@@ -1,0 +1,12 @@
+.git
+node_modules
+work
+reference
+.env
+.env.*
+!.env.example
+dist
+build
+test-results
+playwright-report
+docs/evidence

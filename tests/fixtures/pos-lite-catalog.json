@@ -1,0 +1,1 @@
+{"source":"pos-lite","sourceTenantId":"fictional-pos-location","targetTenantId":"10000000-0000-4000-8000-000000000001","currency":"MXN","rows":[{"id":"fixture-1","name":"Taco de prueba","price":"45.00","category":"Tacos","is_available":true}]}

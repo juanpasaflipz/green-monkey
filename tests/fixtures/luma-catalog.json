@@ -1,0 +1,1 @@
+{"source":"luma","sourceTenantId":"fictional-luma-location","targetTenantId":"10000000-0000-4000-8000-000000000002","currency":"MXN","rows":[{"id":"fixture-1","name":"Ensalada de prueba","price":"85.50","category":"Ensaladas","is_available":true}]}

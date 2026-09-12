@@ -16,3 +16,5 @@ playwright-report/
 *.sql.gz
 .DS_Store
 __pycache__/
+
+build/
