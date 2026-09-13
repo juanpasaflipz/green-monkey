@@ -18,7 +18,7 @@ This is an in-progress implementation, not release approval. Required features r
 | Split by items/amount; grouped settlement | verified | Amount/item splits and grouped settlement API/UI; immutable per-unit allocations, partial-unit balances and concurrent selection checks verified. Pre-allocation history remains explicitly unallocated. | — |
 | Full/partial refunds, cancellations, history | pending | Partial/full amount cash refund API and UI, reason and no-return disposition. Item-level and provider refunds/cancellation pending. | — |
 | Offline cash, menu cache, refresh recovery | pending | Dexie queue, session scope, service worker, cross-tab lock, same-key retries and atomic sync. Manager conflict reconciliation and revoked-session recovery pending. | — |
-| QR customer ordering and kiosk | pending | Signed scoped ordering links; QR/kiosk frontend shares service; unpaid kitchen dispatch and public receipt. Idle reset implemented. Provider checkout and held-order policy pending. | — |
+| QR customer ordering and kiosk | pending | Signed scoped ordering links; QR/kiosk frontend shares service; unpaid kitchen dispatch and public receipt. Idle reset implemented. Provider checkout and held-order policy pending. Kiosk is required Pro; local server entitlement gates are implemented and tested for tenant isolation, expiry and accepted-order retries. Stripe reconciliation and live entitlement provisioning remain pending. | — |
 | Native iOS/Android wrappers | optional follow-on | Not implemented. | — |
 | Ingredients, recipe links, substitutions, costs | pending | Stable stock IDs, append-only recipe versions, historical line cost snapshots; multi-ingredient editor implemented; substitutes and automatic costing pending. | — |
 | Suppliers, purchase orders, receiving | pending | Supplier creation and merchandise receipt/expiry metadata. Purchase orders and lot depletion pending. | — |
@@ -31,7 +31,7 @@ This is an in-progress implementation, not release approval. Required features r
 | PDF reports and scheduled summaries | pending | Not implemented. | Provider/account/device verification required; none performed. |
 | Cash sessions, paid-outs, end-of-day | pending | Device drawer opening, paid-outs, closing count/reason and expected cash including refunds/tips. Saved close draft pending. | — |
 | Team, shifts, payroll/tips summaries | pending | Employee creation, shift start/end and estimated hourly payroll list. Tip distribution and payroll policies pending. | — |
-| Onboarding, account, subscription billing | pending | Menu import and initial owner/device access; account onboarding and billing pending. | Provider/account/device verification required; none performed. |
+| Onboarding, account, subscription billing | pending | Menu import and initial owner/device access; account onboarding and billing pending. Free/Pro packaging and a recommended 14-day trial are defined in PLANS_AND_SIGNUP.md; social signup and Stripe entitlements remain pending. | Provider/account/device verification required; none performed. |
 | CFDI invoice/customer self-service/cancellation | pending | Not implemented. | Provider/account/device verification required; none performed. |
 | Uber Eats/Rappi/DiDi imports and connectors | pending | Not implemented. | — |
 | Courier dispatch (Uber Direct) | optional follow-on | Not implemented. | Provider/account/device verification required; none performed. |

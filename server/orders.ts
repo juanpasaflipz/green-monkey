@@ -1,3 +1,4 @@
+import { requirePro } from "./entitlements.js";
 import {
   payableUnits,
   allocatePayment,
@@ -167,6 +168,7 @@ export async function createOrder(tx: Tx, s: Session, raw: unknown) {
   permit(s, operators);
   const input = orderInput.parse(raw);
   return once(tx, s, input.operationId, "create_order", input, async () => {
+    if (["qr", "kiosk"].includes(input.channel)) await requirePro(tx);
     const lines = quote(
       input.lines,
       await catalog(tx),

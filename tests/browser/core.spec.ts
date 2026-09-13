@@ -352,7 +352,7 @@ test("grouped cash settlement preserves distinct kitchen orders", async ({
           ],
           mode: "takeaway",
           tableId: null,
-          name: "Grouped " + i,
+          name: "Grouped " + crypto.randomUUID() + " " + i,
           note: "",
           channel: "pos",
         }),
@@ -364,6 +364,8 @@ test("grouped cash settlement preserves distinct kitchen orders", async ({
   await page.getByRole("button", { name: "Órdenes", exact: true }).click();
   for (const o of created)
     await page
+      .getByRole("article")
+      .filter({ hasText: o.name })
       .getByRole("checkbox", {
         name: "Seleccionar orden #" + o.number,
         exact: true,

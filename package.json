@@ -13,7 +13,7 @@
     "start": "node build/server/index.js",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "lint": "eslint .",
-    "test": "vitest run tests/domain.test.ts",
+    "test": "vitest run tests/domain.test.ts tests/plans.test.ts",
     "test:db": "tsx tests/database.ts",
     "test:browser": "playwright test",
     "db:migrate": "tsx scripts/migrate.ts",

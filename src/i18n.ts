@@ -470,6 +470,10 @@ export const strings = {
 } as const;
 export type Key = keyof typeof strings.es;
 export const errorText: Record<string, [string, string]> = {
+  pro_required: [
+    "Esta función necesita Pro vigente. Tus órdenes y recibos siguen disponibles.",
+    "This feature requires current Pro access. Your orders and receipts remain available.",
+  ],
   invalid_assignee: [
     "Selecciona un empleado activo de esta sucursal.",
     "Choose an active employee at this restaurant.",

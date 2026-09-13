@@ -59,3 +59,7 @@ The configured integrations stay disabled. Passing cash tests does not establish
 ## Neon and Railway staging verification
 
 See [STAGING.md](STAGING.md) for exact isolated targets, repeatable commands, generated access credentials location and evidence. All 17 integration checks passed on Neon test. Railway built and started the Docker image successfully. Live browser smoke passed login, required modifier, kitchen acknowledgement/readiness, cash payment, receipt, secure HttpOnly cookies, four viewport layouts and selling axe checks (zero violations). Source-only upload contained no environment files or reference snapshots. Production was not deployed.
+
+## Local plan-gating checkpoint
+
+Migration 006 adds read-only runtime entitlements with FORCE RLS. Eighteen unit tests, targeted local entitlement database checks, all seventeen existing database checks, eleven browser scenarios, typecheck, lint and build passed. The canonical order service denies new QR/kiosk orders on Free or expired Pro but recovers accepted requests with the original idempotency key. Details and unimplemented signup/billing/provider work are in [PLANS_AND_SIGNUP.md](PLANS_AND_SIGNUP.md). This checkpoint is local; staging remains on its previously verified deployment.

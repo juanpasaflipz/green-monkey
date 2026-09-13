@@ -18,7 +18,7 @@
 | Split by items/amount; grouped settlement | Both splits; POS Lite payment groups | Canonical allocations; keep kitchen orders distinct | 3, required |
 | Full/partial refunds, cancellations, history | Both | Reversal records and scoped manager approval | 2–3, required |
 | Offline cash, menu cache, refresh recovery | POS Lite Dexie/sync; Luma local handling | Preserve/rebuild with visible reconciliation | 3, required |
-| QR customer ordering and kiosk | Both; dedicated POS Lite kiosk bundle | Rebuild on same order services | 3, required web flows |
+| QR customer ordering and kiosk | Both; dedicated POS Lite kiosk bundle | Rebuild on same order services; kiosk is required Pro | 3, required web flows |
 | Native iOS/Android wrappers | POS Lite ios/android/Capacitor | Preserve a compatible API path; reintroduce when needed | Optional follow-on |
 | Ingredients, recipe links, substitutions, costs | Luma recipes/substitutes; POS Lite recipe management | Stable IDs, units, snapshots, yield | 4, required |
 | Suppliers, purchase orders, receiving | POS Lite procurement; Luma merchandise | One receiving workflow and stock cause | 4, required |

@@ -1,3 +1,4 @@
+import { entitlement, requirePro } from "./entitlements.js";
 import {
   serviceOptions,
   assignService,
@@ -74,7 +75,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", async (_req, res, next) => {
   try {
     const ready =
-      await sql`select name from schema_migrations where name='005_service_assignment.sql'`;
+      await sql`select name from schema_migrations where name='006_entitlements.sql'`;
     if (!ready.length) throw new DomainError("schema_not_ready", 503);
     res.json({ ok: true });
   } catch (e) {
@@ -588,6 +589,7 @@ route("post", "/ordering-links", async (tx, s, req) => {
     const rows = await tx`select id from dining_tables where id=${p.tableId}`;
     if (!rows.length) throw new DomainError("not_found", 404);
   }
+  await requirePro(tx);
   const token = sign({
     purpose: "ordering",
     id: randomUUID(),
@@ -603,6 +605,7 @@ route("post", "/ordering-links", async (tx, s, req) => {
     expiresAt: new Date(Date.now() + 86400_000).toISOString(),
   };
 });
+route("get", "/plan", async (tx) => entitlement(tx));
 route("get", "/capabilities", async () => ({
   cash: { enabled: true },
   external: { enabled: true },

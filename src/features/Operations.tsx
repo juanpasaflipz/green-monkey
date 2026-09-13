@@ -1,3 +1,4 @@
+import { PlanSettings } from "./PlanSettings";
 import { ServiceAssignment } from "./ServiceAssignment";
 import { RestaurantSettings } from "./RestaurantSettings";
 import { currencyExponent } from "../../shared/domain";
@@ -142,7 +143,13 @@ export function Operations({
         />
       )}{" "}
       {view === "settings" && (
-        <RestaurantSettings session={session} locale={locale} />
+        <>
+          <RestaurantSettings session={session} locale={locale} />
+          <PlanSettings
+            locale={locale}
+            timezone={session.restaurant.timezone}
+          />
+        </>
       )}
       {error && (
         <p className="error" role="alert">

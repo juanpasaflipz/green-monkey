@@ -13,6 +13,9 @@ try {
     cashier: "123456",
     kitchen: "654321",
   });
+  await sql`insert into restaurant_entitlements(tenant_id,status,access_until,source)
+    select id,'active',now()+interval '14 days','fixture' from restaurants
+    on conflict(tenant_id) do nothing`;
   console.log(
     "Fictional demo seed ready. Owner: owner / demo-green-monkey; cashier PIN: 123456; kitchen PIN: 654321.",
   );

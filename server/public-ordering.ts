@@ -1,3 +1,4 @@
+import { requirePro } from "./entitlements.js";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import type postgres from "postgres";
@@ -75,12 +76,15 @@ export function publicOrdering(sql: postgres.Sql) {
   router.get("/:token/catalog", async (req, res, next) => {
     try {
       res.json(
-        await context(req.params.token, async (tx, s) => ({
-          restaurant: s.restaurant,
-          catalog: (await catalog(tx)).map(
-            ({ recipe: _recipe, cost: _cost, ...p }) => p,
-          ),
-        })),
+        await context(req.params.token, async (tx, s) => {
+          await requirePro(tx);
+          return {
+            restaurant: s.restaurant,
+            catalog: (await catalog(tx)).map(
+              ({ recipe: _recipe, cost: _cost, ...p }) => p,
+            ),
+          };
+        }),
       );
     } catch (e) {
       next(e);
