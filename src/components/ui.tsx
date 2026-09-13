@@ -6,6 +6,7 @@ import {
   type ButtonHTMLAttributes,
 } from "react";
 import { X } from "lucide-react";
+import { createPortal } from "react-dom";
 export function Button({
   variant = "secondary",
   className = "",
@@ -59,12 +60,14 @@ export function Modal({
   closeLabel,
   children,
   wide = false,
+  footer,
 }: {
   title: string;
   close: () => void;
   closeLabel: string;
   children: ReactNode;
   wide?: boolean;
+  footer?: ReactNode;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
@@ -76,10 +79,10 @@ export function Modal({
       previous?.focus();
     };
   }, []);
-  return (
+  return createPortal(
     <dialog
       aria-labelledby={titleId}
-      className={wide ? "wide" : ""}
+      className={[wide ? "wide" : "", footer ? "has-footer" : ""].join(" ")}
       ref={ref}
       onCancel={(e) => {
         e.preventDefault();
@@ -93,6 +96,8 @@ export function Modal({
         </Button>
       </div>
       <div className="modal-body">{children}</div>
-    </dialog>
+      {footer && <div className="modal-footer">{footer}</div>}
+    </dialog>,
+    document.body,
   );
 }

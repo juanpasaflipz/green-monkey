@@ -1,6 +1,36 @@
 import type { Locale } from "../shared/domain";
 export const strings = {
   es: {
+    thisPayment: "Este pago",
+    assignService: "Mesa y mesero",
+    waiter: "Mesero responsable",
+    serviceMode: "Tipo de servicio",
+    noTable: "Sin mesa",
+    serviceUpdated: "Asignación actualizada",
+    serviceAssignmentHint:
+      "Conserva la orden, sus pagos y las rondas de cocina. Se registra quién hizo el cambio y por qué.",
+    pendingPaymentRecovery:
+      "Hay un pago anterior por confirmar. Reintentar consulta la misma operación; no inicia otro cobro.",
+    retryPayment: "Recuperar pago",
+    restaurantSettings: "Datos del restaurante",
+    currency: "Moneda",
+    timezone: "Zona horaria",
+    businessCutoff: "Cierre del día de negocio",
+    openingDays: "Días de apertura",
+    currencyLocked:
+      "La moneda está bloqueada porque ya existen importes registrados. No se convierten importes históricos.",
+    cutoffHint:
+      "El día de negocio empieza a esta hora local. Los cambios no reescriben la fecha asignada a órdenes anteriores.",
+    settingsSaved: "Configuración guardada",
+    splitAmount: "Dividir por importe",
+    splitItems: "Dividir por productos",
+    sendAndSplit: "Enviar ronda y dividir por productos",
+    selectItems: "Productos de este pago",
+    itemSplitHint:
+      "Cada unidad conserva lo que ya se pagó. Un reembolso no vuelve a abrir su saldo.",
+    unallocatedHistory:
+      "Esta orden tiene pagos anteriores sin asignación por producto. Continúa por importe.",
+
     addIngredient: "Agregar ingrediente",
     syncBeforeClose:
       "Sincroniza las ventas pendientes de este dispositivo antes de cerrar caja.",
@@ -204,6 +234,36 @@ export const strings = {
     notReady: "Esta función aún no está habilitada.",
   },
   en: {
+    thisPayment: "This payment",
+    assignService: "Table and server",
+    waiter: "Assigned server",
+    serviceMode: "Service type",
+    noTable: "No table",
+    serviceUpdated: "Assignment updated",
+    serviceAssignmentHint:
+      "Keeps the order, payments and kitchen rounds. The actor and reason for the change are recorded.",
+    pendingPaymentRecovery:
+      "An earlier payment needs confirmation. Retrying checks the same operation; it does not start another payment.",
+    retryPayment: "Recover payment",
+    restaurantSettings: "Restaurant details",
+    currency: "Currency",
+    timezone: "Time zone",
+    businessCutoff: "Business-day cutoff",
+    openingDays: "Opening days",
+    currencyLocked:
+      "Currency is locked because monetary records already exist. Historical amounts are not converted.",
+    cutoffHint:
+      "The business day starts at this local time. Changes do not rewrite dates assigned to earlier orders.",
+    settingsSaved: "Settings saved",
+    splitAmount: "Split by amount",
+    splitItems: "Split by items",
+    sendAndSplit: "Send round and split by items",
+    selectItems: "Items for this payment",
+    itemSplitHint:
+      "Each unit retains what has been paid. A refund does not reopen its balance.",
+    unallocatedHistory:
+      "This order has earlier payments without item allocations. Continue by amount.",
+
     addIngredient: "Add ingredient",
     syncBeforeClose:
       "Sync this device’s pending sales before closing the drawer.",
@@ -410,6 +470,30 @@ export const strings = {
 } as const;
 export type Key = keyof typeof strings.es;
 export const errorText: Record<string, [string, string]> = {
+  invalid_assignee: [
+    "Selecciona un empleado activo de esta sucursal.",
+    "Choose an active employee at this restaurant.",
+  ],
+  invalid_table: [
+    "Selecciona una mesa de esta sucursal para servicio en mesa.",
+    "Choose a table at this restaurant for dine-in service.",
+  ],
+  items_changed: [
+    "Estos productos ya cambiaron o fueron cobrados. Actualiza la orden.",
+    "These items changed or were paid. Refresh the order.",
+  ],
+  unallocated_history: [
+    "Hay pagos sin asignación por producto; continúa por importe.",
+    "Some payments have no item allocations; continue by amount.",
+  ],
+  settings_changed: [
+    "Cambió la configuración. Actualiza antes de continuar.",
+    "Settings changed. Refresh before continuing.",
+  ],
+  currency_locked: [
+    "La moneda no puede cambiar después de registrar importes.",
+    "Currency cannot change after monetary records exist.",
+  ],
   offline_conflict: [
     "Conecta el dispositivo e inicia sesión con una caja abierta antes de cobrar sin conexión.",
     "Connect and sign in with an open drawer before collecting offline cash.",

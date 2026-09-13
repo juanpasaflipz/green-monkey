@@ -70,10 +70,13 @@ export function Selling({
   const [current, setCurrent] = useState<Order | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [pendingPayment, setPendingPayment] = useState(false);
   const [parked, setParked] = useState<Draft[] | null>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [cashSession, setCashSession] = useState<any>(null);
   const [amount, setAmount] = useState("");
+  const [splitItems, setSplitItems] = useState(false);
+  const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [received, setReceived] = useState("");
   const [tip, setTip] = useState("0");
   const [method, setMethod] = useState("cash");
@@ -96,24 +99,33 @@ export function Selling({
       void api("/tables")
         .then(setTables)
         .catch(() => {});
-      void db.cache.get(contextId).then(async (c) => {
-        if (c && live) setCurrent(await api("/orders/" + c.value));
-      });
-      void db.cache.get(attemptId).then(async (a) => {
-        if (a && live) {
-          try {
+      void (async () => {
+        const a = await db.cache.get(attemptId);
+        if (!live) return;
+        setPendingPayment(!!a);
+        try {
+          if (a) {
             const o = await api<Order>(
               "/orders/" + a.value.orderId + "/payments",
               a.value.payload,
             );
-            setCurrent(o);
-            setReceipt(o);
             await db.cache.delete(attemptId);
-          } catch (e) {
-            setError(translateError((e as Error).message, locale));
+            if (live) {
+              setCurrent(o);
+              setReceipt(o);
+              setPendingPayment(false);
+            }
+          } else {
+            const c = await db.cache.get(contextId);
+            if (c) {
+              const o = await api<Order>("/orders/" + c.value);
+              if (live) setCurrent(o);
+            }
           }
+        } catch (e) {
+          if (live) setError(translateError((e as Error).message, locale));
         }
-      });
+      })();
     }
     return () => {
       live = false;
@@ -235,6 +247,8 @@ export function Selling({
     }
   }
   function openPay() {
+    setSplitItems(false);
+    setSelectedItems([]);
     setAmount((due / scale).toFixed(exponent));
     setReceived((due / scale).toFixed(exponent));
     setTip("0");
@@ -246,6 +260,20 @@ export function Selling({
     setBusy(true);
     setError("");
     try {
+      const previous = await db.cache.get(attemptId);
+      if (previous) {
+        const result = await api<Order>(
+          `/orders/${previous.value.orderId}/payments`,
+          previous.value.payload,
+        );
+        await db.cache.delete(attemptId);
+        setCurrent(result);
+        setPendingPayment(false);
+        setPayment(false);
+        setReceipt(result);
+        paymentKey.current = crypto.randomUUID();
+        return;
+      }
       const n = parseAmount(amount),
         cash = parseAmount(received),
         tips = parseAmount(tip);
@@ -303,8 +331,7 @@ export function Selling({
       let o = current;
       if (draft.lines.length) o = await send();
       if (!o) throw new Error("invalid_input");
-      const previous = await db.cache.get(attemptId);
-      const payload = previous?.value.payload ?? {
+      const payload = {
         operationId: paymentKey.current,
         amount: n,
         tip: tips,
@@ -312,17 +339,25 @@ export function Selling({
         method,
         externalConfirmed: confirmed,
         reference,
+        ...(splitItems ? { items: selectedItems } : {}),
       };
       await db.cache.put({ id: attemptId, value: { orderId: o.id, payload } });
+      setPendingPayment(true);
       const result = await api<Order>(`/orders/${o.id}/payments`, payload);
       await db.cache.delete(attemptId);
       setCurrent(result);
+      setPendingPayment(false);
       setPayment(false);
       setReceipt(result);
       paymentKey.current = crypto.randomUUID();
     } catch (e) {
-      if (e instanceof ApiError && e.status >= 400 && e.status < 500)
+      if (
+        e instanceof ApiError &&
+        [400, 404, 409].includes(e.status) &&
+        e.message !== "operation_conflict"
+      )
         await db.cache.delete(attemptId);
+      setPendingPayment(!!(await db.cache.get(attemptId)));
       setError(translateError((e as Error).message, locale));
     } finally {
       setBusy(false);
@@ -514,8 +549,20 @@ export function Selling({
           <div>
             <span className="eyebrow">GREEN MONKEY / POS</span>
             <h1>{t("sell")}</h1>
+            {pendingPayment && (
+              <div className="warning-panel" role="status">
+                <p>{t("pendingPaymentRecovery")}</p>
+                <Button
+                  disabled={!online || busy}
+                  onClick={() => void collect()}
+                >
+                  {t("retryPayment")}
+                </Button>
+              </div>
+            )}
           </div>
           <Button
+            disabled={pendingPayment}
             onClick={async () => {
               if (draft.lines.length)
                 await db.drafts.put({
@@ -697,10 +744,40 @@ export function Selling({
           title={t("pay")}
           close={() => !busy && setPayment(false)}
           closeLabel={t("close")}
+          footer={
+            <>
+              <div className="row between">
+                <span>{t("thisPayment")}</span>
+                <strong>
+                  {(() => {
+                    try {
+                      return money(parseAmount(amount));
+                    } catch {
+                      return "—";
+                    }
+                  })()}
+                </strong>
+              </div>{" "}
+              <Button
+                variant="primary"
+                className="full"
+                disabled={busy || (splitItems && !selectedItems.length)}
+                onClick={() => void collect()}
+              >
+                {busy ? t("loading") : t(online ? "confirmPay" : "saveOffline")}
+                <Check size={20} />
+              </Button>
+            </>
+          }
         >
           <span className="muted">{t("remaining")}</span>
           <div className="large-money">{money(due)}</div>
           <p>{t("paymentHint")}</p>
+          {pendingPayment && (
+            <p className="warning-panel" role="status">
+              {t("pendingPaymentRecovery")}
+            </p>
+          )}
           {!online && <p className="warning-panel">{t("offlineHint")}</p>}
           <div className="service-tabs">
             <button
@@ -717,10 +794,80 @@ export function Selling({
               {t("external")}
             </button>
           </div>
+          <div className="row wrap">
+            <Button
+              disabled={busy}
+              onClick={() => {
+                setSplitItems(false);
+                setSelectedItems([]);
+                setAmount((due / scale).toFixed(exponent));
+                setReceived((due / scale).toFixed(exponent));
+              }}
+            >
+              {t("splitAmount")}
+            </Button>
+            <Button
+              disabled={busy || !online || pendingPayment}
+              onClick={async () => {
+                try {
+                  const order = draft.lines.length
+                    ? await send()
+                    : await api<Order>("/orders/" + current!.id);
+                  setCurrent(order);
+                  if (!order.itemSplitAvailable) {
+                    setError(t("unallocatedHistory"));
+                    return;
+                  }
+                  setSplitItems(true);
+                  setSelectedItems([]);
+                  setAmount("0");
+                  setReceived("0");
+                } catch (e) {
+                  setError(translateError((e as Error).message, locale));
+                }
+              }}
+            >
+              {t(draft.lines.length ? "sendAndSplit" : "splitItems")}
+            </Button>
+          </div>
+          {splitItems && (
+            <fieldset>
+              <legend>{t("selectItems")}</legend>
+              <p className="muted">{t("itemSplitHint")}</p>
+              {current?.paymentUnits?.map((unit) => (
+                <label className="option" key={unit.key}>
+                  <input
+                    type="checkbox"
+                    disabled={busy || unit.due === 0}
+                    checked={selectedItems.includes(unit.key)}
+                    onChange={() => {
+                      const selection = selectedItems.includes(unit.key)
+                        ? selectedItems.filter((key) => key !== unit.key)
+                        : [...selectedItems, unit.key];
+                      setSelectedItems(selection);
+                      const total = current
+                        .paymentUnits!.filter((u) => selection.includes(u.key))
+                        .reduce((n, u) => n + u.due, 0);
+                      setAmount((total / scale).toFixed(exponent));
+                      setReceived((total / scale).toFixed(exponent));
+                    }}
+                  />
+                  <span>
+                    {unit.name[locale]} · {unit.unit + 1}
+                    <small>
+                      {unit.paid ? `${t("paid")}: ${money(unit.paid)}` : ""}
+                    </small>
+                  </span>
+                  <strong>{unit.due ? money(unit.due) : t("paid")}</strong>
+                </label>
+              ))}
+            </fieldset>
+          )}
           <Field label={t("amount")}>
             <input
               inputMode="decimal"
               value={amount}
+              readOnly={splitItems}
               onChange={(e) => setAmount(e.target.value)}
             />
           </Field>
@@ -775,15 +922,6 @@ export function Selling({
               {error}
             </p>
           )}
-          <Button
-            variant="primary"
-            className="full"
-            disabled={busy}
-            onClick={() => void collect()}
-          >
-            {busy ? t("loading") : t(online ? "confirmPay" : "saveOffline")}
-            <Check size={20} />
-          </Button>
         </Modal>
       )}
       {receipt && (
@@ -794,7 +932,7 @@ export function Selling({
         >
           <div className="receipt">
             <h2>Green Monkey</h2>
-            <p>{session.restaurant.name}</p>
+            <p>{receipt.restaurantSnapshot?.name ?? session.restaurant.name}</p>
             <Badge tone="green">
               {receipt.state === "local"
                 ? t("pending")
@@ -805,7 +943,9 @@ export function Selling({
             <p>
               #{receipt.number || receipt.id.slice(0, 8)} ·{" "}
               {new Date(receipt.createdAt).toLocaleString(locale, {
-                timeZone: session.restaurant.timezone,
+                timeZone:
+                  receipt.restaurantSnapshot?.timezone ??
+                  session.restaurant.timezone,
               })}
             </p>
             {receipt.lines.map((l) => (

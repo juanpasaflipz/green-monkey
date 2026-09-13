@@ -33,7 +33,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [queued, setQueued] = useState(0);
   const t = (key: Key) => strings[locale][key];
-  async function load() {
+  async function load(resetView = true) {
     try {
       const s = await api<Session>("/session");
       setSession(s);
@@ -41,13 +41,14 @@ export default function App() {
       const c = await api<Product[]>("/catalog");
       setCatalog(c);
       await cacheSession(s, c);
-      setView(
-        s.role === "kitchen"
-          ? "kitchen"
-          : s.role === "owner"
-            ? "today"
-            : "sell",
-      );
+      if (resetView)
+        setView(
+          s.role === "kitchen"
+            ? "kitchen"
+            : s.role === "owner"
+              ? "today"
+              : "sell",
+        );
     } catch {
       if (!navigator.onLine) {
         const cached = await db.cache.get("session");
@@ -65,10 +66,13 @@ export default function App() {
   }
   useEffect(() => {
     void load();
+    const refreshSession = () => void load(false);
+    window.addEventListener("gm-session-refresh", refreshSession);
     const on = () => setOnline(navigator.onLine);
     window.addEventListener("online", on);
     window.addEventListener("offline", on);
     return () => {
+      window.removeEventListener("gm-session-refresh", refreshSession);
       window.removeEventListener("online", on);
       window.removeEventListener("offline", on);
     };

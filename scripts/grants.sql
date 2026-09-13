@@ -6,3 +6,7 @@ GRANT INSERT ON order_lines,tenders,refunds,cash_movements,stock_movements,audit
 
 GRANT INSERT ON recipe_versions,receipts TO gm_app;
 GRANT INSERT,UPDATE ON suppliers,shifts TO gm_app;
+
+GRANT SELECT,INSERT ON tender_allocations TO gm_app;
+REVOKE UPDATE ON restaurants FROM gm_app;
+GRANT UPDATE(name,currency,timezone,cutoff,opening_days,config_version) ON restaurants TO gm_app;

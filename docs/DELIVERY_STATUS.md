@@ -5,17 +5,17 @@ This is an in-progress implementation, not release approval. Required features r
 | Capability | Status | Implemented / remaining | External dependency |
 | --- | --- | --- | --- |
 | Owner login, employee PIN, permissions | pending | Owner/password and employee PIN endpoints; signed device cookies; server roles. Organization memberships/switching still pending. | — |
-| Restaurants/organizations, branding | pending | Not implemented. | — |
+| Restaurants/organizations, branding | pending | Owner restaurant settings (name, timezone, cutoff, opening days), currency lock and receipt snapshots implemented. Organization membership/switching and asset branding pending. | — |
 | Catalog/categories/search/photos | pending | Search, categories, bilingual product names, availability, menu editor; image assets not implemented. | — |
 | Modifiers, combos, open amount | pending | Required modifier groups and authoritative prices. Combo slots and open-amount UI pending. | — |
 | Promotions, scheduled offers, discounts/courtesies | pending | Not implemented. | — |
-| Tables, waiter attribution, service rounds | pending | Table selection and additional rounds. Waiter reassignment and table moves pending. | — |
+| Tables, waiter attribution, service rounds | pending | Table selection, additional rounds, table moves and server reassignment with separate service version/audit. Verified creator/payment/round preservation and cross-tenant rejection. | — |
 | Parked carts/templates, call names, fulfillment | pending | IndexedDB drafts and call names. Templates and richer line edits pending. | — |
 | Kitchen/bar, status, seen acknowledgement | pending | Station queues, seen/ready/completed actions, persisted rounds and polling. Cancellation deltas pending. | — |
 | Thermal receipts, kitchen printing, reprints | pending | Browser receipt and durable blocked print records. Printer pairing/acknowledgement/reprint worker pending. | Provider/account/device verification required; none performed. |
 | Cash, separate external bank terminal recording | pending | Cash and explicit external-terminal recording. Cash flow browser-tested; external-terminal recording not sandbox verification. | — |
 | Integrated payments and terminal binding | pending | Not implemented. | Provider/account/device verification required; none performed. |
-| Split by items/amount; grouped settlement | pending | Split by amount and grouped settlement API/UI, browser verified. Item allocations pending. | — |
+| Split by items/amount; grouped settlement | verified | Amount/item splits and grouped settlement API/UI; immutable per-unit allocations, partial-unit balances and concurrent selection checks verified. Pre-allocation history remains explicitly unallocated. | — |
 | Full/partial refunds, cancellations, history | pending | Partial/full amount cash refund API and UI, reason and no-return disposition. Item-level and provider refunds/cancellation pending. | — |
 | Offline cash, menu cache, refresh recovery | pending | Dexie queue, session scope, service worker, cross-tab lock, same-key retries and atomic sync. Manager conflict reconciliation and revoked-session recovery pending. | — |
 | QR customer ordering and kiosk | pending | Signed scoped ordering links; QR/kiosk frontend shares service; unpaid kitchen dispatch and public receipt. Idle reset implemented. Provider checkout and held-order policy pending. | — |

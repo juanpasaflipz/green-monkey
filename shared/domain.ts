@@ -269,6 +269,13 @@ export type Session = {
   };
 };
 export type Order = {
+  serviceVersion?: number;
+  assignedEmployeeId?: string;
+  waiterName?: string;
+  tableName?: string | null;
+  restaurantSnapshot?: Session["restaurant"] | null;
+  itemSplitAvailable?: boolean;
+  paymentUnits?: import("./settlement.js").PayableUnit[];
   id: string;
   number: number;
   version: number;

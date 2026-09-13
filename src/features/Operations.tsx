@@ -1,3 +1,5 @@
+import { ServiceAssignment } from "./ServiceAssignment";
+import { RestaurantSettings } from "./RestaurantSettings";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
 import { useEffect, useState } from "react";
@@ -38,6 +40,7 @@ export function Operations({
   const [modal, setModal] = useState<{ kind: string; item?: any } | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [busy, setBusy] = useState(false);
+  const [serviceOrder, setServiceOrder] = useState<Order | null>(null);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [station, setStation] = useState("kitchen");
   const [detail, setDetail] = useState<any[] | null>(null);
@@ -112,6 +115,14 @@ export function Operations({
   const manager = ["owner", "manager"].includes(session.role);
   return (
     <>
+      {serviceOrder && (
+        <ServiceAssignment
+          order={serviceOrder}
+          locale={locale}
+          close={() => setServiceOrder(null)}
+          saved={load}
+        />
+      )}
       <div className="section-title">
         <div>
           <span className="eyebrow">{session.restaurant.name}</span>
@@ -130,6 +141,9 @@ export function Operations({
           refresh={load}
         />
       )}{" "}
+      {view === "settings" && (
+        <RestaurantSettings session={session} locale={locale} />
+      )}
       {error && (
         <p className="error" role="alert">
           {error}
@@ -172,6 +186,9 @@ export function Operations({
                         </span>
                         <h3>{o.name || t("order")}</h3>
                         <p>
+                          {o.tableName ?? t("noTable")} · {o.waiterName}
+                        </p>
+                        <p>
                           {o.lines
                             .map((l) => `${l.quantity} ${l.name[locale]}`)
                             .join(" · ")}
@@ -195,6 +212,11 @@ export function Operations({
                           {t("resume")}
                           <ArrowUpRight size={16} />
                         </Button>
+                        {o.state !== "completed" && (
+                          <Button onClick={() => setServiceOrder(o)}>
+                            {t("assignService")}
+                          </Button>
+                        )}
                         {manager &&
                           o.tenders.some(
                             (x) => x.method === "cash" && x.amount > x.refunded,
@@ -307,6 +329,12 @@ export function Operations({
                           min
                         </Badge>
                       </header>
+                      <p>
+                        {r.table_name ?? t("noTable")} · {r.waiter_name}
+                      </p>
+                      {r.service_version > 0 && (
+                        <Badge>{t("serviceUpdated")}</Badge>
+                      )}
                       <div className="ticket-lines">
                         {r.lines?.map((l: any) => (
                           <div key={l.id}>
@@ -587,7 +615,9 @@ export function Operations({
                 {session.restaurant.timezone}
                 <br />
                 {t("refresh")}:{" "}
-                {new Date(data.refreshedAt).toLocaleString(locale)}
+                {new Date(data.refreshedAt).toLocaleString(locale, {
+                  timeZone: session.restaurant.timezone,
+                })}
               </p>
             </>
           )}
@@ -702,7 +732,11 @@ export function Operations({
                     <small>{r.reason ?? r.entity_id}</small>
                   </span>
                   <strong>{r.quantity ?? ""}</strong>
-                  <time>{new Date(r.created_at).toLocaleString(locale)}</time>
+                  <time>
+                    {new Date(r.created_at).toLocaleString(locale, {
+                      timeZone: session.restaurant.timezone,
+                    })}
+                  </time>
                 </div>
               ))}
             </div>

@@ -1,3 +1,8 @@
+import {
+  payableUnits,
+  allocatePayment,
+  type Allocation,
+} from "../shared/settlement.js";
 import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
 import { z } from "zod";
@@ -41,6 +46,17 @@ export async function once<T>(
       throw new DomainError("operation_conflict", 409);
     return prior.result as T;
   }
+  if (kind !== "restaurant.settings") {
+    const [restaurant] =
+      await tx`select currency,timezone,cutoff from restaurants where id=${s.tenantId} for share`;
+    if (
+      !restaurant ||
+      restaurant.currency !== s.restaurant.currency ||
+      restaurant.timezone !== s.restaurant.timezone ||
+      restaurant.cutoff !== s.restaurant.cutoff
+    )
+      throw new DomainError("settings_changed", 409);
+  }
   const result = await fn();
   await tx`insert into operations(tenant_id,id,kind,hash,result) values(${s.tenantId},${key},${kind},${fingerprint},${tx.json(result as any)})`;
   return result;
@@ -51,7 +67,8 @@ export async function catalog(tx: Tx): Promise<Product[]> {
   ).map((r) => r.data as Product);
 }
 export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
-  const [o] = await tx`select * from orders where id=${orderId}`;
+  const [o] =
+    await tx`select o.*,e.name as waiter_name,t.name as table_name from orders o join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id) left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id where o.id=${orderId}`;
   if (!o) throw new DomainError("not_found", 404);
   const lines =
     await tx`select data from order_lines where order_id=${orderId} order by round,id`;
@@ -59,7 +76,25 @@ export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
     await tx`select t.*,coalesce((select sum(r.amount) from refunds r where r.tender_id=t.id),0)::int as refunded from tenders t where order_id=${orderId} order by created_at`;
   const rounds =
     await tx`select * from rounds where order_id=${orderId} order by number,station`;
+  const allocations = await tx<
+    Allocation[]
+  >`select line_id as "lineId", unit_index as unit, amount from tender_allocations where order_id=${orderId}`;
+  const allocated = sum(allocations.map((a) => a.amount));
+  const paid = sum(tenders.map((t) => t.amount));
   return {
+    serviceVersion: o.service_version,
+    assignedEmployeeId: o.assigned_employee_id ?? o.employee_id,
+    waiterName: o.waiter_name,
+    tableName: o.table_name,
+    restaurantSnapshot: o.restaurant_snapshot,
+    itemSplitAvailable: allocated === paid,
+    paymentUnits:
+      allocated === paid
+        ? payableUnits(
+            lines.map((l) => l.data),
+            allocations,
+          )
+        : [],
     id: o.id,
     number: o.number,
     version: o.version,
@@ -145,7 +180,7 @@ export async function createOrder(tx: Tx, s: Session, raw: unknown) {
     const [number] =
       await tx`insert into order_numbers(tenant_id,business_date,value) values(${s.tenantId},${date},1) on conflict(tenant_id,business_date) do update set value=order_numbers.value+1 returning value`;
     const orderId = randomUUID();
-    await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))})`;
+    await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))},${tx.json(s.restaurant)})`;
     await append(tx, s, orderId, lines, 1);
     await audit(tx, s, "order.created", orderId, {
       channel: input.channel,
@@ -197,6 +232,11 @@ export const paymentInput = z
     method: z.enum(["cash", "external"]),
     externalConfirmed: z.boolean().default(false),
     reference: z.string().max(120).default(""),
+    items: z
+      .array(z.string().regex(/^[0-9a-f-]{36}:\d{1,2}$/i))
+      .min(1)
+      .max(9900)
+      .optional(),
   })
   .strict();
 export async function drawer(tx: Tx, s: Session) {
@@ -225,8 +265,16 @@ export async function recordPayment(
       (!p.externalConfirmed || !p.reference.trim())
     )
       throw new DomainError("external_confirmation");
+    if (p.items && !o.itemSplitAvailable)
+      throw new DomainError("unallocated_history", 409);
+    const allocations = o.itemSplitAvailable
+      ? allocatePayment(o.paymentUnits!, p.amount, p.items)
+      : [];
     const d = await drawer(tx, s);
-    await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,group_id) values(${s.tenantId},${randomUUID()},${orderId},${d.id},${p.method},${p.amount},${p.tip},${p.received},${p.reference},${groupId})`;
+    const tenderId = randomUUID();
+    await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,group_id) values(${s.tenantId},${tenderId},${orderId},${d.id},${p.method},${p.amount},${p.tip},${p.received},${p.reference},${groupId})`;
+    for (const allocation of allocations)
+      await tx`insert into tender_allocations(tenant_id,order_id,tender_id,line_id,unit_index,amount) values(${s.tenantId},${orderId},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;
     await audit(tx, s, "payment.recorded", orderId, {
       method: p.method,
       amount: p.amount,

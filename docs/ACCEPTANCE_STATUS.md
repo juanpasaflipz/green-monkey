@@ -6,25 +6,25 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 | --- | --- | --- |
 | UX-01 | partial | Modifier validation and persistent cart tested; exact three-item task measurement pending. |
 | UX-02 | partial | Cash checkout and receipt tested; primary activation budget not measured. |
-| UX-03 | partial | Additional rounds tested; full table-service scenario pending. |
+| UX-03 | partial | Additional rounds, table/server reassignment and creator/round preservation tested; full table-service lifecycle pending. |
 | UX-04 | partial | KDS acknowledgement/ready and independent payment tested; complete service scenario pending. |
-| UX-05 | partial | Amount split and reload tested; item allocations and provider failure recovery pending. |
+| UX-05 | partial | Amount/item splits, lost cash-response recovery and reload tested; integrated provider failure recovery pending. |
 | UX-06 | verified | Browser grouped cash settlement retains separate order IDs, tenders and rounds. |
 | UX-07 | partial | Draft persistence implemented; complete parked-ticket restart scenario pending. |
 | UX-08 | partial | Cash discrepancy links and inventory evidence implemented; full alert correction scenario pending. |
 | UX-09 | partial | Count adjustment and concurrent stock version validation implemented; saved count workflow pending. |
 | UX-10 | partial | Drawer close and refund tested; tip/paid-out combined scenario and saved close draft pending. |
-| UX-11 | partial | Selling/cart screenshots and overflow checks at all four sizes; all-workspace review pending. |
+| UX-11 | partial | Selling/cart and item-payment screenshots at all four sizes; fixed payment footer and mobile confirmation checked. All-workspace review pending. |
 | UX-12 | partial | Keyboard search, modal dismissal/focus and one-state axe check; full screen-reader review pending. |
-| UX-13 | pending | Spanish/English strings present; organization switching and complete locale acceptance pending. |
+| UX-13 | pending | Restaurant settings persist with English labels, timezone/cutoff/opening days. Organization switching and complete locale acceptance pending. |
 | UX-14 | partial | Catalog import and cash sale independently verified; complete onboarding flow pending. |
 | CORE-01 | partial | Canonical quote shared by POS/QR/kiosk/sync; promotions and tax configuration pending. |
 | CORE-02 | verified | Eight parallel same-ID creates produce one order/stock effect; altered payload conflicts. |
 | CORE-03 | pending | Integrated provider events/reconciliation not implemented. |
-| CORE-04 | pending | Provider crash/restart recovery not implemented. |
-| CORE-05 | partial | Concurrent cash overcollection prevented; integrated cards/item allocations pending. |
-| CORE-06 | partial | Money/remainder/unit arithmetic unit-tested; live taxes/promotions/item split pending. |
-| CORE-07 | partial | Recipe/price edits retain historical cost and price snapshots; tax/offline conflict acceptance pending. |
+| CORE-04 | pending | Committed cash response loss and original-operation recovery tested; integrated provider crash/restart recovery not implemented. |
+| CORE-05 | partial | Concurrent cash/item collection and lost-response recovery tested; integrated cards pending. |
+| CORE-06 | partial | Money/remainder/unit arithmetic and partial item units tested; live taxes/promotions pending. |
+| CORE-07 | partial | Recipe/price edits retain historical snapshots; new orders retain restaurant configuration. Tax/offline conflict acceptance pending. |
 | CORE-08 | partial | Device PIN, CSRF and cashier management denial tested; approval and membership lifecycle pending. |
 | CORE-09 | partial | Two-tenant RLS/FK and public QR tamper checks; invoice/webhook/print/upload/org routes pending. |
 | CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; Neon pooled/direct pending. |

@@ -36,6 +36,8 @@ npm run dev:ui
 
 Open **http://127.0.0.1:5173**. Fictional restaurant ID: `10000000-0000-4000-8000-000000000001`. Owner login: `owner` / `demo-green-monkey`. Employee PIN access after owner device pairing: `cashier` / `123456`; kitchen: `kitchen` / `654321`.
 
+New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
+
 The seed is explicit, repeatable, and refuses non-local hosts. It is never run at boot. Seed prices/costs are fictional. Live tax configuration is not yet implemented.
 
 ## Build and checks

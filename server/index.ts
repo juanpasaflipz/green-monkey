@@ -1,3 +1,9 @@
+import {
+  serviceOptions,
+  assignService,
+  progressPreparation,
+} from "./service.js";
+import { getSettings, saveSettings } from "./restaurant.js";
 import { publicOrdering } from "./public-ordering.js";
 import "dotenv/config";
 import express from "express";
@@ -40,7 +46,6 @@ import {
   DomainError,
   id,
   money,
-  nextPreparation,
   quote,
   orderInput,
   businessDate,
@@ -69,7 +74,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", async (_req, res, next) => {
   try {
     const ready =
-      await sql`select name from schema_migrations where name='002_management.sql'`;
+      await sql`select name from schema_migrations where name='005_service_assignment.sql'`;
     if (!ready.length) throw new DomainError("schema_not_ready", 503);
     res.json({ ok: true });
   } catch (e) {
@@ -87,6 +92,7 @@ app.post(
   rateLimit({
     windowMs: 60_000,
     limit: 10,
+    skipSuccessfulRequests: true,
     standardHeaders: true,
     legacyHeaders: false,
   }),
@@ -163,6 +169,10 @@ const route = (
       next(e);
     }
   });
+route("get", "/service/options", (tx, s) => serviceOptions(tx, s));
+route("post", "/orders/:id/service", (tx, s, req) =>
+  assignService(tx, s, id.parse(req.params.id), req.body),
+);
 route("get", "/session", async (_tx, s) => s);
 app.post("/api/logout", async (req, res, next) => {
   try {
@@ -242,7 +252,12 @@ route("post", "/settlements", async (tx, s, req) => {
           p.operationId,
         ),
       );
-    await audit(tx,s,"settlement.recorded",p.operationId,{orders:p.orders,received:p.received,total,change:p.received-total});
+    await audit(tx, s, "settlement.recorded", p.operationId, {
+      orders: p.orders,
+      received: p.received,
+      total,
+      change: p.received - total,
+    });
     return result;
   });
 });
@@ -289,43 +304,12 @@ route("post", "/sync", async (tx, s, req) => {
 });
 route("get", "/kitchen", async (tx, s) => {
   permit(s, ["owner", "manager", "kitchen", "server", "cashier"]);
-  return tx`select r.*,o.number as order_number,o.name,o.mode,o.table_id,(select jsonb_agg(l.data) from order_lines l where l.order_id=o.id and l.round=r.number and l.data->>'station'=r.station) as lines from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id where r.state<>'completed' order by r.created_at`;
+  return tx`select r.*,o.number as order_number,o.name,o.mode,o.table_id,(select name from dining_tables t where t.id=o.table_id) as table_name,(select name from employees e where e.id=coalesce(o.assigned_employee_id,o.employee_id)) as waiter_name,o.service_version,(select jsonb_agg(l.data) from order_lines l where l.order_id=o.id and l.round=r.number and l.data->>'station'=r.station) as lines from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id where r.state<>'completed' order by r.created_at`;
 });
-route("post", "/kitchen/:id", async (tx, s, req) => {
-  permit(s, ["owner", "manager", "kitchen"]);
-  const p = z
-    .object({ operationId: id, state: z.enum(["seen", "ready", "completed"]) })
-    .strict()
-    .parse(req.body);
-  return once(
-    tx,
-    s,
-    p.operationId,
-    "kitchen",
-    { ...p, id: req.params.id },
-    async () => {
-      const [r] =
-        await tx`select * from rounds where id=${id.parse(req.params.id)} for update`;
-      if (!r) throw new DomainError("not_found", 404);
-      if (p.state === "seen")
-        await tx`update rounds set seen_at=coalesce(seen_at,now()) where id=${r.id}`;
-      else {
-        nextPreparation(r.state, p.state);
-        await tx`update rounds set state=${p.state},seen_at=coalesce(seen_at,now()) where id=${r.id}`;
-      }
-      const all =
-        await tx`select state from rounds where order_id=${r.order_id}`;
-      const state = all.every((r: any) => r.state === "completed")
-        ? "completed"
-        : all.every((r: any) => r.state !== "active")
-          ? "ready"
-          : "active";
-      await tx`update orders set state=${state} where id=${r.order_id}`;
-      await audit(tx, s, "kitchen." + p.state, r.id);
-      return { ok: true };
-    },
-  );
-});
+route("post", "/kitchen/:id", (tx, s, req) =>
+  progressPreparation(tx, s, id.parse(req.params.id), req.body),
+);
+
 route("get", "/cash", async (tx, s) => {
   permit(s, operators);
   return cashSummary(tx, s);
@@ -510,6 +494,8 @@ route("get", "/report", async (tx, s, req) => {
       : 0,
   };
 });
+route("get", "/restaurant", (tx, s) => getSettings(tx, s));
+route("post", "/restaurant", (tx, s, req) => saveSettings(tx, s, req.body));
 route("post", "/catalog/save", async (tx, s, req) =>
   saveProduct(tx, s, req.body),
 );

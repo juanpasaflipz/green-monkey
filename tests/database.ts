@@ -1,3 +1,9 @@
+import {
+  assignService,
+  serviceOptions,
+  progressPreparation,
+} from "../server/service.js";
+import { getSettings, saveSettings } from "../server/restaurant.js";
 import "dotenv/config";
 import { saveProduct } from "../server/management.js";
 import { commitImport } from "../server/imports.js";
@@ -323,6 +329,266 @@ try {
     assert.equal(versions.length, 2);
     assert.equal(versions[0].data.recipe.length, 2);
     assert.equal(versions[0].data.cost, 1500);
+  });
+  await test("item settlements serialize competing selections and preserve partial units", async () => {
+    const created = await tenant(sql, s.tenantId, (tx) =>
+      createOrder(tx, s, {
+        ...body,
+        operationId: randomUUID(),
+        lines: [{ ...body.lines[0], id: randomUUID(), quantity: 3 }],
+      }),
+    );
+    const unitPrice = created.paymentUnits![0].due;
+    const pay = (amount: number, items?: string[]) => ({
+      operationId: randomUUID(),
+      amount,
+      tip: 42,
+      received: amount + 42,
+      method: "cash",
+      ...(items ? { items } : {}),
+    });
+    const request = pay(unitPrice, [created.paymentUnits![0].key]);
+    const settled = await tenant(sql, s.tenantId, (tx) =>
+      recordPayment(tx, s, created.id, request),
+    );
+    const retry = await tenant(sql, s.tenantId, (tx) =>
+      recordPayment(tx, s, created.id, request),
+    );
+    assert.equal(settled.paid, retry.paid);
+    const results = await Promise.allSettled(
+      [1, 2].map(() =>
+        tenant(sql, s.tenantId, (tx) =>
+          recordPayment(
+            tx,
+            s,
+            created.id,
+            pay(unitPrice, [created.paymentUnits![1].key]),
+          ),
+        ),
+      ),
+    );
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    const partial = await tenant(sql, s.tenantId, (tx) =>
+      recordPayment(tx, s, created.id, pay(1)),
+    );
+    assert.equal(partial.paymentUnits![2].due, unitPrice - 1);
+    const final = await tenant(sql, s.tenantId, (tx) =>
+      recordPayment(
+        tx,
+        s,
+        created.id,
+        pay(unitPrice - 1, [partial.paymentUnits![2].key]),
+      ),
+    );
+    assert.equal(final.paid, final.total);
+    assert(final.paymentUnits!.every((u) => u.due === 0));
+    assert.equal(final.state, "active");
+    await assert.rejects(
+      tenant(
+        sql,
+        s.tenantId,
+        (tx) =>
+          tx`update tender_allocations set amount=1 where order_id=${created.id}`,
+      ),
+    );
+  });
+  await test("pre-allocation tenders are never assigned invented item choices", async () => {
+    const created = await tenant(sql, s.tenantId, (tx) =>
+      createOrder(tx, s, {
+        ...body,
+        operationId: randomUUID(),
+        lines: [{ ...body.lines[0], id: randomUUID(), quantity: 2 }],
+      }),
+    );
+    await tenant(
+      sql,
+      s.tenantId,
+      (tx) =>
+        tx`insert into tenders(tenant_id,id,order_id,method,amount,received) values(${s.tenantId},${randomUUID()},${created.id},'cash',1,1)`,
+    );
+    const old = await tenant(sql, s.tenantId, (tx) => getOrder(tx, created.id));
+    assert.equal(old.itemSplitAvailable, false);
+    assert.deepEqual(old.paymentUnits, []);
+    await assert.rejects(
+      tenant(sql, s.tenantId, (tx) =>
+        recordPayment(tx, s, created.id, {
+          operationId: randomUUID(),
+          amount: created.paymentUnits![0].due,
+          received: created.paymentUnits![0].due,
+          method: "cash",
+          items: [created.paymentUnits![0].key],
+        }),
+      ),
+      (e: any) => e.code === "unallocated_history",
+    );
+  });
+  await test("restaurant settings are scoped, versioned and preserve order snapshots", async () => {
+    await assert.rejects(
+      tenant(
+        sql,
+        s.tenantId,
+        (tx) =>
+          tx`update restaurants set organization_id=organization_id where id=${s.tenantId}`,
+      ),
+    );
+    await assert.rejects(
+      tenant(sql, s.tenantId, async (tx) => {
+        const old = await getSettings(tx, s);
+        const request = {
+          operationId: randomUUID(),
+          expectedVersion: old.version,
+          name: "Changed fixture",
+          currency: old.currency,
+          timezone: "UTC",
+          cutoff: 330,
+          openingDays: [1, 2, 3, 4, 5],
+        };
+        const changed = await saveSettings(tx, s, request);
+        assert.equal(changed.version, old.version + 1);
+        assert.equal(changed.timezone, "UTC");
+        const historic = await getOrder(tx, order.id);
+        assert.equal(
+          historic.restaurantSnapshot!.timezone,
+          "America/Mexico_City",
+        );
+        await assert.rejects(
+          saveSettings(tx, s, { ...request, operationId: randomUUID() }),
+          (e: any) => e.code === "settings_changed",
+        );
+        await assert.rejects(
+          saveSettings(tx, s, {
+            ...request,
+            operationId: randomUUID(),
+            expectedVersion: changed.version,
+            currency: "USD",
+          }),
+          (e: any) => e.code === "currency_locked",
+        );
+        await assert.rejects(
+          saveSettings(
+            tx,
+            { ...s, role: "cashier" },
+            { ...request, operationId: randomUUID() },
+          ),
+          (e: any) => e.code === "forbidden",
+        );
+        const retry = await saveSettings(tx, s, request);
+        assert.equal(retry.version, changed.version);
+        throw new Error("settings_test_rollback");
+      }),
+      (e: any) => e.message === "settings_test_rollback",
+    );
+  });
+  await test("service reassignment preserves creator, payments and kitchen rounds", async () => {
+    const created = await tenant(sql, s.tenantId, (tx) =>
+      createOrder(tx, s, {
+        ...body,
+        operationId: randomUUID(),
+        lines: [{ ...body.lines[0], id: randomUUID() }],
+      }),
+    );
+    const options = await tenant(sql, s.tenantId, (tx) =>
+      serviceOptions(tx, s),
+    );
+    const employee = options.employees.find((e) => e.id !== s.employeeId)!;
+    const request = {
+      operationId: randomUUID(),
+      expectedVersion: 0,
+      mode: "dine_in",
+      tableId: options.tables[0].id,
+      employeeId: employee.id,
+      reason: "Transfer service fixture",
+    };
+    const moved = await tenant(sql, s.tenantId, (tx) =>
+      assignService(tx, s, created.id, request),
+    );
+    assert.equal(moved.tableId, request.tableId);
+    assert.equal(moved.assignedEmployeeId, employee.id);
+    assert.equal(moved.version, created.version);
+    assert.equal(moved.rounds.length, created.rounds.length);
+    assert.equal(moved.paid, created.paid);
+    const [row] = await tenant(
+      sql,
+      s.tenantId,
+      (tx) => tx`select employee_id from orders where id=${created.id}`,
+    );
+    assert.equal(row.employee_id, s.employeeId);
+    const retry = await tenant(sql, s.tenantId, (tx) =>
+      assignService(tx, s, created.id, request),
+    );
+    assert.equal(retry.serviceVersion, 1);
+    await assert.rejects(
+      tenant(sql, s.tenantId, (tx) =>
+        assignService(tx, s, created.id, {
+          ...request,
+          operationId: randomUUID(),
+        }),
+      ),
+      (e: any) => e.code === "stale_order",
+    );
+    await assert.rejects(
+      tenant(sql, s.tenantId, (tx) =>
+        assignService(tx, s, created.id, {
+          ...request,
+          operationId: randomUUID(),
+          expectedVersion: 1,
+          employeeId: "20000000-0000-4000-8000-000000000002",
+        }),
+      ),
+      (e: any) => e.code === "invalid_assignee",
+    );
+    await assert.rejects(
+      tenant(sql, s.tenantId, (tx) =>
+        assignService(tx, s, created.id, {
+          ...request,
+          operationId: randomUUID(),
+          expectedVersion: 1,
+          tableId: "40000000-0000-4000-8002-000000000001",
+        }),
+      ),
+      (e: any) => e.code === "invalid_table",
+    );
+    const round = await tenant(sql, s.tenantId, (tx) =>
+      addRound(tx, s, created.id, {
+        ...body,
+        operationId: randomUUID(),
+        expectedVersion: moved.version,
+        lines: [{ ...body.lines[0], id: randomUUID() }],
+      }),
+    );
+    assert.equal(round.rounds[1].number, 2);
+    assert.equal(round.assignedEmployeeId, employee.id);
+  });
+  await test("kitchen progress and new rounds cannot overwrite aggregate preparation state", async () => {
+    const created = await tenant(sql, s.tenantId, (tx) =>
+      createOrder(tx, s, {
+        ...body,
+        operationId: randomUUID(),
+        lines: [{ ...body.lines[0], id: randomUUID() }],
+      }),
+    );
+    await Promise.all([
+      tenant(sql, s.tenantId, (tx) =>
+        progressPreparation(tx, s, created.rounds[0].id, {
+          operationId: randomUUID(),
+          state: "ready",
+        }),
+      ),
+      tenant(sql, s.tenantId, (tx) =>
+        addRound(tx, s, created.id, {
+          ...body,
+          operationId: randomUUID(),
+          expectedVersion: created.version,
+          lines: [{ ...body.lines[0], id: randomUUID() }],
+        }),
+      ),
+    ]);
+    const result = await tenant(sql, s.tenantId, (tx) =>
+      getOrder(tx, created.id),
+    );
+    assert.equal(result.state, "active");
+    assert(result.rounds.some((r) => r.state === "active"));
+    assert(result.rounds.some((r) => r.state === "ready"));
   });
   console.log(`${checks} integration checks passed on ${identity}`);
 } finally {

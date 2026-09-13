@@ -164,9 +164,14 @@ export function ManagementTools({
                   <span>
                     {r.name}
                     <small>
-                      {new Date(r.started_at).toLocaleString(locale)} →{" "}
+                      {new Date(r.started_at).toLocaleString(locale, {
+                        timeZone: session.restaurant.timezone,
+                      })}{" "}
+                      →{" "}
                       {r.ended_at
-                        ? new Date(r.ended_at).toLocaleString(locale)
+                        ? new Date(r.ended_at).toLocaleString(locale, {
+                            timeZone: session.restaurant.timezone,
+                          })
                         : t("active")}
                     </small>
                   </span>

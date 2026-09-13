@@ -7,6 +7,10 @@ import { hash, permit, managers } from "./auth.js";
 import { audit } from "./orders.js";
 export async function commitImport(tx: Tx, s: Session, raw: unknown) {
   permit(s, managers);
+  const [restaurant] =
+    await tx`select currency from restaurants where id=${s.tenantId} for share`;
+  if (restaurant.currency !== s.restaurant.currency)
+    throw new DomainError("settings_changed", 409);
   const report = previewImport(raw);
   if (
     report.targetTenantId !== s.tenantId ||

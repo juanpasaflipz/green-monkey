@@ -1,3 +1,5 @@
+import { payableUnits, allocatePayment } from "../shared/settlement";
+import { restaurantSettings } from "../shared/restaurant";
 import { describe, it, expect } from "vitest";
 import {
   minor,
@@ -125,4 +127,61 @@ it("uses the currency minor-unit exponent", () => {
   expect(currencyExponent("JPY")).toBe(0);
   expect(currencyExponent("KWD")).toBe(3);
   expect(minor("1.234", currencyExponent("KWD"))).toBe(1234);
+});
+
+describe("item settlement", () => {
+  const line = {
+    id: "line",
+    quantity: 3,
+    total: 100,
+    name: { es: "Taco", en: "Taco" },
+  } as import("../shared/domain").PricedLine;
+  it("retains penny allocation and partially paid units", () => {
+    const units = payableUnits([line], []);
+    expect(units.map((u) => u.total)).toEqual([34, 33, 33]);
+    const allocations = allocatePayment(units, 40);
+    const remaining = payableUnits([line], allocations);
+    expect(remaining.map((u) => u.due)).toEqual([0, 27, 33]);
+    expect(allocatePayment(remaining, 27, ["line:1"])).toEqual([
+      { lineId: "line", unit: 1, amount: 27 },
+    ]);
+  });
+  it("rejects duplicate, unknown, already-paid or mismatched selections", () => {
+    const units = payableUnits(
+      [line],
+      [{ lineId: "line", unit: 0, amount: 34 }],
+    );
+    for (const [amount, items] of [
+      [33, ["line:0"]],
+      [33, ["other:0"]],
+      [33, ["line:1", "line:1"]],
+      [32, ["line:1"]],
+    ] as [number, string[]][])
+      expect(() => allocatePayment(units, amount, items)).toThrow();
+    expect(() =>
+      payableUnits([line], [{ lineId: "line", unit: 1, amount: 34 }]),
+    ).toThrow();
+  });
+});
+it("validates restaurant settings without assuming tax or currency rates", () => {
+  const settings = {
+    operationId: randomUUID(),
+    expectedVersion: 1,
+    name: "Restaurant",
+    currency: "MXN",
+    timezone: "America/Mexico_City",
+    cutoff: 240,
+    openingDays: [1, 2, 3, 4, 5],
+  };
+  expect(restaurantSettings.safeParse(settings).success).toBe(true);
+  expect(
+    restaurantSettings.safeParse({ ...settings, timezone: "not/a-zone" })
+      .success,
+  ).toBe(false);
+  expect(
+    restaurantSettings.safeParse({ ...settings, currency: "ZZZ" }).success,
+  ).toBe(false);
+  expect(
+    restaurantSettings.safeParse({ ...settings, openingDays: [1, 1] }).success,
+  ).toBe(false);
 });
