@@ -1,0 +1,21 @@
+{
+  "url": "https://green-monkey-staging.up.railway.app",
+  "at": "2026-09-13T05:44:24.434Z",
+  "callName": "Staging smoke 1789278259942",
+  "checks": [
+    "health",
+    "anonymous session denied",
+    "owner login",
+    "secure HttpOnly cookies",
+    "four viewports without overflow",
+    "keyboard search",
+    "modifier",
+    "kitchen acknowledgement",
+    "ready",
+    "cash payment",
+    "receipt",
+    "axe selling"
+  ],
+  "axeViolations": 0,
+  "pageErrors": []
+}

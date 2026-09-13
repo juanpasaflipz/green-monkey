@@ -1,6 +1,6 @@
 # Verification record — in progress
 
-Green Monkey is a working local development application, not a completed release. The full required scope remains tracked in [DELIVERY_STATUS.md](DELIVERY_STATUS.md).
+Green Monkey is a working development application with an isolated staging deployment, not a completed release. The full required scope remains tracked in [DELIVERY_STATUS.md](DELIVERY_STATUS.md).
 
 Scenario-by-scenario gaps are listed in [ACCEPTANCE_STATUS.md](ACCEPTANCE_STATUS.md).
 
@@ -41,7 +41,7 @@ Latest production assets are split into application, React, validation and Index
 - All acceptance scenarios beyond the listed subsets, including 300-item/50-active-order pilot load, 10-user API p95, two-tab interrupted sync, catalog conflict reconciliation, integrated provider crash recovery, and real hardware.
 - Whole-app manual accessibility and screen-reader review; KDS accessibility across every required viewport; payment screen-reader review.
 - Historical source import mapping/reconciliation, staging restore and application rollback rehearsal.
-- Docker image execution, Neon pooled/direct validation, Railway staging smoke, provider sandboxes, and physical printing.
+- Provider sandboxes and physical printing. Initial Docker/Railway staging execution and Neon pooled/direct checks have now passed; broader cloud acceptance remains incomplete.
 - No production deployment or cutover has been attempted.
 
 The configured integrations stay disabled. Passing cash tests does not establish Stripe, Clip, FacturAPI, Resend, R2, printer, delivery, or subscription billing readiness.
@@ -55,3 +55,7 @@ The configured integrations stay disabled. Passing cash tests does not establish
 - KDS progress locks the parent order before its round. Concurrent new-round/progress testing leaves the aggregate state active when an active round exists.
 - A fresh backup/restore including five migrations matched control totals: 16 orders; 16 tenders totaling 104001 minor units; zero refunds; stock quantity control sum 2962; 6 source mappings; 12 allocation rows totaling 65000; 9 order configuration snapshots. Different tender/allocation totals are expected because earlier tenders remain explicitly unallocated. These are fixture controls, not business metrics. All 17 integration checks then passed on the restored target.
 - Dependencies and lockfile did not change in this continuation; the earlier clean install remains applicable. Staging, provider hardware, full tax/promotions, organization switching and remaining requirements are not implied by these checks.
+
+## Neon and Railway staging verification
+
+See [STAGING.md](STAGING.md) for exact isolated targets, repeatable commands, generated access credentials location and evidence. All 17 integration checks passed on Neon test. Railway built and started the Docker image successfully. Live browser smoke passed login, required modifier, kitchen acknowledgement/readiness, cash payment, receipt, secure HttpOnly cookies, four viewport layouts and selling axe checks (zero violations). Source-only upload contained no environment files or reference snapshots. Production was not deployed.

@@ -19,7 +19,7 @@ Create a **new isolated database** and separate migration/runtime roles. The run
 npm run db:migrate
 ```
 
-Apply reviewed runtime grants after migrations. `scripts/grants.sql` is the local fixture example for role `gm_app`; adapt the role name explicitly for Neon. Migrations use a checksum registry and advisory transaction lock.
+Apply reviewed runtime grants after migrations. `scripts/grants.sql` is the reviewed privilege manifest; `scripts/grant-runtime.ts` safely applies it to an explicit runtime role for Neon. Migrations use a checksum registry and advisory transaction lock.
 
 For a reproducible disposable local Mac fixture, run `npm run setup:local` after `npm ci`. It initializes/migrates/seeds both isolated databases, applies grants, and creates `.env` only if absent. An existing `.env` is preserved.
 
@@ -84,4 +84,4 @@ Historical transactions, summaries, recipes and identity migration remain pendin
 - `tests/`: domain, isolated DB, and Playwright scenarios.
 - `work/reference-sources/`: ignored hash-verified source snapshots, never part of the deploy image.
 
-No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe, FacturAPI and other configured integrations are **not enabled or verified**. Cash POS does not require those credentials. Docker/Railway deployment is prepared but untested on a staging target; live cutover requires specific approval and reconciled migration.
+No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe, FacturAPI and other configured integrations are **not enabled or verified**. Cash POS does not require those credentials. The [isolated staging deployment](docs/STAGING.md) is running on Railway with Neon; a live cash/KDS/receipt smoke passed. Full release qualification remains incomplete; live cutover requires specific approval and reconciled migration.

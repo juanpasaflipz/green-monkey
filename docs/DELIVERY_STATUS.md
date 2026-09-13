@@ -52,7 +52,7 @@ This is an in-progress implementation, not release approval. Required features r
 
 ## External blockers
 
-- No new Neon/Railway staging target has been supplied. Local PostgreSQL is verified; Neon pooled/direct behavior and Railway staging remain unverified.
+- Separate Neon staging/test databases and Railway staging are provisioned. Seventeen Neon integration checks and a live cash/KDS/receipt browser smoke passed; [STAGING.md](STAGING.md) records targets and evidence. Staging restore/rollback, broader cloud acceptance and provider checks remain pending.
 - No approved legacy exports/schema metadata: historical mapping, totals reconciliation and migration rehearsal remain pending. The Luma ZIP is not a database backup.
 - No payment sandbox merchant/terminal, FacturAPI sandbox, printer bridge/device, verified Resend sender or R2 target configured. These integrations remain disabled. Clip has no assumed request schema or amount units.
 - Docker CLI is absent; the image has not been built locally.

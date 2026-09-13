@@ -42,7 +42,7 @@ A target configuration, to create **only after these scripts exist**, is:
 }
 ```
 
-Railway documents Dockerfile selection, pre-deploy commands, and these config fields in its [configuration reference](https://docs.railway.com/config-as-code/reference). The new root repository intentionally has no active `railway.json` yet, because no application/build scripts exist.
+Railway documents Dockerfile selection, pre-deploy commands, and these config fields in its [configuration reference](https://docs.railway.com/config-as-code/reference). The application now includes an active `railway.json`, Dockerfile, compiled migration runner and health check. The isolated staging deployment is recorded in [STAGING.md](STAGING.md). Railway currently warns that this configuration format must migrate to its new infrastructure-as-code format before December 1, 2026.
 
 `/health` can be process liveness; `/api/health` should check DB connectivity and required schema readiness with a bounded query. Do not expose configuration values. Railway deployment health checks expect an HTTP success response; separately implement ongoing service monitoring. See [Railway health checks](https://docs.railway.com/deployments/healthchecks).
 
