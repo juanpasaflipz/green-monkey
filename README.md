@@ -95,14 +95,17 @@ through 010 and runtime grants before deploying this code.
 database checks run with `npx tsx tests/google-attempts-db.ts` and
 `npx tsx tests/owner-accounts-db.ts`; provide `TEST_DATABASE_URL`,
 `TEST_MIGRATION_DATABASE_URL`, and exact `TEST_DATABASE_HOST_ALLOWLIST` through a
-private environment. These scripts accept only isolated localhost `_test` targets.
+private environment. They accept isolated localhost `_test` targets or Neon test
+targets with an additional exact `TEST_MIGRATION_DATABASE_HOST_ALLOWLIST`.
 `bash scripts/browser-check.sh` includes responsive signup using a clearly labeled
 verified-identity fixture. It does not automate or claim Google's external login.
 
-Still pending: real Google staging verification, existing-owner linking/invites,
+Real Google signup, POS entry and returning login now pass on staging; see
+[tenancy qualification](docs/TENANCY_QUALIFICATION.md).
+Still pending: existing-owner linking/invites,
 multi-location signup/switch UX, email recovery, Apple sign-in, Free device/team
-limits and Stripe trial/subscription provisioning. Staging has not received this
-signup implementation yet.
+limits and Stripe trial/subscription provisioning. Staging now has the signup
+implementation and migrations through 010.
 
 ## Approved launch pricing
 

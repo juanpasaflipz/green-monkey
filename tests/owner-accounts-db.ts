@@ -2,6 +2,7 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
+import { isolatedTarget } from "./isolated-target.js";
 import { connect, checkRole } from "../server/db.js";
 import { authentication, sign } from "../server/auth.js";
 import {
@@ -13,21 +14,7 @@ import {
   accountScope,
 } from "../server/owner-accounts.js";
 
-const runtime = process.env.TEST_DATABASE_URL,
-  migration = process.env.TEST_MIGRATION_DATABASE_URL;
-if (!runtime || !migration) throw Error("Explicit isolated test URLs required");
-const u = new URL(runtime),
-  m = new URL(migration),
-  target = `${u.hostname}:${u.port || "5432"}${u.pathname}`;
-if (
-  !u.pathname.endsWith("_test") ||
-  u.pathname !== m.pathname ||
-  u.hostname !== m.hostname ||
-  u.port !== m.port ||
-  !["localhost", "127.0.0.1"].includes(u.hostname) ||
-  !process.env.TEST_DATABASE_HOST_ALLOWLIST?.split(",").includes(target)
-)
-  throw Error("Only allowlisted isolated local tests allowed");
+const { runtime, migration } = isolatedTarget(process.env);
 const sql = connect(runtime),
   admin = postgres(migration, { max: 1 });
 const subjects = [randomUUID(), randomUUID()];

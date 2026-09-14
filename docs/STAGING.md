@@ -1,5 +1,12 @@
 # Staging operation and verification
 
+Latest qualification, September 14: deployment
+`46cca000-9810-4451-a0fd-84c1d2e92855` serves `0fbc3e9`, with migrations 001–010
+and saved Google staging credentials. Real Google signup/entry/return and 13
+deployed tenant-isolation checks passed. See
+[tenancy qualification](TENANCY_QUALIFICATION.md) for evidence and limits;
+the initial September 12 deployment details below are historical.
+
 Staging is running at https://green-monkey-staging.up.railway.app. It is a development build with fictional restaurants and transactions, not a completed release or production cutover. Required feature gaps remain in [DELIVERY_STATUS.md](DELIVERY_STATUS.md).
 
 ## Targets

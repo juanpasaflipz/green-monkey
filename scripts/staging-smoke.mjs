@@ -27,7 +27,7 @@ try {
   const health = await context.request.get("/api/health");
   expect(health.status()).toBe(200);
   expect((await context.request.get("/api/session")).status()).toBe(401);
-  await page.goto("/");
+  await page.goto("/app");
   await page
     .getByLabel("Contraseña o PIN")
     .fill(process.env.FIXTURE_OWNER_PASSWORD);

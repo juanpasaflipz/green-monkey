@@ -2,24 +2,11 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import postgres from "postgres";
+import { isolatedTarget } from "./isolated-target.js";
 import { connect, checkRole } from "../server/db.js";
 import { googleAttemptStore } from "../server/google-attempt-store.js";
 
-const runtime = process.env.TEST_DATABASE_URL;
-const migration = process.env.TEST_MIGRATION_DATABASE_URL;
-if (!runtime || !migration) throw Error("Explicit isolated test URLs required");
-const u = new URL(runtime),
-  m = new URL(migration);
-const target = `${u.hostname}:${u.port || "5432"}${u.pathname}`;
-if (
-  !u.pathname.endsWith("_test") ||
-  u.pathname !== m.pathname ||
-  u.hostname !== m.hostname ||
-  u.port !== m.port ||
-  !["127.0.0.1", "localhost"].includes(u.hostname) ||
-  !process.env.TEST_DATABASE_HOST_ALLOWLIST?.split(",").includes(target)
-)
-  throw Error("Only the isolated allowlisted local test target is accepted");
+const { runtime, migration } = isolatedTarget(process.env);
 const sql = connect(runtime),
   admin = postgres(migration, { max: 1 });
 const store = googleAttemptStore(sql);

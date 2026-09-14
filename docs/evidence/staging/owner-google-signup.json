@@ -1,0 +1,28 @@
+{
+  "at": "2026-09-14T13:25:38.365Z",
+  "deployedCommit": "0fbc3e96f3b923767d4de465f8fd24c29539db62",
+  "deploymentId": "46cca000-9810-4451-a0fd-84c1d2e92855",
+  "googleRoundTrip": "passed through real provider and browser callback",
+  "restaurant": {
+    "id": "5b31dde2-3ecf-4bed-84e6-31463f77d1e0",
+    "name": "Green Monkey · Prueba de staging",
+    "currency": "MXN",
+    "timezone": "America/Mexico_City",
+    "memberships": 1,
+    "products": 0,
+    "orders": 0,
+    "entitlements": 0
+  },
+  "schema": [
+    "001_core.sql",
+    "002_management.sql",
+    "003_payment_allocations.sql",
+    "004_restaurant_configuration.sql",
+    "005_service_assignment.sql",
+    "006_entitlements.sql",
+    "007_oauth_attempts.sql",
+    "008_owner_accounts.sql",
+    "009_owner_signup_policy.sql",
+    "010_owner_session_lineage.sql"
+  ]
+}

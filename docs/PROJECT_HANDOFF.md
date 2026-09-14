@@ -1,5 +1,11 @@
 # Green Monkey — conversation handoff
 
+Latest continuation: read `docs/TENANCY_QUALIFICATION.md`. Staging now serves
+`0fbc3e9`, with migrations through 010 and Google configured. Real owner Google
+signup, restaurant entry, logout and return passed; Neon DB isolation and 13
+deployed HTTP checks passed. Earlier local-only statements below are superseded.
+Billing, multiple-location flows and wider production qualification remain pending.
+
 September 14 Stripe setup update: dedicated sandbox `acct_1UFZZRFYpuQNRtU1`
 (Green Monkey) now exists. Credentials are in ignored mode-0600
 `.env.stripe-sandbox`; approved verified price IDs are in `.env.stripe-price-ids`.

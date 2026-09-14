@@ -1,5 +1,10 @@
 # Free, Pro and tenant signup
 
+September 14 staging qualification: real Google sign-in → Free restaurant creation
+→ POS entry → logout/return passed. Migrations 001–010 and saved Google credentials
+are now on staging. [Evidence and remaining scope](TENANCY_QUALIFICATION.md).
+Earlier statements below about missing Google staging verification are historical.
+
 Latest provider checkpoint, September 14: dedicated Green Monkey sandbox
 `acct_1UFZZRFYpuQNRtU1` created and credentials saved privately. Actual sandbox
 catalog provisioning and rerun passed for both approved prices; see

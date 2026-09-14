@@ -1,0 +1,28 @@
+{
+  "at": "2026-09-14T13:24:22.429Z",
+  "origin": "https://green-monkey-staging.up.railway.app",
+  "run": "87333bec-74b4-4d0f-82dc-b4a52aa01f47",
+  "identity": "synthetic fixture; not a Google OAuth proof",
+  "tenantIds": [
+    "4aef1825-9f93-4be7-9880-58baf20d5430",
+    "583529cd-ad11-4803-b867-3b796568411d"
+  ],
+  "orderId": "144f6805-a2a8-4c30-a539-b5b20a2b01ef",
+  "checks": [
+    "equal-email identities have separate restaurants",
+    "signup CSRF rejected",
+    "signup retry is idempotent",
+    "Secure HttpOnly POS cookies",
+    "empty isolated catalogs",
+    "cross-owner restaurant entry rejected",
+    "membership list isolated",
+    "catalog writes isolated",
+    "guessed order read denied",
+    "foreign product rejected",
+    "order lists isolated",
+    "owner logout revokes inherited POS session",
+    "other tenant session unaffected"
+  ],
+  "fixturesRetained": true,
+  "chargesCreated": false
+}

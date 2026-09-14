@@ -1,5 +1,12 @@
 # Verification record — in progress
 
+September 14: [multi-tenant signup qualification](TENANCY_QUALIFICATION.md) passed
+on staging: real Google owner signup/entry/return, 13 deployed HTTP isolation
+checks, 17 Neon operational DB checks and targeted owner/OAuth DB checks.
+Migrations 001–010 and runtime grants are applied to Neon test/staging. Deployment
+`46cca000-9810-4451-a0fd-84c1d2e92855` serves `0fbc3e9`. This supersedes historical
+statements about owner signup being local only; remaining release gaps are explicit.
+
 Stripe setup, September 14: created a dedicated Green Monkey sandbox, saved
 credentials in ignored mode-0600 files, and verified the account and both approved
 prices through the real Stripe API. Catalog rerun recovered the same product and

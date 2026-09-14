@@ -1,5 +1,10 @@
 # Delivery status
 
+Latest: [core multi-tenant signup/access qualified on staging](TENANCY_QUALIFICATION.md).
+Real Google callback, Free restaurant creation, authorized POS entry and returning
+login passed, alongside Neon and deployed two-owner isolation checks. Invitations,
+multi-location flows, full plan limits and production qualification remain pending.
+
 This is an in-progress implementation, not release approval. Required features remain pending unless the specific behavior is verified below. Code presence is not provider/hardware validation.
 
 | Capability | Status | Implemented / remaining | External dependency |
