@@ -14,3 +14,4 @@ GRANT SELECT,INSERT ON oauth_login_attempts TO gm_app;
 GRANT UPDATE(consumed_at) ON oauth_login_attempts TO gm_app;
 GRANT SELECT,INSERT ON owner_accounts,owner_sessions,owner_memberships,organizations,restaurants TO gm_app;
 GRANT UPDATE(revoked) ON owner_sessions TO gm_app;
+GRANT INSERT ON signup_billing_intents TO gm_app;

@@ -13,7 +13,7 @@
     "start": "node build/server/index.js",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json --noEmit",
     "lint": "eslint .",
-    "test": "vitest run tests/domain.test.ts tests/plans.test.ts tests/google-identity.test.ts tests/stripe-catalog.test.ts tests/stripe-billing.test.ts",
+    "test": "vitest run tests/domain.test.ts tests/plans.test.ts tests/google-identity.test.ts tests/stripe-catalog.test.ts tests/stripe-billing.test.ts tests/isolated-target.test.ts",
     "stripe:catalog:sandbox": "tsx scripts/stripe-sandbox-catalog.ts",
     "test:db": "tsx tests/database.ts",
     "test:browser": "playwright test",

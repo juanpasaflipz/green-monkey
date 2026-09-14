@@ -94,6 +94,7 @@ export async function withOwner<T>(
 }
 export const signupInput = z
   .object({
+    trialRequested: z.boolean().default(false),
     restaurantName: z.string().trim().min(1).max(100),
     currency: z.enum(["MXN", "USD", "EUR"]),
     timezone: z
@@ -139,6 +140,7 @@ export async function createOwnerRestaurant(
   await tx`insert into owner_memberships(account_id,tenant_id,employee_id) values(${account.id},${tenantId},${employeeId})`;
   await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail)
     values(${tenantId},${randomUUID()},${employeeId},'restaurant.signup',${tenantId},${tx.json({ plan: "free", source: "google" })})`;
+  await tx`insert into signup_billing_intents(tenant_id,trial_requested) values(${tenantId},${p.trialRequested})`;
   return { tenantId, created: true };
 }
 

@@ -20,8 +20,8 @@ export function connect(url: string) {
 }
 export async function checkRole(sql: postgres.Sql) {
   const [r] =
-    await sql`select rolsuper,rolbypassrls from pg_roles where rolname=current_user`;
-  if (r.rolsuper || r.rolbypassrls)
+    await sql`select rolsuper,rolbypassrls,coalesce(pg_has_role(current_user,to_regrole('gm_billing_worker'),'member'),false) as billing from pg_roles where rolname=current_user`;
+  if (r.rolsuper || r.rolbypassrls || r.billing)
     throw Error("Runtime role must not bypass RLS");
   const [owner] =
     await sql`select count(*)::int as count from pg_tables where schemaname='public' and tableowner=current_user`;

@@ -1,5 +1,11 @@
 # Green Monkey — conversation handoff
 
+Active work: user requested finishing billing (item 1), then multi-location (2),
+Free limits (3), offline recovery (4), and production qualification (5), in order.
+Read the newest section of `docs/BILLING_IMPLEMENTATION.md`. There is now
+intentional uncommitted billing implementation; preserve it. Real sandbox trial
+and hosted-session checks passed. Staging billing is not enabled yet.
+
 Latest continuation: read `docs/TENANCY_QUALIFICATION.md`. Staging now serves
 `0fbc3e9`, with migrations through 010 and Google configured. Real owner Google
 signup, restaurant entry, logout and return passed; Neon DB isolation and 13

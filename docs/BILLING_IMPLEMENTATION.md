@@ -1,3 +1,47 @@
+# Active continuation — September 14, 2026
+
+Item 1 is in progress. New local implementation includes migrations 011–013,
+organization billing/location bindings, immutable durable operations, retry leases,
+stale-worker fencing, a signed-event inbox, canonical subscription reconciliation,
+Checkout session polling, owner/CSRF routes, saved signup trial preferences and
+Spanish/English sandbox billing controls. Billing stays disabled unless
+`BILLING_SANDBOX_ENABLED=true` with a separate restricted `BILLING_DATABASE_URL`,
+sandbox keys/prices, `STRIPE_PORTAL_CONFIG_ID` and `STRIPE_WEBHOOK_SECRET`.
+The worker login must be a member of the NOLOGIN `gm_billing_worker` role and
+connect to the same pooled database as the POS using different credentials.
+The POS role cannot write entitlements or billing events.
+
+Real sandbox checks now passed for a no-card 14-day trial, same-key creation
+retry, canonical Pro projection, cancellation and return to Free. A dedicated
+portal configuration permits payment-method changes, invoice history and
+period-end cancellation; subscription price/quantity updates are disabled.
+Portal session creation, annual Checkout creation/retry, session retrieval and
+explicit expiry passed. A monthly Checkout payment also completed in the browser using Stripe’s test card; the canonical subscription granted bounded Pro and was then canceled. No live payments occurred.
+Evidence: `evidence/stripe-sandbox-trial.json` and
+`evidence/stripe-sandbox-hosted.json`, plus `evidence/stripe-sandbox-paid.json`. Private check state is under ignored `work/`;
+portal ID is in ignored `.env.stripe-portal`.
+
+Local database tests pass ownership isolation, six concurrent requests, immutable
+payloads, one worker per organization, expired lease recovery, stale completion
+rejection, one-trial enforcement, duplicate-event inbox, isolated access writes,
+past-due revocation and 23-hour uncertain-mutation review. HTTP checks pass missing
+owner/foreign-owner/CSRF denial, raw signed webhook acceptance, duplicate IDs,
+tamper rejection and no direct grants from event snapshots. 108 unit tests pass.
+Typecheck, lint and build pass. All 13 browser scenarios pass, including a billing
+UI consent fixture and accessibility scan; 17 Neon operational checks also pass.
+Migrations 011–013 are applied to local dev/test and Neon test. Neon billing and
+owner tests pass, including corrected fixture-role cleanup.
+
+Remaining before declaring item 1 complete: trial payment-method consent,
+deployed webhook/restart verification and safe review
+of uncertain operations. In-app reminders appear during the final three trial days; external email reminders
+remain unavailable without a verified sender. Staging still runs the prior
+application without billing. Its restricted billing login and Stripe webhook have
+been provisioned, with credentials saved privately, pending rollout.
+No move to item 2 or production readiness is claimed.
+
+---
+
 # Subscription provider foundation
 
 September 14, 2026: local sandbox adapter only. No billing route, subscription

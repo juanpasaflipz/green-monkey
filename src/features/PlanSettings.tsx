@@ -1,3 +1,4 @@
+import { BillingControls } from "./BillingControls";
 import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { api } from "../api";
@@ -7,9 +8,11 @@ import { PRO_OFFER, PRO_ANNUAL_SAVING_MINOR } from "../../shared/plans";
 export function PlanSettings({
   locale,
   timezone,
+  tenantId,
 }: {
   locale: Locale;
   timezone: string;
+  tenantId: string;
 }) {
   const [plan, setPlan] = useState<{
     plan: string;
@@ -89,11 +92,7 @@ export function PlanSettings({
               }).format(new Date(plan.accessUntil))}
             </p>
           )}
-          <p className="muted">
-            {es
-              ? "Las suscripciones y la prueba de 14 días aún no están disponibles."
-              : "Subscriptions and the 14-day trial are not yet available."}
-          </p>
+          <BillingControls key={tenantId} tenantId={tenantId} locale={locale} />
         </>
       )}
     </section>

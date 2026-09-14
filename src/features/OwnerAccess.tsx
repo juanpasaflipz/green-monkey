@@ -88,6 +88,7 @@ export function OwnerAccess({
   const t = copy[locale];
   const [account, setAccount] = useState<Account | null>(null);
   const [google, setGoogle] = useState(false);
+  const [billingSandbox, setBillingSandbox] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -108,7 +109,9 @@ export function OwnerAccess({
         (!accountResponse.ok && accountResponse.status !== 401)
       )
         throw Error();
-      setGoogle((await providerResponse.json()).google);
+      const providers = await providerResponse.json();
+      setGoogle(providers.google);
+      setBillingSandbox(providers.billingSandbox === true);
       const value = accountResponse.ok ? await accountResponse.json() : null;
       setAccount(value);
       onAccount(Boolean(value));
@@ -201,6 +204,8 @@ export function OwnerAccess({
                   .map(Number);
                 try {
                   const result = await command("signup", {
+                    trialRequested:
+                      billingSandbox && f.get("trialRequested") === "on",
                     restaurantName: f.get("restaurantName"),
                     currency: f.get("currency"),
                     timezone: f.get("timezone"),
@@ -270,7 +275,16 @@ export function OwnerAccess({
                   ))}
                 </fieldset>
               </details>
-              <p className="muted">{t.free}</p>
+              {billingSandbox ? (
+                <label className="opening-day">
+                  <input type="checkbox" name="trialRequested" defaultChecked />
+                  {locale === "es"
+                    ? "Prueba Pro de 14 días sin tarjeta (sandbox). Desmarca para continuar en Free. Si la activación tarda, puedes seguir usando tu restaurante."
+                    : "14-day Pro trial without a card (sandbox). Uncheck to continue on Free. You can keep using your restaurant while activation is pending."}
+                </label>
+              ) : (
+                <p className="muted">{t.free}</p>
+              )}
               <Button
                 type="submit"
                 disabled={busy}

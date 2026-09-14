@@ -455,3 +455,98 @@ describe("raw Stripe sandbox webhook verification", () => {
     ).toBeNull();
   });
 });
+
+describe("invoice reconciliation references", () => {
+  it("uses the subscription reference in modern invoice parent details", () => {
+    const event = {
+      id: "evt_invoice",
+      object: "event" as const,
+      livemode: false as const,
+      type: "invoice.payment_failed",
+      created: now,
+      data: {
+        object: {
+          object: "invoice",
+          parent: {
+            type: "subscription_details",
+            subscription_details: { subscription: "sub_fixture" },
+          },
+          status: "paid",
+        },
+      },
+    };
+    expect(subscriptionEventReference(event)).toBe("sub_fixture");
+  });
+  it("ignores one-off invoices and rejects malformed subscription references", () => {
+    const event = {
+      id: "evt_invoice",
+      object: "event" as const,
+      livemode: false as const,
+      type: "invoice.paid",
+      created: now,
+      data: { object: { object: "invoice", parent: null } },
+    };
+    expect(subscriptionEventReference(event)).toBeNull();
+    expect(() =>
+      subscriptionEventReference({
+        ...event,
+        data: {
+          object: {
+            object: "invoice",
+            parent: {
+              type: "subscription_details",
+              subscription_details: { subscription: "cus_wrong" },
+            },
+          },
+        },
+      }),
+    ).toThrow("stripe_subscription_event_invalid");
+  });
+});
+
+describe("canonical Checkout completion", () => {
+  const session = {
+    id: "cs_test_saved",
+    object: "checkout.session",
+    livemode: false,
+    mode: "subscription",
+    customer: scope.customerId,
+    client_reference_id: organizationId,
+    status: "complete",
+    subscription: "sub_fixture",
+  };
+  const transport = (value: unknown) =>
+    vi.fn<typeof fetch>(async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/v1/account")
+        return Response.json({ id: config.accountId });
+      if (path.startsWith("/v1/customers/"))
+        return Response.json({
+          id: scope.customerId,
+          livemode: false,
+          metadata,
+        });
+      return Response.json(value);
+    });
+  it("reads the saved session and returns only a binding candidate", async () => {
+    const result = await stripeSandboxBilling(
+      config,
+      transport(session),
+    ).readCheckout(scope, "cs_test_saved");
+    expect(result.subscription).toBe("sub_fixture");
+    expect(result).not.toHaveProperty("accessUntil");
+  });
+  it.each([
+    { ...session, customer: "cus_other" },
+    { ...session, client_reference_id: "other" },
+    { ...session, livemode: true },
+    { ...session, id: "cs_test_other" },
+  ])("rejects foreign or live sessions", async (value) => {
+    await expect(
+      stripeSandboxBilling(config, transport(value)).readCheckout(
+        scope,
+        "cs_test_saved",
+      ),
+    ).rejects.toThrow("stripe_billing_response_mismatch");
+  });
+});

@@ -146,6 +146,7 @@ export function Operations({
         <>
           <RestaurantSettings session={session} locale={locale} />
           <PlanSettings
+            tenantId={session.tenantId}
             locale={locale}
             timezone={session.restaurant.timezone}
           />

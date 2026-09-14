@@ -64,6 +64,30 @@ export function subscriptionEventReference(
   event: ReturnType<typeof verifyStripeSandboxEvent>,
 ): string | null {
   if (
+    [
+      "invoice.paid",
+      "invoice.payment_failed",
+      "invoice.voided",
+      "invoice.marked_uncollectible",
+    ].includes(event.type)
+  ) {
+    const invoice = z
+      .object({
+        object: z.literal("invoice"),
+        parent: z
+          .object({
+            type: z.literal("subscription_details"),
+            subscription_details: z.object({
+              subscription: z.string().regex(/^sub_[A-Za-z0-9]+$/),
+            }),
+          })
+          .nullable(),
+      })
+      .safeParse(event.data.object);
+    if (!invoice.success) throw Error("stripe_subscription_event_invalid");
+    return invoice.data.parent?.subscription_details.subscription ?? null;
+  }
+  if (
     ![
       "customer.subscription.created",
       "customer.subscription.updated",

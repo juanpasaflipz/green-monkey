@@ -99,6 +99,59 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
       data: { tenantId: "10000000-0000-4000-8000-000000000001" },
     });
     expect(forbidden.status()).toBe(403);
+    // UI contract fixture only; real Stripe flows are verified separately.
+    let billingChoice: unknown = null;
+    await page.route("**/api/billing/status?*", (route) =>
+      route.fulfill({
+        json: {
+          enabled: true,
+          billing: null,
+          operation: null,
+          entitlement: null,
+        },
+      }),
+    );
+    await page.route("**/api/billing/request", (route) => {
+      billingChoice = route.request().postDataJSON();
+      return route.fulfill({ status: 202, json: { state: "pending" } });
+    });
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await expect(
+      page.getByText(
+        "Billing test environment. No real payments are charged.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", {
+        name: "Subscribe in Stripe (test)",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await page
+      .getByRole("combobox", { name: "Billing interval", exact: true })
+      .selectOption("year");
+    await page
+      .getByRole("checkbox", {
+        name: "I agree to continue to Stripe with the selected interval; any paid subscription recurs per restaurant, plus applicable taxes.",
+        exact: true,
+      })
+      .check();
+    await page
+      .getByRole("button", { name: "Subscribe in Stripe (test)", exact: true })
+      .click();
+    await expect
+      .poll(() => billingChoice)
+      .toEqual({
+        tenantId: account.restaurants[0].id,
+        kind: "checkout",
+        interval: "year",
+        consent: true,
+      });
+    const billingAxe = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(billingAxe.violations).toEqual([]);
     const loggedOut = page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/logout") &&
@@ -112,6 +165,7 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
     const tenants =
       await admin`select tenant_id from owner_memberships where account_id=${accountId}`;
     for (const { tenant_id } of tenants) {
+      await admin`delete from signup_billing_intents where tenant_id=${tenant_id}`;
       await admin`delete from audit where tenant_id=${tenant_id}`;
       await admin`delete from sessions where tenant_id=${tenant_id}`;
       await admin`delete from devices where tenant_id=${tenant_id}`;

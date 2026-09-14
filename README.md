@@ -107,6 +107,15 @@ multi-location signup/switch UX, email recovery, Apple sign-in, Free device/team
 limits and Stripe trial/subscription provisioning. Staging now has the signup
 implementation and migrations through 010.
 
+## Billing implementation in progress
+
+Durable sandbox billing now has organization bindings, leased operations, signed
+webhook reconciliation, saved signup trial preferences and owner controls. Real
+Stripe trial, hosted Checkout payment and cancellation checks pass. See
+[the current billing checkpoint](docs/BILLING_IMPLEMENTATION.md) for activation
+requirements, evidence and remaining staging qualification. It is disabled by
+default and cannot use live keys.
+
 ## Approved launch pricing
 
 Free remains free. Pro is MXN 799 monthly or MXN 7,990 annually, paid upfront,

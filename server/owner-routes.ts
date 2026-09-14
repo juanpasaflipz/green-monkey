@@ -37,7 +37,11 @@ export function ownerRoutes(sql: postgres.Sql) {
     }),
   );
   router.get("/providers", (_req, res) =>
-    res.json({ google: Boolean(google), apple: false }),
+    res.json({
+      google: Boolean(google),
+      apple: false,
+      billingSandbox: process.env.BILLING_SANDBOX_ENABLED === "true",
+    }),
   );
   router.get("/google/start", async (_req, res, next) => {
     if (!google) return res.status(503).json({ error: "google_unavailable" });

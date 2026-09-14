@@ -148,6 +148,7 @@ try {
     const rows =
       await admin`select tenant_id from owner_memberships where account_id=${accountId}`;
     for (const row of rows) {
+      await admin`delete from signup_billing_intents where tenant_id=${row.tenant_id}`;
       await admin`delete from audit where tenant_id=${row.tenant_id}`;
       await admin`delete from sessions where tenant_id=${row.tenant_id}`;
       await admin`delete from devices where tenant_id=${row.tenant_id}`;

@@ -1,3 +1,4 @@
+import { billingRuntime } from "./billing-runtime.js";
 import { entitlement, requirePro } from "./entitlements.js";
 import { ownerRoutes } from "./owner-routes.js";
 import { withOwner } from "./owner-accounts.js";
@@ -63,6 +64,7 @@ if (
   throw Error("DATABASE_URL and JWT_SECRET (32+ characters) required");
 const sql = connect(process.env.DATABASE_URL);
 await checkRole(sql);
+const billing = await billingRuntime(sql, process.env);
 const app = express();
 app.disable("x-powered-by");
 app.use(
@@ -71,13 +73,14 @@ app.use(
       process.env.NODE_ENV === "production" ? undefined : false,
   }),
 );
+app.use("/api/billing/webhook", billing.webhook);
 app.use(express.json({ limit: "256kb" }));
 app.use(cookieParser());
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", async (_req, res, next) => {
   try {
     const ready =
-      await sql`select name from schema_migrations where name='010_owner_session_lineage.sql'`;
+      await sql`select name from schema_migrations where name='013_billing_location_identity.sql'`;
     if (!ready.length) throw new DomainError("schema_not_ready", 503);
     res.json({ ok: true });
   } catch (e) {
@@ -156,6 +159,7 @@ app.post(
 );
 app.use("/api/public", publicOrdering(sql));
 app.use("/api/auth", ownerRoutes(sql));
+app.use("/api/billing", billing.routes);
 app.use("/api", authentication(sql));
 const route = (
   method: "get" | "post",
@@ -664,7 +668,10 @@ const server = app.listen(Number(process.env.PORT ?? 3001), "0.0.0.0", () =>
 );
 process.on("SIGTERM", () => {
   server.close(() => {
-    void sql.end().then(() => process.exit(0));
+    void billing
+      .close()
+      .then(() => sql.end())
+      .then(() => process.exit(0));
   });
   setTimeout(() => process.exit(1), 10000).unref();
 });

@@ -23,6 +23,7 @@ const configSchema = z
     accountId: providerId("acct"),
     monthlyPriceId: providerId("price"),
     annualPriceId: providerId("price"),
+    portalConfigurationId: providerId("bpc").optional(),
     appUrl: z.url().refine((value) => {
       const url = new URL(value);
       return (
@@ -304,6 +305,23 @@ export function stripeSandboxBilling(
         url: hostedUrl(result.url, "checkout.stripe.com"),
       };
     },
+    async readCheckout(scope: BillingScope, sessionId: string) {
+      providerId("cs_test").parse(sessionId);
+      await checkScope(scope);
+      return parse(
+        z.object({
+          id: z.literal(sessionId),
+          object: z.literal("checkout.session"),
+          livemode: z.literal(false),
+          mode: z.literal("subscription"),
+          customer: z.literal(scope.customerId),
+          client_reference_id: z.literal(scope.organizationId),
+          status: z.enum(["open", "complete", "expired"]),
+          subscription: providerId("sub").nullable(),
+        }),
+        await call(`/checkout/sessions/${sessionId}`),
+      );
+    },
     async createPortal(scope: BillingScope, operationId: string) {
       scopeSchema.parse(scope);
       const key = operationKey("portal", scope.organizationId, operationId);
@@ -319,6 +337,9 @@ export function stripeSandboxBilling(
           "/billing_portal/sessions",
           new URLSearchParams({
             customer: scope.customerId,
+            ...(config.portalConfigurationId
+              ? { configuration: config.portalConfigurationId }
+              : {}),
             return_url: new URL("/app", config.appUrl).href,
           }),
           key,
