@@ -10,3 +10,7 @@ GRANT INSERT,UPDATE ON suppliers,shifts TO gm_app;
 GRANT SELECT,INSERT ON tender_allocations TO gm_app;
 REVOKE UPDATE ON restaurants FROM gm_app;
 GRANT UPDATE(name,currency,timezone,cutoff,opening_days,config_version) ON restaurants TO gm_app;
+GRANT SELECT,INSERT ON oauth_login_attempts TO gm_app;
+GRANT UPDATE(consumed_at) ON oauth_login_attempts TO gm_app;
+GRANT SELECT,INSERT ON owner_accounts,owner_sessions,owner_memberships,organizations,restaurants TO gm_app;
+GRANT UPDATE(revoked) ON owner_sessions TO gm_app;

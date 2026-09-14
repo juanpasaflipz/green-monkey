@@ -54,6 +54,14 @@ export function authentication(sql: postgres.Sql) {
         const [s] =
           await tx`select s.*,e.name,e.role,r.name as restaurant_name,r.currency,r.timezone,r.cutoff from sessions s join employees e on e.tenant_id=s.tenant_id and e.id=s.employee_id join devices d on d.tenant_id=s.tenant_id and d.id=s.device_id join restaurants r on r.id=s.tenant_id where s.id=${c.id} and s.token_hash=${hash(c.token)} and not s.revoked and s.expires_at>now() and e.active and d.active and d.id=${device.id} and d.token_hash=${hash(device.token)}`;
         if (!s) throw new DomainError("unauthorized", 401);
+        if (s.owner_account_id) {
+          await tx`select set_config('app.account_id',${s.owner_account_id},true)`;
+          const [owner] =
+            await tx`select a.id from owner_sessions os join owner_accounts a on a.id=os.account_id
+            where os.id=${s.owner_session_id} and os.account_id=${s.owner_account_id}
+              and not os.revoked and os.expires_at>now() and a.active`;
+          if (!owner) throw new DomainError("unauthorized", 401);
+        }
         return {
           id: s.id,
           tenantId: s.tenant_id,

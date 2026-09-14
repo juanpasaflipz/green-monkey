@@ -1,3 +1,4 @@
+import { BrandLogo } from "../components/BrandLogo";
 import { currencyExponent } from "../../shared/domain";
 import { useEffect, useState } from "react";
 import { api } from "../api";
@@ -86,7 +87,7 @@ export function PublicOrdering() {
     <div className="public-ordering">
       <header className="row between">
         <div className="brand">
-          gm<span>Green Monkey</span>
+          <BrandLogo />
         </div>
         <Button onClick={() => setLocale(locale === "es" ? "en" : "es")}>
           {locale === "es" ? "English" : "Español"}

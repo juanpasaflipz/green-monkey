@@ -1,4 +1,6 @@
 import { entitlement, requirePro } from "./entitlements.js";
+import { ownerRoutes } from "./owner-routes.js";
+import { withOwner } from "./owner-accounts.js";
 import {
   serviceOptions,
   assignService,
@@ -75,7 +77,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", async (_req, res, next) => {
   try {
     const ready =
-      await sql`select name from schema_migrations where name='006_entitlements.sql'`;
+      await sql`select name from schema_migrations where name='010_owner_session_lineage.sql'`;
     if (!ready.length) throw new DomainError("schema_not_ready", 503);
     res.json({ ok: true });
   } catch (e) {
@@ -153,6 +155,7 @@ app.post(
   },
 );
 app.use("/api/public", publicOrdering(sql));
+app.use("/api/auth", ownerRoutes(sql));
 app.use("/api", authentication(sql));
 const route = (
   method: "get" | "post",
@@ -184,6 +187,23 @@ app.post("/api/logout", async (req, res, next) => {
       (tx) => tx`update sessions set revoked=true where id=${s.id}`,
     );
     res.clearCookie("gm_session", cookieOptions);
+    if (req.cookies.gm_account) {
+      try {
+        await withOwner(
+          sql,
+          req.cookies.gm_account,
+          undefined,
+          async (tx, account) => {
+            await tx`update owner_sessions set revoked=true where id=${account.sessionId}`;
+          },
+        );
+      } catch (error) {
+        /* An absent or expired account must not prevent POS logout. */
+        if (!(error instanceof DomainError && error.status === 401))
+          throw error;
+      }
+      res.clearCookie("gm_account", cookieOptions);
+    }
     res.json({ ok: true });
   } catch (e) {
     next(e);

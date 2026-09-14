@@ -1,3 +1,4 @@
+import { BrandLogo } from "./components/BrandLogo";
 import { useEffect, useState } from "react";
 import {
   ShoppingBag,
@@ -21,6 +22,7 @@ import { db, cacheSession, scope, syncPending } from "./offline";
 import { Button, Field } from "./components/ui";
 import { Selling } from "./features/Selling";
 import { Operations } from "./features/Operations";
+import { OwnerAccess } from "./features/OwnerAccess";
 export default function App() {
   const [locale, setLocale] = useState<Locale>(
     localStorage.getItem("gm-locale") === "en" ? "en" : "es",
@@ -32,6 +34,7 @@ export default function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [error, setError] = useState("");
   const [queued, setQueued] = useState(0);
+  const [ownerAccess, setOwnerAccess] = useState(false);
   const t = (key: Key) => strings[locale][key];
   async function load(resetView = true) {
     try {
@@ -114,7 +117,7 @@ export default function App() {
       <div className="login">
         <div className="login-art">
           <div className="brand">
-            gm<span>Green Monkey</span>
+            <BrandLogo />
           </div>
           <h1>{t("loginTitle")}</h1>
           <p>{t("loginHint")}</p>
@@ -125,63 +128,75 @@ export default function App() {
             <span />
           </div>
         </div>
-        <form
-          className="login-form"
-          onSubmit={async (e) => {
-            e.preventDefault();
-            setError("");
-            const f = new FormData(e.currentTarget);
-            try {
-              await api("/login", Object.fromEntries(f));
-              await load();
-            } catch (err) {
-              setError(translateError((err as Error).message, locale));
-            }
-          }}
-        >
-          <div className="row between">
-            <h2>{t("login")}</h2>
-            <Button
-              onClick={() => setLocale(locale === "es" ? "en" : "es")}
-              type="button"
-            >
+        <div className="login-form">
+          {ownerAccess && (
+            <Button onClick={() => setLocale(locale === "es" ? "en" : "es")}>
               {locale === "es" ? "English" : "Español"}
             </Button>
-          </div>
-          <Field label={t("restaurant")}>
-            <input
-              name="tenantId"
-              defaultValue="10000000-0000-4000-8000-000000000001"
-              required
-            />
-          </Field>
-          <Field label={t("user")}>
-            <input
-              name="login"
-              autoComplete="username"
-              defaultValue="owner"
-              required
-            />
-          </Field>
-          <Field label={t("secret")}>
-            <input
-              name="secret"
-              type="password"
-              autoComplete="current-password"
-              required
-            />
-          </Field>
-          {error && (
-            <p role="alert" className="error">
-              {error}
-            </p>
           )}
-          <Button variant="primary" type="submit">
-            {t("login")}
-            <ArrowRight size={20} />
-          </Button>
-          <p className="muted">{t("demo")}</p>
-        </form>
+          <OwnerAccess
+            locale={locale}
+            onReady={load}
+            onAccount={setOwnerAccess}
+          />
+          <form
+            hidden={ownerAccess}
+            onSubmit={async (e) => {
+              e.preventDefault();
+              setError("");
+              const f = new FormData(e.currentTarget);
+              try {
+                await api("/login", Object.fromEntries(f));
+                await load();
+              } catch (err) {
+                setError(translateError((err as Error).message, locale));
+              }
+            }}
+          >
+            <div className="row between">
+              <h2>{t("login")}</h2>
+              <Button
+                onClick={() => setLocale(locale === "es" ? "en" : "es")}
+                type="button"
+              >
+                {locale === "es" ? "English" : "Español"}
+              </Button>
+            </div>
+            <Field label={t("restaurant")}>
+              <input
+                name="tenantId"
+                defaultValue="10000000-0000-4000-8000-000000000001"
+                required
+              />
+            </Field>
+            <Field label={t("user")}>
+              <input
+                name="login"
+                autoComplete="username"
+                defaultValue="owner"
+                required
+              />
+            </Field>
+            <Field label={t("secret")}>
+              <input
+                name="secret"
+                type="password"
+                autoComplete="current-password"
+                required
+              />
+            </Field>
+            {error && (
+              <p role="alert" className="error">
+                {error}
+              </p>
+            )}
+            <Button variant="primary" type="submit">
+              {t("login")}
+              <ArrowRight size={20} />
+            </Button>
+            <p className="muted">{t("demo")}</p>
+          </form>
+        </div>
       </div>
     );
   const management = ["owner", "manager"].includes(session.role);
@@ -217,7 +232,7 @@ export default function App() {
             setView(session.role === "kitchen" ? "kitchen" : "sell");
           }}
         >
-          gm<span>Green Monkey</span>
+          <BrandLogo />
         </a>
         <div className="scope">
           <strong>{session.restaurant.name}</strong>

@@ -1,5 +1,18 @@
 # Verification record — in progress
 
+Stripe setup, September 14: created a dedicated Green Monkey sandbox, saved
+credentials in ignored mode-0600 files, and verified the account and both approved
+prices through the real Stripe API. Catalog rerun recovered the same product and
+prices. [Evidence](evidence/stripe-sandbox-catalog.json) contains only non-secret
+IDs and price attributes. No customers, subscriptions, charges, webhook endpoint
+or staging deployment were created in this setup.
+
+Latest continuation: [subscription provider foundation](BILLING_IMPLEMENTATION.md)
+adds sandbox-only billing requests and raw webhook verification. All 94 unit tests,
+typecheck and lint passed; provider responses are synthetic. Durable billing
+operations, webhook inbox/reconciliation, activation UI and real Stripe sandbox
+verification remain pending. No staging migration or deployment was performed.
+
 Green Monkey is a working development application with an isolated staging deployment, not a completed release. The full required scope remains tracked in [DELIVERY_STATUS.md](DELIVERY_STATUS.md).
 
 Scenario-by-scenario gaps are listed in [ACCEPTANCE_STATUS.md](ACCEPTANCE_STATUS.md).
@@ -63,3 +76,62 @@ See [STAGING.md](STAGING.md) for exact isolated targets, repeatable commands, ge
 ## Local plan-gating checkpoint
 
 Migration 006 adds read-only runtime entitlements with FORCE RLS. Eighteen unit tests, targeted local entitlement database checks, all seventeen existing database checks, eleven browser scenarios, typecheck, lint and build passed. The canonical order service denies new QR/kiosk orders on Free or expired Pro but recovers accepted requests with the original idempotency key. Details and unimplemented signup/billing/provider work are in [PLANS_AND_SIGNUP.md](PLANS_AND_SIGNUP.md). This checkpoint is local; staging remains on its previously verified deployment.
+
+## Google authentication foundation checkpoint
+
+Google staging client creation was verified in its dashboard and credentials saved
+privately. The backend adapter and persistent one-time attempt store are implemented
+but not mounted as login routes. Migration 007 was applied only to local dev/test.
+All 36 unit tests, the isolated Google-attempt database checks (including eight-way
+concurrency and process-restart replay), lint, typecheck and build passed. JOSE
+6.2.12 is a new locked dependency. No Google end-to-end login, new browser acceptance,
+Neon migration or staging deployment was performed in this checkpoint. Memberships,
+tenant onboarding, Apple login and Stripe billing remain pending.
+
+## Owner signup continuation (local only)
+
+Mounted Google start/callback, credential-gated button, account identity/session,
+explicit restaurant membership, Free restaurant signup/entry and logout are now
+implemented. Migrations 008–010 were applied on local dev/test only. Signup
+preserves issuer/subject identity and never merges equal emails. Owner revocation
+invalidates linked POS sessions online. Four-way concurrent signup, cross-account
+access rejection and revoked POS lineage passed targeted database tests. All 36
+unit tests, 17 existing DB checks, 12 browser tests, lint, typecheck and build
+passed. Signup keyboard and axe checks passed at all four required sizes; images
+are `docs/evidence/owner-signup-*.png`. Local browser testing starts from a synthetic
+verified identity and therefore does not establish real Google login. Google
+staging smoke, Apple, Stripe, account linking and organization management remain
+pending. No cloud migration or deployment occurred during this continuation.
+
+## Approved pricing checkpoint (local only)
+
+Pro pricing is MXN 799/month or MXN 7,990/year upfront per location, with
+applicable taxes additional. Shared policy records the approved 14-day no-card
+trial, kiosk inclusion, no employee surcharge and free beta until qualification.
+The bilingual settings screen displays the offer; billing/trial activation remains
+unavailable. A sandbox-only Stripe catalog command validates account, product,
+currency, amounts, intervals and tax behavior, with stable idempotency keys and
+rerun reconciliation. All 47 unit tests, typecheck, lint and build passed.
+Stripe tests use synthetic responses, including a lost-response recovery case.
+An actual provisioning attempt stopped with `stripe_sandbox_key_required` before
+network access. No external Stripe catalog or subscription was created.
+The targeted settings browser test also passed, verifying monthly/annual prices,
+annual savings and employee-fee copy in Spanish, plus annual-billing copy in English.
+
+## Marketing landing page (local only)
+
+Implemented a bilingual responsive landing at `/`, with the application at `/app`.
+Existing root OAuth callback query links remain supported; new callbacks use
+`/app`. Product preview examples are explicitly fictional. Pricing uses the shared
+approved offer, with a working monthly/annual selector and truthful beta/Pro
+availability. Signup links open existing app access rather than simulate enrollment.
+
+Typecheck, lint and production build passed. All twelve existing browser scenarios
+passed after moving their login entry point to `/app`. The new landing browser
+scenario passed after correcting two text contrast colors and a test selector.
+Axe reported zero WCAG-tagged violations at 1440×900, 1024×768, 768×1024 and 390×844
+in Spanish, and in the tested English state. Keyboard FAQ activation, pricing,
+preview switching, locale persistence and app entry were verified. Screenshots:
+`docs/evidence/landing-*.png`. Desktop and mobile full-page images were visually
+reviewed. This is local evidence, not a full accessibility certification or cloud
+deployment. No new provider integration, subscription or production change.

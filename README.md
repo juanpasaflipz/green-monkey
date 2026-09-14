@@ -34,7 +34,7 @@ npm run dev
 npm run dev:ui
 ```
 
-Open **http://127.0.0.1:5173**. Fictional restaurant ID: `10000000-0000-4000-8000-000000000001`. Owner login: `owner` / `demo-green-monkey`. Employee PIN access after owner device pairing: `cashier` / `123456`; kitchen: `kitchen` / `654321`.
+Open **http://127.0.0.1:5173** for the marketing page, or **http://127.0.0.1:5173/app** for the POS/login. Fictional restaurant ID: `10000000-0000-4000-8000-000000000001`. Owner login: `owner` / `demo-green-monkey`. Employee PIN access after owner device pairing: `cashier` / `123456`; kitchen: `kitchen` / `654321`.
 
 New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
 
@@ -75,6 +75,62 @@ The current adapter accepts **documented normalized catalog exports**, with expl
 
 Historical transactions, summaries, recipes and identity migration remain pending and require approved exports/schema metadata. See [migration contract](docs/MIGRATION.md).
 
+## Owner signup (local implementation)
+
+Google owner signup now has a server authorization-code callback, persistent
+one-time login attempts, issuer/subject identities, account sessions, and explicit
+restaurant memberships. New accounts create one Free restaurant with an empty
+catalog and configurable currency, timezone, business cutoff and opening days.
+The signup form is available in Spanish and English. This does not activate a
+Stripe trial or link an existing restaurant by matching email addresses.
+
+The backend enables the Google button only when `GOOGLE_CLIENT_ID`,
+`GOOGLE_CLIENT_SECRET`, and `GOOGLE_REDIRECT_URI` are set. The redirect must have
+the same origin as `APP_URL` and the path `/api/auth/google/callback`. Use separate
+OAuth clients for local, staging and production; the saved staging client does
+not authorize localhost. Secrets stay in the server environment. Apply migrations
+through 010 and runtime grants before deploying this code.
+
+`npm test` includes Google token/PKCE/replay tests. After local setup, targeted
+database checks run with `npx tsx tests/google-attempts-db.ts` and
+`npx tsx tests/owner-accounts-db.ts`; provide `TEST_DATABASE_URL`,
+`TEST_MIGRATION_DATABASE_URL`, and exact `TEST_DATABASE_HOST_ALLOWLIST` through a
+private environment. These scripts accept only isolated localhost `_test` targets.
+`bash scripts/browser-check.sh` includes responsive signup using a clearly labeled
+verified-identity fixture. It does not automate or claim Google's external login.
+
+Still pending: real Google staging verification, existing-owner linking/invites,
+multi-location signup/switch UX, email recovery, Apple sign-in, Free device/team
+limits and Stripe trial/subscription provisioning. Staging has not received this
+signup implementation yet.
+
+## Approved launch pricing
+
+Free remains free. Pro is MXN 799 monthly or MXN 7,990 annually, paid upfront,
+per restaurant location, before applicable taxes. Annual billing saves MXN 1,598.
+Kiosk is included in Pro, with no per-employee fee. The approved trial is 14 days,
+without a card, starting at restaurant creation. Beta pilots remain free until
+the promised Pro workflows qualify. Actual trial and subscription provisioning
+are still pending; the settings screen displays pricing without a purchase control.
+
+To prepare only the Stripe sandbox product and two recurring prices, configure
+`STRIPE_SECRET_KEY` with a sandbox key and `STRIPE_EXPECTED_ACCOUNT_ID` with the
+explicit sandbox account, in a private environment, then run:
+
+```sh
+npm run stripe:catalog:sandbox
+```
+
+The command rejects live keys and mismatched accounts/prices, reconciles existing
+objects on rerun, and saves price IDs to ignored `.env.stripe-price-ids`. It never
+creates customers, subscriptions or charges. The dedicated Green Monkey sandbox
+is configured privately in `.env.stripe-sandbox`; actual catalog provisioning and
+rerun verification passed. Run it with
+`node --env-file=.env.stripe-sandbox --import tsx scripts/stripe-sandbox-catalog.ts`.
+Subscription flows and webhook verification against Stripe remain pending. See
+[billing implementation](docs/BILLING_IMPLEMENTATION.md) and
+[plan policy](docs/PLANS_AND_SIGNUP.md).
+
 ## Layout
 
 - `shared/`: validation, money, pricing, units, business time, finance and import preview.
@@ -85,3 +141,18 @@ Historical transactions, summaries, recipes and identity migration remain pendin
 - `work/reference-sources/`: ignored hash-verified source snapshots, never part of the deploy image.
 
 No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe, FacturAPI and other configured integrations are **not enabled or verified**. Cash POS does not require those credentials. The [isolated staging deployment](docs/STAGING.md) is running on Railway with Neon; a live cash/KDS/receipt smoke passed. Full release qualification remains incomplete; live cutover requires specific approval and reconciled migration.
+
+## Marketing landing page
+
+The public root `/` serves a Spanish-first, English-switchable landing page.
+`/app` opens the existing application; Google callbacks now return to `/app`,
+while old root callback links remain compatible. QR and kiosk routes are unchanged.
+The landing page includes illustrative (fictional) product previews, Free/Pro
+pricing from the shared approved policy, a monthly/annual toggle, availability
+explanations and keyboard-operable FAQs. Pro billing is labeled upcoming.
+All app links open the actual access screen; there is no simulated signup,
+lead collection, invented testimonial or active trial promise.
+
+Run `bash scripts/browser-check.sh landing.spec.ts` against the compiled local
+server to check responsive layouts, accessibility, language persistence, pricing
+interaction and entry into the app. Source: `src/marketing/`.

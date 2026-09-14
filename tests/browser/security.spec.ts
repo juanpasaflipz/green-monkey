@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 test("device PIN, server permission, CSRF and public capability isolation", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
   await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await expect(

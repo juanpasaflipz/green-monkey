@@ -1,8 +1,16 @@
 # Free, Pro and tenant signup
 
-Status: product definition for implementation. The owner explicitly requires kiosk to be Pro. Other limits and the 14-day trial below are recommended defaults, not claims of implemented billing or approved commercial prices. Existing staging access is unchanged. Required workflows remain in scope even where they belong to Pro.
+Latest provider checkpoint, September 14: dedicated Green Monkey sandbox
+`acct_1UFZZRFYpuQNRtU1` created and credentials saved privately. Actual sandbox
+catalog provisioning and rerun passed for both approved prices; see
+[billing implementation](BILLING_IMPLEMENTATION.md) and
+[provider evidence](evidence/stripe-sandbox-catalog.json). Historical statements
+below about missing Stripe credentials are superseded. Subscription activation,
+durable webhook integration and full sandbox flow verification remain pending.
 
-## Recommended packaging
+Status: commercial policy approved by the owner on September 13, 2026. Free forever; Pro MXN 799 monthly or MXN 7,990 annually per restaurant location, before applicable taxes. Kiosk is included in Pro; no per-employee Pro fee. The 14-day trial requires no card and starts at restaurant creation, not identity authentication. Beta pilots stay free until promised Pro workflows are qualified. This is not a claim of enabled billing; implementation and verification are recorded below.
+
+## Approved packaging
 
 | Capability | Free forever | Pro and Pro trial |
 | --- | --- | --- |
@@ -21,11 +29,11 @@ Status: product definition for implementation. The owner explicitly requires kio
 | Loyalty, delivery connectors, invoicing and AI parsing | Unavailable | Available only when the module is implemented, configured and provider-verified |
 | History, data export, audit integrity and security | Included; no loss of records on downgrade | Included |
 
-Do not cap completed order count or withhold refunds/history behind an upgrade. Provider transaction fees, messaging/AI usage and hardware are distinct from subscription inclusion. No Pro price is set here; use configured Stripe Price IDs for monthly and annual plans, not hardcoded amounts or legacy prices. Recommend per-location pricing rather than per-employee pricing. One organization owns the Stripe Customer; explicit restaurant entitlements determine which locations receive paid access. The first implementation should use one consistent Pro plan across an organization's billed locations to keep quantities and access unambiguous.
+Do not cap completed order count or withhold refunds/history behind an upgrade. Provider transaction fees, messaging/AI usage and hardware are distinct from subscription inclusion. Use configured Stripe Price IDs validated against the approved amounts in `shared/plans.ts`: 79,900 minor units monthly and 799,000 annually, MXN, recurring per location, exclusive of applicable taxes. Annual savings are 159,800 minor units (two months, 16.7%); the 665.83 MXN monthly equivalent is display-only, never the amount charged each month. There is no permanent founder tier or per-employee Pro fee. One organization owns the Stripe Customer; explicit restaurant entitlements determine which locations receive paid access. The first implementation should use one consistent Pro plan across an organization's billed locations to keep quantities and access unambiguous.
 
 ## Trial and upgrade
 
-Recommend 14 days from successful verified-owner restaurant creation. This gives two weekly service cycles without making an unsupported claim about optimal conversion. Show the exact expiry date and remaining days. Offer Free without a trial for owners who prefer it. One trial per organization; creating another location or linking another login must not reset it.
+The approved trial lasts 14 days from successful verified-owner restaurant creation. This gives two weekly service cycles without making an unsupported claim about optimal conversion. Show the exact expiry date and remaining days. Offer Free without a trial for owners who prefer it. One trial per organization; creating another location or linking another login must not reset it.
 
 Create a Stripe Customer and trial subscription using configured Pro Price IDs and no required payment method. Choose cancellation when the trial ends without a payment method; Green Monkey then retains the Free account. Store a durable provisioning attempt and reuse idempotency keys so retries never create duplicate subscriptions. If Stripe is unavailable, complete Free signup, show trial activation as pending, and start the full trial only when Stripe confirms creation.
 
@@ -81,3 +89,103 @@ Verification: four policy tests plus the existing 14 domain tests; isolated data
 Still pending: signup and provider authentication, Stripe trial provisioning/Checkout/Portal/webhooks, broader Free device/team/feature limits, entitlement notifications and cloud qualification. Browser account setup was attempted but the installed browser runtime failed to load a component before accessing provider accounts. No Stripe, Google or Apple account settings were changed.
 
 The eleven existing local browser scenarios also passed after correcting grouped-settlement test selection to use a unique order call name (order numbers legitimately repeat across business days). Typecheck, lint and production build passed. These changes have not been deployed to staging.
+
+## Google provider and adapter checkpoint
+
+Google project `green-monkey-508518` now has a created, enabled web client named
+`Green Monkey staging`. Its sole origin is
+`https://green-monkey-staging.up.railway.app` and its callback is
+`/api/auth/google/callback`. The owner approved the policy acceptance and client
+creation. Credentials were captured into a private mode-0600, Git-ignored
+`.env.google-staging` file; they are not deployed or included in frontend code.
+The Google audience remains External/Testing, with no test users at inspection.
+
+Implemented locally: `server/google-identity.ts` performs authorization-code
+exchange with PKCE, browser binding and nonce checking, verifies Google RS256
+signatures through JOSE, and requires the configured audience, verified email,
+valid issuer, expiry and recent issuance. Identity keys use canonical issuer and
+subject, never email matching. Provider errors are sanitized. An uncertain exchange
+consumes the attempt and requires a fresh login rather than replaying the code.
+
+Migration 007 and `server/google-attempt-store.ts` persist one-time login attempts.
+Before identity authentication there is no tenant: these rows instead use FORCE
+RLS scoped by a cryptographic random state hash with transaction-local context.
+Missing scope returns no rows. The runtime can insert/read and update only
+`consumed_at`. Database time controls expiry; atomic consumption precedes the
+external request and survives restart. No migration was applied to Neon in this
+checkpoint.
+
+Verified: 36 unit tests (including 18 Google adapter tests), local PostgreSQL
+checks for missing-scope rejection, browser isolation, eight concurrent callbacks,
+restart/replay rejection, expiry and restricted column grants; lint, typecheck
+and production build. Token/exchange tests use explicitly synthetic keys and
+responses, not a claimed Google sandbox login.
+
+Still pending: HTTP start/callback routes, cookie lifecycle, global identities and
+memberships, account linking, signup UI and bilingual errors, attempt cleanup,
+test-user setup and real Google login on staging. The adapter is intentionally not
+mounted until verified identities have an authorized membership/session flow.
+Apple and Stripe configuration/implementation remain pending.
+
+Contract references checked for this implementation:
+[Google OpenID Connect server flow](https://developers.google.com/identity/openid-connect/openid-connect)
+and [JOSE official repository](https://github.com/panva/jose). JOSE 6.2.12 is pinned
+in the lockfile and was installed and tested using Node 24.
+
+## Owner signup continuation
+
+Implemented after the adapter checkpoint: HTTP Google start/callback with a
+ten-minute HttpOnly SameSite=Lax flow cookie, credential-gated login entry,
+global issuer/subject owner accounts, hashed account sessions with CSRF, explicit
+memberships, one initial organization/restaurant per owner, authorized POS entry
+and logout. New restaurants start Free with no synthetic billing entitlement.
+The account creation transaction serializes concurrent signup and reuses its
+original restaurant. Provider email equality never links legacy employees or
+another owner. Existing POS sessions are not silently switched by an OAuth callback.
+
+Migrations 008–010 are local only. A local failing signup test exposed a redundant
+restaurant INSERT policy querying organizations whose policy queried restaurants;
+009 removes that recursive policy while preserving transaction-local tenant RLS.
+010 links Google-origin POS sessions to their owner session so expiry/revocation
+is checked on every online POS request. Already issued bounded offline leases
+retain their documented offline expiry behavior.
+
+Spanish/English signup uses a restaurant name plus expandable currency/time
+settings. Browser testing covered keyboard submission, Free restaurant creation,
+authorized entry, denial of another tenant, and logout; all 12 browser scenarios
+passed. Signup axe checks had zero violations at 1440×900, 1024×768, 768×1024 and
+390×844. All 36 unit tests, 17 existing integration checks, targeted owner/attempt
+database tests, lint, typecheck and build passed. Owner database checks include
+four simultaneous signup requests, email non-merging and inherited POS revocation.
+
+Pending: real Google callback verification on staging, existing account linking,
+invited/multi-location organization management and switching UX, email recovery,
+trial/Stripe provisioning, Apple integration, expired-attempt cleanup and broader
+Free plan limits. The provider-verified identity used in local browser testing is
+explicitly a synthetic test fixture. No real OAuth login or staging deployment is
+claimed from that test.
+
+Google dashboard follow-up: `juan@injupe.com` was saved and verified in the test
+user list (one test user). The app remains in Testing mode. No production publish
+or real account login was performed.
+
+## Approved-price implementation checkpoint
+
+The application displays the approved monthly/annual launch prices, annual savings,
+location basis, additional applicable taxes and kiosk inclusion, while explaining
+that subscriptions/trials are not yet enabled. There is no nonfunctional purchase
+button. Hardware, processing fees and metered third-party usage are separate.
+
+`npm run stripe:catalog:sandbox` prepares only a sandbox product and its monthly
+and annual prices. It requires a sandbox `STRIPE_SECRET_KEY` and exact
+`STRIPE_EXPECTED_ACCOUNT_ID`. It verifies account identity before mutation, uses
+a fixed Green Monkey product ID and unique versioned price lookup keys, and
+validates returned amounts/currency/interval/tax behavior. Reruns reconcile existing
+objects; mismatches fail closed instead of rewriting prices. It never creates
+customers, subscriptions, payments or charges. Validated IDs are saved privately
+to `.env.stripe-price-ids`. The same code rejects live keys.
+
+No Stripe API provisioning has been verified yet: the Chrome dashboard timed out,
+and a dedicated sandbox key/target account is still required. Trial activation,
+Checkout, Customer Portal, signed webhook reconciliation and real sandbox flows
+remain pending. New restaurant signup continues to grant Free only.

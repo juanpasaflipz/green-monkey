@@ -40,3 +40,23 @@ export const PLAN_FEATURES = {
     "expanded_team",
   ],
 } as const;
+
+/** Owner-approved commercial policy, September 13, 2026. These are subscription
+ * amounts, never restaurant tender totals. Checkout must verify configured Stripe
+ * Price records against this policy before offering a purchase.
+ */
+export const PRO_OFFER = {
+  currency: "MXN",
+  monthlyMinor: 79_900,
+  annualMinor: 799_000,
+  trialDays: 14,
+  trialRequiresCard: false,
+  trialStartsAt: "restaurant_creation",
+  billingUnit: "restaurant_location",
+  taxBehavior: "exclusive",
+  perEmployeeFee: false,
+  kioskIncluded: true,
+  freeBetaUntilQualified: true,
+} as const;
+export const PRO_ANNUAL_SAVING_MINOR =
+  PRO_OFFER.monthlyMinor * 12 - PRO_OFFER.annualMinor;

@@ -1,0 +1,30 @@
+{
+  "verifiedAt": "2026-09-14T13:07:04.420Z",
+  "sandboxName": "Green Monkey",
+  "accountId": "acct_1UFZZRFYpuQNRtU1",
+  "prices": [
+    {
+      "id": "price_1UFZaCFYpuQNRtU11W5Hubyu",
+      "product": "green_monkey_pro_v1",
+      "livemode": false,
+      "currency": "mxn",
+      "unitAmount": 79900,
+      "interval": "month",
+      "taxBehavior": "exclusive",
+      "lookupKey": "green_monkey_pro_mxn_month_v1"
+    },
+    {
+      "id": "price_1UFZaCFYpuQNRtU1FzTQ353v",
+      "product": "green_monkey_pro_v1",
+      "livemode": false,
+      "currency": "mxn",
+      "unitAmount": 799000,
+      "interval": "year",
+      "taxBehavior": "exclusive",
+      "lookupKey": "green_monkey_pro_mxn_year_v1"
+    }
+  ],
+  "catalogRerun": "passed",
+  "subscriptionOrChargeCreated": false,
+  "webhookConfigured": false
+}

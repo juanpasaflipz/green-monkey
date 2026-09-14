@@ -1,7 +1,7 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "@playwright/test";
 async function login(page: any) {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
   await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await expect(
@@ -174,6 +174,11 @@ test("restaurant configuration persists and English labels remain usable", async
     await page
       .getByRole("button", { name: "Configuración", exact: true })
       .click();
+    const plan = page.getByRole("region", { name: "Plan y suscripción" });
+    await expect(plan).toContainText("799.00");
+    await expect(plan).toContainText("7,990.00");
+    await expect(plan).toContainText("1,598.00");
+    await expect(plan).toContainText("sin cargo por empleado");
     await expect(
       page.getByRole("combobox", { name: "Moneda", exact: true }),
     ).toBeDisabled();
@@ -204,6 +209,8 @@ test("restaurant configuration persists and English labels remain usable", async
       page.getByLabel("Cierre del día de negocio", { exact: true }),
     ).toHaveValue("05:30");
     await page.getByRole("button", { name: "ES", exact: true }).click();
+    await expect(page.getByRole("region", { name: "Plan and subscription" }))
+      .toContainText("annually, paid upfront");
     await expect(
       page.getByRole("heading", { name: "Restaurant details", exact: true }),
     ).toBeVisible();

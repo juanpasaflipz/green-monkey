@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 async function login(page: any) {
-  await page.goto("/");
+  await page.goto("/app");
   await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
   await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await expect(

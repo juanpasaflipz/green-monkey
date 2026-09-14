@@ -4,7 +4,7 @@ This is an in-progress implementation, not release approval. Required features r
 
 | Capability | Status | Implemented / remaining | External dependency |
 | --- | --- | --- | --- |
-| Owner login, employee PIN, permissions | pending | Owner/password and employee PIN endpoints; signed device cookies; server roles. Organization memberships/switching still pending. | — |
+| Owner login, employee PIN, permissions | pending | Owner/password and employee PIN endpoints; signed device cookies; server roles. Google owner identity, explicit membership, Free restaurant signup/entry and logout implemented and tested locally with synthetic identity. Real Google staging verification, invitations/account linking and organization switching remain pending. | — |
 | Restaurants/organizations, branding | pending | Owner restaurant settings (name, timezone, cutoff, opening days), currency lock and receipt snapshots implemented. Organization membership/switching and asset branding pending. | — |
 | Catalog/categories/search/photos | pending | Search, categories, bilingual product names, availability, menu editor; image assets not implemented. | — |
 | Modifiers, combos, open amount | pending | Required modifier groups and authoritative prices. Combo slots and open-amount UI pending. | — |
@@ -45,12 +45,22 @@ This is an in-progress implementation, not release approval. Required features r
 
 ## Verified subsets
 
+- Google sign-in: staging OAuth client created; server exchange/token validation,
+  durable attempts, mounted callbacks, owner accounts, membership and Free signup
+  tested locally. Real Google end-to-end staging login remains pending. See PLANS_AND_SIGNUP.md.
+
 - Pinned reference downloads match every file hash in the source manifest.
 - Domain unit tests: exact decimal money, remainder allocation, modifier constraints, unit conversion, business cutoff/DST/leap day, state progression, finance and forecast arithmetic.
 - Isolated PostgreSQL tests: RLS, tenant FKs, same-key concurrency, changed payload rejection, payment overcollection prevention, rollback/context reset, immutable tenders, last-portion contention, import rerun without operational side effects.
 - Browser evidence is tracked in RELEASE_REPORT.md; passing subsets do not imply every acceptance criterion is satisfied.
 
 ## External blockers
+
+- Approved Pro pricing and bilingual display are implemented: MXN 799/month or
+  MXN 7,990/year per location. Sandbox catalog provisioning is locally tested but
+  verified against a dedicated Stripe sandbox, including an idempotent rerun. Trial,
+  Checkout, portal and subscription webhook implementation remain pending;
+  approving the offer does not activate billing.
 
 - Separate Neon staging/test databases and Railway staging are provisioned. Seventeen Neon integration checks and a live cash/KDS/receipt browser smoke passed; [STAGING.md](STAGING.md) records targets and evidence. Staging restore/rollback, broader cloud acceptance and provider checks remain pending.
 - No approved legacy exports/schema metadata: historical mapping, totals reconciliation and migration rehearsal remain pending. The Luma ZIP is not a database backup.

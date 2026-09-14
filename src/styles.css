@@ -947,13 +947,39 @@ th {
   padding: 24px;
   margin: auto;
 }
-.login-form > .button {
+.login-form > form > .button {
   width: 100%;
   margin-top: 16px;
 }
-.login-form > .muted {
+.login-form > form > .muted {
   font-size: 12px;
   margin-top: 30px;
+}
+.owner-access {
+  margin-bottom: 24px;
+}
+.owner-access:empty {
+  display: none;
+}
+.owner-access .button {
+  min-height: 48px;
+}
+.owner-access summary {
+  min-height: 48px;
+  padding: 14px 0;
+  cursor: pointer;
+  font-weight: 600;
+}
+.owner-access fieldset {
+  border: 1px solid var(--border);
+  padding: 12px;
+  margin: 16px 0;
+}
+.opening-day {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
 }
 .login-grid {
   display: flex;
@@ -1417,4 +1443,45 @@ dialog.has-footer[open] {
 }
 .modal-footer strong {
   font-size: 24px;
+}
+
+/* Approved brand artwork: preserve the source image and its transparent padding. */
+.brand-logo {
+  position: relative;
+  flex-shrink: 0;
+  width: 200px;
+  height: 60px;
+  overflow: hidden;
+}
+.brand-logo img {
+  display: block;
+  position: absolute;
+  width: 200px;
+  max-width: none;
+  height: auto;
+  top: -4px;
+  left: 0;
+}
+.brand:has(.brand-logo),
+.gm-logo:has(.brand-logo) {
+  flex-shrink: 0;
+  min-height: 48px;
+}
+@media (max-width: 800px) {
+  .topbar .brand-logo {
+    width: 48px;
+  }
+  .topbar .brand-logo img {
+    left: -5px;
+  }
+}
+@media (max-width: 520px) {
+  .gm-site .brand-logo {
+    width: 144px;
+    height: 48px;
+  }
+  .gm-site .brand-logo img {
+    width: 144px;
+    top: 0;
+  }
 }
