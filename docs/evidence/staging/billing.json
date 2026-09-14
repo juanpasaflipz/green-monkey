@@ -1,0 +1,13 @@
+{
+  "checkedAt": "2026-09-14T20:22:02.974Z",
+  "tenantId": "6144bf19-6d1a-4bc9-aab7-4ffeb6ee0cd5",
+  "subscriptionId": "sub_1UFgHjFYpuQNRtU1eO9TRIgE",
+  "trialEnd": "2026-09-28T20:15:27.000Z",
+  "trialVerified": true,
+  "portalPreservedTrial": true,
+  "portalCardVerified": true,
+  "pendingOperationSurvivedRestart": true,
+  "cancellationToFree": true,
+  "processedEventCount": 4,
+  "livePayments": false
+}

@@ -2,9 +2,11 @@
 
 Active work: user requested finishing billing (item 1), then multi-location (2),
 Free limits (3), offline recovery (4), and production qualification (5), in order.
-Read the newest section of `docs/BILLING_IMPLEMENTATION.md`. There is now
-intentional uncommitted billing implementation; preserve it. Real sandbox trial
-and hosted-session checks passed. Staging billing is not enabled yet.
+Item 1 core sandbox billing is now qualified on staging at commit `fc939bc`.
+Read the newest section of `docs/BILLING_IMPLEMENTATION.md`. Real signup/trial,
+paid Checkout, Portal card setup without a second subscription, signed webhooks,
+restart recovery and cancellation to Free passed. Production/live billing is not
+qualified. Item 2 (locations/invitations/switching) is the next active work.
 
 Latest continuation: read `docs/TENANCY_QUALIFICATION.md`. Staging now serves
 `0fbc3e9`, with migrations through 010 and Google configured. Real owner Google

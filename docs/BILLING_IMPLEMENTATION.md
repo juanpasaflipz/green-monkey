@@ -1,4 +1,27 @@
-# Active continuation — September 14, 2026
+# Sandbox billing qualification — September 14, 2026
+
+**Item 1 core sandbox flow is qualified on staging.** Deployment
+`d0178bd6-4861-43e1-8699-e4056e6d5587` serves commit
+`fc939bcded08c5d5992a3e48096e3210a99e2659`; migrations through 013 and restricted
+billing credentials are installed. Real deployed signup created a no-card trial,
+Pro access, and processed signed Stripe events. Adding a test card through Portal
+kept the subscription and trial end unchanged. Railway logs confirm restart;
+a previously queued operation completed afterward. Canonical cancellation and its
+webhook returned the restaurant to Free. Evidence: `evidence/staging/billing.json`
+and `evidence/staging/billing-restart.json`. The synthetic fixture is retained.
+
+This qualifies sandbox behavior, not live billing, tax configuration, production
+release, or additional billed locations. Live keys are rejected. In-app trial
+reminders work during the final three days; email requires a verified sender.
+Uncertain creation operations older than 23 hours stop in `review` so Stripe's
+finite idempotency retention cannot cause duplicate subscriptions. An operator
+must reconcile those provider objects before changing their state; never generate
+a fresh creation key to bypass review. No live customers were charged.
+
+The continuation is now item 2: multi-location creation, invitations and switching.
+The implementation checkpoint below is historical.
+
+## Earlier implementation checkpoint
 
 Item 1 is in progress. New local implementation includes migrations 011–013,
 organization billing/location bindings, immutable durable operations, retry leases,

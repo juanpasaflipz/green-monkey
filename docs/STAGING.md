@@ -1,5 +1,11 @@
 # Staging operation and verification
 
+Latest billing qualification: deployment `d0178bd6-4861-43e1-8699-e4056e6d5587`
+serves `fc939bc`, with migrations through 013 and sandbox billing enabled.
+See [billing evidence](BILLING_IMPLEMENTATION.md). The pre-billing backup is
+private at `work/billing/staging-before-billing.dump`. Staging restart and durable
+queued-operation recovery passed; this is not a full restore/rollback rehearsal.
+
 Latest qualification, September 14: deployment
 `46cca000-9810-4451-a0fd-84c1d2e92855` serves `0fbc3e9`, with migrations 001–010
 and saved Google staging credentials. Real Google signup/entry/return and 13
