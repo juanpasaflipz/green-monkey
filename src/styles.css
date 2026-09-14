@@ -285,6 +285,8 @@ small,
   gap: 6px;
 }
 .connection {
+  min-width: 48px;
+  justify-content: center;
   display: flex;
   align-items: center;
   gap: 7px;

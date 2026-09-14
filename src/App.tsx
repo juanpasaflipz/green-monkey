@@ -243,6 +243,7 @@ export default function App() {
         <div className="top-actions">
           <button
             className={`connection ${online ? "" : "warning"}`}
+            aria-label={`${t(online ? "connected" : "offline")}${queued > 0 ? ` · ${queued}` : ""}`}
             onClick={() => setView("sync")}
           >
             {online ? <Wifi size={16} /> : <WifiOff size={16} />}
