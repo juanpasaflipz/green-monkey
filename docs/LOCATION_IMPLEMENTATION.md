@@ -1,8 +1,13 @@
 # Locations, invitations and switching
 
-Item 2 continuation, September 14, 2026. Local implementation and isolated Neon
-tests pass; staging rollout and deployed qualification are next. Item 1 remains
-qualified on staging. This is not production or live billing approval.
+Item 2 is qualified on staging, September 14, 2026. Deployment
+`b6989aa9-b027-44ac-a8dc-206173812c60` serves commit
+`55badcd92f83cbc5149159969889a33303d0b72a`. `/api/version` and health passed.
+The deployed synthetic check passed trial creation, quantity two at the unchanged
+trial end, explicit/duplicate confirmation, pending entry denial, switching,
+device reuse, stale-tab rejection, manager invitation and guest billing denial.
+Cancellation returned both locations to Free. Evidence:
+`evidence/staging/locations.json`. This is not production or live billing approval.
 
 Owners can open account management, create an additional location in their
 organization, obtain a billing quote and explicitly confirm its immediate amount
@@ -15,7 +20,7 @@ Migrations 014 and 015 add pending activation, immutable location commands,
 email-bound invitations, persistent browser device mappings and durable quote,
 update and watcher operations. They are applied to local dev/test, Neon test and
 staging. Staging was backed up first to the private mode-0600 file
-`work/locations/staging-before-locations.dump`; the new application is pending rollout.
+`work/locations/staging-before-locations.dump`; the new application is deployed.
 Billing remains sandbox-only. The restricted billing worker alone can activate
 locations and project entitlements. Every billed location shares the organization
 subscription; any billed location can open its Portal.
@@ -53,6 +58,6 @@ plus accessibility scans. The provider proof is separate from mocked UI quotes.
 `tests/staging-locations.ts` prepares the explicit staging-only HTTP/provider check
 with synthetic identities and retained audit fixtures. It must not target live data.
 
-Remaining sequence: deploy and qualify item 2, then complete Free limits (3),
+Remaining sequence: complete Free limits (3),
 offline recovery (4), and production qualification (5). Free team/register limits
 and production infrastructure/provider prerequisites are not qualified here.

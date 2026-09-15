@@ -1,5 +1,11 @@
 # Multi-tenant signup qualification — September 14, 2026
 
+Latest: item 2 locations, billing quantity, invitations and switching also pass on
+staging at `55badcd`, with migrations through 015. See
+`LOCATION_IMPLEMENTATION.md` and `evidence/staging/locations.json`. The earlier
+single-location qualification below remains historical evidence. Free limits and
+broader production qualification are still unfinished.
+
 **PASS for the scoped staging flow: Google owner login → create one Free
 restaurant → authorized POS access → logout and return.** This is not full
 production release approval, multi-location qualification or billing acceptance.
