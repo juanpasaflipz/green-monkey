@@ -2,6 +2,10 @@
 
 Active work: user requested finishing billing (item 1), then multi-location (2),
 Free limits (3), offline recovery (4), and production qualification (5), in order.
+Latest item 2 checkpoint: read `docs/LOCATION_IMPLEMENTATION.md`. Additional
+locations, quantity billing, invitations and switching are implemented locally;
+Neon test migrations through 015 and targeted tests pass. Staging rollout remains
+next. Preserve the work and use the newest checkpoint over historical text below.
 Item 1 core sandbox billing is now qualified on staging at commit `fc939bc`.
 Read the newest section of `docs/BILLING_IMPLEMENTATION.md`. Real signup/trial,
 paid Checkout, Portal card setup without a second subscription, signed webhooks,

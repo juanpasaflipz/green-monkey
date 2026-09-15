@@ -36,6 +36,13 @@ export async function cacheSession(s: Session, catalog: Product[]) {
 }
 export async function syncPending(s: Session, force = false) {
   return navigator.locks.request(
+    "green-monkey-session-transition",
+    { mode: "shared" },
+    () => syncScopedPending(s, force),
+  );
+}
+async function syncScopedPending(s: Session, force = false) {
+  return navigator.locks.request(
     "green-monkey-sync:" + scope(s),
     { ifAvailable: !force },
     async (lock) => {
@@ -73,8 +80,36 @@ export async function syncPending(s: Session, force = false) {
               Math.min(300000, 2000 * 2 ** Math.min(row.attempts, 8)),
             error: code,
           });
+          if (code === "session_changed") return;
         }
       }
+    },
+  );
+}
+
+export async function changeRestaurant<T>(
+  tenantId: string,
+  command: () => Promise<T>,
+) {
+  if (!navigator.onLine) throw Error("switch_requires_connection");
+  return navigator.locks.request(
+    "green-monkey-session-transition",
+    async () => {
+      const pending = await db.pending.toArray();
+      const attempts = await db.cache.toArray();
+      if (
+        pending.some(
+          (p) => p.status !== "synced" && !p.scope.startsWith(tenantId + ":"),
+        ) ||
+        attempts.some(
+          (a) => a.id.endsWith(":payment") && !a.id.startsWith(tenantId + ":"),
+        )
+      )
+        throw Error("pending_before_switch");
+      const result = await command();
+      await db.cache.delete("session");
+      localStorage.setItem("gm-session-generation", crypto.randomUUID());
+      return result;
     },
   );
 }

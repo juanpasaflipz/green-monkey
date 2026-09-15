@@ -148,6 +148,39 @@ export async function billingRuntime(
       next(error);
     }
   });
+  routes.post("/locations/quote", async (req, res, next) => {
+    try {
+      const p = z.object({ tenantId: z.uuid() }).strict().parse(req.body);
+      const account = await withOwner(
+        appSql,
+        req.cookies.gm_account ?? "",
+        req.get("x-csrf-token") ?? "",
+        async (_tx, a) => a.id,
+      );
+      res.status(202).json(await store.quoteLocation(account, p.tenantId));
+      tick();
+    } catch (error) {
+      next(error);
+    }
+  });
+  routes.post("/locations/confirm", async (req, res, next) => {
+    try {
+      const p = z
+        .object({ quoteId: z.uuid(), consent: z.literal(true) })
+        .strict()
+        .parse(req.body);
+      const account = await withOwner(
+        appSql,
+        req.cookies.gm_account ?? "",
+        req.get("x-csrf-token") ?? "",
+        async (_tx, a) => a.id,
+      );
+      res.status(202).json(await store.confirmLocation(account, p.quoteId));
+      tick();
+    } catch (error) {
+      next(error);
+    }
+  });
   return {
     routes,
     webhook,

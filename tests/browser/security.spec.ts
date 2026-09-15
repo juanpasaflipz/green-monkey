@@ -10,7 +10,6 @@ test("device PIN, server permission, CSRF and public capability isolation", asyn
   ).toBeVisible();
   const result = await page.evaluate(async () => {
     const s = await (await fetch("/api/session")).json();
-    const cat = await (await fetch("/api/catalog")).json();
     const csrf = await fetch("/api/cash/open", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -73,7 +72,7 @@ test("device PIN, server permission, CSRF and public capability isolation", asyn
     });
     return {
       csrf: csrf.status,
-      scope: wrongTenant[0].id === cat[0].id,
+      scope: wrongTenant.error === "session_changed",
       costLeak: "cost" in publicCatalog.catalog[0],
       recipeLeak: "recipe" in publicCatalog.catalog[0],
       crossPublic: badProduct.status,

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { Button } from "../components/ui";
+import { PRO_OFFER } from "../../shared/plans";
 type Status = {
   enabled: boolean;
   hostedUrl?: string | null;
@@ -8,6 +9,7 @@ type Status = {
     trial_used: boolean;
     has_subscription: boolean;
     interval: "month" | "year";
+    locations?: number;
   } | null;
   operation?: { kind: string; state: string } | null;
   entitlement?: { status: string; access_until: string | null } | null;
@@ -163,6 +165,31 @@ export function BillingControls({
                 </option>
               </select>
             </label>
+          )}
+          {!hasSubscription && (status.billing?.locations ?? 1) > 1 && (
+            <p>
+              {es ? "Total de la organización: " : "Organization total: "}
+              {new Intl.NumberFormat(es ? "es-MX" : "en-US", {
+                style: "currency",
+                currency: "MXN",
+              }).format(
+                (status.billing!.locations! *
+                  (interval === "year"
+                    ? PRO_OFFER.annualMinor
+                    : PRO_OFFER.monthlyMinor)) /
+                  100,
+              )}
+              {interval === "year"
+                ? es
+                  ? "/año"
+                  : "/year"
+                : es
+                  ? "/mes"
+                  : "/month"}
+              {es
+                ? ` por ${status.billing!.locations} sucursales, antes de impuestos.`
+                : ` for ${status.billing!.locations} locations, before taxes.`}
+            </p>
           )}
           <label className="opening-day">
             <input

@@ -152,12 +152,144 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
       .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
       .analyze();
     expect(billingAxe.violations).toEqual([]);
+    await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source) values(${account.restaurants[0].id},'active',now()+interval '1 day','fixture')`;
+    await page.route("**/api/auth/providers", (route) =>
+      route.fulfill({ json: { google: true, billingSandbox: true } }),
+    );
+    await page.unroute("**/api/billing/status?*");
+    let locationQuoteTenant = "";
+    let locationConfirmed = false;
+    const quoteId = randomUUID();
+    await page.route("**/api/billing/status?*", (route) =>
+      route.fulfill({
+        json: {
+          enabled: true,
+          hostedUrl: null,
+          billing: { interval: "month" },
+          operation: locationQuoteTenant
+            ? {
+                id: quoteId,
+                tenant_id: locationQuoteTenant,
+                kind: locationConfirmed ? "location_update" : "location_quote",
+                state: locationConfirmed ? "pending" : "succeeded",
+                result: {
+                  amountDue: 39950,
+                  locations: 2,
+                  expiresAt: Math.floor(Date.now() / 1000) + 600,
+                  trialEnd: null,
+                },
+              }
+            : null,
+        },
+      }),
+    );
+    await page.route("**/api/billing/locations/quote", (route) => {
+      locationQuoteTenant = route.request().postDataJSON().tenantId;
+      return route.fulfill({ status: 202, json: { operationId: quoteId } });
+    });
+    await page.route("**/api/billing/locations/confirm", (route) => {
+      expect(route.request().postDataJSON()).toEqual({
+        quoteId,
+        consent: true,
+      });
+      locationConfirmed = true;
+      return route.fulfill({
+        status: 202,
+        json: { operationId: randomUUID() },
+      });
+    });
+    await page.goto("/app?account=1");
+    await page
+      .getByText("Manage locations and access", { exact: true })
+      .click();
+    await page
+      .getByLabel("Google email", { exact: true })
+      .fill("colleague@example.com");
+    await page
+      .getByRole("button", { name: "Create link", exact: true })
+      .click();
+    await expect(
+      page.getByLabel("Invitation link — copy and share", { exact: true }),
+    ).toHaveValue(/#invite=/);
+    await page
+      .getByRole("button", { name: "Revoke link", exact: true })
+      .click();
+    await expect(page.getByText("Revoked", { exact: true })).toBeVisible();
+    await page
+      .getByLabel("New location name", { exact: true })
+      .fill("Second test location");
+    await page
+      .getByRole("button", { name: "Create pending location", exact: true })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Activation pending", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("heading", { name: "Activate location", exact: true }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Get quote", exact: true }).click();
+    await expect(page.getByText(/Amount now:.*399\.50/)).toBeVisible();
+    await expect(
+      page.getByText(/New recurring total:.*1,598\.00/),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Confirm activation", exact: true }),
+    ).toBeDisabled();
+    await page
+      .getByRole("checkbox", {
+        name: "I accept the quoted amount and the new total for my organization’s locations.",
+        exact: true,
+      })
+      .check();
+    await page
+      .getByRole("button", { name: "Confirm activation", exact: true })
+      .click();
+    await expect.poll(() => locationConfirmed).toBe(true);
+    const managementAxe = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(managementAxe.violations).toEqual([]);
+    await page.screenshot({
+      path: "docs/evidence/owner-locations.png",
+      fullPage: true,
+    });
+    await page.getByRole("button", { name: "Enter", exact: true }).click();
+    await expect(page.locator(".scope")).toContainText("Restaurante de prueba");
+    const [devices] =
+      await admin`select count(*)::int as n from devices where tenant_id=${account.restaurants[0].id}`;
+    expect(devices.n).toBe(1);
+    const staleTab = await context.newPage();
+    await staleTab.goto("/app");
+    await expect(staleTab.locator(".scope")).toContainText(
+      "Restaurante de prueba",
+    );
+    const second =
+      await admin`select r.id from restaurants r join owner_memberships m on m.tenant_id=r.id where m.account_id=${accountId} and r.activation_pending`;
+    // Canonical billing activation is covered by provider + DB tests above.
+    await admin`update restaurants set activation_pending=false where id=${second[0].id}`;
+    await page.goto("/app?account=1");
+    await page
+      .locator(".row.between")
+      .filter({ hasText: "Second test location" })
+      .getByRole("button", { name: "Enter", exact: true })
+      .click();
+    await expect(page.locator(".scope")).toContainText("Second test location");
+    await expect(
+      staleTab.getByText(
+        "The session changed in another tab. Reload to continue in the active restaurant.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await staleTab.close();
+    await page.goto("/app?account=1");
     const loggedOut = page.waitForResponse(
       (response) =>
-        response.url().endsWith("/api/logout") &&
+        response.url().endsWith("/api/auth/account/logout") &&
         response.request().method() === "POST",
     );
-    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Sign out of account", exact: true })
+      .click();
     expect((await loggedOut).status()).toBe(200);
     expect((await page.request.get("/api/auth/account")).status()).toBe(401);
     expect((await page.request.get("/api/session")).status()).toBe(401);
@@ -166,8 +298,12 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
       await admin`select tenant_id from owner_memberships where account_id=${accountId}`;
     for (const { tenant_id } of tenants) {
       await admin`delete from signup_billing_intents where tenant_id=${tenant_id}`;
+      await admin`delete from restaurant_invitations where tenant_id=${tenant_id}`;
+      await admin`delete from owner_location_commands where tenant_id=${tenant_id}`;
+      await admin`delete from restaurant_entitlements where tenant_id=${tenant_id}`;
       await admin`delete from audit where tenant_id=${tenant_id}`;
       await admin`delete from sessions where tenant_id=${tenant_id}`;
+      await admin`delete from owner_browser_devices where tenant_id=${tenant_id}`;
       await admin`delete from devices where tenant_id=${tenant_id}`;
       await admin`delete from owner_memberships where tenant_id=${tenant_id}`;
       await admin`delete from employees where tenant_id=${tenant_id}`;

@@ -1,16 +1,22 @@
 import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { Button, Field } from "../components/ui";
+import { changeRestaurant, db } from "../offline";
+import { clearSessionScope } from "../api";
+import { OwnerManagement } from "./OwnerManagement";
 
 type Account = {
   name: string;
   email: string;
   csrf: string;
+  organizations: { id: string; name: string }[];
   restaurants: {
     id: string;
     name: string;
     currency: string;
     timezone: string;
+    activation_pending: boolean;
+    organization_id: string;
   }[];
 };
 const copy = {
@@ -93,6 +99,15 @@ export function OwnerAccess({
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [invalid, setInvalid] = useState(false);
+  const [transitionError, setTransitionError] = useState("");
+  const [invitation, setInvitation] = useState(() => {
+    const token = new URLSearchParams(location.hash.slice(1)).get("invite");
+    if (token) {
+      sessionStorage.setItem("gm-invitation", token);
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    return token ?? sessionStorage.getItem("gm-invitation") ?? "";
+  });
   const [authError] = useState(
     new URLSearchParams(location.search).has("auth_error"),
   );
@@ -142,11 +157,21 @@ export function OwnerAccess({
   }
   async function enter(tenantId: string) {
     setBusy(true);
+    setTransitionError("");
     setFailed(false);
     try {
-      await command("enter", { tenantId });
+      await changeRestaurant(tenantId, () => command("enter", { tenantId }));
       await onReady();
-    } catch {
+    } catch (error) {
+      setTransitionError(
+        (error as Error).message === "pending_before_switch"
+          ? locale === "es"
+            ? "Sincroniza o resuelve las ventas pendientes antes de cambiar de restaurante."
+            : "Sync or resolve pending sales before switching restaurants."
+          : locale === "es"
+            ? "No se pudo entrar. Revisa la conexión y la activación de la sucursal."
+            : "Could not enter. Check your connection and location activation.",
+      );
       setFailed(true);
     } finally {
       setBusy(false);
@@ -166,6 +191,7 @@ export function OwnerAccess({
           <Button onClick={() => void refresh()}>{t.retry}</Button>
         </div>
       )}
+      {transitionError && <p role="alert">{transitionError}</p>}
       {!account && google && (
         <a className="button full" href="/api/auth/google/start">
           {t.google}
@@ -175,6 +201,33 @@ export function OwnerAccess({
         <>
           <h2>{t.title}</h2>
           <p>{account.email}</p>
+          {invitation && (
+            <div className="panel">
+              <p>
+                {locale === "es"
+                  ? "Tienes una invitación. Acéptala con la cuenta de Google que recibió el enlace."
+                  : "You have an invitation. Accept with the Google account the link was intended for."}
+              </p>
+              <Button
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  try {
+                    await command("invitations/accept", { token: invitation });
+                    sessionStorage.removeItem("gm-invitation");
+                    setInvitation("");
+                    await refresh();
+                  } catch {
+                    setFailed(true);
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {locale === "es" ? "Aceptar invitación" : "Accept invitation"}
+              </Button>
+            </div>
+          )}
           {account.restaurants.map((r) => (
             <div className="row between" key={r.id}>
               <div>
@@ -184,15 +237,30 @@ export function OwnerAccess({
                 </p>
               </div>
               <Button
-                disabled={busy}
+                disabled={busy || r.activation_pending}
                 variant="primary"
                 onClick={() => void enter(r.id)}
               >
-                {t.enter}
+                {r.activation_pending
+                  ? locale === "es"
+                    ? "Activación pendiente"
+                    : "Activation pending"
+                  : t.enter}
               </Button>
             </div>
           ))}
-          {!account.restaurants.length && (
+          {!!account.organizations?.length && (
+            <OwnerManagement
+              locale={locale}
+              csrf={account.csrf}
+              restaurants={account.restaurants.filter((r) =>
+                account.organizations.some((o) => o.id === r.organization_id),
+              )}
+              billingSandbox={billingSandbox}
+              refresh={refresh}
+            />
+          )}
+          {!account.organizations?.length && (
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
@@ -302,8 +370,15 @@ export function OwnerAccess({
               setBusy(true);
               try {
                 await command("logout", {});
+                clearSessionScope();
+                await db.cache.delete("session");
+                localStorage.setItem(
+                  "gm-session-generation",
+                  crypto.randomUUID(),
+                );
                 setAccount(null);
                 onAccount(false);
+                await onReady();
               } catch {
                 setFailed(true);
               } finally {

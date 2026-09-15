@@ -50,6 +50,14 @@ export function authentication(sql: postgres.Sql) {
     try {
       const c = verify(req.cookies.gm_session ?? "");
       const device = verify(req.cookies.gm_device ?? "");
+      if (c.tenantId !== device.tenantId)
+        throw new DomainError("unauthorized", 401);
+      if (
+        (req.headers["x-tenant-id"] &&
+          req.headers["x-tenant-id"] !== c.tenantId) ||
+        (req.headers["x-session-id"] && req.headers["x-session-id"] !== c.id)
+      )
+        throw new DomainError("session_changed", 409);
       const session = await tenant(sql, c.tenantId, async (tx) => {
         const [s] =
           await tx`select s.*,e.name,e.role,r.name as restaurant_name,r.currency,r.timezone,r.cutoff from sessions s join employees e on e.tenant_id=s.tenant_id and e.id=s.employee_id join devices d on d.tenant_id=s.tenant_id and d.id=s.device_id join restaurants r on r.id=s.tenant_id where s.id=${c.id} and s.token_hash=${hash(c.token)} and not s.revoked and s.expires_at>now() and e.active and d.active and d.id=${device.id} and d.token_hash=${hash(device.token)}`;

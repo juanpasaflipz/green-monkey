@@ -80,7 +80,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", async (_req, res, next) => {
   try {
     const ready =
-      await sql`select name from schema_migrations where name='013_billing_location_identity.sql'`;
+      await sql`select name from schema_migrations where name='015_location_billing_operations.sql'`;
     if (!ready.length) throw new DomainError("schema_not_ready", 503);
     res.json({ ok: true });
   } catch (e) {

@@ -17,8 +17,54 @@ export async function billingTick(
       organizationId: op.organization_id as string,
       customerId: op.binding.customer_id as string,
     };
+    const subscriptionBinding: SubscriptionBinding = {
+      ...scope,
+      subscriptionId: op.binding.subscription_id,
+      interval: op.binding.interval,
+      locations: op.locations,
+    };
     let result: Record<string, unknown>;
-    if (op.kind === "customer")
+    if (op.kind === "location_quote")
+      result =
+        op.payload.prorationDate! < Math.floor(Date.now() / 1000) - 600
+          ? { expired: true }
+          : await provider.quoteLocation(
+              subscriptionBinding,
+              op.payload.prorationDate!,
+              op.id,
+            );
+    else if (op.kind === "location_update")
+      result = await provider.updateLocation(
+        subscriptionBinding,
+        op.payload.quote!,
+        op.id,
+      );
+    else if (op.kind === "location_watch") {
+      const update = await provider.readLocationUpdate(
+        subscriptionBinding,
+        op.payload.quote!,
+        op.payload.mutationId!,
+        op.payload.invoiceId,
+      );
+      if (update.state === "pending") {
+        await store.defer(op.id, op.lease_token, { url: update.url });
+        return true;
+      }
+      if (update.state === "expired") result = { expired: true };
+      else {
+        const entitlement = await provider.readSubscription({
+          ...subscriptionBinding,
+          locations: op.payload.quote!.locations,
+        });
+        await store.complete(
+          op.id,
+          op.lease_token,
+          { applied: true },
+          entitlement,
+        );
+        return true;
+      }
+    } else if (op.kind === "customer")
       result = await provider.createCustomer(scope.organizationId, op.id);
     else if (op.kind === "trial")
       result = await provider.createTrial(scope, op.payload.interval, op.id);

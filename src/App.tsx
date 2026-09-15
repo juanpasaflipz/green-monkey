@@ -17,7 +17,7 @@ import {
 } from "lucide-react";
 import type { Session, Locale, Product } from "../shared/domain";
 import { strings, translateError, type Key } from "./i18n";
-import { api, setSession } from "./api";
+import { api, setSession, clearSessionScope } from "./api";
 import { db, cacheSession, scope, syncPending } from "./offline";
 import { Button, Field } from "./components/ui";
 import { Selling } from "./features/Selling";
@@ -35,13 +35,18 @@ export default function App() {
   const [error, setError] = useState("");
   const [queued, setQueued] = useState(0);
   const [ownerAccess, setOwnerAccess] = useState(false);
+  const [showAccount, setShowAccount] = useState(
+    new URLSearchParams(location.search).has("account") ||
+      location.hash.startsWith("#invite="),
+  );
+  const [sessionChanged, setSessionChanged] = useState(false);
   const t = (key: Key) => strings[locale][key];
   async function load(resetView = true) {
     try {
       const s = await api<Session>("/session");
       setSession(s);
-      setActiveSession(s);
       const c = await api<Product[]>("/catalog");
+      setActiveSession(s);
       setCatalog(c);
       await cacheSession(s, c);
       if (resetView)
@@ -53,6 +58,8 @@ export default function App() {
               : "sell",
         );
     } catch {
+      setActiveSession(null);
+      setCatalog([]);
       if (!navigator.onLine) {
         const cached = await db.cache.get("session");
         if (cached && new Date(cached.value.offlineUntil) > new Date()) {
@@ -69,6 +76,12 @@ export default function App() {
   }
   useEffect(() => {
     void load();
+    const changed = () => setSessionChanged(true);
+    const changedElsewhere = (event: StorageEvent) => {
+      if (event.key === "gm-session-generation") changed();
+    };
+    window.addEventListener("gm-session-changed", changed);
+    window.addEventListener("storage", changedElsewhere);
     const refreshSession = () => void load(false);
     window.addEventListener("gm-session-refresh", refreshSession);
     const on = () => setOnline(navigator.onLine);
@@ -78,21 +91,30 @@ export default function App() {
       window.removeEventListener("gm-session-refresh", refreshSession);
       window.removeEventListener("online", on);
       window.removeEventListener("offline", on);
+      window.removeEventListener("gm-session-changed", changed);
+      window.removeEventListener("storage", changedElsewhere);
     };
   }, []);
   useEffect(() => {
+    let current = true;
     if (view === "sell" && session && online)
-      void api<Product[]>("/catalog").then((c) => {
-        setCatalog(c);
-        void cacheSession(session, c);
-      });
-  }, [view]);
+      void api<Product[]>("/catalog")
+        .then((c) => {
+          if (!current) return;
+          setCatalog(c);
+          void cacheSession(session, c);
+        })
+        .catch(() => {});
+    return () => {
+      current = false;
+    };
+  }, [view, session?.id, online]);
   useEffect(() => {
     document.documentElement.lang = locale;
     localStorage.setItem("gm-locale", locale);
   }, [locale]);
   useEffect(() => {
-    if (!session) return;
+    if (!session || sessionChanged) return;
     const s = session;
     const poll = async () => {
       if (navigator.onLine) await syncPending(s);
@@ -105,14 +127,29 @@ export default function App() {
     void poll();
     const timer = setInterval(() => void poll(), 10000);
     return () => clearInterval(timer);
-  }, [session, online]);
+  }, [session, online, sessionChanged]);
   if (loading)
     return (
       <div className="login">
         <p>{t("loading")}</p>
       </div>
     );
-  if (!session)
+  if (sessionChanged)
+    return (
+      <div className="login">
+        <div className="login-form">
+          <p role="alert">
+            {locale === "es"
+              ? "La sesión cambió en otra pestaña. Recarga para continuar en el restaurante activo."
+              : "The session changed in another tab. Reload to continue in the active restaurant."}
+          </p>
+          <Button onClick={() => location.reload()}>
+            {locale === "es" ? "Recargar" : "Reload"}
+          </Button>
+        </div>
+      </div>
+    );
+  if (!session || showAccount)
     return (
       <div className="login">
         <div className="login-art">
@@ -129,6 +166,11 @@ export default function App() {
           </div>
         </div>
         <div className="login-form">
+          {session && (
+            <Button onClick={() => setShowAccount(false)}>
+              {locale === "es" ? "Volver al restaurante" : "Back to restaurant"}
+            </Button>
+          )}
           {ownerAccess && (
             <Button onClick={() => setLocale(locale === "es" ? "en" : "es")}>
               {locale === "es" ? "English" : "Español"}
@@ -136,7 +178,15 @@ export default function App() {
           )}
           <OwnerAccess
             locale={locale}
-            onReady={load}
+            onReady={async () => {
+              clearSessionScope();
+              setActiveSession(null);
+              setCatalog([]);
+              setLoading(true);
+              setShowAccount(false);
+              history.replaceState(null, "", "/app");
+              await load();
+            }}
             onAccount={setOwnerAccess}
           />
           <form
@@ -241,6 +291,16 @@ export default function App() {
           </span>
         </div>
         <div className="top-actions">
+          {management && (
+            <Button
+              aria-label={
+                locale === "es" ? "Cambiar restaurante" : "Switch restaurant"
+              }
+              onClick={() => setShowAccount(true)}
+            >
+              <LayoutGrid size={19} />
+            </Button>
+          )}
           <button
             className={`connection ${online ? "" : "warning"}`}
             aria-label={`${t(online ? "connected" : "offline")}${queued > 0 ? ` · ${queued}` : ""}`}
@@ -265,6 +325,11 @@ export default function App() {
               try {
                 await api("/logout", {});
                 await db.cache.delete("session");
+                clearSessionScope();
+                localStorage.setItem(
+                  "gm-session-generation",
+                  crypto.randomUUID(),
+                );
                 setActiveSession(null);
                 setCatalog([]);
               } catch (e) {

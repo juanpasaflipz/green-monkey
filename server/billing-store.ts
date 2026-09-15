@@ -17,6 +17,55 @@ export function billingStore(sql: postgres.Sql) {
   const transaction = <T>(fn: (tx: Tx) => Promise<T>) =>
     sql.begin((raw) => fn(raw as Tx)) as Promise<T>;
   return {
+    async quoteLocation(accountId: string, tenantId: string) {
+      return transaction(async (tx) => {
+        const [r] =
+          await tx`select r.organization_id from restaurants r join organizations o on o.id=r.organization_id where r.id=${tenantId} and r.activation_pending and o.created_by_account=${accountId}`;
+        if (!r) throw new DomainError("forbidden", 403);
+        await tx`select pg_advisory_xact_lock(hashtextextended(${r.organization_id},711))`;
+        const [b] =
+          await tx`select * from organization_billing where organization_id=${r.organization_id}`;
+        if (!b?.subscription_id)
+          throw new DomainError("billing_subscription_required", 409);
+        const [pending] =
+          await tx`select id,kind,payload from billing_operations where organization_id=${r.organization_id} and kind not in ('portal','reconcile') and state in ('pending','running','review')`;
+        if (pending) {
+          if (
+            pending.kind === "location_quote" &&
+            pending.payload.tenantId === tenantId
+          )
+            return { operationId: pending.id };
+          throw new DomainError("billing_request_pending", 409);
+        }
+        const [clock] =
+          await tx`select floor(extract(epoch from now()))::bigint as seconds`;
+        const id = randomUUID();
+        await tx`insert into billing_operations(id,organization_id,kind,payload) values(${id},${r.organization_id},'location_quote',${tx.json({ tenantId, interval: b.interval, prorationDate: Number(clock.seconds) })})`;
+        return { operationId: id };
+      });
+    },
+    async confirmLocation(accountId: string, quoteId: string) {
+      return transaction(async (tx) => {
+        const [quote] =
+          await tx`select op.* from billing_operations op join organizations o on o.id=op.organization_id where op.id=${quoteId} and op.kind='location_quote' and op.state='succeeded' and o.created_by_account=${accountId}`;
+        if (!quote) throw new DomainError("forbidden", 403);
+        if (quote.result?.expired)
+          throw new DomainError("billing_quote_expired", 409);
+        await tx`select pg_advisory_xact_lock(hashtextextended(${quote.organization_id},711))`;
+        const [prior] =
+          await tx`select id from billing_operations where kind='location_update' and payload->>'quoteId'=${quoteId}`;
+        if (prior) return { operationId: prior.id };
+        const [valid] =
+          await tx`select 1 from organization_billing b where b.organization_id=${quote.organization_id} and b.interval=${quote.payload.interval} and (select count(*) from billing_locations l where l.organization_id=b.organization_id)=${quote.result.previousLocations} and to_timestamp(${quote.result.expiresAt})>now()`;
+        if (!valid) throw new DomainError("billing_quote_expired", 409);
+        const [pending] =
+          await tx`select id from billing_operations where organization_id=${quote.organization_id} and kind not in ('portal','reconcile') and state in ('pending','running','review')`;
+        if (pending) throw new DomainError("billing_request_pending", 409);
+        const id = randomUUID();
+        await tx`insert into billing_operations(id,organization_id,kind,payload) values(${id},${quote.organization_id},'location_update',${tx.json({ ...quote.payload, quoteId, quote: quote.result })})`;
+        return { operationId: id };
+      });
+    },
     async request(
       accountId: string,
       tenantId: string,
@@ -25,7 +74,7 @@ export function billingStore(sql: postgres.Sql) {
     ) {
       return transaction(async (tx) => {
         const [restaurant] =
-          await tx`select r.organization_id from restaurants r join organizations o on o.id=r.organization_id where r.id=${tenantId} and o.created_by_account=${accountId}`;
+          await tx`select r.organization_id from restaurants r join organizations o on o.id=r.organization_id where r.id=${tenantId} and not r.activation_pending and o.created_by_account=${accountId}`;
         if (!restaurant) throw new DomainError("forbidden", 403);
         const org = restaurant.organization_id as string;
         await tx`select pg_advisory_xact_lock(hashtextextended(${org},711))`;
@@ -33,7 +82,7 @@ export function billingStore(sql: postgres.Sql) {
         const [billing] =
           await tx`select * from organization_billing where organization_id=${org} for update`;
         const [pending] =
-          await tx`select id,kind,state,payload from billing_operations where organization_id=${org} and state in ('pending','running','review') and kind in ('customer','trial','checkout','checkout_watch')`;
+          await tx`select id,kind,state,payload from billing_operations where organization_id=${org} and state in ('pending','running','review') and kind not in ('portal','reconcile')`;
         if (pending) {
           if (
             pending.payload.next !== kind ||
@@ -54,9 +103,9 @@ export function billingStore(sql: postgres.Sql) {
           throw new DomainError("billing_use_existing_subscription", 409);
         if (kind === "portal" && !billing.customer_id)
           throw new DomainError("billing_customer_pending", 409);
-        const [other] =
-          await tx`select tenant_id from billing_locations where organization_id=${org} and tenant_id<>${tenantId}`;
-        if (other)
+        const [unbound] =
+          await tx`select 1 from billing_locations where organization_id=${org} and not exists(select 1 from billing_locations where organization_id=${org} and tenant_id=${tenantId}) limit 1`;
+        if (unbound)
           throw new DomainError("billing_location_change_required", 409);
         await tx`insert into billing_locations(organization_id,tenant_id) values(${org},${tenantId}) on conflict do nothing`;
         const id = randomUUID();
@@ -70,12 +119,17 @@ export function billingStore(sql: postgres.Sql) {
         await sql`select r.organization_id from restaurants r join organizations o on o.id=r.organization_id where r.id=${tenantId} and o.created_by_account=${accountId}`;
       if (!r) throw new DomainError("forbidden", 403);
       const [billing] =
-        await sql`select trial_used,subscription_id is not null as has_subscription,interval from organization_billing where organization_id=${r.organization_id}`;
+        await sql`select trial_used,subscription_id is not null as has_subscription,interval,(select count(*)::int from billing_locations l where l.organization_id=b.organization_id) as locations from organization_billing b where organization_id=${r.organization_id}`;
       const [operation] =
-        await sql`select kind,state,result,created_at from billing_operations where organization_id=${r.organization_id} and kind<>'reconcile' order by created_at desc,id desc limit 1`;
+        await sql`select id,kind,state,result,payload->>'tenantId' as tenant_id,created_at from billing_operations where organization_id=${r.organization_id} and kind<>'reconcile' order by created_at desc,id desc limit 1`;
       const [entitlement] =
         await sql`select status,access_until from restaurant_entitlements where tenant_id=${tenantId}`;
       let hostedUrl: string | null = null;
+      if (
+        operation?.kind === "location_watch" &&
+        ["pending", "running"].includes(operation.state)
+      )
+        hostedUrl = operation.result?.url ?? null;
       if (
         operation?.kind === "portal" &&
         operation.state === "succeeded" &&
@@ -152,7 +206,7 @@ export function billingStore(sql: postgres.Sql) {
         // Stripe can prune keys after 24h. Uncertain old creations require
         // reconciliation by an operator, never a newly generated retry key.
         const [old] =
-          await tx`select 1 from billing_operations where id=${op.id} and kind not in ('reconcile','checkout_watch') and first_attempt_at<now()-interval '23 hours'`;
+          await tx`select 1 from billing_operations where id=${op.id} and kind not in ('reconcile','checkout_watch','location_quote','location_watch') and first_attempt_at<now()-interval '23 hours'`;
         if (old) {
           await tx`update billing_operations set state='review',lease_until=null where id=${op.id}`;
           return null;
@@ -174,6 +228,10 @@ export function billingStore(sql: postgres.Sql) {
             next: string;
             tenantId: string;
             sessionId?: string;
+            prorationDate?: number;
+            quote?: import("./stripe-billing.js").LocationQuote;
+            mutationId?: string;
+            invoiceId?: string | null;
           },
           lease_token: token,
           first_attempt_at: clock.claimed_at,
@@ -204,6 +262,10 @@ export function billingStore(sql: postgres.Sql) {
         }
         if (op.kind === "checkout")
           await tx`update organization_billing set interval=${op.payload.interval} where organization_id=${op.organization_id}`;
+        if (op.kind === "location_watch" && result.applied) {
+          await tx`insert into billing_locations(organization_id,tenant_id) values(${op.organization_id},${op.payload.tenantId}) on conflict do nothing`;
+          await tx`update restaurants set activation_pending=false where id=${op.payload.tenantId} and organization_id=${op.organization_id}`;
+        }
         if (entitlement) {
           await tx`update organization_billing set version=version+1,updated_at=now() where organization_id=${op.organization_id}`;
           const rows =
@@ -217,6 +279,8 @@ export function billingStore(sql: postgres.Sql) {
         await tx`update billing_operations set state='succeeded',result=${tx.json(result as postgres.JSONValue)},completed_at=now(),lease_until=null where id=${id}`;
         if (op.kind === "checkout")
           await tx`insert into billing_operations(id,organization_id,kind,payload) values(${randomUUID()},${op.organization_id},'checkout_watch',${tx.json({ ...op.payload, sessionId: result.sessionId })})`;
+        if (op.kind === "location_update" && result.submitted)
+          await tx`insert into billing_operations(id,organization_id,kind,payload) values(${randomUUID()},${op.organization_id},'location_watch',${tx.json({ ...op.payload, mutationId: op.id, invoiceId: result.invoiceId })})`;
         if (op.kind === "customer")
           await tx`insert into billing_operations(id,organization_id,kind,payload) values(${randomUUID()},${op.organization_id},${op.payload.next},${tx.json(op.payload)})`;
         if (op.kind === "trial")
@@ -226,6 +290,9 @@ export function billingStore(sql: postgres.Sql) {
     },
     async retry(id: string, token: string) {
       await sql`update billing_operations set state='pending',lease_until=null,available_at=now()+interval '30 seconds' where id=${id} and lease_token=${token} and state='running'`;
+    },
+    async defer(id: string, token: string, result: Record<string, unknown>) {
+      await sql`update billing_operations set state='pending',result=${sql.json(result as postgres.JSONValue)},lease_until=null,available_at=now()+interval '15 seconds' where id=${id} and lease_token=${token} and state='running'`;
     },
   };
 }

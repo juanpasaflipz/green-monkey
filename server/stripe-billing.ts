@@ -17,6 +17,18 @@ const bindingSchema = scopeSchema.extend({
   locations: z.number().int().min(1).max(1000),
 });
 export type SubscriptionBinding = z.infer<typeof bindingSchema>;
+export const locationQuoteSchema = z.object({
+  itemId: providerId("si"),
+  prorationDate: seconds,
+  periodEnd: seconds,
+  previousLocations: z.number().int().positive(),
+  locations: z.number().int().positive(),
+  amountDue: z.number().int().nonnegative(),
+  currency: z.literal("mxn"),
+  expiresAt: seconds,
+  trialEnd: seconds.nullable(),
+});
+export type LocationQuote = z.infer<typeof locationQuoteSchema>;
 const configSchema = z
   .object({
     secretKey: z.string().regex(/^(sk|rk)_test_[A-Za-z0-9]+$/),
@@ -208,7 +220,233 @@ export function stripeSandboxBilling(
       throw Error("stripe_billing_response_mismatch");
     return result;
   }
+  async function quantityState(
+    binding: SubscriptionBinding,
+    locations: number,
+  ) {
+    bindingSchema.parse(binding);
+    z.number()
+      .int()
+      .min(binding.locations)
+      .max(binding.locations + 1)
+      .parse(locations);
+    await checkScope(binding);
+    const raw = await call(`/subscriptions/${binding.subscriptionId}`);
+    const extra = parse(
+      z.object({
+        collection_method: z.literal("charge_automatically"),
+        cancel_at_period_end: z.boolean(),
+        pending_update: z
+          .object({
+            expires_at: seconds,
+            metadata: z.record(z.string(), z.string()).optional(),
+          })
+          .nullable(),
+        latest_invoice: providerId("in").nullable(),
+        metadata: z.record(z.string(), z.string()),
+        items: z.object({
+          data: z
+            .array(
+              z.object({ id: providerId("si"), quantity: z.number().int() }),
+            )
+            .length(1),
+        }),
+      }),
+      raw,
+    );
+    const item = extra.items.data[0];
+    if (![binding.locations, locations].includes(item.quantity))
+      throw Error("stripe_location_quantity_mismatch");
+    const sub = validateSubscription(raw, {
+      ...binding,
+      locations: item.quantity,
+    });
+    return { extra, item, sub };
+  }
+  async function pendingInvoice(
+    scope: BillingScope,
+    subscriptionId: string,
+    invoiceId: string | null,
+  ) {
+    if (!invoiceId) return null;
+    const invoice = parse(
+      z.object({
+        id: z.literal(invoiceId),
+        customer: z.literal(scope.customerId),
+        livemode: z.literal(false),
+        hosted_invoice_url: z.url().nullable(),
+        parent: z.object({
+          type: z.literal("subscription_details"),
+          subscription_details: z.object({
+            subscription: z.literal(subscriptionId),
+          }),
+        }),
+      }),
+      await call(`/invoices/${invoiceId}`),
+    );
+    return invoice.hosted_invoice_url
+      ? hostedUrl(invoice.hosted_invoice_url, "invoice.stripe.com")
+      : null;
+  }
   return {
+    async quoteLocation(
+      binding: SubscriptionBinding,
+      prorationDate: number,
+      operationId: string,
+    ): Promise<LocationQuote> {
+      seconds.parse(prorationDate);
+      const state = await quantityState(binding, binding.locations + 1);
+      if (
+        state.item.quantity !== binding.locations ||
+        state.extra.pending_update ||
+        state.extra.cancel_at_period_end ||
+        !["active", "trialing"].includes(state.sub.status)
+      )
+        throw Error("stripe_location_update_unavailable");
+      const form = new URLSearchParams({
+        subscription: binding.subscriptionId,
+        "subscription_details[items][0][id]": state.item.id,
+        "subscription_details[items][0][quantity]": String(
+          binding.locations + 1,
+        ),
+        "subscription_details[proration_behavior]": "always_invoice",
+        "subscription_details[proration_date]": String(prorationDate),
+      });
+      // No-card trials that cancel without a payment method have no upcoming
+      // invoice to preview. Adding a location preserves the existing free trial.
+      const invoice =
+        state.sub.status === "trialing"
+          ? { amount_due: 0 }
+          : parse(
+              z.object({
+                amount_due: z.number().int().nonnegative(),
+                currency: z.literal("mxn"),
+                customer: z.literal(binding.customerId),
+              }),
+              await call(
+                "/invoices/create_preview",
+                form,
+                operationKey(
+                  "location-quote",
+                  binding.organizationId,
+                  operationId,
+                ),
+              ),
+            );
+      return {
+        itemId: state.item.id,
+        prorationDate,
+        periodEnd: state.sub.items.data[0].current_period_end,
+        previousLocations: binding.locations,
+        locations: binding.locations + 1,
+        amountDue: state.sub.status === "trialing" ? 0 : invoice.amount_due,
+        currency: "mxn",
+        expiresAt: Math.floor(Date.now() / 1000) + 600,
+        trialEnd: state.sub.status === "trialing" ? state.sub.trial_end : null,
+      };
+    },
+    async updateLocation(
+      binding: SubscriptionBinding,
+      quote: LocationQuote,
+      operationId: string,
+    ) {
+      locationQuoteSchema.parse(quote);
+      z.uuid().parse(operationId);
+      if (
+        quote.previousLocations !== binding.locations ||
+        quote.locations !== binding.locations + 1
+      )
+        throw Error("stripe_location_quantity_mismatch");
+      const state = await quantityState(binding, quote.locations);
+      if (
+        state.extra.metadata.location_operation_id === operationId ||
+        state.extra.pending_update?.metadata?.location_operation_id ===
+          operationId
+      )
+        return { submitted: true, invoiceId: state.extra.latest_invoice };
+      if (quote.expiresAt < Math.floor(Date.now() / 1000))
+        return { expired: true };
+      if (
+        state.item.quantity !== binding.locations ||
+        state.item.id !== quote.itemId ||
+        state.sub.items.data[0].current_period_end !== quote.periodEnd ||
+        state.extra.pending_update ||
+        state.extra.cancel_at_period_end ||
+        !["active", "trialing"].includes(state.sub.status)
+      )
+        throw Error("stripe_location_update_unavailable");
+      const updated = parse(
+        z.object({ latest_invoice: providerId("in").nullable() }),
+        await call(
+          `/subscriptions/${binding.subscriptionId}`,
+          new URLSearchParams({
+            "items[0][id]": quote.itemId,
+            "items[0][quantity]": String(quote.locations),
+            proration_behavior: "always_invoice",
+            proration_date: String(quote.prorationDate),
+            payment_behavior: "pending_if_incomplete",
+            "metadata[location_operation_id]": operationId,
+          }),
+          operationKey("location-update", binding.organizationId, operationId),
+        ),
+      );
+      // A successful HTTP response is not proof that payment or the update applied.
+      return { submitted: true, invoiceId: updated.latest_invoice };
+    },
+    async readLocationUpdate(
+      binding: SubscriptionBinding,
+      quote: LocationQuote,
+      operationId: string,
+      invoiceId?: string | null,
+    ) {
+      locationQuoteSchema.parse(quote);
+      z.uuid().parse(operationId);
+      const state = await quantityState(binding, quote.locations);
+      if (
+        state.extra.metadata.location_operation_id !== operationId &&
+        state.extra.pending_update?.metadata?.location_operation_id !==
+          operationId
+      ) {
+        if (
+          !state.extra.pending_update &&
+          state.item.quantity === binding.locations &&
+          invoiceId
+        ) {
+          const invoice = parse(
+            z.object({
+              id: z.literal(providerId("in").parse(invoiceId)),
+              customer: z.literal(binding.customerId),
+              livemode: z.literal(false),
+              status: z.literal("void"),
+              parent: z.object({
+                subscription_details: z.object({
+                  subscription: z.literal(binding.subscriptionId),
+                }),
+              }),
+            }),
+            await call(`/invoices/${invoiceId}`),
+          );
+          if (invoice.status === "void")
+            return { state: "expired" as const, url: null };
+        }
+        throw Error("stripe_location_operation_mismatch");
+      }
+      if (
+        state.item.quantity === quote.locations &&
+        !state.extra.pending_update
+      )
+        return { state: "applied" as const, url: null };
+      if (!state.extra.pending_update)
+        return { state: "expired" as const, url: null };
+      return {
+        state: "pending" as const,
+        url: await pendingInvoice(
+          binding,
+          binding.subscriptionId,
+          state.extra.latest_invoice,
+        ),
+      };
+    },
     async createCustomer(organizationId: string, operationId: string) {
       z.uuid().parse(organizationId);
       const key = operationKey("customer", organizationId, operationId);

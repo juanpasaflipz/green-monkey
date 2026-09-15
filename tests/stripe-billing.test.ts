@@ -62,6 +62,173 @@ const subscription = () => ({
     data: [{ quantity: 1, current_period_end: now + 86400, price: price() }],
   },
 });
+
+describe("additional location billing", () => {
+  const quote = () => ({
+    itemId: "si_fixture",
+    prorationDate: now,
+    periodEnd: now + 86400,
+    previousLocations: 1,
+    locations: 2,
+    amountDue: 79900,
+    currency: "mxn" as const,
+    expiresAt: Math.floor(Date.now() / 1000) + 600,
+    trialEnd: null,
+  });
+  function locationFixture(
+    options: {
+      trial?: boolean;
+      pending?: boolean;
+      applied?: boolean;
+      foreign?: boolean;
+      voided?: boolean;
+    } = {},
+  ) {
+    const request = vi.fn<typeof fetch>(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/account")
+        return Response.json({ id: config.accountId });
+      if (path === "/v1/customers/cus_fixture")
+        return Response.json({
+          id: scope.customerId,
+          livemode: false,
+          metadata,
+        });
+      if (path === "/v1/invoices/create_preview")
+        return Response.json({
+          customer: scope.customerId,
+          currency: "mxn",
+          amount_due: 39950,
+        });
+      if (path === "/v1/invoices/in_fixture")
+        return Response.json({
+          id: "in_fixture",
+          customer: scope.customerId,
+          livemode: false,
+          status: options.voided ? "void" : "open",
+          hosted_invoice_url: "https://invoice.stripe.com/i/fixture",
+          parent: {
+            type: "subscription_details",
+            subscription_details: { subscription: binding.subscriptionId },
+          },
+        });
+      if (path === "/v1/subscriptions/sub_fixture") {
+        if (init?.method === "POST")
+          return Response.json({ latest_invoice: "in_fixture" });
+        const sub = subscription();
+        return Response.json({
+          ...sub,
+          status: options.trial ? "trialing" : "active",
+          trial_end: options.trial ? now + 86400 : null,
+          collection_method: "charge_automatically",
+          cancel_at_period_end: false,
+          latest_invoice: "in_fixture",
+          metadata: {
+            ...metadata,
+            ...(options.applied && { location_operation_id: operationId }),
+          },
+          pending_update: options.pending
+            ? {
+                expires_at: now + 86400,
+                metadata: {
+                  location_operation_id: options.foreign
+                    ? "other"
+                    : operationId,
+                },
+              }
+            : null,
+          items: {
+            ...sub.items,
+            data: [
+              {
+                ...sub.items.data[0],
+                id: "si_fixture",
+                quantity: options.applied ? 2 : 1,
+              },
+            ],
+          },
+        });
+      }
+      throw Error("unexpected provider call");
+    });
+    return { request, provider: stripeSandboxBilling(config, request) };
+  }
+  it("quotes a no-card trial at zero without requesting a nonexistent invoice", async () => {
+    const { provider, request } = locationFixture({ trial: true });
+    const result = await provider.quoteLocation(binding, now, operationId);
+    expect(result.amountDue).toBe(0);
+    expect(result.trialEnd).toBe(now + 86400);
+    expect(
+      request.mock.calls.some(([url]) =>
+        String(url).includes("create_preview"),
+      ),
+    ).toBe(false);
+  });
+  it("uses the provider proration quote and preserves the consented proration date", async () => {
+    const { provider, request } = locationFixture();
+    const result = await provider.quoteLocation(binding, now, operationId);
+    expect(result.amountDue).toBe(39950);
+    await provider.updateLocation(binding, result, operationId);
+    const posts = request.mock.calls.filter(
+      ([url, init]) =>
+        String(url).includes("subscriptions/") && init?.method === "POST",
+    );
+    expect(posts).toHaveLength(1);
+    const form = posts[0][1]!.body as URLSearchParams;
+    expect(form.get("proration_date")).toBe(String(now));
+    expect(form.get("payment_behavior")).toBe("pending_if_incomplete");
+    expect(form.has("trial_end")).toBe(false);
+  });
+  it("recovers a failed payment from pending metadata without repeating the mutation", async () => {
+    const { provider, request } = locationFixture({ pending: true });
+    expect(
+      await provider.updateLocation(binding, quote(), operationId),
+    ).toEqual({ submitted: true, invoiceId: "in_fixture" });
+    expect(
+      await provider.readLocationUpdate(
+        binding,
+        quote(),
+        operationId,
+        "in_fixture",
+      ),
+    ).toEqual({
+      state: "pending",
+      url: "https://invoice.stripe.com/i/fixture",
+    });
+    expect(request.mock.calls.some(([, init]) => init?.method === "POST")).toBe(
+      false,
+    );
+  });
+  it("does not adopt another pending update", async () => {
+    const { provider } = locationFixture({ pending: true, foreign: true });
+    await expect(
+      provider.readLocationUpdate(binding, quote(), operationId, "in_fixture"),
+    ).rejects.toThrow("stripe_location_operation_mismatch");
+  });
+  it("recognizes a voided original invoice after Stripe discards pending metadata", async () => {
+    const { provider } = locationFixture({ voided: true });
+    expect(
+      await provider.readLocationUpdate(
+        binding,
+        quote(),
+        operationId,
+        "in_fixture",
+      ),
+    ).toEqual({ state: "expired", url: null });
+  });
+  it("does not treat an open invoice as an expired update", async () => {
+    const { provider } = locationFixture();
+    await expect(
+      provider.readLocationUpdate(binding, quote(), operationId, "in_fixture"),
+    ).rejects.toThrow("stripe_billing_response_mismatch");
+  });
+  it("requires canonical quantity and operation metadata before activation", async () => {
+    const { provider } = locationFixture({ applied: true });
+    expect(
+      await provider.readLocationUpdate(binding, quote(), operationId),
+    ).toEqual({ state: "applied", url: null });
+  });
+});
 function fixture(
   options: {
     subscription?: unknown;

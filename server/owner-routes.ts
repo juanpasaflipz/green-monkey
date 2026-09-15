@@ -9,7 +9,15 @@ import {
   enterOwnerRestaurant,
   signInGoogleOwner,
   withOwner,
+  ownerBrowserCookie,
 } from "./owner-accounts.js";
+import {
+  createAdditionalLocation,
+  createInvitation,
+  listInvitations,
+  revokeInvitation,
+  acceptInvitation,
+} from "./owner-management.js";
 
 export function ownerRoutes(sql: postgres.Sql) {
   const router = Router();
@@ -34,6 +42,20 @@ export function ownerRoutes(sql: postgres.Sql) {
       limit: 30,
       standardHeaders: true,
       legacyHeaders: false,
+      skip: (req) =>
+        req.method === "GET" &&
+        ["/providers", "/account", "/account/invitations"].includes(req.path),
+    }),
+  );
+  router.use(
+    rateLimit({
+      windowMs: 60_000,
+      limit: 120,
+      standardHeaders: true,
+      legacyHeaders: false,
+      skip: (req) =>
+        req.method !== "GET" ||
+        !["/providers", "/account", "/account/invitations"].includes(req.path),
     }),
   );
   router.get("/providers", (_req, res) =>
@@ -89,8 +111,10 @@ export function ownerRoutes(sql: postgres.Sql) {
           name: account.name,
           email: account.email,
           csrf: account.csrf,
+          organizations:
+            await tx`select id,name from organizations where created_by_account=${account.id}`,
           restaurants:
-            await tx`select r.id,r.name,r.currency,r.timezone from restaurants r join owner_memberships m on m.tenant_id=r.id where m.account_id=${account.id}`,
+            await tx`select r.id,r.name,r.currency,r.timezone,r.organization_id,r.activation_pending from restaurants r join owner_memberships m on m.tenant_id=r.id where m.account_id=${account.id}`,
         }),
       );
       res.json(result);
@@ -114,6 +138,7 @@ export function ownerRoutes(sql: postgres.Sql) {
   });
   router.post("/account/enter", async (req, res, next) => {
     try {
+      const browser = ownerBrowserCookie(req.cookies.gm_owner_browser);
       const result = await withOwner(
         sql,
         req.cookies.gm_account ?? "",
@@ -124,8 +149,13 @@ export function ownerRoutes(sql: postgres.Sql) {
             account.id,
             req.body.tenantId,
             account.sessionId,
+            browser,
           ),
       );
+      res.cookie("gm_owner_browser", sign(browser), {
+        ...cookieOptions,
+        maxAge: 30 * 86400_000,
+      });
       res.cookie("gm_device", sign(result.device), {
         ...cookieOptions,
         maxAge: 30 * 86400_000,
@@ -135,6 +165,77 @@ export function ownerRoutes(sql: postgres.Sql) {
         maxAge: 12 * 3600_000,
       });
       res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.post("/account/locations", async (req, res, next) => {
+    try {
+      res.json(
+        await withOwner(
+          sql,
+          req.cookies.gm_account ?? "",
+          req.get("x-csrf-token") ?? "",
+          (tx, account) => createAdditionalLocation(tx, account, req.body),
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.post("/account/invitations", async (req, res, next) => {
+    try {
+      res.json(
+        await withOwner(
+          sql,
+          req.cookies.gm_account ?? "",
+          req.get("x-csrf-token") ?? "",
+          (tx, account) => createInvitation(tx, account.id, req.body),
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.get("/account/invitations", async (req, res, next) => {
+    try {
+      res.json(
+        await withOwner(
+          sql,
+          req.cookies.gm_account ?? "",
+          undefined,
+          (tx, account) =>
+            listInvitations(tx, account.id, String(req.query.tenantId ?? "")),
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.post("/account/invitations/revoke", async (req, res, next) => {
+    try {
+      res.json(
+        await withOwner(
+          sql,
+          req.cookies.gm_account ?? "",
+          req.get("x-csrf-token") ?? "",
+          (tx, account) => revokeInvitation(tx, account.id, req.body.id),
+        ),
+      );
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.post("/account/invitations/accept", async (req, res, next) => {
+    try {
+      res.json(
+        await withOwner(
+          sql,
+          req.cookies.gm_account ?? "",
+          req.get("x-csrf-token") ?? "",
+          (tx, account) => acceptInvitation(tx, account, req.body),
+        ),
+      );
     } catch (error) {
       next(error);
     }
@@ -150,6 +251,7 @@ export function ownerRoutes(sql: postgres.Sql) {
         },
       );
       res.clearCookie("gm_account", cookieOptions);
+      res.clearCookie("gm_session", cookieOptions);
       res.json({ ok: true });
     } catch (error) {
       next(error);

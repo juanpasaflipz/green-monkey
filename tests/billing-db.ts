@@ -8,6 +8,7 @@ import { randomUUID, randomBytes, createHmac } from "node:crypto";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { billingStore, checkBillingRole } from "../server/billing-store.js";
+import { createAdditionalLocation } from "../server/owner-management.js";
 import {
   signInGoogleOwner,
   withOwner,
@@ -158,6 +159,111 @@ try {
     await admin`select count(*)::int as n,bool_and(processed_at is not null) as processed from billing_events where id='evt_BillingFixture'`;
   assert.equal(event.n, 1);
   assert.equal(event.processed, true);
+  const location = await withOwner(app, cookies[0], undefined, (tx, account) =>
+    createAdditionalLocation(tx, account, {
+      operationId: randomUUID(),
+      sourceTenantId: tenants[0],
+      restaurantName: "Additional billing fixture",
+      currency: "MXN",
+      timezone: "America/Mexico_City",
+      cutoff: 240,
+      openingDays: [1, 2, 3, 4, 5, 6, 7],
+    }),
+  );
+  tenants.push(location.tenantId);
+  await assert.rejects(
+    store.request(accounts[0], location.tenantId, "checkout", "month"),
+    /forbidden/,
+  );
+  await assert.rejects(
+    store.quoteLocation(accounts[1], location.tenantId),
+    /forbidden/,
+  );
+  const quotes = await Promise.all(
+    Array.from({ length: 4 }, () =>
+      store.quoteLocation(accounts[0], location.tenantId),
+    ),
+  );
+  assert.equal(new Set(quotes.map((q) => q.operationId)).size, 1);
+  const quoteOp = await store.claim();
+  assert.equal(quoteOp?.kind, "location_quote");
+  await store.complete(quoteOp!.id, quoteOp!.lease_token, {
+    itemId: "si_Fixture",
+    prorationDate: Math.floor(Date.now() / 1000),
+    periodEnd: Math.floor(Date.now() / 1000) + 86400,
+    previousLocations: 1,
+    locations: 2,
+    amountDue: 39950,
+    currency: "mxn",
+    expiresAt: Math.floor(Date.now() / 1000) + 600,
+    trialEnd: null,
+  });
+  await assert.rejects(
+    store.confirmLocation(accounts[1], quoteOp!.id),
+    /forbidden/,
+  );
+  const confirmations = await Promise.all(
+    Array.from({ length: 4 }, () =>
+      store.confirmLocation(accounts[0], quoteOp!.id),
+    ),
+  );
+  assert.equal(new Set(confirmations.map((c) => c.operationId)).size, 1);
+  const update = await store.claim();
+  assert.equal(update?.kind, "location_update");
+  await store.complete(update!.id, update!.lease_token, {
+    submitted: true,
+    invoiceId: "in_LocationFixture",
+  });
+  const watcher = await store.claim();
+  assert.equal(watcher?.payload.invoiceId, "in_LocationFixture");
+  await store.defer(watcher!.id, watcher!.lease_token, {
+    url: "https://invoice.stripe.com/i/fixture",
+  });
+  const [beforePayment] =
+    await admin`select activation_pending from restaurants where id=${location.tenantId}`;
+  assert.equal(
+    beforePayment.activation_pending,
+    true,
+    "provider submission does not activate a location",
+  );
+  assert.equal(
+    (await store.status(accounts[0], location.tenantId)).hostedUrl,
+    "https://invoice.stripe.com/i/fixture",
+  );
+  await admin`update billing_operations set available_at=now() where id=${watcher!.id}`;
+  const paidWatcher = await store.claim();
+  await store.complete(
+    paidWatcher!.id,
+    paidWatcher!.lease_token,
+    { applied: true },
+    {
+      status: "active",
+      accessUntil: new Date(Date.now() + 86400000).toISOString(),
+      source: "stripe",
+    },
+  );
+  const [activated] =
+    await admin`select activation_pending from restaurants where id=${location.tenantId}`;
+  assert.equal(activated.activation_pending, false);
+  assert.equal(
+    (await store.status(accounts[0], location.tenantId)).entitlement?.status,
+    "active",
+  );
+  const portal = await store.request(
+    accounts[0],
+    location.tenantId,
+    "portal",
+    "month",
+  );
+  const portalOp = await store.claim();
+  assert.equal(
+    portalOp!.id,
+    portal.operationId,
+    "billing portal works from either billed location",
+  );
+  await store.complete(portalOp!.id, portalOp!.lease_token, {
+    url: "https://billing.stripe.com/p/session/fixture",
+  });
   await store.event("evt_BillingPastDue", "sub_BillingFixture");
   await store.schedule();
   const past = await store.claim();
@@ -334,6 +440,7 @@ try {
   for (const tenant of tenants) {
     for (const table of [
       "signup_billing_intents",
+      "owner_location_commands",
       "restaurant_entitlements",
       "audit",
       "owner_memberships",
