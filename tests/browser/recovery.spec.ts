@@ -177,6 +177,18 @@ test("manager reconciles offline cash and resolves kitchen and stock follow-ups"
     await history.getByRole("button", { name: "Ver movimientos" }).click();
     await expect(history).toContainText("Efectivo recuperado");
     await page.screenshot({ path: "docs/evidence/recovery-history-1440.png" });
+    for (const [width, height] of [
+      [1024, 768],
+      [768, 1024],
+      [390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+    }
   } finally {
     await context.setOffline(false).catch(() => {});
     if (catalogChanged) {
