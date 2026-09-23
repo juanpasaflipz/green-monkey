@@ -49,6 +49,7 @@ npm test
 npm run test:db
 npm run test:db:qualification
 npm run build
+npm run test:restart # isolated local dev fixture; starts its own server on 3003
 NODE_ENV=production npm start
 ```
 
@@ -74,8 +75,8 @@ On this development machine, `bash scripts/compiled-local.sh` serves the compile
 
 Offline cash, manager reconciliation, recovery backups and uncertain-payment
 behavior are documented in [offline recovery](docs/OFFLINE_RECOVERY.md). The current
-slice is locally qualified; the complete M2 acceptance matrix and exact staging
-qualification are still pending. See [the completion ledger](docs/COMPLETION_LEDGER.md).
+slice is locally qualified; exact staging
+qualification is still pending. See [the completion ledger](docs/COMPLETION_LEDGER.md).
 
 ## Imports
 

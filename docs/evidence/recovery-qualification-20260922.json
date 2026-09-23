@@ -1,5 +1,5 @@
 {
-  "sourceCommit": "0751b4a54490f0549507f28757e9d5a52192742d",
+  "sourceCommit": "62f42ae5735077f365de37da3c1df3b9dbe9b96a",
   "recordedAt": "2026-09-23T04:14:12.143904+00:00",
   "unit": {
     "files": 10,
@@ -11,12 +11,13 @@
   "localDatabaseQualification": "passed; recovery rerun after final fixture changes passed",
   "compiledBrowser": {
     "passed": 19,
-    "failed": 0
+    "failed": 0,
+    "affectedRerun": "5 recovery scenarios passed after final backup/persistence UI changes"
   },
   "productionDependencyAudit": {
     "vulnerabilities": 0
   },
-  "neon": "Core, identity, owner, entitlements, billing and Free passed in aggregate; final recovery rerun passed. Final uninterrupted aggregate pending.",
+  "neon": "Uninterrupted aggregate passed; final affected recovery suite also qualified separately.",
   "staging": "unchanged, migrations through 015",
   "production": "not deployed",
   "providers": {
@@ -24,5 +25,7 @@
     "printer": "none selected; disabled"
   },
   "productComplete": false,
-  "remainingScope": "docs/COMPLETION_LEDGER.md"
+  "remainingScope": "docs/COMPLETION_LEDGER.md",
+  "restartHttp": "passed: real API process restart preserves original operation and one tender",
+  "githubChecks": "https://github.com/juanpasaflipz/green-monkey/pull/1/checks"
 }

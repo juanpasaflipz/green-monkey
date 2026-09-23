@@ -12,7 +12,7 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | --- | --- | --- |
 | M0 baseline | complete locally | Preserve checkpoints and applied migration checksums |
 | M1 Free limits | local/Neon qualification exists | Qualify exact candidate on staging after M2 gate |
-| M2 recovery | implemented, acceptance incomplete | Finish remaining OFF matrix in OFFLINE_RECOVERY.md |
+| M2 recovery | local and Neon qualification passed | Exact-candidate staging evidence remains in M3 |
 | M3 staging candidate | not started for this candidate | Meet M2 gate, back up isolated staging, migrate and verify revision |
 | M4 selling/pricing/cash/kitchen | partial | Combos/open amounts, promotions, approvals, cancellations, saved drafts |
 | M5 jobs/printing/merchant payments | incomplete | Durable delivery infrastructure; device/provider selection is absent |

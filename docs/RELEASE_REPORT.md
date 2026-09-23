@@ -21,7 +21,9 @@ product remains incomplete; see COMPLETION_LEDGER.md and OFFLINE_RECOVERY.md.
 No printer or merchant payment provider is selected; those capabilities remain
 disabled by the user's September 22 instruction. Neon core, identity, owner, entitlement, billing and Free suites passed in
 an aggregate run; final recovery rerun passed after clock-margin fixture
-correction. A final uninterrupted aggregate and GitHub CI are tracked separately.
+correction. The final uninterrupted Neon aggregate subsequently passed. GitHub Actions
+qualification passed on published source; restart, replacement-device, refund, payment-backup and persistence acceptance
+additions also passed locally. Exact published checks are linked from PR #1.
 Machine-readable evidence: `evidence/recovery-qualification-20260922.json`.
 
 

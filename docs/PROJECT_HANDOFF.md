@@ -10,6 +10,15 @@ workflow with isolated PostgreSQL 16, Node 24 and compiled browser tests. Do not
 change applied migrations 016–020. Printer/payment integrations remain disabled:
 the user confirmed none are selected. See `COMPLETION_LEDGER.md` and the current
 verification results below; the entire product is still not finished.
+Final additions: actual API restart replay, revoked-session recovery after browser
+logout/device-root replacement, recovered amount-refund UI, and read-only recovery
+order lifecycles. The final uninterrupted Neon aggregate passed. GitHub PR #1
+contains the published implementation and CI workflow. Preserve its draft status
+until the completion gates are actually satisfied. Payment-backup conflicts and
+download round-trips are tested; storage persistence status and request are visible.
+Local recovery acceptance and final Neon qualification pass; the next plan milestone
+is exact-candidate staging qualification (M3), followed by the remaining required
+product work, not a claim of overall completion.
 
 September 20, 2026 continuation: M1 Free-limit enforcement is implemented and has
 passed unit, local/Neon database and compiled-browser checks. The core M2 offline

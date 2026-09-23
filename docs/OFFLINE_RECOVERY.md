@@ -101,8 +101,18 @@ original expected/count/discrepancy and subsequent recovered cash. Uncertain
 payments are serialized across tabs and acknowledged evidence is removed only if
 it still matches the exact claim; a committed status has an explicit dismiss action.
 
-Still required before declaring M2 fully complete: full replacement-root/logout
-and process-restart HTTP/browser matrix, recovered item-refund rejection/amount
-refund browser flow, and final exact-candidate isolated/staging evidence. The
-current staging schema remains at 015. No new staging or production deployment is
-claimed. Full product milestones M3–M11 remain governed by the completion plan.
+Additional final checks now cover an actual API process restart with exact replay
+(`npm run test:restart`), logout plus replacement device-root authentication while
+retaining the queue, manager recovery of that revoked original session, and an
+amount refund through the browser against recovered cash. Recovered financial
+orders cannot accept new kitchen rounds or service reassignment. Their states are
+explicitly labeled in Spanish and English.
+
+The final uninterrupted isolated Neon aggregate passed. GitHub qualification also
+passed on the published candidate; later affected checks are recorded in the
+release evidence. Payment-backup collision/atomicity and download round-trip checks also pass.
+The UI reports browser persistence status, offers a persistence request, and
+explains permanent loss without a surviving backup. The remaining release gate
+for this recovery slice is exact-candidate staging evidence. The staging schema remains at 015. No new
+staging or production deployment is claimed. Full product milestones M3–M11 remain
+governed by the completion plan.
