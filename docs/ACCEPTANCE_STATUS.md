@@ -29,14 +29,14 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 | CORE-09 | partial | Two-tenant RLS/FK and public QR tamper checks; invoice/webhook/print/upload/org routes pending. |
 | CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; Neon pooled/direct pending. |
 | CORE-11 | partial | Cash refund reason, original tender immutability and no automatic stock return; item void/approval/provider cases pending. |
-| OFF-01 | partial | Offline cash full refresh/reconnect verified; browser close/reopen and duplicate-sync scenario pending. |
-| OFF-02 | pending | Lost-response recovery implemented through same-key operations but interruption scenario not tested. |
-| OFF-03 | pending | Web Locks and server deduplication implemented; two-tab restart test pending. |
-| OFF-04 | pending | Unbounded retained retry queue implemented; exhaustive retry test pending. |
-| OFF-05 | pending | Conflicts retained; manager reconciliation not implemented. |
-| OFF-06 | pending | Local data scoped and retained; revoked-session recovery and restaurant switching pending. |
+| OFF-01 | partial | Compiled offline refresh/reconnect and duplicate replay pass; complete browser close/reopen matrix remains. |
+| OFF-02 | partial | Lost committed cash response, exact payment fingerprint/status and interrupted tab recovery pass; full process-restart HTTP matrix remains. |
+| OFF-03 | partial | Two tabs serialize sync; closing the lock holder recovers its syncing row. Concurrent server sync/reconciliation deduplicates. |
+| OFF-04 | partial | Eight failed automatic attempts stop with evidence retained; explicit retry verified using transport mocks. |
+| OFF-05 | partial | Manager cash review, immutable evidence, concurrent kitchen/stock review, old-drawer corrections and refund cap pass; remaining refund browser matrix pending. |
+| OFF-06 | partial | Tenant-bound atomic backups, wrong-tenant rejection, old-session payment retention and revoked-session manager DB recovery pass; full replacement-root/logout matrix pending. |
 | OFF-07 | partial | Unsupported offline actions disabled; no provider offline capability claimed. |
-| OFF-08 | pending | Service worker defers activation; update-during-payment scenario pending. |
+| OFF-08 | partial | Waiting revision keeps unresolved work; complete hashed shell graph is precached and API responses are excluded. Exact staging update proof pending. |
 | OPS-01 | pending | Printer jobs explicitly blocked; printer worker/hardware recovery pending. |
 | OPS-02 | partial | Persisted KDS rounds and polling; disconnect/cancellation scenario pending. |
 | OPS-03 | pending | Durable report/email worker not implemented. |

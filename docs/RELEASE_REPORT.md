@@ -1,5 +1,30 @@
 # Verification record — in progress
 
+
+## September 22, 2026 recovery continuation
+
+Local unit checks: 126 passed across 10 files. Local aggregate database
+qualification passed core, identity, owner, entitlement, billing, Free and recovery
+suites. The compiled browser suite passed 19 scenarios; additional affected
+recovery tests verify closed-drawer history and cost coverage. Typecheck, lint,
+production build and production dependency audit passed (zero vulnerabilities).
+
+Independent review identified and fixed wrong-session/drawer payment retries,
+missing command fingerprints, concurrent task completion, cross-tab evidence
+removal, missing historical drawer access and misleading recovery cost coverage.
+The service worker now precaches every hashed build chunk and keeps controlled
+navigation on its installed revision. GitHub Actions runs the complete local
+qualification on disposable PostgreSQL 16 with Node 24.
+
+No new staging or production deployment is included in this evidence. The full
+product remains incomplete; see COMPLETION_LEDGER.md and OFFLINE_RECOVERY.md.
+No printer or merchant payment provider is selected; those capabilities remain
+disabled by the user's September 22 instruction. Neon core, identity, owner, entitlement, billing and Free suites passed in
+an aggregate run; final recovery rerun passed after clock-margin fixture
+correction. A final uninterrupted aggregate and GitHub CI are tracked separately.
+Machine-readable evidence: `evidence/recovery-qualification-20260922.json`.
+
+
 September 14: [multi-tenant signup qualification](TENANCY_QUALIFICATION.md) passed
 on staging: real Google owner signup/entry/return, 13 deployed HTTP isolation
 checks, 17 Neon operational DB checks and targeted owner/OAuth DB checks.

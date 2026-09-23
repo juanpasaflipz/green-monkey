@@ -1,5 +1,30 @@
 # Green Monkey — conversation handoff
 
+September 22 continuation: preserved all prior work under ignored
+`work/checkpoints/continuation-20260922`. Added recipe/config/security checks,
+exact uncertain-payment fingerprints and original-drawer retry validation,
+conditional payment-evidence acknowledgement and cross-tab payment serialization,
+atomic backup comparison, concurrent task completion, historical drawer inspection,
+and explicit missing recovery cost coverage. Added a GitHub Actions qualification
+workflow with isolated PostgreSQL 16, Node 24 and compiled browser tests. Do not
+change applied migrations 016–020. Printer/payment integrations remain disabled:
+the user confirmed none are selected. See `COMPLETION_LEDGER.md` and the current
+verification results below; the entire product is still not finished.
+
+September 20, 2026 continuation: M1 Free-limit enforcement is implemented and has
+passed unit, local/Neon database and compiled-browser checks. The core M2 offline
+and uncertain-payment recovery slice is implemented locally through migrations
+020. It includes versioned offline leases, shared v1/v2 contracts, exact replay,
+manager cash reconciliation against the original drawer, immutable recovery
+evidence, separate kitchen/stock tasks, payment status/same-command retry, recovery
+backups and revisioned service-worker caches. Read `docs/FREE_LIMITS.md` and
+`docs/OFFLINE_RECOVERY.md`. Local dev/test and isolated Neon test are migrated
+through 020; staging remains through 015 and was not changed. Do not claim M2 is
+finished until the remaining mandatory browser/concurrency/backup/currency cases
+listed in the recovery document and `PRODUCT_COMPLETION_PLAN.md` pass, followed by
+exact-candidate staging qualification. HEAD remains the preexisting commit and the
+working tree contains intentional uncommitted work; preserve it.
+
 Active work: user requested finishing billing (item 1), then multi-location (2),
 Free limits (3), offline recovery (4), and production qualification (5), in order.
 Latest checkpoint: item 2 is qualified on staging at `55badcd`. Read

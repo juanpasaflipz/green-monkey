@@ -1,0 +1,28 @@
+{
+  "sourceCommit": "0751b4a54490f0549507f28757e9d5a52192742d",
+  "recordedAt": "2026-09-23T04:14:12.143904+00:00",
+  "unit": {
+    "files": 10,
+    "passed": 126
+  },
+  "typecheck": "passed",
+  "lint": "passed",
+  "build": "passed",
+  "localDatabaseQualification": "passed; recovery rerun after final fixture changes passed",
+  "compiledBrowser": {
+    "passed": 19,
+    "failed": 0
+  },
+  "productionDependencyAudit": {
+    "vulnerabilities": 0
+  },
+  "neon": "Core, identity, owner, entitlements, billing and Free passed in aggregate; final recovery rerun passed. Final uninterrupted aggregate pending.",
+  "staging": "unchanged, migrations through 015",
+  "production": "not deployed",
+  "providers": {
+    "merchantPayment": "none selected; disabled",
+    "printer": "none selected; disabled"
+  },
+  "productComplete": false,
+  "remainingScope": "docs/COMPLETION_LEDGER.md"
+}

@@ -47,11 +47,19 @@ npm run lint
 npm run typecheck
 npm test
 npm run test:db
+npm run test:db:qualification
 npm run build
 NODE_ENV=production npm start
 ```
 
-`test:db` refuses targets unless the database name ends in `_test` and the exact `host:port/database` appears in `TEST_DATABASE_HOST_ALLOWLIST`. Prepare that separate target with migrations, grants, and fictional fixtures first. It never falls back to `DATABASE_URL`.
+`test:db` runs the 17 core operational scenarios. `test:db:qualification`
+also runs the identity, owner management, entitlement, billing, Free-limit and
+offline-recovery suites in a fixed order. `npm run test:db:recovery` runs the
+recovery database slice directly. All database runners require both
+`TEST_DATABASE_URL` and `TEST_MIGRATION_DATABASE_URL`; the runtime target must end
+in `_test`, and both local or Neon endpoints must satisfy the exact allowlists
+described below. Prepare that separate target with migrations, grants and
+fictional fixtures first. The runners never fall back to `DATABASE_URL`.
 
 Browser checks require a running server and Chromium:
 
@@ -63,6 +71,11 @@ TEST_BASE_URL=http://127.0.0.1:3002 TEST_PRODUCTION=1 npm run test:browser
 ```
 
 On this development machine, `bash scripts/compiled-local.sh` serves the compiled app on port 3002 and `bash scripts/browser-check.sh` runs the complete browser suite there. Service workers deliberately do not force-update active sessions.
+
+Offline cash, manager reconciliation, recovery backups and uncertain-payment
+behavior are documented in [offline recovery](docs/OFFLINE_RECOVERY.md). The current
+slice is locally qualified; the complete M2 acceptance matrix and exact staging
+qualification are still pending. See [the completion ledger](docs/COMPLETION_LEDGER.md).
 
 ## Imports
 
@@ -89,11 +102,10 @@ The backend enables the Google button only when `GOOGLE_CLIENT_ID`,
 the same origin as `APP_URL` and the path `/api/auth/google/callback`. Use separate
 OAuth clients for local, staging and production; the saved staging client does
 not authorize localhost. Secrets stay in the server environment. Apply migrations
-through 010 and runtime grants before deploying this code.
+through 020 and runtime grants before deploying this code.
 
 `npm test` includes Google token/PKCE/replay tests. After local setup, targeted
-database checks run with `npx tsx tests/google-attempts-db.ts` and
-`npx tsx tests/owner-accounts-db.ts`; provide `TEST_DATABASE_URL`,
+database checks run with `npm run test:db:identity`; provide `TEST_DATABASE_URL`,
 `TEST_MIGRATION_DATABASE_URL`, and exact `TEST_DATABASE_HOST_ALLOWLIST` through a
 private environment. They accept isolated localhost `_test` targets or Neon test
 targets with an additional exact `TEST_MIGRATION_DATABASE_HOST_ALLOWLIST`.
@@ -102,10 +114,10 @@ verified-identity fixture. It does not automate or claim Google's external login
 
 Real Google signup, POS entry and returning login now pass on staging; see
 [tenancy qualification](docs/TENANCY_QUALIFICATION.md).
-Still pending: existing-owner linking/invites,
-multi-location signup/switch UX, email recovery, Apple sign-in, Free device/team
-limits and Stripe trial/subscription provisioning. Staging now has the signup
-implementation and migrations through 010.
+Invitations and multiple locations are implemented and have prior staging proof;
+Free device/team/location limits are implemented and tested. Deliberate account
+linking, verified email recovery and Apple sign-in remain pending. See the latest
+handoff and completion ledger rather than older dated staging checkpoints.
 
 ## Billing implementation in progress
 
@@ -122,8 +134,8 @@ Free remains free. Pro is MXN 799 monthly or MXN 7,990 annually, paid upfront,
 per restaurant location, before applicable taxes. Annual billing saves MXN 1,598.
 Kiosk is included in Pro, with no per-employee fee. The approved trial is 14 days,
 without a card, starting at restaurant creation. Beta pilots remain free until
-the promised Pro workflows qualify. Actual trial and subscription provisioning
-are still pending; the settings screen displays pricing without a purchase control.
+the promised Pro workflows qualify. Trial and subscription provisioning are implemented and verified in the dedicated
+sandbox. Owner billing controls are enabled only for the configured sandbox.
 
 To prepare only the Stripe sandbox product and two recurring prices, configure
 `STRIPE_SECRET_KEY` with a sandbox key and `STRIPE_EXPECTED_ACCOUNT_ID` with the
@@ -139,7 +151,7 @@ creates customers, subscriptions or charges. The dedicated Green Monkey sandbox
 is configured privately in `.env.stripe-sandbox`; actual catalog provisioning and
 rerun verification passed. Run it with
 `node --env-file=.env.stripe-sandbox --import tsx scripts/stripe-sandbox-catalog.ts`.
-Subscription flows and webhook verification against Stripe remain pending. See
+Subscription flows and webhook verification passed in the dedicated sandbox. See
 [billing implementation](docs/BILLING_IMPLEMENTATION.md) and
 [plan policy](docs/PLANS_AND_SIGNUP.md).
 
