@@ -252,6 +252,7 @@ export function forecast(
   };
 }
 export type Session = {
+  sellingAllowed?: boolean;
   id: string;
   tenantId: string;
   employeeId: string;
@@ -260,15 +261,27 @@ export type Session = {
   deviceId: string;
   expiresAt: string;
   offlineUntil: string;
+  offlineLeaseVersion?: number;
   csrf: string;
   restaurant: {
     name: string;
     currency: string;
     timezone: string;
     cutoff: number;
+    configVersion?: number;
   };
 };
 export type Order = {
+  recovery?: {
+    id?: string;
+    reason: string;
+    original: { recordedAt: string };
+    recognizedAt?: string;
+    evidenceVersion?: number;
+    itemAllocationComplete?: boolean;
+    fulfillment: string;
+    stock: string;
+  } | null;
   serviceVersion?: number;
   assignedEmployeeId?: string;
   waiterName?: string;

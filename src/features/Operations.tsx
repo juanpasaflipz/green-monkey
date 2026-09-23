@@ -1,3 +1,6 @@
+import { CashHistory } from "./CashHistory";
+import { RecoveryQueue } from "./RecoveryQueue";
+import { FreeSelection } from "./FreeSelection";
 import { PlanSettings } from "./PlanSettings";
 import { ServiceAssignment } from "./ServiceAssignment";
 import { RestaurantSettings } from "./RestaurantSettings";
@@ -13,7 +16,7 @@ import {
 } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
 import { api } from "../api";
-import { db, scope, syncPending } from "../offline";
+import { db, scope } from "../offline";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 export function Operations({
   view,
@@ -145,6 +148,7 @@ export function Operations({
       {view === "settings" && (
         <>
           <RestaurantSettings session={session} locale={locale} />
+          {session.role === "owner" && <FreeSelection locale={locale} />}
           <PlanSettings
             tenantId={session.tenantId}
             locale={locale}
@@ -393,6 +397,7 @@ export function Operations({
               )}
             </>
           )}
+          {view === "cash" && manager && <CashHistory locale={locale} />}
           {view === "cash" && (
             <>
               {!data || data.closed_at ? (
@@ -602,6 +607,13 @@ export function Operations({
                 <section className="panel">
                   <span className="eyebrow">{t("coverage")}</span>
                   <h2>{Math.round(data.costCoverage * 100)}%</h2>
+                  {data.unallocatedRecoveryCount > 0 && (
+                    <p className="warning-panel">
+                      {locale === "es"
+                        ? `${data.unallocatedRecoveryCount} ventas recuperadas (${m(data.unallocatedRecoveryTotal)}) sin costo histórico por producto. El costo mostrado está incompleto.`
+                        : `${data.unallocatedRecoveryCount} recovered sales (${m(data.unallocatedRecoveryTotal)}) have no historical item costs. Displayed costs are incomplete.`}
+                    </p>
+                  )}
                   <p>{t("forecastEmpty")}</p>
                   <hr />
                   <p>
@@ -686,30 +698,7 @@ export function Operations({
             </>
           )}
           {view === "sync" && (
-            <>
-              <p className="warning-panel">{t("syncHint")}</p>
-              <Button
-                variant="primary"
-                onClick={async () => {
-                  await syncPending(session, true);
-                  await load();
-                }}
-              >
-                {t("retry")}
-              </Button>
-              {data?.map((p: any) => (
-                <div className="panel" key={p.id}>
-                  <strong>
-                    {p.id.slice(0, 8)} · {m(p.body.expectedTotal)}
-                  </strong>
-                  <p>{t(p.status === "synced" ? "paid" : "pending")}</p>
-                  {p.error && (
-                    <p className="error">{translateError(p.error, locale)}</p>
-                  )}
-                </div>
-              ))}
-              {!data?.length && <Empty title={t("noData")} />}
-            </>
+            <RecoveryQueue session={session} locale={locale} />
           )}
         </>
       )}

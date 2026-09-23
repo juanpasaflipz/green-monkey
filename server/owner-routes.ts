@@ -12,6 +12,7 @@ import {
   ownerBrowserCookie,
 } from "./owner-accounts.js";
 import {
+  selectFreeLocation,
   createAdditionalLocation,
   createInvitation,
   listInvitations,
@@ -114,7 +115,7 @@ export function ownerRoutes(sql: postgres.Sql) {
           organizations:
             await tx`select id,name from organizations where created_by_account=${account.id}`,
           restaurants:
-            await tx`select r.id,r.name,r.currency,r.timezone,r.organization_id,r.activation_pending from restaurants r join owner_memberships m on m.tenant_id=r.id where m.account_id=${account.id}`,
+            await tx`select r.id,r.name,r.currency,r.timezone,r.organization_id,r.activation_pending,r.free_location from restaurants r join owner_memberships m on m.tenant_id=r.id where m.account_id=${account.id}`,
         }),
       );
       res.json(result);
@@ -165,6 +166,20 @@ export function ownerRoutes(sql: postgres.Sql) {
         maxAge: 12 * 3600_000,
       });
       res.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.post("/account/free-location", async (req, res, next) => {
+    try {
+      res.json(
+        await withOwner(
+          sql,
+          req.cookies.gm_account ?? "",
+          req.get("x-csrf-token") ?? "",
+          (tx, a) => selectFreeLocation(tx, a.id, req.body.tenantId),
+        ),
+      );
     } catch (error) {
       next(error);
     }

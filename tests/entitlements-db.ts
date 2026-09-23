@@ -6,31 +6,17 @@ import { connect, tenant } from "../server/db.js";
 import { entitlement, requirePro } from "../server/entitlements.js";
 import { catalog, createOrder } from "../server/orders.js";
 import type { Session } from "../shared/domain.js";
-const runtime = process.env.TEST_DATABASE_URL;
-const migration = process.env.TEST_MIGRATION_DATABASE_URL;
-if (!runtime || !migration)
-  throw Error("Explicit test runtime and migration URLs required");
-const u = new URL(runtime),
-  m = new URL(migration);
-const key = u.hostname + ":" + (u.port || "5432") + u.pathname;
-if (
-  !u.pathname.endsWith("_test") ||
-  u.pathname !== m.pathname ||
-  u.hostname !== m.hostname ||
-  !["127.0.0.1", "localhost"].includes(u.hostname) ||
-  !process.env.TEST_DATABASE_HOST_ALLOWLIST?.split(",").includes(key)
-)
-  throw Error("Only the isolated, allowlisted local test target is accepted");
+import { isolatedTarget } from "./isolated-target.js";
+const { runtime, migration } = isolatedTarget(process.env);
 const sql = connect(runtime),
   admin = postgres(migration, { max: 1 });
 const a = "10000000-0000-4000-8000-000000000001",
   b = "10000000-0000-4000-8000-000000000002";
 const before =
   await admin`select * from restaurant_entitlements where tenant_id in (${a},${b})`;
-assert.equal(before.length, 2);
 try {
-  await admin`update restaurant_entitlements set status='active',access_until=now()+interval '1 hour' where tenant_id=${a}`;
-  await admin`update restaurant_entitlements set status='canceled' where tenant_id=${b}`;
+  await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source) values(${a},'active',now()+interval '1 hour','fixture') on conflict(tenant_id) do update set status='active',access_until=now()+interval '1 hour'`;
+  await admin`insert into restaurant_entitlements(tenant_id,status,source) values(${b},'canceled','fixture') on conflict(tenant_id) do update set status='canceled',access_until=null`;
   assert.equal((await tenant(sql, a, entitlement)).plan, "pro");
   assert.equal((await tenant(sql, b, entitlement)).plan, "free");
   await assert.rejects(tenant(sql, b, requirePro), /pro_required/);
@@ -94,7 +80,12 @@ try {
   );
 } finally {
   for (const row of before)
-    await admin`update restaurant_entitlements set status=${row.status},access_until=${row.access_until} where tenant_id=${row.tenant_id}`;
+    await admin`update restaurant_entitlements set status=${row.status},access_until=${row.access_until},trial_used=${row.trial_used},source=${row.source},stripe_customer_id=${row.stripe_customer_id},stripe_subscription_id=${row.stripe_subscription_id},version=${row.version},updated_at=${row.updated_at} where tenant_id=${row.tenant_id}`;
+  const priorIds = before.map((row) => row.tenant_id);
+  if (!priorIds.includes(a))
+    await admin`delete from restaurant_entitlements where tenant_id=${a}`;
+  if (!priorIds.includes(b))
+    await admin`delete from restaurant_entitlements where tenant_id=${b}`;
   await sql.end();
   await admin.end();
 }

@@ -1,3 +1,5 @@
+import { selectFirstDevice, sellingAllowed } from "./free-limits.js";
+import { issueOfflineLease } from "./offline-leases.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type postgres from "postgres";
 import { z } from "zod";
@@ -135,8 +137,8 @@ export async function createOwnerRestaurant(
     employeeId = randomUUID();
   await tx`select set_config('app.tenant_id',${tenantId},true)`;
   await tx`insert into organizations(id,name,created_by_account) values(${organizationId},${p.restaurantName},${account.id})`;
-  await tx`insert into restaurants(id,organization_id,name,currency,timezone,cutoff,opening_days)
-    values(${tenantId},${organizationId},${p.restaurantName},${p.currency},${p.timezone},${p.cutoff},${p.openingDays})`;
+  await tx`insert into restaurants(id,organization_id,name,currency,timezone,cutoff,opening_days,free_location)
+    values(${tenantId},${organizationId},${p.restaurantName},${p.currency},${p.timezone},${p.cutoff},${p.openingDays},true)`;
   // Social owners have no usable password until an explicit recovery/linking flow.
   await tx`insert into employees(tenant_id,id,name,login,secret_hash,role)
     values(${tenantId},${employeeId},${account.name},${"account-" + account.id},${password(opaque())},'owner')`;
@@ -196,8 +198,11 @@ export async function enterOwnerRestaurant(
     if (browser)
       await tx`insert into owner_browser_devices(account_id,browser_id,tenant_id,device_id,browser_token_hash) values(${accountId},${browser.id},${tenantId},${device.id},${hash(browser.token)})`;
   }
-  await tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,offline_until,owner_account_id,owner_session_id)
-    values(${tenantId},${session.id},${employee.id},${device.id},${hash(session.token)},${opaque()},now()+interval '12 hours',now()+interval '4 hours',${accountId},${ownerSessionId})`;
+  await selectFirstDevice(tx, device.id);
+  const selling = await sellingAllowed(tx, employee.id, device.id);
+  await tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,offline_until,owner_account_id,owner_session_id,selling_authorized)
+    values(${tenantId},${session.id},${employee.id},${device.id},${hash(session.token)},${opaque()},now()+interval '12 hours',now()+interval '4 hours',${accountId},${ownerSessionId},${selling})`;
+  await issueOfflineLease(tx, session.id);
   return { device, session };
 }
 

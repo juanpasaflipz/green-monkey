@@ -10,6 +10,7 @@ type Restaurant = {
   currency: string;
   timezone: string;
   activation_pending: boolean;
+  free_location: boolean;
 };
 type Invitation = {
   id: string;
@@ -185,6 +186,34 @@ export function OwnerManagement({
           ))}
         </select>
       </Field>
+      {restaurant && !restaurant.activation_pending && (
+        <section>
+          <p>
+            {restaurant.free_location
+              ? es
+                ? "Sucursal seleccionada para Free."
+                : "Selected Free location."
+              : es
+                ? "Esta sucursal requiere Pro para iniciar ventas. Puedes seleccionarla como tu única sucursal Free."
+                : "This location requires Pro to start sales. You can select it as your only Free location."}
+          </p>
+          {!restaurant.free_location && (
+            <Button
+              disabled={busy}
+              onClick={() =>
+                void run(async () => {
+                  await request("/api/auth/account/free-location", {
+                    tenantId: selected,
+                  });
+                  await refresh();
+                })
+              }
+            >
+              {es ? "Usar esta sucursal en Free" : "Use this location on Free"}
+            </Button>
+          )}
+        </section>
+      )}
       {error && <p role="alert">{error}</p>}
       {restaurant?.activation_pending && (
         <section>

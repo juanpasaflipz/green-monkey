@@ -1,3 +1,4 @@
+import { requireSelling } from "./free-limits.js";
 import { requirePro } from "./entitlements.js";
 import {
   payableUnits,
@@ -82,7 +83,26 @@ export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
   >`select line_id as "lineId", unit_index as unit, amount from tender_allocations where order_id=${orderId}`;
   const allocated = sum(allocations.map((a) => a.amount));
   const paid = sum(tenders.map((t) => t.amount));
+  const [recovery] = await tx`select r.id,r.reason,r.original_sold_at,
+    r.recognized_at,r.evidence_version,r.item_allocation_complete,
+    coalesce(jsonb_object_agg(t.kind,t.state) filter(where t.kind is not null),'{}') as tasks
+    from offline_recoveries r left join offline_recovery_tasks t
+      on t.tenant_id=r.tenant_id and t.recovery_id=r.id
+    where r.order_id=${orderId}
+    group by r.tenant_id,r.id`;
   return {
+    recovery: recovery
+      ? {
+          id: recovery.id,
+          reason: recovery.reason,
+          original: { recordedAt: recovery.original_sold_at.toISOString() },
+          recognizedAt: recovery.recognized_at.toISOString(),
+          evidenceVersion: recovery.evidence_version,
+          itemAllocationComplete: recovery.item_allocation_complete,
+          fulfillment: recovery.tasks.kitchen,
+          stock: recovery.tasks.stock,
+        }
+      : null,
     serviceVersion: o.service_version,
     assignedEmployeeId: o.assigned_employee_id ?? o.employee_id,
     waiterName: o.waiter_name,
@@ -164,11 +184,17 @@ async function append(
   }
   await tx`insert into jobs(tenant_id,id,kind,dedupe_key,payload,state) values(${s.tenantId},${randomUUID()},'kitchen_dispatch',${orderId + ":" + round},${tx.json({ orderId, round })},'available')`;
 }
-export async function createOrder(tx: Tx, s: Session, raw: unknown) {
+export async function createOrder(
+  tx: Tx,
+  s: Session,
+  raw: unknown,
+  authorizedOfflineRecovery = false,
+) {
   permit(s, operators);
   const input = orderInput.parse(raw);
   return once(tx, s, input.operationId, "create_order", input, async () => {
     if (["qr", "kiosk"].includes(input.channel)) await requirePro(tx);
+    else if (!authorizedOfflineRecovery) await requireSelling(tx, s);
     const lines = quote(
       input.lines,
       await catalog(tx),
@@ -209,6 +235,7 @@ export async function addRound(
     "round",
     { orderId, ...input },
     async () => {
+      await requireSelling(tx, s);
       const [o] = await tx`select * from orders where id=${orderId} for update`;
       if (!o) throw new DomainError("not_found", 404);
       if (o.version !== input.expectedVersion || o.state === "completed")
@@ -253,6 +280,7 @@ export async function recordPayment(
   orderId: string,
   raw: unknown,
   groupId: string | null = null,
+  expectedDrawerId?: string,
 ) {
   permit(s, operators);
   const p = paymentInput.parse(raw);
@@ -273,6 +301,8 @@ export async function recordPayment(
       ? allocatePayment(o.paymentUnits!, p.amount, p.items)
       : [];
     const d = await drawer(tx, s);
+    if (expectedDrawerId && d.id !== expectedDrawerId)
+      throw new DomainError("payment_review_required", 409);
     const tenderId = randomUUID();
     await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,group_id) values(${s.tenantId},${tenderId},${orderId},${d.id},${p.method},${p.amount},${p.tip},${p.received},${p.reference},${groupId})`;
     for (const allocation of allocations)

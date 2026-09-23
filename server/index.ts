@@ -1,3 +1,17 @@
+import {
+  synchronizeOffline,
+  reviewOffline,
+  reconcileOffline,
+  listOfflineRecoveries,
+  resolveOfflineRecoveryTask,
+} from "./offline-sync.js";
+import {
+  selectFirstDevice,
+  sellingAllowed,
+  requireSelling,
+  freeSelection,
+  saveFreeSelection,
+} from "./free-limits.js";
 import { billingRuntime } from "./billing-runtime.js";
 import { entitlement, requirePro } from "./entitlements.js";
 import { ownerRoutes } from "./owner-routes.js";
@@ -45,13 +59,17 @@ import {
 import { saveProduct, saveEmployee, receive } from "./management.js";
 import { previewImport } from "../shared/import.js";
 import { commitImport } from "./imports.js";
-import { cashSummary, refund } from "./operations.js";
+import { cashHistory, cashSummary, closeCash, refund } from "./operations.js";
+import { requireReadySchema } from "./readiness.js";
+import { issueOfflineLease } from "./offline-leases.js";
+import {
+  paymentRecoveryStatus,
+  retryPaymentRecovery,
+} from "./payment-recovery.js";
 import {
   DomainError,
   id,
   money,
-  quote,
-  orderInput,
   businessDate,
   boundaries,
   type Session,
@@ -79,9 +97,7 @@ app.use(cookieParser());
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", async (_req, res, next) => {
   try {
-    const ready =
-      await sql`select name from schema_migrations where name='015_location_billing_operations.sql'`;
-    if (!ready.length) throw new DomainError("schema_not_ready", 503);
+    await requireReadySchema(sql);
     res.json({ ok: true });
   } catch (e) {
     next(e);
@@ -137,7 +153,10 @@ app.post(
         const token = randomBytes(32).toString("hex"),
           sessionId = randomUUID(),
           csrf = randomBytes(24).toString("hex");
-        await tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,offline_until) values(${p.tenantId},${sessionId},${e.id},${device.id},${hash(token)},${csrf},now()+interval '12 hours',now()+interval '4 hours')`;
+        await selectFirstDevice(tx, device.id);
+        const selling = await sellingAllowed(tx, e.id, device.id);
+        await tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,offline_until,selling_authorized) values(${p.tenantId},${sessionId},${e.id},${device.id},${hash(token)},${csrf},now()+interval '12 hours',now()+interval '4 hours',${selling})`;
+        await issueOfflineLease(tx, sessionId);
         return {
           device,
           session: { id: sessionId, tenantId: p.tenantId, token },
@@ -182,6 +201,10 @@ route("post", "/orders/:id/service", (tx, s, req) =>
   assignService(tx, s, id.parse(req.params.id), req.body),
 );
 route("get", "/session", async (_tx, s) => s);
+route("get", "/plan/selection", freeSelection);
+route("post", "/plan/selection", (tx, s, req) =>
+  saveFreeSelection(tx, s, req.body),
+);
 app.post("/api/logout", async (req, res, next) => {
   try {
     const s = (req as AuthRequest).session;
@@ -241,6 +264,12 @@ route("post", "/orders/:id/rounds", async (tx, s, req) =>
 route("post", "/orders/:id/payments", async (tx, s, req) =>
   recordPayment(tx, s, id.parse(req.params.id), req.body),
 );
+route("post", "/payments/recovery/status", (tx, s, req) =>
+  paymentRecoveryStatus(tx, s, req.body),
+);
+route("post", "/payments/recovery/retry", (tx, s, req) =>
+  retryPaymentRecovery(tx, s, req.body),
+);
 route("post", "/refunds", async (tx, s, req) => refund(tx, s, req.body));
 route("post", "/settlements", async (tx, s, req) => {
   permit(s, operators);
@@ -286,46 +315,20 @@ route("post", "/settlements", async (tx, s, req) => {
     return result;
   });
 });
-route("post", "/sync", async (tx, s, req) => {
-  const p = z
-    .object({
-      operationId: id,
-      order: orderInput,
-      expectedTotal: money,
-      received: money,
-      tip: money,
-      recordedAt: z.string().datetime(),
-      sessionId: id,
-      cashSessionId: id,
-    })
-    .strict()
-    .parse(req.body);
-  permit(s, operators);
-  return once(tx, s, p.operationId, "offline_sync", p, async () => {
-    const [lease] =
-      await tx`select * from sessions where id=${p.sessionId} and employee_id=${s.employeeId} and device_id=${s.deviceId}`;
-    if (
-      !lease ||
-      lease.revoked ||
-      new Date(p.recordedAt) > lease.offline_until ||
-      new Date(p.recordedAt) > new Date()
-    )
-      throw new DomainError("offline_conflict", 409);
-    const activeDrawer = await drawer(tx, s);
-    if (activeDrawer.id !== p.cashSessionId)
-      throw new DomainError("offline_drawer_conflict", 409);
-    const priced = quote(p.order.lines, await catalog(tx), false);
-    if (priced.reduce((a, l) => a + l.total, 0) !== p.expectedTotal)
-      throw new DomainError("price_conflict", 409);
-    const o = await createOrder(tx, s, { ...p.order, channel: "offline" });
-    return recordPayment(tx, s, o.id, {
-      operationId: randomUUID(),
-      method: "cash",
-      amount: p.expectedTotal,
-      tip: p.tip,
-      received: p.received,
-    });
-  });
+route("post", "/sync", (tx, s, req) => synchronizeOffline(tx, s, req.body));
+route("post", "/sync/review", (tx, s, req) => reviewOffline(tx, s, req.body));
+route("post", "/sync/reconcile", (tx, s, req) =>
+  reconcileOffline(tx, s, req.body),
+);
+route("get", "/sync/recoveries", (tx, s) => listOfflineRecoveries(tx, s));
+route("post", "/sync/recoveries/resolve", (tx, s, req) =>
+  resolveOfflineRecoveryTask(tx, s, req.body),
+);
+route("get", "/operations/:id", async (tx, s, req) => {
+  permit(s, managers);
+  const [operation] =
+    await tx`select kind,result from operations where id=${id.parse(req.params.id)}`;
+  return operation ?? null;
 });
 route("get", "/kitchen", async (tx, s) => {
   permit(s, ["owner", "manager", "kitchen", "server", "cashier"]);
@@ -339,6 +342,21 @@ route("get", "/cash", async (tx, s) => {
   permit(s, operators);
   return cashSummary(tx, s);
 });
+route("get", "/cash/history", (tx, s, req) =>
+  cashHistory(
+    tx,
+    s,
+    z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(1000000)
+      .parse(req.query.offset ?? 0),
+  ),
+);
+route("get", "/cash/history/:id", (tx, s, req) =>
+  cashSummary(tx, s, id.parse(req.params.id)),
+);
 route("post", "/cash/open", async (tx, s, req) => {
   permit(s, operators);
   const p = z
@@ -346,27 +364,13 @@ route("post", "/cash/open", async (tx, s, req) => {
     .strict()
     .parse(req.body);
   return once(tx, s, p.operationId, "cash.open", p, async () => {
+    await requireSelling(tx, s);
     await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening) values(${s.tenantId},${randomUUID()},${s.deviceId},${s.employeeId},${p.opening})`;
     await audit(tx, s, "cash.open", s.deviceId, p);
     return cashSummary(tx, s);
   });
 });
-route("post", "/cash/close", async (tx, s, req) => {
-  permit(s, managers);
-  const p = z
-    .object({ operationId: id, counted: money, reason: z.string().max(300) })
-    .strict()
-    .parse(req.body);
-  return once(tx, s, p.operationId, "cash.close", p, async () => {
-    const d = await drawer(tx, s);
-    const summary = await cashSummary(tx, s);
-    if (summary!.expected !== p.counted && p.reason.trim().length < 3)
-      throw new DomainError("reason_required");
-    await tx`update cash_sessions set counted=${p.counted},expected=${summary!.expected},reason=${p.reason},closed_at=now() where id=${d.id}`;
-    await audit(tx, s, "cash.close", d.id, p);
-    return cashSummary(tx, s);
-  });
-});
+route("post", "/cash/close", (tx, s, req) => closeCash(tx, s, req.body));
 route("post", "/cash/paid-out", async (tx, s, req) => {
   permit(s, managers);
   const p = z
@@ -378,6 +382,7 @@ route("post", "/cash/paid-out", async (tx, s, req) => {
     .strict()
     .parse(req.body);
   return once(tx, s, p.operationId, "cash.paidout", p, async () => {
+    await requireSelling(tx, s);
     const d = await drawer(tx, s);
     await tx`insert into cash_movements(tenant_id,id,session_id,amount,reason) values(${s.tenantId},${randomUUID()},${d.id},${-p.amount},${p.reason})`;
     await audit(tx, s, "cash.paidout", d.id, p);
@@ -406,6 +411,8 @@ route("post", "/inventory/movement", async (tx, s, req) => {
     .strict()
     .parse(req.body);
   return once(tx, s, p.operationId, "stock", p, async () => {
+    await requireSelling(tx, s);
+    if (p.kind !== "receipt") await requirePro(tx);
     const [i] =
       await tx`select * from stock_items where id=${p.stockId} for update`;
     if (!i) throw new DomainError("not_found", 404);
@@ -444,6 +451,8 @@ route("post", "/inventory/prep", async (tx, s, req) => {
     .strict()
     .parse(req.body);
   return once(tx, s, p.operationId, "prep", p, async () => {
+    await requireSelling(tx, s);
+    await requirePro(tx);
     if (
       p.inputId === p.outputId ||
       new Decimal(p.inputQuantity).lte(0) ||
@@ -497,6 +506,10 @@ route("get", "/report", async (tx, s, req) => {
     await tx`select l.data from order_lines l join orders o on o.tenant_id=l.tenant_id and o.id=l.order_id where o.created_at>=${period.start} and o.created_at<${period.end}`;
   const cash =
     await tx`select * from cash_sessions where closed_at>=${period.start} and closed_at<${period.end}`;
+  const unallocatedRecoveries = orders.filter(
+    (o: any) =>
+      o.state === "recovery_pending" || o.state === "recovery_reviewed",
+  );
   return {
     date,
     period,
@@ -514,9 +527,16 @@ route("get", "/report", async (tx, s, req) => {
       (a: number, l: any) => a + (l.data.cost ?? 0) * l.data.quantity,
       0,
     ),
-    costCoverage: costs.length
-      ? costs.filter((l: any) => l.data.cost !== null).length / costs.length
-      : 0,
+    unallocatedRecoveryCount: unallocatedRecoveries.length,
+    unallocatedRecoveryTotal: unallocatedRecoveries.reduce(
+      (total: number, o: any) => total + o.total,
+      0,
+    ),
+    costCoverage:
+      costs.length + unallocatedRecoveries.length
+        ? costs.filter((l: any) => l.data.cost !== null).length /
+          (costs.length + unallocatedRecoveries.length)
+        : 0,
   };
 });
 route("get", "/restaurant", (tx, s) => getSettings(tx, s));
@@ -539,6 +559,8 @@ route("post", "/suppliers", async (tx, s, req) => {
     .strict()
     .parse(req.body);
   return once(tx, s, p.operationId, "supplier", p, async () => {
+    await requireSelling(tx, s);
+    await requirePro(tx);
     await tx`insert into suppliers(tenant_id,id,name) values(${s.tenantId},${p.operationId},${p.name})`;
     return { ok: true };
   });
@@ -559,6 +581,10 @@ route("post", "/shifts", async (tx, s, req) => {
     .strict()
     .parse(req.body);
   return once(tx, s, p.operationId, "shift", p, async () => {
+    if (p.action === "start") {
+      await requireSelling(tx, s);
+      await requirePro(tx);
+    }
     if (p.action === "start")
       await tx`insert into shifts(tenant_id,id,employee_id,hourly_rate) values(${s.tenantId},${p.operationId},${p.employeeId},${p.hourlyRate})`;
     else {
@@ -586,6 +612,7 @@ route("post", "/expenses", async (tx, s, req) => {
     .strict()
     .parse(req.body);
   return once(tx, s, p.operationId, "expense", p, async () => {
+    await requireSelling(tx, s);
     await tx`insert into expenses(tenant_id,id,amount,kind,reason) values(${s.tenantId},${p.operationId},${p.amount},${p.kind},${p.reason})`;
     await audit(tx, s, "expense", p.operationId, p);
     return { ok: true };
@@ -613,6 +640,7 @@ route("post", "/ordering-links", async (tx, s, req) => {
     const rows = await tx`select id from dining_tables where id=${p.tableId}`;
     if (!rows.length) throw new DomainError("not_found", 404);
   }
+  await requireSelling(tx, s);
   await requirePro(tx);
   const token = sign({
     purpose: "ordering",

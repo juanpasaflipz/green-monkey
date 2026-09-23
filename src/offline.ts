@@ -1,6 +1,11 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { OrderInput, Session, Product } from "../shared/domain";
+import type { OfflineSale, PaymentAttempt } from "../shared/offline-recovery";
 import { api } from "./api";
+import {
+  evidenceKey,
+  normalizePaymentAttempt,
+} from "../shared/offline-recovery";
 export type Draft = {
   id: string;
   scope: string;
@@ -10,13 +15,16 @@ export type Draft = {
 export type Pending = {
   id: string;
   scope: string;
-  body: any;
+  body: OfflineSale;
+  receipt?: { lines: unknown[]; restaurant: Session["restaurant"] };
   status: "pending" | "syncing" | "conflict" | "synced";
   attempts: number;
   nextAt: number;
   error?: string;
   result?: any;
 };
+export type CachedValue =
+  { id: string; value: unknown } | { id: string; value: PaymentAttempt };
 const db = new Dexie("green-monkey-v1") as Dexie & {
   drafts: EntityTable<Draft, "id">;
   pending: EntityTable<Pending, "id">;
@@ -30,6 +38,17 @@ db.version(1).stores({
 export const scope = (s: Session) =>
   `${s.tenantId}:${s.deviceId}:${s.employeeId}`;
 export { db };
+export async function clearPaymentAttempt(key: string, evidence: unknown) {
+  await db.transaction("rw", db.cache, async () => {
+    const current = await db.cache.get(key);
+    if (
+      current &&
+      evidenceKey(normalizePaymentAttempt(current.value, key)) ===
+        evidenceKey(normalizePaymentAttempt(evidence, key))
+    )
+      await db.cache.delete(key);
+  });
+}
 export async function cacheSession(s: Session, catalog: Product[]) {
   await db.cache.put({ id: "session", value: s });
   await db.cache.put({ id: scope(s) + ":catalog", value: catalog });
@@ -68,12 +87,22 @@ async function syncScopedPending(s: Session, force = false) {
           await db.pending.update(row.id, {
             status: [
               "price_conflict",
+              "offline_drawer_conflict",
+              "offline_context_invalid",
+              "unauthorized",
+              "forbidden",
+              "free_selection_required",
+              "operation_conflict",
+              "settings_changed",
+              "drawer_required",
               "offline_conflict",
               "insufficient_stock",
               "unavailable",
             ].includes(code)
               ? "conflict"
-              : "pending",
+              : row.attempts >= 7
+                ? "conflict"
+                : "pending",
             attempts: row.attempts + 1,
             nextAt:
               Date.now() +

@@ -104,6 +104,16 @@ test("one of three items is paid once and stays allocated after refresh", async 
     page.getByRole("dialog").getByText(/Hay un pago anterior por confirmar/),
   ).toBeVisible();
   await page.screenshot({ path: "docs/evidence/payment-recovery-1440.png" });
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).not.toBeVisible();
+  await page.getByRole("button", { name: /Conectado/ }).click();
+  await expect(
+    page.getByRole("heading", { name: /Pago por confirmar/ }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Consultar estado", exact: true })
+    .click();
+  await expect(page.getByText(/El servidor ya registró este mismo pago/)).toBeVisible();
   await page.reload();
   await expect(
     page.getByRole("heading", { name: "Recibo", exact: true }),

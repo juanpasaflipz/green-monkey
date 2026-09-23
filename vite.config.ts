@@ -1,7 +1,12 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+const buildId =
+  process.env.RAILWAY_GIT_COMMIT_SHA ??
+  process.env.GITHUB_SHA ??
+  `${process.env.npm_package_version ?? "dev"}-${Date.now()}`;
 export default defineConfig({
+  define: { __BUILD_ID__: JSON.stringify(buildId) },
   plugins: [react(), tailwindcss()],
   build: {
     rolldownOptions: {

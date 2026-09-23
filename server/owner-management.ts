@@ -1,3 +1,4 @@
+import { employeeSlot } from "./free-limits.js";
 import { createHmac, randomUUID, randomBytes } from "node:crypto";
 import { z } from "zod";
 import type { Tx } from "./db.js";
@@ -134,11 +135,40 @@ export async function acceptInvitation(
   const [existing] =
     await tx`select employee_id from owner_memberships where tenant_id=${i.tenant_id}`;
   const employeeId = existing?.employee_id ?? randomUUID();
-  if (!existing)
-    await tx`insert into employees(tenant_id,id,name,login,secret_hash,role) values(${i.tenant_id},${employeeId},${account.name},${"account-" + account.id},${password(randomBytes(32).toString("hex"))},${i.role})`;
+  if (!existing) {
+    const slot = await employeeSlot(tx, employeeId, true, i.role);
+    await tx`insert into employees(tenant_id,id,name,login,secret_hash,role,free_slot) values(${i.tenant_id},${employeeId},${account.name},${"account-" + account.id},${password(randomBytes(32).toString("hex"))},${i.role},${slot})`;
+  }
   await tx`update restaurant_invitations set accepted_by=${account.id},accepted_at=now(),employee_id=${employeeId} where id=${i.id}`;
   if (!existing)
     await tx`insert into owner_memberships(account_id,tenant_id,employee_id) values(${account.id},${i.tenant_id},${employeeId})`;
   await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail) values(${i.tenant_id},${randomUUID()},${employeeId},'invitation.accepted',${i.id},${tx.json({ accountId: account.id, role: i.role })})`;
   return { tenantId: i.tenant_id };
+}
+
+export async function selectFreeLocation(
+  tx: Tx,
+  accountId: string,
+  tenantId: string,
+) {
+  z.uuid().parse(tenantId);
+  const r = await owned(tx, accountId, tenantId);
+  await tx`select pg_advisory_xact_lock(hashtextextended(${r.organization_id},921))`;
+  const [location] =
+    await tx`select activation_pending from restaurants where id=${tenantId}`;
+  if (location?.activation_pending)
+    throw new DomainError("location_billing_pending", 409);
+  const previous =
+    await tx`select id from restaurants where organization_id=${r.organization_id} and free_location`;
+  for (const location of previous) {
+    await tx`select set_config('app.tenant_id',${location.id},true)`;
+    await tx`update restaurants set free_location=false where id=${location.id}`;
+  }
+  await tx`select set_config('app.tenant_id',${tenantId},true)`;
+  await tx`update restaurants set free_location=true where id=${tenantId}`;
+  await tx`select set_config('app.tenant_id',${tenantId},true)`;
+  const [m] =
+    await tx`select employee_id from owner_memberships where account_id=${accountId} and tenant_id=${tenantId}`;
+  await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail) values(${tenantId},${randomUUID()},${m.employee_id},'plan.free_location',${tenantId},${tx.json({ organizationId: r.organization_id })})`;
+  return { ok: true };
 }

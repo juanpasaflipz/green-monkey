@@ -391,6 +391,13 @@ export default function App() {
             )}
           </nav>
         )}
+        {session.sellingAllowed === false && (
+          <p role="status" className="warning">
+            {locale === "es"
+              ? "Free: esta sucursal, dispositivo o empleado no está seleccionado para iniciar ventas. El propietario puede cambiar la selección en Cuenta y Configuración. Puedes terminar cobros y consultar registros."
+              : "Free: this location, device or employee is not selected to start sales. The owner can change selections in Account and Settings. You can finish payments and view records."}
+          </p>
+        )}
         {error && (
           <p role="alert" className="error">
             {error}

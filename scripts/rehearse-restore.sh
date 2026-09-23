@@ -26,6 +26,7 @@ if [ "${1:-}" = "--verify" ]; then
   nvm use 24
   export NODE_ENV=development
   export TEST_DATABASE_URL="postgresql://gm_app:local-only-green-monkey@127.0.0.1:55439/$restore_db"
+  export TEST_MIGRATION_DATABASE_URL="postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:55439/$restore_db"
   export TEST_DATABASE_HOST_ALLOWLIST="127.0.0.1:55439/$restore_db"
   npm run test:db
 fi

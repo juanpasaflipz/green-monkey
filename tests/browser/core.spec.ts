@@ -269,12 +269,56 @@ test("offline cash persists and synchronizes after reconnect", async ({
   await page.getByRole("button", { name: "Operación", exact: true }).click();
   await page.getByRole("button", { name: /Sin conexión/ }).click();
   await expect(page.locator(".workspace")).toContainText(
-    "Pendiente de sincronizar",
+    "Efectivo registrado localmente; pendiente en el servidor",
   );
   await page.screenshot({ path: "docs/evidence/offline-queue-1440.png" });
   await context.setOffline(false);
-  await page.getByRole("button", { name: "Reintentar", exact: true }).click();
-  await expect(page.locator(".workspace")).toContainText("Cobrado");
+  const update = await page.evaluate(async () => {
+    const registration = await navigator.serviceWorker.register(
+      "/sw.js?revision=browser-recovery-test",
+    );
+    const worker = registration.installing ?? registration.waiting;
+    if (worker && !["installed", "activated"].includes(worker.state))
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("service_worker_update_timeout")),
+          10000,
+        );
+        worker.addEventListener("statechange", () => {
+          if (["installed", "activated"].includes(worker.state)) {
+            clearTimeout(timeout);
+            resolve();
+          }
+        });
+      });
+    const names = await caches.keys();
+    const updated = names.find((name) =>
+      name.includes("browser-recovery-test"),
+    );
+    const requests = updated
+      ? await (await caches.open(updated)).keys()
+      : [];
+    return {
+      waiting: !!registration.waiting,
+      names,
+      paths: requests.map((request) => new URL(request.url).pathname),
+    };
+  });
+  expect(update.waiting).toBe(true);
+  expect(update.names.some((name) => name.includes("browser-recovery-test"))).toBe(
+    true,
+  );
+  expect(update.paths.some((path) => path.startsWith("/assets/"))).toBe(true);
+  expect(update.paths.some((path) => path.startsWith("/api/"))).toBe(false);
+  await expect(page.locator(".workspace")).toContainText(
+    "Efectivo registrado localmente; pendiente en el servidor",
+  );
+  await page
+    .getByRole("button", { name: "Reintentar sincronización", exact: true })
+    .click();
+  await expect(page.locator(".workspace")).toContainText(
+    "Registrado en el servidor",
+  );
 });
 
 test("QR shares authoritative order pricing and exposes a narrow receipt", async ({

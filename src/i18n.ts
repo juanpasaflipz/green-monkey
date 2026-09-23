@@ -478,6 +478,38 @@ export const errorText: Record<string, [string, string]> = {
     "Selecciona un empleado activo de esta sucursal.",
     "Choose an active employee at this restaurant.",
   ],
+  invalid_backup: [
+    "La copia no es válida o pertenece a otra sucursal.",
+    "The backup is invalid or belongs to another location.",
+  ],
+  offline_context_invalid: [
+    "No se pudo verificar la sesión y caja originales. Conserva la copia para revisión.",
+    "The original session and drawer could not be verified. Keep the backup for review.",
+  ],
+  offline_order_already_exists: [
+    "La orden original ya existe. Revisa sus cobros antes de registrar efectivo adicional.",
+    "The original order already exists. Review its payments before recording additional cash.",
+  ],
+  payment_review_required: [
+    "No se puede reenviar este pago con seguridad. Consulta el resultado y revisa la caja original; no cobres otra vez.",
+    "This payment cannot be retried safely. Check its result and review the original drawer; do not charge again.",
+  ],
+  free_selection_required: [
+    "Selecciona esta sucursal, dispositivo y empleado para Free, o activa Pro, antes de iniciar ventas. Los cobros pendientes y registros se conservan.",
+    "Select this location, device and employee for Free, or activate Pro, before starting sales. Outstanding payments and records are preserved.",
+  ],
+  free_team_limit: [
+    "Free permite dos empleados. Cambia la selección en Configuración o activa Pro.",
+    "Free allows two employees. Change the selection in Settings or activate Pro.",
+  ],
+  owner_role_reserved: [
+    "El rol de propietario se conserva para el propietario existente.",
+    "The owner role is reserved for the existing owner.",
+  ],
+  invalid_selection: [
+    "Selecciona un dispositivo y empleados activos de esta sucursal.",
+    "Select an active device and employees at this location.",
+  ],
   invalid_table: [
     "Selecciona una mesa de esta sucursal para servicio en mesa.",
     "Choose a table at this restaurant for dine-in service.",

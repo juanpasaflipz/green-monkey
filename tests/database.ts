@@ -9,7 +9,9 @@ import { saveProduct } from "../server/management.js";
 import { commitImport } from "../server/imports.js";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import postgres from "postgres";
 import { connect, tenant, checkRole } from "../server/db.js";
+import { isolatedTarget } from "./isolated-target.js";
 import {
   createOrder,
   recordPayment,
@@ -19,17 +21,11 @@ import {
   stock,
 } from "../server/orders.js";
 import type { Session } from "../shared/domain.js";
-const url = process.env.TEST_DATABASE_URL;
-if (!url) throw Error("TEST_DATABASE_URL required");
+const { runtime: url, migration } = isolatedTarget(process.env);
 const u = new URL(url);
 const identity = u.hostname + ":" + (u.port || "5432") + u.pathname;
-if (
-  !u.pathname.endsWith("_test") ||
-  !process.env.TEST_DATABASE_HOST_ALLOWLIST?.split(",").includes(identity) ||
-  process.env.NODE_ENV === "production"
-)
-  throw Error("Unsafe test target refused");
-const sql = connect(url);
+const sql = connect(url),
+  admin = postgres(migration, { max: 1 });
 await checkRole(sql);
 const s: Session = {
   id: randomUUID(),
@@ -49,6 +45,9 @@ const s: Session = {
   },
 };
 let checks = 0;
+const [originalEntitlement] =
+  await admin`select * from restaurant_entitlements where tenant_id=${s.tenantId}`;
+await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source) values(${s.tenantId},'active',now()+interval '1 hour','fixture') on conflict(tenant_id) do update set status='active',access_until=now()+interval '1 hour'`;
 async function test(name: string, fn: () => Promise<void>) {
   await fn();
   checks++;
@@ -592,5 +591,10 @@ try {
   });
   console.log(`${checks} integration checks passed on ${identity}`);
 } finally {
+  if (originalEntitlement)
+    await admin`update restaurant_entitlements set status=${originalEntitlement.status},access_until=${originalEntitlement.access_until},trial_used=${originalEntitlement.trial_used},source=${originalEntitlement.source},stripe_customer_id=${originalEntitlement.stripe_customer_id},stripe_subscription_id=${originalEntitlement.stripe_subscription_id},version=${originalEntitlement.version},updated_at=${originalEntitlement.updated_at} where tenant_id=${s.tenantId}`;
+  else
+    await admin`delete from restaurant_entitlements where tenant_id=${s.tenantId}`;
   await sql.end();
+  await admin.end();
 }

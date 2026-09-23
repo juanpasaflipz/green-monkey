@@ -3,6 +3,7 @@ import { permit, managers } from "./auth.js";
 import { once, audit } from "./orders.js";
 import { restaurantSettings } from "../shared/restaurant.js";
 import { DomainError, type Session } from "../shared/domain.js";
+import { requireSelling } from "./free-limits.js";
 type Settings = {
   name: string;
   currency: string;
@@ -24,6 +25,7 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
   permit(s, ["owner"]);
   const p = restaurantSettings.parse(raw);
   return once(tx, s, p.operationId, "restaurant.settings", p, async () => {
+    await requireSelling(tx, s);
     await tx`select id from restaurants where id=${s.tenantId} for update`;
     const old = await getSettings(tx, s);
     if (old.version !== p.expectedVersion)

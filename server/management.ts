@@ -1,3 +1,5 @@
+import { employeeSlot, requireSelling } from "./free-limits.js";
+import { requirePro } from "./entitlements.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
@@ -33,8 +35,14 @@ export async function saveProduct(tx: Tx, s: Session, raw: unknown) {
     .strict()
     .parse(raw);
   return once(tx, s, p.operationId, "catalog.save", p, async () => {
+    await requireSelling(tx, s);
     const [old] =
       await tx`select data from catalog where id=${p.id} for update`;
+    if (
+      JSON.stringify(old?.data.recipe ?? []) !== JSON.stringify(p.recipe) ||
+      (old?.data.cost ?? null) !== p.cost
+    )
+      await requirePro(tx);
     if ((old?.data.version ?? 0) !== p.expectedVersion)
       throw new DomainError("stale_order", 409);
     if (new Set(p.recipe.map((line) => line.stockId)).size !== p.recipe.length)
@@ -84,7 +92,9 @@ export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
     "employee.save",
     { ...p, secret: hash(p.secret) },
     async () => {
-      await tx`insert into employees(tenant_id,id,name,login,role,secret_hash,active) values(${s.tenantId},${p.id},${p.name},${p.login},${p.role},${password(p.secret)},${p.active}) on conflict(tenant_id,id) do update set name=excluded.name,login=excluded.login,role=excluded.role,secret_hash=excluded.secret_hash,active=excluded.active`;
+      await requireSelling(tx, s);
+      const slot = await employeeSlot(tx, p.id, p.active, p.role);
+      await tx`insert into employees(tenant_id,id,name,login,role,secret_hash,active,free_slot) values(${s.tenantId},${p.id},${p.name},${p.login},${p.role},${password(p.secret)},${p.active},${slot}) on conflict(tenant_id,id) do update set name=excluded.name,login=excluded.login,role=excluded.role,secret_hash=excluded.secret_hash,active=excluded.active,free_slot=excluded.free_slot`;
       await tx`update sessions set revoked=true where employee_id=${p.id}`;
       await audit(tx, s, "employee.saved", p.id, {
         role: p.role,
@@ -112,6 +122,8 @@ export async function receive(tx: Tx, s: Session, raw: unknown) {
     .strict()
     .parse(raw);
   return once(tx, s, p.operationId, "receiving", p, async () => {
+    await requireSelling(tx, s);
+    await requirePro(tx);
     if (new Decimal(p.quantity).lte(0))
       throw new DomainError("invalid_quantity");
     await tx`insert into receipts(tenant_id,id,supplier_id,stock_id,quantity,cost,expires_on) values(${s.tenantId},${p.operationId},${p.supplierId},${p.stockId},${p.quantity},${p.cost},${p.expiresOn})`;

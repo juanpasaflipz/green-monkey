@@ -1,0 +1,65 @@
+name: Qualification
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: gm_provisioner
+          POSTGRES_PASSWORD: local-only-provisioner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gm_provisioner -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: local-only-provisioner
+      DATABASE_URL: postgresql://gm_app:local-only-green-monkey@127.0.0.1:5432/green_monkey_dev
+      MIGRATION_DATABASE_URL: postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_dev
+      TEST_DATABASE_URL: postgresql://gm_app:local-only-green-monkey@127.0.0.1:5432/green_monkey_test
+      TEST_MIGRATION_DATABASE_URL: postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_test
+      TEST_DATABASE_HOST_ALLOWLIST: 127.0.0.1:5432/green_monkey_test
+      ALLOW_DEMO_SEED: green-monkey-local
+      JWT_SECRET: synthetic-ci-only-never-use-outside-disposable-tests-123456789
+      APP_URL: http://127.0.0.1:3002
+      PORT: 3002
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Prepare disposable databases and restricted runtime roles
+        run: |
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/provision-local.sql
+          for database in green_monkey_dev green_monkey_test; do
+            export MIGRATION_DATABASE_URL="postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/$database"
+            npm run db:migrate
+            npm run db:seed
+            npm run db:grants
+          done
+      - run: npm run typecheck && npm run lint && npm test
+      - run: npm run test:db:qualification
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - name: Compiled browser acceptance
+        run: |
+          NODE_ENV=production npm start > /tmp/green-monkey-server.log 2>&1 &
+          node --input-type=module -e 'for(let i=0;i<60;i++){try{if((await fetch("http://127.0.0.1:3002/api/health")).ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
+          TEST_BASE_URL=http://127.0.0.1:3002 TEST_PRODUCTION=1 npm run test:browser
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: qualification-failure
+          path: |
+            playwright-report/
+            test-results/
+            /tmp/green-monkey-server.log

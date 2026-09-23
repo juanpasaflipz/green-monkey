@@ -23,6 +23,7 @@ DATABASE_URL=postgresql://gm_app:local-only-green-monkey@127.0.0.1:55439/green_m
 MIGRATION_DATABASE_URL=postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:55439/green_monkey_dev
 ALLOW_DEMO_SEED=green-monkey-local
 TEST_DATABASE_URL=postgresql://gm_app:local-only-green-monkey@127.0.0.1:55439/green_monkey_test
+TEST_MIGRATION_DATABASE_URL=postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:55439/green_monkey_test
 TEST_DATABASE_HOST_ALLOWLIST=127.0.0.1:55439/green_monkey_test
 JWT_SECRET='''+secrets.token_hex(32)+'\n')
 Path('.env').chmod(0o600)

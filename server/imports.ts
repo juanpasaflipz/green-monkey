@@ -5,6 +5,7 @@ import { DomainError } from "../shared/domain.js";
 import { previewImport } from "../shared/import.js";
 import { hash, permit, managers } from "./auth.js";
 import { audit } from "./orders.js";
+import { requireSelling } from "./free-limits.js";
 export async function commitImport(tx: Tx, s: Session, raw: unknown) {
   permit(s, managers);
   const [restaurant] =
@@ -23,6 +24,7 @@ export async function commitImport(tx: Tx, s: Session, raw: unknown) {
   const [prior] =
     await tx`select * from import_batches where source=${report.source} and file_hash=${fingerprint}`;
   if (prior) return prior.report;
+  await requireSelling(tx, s);
   const batchId = randomUUID();
   await tx`insert into import_batches(tenant_id,id,source,file_hash,report) values(${s.tenantId},${batchId},${report.source},${fingerprint},${tx.json(report)})`;
   for (const r of report.accepted) {

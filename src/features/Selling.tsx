@@ -1,4 +1,5 @@
 import { currencyExponent } from "../../shared/domain";
+import { normalizePaymentAttempt } from "../../shared/offline-recovery";
 import { useEffect, useRef, useState } from "react";
 import {
   Search,
@@ -22,7 +23,7 @@ import {
 } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
 import { api, ApiError } from "../api";
-import { db, scope, type Draft } from "../offline";
+import { clearPaymentAttempt, db, scope, type Draft } from "../offline";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 const fresh = (): OrderInput => ({
   operationId: crypto.randomUUID(),
@@ -87,6 +88,18 @@ export function Selling({
   const activeId = scope(session) + ":active";
   const contextId = scope(session) + ":order";
   const attemptId = scope(session) + ":payment";
+  async function recoverPayment(value: unknown): Promise<Order> {
+    const attempt = normalizePaymentAttempt(value, attemptId);
+    if (!attempt) throw Error("payment_review_required");
+    const status = await api<{
+      state: string;
+      result?: Order;
+      retryAllowed?: boolean;
+    }>("/payments/recovery/status", attempt);
+    if (status.state === "committed" && status.result) return status.result;
+    if (!status.retryAllowed) throw Error("payment_review_required");
+    return api<Order>("/payments/recovery/retry", attempt);
+  }
   useEffect(() => {
     let live = true;
     void db.drafts.get(activeId).then((d) => {
@@ -105,11 +118,8 @@ export function Selling({
         setPendingPayment(!!a);
         try {
           if (a) {
-            const o = await api<Order>(
-              "/orders/" + a.value.orderId + "/payments",
-              a.value.payload,
-            );
-            await db.cache.delete(attemptId);
+            const o = await recoverPayment(a.value);
+            await clearPaymentAttempt(attemptId, a.value);
             if (live) {
               setCurrent(o);
               setReceipt(o);
@@ -257,16 +267,25 @@ export function Selling({
     setError("");
   }
   async function collect() {
+    return navigator.locks.request(
+      "green-monkey-session-transition",
+      { mode: "shared" },
+      () =>
+        navigator.locks.request(
+          "green-monkey-payment:" + scope(session),
+          collectLocked,
+        ),
+    );
+  }
+  async function collectLocked() {
+    let submittedAttempt: unknown;
     setBusy(true);
     setError("");
     try {
       const previous = await db.cache.get(attemptId);
       if (previous) {
-        const result = await api<Order>(
-          `/orders/${previous.value.orderId}/payments`,
-          previous.value.payload,
-        );
-        await db.cache.delete(attemptId);
+        const result = await recoverPayment(previous.value);
+        await clearPaymentAttempt(attemptId, previous.value);
         setCurrent(result);
         setPendingPayment(false);
         setPayment(false);
@@ -283,16 +302,23 @@ export function Selling({
           !cashSession ||
           cashSession.closed_at ||
           method !== "cash" ||
+          session.sellingAllowed === false ||
           new Date(session.offlineUntil) < new Date() ||
           n !== draftTotal ||
           cash < n + tips
         )
           throw new Error("offline_conflict");
         const operationId = paymentKey.current;
+        const receiptSnapshot = {
+          lines: priced,
+          restaurant: session.restaurant,
+        };
         await db.pending.put({
           id: operationId,
           scope: scope(session),
+          receipt: receiptSnapshot,
           body: {
+            formatVersion: 2,
             operationId,
             order: draft,
             expectedTotal: draftTotal,
@@ -301,6 +327,14 @@ export function Selling({
             recordedAt: new Date().toISOString(),
             sessionId: session.id,
             cashSessionId: cashSession.id,
+            tenantId: session.tenantId,
+            employeeId: session.employeeId,
+            deviceId: session.deviceId,
+            leaseVersion: session.offlineLeaseVersion ?? 0,
+            currency: session.restaurant.currency,
+            currencyExponent: exponent,
+            configurationVersion: session.restaurant.configVersion ?? null,
+            receiptSnapshot,
           },
           status: "pending",
           attempts: 0,
@@ -341,10 +375,21 @@ export function Selling({
         reference,
         ...(splitItems ? { items: selectedItems } : {}),
       };
-      await db.cache.put({ id: attemptId, value: { orderId: o.id, payload } });
+      submittedAttempt = {
+        formatVersion: 1,
+        tenantId: session.tenantId,
+        employeeId: session.employeeId,
+        deviceId: session.deviceId,
+        sessionId: session.id,
+        cashSessionId: cashSession.id,
+        orderId: o.id,
+        createdAt: new Date().toISOString(),
+        payload,
+      };
+      await db.cache.put({ id: attemptId, value: submittedAttempt });
       setPendingPayment(true);
       const result = await api<Order>(`/orders/${o.id}/payments`, payload);
-      await db.cache.delete(attemptId);
+      await clearPaymentAttempt(attemptId, submittedAttempt);
       setCurrent(result);
       setPendingPayment(false);
       setPayment(false);
@@ -352,11 +397,12 @@ export function Selling({
       paymentKey.current = crypto.randomUUID();
     } catch (e) {
       if (
+        submittedAttempt &&
         e instanceof ApiError &&
         [400, 404, 409].includes(e.status) &&
         e.message !== "operation_conflict"
       )
-        await db.cache.delete(attemptId);
+        await clearPaymentAttempt(attemptId, submittedAttempt);
       setPendingPayment(!!(await db.cache.get(attemptId)));
       setError(translateError((e as Error).message, locale));
     } finally {
@@ -948,6 +994,15 @@ export function Selling({
                   session.restaurant.timezone,
               })}
             </p>
+            {receipt.recovery && (
+              <p>
+                {locale === "es"
+                  ? "Efectivo conciliado. Cocina e inventario requieren revisión manual."
+                  : "Cash reconciled. Kitchen and inventory require manual review."}
+                <br />
+                {receipt.recovery.reason}
+              </p>
+            )}
             {receipt.lines.map((l) => (
               <div className="row between" key={l.id}>
                 <span>

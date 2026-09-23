@@ -16,6 +16,7 @@ type Account = {
     currency: string;
     timezone: string;
     activation_pending: boolean;
+    free_location: boolean;
     organization_id: string;
   }[];
 };

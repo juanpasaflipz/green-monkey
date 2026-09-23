@@ -60,3 +60,5 @@ export const PRO_OFFER = {
 } as const;
 export const PRO_ANNUAL_SAVING_MINOR =
   PRO_OFFER.monthlyMinor * 12 - PRO_OFFER.annualMinor;
+
+export const FREE_LIMITS = { devices: 1, employees: 2 } as const;

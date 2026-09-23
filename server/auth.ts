@@ -1,3 +1,4 @@
+import { sellingAllowed } from "./free-limits.js";
 import {
   randomBytes,
   scryptSync,
@@ -60,7 +61,13 @@ export function authentication(sql: postgres.Sql) {
         throw new DomainError("session_changed", 409);
       const session = await tenant(sql, c.tenantId, async (tx) => {
         const [s] =
-          await tx`select s.*,e.name,e.role,r.name as restaurant_name,r.currency,r.timezone,r.cutoff from sessions s join employees e on e.tenant_id=s.tenant_id and e.id=s.employee_id join devices d on d.tenant_id=s.tenant_id and d.id=s.device_id join restaurants r on r.id=s.tenant_id where s.id=${c.id} and s.token_hash=${hash(c.token)} and not s.revoked and s.expires_at>now() and e.active and d.active and d.id=${device.id} and d.token_hash=${hash(device.token)}`;
+          await tx`select s.*,e.name,e.role,r.name as restaurant_name,r.currency,r.timezone,r.cutoff,r.config_version,
+            (select contract_version from offline_leases l where l.session_id=s.id) as offline_lease_version
+          from sessions s join employees e on e.tenant_id=s.tenant_id and e.id=s.employee_id
+          join devices d on d.tenant_id=s.tenant_id and d.id=s.device_id
+          join restaurants r on r.id=s.tenant_id
+          where s.id=${c.id} and s.token_hash=${hash(c.token)} and not s.revoked and s.expires_at>now()
+            and e.active and d.active and d.id=${device.id} and d.token_hash=${hash(device.token)}`;
         if (!s) throw new DomainError("unauthorized", 401);
         if (s.owner_account_id) {
           await tx`select set_config('app.account_id',${s.owner_account_id},true)`;
@@ -71,6 +78,7 @@ export function authentication(sql: postgres.Sql) {
           if (!owner) throw new DomainError("unauthorized", 401);
         }
         return {
+          sellingAllowed: await sellingAllowed(tx, s.employee_id, s.device_id),
           id: s.id,
           tenantId: s.tenant_id,
           employeeId: s.employee_id,
@@ -79,12 +87,14 @@ export function authentication(sql: postgres.Sql) {
           deviceId: s.device_id,
           expiresAt: s.expires_at.toISOString(),
           offlineUntil: s.offline_until.toISOString(),
+          offlineLeaseVersion: s.offline_lease_version,
           csrf: s.csrf,
           restaurant: {
             name: s.restaurant_name,
             currency: s.currency,
             timezone: s.timezone,
             cutoff: s.cutoff,
+            configVersion: s.config_version,
           },
         } as Session;
       });
