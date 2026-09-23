@@ -1,4 +1,4 @@
-/* global process, URL, document, innerWidth, console */
+/* global process, URL, document, innerWidth, console, crypto */
 import { chromium } from "@playwright/test";
 import { expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
@@ -22,6 +22,15 @@ page.setDefaultTimeout(30000);
 const errors = [];
 page.on("pageerror", (e) => errors.push(e.message));
 const evidence = "docs/evidence/staging";
+let originalSelection, session;
+const post = async (path, data) => {
+  const response = await context.request.post(path, {
+    data,
+    headers: { "x-csrf-token": session.csrf },
+  });
+  expect(response.ok(), await response.text()).toBe(true);
+  return response.json();
+};
 await mkdir(evidence, { recursive: true });
 try {
   const health = await context.request.get("/api/health");
@@ -35,6 +44,17 @@ try {
   await expect(
     page.getByRole("heading", { name: "Hoy", exact: true }),
   ).toBeVisible();
+  session = await (await context.request.get("/api/session")).json();
+  originalSelection = await (
+    await context.request.get("/api/plan/selection")
+  ).json();
+  await post("/api/plan/selection", {
+    deviceId: session.deviceId,
+    employeeIds: originalSelection.employees
+      .filter((e) => e.free_slot)
+      .map((e) => e.id),
+  });
+  await page.reload();
   const cookies = await context.cookies();
   for (const name of ["gm_session", "gm_device"]) {
     const cookie = cookies.find((c) => c.name === name);
@@ -99,6 +119,23 @@ try {
     .click();
   await expect(page.locator(".receipt")).toContainText("Cobrado");
   await page.screenshot({ path: `${evidence}/receipt-1440.png` });
+  const cash = await (await context.request.get("/api/cash")).json();
+  const tender = cash.tenders.at(-1);
+  expect(tender.amount).toBeGreaterThan(0);
+  await post("/api/refunds", {
+    operationId: crypto.randomUUID(),
+    tenderId: tender.id,
+    amount: tender.amount,
+    reason: "Reverse synthetic staging smoke cash",
+    disposition: "no_stock_return",
+  });
+  const finalCash = await (await context.request.get("/api/cash")).json();
+  expect(finalCash.refunds).toHaveLength(1);
+  await post("/api/cash/close", {
+    operationId: crypto.randomUUID(),
+    counted: finalCash.expected,
+    reason: "Synthetic staging smoke complete",
+  });
   await page
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();
@@ -126,6 +163,8 @@ try {
           "ready",
           "cash payment",
           "receipt",
+          "cash refund",
+          "drawer close",
           "axe selling",
         ],
         axeViolations: a11y.violations.length,
@@ -142,5 +181,15 @@ try {
   await page.screenshot({ path: `${evidence}/failure.png` });
   throw e;
 } finally {
+  if (originalSelection && session) {
+    const device = originalSelection.devices.find((d) => d.free_slot);
+    if (device)
+      await post("/api/plan/selection", {
+        deviceId: device.id,
+        employeeIds: originalSelection.employees
+          .filter((e) => e.free_slot)
+          .map((e) => e.id),
+      });
+  }
   await browser.close();
 }

@@ -1,9 +1,9 @@
 {
-  "verifiedAt": "2026-09-15T05:55:56.687Z",
+  "verifiedAt": "2026-09-23T04:40:55.754Z",
   "origin": "https://green-monkey-staging.up.railway.app",
   "version": {
     "version": "0.1.0",
-    "commit": "55badcd92f83cbc5149159969889a33303d0b72a"
+    "commit": "b05c6a422c4fc4ca5330cb6a7f42a1098a0a58d2"
   },
   "sandbox": true,
   "syntheticIdentity": true,
@@ -19,7 +19,7 @@
   "guestBillingDenied": true,
   "canceledBothToFree": true,
   "tenants": [
-    "9189c4b2-2d0d-4884-8616-160d89845a2f",
-    "373b6be5-9b51-4a25-9d37-2808326a542d"
+    "6ac25600-fd3b-4ea2-a7a1-f02bf6140bce",
+    "968d6283-704c-4e40-bc89-31098ebea1ce"
   ]
 }

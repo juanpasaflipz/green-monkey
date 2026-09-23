@@ -1,5 +1,23 @@
 # Staging operation and verification
 
+September 23 staging checkpoint: Railway deployment
+`35e6fab1-0774-4e43-87ac-6262da6324fd` serves
+`b05c6a422c4fc4ca5330cb6a7f42a1098a0a58d2` at the authorized staging URL.
+Health and version pass. A fresh restricted backup preceded additive migrations
+016–020 and reviewed runtime grants. Source-only upload excluded private files.
+Deployed checks passed: 13 tenant-isolation checks; 12 recovery/Free-selection
+checks including original closed-drawer recognition, duplicate replay, replacement
+device, task resolution, refund and repeatable browser backup restore/download;
+browser cash/KDS/refund/close, four viewports
+and zero selling accessibility violations; real Stripe sandbox two-location trial,
+invitation/switching, preserved trial end and cancellation of both locations to Free.
+Evidence is under `docs/evidence/staging/`. Synthetic fixtures remain for audit;
+no live charges or production cutover occurred. Printer and restaurant payment
+providers remain disabled because none are selected. M3 still needs the remaining
+exact-candidate paid-upgrade/restart/trial-expiry evidence;
+M4–M11 remain required. This is not full product completion.
+
+
 Latest billing qualification: deployment `d0178bd6-4861-43e1-8699-e4056e6d5587`
 serves `fc939bc`, with migrations through 013 and sandbox billing enabled.
 See [billing evidence](BILLING_IMPLEMENTATION.md). The pre-billing backup is

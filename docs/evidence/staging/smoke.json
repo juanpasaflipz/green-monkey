@@ -1,7 +1,7 @@
 {
   "url": "https://green-monkey-staging.up.railway.app",
-  "at": "2026-09-13T05:44:24.434Z",
-  "callName": "Staging smoke 1789278259942",
+  "at": "2026-09-23T04:40:05.932Z",
+  "callName": "Staging smoke 1790138397598",
   "checks": [
     "health",
     "anonymous session denied",
@@ -14,8 +14,11 @@
     "ready",
     "cash payment",
     "receipt",
+    "cash refund",
+    "drawer close",
     "axe selling"
   ],
   "axeViolations": 0,
-  "pageErrors": []
+  "pageErrors": [],
+  "commit": "b05c6a422c4fc4ca5330cb6a7f42a1098a0a58d2"
 }

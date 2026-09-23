@@ -11,9 +11,9 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | Milestone | Status | Next action |
 | --- | --- | --- |
 | M0 baseline | complete locally | Preserve checkpoints and applied migration checksums |
-| M1 Free limits | local/Neon qualification exists | Qualify exact candidate on staging after M2 gate |
-| M2 recovery | local and Neon qualification passed | Exact-candidate staging evidence remains in M3 |
-| M3 staging candidate | not started for this candidate | Meet M2 gate, back up isolated staging, migrate and verify revision |
+| M1 Free limits | local/Neon and deployed device selection passed | Remaining combined entitlement scenarios in M3 |
+| M2 recovery | local/Neon and deployed recovery HTTP passed | Deployed backup restore/download also passed; combined billing cases remain |
+| M3 staging candidate | deployed; core flows passed | Finish remaining exact-candidate sandbox billing cases; see STAGING.md |
 | M4 selling/pricing/cash/kitchen | partial | Combos/open amounts, promotions, approvals, cancellations, saved drafts |
 | M5 jobs/printing/merchant payments | incomplete | Durable delivery infrastructure; device/provider selection is absent |
 | M6 inventory/procurement | partial | Purchase orders, substitutions, lots, yields, saved counts |

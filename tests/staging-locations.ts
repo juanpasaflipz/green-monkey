@@ -20,7 +20,10 @@ if (
     process.env.QUALIFICATION_DATABASE_ALLOWLIST
 )
   throw Error("explicit_staging_locations_target_required");
-const path = "work/billing/staging-locations.json";
+const runLabel = process.env.QUALIFICATION_RUN ?? "";
+if (!/^[a-z0-9-]{0,64}$/.test(runLabel))
+  throw Error("invalid_qualification_run");
+const path = `work/billing/staging-locations${runLabel ? "-" + runLabel : ""}.json`;
 type State = {
   subject: string;
   guestSubject: string;
@@ -199,7 +202,7 @@ try {
   assert.notEqual(secondSession.tenantId, firstSession.tenantId);
   await api("/api/catalog", undefined, undefined, 409, {
     "x-tenant-id": firstSession.tenantId,
-      "x-session-id": firstSession.id,
+    "x-session-id": firstSession.id,
   });
   await api(
     "/api/auth/account/enter",

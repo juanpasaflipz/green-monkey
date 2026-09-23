@@ -1,13 +1,13 @@
 {
-  "at": "2026-09-14T13:24:22.429Z",
+  "at": "2026-09-23T04:37:25.539Z",
   "origin": "https://green-monkey-staging.up.railway.app",
-  "run": "87333bec-74b4-4d0f-82dc-b4a52aa01f47",
+  "run": "772e4ae4-30ce-4e4c-97a9-502f658389c5",
   "identity": "synthetic fixture; not a Google OAuth proof",
   "tenantIds": [
-    "4aef1825-9f93-4be7-9880-58baf20d5430",
-    "583529cd-ad11-4803-b867-3b796568411d"
+    "e24eb81d-4002-4c48-9cfb-3ddfe754de6e",
+    "53877fde-80d6-43ff-9770-7db2fa4e5458"
   ],
-  "orderId": "144f6805-a2a8-4c30-a539-b5b20a2b01ef",
+  "orderId": "b27ed00f-9c09-409f-b95e-42fd6caaedd0",
   "checks": [
     "equal-email identities have separate restaurants",
     "signup CSRF rejected",
@@ -24,5 +24,6 @@
     "other tenant session unaffected"
   ],
   "fixturesRetained": true,
-  "chargesCreated": false
+  "chargesCreated": false,
+  "commit": "b05c6a422c4fc4ca5330cb6a7f42a1098a0a58d2"
 }
