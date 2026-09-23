@@ -355,7 +355,7 @@ try {
   );
 
   const refundDrawer = randomUUID();
-  await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening) values(${tenantId},${refundDrawer},${deviceId},${employeeId},0)`;
+  await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at) values(${tenantId},${refundDrawer},${deviceId},${employeeId},0,now()-interval '1 minute')`;
   const refunded = await run((tx) =>
     refund(tx, s, {
       operationId: randomUUID(),
@@ -407,7 +407,7 @@ try {
   );
 
   const lastDrawer = randomUUID();
-  await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening) values(${tenantId},${lastDrawer},${deviceId},${employeeId},0)`;
+  await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at) values(${tenantId},${lastDrawer},${deviceId},${employeeId},0,now()-interval '1 minute')`;
   const beforeClose = { ...sale(2), cashSessionId: lastDrawer };
   let closingStarted!: () => void, allowClose!: () => void;
   const started = new Promise<void>((resolve) => {

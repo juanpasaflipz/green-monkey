@@ -309,6 +309,8 @@ test("offline cash persists and synchronizes after reconnect", async ({
     true,
   );
   expect(update.paths.some((path) => path.startsWith("/assets/"))).toBe(true);
+  expect(update.paths.some((path) => path.startsWith("/assets/App-"))).toBe(true);
+  expect(update.paths.some((path) => path.startsWith("/assets/dexie-"))).toBe(true);
   expect(update.paths.some((path) => path.startsWith("/api/"))).toBe(false);
   await expect(page.locator(".workspace")).toContainText(
     "Efectivo registrado localmente; pendiente en el servidor",
