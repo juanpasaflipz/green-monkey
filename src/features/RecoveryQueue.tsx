@@ -30,6 +30,7 @@ export function RecoveryQueue({
   const es = locale === "es",
     manager = ["owner", "manager"].includes(session.role);
   const [rows, setRows] = useState<Pending[]>([]),
+    [persistent, setPersistent] = useState<boolean | null>(null),
     [attempts, setAttempts] = useState<
       { key: string; attempt: PaymentAttempt }[]
     >([]),
@@ -83,6 +84,10 @@ export function RecoveryQueue({
     if (manager) setRecoveries(await api("/sync/recoveries"));
   }
   useEffect(() => {
+    void navigator.storage
+      ?.persisted?.()
+      .then(setPersistent)
+      .catch(() => {});
     const refresh = () =>
       void load().catch((e: Error) =>
         setError(translateError(e.message, locale)),
@@ -143,6 +148,32 @@ export function RecoveryQueue({
           ? "Las ventas pendientes viven en este navegador. No borres sus datos. Descarga una copia antes de cambiar de dispositivo. Un gerente de esta sucursal puede conciliar ventas de sesiones o dispositivos anteriores."
           : "Pending sales live in this browser. Do not clear its data. Download a copy before replacing the device. A manager at this location can reconcile sales from previous sessions or devices."}
       </p>
+      <p>
+        {es
+          ? "Si se borran los datos del navegador sin una copia, las ventas no sincronizadas no se pueden recuperar."
+          : "If browser data is erased without a backup, unsynchronized sales cannot be recovered."}
+      </p>
+      <p role="status">
+        {persistent === true
+          ? es
+            ? "Conservación local concedida; no sustituye una copia y los datos aún pueden borrarse manualmente."
+            : "Local persistence granted; it does not replace a backup and data can still be cleared manually."
+          : es
+            ? "La conservación de datos locales no está garantizada. Descarga una copia."
+            : "Local data retention is not guaranteed. Download a backup."}
+      </p>
+      {navigator.storage?.persist && persistent !== true && (
+        <Button
+          disabled={busy}
+          onClick={() =>
+            void run(async () =>
+              setPersistent(await navigator.storage.persist()),
+            )
+          }
+        >
+          {es ? "Solicitar conservación local" : "Request local persistence"}
+        </Button>
+      )}
       {error && <p role="alert">{error}</p>}
       <div className="row">
         <Button

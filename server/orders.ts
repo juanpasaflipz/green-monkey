@@ -238,7 +238,10 @@ export async function addRound(
       await requireSelling(tx, s);
       const [o] = await tx`select * from orders where id=${orderId} for update`;
       if (!o) throw new DomainError("not_found", 404);
-      if (o.version !== input.expectedVersion || o.state === "completed")
+      if (
+        o.version !== input.expectedVersion ||
+        ["completed", "recovery_pending", "recovery_reviewed"].includes(o.state)
+      )
         throw new DomainError("stale_order", 409);
       const lines = quote(
         input.lines,

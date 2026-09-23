@@ -49,6 +49,7 @@ jobs:
       - run: npm run typecheck && npm run lint && npm test
       - run: npm run test:db:qualification
       - run: npm run build
+      - run: npm run test:restart
       - run: npx playwright install --with-deps chromium
       - name: Compiled browser acceptance
         run: |

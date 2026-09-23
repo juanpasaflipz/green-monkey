@@ -20,7 +20,7 @@ import {
   refund,
 } from "../server/operations.js";
 import { currencyExponent, type Session } from "../shared/domain.js";
-import { createOrder } from "../server/orders.js";
+import { addRound, createOrder } from "../server/orders.js";
 import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
@@ -297,6 +297,16 @@ try {
   assert.equal(recovered.id, replay.id, "reconciliation is exactly once");
   assert.equal(recovered.state, "recovery_pending");
   assert.equal(recovered.lines.length, 0, "historical items are not invented");
+  await assert.rejects(
+    run((tx) =>
+      addRound(tx, s, recovered.id, {
+        ...sale(1).order,
+        expectedVersion: recovered.version,
+      }),
+    ),
+    /stale_order/,
+    "financial recovery cannot be reopened as a fulfillment order",
+  );
   assert.deepEqual(recovered.recovery?.fulfillment, "pending");
   assert.deepEqual(recovered.recovery?.stock, "pending");
   const [evidence] =

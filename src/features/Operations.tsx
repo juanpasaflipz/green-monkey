@@ -224,7 +224,7 @@ export function Operations({
                           {t("resume")}
                           <ArrowUpRight size={16} />
                         </Button>
-                        {o.state !== "completed" && (
+                        {o.state !== "completed" && !o.recovery && (
                           <Button onClick={() => setServiceOrder(o)}>
                             {t("assignService")}
                           </Button>

@@ -44,12 +44,13 @@ test("manager reconciles offline cash and resolves kitchen and stock follow-ups"
   });
   expect(product).toBeTruthy();
   const cookies = await context.cookies();
-  const api = await playwrightRequest.newContext({
+  let api = await playwrightRequest.newContext({
     baseURL,
     extraHTTPHeaders: {
       cookie: cookies.map(({ name, value }) => `${name}=${value}`).join("; "),
     },
   });
+  let currentCsrf = session.csrf;
   let catalogChanged = false;
   try {
     await context.setOffline(true);
@@ -126,6 +127,26 @@ test("manager reconciles offline cash and resolves kitchen and stock follow-ups"
       },
     });
     expect(closed.ok(), await closed.text()).toBe(true);
+    await page.getByRole("button", { name: "Salir", exact: true }).click();
+    await context.clearCookies();
+    await login(page);
+    const replacement = await page.evaluate(async () =>
+      (await fetch("/api/session")).json(),
+    );
+    expect(replacement.tenantId).toBe(session.tenantId);
+    expect(replacement.deviceId).not.toBe(session.deviceId);
+    expect(replacement.id).not.toBe(session.id);
+    currentCsrf = replacement.csrf;
+    await api.dispose();
+    const replacementCookies = await context.cookies();
+    api = await playwrightRequest.newContext({
+      baseURL,
+      extraHTTPHeaders: {
+        cookie: replacementCookies
+          .map(({ name, value }) => `${name}=${value}`)
+          .join("; "),
+      },
+    });
     await page.getByRole("button", { name: /Conectado/ }).click();
     await expect(
       page.getByRole("button", { name: "Revisar efectivo", exact: true }),
@@ -189,11 +210,48 @@ test("manager reconciles offline cash and resolves kitchen and stock follow-ups"
         ),
       ).toBe(true);
     }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const cases = await (await api.get("/api/sync/recoveries")).json();
+    const recoveredCase = cases.find(
+      (item: any) => item.reason === recoveryReason,
+    );
+    const recoveredOrder = await (
+      await api.get(`/api/orders/${recoveredCase.order_id}`)
+    ).json();
+    expect(recoveredOrder.itemSplitAvailable).toBe(false);
+    expect(recoveredOrder.paymentUnits).toEqual([]);
+    await page.getByRole("button", { name: "Abrir caja", exact: true }).click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Guardar", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    const recoveredCard = page
+      .locator(".order-summary")
+      .filter({ hasText: new RegExp(`#${recoveredOrder.number} ·`) });
+    await recoveredCard
+      .getByRole("button", { name: "Reembolsar", exact: true })
+      .click();
+    const refund = page.getByRole("dialog");
+    await refund.getByLabel("Importe", { exact: true }).fill("1.00");
+    await refund
+      .getByLabel("Explicación")
+      .fill("Reembolso del efectivo recuperado verificado");
+    await refund
+      .locator('select[name="disposition"]')
+      .selectOption("no_stock_return");
+    await refund.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(recoveredCard).toContainText("Reembolsado");
+    const refunded = await (
+      await api.get(`/api/orders/${recoveredOrder.id}`)
+    ).json();
+    expect(refunded.refunded).toBe(100);
+    expect(refunded.tenders).toHaveLength(1);
   } finally {
     await context.setOffline(false).catch(() => {});
     if (catalogChanged) {
       const restored = await api.post("/api/catalog/save", {
-        headers: { "x-csrf-token": session.csrf },
+        headers: { "x-csrf-token": currentCsrf },
         data: {
           operationId: crypto.randomUUID(),
           id: product.id,
@@ -265,12 +323,31 @@ test("backup restore is tenant-bound, atomic, repeatable and preserves original 
     };
   };
   const sales = [makeSale("JPY", 0), makeSale("KWD", 3)];
+  const attempt = {
+    formatVersion: 1,
+    tenantId: session.tenantId,
+    employeeId: session.employeeId,
+    deviceId: sales[0].body.deviceId,
+    sessionId: crypto.randomUUID(),
+    cashSessionId: crypto.randomUUID(),
+    orderId: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    payload: {
+      operationId: crypto.randomUUID(),
+      amount: 100,
+      tip: 0,
+      received: 100,
+      method: "cash",
+      externalConfirmed: false,
+      reference: "",
+    },
+  };
   const backup = {
     format: "green-monkey-recovery-v2",
     tenantId: session.tenantId,
     exportedAt: new Date().toISOString(),
     sales,
-    paymentAttempts: [],
+    paymentAttempts: [attempt],
   };
   const send = async (value: unknown) =>
     upload.setInputFiles({
@@ -337,6 +414,32 @@ test("backup restore is tenant-bound, atomic, repeatable and preserves original 
     retained.find((row) => row.id === sales[0].id).body.expectedTotal,
   ).toBe(1234);
   expect(retained.some((row) => row.id === newSale.id)).toBe(false);
+  await send({
+    ...backup,
+    sales: [newSale],
+    paymentAttempts: [
+      { ...attempt, payload: { ...attempt.payload, amount: 99 } },
+    ],
+  });
+  await expect(page.getByRole("alert")).toBeVisible();
+  expect(await records()).toHaveLength(2);
+  await expect(
+    page.getByRole("heading", { name: /Pago por confirmar/ }),
+  ).toBeVisible();
+  const downloadEvent = page.waitForEvent("download");
+  await page
+    .getByRole("button", { name: "Descargar pendientes", exact: true })
+    .click();
+  const download = await downloadEvent;
+  const stream = await download.createReadStream();
+  const chunks = [];
+  for await (const chunk of stream!) chunks.push(chunk);
+  const exported = JSON.parse(Buffer.concat(chunks).toString());
+  expect(exported.paymentAttempts).toEqual([attempt]);
+  expect(exported.sales).toHaveLength(2);
+  await expect(
+    page.getByText(/ventas no sincronizadas no se pueden recuperar/),
+  ).toBeVisible();
   // Replacement-device records remain visible to a manager after a fresh page load.
   await page.reload();
   await page.getByRole("button", { name: "Operación", exact: true }).click();
