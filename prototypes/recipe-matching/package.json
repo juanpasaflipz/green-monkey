@@ -1,0 +1,20 @@
+{
+  "name": "recipe-matching-prototype",
+  "version": "1.0.0",
+  "description": "Prototype: TypeSafe-assisted legacy recipe to menu item matching",
+  "scripts": {
+    "match": "tsx src/run.ts",
+    "match:dry": "tsx src/run.ts --dry-run",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module",
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}
