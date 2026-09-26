@@ -37,7 +37,6 @@ import {
   authentication,
   type AuthRequest,
   hash,
-  matches,
   sign,
   verify,
   cookieOptions,
@@ -60,6 +59,12 @@ import { saveProduct, saveEmployee, receive } from "./management.js";
 import { previewImport } from "../shared/import.js";
 import { commitImport } from "./imports.js";
 import { cashHistory, cashSummary, closeCash, refund } from "./operations.js";
+import {
+  acknowledgeVoids,
+  checkEmployeeSecret,
+  verifyApproval,
+  voidLines,
+} from "./voids.js";
 import { requireReadySchema } from "./readiness.js";
 import { issueOfflineLease } from "./offline-leases.js";
 import {
@@ -129,10 +134,11 @@ app.post(
         .strict()
         .parse(req.body);
       const result = await tenant(sql, p.tenantId, async (tx) => {
-        const [e] =
-          await tx`select * from employees where login=${p.login} and active`;
-        if (!e || !matches(p.secret, e.secret_hash))
-          throw new DomainError("invalid_login", 401);
+        // A wrong secret must commit its failed-attempt count, so it returns a
+        // marker instead of throwing inside this transaction.
+        const check = await checkEmployeeSecret(tx, p.login, p.secret);
+        if (check.outcome !== "ok") return { rejected: check.outcome } as const;
+        const e = check.employee;
         let device;
         try {
           device = verify(req.cookies.gm_device ?? "");
@@ -162,6 +168,10 @@ app.post(
           session: { id: sessionId, tenantId: p.tenantId, token },
         };
       });
+      if ("rejected" in result)
+        throw result.rejected === "locked"
+          ? new DomainError("pin_locked", 423)
+          : new DomainError("invalid_login", 401);
       res.cookie("gm_device", sign(result.device), {
         ...cookieOptions,
         maxAge: 30 * 86400_000,
@@ -271,6 +281,24 @@ route("post", "/payments/recovery/retry", (tx, s, req) =>
   retryPaymentRecovery(tx, s, req.body),
 );
 route("post", "/refunds", async (tx, s, req) => refund(tx, s, req.body));
+app.post("/api/orders/:id/voids", async (req, res, next) => {
+  try {
+    const s = (req as unknown as AuthRequest).session;
+    const orderId = id.parse(req.params.id);
+    // Approval is checked in its own transaction so failed PINs are counted.
+    const approverId = await verifyApproval(sql, s, req.body?.approval);
+    res.json(
+      await tenant(sql, s.tenantId, (tx) =>
+        voidLines(tx, s, orderId, req.body, approverId),
+      ),
+    );
+  } catch (e) {
+    next(e);
+  }
+});
+route("post", "/kitchen/:id/voids/ack", (tx, s, req) =>
+  acknowledgeVoids(tx, s, id.parse(req.params.id), req.body),
+);
 route("post", "/settlements", async (tx, s, req) => {
   permit(s, operators);
   const p = z
@@ -332,7 +360,7 @@ route("get", "/operations/:id", async (tx, s, req) => {
 });
 route("get", "/kitchen", async (tx, s) => {
   permit(s, ["owner", "manager", "kitchen", "server", "cashier"]);
-  return tx`select r.*,o.number as order_number,o.name,o.mode,o.table_id,(select name from dining_tables t where t.id=o.table_id) as table_name,(select name from employees e where e.id=coalesce(o.assigned_employee_id,o.employee_id)) as waiter_name,o.service_version,(select jsonb_agg(l.data) from order_lines l where l.order_id=o.id and l.round=r.number and l.data->>'station'=r.station) as lines from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id where r.state<>'completed' order by r.created_at`;
+  return tx`select r.*,o.number as order_number,o.name,o.mode,o.table_id,(select name from dining_tables t where t.id=o.table_id) as table_name,(select name from employees e where e.id=coalesce(o.assigned_employee_id,o.employee_id)) as waiter_name,o.service_version,(select jsonb_agg(l.data || jsonb_build_object('voidedQuantity',coalesce((select sum(cardinality(v.units)) from line_voids v where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) order by l.id) from order_lines l where l.order_id=o.id and l.round=r.number and l.data->>'station'=r.station) as lines,(select jsonb_agg(jsonb_build_object('id',v.id,'lineId',v.line_id,'quantity',cardinality(v.units),'name',l.data->'name','reason',v.reason,'createdAt',v.created_at) order by v.created_at) from line_voids v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id where v.order_id=o.id and l.round=r.number and l.data->>'station'=r.station and v.kitchen_ack_required and v.kitchen_acknowledged_at is null) as pending_voids from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id where r.state<>'completed' order by r.created_at`;
 });
 route("post", "/kitchen/:id", (tx, s, req) =>
   progressPreparation(tx, s, id.parse(req.params.id), req.body),

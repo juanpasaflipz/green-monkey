@@ -22,3 +22,5 @@ GRANT UPDATE(revoked,accepted_by,accepted_at,employee_id) ON restaurant_invitati
 GRANT UPDATE(free_location) ON restaurants TO gm_app;
 GRANT SELECT,INSERT ON offline_leases,offline_recoveries,offline_recovery_tasks TO gm_app;
 GRANT UPDATE(state,resolved_by,resolution,resolved_at) ON offline_recovery_tasks TO gm_app;
+GRANT SELECT,INSERT ON line_voids TO gm_app;
+GRANT UPDATE(kitchen_acknowledged_at,kitchen_acknowledged_by) ON line_voids TO gm_app;

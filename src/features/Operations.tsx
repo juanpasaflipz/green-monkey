@@ -3,6 +3,8 @@ import { RecoveryQueue } from "./RecoveryQueue";
 import { FreeSelection } from "./FreeSelection";
 import { PlanSettings } from "./PlanSettings";
 import { ServiceAssignment } from "./ServiceAssignment";
+import { VoidDialog } from "./VoidDialog";
+import { lineRemaining } from "../../shared/settlement";
 import { RestaurantSettings } from "./RestaurantSettings";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
@@ -45,6 +47,7 @@ export function Operations({
   const [orders, setOrders] = useState<Order[]>([]);
   const [busy, setBusy] = useState(false);
   const [serviceOrder, setServiceOrder] = useState<Order | null>(null);
+  const [voidOrder, setVoidOrder] = useState<Order | null>(null);
   const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
   const [station, setStation] = useState("kitchen");
   const [detail, setDetail] = useState<any[] | null>(null);
@@ -119,6 +122,16 @@ export function Operations({
   const manager = ["owner", "manager"].includes(session.role);
   return (
     <>
+      {voidOrder && (
+        <VoidDialog
+          order={voidOrder}
+          session={session}
+          locale={locale}
+          money={m}
+          close={() => setVoidOrder(null)}
+          saved={load}
+        />
+      )}
       {serviceOrder && (
         <ServiceAssignment
           order={serviceOrder}
@@ -202,9 +215,39 @@ export function Operations({
                         </p>
                         <p>
                           {o.lines
-                            .map((l) => `${l.quantity} ${l.name[locale]}`)
+                            .filter((l) => lineRemaining(l).quantity > 0)
+                            .map(
+                              (l) =>
+                                `${lineRemaining(l).quantity} ${l.name[locale]}`,
+                            )
                             .join(" · ")}
                         </p>
+                        {!!o.voids?.length && (
+                          <details className="void-history">
+                            <summary>
+                              {t("voidHistory")} ({o.voids.length})
+                            </summary>
+                            <ul>
+                              {o.voids.map((v) => (
+                                <li key={v.id}>
+                                  {v.quantity} ×{" "}
+                                  {o.lines.find((l) => l.id === v.lineId)?.name[
+                                    locale
+                                  ] ?? ""}{" "}
+                                  · −{m(v.amount)} · {v.reason}
+                                  <br />
+                                  <small className="muted">
+                                    {t("voidBy")
+                                      .replace("{actor}", v.actorName)
+                                      .replace("{approver}", v.approverName)}
+                                    {v.kitchenPending &&
+                                      " · " + t("voidKitchenPending")}
+                                  </small>
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        )}
                         <Badge tone={o.paid >= o.total ? "green" : "amber"}>
                           {t(
                             o.refunded
@@ -224,11 +267,23 @@ export function Operations({
                           {t("resume")}
                           <ArrowUpRight size={16} />
                         </Button>
-                        {o.state !== "completed" && !o.recovery && (
-                          <Button onClick={() => setServiceOrder(o)}>
-                            {t("assignService")}
-                          </Button>
-                        )}
+                        {o.state !== "completed" &&
+                          o.state !== "cancelled" &&
+                          !o.recovery && (
+                            <Button onClick={() => setServiceOrder(o)}>
+                              {t("assignService")}
+                            </Button>
+                          )}
+                        {!["completed", "cancelled"].includes(o.state) &&
+                          !o.recovery &&
+                          o.paymentUnits?.some((u) => u.paid === 0) && (
+                            <Button
+                              variant="ghost"
+                              onClick={() => setVoidOrder(o)}
+                            >
+                              {t("voidAction")}
+                            </Button>
+                          )}
                         {manager &&
                           o.tenders.some(
                             (x) => x.method === "cash" && x.amount > x.refunded,
@@ -349,9 +404,17 @@ export function Operations({
                       )}
                       <div className="ticket-lines">
                         {r.lines?.map((l: any) => (
-                          <div key={l.id}>
+                          <div
+                            key={l.id}
+                            className={
+                              l.voidedQuantity >= l.quantity ? "voided" : ""
+                            }
+                          >
                             <strong>
-                              {l.quantity} × {l.name[locale]}
+                              {l.quantity - l.voidedQuantity} × {l.name[locale]}
+                              {l.voidedQuantity > 0 && (
+                                <s className="muted"> ({l.quantity})</s>
+                              )}
                             </strong>
                             <p>
                               {l.optionNames
@@ -364,6 +427,31 @@ export function Operations({
                           </div>
                         ))}
                       </div>
+                      {!!r.pending_voids?.length && (
+                        <div className="void-alert" role="alert">
+                          <strong>{t("kitchenVoided")}</strong>
+                          {r.pending_voids.map((v: any) => (
+                            <p key={v.id}>
+                              {v.quantity} × {v.name[locale]} · {v.reason}
+                            </p>
+                          ))}
+                          {["owner", "manager", "kitchen"].includes(
+                            session.role,
+                          ) && (
+                            <Button
+                              className="full"
+                              disabled={busy}
+                              onClick={() =>
+                                void action("/kitchen/" + r.id + "/voids/ack", {
+                                  operationId: crypto.randomUUID(),
+                                })
+                              }
+                            >
+                              {t("kitchenVoidAck")}
+                            </Button>
+                          )}
+                        </div>
+                      )}
                       <p>{t(r.seen_at ? "seen" : "sent")}</p>
                       <Button
                         variant="primary"

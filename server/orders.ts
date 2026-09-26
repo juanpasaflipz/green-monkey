@@ -21,6 +21,7 @@ import {
   type Session,
   type Product,
   type Order,
+  type PricedLine,
 } from "../shared/domain.js";
 export async function audit(
   tx: Tx,
@@ -72,8 +73,25 @@ export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
   const [o] =
     await tx`select o.*,e.name as waiter_name,t.name as table_name from orders o join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id) left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id where o.id=${orderId}`;
   if (!o) throw new DomainError("not_found", 404);
-  const lines =
-    await tx`select data from order_lines where order_id=${orderId} order by round,id`;
+  const lines = (
+    await tx`select l.data,l.round,coalesce((select array_agg(u order by u) from line_voids v, unnest(v.units) u
+        where v.tenant_id=l.tenant_id and v.line_id=l.id),'{}') as voided_units
+      from order_lines l where l.order_id=${orderId} order by l.round,l.id`
+  ).map((l) => ({
+    data: {
+      ...l.data,
+      round: l.round,
+      voidedUnits: l.voided_units as number[],
+    } as PricedLine,
+  }));
+  const voids =
+    await tx`select v.id,v.line_id,cardinality(v.units)::int as quantity,v.amount,v.reason,
+      v.stock_disposition,v.preparation_state,v.created_at,v.kitchen_ack_required,v.kitchen_acknowledged_at,
+      a.name as actor_name,m.name as approver_name
+    from line_voids v
+    join employees a on a.tenant_id=v.tenant_id and a.id=v.actor_id
+    join employees m on m.tenant_id=v.tenant_id and m.id=v.approver_id
+    where v.order_id=${orderId} order by v.created_at,v.id`;
   const tenders =
     await tx`select t.*,coalesce((select sum(r.amount) from refunds r where r.tender_id=t.id),0)::int as refunded from tenders t where order_id=${orderId} order by created_at`;
   const rounds =
@@ -114,8 +132,26 @@ export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
         ? payableUnits(
             lines.map((l) => l.data),
             allocations,
+          ).filter(
+            (unit) =>
+              !lines
+                .find((l) => l.data.id === unit.lineId)
+                ?.data.voidedUnits?.includes(unit.unit),
           )
         : [],
+    voids: voids.map((v) => ({
+      id: v.id,
+      lineId: v.line_id,
+      quantity: v.quantity,
+      amount: v.amount,
+      reason: v.reason,
+      stockDisposition: v.stock_disposition,
+      preparationState: v.preparation_state,
+      actorName: v.actor_name,
+      approverName: v.approver_name,
+      createdAt: v.created_at.toISOString(),
+      kitchenPending: v.kitchen_ack_required && !v.kitchen_acknowledged_at,
+    })),
     id: o.id,
     number: o.number,
     version: o.version,
@@ -240,7 +276,12 @@ export async function addRound(
       if (!o) throw new DomainError("not_found", 404);
       if (
         o.version !== input.expectedVersion ||
-        ["completed", "recovery_pending", "recovery_reviewed"].includes(o.state)
+        [
+          "completed",
+          "cancelled",
+          "recovery_pending",
+          "recovery_reviewed",
+        ].includes(o.state)
       )
         throw new DomainError("stale_order", 409);
       const lines = quote(

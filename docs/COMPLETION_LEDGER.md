@@ -14,7 +14,7 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | M1 Free limits | local/Neon and deployed device selection passed | Remaining combined entitlement scenarios in M3 |
 | M2 recovery | local/Neon and deployed recovery HTTP passed | Deployed backup restore/download also passed; combined billing cases remain |
 | M3 staging candidate | deployed; core flows passed | Finish remaining exact-candidate sandbox billing cases; see STAGING.md |
-| M4 selling/pricing/cash/kitchen | partial | Combos/open amounts, promotions, approvals, cancellations, saved drafts |
+| M4 selling/pricing/cash/kitchen | partial | Item voids with manager approval and kitchen deltas done locally (Sept 26); next: discounts/courtesies with approval, item-level refunds, saved drawer close, combos/open amounts, promotions |
 | M5 jobs/printing/merchant payments | incomplete | Durable delivery infrastructure; device/provider selection is absent |
 | M6 inventory/procurement | partial | Purchase orders, substitutions, lots, yields, saved counts |
 | M7 finance/imports/reports | partial | Complete metric contract, recurring expenses, settlement imports, PDF/schedules |

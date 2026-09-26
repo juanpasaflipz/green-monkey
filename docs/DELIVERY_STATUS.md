@@ -1,5 +1,7 @@
 # Delivery status
 
+September 26 continuation (branch `claude/m4-voids-approval`, not staged): M4 item voids with per-request manager approval, kitchen cancellation deltas and per-employee PIN lockout. Migration 021 and grants must be applied before deploying this revision.
+
 Latest continuation, September 22, 2026: Free limits and offline/payment recovery
 are implemented with local database/browser regression coverage. Google signup,
 sandbox subscription billing, invitations and multiple locations have prior
@@ -13,7 +15,7 @@ This is an in-progress implementation, not release approval. Required features r
 
 | Capability | Status | Implemented / remaining | External dependency |
 | --- | --- | --- | --- |
-| Owner login, employee PIN, permissions | pending | Owner/password and employee PIN endpoints; signed device cookies; server roles. Google owner identity, explicit membership, Free restaurant signup/entry and logout implemented and tested locally with synthetic identity. Google staging login, invitations and organization switching verified in prior staging releases; deliberate account linking remains pending. | — |
+| Owner login, employee PIN, permissions | pending | Owner/password and employee PIN endpoints; signed device cookies; server roles. Google owner identity, explicit membership, Free restaurant signup/entry and logout implemented and tested locally with synthetic identity. Google staging login, invitations and organization switching verified in prior staging releases; deliberate account linking remains pending. Per-employee lockout after 5 failed secrets (5 minutes) for sign-in and manager approvals, committed even when the request is rejected (September 26, local DB/HTTP checked). | — |
 | Restaurants/organizations, branding | pending | Owner settings, currency lock, receipt snapshots, approved branding, organization locations/invitations/switching implemented; dynamic asset upload remains pending. | — |
 | Catalog/categories/search/photos | pending | Search, categories, bilingual product names, availability, menu editor; image assets not implemented. | — |
 | Modifiers, combos, open amount | pending | Required modifier groups and authoritative prices. Combo slots and open-amount UI pending. | — |
@@ -25,7 +27,7 @@ This is an in-progress implementation, not release approval. Required features r
 | Cash, separate external bank terminal recording | pending | Cash and explicit external-terminal recording. Cash flow browser-tested; external-terminal recording not sandbox verification. | — |
 | Integrated payments and terminal binding | pending | Not implemented. | Provider/account/device verification required; none performed. |
 | Split by items/amount; grouped settlement | verified | Amount/item splits and grouped settlement API/UI; immutable per-unit allocations, partial-unit balances and concurrent selection checks verified. Pre-allocation history remains explicitly unallocated. | — |
-| Full/partial refunds, cancellations, history | pending | Partial/full amount cash refund API and UI, reason and no-return disposition. Item-level and provider refunds/cancellation pending. | — |
+| Full/partial refunds, cancellations, history | pending | Partial/full amount cash refund API and UI, reason and no-return disposition. Item voids (September 26): unpaid units only, reason, manager approval verified server-side per request, stock return only before the kitchen sees the ticket, kitchen cancellation delta with acknowledgement, fully voided orders become cancelled; local DB-tested (`test:db:voids`) and browser-checked. Item-level refunds of paid units and provider refunds pending. | — |
 | Offline cash, menu cache, refresh recovery | pending | Dexie queue, session scope, service worker, cross-tab lock, same-key retries and atomic sync. Versioned leases, manager reconciliation, backup validation, uncertain-payment checks, historical drawer corrections and concurrency recovery implemented. See OFFLINE_RECOVERY.md for remaining gates. | — |
 | QR customer ordering and kiosk | pending | Signed scoped ordering links; QR/kiosk frontend shares service; unpaid kitchen dispatch and public receipt. Idle reset implemented. Provider checkout and held-order policy pending. Kiosk is required Pro; local server entitlement gates are implemented and tested for tenant isolation, expiry and accepted-order retries. Stripe reconciliation and live entitlement provisioning remain pending. | — |
 | Native iOS/Android wrappers | optional follow-on | Not implemented. | — |

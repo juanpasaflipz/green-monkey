@@ -23,7 +23,7 @@
     "test:db:billing": "tsx tests/billing-db.ts",
     "test:db:free": "tsx tests/free-limits-db.ts",
     "test:db:recovery": "tsx tests/offline-recovery-db.ts",
-    "test:db:qualification": "npm run test:db:core && npm run test:db:identity && npm run test:db:owner && npm run test:db:entitlements && npm run test:db:billing && npm run test:db:free && npm run test:db:recovery",
+    "test:db:qualification": "npm run test:db:core && npm run test:db:identity && npm run test:db:owner && npm run test:db:entitlements && npm run test:db:billing && npm run test:db:free && npm run test:db:recovery && npm run test:db:voids",
     "test:browser": "playwright test",
     "db:migrate": "tsx scripts/migrate.ts",
     "db:grants": "tsx scripts/apply-grants.ts",
@@ -31,7 +31,8 @@
     "db:local": "bash scripts/local-db.sh",
     "import:dry-run": "tsx scripts/import.ts",
     "setup:local": "bash scripts/setup-local.sh",
-    "test:restart": "tsx tests/restart-http.ts"
+    "test:restart": "tsx tests/restart-http.ts",
+    "test:db:voids": "tsx tests/voids-db.ts"
   },
   "dependencies": {
     "@js-temporal/polyfill": "0.5.1",

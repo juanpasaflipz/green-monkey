@@ -25,10 +25,10 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 | CORE-05 | partial | Concurrent cash/item collection and lost-response recovery tested; integrated cards pending. |
 | CORE-06 | partial | Money/remainder/unit arithmetic and partial item units tested; live taxes/promotions pending. |
 | CORE-07 | partial | Recipe/price edits retain historical snapshots; new orders retain restaurant configuration. Tax/offline conflict acceptance pending. |
-| CORE-08 | partial | Device PIN, CSRF and cashier management denial tested; approval and membership lifecycle pending. |
+| CORE-08 | partial | Device PIN, CSRF and cashier management denial tested. Manager approval is verified server-side for the exact void request, never stored, and failed approvals count toward a per-employee lockout (tests/voids-db.ts). Membership lifecycle and replayed-approval checks for other sensitive actions pending. |
 | CORE-09 | partial | Two-tenant RLS/FK and public QR tamper checks; invoice/webhook/print/upload/org routes pending. |
 | CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; Neon pooled/direct pending. |
-| CORE-11 | partial | Cash refund reason, original tender immutability and no automatic stock return; item void/approval/provider cases pending. |
+| CORE-11 | partial | Cash refund reason, original tender immutability and no automatic stock return. Item voids keep the original line snapshot, record reason/actor/approver, refuse paid units and return stock only before the kitchen sees the ticket (tests/voids-db.ts). Item-level refund and provider cases pending. |
 | OFF-01 | partial | Compiled offline refresh/reconnect and duplicate replay pass; complete browser close/reopen matrix remains. |
 | OFF-02 | partial | Lost committed cash response, exact payment fingerprint/status and interrupted tab recovery pass; full process-restart HTTP matrix remains. |
 | OFF-03 | partial | Two tabs serialize sync; closing the lock holder recovers its syncing row. Concurrent server sync/reconciliation deduplicates. |
@@ -38,7 +38,7 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 | OFF-07 | partial | Unsupported offline actions disabled; no provider offline capability claimed. |
 | OFF-08 | partial | Waiting revision keeps unresolved work; complete hashed shell graph is precached and API responses are excluded. Exact staging update proof pending. |
 | OPS-01 | pending | Printer jobs explicitly blocked; printer worker/hardware recovery pending. |
-| OPS-02 | partial | Persisted KDS rounds and polling; disconnect/cancellation scenario pending. |
+| OPS-02 | partial | Persisted KDS rounds and polling. Void deltas persist until the kitchen acknowledges them; fully voided tickets close after acknowledgement. Disconnect scenario pending. |
 | OPS-03 | pending | Durable report/email worker not implemented. |
 | INV-01 | partial | Receiving/preparation/sale/count/waste ledger implemented; complete chained cost reconciliation pending. |
 | INV-02 | verified | Two concurrent last-portion deductions serialize; only one succeeds. |

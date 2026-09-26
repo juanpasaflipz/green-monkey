@@ -1,3 +1,4 @@
+import { lineRemaining } from "../../shared/settlement";
 import { currencyExponent } from "../../shared/domain";
 import { normalizePaymentAttempt } from "../../shared/offline-recovery";
 import { useEffect, useRef, useState } from "react";
@@ -473,7 +474,8 @@ export function Selling({
             </strong>
             <p>
               {current.lines
-                .map((l) => `${l.quantity} × ${l.name[locale]}`)
+                .filter((l) => lineRemaining(l).quantity > 0)
+                .map((l) => `${lineRemaining(l).quantity} × ${l.name[locale]}`)
                 .join(", ")}
             </p>
             <span>
@@ -1003,14 +1005,16 @@ export function Selling({
                 {receipt.recovery.reason}
               </p>
             )}
-            {receipt.lines.map((l) => (
-              <div className="row between" key={l.id}>
-                <span>
-                  {l.quantity} × {l.name[locale]}
-                </span>
-                <strong>{money(l.total)}</strong>
-              </div>
-            ))}
+            {receipt.lines
+              .filter((l) => lineRemaining(l).quantity > 0)
+              .map((l) => (
+                <div className="row between" key={l.id}>
+                  <span>
+                    {lineRemaining(l).quantity} × {l.name[locale]}
+                  </span>
+                  <strong>{money(lineRemaining(l).total)}</strong>
+                </div>
+              ))}
             <hr />
             <div className="row between">
               <span>{t("total")}</span>

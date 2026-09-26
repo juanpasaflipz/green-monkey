@@ -1,7 +1,7 @@
 import type postgres from "postgres";
 import { DomainError } from "../shared/domain.js";
 
-export const requiredSchemaMigration = "020_offline_recovery_retention.sql";
+export const requiredSchemaMigration = "021_line_voids.sql";
 
 export async function requireReadySchema(sql: postgres.Sql) {
   const rows =

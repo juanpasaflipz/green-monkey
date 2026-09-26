@@ -71,6 +71,23 @@ export type PricedLine = LineInput & {
   station: string;
   recipe: NonNullable<Product["recipe"]>;
   productVersion: number;
+  /** Present on persisted lines: the service round the line was sent in. */
+  round?: number;
+  /** Present on persisted lines: payable unit indexes removed by voids. */
+  voidedUnits?: number[];
+};
+export type LineVoid = {
+  id: string;
+  lineId: string;
+  quantity: number;
+  amount: number;
+  reason: string;
+  stockDisposition: "returned" | "not_returned";
+  preparationState: string;
+  actorName: string;
+  approverName: string;
+  createdAt: string;
+  kitchenPending: boolean;
 };
 export function minor(value: string, exponent = 2): number {
   if (!/^\d+(\.\d+)?$/.test(value)) throw new DomainError("invalid_amount");
@@ -289,6 +306,7 @@ export type Order = {
   restaurantSnapshot?: Session["restaurant"] | null;
   itemSplitAvailable?: boolean;
   paymentUnits?: import("./settlement.js").PayableUnit[];
+  voids?: LineVoid[];
   id: string;
   number: number;
   version: number;

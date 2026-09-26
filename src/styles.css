@@ -1487,3 +1487,68 @@ dialog.has-footer[open] {
     top: 0;
   }
 }
+
+/* Item voids: kitchen cancellation deltas and order history. */
+.void-alert {
+  background: #feece9;
+  color: #b42318;
+  border: 2px solid #b42318;
+  border-radius: 8px;
+  padding: 12px;
+  display: grid;
+  gap: 6px;
+}
+.void-alert strong {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.void-alert p {
+  margin: 0;
+  font-weight: 600;
+}
+.ticket-lines > div.voided {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.void-history summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+}
+.void-history ul {
+  margin: 0;
+  padding-left: 18px;
+}
+.void-lines {
+  display: grid;
+  gap: 8px;
+}
+.field .choice {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  font-size: 15px;
+  font-weight: 500;
+  color: #17251d;
+}
+.field .choice input {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  padding: 0;
+  flex: none;
+  accent-color: #166534;
+}
+fieldset.field {
+  border: 0;
+  padding: 0;
+}
+fieldset.field legend {
+  font-size: 13px;
+  font-weight: 600;
+  color: #536258;
+  margin-bottom: 4px;
+}

@@ -71,3 +71,17 @@ export function allocatePayment(
   if (left) throw new DomainError("overpayment", 409);
   return allocations;
 }
+
+/** Quantity and amount still standing on a line after voids. */
+export function lineRemaining(line: PricedLine): {
+  quantity: number;
+  total: number;
+} {
+  const voided = new Set(line.voidedUnits ?? []);
+  if (!voided.size) return { quantity: line.quantity, total: line.total };
+  const units = allocate(line.total, Array(line.quantity).fill(1));
+  return {
+    quantity: line.quantity - voided.size,
+    total: sum(units.filter((_, unit) => !voided.has(unit))),
+  };
+}

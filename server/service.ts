@@ -45,7 +45,7 @@ export async function assignService(
         await tx`select * from orders where id=${orderId} for update`;
       if (!old) throw new DomainError("not_found", 404);
       if (
-        ["completed", "recovery_pending", "recovery_reviewed"].includes(
+        ["completed", "cancelled", "recovery_pending", "recovery_reviewed"].includes(
           old.state,
         ) ||
         old.service_version !== p.expectedVersion
