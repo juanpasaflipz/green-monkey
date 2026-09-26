@@ -77,6 +77,7 @@ Use a bounded postgres.js pool, connection/query timeouts, and explicit SSL sett
 | `FACTURAPI_API_KEY`, `FACTURAPI_TEST_KEY` | Canonical invoicing variables; verify sandbox/live separation |
 | `R2_*`, `FEATURE_MENU_PHOTOS`, `VITE_FEATURE_MENU_PHOTOS` | Preserve asset capability and server/client flags |
 | `RESEND_API_KEY`, `ANTHROPIC_API_KEY` | Optional reports/email and reviewed import assistance |
+| `TYPESAFE_API_KEY` | New: optional, server-only key for the TypeSafe judgment-assist modules in the feature matrix; never expose to the browser; unset disables them and keeps the manual flow |
 | `TWILIO_*`, `WA_*`, `APPLE_PASS_*`, `GOOGLE_WALLET_*` | Optional modules; add documented fields when implementing each |
 | Luma `NEXT_PUBLIC_SUPABASE_*`, `SUPABASE_SERVICE_ROLE_KEY` | Remove from target runtime; authorized read-only migration access belongs to a separate import process |
 | Luma `NEXT_PUBLIC_APP_URL` | Map to `APP_URL` and safe public configuration |

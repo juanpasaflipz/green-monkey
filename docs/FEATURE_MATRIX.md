@@ -43,6 +43,21 @@
 | Incident monitoring / AI sentinel | POS Lite sentinel | Basic operational monitoring required; automated fixes off by default | 6 baseline; advanced optional module |
 | Financing, settlement/disbursement, marketing/site fragments | Legacy residual files/docs | Exclude from base POS; record any future demand explicitly | Outside base scope |
 
+## Optional judgment assist (TypeSafe)
+
+New capability; no source equivalent. [TypeSafe](https://docs.typesafe.ai/llms.txt) System One models return typed judgments with probabilities, not generated text. Code builds candidates and applies every write; the model only selects or flags. Each use is a disabled-by-default module behind the same manual flow, calls TypeSafe server-side only, and pre-fills review screens rather than committing records. Set confidence thresholds from Spanish-language sample data before enabling; verify current language support, limits, and pricing in the live docs.
+
+| Capability | Spec reference | Decision | Phase / requirement |
+| --- | --- | --- | --- |
+| Recipe ↔ menu item matching | MIGRATION step 6; SOURCE_ANALYSIS #7 | Code generates candidate menu items; Choice selects one or “no match”; low confidence flagged on the reviewed matching screen | 4, optional assist; reviewed link required |
+| Receipt/supplier line → ingredient | Row “AI receipt/menu parsing” above | After text extraction, Choice selects a catalog ingredient or “new/unknown”; code copies the ID and converts units | 4–5, optional assist; manual receiving required |
+| Menu import categorization and duplicates | ACCEPTANCE UX-14; UX_SPEC menu editing | Choice assigns existing categories; Noul flags modifier-vs-item and likely duplicate products for review | 4–5, optional assist; import preview required |
+| Kitchen note safety highlight | UX_SPEC kitchen tickets | Noul flags allergy/safety mentions as an added highlight only; never hides, reroutes, or delays dispatch | Optional follow-on; additive only |
+| Waste/variance reason classification | UX_SPEC inventory; ACCEPTANCE INV-04 | Choice maps free-text notes to reason codes for reports; arithmetic stays in code; never infers theft | Optional follow-on |
+| Legacy restaurant identity suggestions | MIGRATION “never deduplicate by name” | Noul scores code-selected candidate pairs as a suggestion; explicit reviewed mapping still required | Migration tooling, optional assist |
+
+Excluded: pricing, tax, splits, cash close, stock arithmetic, forecasts, owner alert calculation, and cashier catalog search (local ≤100ms budget).
+
 ## Mandatory merge resolutions
 
 - One order/payment/inventory service replaces parallel implementations.
