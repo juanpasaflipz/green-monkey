@@ -6,6 +6,7 @@ import {
   LayoutGrid,
   Wallet,
   ChartNoAxesCombined,
+  House,
   Package,
   Users,
   Settings,
@@ -14,6 +15,7 @@ import {
   Wifi,
   WifiOff,
   ArrowRight,
+  ChevronDown,
 } from "lucide-react";
 import type { Session, Locale, Product } from "../shared/domain";
 import { strings, translateError, type Key } from "./i18n";
@@ -255,7 +257,7 @@ export default function App() {
       ? [["kitchen", ChefHat]]
       : management
         ? [
-            ["today", ChartNoAxesCombined],
+            ["today", House],
             ["operation", ShoppingBag],
             ["inventory", Package],
             ["finance", ChartNoAxesCombined],
@@ -271,9 +273,15 @@ export default function App() {
   const operational = ["sell", "orders", "tables", "cash", "kitchen"].includes(
     view,
   );
+  const initials = session.restaurant.name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((w) => w[0]!.toUpperCase())
+    .join("");
   return (
     <div className="app">
-      <header className="topbar">
+      <aside className="sidebar">
         <a
           className="brand"
           href="#"
@@ -284,28 +292,60 @@ export default function App() {
         >
           <BrandLogo />
         </a>
+        <nav className="rail" aria-label={t("operation")}>
+          {nav.map(([key, Icon]) => {
+            const name = key as string;
+            const Glyph = Icon as typeof ShoppingBag;
+            const current =
+              view === name || (name === "operation" && operational);
+            return (
+              <button
+                key={name}
+                className={current ? "selected" : ""}
+                onClick={() => {
+                  setView(name === "operation" ? "sell" : name);
+                  setError("");
+                }}
+                aria-current={current ? "page" : undefined}
+              >
+                <Glyph size={20} strokeWidth={current ? 2.4 : 2} />
+                <span>{t(name as Key)}</span>
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+      <header className="topbar">
         <div className="scope">
-          <strong>{session.restaurant.name}</strong>
-          <span>
-            {session.name} · {t(session.role as Key)}
+          <span className="store-avatar" aria-hidden="true">
+            {initials}
           </span>
-        </div>
-        <div className="top-actions">
+          <span className="store-text">
+            <strong>{session.restaurant.name}</strong>
+            <span>
+              {session.name} · {t(session.role as Key)}
+            </span>
+          </span>
           {management && (
             <Button
+              variant="ghost"
+              className="store-switch"
               aria-label={
                 locale === "es" ? "Cambiar restaurante" : "Switch restaurant"
               }
               onClick={() => setShowAccount(true)}
             >
-              <LayoutGrid size={19} />
+              <ChevronDown size={18} />
             </Button>
           )}
+        </div>
+        <div className="top-actions">
           <button
             className={`connection ${online ? "" : "warning"}`}
             aria-label={`${t(online ? "connected" : "offline")}${queued > 0 ? ` · ${queued}` : ""}`}
             onClick={() => setView("sync")}
           >
+            <span className="status-dot" aria-hidden="true" />
             {online ? <Wifi size={16} /> : <WifiOff size={16} />}
             <span>
               {t(online ? "connected" : "offline")}
@@ -314,12 +354,14 @@ export default function App() {
           </button>
           <Button
             variant="ghost"
+            className="round"
             onClick={() => setLocale(locale === "es" ? "en" : "es")}
           >
             {locale.toUpperCase()}
           </Button>
           <Button
             variant="ghost"
+            className="round"
             aria-label={t("logout")}
             onClick={async () => {
               try {
@@ -337,38 +379,10 @@ export default function App() {
               }
             }}
           >
-            <LogOut size={19} />
+            <LogOut size={18} />
           </Button>
         </div>
       </header>
-      <nav className="rail" aria-label={t("operation")}>
-        {nav.map(([key, Icon]) => {
-          const name = key as string;
-          const Glyph = Icon as typeof ShoppingBag;
-          return (
-            <button
-              key={name}
-              className={
-                view === name || (name === "operation" && operational)
-                  ? "selected"
-                  : ""
-              }
-              onClick={() => {
-                setView(name === "operation" ? "sell" : name);
-                setError("");
-              }}
-              aria-current={
-                view === name || (name === "operation" && operational)
-                  ? "page"
-                  : undefined
-              }
-            >
-              <Glyph size={22} />
-              <span>{t(name as Key)}</span>
-            </button>
-          );
-        })}
-      </nav>
       <main
         className={
           (view === "sell" ? "selling-main" : "workspace") +
