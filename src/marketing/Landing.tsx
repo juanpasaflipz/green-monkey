@@ -166,6 +166,9 @@ export default function Landing() {
             {t("Entrar", "Sign in")}
             <ArrowUpRight size={16} aria-hidden="true" />
           </a>
+          <a className="gm-signup" href="/app?signup">
+            {t("Crear cuenta", "Create account")}
+          </a>
         </nav>
       </header>
       <main id="main">
@@ -190,8 +193,8 @@ export default function Landing() {
               )}
             </p>
             <div className="gm-actions">
-              <a className="gm-cta" href="/app">
-                {t("Conocer Green Monkey", "Explore Green Monkey")}
+              <a className="gm-cta" href="/app?signup">
+                {t("Crear cuenta gratis", "Create a free account")}
                 <ArrowRight size={18} aria-hidden="true" />
               </a>
               <a className="gm-text-link" href="#product">
@@ -455,8 +458,8 @@ export default function Landing() {
                   {money(0)}
                   <span>MXN / {t("siempre", "forever")}</span>
                 </div>
-                <a className="gm-cta gm-outline" href="/app">
-                  {t("Ir a la aplicación", "Open the app")}
+                <a className="gm-cta gm-outline" href="/app?signup">
+                  {t("Crear cuenta gratis", "Create a free account")}
                   <ArrowRight size={18} aria-hidden="true" />
                 </a>
                 <ul>
@@ -568,8 +571,8 @@ export default function Landing() {
             <br />
             <em>{t("con más claridad.", "with more clarity.")}</em>
           </h2>
-          <a className="gm-cta" href="/app">
-            {t("Explorar la aplicación", "Explore the app")}
+          <a className="gm-cta" href="/app?signup">
+            {t("Crear cuenta gratis", "Create a free account")}
             <ArrowRight size={18} aria-hidden="true" />
           </a>
         </section>

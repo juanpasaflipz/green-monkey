@@ -23,6 +23,12 @@ type Account = {
 const copy = {
   es: {
     google: "Continuar con Google",
+    signupTitle: "Crear cuenta",
+    signupHint:
+      "¿Nuevo en Green Monkey? Crea tu restaurante gratis con tu cuenta de Google. Si ya tienes cuenta, entras con el mismo botón.",
+    signupUnavailable:
+      "La creación de cuentas con Google no está configurada en este entorno.",
+    or: "o entra con el usuario de tu restaurante",
     title: "Tu restaurante",
     name: "Nombre del restaurante",
     currency: "Moneda",
@@ -54,6 +60,11 @@ const copy = {
   },
   en: {
     google: "Continue with Google",
+    signupTitle: "Create account",
+    signupHint:
+      "New to Green Monkey? Create your restaurant for free with your Google account. If you already have an account, the same button signs you in.",
+    signupUnavailable: "Google account creation is not configured here.",
+    or: "or sign in with your restaurant user",
     title: "Your restaurant",
     name: "Restaurant name",
     currency: "Currency",
@@ -109,6 +120,9 @@ export function OwnerAccess({
     }
     return token ?? sessionStorage.getItem("gm-invitation") ?? "";
   });
+  const [wantsSignup] = useState(() =>
+    new URLSearchParams(location.search).has("signup"),
+  );
   const [authError] = useState(
     new URLSearchParams(location.search).has("auth_error"),
   );
@@ -193,10 +207,22 @@ export function OwnerAccess({
         </div>
       )}
       {transitionError && <p role="alert">{transitionError}</p>}
-      {!account && google && (
-        <a className="button full" href="/api/auth/google/start">
-          {t.google}
-        </a>
+      {!account && (google || wantsSignup) && (
+        <div className="signup-cta">
+          <h2>{t.signupTitle}</h2>
+          <p className="muted">{google ? t.signupHint : t.signupUnavailable}</p>
+          {google && (
+            <a
+              className={`button full ${wantsSignup ? "primary" : ""}`}
+              href="/api/auth/google/start"
+            >
+              {t.google}
+            </a>
+          )}
+          <p className="signup-divider">
+            <span>{t.or}</span>
+          </p>
+        </div>
       )}
       {account && (
         <>

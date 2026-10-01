@@ -90,6 +90,17 @@
   border-left: 1px solid #cbd5c8;
   padding-left: 28px;
 }
+.gm-signup {
+  justify-content: center;
+  padding-inline: 18px;
+  border-radius: 6px;
+  background: var(--gm-green);
+  color: white !important;
+  white-space: nowrap;
+}
+.gm-signup:hover {
+  background: #226444;
+}
 .gm-hero {
   display: grid;
   grid-template-columns: 1.05fr 1fr;
@@ -816,8 +827,12 @@
     display: none;
   }
   .gm-header nav > a[href="#pricing"] {
+    display: none;
+  }
+  .gm-signup {
+    min-height: 44px;
+    padding-inline: 12px;
     font-size: 12px;
-    padding-inline: 4px;
   }
   .gm-language {
     padding-inline: 8px;
