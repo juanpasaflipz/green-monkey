@@ -1,5 +1,33 @@
 # Staging operation and verification
 
+September 30 staging checkpoint (M4 item voids): Railway deployment
+`6526e175-a35a-475e-88a7-d4280c497786` serves
+`fb922ab0d82dd19b246f25f7724fe970423e0f64`. Before any change, Neon branch
+`pre-021-staging-backup-2026-09-30` (`br-polished-hall-aem062zv`, no compute)
+copied the primary branch as the restore point. Migration 021 (`line_voids`,
+employee PIN lockout columns) was applied to `green_monkey_staging` with
+`scripts/migrate.ts` over the direct endpoint as `neondb_owner`, followed by
+`scripts/grant-runtime.ts` for `gm_staging_app`. Read-only checks confirmed the
+migration registry, forced RLS on `line_voids`, runtime `SELECT,INSERT` plus
+`UPDATE` limited to the two kitchen-acknowledgement columns, the immutability
+trigger and both `employees` columns. The previous build stayed healthy between
+migration and deploy because its readiness gate requires only 020.
+
+The source upload was a `git archive` of `fb922ab` (tracked files only).
+Deployment `35568e97-b5cb-47a4-be83-427d272ff065` built and started, health
+passed, and the served bundle contains the void screens. `RAILWAY_GIT_COMMIT_SHA`
+is a manually set service variable, so it was updated to `fb922ab` for
+`/api/version` (redeploy `ab09128b-8813-420b-8b8d-8c02754247b7`). The
+`neondb_owner` password was then rotated and the staging
+`MIGRATION_DATABASE_URL` updated; redeploy `6526e175` ran the migration step
+with the new credential and passed health. The `gm_staging_app` and
+`gm_staging_billing` passwords were exposed in a working session and must be
+rotated, together with `DATABASE_URL` and `BILLING_DATABASE_URL`. Private env
+files holding the old `neondb_owner` password are stale. The void/approval/kitchen
+flow has not been exercised on staging; local `test:db:voids` (10 checks) and
+`tests/browser/voids.spec.ts` passed. The workstation `RAILWAY_API_TOKEN` was
+rejected by CLI 5.63.1; the upload used an interactive `railway login` session.
+
 September 23 staging checkpoint: Railway deployment
 `35e6fab1-0774-4e43-87ac-6262da6324fd` serves
 `b05c6a422c4fc4ca5330cb6a7f42a1098a0a58d2` at the authorized staging URL.
