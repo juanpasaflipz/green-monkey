@@ -123,13 +123,11 @@ export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
           revoke: true,
         });
         await cancelCodesCreatedBy(tx, p.id, s.employeeId);
-      }
-      else if (old && old.role !== p.role) {
+      } else if (old && old.role !== p.role) {
         await endEmployeeSessions(tx, p.id, "role_changed", { revoke: false });
         if (!managers.includes(p.role))
           await cancelCodesCreatedBy(tx, p.id, s.employeeId);
-      }
-      else
+      } else
         await endEmployeeSessions(tx, p.id, "pin_reset", {
           revoke: false,
           exceptSessionId: p.id === s.employeeId ? s.id : undefined,
