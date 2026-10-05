@@ -146,6 +146,16 @@ export function Selling({
    * answers after a move never writes its order into the new cart.
    */
   const contextEpoch = useRef(0);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  /** SVC-R10: a switch from Mesas or Órdenes is waiting for a request. */
+  const switchDeferred = useRef(false);
+  /**
+   * SVC-REV-1: a send or payment failed where the waiter may not have read
+   * its error (a switch was waiting for it, or Vender was not on screen). The
+   * next switch request is dropped once, so the error and its actions stay.
+   */
+  const unseenFailure = useRef(false);
   const nameCache = useRef(new Map<string, Label>());
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -206,6 +216,8 @@ export function Selling({
    */
   function replaceContext(order: Order | null, next: OrderInput) {
     contextEpoch.current++;
+    unseenFailure.current = false;
+    switchDeferred.current = false;
     currentRef.current = order;
     draftRef.current = next;
     setCurrent(order);
@@ -216,6 +228,31 @@ export function Selling({
     return order
       ? db.cache.put({ id: contextId, value: order.id })
       : db.cache.delete(contextId);
+  }
+  /**
+   * SVC-REV-1: called when a send or payment of the cart on screen fails. If
+   * a switch was waiting for it, or Vender was not on screen, the waiter has
+   * not read the error yet, so the next switch request keeps this cart (and
+   * its error and actions) instead of replacing it.
+   */
+  function requestFailed() {
+    unseenFailure.current = switchDeferred.current || !activeRef.current;
+  }
+  /**
+   * SVC-REV-1: a send that fails after the cart moved to another order. Its
+   * cart is in Borradores under the same operation id; the waiter is told it
+   * did not reach the kitchen, since the cart on screen is another check now.
+   */
+  function failedAfterSwitch(target: Order | null, code: string) {
+    const reason = translateError(code, locale);
+    setError(
+      target
+        ? t("serviceRoundFailedAfterSwitch")
+            .replace("{n}", String(target.number))
+            .replace("{reason}", reason)
+        : t("serviceSendFailedAfterSwitch").replace("{reason}", reason),
+    );
+    return new HandledError(code);
   }
   /**
    * SVC-R10: a send that answers after the cart moved to another order. The
@@ -311,6 +348,9 @@ export function Selling({
       void api("/tables")
         .then(setTables)
         .catch(() => {});
+      // SVC-REV-2: a table or order chosen while these load owns the cart.
+      const epoch = contextEpoch.current;
+      const moved = () => epoch !== contextEpoch.current;
       void (async () => {
         const a = await db.cache.get(attemptId);
         if (!live) return;
@@ -320,18 +360,25 @@ export function Selling({
             const o = await recoverPayment(a.value);
             await clearPaymentAttempt(attemptId, a.value);
             if (live) {
-              setCurrent(o);
-              setReceipt(o);
               setPendingPayment(false);
+              if (moved())
+                setNotice(
+                  t("servicePaidAfterSwitch").replace("{n}", String(o.number)),
+                );
+              else {
+                setCurrent(o);
+                setReceipt(o);
+              }
             }
           } else {
             const c = await db.cache.get(contextId);
-            if (c) {
+            if (c && !moved()) {
               const o = await api<Order>("/orders/" + c.value);
               // A cached context that points at a closed check is dropped.
-              if (live && checkStateOf(o) === "closed")
+              if (!live || moved()) return;
+              if (checkStateOf(o) === "closed")
                 void db.cache.delete(contextId);
-              else if (live) setCurrent(o);
+              else setCurrent(o);
             }
           }
         } catch (e) {
@@ -372,13 +419,35 @@ export function Selling({
     if (!active) return;
     const resume = localStorage.getItem("gm-resume");
     const table = localStorage.getItem("gm-table");
-    if (!resume && !table) return;
+    if (!resume && !table) {
+      // Vender is on screen with nothing to switch to: its error is visible.
+      unseenFailure.current = false;
+      return;
+    }
     // SVC-R10: a send or payment in flight (and the receipt it shows) finishes
     // on its own cart first. The request stays in localStorage and this effect
     // runs again once busy, paying and the receipt clear, so a late response
     // can never land on the order the waiter switched to.
     if (busy || paying || showingReceipt) {
+      switchDeferred.current = true;
       setNotice(t("serviceSwitchWaits"));
+      return;
+    }
+    switchDeferred.current = false;
+    if (unseenFailure.current) {
+      // SVC-REV-1: the request this switch waited for failed (or failed while
+      // Vender was hidden). Replacing the cart would erase that error and its
+      // actions, and the food would never reach the kitchen unnoticed, so the
+      // switch is dropped once; choosing the check again switches.
+      unseenFailure.current = false;
+      localStorage.removeItem("gm-resume");
+      localStorage.removeItem("gm-table");
+      const waits = t("serviceSwitchWaits");
+      setNotice((n) =>
+        [n === waits ? "" : n, t("serviceSwitchCancelled")]
+          .filter(Boolean)
+          .join(" "),
+      );
       return;
     }
     if (resume) {
@@ -524,17 +593,21 @@ export function Selling({
     setNotice("");
     setClosedCheck(false);
     setNoteReprint(null);
+    unseenFailure.current = false;
     const inFlight = new Set(d.lines.map((l) => l.id));
     sendingRef.current = inFlight;
     setSending(inFlight);
     // SVC-R10: the cart this send belongs to; see replaceContext.
     const epoch = contextEpoch.current;
     const moved = () => epoch !== contextEpoch.current;
+    // SVC-REV-1: false until every line of this send is known to have landed.
+    let landed = false;
     try {
       const o = await api<Order>(
         target ? `/orders/${target.id}/rounds` : "/orders",
         target ? { ...d, expectedVersion: target.version } : d,
       );
+      landed = true;
       if (moved()) {
         // The cart moved to another order while this send was in flight: the
         // order it reached is never written into the cart on screen.
@@ -565,13 +638,14 @@ export function Selling({
       const code = (e as Error).message;
       // SVC-R10: the cart this send came from is in Borradores under the same
       // operation id, so sending it from there replays or recovers it (FOH-11);
-      // the cart on screen belongs to another order and stays as it is.
-      if (moved()) throw new HandledError(code);
+      // the cart on screen belongs to another order and stays as it is, and
+      // the waiter is told the send did not land (SVC-REV-1).
+      if (moved()) throw failedAfterSwitch(target, code);
       if (code === "stale_order" && target) {
         // Refresh in place; the unsent lines and their operation id stay.
         try {
           const latest = await api<Order>("/orders/" + target.id);
-          if (moved()) throw new HandledError(code);
+          if (moved()) throw failedAfterSwitch(target, code);
           setCurrent(latest);
           if (checkStateOf(latest) === "closed") {
             setClosedCheck(true);
@@ -601,7 +675,7 @@ export function Selling({
           target ? api<Order>("/orders/" + target.id).catch(() => null) : null,
         );
         // SVC-R10: the parked copy recovers the same way when it is sent.
-        if (moved()) throw new HandledError(code);
+        if (moved()) throw failedAfterSwitch(target, code);
         if (latest) {
           const operationId = crypto.randomUUID();
           const ids = idSequence();
@@ -613,7 +687,10 @@ export function Selling({
           await db.cache.put({ id: contextId, value: latest.id });
           if (readPrintSettings().kitchenOnSend)
             printRounds(latest, next.rounds);
-          if (next.sent) return latest;
+          if (next.sent) {
+            landed = true;
+            return latest;
+          }
           if (checkStateOf(latest) === "closed") {
             setClosedCheck(true);
             setError(t("serviceCheckClosedKeep"));
@@ -638,6 +715,7 @@ export function Selling({
       setError(translateError(code, locale));
       throw new HandledError(code);
     } finally {
+      if (!landed) requestFailed();
       sendingRef.current = null;
       setSending(null);
       if (!opts.keepBusy) setBusy(false);
@@ -697,10 +775,10 @@ export function Selling({
     // SVC-R10: a payment that settles after the cart moved to another order
     // is announced instead of replacing that cart with its receipt.
     const epoch = contextEpoch.current;
-    const settled = (result: Order) => {
+    const settled = (result: Order, owned = true) => {
       setPendingPayment(false);
       setPayment(false);
-      if (epoch !== contextEpoch.current) {
+      if (!owned || epoch !== contextEpoch.current) {
         setNotice(
           t("servicePaidAfterSwitch").replace("{n}", String(result.number)),
         );
@@ -714,7 +792,14 @@ export function Selling({
       if (previous) {
         const result = await recoverPayment(previous.value);
         await clearPaymentAttempt(attemptId, previous.value);
-        settled(result);
+        // SVC-REV-2: the stored attempt may belong to a check the cart left
+        // before "Reintentar" (another table opened after a lost response).
+        // Its receipt never replaces that cart or drops its unsent lines.
+        const shown = currentRef.current;
+        settled(
+          result,
+          shown ? shown.id === result.id : !draftRef.current.lines.length,
+        );
         return;
       }
       if (!values) throw new Error("invalid_input");
@@ -830,6 +915,8 @@ export function Selling({
       )
         await clearPaymentAttempt(attemptId, submittedAttempt);
       setPendingPayment(!!(await db.cache.get(attemptId)));
+      // SVC-REV-1: a switch waiting for this payment keeps its error on screen.
+      if (epoch === contextEpoch.current) requestFailed();
       if (!(e instanceof HandledError))
         setError(translateError((e as Error).message, locale));
       // "Enviar como orden nueva" lives in the cart: close the dialog for it.

@@ -177,6 +177,12 @@ export default defineArea({
       "La orden #{n} llegó a cocina mientras cambiabas de cuenta.",
     servicePaidAfterSwitch:
       "El cobro pendiente de la orden #{n} quedó registrado. Su recibo está en Órdenes.",
+    serviceSwitchCancelled:
+      "No abrimos la cuenta que elegiste porque el envío o cobro en curso no se completó. Revisa el aviso y vuelve a elegirla.",
+    serviceSendFailedAfterSwitch:
+      "La orden que estabas capturando no llegó a cocina: {reason} Quedó en Borradores; envíala desde ahí.",
+    serviceRoundFailedAfterSwitch:
+      "La ronda para la orden #{n} no llegó a cocina: {reason} Quedó en Borradores; envíala desde ahí.",
     serviceDetailsButton: "Detalles",
     serviceDetailsTitle: "Detalles de la orden",
     serviceUnnamed: "Sin nombre",
@@ -432,6 +438,12 @@ export default defineArea({
       "Order #{n} reached the kitchen while you switched checks.",
     servicePaidAfterSwitch:
       "The pending payment on order #{n} was recorded. Its receipt is in Orders.",
+    serviceSwitchCancelled:
+      "The check you chose did not open because the send or payment in progress did not finish. Read the message and choose it again.",
+    serviceSendFailedAfterSwitch:
+      "The order you were entering did not reach the kitchen: {reason} It is in Drafts; send it from there.",
+    serviceRoundFailedAfterSwitch:
+      "The round for order #{n} did not reach the kitchen: {reason} It is in Drafts; send it from there.",
     serviceDetailsButton: "Details",
     serviceDetailsTitle: "Order details",
     serviceUnnamed: "No name",

@@ -1060,6 +1060,345 @@ test("a round that answers after its cart moved to another check never comes bac
   expect(await names(b.id)).toEqual(["Agua de jamaica", "Taco de hongos"]);
 });
 
+const SWITCH_CANCELLED =
+  "No abrimos la cuenta que elegiste porque el envío o cobro en curso no se completó. Revisa el aviso y vuelve a elegirla.";
+
+test("a send that fails while a table switch waits keeps its error and cart until the table is chosen again", async ({
+  page,
+}) => {
+  // SVC-REV-1: the deferred switch must not erase the failure of the send it
+  // waited for; the food did not reach the kitchen and the waiter must know.
+  await login(page);
+  const free = await freeTables(page);
+  expect(free.length, "two fixture tables must be free").toBeGreaterThan(1);
+  const [first, second] = free;
+  const name = "Falla mesa " + tag();
+  const send = page.getByRole("button", {
+    name: "Enviar a cocina",
+    exact: true,
+  });
+  const cart = page.locator(".order-line");
+  const existing = page.locator(".existing");
+  const failure = page.locator(".cart-bottom [role=alert]");
+  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const tableSelect = page.getByLabel("Seleccionar mesa");
+  const card = (t: { name: string }) =>
+    page.getByRole("article", { name: t.name, exact: true });
+  const newCheck = async (t: { name: string }) => {
+    await page.getByRole("button", { name: "Mesas", exact: true }).click();
+    await card(t)
+      .getByRole("button", { name: "Nueva cuenta", exact: true })
+      .click();
+  };
+  let release = () => {};
+  let gate = Promise.resolve();
+  const operations: string[] = [];
+  await page.route("**/api/orders", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    operations.push(route.request().postDataJSON().operationId);
+    if (operations.length === 1) {
+      // The first send hangs, then the connection drops without reaching
+      // the server.
+      await gate;
+      await route.abort("failed");
+    } else await route.continue();
+  });
+
+  await newCheck(first);
+  await expect(tableSelect).toHaveValue(first.id);
+  await tile("Taco de hongos").click();
+  await page.getByLabel("Nombre para llamar").fill(name);
+  gate = new Promise<void>((resolve) => (release = resolve));
+  await send.click();
+  await expect.poll(() => operations.length).toBe(1);
+  await newCheck(second);
+  await expect(page.getByText(SWITCH_WAITS)).toBeVisible();
+  release();
+
+  // The send failed: its error stays, the switch did not happen and the
+  // first table's cart is still on screen, ready to send again.
+  await expect(page.getByText(SWITCH_CANCELLED)).toBeVisible();
+  await expect(page.getByText(SWITCH_WAITS)).toHaveCount(0);
+  await expect(failure).toBeVisible();
+  await expect(tableSelect).toHaveValue(first.id);
+  await expect(existing).toHaveCount(0);
+  await expect(cart).toHaveCount(1);
+  await expect(cart.first()).toContainText("Taco de hongos");
+  await expect(cart.filter({ hasText: "Enviando a cocina…" })).toHaveCount(0);
+  await expect(page.getByLabel("Nombre para llamar")).toHaveValue(name);
+  await expect(send).toBeEnabled();
+  // Nothing reached the kitchen or the tables.
+  const nothing = await call(
+    page,
+    `/service/orders?q=${encodeURIComponent(name)}`,
+  );
+  expect(nothing.items).toHaveLength(0);
+  const kitchen = await call(page, "/service/kitchen?station=all");
+  expect(
+    kitchen.rounds.filter((r: any) => r.callName === name),
+  ).toHaveLength(0);
+
+  // Choosing the table again switches: the unsent cart goes to Borradores.
+  await newCheck(second);
+  await expect(tableSelect).toHaveValue(second.id);
+  await expect(cart).toHaveCount(0);
+  await expect(
+    page.getByText("Guardamos la orden que estabas capturando en Borradores."),
+  ).toBeVisible();
+  await expect(failure).toHaveCount(0);
+  // Sent from Borradores it keeps its operation id, so it lands once, on the
+  // first table.
+  await page.getByRole("button", { name: "Borradores", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: new RegExp(name) })
+    .click();
+  await expect(tableSelect).toHaveValue(first.id);
+  await expect(cart).toHaveCount(1);
+  await send.click();
+  await expect(existing).toContainText("Taco de hongos");
+  expect(operations).toHaveLength(2);
+  expect(operations[1]).toBe(operations[0]);
+  const list = await call(
+    page,
+    `/service/orders?q=${encodeURIComponent(name)}`,
+  );
+  expect(list.items).toHaveLength(1);
+  const order = await call(page, "/orders/" + list.items[0].id);
+  expect(order.tableId).toBe(first.id);
+  expect(order.lines.map((l: any) => l.name.es)).toEqual(["Taco de hongos"]);
+  await freeCheck(page, order.id);
+});
+
+test("a round refused while the waiter is in Órdenes keeps its error when another check is opened", async ({
+  page,
+}) => {
+  // SVC-REV-1: the send fails while Vender is hidden; the next Abrir orden
+  // must show that failure (and its "Enviar como orden nueva") instead of
+  // replacing the cart, and only a second Abrir orden switches.
+  await login(page);
+  const nameA = "Rechazo A " + tag();
+  const nameB = "Rechazo B " + tag();
+  const a = await apiOrder(page, nameA);
+  const b = await apiOrder(page, nameB);
+  const send = page.getByRole("button", {
+    name: "Enviar a cocina",
+    exact: true,
+  });
+  const cart = page.locator(".order-line");
+  const existing = page.locator(".existing");
+  const failure = page.locator(".cart-bottom [role=alert]");
+  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  let release = () => {};
+  let gate = Promise.resolve();
+  let rounds = 0;
+  await page.route("**/api/orders/*/rounds", async (route) => {
+    rounds++;
+    await gate;
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "check_closed" }),
+    });
+  });
+  const resume = async (name: string) => {
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await page
+      .locator(".order-summary")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "Abrir orden", exact: true })
+      .click();
+  };
+
+  await resume(nameA);
+  await expect(existing).toContainText(`#${a.number} ·`);
+  await tile("Flan de vainilla").click();
+  gate = new Promise<void>((resolve) => (release = resolve));
+  await send.click();
+  await expect.poll(() => rounds).toBe(1);
+  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+  release();
+  // Selling is hidden; its cart takes the refusal meanwhile.
+  await expect(failure).toContainText(
+    "Esta cuenta ya se cerró. Tus productos sin enviar siguen aquí.",
+  );
+  await page
+    .locator(".order-summary")
+    .filter({ hasText: nameB })
+    .getByRole("button", { name: "Abrir orden", exact: true })
+    .click();
+  await expect(page.getByText(SWITCH_CANCELLED)).toBeVisible();
+  await expect(failure).toBeVisible();
+  await expect(failure).toContainText("Esta cuenta ya se cerró.");
+  await expect(
+    failure.getByRole("button", { name: "Enviar como orden nueva" }),
+  ).toBeVisible();
+  await expect(existing).toContainText(`#${a.number} ·`);
+  await expect(cart).toHaveCount(1);
+  await expect(cart.first()).toContainText("Flan de vainilla");
+
+  // The second Abrir orden switches and parks the round with its check.
+  await resume(nameB);
+  await expect(existing).toContainText(`#${b.number} ·`);
+  await expect(cart).toHaveCount(0);
+  await expect(failure).toHaveCount(0);
+  await page.getByRole("button", { name: "Borradores", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText(
+    `#${a.number} · ronda sin enviar`,
+  );
+  await page.keyboard.press("Escape");
+  expect(rounds).toBe(1);
+  const names = async (id: string) =>
+    (await call(page, "/orders/" + id)).lines.map((l: any) => l.name.es);
+  expect(await names(a.id)).toEqual(["Taco de hongos"]);
+  expect(await names(b.id)).toEqual(["Taco de hongos"]);
+});
+
+test("a round that fails after its cart moved to another check says so and stays in Borradores", async ({
+  page,
+}) => {
+  // SVC-REV-1, backstop path: check B opened while A's round was in flight
+  // (B was already loading), then A's round failed.
+  await login(page);
+  const nameA = "Caida A " + tag();
+  const nameB = "Caida B " + tag();
+  const a = await apiOrder(page, nameA);
+  const b = await apiOrder(page, nameB);
+  const send = page.getByRole("button", {
+    name: "Enviar a cocina",
+    exact: true,
+  });
+  const cart = page.locator(".order-line");
+  const existing = page.locator(".existing");
+  const failure = page.locator(".cart-bottom [role=alert]");
+  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  let release = () => {};
+  let gate = Promise.resolve();
+  let releaseLoad = () => {};
+  let loadGate = Promise.resolve();
+  let rounds = 0;
+  await page.route("**/api/orders/*/rounds", async (route) => {
+    rounds++;
+    await gate;
+    await route.abort("failed");
+  });
+  await page.route(`**/api/orders/${b.id}`, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await loadGate;
+    await route.continue();
+  });
+  const resume = async (name: string) => {
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await page
+      .locator(".order-summary")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "Abrir orden", exact: true })
+      .click();
+  };
+
+  await resume(nameA);
+  await expect(existing).toContainText(`#${a.number} ·`);
+  await tile("Flan de vainilla").click();
+  loadGate = new Promise<void>((resolve) => (releaseLoad = resolve));
+  await resume(nameB);
+  await expect(existing).toContainText(`#${a.number} ·`);
+  gate = new Promise<void>((resolve) => (release = resolve));
+  await send.click();
+  await expect.poll(() => rounds).toBe(1);
+  releaseLoad();
+  await expect(existing).toContainText(`#${b.number} ·`);
+  release();
+  await expect(failure).toContainText(
+    `La ronda para la orden #${a.number} no llegó a cocina:`,
+  );
+  await expect(failure).toContainText(
+    "Quedó en Borradores; envíala desde ahí.",
+  );
+  await expect(existing).toContainText(`#${b.number} ·`);
+  await expect(cart).toHaveCount(0);
+  await page.getByRole("button", { name: "Borradores", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText(
+    `#${a.number} · ronda sin enviar`,
+  );
+  await page.keyboard.press("Escape");
+  const names = async (id: string) =>
+    (await call(page, "/orders/" + id)).lines.map((l: any) => l.name.es);
+  expect(await names(a.id)).toEqual(["Taco de hongos"]);
+  expect(await names(b.id)).toEqual(["Taco de hongos"]);
+});
+
+test("a recovered payment for a check the cart already left is announced, not shown as its receipt", async ({
+  page,
+}) => {
+  // SVC-REV-2: a lost payment response, then another table opened and items
+  // added before "Recuperar pago"; the recovery must not take over that cart.
+  await login(page);
+  await openDrawer(page);
+  const free = await freeTables(page);
+  expect(free.length, "a fixture table must be free").toBeGreaterThan(0);
+  const table = free[0];
+  const name = "Recupera " + tag();
+  const a = await apiOrder(page, name);
+  const cart = page.locator(".order-line");
+  const existing = page.locator(".existing");
+  const tableSelect = page.getByLabel("Seleccionar mesa");
+  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+  await page
+    .locator(".order-summary")
+    .filter({ hasText: name })
+    .getByRole("button", { name: "Abrir orden", exact: true })
+    .click();
+  await expect(existing).toContainText(`#${a.number} ·`);
+  // The server records the payment; its response never arrives.
+  await page.route(
+    "**/api/orders/*/payments",
+    async (route) => {
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      await route.abort("failed");
+    },
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog").getByText(/Hay un pago anterior por confirmar/),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  const recover = page.getByRole("button", {
+    name: "Recuperar pago",
+    exact: true,
+  });
+  await expect(recover).toBeVisible();
+
+  await page.getByRole("button", { name: "Mesas", exact: true }).click();
+  await page
+    .getByRole("article", { name: table.name, exact: true })
+    .getByRole("button", { name: "Nueva cuenta", exact: true })
+    .click();
+  await expect(tableSelect).toHaveValue(table.id);
+  await page.locator("button.product", { hasText: "Agua de jamaica" }).click();
+  await expect(cart).toHaveCount(1);
+  await recover.click();
+  await expect(
+    page.getByText(
+      `El cobro pendiente de la orden #${a.number} quedó registrado. Su recibo está en Órdenes.`,
+    ),
+  ).toBeVisible();
+  await expect(recover).toHaveCount(0);
+  await expect(page.locator(".receipt")).toHaveCount(0);
+  await expect(existing).toHaveCount(0);
+  await expect(tableSelect).toHaveValue(table.id);
+  await expect(cart).toHaveCount(1);
+  await expect(cart.first()).toContainText("Agua de jamaica");
+  const order = await call(page, "/orders/" + a.id);
+  expect(order.tenders).toHaveLength(1);
+  expect(order.paid).toBe(order.total);
+});
+
 test("Cobrar with unsent items does not announce a balance change it made itself", async ({
   page,
 }) => {
