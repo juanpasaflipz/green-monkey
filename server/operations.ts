@@ -4,6 +4,7 @@ import type { Tx } from "./db.js";
 import { id, money, DomainError, type Session } from "../shared/domain.js";
 import { once, audit, drawer, getOrder } from "./orders.js";
 import { permit, managers } from "./auth.js";
+import { requireSelling } from "./free-limits.js";
 export async function cashSummary(tx: Tx, s: Session, drawerId?: string) {
   if (drawerId) permit(s, managers);
   const [d] = drawerId
@@ -90,6 +91,26 @@ export async function closeCash(tx: Tx, s: Session, raw: unknown) {
       throw new DomainError("reason_required");
     await tx`update cash_sessions set counted=${p.counted},expected=${summary!.expected},reason=${p.reason},closed_at=clock_timestamp() where id=${d.id}`;
     await audit(tx, s, "cash.close", d.id, p);
+    return cashSummary(tx, s);
+  });
+}
+
+/** Manager cash paid-out from this device's open drawer (moved verbatim from index.ts). */
+export async function recordPaidOut(tx: Tx, s: Session, raw: unknown) {
+  permit(s, managers);
+  const p = z
+    .object({
+      operationId: id,
+      amount: money.refine((n) => n > 0),
+      reason: z.string().min(3).max(300),
+    })
+    .strict()
+    .parse(raw);
+  return once(tx, s, p.operationId, "cash.paidout", p, async () => {
+    await requireSelling(tx, s);
+    const d = await drawer(tx, s);
+    await tx`insert into cash_movements(tenant_id,id,session_id,amount,reason) values(${s.tenantId},${randomUUID()},${d.id},${-p.amount},${p.reason})`;
+    await audit(tx, s, "cash.paidout", d.id, p);
     return cashSummary(tx, s);
   });
 }

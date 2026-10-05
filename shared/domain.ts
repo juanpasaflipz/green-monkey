@@ -307,6 +307,12 @@ export type Order = {
   itemSplitAvailable?: boolean;
   paymentUnits?: import("./settlement.js").PayableUnit[];
   voids?: LineVoid[];
+  checkState?: "open" | "paid" | "closed"; // service
+  closedAt?: string | null; // service
+  closeReason?: "settled" | "released" | "voided" | "recovery" | null; // service
+  channel?: string; // service
+  businessDate?: string; // service
+  openedBy?: string; // service: name of the employee who opened the check
   id: string;
   number: number;
   version: number;
