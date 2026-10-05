@@ -352,7 +352,7 @@ export async function touchSession(
   if (!row.absolute_expires_at) return unchanged;
   const [t] = await tx`update sessions set last_seen_at=now(),
       expires_at=least(now()+make_interval(mins=>${ACCESS.sessionIdleMinutes}),absolute_expires_at)
-    where id=${row.id}
+    where id=${row.id} and ended_at is null and not revoked
       and (last_seen_at is null or last_seen_at<now()-make_interval(secs=>${ACCESS.touchSeconds}))
     returning expires_at,offline_until,absolute_expires_at`;
   if (!t) return unchanged;
@@ -523,15 +523,19 @@ async function signInOnDevice(
             from sessions where id=${current.id} and token_hash=${hash(current.token)}
               and device_id=${row.id} and ended_at is null and not revoked and expires_at>now()`
         : [];
-    if (
+    // The re-check in the UPDATE keeps a concurrent end or revoke from being
+    // undone by sliding expires_at forward again; such a session is replaced.
+    const [resumed] =
       live &&
       live.employee_id === check.employee.id &&
       !live.owner_account_id &&
       live.reusable
-    ) {
-      await tx`update sessions set authenticated_at=now(),last_seen_at=now(),
-          expires_at=least(now()+make_interval(mins=>${ACCESS.sessionIdleMinutes}),absolute_expires_at)
-        where id=${live.id}`;
+        ? await tx`update sessions set authenticated_at=now(),last_seen_at=now(),
+              expires_at=least(now()+make_interval(mins=>${ACCESS.sessionIdleMinutes}),absolute_expires_at)
+            where id=${live.id} and ended_at is null and not revoked and expires_at>now()
+            returning id`
+        : [];
+    if (resumed) {
       await tx`update devices set last_seen_at=now(),
           token_expires_at=greatest(coalesce(token_expires_at,now()),now()+make_interval(days=>${ACCESS.deviceTokenDays}))
         where id=${row.id}`;

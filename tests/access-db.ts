@@ -1351,6 +1351,59 @@ try {
     assert.equal(inactive.active, false);
   });
 
+  await test("an ended session is never revived: touch and PIN reuse re-check ended_at under the row lock", async () => {
+    const terminal = await device("Carrera");
+    // touchSession with a row read before a concurrent end.
+    const touched = await pin(terminal, cashierId, CASHIER_PIN);
+    const [before] = await admin`select s.*,e.role,l.selling_authorized as lease_selling from sessions s
+      join employees e on e.id=s.employee_id left join offline_leases l on l.session_id=s.id where s.id=${touched.sessionId}`;
+    await admin`update sessions set last_seen_at=now()-interval '2 minutes' where id=${touched.sessionId}`;
+    await run((tx) => endSession(tx, touched.sessionId, "ended_by_manager"));
+    await run((tx) => touchSession(tx, before as any, true));
+    const afterTouch = await sessionRow(touched.sessionId);
+    assert.ok(afterTouch.expires_at.getTime() <= Date.now());
+    assert.equal(afterTouch.end_reason, "ended_by_manager");
+    // PIN reuse racing a manager's end: the end commits while the reuse waits.
+    const first = await pin(terminal, cashierId, CASHIER_PIN);
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    let locked!: () => void;
+    const rowLocked = new Promise<void>((resolve) => (locked = resolve));
+    // A second connection holds the row lock while admin observes the wait.
+    const manager = postgres(migration, { max: 1 });
+    let result: Awaited<ReturnType<typeof pin>>;
+    try {
+      const ending = manager.begin(async (tx) => {
+        await tx`select id from sessions where id=${first.sessionId} for update`;
+        locked();
+        await held;
+        await tx`update sessions set ended_at=now(),end_reason='ended_by_manager',
+            expires_at=least(expires_at,now()) where id=${first.sessionId}`;
+      });
+      await rowLocked;
+      const again = pin(terminal, cashierId, CASHIER_PIN, first.cookie);
+      let waiting = false;
+      for (let i = 0; i < 100 && !waiting; i++) {
+        const [w] =
+          await admin`select count(*)::int as n from pg_locks where not granted`;
+        waiting = w.n > 0;
+        if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      release();
+      await ending;
+      result = await again;
+      assert.equal(waiting, true, "the PIN reuse must wait for the session row lock");
+    } finally {
+      release();
+      await manager.end();
+    }
+    assert.equal(result.reused, false);
+    assert.notEqual(result.sessionId, first.sessionId);
+    const ended = await sessionRow(first.sessionId);
+    assert.equal(ended.end_reason, "ended_by_manager");
+    assert.ok(ended.expires_at.getTime() <= Date.now());
+  });
+
   console.log(`${checks} access checks passed`);
 } finally {
   for (const id of [tenantId, otherTenantId]) {
