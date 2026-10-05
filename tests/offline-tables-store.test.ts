@@ -438,6 +438,61 @@ describe("table-service preconditions", () => {
     expect(fakeDb.pending.rows.size).toBe(rows);
   });
 
+  it("a line the cart flags as unavailable (no price) never goes into a record (OFF-INT-4)", async () => {
+    // The menu refreshed while the payment dialog was open and flagged a line:
+    // the cart's priced lines and total leave it out, so a record holding it
+    // would be refused at sync and sent to manager review.
+    const s = session();
+    const open = await localOrder(s);
+    const cached = uuid(71);
+    await cacheSnapshot(s, [serverCopy(cached)]);
+    const rows = fakeDb.pending.rows.size;
+    const kept = line();
+    const flagged = line();
+    const cart = {
+      lines: [kept, flagged],
+      priced: [priced(kept, 100)],
+      total: 100,
+    };
+    const checkout = (current: Order | null, amount: number) =>
+      saveOfflineCheckout(ctxOf(s), values(amount), {
+        draft: draft(cart.lines),
+        priced: cart.priced,
+        total: cart.total,
+        current,
+        operationId: crypto.randomUUID(),
+        orderOperationId: crypto.randomUUID(),
+        autoPrint: false,
+      });
+    const saves = [
+      // Cobrar: a new order paid in full, a new order paid in part, and a
+      // payment with the cart's items as a round of a local or cached order.
+      checkout(null, 100),
+      checkout(null, 50),
+      checkout(open, 100),
+      checkout(await findOpenOrder(s, { orderId: cached }), 100),
+      // Enviar: a new local order, and a round.
+      saveOfflineOrder(ctxOf(s), {
+        draft: draft(cart.lines),
+        priced: cart.priced,
+        total: cart.total,
+        operationId: crypto.randomUUID(),
+        autoPrint: false,
+      }),
+      saveOfflineRound(ctxOf(s), {
+        target: { localOrderOperationId: open.id },
+        lines: cart.lines,
+        priced: cart.priced,
+        total: cart.total,
+        operationId: crypto.randomUUID(),
+        autoPrint: false,
+      }),
+    ];
+    for (const save of saves)
+      expect(await refusal(save)).toBe("offline_cart_blocked");
+    expect(fakeDb.pending.rows.size).toBe(rows);
+  });
+
   it("an amount above the balance this device sees is refused", async () => {
     const s = session();
     const open = await localOrder(s, 250);

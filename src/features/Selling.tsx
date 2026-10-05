@@ -653,7 +653,9 @@ export function Selling({
     let landed = false;
     setSentOffline([]);
     try {
-      // I13: a local order only ever changes through offline records.
+      // I13: a local order only ever changes through offline records. A line
+      // priceCart flags has no price in `priced`, so the builder refuses the
+      // send with the cart's own message (OFF-INT-4).
       if (!online || offline.isLocalOrder(target)) {
         const { operationId, view } = await offline.sendOffline(target, d, {
           priced,
@@ -963,7 +965,10 @@ export function Selling({
         if (hadAttempt) return;
         throw new Error("invalid_input");
       }
-      // I13: a local order only ever changes through offline records.
+      // I13: a local order only ever changes through offline records. A cart
+      // priceCart flags (a menu refresh while this dialog was open) is refused
+      // by the builders with the cart's own message (OFF-INT-4): `priced`
+      // leaves the flagged line out, and no record holds a line it cannot price.
       if (!online || offline.isLocalOrder(current)) {
         const saved = await offline.collectOffline(
           {

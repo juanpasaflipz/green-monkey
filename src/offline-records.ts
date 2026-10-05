@@ -200,8 +200,16 @@ export async function checkTableService(session: Session) {
   if (!offlineTableServiceOn(session)) fail("offline_table_service_off");
 }
 
-export function checkLines(lines: LineInput[]) {
+/**
+ * A record holds only lines the cart priced. A line the cart flags (unavailable
+ * or no longer valid after a menu refresh, priceCart's `blocked`) has no price
+ * and is left out of the total, so sync would refuse the record and send it to
+ * manager review (OFF-INT-4): it is refused here instead.
+ */
+export function checkLines(lines: LineInput[], priced: PricedLine[]) {
   if (!lines.length) fail("offline_record_invalid");
+  const ids = new Set(priced.map((line) => line.id));
+  if (lines.some((line) => !ids.has(line.id))) fail("offline_cart_blocked");
 }
 
 export function checkPayment(payment: OfflinePaymentInput, due: number) {
@@ -332,7 +340,7 @@ export async function saveOfflineSale(
   },
 ): Promise<LocalReceipt> {
   check(ctx, true);
-  checkLines(input.draft.lines);
+  checkLines(input.draft.lines, input.priced);
   if (!(input.total > 0) || input.payment.amount !== input.total)
     fail("offline_amount_invalid");
   checkPayment(input.payment, input.total);
@@ -1069,7 +1077,7 @@ export async function saveOfflineOrder(
 ): Promise<LocalOrderView> {
   check(ctx, false);
   await checkTableService(ctx.session);
-  checkLines(input.draft.lines);
+  checkLines(input.draft.lines, input.priced);
   const prefix = await devicePrefix(ctx.session);
   const snapshot = {
     lines: input.priced,
@@ -1149,7 +1157,7 @@ export async function saveOfflineRound(
 ): Promise<LocalOrderView> {
   check(ctx, false);
   await checkTableService(ctx.session);
-  checkLines(input.lines);
+  checkLines(input.lines, input.priced);
   const target = await findOpenOrder(ctx.session, input.target);
   if (!target) return fail("offline_order_not_cached");
   // §2.3: a check with no balance left is paid (or closed, or ticketed after
@@ -1232,7 +1240,7 @@ export async function saveOfflinePayment(
 ): Promise<LocalReceipt> {
   check(ctx, true);
   await checkTableService(ctx.session);
-  if (input.round) checkLines(input.round.lines);
+  if (input.round) checkLines(input.round.lines, input.round.priced);
   const found = await findOpenOrder(ctx.session, input.target);
   if (!found) return fail("offline_order_not_cached");
   const current = found;
@@ -1307,7 +1315,7 @@ export async function saveOfflinePartial(
 ): Promise<LocalReceipt> {
   check(ctx, true);
   await checkTableService(ctx.session);
-  checkLines(input.draft.lines);
+  checkLines(input.draft.lines, input.priced);
   if (input.payment.amount >= input.total) fail("offline_amount_invalid");
   checkPayment(input.payment, input.total);
   const prefix = await devicePrefix(ctx.session);

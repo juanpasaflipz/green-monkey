@@ -34,6 +34,7 @@ const clientCodes = [
   // which the Error("…") scan below does not see.
   "offline_amount_exceeds_due",
   "offline_amount_invalid",
+  "offline_cart_blocked",
   "offline_check_paid",
   "offline_order_not_cached",
   "offline_order_outdated",

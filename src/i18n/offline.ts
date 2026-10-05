@@ -540,6 +540,11 @@ export default defineArea({
       "Estos productos ya se enviaron en línea a esta orden (la respuesta se perdió). Un gerente debe revisar el registro; si la orden ya los tiene, archívalo.",
       "These items were already sent online to this order (the response was lost). A manager must review the record; if the order already has them, archive it.",
     ],
+    // OFF-INT-4: the cart's own wording (service's serviceCartBlocked).
+    offline_cart_blocked: [
+      "Quita los productos no disponibles para enviar o cobrar.",
+      "Remove unavailable items to send or collect.",
+    ],
     offline_table_service_off: [
       "Sin conexión solo se guardan órdenes nuevas cobradas completas. Enviar a cocina sin cobrar, agregar a una cuenta abierta y los pagos parciales están disponibles al volver la conexión.",
       "Offline, only new orders paid in full can be saved. Sending to the kitchen without paying, adding to an open check and partial payments are available when the connection returns.",
