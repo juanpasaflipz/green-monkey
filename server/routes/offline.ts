@@ -20,6 +20,10 @@ import {
 } from "../offline-kitchen.js";
 import { offlineDevicePrefix } from "../offline-device.js";
 import { openOrdersSnapshot } from "../offline-tables.js";
+import {
+  readOfflineSettings,
+  saveOfflineSettings,
+} from "../offline-settings.js";
 
 /**
  * Single-flight database reachability, cached for `ttlMs`: at most one
@@ -88,6 +92,11 @@ export function register({ route }: RouteContext) {
     z.object({}).strict().parse(req.body);
     return offlineDevicePrefix(tx, s);
   });
+  // LD-7: offline table service is a per-restaurant beta, off by default.
+  route("get", "/offline/settings", (tx, s) => readOfflineSettings(tx, s));
+  route("post", "/offline/settings", (tx, s, req) =>
+    saveOfflineSettings(tx, s, req.body),
+  );
   route("get", "/offline/open-orders", (tx, s) => openOrdersSnapshot(tx, s));
   route("post", "/offline/sync", (tx, s, req) =>
     syncOfflineRecord(tx, s, req.body),

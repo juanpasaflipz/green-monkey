@@ -37,6 +37,7 @@ import {
 } from "./orders.js";
 import {
   leaseForEvidence,
+  requireRecentAuth,
   type LeaseWindow,
   type OfflineLeaseRow,
 } from "./compat/offline-access.js";
@@ -829,6 +830,7 @@ export async function reconcileOfflineRecord(
   raw: unknown,
 ): Promise<Order> {
   permit(s, managers);
+  requireRecentAuth(s); // D23: money-affecting manager command
   const input = reconcileInput.parse(raw);
   const p = offlineRecord.parse(input.record);
   if ("tenantId" in p && p.tenantId !== s.tenantId)
@@ -939,6 +941,7 @@ export async function archiveOfflineRecord(
   raw: unknown,
 ): Promise<{ id: string; operationId: string; archivedAt: string }> {
   permit(s, managers);
+  requireRecentAuth(s); // D23: money-affecting manager command
   const p = archiveInput.parse(raw);
   const recordId = id.parse(p.record.operationId);
   if (p.record.tenantId !== undefined && p.record.tenantId !== s.tenantId)

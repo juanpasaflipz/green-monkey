@@ -33,6 +33,11 @@ import {
 } from "../server/orders.js";
 import { openOrdersSnapshot } from "../server/offline-tables.js";
 import {
+  readOfflineSettings,
+  saveOfflineSettings,
+} from "../server/offline-settings.js";
+import { ZodError } from "zod";
+import {
   businessDate,
   currencyExponent,
   type LineInput,
@@ -1745,6 +1750,66 @@ try {
   );
   assert.equal(stillServiceable.total, 150);
 
+  // 22. LD-7: offline table service is a per-restaurant beta, OFF by default.
+  // Every table record above synced with it off: sync never consults the
+  // setting, because a record saved while it was on is a real sale.
+  assert.deepEqual(await run((tx) => readOfflineSettings(tx, s1)), {
+    tableService: false,
+  });
+  // With it off no device fetches the open-orders snapshot (GAP-4).
+  await expectCode(
+    run((tx) => openOrdersSnapshot(tx, s1)),
+    "offline_table_service_off",
+  );
+  const settingsCommand = { operationId: randomUUID(), tableService: true };
+  await expectCode(
+    run((tx) => saveOfflineSettings(tx, s1, settingsCommand)),
+    "forbidden",
+    "a cashier cannot turn it on",
+  );
+  await expectCode(
+    run((tx) => saveOfflineSettings(tx, server, settingsCommand)),
+    "forbidden",
+  );
+  await expectCode(
+    run((tx) => readOfflineSettings(tx, kitchen)),
+    "forbidden",
+  );
+  const auditsBefore = await count(
+    "audit",
+    "operation='offline.settings_changed'",
+  );
+  assert.deepEqual(
+    await run((tx) => saveOfflineSettings(tx, manager1, settingsCommand)),
+    { tableService: true },
+  );
+  // A replay (or a second save of the same value) changes and audits nothing.
+  await run((tx) => saveOfflineSettings(tx, manager1, settingsCommand));
+  assert.equal(
+    await count("audit", "operation='offline.settings_changed'"),
+    auditsBefore + 1,
+  );
+  const [settingAudit] =
+    await admin`select actor_id,detail from audit where tenant_id=${tenantId} and operation='offline.settings_changed'`;
+  assert.equal(settingAudit.actor_id, ids.manager);
+  assert.deepEqual(settingAudit.detail.before, { tableService: false });
+  assert.deepEqual(settingAudit.detail.after, { tableService: true });
+  assert.deepEqual(await run((tx) => readOfflineSettings(tx, s1)), {
+    tableService: true,
+  });
+  const [otherSetting] =
+    await admin`select offline_table_service from restaurants where id=${otherTenant}`;
+  assert.equal(otherSetting.offline_table_service, false, "per restaurant");
+  await assert.rejects(
+    run((tx) =>
+      saveOfflineSettings(tx, manager1, {
+        operationId: randomUUID(),
+        tableService: "yes",
+      }),
+    ),
+    ZodError,
+  );
+
   // Open-orders snapshot: excludes cancelled and recovery orders, includes
   // completed-but-unpaid ones and excludes completed-and-paid ones.
   const delivered = await run((tx) =>
@@ -1842,7 +1907,7 @@ try {
   }
 
   console.log(
-    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse, overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, open-orders snapshot).",
+    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse (only at the server's price), overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, lines already sent online, rounds on paid checks, open-orders snapshot) and the LD-7 setting (off by default, managers only, audited once, gates the snapshot, never sync).",
   );
 } finally {
   for (const table of [

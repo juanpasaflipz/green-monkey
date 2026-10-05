@@ -30,6 +30,7 @@ import {
   refreshCheckState,
 } from "./compat/offline-service.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
+import { requireTableService } from "./offline-settings.js";
 import {
   appliers,
   assertLinesNotRecorded,
@@ -371,11 +372,14 @@ reconcilers.payment = async (tx, s, p: OfflineRecord, ctx, reason) => {
 
 /**
  * Open orders from the current and previous business day, for selling against
- * them during an outage. One bounded query (200 rows). Contract D19: after
+ * them during an outage, only while the restaurant has offline table service
+ * on (LD-7). One bounded query (200 rows). Contract D19: after
  * service merges this predicate becomes `check_state <> 'closed'`.
  */
 export async function openOrdersSnapshot(tx: Tx, s: Session) {
   permit(s, operators);
+  // LD-7 / GAP-4: devices fetch it only while table service is on.
+  await requireTableService(tx);
   const today = businessDate(
     new Date().toISOString(),
     s.restaurant.timezone,

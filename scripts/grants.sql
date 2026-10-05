@@ -28,3 +28,4 @@ GRANT UPDATE(kitchen_acknowledged_at,kitchen_acknowledged_by) ON line_voids TO g
 GRANT SELECT,INSERT ON offline_sync_records,offline_archives,offline_kitchen_reviews TO gm_app;
 GRANT UPDATE(state,decided_by,decided_at) ON offline_kitchen_reviews TO gm_app;
 GRANT UPDATE(offline_prefix) ON devices TO gm_app;
+GRANT UPDATE(offline_table_service) ON restaurants TO gm_app;

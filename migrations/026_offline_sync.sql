@@ -1,10 +1,16 @@
 -- 026: offline sync ledger, kitchen review of offline-sold rounds, manager archive
 -- of unverifiable local records, and per-device provisional-number prefixes.
--- Expand-only: three new tables, one nullable column on a small table and one
--- index on a small table. Old app revisions neither read nor write any of these
--- objects, and rounds.state keeps no CHECK (the new value 'offline_review' is a
--- contract for any later DB-9 constraint).
+-- Expand-only: three new tables, one nullable column and one index on the small
+-- devices table, and one defaulted setting column on restaurants. Old app
+-- revisions neither read nor write any of these objects, and rounds.state keeps
+-- no CHECK (the new value 'offline_review' is a contract for any later DB-9
+-- constraint).
 SET LOCAL lock_timeout = '5s';
+
+-- Offline table service (lead decision LD-7): open checks, rounds and partial
+-- payments offline are a per-restaurant beta, OFF by default. A constant
+-- default adds the column without rewriting restaurants.
+ALTER TABLE restaurants ADD COLUMN offline_table_service boolean NOT NULL DEFAULT false;
 
 -- Device prefix for provisional offline numbers (A..Y, A1..Y9). 'Z' is reserved
 -- for client-side fallback prefixes and is never stored.

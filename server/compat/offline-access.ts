@@ -48,3 +48,13 @@ export async function leaseForEvidence(
     ],
   };
 }
+
+/**
+ * access (023): step-up for money-affecting and configuration manager commands
+ * (contract D23, LD-7). Access's real function throws 403 step_up_required on
+ * a terminal whose PIN was not entered recently. Before access merges there is
+ * no step-up primitive, so this fallback accepts the call; at offline's merge
+ * the integrator imports access's requireRecentAuth and deletes this file, so
+ * every call site already in place becomes enforced.
+ */
+export function requireRecentAuth(_s: Session, _maxAgeSeconds?: number): void {}
