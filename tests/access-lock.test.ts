@@ -80,9 +80,11 @@ describe("lock markers (SEC-6, ACC-1/ACC-2)", () => {
     noteActivity(A, false, 15_001);
     expect(JSON.parse(store.get(ACTIVITY_KEY)!).at).toBe(15_001);
     noteActivity(B, false, 15_002);
+    // The marker also names the writing tab, so tabs can tell their input apart (ACC-21).
     expect(JSON.parse(store.get(ACTIVITY_KEY)!)).toEqual({
       sessionId: B,
       at: 15_002,
+      tab: expect.any(String),
     });
     noteActivity(B, true, 15_003);
     expect(JSON.parse(store.get(ACTIVITY_KEY)!).at).toBe(15_003);
@@ -191,5 +193,74 @@ describe("lock across tabs (ACC-16)", () => {
     rememberLock(A, "manual", 2);
     expect(store.get(LOCK_KEY)).not.toBe(first);
     expect(lockedFor(store.get(LOCK_KEY)!, A)).toBe("manual");
+  });
+});
+
+describe("server locks never soften (ACC-18)", () => {
+  it("a lock the server imposed is never replaced by an idle, manual or renew lock", async () => {
+    const { nextLock, allowsContinueOffline } = await load();
+    for (const code of [
+      "session_revoked",
+      "session_ended",
+      "session_expired",
+      "unauthorized",
+    ]) {
+      const server = { reason: code };
+      for (const soft of ["idle", "manual", "renew"])
+        expect(nextLock(server, soft)).toBe(server);
+      // The first server reason stays as well.
+      expect(nextLock(server, "session_expired")).toBe(server);
+      expect(allowsContinueOffline(code)).toBe(false);
+    }
+    // A server code replaces a client lock.
+    expect(nextLock({ reason: "manual" }, "session_revoked")).toEqual({
+      reason: "session_revoked",
+    });
+    expect(nextLock({ reason: "idle" }, "session_ended")).toEqual({
+      reason: "session_ended",
+    });
+    // Client locks: the one already up stays; none up locks with the reason.
+    const idle = { reason: "idle" };
+    expect(nextLock(idle, "manual")).toBe(idle);
+    expect(nextLock(null, "manual")).toEqual({ reason: "manual" });
+    expect(nextLock(null, "session_revoked")).toEqual({
+      reason: "session_revoked",
+    });
+    expect(allowsContinueOffline("idle")).toBe(true);
+    expect(allowsContinueOffline("manual")).toBe(true);
+    expect(allowsContinueOffline("renew")).toBe(false);
+  });
+});
+
+describe("idle lock across tabs (ACC-21)", () => {
+  it("an idle lock in another tab never locks this tab; other reasons do", async () => {
+    const { rememberLock, lockFromOtherTab, LOCK_KEY } = await load();
+    rememberLock(A, "idle", 1);
+    expect(lockFromOtherTab(store.get(LOCK_KEY)!, A)).toBeNull();
+    rememberLock(A, "manual", 2);
+    expect(lockFromOtherTab(store.get(LOCK_KEY)!, A)).toBe("manual");
+    expect(lockFromOtherTab(store.get(LOCK_KEY)!, B)).toBeNull();
+    rememberLock(A, "session_ended", 3);
+    expect(lockFromOtherTab(store.get(LOCK_KEY)!, A)).toBe("session_ended");
+  });
+
+  it("a due idle lock waits while another tab of the session had input within the window", async () => {
+    const { noteActivity, idleElsewhereWait, ACTIVITY_KEY } = await load();
+    const t0 = 1_000_000;
+    // This tab's own input never defers its own timer.
+    noteActivity(A, true, t0);
+    expect(idleElsewhereWait(A, 180, t0 + 180_000)).toBe(0);
+    // Another tab's input 60 s ago: wait the rest of that tab's window.
+    store.set(
+      ACTIVITY_KEY,
+      JSON.stringify({ sessionId: A, at: t0 + 120_000, tab: "other-tab" }),
+    );
+    expect(idleElsewhereWait(A, 180, t0 + 180_000)).toBe(120_000);
+    // Idle everywhere: lock now.
+    expect(idleElsewhereWait(A, 180, t0 + 300_000)).toBe(0);
+    // Another session's input, or a corrupt marker, defers nothing.
+    expect(idleElsewhereWait(B, 180, t0 + 180_000)).toBe(0);
+    store.set(ACTIVITY_KEY, "{not json");
+    expect(idleElsewhereWait(A, 180, t0 + 180_000)).toBe(0);
   });
 });

@@ -11,7 +11,7 @@ import {
   fetchCurrentSession,
   finishPendingLogout,
 } from "../access/session";
-import { inertOutside } from "../access/lock";
+import { allowsContinueOffline, inertOutside } from "../access/lock";
 import { PinPad } from "./PinPad";
 import "../access/access.css";
 
@@ -140,7 +140,7 @@ export function LockScreen({
             <p role="status">
               {t.accessOfflineUnlockHint.replace("{name}", session.name)}
             </p>
-            {(reason === "idle" || reason === "manual") &&
+            {allowsContinueOffline(reason) &&
               new Date(session.offlineUntil).getTime() > Date.now() && (
               <Button
                 variant="primary"

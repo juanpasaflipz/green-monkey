@@ -47,6 +47,9 @@ export function forgetLock() {
   write(LOCK_KEY, null);
 }
 
+/** This page's id in the activity marker, so a tab can tell other tabs' input from its own. */
+const TAB = Math.random().toString(36).slice(2, 10);
+
 let lastWrite = { sessionId: "", at: 0 };
 /** Records input for the idle check on restore (at most every 5 s unless forced). */
 export function noteActivity(sessionId: string, force = false, now = Date.now()) {
@@ -57,7 +60,30 @@ export function noteActivity(sessionId: string, force = false, now = Date.now())
   )
     return;
   lastWrite = { sessionId, at: now };
-  write(ACTIVITY_KEY, JSON.stringify({ sessionId, at: now }));
+  write(ACTIVITY_KEY, JSON.stringify({ sessionId, at: now, tab: TAB }));
+}
+
+/**
+ * How long this tab's due auto-lock must still wait because another open tab
+ * of the same session had input more recently (ACC-21); 0 when the session is
+ * idle everywhere. Each tab's timer only hears its own input, so without this a
+ * background tab would lock while the cashier sells in the foreground tab. The
+ * marker is written at most every 5 s, so a background tab may lock itself up
+ * to 5 s early; its idle lock never reaches other tabs (lockFromOtherTab).
+ */
+export function idleElsewhereWait(
+  sessionId: string,
+  seconds: number,
+  now = Date.now(),
+): number {
+  const activity = parse(read(ACTIVITY_KEY));
+  if (
+    activity?.sessionId !== sessionId ||
+    activity.tab === TAB ||
+    typeof activity.at !== "number"
+  )
+    return 0;
+  return Math.max(0, activity.at + seconds * 1000 - now);
 }
 
 /** The reason a lock marker (for example from another tab) holds for this session. */
@@ -66,6 +92,41 @@ export function lockedFor(raw: string | null, sessionId: string): string | null 
   return lock?.sessionId === sessionId && typeof lock.reason === "string"
     ? lock.reason
     : null;
+}
+
+/**
+ * The lock another tab's marker puts on this tab (ACC-16): every reason except
+ * "idle". Each tab decides its own idle lock from its own input and the shared
+ * activity marker (ACC-21), so an idle background tab never locks the tab in use.
+ */
+export function lockFromOtherTab(
+  raw: string | null,
+  sessionId: string,
+): string | null {
+  const reason = lockedFor(raw, sessionId);
+  return reason === "idle" ? null : reason;
+}
+
+/** Locks the client sets by itself; every other reason is a server session code. */
+const CLIENT_LOCKS = new Set(["idle", "manual", "renew"]);
+/** The offline "Continuar como" is offered only for these (contract 8.2). */
+export function allowsContinueOffline(reason: string) {
+  return reason === "idle" || reason === "manual";
+}
+/**
+ * The lock after a request to lock with `reason` (ACC-18). A lock the server
+ * imposed (a session code) is never replaced, so only a PIN unlock, a switch or
+ * a sign-out ends it and no client lock can turn it into one with a soft
+ * unlock. A server code replaces an idle, manual or renew lock; otherwise the
+ * lock already up stays as it is.
+ */
+export function nextLock(
+  current: { reason: string } | null,
+  reason: string,
+): { reason: string } {
+  if (!current) return { reason };
+  if (!CLIENT_LOCKS.has(current.reason)) return current;
+  return CLIENT_LOCKS.has(reason) ? current : { reason };
 }
 
 /** A revoked session or device: the cached session is removed. */

@@ -7,11 +7,13 @@ const ACTIVITY = ["pointerdown", "keydown", "touchstart", "wheel"] as const;
  * One setTimeout, reset on every input event and cleared when the lock is
  * disabled (null seconds) or inactive (already locked / signed out). Each
  * input also calls onActivity, so a reload can tell how long the device sat idle.
+ * onIdle may return a number of milliseconds to wait before it is asked again
+ * (another tab of the same session is still in use, ACC-21).
  */
 export function useIdleLock(
   seconds: number | null,
   active: boolean,
-  onIdle: () => void,
+  onIdle: () => number | void,
   onActivity?: () => void,
 ) {
   const callback = useRef(onIdle);
@@ -22,11 +24,18 @@ export function useIdleLock(
   }, [onIdle, onActivity]);
   useEffect(() => {
     if (!seconds || !active) return;
-    const fire = () => callback.current();
-    let timer = setTimeout(fire, seconds * 1000);
-    const reset = () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = (ms: number) => {
       clearTimeout(timer);
-      timer = setTimeout(fire, seconds * 1000);
+      timer = setTimeout(fire, ms);
+    };
+    const fire = () => {
+      const wait = callback.current();
+      if (typeof wait === "number" && wait > 0) arm(wait);
+    };
+    arm(seconds * 1000);
+    const reset = () => {
+      arm(seconds * 1000);
       activity.current?.();
     };
     for (const event of ACTIVITY)
