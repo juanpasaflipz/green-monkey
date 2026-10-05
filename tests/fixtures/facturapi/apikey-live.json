@@ -1,0 +1,10 @@
+{
+  "provenance": "docs@1c2e617",
+  "source": "openapi_v2.en.yaml#/paths/~1organizations~1{organization_id}~1apikeys~1live/put/responses/200",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": "sk_live_API_KEY",
+  "note": "The documented example value of the response schema (a JSON string). 'This operation does not invalidate previously generated keys.' Not a real key."
+}

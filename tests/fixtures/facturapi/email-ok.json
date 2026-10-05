@@ -1,0 +1,12 @@
+{
+  "provenance": "docs@1c2e617",
+  "source": "openapi_v2.en.yaml#/paths/~1invoices~1{invoice_id}~1email/post/responses/200",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "ok": true
+  },
+  "note": "The documented 200 schema {ok: boolean} with ok true. Not a recorded response."
+}
