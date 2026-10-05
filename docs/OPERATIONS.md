@@ -9,9 +9,10 @@ This application is under implementation and is not approved for live service.
 5. Return to selling. Add products and send another round without repeating earlier lines. **Cobrar** opens the payment workspace. Enter a smaller amount for partial payment; the remainder survives reload.
 6. Use **Dividir por productos** to select individual units after sending the round. Amount splits allocate against remaining units in stable order. Already paid units stay paid after refund; older payments with no item allocations remain amount-only. The payment footer stays visible on mobile.
 7. Cash is recorded locally in PostgreSQL. External terminal mode means staff explicitly confirm a separate device's approval; it is not integrated payment verification. Hardware printing remains disabled; browser printing does not acknowledge paper output.
-8. Owners/managers can refund recorded cash from order history, with a reason and disposition. This initial workflow never automatically returns prepared food to inventory.
-9. Receive stock, log preparation or waste, and review movements under inventory. A count uses a stock version; concurrent movements require refreshing the count before adjustment.
-10. Closing cash records expected amount, counted amount, and discrepancy explanation. Refunds, tips and paid-outs are included.
+8. A paid dine-in check keeps its table until **Liberar mesa** (on the receipt, the table card, the order row or when opening a new check); takeaway and tableless checks close when settled. **Órdenes** and **Mesas** list open checks; the kitchen display polls a versioned feed and shows a stale banner when it stops. Receipts and pre-bills print the order note, round notes and line notes, as kitchen tickets do. Print settings (80/58 mm, kitchen ticket on send, KDS auto-print) are per device. See [Service](SERVICE.md).
+9. Owners/managers can refund recorded cash from order history, with a reason and disposition. This initial workflow never automatically returns prepared food to inventory.
+10. Receive stock, log preparation or waste, and review movements under inventory. A count uses a stock version; concurrent movements require refreshing the count before adjustment.
+11. Closing cash records expected amount, counted amount, and discrepancy explanation. Refunds, tips and paid-outs are included.
 
 ## Offline
 

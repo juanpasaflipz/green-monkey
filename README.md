@@ -36,6 +36,8 @@ npm run dev:ui
 
 Open **http://127.0.0.1:5173** for the marketing page, or **http://127.0.0.1:5173/app** for the POS/login. The demo owner form ("Acceso de demostración") appears only when `.env` sets `DEMO_TENANT_ID=10000000-0000-4000-8000-000000000001` (the fictional restaurant; `npm run setup:local` writes it, and the server refuses to start with it in production). Owner login: `owner` / `demo-green-monkey`; that pairs the browser as a terminal. Pair any other browser with a code from **Configuración → Dispositivos**. On a paired browser, staff tap their name and enter their PIN: `cashier` / `123456`; kitchen: `kitchen` / `654321`. Pairing, PIN lockout, step-up, the lock screen and staff/device management: [access](docs/ACCESS.md).
 
+Front-of-house service (orders and tables lists, check lifecycle with **Liberar mesa**, kitchen display, kitchen and order notes, receipts and browser printing on 80/58 mm) is described in [Service](docs/SERVICE.md).
+
 New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
 
 The seed is explicit, repeatable, and refuses non-local hosts. It is never run at boot. Seed prices/costs are fictional. Live tax configuration is not yet implemented.
@@ -59,8 +61,10 @@ npm run start:worker # compiled worker; `npm run worker` runs it from source
 `test:db` runs the 17 core operational scenarios. `test:db:qualification`
 also runs the identity, owner management, entitlement, billing, Free-limit,
 offline-recovery, item-void, ops (roles, migrations, jobs, backups,
-provisioning) and access (`npm run test:db:access`: pairing codes, PIN
-throttling, sessions, step-up, staff and devices) suites in a fixed order.
+provisioning), access (`npm run test:db:access`: pairing codes, PIN
+throttling, sessions, step-up, staff and devices) and service
+(`npm run test:db:service`: check lifecycle, kitchen feed, notes, print audit)
+suites in a fixed order.
 `npm run test:db:recovery` runs the recovery database slice directly. All database runners require both
 `TEST_DATABASE_URL` and `TEST_MIGRATION_DATABASE_URL`; the runtime target must end
 in `_test`, and both local or Neon endpoints must satisfy the exact allowlists
