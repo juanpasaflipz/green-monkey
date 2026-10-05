@@ -65,8 +65,9 @@ also runs the identity, owner management, entitlement, billing, Free-limit,
 offline-recovery, item-void, ops (roles, migrations, jobs, backups,
 provisioning) and access (`npm run test:db:access`: pairing codes, PIN
 throttling, sessions, step-up, staff and devices), service
-(`npm run test:db:service`: check lifecycle, kitchen feed, notes, print audit)
-and menu (`npm run test:db:menu`: catalog, floor, stock ledger and policy)
+(`npm run test:db:service`: check lifecycle, kitchen feed, notes, print audit),
+menu (`npm run test:db:menu`: catalog, floor, stock ledger and policy) and
+offline (`npm run test:db:offline`: sync, reconcile, archive, review lane)
 suites in a fixed order.
 `npm run test:db:recovery` runs the recovery database slice directly. All database runners require both
 `TEST_DATABASE_URL` and `TEST_MIGRATION_DATABASE_URL`; the runtime target must end
@@ -89,9 +90,13 @@ TEST_BASE_URL=http://127.0.0.1:3002 TEST_PRODUCTION=1 npm run test:browser
 
 On this development machine, `bash scripts/compiled-local.sh` serves the compiled app on port 3002 and `bash scripts/browser-check.sh` runs the complete browser suite there. Service workers deliberately do not force-update active sessions.
 
-Offline cash, manager reconciliation, recovery backups and uncertain-payment
-behavior are documented in [offline recovery](docs/OFFLINE_RECOVERY.md). The current
-slice is locally qualified; exact staging
+Offline selling (connection pill and manual offline mode, cash or external-terminal
+sales with provisional numbers, on-device kitchen tickets, the KDS review lane,
+exactly-once sync with manager reconcile and archive, service-worker updates),
+recovery backups and uncertain-payment behavior are documented in
+[offline recovery](docs/OFFLINE_RECOVERY.md). Offline table service (open checks,
+rounds and partial payments offline) is a per-restaurant Beta setting, off by
+default. The current slice is locally qualified; exact staging
 qualification is still pending. See [the completion ledger](docs/COMPLETION_LEDGER.md).
 
 ## Imports

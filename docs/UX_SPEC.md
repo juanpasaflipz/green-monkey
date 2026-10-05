@@ -104,6 +104,8 @@ Kitchen tickets emphasize item quantities, modifiers, notes, table/call name, ro
 
 Implemented as described in [Service](SERVICE.md): Órdenes and Mesas lists with check badges, **Liberar mesa** for paid dine-in checks, the KDS with station filter, round and order notes (allergy notes highlighted), void deltas with acknowledgement and a stale-feed banner, and receipts, pre-bills and kitchen tickets printed through one browser print path on 80 or 58 mm paper.
 
+Offline ([offline recovery](OFFLINE_RECOVERY.md)): the header pill reads **Conectado** or **Sin conexión** and opens the Sync screen; local orders show their provisional number until sync maps it to the server number; synced offline rounds wait in a review lane above the KDS tickets for the station on screen, each with **Preparar ahora** and **Ya se preparó**.
+
 ## Inventory and owner screens
 
 Inventory has task tabs: Existencias, Recibir, Preparación, Conteo, Mermas. A stock row shows unit, available/prepared quantity, threshold, recent movement, and action. Count entry keeps focus in a rapid-entry sequence, supports partial saved counts, and previews variance reasons before posting adjustments.
