@@ -61,7 +61,13 @@ kitchen state.
   close are refunds; no check is ever reopened.
 - `rounds_progress_timestamps` maintains `rounds.ready_at` and
   `rounds.completed_at`; recall clears `completed_at`.
-- The backfill closed historical settled, fully voided and recovery orders.
+- The backfill closes historical settled, fully voided and recovery orders.
+  The deployed migration role owns the tables but is neither superuser nor
+  BYPASSRLS, so the backfill switches `orders` and `tenders` to
+  `NO FORCE ROW LEVEL SECURITY` for that one statement and back to `FORCE`
+  right after it, in the same transaction (wave contract OPS-R2). DB test "024
+  backfill closes historical checks when a non-superuser owner applies it"
+  applies 001-021, writes history and applies 024 as such an owner.
 - Indexes (names are a cross-area contract): `orders_open_checks`,
   `orders_business_day`, `orders_table_open`, `rounds_open`,
   `rounds_recent_completed`, `tender_allocations_order`, `refunds_tender`,

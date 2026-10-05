@@ -16,8 +16,17 @@ ALTER TABLE orders
   ADD COLUMN close_reason text;
 
 -- Historical settled, fully voided and recovery orders are closed.
--- Unpaid orders (including delivered-but-unpaid ones) stay open. The migration
--- role owns the schema and bypasses RLS, as in migration 018.
+-- Unpaid orders (including delivered-but-unpaid ones) stay open.
+-- The deployed migration role (gm_migrator) owns these tables but is neither a
+-- superuser nor BYPASSRLS, so FORCE ROW LEVEL SECURITY applies to it and, with
+-- no app.tenant_id set, every tenant_scope policy would hide every row: the
+-- UPDATE would silently change nothing. Both tables the backfill writes or
+-- reads are switched to NO FORCE for this one statement (the owner then
+-- bypasses RLS) and back to FORCE right after it. ALTER TABLE is
+-- transactional, so no other session ever sees the unforced tables (wave
+-- contract OPS-R2; menu 025 uses the same pattern).
+ALTER TABLE orders NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE tenders NO FORCE ROW LEVEL SECURITY;
 WITH money AS (
   SELECT o.tenant_id, o.id,
          coalesce(sum(t.amount), 0) AS paid,
@@ -39,6 +48,8 @@ WHERE m.tenant_id = o.tenant_id AND m.id = o.id
   AND (o.state LIKE 'recovery%'
        OR (o.state = 'cancelled' AND m.paid = 0)
        OR m.paid >= o.total);
+ALTER TABLE orders FORCE ROW LEVEL SECURITY;
+ALTER TABLE tenders FORCE ROW LEVEL SECURITY;
 
 ALTER TABLE orders
   ADD CONSTRAINT orders_check_state_valid

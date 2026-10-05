@@ -1,6 +1,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readdir, readFile } from "node:fs/promises";
 import postgres from "postgres";
 import { password } from "../server/auth.js";
 import { checkRole, connect, tenant, type Tx } from "../server/db.js";
@@ -296,6 +297,128 @@ try {
     const [inconsistent] = await admin`select count(*)::int as n from orders
       where (check_state='closed') <> (closed_at is not null and closed_by is not null and close_reason is not null)`;
     assert.equal(inconsistent.n, 0);
+  });
+
+  await test("024 backfill closes historical checks when a non-superuser owner applies it (OPS-R2)", async () => {
+    // Deployed migrations run as gm_migrator: owner of the tables, but neither
+    // superuser nor BYPASSRLS, so FORCE ROW LEVEL SECURITY applies to it. A
+    // throwaway database owned by such a role gets 001-021, then history, then
+    // 024, in that order (the shared test database never holds orders older
+    // than 024, so only this check exercises the backfill).
+    const suffix = randomUUID().replace(/-/g, "").slice(0, 10);
+    const role = `gm_svc_backfill_${suffix}`;
+    const secret = randomUUID().replace(/-/g, "");
+    const database = `green_monkey_svc_backfill_${suffix}_test`;
+    const urlFor = (user?: { name: string; password: string }) => {
+      const u = new URL(migration);
+      u.pathname = "/" + database;
+      if (user) {
+        u.username = user.name;
+        u.password = user.password;
+      }
+      return u.href;
+    };
+    await admin.unsafe(
+      `create role "${role}" login password '${secret}' nosuperuser nocreatedb nocreaterole nobypassrls`,
+    );
+    await admin.unsafe(`create database "${database}" owner "${role}"`);
+    const owner = postgres(urlFor({ name: role, password: secret }), {
+      max: 1,
+      onnotice: () => {},
+    });
+    const root = postgres(urlFor(), { max: 1, onnotice: () => {} });
+    try {
+      const dir = new URL("../migrations/", import.meta.url);
+      const files = (await readdir(dir))
+        .filter((n) => n.endsWith(".sql"))
+        .sort();
+      const apply = async (name: string) => {
+        const body = await readFile(new URL(name, dir), "utf8");
+        await owner.begin((tx) => tx.unsafe(body));
+      };
+      for (const name of files.filter((n) => n < "024")) await apply(name);
+      const [who] =
+        await owner`select rolsuper, rolbypassrls from pg_roles where rolname = current_user`;
+      assert.deepEqual(
+        { ...who },
+        { rolsuper: false, rolbypassrls: false },
+        "the backfill must run as an owner without BYPASSRLS",
+      );
+
+      // History written before 024, as the previous revision left it.
+      const org = randomUUID(),
+        tenant = randomUUID(),
+        employee = randomUUID(),
+        device = randomUUID(),
+        drawer = randomUUID();
+      const order = {
+        paid: randomUUID(),
+        partial: randomUUID(),
+        voided: randomUUID(),
+        unpaid: randomUUID(),
+        served: randomUUID(),
+        recovery: randomUUID(),
+      };
+      const paidAt = new Date("2026-03-01T19:30:00Z");
+      await root.begin(async (tx) => {
+        await tx`insert into organizations(id,name) values(${org},'Backfill fixture')`;
+        await tx`insert into restaurants(id,organization_id,name) values(${tenant},${org},'Backfill')`;
+        await tx`insert into employees(tenant_id,id,name,login,secret_hash,role)
+          values(${tenant},${employee},'Caja','caja','x','cashier')`;
+        await tx`insert into devices(tenant_id,id,name,token_hash) values(${tenant},${device},'Caja',${"fixture-" + device})`;
+        await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening) values(${tenant},${drawer},${device},${employee},0)`;
+        const rows: [string, number, string, number][] = [
+          [order.paid, 1, "completed", 10000],
+          [order.partial, 2, "active", 10000],
+          [order.voided, 3, "cancelled", 0],
+          [order.unpaid, 4, "active", 5000],
+          [order.served, 5, "completed", 5000],
+          [order.recovery, 6, "recovery_reviewed", 3000],
+        ];
+        for (const [id, number, state, total] of rows)
+          await tx`insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,state,total,created_at)
+            values(${tenant},${id},${number},'2026-03-01',${employee},'takeaway','','','pos',${state},${total},'2026-03-01T18:00:00Z')`;
+        await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,received,created_at)
+          values(${tenant},${randomUUID()},${order.paid},${drawer},'cash',6000,6000,'2026-03-01T19:00:00Z'),
+                (${tenant},${randomUUID()},${order.paid},${drawer},'cash',4000,4000,${paidAt}),
+                (${tenant},${randomUUID()},${order.partial},${drawer},'cash',2500,2500,${paidAt})`;
+      });
+
+      await apply("024_service_lifecycle.sql");
+
+      const after =
+        await root`select id, check_state, close_reason, closed_at, closed_by from orders`;
+      const byId = new Map(after.map((r) => [r.id as string, r]));
+      const stateOf = (id: string) => {
+        const r = byId.get(id)!;
+        return [r.check_state, r.close_reason];
+      };
+      assert.deepEqual(stateOf(order.paid), ["closed", "settled"]);
+      assert.equal(
+        new Date(byId.get(order.paid)!.closed_at).toISOString(),
+        paidAt.toISOString(),
+        "a settled check closes at its last payment",
+      );
+      assert.equal(byId.get(order.paid)!.closed_by, employee);
+      assert.deepEqual(stateOf(order.voided), ["closed", "voided"]);
+      assert.deepEqual(stateOf(order.recovery), ["closed", "recovery"]);
+      assert.deepEqual(stateOf(order.partial), ["open", null]);
+      assert.deepEqual(stateOf(order.unpaid), ["open", null]);
+      assert.deepEqual(
+        stateOf(order.served),
+        ["open", null],
+        "delivered but unpaid stays open",
+      );
+      const [forced] = await root`
+        select bool_and(relforcerowsecurity) as forced from pg_class
+        where oid in ('public.orders'::regclass, 'public.tenders'::regclass)`;
+      assert.equal(forced.forced, true, "FORCE is restored in the same file");
+    } finally {
+      await owner.end();
+      await root.end();
+      await admin.unsafe(`drop database if exists "${database}" with (force)`);
+      await admin.unsafe(`drop role if exists "${role}"`);
+    }
   });
 
   await test("delivered rounds keep the check open for more rounds and voids", async () => {
