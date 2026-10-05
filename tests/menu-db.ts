@@ -1373,6 +1373,92 @@ try {
     assert(terrazaTables.every((t: any) => t.area_name === "Terraza"));
   });
 
+  await test("service reassignment lists tables in /tables order: by area, then position", async () => {
+    const salon = await run(manager, (tx) =>
+      saveArea(tx, manager, {
+        operationId: op(),
+        id: randomUUID(),
+        expectedVersion: 0,
+        name: "Salón " + randomUUID().slice(0, 4),
+      }),
+    );
+    await run(manager, (tx) =>
+      bulkTables(tx, manager, {
+        operationId: op(),
+        areaId: salon.id,
+        prefix: "S" + randomUUID().slice(0, 4),
+        from: 1,
+        to: 2,
+      }),
+    );
+    const listed = (
+      await run(cashier, (tx) => serviceOptions(tx, cashier))
+    ).tables.map((t: any) => ({ id: t.id, area: t.area_id }));
+    const active = (await run(manager, activeTables)).map((t: any) => t.id);
+    assert.deepEqual(
+      listed.map((t) => t.id),
+      active,
+    );
+    // Positions restart in every area, so ordering by position alone would
+    // interleave Terraza 1, Salón 1, Terraza 2, … Each area is one block.
+    const blocks = listed
+      .map((t) => t.area)
+      .filter((area, i, all) => i === 0 || area !== all[i - 1]);
+    assert.equal(new Set(blocks).size, blocks.length);
+    assert(new Set(blocks).has(salon.id) && new Set(blocks).has(terraza.id));
+  });
+
+  await test("a reassignment racing a table archive never leaves an open check on the archived table", async () => {
+    const racing = await run(manager, (tx) =>
+      saveTable(tx, manager, {
+        operationId: op(),
+        id: randomUUID(),
+        expectedVersion: 0,
+        name: "Carrera " + randomUUID().slice(0, 4),
+        areaId: terraza.id,
+      }),
+    );
+    const plain = await newProduct(manager, tacos.id);
+    const open = await order(cashier, orderBody([{ productId: plain.id }]));
+    let archived!: () => void;
+    const archiveDone = new Promise<void>((resolve) => (archived = resolve));
+    // The archive passes its open-check and stays uncommitted for a moment.
+    const archive = run(manager, async (tx) => {
+      const row = await archiveTable(tx, manager, {
+        operationId: op(),
+        id: racing.id,
+        expectedVersion: racing.version,
+        archived: true,
+      });
+      archived();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return row;
+    });
+    await archiveDone;
+    const assign = run(cashier, (tx) =>
+      assignService(tx, cashier, open.id, {
+        operationId: op(),
+        expectedVersion: 0,
+        tableId: racing.id,
+        employeeId: cashier.employeeId,
+        mode: "dine_in",
+        reason: "Cambio de mesa",
+      }),
+    );
+    const [first, second] = await Promise.allSettled([archive, assign]);
+    assert.equal(first.status, "fulfilled");
+    assert.equal(second.status, "rejected");
+    assert.equal(
+      (second as PromiseRejectedResult).reason.code,
+      "invalid_table",
+    );
+    const [row] = await run(
+      manager,
+      (tx) => tx`select table_id from orders where id=${open.id}`,
+    );
+    assert.equal(row.table_id, null);
+  });
+
   await test("an area with active tables cannot be archived", async () => {
     const fresh = (
       await run(manager, (tx) => floorPayload(tx, manager))
