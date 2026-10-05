@@ -88,6 +88,13 @@ voids; `/api/kitchen/:id` never turns a cancelled order back into an active
 one; external tenders store `received = amount + tip` and keep only their
 trimmed reference; grouped settlement locks every order before the drawer.
 
+**Deploy.** Apply 024 and `scripts/grants.sql` first; the previous revision
+keeps serving while the new one rolls out. In that window the previous revision
+can settle a check without closing it, so such a check shows a zero balance
+until staff release it (Órdenes and Mesas offer **Liberar mesa** / **Cerrar
+cuenta** for any open check at balance 0), and its attempt to add a round to an
+already settled check fails with a server error instead of `check_closed`.
+
 **Legacy endpoints scheduled for removal.** `GET /api/orders` (now batched) and
 `GET /api/kitchen` keep their response shapes for one release so PWA bundles
 cached before the deploy keep working. A later contract change removes them.

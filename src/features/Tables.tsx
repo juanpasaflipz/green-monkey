@@ -128,7 +128,9 @@ export function Tables({
                 <Badge tone="green">{t("serviceTableFoodReady")}</Badge>
               )}
               {table.checks.map((c) =>
-                c.checkState === "paid" ? (
+                // A check settled by an older app revision during a deploy can
+                // stay "open" at balance 0; it is released the same way.
+                c.checkState === "paid" || c.balance <= 0 ? (
                   <div className="table-check paid" key={c.id}>
                     <span>
                       {t("serviceTablePaidLine").replace(
@@ -156,7 +158,9 @@ export function Tables({
               <Button
                 disabled={busy}
                 onClick={() =>
-                  table.checks.some((c) => c.checkState === "paid")
+                  table.checks.some(
+                    (c) => c.checkState === "paid" || c.balance <= 0,
+                  )
                     ? setPrompt(table)
                     : open(table)
                 }
@@ -178,7 +182,7 @@ export function Tables({
             {t("serviceTablePaidPrompt").replace(
               "{numbers}",
               prompt.checks
-                .filter((c) => c.checkState === "paid")
+                .filter((c) => c.checkState === "paid" || c.balance <= 0)
                 .map((c) => "#" + c.number)
                 .join(", "),
             )}
@@ -190,7 +194,7 @@ export function Tables({
               onClick={() =>
                 void act(async () => {
                   for (const c of prompt.checks.filter(
-                    (c) => c.checkState === "paid",
+                    (c) => c.checkState === "paid" || c.balance <= 0,
                   ))
                     await release(c);
                   const table = prompt;

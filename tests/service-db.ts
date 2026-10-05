@@ -406,6 +406,23 @@ try {
     assert.equal(audits.length, 1);
     assert.equal(audits[0].detail.reason, "released");
     await rejects(close(randomUUID()), "not_found");
+    // A check settled by the previous app revision during a rolling deploy
+    // stays open at balance 0; it is still listed and can be released.
+    const legacy = await newOrder({ mode: "dine_in", tableId: tables[2].id });
+    await asAdmin(async (tx) => {
+      const [drawer] =
+        await tx`select id from cash_sessions where tenant_id=${tenantId} and closed_at is null limit 1`;
+      await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received)
+        values(${tenantId},${randomUUID()},${legacy.id},${drawer.id},'cash',${legacy.total},0,${legacy.total})`;
+    });
+    const listed = await run(owner, (tx) => tableOccupancy(tx, owner));
+    const stuck = listed
+      .find((t) => t.id === tables[2].id)!
+      .checks.find((c) => c.id === legacy.id)!;
+    assert.equal(stuck.checkState, "open");
+    assert.equal(stuck.balance, 0);
+    const releasedLegacy = await close(legacy.id);
+    assert.equal(releasedLegacy.closeReason, "released");
   });
 
   await test("fully voided unpaid check closes as voided and frees its table", async () => {

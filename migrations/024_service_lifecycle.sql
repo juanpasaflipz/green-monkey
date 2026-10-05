@@ -1,8 +1,11 @@
 -- 024 Service lifecycle: check (financial) state separate from kitchen state,
 -- round notes and progress timestamps, kitchen feed versions, service indexes.
--- Expand-only. The previous app revision keeps working unchanged: it never reads
--- the new columns, DEFAULTs keep its inserts valid, and the insert trigger closes
--- the recovery orders it creates.
+-- Expand-only. The previous app revision never reads the new columns, DEFAULTs
+-- keep its inserts valid and the insert trigger closes the recovery orders it
+-- creates. During a rolling deploy it can still settle a check without closing
+-- it (staff release such zero-balance checks from Órdenes or Mesas), and adding
+-- a round to an already settled check fails there with a server error, the
+-- case the new revision rejects as check_closed.
 SET LOCAL lock_timeout = '5s';
 
 -- 1. Check lifecycle on orders --------------------------------------------

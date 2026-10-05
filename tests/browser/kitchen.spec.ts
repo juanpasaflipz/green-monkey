@@ -198,6 +198,13 @@ test("kitchen ticket prints through the browser print path", async ({
     expect(job.text).toContain(`#${order.number}`);
     expect(job.text).toContain("Salsa verde");
     expect(job.text).toContain("Sin cebolla");
+    // A print() that returns at once (iOS Safari) must not blank the job: the
+    // document stays until afterprint.
+    await expect(page.locator("#print-root")).toContainText(`#${order.number}`);
+    await expect(page.locator("body")).toHaveClass(/printing-doc/);
+    await page.evaluate(() => window.dispatchEvent(new Event("afterprint")));
+    await expect(page.locator("#print-root")).toBeEmpty();
+    await expect(page.locator("body")).not.toHaveClass(/printing-doc/);
     // Render the captured job as the print medium shows it, for evidence.
     await page.evaluate((html) => {
       const root = document.getElementById("print-root")!;

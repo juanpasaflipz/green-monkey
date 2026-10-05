@@ -97,8 +97,16 @@ export function Orders({
       setItems((old) => {
         const head = r.items;
         if (limit < PAGE + extra.current) {
+          // Beyond the refreshable top rows, keep only loaded rows that sort
+          // after the new head (keyset order), so rows pushed down by new
+          // orders stay and rows that left the filter disappear.
+          const last = head.at(-1);
           const ids = new Set(head.map((o) => o.id));
-          return [...head, ...old.slice(limit).filter((o) => !ids.has(o.id))];
+          const after = (o: OrderSummary) =>
+            !last ||
+            o.createdAt < last.createdAt ||
+            (o.createdAt === last.createdAt && o.id < last.id);
+          return [...head, ...old.filter((o) => !ids.has(o.id) && after(o))];
         }
         return head;
       });

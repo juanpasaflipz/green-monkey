@@ -100,7 +100,13 @@ export function printDocument(
   return job;
 }
 
+/** Cleans up the previous document if its afterprint never arrived. */
+let pendingCleanup: (() => void) | null = null;
+/** Safety net for engines that never fire afterprint. */
+const ORPHAN_CLEANUP_MS = 120_000;
+
 async function printNow(node: ReactNode, paper: PaperWidth) {
+  pendingCleanup?.();
   let host = document.getElementById("print-root");
   if (!host) {
     host = document.createElement("div");
@@ -117,22 +123,30 @@ async function printNow(node: ReactNode, paper: PaperWidth) {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
   );
   let done = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
   const cleanup = () => {
     if (done) return;
     done = true;
+    if (timer) clearTimeout(timer);
     window.removeEventListener("afterprint", cleanup);
-    root.unmount();
+    if (pendingCleanup === cleanup) pendingCleanup = null;
+    try {
+      root.unmount();
+    } catch {
+      /* The container was already emptied. */
+    }
     target.replaceChildren();
     document.body.classList.remove("printing-doc");
   };
+  pendingCleanup = cleanup;
   window.addEventListener("afterprint", cleanup);
   document.body.classList.add("printing-doc");
-  try {
-    // Chromium blocks until the dialog closes; other engines fire afterprint.
-    window.print();
-  } finally {
-    cleanup();
-  }
+  // Chromium blocks inside print() and fires afterprint before it returns.
+  // Engines whose print() returns at once (iOS/iPadOS Safari) take the
+  // snapshot later, so the document stays until afterprint, the next print
+  // job, or the safety timer.
+  window.print();
+  if (!done) timer = setTimeout(cleanup, ORPHAN_CLEANUP_MS);
 }
 
 /** Several documents (for example one ticket per station) in one print job. */
