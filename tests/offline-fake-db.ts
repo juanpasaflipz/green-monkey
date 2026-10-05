@@ -19,15 +19,14 @@ export class FakeCollection {
   filter(fn: (row: any) => boolean) {
     return new FakeCollection(
       this.table,
-      (row) => this.predicate(row) && fn(copy(row)),
+      (row) => this.predicate(row) && this.table.read(row) && fn(copy(row)),
     );
   }
   private matching() {
     return [...this.table.rows.values()].filter(this.predicate);
   }
   async toArray() {
-    this.table.valueReads += this.matching().length;
-    return this.matching().map(copy);
+    return this.matching().map((row) => copy(this.table.read(row) && row));
   }
   async first() {
     return (await this.toArray())[0];
@@ -54,11 +53,15 @@ export class FakeCollection {
 
 export class FakeTable {
   rows = new Map<string, Row>();
-  /** Rows whose values were read by a collection scan (storage-churn checks). */
-  valueReads = 0;
+  /** Keys whose stored value was read (deserialized), for storage-churn checks. */
+  readIds = new Set<string>();
+  read(row: Row): true {
+    this.readIds.add(row.id);
+    return true;
+  }
   async get(id: string) {
     const row = this.rows.get(id);
-    return row ? copy(row) : undefined;
+    return row && this.read(row) ? copy(row) : undefined;
   }
   async put(row: Row) {
     this.rows.set(row.id, copy(row));
@@ -88,8 +91,7 @@ export class FakeTable {
     for (const id of ids) this.rows.delete(id);
   }
   async toArray() {
-    this.valueReads += this.rows.size;
-    return [...this.rows.values()].map(copy);
+    return [...this.rows.values()].map((row) => copy(this.read(row) && row));
   }
   async count() {
     return this.rows.size;
@@ -106,7 +108,7 @@ export class FakeTable {
     };
   }
   filter(fn: (row: any) => boolean) {
-    return new FakeCollection(this, (row) => fn(copy(row)));
+    return new FakeCollection(this, (row) => this.read(row) && fn(copy(row)));
   }
 }
 
@@ -131,7 +133,7 @@ export class FakeDb {
   reset() {
     for (const table of this.tables()) {
       table.rows.clear();
-      table.valueReads = 0;
+      table.readIds.clear();
     }
   }
 }

@@ -23,7 +23,13 @@ import {
   offlineBlockReason,
   saveOfflineSale,
 } from "../src/offline-records";
-import { syncPending, unsyncedCount } from "../src/offline-queue";
+import {
+  PRUNE_EVERY_MS,
+  isResolved,
+  settleAlreadySynced,
+  syncPending,
+  unsyncedCount,
+} from "../src/offline-queue";
 
 const mockedApi = vi.mocked(api);
 const uuid = (n: number) =>
@@ -359,5 +365,102 @@ describe("sync loop", () => {
     await syncPending(s, { reason: "poll" });
     expect(mockedApi).not.toHaveBeenCalled();
     expect(await unsyncedCount(s)).toBe(1);
+  });
+});
+
+describe("retention and older tabs", () => {
+  it("OFF-R7: an archived row rewritten by an older tab stays resolved and is put back", async () => {
+    const s = session();
+    const archived = row(s, {
+      status: "conflict",
+      error: "offline_conflict",
+      archivedAt: Date.now() - 1_000,
+    });
+    await fakeDb.pending.put(archived);
+    expect(isResolved(archived as never)).toBe(true);
+    expect(await unsyncedCount(s)).toBe(0);
+    await syncPending(s, { force: true, reason: "manual" });
+    expect(mockedApi).not.toHaveBeenCalled();
+    expect((await fakeDb.pending.get(archived.id))!.status).toBe("archived");
+  });
+
+  it("OFF-R11: background passes prune at most hourly and never read cached blobs", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-05T20:00:00.000Z"));
+    const s = session({
+      employeeId: uuid(30),
+      offlineUntil: "2026-10-05T23:00:00.000Z",
+    });
+    const day = 86_400_000;
+    const now = Date.now();
+    const catalog = `${scope(s)}:catalog`;
+    const openOrders = `${scope(s)}:open-orders`;
+    await fakeDb.cache.put({ id: catalog, value: [{ big: "x".repeat(1000) }] });
+    await fakeDb.cache.put({ id: openOrders, value: { orders: [] } });
+    const oldTicket = `${scope(s)}:ticket:${uuid(31)}:kitchen`;
+    const newTicket = `${scope(s)}:ticket:${uuid(32)}:kitchen`;
+    await fakeDb.cache.put({
+      id: oldTicket,
+      value: { updatedAt: now - 3 * day },
+    });
+    await fakeDb.cache.put({ id: newTicket, value: { updatedAt: now - day } });
+    const seq = `${s.tenantId}:${s.deviceId}:offline-seq:`;
+    await fakeDb.cache.put({ id: seq + "2026-09-30", value: 4 });
+    await fakeDb.cache.put({ id: seq + "2026-10-05", value: 2 });
+    const old = row(s, { status: "synced", syncedAt: now - 8 * day });
+    const recent = row(s, { status: "synced", syncedAt: now - day });
+    await fakeDb.pending.put(old);
+    await fakeDb.pending.put(recent);
+    // A manual (or reconnect) pass prunes now, through keys and indexes only.
+    await syncPending(s, { reason: "manual" });
+    expect(await fakeDb.pending.get(old.id)).toBeUndefined();
+    expect(await fakeDb.pending.get(recent.id)).toBeDefined();
+    expect(await fakeDb.cache.get(oldTicket)).toBeUndefined();
+    expect(await fakeDb.cache.get(newTicket)).toBeDefined();
+    expect(await fakeDb.cache.get(seq + "2026-09-30")).toBeUndefined();
+    expect(await fakeDb.cache.get(seq + "2026-10-05")).toBeDefined();
+    fakeDb.cache.readIds.clear();
+    // The next background passes within the hour do not prune at all.
+    const stale = row(s, { status: "synced", syncedAt: now - 8 * day });
+    await fakeDb.pending.put(stale);
+    vi.setSystemTime(now + PRUNE_EVERY_MS - 60_000);
+    await syncPending(s, { reason: "poll" });
+    await syncPending(s, { reason: "poll" });
+    expect(await fakeDb.pending.get(stale.id)).toBeDefined();
+    expect([...fakeDb.cache.readIds]).toEqual([]);
+    // An hour later a background pass prunes again, still without reading
+    // the catalog or the open-orders cache.
+    vi.setSystemTime(now + PRUNE_EVERY_MS + 1);
+    await syncPending(s, { reason: "poll" });
+    expect(fakeDb.pending.rows.has(stale.id)).toBe(false);
+    expect(fakeDb.cache.readIds.has(catalog)).toBe(false);
+    expect(fakeDb.cache.readIds.has(openOrders)).toBe(false);
+  });
+
+  it("a record the server already applied keeps its stored result", async () => {
+    const s = session();
+    const queued = row(s, { status: "conflict", error: "offline_conflict" });
+    await fakeDb.pending.put(queued);
+    const stored = { orderId: uuid(40), tenderId: uuid(41) };
+    mockedApi.mockResolvedValueOnce(stored);
+    await settleAlreadySynced((await fakeDb.pending.get(queued.id)) as never);
+    expect(mockedApi).toHaveBeenCalledWith("/offline/sync", queued.body, {
+      idempotent: true,
+      timeoutMs: 20_000,
+    });
+    expect(await fakeDb.pending.get(queued.id)).toMatchObject({
+      status: "synced",
+      result: stored,
+    });
+    const other = row(s);
+    await fakeDb.pending.put(other);
+    mockedApi.mockRejectedValueOnce(
+      new ApiError("network_unavailable", 0, "network"),
+    );
+    await settleAlreadySynced((await fakeDb.pending.get(other.id)) as never);
+    expect(await fakeDb.pending.get(other.id)).toMatchObject({
+      status: "synced",
+      result: null,
+    });
   });
 });

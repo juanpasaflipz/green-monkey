@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
 import { api } from "../../api";
 import { db, type Pending } from "../../offline";
+import { settleAlreadySynced } from "../../offline-queue";
 import { Button, Field } from "../../components/ui";
 import { translateError } from "../../i18n";
 import { withLocks } from "../../platform";
@@ -52,13 +53,7 @@ export function ArchiveRecordForm({
           });
         } catch (e) {
           if ((e as Error).message !== "offline_already_synced") throw e;
-          await db.pending.update(row.id, {
-            status: "synced",
-            syncedAt: Date.now(),
-            result: null,
-            error: undefined,
-            waitReason: undefined,
-          });
+          await settleAlreadySynced(row);
         }
       });
       done();

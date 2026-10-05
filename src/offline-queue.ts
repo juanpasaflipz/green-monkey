@@ -24,9 +24,17 @@ export type SyncOptions = {
   reason?: "poll" | "reconnect" | "manual";
 };
 
-/** Synced and archived rows are resolved: they never block close or updates. */
-export function isResolved(row: Pick<Pending, "status">): boolean {
-  return row.status === "synced" || row.status === "archived";
+/**
+ * Synced and archived rows are resolved: they never block close or updates. A
+ * row once archived stays resolved even if a tab still running a pre-026
+ * revision rewrote its status (it treats anything but "synced" as unsynced).
+ */
+export function isResolved(
+  row: Pick<Pending, "status"> & { archivedAt?: number },
+): boolean {
+  return (
+    row.status === "synced" || row.status === "archived" || !!row.archivedAt
+  );
 }
 
 /** The local order a round or payment waits for, if any (invariant I5). */
@@ -65,7 +73,12 @@ async function syncScoped(
     { ifAvailable: !force },
     async (lock) => {
       if (!lock) return;
-      const rows = (await db.pending.where("scope").equals(scope(s)).toArray())
+      const stored = await db.pending.where("scope").equals(scope(s)).toArray();
+      // OFF-R7: put back archived rows an older tab marked pending or conflict.
+      for (const row of stored)
+        if (row.archivedAt && row.status !== "archived")
+          await db.pending.update(row.id, { status: "archived" });
+      const rows = stored
         .filter((row) => !isResolved(row))
         .sort((a, b) => order(a) - order(b));
       for (const row of rows) {
@@ -109,7 +122,8 @@ async function syncScoped(
                 attempts: reachable ? row.attempts + 1 : row.attempts,
                 nextAt: Date.now() + retryDelay(row.attempts),
               });
-              if (kind === "network" || kind === "timeout") return finish(s);
+              if (kind === "network" || kind === "timeout")
+                return finish(s, reason);
               break;
             case "auth":
               await db.pending.update(row.id, {
@@ -117,7 +131,7 @@ async function syncScoped(
                 error: code,
                 waitReason: "auth",
               });
-              return finish(s);
+              return finish(s, reason);
             case "archived":
               await db.pending.update(row.id, {
                 status: "archived",
@@ -155,18 +169,52 @@ async function syncScoped(
           nextAt: 0,
         });
       }
-      await finish(s);
+      await finish(s, reason);
     },
   );
 }
 
-async function finish(s: Session) {
+/**
+ * Marks a row the server says it already applied (archive answered
+ * offline_already_synced). Replaying the same record returns the stored result
+ * (same idempotency key), so offline balances can tell exactly which tender or
+ * round it was; if that fails the row is still resolved, without a result.
+ */
+export async function settleAlreadySynced(row: Pending): Promise<void> {
+  const result = await api("/offline/sync", row.body, {
+    idempotent: true,
+    timeoutMs: 20_000,
+  }).catch(() => null);
+  await db.pending.update(row.id, {
+    status: "synced",
+    syncedAt: Date.now(),
+    result,
+    error: undefined,
+    waitReason: undefined,
+  });
+}
+
+/** Background passes prune at most this often; reconnect and manual passes always do. */
+export const PRUNE_EVERY_MS = 3_600_000;
+const prunedAt = new Map<string, number>();
+
+/**
+ * Retention after a pass (OFF-12), without storage churn on cheap tablets
+ * (OFF-R11): the 10 s background passes prune at most once an hour, and
+ * pruning walks indexes and keys only, so it never reads the cached catalog
+ * or open-orders values.
+ */
+async function finish(s: Session, reason: SyncOptions["reason"] = "poll") {
   const now = Date.now();
+  const key = scope(s);
+  if (reason === "poll" && now - (prunedAt.get(key) ?? 0) < PRUNE_EVERY_MS)
+    return;
+  prunedAt.set(key, now);
   // Legacy synced rows have no syncedAt; start their retention clock now.
   await db.pending
-    .where("scope")
-    .equals(scope(s))
-    .filter((row) => row.status === "synced" && !row.syncedAt)
+    .where("status")
+    .equals("synced")
+    .filter((row) => row.scope === key && !row.syncedAt)
     .modify({ syncedAt: now });
   await pruneResolved(now);
   await pruneScopedCache(s, now);
@@ -175,31 +223,33 @@ async function finish(s: Session) {
 /** Deletes rows resolved more than 7 days ago. Unresolved rows are never pruned. */
 export async function pruneResolved(now = Date.now()): Promise<number> {
   return db.pending
+    .where("status")
+    .anyOf(["synced", "archived"])
     .filter((row) => {
       if (row.status === "synced")
         return !!row.syncedAt && now - row.syncedAt > RESOLVED_RETENTION_MS;
-      if (row.status === "archived")
-        return !!row.archivedAt && now - row.archivedAt > RESOLVED_RETENTION_MS;
-      return false;
+      return !!row.archivedAt && now - row.archivedAt > RESOLVED_RETENTION_MS;
     })
     .delete();
 }
 
-const TWO_DAYS = 2 * 86_400_000;
+const DAY = 86_400_000;
 async function pruneScopedCache(s: Session, now: number) {
-  const prefix = scope(s) + ":ticket:";
-  const sequencePrefix = `${s.tenantId}:${s.deviceId}:offline-seq:`;
+  // Ticket status chips are small values; only their own key range is read.
   await db.cache
-    .filter((row) => {
-      if (row.id.startsWith(prefix))
-        return now - Number(row.value?.updatedAt ?? 0) > TWO_DAYS;
-      if (row.id.startsWith(sequencePrefix)) {
-        const day = Date.parse(row.id.slice(sequencePrefix.length));
-        return Number.isFinite(day) && now - day > TWO_DAYS + 86_400_000;
-      }
-      return false;
-    })
+    .where("id")
+    .startsWith(scope(s) + ":ticket:")
+    .filter((row) => now - Number(row.value?.updatedAt ?? 0) > 2 * DAY)
     .delete();
+  // Provisional-number counters carry their business day in the key.
+  const sequencePrefix = `${s.tenantId}:${s.deviceId}:offline-seq:`;
+  const stale = (
+    await db.cache.where("id").startsWith(sequencePrefix).primaryKeys()
+  ).filter((id) => {
+    const day = Date.parse(String(id).slice(sequencePrefix.length));
+    return Number.isFinite(day) && now - day > 3 * DAY;
+  });
+  if (stale.length) await db.cache.bulkDelete(stale);
 }
 
 /** Unresolved records for this employee on this device ("self") or for the whole device. */
