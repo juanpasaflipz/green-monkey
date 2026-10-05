@@ -68,7 +68,7 @@ unverified unless a dated checkpoint explicitly records it.
 | SMS/WhatsApp and voice operations | Optional configured module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | AI receipt/menu parsing and recipe matching | 4–5, optional assist; manual flow required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Kiosk suggestions, menu boards/displays | Optional follow-on | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
-| Incident monitoring / AI sentinel | 6 baseline; advanced optional module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Partial: structured logs and request ids, `/api/ops/status`, watchdog and dead-job alerts, hourly uptime and backup-freshness checks, optional Sentry; locally verified 2026-10-05. Alert channel setup and incident staffing pending; AI sentinel not implemented. |
+| Incident monitoring / AI sentinel | 6 baseline; advanced optional module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Partial: structured logs and request ids, `/api/ops/status`, watchdog and dead-job alerts, optional Sentry; locally verified 2026-10-05 (`tests/ops-http.test.ts`, `tests/drain-http.ts`, `tests/browser/ops.spec.ts`). Hourly uptime and backup-freshness workflow written; pending its first scheduled run after provisioning. Alert channel setup and incident staffing pending; AI sentinel not implemented. |
 | Financing, settlement/disbursement, marketing/site fragments | Outside base scope | See DELIVERY_STATUS.md and corresponding M1–M9 section | Excluded from base POS per approved matrix. |
 
 ## Acceptance inventory

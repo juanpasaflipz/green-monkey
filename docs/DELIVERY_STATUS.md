@@ -51,7 +51,7 @@ This is an in-progress implementation, not release approval. Required features r
 | SMS/WhatsApp and voice operations | optional follow-on | Not implemented. | Provider/account/device verification required; none performed. |
 | AI receipt/menu parsing and recipe matching | pending | Not implemented. | — |
 | Kiosk suggestions, menu boards/displays | optional follow-on | Not implemented. | — |
-| Incident monitoring / AI sentinel | partial | Structured JSON logs with request ids and route templates, `/api/ops/status`, worker watchdog alerts (web down, billing review/retrying), dead-job alerts, hourly uptime and backup-freshness workflow, optional Sentry; locally verified by `tests/ops-http.test.ts`, `tests/drain-http.ts` and `tests/browser/ops.spec.ts`. Alert topic and Railway deploy webhook are the owner's setup steps; no on-call staffing; AI sentinel not implemented. | — |
+| Incident monitoring / AI sentinel | partial | Structured JSON logs with request ids and route templates, `/api/ops/status`, worker watchdog alerts (web down, billing review/retrying), dead-job alerts, optional Sentry; locally verified by `tests/ops-http.test.ts`, `tests/drain-http.ts` and `tests/browser/ops.spec.ts`. The hourly uptime and backup-freshness workflow is written and pending its first scheduled run (it starts once provisioning lists production in `OPS_LIVE_ENVIRONMENTS`). Alert topic and Railway deploy webhook are the owner's setup steps; no on-call staffing; AI sentinel not implemented. | — |
 | Financing, settlement/disbursement, marketing/site fragments | optional follow-on | Excluded from base POS per approved matrix. | — |
 
 ## Verified subsets

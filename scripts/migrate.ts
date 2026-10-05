@@ -142,7 +142,7 @@ export async function main(
     }
     await assertMigrationRole(sql, appEnv);
     const database = decodeURIComponent(target.pathname.slice(1));
-    let granted = false;
+    let granted: string | null = null;
     if (!flags.has("--grants-only")) {
       // With --grants, the newest migration and the grants commit together:
       // readiness (newest migration recorded) never passes before the new
@@ -150,17 +150,25 @@ export async function main(
       const applied = await applyMigrations(sql, files, {
         beforeLastRecord: flags.has("--grants")
           ? async (tx) => {
-              await applyGrantsTx(tx, { role, database });
-              granted = true;
+              granted = (await applyGrantsTx(tx, { role, database })).hash;
             }
           : undefined,
       });
-      log.info("migrations_complete", { applied: applied.length, granted });
+      log.info("migrations_complete", {
+        applied: applied.length,
+        granted: granted !== null,
+      });
       if (granted)
-        log.info("grants_applied", { role, withMigration: applied.at(-1) });
+        log.info("grants_applied", {
+          role,
+          hash: granted,
+          withMigration: applied.at(-1),
+        });
     }
-    if (!granted && (flags.has("--grants") || flags.has("--grants-only")))
-      await applyGrants(sql, { role, database });
+    if (!granted && (flags.has("--grants") || flags.has("--grants-only"))) {
+      const { hash } = await applyGrants(sql, { role, database });
+      log.info("grants_applied", { role, hash });
+    }
     await reconcilePolicies(sql);
     if (flags.has("--retention")) {
       // Retention never fails a deploy; a failure alerts (retention_failed)

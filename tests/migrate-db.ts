@@ -1,6 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -311,6 +311,18 @@ try {
             l.includes('"grants_applied"') &&
             l.includes(`"withMigration":"${readMigrations().at(-1)!.name}"`),
         ),
+      );
+      // The log carries the manifest's sha256 (nothing stores it yet).
+      const manifestHash = createHash("sha256")
+        .update(readFileSync("scripts/grants.sql"))
+        .digest("hex");
+      assert.ok(
+        lines.some(
+          (l) =>
+            l.includes('"grants_applied"') &&
+            l.includes(`"hash":"${manifestHash}"`),
+        ),
+        "grants_applied logs the manifest hash",
       );
       const checkOwner = pool(urlFor(real));
       const [o] = await checkOwner`

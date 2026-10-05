@@ -24,6 +24,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { databaseTls, withoutParams } from "../../server/db-support.js";
+import type { Tx } from "../../server/db.js";
 import { controlTotals } from "./control-totals.js";
 import { provisionRoles } from "./provision-roles.js";
 import { verifyRestore } from "./restore-verify.js";
@@ -155,7 +156,8 @@ if (!dryRun) {
     onnotice: () => {},
   });
   try {
-    pitrTotals = await sql.begin(async (tx) => {
+    pitrTotals = await sql.begin(async (raw) => {
+      const tx = raw as unknown as Tx;
       await tx`set local row_security = on`;
       return controlTotals(tx as unknown as postgres.Sql);
     });

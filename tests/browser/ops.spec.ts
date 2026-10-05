@@ -17,6 +17,21 @@ test("malformed JSON gets 400 invalid_json with a matching X-Request-Id", async 
   expect(response.headers()["x-request-id"]).toBe(body.requestId);
 });
 
+test("an oversized body gets 413 payload_too_large from the server's own error handler", async ({
+  request,
+}) => {
+  // server/index.ts parses JSON with a 256 kB limit; this exercises its
+  // error handler in the compiled build, not a re-implementation.
+  const response = await request.post("/api/public/ops-check/orders", {
+    headers: { "Content-Type": "application/json" },
+    data: JSON.stringify({ note: "x".repeat(300 * 1024) }),
+  });
+  expect(response.status()).toBe(413);
+  const body = await response.json();
+  expect(body.error).toBe("payload_too_large");
+  expect(response.headers()["x-request-id"]).toBe(body.requestId);
+});
+
 test("a Railway request id is reused end to end", async ({ request }) => {
   const response = await request.get("/api/session", {
     headers: { "X-Railway-Request-Id": "ops-browser-check-0001" },

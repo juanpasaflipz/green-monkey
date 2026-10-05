@@ -8,6 +8,7 @@ import postgres from "postgres";
 import { readFileSync } from "node:fs";
 import { latestBundledMigration } from "../../server/readiness.js";
 import { databaseTls, withoutParams } from "../../server/db-support.js";
+import type { Tx } from "../../server/db.js";
 import { controlTotals, schemaFingerprint } from "./control-totals.js";
 
 export interface RestoreManifest {
@@ -56,7 +57,8 @@ export async function verifyRestore(o: {
       JSON.stringify(schema) === JSON.stringify(manifest.schema),
       { restored: schema, source: manifest.schema },
     );
-    const totals = await admin.begin(async (tx) => {
+    const totals = await admin.begin(async (raw) => {
+      const tx = raw as unknown as Tx;
       await tx`set local row_security = on`;
       return controlTotals(tx as unknown as postgres.Sql);
     });
@@ -69,7 +71,8 @@ export async function verifyRestore(o: {
       await admin`select tenant_id::text as tenant from employees limit 1`;
     const isolated = !sample
       ? true // an empty database has no tenant to leak
-      : await runtime.begin(async (tx) => {
+      : await runtime.begin(async (raw) => {
+          const tx = raw as unknown as Tx;
           const [none] = await tx`select count(*)::int as n from employees`;
           await tx`select set_config('app.tenant_id', ${sample.tenant}, true)`;
           const [one] =
