@@ -19,6 +19,7 @@ import "../access/access.css";
 export function AccessGate({
   locale,
   setLocale,
+  online,
   reason,
   signupFirst,
   onSignedIn,
@@ -26,6 +27,8 @@ export function AccessGate({
 }: {
   locale: Locale;
   setLocale: (l: Locale) => void;
+  /** App's connectivity (contract 0.8); the gate refetches when it returns. */
+  online: boolean;
   reason?: string;
   signupFirst: boolean;
   onSignedIn: () => Promise<void>;
@@ -54,12 +57,21 @@ export function AccessGate({
     }
   }
   useEffect(() => {
-    void refresh();
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") void refresh();
     }, 30_000);
     return () => clearInterval(timer);
   }, []);
+  // On mount and whenever the connection changes: a gate shown after an
+  // offline logout fills in by itself when the device reconnects.
+  useEffect(() => {
+    void refresh();
+  }, [online]);
+  const offlineNotice = !online && (
+    <p role="status" className="warning">
+      {t.accessGateOffline}
+    </p>
+  );
   async function signIn(employee: TerminalStaff, secret: string) {
     setBusy(true);
     setError("");
@@ -92,7 +104,12 @@ export function AccessGate({
           <span />
           {languageToggle}
         </div>
-        {failed ? (
+        {failed && !online ? (
+          <div>
+            {offlineNotice}
+            <Button onClick={() => void refresh()}>{t.retry}</Button>
+          </div>
+        ) : failed ? (
           <div role="alert">
             <p className="error">{translateError("error", locale)}</p>
             <Button onClick={() => void refresh()}>{t.retry}</Button>
@@ -145,6 +162,7 @@ export function AccessGate({
           <span />
           {languageToggle}
         </div>
+        {offlineNotice}
         {reasonText && (
           <p role="alert" className="error">
             {reasonText}
@@ -169,6 +187,7 @@ export function AccessGate({
         {languageToggle}
       </div>
       {notice && <p role="status">{notice}</p>}
+      {offlineNotice}
       {reasonText && (
         <p role="alert" className="error">
           {reasonText}

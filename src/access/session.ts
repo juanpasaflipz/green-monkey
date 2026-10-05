@@ -91,6 +91,15 @@ export async function serverSignOut(
 }
 
 /**
+ * A PIN sign-in on this device already ended (switch/replace) or deliberately
+ * resumed the session a remembered logout pointed at, so the logout must not
+ * run afterwards and end the new session.
+ */
+export function clearPendingLogout() {
+  write(LOGOUT_PENDING_KEY, null);
+}
+
+/**
  * Completes a remembered logout. Resolves true when nothing remains pending;
  * without a connection the request fails and the flag stays set.
  */

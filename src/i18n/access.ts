@@ -37,6 +37,8 @@ export default defineArea({
     accessOfflineUnlockHint:
       "Sin conexión no se puede verificar el PIN. Las ventas se registran a nombre de {name}.",
     accessSwitchOffline: "Cambiar de usuario requiere conexión.",
+    accessGateOffline:
+      "Sin conexión. Para entrar en este dispositivo hace falta conexión; esta pantalla se actualiza sola cuando vuelva.",
     accessGoogleAgain: "Continuar con Google",
     accessPendingTitle: "Ventas sin enviar",
     accessPendingBody:
@@ -206,6 +208,8 @@ export default defineArea({
     accessOfflineUnlockHint:
       "Offline, the PIN cannot be verified. Sales are recorded under {name}.",
     accessSwitchOffline: "Switching user requires a connection.",
+    accessGateOffline:
+      "Offline. Signing in on this device needs a connection; this screen updates by itself when it returns.",
     accessGoogleAgain: "Continue with Google",
     accessPendingTitle: "Unsent sales",
     accessPendingBody:

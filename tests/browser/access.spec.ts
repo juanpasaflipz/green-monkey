@@ -341,6 +341,107 @@ test("idle lock after 3 minutes keeps the cart for the same employee; switch use
   }
 });
 
+test("a lock survives reloads, new tabs and offline restores; Continuar como needs a valid offline window and the PIN is asked again on reconnect (SEC-6)", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  test.skip(
+    !process.env.TEST_PRODUCTION,
+    "Offline reload requires the compiled server's service worker",
+  );
+  const admin = fixtureAdmin(baseURL);
+  try {
+    await ownerLogin(page);
+    const { context, page: tablet } = await pairTerminal(
+      browser,
+      page,
+      `Recarga ${tag()}`,
+    );
+    await signIn(tablet, CASHIER.name, CASHIER.pin);
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    await tablet.evaluate(async () => {
+      await navigator.serviceWorker.ready;
+    });
+    const s = await sessionOf(tablet);
+    const lock = tablet.getByRole("dialog", { name: "Pantalla bloqueada" });
+    const pinField = lock.getByLabel(`PIN de ${CASHIER.name}`);
+    const continueAs = lock.getByRole("button", {
+      name: `Continuar como ${CASHIER.name}`,
+    });
+    // Manual lock, then a reload: still locked and the PIN is required.
+    await tablet.getByRole("button", { name: "Bloquear pantalla" }).click();
+    await expect(lock).toBeVisible();
+    await tablet.reload();
+    await expect(lock).toBeVisible();
+    await expect(pinField).toBeVisible();
+    // A new tab on the same terminal opens locked as well.
+    const other = await context.newPage();
+    await other.goto("/app");
+    await expect(
+      other.getByRole("dialog", { name: "Pantalla bloqueada" }),
+    ).toBeVisible();
+    await other.close();
+    // Offline with an expired offline window there is no way past the lock.
+    await admin`update sessions set offline_until=now()-interval '1 minute' where id=${s.id}`;
+    await tablet.reload();
+    await expect(lock).toBeVisible();
+    await context.setOffline(true);
+    await expect(lock).toContainText(
+      "Sin conexión no se puede verificar el PIN.",
+    );
+    await expect(continueAs).toHaveCount(0);
+    await context.setOffline(false);
+    await expect(pinField).toBeVisible();
+    // With a valid window, an offline reload restores the cached session locked.
+    await admin`update sessions set offline_until=now()+interval '4 hours' where id=${s.id}`;
+    await tablet.reload();
+    await expect(lock).toBeVisible();
+    await context.setOffline(true);
+    await tablet.reload();
+    await expect(lock).toBeVisible();
+    await expect(lock).toContainText(
+      `Sin conexión no se puede verificar el PIN. Las ventas se registran a nombre de ${CASHIER.name}.`,
+    );
+    await tablet.screenshot({
+      path: "docs/evidence/access-offline-lock-1440.png",
+    });
+    await continueAs.click();
+    await expect(lock).toBeHidden();
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    // The connection returns: the PIN is required before any online work.
+    await context.setOffline(false);
+    await expect(lock).toBeVisible();
+    await expect(pinField).toBeVisible();
+    await enterSecret(lock, CASHIER.name, CASHIER.pin);
+    await expect(lock).toBeHidden();
+    // Unlocked with the PIN, a reload opens the workspace directly...
+    await tablet.reload();
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    await expect(lock).toHaveCount(0);
+    // ...unless the device sat idle longer than its auto-lock.
+    await admin`update devices set idle_lock_seconds=600 where id=${s.deviceId}`;
+    await tablet.reload();
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    await expect(lock).toHaveCount(0);
+    await tablet.evaluate((id) => {
+      localStorage.setItem(
+        "gm-activity",
+        JSON.stringify({ sessionId: id, at: Date.now() - 11 * 60_000 }),
+      );
+    }, s.id);
+    await tablet.reload();
+    await expect(lock).toBeVisible();
+    await enterSecret(lock, CASHIER.name, CASHIER.pin);
+    await expect(lock).toBeHidden();
+    const after = await sessionOf(tablet);
+    expect(after.id).toBe(s.id);
+    await context.close();
+  } finally {
+    await admin.end();
+  }
+});
+
 test("an expired session shows the PIN lock with its reason, not a generic error, and Salir works (FOH-7)", async ({
   page,
   browser,
@@ -482,6 +583,15 @@ test("offline logout signs out locally and completes on reconnect (SEC-6)", asyn
       .getByRole("button", { name: "Salir de todos modos", exact: true })
       .click();
     await expect(tablet.locator(".scope")).toHaveCount(0);
+    // The gate says why nobody can sign in now, not a generic error.
+    await expect(
+      tablet.getByText(
+        "Sin conexión. Para entrar en este dispositivo hace falta conexión; esta pantalla se actualiza sola cuando vuelva.",
+      ),
+    ).toBeVisible();
+    await expect(tablet.getByText("No se pudo completar la acción.")).toHaveCount(
+      0,
+    );
     expect(
       await tablet.evaluate(() => localStorage.getItem("gm-logout-pending")),
     ).toBe(s.id);
@@ -496,7 +606,7 @@ test("offline logout signs out locally and completes on reconnect (SEC-6)", asyn
     const [after] =
       await admin`select end_reason,revoked from sessions where id=${s.id}`;
     expect(after).toEqual({ end_reason: "logout", revoked: false });
-    await tablet.getByRole("button", { name: "Reintentar" }).click();
+    // Back online, the roster appears without pressing anything.
     await expect(
       tablet.getByRole("heading", { name: "¿Quién entra?", exact: true }),
     ).toBeVisible();

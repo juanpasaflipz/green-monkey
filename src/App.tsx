@@ -32,12 +32,19 @@ import { StepUpDialog } from "./features/StepUpDialog";
 import { useIdleLock } from "./access/idle";
 import {
   LOGOUT_PENDING_KEY,
+  clearPendingLogout,
   drainBeforeLeaving,
   finishPendingLogout,
   serverSignOut,
   startHeartbeat,
   unsyncedFor,
 } from "./access/session";
+import {
+  forgetLock,
+  noteActivity,
+  rememberLock,
+  restoredLock,
+} from "./access/lock";
 import "./access/access.css";
 export default function App() {
   const [locale, setLocale] = useState<Locale>(
@@ -57,6 +64,9 @@ export default function App() {
   );
   const [sessionChanged, setSessionChanged] = useState(false);
   const [lock, setLock] = useState<null | { reason: string }>(null);
+  // "Continuar como" offline: unlocked without a PIN until the connection or
+  // the offline window ends (contract 8.2), then locked again.
+  const [softUnlocked, setSoftUnlocked] = useState(false);
   const [stepUpRequest, setStepUpRequest] = useState<null | {
     resolve: () => void;
     reject: (e: unknown) => void;
@@ -84,6 +94,7 @@ export default function App() {
       const s = await api<Session>("/session");
       setSession(s);
       const c = await api<Product[]>("/catalog");
+      resumeLock(s);
       setActiveSession(s);
       setCatalog(c);
       await cacheSession(s, c);
@@ -101,6 +112,7 @@ export default function App() {
       if (!navigator.onLine) {
         const cached = await db.cache.get("session");
         if (cached && new Date(cached.value.offlineUntil) > new Date()) {
+          resumeLock(cached.value);
           setActiveSession(cached.value);
           setSession(cached.value);
           setCatalog(
@@ -111,6 +123,16 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  }
+  /**
+   * A reload, a reopened tab or an offline restore never opens a locked
+   * session unlocked (SEC-6): the remembered lock, or a pause longer than the
+   * auto-lock, starts the restored session behind the lock screen.
+   */
+  function resumeLock(s: Session) {
+    const reason = restoredLock(s);
+    if (reason) setLock({ reason });
+    else noteActivity(s.id, true);
   }
   useEffect(() => {
     void load();
@@ -163,7 +185,12 @@ export default function App() {
         setActiveSession(null);
         setCatalog([]);
         setGateReason(code);
-      } else setLock((current) => current ?? { reason: code });
+        forgetLock();
+      } else {
+        // A deactivated employee must not keep selling offline from the cache.
+        if (code === "session_revoked") void db.cache.delete("session");
+        setLock((current) => current ?? { reason: code });
+      }
     };
     window.addEventListener("gm-unauthorized", unauthorized);
     registerStepUpHandler(
@@ -183,7 +210,25 @@ export default function App() {
     session?.access?.idleLockSeconds ?? null,
     Boolean(session) && !lock && !sessionChanged,
     () => setLock({ reason: "idle" }),
+    () => {
+      if (sessionRef.current) noteActivity(sessionRef.current.id);
+    },
   );
+  useEffect(() => {
+    // Remembered until a PIN unlock, a new sign-in or a sign-out (SEC-6).
+    if (session && lock) rememberLock(session.id, lock.reason);
+  }, [session?.id, lock?.reason]);
+  useEffect(() => {
+    // The offline soft unlock ends with the connection or the offline window.
+    if (
+      softUnlocked &&
+      session &&
+      (online || new Date(session.offlineUntil).getTime() <= now)
+    ) {
+      setSoftUnlocked(false);
+      setLock({ reason: "idle" });
+    }
+  }, [softUnlocked, online, now, session?.offlineUntil]);
   useEffect(() => {
     if (!session || sessionChanged) return;
     // Keeps the sliding expiry and renewed offline window current (OFF-3);
@@ -273,6 +318,8 @@ export default function App() {
     await db.cache.delete("session");
     clearSessionScope();
     localStorage.setItem("gm-session-generation", crypto.randomUUID());
+    forgetLock();
+    setSoftUnlocked(false);
     setLock(null);
     setActiveSession(null);
     setCatalog([]);
@@ -333,9 +380,13 @@ export default function App() {
             <AccessGate
               locale={locale}
               setLocale={setLocale}
+              online={online}
               reason={gateReason}
               signupFirst={new URLSearchParams(location.search).has("signup")}
               onSignedIn={async () => {
+                // The PIN just entered supersedes any remembered lock or logout.
+                clearPendingLogout();
+                forgetLock();
                 setGateReason("");
                 await load();
               }}
@@ -557,6 +608,10 @@ export default function App() {
           onUnlocked={(s) => {
             const sameEmployee = scope(s) === scope(session);
             setSession(s);
+            clearPendingLogout();
+            forgetLock();
+            setSoftUnlocked(false);
+            noteActivity(s.id, true);
             if (s.id !== session.id)
               localStorage.setItem("gm-session-generation", crypto.randomUUID());
             void db.cache.put({ id: "session", value: s });
@@ -578,7 +633,12 @@ export default function App() {
                 .catch(() => {});
             }
           }}
-          onContinueOffline={() => setLock(null)}
+          onContinueOffline={() => {
+            // The lock stays remembered: a reload or the connection returning
+            // asks for the PIN again.
+            setSoftUnlocked(true);
+            setLock(null);
+          }}
           onSignOut={() => void signOut()}
         />
       )}
