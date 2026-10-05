@@ -1057,17 +1057,27 @@ test("KDS shows offline sales in the review lane with provisional and server num
     { tenantId },
   );
   expect(status).toBe(200);
+  // Service's KDS (024) polls its versioned feed for the station on screen.
   const kitchenPolled = () =>
     page.waitForResponse(
-      (response) => new URL(response.url()).pathname === "/api/kitchen",
+      (response) =>
+        new URL(response.url()).pathname === "/api/service/kitchen",
     );
   const polled = kitchenPolled();
   await page.goto("/app");
   const lane = page.locator(".offline-review-lane");
   await expect(lane).toContainText("Ventas sin conexión por revisar");
   const cards = lane.locator(".offline-review-card").filter({ hasText: label });
-  // Kitchen station (the default): only the kitchen round, and a count of
-  // what waits at the bar.
+  // Service's KDS opens on "Todas" (gm-kds-station): the lane shows every
+  // station's round (LD-10 B1) and no count of another station.
+  await expect(
+    page.getByRole("radio", { name: "Todas", exact: true }),
+  ).toBeChecked();
+  await expect(cards).toHaveCount(2);
+  await expect(lane).not.toContainText(/por revisar en/);
+  // Kitchen station: only the kitchen round, and a count of what waits at
+  // the bar.
+  await page.getByRole("radio", { name: "Cocina", exact: true }).check();
   await expect(cards).toHaveCount(1);
   // OUTAGE-005 (I7): a round waiting in review is never a live ticket.
   const server = label.split("→ ")[1]!;
@@ -1094,10 +1104,7 @@ test("KDS shows offline sales in the review lane with provisional and server num
   await expect(confirm).toContainText("No aparecerán en cocina");
   await confirm.getByRole("button", { name: "Ya se preparó" }).click();
   await expect(cards).toHaveCount(0);
-  await page
-    .getByRole("main")
-    .getByRole("button", { name: "Barra", exact: true })
-    .click();
+  await page.getByRole("radio", { name: "Barra", exact: true }).check();
   await expect(cards).toHaveCount(1);
   await expect(cards).toContainText("Barra");
   await expect(live).toHaveCount(0);
@@ -1162,10 +1169,8 @@ test("The KDS review lane polls every 10 s with items and every 30 s while empty
   expect(polls).toBeGreaterThanOrEqual(5);
   // Empty the lane at both stations (earlier tests may have left items).
   for (const station of ["Cocina", "Barra"]) {
-    await page
-      .getByRole("main")
-      .getByRole("button", { name: station, exact: true })
-      .click();
+    // Service's KDS station radios (024).
+    await page.getByRole("radio", { name: station, exact: true }).check();
     const all = lane.getByRole("button", {
       name: "Marcar todas como ya preparadas",
     });
@@ -2537,7 +2542,8 @@ test.describe("offline table service (Beta) turned on", () => {
       (window as any).__printed = [];
       window.print = () => {
         (window as any).__printed.push(
-          document.getElementById("gm-offline-print-root")?.textContent ?? "",
+          // Service's printDocument (contracts §3.7) renders into #print-root.
+          document.getElementById("print-root")?.textContent ?? "",
         );
       };
     });
