@@ -541,7 +541,9 @@ como" follow offline's heartbeat, that is whether the server answers, not the
 the PIN even in manual offline mode, and a soft unlock ends as soon as the server
 answers again; any call made during it first probes the server and is refused
 unsent (`session_locked`) if it answers. Offline evidence (`/offline/sync`) syncs
-behind any lock.
+behind any lock. Signing out and the sign-in gate follow the same rule: in
+manual offline mode "Salir" syncs and ends the session normally and the next
+employee signs in (OFF-R16).
 
 ## Verification
 

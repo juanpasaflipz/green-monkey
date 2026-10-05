@@ -265,6 +265,10 @@ offline area's evidence rules.
 **Salir** first sends queued sales. If some remain, "Ventas sin enviar" explains
 they will sync when the same employee signs in here again (or wait for manager
 reconciliation). Offline, "Sin conexión" offers to lock the screen instead.
+"Offline" here means the server does not answer (offline's heartbeat), not
+the "Trabajar sin conexión" preference: in manual offline mode the sign-out
+syncs and ends the session normally, and the sign-in gate works, so the next
+employee signs in (OFF-R16).
 Logout always succeeds: the server endpoint never fails on an invalid session,
 and a logout that cannot reach the server is remembered
 (`localStorage["gm-logout-pending"]`), blocks restoring the cached session, and
