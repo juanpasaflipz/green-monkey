@@ -370,7 +370,9 @@ integrator:
   `recordSettlement` in `server/checks.ts`; the route is now three lines. It
   sits directly above offline's deletion of the `/sync` routes (base lines
   352-360), so expect a textual conflict at offline's merge: keep service's
-  three-line route and apply offline's deletion. **Behaviour change:** grouped
+  three-line route and apply offline's deletion (done at offline's
+  integration; the `/sync*` routes live in `server/routes/offline.ts`).
+  **Behaviour change:** grouped
   settlement now locks every order row (sorted by id) before the drawer, where
   it previously locked the drawer between orders. This removes a deadlock with
   concurrent rounds and payments (DB test "kitchen feed and progress do not
@@ -392,7 +394,12 @@ integrator:
   returns early while `busy`, `paying` or a receipt is shown, SVC-R10), and a
   request that a failed send or payment was holding is dropped once
   (`requestFailed()`/`unseenFailure`, SVC-REV-1); offline's send and collect
-  paths should call `requestFailed()` on failure the same way.
+  paths should call `requestFailed()` on failure the same way. Done at
+  offline's integration: **Nueva orden** is `disabled={busy}`; offline's send
+  and collect run inside `sendWith`/`collectLocked`, whose failure paths call
+  `requestFailed()`; and offline's **Órdenes abiertas** (table service on) is
+  disabled while `busy` or `paying` and parks unsent lines before it replaces
+  the cart.
 - `src/features/Selling.tsx` context switches (SVC-R10): every place that
   replaces the cart's order calls `replaceContext(order, draft)`, which bumps
   `contextEpoch`; `sendWith` and `collectLocked` compare the epoch after each
@@ -401,7 +408,12 @@ integrator:
   `replaceContext` and, in `collectLocked`, finish through `settled(result)`
   (which announces instead of showing a receipt when the epoch moved). Offline's
   own local `setDraft(fresh())` after a local sale is a reset of the same cart
-  and may stay as it is.
+  and may stay as it is. Done at offline's integration: the offline send
+  checks the epoch (`moved()`) before writing the cart, `settleActiveAttempt`
+  finishes through `settled()`, and an "Órdenes abiertas" pick goes through
+  `replaceContext`. The offline collect writes its local receipt directly,
+  which is safe because every control that replaces the cart waits while a
+  collect is in flight.
 - `tests/voids-db.ts` "paid units cannot be voided…" (base lines ~215-260, next
   to menu's stock-assertion region 188-216): the order is now dine-in, because a
   fully paid takeaway check closes and would answer `check_closed` instead of

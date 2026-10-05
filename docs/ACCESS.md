@@ -124,16 +124,19 @@ Offline, the PIN cannot be verified, so the locked employee may "Continuar como
 calls) while the cached offline window is still valid. A PIN request that gets
 no answer while the device reports a connection (router up, internet down) is
 treated the same way: the lock shows the offline notice instead of a generic
-error, and App probes `/api/health` every 10 s. At merge, offline's probe-based
-`canUseServer` replaces this local reachability flag. That soft unlock is not a
+error, and offline's heartbeat (`/api/offline/ping`) is probed at once. Since
+offline merged, the lock follows that heartbeat, that is whether the server
+answers, not the "Trabajar sin conexión" preference, so manual offline mode
+never offers "Continuar como" while the server answers. That soft unlock is not a
 PIN unlock: the lock stays remembered, a reload asks again, and the same lock
 comes back as soon as the server answers again or the offline window ends, so
 the PIN is required before any online work. While a soft unlock over an idle or
 manual lock is in effect, `api()` asks App before every call (except the lock
-screen's `/access/*` calls and `/sync` of offline evidence, which also runs
-behind any lock) whether `/api/health` answers; when it does, the lock comes
-back at once and the call is refused unsent (`session_locked`), so a cash close
-or menu edit cannot slip through in the seconds before the 10 s probe notices.
+screen's `/access/*` calls and `/offline/sync` (or the legacy `/sync`) of
+offline evidence, which also runs behind any lock) whether the server answers,
+through offline's `probeNow()`; when it does, the lock comes back at once and the
+call is refused unsent (`session_locked`), so a cash close or menu edit cannot
+slip through before the background heartbeat notices.
 A renewal prompt's soft unlock is not gated: that session is still valid.
 Switching user needs a connection. A server session code also applies to the offline
 cache, including on a cold start before any session is shown:
@@ -382,7 +385,7 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
   during it first checks that the server is still unreachable, so it never
   reaches online commands or reads. Only the lock screen's own calls
   (`/access/terminal`, `/access/pin`, `/access/step-up`, `/access/logout`) and
-  the offline sync (`/sync`) skip that check. Clearing the
+  the offline sync (`/offline/sync`, legacy `/sync`) skip that check. Clearing the
   browser's site data removes the remembered lock, but also unpairs the device.
 - The lock's resistance to Escape and forced closes is tested in Chromium (the
   browser suite) and checked with a dialog probe in WebKit 26.6. The Android
@@ -421,26 +424,38 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
 
 ## Merge notes (for integrators)
 
-- **Lock on load and restore (offline merge, contract §4.7).** The golden
+- **Lock on load and restore (offline merge, contract §4.7): done at
+  offline's integration.** The golden
   `load()` shown in the contracts has neither `resumeLock(s)` nor
   `settleRejectedSession(code)`. Keep both: `load()` calls `resumeLock` before
   showing a session, calls `settleRejectedSession` on any 401, and offline's
   `restoreCached()` must call `resumeLock(cached)` too. Without them a reload
-  unlocks (A1) and a revoked session is restored offline (A7).
-- **Payment attempt on a session 401 (offline merge).** Selling clears the
+  unlocks (A1) and a revoked session is restored offline (A7). Merged with
+  both, and `restoreCached()` calls `resumeLock(cached)`.
+- **Payment attempt on a session 401 (offline merge): done at offline's
+  integration.** Selling clears the
   attempt on any session 401 (`isSessionRejection`), which is safe only because
   `request()` never retries. If offline adds a bounded retry for idempotent
   POSTs, a first attempt that committed but lost its response followed by a
   retry rejected with 401 would clear an attempt that was charged. Either
   `request()` never retries into a 401, or Selling clears only when the call
   was never sent (`session_expired` while blocked, `session_locked`) or the 401
-  came on the first attempt.
-- **Soft-unlock check (offline merge).** App's `registerSoftUnlockCheck` probes
+  came on the first attempt. Resolved in `request()`: a retried POST answered
+  401 reports the first, transient failure. The unsent refusals carry kind
+  "auth", so offline sync never turns them into conflicts (OFF-7).
+- **Soft-unlock check (offline merge): done at offline's integration (LD-10
+  B6).** App's `registerSoftUnlockCheck` probed
   `/api/health` itself; at merge it should use offline's `probeNow()` /
   `canUseServer` instead, keep refusing the call unsent with `session_locked`,
   and keep exactly `/sync` and the lock screen's calls (`/access/terminal`,
   `/access/pin`, `/access/step-up`, `/access/logout`) exempt; authenticated
-  `/access/*` reads such as the staff and device lists are checked.
+  `/access/*` reads such as the staff and device lists are checked. Merged:
+  the check runs `probeNow()` and treats any answer since the call asked as
+  "the server answers" (offline's mode needs two answers in a row to turn
+  online); `serverDown` and the `/api/health` prober are gone; the lock gets
+  `serverReachable`; `/offline/sync` joins `/sync` in the exempt list (it is
+  where offline's queue posts); LockScreen reads a transient `ApiError` from
+  offline's `request()` as "no answer".
 - **Limiter key (ops merge, LD-9): done at access's integration.** Every
   access limiter keys on `ipKey(req)` in `server/routes/access.ts`, which now
   uses `clientIp(req)` from `server/logging.ts`; the CD smoke

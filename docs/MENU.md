@@ -380,6 +380,6 @@ Menu's merge resolved every hand-off it owned:
   `server/logging.ts`, like the access and ops limits (LD-11). IPv6 clients are
   grouped per /56; the per-link revision budget adds the signed link id.
 
-Carried by offline's merge: `/sync` quotes with `canOpen = true` in offline's
-rewrite (D11). Until then, open-price lines recorded offline are not accepted by
-`/sync`.
+Done at offline's merge: sync (`/offline/sync`, legacy `/sync`) quotes with
+`canOpen = true` in offline's rewrite (D11), so open-price lines recorded
+offline are accepted.

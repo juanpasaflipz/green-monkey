@@ -75,8 +75,8 @@ Offline table service (open checks, rounds and partial payments without a
 connection) is a **per-restaurant beta setting that ships off** (lead decision
 LD-7), because it is where offline and online records meet. Owners and managers
 turn it on or off on the Sync screen under **Servicio de mesa sin conexión
-(Beta)**; the change is audited (`offline.settings_changed`) and, once access
-merges, requires a recent PIN (step-up). Devices read the setting when selling
+(Beta)**; the change is audited (`offline.settings_changed`) and requires a
+recent PIN (step-up, D23). Devices read the setting when selling
 opens and when the connection returns (it is never polled) and keep the last
 answer for an outage; a device that never read it treats it as off.
 
@@ -135,10 +135,10 @@ What this does and does not guarantee about charging twice, or too little:
   grouped settlement), which checks every selected order before it sends
   anything and names the order it refuses ("#142 · …"). In Órdenes, an order
   with such records cannot be selected and shows the reason until they sync.
-  Merge note: service's settlement dialog (`SettlementDialog.tsx`, which posts
-  `/settlements` directly) must call `guardOnlineCharges(session, orders)` from
-  `src/offline-queue.ts` before it posts; no other charge path exists in this
-  wave. The retry of a payment attempt is not a new charge: it resends the same
+  Service's settlement dialog (`SettlementDialog.tsx`) reads the full orders
+  and runs this guard (`onlineChargeRefusal`) right before it posts
+  `/settlements` (done at offline's merge, LD-10 B2); no other charge path
+  exists in this wave. The retry of a payment attempt is not a new charge: it resends the same
   attempt, and no offline payment can be saved for an order while it exists.
 - On this device, while an offline payment for an order is still unresolved,
   charging that order online is refused ("Esta orden tiene un pago por
@@ -230,7 +230,11 @@ review lane shows.
   (Preguntar / Imprimir comanda / Imprimir comanda y recibo) can print
   automatically right after saving; with **Preguntar** (the default), an offline
   **Enviar** shows "Comanda guardada en este dispositivo…" with **Imprimir
-  comanda**. Printing uses the browser/OS print dialog; the browser cannot confirm
+  comanda**. The local receipt, shown and printed, is service's receipt (kind
+  "local", LD-10 B4): lines with options and notes, the order and round notes
+  (LD-1), the payment method, the external-terminal reference, cash received and
+  change, and what was collected, with the balance after a partial payment
+  (Beta table service). Printing uses the browser/OS print dialog; the browser cannot confirm
   that paper came out.
 - **Device list**: "Comandas sin conexión" (banner button) lists the last 24 hours
   with local Pendiente/Lista/Entregada chips and **Reimprimir**. The list stays on
@@ -246,20 +250,21 @@ only "Ya se preparó"; cashiers only see the lane. An order whose online create 
 committed before the outage (lost response) is reused, not duplicated, and its
 rounds stay live.
 
-The lane follows the KDS's selected station: the kitchen screen shows kitchen
-rounds and the bar screen bar rounds, with a count of what waits at the other
-station. **Marcar todas como ya preparadas** marks only the selected station's
-rounds, so clearing the kitchen never hides the bar's drinks. The lane loads when
+The lane sits above the KDS tickets (service's `beforeTickets` slot) and follows
+the KDS's selected station: **Todas** shows every station's rounds, **Cocina** or
+**Barra** only that station's, with a count of what waits at the other station.
+**Marcar todas como ya preparadas** marks only the rounds on screen, so clearing
+the kitchen never hides the bar's drinks. The lane loads when
 the screen opens, when the page becomes visible, when the connection returns and
 after each decision, then every 10 s while it has something to review and every
 30 s while it is empty (visible pages only).
 
 The KDS screen never shows a round in `offline_review` as a live ticket: it waits
 only in the lane until someone decides, and "Preparar ahora" moves it to the live
-columns of its station. Merge prerequisite: excluding `offline_review` on the server
-(`kitchenFeed`, `clearStaleRounds` and `GET /api/kitchen`) is service's change
-(contract D13) and must land with or before offline; until then the legacy
-`GET /api/kitchen` still returns those rounds and only the screen filters them out.
+columns of its station. Service excludes `offline_review` on the server
+(`kitchenFeed`, `clearStaleRounds` and the legacy `GET /api/kitchen`, contract
+D13), and the decision endpoint bumps the kitchen feed last, so a "Preparar ahora"
+ticket appears on the next KDS poll.
 
 ## Sync, retries and exactly-once
 
@@ -373,11 +378,10 @@ tenant/employee/device and lease match, currency, drawer of that device, amounts
 and separately whether it is **eligible** to sync automatically (not archived, same
 employee on the same device, session not revoked, employee and device active,
 selling allowed, time within tolerance, that drawer still open, settings unchanged).
-Under the wave contract (D6) an ended session (logout, switch) is valid evidence
-for the same person on the same device, and only a revoked session needs a manager.
-That depends on access's change: on this branch logout still marks the session
-revoked, so records left by a logged-out session go to **Requiere revisión**
-(`offline_conflict`) and a manager reconciles or archives them until access merges.
+Under the wave contract (D6) an ended session (logout, switch, PIN reset, role
+change) is valid evidence for the same person on the same device, and only a
+revoked session (employee deactivated or device unpaired) needs a manager: its
+records go to **Requiere revisión** (`offline_conflict`) for reconcile or archive.
 
 On the Sync screen a manager can:
 
@@ -524,13 +528,20 @@ one conflict in that file; resolve it by taking the side being reverted to, whic
 drops the table-service record tests. Checked in a scratch clone: the remaining
 core then typechecks, lints and passes every unit test.
 
-These are in-wave stand-ins defined by the wave contracts, replaced at merge:
-`server/compat/offline-access.ts` (access's `leaseForEvidence` with lease
-windows), `server/compat/offline-service.ts` (service's check lifecycle, kitchen
-feed bump and `applyRound`) and `src/compat/offline-print.tsx` (service's print
-primitive and kitchen ticket document). Until access merges, the offline window is
-the 4-hour window from login; access's renewals become additional windows that the
-time rule already accepts.
+Since the wave merged, offline uses the real modules the wave contracts named
+(the in-wave `server/compat` and `src/compat` stand-ins are gone): access's
+`leaseForEvidence` with every renewal window, service's check lifecycle, kitchen
+feed bump and `applyRound`, and service's print primitive and kitchen ticket
+document. The offline window is the base lease plus access's renewals, and the
+time rule accepts evidence inside any of them.
+
+Lock and connectivity (LD-10 B6): access's lock screen and its offline "Continuar
+como" follow offline's heartbeat, that is whether the server answers, not the
+**Trabajar sin conexión** preference. With the server reachable the lock asks for
+the PIN even in manual offline mode, and a soft unlock ends as soon as the server
+answers again; any call made during it first probes the server and is refused
+unsent (`session_locked`) if it answers. Offline evidence (`/offline/sync`) syncs
+behind any lock.
 
 ## Verification
 
