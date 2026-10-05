@@ -41,7 +41,7 @@ import {
 import { leaseCovers, renewOfflineLease } from "../server/offline-leases.js";
 import { synchronizeOffline } from "../server/offline-sync.js";
 import { verifyApproval } from "../server/voids.js";
-import { createOrder } from "../server/orders.js";
+import { createOrder, recordPayment } from "../server/orders.js";
 import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
@@ -1090,6 +1090,69 @@ try {
     const ended = await newSession();
     await run((tx) => endSession(tx, ended.id, "switched"));
     assert.equal((await status(manager.session, attempt(ended.id))).retryAllowed, false);
+  });
+
+  await test("ACC-R-5: a void approval needs an open order with an unpaid unit before any PIN is checked", async () => {
+    await clearThrottles(managerId);
+    const terminal = await device("Aprobación de anulación");
+    const signedIn = await pin(terminal, cashierId, CASHIER_PIN);
+    const { session } = await authenticate({
+      gm_device: sign(terminal),
+      gm_session: signedIn.cookie,
+    });
+    await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at)
+      values(${tenantId},${randomUUID()},${terminal.id},${cashierId},0,now())`;
+    const newOrder = () =>
+      run((tx) =>
+        createOrder(tx, session, {
+          operationId: randomUUID(),
+          lines: [
+            { id: randomUUID(), productId, quantity: 1, options: [], note: "" },
+          ],
+          mode: "takeaway",
+          tableId: null,
+          name: "Anulación",
+          note: "",
+          channel: "pos",
+        }),
+      );
+    const wrong = { employeeId: managerId, secret: "000000" };
+    const failures = async () =>
+      (await admin`select failed_attempts from employees where id=${managerId}`)[0]
+        .failed_attempts;
+    // An open order with an unpaid unit: the PIN is checked and a wrong one counts.
+    const open = await newOrder();
+    await rejects(verifyApproval(sql, session, wrong, open.id), "approval_denied");
+    assert.equal(await failures(), 1);
+    // Fully paid: refused before the PIN, which is neither checked nor counted.
+    await run((tx) =>
+      recordPayment(tx, session, open.id, {
+        operationId: randomUUID(),
+        amount: 100,
+        tip: 0,
+        received: 100,
+        method: "cash",
+        externalConfirmed: false,
+        reference: "",
+      }),
+    );
+    await rejects(verifyApproval(sql, session, wrong, open.id), "void_exceeds_unpaid");
+    await rejects(
+      verifyApproval(sql, session, { employeeId: managerId, secret: MANAGER_PIN }, open.id),
+      "void_exceeds_unpaid",
+    );
+    // Closed (here cancelled): refused before the PIN as well.
+    const closed = await newOrder();
+    await admin`update orders set state='cancelled' where id=${closed.id}`;
+    await rejects(verifyApproval(sql, session, wrong, closed.id), "stale_order");
+    assert.equal(await failures(), 1);
+    // The right PIN on an order that can still be voided approves.
+    const voidable = await newOrder();
+    assert.equal(
+      await verifyApproval(sql, session, { employeeId: managerId, secret: MANAGER_PIN }, voidable.id),
+      managerId,
+    );
+    await clearThrottles(managerId);
   });
 
   await test("OFF-7 regression: logout ends without revoking and the same employee's new session on the same device syncs the queued sale", async () => {

@@ -78,8 +78,10 @@ function noteApprovalFailure(sessionId: string, now = Date.now()) {
  * count against the approver on the session's device only (SEC-2). Without a
  * payload, a manager may approve their own action only from a Google-entered
  * session on a personal device or with a recent PIN (SEC-6/A4). Returns the
- * approver's id. With orderId, the order must exist before any PIN is checked,
- * so approvals cannot be tried against made-up orders (A5).
+ * approver's id. With orderId, the order must exist, be open and still have an
+ * unpaid unit before any PIN is checked, so approvals cannot be tried against
+ * made-up, closed or fully paid orders (A5/ACC-R-5). The read takes no lock:
+ * voidLines re-checks all of it under the order's FOR UPDATE.
  */
 export async function verifyApproval(
   sql: postgres.Sql,
@@ -108,8 +110,15 @@ export async function verifyApproval(
     throw new DomainError("too_many_attempts", 429);
   const result = await tenant(sql, s.tenantId, async (tx) => {
     if (orderId) {
-      const [order] = await tx`select id from orders where id=${orderId}`;
+      const [order] = await tx`select state from orders where id=${orderId}`;
       if (!order) throw new DomainError("not_found", 404);
+      if (closedStates.includes(order.state))
+        throw new DomainError("stale_order", 409);
+      const detail = await getOrder(tx, orderId);
+      if (!detail.itemSplitAvailable)
+        throw new DomainError("unallocated_history", 409);
+      if (!detail.paymentUnits!.some((u) => u.paid === 0))
+        throw new DomainError("void_exceeds_unpaid", 409);
     }
     const check = await checkPin(
       tx,

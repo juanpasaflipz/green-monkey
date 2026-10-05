@@ -209,8 +209,11 @@ lock staff out (SEC-2).
   alternating wrong approval PINs with unlocks cannot go past the hard lock. A
   PIN reset clears every lock.
 - Manager approvals count against the approving manager on the session's device
-  only. A void approval checks that the order exists before any PIN, and one
-  session's rejected approvals are capped at 10 per minute
+  only. A void approval checks that the order exists, is open and still has an
+  unpaid unit before any PIN (`not_found`, `stale_order`,
+  `void_exceeds_unpaid`), so a made-up, closed or fully paid order cannot serve
+  as a PIN check, and one session's rejected approvals are capped at 10 per
+  minute
   (`too_many_attempts`, in-process).
 - Rate limits: `POST /api/access/pin` (30/min), `GET /api/access/terminal`
   (120/min) and logout (60/min) count per verified `gm_device`. Requests
