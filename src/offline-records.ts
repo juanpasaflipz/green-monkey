@@ -167,11 +167,11 @@ export function check(ctx: SaveContext, needsDrawer: boolean) {
 }
 
 export function checkLines(lines: LineInput[]) {
-  if (!lines.length) fail("invalid_input");
+  if (!lines.length) fail("offline_record_invalid");
 }
 
 export function checkPayment(payment: OfflinePaymentInput, due: number) {
-  if (!(payment.amount > 0)) fail("invalid_amount");
+  if (!(payment.amount > 0)) fail("offline_amount_invalid");
   if (payment.amount > due) fail("offline_amount_exceeds_due");
   if (
     payment.method === "cash" &&
@@ -224,7 +224,7 @@ export function recordBase(
 /** Never store a record the server's schema would refuse. */
 export function validated<T extends OfflineRecordV3>(record: unknown): T {
   const parsed = offlineRecordV3.safeParse(record);
-  if (!parsed.success) fail("invalid_input");
+  if (!parsed.success) fail("offline_record_invalid");
   return parsed.data as T;
 }
 
@@ -300,7 +300,7 @@ export async function saveOfflineSale(
   check(ctx, true);
   checkLines(input.draft.lines);
   if (!(input.total > 0) || input.payment.amount !== input.total)
-    fail("invalid_amount");
+    fail("offline_amount_invalid");
   checkPayment(input.payment, input.total);
   const prefix = await devicePrefix(ctx.session);
   const snapshot = {

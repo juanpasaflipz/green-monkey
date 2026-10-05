@@ -381,5 +381,17 @@ export default defineArea({
       "El importe supera el saldo de la orden guardada en este dispositivo.",
       "The amount exceeds the balance of the order saved on this device.",
     ],
+    offline_amount_invalid: [
+      "Escribe un importe mayor que cero.",
+      "Enter an amount greater than zero.",
+    ],
+    offline_record_invalid: [
+      "No se pudo guardar este registro sin conexión. Revisa la orden e intenta de nuevo.",
+      "This offline record could not be saved. Check the order and try again.",
+    ],
+    offline_order_not_cached: [
+      "Esta orden no está guardada en este dispositivo. Ábrela desde Órdenes abiertas o cóbrala al volver la conexión.",
+      "This order is not saved on this device. Open it from Open orders or charge it when the connection returns.",
+    ],
   },
 });
