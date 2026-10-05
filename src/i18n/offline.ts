@@ -138,6 +138,8 @@ export default defineArea({
     offlineOpKitchenDecision: "Decisión de cocina sobre venta sin conexión",
     offlineOpArchived: "Registro local archivado",
     offlineOpPaymentReconciled: "Cobro sin conexión conciliado",
+    offlinePayCachedWarning:
+      "Esta orden se guardó antes de perder la conexión. Si pudo cobrarse en otro dispositivo, no la cobres hasta confirmarlo.",
   },
   en: {
     offlineStatusOnline: "Connected",
@@ -272,6 +274,8 @@ export default defineArea({
     offlineOpKitchenDecision: "Kitchen decision on an offline sale",
     offlineOpArchived: "Local record archived",
     offlineOpPaymentReconciled: "Offline payment reconciled",
+    offlinePayCachedWarning:
+      "This order was saved before the connection dropped. If it may have been paid on another device, do not charge it until you confirm.",
   },
   errors: {
     network_unavailable: [

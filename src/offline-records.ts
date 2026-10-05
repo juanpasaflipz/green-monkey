@@ -25,6 +25,7 @@ import {
   type OfflinePayment,
   type OfflineRecord,
   type OfflineRecordV3,
+  type OrderTarget,
 } from "../shared/offline-recovery";
 import { api } from "./api";
 import { clockOffset, correctedIso, deviceIso, serverNow } from "./clock";
@@ -53,6 +54,9 @@ export type LocalReceipt = Order & {
     soldAt: string;
     method: "cash" | "external";
     reference: string;
+    localOperationId?: string | null;
+    cachedAt?: string | null;
+    serverOrderId?: string | null;
   };
 };
 /** A kitchen ticket kept on this device for calling out and reprinting. */
@@ -82,8 +86,7 @@ type CachedPrefix = { prefix: string; source: "server" | "fallback" };
 /** Server-assigned device prefix, fetched once while online; "Z.." otherwise. */
 export async function ensureDevicePrefix(session: Session): Promise<string> {
   const cached = (await db.cache.get(prefixKey(session)))?.value as
-    | CachedPrefix
-    | undefined;
+    CachedPrefix | undefined;
   if (cached?.source === "server") return cached.prefix;
   if (getConnectivitySnapshot().canUseServer && session.role !== "kitchen")
     try {
@@ -101,8 +104,7 @@ export async function ensureDevicePrefix(session: Session): Promise<string> {
 
 async function devicePrefix(session: Session): Promise<string> {
   const cached = (await db.cache.get(prefixKey(session)))?.value as
-    | CachedPrefix
-    | undefined;
+    CachedPrefix | undefined;
   return cached?.source === "server"
     ? cached.prefix
     : fallbackPrefix(session.deviceId);
@@ -275,7 +277,13 @@ export async function deleteDraft(session: Session) {
   await db.drafts.delete(scope(session) + ":active");
 }
 
-export { allocateNumber, allocateSequence, devicePrefix, restaurantSnapshot, fail };
+export {
+  allocateNumber,
+  allocateSequence,
+  devicePrefix,
+  restaurantSnapshot,
+  fail,
+};
 
 /** New order paid in full offline, by cash or an external terminal. */
 export async function saveOfflineSale(
@@ -392,7 +400,9 @@ export async function localKitchenTickets(
   copy: { banner: string; footer: string; round: (n: number) => string },
   tables: { id: string; name: string }[] = [],
 ): Promise<LocalTicket[]> {
-  const rows = (await db.pending.where("scope").equals(scope(session)).toArray())
+  const rows = (
+    await db.pending.where("scope").equals(scope(session)).toArray()
+  )
     .filter((row) => row.status !== "archived" && isV3(row.body))
     .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
   const tableName = (id: string | null) =>
@@ -423,3 +433,582 @@ export async function localKitchenTickets(
   }
   return tickets.sort((a, b) => b.createdAt - a.createdAt);
 }
+
+// ---------------------------------------------------------------------------
+// Offline table service (wave contract §8.1): open orders, rounds and partial
+// payments. Projections are display-only (I13); the server revalidates every
+// record at sync.
+
+export type LocalOrderView = Order & {
+  offline: {
+    provisionalNumber: string | null;
+    soldAt: string;
+    localOperationId: string | null;
+    cachedAt: string | null;
+    serverOrderId: string | null;
+  };
+};
+
+type CachedOrder = {
+  id: string;
+  number: number;
+  version: number;
+  mode: string;
+  tableId: string | null;
+  tableName: string | null;
+  name: string;
+  note?: string;
+  total: number;
+  paid: number;
+  state: string;
+  createdAt: string;
+  serviceVersion?: number;
+  lines: {
+    id: string;
+    productId: string;
+    round: number;
+    quantity: number;
+    name: { es: string; en: string };
+    optionNames: { es: string; en: string }[];
+    unitPrice: number;
+    total: number;
+    station: string;
+    voidedQuantity: number;
+  }[];
+};
+
+export const openOrdersKey = (s: Session) => `${scope(s)}:open-orders`;
+
+async function cachedSnapshot(
+  session: Session,
+): Promise<{ refreshedAt: string | null; orders: CachedOrder[] }> {
+  const value = (await db.cache.get(openOrdersKey(session)))?.value as
+    { refreshedAt: string; orders: CachedOrder[] } | undefined;
+  return value ?? { refreshedAt: null, orders: [] };
+}
+
+/** GET /offline/open-orders into the device cache (called while online). */
+export async function refreshOpenOrders(session: Session): Promise<void> {
+  const snapshot = await api<{ refreshedAt: string; orders: CachedOrder[] }>(
+    "/offline/open-orders",
+  );
+  await db.cache.put({ id: openOrdersKey(session), value: snapshot });
+}
+
+async function scopedV3Rows(session: Session) {
+  return (await db.pending.where("scope").equals(scope(session)).toArray())
+    .filter((row) => row.status !== "archived" && isV3(row.body))
+    .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+}
+
+const targetsLocal = (body: OfflineRecordV3, operationId: string) =>
+  "target" in body &&
+  "localOrderOperationId" in body.target &&
+  body.target.localOrderOperationId === operationId;
+const targetsServer = (body: OfflineRecordV3, orderId: string) =>
+  "target" in body &&
+  "orderId" in body.target &&
+  body.target.orderId === orderId;
+
+type SyncResult = { orderId?: string; orderNumber?: number };
+
+/** Orders created on this device (Enviar or partial payment), with their local rounds and payments. */
+async function localOrders(session: Session): Promise<LocalOrderView[]> {
+  const rows = await scopedV3Rows(session);
+  const cachedIds = new Set(
+    (await cachedSnapshot(session)).orders.map((order) => order.id),
+  );
+  const views: LocalOrderView[] = [];
+  for (const row of rows) {
+    const body = row.body as OfflineRecordV3;
+    if (body.kind !== "order") continue;
+    const result = row.result as SyncResult | undefined;
+    const serverId = result?.orderId ?? null;
+    // Once a refreshed server snapshot carries the order, it lives there.
+    if (serverId && cachedIds.has(serverId)) continue;
+    const lines = pricedFrom(row).map((line) => ({ ...line, round: 1 }));
+    let total = body.expectedTotal,
+      paid = 0,
+      round = 1;
+    for (const child of rows) {
+      const c = child.body as OfflineRecordV3;
+      if (!targetsLocal(c, body.operationId)) continue;
+      if (c.kind === "round") {
+        round++;
+        lines.push(...pricedFrom(child).map((line) => ({ ...line, round })));
+        total += c.expectedTotal;
+      } else if (c.kind === "payment") paid += c.payment.amount;
+    }
+    views.push({
+      id: body.operationId,
+      number: result?.orderNumber ?? 0,
+      version: round,
+      mode: body.order.mode,
+      tableId: body.order.tableId,
+      name: body.order.name,
+      note: body.order.note,
+      lines,
+      total,
+      paid,
+      refunded: 0,
+      state: "local_open",
+      createdAt: body.recordedAt,
+      rounds: [],
+      tenders: [],
+      restaurantSnapshot: row.receipt?.restaurant ?? null,
+      offline: {
+        provisionalNumber: body.provisionalNumber,
+        soldAt: body.recordedAt,
+        localOperationId: body.operationId,
+        cachedAt: null,
+        serverOrderId: serverId,
+      },
+    });
+  }
+  return views;
+}
+
+/** Local open orders that still have a balance. */
+export async function localOpenOrders(
+  session: Session,
+): Promise<LocalOrderView[]> {
+  return (await localOrders(session)).filter(
+    (order) => order.total > order.paid,
+  );
+}
+
+/**
+ * Server open orders cached before the outage, plus this device's rounds and
+ * payments for them. A row synced after the snapshot still counts, so a payment
+ * that already reached the server never makes the order look unpaid again.
+ */
+export async function cachedServerOpenOrders(
+  session: Session,
+): Promise<{ refreshedAt: string | null; orders: LocalOrderView[] }> {
+  const snapshot = await cachedSnapshot(session);
+  const refreshedAt = snapshot.refreshedAt
+    ? Date.parse(snapshot.refreshedAt)
+    : 0;
+  const rows = (await scopedV3Rows(session)).filter(
+    (row) => row.status !== "synced" || (row.syncedAt ?? 0) > refreshedAt,
+  );
+  const orders = snapshot.orders.map((order): LocalOrderView => {
+    const lines: PricedLine[] = order.lines.map((line) => ({
+      id: line.id,
+      productId: line.productId,
+      quantity: line.quantity,
+      options: [],
+      note: "",
+      name: line.name,
+      optionNames: line.optionNames ?? [],
+      unitPrice: line.unitPrice,
+      total: line.total,
+      cost: null,
+      station: line.station,
+      recipe: [],
+      productVersion: 0,
+      round: line.round,
+      voidedUnits: Array.from(
+        { length: Number(line.voidedQuantity) || 0 },
+        (_, i) => i,
+      ),
+    }));
+    let total = order.total,
+      paid = order.paid,
+      round = Math.max(0, ...order.lines.map((line) => line.round));
+    for (const row of rows) {
+      const body = row.body as OfflineRecordV3;
+      if (!targetsServer(body, order.id)) continue;
+      if (body.kind === "round") {
+        round++;
+        lines.push(...pricedFrom(row).map((line) => ({ ...line, round })));
+        total += body.expectedTotal;
+      } else if (body.kind === "payment") paid += body.payment.amount;
+    }
+    return {
+      id: order.id,
+      number: order.number,
+      version: order.version,
+      mode: order.mode,
+      tableId: order.tableId,
+      tableName: order.tableName,
+      name: order.name,
+      note: order.note ?? "",
+      lines,
+      total,
+      paid,
+      refunded: 0,
+      state: order.state,
+      createdAt: order.createdAt,
+      serviceVersion: order.serviceVersion,
+      rounds: [],
+      tenders: [],
+      offline: {
+        provisionalNumber: null,
+        soldAt: order.createdAt,
+        localOperationId: null,
+        cachedAt: snapshot.refreshedAt,
+        serverOrderId: order.id,
+      },
+    };
+  });
+  return { refreshedAt: snapshot.refreshedAt, orders };
+}
+
+/** The sync target for an order shown in Selling. */
+export function targetOf(order: {
+  id: string;
+  offline?: { localOperationId?: string | null } | null;
+}): OrderTarget {
+  return order.offline?.localOperationId
+    ? { localOrderOperationId: order.offline.localOperationId }
+    : { orderId: order.id };
+}
+
+/** True for an order created on this device that the server has not answered for yet. */
+export const isLocalOrder = (order: Order | null): boolean =>
+  order?.state === "local_open";
+
+/** The current projection of one target order, if this device knows it. */
+export async function findOpenOrder(
+  session: Session,
+  target: OrderTarget,
+): Promise<LocalOrderView | null> {
+  if ("localOrderOperationId" in target)
+    return (
+      (await localOrders(session)).find(
+        (order) =>
+          order.offline.localOperationId === target.localOrderOperationId,
+      ) ?? null
+    );
+  return (
+    (await cachedServerOpenOrders(session)).orders.find(
+      (order) => order.id === target.orderId,
+    ) ?? null
+  );
+}
+
+async function targetNumber(target: OrderTarget): Promise<string | null> {
+  if (!("localOrderOperationId" in target)) return null;
+  const parent = await db.pending.get(target.localOrderOperationId);
+  return parent && isV3(parent.body) ? parent.body.provisionalNumber : null;
+}
+
+/** Online payment attempts (active or parked) recorded for one server order. */
+async function hasAttemptFor(session: Session, orderId: string) {
+  const prefix = scope(session) + ":payment";
+  const rows = await db.cache
+    .filter((row) => row.id === prefix || row.id.startsWith(prefix + ":"))
+    .toArray();
+  return rows.some(
+    (row) => (row.value as { orderId?: string } | null)?.orderId === orderId,
+  );
+}
+
+/** "Enviar" offline: a new local open order (kitchen via print/device list). */
+export async function saveOfflineOrder(
+  ctx: SaveContext,
+  input: {
+    draft: OrderInput;
+    priced: PricedLine[];
+    total: number;
+    operationId: string;
+    autoPrint: boolean;
+  },
+): Promise<LocalOrderView> {
+  check(ctx, false);
+  checkLines(input.draft.lines);
+  const prefix = await devicePrefix(ctx.session);
+  const snapshot = {
+    lines: input.priced,
+    restaurant: restaurantSnapshot(ctx.session),
+  };
+  await write(async () => {
+    const number = await allocateNumber(ctx.session, prefix);
+    const sequence = await allocateSequence(ctx.session);
+    const body = validated({
+      ...recordBase(
+        ctx.session,
+        input.operationId,
+        sequence,
+        number,
+        deliveryFor(input.autoPrint),
+      ),
+      kind: "order",
+      cashSessionId: ctx.cashSession?.id ?? null,
+      order: input.draft,
+      expectedTotal: input.total,
+      receiptSnapshot: snapshot,
+    });
+    await insertOnce(pendingRow(ctx.session, body, snapshot));
+    await deleteDraft(ctx.session);
+  });
+  return (
+    (await findOpenOrder(ctx.session, {
+      localOrderOperationId: input.operationId,
+    })) ?? fail("invalid_input")
+  );
+}
+
+type RoundInput = {
+  lines: LineInput[];
+  priced: PricedLine[];
+  total: number;
+  operationId: string;
+  autoPrint: boolean;
+};
+
+async function roundBody(
+  ctx: SaveContext,
+  target: OrderTarget,
+  input: RoundInput,
+  number: string | null,
+) {
+  const snapshot = {
+    lines: input.priced,
+    restaurant: restaurantSnapshot(ctx.session),
+  };
+  const body = validated({
+    ...recordBase(
+      ctx.session,
+      input.operationId,
+      await allocateSequence(ctx.session),
+      number,
+      deliveryFor(input.autoPrint),
+    ),
+    kind: "round",
+    cashSessionId: ctx.cashSession?.id ?? null,
+    target,
+    lines: input.lines,
+    expectedTotal: input.total,
+    receiptSnapshot: snapshot,
+  });
+  return { body, snapshot };
+}
+
+/** Adds items to a local open order or to a server order cached before the outage. */
+export async function saveOfflineRound(
+  ctx: SaveContext,
+  input: RoundInput & { target: OrderTarget },
+): Promise<LocalOrderView> {
+  check(ctx, false);
+  checkLines(input.lines);
+  if (!(await findOpenOrder(ctx.session, input.target))) fail("invalid_input");
+  const number = await targetNumber(input.target);
+  const target = await findOpenOrder(ctx.session, input.target);
+  await write(async () => {
+    const { body, snapshot } = await roundBody(
+      ctx,
+      input.target,
+      input,
+      number,
+    );
+    await insertOnce(
+      withContext(pendingRow(ctx.session, body, snapshot), target),
+    );
+    await deleteDraft(ctx.session);
+  });
+  return (
+    (await findOpenOrder(ctx.session, input.target)) ?? fail("invalid_input")
+  );
+}
+
+/** Keeps the cached server order's heading on the row for its kitchen ticket. */
+function withContext(row: Pending, order: LocalOrderView | null): Pending {
+  return order && !order.offline.localOperationId
+    ? {
+        ...row,
+        context: {
+          orderNumber: order.number,
+          mode: order.mode,
+          tableName: order.tableName ?? null,
+          name: order.name,
+        },
+      }
+    : row;
+}
+
+/**
+ * Payment of a local or cached order, with the round being added in the same
+ * checkout written atomically, so a refused payment never leaves half a
+ * checkout. Never more than the balance this device can see.
+ */
+export async function saveOfflinePayment(
+  ctx: SaveContext,
+  input: {
+    target: OrderTarget;
+    payment: OfflinePaymentInput;
+    operationId: string;
+    round?: RoundInput;
+  },
+): Promise<LocalReceipt> {
+  check(ctx, true);
+  if (
+    "orderId" in input.target &&
+    (await hasAttemptFor(ctx.session, input.target.orderId))
+  )
+    fail("offline_payment_pending_for_order");
+  if (input.round) checkLines(input.round.lines);
+  const current = await findOpenOrder(ctx.session, input.target);
+  if (!current) fail("invalid_input");
+  const due = current!.total - current!.paid + (input.round?.total ?? 0);
+  checkPayment(input.payment, due);
+  const number = await targetNumber(input.target);
+  await write(async () => {
+    if (input.round) {
+      const { body, snapshot } = await roundBody(
+        ctx,
+        input.target,
+        input.round,
+        number,
+      );
+      await insertOnce(
+        withContext(pendingRow(ctx.session, body, snapshot), current),
+      );
+    }
+    const body = validated({
+      ...recordBase(
+        ctx.session,
+        input.operationId,
+        await allocateSequence(ctx.session),
+        number,
+        "not_applicable",
+      ),
+      kind: "payment",
+      cashSessionId: ctx.cashSession!.id,
+      target: input.target,
+      expectedDue: due,
+      payment: input.payment,
+    });
+    await insertOnce(pendingRow(ctx.session, body));
+    await deleteDraft(ctx.session);
+  });
+  const after = (await findOpenOrder(ctx.session, input.target)) ?? current!;
+  return {
+    ...after,
+    state: "local",
+    offline: {
+      ...after.offline,
+      soldAt: correctedIso(),
+      method: input.payment.method,
+      reference: input.payment.reference,
+    },
+  };
+}
+
+/** New order paid in part: the order and its first payment, atomically. */
+export async function saveOfflinePartial(
+  ctx: SaveContext,
+  input: {
+    draft: OrderInput;
+    priced: PricedLine[];
+    total: number;
+    payment: OfflinePaymentInput;
+    orderOperationId: string;
+    paymentOperationId: string;
+    autoPrint: boolean;
+  },
+): Promise<LocalReceipt> {
+  check(ctx, true);
+  checkLines(input.draft.lines);
+  if (input.payment.amount >= input.total) fail("invalid_amount");
+  checkPayment(input.payment, input.total);
+  const prefix = await devicePrefix(ctx.session);
+  const snapshot = {
+    lines: input.priced,
+    restaurant: restaurantSnapshot(ctx.session),
+  };
+  await write(async () => {
+    const provisional = await allocateNumber(ctx.session, prefix);
+    const orderBody = validated({
+      ...recordBase(
+        ctx.session,
+        input.orderOperationId,
+        await allocateSequence(ctx.session),
+        provisional,
+        deliveryFor(input.autoPrint),
+      ),
+      kind: "order",
+      cashSessionId: ctx.cashSession!.id,
+      order: input.draft,
+      expectedTotal: input.total,
+      receiptSnapshot: snapshot,
+    });
+    await insertOnce(pendingRow(ctx.session, orderBody, snapshot));
+    const paymentBody = validated({
+      ...recordBase(
+        ctx.session,
+        input.paymentOperationId,
+        await allocateSequence(ctx.session),
+        provisional,
+        "not_applicable",
+      ),
+      kind: "payment",
+      cashSessionId: ctx.cashSession!.id,
+      target: { localOrderOperationId: input.orderOperationId },
+      expectedDue: input.total,
+      payment: input.payment,
+    });
+    await insertOnce(pendingRow(ctx.session, paymentBody));
+    await deleteDraft(ctx.session);
+  });
+  const view = await findOpenOrder(ctx.session, {
+    localOrderOperationId: input.orderOperationId,
+  });
+  if (!view) fail("invalid_input");
+  return {
+    ...view!,
+    state: "local",
+    offline: {
+      ...view!.offline,
+      method: input.payment.method,
+      reference: input.payment.reference,
+    },
+  };
+}
+
+ticketHeadings.order = (row, _rows, tableName) => {
+  const body = row.body as OfflineRecordV3 & { kind: "order" };
+  return {
+    label: body.provisionalNumber ?? "—",
+    round: 1,
+    mode: body.order.mode,
+    tableName: tableName(body.order.tableId),
+    callName: body.order.name,
+    orderNote: body.order.note,
+  };
+};
+ticketHeadings.round = (row, rows, tableName) => {
+  const body = row.body as OfflineRecordV3 & { kind: "round" };
+  const earlier = rows.filter(
+    (other) =>
+      (other.sequence ?? 0) < (row.sequence ?? 0) &&
+      isV3(other.body) &&
+      other.body.kind === "round" &&
+      JSON.stringify(other.body.target) === JSON.stringify(body.target),
+  ).length;
+  if ("localOrderOperationId" in body.target) {
+    const parent = rows.find(
+      (other) =>
+        other.id ===
+        (body.target as { localOrderOperationId: string })
+          .localOrderOperationId,
+    )?.body as (OfflineRecordV3 & { kind: "order" }) | undefined;
+    return {
+      label: body.provisionalNumber ?? parent?.provisionalNumber ?? "—",
+      round: earlier + 2,
+      mode: parent?.order.mode ?? "dine_in",
+      tableName: tableName(parent?.order.tableId ?? null),
+      callName: parent?.order.name ?? "",
+      orderNote: "",
+    };
+  }
+  return {
+    label: `#${row.context?.orderNumber ?? "—"}`,
+    round: earlier + 2,
+    mode: row.context?.mode ?? "dine_in",
+    tableName: row.context?.tableName ?? null,
+    callName: row.context?.name ?? "",
+    orderNote: "",
+  };
+};

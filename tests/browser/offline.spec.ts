@@ -1104,3 +1104,162 @@ test("Service worker update keeps the old revision intact; the prompt applies on
     await context.unrouteAll({ behavior: "ignoreErrors" });
   }
 });
+
+test("Offline payment on a cached open table order; an external terminal payment requires a reference", async ({
+  page,
+  context,
+}) => {
+  // Regression OFF-5: open table checks could not be settled offline.
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: "En mesa", exact: true }).click();
+  await page.getByLabel("Seleccionar mesa").selectOption({ label: "Mesa 03" });
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  const created = page.waitForResponse(
+    (r) =>
+      new URL(r.url()).pathname === "/api/orders" &&
+      r.request().method() === "POST",
+  );
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
+  const order = await (await created).json();
+  await expect(page.locator(".existing")).toContainText(`#${order.number}`);
+  // Reopening selling refreshes the open-orders cache used during outages.
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  const cached = page.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/api/offline/open-orders",
+  );
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await cached;
+  await page.getByRole("button", { name: "Nueva orden", exact: true }).click();
+  await goOffline(context, page);
+  await page
+    .getByRole("button", { name: "Órdenes abiertas", exact: true })
+    .click();
+  const picker = page.getByRole("dialog", { name: "Órdenes abiertas" });
+  await expect(picker).toContainText(
+    "Órdenes guardadas antes de perder la conexión",
+  );
+  await picker
+    .getByRole("button", { name: new RegExp(`#${order.number} · Mesa 03`) })
+    .click();
+  await expect(page.locator(".existing")).toContainText(`#${order.number}`);
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Cobrar" });
+  await expect(dialog).toContainText(
+    "Esta orden se guardó antes de perder la conexión",
+  );
+  await dialog
+    .getByRole("button", { name: "Terminal externa", exact: true })
+    .click();
+  const save = dialog.getByRole("button", {
+    name: "Guardar cobro con terminal",
+    exact: true,
+  });
+  await save.click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Confirma la aprobación e ingresa la referencia",
+  );
+  await dialog.getByLabel("Referencia").fill("AUTH-55");
+  await dialog.getByRole("checkbox").check();
+  await save.click();
+  await expect(page.locator(".receipt")).toContainText(
+    "Pendiente de sincronizar",
+  );
+  await nextSale(page);
+  await context.setOffline(false);
+  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(
+      async () =>
+        (
+          await page.evaluate(
+            async (id) => (await fetch(`/api/orders/${id}`)).json(),
+            order.id,
+          )
+        ).paid,
+      { timeout: 45_000 },
+    )
+    .toBe(order.total);
+  const synced = await page.evaluate(
+    async (id) => (await fetch(`/api/orders/${id}`)).json(),
+    order.id,
+  );
+  expect(synced.tenders).toHaveLength(1);
+  expect(synced.tenders[0]).toMatchObject({
+    method: "external",
+    external_reference: "AUTH-55",
+  });
+});
+
+test("Offline Enviar, add a round and pay later sync as one order with two rounds", async ({
+  page,
+  context,
+}) => {
+  // Regression OFF-5: Enviar was disabled offline and rounds could not be added.
+  await page.addInitScript(() => {
+    window.print = () => {};
+  });
+  await login(page);
+  await openDrawer(page);
+  await goOffline(context, page);
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page
+    .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+    .click();
+  const heading = page.locator(".cart-heading .eyebrow").first();
+  await expect(heading).toHaveText(PROVISIONAL);
+  const number = (await heading.textContent())!.trim();
+  await page.getByRole("button", { name: /Agua de jamaica/ }).click();
+  await page
+    .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+    .click();
+  await expect(page.locator(".existing")).toContainText("Agua de jamaica");
+  await page.getByRole("button", { name: "Comandas (2)", exact: true }).click();
+  const tickets = page
+    .getByRole("dialog", { name: "Comandas sin conexión" })
+    .locator(".offline-ticket");
+  await expect(tickets).toHaveCount(2);
+  await expect(tickets.filter({ hasText: "Ronda 2" })).toContainText(number);
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "Guardar cobro en este dispositivo",
+      exact: true,
+    })
+    .click();
+  await expect(page.locator(".receipt")).toContainText(number);
+  await nextSale(page);
+  await context.setOffline(false);
+  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(
+      async () =>
+        (await allRows(page)).filter((row) => row.status === "synced").length,
+      { timeout: 60_000 },
+    )
+    .toBe(3);
+  const rows = await allRows(page);
+  const orderIds = new Set(rows.map((row) => row.result?.orderId));
+  expect(orderIds.size).toBe(1);
+  const [orderId] = [...orderIds];
+  const synced = await page.evaluate(
+    async (id) => (await fetch(`/api/orders/${id}`)).json(),
+    orderId,
+  );
+  expect(synced.offline.provisionalNumber).toBe(number);
+  expect(new Set(synced.lines.map((line: any) => line.round))).toEqual(
+    new Set([1, 2]),
+  );
+  expect(synced.paid).toBe(synced.total);
+  expect(synced.tenders).toHaveLength(1);
+  expect(
+    synced.rounds.every((round: any) => round.state === "offline_review"),
+  ).toBe(true);
+  await pill(page, /^Conectado/).click();
+  await expect(page.locator(".workspace")).toContainText(
+    new RegExp(`${number} → #${synced.number}`),
+  );
+});

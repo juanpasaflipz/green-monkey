@@ -33,6 +33,13 @@ export type Pending = {
   archivedAt?: number;
   lastAttemptAt?: number;
   waitReason?: "auth" | "dependency";
+  /** Local display context of a cached server order (never sent). */
+  context?: {
+    orderNumber?: number;
+    mode?: string;
+    tableName?: string | null;
+    name?: string;
+  };
 };
 export type CachedValue =
   { id: string; value: unknown } | { id: string; value: PaymentAttempt };

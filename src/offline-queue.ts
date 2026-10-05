@@ -28,8 +28,16 @@ export function isResolved(row: Pick<Pending, "status">): boolean {
   return row.status === "synced" || row.status === "archived";
 }
 
+/** The local order a round or payment waits for, if any (invariant I5). */
+export function dependencyOf(body: Pending["body"]): string | null {
+  return "target" in body && "localOrderOperationId" in body.target
+    ? body.target.localOrderOperationId
+    : null;
+}
+
 const order = (row: Pending) =>
-  (row.body as { sequence?: number }).sequence ?? Date.parse(row.body.recordedAt);
+  (row.body as { sequence?: number }).sequence ??
+  Date.parse(row.body.recordedAt);
 
 /**
  * Sends every due record in this session's scope, oldest first. Accepts the
@@ -63,6 +71,19 @@ async function syncScoped(
         const now = Date.now();
         if (row.status === "conflict" && !force) continue;
         if (row.nextAt > now && !force && reason !== "reconnect") continue;
+        const dependency = dependencyOf(row.body);
+        if (dependency) {
+          const parent = await db.pending.get(dependency);
+          if (parent && !isResolved(parent)) {
+            // Waiting for a queued parent is not an attempt.
+            if (row.waitReason !== "dependency" || row.status !== "pending")
+              await db.pending.update(row.id, {
+                status: "pending",
+                waitReason: "dependency",
+              });
+            continue;
+          }
+        }
         const reachable = getConnectivitySnapshot().serverReachable;
         await db.pending.update(row.id, {
           status: "syncing",
@@ -216,9 +237,9 @@ export function useOfflineQueue(session: Session | null): {
       return;
     }
     const subscription = liveQuery(async () => {
-      const open = (await db.pending.where("scope").equals(key).toArray()).filter(
-        (row) => !isResolved(row),
-      );
+      const open = (
+        await db.pending.where("scope").equals(key).toArray()
+      ).filter((row) => !isResolved(row));
       return {
         queued: open.length,
         oldestUnresolvedAt: open.length

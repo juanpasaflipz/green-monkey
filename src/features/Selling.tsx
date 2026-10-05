@@ -33,7 +33,10 @@ import {
   type Draft,
 } from "../offline";
 import { useOfflineSelling } from "./offline/useOfflineSelling";
+import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
 import { fmt } from "./offline/format";
+import { liveQuery } from "dexie";
+import type { LocalOrderView } from "../offline-records";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 const fresh = (): OrderInput => ({
   operationId: crypto.randomUUID(),
@@ -106,6 +109,39 @@ export function Selling({
     active,
   });
   const [notice, setNotice] = useState("");
+  const [openOrders, setOpenOrders] = useState(false);
+  /** Order record id for a new order paid in part offline, one per dialog. */
+  const orderOperationKey = useRef(crypto.randomUUID());
+  // I13: once a local order has synced (or a cached order is reachable again),
+  // keep selling against the authoritative server order.
+  useEffect(() => {
+    const view = current as LocalOrderView | null;
+    if (!online || !view?.offline || !("cachedAt" in view.offline)) return;
+    let live = true;
+    const subscription = liveQuery(async () => {
+      if (!view.offline.localOperationId) return view.offline.serverOrderId;
+      const row = await db.pending.get(view.offline.localOperationId);
+      return row?.status === "synced"
+        ? ((row.result as { orderId?: string } | null)?.orderId ?? null)
+        : null;
+    }).subscribe({
+      next: (orderId) => {
+        if (!orderId || !live) return;
+        void api<Order>("/orders/" + orderId)
+          .then((order) => {
+            if (!live) return;
+            setCurrent(order);
+            void db.cache.put({ id: contextId, value: order.id });
+          })
+          .catch(() => {});
+      },
+      error: () => {},
+    });
+    return () => {
+      live = false;
+      subscription.unsubscribe();
+    };
+  }, [online, current?.id]);
   /** OFF-2: an attempt the server cannot confirm is parked, not retried forever. */
   const shouldPark = (e: unknown) =>
     (e as Error).message === "payment_review_required" ||
@@ -168,7 +204,8 @@ export function Selling({
               setPendingPayment(false);
               setError(t("offlineAttemptParked"));
             }
-          } else if (live) setError(translateError((e as Error).message, locale));
+          } else if (live)
+            setError(translateError((e as Error).message, locale));
         }
       })();
     }
@@ -276,6 +313,22 @@ export function Selling({
     setBusy(true);
     setError("");
     try {
+      // I13: a local order only ever changes through offline records.
+      if (!online || offline.isLocalOrder(current)) {
+        const { operationId, view } = await offline.sendOffline(
+          current,
+          draft,
+          { priced, total: draftTotal },
+        );
+        setCurrent(view);
+        setDraft((d) => ({
+          ...d,
+          operationId: crypto.randomUUID(),
+          lines: [],
+        }));
+        offline.afterSave([operationId]);
+        return view as Order;
+      }
       const o = await api<Order>(
         current ? `/orders/${current.id}/rounds` : "/orders",
         current ? { ...draft, expectedVersion: current.version } : draft,
@@ -299,6 +352,7 @@ export function Selling({
     setReceived((due / scale).toFixed(exponent));
     setTip("0");
     paymentKey.current = crypto.randomUUID();
+    orderOperationKey.current = crypto.randomUUID();
     setPayment(true);
     setError("");
   }
@@ -356,7 +410,9 @@ export function Selling({
       )
     )
       throw new Error(
-        online ? "payment_review_required" : "offline_payment_pending_for_order",
+        online
+          ? "payment_review_required"
+          : "offline_payment_pending_for_order",
       );
     return false;
   }
@@ -397,8 +453,8 @@ export function Selling({
       const n = parseAmount(amount),
         cash = parseAmount(received),
         tips = parseAmount(tip);
-      if (!online) {
-        const local = await offline.collectOffline(
+      if (!online || offline.isLocalOrder(current)) {
+        const saved = await offline.collectOffline(
           {
             amount: n,
             tip: tips,
@@ -413,14 +469,17 @@ export function Selling({
             total: draftTotal,
             current,
             operationId: paymentKey.current,
+            orderOperationId: orderOperationKey.current,
           },
           splitItems ? selectedItems : undefined,
         );
-        setReceipt(local);
+        setReceipt(saved.receipt);
+        setCurrent(saved.view);
         setPayment(false);
         setDraft(fresh());
         paymentKey.current = crypto.randomUUID();
-        offline.afterSave(local);
+        orderOperationKey.current = crypto.randomUUID();
+        offline.afterSave(saved.operationIds, saved.receipt);
         return;
       }
       let o = current;
@@ -616,11 +675,13 @@ export function Selling({
         {notice && <p role="status">{notice}</p>}
         <div className="row">
           <Button
-            disabled={!draft.lines.length || busy || !online}
+            disabled={
+              !draft.lines.length || busy || (!online && !!offline.blockReason)
+            }
             onClick={() => void send().catch(() => {})}
           >
             <Send size={16} />
-            {t("send")}
+            {t(online ? "send" : "offlineSendLocal")}
           </Button>
           <Button
             variant="primary"
@@ -702,6 +763,11 @@ export function Selling({
           >
             {t("drafts")}
           </Button>
+          {!online && (
+            <Button onClick={() => setOpenOrders(true)}>
+              {t("offlineOpenOrders")}
+            </Button>
+          )}
         </div>
         <div className="search">
           <Search size={20} />
@@ -905,6 +971,12 @@ export function Selling({
               {offline.paymentSlot.hint(method as "cash" | "external")}
             </p>
           )}
+          {!online &&
+            !!(current as LocalOrderView | null)?.offline?.cachedAt && (
+              <p className="warning-panel" role="status">
+                {t("offlinePayCachedWarning")}
+              </p>
+            )}
           {!online && offline.paymentSlot.blockReason && (
             <p className="error" role="alert">
               {offline.paymentSlot.blockReason}
@@ -1078,7 +1150,9 @@ export function Selling({
                   })}
                 </strong>
                 <br />
-                <span className="tiny muted">{t("offlineProvisionalHint")}</span>
+                <span className="tiny muted">
+                  {t("offlineProvisionalHint")}
+                </span>
               </p>
             )}
             <p>
@@ -1128,32 +1202,37 @@ export function Selling({
           <div className="row">
             <Button onClick={() => window.print()}>{t("print")}</Button>
             {receipt.state === "local" && (
-              <Button
-                onClick={() =>
-                  void offline.printKitchen(
-                    receipt as Parameters<typeof offline.printKitchen>[0],
-                  )
-                }
-              >
+              <Button onClick={() => void offline.printKitchen([receipt.id])}>
                 {t("offlinePrintKitchen")}
               </Button>
             )}
             <Button
               variant="primary"
               onClick={() =>
-                receipt.paid >= receipt.total || receipt.state === "local"
-                  ? reset()
-                  : setReceipt(null)
+                receipt.paid >= receipt.total ? reset() : setReceipt(null)
               }
             >
-              {t(
-                receipt.paid >= receipt.total || receipt.state === "local"
-                  ? "nextSale"
-                  : "back",
-              )}
+              {t(receipt.paid >= receipt.total ? "nextSale" : "back")}
             </Button>
           </div>
         </Modal>
+      )}
+      {openOrders && (
+        <OfflineOrdersModal
+          session={session}
+          locale={locale}
+          close={() => setOpenOrders(false)}
+          onPick={(order) => {
+            setCurrent(order);
+            setDraft({
+              ...fresh(),
+              mode: order.mode as OrderInput["mode"],
+              tableId: order.tableId,
+              name: order.name,
+            });
+            setOpenOrders(false);
+          }}
+        />
       )}
       {parked && (
         <Modal
