@@ -102,6 +102,8 @@ context; the runtime role has no DELETE anywhere.
 | `BACKUP_DATABASE_URL`, `PROVISION_DATABASE_URL` | Backup workflow and operator scripts only; refused by deployed services |
 | `TRUST_PROXY` | Express trust proxy; unset means `loopback, 100.0.0.0/8` in production (Railway edge) |
 | `JWT_SECRET` | Retain; generated per environment, rotated deliberately |
+| `ACCESS_STEP_UP_SECONDS`, `ACCESS_IDLE_LOCK_DEFAULT_SECONDS` | New (access): step-up window (30..1800 s, default 120) and default terminal auto-lock (default 180 s); `preserve()` on `web` ([ACCESS.md](ACCESS.md) "Configuration") |
+| `DEMO_TENANT_ID` | New (access): fictional demo tenant for local and staging only; declared on staging's `web` only, and the server refuses to start with it when `RAILWAY_ENVIRONMENT_NAME` is `production` |
 | `ADMIN_SECRET` | Legacy compatibility only; empty/disabled normally; no universal browser admin bypass |
 | `APP_URL`, `PORT`, `NODE_ENV`, `RESTAURANT_TZ` | Retain; timezone is default, restaurant data takes precedence |
 | `DEFAULT_TENANT_ID` | Development convenience only; reject production fallback |
