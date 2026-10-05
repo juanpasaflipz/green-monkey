@@ -359,8 +359,10 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
   in a terminal's browser profile.
 - Offline unlock without a PIN ("Continuar como") attributes offline sales to
   the locked employee without proof that they are the one at the terminal. It
-  lasts only while the device is offline and its offline window is valid, and
-  re-locks on reconnect, so it never reaches online commands. Clearing the
+  lasts only while the device is offline (or the server unreachable) and its
+  offline window is valid, and re-locks on reconnect; every online call made
+  during it first checks that the server is still unreachable, so it never
+  reaches online commands. Clearing the
   browser's site data removes the remembered lock, but also unpairs the device.
 - The lock's resistance to Escape and forced closes is tested in Chromium (the
   browser suite) and checked with a dialog probe in WebKit 26.6. The Android
@@ -389,6 +391,41 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
 - `sessions_live_by_device` and `sessions_live_by_employee` are created inside
   the migration transaction. That is safe while `sessions` is small; on a large
   table, build them beforehand.
+- A missing payment attempt that cannot be retried (for example its drawer was
+  closed overnight) still blocks that employee's next Cobrar on that device
+  with `payment_review_required`; there is no manager "Descartar intento" yet
+  (see the merge notes).
+- A restaurant's own paired devices, revoked ones included, can exhaust its
+  per-IP backstop (20 times the device limit); pairing them needs a code from
+  that restaurant's owner or manager.
+
+## Merge notes (for integrators)
+
+- **Lock on load and restore (offline merge, contract §4.7).** The golden
+  `load()` shown in the contracts has neither `resumeLock(s)` nor
+  `settleRejectedSession(code)`. Keep both: `load()` calls `resumeLock` before
+  showing a session, calls `settleRejectedSession` on any 401, and offline's
+  `restoreCached()` must call `resumeLock(cached)` too. Without them a reload
+  unlocks (A1) and a revoked session is restored offline (A7).
+- **Payment attempt on a session 401 (offline merge).** Selling clears the
+  attempt on any session 401 (`isSessionRejection`), which is safe only because
+  `request()` never retries. If offline adds a bounded retry for idempotent
+  POSTs, a first attempt that committed but lost its response followed by a
+  retry rejected with 401 would clear an attempt that was charged. Either
+  `request()` never retries into a 401, or Selling clears only when the call
+  was never sent (`session_expired` while blocked, `session_locked`) or the 401
+  came on the first attempt.
+- **Soft-unlock check (offline merge).** App's `registerSoftUnlockCheck` probes
+  `/api/health` itself; at merge it should use offline's `probeNow()` /
+  `canUseServer` instead, keep refusing the call unsent with `session_locked`,
+  and keep `/sync` and `/access/*` exempt.
+- **Limiter key (ops merge, LD-9).** Every access limiter keys on `ipKey(req)`
+  in `server/routes/access.ts`; switch that one function to `clientIp(req)` from
+  `server/logging.ts`.
+- **"Descartar intento" (offline or RecoveryQueue).** A manager-only discard,
+  with step-up and an audit row, for attempts in state `missing` with
+  `retryAllowed=false`, so a missing attempt that can no longer be retried
+  stops blocking that employee's Cobrar on that device. Not built in access.
 
 ## Data minimisation
 
@@ -400,13 +437,14 @@ This keeps the personal data proportional to the purpose (LFPDPPP 2025,
 
 ## Verification (local)
 
-- `npm run test:db:access` (35 checks, one of which applies migration 023 as an
+- `npm run test:db:access` (36 checks, one of which applies migration 023 as an
   owner role without BYPASSRLS in a scratch database), plus the updated voids,
   owner and offline-recovery suites in `npm run test:db:qualification`.
-- `npm run build && npm run test:access-http` (11 checks against the compiled
+- `npm run build && npm run test:access-http` (13 checks against the compiled
   server, with and without `DEMO_TENANT_ID`, including the terminal guard's case,
-  trailing-slash, HEAD and account-center variants and the device-keyed limits).
-- `tests/browser/access.spec.ts` (24 flows, axe at 1440 and 390, no horizontal
+  trailing-slash, HEAD and account-center variants, the device-keyed limits,
+  the per-restaurant backstop and pairing ending a held Google sign-in).
+- `tests/browser/access.spec.ts` (25 flows, axe at 1440 and 390, no horizontal
   overflow at 1440/1024/768/390); evidence in `docs/evidence/access-*.png`.
 - `tests/access.test.ts`, `tests/access-client.test.ts` and
   `tests/access-lock.test.ts` (unit).
