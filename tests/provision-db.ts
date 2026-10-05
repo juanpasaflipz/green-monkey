@@ -52,6 +52,10 @@ const disconnect = async (user: string) => {
     }
 };
 const created: string[] = [];
+const neonEnv = "n" + randomBytes(3).toString("hex");
+const neonDatabase = `green_monkey_provision_${neonEnv}_test`;
+const neonOwner = `gm_test_neon_owner_${neonEnv}`;
+const neonOwnerPassword = randomBytes(24).toString("hex");
 try {
   await admin.unsafe(`create database "${database}"`);
   assert.equal(
@@ -299,14 +303,143 @@ try {
     },
   );
 
+  await check(
+    "Neon parity: a non-superuser CREATEROLE owner provisions, rotates and finalizes logins (OPS-R9)",
+    async () => {
+      // neondb_owner is LOGIN CREATEROLE CREATEDB BYPASSRLS but never a
+      // superuser, and it owns the database it migrated. On a fresh Neon
+      // cluster it creates the capability roles itself (globals.sql), so
+      // PostgreSQL 16+ gives it ADMIN on them without INHERIT or SET
+      // (createrole_self_grant ''). They already exist in this shared local
+      // cluster, so the check grants exactly that membership.
+      await admin.unsafe(
+        `create role "${neonOwner}" login createrole createdb bypassrls nosuperuser password '${neonOwnerPassword}'`,
+      );
+      await admin.unsafe(
+        `grant gm_migrator, gm_billing_worker, gm_backup_reader to "${neonOwner}" with admin true, inherit false, set false`,
+      );
+      await admin.unsafe(
+        `create database "${neonDatabase}" owner "${neonOwner}"`,
+      );
+      const neonOwnerUrl = (() => {
+        const u = new URL(migration);
+        u.pathname = "/" + neonDatabase;
+        u.username = neonOwner;
+        u.password = neonOwnerPassword;
+        return u.href;
+      })();
+      const owner = as(neonOwnerUrl);
+      const [self] = await owner`
+        select r.rolsuper, pg_has_role(current_user, 'gm_migrator', 'SET') as can_set
+        from pg_roles r where r.rolname = current_user`;
+      assert.deepEqual(
+        { ...self },
+        { rolsuper: false, can_set: false },
+        "the owner starts like neondb_owner: not a superuser, cannot SET ROLE gm_migrator",
+      );
+      assert.equal(
+        await migrate([], {
+          MIGRATION_DATABASE_URL: neonOwnerUrl,
+          APP_ENV: "development",
+        }),
+        0,
+        "the owner migrates its database",
+      );
+
+      const neonFile = join(dir, `.env.provisioned-${neonEnv}`);
+      const result = await provisionRoles({
+        ownerUrl: neonOwnerUrl,
+        env: neonEnv,
+        file: neonFile,
+      });
+      created.push(result.roles.app, result.roles.billing, result.roles.backup);
+      assert.ok(
+        result.actions.includes(
+          "asserted: no privileged login; only gm_migrator owns tables",
+        ),
+      );
+      const [owners] = await owner`
+        select array_agg(distinct tableowner) as owners from pg_tables where schemaname='public'`;
+      assert.deepEqual(owners.owners, ["gm_migrator"]);
+      const [membership] = await owner`
+        select pg_has_role(current_user, 'gm_migrator', 'SET') as can_set,
+               pg_has_role(current_user, 'gm_migrator', 'USAGE') as inherits`;
+      assert.deepEqual({ ...membership }, { can_set: true, inherits: true });
+      const again = await provisionRoles({
+        ownerUrl: neonOwnerUrl,
+        env: neonEnv,
+        file: neonFile,
+      });
+      assert.ok(
+        !again.actions.some((a) => a.startsWith("created gm_")),
+        "a re-run as the non-superuser owner is idempotent",
+      );
+
+      // The deploy applies the runtime grants; then a runtime and a billing
+      // rotation and both finalizations run through the same owner.
+      const saved = parse(readFileSync(neonFile, "utf8"));
+      assert.equal(
+        await migrate(["--grants-only"], {
+          MIGRATION_DATABASE_URL: neonOwnerUrl,
+          PG_APP_USER: saved.PG_APP_USER,
+          APP_ENV: "development",
+        }),
+        0,
+      );
+      const org = randomUUID(),
+        tenantId = randomUUID();
+      await as(neonOwnerUrl).begin(async (tx) => {
+        await tx`insert into organizations(id,name) values(${org},'Neon parity fixture')`;
+        await tx`insert into restaurants(id,organization_id,name) values(${tenantId},${org},'Neon parity fixture')`;
+      });
+      const runtimeNext = await rotateLogin({
+        ownerUrl: neonOwnerUrl,
+        env: neonEnv,
+        kind: "runtime",
+        newName: `gm_${neonEnv}_app_next`,
+        file: null,
+      });
+      created.push(runtimeNext.newName);
+      const next = as(runtimeNext.url);
+      await checkRole(next);
+      await tenant(next, tenantId, async (tx) => {
+        await tx`insert into dining_tables(tenant_id,id,name) values(${tenantId},${randomUUID()},'Mesa N')`;
+        const [row] = await tx`select count(*)::int as n from dining_tables`;
+        assert.equal(row.n, 1);
+      });
+      const billingNext = await rotateLogin({
+        ownerUrl: neonOwnerUrl,
+        env: neonEnv,
+        kind: "billing",
+        newName: `gm_${neonEnv}_billing_next`,
+        file: null,
+      });
+      created.push(billingNext.newName);
+      assert.ok(
+        billingNext.actions.includes(
+          `${billingNext.newName} is a member of gm_billing_worker`,
+        ),
+      );
+      await disconnect(saved.PG_APP_USER);
+      for (const old of [saved.PG_APP_USER, `gm_${neonEnv}_billing`])
+        await finalizeRotation({ ownerUrl: neonOwnerUrl, old });
+      const [gone] = await admin`
+        select count(*)::int as n from pg_roles
+        where rolname = any(${[saved.PG_APP_USER, `gm_${neonEnv}_billing`]})`;
+      assert.equal(gone.n, 0, "the owner drops the logins it rotated out");
+      await tenant(next, tenantId, (tx) => tx`select 1 from dining_tables`);
+    },
+  );
+
   console.log(`Provisioning DB checks passed: ${passed()} checks.`);
 } finally {
   for (const sql of pools) await sql.end({ timeout: 5 }).catch(() => undefined);
   rmSync(dir, { recursive: true, force: true });
-  await admin
-    .unsafe(`drop database if exists "${database}" with (force)`)
-    .catch((e) => console.error(e.message));
-  for (const role of created)
+  for (const db of [database, neonDatabase])
+    await admin
+      .unsafe(`drop database if exists "${db}" with (force)`)
+      .catch((e) => console.error(e.message));
+  for (const role of [...created, neonOwner])
     await admin
       .unsafe(`drop role if exists "${role}"`)
       .catch((e) => console.error(e.message));

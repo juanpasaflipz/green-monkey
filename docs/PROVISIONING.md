@@ -49,8 +49,13 @@ timeouts that Neon's pooler honours, revokes `CONNECT` from `PUBLIC`, and
 writes `.env.provisioned-production` with `MIGRATION_DATABASE_URL` (direct),
 `DATABASE_URL` and `BILLING_DATABASE_URL` (pooled), `BACKUP_DATABASE_URL`
 (direct) and `PG_APP_USER`. It asserts that no login is privileged and that
-only `gm_migrator` owns tables. Then rotate the `neondb_owner` password in the
-Neon console and keep it offline.
+only `gm_migrator` owns tables. `neondb_owner` is not a superuser on Neon
+(it has CREATEROLE, CREATEDB and BYPASSRLS through `neon_superuser`), so the
+script changes only role attributes such an owner may change and grants it
+INHERIT and SET on `gm_migrator` for the ownership transfer and later
+rotations; `tests/provision-db.ts` ("Neon parity") runs provisioning,
+rotation and finalization through such an owner. Then rotate the
+`neondb_owner` password in the Neon console and keep it offline.
 
 ## 3. Railway
 

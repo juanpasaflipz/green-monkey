@@ -24,7 +24,7 @@ import { pathToFileURL } from "node:url";
 import type { Tx } from "../../server/db.js";
 import { databaseTls, withoutParams } from "../../server/db-support.js";
 import { applyGrantsTx } from "../../server/ops/schema.js";
-import { pooledHost } from "./provision-roles.js";
+import { ensurePrivilegesOf, pooledHost } from "./provision-roles.js";
 
 const ROLE = /^[a-z_][a-z0-9_]{0,62}$/;
 const ident = (v: string) => '"' + v.replaceAll('"', '""') + '"';
@@ -212,6 +212,10 @@ export async function finalizeRotation(o: { ownerUrl: string; old: string }) {
       );
     await sql.begin(async (raw) => {
       const tx = raw as Tx;
+      // DROP OWNED needs the old login's privileges. Neon's owner holds only
+      // ADMIN on the logins it created (PostgreSQL 16+), so it inherits the
+      // old login first; the membership disappears with the role (OPS-R9).
+      await ensurePrivilegesOf(tx, o.old);
       await tx.unsafe(`drop owned by ${ident(o.old)}`);
       await tx.unsafe(`drop role ${ident(o.old)}`);
     });

@@ -11,6 +11,10 @@
 //     scripts/ops/sql/database-grants.sql and moves every public object to
 //     gm_migrator (scripts/ops/sql/transfer-ownership.sql);
 //   - asserts that no login is privileged and only gm_migrator owns tables.
+// The owner is never a superuser on Neon (LOGIN CREATEROLE CREATEDB
+// BYPASSRLS), so ALTER ROLE names only attributes it may change, and the
+// owner takes INHERIT and SET on gm_migrator explicitly (OPS-R9;
+// tests/provision-db.ts "Neon parity").
 // Passwords for new logins are generated here and written, before any role
 // changes, to .env.provisioned-<env> (mode 0600, never overwritten); a re-run
 // reuses them. An existing login keeps its password (rotation is
@@ -52,6 +56,33 @@ export interface ProvisionResult {
 
 const ident = (v: string) => '"' + v.replaceAll('"', '""') + '"';
 const literal = (v: string) => "'" + v.replaceAll("'", "''") + "'";
+
+/**
+ * Makes the current (owner) login inherit `role`'s privileges, and with
+ * `set` also able to SET ROLE to it, granting the membership when missing.
+ * On PostgreSQL 16+ a CREATEROLE login gets ADMIN, but neither INHERIT nor
+ * SET, on the roles it creates; on 15 and older a plain GRANT inherits.
+ * A superuser already passes both checks.
+ */
+export async function ensurePrivilegesOf(
+  tx: Tx,
+  role: string,
+  o: { set?: boolean } = {},
+) {
+  const [{ version }] =
+    await tx`select current_setting('server_version_num')::int as version`;
+  const modern = version >= 160000;
+  const [{ ok }] =
+    modern && o.set
+      ? await tx`select pg_has_role(current_user, ${role}, 'USAGE') and pg_has_role(current_user, ${role}, 'SET') as ok`
+      : await tx`select pg_has_role(current_user, ${role}, 'USAGE') as ok`;
+  if (ok) return false;
+  await tx.unsafe(
+    `grant ${ident(role)} to current_user` +
+      (modern ? ` with inherit true${o.set ? ", set true" : ""}` : ""),
+  );
+  return true;
+}
 
 /** Neon pooled host: the endpoint id gains a -pooler suffix. */
 export function pooledHost(hostname: string) {
@@ -157,21 +188,38 @@ export async function provisionRoles(o: {
         await tx`select set_config('lock_timeout','5s',true)`;
         await tx.unsafe(readFileSync("scripts/ops/sql/globals.sql", "utf8"));
         actions.push("capability roles and gm_migrator ensured");
-        const exists = async (role: string) =>
-          (await tx`select 1 from pg_roles where rolname=${role}`).length > 0;
+        const attributes = async (role: string) =>
+          (
+            await tx`
+              select rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolbypassrls
+              from pg_roles where rolname=${role}`
+          )[0];
         const login = async (key: keyof typeof roles, member?: string) => {
           const role = roles[key];
-          if (!(await exists(role))) {
+          let current = await attributes(role);
+          if (!current) {
             await tx.unsafe(
               `create role ${ident(role)} nosuperuser nocreatedb nocreaterole nobypassrls`,
             );
             actions.push(`created ${role}`);
+            current = await attributes(role);
           }
+          // The owner on Neon (neondb_owner) has CREATEROLE but is not a
+          // superuser, and PostgreSQL lets only a superuser name SUPERUSER or
+          // NOSUPERUSER in ALTER ROLE (OPS-R9). Name only the attributes that
+          // must change; the assertion below refuses any privileged login
+          // that remains.
           const password = passwords[key];
-          await tx.unsafe(
-            `alter role ${ident(role)} login nosuperuser nocreatedb nocreaterole nobypassrls` +
-              (password ? ` password ${literal(password)}` : ""),
-          );
+          const clauses = [
+            current.rolcanlogin ? "" : "login",
+            current.rolsuper ? "nosuperuser" : "",
+            current.rolcreatedb ? "nocreatedb" : "",
+            current.rolcreaterole ? "nocreaterole" : "",
+            current.rolbypassrls ? "nobypassrls" : "",
+            password ? `password ${literal(password)}` : "",
+          ].filter(Boolean);
+          if (clauses.length)
+            await tx.unsafe(`alter role ${ident(role)} ${clauses.join(" ")}`);
           if (!password) actions.push(`${role}: kept its existing password`);
           if (member) {
             await tx.unsafe(`grant ${ident(member)} to ${ident(role)}`);
@@ -201,10 +249,13 @@ export async function provisionRoles(o: {
         actions.push(
           "database grants applied; PUBLIC loses CONNECT and CREATE",
         );
-        // PG16+: changing ownership to gm_migrator requires membership in it.
-        const [{ member }] =
-          await tx`select pg_has_role(current_user, 'gm_migrator', 'member') as member`;
-        if (!member) await tx.unsafe(`grant gm_migrator to current_user`);
+        // Moving ownership to gm_migrator needs SET ROLE on it (PG16+), and
+        // rotate-db-login.ts grants on its tables through inherited
+        // privileges. A non-superuser owner that created gm_migrator holds
+        // only ADMIN on it (PG16 createrole_self_grant ''), which already
+        // counts as 'member' (OPS-R9), so check SET and USAGE explicitly.
+        await ensurePrivilegesOf(tx, "gm_migrator", { set: true });
+        actions.push("owner can SET ROLE gm_migrator and inherits it");
         await tx.unsafe(
           readFileSync("scripts/ops/sql/transfer-ownership.sql", "utf8"),
         );
