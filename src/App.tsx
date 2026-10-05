@@ -21,6 +21,7 @@ import { api, setSession, clearSessionScope } from "./api";
 import { db, cacheSession, scope } from "./offline";
 import {
   getConnectivitySnapshot,
+  probeNow,
   serverNow,
   useConnectivity,
 } from "./connectivity";
@@ -101,11 +102,11 @@ export default function App() {
   // reachable again or the offline window ends (contract 8.2), then locked
   // again with the same reason.
   const [softUnlocked, setSoftUnlocked] = useState<string | null>(null);
-  // The lock screen could not reach the server although the device reports a
-  // connection (router up, internet down). Cleared by a health probe; offline's
-  // probe-based canUseServer replaces this at merge (ACC-FLOOR-6).
-  const [serverDown, setServerDown] = useState(false);
-  const reachable = online && !serverDown;
+  // Whether the server answers, from offline's heartbeat (contract §0.8,
+  // LD-10 B6): the lock and its soft unlock follow the server itself, not the
+  // "Trabajar sin conexión" preference (`online` = canUseServer), so manual
+  // offline mode never stands in for an unreachable server (ACC-R-2).
+  const reachable = net.serverReachable;
   // A pending "Confirma con tu PIN", for the session whose command asked for it.
   const [stepUpRequest, setStepUpRequest] = useState<null | StepUpRequest>(
     null,
@@ -366,43 +367,20 @@ export default function App() {
     if (!softUnlocked || softUnlocked === "renew") return;
     const reason = softUnlocked;
     registerSoftUnlockCheck(async () => {
-      if (!navigator.onLine) return false;
-      try {
-        const r = await fetch("/api/health", {
-          cache: "no-store",
-          signal: AbortSignal.timeout(3_000),
-        });
-        if (!r.ok) return false;
-      } catch {
+      // Offline's probe (contract §0.8). Its mode needs two answers in a row
+      // to turn "online", so the question here is whether the server answered
+      // at all since this call asked (the probe, or any other request).
+      const asked = Date.now();
+      await probeNow();
+      const net = getConnectivitySnapshot();
+      if (!net.serverReachable && (net.lastContactAt ?? 0) < asked)
         return false;
-      }
-      setServerDown(false);
       setSoftUnlocked(null);
       setLock((current) => nextLock(current, reason));
       return true;
     });
     return () => registerSoftUnlockCheck(null);
   }, [softUnlocked]);
-  useEffect(() => {
-    // While the server is known unreachable, probe it; the lock screen (or the
-    // soft unlock's re-lock) follows as soon as it answers.
-    if (!serverDown || !online) return;
-    let live = true;
-    const probe = async () => {
-      try {
-        const r = await fetch("/api/health", { cache: "no-store" });
-        if (live && r.ok) setServerDown(false);
-      } catch {
-        /* Still unreachable. */
-      }
-    };
-    void probe();
-    const timer = setInterval(() => void probe(), 10_000);
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [serverDown, online]);
   useEffect(() => {
     // Whatever replaced or ended the session, its pending step-up goes (ACC-20).
     if (stepUpRef.current && stepUpRef.current.sessionId !== session?.id)
@@ -837,7 +815,7 @@ export default function App() {
           online={reachable}
           locale={locale}
           overlayOpen={Boolean(leaving)}
-          onUnreachable={() => setServerDown(true)}
+          onUnreachable={() => void probeNow()}
           onDismiss={() => {
             // Only a renewal the cashier started; the session is still valid.
             // A pending offline soft unlock keeps its own re-lock.
@@ -847,7 +825,6 @@ export default function App() {
           onUnlocked={(s) => {
             const sameEmployee = scope(s) === scope(session);
             setSession(s);
-            setServerDown(false);
             clearPendingLogout();
             forgetLock();
             setSoftUnlocked(null);

@@ -22,6 +22,13 @@ import "../access/access.css";
 export type LockReason = "idle" | "manual" | "renew" | string;
 
 /**
+ * The server gave no answer of its own: offline's request() (026) reports a
+ * failed fetch, a timeout or a proxy/HTML page as a transient ApiError, not a
+ * thrown fetch.
+ */
+const noAnswer = (e: unknown) => !(e instanceof ApiError) || e.transient;
+
+/**
  * Full-screen lock that keeps the workspace mounted underneath (SEC-6/FOH-7).
  * The same employee's PIN resumes with every unsaved state; another employee's
  * PIN starts their own session. Offline, the PIN cannot be verified, so the
@@ -107,7 +114,7 @@ export function LockScreen({
     try {
       setTerminal(await api<TerminalState>("/access/terminal"));
     } catch (e) {
-      if (!(e instanceof ApiError)) unreachable.current();
+      if (noAnswer(e)) unreachable.current();
     }
   }, []);
   useEffect(() => {
@@ -166,12 +173,12 @@ export function LockScreen({
     } catch (e) {
       // No answer from the server (router up, internet down): this is the
       // offline lock, with its notice and "Continuar como" (ACC-FLOOR-6).
-      if (!(e instanceof ApiError)) {
+      if (noAnswer(e)) {
         setError("");
         onUnreachable();
         return;
       }
-      const code = e.message;
+      const code = (e as ApiError).message;
       setError(translateError(code, locale));
       if (["pin_locked", "pin_hard_locked"].includes(code))
         await refreshTerminal();

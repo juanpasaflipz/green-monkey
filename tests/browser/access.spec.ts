@@ -1535,8 +1535,9 @@ test("a renewal can be put off, and an unreachable server shows the offline lock
     // The device reports a connection but the server cannot be reached.
     await banner.getByRole("button", { name: "Renovar ahora" }).click();
     await expect(renew).toBeVisible();
-    await tablet.route("**/api/access/pin", (r) => r.abort("internetdisconnected"));
-    await tablet.route("**/api/health", (r) => r.abort("internetdisconnected"));
+    // Every server call fails, offline's /api/offline/ping heartbeat included
+    // (since offline 026 it decides reachability, not /api/health).
+    await tablet.route("**/api/**", (r) => r.abort("internetdisconnected"));
     await enterSecret(renew, CASHIER.name, CASHIER.pin);
     await expect(renew).toContainText(
       `Sin conexión no se puede verificar el PIN. Las ventas se registran a nombre de ${CASHIER.name}.`,
@@ -1548,8 +1549,7 @@ test("a renewal can be put off, and an unreachable server shows the offline lock
     await expect(renew).toBeHidden();
     await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
     // The server answers again: the renewal prompt comes back by itself.
-    await tablet.unroute("**/api/health");
-    await tablet.unroute("**/api/access/pin");
+    await tablet.unroute("**/api/**");
     await expect(renew).toBeVisible({ timeout: 20_000 });
     await enterSecret(renew, CASHIER.name, CASHIER.pin);
     await expect(renew).toBeHidden();
@@ -1577,8 +1577,9 @@ test("a soft unlock that began with the server unreachable never works online: t
   await tablet.getByRole("button", { name: "Bloquear pantalla" }).click();
   await expect(lock).toBeVisible();
   // The router is up but the internet is down: navigator.onLine stays true.
-  await tablet.route("**/api/access/pin", (r) => r.abort("internetdisconnected"));
-  await tablet.route("**/api/health", (r) => r.abort("internetdisconnected"));
+  // Every server call fails, offline's /api/offline/ping heartbeat included
+  // (since offline 026 it decides reachability, not /api/health).
+  await tablet.route("**/api/**", (r) => r.abort("internetdisconnected"));
   await enterSecret(lock, CASHIER.name, CASHIER.pin);
   await expect(lock).toContainText(
     `Sin conexión no se puede verificar el PIN. Las ventas se registran a nombre de ${CASHIER.name}.`,
@@ -1593,8 +1594,7 @@ test("a soft unlock that began with the server unreachable never works online: t
       sent.push(request.method());
   });
   // The internet comes back before the background probe notices.
-  await tablet.unroute("**/api/health");
-  await tablet.unroute("**/api/access/pin");
+  await tablet.unroute("**/api/**");
   // Opening Órdenes is online work: it is refused unsent and the lock returns.
   // (If a background call re-locked first, the lock blocks the click.)
   await tablet
