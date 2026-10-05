@@ -373,11 +373,10 @@ tenant/employee/device and lease match, currency, drawer of that device, amounts
 and separately whether it is **eligible** to sync automatically (not archived, same
 employee on the same device, session not revoked, employee and device active,
 selling allowed, time within tolerance, that drawer still open, settings unchanged).
-Under the wave contract (D6) an ended session (logout, switch) is valid evidence
-for the same person on the same device, and only a revoked session needs a manager.
-That depends on access's change: on this branch logout still marks the session
-revoked, so records left by a logged-out session go to **Requiere revisión**
-(`offline_conflict`) and a manager reconciles or archives them until access merges.
+Under the wave contract (D6) an ended session (logout, switch, PIN reset, role
+change) is valid evidence for the same person on the same device, and only a
+revoked session (employee deactivated or device unpaired) needs a manager: its
+records go to **Requiere revisión** (`offline_conflict`) for reconcile or archive.
 
 On the Sync screen a manager can:
 
@@ -524,13 +523,12 @@ one conflict in that file; resolve it by taking the side being reverted to, whic
 drops the table-service record tests. Checked in a scratch clone: the remaining
 core then typechecks, lints and passes every unit test.
 
-These are in-wave stand-ins defined by the wave contracts, replaced at merge:
-`server/compat/offline-access.ts` (access's `leaseForEvidence` with lease
-windows), `server/compat/offline-service.ts` (service's check lifecycle, kitchen
-feed bump and `applyRound`) and `src/compat/offline-print.tsx` (service's print
-primitive and kitchen ticket document). Until access merges, the offline window is
-the 4-hour window from login; access's renewals become additional windows that the
-time rule already accepts.
+Since the wave merged, offline uses the real modules the wave contracts named
+(the in-wave `server/compat` and `src/compat` stand-ins are gone): access's
+`leaseForEvidence` with every renewal window, service's check lifecycle, kitchen
+feed bump and `applyRound`, and service's print primitive and kitchen ticket
+document. The offline window is the base lease plus access's renewals, and the
+time rule accepts evidence inside any of them.
 
 ## Verification
 
