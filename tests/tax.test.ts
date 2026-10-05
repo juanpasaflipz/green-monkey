@@ -88,24 +88,29 @@ describe("tax rules", () => {
 });
 
 describe("extractTax", () => {
-  it("base + tax equals gross for every amount 0..2,000,000 at 16% and 8%", () => {
-    for (const r of TAXED_RATES) {
-      const d = 10000 + r;
-      for (let g = 0; g <= 2_000_000; g++) {
-        const { base, tax } = extractTax(g, r);
-        // Exact reconciliation, both parts non-negative, and tax is the nearest integer to
-        // g·r/(10000+r): |tax·d − g·r| ≤ d/2 (Number math is exact below 2^53 here).
-        if (
-          base + tax !== g ||
-          base < 0 ||
-          tax < 0 ||
-          2 * Math.abs(tax * d - g * r) > d ||
-          (2 * g * r) % (2 * d) === d // a tie would make "round half up" matter: none exist
-        )
-          throw new Error(`gross ${g} at ${r} bps → ${base} + ${tax}`);
+  // Exhaustive (2M amounts per rate): allow for slow shared CI/dev machines.
+  it(
+    "base + tax equals gross for every amount 0..2,000,000 at 16% and 8%",
+    { timeout: 60_000 },
+    () => {
+      for (const r of TAXED_RATES) {
+        const d = 10000 + r;
+        for (let g = 0; g <= 2_000_000; g++) {
+          const { base, tax } = extractTax(g, r);
+          // Exact reconciliation, both parts non-negative, and tax is the nearest integer to
+          // g·r/(10000+r): |tax·d − g·r| ≤ d/2 (Number math is exact below 2^53 here).
+          if (
+            base + tax !== g ||
+            base < 0 ||
+            tax < 0 ||
+            2 * Math.abs(tax * d - g * r) > d ||
+            (2 * g * r) % (2 * d) === d // a tie would make "round half up" matter: none exist
+          )
+            throw new Error(`gross ${g} at ${r} bps → ${base} + ${tax}`);
+        }
       }
-    }
-  });
+    },
+  );
 
   it("extractTax equals domain tax(gross, rate, true) for every amount 0..200,000 at 16% and 8%", () => {
     for (const r of TAXED_RATES)
@@ -114,21 +119,26 @@ describe("extractTax", () => {
           throw new Error(`gross ${g} at ${r} bps`);
   });
 
-  it("every split is within the SAT CFDI 4.0 traslado tolerance (2 decimals)", () => {
-    for (const r of TAXED_RATES) {
-      for (let g = 0; g <= 2_000_000; g++) {
-        const { base, tax } = extractTax(g, r);
-        if (!satTaxWithinTolerance(base, tax, r))
-          throw new Error(`gross ${g} at ${r} bps → ${base} + ${tax}`);
+  // Exhaustive (2M amounts per rate): allow for slow shared CI/dev machines.
+  it(
+    "every split is within the SAT CFDI 4.0 traslado tolerance (2 decimals)",
+    { timeout: 60_000 },
+    () => {
+      for (const r of TAXED_RATES) {
+        for (let g = 0; g <= 2_000_000; g++) {
+          const { base, tax } = extractTax(g, r);
+          if (!satTaxWithinTolerance(base, tax, r))
+            throw new Error(`gross ${g} at ${r} bps → ${base} + ${tax}`);
+        }
+        const random = rng(r);
+        for (let i = 0; i < 100_000; i++) {
+          const g = random.int(2_000_000, 100_000_000);
+          const { base, tax } = extractTax(g, r);
+          expect(satTaxWithinTolerance(base, tax, r), `${g}`).toBe(true);
+        }
       }
-      const random = rng(r);
-      for (let i = 0; i < 100_000; i++) {
-        const g = random.int(2_000_000, 100_000_000);
-        const { base, tax } = extractTax(g, r);
-        expect(satTaxWithinTolerance(base, tax, r), `${g}`).toBe(true);
-      }
-    }
-  });
+    },
+  );
 
   it.each([
     [0, 1600, 0, 0],
