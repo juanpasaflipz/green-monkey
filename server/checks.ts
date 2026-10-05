@@ -18,6 +18,7 @@ import {
   decodeCursor,
   encodeCursor,
   holdsTable,
+  orderNoteEditable,
   type CheckState,
   type CloseReason,
   type OrderListResponse,
@@ -206,7 +207,23 @@ export async function updateOrderNote(
     async () => {
       const [o] = await tx`select * from orders where id=${orderId} for update`;
       if (!o) throw new DomainError("not_found", 404);
-      assertCheckWritable(o as { check_state: string; state: string });
+      const row = o as {
+        check_state: CheckState;
+        state: string;
+        close_reason: CloseReason | null;
+      };
+      // SVC-K3: a closed check still takes a note edit while its kitchen
+      // tickets are open; orders_check_lifecycle leaves `note` mutable.
+      if (
+        !orderNoteEditable({
+          checkState: row.check_state,
+          state: row.state,
+          closeReason: row.close_reason,
+        })
+      ) {
+        assertCheckWritable(row);
+        throw new DomainError("check_closed", 409);
+      }
       await tx`update orders set note=${p.note} where id=${orderId}`;
       await audit(tx, s, "order.note", orderId, {
         before: o.note,

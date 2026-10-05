@@ -140,6 +140,27 @@ export function holdsTable(o: {
   );
 }
 
+/**
+ * SVC-K3: the order note goes to the kitchen, so it stays editable after the
+ * check closes while the kitchen still prepares or holds a round (pay-first
+ * counter service: the customer mentions an allergy right after paying). A
+ * closed check whose food was all served, a voided check and a recovery order
+ * keep rejecting the edit. `state` is the order's kitchen state.
+ */
+export function orderNoteEditable(o: {
+  checkState: CheckState;
+  state: string;
+  closeReason?: CloseReason | null;
+}): boolean {
+  if (o.state.startsWith("recovery")) return false;
+  if (o.checkState !== "closed") return o.state !== "cancelled";
+  return (
+    (o.state === "active" || o.state === "ready") &&
+    o.closeReason !== "voided" &&
+    o.closeReason !== "recovery"
+  );
+}
+
 /** A bumped (completed) round can only return to ready. */
 export function recallPreparation(current: string): "ready" {
   if (current !== "completed")

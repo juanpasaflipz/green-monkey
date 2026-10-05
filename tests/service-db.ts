@@ -505,9 +505,86 @@ try {
       ),
       "check_closed",
     );
+    // SVC-K3: the released check's tickets are still open in the kitchen, so
+    // its note can still change; once every round is served it is refused.
+    const renoted = await run(owner, (tx) =>
+      updateOrderNote(tx, owner, dine.id, {
+        operationId: randomUUID(),
+        note: "x",
+      }),
+    );
+    assert.equal(renoted.note, "x");
+    assert.equal(renoted.checkState, "closed");
+    for (const r of renoted.rounds) {
+      await progress(r.id, "ready");
+      await progress(r.id, "completed");
+    }
+    assert.equal((await read(dine.id)).state, "completed");
     await rejects(
       run(owner, (tx) =>
         updateOrderNote(tx, owner, dine.id, {
+          operationId: randomUUID(),
+          note: "x",
+        }),
+      ),
+      "check_closed",
+    );
+  });
+
+  await test("a closed check's note stays editable while its kitchen tickets are open", async () => {
+    // Pay-first counter: the customer mentions an allergy right after paying.
+    const o = await newOrder({ note: "Sin prisa" });
+    const paid = await pay(o, o.total);
+    assert.equal(paid.checkState, "closed");
+    assert.equal(paid.state, "active");
+    const note = (text: string, s: Session = cashier) =>
+      run(s, (tx) =>
+        updateOrderNote(tx, s, o.id, { operationId: randomUUID(), note: text }),
+      );
+    const before = await full(kitchen);
+    const edited = await note("Alergia: piña");
+    assert.equal(edited.note, "Alergia: piña");
+    assert.equal(edited.checkState, "closed");
+    assert.equal(edited.closeReason, "settled");
+    assert.equal(edited.total, paid.total);
+    assert.equal(edited.paid, paid.paid);
+    assert.equal(edited.version, paid.version);
+    const changed = await feed(kitchen, { version: String(before.version) });
+    assert.equal(changed.unchanged, false);
+    assert.equal(
+      (changed as Extract<KitchenFeed, { unchanged: false }>).rounds.find(
+        (r) => r.orderId === o.id,
+      )!.orderNote,
+      "Alergia: piña",
+    );
+    const r = kitchenRound(o);
+    await progress(r.id, "ready");
+    assert.equal(
+      (await note("Alergia: piña y nuez")).note,
+      "Alergia: piña y nuez",
+    );
+    // Served: the kitchen has nothing left to read, so the edit is refused.
+    await progress(r.id, "completed");
+    await rejects(note("tarde"), "check_closed");
+    assert.equal((await read(o.id)).note, "Alergia: piña y nuez");
+    const audits = await run(
+      owner,
+      (tx) =>
+        tx`select detail from audit where entity_id=${o.id} and operation='order.note' order by created_at`,
+    );
+    assert.deepEqual(
+      audits.map((a) => a.detail.after),
+      ["Alergia: piña", "Alergia: piña y nuez"],
+    );
+
+    // A fully voided check never takes a note.
+    const v = await newOrder();
+    const voided = await voidAs(owner, v, 1);
+    assert.equal(voided.checkState, "closed");
+    assert.equal(voided.closeReason, "voided");
+    await rejects(
+      run(owner, (tx) =>
+        updateOrderNote(tx, owner, v.id, {
           operationId: randomUUID(),
           note: "x",
         }),

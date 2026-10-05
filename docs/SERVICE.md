@@ -42,14 +42,19 @@ close automatically when settled.
 | Void unpaid units | yes | n/a (no unpaid units) | `check_closed` |
 | Record a payment | yes | `overpayment` | `check_closed` |
 | Move table or server | yes | yes (leaving a table settles it) | `check_closed` |
-| Edit the order note | yes | yes | `check_closed` |
+| Edit the order note | yes | yes | only while kitchen tickets are open, else `check_closed` |
 | Refund (manager) | yes | yes | yes (post-close correction) |
 | Cerrar cuenta / Liberar mesa | only at balance 0, else `balance_due` | yes | returns the order |
 
 Recovery orders keep their historical `stale_order` code for every write. The
 kitchen continues independently: a takeaway check closed at payment still shows
 its tickets on the KDS until they are served. **Marcar entregado** only changes
-kitchen state.
+kitchen state. Because the order note goes to the kitchen, a closed check takes
+**Editar nota** while its kitchen state is still `active` or `ready` (the
+customer of a pay-first counter mentions an allergy right after paying); a
+fully served, voided or recovery order refuses it (`orderNoteEditable` in
+`shared/service.ts`). The receipt shown after the payment, order detail and the
+cart offer **Editar nota** under the same rule.
 
 ### Database rules (migration 024)
 
@@ -148,7 +153,7 @@ cached before the deploy keep working. A later contract change removes them.
 
 | Note | Where it is stored | Where it appears |
 | --- | --- | --- |
-| Order note ("Nota de la orden (cocina)") | `orders.note` | every kitchen ticket of the order, receipts and pre-bills ("Nota de la orden"), order detail, Orders list; editable after sending with **Editar nota** |
+| Order note ("Nota de la orden (cocina)") | `orders.note` | every kitchen ticket of the order, receipts and pre-bills ("Nota de la orden"), order detail, Orders list; editable after sending with **Editar nota**, also after close while kitchen tickets are open |
 | Round note ("Nota para esta ronda") | `rounds.note` | that round's tickets, receipts and pre-bills ("Nota de la ronda N", left out when identical to the order note), order detail |
 | Line note (presets: Sin cebolla, Sin chile, Sin cilantro, Salsa aparte, Alergia:) | line snapshot `note` (≤ 300) | kitchen tickets, receipts and pre-bills, order detail |
 

@@ -10,6 +10,7 @@ import {
   idSequence,
   kitchenStatus,
   mergeLine,
+  orderNoteEditable,
   parseMoneyInput,
   paymentStatus,
   priceCart,
@@ -339,6 +340,60 @@ describe("service lifecycle rules", () => {
     expect(
       holdsTable({ mode: "dine_in", tableId: table, channel: "offline" }),
     ).toBe(false);
+  });
+
+  it("orderNoteEditable keeps the note open while a closed check's kitchen is (SVC-K3)", () => {
+    for (const checkState of ["open", "paid"] as const)
+      for (const state of ["active", "ready", "completed"])
+        expect(orderNoteEditable({ checkState, state })).toBe(true);
+    for (const closeReason of ["settled", "released"] as const) {
+      expect(
+        orderNoteEditable({
+          checkState: "closed",
+          state: "active",
+          closeReason,
+        }),
+      ).toBe(true);
+      expect(
+        orderNoteEditable({
+          checkState: "closed",
+          state: "ready",
+          closeReason,
+        }),
+      ).toBe(true);
+      expect(
+        orderNoteEditable({
+          checkState: "closed",
+          state: "completed",
+          closeReason,
+        }),
+      ).toBe(false);
+    }
+    expect(
+      orderNoteEditable({
+        checkState: "closed",
+        state: "active",
+        closeReason: "voided",
+      }),
+    ).toBe(false);
+    expect(
+      orderNoteEditable({
+        checkState: "closed",
+        state: "cancelled",
+        closeReason: "voided",
+      }),
+    ).toBe(false);
+    expect(orderNoteEditable({ checkState: "open", state: "cancelled" })).toBe(
+      false,
+    );
+    for (const state of ["recovery_pending", "recovery_reviewed"])
+      expect(
+        orderNoteEditable({
+          checkState: "closed",
+          state,
+          closeReason: "recovery",
+        }),
+      ).toBe(false);
   });
 
   it("order cursor round-trips microsecond timestamps and rejects tampering", () => {
