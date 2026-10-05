@@ -229,7 +229,7 @@ function isLoopback(hostname: string): boolean {
  * server/cfdi/config.ts additionally restricts the override to APP_ENV development/test.
  */
 export function resolveBaseUrl(value: string | undefined): string {
-  const raw = (value ?? "").trim() || FACTURAPI_BASE_URL;
+  const raw = (value ?? "").trim().replace(/\/+$/, "") || FACTURAPI_BASE_URL;
   if (raw === FACTURAPI_BASE_URL) return raw;
   let url: URL;
   try {

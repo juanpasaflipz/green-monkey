@@ -92,6 +92,8 @@ const PERMANENT: Record<string, string> = {
   // Auth: an organization key revoked or the platform User key invalid (critical alerts).
   api_key_invalid: "cfdi_org_key_invalid",
   user_key_invalid: "cfdi_provider_auth_failed",
+  // A generic 401 cannot tell which key failed; a caller that used an organization key treats
+  // cfdi_provider_auth_failed like cfdi_org_key_invalid.
   missing_credentials: "cfdi_provider_auth_failed",
   unauthorized: "cfdi_provider_auth_failed",
   forbidden: "cfdi_provider_forbidden",

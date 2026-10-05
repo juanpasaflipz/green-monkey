@@ -1130,6 +1130,8 @@ describe("Facturapi client contract", () => {
 
     // Base URL: the official one or a loopback fake, never another host.
     expect(resolveBaseUrl(undefined)).toBe(FACTURAPI_BASE_URL);
+    expect(resolveBaseUrl(" ")).toBe(FACTURAPI_BASE_URL);
+    expect(resolveBaseUrl(`${FACTURAPI_BASE_URL}/`)).toBe(FACTURAPI_BASE_URL);
     expect(resolveBaseUrl("http://127.0.0.1:4799/v2/")).toBe(
       "http://127.0.0.1:4799/v2",
     );
