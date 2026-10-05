@@ -209,9 +209,16 @@ lock staff out (SEC-2).
   (`too_many_attempts`, in-process).
 - Rate limits: `POST /api/access/pin` (30/min), `GET /api/access/terminal`
   (120/min) and logout (60/min) count per verified `gm_device`. Requests
-  without a valid device cookie share a separate per-IP budget, so guest Wi-Fi
-  on the restaurant's public IP cannot use up a terminal's budget; device
-  requests also keep a per-IP backstop at 20 times the device limit.
+  without a valid device cookie share a separate per-IP budget, so cookie-less
+  traffic on the restaurant's public IP (guest Wi-Fi) cannot use up a
+  terminal's budget. Device requests also keep a backstop at 20 times the
+  device limit per restaurant and IP: it is keyed by the restaurant in the
+  signed device cookie, so devices paired in another restaurant (anyone can
+  pair devices in their own Free restaurant) only spend their own restaurant's
+  backstop from a shared IP such as guest Wi-Fi, a food court or carrier NAT.
+  A restaurant's own paired devices, revoked ones included, can still exhaust
+  its backstop from one IP; pairing them needs a code from that restaurant's
+  owner or manager.
 
 This follows the OWASP Authentication Cheat Sheet guidance on exponential,
 time-bounded lockout that avoids becoming a denial of service

@@ -18,6 +18,9 @@ if (
 const TENANT = "10000000-0000-4000-8000-000000000001";
 const OWNER = "20000000-0000-4000-8000-000000000001";
 const CASHIER = "20000000-0000-4000-8001-000000000001";
+// The fixture's second fictional restaurant and its owner.
+const OTHER_TENANT = "10000000-0000-4000-8000-000000000002";
+const OTHER_OWNER = "20000000-0000-4000-8000-000000000002";
 const port = Number(process.env.RESTART_TEST_PORT ?? 3003),
   origin = `http://127.0.0.1:${port}`;
 const admin = postgres(process.env.MIGRATION_DATABASE_URL, { max: 1 });
@@ -115,12 +118,12 @@ async function check(name: string, fn: () => Promise<void>) {
   checks++;
   console.log("PASS", name);
 }
-async function newCode(name: string) {
+async function newCode(name: string, tenant = TENANT, creator = OWNER) {
   const code = generatePairingCode();
   await admin.begin(async (tx) => {
-    await tx`select set_config('app.tenant_id',${TENANT},true)`;
+    await tx`select set_config('app.tenant_id',${tenant},true)`;
     await tx`insert into device_pairing_codes(tenant_id,id,code_hash,device_name,created_by,expires_at)
-      values(${TENANT},${randomUUID()},${pairingHash(code)},${name},${OWNER},now()+interval '10 minutes')`;
+      values(${tenant},${randomUUID()},${pairingHash(code)},${name},${creator},now()+interval '10 minutes')`;
   });
   return code;
 }
@@ -305,6 +308,43 @@ try {
     assert.equal((await a.browser.request("POST", "/api/access/pin", {})).status, 429);
     const b = await pairedCashier(`HTTP flood B ${randomUUID().slice(0, 4)}`);
     assert.equal(b.session.employeeId, CASHIER);
+  });
+  await check("devices paired in another restaurant on the same IP never spend this restaurant's backstop; each restaurant keeps its own (ACC-R-1)", async () => {
+    // Anyone can pair devices in their own Free restaurant. From a shared IP
+    // (guest Wi-Fi, a food court, carrier NAT) 21 such devices each spend
+    // their full 30 PIN requests a minute: 20 of them fill that restaurant's
+    // backstop of 600, and the 21st is refused by it.
+    const devices: Browser[] = [];
+    for (let i = 0; i < 21; i++) {
+      const b = new Browser();
+      const paired = await b.request("POST", "/api/access/pair", {
+        code: await newCode(`HTTP other ${i} ${randomUUID().slice(0, 4)}`, OTHER_TENANT, OTHER_OWNER),
+      });
+      assert.equal(paired.status, 200, JSON.stringify(paired.json));
+      devices.push(b);
+    }
+    for (const [n, b] of devices.slice(0, 20).entries()) {
+      for (let i = 0; i < 30; i++)
+        assert.equal(
+          (await b.request("POST", "/api/access/pin", {})).status,
+          400,
+          `other restaurant device ${n} pin ${i}`,
+        );
+      assert.equal((await b.request("POST", "/api/access/pin", {})).status, 429);
+    }
+    const backstopped = await devices[20].request("POST", "/api/access/pin", {});
+    assert.equal(backstopped.status, 429, "the other restaurant's own backstop still holds");
+    assert.equal(backstopped.json.error, "too_many_attempts");
+    // This restaurant's terminals on the same IP still load the gate and sign in.
+    const ours = await pairedCashier(`HTTP backstop ${randomUUID().slice(0, 4)}`);
+    assert.equal(ours.session.employeeId, CASHIER);
+    const gate = await ours.browser.request("GET", "/api/access/terminal");
+    assert.equal(gate.status, 200);
+    assert.equal(gate.json.paired, true);
+    assert.equal(
+      (await ours.browser.request("POST", "/api/access/logout", {})).status,
+      200,
+    );
   });
   await check("the 11th failed pairing attempt in a minute → 429 too_many_attempts", async () => {
     const b = new Browser();
