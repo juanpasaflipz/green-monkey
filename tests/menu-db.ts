@@ -15,7 +15,7 @@ import {
   recordPayment,
   stock,
 } from "../server/orders.js";
-import { saveProduct } from "../server/management.js";
+import { receive, saveProduct } from "../server/management.js";
 import {
   PUBLIC_REQUESTS_PER_MINUTE,
   REVISION_POLLS_PER_MINUTE,
@@ -2054,6 +2054,104 @@ try {
       }),
       "invalid_recipe",
     );
+  });
+
+  await test("MENU-R2: an archived ingredient refuses receipts, waste, counts, prep and receiving; a void return still lands", async () => {
+    const gone = await newStock(manager, "Jamaica", "kg", "10");
+    const other = await newStock(manager, "Agua", "l", "10");
+    const product = await newProduct(manager, tacos.id, {
+      recipe: [{ stockId: gone, quantity: "1" }],
+    });
+    const sold = await order(
+      cashier,
+      orderBody([{ productId: product.id, quantity: 2 }]),
+    );
+    await run(manager, (tx) =>
+      archiveProduct(tx, manager, {
+        operationId: op(),
+        id: product.id,
+        expectedVersion: product.version,
+        archived: true,
+      }),
+    );
+    const settingsVersion = (
+      await run(manager, (tx) => listStockItems(tx, manager))
+    ).items.find((i) => i.id === gone)!.settingsVersion;
+    await run(manager, (tx) =>
+      archiveStockItem(tx, manager, {
+        operationId: op(),
+        id: gone,
+        expectedVersion: settingsVersion,
+        archived: true,
+      }),
+    );
+    const before = await onHand(manager, gone);
+    assert.equal(Number(before.q), 8);
+    await rejects(move(manager, gone, "1", "receipt"), "stock_archived");
+    await rejects(move(manager, gone, "1", "waste"), "stock_archived");
+    await rejects(count(manager, gone, "3", before.version), "stock_archived");
+    await rejects(prep(manager, gone, "1", other, "1"), "stock_archived");
+    await rejects(prep(manager, other, "1", gone, "1"), "stock_archived");
+    const supplierId = randomUUID();
+    await asAdmin(
+      a.tenantId,
+      (tx) =>
+        tx`insert into suppliers(tenant_id,id,name) values(${a.tenantId},${supplierId},'Proveedor ficticio')`,
+    );
+    const receiving = op();
+    await rejects(
+      run(manager, (tx) =>
+        receive(tx, manager, {
+          operationId: receiving,
+          supplierId,
+          stockId: gone,
+          quantity: "2",
+          cost: 4000,
+          expiresOn: null,
+          reason: "Compra del día",
+        }),
+      ),
+      "stock_archived",
+    );
+    // The runtime role may only insert receipts; read back as the owner.
+    const [kept] = await asAdmin(
+      a.tenantId,
+      (tx) => tx`select count(*)::int as n from receipts where id=${receiving}`,
+    );
+    assert.equal(kept.n, 0, "the refused receipt row rolled back");
+    const after = await onHand(manager, gone);
+    assert.equal(after.q, before.q);
+    assert.equal(after.version, before.version);
+    assert.equal(Number((await onHand(manager, other)).q), 10);
+    // Recorded sales still return stock to the archived item on a void.
+    await run(owner, (tx) =>
+      voidLines(
+        tx,
+        owner,
+        sold.id,
+        {
+          operationId: op(),
+          expectedVersion: sold.version,
+          lines: [{ lineId: sold.lines[0].id, quantity: 1 }],
+          reason: "Cliente cambió",
+          stockDisposition: "return",
+        },
+        owner.employeeId,
+      ),
+    );
+    assert.equal(Number((await onHand(manager, gone)).q), 9);
+    // Restored, it takes manual movements again.
+    await run(manager, (tx) =>
+      archiveStockItem(tx, manager, {
+        operationId: op(),
+        id: gone,
+        expectedVersion: settingsVersion + 1,
+        archived: false,
+      }),
+    );
+    await move(manager, gone, "1", "receipt");
+    assert.equal(Number((await onHand(manager, gone)).q), 10);
+    assert.deepEqual(await drift(), []);
   });
 
   await test("a group whose choice recipe uses an archived ingredient cannot be restored or linked", async () => {

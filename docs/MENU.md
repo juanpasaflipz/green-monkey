@@ -165,7 +165,10 @@ reorder point, an optional par level and an optional opening stock (one
 `opening` movement, "Existencia inicial"). The unit locks (`unit_locked`) once
 the item has movements or is used in any recipe. An item used by an active recipe
 cannot be archived (`stock_in_use`); archived items leave the recipe pickers and
-Existencias. Creating and editing stock items, and recipe or cost changes, need
+Existencias. An archived item also refuses movements recorded by hand: receipts,
+receiving, waste, counts and prep answer `stock_archived` until it is restored.
+Sales and void returns of orders recorded earlier still move its balance.
+Creating and editing stock items, and recipe or cost changes, need
 Pro; archiving does not. A unit change takes the menu lock first, so it cannot
 race a menu save that links the item to a recipe written in the old unit.
 

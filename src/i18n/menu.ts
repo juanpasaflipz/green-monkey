@@ -597,6 +597,10 @@ export default defineArea({
       "Este insumo se usa en recetas. Quítalo de esas recetas antes de archivarlo.",
       "This ingredient is used in recipes. Remove it from those recipes before archiving it.",
     ],
+    stock_archived: [
+      "Este insumo está archivado. Restáuralo en Insumos para registrar compras, mermas, conteos o producción.",
+      "This ingredient is archived. Restore it under Ingredients to record purchases, waste, counts or prep.",
+    ],
     unit_locked: [
       "La unidad no se puede cambiar porque el insumo ya tiene movimientos o recetas.",
       "The unit cannot change because the ingredient already has movements or recipes.",

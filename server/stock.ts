@@ -11,6 +11,19 @@ export type { NegativeStockPolicy };
 
 /** Causes that a restaurant's `block` policy may refuse when they go negative. */
 export const BLOCKABLE_CAUSES = new Set(["sale", "waste", "prep_input"]);
+/**
+ * Movements a manager records by hand (POST /inventory/movement, /inventory/
+ * prep, /receiving). They are refused on an archived item, which has left
+ * Existencias (§2.9, MENU-R2). Sales, void returns and opening balances are
+ * not: they follow recipes and orders recorded before the archive.
+ */
+export const MANUAL_CAUSES = new Set([
+  "receipt",
+  "waste",
+  "count_adjust",
+  "prep_input",
+  "prep_output",
+]);
 
 export async function negativeStockPolicy(
   tx: Tx,
@@ -51,11 +64,13 @@ export async function stock(
   policy?: NegativeStockPolicy,
 ): Promise<void> {
   const [item] =
-    await tx`select id,on_hand::text as on_hand from stock_items where id=${stockId} for update`;
+    await tx`select id,on_hand::text as on_hand,archived_at is not null as archived from stock_items where id=${stockId} for update`;
   if (!item) throw new DomainError("not_found", 404);
   const [existing] =
     await tx`select id from stock_movements where stock_id=${stockId} and cause=${cause} and cause_id=${causeId}`;
   if (existing) return;
+  if (item.archived && MANUAL_CAUSES.has(cause))
+    throw new DomainError("stock_archived", 409);
   const delta = new Decimal(quantity);
   if (
     delta.isNegative() &&
