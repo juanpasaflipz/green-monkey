@@ -57,12 +57,24 @@ statements S1–S5 (spec §4.5, next wave) produce those aggregates. The summary
 `tickets_vs_orders`, `paid_identity`, `methods_sum` and `refunds_vs_fiscal`. Without fiscal
 data (non-MXN), it skips the two fiscal checks.
 
-Property tests over 400 random sales worlds check every summary figure against the records to
-the centavo. The worlds include voids, comps, recovery orders, next-day and late offline
-collections, later refunds and paid-outs.
+A property test over 400 random sales worlds compares the whole `SalesSummary` (every sales,
+refund, collection and margin figure, every day row and every check) with a summary computed
+straight from the world's records, to the centavo. The worlds include voids and waste, comps,
+recovery orders, open and partly paid checks, next-day and late offline collections, later
+refunds with restocked cost, and paid-outs. The test also counts, for figures that are easy to
+miswire (tips on the checks against offline tips, waste against COGS, COGS of all orders against
+ticketed COGS, recovery against cancelled orders, ticketed orders against orders, courtesies
+against discounts, late collections, restocked cost, paid-outs, open checks, voids, cancelled
+amounts), that they differ in more than 100 of the worlds, so the comparison cannot pass
+vacuously. The records only fix fiscal's input, `FiscalTotals`, and there are no drawers.
+The fixture gives each ticket the order's total, so these worlds cannot tell `ticketed.gross`
+(Σ ticket gross) from Σ total of the ticketed orders; the `tickets_vs_orders` unit tests and
+the drift property cover that difference.
 
-**What the checks guard, and what they do not.** A one-centavo drift in one of these aggregates
-fails exactly its own check (a property test drifts each one in turn):
+**What the checks guard, and what they do not.** A one-centavo drift, up or down, in one of these
+aggregates fails its own check (a property test drifts each one by +1 and by −1). Lowering the S1
+`total` of a fully paid range also fails `paid_identity`, because `outstanding` turns negative,
+so that drift is reported by two checks:
 
 | Check | Aggregates it compares |
 | --- | --- |
@@ -78,8 +90,9 @@ courtesies, COGS, coverage and waste; every S3 collection figure; the S4 amounts
 (and all of S4 when there is no fiscal data); S4b restocked cost; and S5 paid-outs.
 `methods_sum` holds by construction here, because the core derives `collected` and `tips` from
 the same S3 rows as `byMethod`. A drift in any of those leaves every check green (the property
-test asserts this too). The next wave's DB suite (`tests/reports-db.ts`, spec §7.2) is what
-compares them with the records.
+test asserts this too). The 400-world property shows that the core turns correct aggregates into
+correct figures. Whether the S1–S5 statements produce correct aggregates from the database is
+for the next wave's DB suite (`tests/reports-db.ts`, spec §7.2) to show.
 
 ### Cortes
 

@@ -55,8 +55,10 @@ import {
   type ExceptionKind,
   type ExceptionRow,
   type QuickRange,
+  type CheckCode,
   type ReconciliationInput,
   type SalesDayAggregate,
+  type SalesSummary,
   type SummaryInput,
 } from "../shared/reports";
 import {
@@ -874,6 +876,252 @@ function summaryOf(
   });
 }
 
+/**
+ * The whole SalesSummary that summaryOf(world, range) must return, computed straight from the
+ * world's records with the §2.2 definitions: no S1–S5 aggregate, no aggregateWorld and no
+ * composeSalesSummary helper is involved. Only the fiscal totals (fiscal's input, not a reports
+ * figure) come from worldFiscalTotals, and the drawers are none.
+ */
+function summaryFromRecords(world: World, range: DateRange): SalesSummary {
+  type Order = World["orders"][number];
+  type Line = Order["lines"][number];
+  type Tender = Order["tenders"][number];
+  const inRange = (date: string) => date >= range.from && date <= range.to;
+  const sum = <T>(rows: readonly T[], f: (row: T) => number) =>
+    rows.reduce((a, row) => a + f(row), 0);
+  const count = <T>(rows: readonly T[], p: (row: T) => boolean) =>
+    rows.filter(p).length;
+
+  const orders = world.orders.filter((o) => inRange(o.date));
+  const recovery = (o: Order) => o.state === "recovery_pending";
+  const discountOf = (o: Order) => sum(o.lines, lineDiscount);
+  // Ventas brutas of one order: the remaining line gross after voids, or a recovery's total.
+  const grossOf = (o: Order) =>
+    recovery(o) ? o.recoveryTotal : sum(o.lines, lineGross);
+  const paidOf = (o: Order) => sum(o.tenders, (t) => t.amount);
+  const tipsOf = (o: Order) => sum(o.tenders, (t) => t.tip);
+  const remaining = (l: Line) => l.quantity - l.voidedUnits;
+  const costOf = (l: Line) => (l.cost === null ? 0 : l.cost);
+  const costed = (l: Line) => l.cost !== null;
+  const ticketed = orders.filter((o) => o.ticketed);
+  const unticketed = orders.filter((o) => !o.ticketed);
+  const offline = orders.filter((o) => o.channel === "offline");
+  const allLines = orders.flatMap((o) => o.lines);
+  const ticketedLines = ticketed.flatMap((o) => o.lines);
+
+  const salesTotal = sum(orders, orderTotal);
+  const discounts = sum(orders, discountOf);
+  const orderCount = count(orders, (o) => orderTotal(o) > 0);
+  const paidOnSales = sum(orders, paidOf);
+  const cogs = sum(
+    ticketedLines.filter(costed),
+    (l) => costOf(l) * remaining(l),
+  );
+  // Recovery orders have no lines: their gross counts in the denominator as uncovered.
+  const coverageWhole = sum(ticketed, grossOf);
+  const coveredGross = sum(ticketedLines.filter(costed), lineGross);
+
+  const refunds = world.refunds.filter((r) => inRange(r.date));
+  const refundsOf = (method: string) =>
+    refunds.filter((r) => r.method === method);
+  const restockedCost = sum(refunds, (r) => r.restockedCost);
+  const tenders: Tender[] = world.orders
+    .flatMap((o) => o.tenders)
+    .filter((t) => inRange(t.collectionDate));
+  const late = tenders.filter((t) => t.collectionDate < t.recordedDate);
+  const paidOuts = world.paidOuts.filter((p) => inRange(p.date));
+  const fiscal = worldFiscalTotals(world, range);
+
+  const byMethod = (["cash", "external"] as const).map((method) => {
+    const own = tenders.filter((t) => t.method === method);
+    const amount = sum(own, (t) => t.amount);
+    const tips = sum(own, (t) => t.tip);
+    const refunded = sum(refundsOf(method), (r) => r.amount);
+    return {
+      method,
+      count: own.length,
+      amount,
+      tips,
+      refunds: refunded,
+      refundCount: refundsOf(method).length,
+      net: amount + tips - refunded,
+    };
+  });
+  const collected = sum(tenders, (t) => t.amount);
+  const tips = sum(tenders, (t) => t.tip);
+  const refundTotal = sum(refunds, (r) => r.amount);
+  const ok = (code: CheckCode, expected: number, actual: number) => ({
+    code,
+    ok: true,
+    expected,
+    actual,
+  });
+
+  return {
+    range,
+    currency: "MXN",
+    generatedAt: "2026-10-06T06:12:00.000Z",
+    currentBusinessDate: range.to,
+    requestId: "",
+    sales: {
+      orders: orderCount,
+      cancelledOrders: count(orders, (o) => o.state === "cancelled"),
+      cancelledAmount: sum(
+        orders.filter((o) => o.state === "cancelled"),
+        (o) => sum(o.lines, (l) => l.voidedUnits * l.unitPrice),
+      ),
+      grossSales: sum(orders, grossOf),
+      discounts,
+      courtesies: sum(
+        allLines.filter((l) => l.comp),
+        lineDiscount,
+      ),
+      salesTotal,
+      // round_half_up(salesTotal / orders); every total here is ≥ 0 and far below 2^53.
+      averageTicket: orderCount ? Math.round(salesTotal / orderCount) : 0,
+      offlineSales: {
+        count: count(offline, (o) => orderTotal(o) > 0),
+        total: sum(offline, orderTotal),
+        tips: sum(offline, tipsOf),
+      },
+      voids: {
+        amount: sum(allLines, (l) => l.voidedUnits * l.unitPrice),
+        units: sum(allLines, (l) => l.voidedUnits),
+      },
+      ticketed: { count: ticketed.length, gross: sum(ticketed, orderTotal) },
+      unticketed: {
+        openBalance: sum(
+          unticketed.filter((o) => paidOf(o) < orderTotal(o)),
+          orderTotal,
+        ),
+        paidWithoutTicket: sum(
+          unticketed.filter(
+            (o) => orderTotal(o) > 0 && paidOf(o) >= orderTotal(o),
+          ),
+          orderTotal,
+        ),
+      },
+      paidOnSales,
+      outstanding: sum(orders, (o) => orderTotal(o) - paidOf(o)),
+      openChecks: count(orders, (o) => orderTotal(o) > paidOf(o)),
+      tipsOnSales: sum(orders, tipsOf),
+      cogs,
+      cogsAllOrders: sum(
+        allLines.filter(costed),
+        (l) => costOf(l) * remaining(l),
+      ),
+      costCoverageBps: coverageWhole
+        ? Math.floor((10_000 * coveredGross) / coverageWhole)
+        : 0,
+      wasteCost: sum(allLines.filter(costed), (l) => costOf(l) * l.wasteUnits),
+      recovery: {
+        count: count(orders, recovery),
+        total: sum(orders.filter(recovery), (o) => o.recoveryTotal),
+      },
+    },
+    refunds: {
+      count: refunds.length,
+      total: refundTotal,
+      cash: sum(refundsOf("cash"), (r) => r.amount),
+      external: sum(refundsOf("external"), (r) => r.amount),
+      restockedCost,
+    },
+    collections: {
+      byMethod,
+      collected,
+      tips,
+      refunds: refundTotal,
+      paidOuts: sum(paidOuts, (p) => p.amount),
+      paidOutCount: paidOuts.length,
+      late: { count: late.length, amount: sum(late, (t) => t.amount) },
+    },
+    margin: {
+      netSalesExTax: fiscal ? fiscal.base : null,
+      netAfterRefundsExTax: fiscal ? fiscal.netBase : null,
+      salesAfterRefunds: fiscal ? fiscal.netGross : null,
+      cogs,
+      restockedCost,
+      estimatedMargin: fiscal ? fiscal.netBase - cogs + restockedCost : null,
+    },
+    drawers: {
+      open: 0,
+      closed: 0,
+      differenceNet: 0,
+      shortages: 0,
+      overages: 0,
+      unreviewed: 0,
+      openFromEarlierDays: 0,
+    },
+    days:
+      range.from === range.to
+        ? []
+        : rangeDates(range).map((date) => {
+            const own = orders.filter((o) => o.date === date);
+            const collectedOn = tenders.filter(
+              (t) => t.collectionDate === date,
+            );
+            const on = (method: string) =>
+              sum(
+                collectedOn.filter((t) => t.method === method),
+                (t) => t.amount,
+              );
+            return {
+              date,
+              orders: count(own, (o) => orderTotal(o) > 0),
+              grossSales: sum(own, grossOf),
+              discounts: sum(own, discountOf),
+              salesTotal: sum(own, orderTotal),
+              refunds: sum(
+                refunds.filter((r) => r.date === date),
+                (r) => r.amount,
+              ),
+              cash: on("cash"),
+              external: on("external"),
+              tips: sum(collectedOn, (t) => t.tip),
+              paidOuts: sum(
+                paidOuts.filter((p) => p.date === date),
+                (p) => p.amount,
+              ),
+            };
+          }),
+    // Consistent records: every check passes, each comparing the record side with the derived side.
+    checks: [
+      ok(
+        "lines_vs_orders",
+        salesTotal,
+        sum(allLines, (l) => lineGross(l) - lineDiscount(l)) +
+          sum(orders.filter(recovery), (o) => o.recoveryTotal),
+      ),
+      ok("discounts_vs_allocations", discounts, sum(allLines, lineDiscount)),
+      ...(fiscal
+        ? [ok("tickets_vs_orders", sum(ticketed, orderTotal), fiscal.gross)]
+        : []),
+      ok(
+        "paid_identity",
+        salesTotal,
+        paidOnSales + sum(orders, (o) => orderTotal(o) - paidOf(o)),
+      ),
+      ok(
+        "methods_sum",
+        tips,
+        sum(byMethod, (m) => m.tips),
+      ),
+      ...(fiscal
+        ? [
+            ok(
+              "refunds_vs_fiscal",
+              sum(
+                refunds.filter((r) => r.afterEpoch),
+                (r) => r.amount,
+              ),
+              fiscal.refundGross,
+            ),
+          ]
+        : []),
+    ],
+  };
+}
+
 describe("metric contract composition (MON-6, FIN-02)", () => {
   it("reproduces the §2.6.3 corte del día sample to the centavo", () => {
     const date = "2026-10-05";
@@ -1020,13 +1268,50 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
     expect(failedCheckCodes(summary.checks)).toEqual([]);
   });
 
-  it("property: 400 random worlds reconcile gross, discounts, net, tips, refunds and tenders by type to the centavo", () => {
+  it("property: in 400 random worlds every summary figure equals the records to the centavo, and gross, discounts, net, tips, refunds and tenders by type reconcile", () => {
     const random = rng(29029);
+    // How often each figure differs from the figure a miswired sum would most likely use, so that
+    // the whole-summary comparison below cannot pass vacuously.
+    const seen = {
+      waste: 0,
+      tipsBeyondOffline: 0,
+      cogsBeyondTicketed: 0,
+      recoveryVsCancelled: 0,
+      ticketedVsOrders: 0,
+      courtesiesBelowDiscounts: 0,
+      late: 0,
+      restocked: 0,
+      paidOuts: 0,
+      openChecks: 0,
+      voids: 0,
+      cancelledAmount: 0,
+    };
     for (let n = 0; n < 400; n++) {
       const from = addDays("2026-10-01", random.int(0, 120));
       const range = { from, to: addDays(from, random.pick([0, 0, 1, 6, 30])) };
       const world = randomWorld(random, range);
       const s = summaryOf(world, range);
+
+      // Every figure of the summary (sales, refunds, collections, margin, days and checks) against
+      // the ground truth computed from the records alone.
+      expect(s, JSON.stringify(range)).toEqual(
+        summaryFromRecords(world, range),
+      );
+      if (s.sales.wasteCost > 0) seen.waste++;
+      if (s.sales.tipsOnSales !== s.sales.offlineSales.tips)
+        seen.tipsBeyondOffline++;
+      if (s.sales.cogsAllOrders !== s.sales.cogs) seen.cogsBeyondTicketed++;
+      if (s.sales.recovery.count !== s.sales.cancelledOrders)
+        seen.recoveryVsCancelled++;
+      if (s.sales.ticketed.count !== s.sales.orders) seen.ticketedVsOrders++;
+      if (s.sales.courtesies > 0 && s.sales.courtesies < s.sales.discounts)
+        seen.courtesiesBelowDiscounts++;
+      if (s.collections.late.count > 0) seen.late++;
+      if (s.refunds.restockedCost > 0) seen.restocked++;
+      if (s.collections.paidOutCount > 0) seen.paidOuts++;
+      if (s.sales.openChecks > 0) seen.openChecks++;
+      if (s.sales.voids.units > 0) seen.voids++;
+      if (s.sales.cancelledAmount > 0) seen.cancelledAmount++;
       const inRange = (d: string) => d >= range.from && d <= range.to;
       const orders = world.orders.filter((o) => inRange(o.date));
       const tenders = world.orders
@@ -1148,12 +1433,15 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
       expect(failedCheckCodes(s.checks), JSON.stringify(range)).toEqual([]);
       expect(s.checks.length).toBe(world.fiscal ? 6 : 4);
     }
+    for (const [figure, worlds] of Object.entries(seen))
+      expect(worlds, figure).toBeGreaterThan(100);
   });
 
-  it("property: a one-centavo drift in a guarded aggregate fails exactly its own check, and Ventas brutas − Descuentos = Ventas totales holds under any drift", () => {
+  it("property: a one-centavo drift (+1 or −1) in a guarded aggregate fails its own check, plus paid_identity only when a lower S1 total makes outstanding negative, and Ventas brutas − Descuentos = Ventas totales holds under any drift", () => {
     const random = rng(7);
     let tried = 0;
     let withRefunds = 0;
+    let fullyPaid = 0;
     for (let n = 0; n < 200; n++) {
       const range = { from: "2026-10-05", to: "2026-10-07" };
       const world = randomWorld(random, range, { fiscal: true });
@@ -1174,9 +1462,13 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
         composeSalesSummary({ ...base, ...patch });
       const fails = (patch: Partial<SummaryInput>) =>
         failedCheckCodes(summary(patch).checks);
-      const bump = <T extends object>(rows: readonly T[], key: keyof T) =>
+      const bump = <T extends object>(
+        rows: readonly T[],
+        key: keyof T,
+        delta = 1,
+      ) =>
         rows.map((r, i) =>
-          i === 0 ? { ...r, [key]: (r[key] as number) + 1 } : r,
+          i === 0 ? { ...r, [key]: (r[key] as number) + delta } : r,
         );
       const identityHolds = (patch: Partial<SummaryInput>) => {
         const s = summary(patch);
@@ -1185,45 +1477,79 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
           expect(d.grossSales - d.discounts).toBe(d.salesTotal);
       };
       expect(fails({})).toEqual([]);
+      const outstanding = summary({}).sales.outstanding;
 
-      // The guarded aggregates: each drift fails its own check and no other.
-      const guarded: [Partial<SummaryInput>, string][] = [
-        [{ sales: bump(agg.sales, "total") }, "lines_vs_orders"],
-        [{ sales: bump(agg.sales, "recoveryTotal") }, "lines_vs_orders"],
-        [{ lines: bump(agg.lines, "lineNet") }, "lines_vs_orders"],
-        [{ sales: bump(agg.sales, "discounts") }, "discounts_vs_allocations"],
-        [
-          { lines: bump(agg.lines, "lineDiscounts") },
-          "discounts_vs_allocations",
-        ],
-        [{ sales: bump(agg.sales, "ticketedGross") }, "tickets_vs_orders"],
-        [{ sales: bump(agg.sales, "ticketedOrderTotal") }, "tickets_vs_orders"],
-        [
-          { fiscal: { ...base.fiscal!, gross: base.fiscal!.gross + 1 } },
-          "tickets_vs_orders",
-        ],
-        [{ sales: bump(agg.sales, "overpaid") }, "paid_identity"],
-        [
-          {
-            fiscal: {
-              ...base.fiscal!,
-              refundGross: base.fiscal!.refundGross + 1,
+      // The guarded aggregates: a drift of either sign fails its own check. The one exception is
+      // lowering the S1 total of a fully paid range: outstanding (total − paid) turns −1, so
+      // paid_identity fails too (the drift is caught twice, never missed).
+      for (const delta of [1, -1]) {
+        const totalFails =
+          delta < 0 && outstanding === 0
+            ? ["lines_vs_orders", "paid_identity"]
+            : ["lines_vs_orders"];
+        const guarded: [Partial<SummaryInput>, string[]][] = [
+          [{ sales: bump(agg.sales, "total", delta) }, totalFails],
+          [
+            { sales: bump(agg.sales, "recoveryTotal", delta) },
+            ["lines_vs_orders"],
+          ],
+          [{ lines: bump(agg.lines, "lineNet", delta) }, ["lines_vs_orders"]],
+          [
+            { sales: bump(agg.sales, "discounts", delta) },
+            ["discounts_vs_allocations"],
+          ],
+          [
+            { lines: bump(agg.lines, "lineDiscounts", delta) },
+            ["discounts_vs_allocations"],
+          ],
+          [
+            { sales: bump(agg.sales, "ticketedGross", delta) },
+            ["tickets_vs_orders"],
+          ],
+          [
+            { sales: bump(agg.sales, "ticketedOrderTotal", delta) },
+            ["tickets_vs_orders"],
+          ],
+          [
+            { fiscal: { ...base.fiscal!, gross: base.fiscal!.gross + delta } },
+            ["tickets_vs_orders"],
+          ],
+          [{ sales: bump(agg.sales, "overpaid", delta) }, ["paid_identity"]],
+          [
+            {
+              fiscal: {
+                ...base.fiscal!,
+                refundGross: base.fiscal!.refundGross + delta,
+              },
             },
-          },
-          "refunds_vs_fiscal",
-        ],
-      ];
-      if (agg.refunds.length) {
-        withRefunds++;
-        guarded.push([
-          { refunds: bump(agg.refunds, "fiscalAmount") },
-          "refunds_vs_fiscal",
-        ]);
+            ["refunds_vs_fiscal"],
+          ],
+        ];
+        if (agg.refunds.length)
+          guarded.push([
+            { refunds: bump(agg.refunds, "fiscalAmount", delta) },
+            ["refunds_vs_fiscal"],
+          ]);
+        for (const [patch, checks] of guarded) {
+          expect(fails(patch), `${checks[0]} ${delta}`).toEqual(checks);
+          identityHolds(patch);
+        }
       }
-      for (const [patch, check] of guarded) {
-        expect(fails(patch), check).toEqual([check]);
-        identityHolds(patch);
-      }
+      if (agg.refunds.length) withRefunds++;
+
+      // The same records with every order paid in full (outstanding 0): +1 on the S1 total fails
+      // lines_vs_orders alone, −1 fails lines_vs_orders and paid_identity.
+      const paidUp = agg.sales.map((r) => ({ ...r, paid: r.total }));
+      expect(fails({ sales: paidUp })).toEqual([]);
+      expect(summary({ sales: paidUp }).sales.outstanding).toBe(0);
+      expect(fails({ sales: bump(paidUp, "total", 1) })).toEqual([
+        "lines_vs_orders",
+      ]);
+      expect(fails({ sales: bump(paidUp, "total", -1) })).toEqual([
+        "lines_vs_orders",
+        "paid_identity",
+      ]);
+      if (outstanding === 0) fullyPaid++;
 
       // Not guarded by the checks (the DB suite of the next wave compares them with the records):
       // a drift leaves every check green, and the gross identity still holds.
@@ -1261,6 +1587,8 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
     }
     expect(tried).toBeGreaterThan(50);
     expect(withRefunds).toBeGreaterThan(10);
+    // The natural worlds reach the outstanding = 0 branch of the −1 total drift too.
+    expect(fullyPaid).toBeGreaterThan(0);
   });
 
   it("Ventas brutas cannot disagree with Ventas totales + Descuentos: a stale S1 gross column is ignored", () => {
