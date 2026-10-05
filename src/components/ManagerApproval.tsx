@@ -3,25 +3,41 @@ import type { Locale, Session } from "../../shared/domain";
 import type { Approver } from "../../shared/access";
 import { strings } from "../i18n";
 import { api } from "../api";
-import { Field } from "./ui";
+import { Button, Field } from "./ui";
 
 export type ApprovalValue = { employeeId: string; secret: string };
 
-/** Active owners and managers with a usable PIN on this restaurant. */
-export function useApprovers() {
+/**
+ * Active owners and managers with a usable PIN on this restaurant, whether the
+ * list failed to load, and a reload.
+ */
+export function useApproverList() {
   const [approvers, setApprovers] = useState<Approver[]>([]);
+  const [state, setState] = useState<"loading" | "loaded" | "failed">(
+    "loading",
+  );
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let current = true;
+    setState("loading");
     void api<Approver[]>("/access/approvers")
       .then((rows) => {
-        if (current) setApprovers(rows);
+        if (!current) return;
+        setApprovers(rows);
+        setState("loaded");
       })
-      .catch(() => {});
+      .catch(() => {
+        if (current) setState("failed");
+      });
     return () => {
       current = false;
     };
-  }, []);
-  return approvers;
+  }, [attempt]);
+  return { approvers, state, reload: () => setAttempt((n) => n + 1) };
+}
+/** Active owners and managers with a usable PIN on this restaurant. */
+export function useApprovers() {
+  return useApproverList().approvers;
 }
 
 /**
@@ -41,7 +57,7 @@ export function ManagerApproval({
   onChange: (v: ApprovalValue) => void;
 }) {
   const t = strings[locale];
-  const approvers = useApprovers();
+  const { approvers, state, reload } = useApproverList();
   const isManager = ["owner", "manager"].includes(session.role);
   useEffect(() => {
     if (value.employeeId || !approvers.length) return;
@@ -56,6 +72,20 @@ export function ManagerApproval({
     <fieldset className="manager-approval">
       <legend>{t.accessApprovalTitle}</legend>
       <p className="muted tiny">{t.accessApprovalHint}</p>
+      {/* Say why nobody can approve and what to do (ACC-FLOOR-10). */}
+      {state === "failed" && (
+        <p role="alert" className="error">
+          {t.accessApproversFailed}{" "}
+          <Button variant="ghost" onClick={reload}>
+            {t.retry}
+          </Button>
+        </p>
+      )}
+      {state === "loaded" && approvers.length === 0 && (
+        <p role="alert" className="error">
+          {t.accessApproversNone}
+        </p>
+      )}
       <Field label={t.accessApprover}>
         <select
           value={value.employeeId}

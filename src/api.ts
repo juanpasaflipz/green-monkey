@@ -20,12 +20,14 @@ export function setSession(s: Session) {
   tenantId = s.tenantId;
   sessionId = s.id;
   blocked = false;
+  blockedBy = "";
 }
 export function clearSessionScope() {
   csrf = "";
   tenantId = "";
   sessionId = "";
   blocked = false;
+  blockedBy = "";
 }
 async function request<T>(
   path: string,
@@ -71,9 +73,18 @@ export function isSessionRejection(e: unknown): boolean {
 }
 /** After a session 401, stop calling the server until a new session is set. */
 let blocked = false;
+let blockedBy = "";
 /** True while a session 401 keeps non-access calls from reaching the server. */
 export function requestsBlocked() {
   return blocked;
+}
+/**
+ * The session code that blocked calls, or null. App re-applies it as the lock
+ * reason if no lock is showing, since a blocked call never dispatches again
+ * (ACC-FLOOR-2).
+ */
+export function blockedReason(): string | null {
+  return blocked ? blockedBy || "session_expired" : null;
 }
 /** While set, non-access calls wait: a PIN sign-in may be replacing the session cookie. */
 let held: Promise<void> | null = null;
@@ -125,7 +136,10 @@ async function guarded<T>(
       SESSION_CODES.has(e.message) &&
       !path.startsWith("/access/")
     ) {
-      if (sessionId) blocked = true;
+      if (sessionId) {
+        blocked = true;
+        blockedBy = e.message;
+      }
       window.dispatchEvent(
         new CustomEvent("gm-unauthorized", { detail: e.message }),
       );

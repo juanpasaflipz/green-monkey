@@ -3,7 +3,7 @@ import { ArrowRight } from "lucide-react";
 import type { Locale } from "../../shared/domain";
 import type { TerminalState, TerminalStaff } from "../../shared/access";
 import { strings, translateError, type Key } from "../i18n";
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import { Button, Field } from "../components/ui";
 import { finishPendingLogout } from "../access/session";
 import { OwnerAccess } from "./OwnerAccess";
@@ -37,6 +37,9 @@ export function AccessGate({
   const t = strings[locale];
   const [state, setState] = useState<TerminalState | null>(null);
   const [failed, setFailed] = useState(false);
+  // The last refresh got no answer (router up, internet down): shown as
+  // offline rather than as a generic error (ACC-FLOOR-14).
+  const [unreachable, setUnreachable] = useState(false);
   const [selected, setSelected] = useState<TerminalStaff | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -47,13 +50,15 @@ export function AccessGate({
       const next = await api<TerminalState>("/access/terminal");
       setState(next);
       setFailed(false);
+      setUnreachable(false);
       setSelected((current) =>
         current
           ? (next.staff?.find((e) => e.id === current.id) ?? null)
           : current,
       );
-    } catch {
+    } catch (e) {
       setFailed(true);
+      setUnreachable(!(e instanceof ApiError));
     }
   }
   useEffect(() => {
@@ -67,10 +72,14 @@ export function AccessGate({
   useEffect(() => {
     void refresh();
   }, [online]);
-  const offlineNotice = !online && (
-    <p role="status" className="warning">
-      {t.accessGateOffline}
-    </p>
+  const offline = !online || unreachable;
+  const offlineNotice = offline && (
+    <>
+      <p role="status" className="warning">
+        {t.accessGateOffline}
+      </p>
+      <p className="muted">{t.accessGateSalesKept}</p>
+    </>
   );
   async function signIn(employee: TerminalStaff, secret: string) {
     setBusy(true);
@@ -104,7 +113,7 @@ export function AccessGate({
           <span />
           {languageToggle}
         </div>
-        {failed && !online ? (
+        {failed && offline ? (
           <div>
             {offlineNotice}
             <Button onClick={() => void refresh()}>{t.retry}</Button>

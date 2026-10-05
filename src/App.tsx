@@ -25,7 +25,12 @@ import { Button, Modal } from "./components/ui";
 import { Selling } from "./features/Selling";
 import { Operations } from "./features/Operations";
 import { OwnerAccess } from "./features/OwnerAccess";
-import { ApiError, registerStepUpHandler, requestsBlocked } from "./api";
+import {
+  ApiError,
+  blockedReason,
+  registerStepUpHandler,
+  requestsBlocked,
+} from "./api";
 import { AccessGate } from "./features/AccessGate";
 import { LockScreen } from "./features/LockScreen";
 import { StepUpDialog } from "./features/StepUpDialog";
@@ -45,10 +50,12 @@ import {
   allowsContinueOffline,
   forgetLock,
   idleElsewhereWait,
+  idleLock,
   lockFromOtherTab,
   nextLock,
   noteActivity,
   rememberLock,
+  remembered,
   restoredLock,
 } from "./access/lock";
 import "./access/access.css";
@@ -75,9 +82,15 @@ export default function App() {
   );
   const [sessionChanged, setSessionChanged] = useState(false);
   const [lock, setLock] = useState<null | { reason: string }>(null);
-  // "Continuar como" offline: unlocked without a PIN until the connection or
-  // the offline window ends (contract 8.2), then locked again.
-  const [softUnlocked, setSoftUnlocked] = useState(false);
+  // "Continuar como" offline: unlocked without a PIN until the server is
+  // reachable again or the offline window ends (contract 8.2), then locked
+  // again with the same reason.
+  const [softUnlocked, setSoftUnlocked] = useState<string | null>(null);
+  // The lock screen could not reach the server although the device reports a
+  // connection (router up, internet down). Cleared by a health probe; offline's
+  // probe-based canUseServer replaces this at merge (ACC-FLOOR-6).
+  const [serverDown, setServerDown] = useState(false);
+  const reachable = online && !serverDown;
   // A pending "Confirma con tu PIN", for the session whose command asked for it.
   const [stepUpRequest, setStepUpRequest] = useState<null | StepUpRequest>(
     null,
@@ -218,7 +231,7 @@ export default function App() {
         // The server's reason replaces an idle, manual or renew lock (and
         // ends a soft unlock), so no offline "Continuar como" remains for a
         // session it rejected; nothing replaces it but a PIN (ACC-18).
-        setSoftUnlocked(false);
+        setSoftUnlocked(null);
         setLock((current) => nextLock(current, code));
       }
     };
@@ -242,22 +255,26 @@ export default function App() {
   }, []);
   useIdleLock(
     session?.access?.idleLockSeconds ?? null,
-    Boolean(session) && !lock && !sessionChanged,
+    // A renewal prompt left on screen still auto-locks (its "Ahora no" must
+    // not outlive the auto-lock, ACC-FLOOR-6).
+    Boolean(session) && (!lock || lock.reason === "renew") && !sessionChanged,
     () => {
       // Another tab of this session still in use defers the lock (ACC-21).
       const s = sessionRef.current;
       const seconds = s?.access?.idleLockSeconds;
       const wait = s && seconds ? idleElsewhereWait(s.id, seconds) : 0;
       if (wait > 0) return wait;
-      setLock((current) => nextLock(current, "idle"));
+      setLock(idleLock);
     },
     () => {
       if (sessionRef.current) noteActivity(sessionRef.current.id);
     },
   );
   useEffect(() => {
-    // Remembered until a PIN unlock, a new sign-in or a sign-out (SEC-6).
-    if (session && lock) rememberLock(session.id, lock.reason);
+    // Remembered until a PIN unlock, a new sign-in or a sign-out (SEC-6);
+    // a renewal prompt is this tab's own and is not.
+    if (session && lock && remembered(lock.reason))
+      rememberLock(session.id, lock.reason);
   }, [session?.id, lock?.reason]);
   useEffect(() => {
     // A lock in another tab of the same session locks this tab too (SEC-6),
@@ -269,23 +286,45 @@ export default function App() {
           ? lockFromOtherTab(event.newValue, s.id)
           : null;
       if (!reason) return;
-      setSoftUnlocked(false);
+      setSoftUnlocked(null);
       setLock((current) => nextLock(current, reason));
     };
     window.addEventListener("storage", lockedElsewhere);
     return () => window.removeEventListener("storage", lockedElsewhere);
   }, []);
   useEffect(() => {
-    // The offline soft unlock ends with the connection or the offline window.
+    // The offline soft unlock ends when the server is reachable again or the
+    // offline window ends; the same lock comes back.
     if (
       softUnlocked &&
       session &&
-      (online || new Date(session.offlineUntil).getTime() <= now)
+      (reachable || new Date(session.offlineUntil).getTime() <= now)
     ) {
-      setSoftUnlocked(false);
-      setLock((current) => nextLock(current, "idle"));
+      const reason = softUnlocked;
+      setSoftUnlocked(null);
+      setLock((current) => nextLock(current, reason));
     }
-  }, [softUnlocked, online, now, session?.offlineUntil]);
+  }, [softUnlocked, reachable, now, session?.offlineUntil]);
+  useEffect(() => {
+    // While the server is known unreachable, probe it; the lock screen (or the
+    // soft unlock's re-lock) follows as soon as it answers.
+    if (!serverDown || !online) return;
+    let live = true;
+    const probe = async () => {
+      try {
+        const r = await fetch("/api/health", { cache: "no-store" });
+        if (live && r.ok) setServerDown(false);
+      } catch {
+        /* Still unreachable. */
+      }
+    };
+    void probe();
+    const timer = setInterval(() => void probe(), 10_000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [serverDown, online]);
   useEffect(() => {
     // Whatever replaced or ended the session, its pending step-up goes (ACC-20).
     if (stepUpRef.current && stepUpRef.current.sessionId !== session?.id)
@@ -335,6 +374,13 @@ export default function App() {
     if (!session || sessionChanged) return;
     const s = session;
     const poll = async () => {
+      // A session 401 always shows its lock: if nothing shows one while calls
+      // are blocked, put it back (ACC-FLOOR-2).
+      const rejected = blockedReason();
+      if (rejected) {
+        setSoftUnlocked(null);
+        setLock((current) => nextLock(current, rejected));
+      }
       // Blocked calls would count as sync attempts and push queued sales
       // toward conflict (OFF-7); offline carries this rule at merge.
       if (navigator.onLine && !requestsBlocked()) await syncPending(s);
@@ -351,7 +397,7 @@ export default function App() {
   async function ownerReady() {
     cancelStepUp();
     setLeaving(null);
-    setSoftUnlocked(false);
+    setSoftUnlocked(null);
     setLock(null);
     clearSessionScope();
     setActiveSession(null);
@@ -391,7 +437,7 @@ export default function App() {
     clearSessionScope();
     localStorage.setItem("gm-session-generation", crypto.randomUUID());
     forgetLock();
-    setSoftUnlocked(false);
+    setSoftUnlocked(null);
     setLock(null);
     setActiveSession(null);
     setCatalog([]);
@@ -461,7 +507,7 @@ export default function App() {
                 clearPendingLogout();
                 forgetLock();
                 cancelStepUp();
-                setSoftUnlocked(false);
+                setSoftUnlocked(null);
                 setLock(null);
                 setGateReason("");
                 await load();
@@ -681,14 +727,23 @@ export default function App() {
         <LockScreen
           session={session}
           reason={lock.reason}
-          online={online}
+          online={reachable}
           locale={locale}
+          overlayOpen={Boolean(leaving)}
+          onUnreachable={() => setServerDown(true)}
+          onDismiss={() => {
+            // Only a renewal the cashier started; the session is still valid.
+            if (lock.reason !== "renew") return;
+            setSoftUnlocked(null);
+            setLock(null);
+          }}
           onUnlocked={(s) => {
             const sameEmployee = scope(s) === scope(session);
             setSession(s);
+            setServerDown(false);
             clearPendingLogout();
             forgetLock();
-            setSoftUnlocked(false);
+            setSoftUnlocked(null);
             noteActivity(s.id, true);
             if (s.id !== session.id) {
               // The previous session's prompts and warnings are not the new one's.
@@ -716,11 +771,12 @@ export default function App() {
             }
           }}
           onContinueOffline={() => {
-            // Never past a lock the server imposed (ACC-18).
-            if (!allowsContinueOffline(lock.reason)) return;
-            // The lock stays remembered: a reload or the connection returning
-            // asks for the PIN again.
-            setSoftUnlocked(true);
+            // Never past a lock the server imposed (ACC-18), nor while a
+            // session 401 blocks calls (ACC-FLOOR-2).
+            if (!allowsContinueOffline(lock.reason) || requestsBlocked()) return;
+            // The lock stays remembered: a reload or the server answering
+            // again asks for the PIN again.
+            setSoftUnlocked(lock.reason);
             setLock(null);
           }}
           onSignOut={() => void signOut()}
@@ -737,6 +793,12 @@ export default function App() {
             setStepUpRequest(null);
           }}
           onCancel={cancelStepUp}
+          onSessionEnded={(error) => {
+            const pending = stepUpRef.current;
+            stepUpRef.current = null;
+            setStepUpRequest(null);
+            pending?.reject(error);
+          }}
         />
       )}
       {leaving && (

@@ -255,7 +255,26 @@ describe("server locks never soften (ACC-18)", () => {
     });
     expect(allowsContinueOffline("idle")).toBe(true);
     expect(allowsContinueOffline("manual")).toBe(true);
-    expect(allowsContinueOffline("renew")).toBe(false);
+    // ACC-FLOOR-6: a renewal the cashier started keeps a valid session, so it
+    // may continue offline too (changed deliberately from false).
+    expect(allowsContinueOffline("renew")).toBe(true);
+  });
+});
+
+describe("renewal prompt (ACC-FLOOR-6)", () => {
+  it("the auto-lock turns a renewal prompt into an idle lock and never softens a server lock", async () => {
+    const { idleLock, remembered } = await load();
+    expect(idleLock({ reason: "renew" })).toEqual({ reason: "idle" });
+    expect(idleLock(null)).toEqual({ reason: "idle" });
+    const manual = { reason: "manual" };
+    expect(idleLock(manual)).toBe(manual);
+    const server = { reason: "session_ended" };
+    expect(idleLock(server)).toBe(server);
+    // A renewal prompt is never remembered across reloads or tabs; every
+    // other lock is.
+    expect(remembered("renew")).toBe(false);
+    for (const reason of ["idle", "manual", "session_revoked"])
+      expect(remembered(reason)).toBe(true);
   });
 });
 

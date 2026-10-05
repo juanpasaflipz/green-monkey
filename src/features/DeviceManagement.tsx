@@ -489,6 +489,9 @@ function RevokeDevice({
   const t = strings[locale];
   const [operationId] = useState(() => crypto.randomUUID());
   const [ack, setAck] = useState(false);
+  // A drawer opened after the list loaded is reported by the server; the
+  // acknowledgement then appears here (ACC-FLOOR-11).
+  const [openDrawer, setOpenDrawer] = useState(device.openDrawer);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return (
@@ -501,7 +504,7 @@ function RevokeDevice({
           <Button onClick={close}>{t.cancel}</Button>
           <Button
             variant="danger"
-            disabled={busy || (device.openDrawer && !ack)}
+            disabled={busy || (openDrawer && !ack)}
             onClick={async () => {
               setBusy(true);
               setError("");
@@ -512,7 +515,9 @@ function RevokeDevice({
                 });
                 await revoked();
               } catch (e) {
-                setError(translateError((e as Error).message, locale));
+                const code = (e as Error).message;
+                if (code === "open_drawer_ack_required") setOpenDrawer(true);
+                setError(translateError(code, locale));
               } finally {
                 setBusy(false);
               }
@@ -525,7 +530,7 @@ function RevokeDevice({
     >
       <p>{t.accessDevicesRevokeConfirm.replace("{name}", device.name)}</p>
       {device.current && <p className="error">{t.accessDevicesRevokeSelf}</p>}
-      {device.openDrawer && (
+      {openDrawer && (
         <>
           <p>{t.accessDevicesRevokeDrawer}</p>
           <label className="opening-day">

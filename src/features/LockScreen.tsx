@@ -1,17 +1,21 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Lock } from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import type { TerminalState, TerminalStaff } from "../../shared/access";
 import { strings, translateError, type Key } from "../i18n";
-import { api, holdRequests } from "../api";
+import { ApiError, api, holdRequests } from "../api";
 import { Button } from "../components/ui";
 import {
   drainBeforeLeaving,
   fetchCurrentSession,
   finishPendingLogout,
 } from "../access/session";
-import { allowsContinueOffline, inertOutside } from "../access/lock";
+import {
+  allowsContinueOffline,
+  inertOutside,
+  keepLockOnTop,
+} from "../access/lock";
 import { PinPad } from "./PinPad";
 import "../access/access.css";
 
@@ -23,27 +27,43 @@ export type LockReason = "idle" | "manual" | "renew" | string;
  * PIN starts their own session. Offline, the PIN cannot be verified, so the
  * current employee may continue with an explicit notice.
  *
- * Only an unlock, a switch or "Salir" ends it. A modal dialog's cancel can be
- * forced through by repeated close requests (Escape, Android back), so the
- * lock does not rely on it: closedby="none" ignores close requests where
+ * Only an unlock, a switch or "Salir" ends it (and "Ahora no" for a renewal
+ * the cashier started, whose session is still valid). A modal dialog's cancel
+ * can be forced through by repeated close requests (Escape, Android back), so
+ * the lock does not rely on it: closedby="none" ignores close requests where
  * supported, the Escape keydown is cancelled before it becomes one, any close
- * reopens the dialog at once, and everything outside it stays inert.
+ * reopens the dialog at once, everything outside it stays inert, and a dialog
+ * opened later is kept below it.
+ *
+ * While shown and online it re-reads the roster every 20 s, when the tab
+ * becomes visible and when a PIN lock it shows runs out, so a manager's unlock
+ * elsewhere re-enables the keypad (ACC-FLOOR-3). A request that cannot reach
+ * the server is reported with onUnreachable, and App shows the offline lock.
  */
 export function LockScreen({
   session,
   reason,
   online,
   locale,
+  overlayOpen = false,
   onUnlocked,
   onContinueOffline,
+  onDismiss,
+  onUnreachable,
   onSignOut,
 }: {
   session: Session;
   reason: LockReason;
+  /** The server is reachable (App: connected and not found unreachable). */
   online: boolean;
   locale: Locale;
+  /** App shows a dialog of the lock's own over it (the "Salir" warnings). */
+  overlayOpen?: boolean;
   onUnlocked: (s: Session) => void;
   onContinueOffline: () => void;
+  /** Closes a renewal prompt; offered for reason "renew" only. */
+  onDismiss: () => void;
+  onUnreachable: () => void;
   onSignOut: () => void;
 }) {
   const t = strings[locale];
@@ -57,6 +77,10 @@ export function LockScreen({
   const [pending, setPending] = useState({ sales: 0, payment: false });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const overlay = useRef(overlayOpen);
+  overlay.current = overlayOpen;
+  const unreachable = useRef(onUnreachable);
+  unreachable.current = onUnreachable;
   useEffect(() => {
     const dialog = ref.current;
     if (!dialog) return;
@@ -67,23 +91,62 @@ export function LockScreen({
       if (dialog.isConnected && !dialog.open) dialog.showModal();
     };
     const release = inertOutside(dialog);
+    const releaseTop = keepLockOnTop(dialog, () => overlay.current);
     window.addEventListener("keydown", blockEscape, true);
     dialog.addEventListener("close", reopen);
     dialog.showModal();
     return () => {
       dialog.removeEventListener("close", reopen);
       window.removeEventListener("keydown", blockEscape, true);
+      releaseTop();
       release();
       dialog.close();
     };
   }, []);
+  const refreshTerminal = useCallback(async () => {
+    try {
+      setTerminal(await api<TerminalState>("/access/terminal"));
+    } catch (e) {
+      if (!(e instanceof ApiError)) unreachable.current();
+    }
+  }, []);
   useEffect(() => {
-    if (online)
-      void api<TerminalState>("/access/terminal")
-        .then(setTerminal)
-        .catch(() => setTerminal(null));
-  }, [online]);
+    if (!online) return;
+    void refreshTerminal();
+    const visible = () => {
+      if (document.visibilityState === "visible") void refreshTerminal();
+    };
+    const timer = setInterval(visible, 20_000);
+    document.addEventListener("visibilitychange", visible);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", visible);
+    };
+  }, [online, refreshTerminal]);
   const self = terminal?.staff?.find((e) => e.id === session.employeeId);
+  // The roster entry picked for a switch, kept current by the refreshes.
+  const chosen = other
+    ? (terminal?.staff?.find((e) => e.id === other.id) ?? other)
+    : null;
+  const shown = mode === "other" ? chosen : self;
+  const shownLockedUntil =
+    shown && !shown.hardLocked ? shown.lockedUntil : null;
+  useEffect(() => {
+    // When the PIN lock on screen runs out, ask again: the keypad re-enables.
+    const until = shownLockedUntil ? new Date(shownLockedUntil).getTime() : 0;
+    if (!online || until <= Date.now()) return;
+    const timer = setTimeout(
+      () => void refreshTerminal(),
+      Math.min(until - Date.now() + 1000, 2_147_000_000),
+    );
+    return () => clearTimeout(timer);
+  }, [online, shownLockedUntil, refreshTerminal]);
+  const shownLocked = Boolean(
+    shown &&
+      (shown.hardLocked ||
+        (shown.lockedUntil &&
+          new Date(shown.lockedUntil).getTime() > Date.now())),
+  );
   // A Google owner without a PIN re-enters through Google on their own device.
   const googleOnly =
     session.access?.deviceKind === "personal" &&
@@ -101,10 +164,17 @@ export function LockScreen({
       await api("/access/pin", { employeeId, secret });
       onUnlocked(await fetchCurrentSession());
     } catch (e) {
-      const code = (e as Error).message;
+      // No answer from the server (router up, internet down): this is the
+      // offline lock, with its notice and "Continuar como" (ACC-FLOOR-6).
+      if (!(e instanceof ApiError)) {
+        setError("");
+        onUnreachable();
+        return;
+      }
+      const code = e.message;
       setError(translateError(code, locale));
       if (["pin_locked", "pin_hard_locked"].includes(code))
-        setTerminal(await api<TerminalState>("/access/terminal"));
+        await refreshTerminal();
     } finally {
       release();
       setBusy(false);
@@ -150,6 +220,11 @@ export function LockScreen({
                 {t.accessContinueAs.replace("{name}", session.name)}
               </Button>
             )}
+            {reason === "renew" && (
+              <Button className="full" onClick={onDismiss}>
+                {t.accessNotNow}
+              </Button>
+            )}
             <Button
               className="full"
               disabled
@@ -180,6 +255,16 @@ export function LockScreen({
                 hardLocked={self?.hardLocked ?? false}
                 onSubmit={(secret) => unlock(session.employeeId, secret)}
               />
+            )}
+            {shownLocked && (
+              <Button variant="ghost" onClick={() => void refreshTerminal()}>
+                {t.accessLockCheckAgain}
+              </Button>
+            )}
+            {reason === "renew" && (
+              <Button className="full" disabled={busy} onClick={onDismiss}>
+                {t.accessNotNow}
+              </Button>
             )}
             <Button
               className="full"
@@ -248,10 +333,15 @@ export function LockScreen({
                 locale={locale}
                 busy={busy}
                 error={error}
-                lockedUntil={other.lockedUntil}
-                hardLocked={other.hardLocked}
+                lockedUntil={chosen?.lockedUntil ?? null}
+                hardLocked={chosen?.hardLocked ?? false}
                 onSubmit={(secret) => unlock(other.id, secret)}
               />
+              {shownLocked && (
+                <Button variant="ghost" onClick={() => void refreshTerminal()}>
+                  {t.accessLockCheckAgain}
+                </Button>
+              )}
               <Button variant="ghost" onClick={() => setMode("roster")}>
                 {t.accessChooseOther}
               </Button>

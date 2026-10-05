@@ -109,9 +109,27 @@ export function lockFromOtherTab(
 
 /** Locks the client sets by itself; every other reason is a server session code. */
 const CLIENT_LOCKS = new Set(["idle", "manual", "renew"]);
-/** The offline "Continuar como" is offered only for these (contract 8.2). */
+/**
+ * The offline "Continuar como" is offered only for locks the client set
+ * (contract 8.2), including a renewal the cashier started: that session is
+ * still valid (ACC-FLOOR-6). Never for a lock the server imposed.
+ */
 export function allowsContinueOffline(reason: string) {
-  return reason === "idle" || reason === "manual";
+  return CLIENT_LOCKS.has(reason);
+}
+/**
+ * The lock after the auto-lock fires. A renewal prompt left on screen becomes
+ * an idle lock, so its "Ahora no" never outlives the auto-lock; otherwise as
+ * nextLock (ACC-FLOOR-6).
+ */
+export function idleLock(current: { reason: string } | null): {
+  reason: string;
+} {
+  return current?.reason === "renew" ? { reason: "idle" } : nextLock(current, "idle");
+}
+/** Locks remembered across reloads and tabs; a renewal prompt is per tab and voluntary. */
+export function remembered(reason: string) {
+  return reason !== "renew";
 }
 /**
  * The lock after a request to lock with `reason` (ACC-18). A lock the server
@@ -178,6 +196,59 @@ export function inertOutside(keep: Element): () => void {
   );
   for (const el of changed) el.inert = true;
   return () => {
+    for (const el of changed) el.inert = false;
+  };
+}
+
+/**
+ * Keeps the lock the topmost dialog (ACC-FLOOR-9). A dialog opened after the
+ * lock (a receipt for a payment that resolved, a background prompt) is a new
+ * portal child of <body> and would stack above it in the top layer: it is
+ * made inert and the lock is raised above it again. allowOverlay() names the
+ * moments the lock itself asks for a dialog over it (the "Salir" warnings).
+ * Returns the undo, which also releases the elements it made inert.
+ */
+export function keepLockOnTop(
+  dialog: HTMLDialogElement,
+  allowOverlay: () => boolean,
+): () => void {
+  const changed = new Set<HTMLElement>();
+  const raise = () => {
+    if (!dialog.isConnected) return;
+    if (dialog.open) dialog.close();
+    dialog.showModal();
+  };
+  const observer = new MutationObserver((records) => {
+    if (allowOverlay()) return;
+    let opened = false;
+    for (const record of records) {
+      // Only new top-level children (portals); nodes inside the lock or the
+      // already-inert workspace are left alone.
+      if (record.type === "childList" && record.target === document.body)
+        for (const node of record.addedNodes)
+          if (node instanceof HTMLElement && node !== dialog && !node.inert) {
+            node.inert = true;
+            changed.add(node);
+            if (node instanceof HTMLDialogElement && node.open) opened = true;
+          }
+      if (
+        record.type === "attributes" &&
+        record.target !== dialog &&
+        record.target instanceof HTMLDialogElement &&
+        record.target.open
+      )
+        opened = true;
+    }
+    if (opened) raise();
+  });
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ["open"],
+  });
+  return () => {
+    observer.disconnect();
     for (const el of changed) el.inert = false;
   };
 }

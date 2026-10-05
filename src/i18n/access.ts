@@ -35,11 +35,15 @@ export default defineArea({
     accessLockNow: "Bloquear pantalla",
     accessSwitchUser: "Cambiar de usuario",
     accessContinueAs: "Continuar como {name}",
+    accessNotNow: "Ahora no",
+    accessLockCheckAgain: "Comprobar de nuevo",
     accessOfflineUnlockHint:
       "Sin conexión no se puede verificar el PIN. Las ventas se registran a nombre de {name}.",
     accessSwitchOffline: "Cambiar de usuario requiere conexión.",
     accessGateOffline:
       "Sin conexión. Para entrar en este dispositivo hace falta conexión; esta pantalla se actualiza sola cuando vuelva.",
+    accessGateSalesKept:
+      "Las ventas guardadas en este dispositivo se conservan y se enviarán cuando vuelva la conexión.",
     accessGoogleAgain: "Continuar con Google",
     accessPendingTitle: "Ventas sin enviar",
     accessPendingBody:
@@ -66,6 +70,9 @@ export default defineArea({
     accessApprover: "Gerente que autoriza",
     accessApproverPin: "PIN del gerente",
     accessApprovalSelf: "Confirma con tu PIN",
+    accessApproversNone:
+      "No hay gerentes con PIN en esta sucursal. El propietario puede crear el suyo en Equipo → Mi PIN para terminales compartidas.",
+    accessApproversFailed: "No se pudo cargar la lista de gerentes.",
     accessStaffAdd: "Agregar empleado",
     accessStaffName: "Nombre",
     accessStaffLogin: "Usuario",
@@ -149,15 +156,16 @@ export default defineArea({
     accessDevicesEditTitle: "Editar «{name}»",
     accessDevicesAutoLock: "Bloqueo automático",
     accessDevicesAutoLockDefault:
-      "Predeterminado (3 min; cocina y personales nunca)",
+      "Predeterminado (3 min; nunca en cocina ni al entrar con Google en un dispositivo personal)",
     accessDevicesNever: "Nunca",
     accessDevicesMinutes: "{n} min",
     accessDevicesRevoke: "Desvincular",
     accessDevicesRevokeConfirm:
       "«{name}» dejará de funcionar de inmediato y se cerrarán sus sesiones. Para usarlo de nuevo necesitará un código nuevo.",
     accessDevicesRevokeDrawer:
-      "Este dispositivo tiene una caja abierta. Seguirá abierta y deberás conciliarla en Caja.",
-    accessDevicesRevokeDrawerAck: "Entiendo que la caja seguirá abierta.",
+      "Este dispositivo tiene una caja abierta. Si todavía funciona, ciérrala antes en él (Caja → Cerrar caja). Si lo desvinculas, la caja queda abierta y por ahora ningún dispositivo puede cerrarla: cuenta el efectivo, guarda el conteo y pide a soporte que la cierre.",
+    accessDevicesRevokeDrawerAck:
+      "Entiendo que la caja queda abierta y que soporte la cerrará con mi conteo.",
     accessDevicesRevokeSelf:
       "Estás desvinculando este mismo dispositivo; se cerrará tu sesión.",
     accessDevicesRevoked: "«{name}» se desvinculó.",
@@ -210,11 +218,15 @@ export default defineArea({
     accessLockNow: "Lock screen",
     accessSwitchUser: "Switch user",
     accessContinueAs: "Continue as {name}",
+    accessNotNow: "Not now",
+    accessLockCheckAgain: "Check again",
     accessOfflineUnlockHint:
       "Offline, the PIN cannot be verified. Sales are recorded under {name}.",
     accessSwitchOffline: "Switching user requires a connection.",
     accessGateOffline:
       "Offline. Signing in on this device needs a connection; this screen updates by itself when it returns.",
+    accessGateSalesKept:
+      "Sales saved on this device are kept and will be sent when the connection returns.",
     accessGoogleAgain: "Continue with Google",
     accessPendingTitle: "Unsent sales",
     accessPendingBody:
@@ -241,6 +253,9 @@ export default defineArea({
     accessApprover: "Approving manager",
     accessApproverPin: "Manager PIN",
     accessApprovalSelf: "Confirm with your PIN",
+    accessApproversNone:
+      "No manager has a PIN at this location. The owner can set theirs in Team → My PIN for shared terminals.",
+    accessApproversFailed: "The list of managers could not be loaded.",
     accessStaffAdd: "Add employee",
     accessStaffName: "Name",
     accessStaffLogin: "Username",
@@ -323,15 +338,17 @@ export default defineArea({
     accessDevicesEdit: "Edit",
     accessDevicesEditTitle: 'Edit "{name}"',
     accessDevicesAutoLock: "Auto-lock",
-    accessDevicesAutoLockDefault: "Default (3 min; kitchen and personal never)",
+    accessDevicesAutoLockDefault:
+      "Default (3 min; never for kitchen or a Google sign-in on a personal device)",
     accessDevicesNever: "Never",
     accessDevicesMinutes: "{n} min",
     accessDevicesRevoke: "Unpair",
     accessDevicesRevokeConfirm:
       '"{name}" stops working immediately and its sessions close. It will need a new code to be used again.',
     accessDevicesRevokeDrawer:
-      "This device has an open drawer. It stays open and you must reconcile it in Cash drawer.",
-    accessDevicesRevokeDrawerAck: "I understand the drawer stays open.",
+      "This device has an open drawer. If it still works, close the drawer on it first (Cash drawer → Close drawer). If you unpair it, the drawer stays open and for now no device can close it: count the cash, keep the count and ask support to close it.",
+    accessDevicesRevokeDrawerAck:
+      "I understand the drawer stays open and support will close it with my count.",
     accessDevicesRevokeSelf:
       "You are unpairing this device; your session will end.",
     accessDevicesRevoked: '"{name}" was unpaired.',
@@ -479,8 +496,8 @@ export default defineArea({
       "The device does not exist or was already unpaired.",
     ],
     open_drawer_ack_required: [
-      "Este dispositivo tiene una caja abierta. Confirma que la conciliarás antes de desvincularlo.",
-      "This device has an open drawer. Confirm you will reconcile it before unpairing.",
+      "Este dispositivo tiene una caja abierta. Lee el aviso y confírmalo para desvincularlo.",
+      "This device has an open drawer. Read the notice and confirm it to unpair.",
     ],
     missing_tenant: [
       "No se identificó la sucursal. Vuelve a entrar.",

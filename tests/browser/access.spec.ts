@@ -1439,3 +1439,338 @@ test("expiry banner appears 30 minutes before the absolute cap and Renovar keeps
     await admin.end();
   }
 });
+
+test("an unlock made elsewhere re-enables the lock screen's keypad by itself, and Comprobar de nuevo asks at once (ACC-FLOOR-3)", async ({
+  page,
+  browser,
+}) => {
+  await ownerLogin(page);
+  const code = await newCode(page, `Desbloqueo remoto ${tag()}`);
+  const context = await browser.newContext();
+  const tablet = await context.newPage();
+  await tablet.clock.install();
+  await pair(tablet, code);
+  await signIn(tablet, CASHIER.name, CASHIER.pin);
+  await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+  const s = await sessionOf(tablet);
+  const lock = tablet.getByRole("dialog", { name: "Pantalla bloqueada" });
+  const pinField = lock.getByLabel(`PIN de ${CASHIER.name}`);
+  const lockOut = async () => {
+    await tablet.getByRole("button", { name: "Bloquear pantalla" }).click();
+    await expect(lock).toBeVisible();
+    for (let i = 0; i < 5; i++) {
+      await enterSecret(lock, CASHIER.name, "000000");
+      await expect(lock.getByRole("alert")).toBeVisible();
+    }
+    await expect(pinField).toBeDisabled();
+    await expect(
+      lock.getByText(/Bloqueado en este dispositivo hasta las/),
+    ).toBeVisible();
+  };
+  const unlockElsewhere = async () =>
+    expect(
+      (
+        await call(page, `/access/staff/${s.employeeId}/unlock`, {
+          operationId: crypto.randomUUID(),
+        })
+      ).status,
+    ).toBe(200);
+  // 1. No input on the tablet: the next roster refresh re-enables the keypad.
+  await lockOut();
+  await unlockElsewhere();
+  await tablet.clock.fastForward("00:21");
+  await expect(pinField).toBeEnabled();
+  await enterSecret(lock, CASHIER.name, CASHIER.pin);
+  await expect(lock).toBeHidden();
+  // 2. "Comprobar de nuevo" asks right away.
+  await lockOut();
+  await unlockElsewhere();
+  await lock.getByRole("button", { name: "Comprobar de nuevo" }).click();
+  await expect(pinField).toBeEnabled();
+  await enterSecret(lock, CASHIER.name, CASHIER.pin);
+  await expect(lock).toBeHidden();
+  expect((await sessionOf(tablet)).id).toBe(s.id);
+  await context.close();
+});
+
+test("a renewal can be put off, and an unreachable server shows the offline lock with Continuar como until it answers again (ACC-FLOOR-6)", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  const admin = fixtureAdmin(baseURL);
+  try {
+    await ownerLogin(page);
+    const { context, page: tablet } = await pairTerminal(
+      browser,
+      page,
+      `Renovar luego ${tag()}`,
+    );
+    await signIn(tablet, CASHIER.name, CASHIER.pin);
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    const s = await sessionOf(tablet);
+    await admin`update sessions set absolute_expires_at=now()+interval '20 minutes',
+      expires_at=least(expires_at,now()+interval '20 minutes') where id=${s.id}`;
+    await tablet.reload();
+    await tablet.getByRole("button", { name: /Taco de hongos/ }).click();
+    const cart = tablet.locator(".cart");
+    await expect(cart).toContainText("Taco de hongos");
+    const banner = tablet.locator(".expiry-banner");
+    const renew = tablet.getByRole("dialog", {
+      name: `Renueva la sesión de ${CASHIER.name}`,
+    });
+    // "Ahora no": the session is still valid, so the prompt simply closes.
+    await banner.getByRole("button", { name: "Renovar ahora" }).click();
+    await expect(renew).toBeVisible();
+    await renew.getByRole("button", { name: "Ahora no" }).click();
+    await expect(renew).toBeHidden();
+    await expect(banner).toBeVisible();
+    await expect(cart).toContainText("Taco de hongos");
+    expect((await sessionOf(tablet)).id).toBe(s.id);
+    // A put-off renewal is not remembered by a reload.
+    await tablet.reload();
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    await expect(renew).toHaveCount(0);
+    // The device reports a connection but the server cannot be reached.
+    await banner.getByRole("button", { name: "Renovar ahora" }).click();
+    await expect(renew).toBeVisible();
+    await tablet.route("**/api/access/pin", (r) => r.abort("internetdisconnected"));
+    await tablet.route("**/api/health", (r) => r.abort("internetdisconnected"));
+    await enterSecret(renew, CASHIER.name, CASHIER.pin);
+    await expect(renew).toContainText(
+      `Sin conexión no se puede verificar el PIN. Las ventas se registran a nombre de ${CASHIER.name}.`,
+    );
+    await expect(renew.getByText("No se pudo completar la acción.")).toHaveCount(0);
+    await renew
+      .getByRole("button", { name: `Continuar como ${CASHIER.name}` })
+      .click();
+    await expect(renew).toBeHidden();
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    // The server answers again: the renewal prompt comes back by itself.
+    await tablet.unroute("**/api/health");
+    await tablet.unroute("**/api/access/pin");
+    await expect(renew).toBeVisible({ timeout: 20_000 });
+    await enterSecret(renew, CASHIER.name, CASHIER.pin);
+    await expect(renew).toBeHidden();
+    await expect(banner).toHaveCount(0);
+    expect((await sessionOf(tablet)).id).not.toBe(s.id);
+    await context.close();
+  } finally {
+    await admin.end();
+  }
+});
+
+test("a dialog opened after the lock stays below it, inert, until the PIN unlocks (ACC-FLOOR-9)", async ({
+  page,
+  browser,
+}) => {
+  await ownerLogin(page);
+  const { context, page: tablet } = await pairTerminal(
+    browser,
+    page,
+    `Encima ${tag()}`,
+  );
+  await signIn(tablet, CASHIER.name, CASHIER.pin);
+  await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+  await tablet.getByRole("button", { name: "Bloquear pantalla" }).click();
+  const lock = tablet.getByRole("dialog", { name: "Pantalla bloqueada" });
+  await expect(lock).toBeVisible();
+  // A request that resolves late opens a dialog (a receipt) after the lock.
+  await tablet.evaluate(() => {
+    const late = document.createElement("dialog");
+    late.id = "late-dialog";
+    late.innerHTML = "<p>Recibo</p><button>Imprimir</button>";
+    document.body.append(late);
+    late.showModal();
+  });
+  const state = () =>
+    tablet.evaluate(() => {
+      const late = document.getElementById("late-dialog") as HTMLDialogElement;
+      const r = late.getBoundingClientRect();
+      const top = document.elementFromPoint(
+        r.left + r.width / 2,
+        r.top + r.height / 2,
+      );
+      return {
+        inert: late.inert,
+        lockOnTop: Boolean(top?.closest("dialog.lock-screen")),
+      };
+    });
+  await expect.poll(state).toEqual({ inert: true, lockOnTop: true });
+  await enterSecret(lock, CASHIER.name, CASHIER.pin);
+  await expect(lock).toBeHidden();
+  expect((await state()).inert).toBe(false);
+  await context.close();
+});
+
+test("unpairing a device whose drawer opened after the list loaded asks for the drawer confirmation in place (ACC-FLOOR-11/ACC-FLOOR-7)", async ({
+  page,
+  browser,
+}) => {
+  const id = tag();
+  await ownerLogin(page);
+  const { context, page: tablet } = await pairTerminal(
+    browser,
+    page,
+    `Caja tarde ${id}`,
+  );
+  await signIn(tablet, CASHIER.name, CASHIER.pin);
+  await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+  await page.getByRole("button", { name: "Configuración", exact: true }).click();
+  const device = page
+    .locator(".device-row")
+    .filter({ hasText: `Caja tarde ${id}` });
+  await expect(device).toBeVisible();
+  // The cashier opens a drawer after the manager loaded the list.
+  expect(
+    (
+      await call(tablet, "/cash/open", {
+        operationId: crypto.randomUUID(),
+        opening: 0,
+      })
+    ).status,
+  ).toBe(200);
+  await device
+    .getByRole("button", { name: `Desvincular · Caja tarde ${id}` })
+    .click();
+  const revoke = page.getByRole("dialog", { name: "Desvincular" });
+  await expect(revoke.getByRole("checkbox")).toHaveCount(0);
+  const confirm = revoke.getByRole("button", { name: "Desvincular", exact: true });
+  await confirm.click();
+  await expect(revoke.getByRole("alert")).toContainText(
+    "Este dispositivo tiene una caja abierta. Lee el aviso y confírmalo para desvincularlo.",
+  );
+  // The notice says honestly what happens to the drawer.
+  await expect(revoke).toContainText(
+    "por ahora ningún dispositivo puede cerrarla: cuenta el efectivo, guarda el conteo y pide a soporte que la cierre.",
+  );
+  await expect(confirm).toBeDisabled();
+  await revoke
+    .getByRole("checkbox", {
+      name: "Entiendo que la caja queda abierta y que soporte la cerrará con mi conteo.",
+    })
+    .check();
+  await confirm.click();
+  await expect(
+    page.locator(".device-management").getByRole("status"),
+  ).toContainText(`«Caja tarde ${id}» se desvinculó.`);
+  await context.close();
+});
+
+test("the void approval explains a manager list that failed to load and Reintentar fills it (ACC-FLOOR-10)", async ({
+  page,
+  browser,
+}) => {
+  const name = `Sin lista ${tag()}`;
+  await ownerLogin(page);
+  const catalog = (await call<any[]>(page, "/catalog")).body;
+  const product = catalog.find((p) => p.name.es === "Taco de hongos");
+  const order = await call(page, "/orders", {
+    operationId: crypto.randomUUID(),
+    lines: [
+      { id: crypto.randomUUID(), productId: product.id, quantity: 2, options: [], note: "" },
+    ],
+    mode: "takeaway",
+    tableId: null,
+    name,
+    note: "",
+    channel: "pos",
+  });
+  expect(order.status).toBe(200);
+  const { context, page: tablet } = await pairTerminal(
+    browser,
+    page,
+    `Anular ${tag()}`,
+  );
+  await signIn(tablet, CASHIER.name, CASHIER.pin);
+  await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+  await tablet.route("**/api/access/approvers", (r) =>
+    r.abort("internetdisconnected"),
+  );
+  await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
+  await tablet
+    .locator(".order-summary")
+    .filter({ hasText: name })
+    .getByRole("button", { name: "Anular", exact: true })
+    .click();
+  const dialog = tablet.getByRole("dialog", { name: "Anular productos" });
+  const approval = dialog.locator(".manager-approval");
+  await expect(approval.getByRole("alert")).toContainText(
+    "No se pudo cargar la lista de gerentes.",
+  );
+  await tablet.unroute("**/api/access/approvers");
+  await approval.getByRole("button", { name: "Reintentar" }).click();
+  await expect(approval.getByRole("alert")).toHaveCount(0);
+  await expect(approval.getByLabel("Gerente que autoriza")).toContainText(
+    "Alex Demo",
+  );
+  await context.close();
+});
+
+test("a session ended while the PIN confirmation is open shows its lock instead of a looping PIN error (ACC-FLOOR-12)", async ({
+  page,
+  baseURL,
+}) => {
+  const admin = fixtureAdmin(baseURL);
+  const name = `Confirmación ${tag()}`;
+  try {
+    await ownerLogin(page);
+    const s = await sessionOf(page);
+    const drawer = await call(page, "/cash");
+    if (!drawer.body || drawer.body.closed_at)
+      expect(
+        (await call(page, "/cash/open", {
+          operationId: crypto.randomUUID(),
+          opening: 0,
+        })).status,
+      ).toBe(200);
+    const catalog = (await call<any[]>(page, "/catalog")).body;
+    const product = catalog.find((p) => p.name.es === "Taco de hongos");
+    const order = await call(page, "/orders", {
+      operationId: crypto.randomUUID(),
+      lines: [
+        { id: crypto.randomUUID(), productId: product.id, quantity: 1, options: [], note: "" },
+      ],
+      mode: "takeaway",
+      tableId: null,
+      name,
+      note: "",
+      channel: "pos",
+    });
+    expect(order.status).toBe(200);
+    const paid = await call(page, `/orders/${order.body.id}/payments`, {
+      operationId: crypto.randomUUID(),
+      amount: order.body.total,
+      tip: 0,
+      received: order.body.total,
+      method: "cash",
+    });
+    expect(paid.status).toBe(200);
+    await admin`update sessions set authenticated_at=now()-interval '1 hour' where id=${s.id}`;
+    await page.getByRole("button", { name: "Operación", exact: true }).click();
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    const card = page.locator(".order-summary").filter({ hasText: name }).first();
+    await card.getByRole("button", { name: "Reembolsar", exact: true }).click();
+    const refund = page.getByRole("dialog").first();
+    await refund.getByLabel("Importe", { exact: true }).fill("10");
+    await refund.getByLabel("Explicación").fill("Devolución interrumpida");
+    await refund.getByRole("button", { name: "Guardar", exact: true }).click();
+    const stepUp = page.getByRole("dialog", { name: "Confirma con tu PIN" });
+    await expect(stepUp).toBeVisible();
+    // A manager closes this session from another device meanwhile.
+    await admin`update sessions set ended_at=now(),end_reason='ended_by_manager',expires_at=now() where id=${s.id}`;
+    await enterSecret(stepUp, "Alex Demo", OWNER_PASSWORD, true, "Confirmar");
+    await expect(stepUp).toBeHidden();
+    await expect(
+      page.getByRole("dialog", {
+        name: "La sesión se cerró en este dispositivo. Ingresa tu PIN para continuar.",
+      }),
+    ).toBeVisible();
+    const [refunds] =
+      await admin`select count(*)::int as n from refunds r join tenders t on t.tenant_id=r.tenant_id and t.id=r.tender_id
+        where t.order_id=${order.body.id}`;
+    expect(refunds.n).toBe(0);
+  } finally {
+    await admin.end();
+  }
+});
