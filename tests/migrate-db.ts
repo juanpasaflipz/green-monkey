@@ -1,7 +1,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import postgres from "postgres";
@@ -26,6 +26,7 @@ const admin = postgres(migration, { max: 1, onnotice: () => {} });
 const suffix = randomBytes(4).toString("hex");
 const synthetic = `green_monkey_runner_${suffix}_test`;
 const real = `green_monkey_runner_${suffix}b_test`;
+const legacy = `green_monkey_runner_${suffix}c_test`;
 const migrator = `gm_test_migrator_${suffix}`;
 const migratorPassword = randomBytes(24).toString("hex");
 const dir = mkdtempSync(join(tmpdir(), "gm-migrations-"));
@@ -392,6 +393,51 @@ try {
     },
   );
 
+  await check(
+    "cutover: globals, database grants and ownership transfer let gm_migrator take over an owner-migrated database (R4)",
+    async () => {
+      const read = (f: string) => readFileSync(f, "utf8");
+      await admin.unsafe(read("scripts/ops/sql/globals.sql"));
+      // The same public local-only value CI uses; never a real credential.
+      await admin.unsafe(
+        "alter role gm_migrator login password 'local-only-migrator'",
+      );
+      await admin.unsafe(`create database "${legacy}"`);
+      const legacyAdmin = pool(urlFor(legacy));
+      // Today's staging: migrated by the database owner.
+      assert.equal(
+        await main([], {
+          MIGRATION_DATABASE_URL: urlFor(legacy),
+          APP_ENV: "development",
+        }),
+        0,
+      );
+      await legacyAdmin.unsafe(read("scripts/ops/sql/database-grants.sql"));
+      await legacyAdmin.begin((tx) =>
+        tx.unsafe(read("scripts/ops/sql/transfer-ownership.sql")),
+      );
+      const [owners] = await legacyAdmin`
+        select array_agg(distinct tableowner) as owners from pg_tables where schemaname='public'`;
+      assert.deepEqual(owners.owners, ["gm_migrator"]);
+      const asMigrator = urlFor(legacy, {
+        name: "gm_migrator",
+        password: "local-only-migrator",
+      });
+      assert.equal(
+        await main(["--grants", "--retention"], {
+          MIGRATION_DATABASE_URL: asMigrator,
+          PG_APP_USER: "gm_app",
+          APP_ENV: "staging",
+        }),
+        0,
+        "the non-superuser owner migrates, grants and prunes",
+      );
+      const appLegacy = new URL(runtime);
+      appLegacy.pathname = "/" + legacy;
+      await requireReadySchema(pool(appLegacy.href));
+    },
+  );
+
   await check("pooled host is refused", async () => {
     assert.equal(
       await main([], {
@@ -430,6 +476,9 @@ try {
   rmSync(dir, { recursive: true, force: true });
   await admin
     .unsafe(`drop database if exists "${synthetic}" with (force)`)
+    .catch(() => undefined);
+  await admin
+    .unsafe(`drop database if exists "${legacy}" with (force)`)
     .catch(() => undefined);
   await admin
     .unsafe(`drop database if exists "${real}" with (force)`)
