@@ -90,7 +90,10 @@ Migrations live in `migrations/NNN_name.sql` and are applied by
   pending, the manifest runs in its own transaction;
 - then the backup-reader policy reconciler (`scripts/db/post-migrate.sql`) and,
   with `--retention`, the retention pass (a failure alerts `retention_failed`
-  and never fails the deploy; the worker repeats it every 15 minutes);
+  and never fails the deploy; the worker repeats it every 15 minutes between
+  04:00 and 10:00 America/Mexico_City; every batch is bounded by a 200 ms
+  lock wait and a 1.5 s statement timeout, [RUNBOOK.md](RUNBOOK.md)
+  "Retention");
 - `--check` exits 3 while migrations are pending; `--dry-run` lists them.
 
 Rules enforced by `tests/migrations-lint.test.ts` (the rules live in

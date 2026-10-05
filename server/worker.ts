@@ -3,7 +3,8 @@
 // so configuration (dotenv + validation) loads before anything else.
 // Its Railway preDeploy runs `migrate.js --grants --retention`, keeping the
 // migration owner credential out of the internet-facing web service; the
-// same credential runs retention every 15 minutes here (OPS-R6).
+// same credential runs retention here every 15 minutes inside the off-hours
+// window 04:00-10:00 America/Mexico_City (OPS-R6, OPS-R10).
 import "./config.js";
 import http from "node:http";
 import { hostname } from "node:os";
@@ -16,6 +17,7 @@ import { configureAlerts, sendAlert } from "./ops/alerts.js";
 import { createWatchdog } from "./ops/watchdog.js";
 import {
   createRetentionSchedule,
+  RETENTION_WINDOW,
   type RetentionSchedule,
 } from "./ops/retention.js";
 
@@ -117,6 +119,9 @@ log.info("worker_ready", {
   billing: Boolean(billing),
   alerts: Boolean(config.alertWebhook),
   retention: Boolean(retention),
+  retentionWindow: retention
+    ? `${RETENTION_WINDOW.startHour}-${RETENTION_WINDOW.endHour} ${RETENTION_WINDOW.timeZone}`
+    : null,
   version: info.version,
   commit: info.commit,
 });

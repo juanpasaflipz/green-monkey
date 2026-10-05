@@ -172,7 +172,10 @@ export async function main(
     await reconcilePolicies(sql);
     if (flags.has("--retention")) {
       // Retention never fails a deploy; a failure alerts (retention_failed)
-      // and the worker's 15-minute schedule retries it.
+      // and the worker's off-hours schedule (04:00-10:00 Mexico City, every
+      // 15 minutes) retries it. Each batch is bounded by the retention lock
+      // and statement timeouts, so a deploy during service never stalls
+      // order and payment inserts for long (OPS-R10).
       configureAlerts(alertTargetFromEnv(env), appEnv);
       await retentionPass(sql, sendAlert);
     }

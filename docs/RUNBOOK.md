@@ -33,7 +33,7 @@ acknowledged a critical alert within 15 minutes during service hours
 | `web_recovered` (info) | ntfy | the probe passes again |
 | `jobs_dead_<kind>` (warning) | ntfy, from the web jobs runner | a job exhausted 8 attempts; see `GET /api/jobs` as a manager |
 | `billing_review` / `billing_retrying` (warning) | ntfy, from the worker | billing operations need a person / keep failing |
-| `retention_failed` (warning) | ntfy, from the worker's 15-minute retention or the deploy's preDeploy pass | deleting expired OAuth attempts or old done/dead jobs failed (`tables=` names which); lock-timeout skips do not alert. Check `@message:retention_table_failed` in the worker logs; the next run retries |
+| `retention_failed` (warning) | ntfy, from the worker's off-hours retention or the deploy's preDeploy pass | deleting expired OAuth attempts or old done/dead jobs failed (`tables=` names which); lock-timeout skips do not alert. Check `@message:retention_table_failed` in the worker logs: `reason:"statement_timeout"` means a batch hit its 1.5 s bound (see "Retention" below), anything else is an error; the next run retries |
 | Uptime workflow failure | ntfy + GitHub issue `ops-alert: production` | `/api/ops/status` not ok or degraded, or the last successful production backup run is older than 26 h |
 | Backup workflow failure | ntfy + GitHub issue `ops-alert: <env>` | the nightly dump failed |
 | Railway deploy failed/crashed | ntfy (Railway webhook, manual setup below) | a deploy or a running instance failed |
@@ -118,6 +118,26 @@ public ordering, billing, ops endpoints) use in-memory stores, and two replicas
 would double every limit and split buckets. Before scaling out, move the
 limiter store to Postgres or Redis. Size the database pool from
 [LOAD_TEST.md](LOAD_TEST.md) first.
+
+## Retention
+
+Retention deletes only expired OAuth login attempts and done/dead jobs older
+than 30 days (`server/ops/retention.ts`; every other table, blocked receipt
+jobs included, is kept). It runs as `gm_migrator` once per deploy (the
+worker's preDeploy) and from the worker every 15 minutes **only between
+04:00 and 10:00 America/Mexico_City**, after the 03:30 backup and outside
+service hours; `lastRetentionAt` in the worker's `/healthz` shows the last
+pass. Each batch briefly turns off FORCE row-level security, which takes an
+ACCESS EXCLUSIVE lock on the table until it commits, and every order and
+payment inserts into `jobs`. So each batch waits at most 200 ms for that
+lock (a lock-timeout skip is logged, not alerted) and runs each statement
+at most 1.5 s; a deploy during service can therefore stall order and
+payment inserts by at most about 1.7 s per batch, and the off-hours passes
+not at all. When `retention_failed` reports `reason:"statement_timeout"`,
+the jobs scan has outgrown that bound (no index serves the predicate):
+nothing was deleted and sales were not affected, but the table now keeps
+growing until the follow-up below ships. Do not raise the bounds in
+service hours.
 
 ## Deploy window
 
@@ -219,3 +239,4 @@ Root cause:
 Data impact: (none / reconciled how)
 Follow-ups: (owner, due date)
 ```
+| OPS-R10, retention needs DDL | Each retention batch turns off FORCE row-level security (ACCESS EXCLUSIVE until commit) and scans `jobs` without an index, because only the owner may delete and FORCE applies to it. The worker therefore runs it only 04:00–10:00 Mexico City, with a 200 ms lock wait and a 1.5 s statement bound per batch; at a few million `jobs` rows (blocked receipt jobs are never deleted) the scan exceeds the bound and `retention_failed` reports `statement_timeout` every night. | Ops, next wave (a new migration; 022 is limited to the hot-path indexes): a partial index `jobs(created_at) WHERE state IN ('done','dead')` so each batch finds its rows in milliseconds, and a `gm_maintenance` login with DELETE on the two tables under policies limited to the retention predicates, so retention needs no DDL and no ACCESS EXCLUSIVE lock and can run at any hour. |

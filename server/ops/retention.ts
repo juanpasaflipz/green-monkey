@@ -6,13 +6,19 @@
  * void or offline evidence rows (tests assert the allow-list).
  *
  * Both tables force row-level security and the runtime role has no DELETE,
- * so the pass runs as the schema owner: every 15 minutes from the worker
- * (MIGRATION_DATABASE_URL, which its preDeploy already holds) and once per
- * deploy (`migrate.js --retention`). Each batch uses the owner pattern
- * migrations use for backfills: in one short transaction, NO FORCE ROW LEVEL
- * SECURITY, a bounded DELETE, FORCE ROW LEVEL SECURITY. The ACCESS EXCLUSIVE
- * lock is held for milliseconds, lock_timeout keeps it from queueing behind
- * traffic, and nobody ever observes the table without FORCE.
+ * so the pass runs as the schema owner: once per deploy (`migrate.js
+ * --retention`) and from the worker every 15 minutes inside an off-hours
+ * window, 04:00-10:00 America/Mexico_City (MIGRATION_DATABASE_URL, which its
+ * preDeploy already holds). Each batch uses the owner pattern migrations use
+ * for backfills: in one transaction, NO FORCE ROW LEVEL SECURITY, a bounded
+ * DELETE, FORCE ROW LEVEL SECURITY, so nobody ever observes the table without
+ * FORCE. The ALTER takes ACCESS EXCLUSIVE until commit, and every order and
+ * payment inserts into jobs, so each batch is bounded (OPS-R10): the ALTER
+ * waits at most RETENTION_LOCK_TIMEOUT_MS (others queue behind it only that
+ * long) and every statement at most RETENTION_STATEMENT_TIMEOUT_MS, so a scan
+ * that outgrows the bound aborts and alerts instead of freezing sales. No
+ * index serves the jobs predicate yet; RUNBOOK "Open follow-ups" records the
+ * DDL-free design (a maintenance DELETE policy or a partial index).
  */
 import postgres from "postgres";
 import type { Tx } from "../db.js";
@@ -23,6 +29,48 @@ import type { Alert } from "./alerts.js";
 /** How often the worker runs retention (spec §4.15); first run 60 s after boot. */
 export const RETENTION_INTERVAL_MS = 15 * 60_000;
 export const RETENTION_FIRST_RUN_MS = 60_000;
+/** Longest wait for the ACCESS EXCLUSIVE lock; jobs inserts queue behind it. */
+export const RETENTION_LOCK_TIMEOUT_MS = 200;
+/** Longest any statement of a batch runs while the lock is held. */
+export const RETENTION_STATEMENT_TIMEOUT_MS = 1500;
+/** Pause between batches so inserts queued behind a batch drain first. */
+export const RETENTION_PAUSE_MS = 250;
+
+export interface RetentionWindow {
+  timeZone: string;
+  /** First local hour inside the window (inclusive). */
+  startHour: number;
+  /** First local hour after the window (exclusive). */
+  endHour: number;
+}
+
+/**
+ * The worker's periodic retention runs only between 04:00 and 10:00 in
+ * Mexico City (UTC-6 all year): after the nightly backup starts (03:30),
+ * well before service hours (12:00-23:59, RUNBOOK) and outside the hours
+ * restaurants sell (OPS-R10).
+ */
+export const RETENTION_WINDOW: RetentionWindow = {
+  timeZone: "America/Mexico_City",
+  startHour: 4,
+  endHour: 10,
+};
+
+/** Whether `at` falls inside the window, in the window's time zone. */
+export function inRetentionWindow(
+  at: number | Date,
+  window: RetentionWindow = RETENTION_WINDOW,
+): boolean {
+  const hour =
+    Number(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: window.timeZone,
+        hour: "numeric",
+        hourCycle: "h23",
+      }).format(at),
+    ) % 24;
+  return hour >= window.startHour && hour < window.endHour;
+}
 
 export type RetentionResult = {
   deleted: Record<string, number>;
@@ -76,9 +124,10 @@ export const retentionRules: readonly { table: string; predicate: string }[] = [
 const IDENT = /^[a-z_][a-z0-9_]*$/;
 
 /**
- * Deletes expired rows in bounded batches within a time budget. Lock
- * timeouts skip the table for this run; other errors are logged and
- * reported in `failed`. Never throws for a single table's failure.
+ * Deletes expired rows in bounded batches within a time budget. A lock
+ * timeout skips the table for this run; any other error, including a
+ * statement timeout, is logged and reported in `failed`. Never throws for a
+ * single table's failure.
  */
 export async function runRetention(
   sql: postgres.Sql,
@@ -86,6 +135,9 @@ export async function runRetention(
     batch?: number;
     maxBatches?: number;
     budgetMs?: number;
+    lockTimeoutMs?: number;
+    statementTimeoutMs?: number;
+    pauseMs?: number;
     now?: () => number;
   } = {},
 ): Promise<{
@@ -96,6 +148,13 @@ export async function runRetention(
   const batch = o.batch ?? 5000;
   const maxBatches = o.maxBatches ?? 20;
   const budgetMs = o.budgetMs ?? 60_000;
+  const lockTimeoutMs = o.lockTimeoutMs ?? RETENTION_LOCK_TIMEOUT_MS;
+  const statementTimeoutMs =
+    o.statementTimeoutMs ?? RETENTION_STATEMENT_TIMEOUT_MS;
+  const pauseMs = o.pauseMs ?? RETENTION_PAUSE_MS;
+  for (const ms of [lockTimeoutMs, statementTimeoutMs])
+    if (!Number.isInteger(ms) || ms < 1)
+      throw Error("retention_timeout_invalid");
   const now = o.now ?? Date.now;
   const started = now();
   const deleted: Record<string, number> = {};
@@ -106,9 +165,15 @@ export async function runRetention(
     deleted[rule.table] = 0;
     try {
       for (let n = 0; n < maxBatches && now() - started < budgetMs; n++) {
+        if (n > 0 && pauseMs > 0)
+          await new Promise((r) => setTimeout(r, pauseMs));
         const count = await sql.begin(async (raw) => {
           const tx = raw as Tx;
-          await tx`select set_config('lock_timeout','2s',true), set_config('statement_timeout','30s',true)`;
+          // Transaction-local: the lock wait and every statement (the
+          // DELETE's scan above all) are bounded while ACCESS EXCLUSIVE is
+          // held; a timeout rolls the whole batch back, FORCE included.
+          await tx`select set_config('lock_timeout', ${lockTimeoutMs + "ms"}, true),
+                          set_config('statement_timeout', ${statementTimeoutMs + "ms"}, true)`;
           await tx.unsafe(
             `alter table ${rule.table} no force row level security`,
           );
@@ -136,7 +201,14 @@ export async function runRetention(
         });
       } else {
         failed.push(rule.table);
-        log.error("retention_table_failed", { table: rule.table }, error);
+        log.error(
+          "retention_table_failed",
+          {
+            table: rule.table,
+            reason: code === "57014" ? "statement_timeout" : "error",
+          },
+          error,
+        );
       }
     }
   }
@@ -148,15 +220,22 @@ export interface RetentionSchedule {
   start(): void;
   /** Runs one pass now unless one is already running (then returns null). */
   runNow(): Promise<RetentionResult | null>;
+  /**
+   * One scheduled tick: runs a pass only inside the off-hours window and
+   * when none is running; otherwise returns null without touching the
+   * database.
+   */
+  tick(): Promise<RetentionResult | null>;
   /** Time of the last finished pass, for the worker's /healthz body. */
   lastRunAt(): number | null;
   stop(): Promise<void>;
 }
 
 /**
- * The worker's periodic retention (OPS-R6): every 15 minutes, first run 60 s
- * after boot, on its own one-connection pool for the owner credential that
- * closes when idle. Runs never overlap, and each failure alerts through
+ * The worker's periodic retention (OPS-R6, OPS-R10): a tick every 15
+ * minutes, the first 60 s after boot, each running a pass only inside
+ * RETENTION_WINDOW, on its own one-connection pool for the owner credential
+ * that closes when idle. Runs never overlap, and each failure alerts through
  * retentionPass.
  */
 export function createRetentionSchedule(o: {
@@ -164,12 +243,16 @@ export function createRetentionSchedule(o: {
   alert: (a: Alert) => Promise<void>;
   intervalMs?: number;
   firstRunMs?: number;
+  window?: RetentionWindow;
+  now?: () => number;
   run?: (
     sql: postgres.Sql,
     alert: (a: Alert) => Promise<void>,
   ) => Promise<RetentionResult | null>;
 }): RetentionSchedule {
   const url = new URL(o.url);
+  const window = o.window ?? RETENTION_WINDOW;
+  const now = o.now ?? Date.now;
   let sql: postgres.Sql | null = null;
   let running: Promise<RetentionResult | null> | null = null;
   let last: number | null = null;
@@ -191,14 +274,15 @@ export function createRetentionSchedule(o: {
     });
     return running;
   };
+  const tick = async () => (inRetentionWindow(now(), window) ? runNow() : null);
   return {
     start() {
       const first = setTimeout(
-        () => void runNow(),
+        () => void tick(),
         o.firstRunMs ?? RETENTION_FIRST_RUN_MS,
       );
       const every = setInterval(
-        () => void runNow(),
+        () => void tick(),
         o.intervalMs ?? RETENTION_INTERVAL_MS,
       );
       first.unref();
@@ -206,6 +290,7 @@ export function createRetentionSchedule(o: {
       timers.push(first, every);
     },
     runNow,
+    tick,
     lastRunAt: () => last,
     async stop() {
       for (const timer of timers) clearTimeout(timer);

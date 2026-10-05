@@ -20,8 +20,12 @@ import { main } from "../scripts/migrate.js";
 import { requireReadySchema } from "../server/readiness.js";
 import {
   createRetentionSchedule,
+  RETENTION_LOCK_TIMEOUT_MS,
+  RETENTION_STATEMENT_TIMEOUT_MS,
+  retentionPass,
   runRetention,
 } from "../server/ops/retention.js";
+import { tenant } from "../server/db.js";
 import type { Alert } from "../server/ops/alerts.js";
 import { setLogSink } from "../server/logging.js";
 import { lintMigrations } from "../scripts/ops/migrations-lint.js";
@@ -525,6 +529,178 @@ try {
         );
       } finally {
         await broken.stop();
+      }
+    },
+  );
+
+  await check(
+    "retention holds jobs' ACCESS EXCLUSIVE lock only within its bounds: order-path inserts stay fast on a large table, a slow pass aborts and alerts, and a blocked ALTER queues inserts at most the lock timeout (OPS-R10)",
+    async () => {
+      const adminReal = pool(urlFor(real));
+      const owner = pool(migratorUrl);
+      const org = randomUUID(),
+        tenantId = randomUUID();
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      // What an order or a payment does: one jobs insert as the runtime role.
+      const insertJob = async () => {
+        const t = performance.now();
+        await tenant(
+          app,
+          tenantId,
+          (tx) =>
+            tx`insert into jobs(tenant_id,id,kind,dedupe_key,payload)
+               values(${tenantId},${randomUUID()},'kitchen_dispatch',${randomUUID()},'{}')`,
+        );
+        return performance.now() - t;
+      };
+      const jobsLock = async (granted: boolean) => {
+        const [row] = await adminReal`
+          select count(*)::int as n from pg_locks
+          where database = (select oid from pg_database where datname = current_database())
+            and relation = 'public.jobs'::regclass
+            and mode = 'AccessExclusiveLock' and granted = ${granted}`;
+        return row.n > 0;
+      };
+      const waitFor = async (what: string, probe: () => Promise<boolean>) => {
+        const deadline = Date.now() + 10_000;
+        while (!(await probe())) {
+          if (Date.now() > deadline) throw Error(`timed out waiting: ${what}`);
+          await sleep(5);
+        }
+      };
+      const bound = RETENTION_LOCK_TIMEOUT_MS + RETENTION_STATEMENT_TIMEOUT_MS;
+      try {
+        await adminReal.begin(async (tx) => {
+          await tx`insert into organizations(id,name) values(${org},'Retention lock fixture')`;
+          await tx`insert into restaurants(id,organization_id,name) values(${tenantId},${org},'Retention lock fixture')`;
+          // A large table retention must keep (recent done jobs, blocked
+          // receipts that never expire) plus 40 expired done jobs.
+          await tx`
+            insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,created_at)
+            select ${tenantId}, gen_random_uuid(), 'kitchen_dispatch', 'keep-' || g, '{}',
+                   case when g % 2 = 0 then 'done' else 'blocked' end,
+                   case when g % 2 = 0 then now() - interval '1 day' else now() - interval '40 days' end
+            from generate_series(1, 200000) g`;
+          await tx`
+            insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,created_at)
+            select ${tenantId}, gen_random_uuid(), 'kitchen_dispatch', 'expired-' || g, '{}',
+                   'done', now() - interval '40 days'
+            from generate_series(1, 40) g`;
+        });
+        await adminReal`analyze jobs`;
+
+        // 1. A real pass over the large table while orders keep inserting.
+        const latencies: number[] = [];
+        let stop = false;
+        const traffic = (async () => {
+          while (!stop) latencies.push(await insertJob());
+        })();
+        const result = await runRetention(owner);
+        stop = true;
+        await traffic;
+        assert.deepEqual(result.failed, []);
+        assert.ok(result.deleted.jobs >= 40);
+        const [kept] = await adminReal`
+          select count(*) filter (where dedupe_key like 'keep-%')::int as kept,
+                 count(*) filter (where dedupe_key like 'expired-%')::int as expired
+          from jobs where tenant_id = ${tenantId}`;
+        assert.deepEqual({ ...kept }, { kept: 200000, expired: 0 });
+        assert.ok(latencies.length > 0, "orders inserted during the pass");
+        assert.ok(
+          Math.max(...latencies) < bound + 500,
+          `inserts stayed under the bound (max ${Math.round(Math.max(...latencies))} ms)`,
+        );
+
+        // 2. A pass whose DELETE outgrows the bound (a 100 ms trigger per
+        // row stands in for a scan of a production-sized table: 40 rows are
+        // 4 s unbounded) aborts at the statement timeout, rolls back, alerts,
+        // and an order that arrives while it holds the lock waits only that
+        // long.
+        await adminReal.unsafe(
+          `create function retention_slow_delete() returns trigger language plpgsql as $f$ begin perform pg_sleep(0.1); return old; end $f$`,
+        );
+        await adminReal.unsafe(
+          `create trigger retention_slow_delete before delete on jobs for each row execute function retention_slow_delete()`,
+        );
+        await adminReal`
+          insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,created_at)
+          select ${tenantId}, gen_random_uuid(), 'kitchen_dispatch', 'slow-' || g, '{}',
+                 'done', now() - interval '40 days'
+          from generate_series(1, 40) g`;
+        const alerts: Alert[] = [];
+        lines.length = 0;
+        const slowPass = retentionPass(owner, async (a) => void alerts.push(a));
+        await waitFor("retention holds the jobs lock", () => jobsLock(true));
+        const waited = await insertJob();
+        const slow = await slowPass;
+        assert.deepEqual(slow?.failed, ["jobs"]);
+        assert.ok(
+          lines.some(
+            (l) =>
+              l.includes('"retention_table_failed"') &&
+              l.includes('"statement_timeout"'),
+          ),
+        );
+        assert.deepEqual(
+          alerts.map((a) => a.body),
+          ["retention_failed tables=jobs"],
+        );
+        assert.ok(
+          waited >= 200,
+          `the insert really waited behind retention's lock (${Math.round(waited)} ms)`,
+        );
+        assert.ok(
+          waited < bound + 500,
+          `the insert waited at most the bound (${Math.round(waited)} ms, unbounded 4000 ms)`,
+        );
+        const [slowLeft] = await adminReal`
+          select count(*)::int as n,
+                 (select relforcerowsecurity from pg_class where oid = 'public.jobs'::regclass) as forced
+          from jobs where tenant_id = ${tenantId} and dedupe_key like 'slow-%'`;
+        assert.deepEqual(
+          { ...slowLeft },
+          { n: 40, forced: true },
+          "the aborted batch rolled back, FORCE included",
+        );
+        await adminReal.unsafe(`drop trigger retention_slow_delete on jobs`);
+        await adminReal.unsafe(`drop function retention_slow_delete()`);
+
+        // 3. While a long reader (the nightly pg_dump) holds ACCESS SHARE,
+        // the ALTER waits; inserts queue behind it at most the lock timeout.
+        const holder = pool(urlFor(real), 1);
+        let release!: () => void;
+        const released = new Promise<void>((r) => (release = r));
+        let holding!: () => void;
+        const holds = new Promise<void>((r) => (holding = r));
+        const held = holder.begin(async (tx) => {
+          await tx`lock table jobs in access share mode`;
+          holding();
+          await released;
+        });
+        await holds;
+        const blocked = runRetention(owner);
+        await waitFor("retention's ALTER is waiting", () => jobsLock(false));
+        const queued = await insertJob();
+        const skipped = await blocked;
+        release();
+        await held;
+        assert.deepEqual(skipped.skipped, ["jobs"]);
+        assert.ok(
+          queued < RETENTION_LOCK_TIMEOUT_MS + 400,
+          `an insert queued behind the waiting ALTER for at most the lock timeout (${Math.round(queued)} ms)`,
+        );
+      } finally {
+        await adminReal
+          .unsafe(`drop trigger if exists retention_slow_delete on jobs`)
+          .catch(() => undefined);
+        await adminReal
+          .unsafe(`drop function if exists retention_slow_delete()`)
+          .catch(() => undefined);
+        await adminReal.begin(async (tx) => {
+          await tx`delete from jobs where tenant_id=${tenantId}`;
+          await tx`delete from restaurants where id=${tenantId}`;
+          await tx`delete from organizations where id=${org}`;
+        });
       }
     },
   );
