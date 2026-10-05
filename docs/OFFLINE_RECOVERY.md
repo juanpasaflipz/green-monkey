@@ -54,7 +54,8 @@ backup download of every unsynced record without a session.
 |---|---|
 | New order paid in full in cash | yes |
 | New order paid in full on a separate card terminal (staff confirm approval and type its reference; nothing is verified with the bank) | yes |
-| Item split, settle several orders together, voids, refunds, discounts, drawer open/close/paid-out | no (disabled; item split shows "Dividir por productos no está disponible sin conexión") |
+| Item split | no (disabled; an offline save refuses it with "Dividir por productos no está disponible sin conexión") |
+| Settle several orders together, voids, refunds, discounts, drawer open/close/paid-out | no: unavailable offline (they need the server and fail with a connection message) |
 | Integrated card charges, invoicing | no |
 
 Open-price lines are allowed offline (wave contract D11): the server re-prices them
@@ -75,17 +76,39 @@ so the core fixes can ship without it.
 **Órdenes abiertas** (next to Borradores while offline) lists the server open orders
 cached before the outage, "Órdenes guardadas antes de perder la conexión (HH:mm)"
 (refreshed every 120 s while selling is visible; current and previous business
-day, at most 200), and the orders created on this device. Paying a cached server
-order warns that it may have been paid on another device. A round or payment for a
-local order waits until that order has synced (it is never sent to another order);
-an archived local order makes its dependents go to a manager, who can still
-reconcile their money as a financial-only recovery. A payment that would exceed the
-server balance at sync (for example because the table was paid on another device)
-is refused and shown for review; it is never partially applied. A manager can
-reconcile an offline payment to its order, recording it in the original drawer even
-if that drawer is closed, and the order stays a normal order. Local orders are only
-changed through offline records, even after the connection returns; once their
-record syncs, selling continues on the server order.
+day, at most 200), and the orders created on this device. Every server order
+selling handles online (send, round, payment, resume) is also stored in that cache
+at once, so the order on screen when the connection drops can be paid offline at
+its current balance; an older copy never replaces a newer one. Offline, the order
+on screen shows the cached copy plus this device's rounds and payments that copy
+does not contain yet. The server lists, with each cached order, the tenders and
+offline records it already contains, so a record is never counted twice and never
+dropped, whatever the device clock says. Money another employee collected on this
+device (before a shift change) counts too. Paying a cached server order warns that
+it may have been paid on another device.
+
+A round or payment for a local order waits until that order has synced (it is
+never sent to another order). A payment that would exceed the server balance at
+sync (for example because the table was paid on another device) is refused and
+shown for review; it is never partially applied. Local orders are only changed
+through offline records, even after the connection returns; once their record
+syncs, selling continues on the server order. While an offline payment for an
+order is still unresolved on this device, charging that order online is refused
+("Esta orden tiene un pago por confirmar…"), and selling reads the order again as
+soon as the payment syncs, so the guest is never charged twice.
+
+A manager reconciles an offline payment (see Review below):
+
+- into its order when it fits the balance, recording it in the original drawer
+  even if that drawer is closed; the order stays a normal order;
+- never while its original local order is still queued (on this or another
+  device): the review says "Esperando a que se sincronice la orden original" and
+  offers only archive. Recording the money first would leave the real order to
+  sync unpaid later, counting the revenue twice;
+- as a financial-only recovery only when its order was archived, cancelled, is in
+  recovery or does not exist;
+- never into a paid or closed check (`offline_payment_exceeds_due`); the manager
+  archives it instead.
 
 Before any offline save the device checks: the session may sell (Free selection),
 the offline window is still open by the server-corrected clock, a drawer was open
@@ -148,7 +171,9 @@ Retry policy:
   verifiable, outside the offline window, another drawer open, settings changed,
   payment past the balance…) mark a record **Requiere revisión**.
 - Synced and archived rows are kept 7 days on the device, then pruned. Unresolved
-  rows are never pruned.
+  rows are never pruned. Background passes (every 10 s) prune at most once an hour;
+  reconnect and manual passes always do. Pruning walks indexes and keys only, so it
+  never reads the cached menu or open orders.
 
 The server re-prices every line from today's catalog and refuses any total or
 product-revision mismatch (`price_conflict`, `offline_catalog_changed`); it never
@@ -176,8 +201,11 @@ tenant/employee/device and lease match, currency, drawer of that device, amounts
 and separately whether it is **eligible** to sync automatically (not archived, same
 employee on the same device, session not revoked, employee and device active,
 selling allowed, time within tolerance, that drawer still open, settings unchanged).
-An ended session (logout, switch) is still valid evidence for the same person on the
-same device; a revoked session needs a manager.
+Under the wave contract (D6) an ended session (logout, switch) is valid evidence
+for the same person on the same device, and only a revoked session needs a manager.
+That depends on access's change: on this branch logout still marks the session
+revoked, so records left by a logged-out session go to **Requiere revisión**
+(`offline_conflict`) and a manager reconciles or archives them until access merges.
 
 On the Sync screen a manager can:
 
@@ -261,6 +289,22 @@ the decision columns of reviews; it cannot delete any of them.
 
 ## Wave-1 integration notes
 
+Rollout: a tab still running a pre-026 revision on the same device (for example in
+a private window without a service worker, or during the first update) treats every
+status other than "synced" as unsynced and can post an archived row to `/api/sync`,
+rewriting it to pending or conflict. Such a row keeps its `archivedAt`, so it still
+counts as resolved for drawer close and updates, and the next sync pass of the new
+revision puts its status back to archived. Close old tabs after the update.
+
+Reverting the table-service series (wave contract §8.1): revert every commit whose
+subject starts with `feat(offline-tables)`, `style(offline-tables)`,
+`docs(offline-tables)`, `fix(offline-tables)` or `test(offline-tables)`, newest
+first. The core commit `0604935` (prettier formatting) sits between two of them and
+touches `tests/offline-records.test.ts`, so the last revert (`cf69988`) stops with
+one conflict in that file; resolve it by taking the side being reverted to, which
+drops the table-service record tests. Checked in a scratch clone: the remaining
+core then typechecks, lints and passes every unit test.
+
 These are in-wave stand-ins defined by the wave contracts, replaced at merge:
 `server/compat/offline-access.ts` (access's `leaseForEvidence` with lease
 windows), `server/compat/offline-service.ts` (service's check lifecycle, kitchen
@@ -285,7 +329,12 @@ TEST_BASE_URL=http://127.0.0.1:<port> TEST_PRODUCTION=1 npx playwright test
   clock offset, provisional numbers), `tests/offline-net.test.ts` (timeouts, error
   kinds, HTML 502, bounded retry), `tests/offline-records.test.ts` (v3 contracts,
   time rule, backup v3), `tests/offline-clock.test.ts`, `tests/sw-shell.test.ts`
-  (the real `public/sw.js` in `node:vm`).
+  (the real `public/sw.js` in `node:vm`), `tests/offline-store.test.ts` (sale
+  builder preconditions, exactly-once local writes, the sync loop's dependency,
+  retry, classification and pruning rules) and `tests/offline-tables-store.test.ts`
+  (table-service preconditions I8, I9, I13, I14, atomic checkouts, projections with
+  a skewed clock, the open-orders cache and the online payment guard), both against
+  an in-memory store (`tests/offline-fake-db.ts`).
 - Database: `tests/offline-sync-db.ts` (exactly-once sync, archive races, repricing,
   drawer guard, clock tolerance, lease-cited config, review lane decisions, device
   prefixes, RLS, grants, immutability, pagination, the ping) and the updated
