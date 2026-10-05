@@ -1,0 +1,89 @@
+name: Backup
+# The run name carries the environment, so the uptime workflow can tell a
+# production backup from a staging one (OPS-R7).
+run-name: Backup ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
+# Encrypted off-platform logical backups (DB-2/OPS-5): production daily at
+# 03:30 America/Mexico_City (09:30 UTC), staging weekly. Daily objects expire
+# after 35 days and monthly ones after 1,900 days (R2 lifecycle rules,
+# scripts/ops/provision-r2.sh). The private age key never enters GitHub.
+on:
+  schedule:
+    - cron: "30 9 * * *"
+    - cron: "0 10 * * 0"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to back up
+        type: choice
+        options: [production, staging]
+        default: staging
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: backup-${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
+  cancel-in-progress: false
+jobs:
+  backup:
+    # Schedules stay off until provisioning lists the environment in the
+    # repository variable OPS_LIVE_ENVIRONMENTS (environment-level variables
+    # are not visible to a job-level condition); a manual dispatch always runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.schedule == '30 9 * * *' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'production')) ||
+      (github.event.schedule == '0 10 * * 0' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'staging'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
+    env:
+      BACKUP_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # pg_dump runs natively: the postgres:18 image purges ca-certificates,
+      # so sslrootcert=system would find no trust store inside it (OPS-R5).
+      - name: Tools (age, PostgreSQL 18 client)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age postgresql-client-18
+          /usr/lib/postgresql/18/bin/pg_dump --version
+          aws --version
+      - name: Dump, encrypt, upload and verify
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_PG_DUMP: /usr/lib/postgresql/18/bin/pg_dump
+          AGE_RECIPIENTS_FILE: ops/backup/age-recipients.txt
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          grep -q '^age1' ops/backup/age-recipients.txt || { echo "no age recipient committed"; exit 1; }
+          npm run -s ops:backup
+      - name: Alert on failure
+        if: failure()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          message="backup_failed env=$BACKUP_ENV run=$RUN_URL"
+          if [ -n "$ALERT_WEBHOOK_URL" ]; then
+            curl -fsS --max-time 10 -H "Title: Green Monkey $BACKUP_ENV: backup failed" \
+              -H "Priority: high" -H "Tags: warning" -d "$message" "$ALERT_WEBHOOK_URL" || true
+          fi
+          title="ops-alert: $BACKUP_ENV"
+          gh label create ops-alert -R "$GITHUB_REPOSITORY" --color B60205 \
+            --description "Automated operations alert" --force >/dev/null 2>&1 || true
+          number=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --label ops-alert --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$number" ]; then gh issue comment -R "$GITHUB_REPOSITORY" "$number" --body "$message"
+          else gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --label ops-alert --body "$message"; fi

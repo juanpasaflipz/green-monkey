@@ -1,0 +1,14 @@
+# `railway up` uploads the working tree; never ship local secrets or history.
+.history/
+.env
+.env.*
+**/.env*
+!.env.example
+work/
+docs/evidence/
+playwright-report/
+test-results/
+*.dump
+*.age
+*.pem
+*.key

@@ -102,21 +102,44 @@ The test environment file must include `TEST_DATABASE_URL` and the exact pooled 
 
 ## Deployment
 
-Railway builds the Dockerfile with the committed lockfile, executes the migration runner before starting the compiled API, and checks `/api/health`. Set `NODE_ENV=production`, `PORT=3001`, `APP_URL` to the staging origin, runtime `DATABASE_URL`, `PG_APP_USER`, a generated `JWT_SECRET`, and the separate migration URL. Optional providers remain disabled.
+Prepared, not yet cut over (the cutover is an operator step with the owner's
+consent: [RUNBOOK.md](RUNBOOK.md) "Staging cutover"). After the cutover:
 
-The current one-service pre-deploy setup makes the migration URL available in the container environment; the web application never instantiates that connection or falls back to it. A separately scoped migration job is preferable before production qualification.
+- Merging to `main` runs Qualification; on success `.github/workflows/deploy.yml`
+  applies `.railway/railway.ts` (non-destructive changes only), stamps
+  `build-info.json` with the commit, uploads the `worker` service (its
+  preDeploy runs `migrate.js --grants --retention` as `gm_migrator`) and then
+  `web`, and runs `scripts/ops/smoke.mjs` until `/api/version` reports the
+  merged SHA. Nobody uploads from a workstation and nobody types
+  `RAILWAY_GIT_COMMIT_SHA` by hand any more; delete that service variable.
+- `web` holds only `DATABASE_URL`/`PG_APP_USER` (runtime role), `JWT_SECRET`,
+  Google OAuth, `STRIPE_WEBHOOK_SECRET` and, with billing enabled,
+  `BILLING_DATABASE_URL`. It refuses to start with `MIGRATION_DATABASE_URL`,
+  `BACKUP_DATABASE_URL` or `STRIPE_SECRET_KEY` when `APP_ENV=staging`.
+- `worker` (new service, no public domain) holds `MIGRATION_DATABASE_URL`
+  (`gm_migrator`, direct endpoint), `PG_APP_USER`, `BILLING_DATABASE_URL`, the
+  Stripe sandbox keys and `ALERT_WEBHOOK_URL`. `web` reaches its `/healthz` at
+  `http://worker.railway.internal:3002` (`WORKER_URL`) for `/api/ops/status`.
+- Health: `/api/health` (schema ready, not draining); public status:
+  `/api/ops/status`; client-address probe: `/api/ops/diagnostics/ip`, which the
+  CD smoke uses to prove Railway's proxy hop is trusted and spoofed headers are
+  not.
 
-Use a staging-scoped `RAILWAY_TOKEN` for CLI uploads. The supplied workspace token worked through the API, but CLI workspace operations returned unauthorized even with CLI 5.54.0. There is no need to change the workspace token to deploy with the scoped token.
+Until the cutover, the existing one-service setup described in the checkpoints
+above remains what is deployed; its `railway.json` stops being read on
+2026-12-01, so the cutover must happen before then.
 
-```sh
-railway up --detach --project 9bd572ca-7c0b-41f8-8553-e69253e8e9e8 \
-  --environment 9e87eafe-e620-40ad-98c2-2c541e1afaf7 \
-  --service cf91a7f0-e533-4354-baea-d5d56df6d3d9
-```
+## Credential rotation log
 
-The initial upload used an explicit source-only allowlist: application source, build configuration, migrations, scripts and lockfile. Environment files, local work, Git history and source snapshots were excluded. Its local SHA-256 manifest is in `work/staging-upload-manifest.json`. This was a local source upload, not a GitHub push; `/api/version` may report `unknown` for the Git commit.
+Rotations are recorded here without secrets (date, role, action, operator).
+The procedure is [RUNBOOK.md](RUNBOOK.md) "Credential rotation"
+(`scripts/ops/rotate-db-login.ts`, dual role, zero downtime).
 
-Railway CLI reports that `railway.json` remains supported until December 1, 2026 but is deprecated in favor of its new infrastructure-as-code format. The successful staging build used the existing configuration. Migrate and validate that format before the deadline.
+| Date | Role | Action | Operator |
+| --- | --- | --- | --- |
+| — | `gm_staging_app` | Exposed in a working session (September 30); rotation pending at cutover step 9 | — |
+| — | `gm_staging_billing` | Exposed in a working session (September 30); replace with a rotated billing login at cutover step 10 | — |
+| — | `neondb_owner` | Rotate after the cutover and keep offline (cutover step 11) | — |
 
 ## Checks and evidence
 

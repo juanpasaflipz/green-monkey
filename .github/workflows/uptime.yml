@@ -1,0 +1,67 @@
+name: Uptime
+# Hourly external check (OPS-4): production /api/ops/status must be ok and not
+# degraded (database, schema, worker), and the last successful production
+# backup must be under 26 hours old. Alerts the ntfy topic and opens or
+# updates an "ops-alert: production" issue. Railway does not monitor the
+# healthcheck after a deploy goes live, so this runs outside Railway.
+# The hourly schedule stays off until production is listed in the repository
+# variable OPS_LIVE_ENVIRONMENTS (PROVISIONING.md §7); a dispatch always runs.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+  issues: write
+concurrency:
+  group: uptime
+  cancel-in-progress: true
+jobs:
+  check:
+    if: github.event_name == 'workflow_dispatch' || contains(vars.OPS_LIVE_ENVIRONMENTS, 'production')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: production
+    steps:
+      - name: Service status
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          body=$(curl -fsS --max-time 15 "$APP_URL/api/ops/status")
+          node -e '
+            const s = JSON.parse(process.argv[1]);
+            console.log(JSON.stringify({ ok: s.ok, degraded: s.degraded, db: s.db, schema: s.schema, worker: s.worker?.status, commit: s.commit }));
+            if (s.ok !== true || s.degraded !== false) process.exit(1);' "$body"
+      - name: Backup freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Production runs only: staging's weekly run and staging dispatches
+          # must not hide a failing production backup (OPS-R7). backup.yml's
+          # run-name is "Backup <environment>".
+          created=$(gh run list -R "$GITHUB_REPOSITORY" --workflow backup.yml --status success \
+            --limit 50 --json createdAt,event,displayTitle \
+            --jq '[.[] | select((.event == "schedule" or .event == "workflow_dispatch") and .displayTitle == "Backup production")][0].createdAt')
+          [ -n "$created" ] || { echo "no successful production backup run"; exit 1; }
+          age=$(( $(date -u +%s) - $(date -u -d "$created" +%s) ))
+          echo "last successful production backup run ${age}s ago"
+          [ "$age" -lt 93600 ] || { echo "backup older than 26 h"; exit 1; }
+      - name: Alert
+        if: failure()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          message="uptime_check_failed env=production run=$RUN_URL"
+          if [ -n "$ALERT_WEBHOOK_URL" ]; then
+            curl -fsS --max-time 10 -H "Title: Green Monkey production: uptime check failed" \
+              -H "Priority: urgent" -H "Tags: rotating_light" -d "$message" "$ALERT_WEBHOOK_URL" || true
+          fi
+          title="ops-alert: production"
+          gh label create ops-alert -R "$GITHUB_REPOSITORY" --color B60205 \
+            --description "Automated operations alert" --force >/dev/null 2>&1 || true
+          number=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --label ops-alert --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$number" ]; then gh issue comment -R "$GITHUB_REPOSITORY" "$number" --body "$message"
+          else gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --label ops-alert --body "$message"; fi

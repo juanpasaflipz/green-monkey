@@ -1,0 +1,140 @@
+name: Deploy
+# Staging deploys automatically after Qualification passes on main.
+# Production deploys only by manual dispatch of a SHA that is already live on
+# staging, with a typed confirmation and a service-hours guard (OPS-1/OPS-13).
+on:
+  workflow_run:
+    workflows: [Qualification]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Full commit SHA on main that is live on staging
+        required: true
+        type: string
+      confirm:
+        description: "Type exactly: deploy <first 7 characters of sha> to production"
+        required: true
+        type: string
+      allow_service_hours:
+        description: Allow 12:00-23:59 America/Mexico_City (restaurant service hours)
+        type: boolean
+        default: false
+      railway_config:
+        description: >-
+          Railway IaC sync. auto = apply only when the SHA is the head of main
+          (a rollback keeps the current configuration); apply = always; skip = never
+        type: choice
+        options: [auto, apply, skip]
+        default: auto
+permissions:
+  contents: read
+concurrency:
+  group: deploy-${{ github.event_name == 'workflow_dispatch' && 'production' || 'staging' }}
+  cancel-in-progress: false
+jobs:
+  staging:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      statuses: write
+    environment:
+      name: staging
+      url: ${{ vars.APP_URL }}
+    env:
+      SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.SHA }}
+      - uses: ./.github/actions/deploy
+        with:
+          sha: ${{ env.SHA }}
+          railway-token: ${{ secrets.RAILWAY_TOKEN }}
+          railway-cli-version: ${{ vars.RAILWAY_CLI_VERSION }}
+          railway-iac-version: ${{ vars.RAILWAY_IAC_VERSION }}
+          app-url: ${{ vars.APP_URL }}
+      - name: Record staging proof for production
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$SHA" \
+            -f state=success -f context=deploy/staging \
+            -f description="Live and smoke-tested on staging" >/dev/null
+
+  production:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+      statuses: read
+    environment:
+      name: production
+      url: ${{ vars.APP_URL }}
+    env:
+      SHA: ${{ inputs.sha }}
+    steps:
+      - name: Guard
+        id: guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIRM: ${{ inputs.confirm }}
+          ALLOW_SERVICE_HOURS: ${{ inputs.allow_service_hours }}
+          RAILWAY_CONFIG: ${{ inputs.railway_config }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "sha must be a full lowercase commit"; exit 1; }
+          [ "$CONFIRM" = "deploy ${SHA:0:7} to production" ] || { echo "confirmation phrase mismatch"; exit 1; }
+          probe="$RUNNER_TEMP/guard" && mkdir -p "$probe" && cd "$probe"
+          git init -q && git remote add origin "https://github.com/$GITHUB_REPOSITORY"
+          git -c "http.extraheader=AUTHORIZATION: bearer $GH_TOKEN" fetch -q origin main
+          git merge-base --is-ancestor "$SHA" origin/main || { echo "sha is not on main"; exit 1; }
+          state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" \
+            --jq '[.[] | select(.context == "deploy/staging")][0].state')
+          [ "$state" = "success" ] || { echo "sha was never live on staging"; exit 1; }
+          # Mexico City has no DST since 2022 (UTC-6 year-round).
+          hour=$(TZ=America/Mexico_City date +%H)
+          if [ "$hour" -ge 12 ] && [ "$ALLOW_SERVICE_HOURS" != "true" ]; then
+            echo "refused during service hours (12:00-23:59 America/Mexico_City)"; exit 1
+          fi
+          # A rollback (any SHA behind main's head) keeps the live Railway
+          # configuration: an older railway.ts omits newer variables, which
+          # Railway would plan as deletions and apply --yes refuses (OPS-R4).
+          # >>> iac-sync-decision (executed by tests/workflows.test.ts)
+          head=$(git rev-parse origin/main)
+          case "${RAILWAY_CONFIG:-auto}" in
+            auto) if [ "$SHA" = "$head" ]; then sync=true; else sync=false; fi ;;
+            apply) sync=true ;;
+            skip) sync=false ;;
+            *) echo "railway_config must be auto, apply or skip"; exit 1 ;;
+          esac
+          echo "Railway IaC sync: $sync (sha is main head: $([ "$SHA" = "$head" ] && echo yes || echo no))"
+          echo "sync_config=$sync" >> "$GITHUB_OUTPUT"
+          # <<< iac-sync-decision
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ env.SHA }}
+          fetch-depth: 0
+      - uses: ./.github/actions/deploy
+        with:
+          sha: ${{ env.SHA }}
+          sync-config: ${{ steps.guard.outputs.sync_config }}
+          railway-token: ${{ secrets.RAILWAY_TOKEN }}
+          railway-cli-version: ${{ vars.RAILWAY_CLI_VERSION }}
+          railway-iac-version: ${{ vars.RAILWAY_IAC_VERSION }}
+          app-url: ${{ vars.APP_URL }}
+      - name: Tag the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="prod-$(date -u +%Y%m%d-%H%M)-${SHA:0:7}"
+          git tag "$tag" "$SHA"
+          git push origin "$tag"
+          gh release create "$tag" --target "$SHA" --generate-notes --title "$tag"

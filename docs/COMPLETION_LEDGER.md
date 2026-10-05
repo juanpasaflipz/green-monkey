@@ -68,7 +68,7 @@ unverified unless a dated checkpoint explicitly records it.
 | SMS/WhatsApp and voice operations | Optional configured module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | AI receipt/menu parsing and recipe matching | 4–5, optional assist; manual flow required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Kiosk suggestions, menu boards/displays | Optional follow-on | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
-| Incident monitoring / AI sentinel | 6 baseline; advanced optional module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Safe error IDs, health/version endpoints, explicit capabilities. Metrics/alerts and incident workflow pending. |
+| Incident monitoring / AI sentinel | 6 baseline; advanced optional module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Partial: structured logs and request ids, `/api/ops/status`, watchdog and dead-job alerts, optional Sentry; locally verified 2026-10-05 (`tests/ops-http.test.ts`, `tests/drain-http.ts`, `tests/browser/ops.spec.ts`). Hourly uptime and backup-freshness workflow written; pending its first scheduled run after provisioning. Alert channel setup and incident staffing pending; AI sentinel not implemented. |
 | Financing, settlement/disbursement, marketing/site fragments | Outside base scope | See DELIVERY_STATUS.md and corresponding M1–M9 section | Excluded from base POS per approved matrix. |
 
 ## Acceptance inventory
@@ -102,7 +102,7 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | CORE-07 | partial | Recipe/price edits retain historical snapshots; new orders retain restaurant configuration. Tax/offline conflict acceptance pending. |
 | CORE-08 | partial | Device PIN, CSRF and cashier management denial tested; approval and membership lifecycle pending. |
 | CORE-09 | partial | Two-tenant RLS/FK and public QR tamper checks; invoice/webhook/print/upload/org routes pending. |
-| CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; Neon pooled/direct pending. |
+| CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; tenant transactions set `statement_timeout` with the tenant in one statement, role defaults via `ALTER ROLE` and verified TLS off-host (`tests/ops-db.ts`, `tests/provision-db.ts`, 2026-10-05); Neon pooled/direct pending. |
 | CORE-11 | partial | Cash refund reason, original tender immutability and no automatic stock return; item void/approval/provider cases pending. |
 | OFF-01 | partial | Compiled offline refresh/reconnect and duplicate replay pass; complete browser close/reopen matrix remains. |
 | OFF-02 | partial | Lost committed cash response, exact payment fingerprint/status and interrupted tab recovery pass; full process-restart HTTP matrix remains. |
