@@ -16,7 +16,7 @@ never computes IVA: it takes fiscal's `fiscalSummary` totals as input.
 
 | Module | Contents |
 | --- | --- |
-| `shared/reports.ts` | `LIMITS` (92-day aggregates, 31-day lists, 500 rows per page, 20,000 export rows); `parseRange`, `isBusinessDate`, `addDays`, `rangeDates`, `quickRange` (Hoy, Ayer, Esta semana, Semana pasada, Este mes, Mes pasado; weeks start Monday); `currentBusinessDate`, `wideWindow`, and `wallClockBusinessDate` / `wallClockHour` (the SQL day formula in JS); `BREAKDOWNS`, `EXCEPTION_KINDS`, `DIFFERENCE_KINDS`, `AUDIT_GROUPS`, `auditGroupPrefixes`, `parseExceptionKinds`; the query and command schemas; `encodeReportCursor` / `decodeReportCursor`; `averageTicket`, `bps`, `aggregateInt`; `composeSalesSummary` and `reconciliationChecks`; `hourRows`, `exceptionSummary`, `exceptionTotals`; `drawerRow`, `drawerSummary`, `corteAccess`, `buildCorteDocument`, `folioRanges`, `otherDayDrawerCollections`, `buildDayCorteDocument`; and the wire types (`SalesSummary`, `DrawerRow`, `CorteDocument`, `DayCorteDocument`, …). |
+| `shared/reports.ts` | `LIMITS` (92-day aggregates, 31-day lists, 500 rows per page, 20,000 export rows); `parseRange`, `isBusinessDate`, `addDays`, `rangeDates`, `quickRange` (Hoy, Ayer, Esta semana, Semana pasada, Este mes, Mes pasado; weeks start Monday); `currentBusinessDate`, `wideWindow`, and `wallClockBusinessDate` / `wallClockHour` (the SQL day formula in JS); `BREAKDOWNS`, `EXCEPTION_KINDS`, `DIFFERENCE_KINDS`, `AUDIT_GROUPS`, `auditGroupPrefixes`, `parseExceptionKinds`; the query and command schemas; `encodeReportCursor` / `decodeReportCursor`; `averageTicket`, `bps`, `aggregateInt`; `composeSalesSummary` and `reconciliationChecks`; `hourRows`, `exceptionSummary`, `exceptionTotals`; `drawerRow`, `drawersUpTo`, `drawerSummary`, `corteAccess`, `buildCorteDocument`, `folioRanges`, `otherDayDrawerCollections`, `buildDayCorteDocument`; and the wire types (`SalesSummary`, `DrawerRow`, `CorteDocument`, `DayCorteDocument`, …). |
 | `shared/csv.ts` | `toCsv`, `csvCell`, `moneyCsv`, `percentCsv`, `dateTimeCsv`, `csvFileName`. |
 
 Tests: `tests/reports.test.ts` (`npm test`), with the random sales world and reference
@@ -36,6 +36,11 @@ the settings in force at that instant. `wallClockBusinessDate` is that formula i
 test checks it against `businessDate()` (the rule orders are stamped with) on 10,000 random
 instants and minute by minute across the 2026 DST changes in America/Tijuana. An event at
 exactly the cutoff instant belongs to the new day.
+
+`wideWindow` widens the range by 3 days on each side under the current settings, so it holds
+every event of the range under any past settings. A deterministic test pins the worst cases
+(UTC+14 with cutoff 00:00 against UTC−12 with cutoff 23:59, in both directions): their edge
+instants fall outside a ±2-day window, so the margin cannot be narrowed.
 
 ### Metric arithmetic and checks
 
@@ -97,7 +102,9 @@ for the next wave's DB suite (`tests/reports-db.ts`, spec §7.2) to show.
 ### Cortes
 
 - **Corte X** (open drawer): expected cash is `opening + cash sales + cash tips − cash
-  refunds − paid-outs`. The terminal section shows payments, tips, refunds and net.
+  refunds − paid-outs + pay-ins`. No command records a pay-in today (`payIns` is 0), but the
+  cash section and `DrawerRow` carry `payIns`, so the printed figures always add up to expected
+  cash. The terminal section shows payments, tips, refunds and net.
 - **Corte Z** (closed drawer): every figure as of close. Cash and terminal tenders recorded
   after the close (offline late sync, LD-7) are left out of sales, tips, the terminal net and
   the payment count. They are shown separately as `lateCash` and `lateTerminal` ("Registrado
@@ -107,12 +114,20 @@ for the next wave's DB suite (`tests/reports-db.ts`, spec §7.2) to show.
   the reported total and the difference agree on one document.
 - **Cortes table rows** (`DrawerRow`) cover every tender of the drawer, late ones included, and
   disclose the late parts in `lateCash` / `lateTerminal`.
+- **Drawers of a past range.** `drawersUpTo(rows, to)` keeps the drawers opened on or before
+  `to`. `composeSalesSummary` (the Cajas card) and `buildDayCorteDocument` apply it, because
+  drawerList also returns every drawer that is open now. Without it, a corte del día for the 5th
+  printed on the 12th would list the 12th's open drawer and print "Hay cajas abiertas". A drawer
+  opened before the range and still open stays, since it may hold the range's collections.
 - **Blind count slip** (cashier or server who may not see expected cash): only the counted
   cash, the terminal section (as of close, with `lateTerminal`) and the payment count. Expected
-  cash, cash sales, refunds, paid-outs, the difference, the controls, the folios, late cash and
-  the review note are never in the document.
+  cash, cash sales, refunds, paid-outs, pay-ins, the difference, the controls, the folios, late
+  cash and the review note are never in the document.
 - `corteAccess` applies the spec §4.7 role rules, including the 12-hour own-device window
-  for cashiers and servers.
+  for cashiers and servers, plus the §2.12 condition "own device's **last** drawer": a cashier
+  or server may print a corte Z or count slip only when `drawer.latestOnDevice` is true. So on a
+  shared device, the next shift cannot print the previous shift's counted cash. Owners and
+  managers print any closed drawer.
 
 ### CSV
 
@@ -158,13 +173,28 @@ for the next wave's DB suite (`tests/reports-db.ts`, spec §7.2) to show.
   `src/features/reports/csv.ts` adds `downloadCsv` and the dataset column lists on top of it.
 - **Settings argument.** `wideWindow` and `currentBusinessDate` take `{timezone, cutoff}`, not
   a `Session`. The client range picker needs them too.
+- **Pay-ins.** The drawerList `cash_movements` lateral must select pay-ins (Σ positive amounts)
+  apart from paid-outs (−Σ negative amounts), into `DrawerFacts.payIns`. The printed corte shows
+  a pay-in row ("Entradas de efectivo", a new `reports*` key) only when `payIns ≠ 0`.
+- **Last drawer on the device.** `assertCorteAccess` passes `drawer.latestOnDevice = not exists
+  (select 1 from cash_sessions n where n.device_id = d.device_id and (n.opened_at, n.id) >
+  (d.opened_at, d.id))`.
+- **Past ranges.** The server may pass drawerList rows unchanged: `composeSalesSummary` and
+  `buildDayCorteDocument` drop the drawers opened after the range themselves.
+- **Refunds of orders without a ticket.** S4 `fiscal_amount` stays "every refund with
+  `created_at ≥ fiscal_epoch()`", ticketed order or not. Fiscal's `recordRefundTax` (fiscal
+  spec §4.7 step 4) also writes adjustments for refunds of orders without a ticket (kill switch,
+  pre-epoch order, pre-ticket item refund), from the order's provisional tax groups, and
+  `fiscalSummary` sums every adjustment. So `refunds_vs_fiscal` holds for them. The 400-world
+  property includes such refunds in more than 40 worlds. Only a batchless refund from a deploy
+  overlap, which has no adjustment, fails the check, on purpose (spec DB test 37).
 
-## Open question for the lead (before the server wave)
+## Open questions for the lead (before the server wave)
 
 **Blind count and the drawer row.** For an open drawer and a viewer who may not see expected
 cash during the shift, `drawerRow()` sets only `expected` to null, as spec §4.5 says. The same
-row still carries `opening`, `cashSales`, `cashTips`, `cashRefunds` and `paidOuts` (non-nullable
-in the spec's `DrawerRow`). Pay-ins are always 0, so the viewer can add those up to the expected
+row still carries `opening`, `cashSales`, `cashTips`, `cashRefunds`, `paidOuts` and `payIns`
+(non-nullable in the spec's `DrawerRow`), so the viewer can add those up to the expected
 cash. `corteAccess` refuses that viewer the corte X (`reports_corte_hidden`), and discounts'
 `cashSummary` (discounts spec, not on this branch yet) nulls the cash figures, cash tenders, cash
 refunds and movements for blind viewers. Only owners and managers see the
@@ -178,6 +208,11 @@ cobrado. So redacting the row alone would not hide expected cash. The two option
    manager under blind count can still work expected cash out from the tender figures.
 
 The core implements neither yet. The code follows the spec as written.
+
+**Last drawer rule (to confirm).** Spec §4.7 lets a cashier or server print a corte Z of their own
+device closed within 12 hours, while §2.12 says "own device's last drawer, closed ≤ 12 h ago". The
+core applies both, the stricter reading (see Cortes). If the lead decides that §4.7 alone binds,
+drop the `latestOnDevice` check in `corteAccess` and its unit test.
 
 ## Pending (next wave)
 
