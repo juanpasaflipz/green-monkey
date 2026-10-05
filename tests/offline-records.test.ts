@@ -174,6 +174,7 @@ describe("offline record v3 contracts", () => {
     const parsed = recoveryBackupV3.parse(JSON.parse(JSON.stringify(backup)));
     expect(parsed.format).toBe("green-monkey-recovery-v3");
     expect(evidenceKey(parsed)).toBe(evidenceKey(recoveryBackupV3.parse(backup)));
+    expect(recoveryBackup.parse(backup).format).toBe("green-monkey-recovery-v3");
     expect(
       recoveryBackup.parse({
         format: "green-monkey-offline-v1",

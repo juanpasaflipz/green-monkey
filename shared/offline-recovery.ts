@@ -331,7 +331,11 @@ export const recoveryBackupV3 = z
   })
   .strict();
 
-export const recoveryBackup = z.union([recoveryBackupV2, recoveryBackupV1]);
+export const recoveryBackup = z.union([
+  recoveryBackupV3,
+  recoveryBackupV2,
+  recoveryBackupV1,
+]);
 export type RecoveryBackup = z.infer<typeof recoveryBackup>;
 
 // Object property order is not evidence. Backups may be serialized by a different
