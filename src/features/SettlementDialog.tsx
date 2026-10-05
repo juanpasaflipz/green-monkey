@@ -49,6 +49,8 @@ export function SettlementDialog({
       return null;
     }
   })();
+  /** SERVICE-MONEY-4: short cash is caught here, before the server refuses it. */
+  const short = received !== null && received < total;
   return (
     <Modal title={t("settleOrders")} close={close} closeLabel={t("close")}>
       <form
@@ -96,6 +98,11 @@ export function SettlementDialog({
               : "—"}
           </strong>
         </div>
+        {short && (
+          <p className="error field-error" role="alert">
+            {translateError("insufficient_cash", locale)}
+          </p>
+        )}
         {error && (
           <p className="error" role="alert">
             {error}
@@ -105,7 +112,7 @@ export function SettlementDialog({
           variant="primary"
           className="full"
           type="submit"
-          disabled={busy}
+          disabled={busy || received === null || short}
         >
           {t("save")}
         </Button>

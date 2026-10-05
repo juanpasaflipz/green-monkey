@@ -1280,7 +1280,16 @@ test("Cobrar juntas keeps the balances it opened with and shows the change", asy
     `#${first.number} · ${money(first.total)}`,
   );
   await expect(dialog).toContainText(money(total));
+  // SERVICE-MONEY-4: short cash is refused before anything is sent.
+  await dialog.getByLabel("Efectivo recibido").fill(String(total / 100 - 1));
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "El efectivo recibido no cubre el importe.",
+  );
+  await expect(
+    dialog.getByRole("button", { name: "Guardar", exact: true }),
+  ).toBeDisabled();
   await dialog.getByLabel("Efectivo recibido").fill(String(total / 100 + 20));
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
   await expect(dialog.locator(".row", { hasText: "Cambio" })).toContainText(
     "$20.00",
   );
