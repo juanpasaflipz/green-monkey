@@ -20,6 +20,7 @@ import {
   verifyApproval,
   voidLines,
 } from "../server/voids.js";
+import { deviceScope } from "../server/access.js";
 import type { Order, Session } from "../shared/domain.js";
 import { isolatedTarget } from "./isolated-target.js";
 
@@ -182,7 +183,34 @@ try {
     await admin.begin(async (tx) => {
       await tx`select set_config('app.tenant_id',${tenantId},true)`;
       await tx`update employees set failed_attempts=0,locked_until=null where id=${managerId}`;
+      await tx`delete from pin_throttles where employee_id=${managerId}`;
     });
+  });
+
+  await test("approval by employeeId works", async () => {
+    const o = await newOrder();
+    await rejects(
+      voidAs(
+        cashier,
+        o.id,
+        voidBody(o, 1, { approval: { employeeId: managerId, secret: "0000" } }),
+      ),
+      "approval_denied",
+    );
+    const v = await voidAs(
+      cashier,
+      o.id,
+      voidBody(o, 1, {
+        approval: { employeeId: managerId, secret: managerPin },
+      }),
+    );
+    assert.equal(v.voids![0].approverName, "Gerente prueba");
+    // The successful PIN cleared the failure on this device.
+    const [row] = await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id',${tenantId},true)`;
+      return tx`select failures from pin_throttles where employee_id=${managerId} and scope=${deviceScope(cashier.deviceId)}`;
+    });
+    assert.equal(row.failures, 0);
   });
 
   await test("approved void removes unpaid units, returns stock before preparation, and records evidence", async () => {
@@ -368,25 +396,40 @@ try {
     assert.equal(v.voids!.length, 1);
   });
 
-  await test("failed PINs lock the employee and the count survives the rejected request", async () => {
-    for (let i = 0; i < MAX_FAILED_ATTEMPTS; i++)
+  await test("failed PINs lock the employee on this device and the count survives the rejected request", async () => {
+    // SEC-2: the lock is per employee and device scope; the failure that reaches
+    // the threshold already answers pin_locked.
+    for (let i = 0; i < MAX_FAILED_ATTEMPTS - 1; i++)
       await rejects(
         verifyApproval(sql, cashier, { login: managerLogin, secret: "9999" }),
         "approval_denied",
       );
+    await rejects(
+      verifyApproval(sql, cashier, { login: managerLogin, secret: "9999" }),
+      "pin_locked",
+    );
     await rejects(verifyApproval(sql, cashier, approval), "pin_locked");
     const [row] = await admin.begin(async (tx) => {
       await tx`select set_config('app.tenant_id',${tenantId},true)`;
-      return tx`select failed_attempts,locked_until>now() as locked,
-          locked_until<=now()+make_interval(mins=>${LOCK_MINUTES}) as bounded
-        from employees where id=${managerId}`;
+      return tx`select t.failures,t.lock_level,t.locked_until>now() as locked,
+          t.locked_until<=now()+make_interval(mins=>${LOCK_MINUTES}) as bounded,
+          e.failed_attempts
+        from pin_throttles t join employees e on e.tenant_id=t.tenant_id and e.id=t.employee_id
+        where t.employee_id=${managerId} and t.scope=${deviceScope(cashier.deviceId)}`;
     });
-    assert.equal(row.failed_attempts, MAX_FAILED_ATTEMPTS);
+    assert.equal(row.failures, 0);
+    assert.equal(row.lock_level, 1);
     assert.equal(row.locked, true);
     assert.equal(row.bounded, true);
-    // Sign-in uses the same check and also refuses while locked.
+    assert.equal(row.failed_attempts, MAX_FAILED_ATTEMPTS);
+    // Sign-in on the same device uses the same check and also refuses while locked.
     const check = await run(owner, (tx) =>
-      checkEmployeeSecret(tx, managerLogin, managerPin),
+      checkEmployeeSecret(
+        tx,
+        managerLogin,
+        managerPin,
+        deviceScope(cashier.deviceId),
+      ),
     );
     assert.equal(check.outcome, "locked");
   });
@@ -394,14 +437,18 @@ try {
   await test("a successful PIN clears earlier failures", async () => {
     await admin.begin(async (tx) => {
       await tx`select set_config('app.tenant_id',${tenantId},true)`;
+      await tx`update pin_throttles set failures=3,lock_level=0,locked_until=null,last_failure_at=now()
+        where employee_id=${managerId} and scope=${deviceScope(cashier.deviceId)}`;
       await tx`update employees set failed_attempts=3,locked_until=null where id=${managerId}`;
     });
     assert.equal(await verifyApproval(sql, cashier, approval), managerId);
     const [row] = await admin.begin(async (tx) => {
       await tx`select set_config('app.tenant_id',${tenantId},true)`;
-      return tx`select failed_attempts from employees where id=${managerId}`;
+      return tx`select t.failures,t.lock_level,e.failed_attempts
+        from pin_throttles t join employees e on e.tenant_id=t.tenant_id and e.id=t.employee_id
+        where t.employee_id=${managerId} and t.scope=${deviceScope(cashier.deviceId)}`;
     });
-    assert.equal(row.failed_attempts, 0);
+    assert.deepEqual(row, { failures: 0, lock_level: 0, failed_attempts: 0 });
   });
 
   console.log(`${checks} void and approval checks passed`);
