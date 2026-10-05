@@ -34,6 +34,8 @@ import {
 import {
   MENU_POLL_MS,
   MENU_REFRESH_EVENT,
+  PUBLIC_MENU_POLL,
+  advanceBaseline,
   menuBaseline,
   watchMenuRevision,
 } from "../src/features/menu/freshness";
@@ -893,5 +895,116 @@ describe("OWNER-2: QR/kiosk catalog freshness", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(fetched).toBe(2);
     stop();
+  });
+});
+
+describe("MENU-R1: QR/kiosk polls spare the venue's shared request budget", () => {
+  afterEach(() => vi.useRealTimers());
+  class Doc extends EventTarget {
+    visibilityState: DocumentVisibilityState = "visible";
+  }
+  function publicHarness(random: () => number) {
+    vi.useFakeTimers();
+    const server = { revision: 1 };
+    const calls = { revision: 0, catalog: 0 };
+    let known: number | null = 1;
+    let on = true;
+    const win = new EventTarget(),
+      doc = new Doc();
+    const stop = watchMenuRevision<{ revision: number }>({
+      revision: async () => (calls.revision++, server.revision),
+      catalog: async () => (calls.catalog++, { ...server }),
+      apply: () => {},
+      baseline: { get: () => known, set: (r) => void (known = r) },
+      win,
+      doc,
+      ...PUBLIC_MENU_POLL,
+      active: () => on,
+      random,
+    });
+    const setActive = (value: boolean) => void (on = value);
+    return { server, calls, win, doc, stop, setActive };
+  }
+
+  it("a change still shows within a minute, and pages poll at spread times", async () => {
+    expect(PUBLIC_MENU_POLL.jitter).toBeGreaterThan(0);
+    expect(PUBLIC_MENU_POLL.jitter).toBeLessThanOrEqual(MENU_POLL_MS / 2);
+    // random() = 1 takes the whole jitter off the wait; 0 takes nothing.
+    const early = publicHarness(() => 0.999999);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(early.calls.revision).toBe(1);
+    await vi.advanceTimersByTimeAsync(
+      MENU_POLL_MS - PUBLIC_MENU_POLL.jitter - 1,
+    );
+    expect(early.calls.revision).toBe(1);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(early.calls.revision).toBe(2);
+    early.stop();
+    const late = publicHarness(() => 0);
+    await vi.advanceTimersByTimeAsync(MENU_POLL_MS - 1);
+    expect(late.calls.revision).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(late.calls.revision).toBe(2);
+    late.stop();
+  });
+
+  it("a hidden page or one showing its sent order does not poll; the refresh event still refetches", async () => {
+    const h = publicHarness(() => 0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls).toEqual({ revision: 1, catalog: 0 });
+    h.setActive(false);
+    h.server.revision = 2;
+    await vi.advanceTimersByTimeAsync(MENU_POLL_MS * 5);
+    h.win.dispatchEvent(new Event("focus"));
+    h.doc.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls).toEqual({ revision: 1, catalog: 0 });
+    // A kiosk reset refetches even before the page counts as active again.
+    h.win.dispatchEvent(new Event(MENU_REFRESH_EVENT));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls).toEqual({ revision: 1, catalog: 1 });
+    h.setActive(true);
+    await vi.advanceTimersByTimeAsync(MENU_POLL_MS);
+    expect(h.calls.revision).toBe(2);
+    h.stop();
+  });
+
+  it("focus and visibilitychange bursts collapse into one check per gap", async () => {
+    const h = publicHarness(() => 0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.revision).toBe(1);
+    // Switching back to the tab fires both events; both fall in the gap of
+    // the start check.
+    h.doc.dispatchEvent(new Event("visibilitychange"));
+    h.win.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.revision).toBe(1);
+    await vi.advanceTimersByTimeAsync(PUBLIC_MENU_POLL.minGap);
+    h.doc.dispatchEvent(new Event("visibilitychange"));
+    h.win.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.revision).toBe(2);
+    // Many app switches in a minute stay within the server's poll budget.
+    for (let i = 0; i < 60; i++) {
+      h.win.dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(h.calls.revision).toBeLessThanOrEqual(
+      2 + Math.ceil(60_000 / PUBLIC_MENU_POLL.minGap) + 1,
+    );
+    h.stop();
+  });
+
+  it("the baseline only moves forward, and only on a known revision", () => {
+    const ref = { current: null as number | null };
+    advanceBaseline(ref, undefined);
+    expect(ref.current).toBeNull();
+    advanceBaseline(ref, 5);
+    expect(ref.current).toBe(5);
+    // A poll read before a later catalog payload never moves it back.
+    advanceBaseline(ref, 4);
+    expect(ref.current).toBe(5);
+    advanceBaseline(ref, 6);
+    expect(ref.current).toBe(6);
   });
 });

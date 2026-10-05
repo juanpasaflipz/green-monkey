@@ -1,6 +1,7 @@
 import { requirePro } from "./entitlements.js";
+import { createHash } from "node:crypto";
 import express from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type postgres from "postgres";
 import { tenant } from "./db.js";
 import { verify, sign } from "./auth.js";
@@ -29,16 +30,48 @@ function publicOrder(o: any) {
     })),
   };
 }
+/** Catalog loads and order submissions per client IP per minute (shared). */
+export const PUBLIC_REQUESTS_PER_MINUTE = 30;
+/**
+ * Freshness polls per link per client IP per minute. A page polls about once
+ * a minute plus throttled focus checks, so this leaves room for a few diners
+ * sharing one table link on the venue Wi-Fi; a refused poll is only retried
+ * on the next tick.
+ */
+export const REVISION_POLLS_PER_MINUTE = 20;
+const isRevisionPoll = (req: express.Request) =>
+  req.method === "GET" && /^\/[^/]+\/revision$/.test(req.path);
 export function publicOrdering(sql: postgres.Sql) {
   const router = express.Router();
+  // MENU-R1: every open QR/kiosk page polls /:token/revision, and diners on
+  // one Wi-Fi share an IP. The poll therefore has its own budget, so it can
+  // never use up the one that catalog loads and order submissions share.
   router.use(
     rateLimit({
       windowMs: 60_000,
-      limit: 30,
+      limit: PUBLIC_REQUESTS_PER_MINUTE,
       standardHeaders: true,
       legacyHeaders: false,
+      message: { error: "rate_limited" },
+      skip: isRevisionPoll,
     }),
   );
+  const revisionLimit = rateLimit({
+    windowMs: 60_000,
+    limit: REVISION_POLLS_PER_MINUTE,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: "rate_limited" },
+    // Per link and client (IPv6 grouped by /56, the library default): one
+    // busy table cannot slow another table's or the kiosk's freshness.
+    keyGenerator: (req) =>
+      ipKeyGenerator(req.ip ?? "") +
+      ":" +
+      createHash("sha256")
+        .update(String(req.params.token))
+        .digest("base64url")
+        .slice(0, 22),
+  });
   async function context(
     token: string,
     fn: (tx: any, s: Session, c: any) => Promise<unknown>,
@@ -94,11 +127,11 @@ export function publicOrdering(sql: postgres.Sql) {
     }
   });
   // QR/kiosk freshness (OWNER-2): a small poll; the catalog is refetched only
-  // when the revision moves.
-  router.get("/:token/revision", async (req, res, next) => {
+  // when the revision moves. Throttled by revisionLimit, not the shared limit.
+  router.get("/:token/revision", revisionLimit, async (req, res, next) => {
     try {
       res.json(
-        await context(req.params.token, async (tx) => {
+        await context(String(req.params.token), async (tx) => {
           await requirePro(tx);
           return menuRevision(tx);
         }),

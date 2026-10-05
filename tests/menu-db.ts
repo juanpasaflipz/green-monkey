@@ -4,8 +4,9 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import express from "express";
 import postgres from "postgres";
-import { password } from "../server/auth.js";
+import { password, sign } from "../server/auth.js";
 import { checkRole, connect, tenant } from "../server/db.js";
 import {
   addRound,
@@ -15,6 +16,11 @@ import {
   stock,
 } from "../server/orders.js";
 import { saveProduct } from "../server/management.js";
+import {
+  PUBLIC_REQUESTS_PER_MINUTE,
+  REVISION_POLLS_PER_MINUTE,
+  publicOrdering,
+} from "../server/public-ordering.js";
 import { commitImport } from "../server/imports.js";
 import {
   serviceOptions,
@@ -1908,8 +1914,7 @@ try {
     );
     const rows = await run(
       manager,
-      (tx) =>
-        tx`select stock_id from stock_movements where id=${movementId}`,
+      (tx) => tx`select stock_id from stock_movements where id=${movementId}`,
     );
     assert.deepEqual(
       rows.map((r: { stock_id: string }) => r.stock_id),
@@ -2106,8 +2111,7 @@ try {
     await rejects(restore(), "invalid_recipe");
     const [still] = await run(
       manager,
-      (tx) =>
-        tx`select archived_at from modifier_groups where id=${extras.id}`,
+      (tx) => tx`select archived_at from modifier_groups where id=${extras.id}`,
     );
     assert.notEqual(still.archived_at, null, "the refused restore rolled back");
     // With the ingredient back, the group restores.
@@ -2125,8 +2129,7 @@ try {
     // even if one were archived behind the menu's back.
     await asAdmin(
       a.tenantId,
-      (tx) =>
-        tx`update stock_items set archived_at=now() where id=${queso}`,
+      (tx) => tx`update stock_items set archived_at=now() where id=${queso}`,
     );
     await rejects(
       newProduct(manager, tacos.id, { groupIds: [extras.id] }),
@@ -2253,6 +2256,94 @@ try {
       "concurrent_update",
     );
     assert.equal(forced, 2);
+  });
+
+  // --------------------------------------------------------- public ordering
+  await test("MENU-R1: QR/kiosk revision polls have their own budget and never get a diner's order refused", async () => {
+    const product = await newProduct(manager, tacos.id);
+    const app = express();
+    app.use(express.json());
+    app.use("/api/public", publicOrdering(sql));
+    app.use(
+      (
+        error: unknown,
+        _req: express.Request,
+        res: express.Response,
+        _next: express.NextFunction,
+      ) =>
+        res.status(error instanceof DomainError ? error.status : 500).json({
+          error: error instanceof DomainError ? error.code : "internal_error",
+        }),
+    );
+    const server = app.listen(0, "127.0.0.1");
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const origin =
+      "http://127.0.0.1:" + (server.address() as { port: number }).port;
+    // Links as POST /ordering-links signs them; every request below comes
+    // from one client IP, like diners on a restaurant's guest Wi-Fi.
+    const link = (channel: "qr" | "kiosk") =>
+      sign({
+        purpose: "ordering",
+        id: randomUUID(),
+        tenantId: a.tenantId,
+        employeeId: manager.employeeId,
+        deviceId: manager.deviceId,
+        tableId: null,
+        channel,
+        expiresAt: Date.now() + 3600_000,
+      });
+    const qr = link("qr"),
+      kiosk = link("kiosk");
+    const get = async (path: string) => {
+      const r = await fetch(origin + "/api/public/" + path);
+      return {
+        status: r.status,
+        limit: r.headers.get("ratelimit-limit"),
+        body: await r.json(),
+      };
+    };
+    try {
+      const polls = [];
+      for (let i = 0; i < PUBLIC_REQUESTS_PER_MINUTE + 5; i++)
+        polls.push(await get(qr + "/revision"));
+      const served = polls.filter((p) => p.status === 200);
+      assert.equal(served.length, REVISION_POLLS_PER_MINUTE);
+      assert(served.every((p) => typeof p.body.revision === "number"));
+      assert.equal(served[0].limit, String(REVISION_POLLS_PER_MINUTE));
+      const refused = polls.filter((p) => p.status === 429);
+      assert.equal(
+        refused.length,
+        PUBLIC_REQUESTS_PER_MINUTE + 5 - REVISION_POLLS_PER_MINUTE,
+      );
+      assert.deepEqual(refused[0].body, { error: "rate_limited" });
+      // Another link from the same IP (the kiosk, another table) polls on.
+      assert.equal((await get(kiosk + "/revision")).status, 200);
+      // After more polls than the shared limit, the diner's order goes through.
+      const sent = await fetch(origin + "/api/public/" + qr + "/orders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          orderBody([{ productId: product.id }], { channel: "qr" }),
+        ),
+      });
+      const body = await sent.json();
+      assert.equal(sent.status, 200, JSON.stringify(body));
+      assert.equal(body.order.total, product.price);
+      assert.equal(
+        sent.headers.get("ratelimit-limit"),
+        String(PUBLIC_REQUESTS_PER_MINUTE),
+      );
+      // Catalog loads and orders keep sharing their unchanged per-IP limit.
+      for (let i = 1; i < PUBLIC_REQUESTS_PER_MINUTE; i++)
+        assert.equal((await get(qr + "/catalog")).status, 200);
+      const over = await get(qr + "/catalog");
+      assert.equal(over.status, 429);
+      assert.deepEqual(over.body, { error: "rate_limited" });
+      // An exhausted shared budget does not stop another link's polls.
+      assert.equal((await get(kiosk + "/revision")).status, 200);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 
   await test("menu editor payload lists archived records and the stock options", async () => {

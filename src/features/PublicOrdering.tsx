@@ -7,7 +7,12 @@ import { ModifierPicker } from "../components/ModifierPicker";
 import { orderable, pickerNeeded } from "../../shared/menu";
 import { moneyFormatter } from "./menu/format";
 import { CATALOG_ERRORS, priceCart } from "./menu/cart";
-import { MENU_REFRESH_EVENT, watchMenuRevision } from "./menu/freshness";
+import {
+  MENU_REFRESH_EVENT,
+  PUBLIC_MENU_POLL,
+  advanceBaseline,
+  watchMenuRevision,
+} from "./menu/freshness";
 import { UnavailableLines } from "./menu/UnavailableLines";
 import {
   type Product,
@@ -44,18 +49,26 @@ export function PublicOrdering() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const baseline = useRef<number | null>(null);
+  // MENU-R1: a page showing its sent order no longer polls.
+  const sent = useRef(false);
+  useEffect(() => {
+    sent.current = result !== null;
+  }, [result]);
   useEffect(() => {
     void api<PublicCatalog>("/public/" + token + "/catalog")
       .then((d) => {
-        baseline.current = d.revision ?? null;
+        advanceBaseline(baseline, d.revision);
         setData(d);
       })
       .catch((e) => setError(translateError(e.message, locale)));
   }, [token]);
   // OWNER-2: a kiosk or a table's QR page stays open for hours. Poll the menu
-  // revision every minute and when the page becomes visible again, and
+  // revision about every minute and when the page becomes visible again, and
   // refetch the catalog when it moved, so an 86 or a price change reaches
-  // the customer before they order.
+  // the customer before they order. MENU-R1: diners share the venue's IP, so
+  // a hidden page or one showing its sent order does not poll, polls are
+  // spread (PUBLIC_MENU_POLL), and every catalog payload moves the baseline
+  // so a refetch after an error or a kiosk reset is not repeated by the poll.
   const ready = data !== null;
   useEffect(() => {
     if (!ready) return;
@@ -64,15 +77,18 @@ export function PublicOrdering() {
         (await api<{ revision: number }>("/public/" + token + "/revision"))
           .revision,
       catalog: () => api<PublicCatalog>("/public/" + token + "/catalog"),
-      apply: (d) => setData(d),
+      apply: (d) => {
+        advanceBaseline(baseline, d.revision);
+        setData(d);
+      },
       baseline: {
         get: () => baseline.current,
-        set: (revision) => {
-          baseline.current = revision;
-        },
+        set: (revision) => advanceBaseline(baseline, revision),
       },
       win: window,
       doc: document,
+      ...PUBLIC_MENU_POLL,
+      active: () => document.visibilityState === "visible" && !sent.current,
     });
   }, [token, ready]);
   useEffect(() => {

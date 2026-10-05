@@ -1291,6 +1291,27 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
     await expect(
       customer.getByText("Enviado a cocina", { exact: true }),
     ).toBeVisible();
+    // MENU-R1: diners share the venue's IP, so a page showing its sent order
+    // stops asking for the menu revision (poll, focus and visibility).
+    const polls: string[] = [];
+    customer.on("request", (r) => {
+      if (new URL(r.url()).pathname.endsWith("/revision")) polls.push(r.url());
+    });
+    await page.clock.fastForward(130_000);
+    await customer.evaluate(() => {
+      window.dispatchEvent(new Event("focus"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    // The receipt refresh round-trip lets any due request go out first.
+    const receipt = customer.waitForResponse((r) =>
+      new URL(r.url()).pathname.startsWith("/api/public/receipt/"),
+    );
+    await customer.getByRole("button", { name: "Actualizar" }).click();
+    expect((await receipt).ok()).toBe(true);
+    await expect(
+      customer.getByText("Enviado a cocina", { exact: true }),
+    ).toBeVisible();
+    expect(polls).toEqual([]);
     await customer.close();
 
     // Kiosk: an item 86'd before any poll is refused by the server; the page

@@ -87,10 +87,21 @@ and access's heartbeat (contract D15).
 
 **QR and kiosk freshness.** `GET /public/:token/catalog` also returns the menu
 revision, read before the catalog. An open QR or kiosk page polls
-`GET /public/:token/revision` every 60 seconds and when it becomes visible again,
-and refetches the catalog only when the revision moved. It also refetches after
-the server refuses an order with a catalog error, and on every kiosk idle reset.
-The reset also clears the previous customer's error message.
+`GET /public/:token/revision` about every minute (each wait is 50 to 60 seconds,
+at random, so pages opened together do not poll in step) and when it becomes
+visible again. It refetches the catalog only when the revision moved. It also
+refetches after the server refuses an order with a catalog error, and on every
+kiosk idle reset. The reset also clears the previous customer's error message.
+A hidden page, or one showing its sent order, does not poll, and checks from
+focus or visibility changes less than 15 seconds apart are skipped.
+
+**Public request limits.** Diners on a restaurant's guest Wi-Fi share one public
+IP. Catalog loads and order submissions keep sharing a limit of 30 requests a
+minute per client IP (IPv6 grouped by /56). The revision poll is not counted
+there: it has its own limit of 20 a minute per link and client IP, so open pages
+can never use up the budget a diner needs to send an order. A refused poll is
+retried on the next tick. Refusals answer 429 with `{"error":"rate_limited"}`.
+Per-link and per-table limits on stored links are public-ordering's (032).
 
 **Carts price line by line.** In the POS cart and the QR/kiosk order, each line
 is priced on its own (`priceCart()` in `src/features/menu/cart.ts`). A product
