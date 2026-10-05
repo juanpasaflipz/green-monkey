@@ -103,11 +103,30 @@ export function RecoveryQueue({
         : row.scope === scope(session),
     [manager, session.tenantId, session.deviceId, session.employeeId],
   );
-  // Local rows and attempts update through liveQuery: no storage polling (OFF-12).
+  // Local rows and attempts update through liveQuery: no storage polling
+  // (OFF-12). Only this tenant's key ranges are read, and of the cache only
+  // the attempt keys' values, never every catalog and snapshot (OUTAGE-011).
   useEffect(() => {
     const subscription = liveQuery(async () => ({
-      rows: await db.pending.filter(visible).toArray(),
-      attempts: (await db.cache.filter((row) => isAttemptKey(row.id)).toArray())
+      rows: (
+        await db.pending
+          .where("scope")
+          .startsWith(session.tenantId + ":")
+          .toArray()
+      ).filter(visible),
+      attempts: (
+        await db.cache.bulkGet(
+          (
+            await db.cache
+              .where("id")
+              .startsWith(session.tenantId + ":")
+              .primaryKeys()
+          )
+            .map(String)
+            .filter(isAttemptKey),
+        )
+      )
+        .filter((row) => row !== undefined)
         .map((row) => ({
           key: row.id,
           attempt: normalizePaymentAttempt(row.value, row.id),
