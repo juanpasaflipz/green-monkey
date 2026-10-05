@@ -12,7 +12,7 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | --- | --- | --- |
 | M0 baseline | complete locally | Preserve checkpoints and applied migration checksums |
 | M1 Free limits | local/Neon and deployed device selection passed | Remaining combined entitlement scenarios in M3 |
-| M2 recovery | local/Neon and deployed recovery HTTP passed | Deployed backup restore/download also passed; combined billing cases remain |
+| M2 recovery | local/Neon and deployed recovery HTTP passed; wave-1 offline track (026) locally verified | Staging proof of the 026 offline changes, real tablet and printer checks, combined billing cases |
 | M3 staging candidate | deployed; core flows passed | Finish remaining exact-candidate sandbox billing cases; see STAGING.md |
 | M4 selling/pricing/cash/kitchen | partial | Item voids with manager approval and kitchen deltas done locally (Sept 26); next: discounts/courtesies with approval, item-level refunds, saved drawer close, combos/open amounts, promotions |
 | M5 jobs/printing/merchant payments | incomplete | Durable delivery infrastructure; device/provider selection is absent |
@@ -45,7 +45,7 @@ unverified unless a dated checkpoint explicitly records it.
 | Integrated payments and terminal binding | 3, required for configured providers | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Split by items/amount; grouped settlement | 3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Amount/item splits and grouped settlement API/UI; immutable per-unit allocations, partial-unit balances and concurrent selection checks verified. Pre-allocation history remains explicitly unallocated. |
 | Full/partial refunds, cancellations, history | 2–3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Partial/full amount cash refund API and UI, reason and no-return disposition. Item-level and provider refunds/cancellation pending. |
-| Offline cash, menu cache, refresh recovery | 3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Dexie queue, session scope, service worker, cross-tab lock, same-key retries and atomic sync. Versioned leases, manager reconciliation, backup validation, uncertain-payment checks, historical drawer corrections and concurrency recovery implemented. See OFFLINE_RECOVERY.md for remaining gates. |
+| Offline cash, menu cache, refresh recovery | 3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Reachability heartbeat and request outcomes (not navigator.onLine), manual offline mode, request timeouts, cached-session restore on any transient failure, v3 offline sales by cash or external terminal with provisional numbers, kitchen tickets (print and device list), KDS review lane, exactly-once sync with authenticity/eligibility split, manager reconcile and archive, retries that never exhaust, clock offset, atomic service-worker revisions with an update prompt, persistence, manifest and browser gate (offline track, migration 026; locally verified). Real tablet, printer, ISP-outage and staging update proof pending; see OFFLINE_RECOVERY.md. |
 | QR customer ordering and kiosk | 3, required web flows | See DELIVERY_STATUS.md and corresponding M1–M9 section | Signed scoped ordering links; QR/kiosk frontend shares service; unpaid kitchen dispatch and public receipt. Idle reset implemented. Provider checkout and held-order policy pending. Kiosk is required Pro; local server entitlement gates are implemented and tested for tenant isolation, expiry and accepted-order retries. Stripe reconciliation and live entitlement provisioning remain pending. |
 | Native iOS/Android wrappers | Optional follow-on | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Ingredients, recipe links, substitutions, costs | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Stable stock IDs, append-only recipe versions, historical line cost snapshots; multi-ingredient editor implemented; substitutes and automatic costing pending. |
@@ -104,14 +104,18 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | CORE-09 | partial | Two-tenant RLS/FK and public QR tamper checks; invoice/webhook/print/upload/org routes pending. |
 | CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; Neon pooled/direct pending. |
 | CORE-11 | partial | Cash refund reason, original tender immutability and no automatic stock return; item void/approval/provider cases pending. |
-| OFF-01 | partial | Compiled offline refresh/reconnect and duplicate replay pass; complete browser close/reopen matrix remains. |
-| OFF-02 | partial | Lost committed cash response, exact payment fingerprint/status and interrupted tab recovery pass; full process-restart HTTP matrix remains. |
-| OFF-03 | partial | Two tabs serialize sync; closing the lock holder recovers its syncing row. Concurrent server sync/reconciliation deduplicates. |
-| OFF-04 | partial | Eight failed automatic attempts stop with evidence retained; explicit retry verified using transport mocks. |
-| OFF-05 | partial | Manager cash review, immutable evidence, concurrent kitchen/stock review, old-drawer corrections and refund cap pass; remaining refund browser matrix pending. |
-| OFF-06 | partial | Tenant-bound atomic backups, wrong-tenant rejection, old-session payment retention and revoked-session manager DB recovery pass; full replacement-root/logout matrix pending. |
-| OFF-07 | partial | Unsupported offline actions disabled; no provider offline capability claimed. |
-| OFF-08 | partial | Waiting revision keeps unresolved work; complete hashed shell graph is precached and API responses are excluded. Exact staging update proof pending. |
+| OFF-01 | partial | Compiled offline refresh/reconnect, reload during an API outage and exactly-once replay pass locally (`offline.spec.ts`, `offline-sync-db.ts`); staging and real-device close/reopen remain. |
+| OFF-02 | partial | Lost committed cash response, idempotent payment retry, reuse of an online order whose response was lost, exact payment fingerprint/status and interrupted tab recovery pass locally; full process-restart HTTP matrix remains. |
+| OFF-03 | partial | Two tabs serialize sync; closing the lock holder recovers its syncing row. Concurrent sync/reconcile and sync/archive of one record apply exactly once (`offline-sync-db.ts`). Staging pending. |
+| OFF-04 | partial | Redefined: transient failures never exhaust or become conflicts and attempts are not counted offline (`offline-policy.test.ts`, `offline.spec.ts` with 503 responses); every conflict can be reconciled or archived (`offline-sync-db.ts`, `offline.spec.ts`). Locally verified; staging pending. |
+| OFF-05 | partial | Server repricing refuses price and product-revision changes; review never throws for evidence; lease-cited config change stays reconcilable; manager cash review, immutable evidence, kitchen/stock review, old-drawer corrections and refund cap pass locally; remaining refund browser matrix pending. |
+| OFF-06 | partial | Tenant-bound atomic backups (v1/v2/v3), wrong-tenant rejection, parked review-required payment attempts, ended-session evidence auto-syncing for the same employee and device, and revoked-session manager recovery pass locally; access's logout guard and renewal evidence join at access's merge. |
+| OFF-07 | partial | Item split, settlements, voids, refunds, discounts and drawer operations disabled offline; external terminal recording requires reference and confirmation; kitchen tickets say they are not network deliveries; no provider offline capability claimed. |
+| OFF-08 | partial | Build id baked into the worker; a failed install leaves the old revision intact and an offline reload still renders; the update prompt applies only with nothing unsynced (`sw-shell.test.ts`, `offline.spec.ts`). Exact staging update proof between two deployed builds pending. |
+| OFF-09 | partial | API down with the browser online, HTML 502 and a hung server switch to offline selling and sync on recovery (`offline.spec.ts`, Chromium and emulated WebKit iPad). Real ISP outage pending. |
+| OFF-10 | partial | Kitchen tickets print and stay on the device; KDS review lane decisions pass locally. Live-KDS exclusion lands with service (D13); real printer pending. |
+| OFF-11 | partial | External terminal offline sales and provisional numbers mapped at sync pass locally. Offline table service (open orders, rounds, partial payments) ships as the separate `feat(offline-tables)` series. |
+| OFF-12 | partial | Fast device clock syncs; out-of-window and unverifiable evidence archived with a reason unblocks drawer close (`offline.spec.ts`, `offline-sync-db.ts`). Locally verified. |
 | OPS-01 | pending | Printer jobs explicitly blocked; printer worker/hardware recovery pending. |
 | OPS-02 | partial | Persisted KDS rounds and polling; disconnect/cancellation scenario pending. |
 | OPS-03 | pending | Durable report/email worker not implemented. |
@@ -128,19 +132,35 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 
 ## New recovery evidence
 
+- `tests/offline-sync-db.ts` (wave 1, migration 026): exactly-once v3 sale sync and
+  replay, external terminal tenders, business date from the sale time, clock
+  tolerance and clamping, lease-cited configuration, authenticity vs eligibility,
+  archive idempotency and sync/archive races, reuse of a committed online order,
+  overpayment refusal, negative stock for offline sales, repricing, drawer guard and
+  late reconcile, kitchen review lane, device prefixes, revoked vs ended sessions,
+  legacy `/sync` compatibility, RLS, grants, immutability, pagination, heartbeat.
 - `tests/offline-recovery-db.ts`: automatic/legacy replay, revoked-session manager
   recognition, price/recipe/settings/permission conflicts, exact payment status,
   original-drawer checks, two-writer deduplication, concurrent task completion,
   close/recovery serialization, historical drawer visibility, bounded refunds.
+- `tests/browser/offline.spec.ts`: API down and HTML 502 with the browser online,
+  hung server, reload during an outage, manual offline mode, parked payment
+  attempts, transient retries, offline kitchen tickets, KDS review lane, fast
+  device clock, archive and drawer close, service-worker update, 768 px state,
+  persistence, manifest, browser gate, no polling, pruning. `@cross` tests also run
+  on Playwright's emulated WebKit iPad, which is not real-device evidence.
 - `tests/browser/recovery.spec.ts`: real unavailable-catalog conflict and closed
   drawer review; unallocated report coverage; atomic backup failures and repeated
-  import; JPY/KWD display; interrupted two-tab sync; eight-attempt exhaustion;
-  old-session payment retained without another charge. Transport retry cases use
-  explicit response mocks; they do not establish provider behavior.
+  import; JPY/KWD display; interrupted two-tab sync; old-session payment retained
+  without another charge. Transport retry cases use explicit response mocks; they
+  do not establish provider behavior.
 - `tests/browser/core.spec.ts` and `settlement-settings.spec.ts`: compiled offline
-  refresh/reconnect, service-worker update, lost committed cash response and splits.
-- Shared contracts/readiness tests and all database suites run in the qualification
-  workflow. CI results are recorded separately from local and Neon results.
+  refresh/reconnect, baked service-worker revision, lost committed cash response
+  and splits.
+- Unit: `offline-policy`, `offline-net`, `offline-records`, `offline-clock`,
+  `sw-shell`. Shared contracts/readiness tests and all database suites run in the
+  qualification workflow. CI results are recorded separately from local and Neon
+  results.
 
 ## External prerequisites
 

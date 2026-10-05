@@ -1,118 +1,281 @@
 # Offline and payment recovery
 
-Status on September 20, 2026: the core M2 recovery slice is implemented and
-qualified locally. It is not yet deployed to staging and the complete M2 browser
-matrix in `PRODUCT_COMPLETION_PLAN.md` is not yet satisfied.
+Status on October 5, 2026 (wave 1, offline track, migration 026): the offline
+selling and recovery changes below are implemented and qualified **locally**
+(unit, isolated database suites, compiled-server browser tests in Chromium and in
+Playwright's emulated WebKit iPad). They are **not** deployed to staging, and they
+have **not** been checked on real tablets, real thermal printers or a real ISP
+outage. Those remain release gates (see "Verification").
 
-## Operator behavior
+## What staff see
 
-When the POS loses connectivity, an eligible open drawer can record cash locally.
-The receipt states that cash was recorded on that device, server synchronization is
-pending, and kitchen delivery is unknown. The Sync screen retains the claim in
-IndexedDB and lets the operator download a tenant-bound recovery backup.
+The POS decides it is offline from what actually happens, not from
+`navigator.onLine`:
 
-On reconnect, the server accepts an automatic replay only when the original
-versioned lease, tenant, employee, device, session, drawer, currency and restaurant
-configuration evidence remain valid. The operation ID is reused. A retry never
-silently reprices cash, changes currency, applies today's recipe as historical
-stock, or claims that food reached the kitchen.
+- A heartbeat calls `GET /api/offline/ping` (every 30 s while online, every 2–15 s
+  while offline, 120 s while the page is hidden).
+- Every API request reports its outcome. Two consecutive failures (network error,
+  timeout, 5xx, a non-JSON or HTML proxy page) switch the device to offline; two
+  consecutive successes switch it back. A browser that reports itself offline is
+  offline immediately.
+- Requests time out (GET 8 s, POST 15 s, offline sync 20 s), so a hung server never
+  leaves a dialog stuck.
 
-If automatic replay conflicts, an owner or manager can review the original evidence
-and explicitly confirm cash already collected. The server then records the cash
-exactly once against the original drawer, including a closed drawer, and creates an
-immutable recovery record. The resulting order remains `recovery_pending`; it is
-not described as completed. Kitchen and stock are separate durable follow-up tasks
-and both require a recorded outcome and reason. After both are reviewed, the order
-becomes `recovery_reviewed`.
+The top bar pill always shows an icon and text, at every width: **Conectado**,
+**Conexión lenta**, **Sin conexión** or **Sin conexión (manual)**, plus
+"· N por sincronizar". A full-width banner explains the state:
 
-Uncertain online payments use a separate flow. The Sync screen first asks the server
-for the canonical operation result. If the exact command already committed, that
-result is displayed. The same immutable command can be retried only from the same
-active session, device and employee while the original drawer remains open.
-Otherwise the UI requires review and does not authorize a new charge.
+| State | Banner |
+|---|---|
+| Offline | "Sin conexión con el servidor. Las ventas se guardan en este dispositivo y se envían al volver la conexión." plus the offline-window line and **Comandas (k)** / **Ver sincronización** |
+| Manual | "Trabajando sin conexión por decisión del equipo…" with **Volver a conectarme** |
+| Slow (2 of the last 3 requests over 4 s) | "La conexión está lenta…" with **Trabajar sin conexión** |
+| Kitchen role offline | "Sin conexión: esta pantalla no recibe pedidos nuevos. Pide las comandas impresas o en voz al mostrador." |
 
-## Evidence and storage
+The offline-window line reads "Puedes vender sin conexión hasta las HH:mm", turns
+amber and bold in the last 30 minutes, and once the window has ended says that no
+new sales can be saved until someone reconnects and signs in. The banner also warns
+when any unsynced record is older than 20 hours (it may miss the 24 h global
+invoice) and when the device clock differs from the server by more than 2 minutes.
 
-New offline records use the shared v2 contract in `shared/offline-recovery.ts` and
-include the original operation and draft IDs, tenant, employee, device, session,
-lease version, drawer, timestamps, currency exponent, configuration version,
-amounts and receipt snapshot. Exact legacy v1 records remain parseable without
-adding defaults that would change an accepted operation fingerprint.
+**Trabajar sin conexión** (Sync screen switch, slow banner) is a device-local mode
+for any operator. While it is on, the POS never attempts blocking server commands
+such as sending or charging; background probes and background sync continue
+whenever the server answers.
 
-Server evidence lives in `offline_leases`, `offline_recoveries` and
-`offline_recovery_tasks`. Recovered tenders carry the `offline_recovery` source and
-original operation ID. Runtime roles cannot delete these records or rewrite their
-evidence; privileged retention work remains possible. Migrations 018–020 introduce
-and correct these controls.
+A reload during an outage restores the cached session (any transient failure, not
+only a browser that says it is offline) while its offline window is open. If the
+window has ended, the login screen says signing in needs a connection and offers a
+backup download of every unsynced record without a session.
 
-Backups are versioned and tenant-bound. A v2 backup includes unresolved cash sales
-and unresolved payment attempts. Restore validates its schema, size, tenant and IDs,
-runs atomically, accepts identical repeated records, and rejects a changed-payload
-collision instead of overwriting local evidence.
+## What can be done offline
+
+| Action | Offline |
+|---|---|
+| New order paid in full in cash | yes |
+| New order paid in full on a separate card terminal (staff confirm approval and type its reference; nothing is verified with the bank) | yes |
+| Item split, settle several orders together, voids, refunds, discounts, drawer open/close/paid-out | no (disabled; item split shows "Dividir por productos no está disponible sin conexión") |
+| Integrated card charges, invoicing | no |
+
+Open-price lines are allowed offline (wave contract D11): the server re-prices them
+with the same staff rule at sync.
+
+Before any offline save the device checks: the session may sell (Free selection),
+the offline window is still open by the server-corrected clock, a drawer was open
+and cached before the outage, the order has no unresolved online payment, and the
+record fits in local storage (otherwise "No hay espacio en este dispositivo…").
+
+## Provisional numbers
+
+Each offline sale gets a number such as **B-07**: a per-device letter prefix
+assigned once by the server (`A`…`Y`, then `A1`…`Y9`; immutable once set) and a
+per-device, per-business-day counter. A device that never fetched a prefix uses the
+reserved `Z` family derived from its device id. The receipt shows "Número
+provisional B-07" and "El número definitivo se asigna al sincronizar."; after sync
+the Sync screen shows "B-07 → #142", and `Order.offline` keeps the provisional
+number and the sale time for reprints.
+
+## Kitchen during and after an outage
+
+During the outage the KDS receives nothing over the network. Each offline sale
+produces one comanda per station (kitchen, bar) with "COMANDA · SIN CONEXIÓN",
+the provisional number, mode, table, call name, time and lines.
+
+- **Print**: the receipt offers **Imprimir comanda**. The Sync screen setting "Al
+  guardar sin conexión" (Preguntar / Imprimir comanda / Imprimir comanda y recibo)
+  can print automatically right after saving. Printing uses the browser/OS print
+  dialog; the browser cannot confirm that paper came out.
+- **Device list**: "Comandas sin conexión" (banner button) lists the last 24 hours
+  with local Pendiente/Lista/Entregada chips and **Reimprimir**. The list stays on
+  the device; the kitchen does not see it.
+
+After reconnect, rounds created by sync start in state `offline_review` and wait in
+the KDS lane **Ventas sin conexión por revisar**, showing "B-07 → #142", station,
+round, mode, table, lines, "Vendida HH:mm · sincronizada HH:mm" and whether the
+comanda was printed or only listed. **Ya se preparó** completes the round (and
+acknowledges that round's pending void tickets); **Preparar ahora** sends it to the
+live KDS. The first decision wins. Owners, managers and kitchen may do both; servers
+only "Ya se preparó"; cashiers only see the lane. An order whose online create had
+committed before the outage (lost response) is reused, not duplicated, and its
+rounds stay live.
+
+Wave note: excluding `offline_review` rounds from the live KDS columns is service's
+change (contract D13). Until service merges, those rounds also appear in the live
+columns, where no progress action is accepted for them.
+
+## Sync, retries and exactly-once
+
+Every record carries an `operationId` created once per save; it is the server
+idempotency key. Sync (`POST /api/offline/sync`), the legacy `POST /api/sync`
+and manager reconcile all run inside `once(operationId, "offline_sync")`, so a
+record applies at most once whatever the path or retry. Manager archive takes the
+same advisory lock, so exactly one of archive or sync wins.
+
+Retry policy:
+
+- Transient failures (network, timeout, 5xx, non-JSON, 429, database unavailable,
+  a device clock slightly ahead, a dependency still queued) are retried forever
+  with jittered backoff capped at 60 s. They never become conflicts.
+- Attempts are not counted, and sync is not attempted, while the device is offline.
+- Only explicit domain answers (price changed, product changed, evidence not
+  verifiable, outside the offline window, another drawer open, settings changed,
+  payment past the balance…) mark a record **Requiere revisión**.
+- Synced and archived rows are kept 7 days on the device, then pruned. Unresolved
+  rows are never pruned.
+
+The server re-prices every line from today's catalog and refuses any total or
+product-revision mismatch (`price_conflict`, `offline_catalog_changed`); it never
+silently charges a different amount. Payments go through the normal payment command,
+so a record can never pay past the order's balance (`offline_payment_exceeds_due`).
+Offline-collected sales may take stock negative because the sale physically
+happened. The order's business date comes from the validated sale time, not the
+sync time.
+
+## Clock handling
+
+Records carry the server-corrected sale time, the raw device time and the measured
+offset (median of the last 5 pings, kept on the device). The server accepts a sale
+up to 2 minutes after its own clock, up to 5 minutes before the lease window or
+drawer opened, and up to 2 minutes after the window or drawer closed, and clamps the
+sale time into those bounds. A record more than 2 minutes in the future is retried
+later (the device clock may simply be ahead); one outside the window goes to a
+manager. Records cite the offline lease they were made under, never the live
+settings version (the old live-vs-lease bug blocked review and drawer close).
+
+## Authenticity, eligibility, review and archive
+
+The server first decides whether the evidence is **authentic** (the session exists,
+tenant/employee/device and lease match, currency, drawer of that device, amounts)
+and separately whether it is **eligible** to sync automatically (not archived, same
+employee on the same device, session not revoked, employee and device active,
+selling allowed, time within tolerance, that drawer still open, settings unchanged).
+An ended session (logout, switch) is still valid evidence for the same person on the
+same device; a revoked session needs a manager.
+
+On the Sync screen a manager can:
+
+- **Revisar** any unresolved row. Review never fails because evidence is bad; it
+  shows the problems, the original employee, drawer, amounts, method, reference and
+  sale time.
+- **Conciliar** authentic cash or terminal sales: the money is recorded once in the
+  original drawer (even if closed) as a financial-only recovery order, with kitchen
+  and stock follow-up tasks.
+- **Archivar registro local** for anything, including evidence that cannot be
+  verified or does not parse: a reason (10–500 characters) and confirmation are
+  required, the evidence is kept verbatim on the server with its hash and the
+  manager's name, and nothing is added to sales or the drawer. Drawer close then
+  counts the row as resolved and notes "Este dispositivo archivó $X de ventas
+  locales de esta caja. Ese efectivo puede aparecer como sobrante."
+
+## Uncertain online payments
+
+An online payment whose answer is lost stays in the device's single active slot
+and is resolved with its exact command (status, then the same retry). If the server
+needs a manager (for example the attempt belongs to an older session), the attempt
+is **parked** under its own key: it blocks only its own order, "Nueva orden" and
+other sales stay available, and the Sync screen lists it as "En revisión". An
+attempt is never overwritten.
+
+## Service-worker updates
+
+The build id is baked into `sw.js` at build time and the worker is registered at
+the fixed `/sw.js`; each revision uses its own `green-monkey-shell-<build>` cache.
+Install refuses HTML from another build, caches every hashed asset first (an HTML
+fallback page is never accepted as an asset), writes the HTML last and deletes its
+own cache on any failure, so a failed update on flaky Wi-Fi can never leave a
+half-cached shell. Navigations use the worker's own revision. A new revision waits;
+the bar "Hay una nueva versión lista." applies it only when the device has no
+unsynced record and no payment in flight, under the exclusive session-transition
+lock. Otherwise it activates when every tab closes. `/api` responses are never
+cached.
+
+## Storage persistence and installing
+
+After the first online load the app requests persistent storage automatically (at
+most once a day while not granted; Firefox shows a prompt, Chromium and Safari
+decide themselves). The Sync screen shows the result. The app ships a web app
+manifest and icons so it can be installed to the home screen. On iPad/iPhone an
+installed app has its own storage, separate from Safari: pair and sign in inside the
+installed app, and do not switch between the two while records are unsynced.
+
+## Supported browsers
+
+Chrome or Edge 111+, Safari 16.4+ (iPadOS/iOS 16.4 or later) and Firefox 114+
+(the Vite 8 default build target). The app refuses to start on browsers missing
+IndexedDB, Web Locks, AbortController, `AbortSignal.timeout` or
+`crypto.randomUUID`. A browser without service workers (for example a private
+window) can sell offline only while the page stays open; the Sync screen says so.
 
 ## Physical limitations
 
-- If all browser storage is destroyed before server acknowledgement and no exported
-  backup survives, the unsynchronized claim cannot be recovered. There is no hidden
-  cloud copy.
-- A backup is evidence for manager review, not proof that the cash, kitchen work or
+- If browser storage is erased before the server acknowledges a record and no
+  backup survives, the record cannot be recovered. There is no hidden cloud copy.
+- Browser printing cannot confirm that paper came out. On iPad, printing goes
+  through AirPrint, which most thermal printers do not support; there the device
+  ticket list may be the only kitchen fallback.
+- There is no LAN or peer-to-peer KDS during an outage.
+- A backup is evidence for manager review, not proof that cash, kitchen work or
   stock movement happened.
-- Legacy records without historical item-price, tax, recipe or cost evidence remain
-  unallocated. Recovery does not invent those facts from the current catalog.
-- Kitchen and stock corrections are not automatic because duplicating either can be
-  worse than leaving an explicit task for an operator.
 - Recovery never performs another real customer payment.
 
-## Service-worker behavior
+## Data model (migration 026)
 
-The compiled app uses revision-specific shell caches. Installation fetches the HTML
-and its hashed assets as one revision; authenticated `/api` responses are never
-cached. A waiting update does not force an active checkout to switch revisions, and
-old caches are retained while clients still depend on them. IndexedDB queues and
-payment attempts are not deleted during an app update.
+- `offline_sync_records`: immutable ledger of every applied record (kind, path,
+  device, employee, session, order, tender, round, provisional number, recorded
+  time, raw device time, offset, validated `sold_at`, `business_date`, kitchen
+  delivery, amounts, `synced_at`). Reports and CFDI read the sale day from here.
+- `offline_kitchen_reviews`: one pending → decided transition per offline round.
+- `offline_archives`: manager archives with verbatim evidence and its sha256.
+- `devices.offline_prefix`: unique per tenant, immutable once set.
+
+All tables use forced row-level security with tenant checks on reads and writes.
+The runtime role can only insert into the ledger and archives and can only update
+the decision columns of reviews; it cannot delete any of them.
+
+## Wave-1 integration notes
+
+These are in-wave stand-ins defined by the wave contracts, replaced at merge:
+`server/compat/offline-access.ts` (access's `leaseForEvidence` with lease
+windows), `server/compat/offline-service.ts` (service's check lifecycle, kitchen
+feed bump and `applyRound`) and `src/compat/offline-print.tsx` (service's print
+primitive and kitchen ticket document). Until access merges, the offline window is
+the 4-hour window from login; access's renewals become additional windows that the
+time rule already accepts.
 
 ## Verification
 
-The local qualification currently covers shared v1/v2 contracts, automatic replay,
-real catalog conflict and manager review, revoked sessions, late correction to a
-closed drawer, exact-once tender source, durable kitchen/stock tasks, tenant
-isolation, capped refunds, uncertain-payment status/retry, service-worker update
-with unresolved work, and a compiled-browser manager reconciliation flow.
-
-Run:
+Local qualification on the offline track (isolated local databases and a compiled
+local server):
 
 ```sh
-npm test
-npm run test:db:recovery
-TEST_BASE_URL=http://127.0.0.1:3002 TEST_PRODUCTION=1 npm run test:browser
+npm run lint && npm run typecheck && npm test
+npm run test:db:qualification      # includes npm run test:db:offline
+npm run build && npm run test:restart
+TEST_BASE_URL=http://127.0.0.1:<port> TEST_PRODUCTION=1 npx playwright test
 ```
 
-September 22 continuation adds compiled-browser tests for interrupted two-tab
-locks, retry exhaustion, malformed/wrong-tenant/repeated/conflicting atomic backup
-restore, replacement-device evidence, JPY/KWD formatting and retained old-session
-payment review. Database tests add same-price recipe changes, configuration
-changes, disabled devices, expired evidence, simultaneous sync/reconciliation,
-simultaneous close/reconciliation, concurrent follow-up completion, exact payment
-fingerprints and original-drawer history from a replacement device.
+- Unit: `tests/offline-policy.test.ts` (connectivity state machine, retry policy,
+  clock offset, provisional numbers), `tests/offline-net.test.ts` (timeouts, error
+  kinds, HTML 502, bounded retry), `tests/offline-records.test.ts` (v3 contracts,
+  time rule, backup v3), `tests/offline-clock.test.ts`, `tests/sw-shell.test.ts`
+  (the real `public/sw.js` in `node:vm`).
+- Database: `tests/offline-sync-db.ts` (exactly-once sync, archive races, repricing,
+  drawer guard, clock tolerance, lease-cited config, review lane decisions, device
+  prefixes, RLS, grants, immutability, pagination, the ping) and the updated
+  `tests/offline-recovery-db.ts`.
+- Browser: `tests/browser/offline.spec.ts` on Chromium, and its `@cross` tests on the
+  `webkit-ipad` project (Playwright WebKit with an emulated iPad, not a real device).
 
-Recovered sales now reduce reported cost coverage and expose missing historical
-item costs. Managers can inspect closed drawers from all devices, including their
-original expected/count/discrepancy and subsequent recovered cash. Uncertain
-payments are serialized across tabs and acknowledged evidence is removed only if
-it still matches the exact claim; a committed status has an explicit dismiss action.
+Not verified, and still release gates: real tablets (iPad Safari and installed app,
+Android Chrome), real thermal printers through the browser dialog and
+`--kiosk-printing`, a real ISP outage on restaurant Wi-Fi, and staging proof of a
+service-worker update between two deployed builds.
 
-Additional final checks now cover an actual API process restart with exact replay
-(`npm run test:restart`), logout plus replacement device-root authentication while
-retaining the queue, manager recovery of that revoked original session, and an
-amount refund through the browser against recovered cash. Recovered financial
-orders cannot accept new kitchen rounds or service reassignment. Their states are
-explicitly labeled in Spanish and English.
+## Earlier recovery slice (September 2026)
 
-The final uninterrupted isolated Neon aggregate passed. GitHub qualification also
-passed on the published candidate; later affected checks are recorded in the
-release evidence. Payment-backup collision/atomicity and download round-trip checks also pass.
-The UI reports browser persistence status, offers a persistence request, and
-explains permanent loss without a surviving backup. The remaining release gate
-for this recovery slice is exact-candidate staging evidence. The staging schema remains at 015. No new
-staging or production deployment is claimed. Full product milestones M3–M11 remain
-governed by the completion plan.
+The September 20–22 slice introduced versioned offline leases (018–020), manager
+reconciliation of cash into the original drawer, durable kitchen/stock follow-up
+tasks, tenant-bound atomic backups, uncertain-payment status and same-command retry,
+and its tests (`tests/offline-recovery-db.ts`, `tests/browser/recovery.spec.ts`).
+That behaviour is kept; this wave replaces the retry exhaustion that turned
+transient failures into conflicts, and the revision-from-URL service-worker cache.

@@ -40,11 +40,15 @@ These are tests for the future application. They have not been run by this hando
 - OFF-01: In an eligible authenticated offline session, create a cash order, refresh/close/reopen, reconnect, and sync twice. One server order/tender/stock effect; local receipt survives.
 - OFF-02: Disconnect after server commit but before response. Retry recovers the original result.
 - OFF-03: Open two tabs/restart mid-sync. Leases and server deduplication prevent duplicate effects.
-- OFF-04: Exhaust automatic retries. Queue remains visible and recoverable; no silent loss.
+- OFF-04: Transient failures (network, timeout, 5xx, HTML proxy pages) never exhaust and never become conflicts; attempts are not counted while offline. Explicit domain conflicts stay visible and every one can be resolved by a manager (reconcile authentic evidence or archive with a reason); no silent loss.
 - OFF-05: Change catalog prices, availability, permissions, or account status before sync. Show explicit reconciliation for already collected cash; never silently change the paid amount.
 - OFF-06: Switch restaurant/logout with pending orders. Data remains isolated and only authorized recovery can access it; pending sales are retained.
 - OFF-07: Try offline integrated card/invoicing/protected override. Action clearly unavailable unless a tested specific offline capability exists. Kitchen status does not claim remote delivery.
 - OFF-08: New application/service-worker version arrives during checkout or pending sync. Update defers safely and pending data survives migration.
+- OFF-09: The API or internet goes down while Wi-Fi and `navigator.onLine` stay up (aborted requests, HTML 502, a hung server). The device switches to offline selling within two failed requests or probes, no dialog stays stuck past its timeout, a reload restores the cached session, and the queue syncs on its own when the server answers again.
+- OFF-10: Offline sales produce per-station kitchen tickets (print and on-device list). After sync their rounds wait in a KDS review lane with provisional and server numbers and sale/sync times; "already prepared" and "prepare now" are single decisions, and no synced round reaches the live KDS without one.
+- OFF-11: Offline payments by external terminal require a reference and confirmation; each offline sale gets a device-prefixed provisional number mapped to the server number at sync. With table service enabled, open orders cached before the outage and orders created offline can receive rounds and full or partial payments, revalidated against the balance at sync.
+- OFF-12: A device clock a few minutes off still syncs (offset-corrected time, bounded tolerance, clamped sale time, business date from the sale time). Evidence that cannot be verified, or a record outside the offline window, can always be archived by a manager with a reason, which unblocks drawer close without adding money to sales.
 - OPS-01: Printer offline, paper/acknowledgement uncertain, duplicate job delivery, worker restart. Payment stays correct; job state and reprint audit explain recovery.
 - OPS-02: KDS disconnects and reconnects after new rounds/cancellations. No lost changes, duplicate sound bursts, or stale state shown as current.
 - OPS-03: Report/email job runs twice or fails midway. One logical report per period; retriable delivery; no duplicate unbounded sending.
