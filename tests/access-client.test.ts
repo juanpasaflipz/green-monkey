@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../shared/domain";
+import { classifySyncError } from "../src/offline-policy";
 
 type Reply = { status: number; body: unknown };
 let replies: Reply[] = [];
@@ -64,6 +65,19 @@ describe("api() session policy", () => {
     await expect(blocked).rejects.toMatchObject({ message: "session_expired" });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(events).toEqual(["session_expired"]);
+    // OFF-7 (integration): a queued sale refused while blocked waits as auth in
+    // offline's sync loop; it is never classified as a conflict.
+    const sync = await api("/offline/sync", { operationId: "op-s" }).catch(
+      (e: InstanceType<typeof ApiError>) => e,
+    );
+    expect(sync).toMatchObject({ message: "session_expired", kind: "auth" });
+    expect(
+      classifySyncError(
+        (sync as InstanceType<typeof ApiError>).message,
+        (sync as InstanceType<typeof ApiError>).kind,
+      ),
+    ).toBe("auth");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     // Access endpoints still work so the lock screen can sign in again.
     await api("/access/terminal");
     expect(fetchMock).toHaveBeenCalledTimes(2);

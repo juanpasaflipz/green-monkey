@@ -82,6 +82,7 @@ async function request<T>(
 ): Promise<T> {
   const method = body === undefined ? "GET" : "POST";
   const timeoutMs = options.timeoutMs ?? (method === "GET" ? 8000 : 15000);
+  let firstFailure: ApiError | null = null;
   for (let attempt = 0; ; attempt++) {
     if (options.signal?.aborted) throw abortError();
     const controller = new AbortController();
@@ -167,6 +168,13 @@ async function request<T>(
       latencyMs: Date.now() - started,
       path,
     });
+    // A retried POST answered with a 401: the first attempt may have committed
+    // before its response was lost, so its outcome stays unknown. Report the
+    // first (transient) failure, never a session 401 that callers read as "not
+    // processed" (Selling clears a payment attempt on one, ACC-FLOOR-1).
+    if (firstFailure && method === "POST" && failure.status === 401)
+      throw firstFailure;
+    firstFailure ??= failure;
     const retryable =
       attempt === 0 &&
       (method === "GET" || options.idempotent === true) &&
@@ -318,13 +326,15 @@ export async function api<T = any>(
 ): Promise<T> {
   const access = path.startsWith("/access/");
   while (held && !access) await held;
-  if (blocked && !access) throw new ApiError("session_expired", 401);
+  // Kind "auth" (contracts 3.9): offline sync classifies it as auth, never
+  // as a conflict, so blocked calls never push queued sales to review (OFF-7).
+  if (blocked && !access) throw new ApiError("session_expired", 401, "auth");
   if (
     softUnlockCheck &&
     !SOFT_UNLOCK_EXEMPT.has(path) &&
     (await softUnlockCheck())
   )
-    throw new ApiError("session_locked", 401);
+    throw new ApiError("session_locked", 401, "auth");
   const owner = sessionId;
   try {
     return await guarded<T>(path, body, options);
