@@ -1046,11 +1046,16 @@ test("logout with unsent sales warns, and the sales sync when the same employee 
     expect(queued).toHaveLength(1);
     const [sale] = queued;
     await tablet.getByRole("button", { name: "Siguiente venta" }).click();
-    // Back online, but the sync endpoint is failing.
-    await tablet.route("**/api/sync", (route) =>
+    // Back online, but the sync endpoint (offline's /offline/sync) is failing.
+    await tablet.route("**/api/offline/sync", (route) =>
       route.fulfill({ status: 503, json: { error: "server_unavailable" } }),
     );
     await context.setOffline(false);
+    // Offline's connectivity counts the server reachable after two answered
+    // probes; until then Salir warns "Sin conexión" instead (flow H).
+    await expect(
+      tablet.getByRole("button", { name: /^Conectado/ }),
+    ).toBeVisible({ timeout: 30_000 });
     await tablet.getByRole("button", { name: "Salir", exact: true }).click();
     const warning = tablet.getByRole("dialog", { name: "Ventas sin enviar" });
     await expect(warning).toContainText(
@@ -1066,7 +1071,7 @@ test("logout with unsent sales warns, and the sales sync when the same employee 
     const [ended] =
       await admin`select end_reason,revoked from sessions where id=${first.id}`;
     expect(ended).toEqual({ end_reason: "logout", revoked: false });
-    await tablet.unroute("**/api/sync");
+    await tablet.unroute("**/api/offline/sync");
     // The same employee returns on the same device: the queued sale syncs.
     await signIn(tablet, CASHIER.name, CASHIER.pin);
     await expect(
