@@ -1949,6 +1949,18 @@ th {
 .receipt-doc .doc-line-note {
   font-style: italic;
 }
+.receipt-doc .doc-note {
+  text-align: left;
+  margin: 8px 0;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-size: 14px;
+}
+.receipt-doc .doc-note.allergy strong {
+  text-transform: uppercase;
+}
 .receipt-doc .doc-line .row,
 .receipt-doc .doc-tender .row {
   margin: 4px 0;
@@ -2060,7 +2072,12 @@ th {
   }
   .print-doc .doc-note {
     border: 1px solid #000;
+    border-radius: 0;
     padding: 1mm;
+    margin: 1mm 0;
+    background: none;
+    color: #000;
+    font-size: inherit;
     font-weight: 700;
   }
   .print-doc .doc-kitchen-line {

@@ -13,6 +13,7 @@ import {
   paymentStatus,
   priceCart,
   recallPreparation,
+  roundNotes,
   tipFromPercent,
   validatePayment,
   ALLERGY_PATTERN,
@@ -334,5 +335,28 @@ describe("service lifecycle rules", () => {
     ])
       expect(ALLERGY_PATTERN.test(note)).toBe(true);
     expect(ALLERGY_PATTERN.test("Sin cebolla")).toBe(false);
+  });
+});
+
+describe("notes and lost sends", () => {
+  it("lists round notes once per round, in order, without the order note", () => {
+    expect(
+      roundNotes({
+        note: "ALERGIA: cacahuate",
+        rounds: [
+          { number: 3, note: "Postres al final" },
+          { number: 1, note: "" },
+          { number: 2, note: "Para llevar" },
+          { number: 2, note: "Para llevar" },
+          { number: 3, note: "Postres al final" },
+          { number: 4, note: " ALERGIA: cacahuate " },
+          { number: 5, note: null },
+        ],
+      }),
+    ).toEqual([
+      { round: 2, note: "Para llevar" },
+      { round: 3, note: "Postres al final" },
+    ]);
+    expect(roundNotes({ note: "", rounds: undefined })).toEqual([]);
   });
 });

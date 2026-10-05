@@ -64,6 +64,10 @@ const channels: Record<string, Key> = {
   kiosk: "serviceChannelKiosk",
   offline: "serviceChannelOffline",
 };
+const tenderMethods: Record<string, Key> = {
+  cash: "serviceIntegrationCash",
+  external: "serviceIntegrationExternal",
+};
 const integrations: Record<string, Key> = {
   cash: "serviceIntegrationCash",
   external: "serviceIntegrationExternal",
@@ -90,11 +94,8 @@ export function tenderMethodLabel(
 ): string {
   if (source === "offline_recovery")
     return strings[locale].serviceTenderRecovered;
-  return strings[locale][
-    method === "external"
-      ? "serviceIntegrationExternal"
-      : "serviceIntegrationCash"
-  ];
+  // Unknown methods (a future integrated tender) never print as cash.
+  return strings[locale][tenderMethods[method] ?? "serviceTenderOther"];
 }
 export function channelLabel(channel: string, locale: Locale): string {
   return strings[locale][channels[channel] ?? "serviceChannelPos"];

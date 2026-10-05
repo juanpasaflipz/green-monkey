@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { lineRemaining } from "../../shared/settlement";
-import { changeDue } from "../../shared/service";
+import { changeDue, roundNotes } from "../../shared/service";
 import {
   currencyExponent,
   type Locale,
@@ -12,6 +12,7 @@ import { api } from "../api";
 import { tenderMethodLabel } from "../labels";
 import { Badge, Button, Modal } from "../components/ui";
 import { printDocument, usePrintSettings, type PaperWidth } from "../print";
+import { DocNote } from "./KitchenTicket";
 
 export function moneyFormatter(currency: string, locale: Locale) {
   const scale = 10 ** currencyExponent(currency);
@@ -27,9 +28,34 @@ export function checkStateOf(order: Order) {
   return order.checkState ?? (order.paid >= order.total ? "closed" : "open");
 }
 
+export type ReceiptKind = "receipt" | "check" | "local";
+/** Content another area adds to receipts (fiscal 027, CFDI 030). */
+export type ReceiptSlot = (p: {
+  order: Order;
+  kind: ReceiptKind;
+  reprint: boolean;
+  locale: Locale;
+}) => ReactNode;
+const receiptSlots: { header?: ReceiptSlot; footer?: ReceiptSlot } = {};
+/**
+ * Registers receipt header/footer content once, at startup. Every
+ * ReceiptDocument then shows it: the receipt modal and its print, and the
+ * pre-bill and reprint printed from order detail. A registry rather than React
+ * context, because printDocument renders into its own root, where context from
+ * the app tree does not reach. Explicit `header`/`footer` props win.
+ */
+export function setReceiptSlots(slots: {
+  header?: ReceiptSlot;
+  footer?: ReceiptSlot;
+}) {
+  receiptSlots.header = slots.header;
+  receiptSlots.footer = slots.footer;
+}
+
 /**
  * The printable receipt, pre-bill ("cuenta") or local offline receipt. Fiscal
- * (027) and CFDI (030) content is injected through `header` and `footer`.
+ * (027) and CFDI (030) content is injected through `header` and `footer`
+ * (props, or slots registered with setReceiptSlots).
  */
 export function ReceiptDocument({
   order,
@@ -45,7 +71,7 @@ export function ReceiptDocument({
   order: Order;
   session: Session;
   locale: Locale;
-  kind: "receipt" | "check" | "local";
+  kind: ReceiptKind;
   reprint?: boolean;
   /** Replaces "#number" (offline provisional numbers). */
   label?: string;
@@ -56,6 +82,12 @@ export function ReceiptDocument({
   const t = strings[locale];
   const restaurant = order.restaurantSnapshot ?? session.restaurant;
   const money = moneyFormatter(restaurant.currency, locale);
+  const slot = { order, kind, reprint, locale };
+  const top = header ?? receiptSlots.header?.(slot);
+  const bottom = footer ?? receiptSlots.footer?.(slot);
+  // LD-1: the order note and round notes print for the customer as well as
+  // the kitchen; round notes identical to the order note are left out.
+  const notes = roundNotes(order);
   const paidTone =
     kind === "local"
       ? "neutral"
@@ -71,7 +103,7 @@ export function ReceiptDocument({
       {kind === "check" && (
         <p className="doc-flag">{t.serviceReceiptCheckTitle}</p>
       )}
-      {header}
+      {top}
       <Badge tone={paidTone}>
         {kind === "local"
           ? t.pending
@@ -109,6 +141,21 @@ export function ReceiptDocument({
           {order.recovery.reason}
         </p>
       )}
+      {order.note && (
+        <DocNote
+          label={t.serviceDetailOrderNote}
+          text={order.note}
+          locale={locale}
+        />
+      )}
+      {notes.map((n) => (
+        <DocNote
+          key={n.round}
+          label={t.serviceDetailRoundNote.replace("{n}", String(n.round))}
+          text={n.note}
+          locale={locale}
+        />
+      ))}
       <div className="doc-lines">
         {order.lines
           .filter((l) => lineRemaining(l).quantity > 0)
@@ -186,7 +233,7 @@ export function ReceiptDocument({
         <span>{t.remaining}</span>
         <strong>{money(order.total - order.paid)}</strong>
       </div>
-      {footer}
+      {bottom}
     </div>
   );
 }
@@ -220,6 +267,8 @@ export function ReceiptModal({
   label,
   labelHint,
   extraActions,
+  header,
+  footer,
 }: {
   order: Order;
   session: Session;
@@ -232,6 +281,9 @@ export function ReceiptModal({
   label?: string;
   labelHint?: string;
   extraActions?: ReactNode;
+  /** Forwarded to the shown and the printed ReceiptDocument. */
+  header?: ReactNode;
+  footer?: ReactNode;
 }) {
   const t = strings[locale];
   const [settings, saveSettings] = usePrintSettings();
@@ -255,6 +307,8 @@ export function ReceiptModal({
           reprint={reprint}
           label={label}
           labelHint={labelHint}
+          header={header}
+          footer={footer}
         />
       </div>
       <p className="muted tiny">{t.receiptPrintHint}</p>
@@ -288,6 +342,8 @@ export function ReceiptModal({
                 reprint={reprint}
                 label={label}
                 labelHint={labelHint}
+                header={header}
+                footer={footer}
               />,
               settings.paper,
             );

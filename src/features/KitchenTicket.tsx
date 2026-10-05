@@ -116,7 +116,8 @@ export function ticketsFromOrderRound(
   });
 }
 
-function Note({
+/** A boxed note on a printed document; allergy notes are labelled "Alergia". */
+export function DocNote({
   label,
   text,
   locale,
@@ -127,7 +128,7 @@ function Note({
 }) {
   const allergy = ALLERGY_PATTERN.test(text);
   return (
-    <div className="doc-note">
+    <div className={allergy ? "doc-note allergy" : "doc-note"}>
       <strong>{allergy ? strings[locale].serviceKdsAllergy : label}: </strong>
       {text}
     </div>
@@ -171,14 +172,18 @@ export function KitchenTicketDocument({
         {ticket.waiterName ? ` · ${ticket.waiterName}` : ""}
       </p>
       {ticket.orderNote && (
-        <Note
+        <DocNote
           label={t.serviceKdsOrderNote}
           text={ticket.orderNote}
           locale={locale}
         />
       )}
       {roundNote && (
-        <Note label={t.serviceKdsRoundNote} text={roundNote} locale={locale} />
+        <DocNote
+          label={t.serviceKdsRoundNote}
+          text={roundNote}
+          locale={locale}
+        />
       )}
       {ticket.lines.map((l, index) => {
         const voided = l.voidedQuantity ?? 0;
@@ -202,7 +207,11 @@ export function KitchenTicketDocument({
               <div key={i}>+ {o[locale]}</div>
             ))}
             {l.note && (
-              <Note label={t.serviceLineNote} text={l.note} locale={locale} />
+              <DocNote
+                label={t.serviceLineNote}
+                text={l.note}
+                locale={locale}
+              />
             )}
           </div>
         );

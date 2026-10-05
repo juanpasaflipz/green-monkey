@@ -413,3 +413,23 @@ export function kitchenStatus(o: {
 
 /** Matches allergy notes in Spanish and English ("alergia", "alérgico", "allergy"). */
 export const ALLERGY_PATTERN = /al+[eé]rg/i;
+
+/**
+ * The non-empty round notes of an order, one per round number in round order,
+ * leaving out notes identical to the order note (as kitchen tickets do).
+ */
+export function roundNotes(order: {
+  note?: string | null;
+  rounds?: readonly { number: number; note?: string | null }[] | null;
+}): { round: number; note: string }[] {
+  const notes = new Map<number, string>();
+  for (const r of order.rounds ?? []) {
+    const note = (r.note ?? "").trim();
+    if (note && note !== (order.note ?? "").trim() && !notes.has(r.number))
+      notes.set(r.number, note);
+  }
+  return [...notes]
+    .sort(([a], [b]) => a - b)
+    .map(([round, note]) => ({ round, note }));
+}
+

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Printer } from "lucide-react";
 import { lineRemaining } from "../../shared/settlement";
-import { changeDue } from "../../shared/service";
+import { changeDue, roundNotes } from "../../shared/service";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { api } from "../api";
 import { strings, translateError, type Key } from "../i18n";
@@ -84,15 +84,7 @@ export function OrderDetail({
     : false;
   const voidable = order?.paymentUnits?.some((u) => u.paid === 0) ?? false;
   const holdsTable = order?.mode === "dine_in" && !!order?.tableId;
-  const roundNotes = order
-    ? [
-        ...new Map(
-          order.rounds
-            .filter((r: any) => r.note)
-            .map((r: any) => [r.number as number, r.note as string]),
-        ),
-      ]
-    : [];
+  const notes = order ? roundNotes(order) : [];
   return (
     <Modal
       wide
@@ -227,9 +219,11 @@ export function OrderDetail({
                 {t("serviceDetailEditNote")}
               </Button>
             )}
-            {roundNotes.map(([n, note]) => (
-              <div key={n}>
-                <h4>{t("serviceDetailRoundNote").replace("{n}", String(n))}</h4>
+            {notes.map(({ round, note }) => (
+              <div key={round}>
+                <h4>
+                  {t("serviceDetailRoundNote").replace("{n}", String(round))}
+                </h4>
                 <p className="line-note">{note}</p>
               </div>
             ))}
