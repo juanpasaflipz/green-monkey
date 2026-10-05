@@ -116,6 +116,24 @@ export function ticketsFromOrderRound(
   });
 }
 
+/**
+ * The tickets still on the kitchen screen (every station round not yet
+ * served), for reprinting comandas after the order note changed.
+ */
+export function ticketsForOpenRounds(order: Order): KitchenTicketModel[] {
+  const open = (order.rounds ?? []).filter(
+    (r: any) => r.state !== "completed" && r.state !== "offline_review",
+  );
+  const numbers = [...new Set(open.map((r: any) => r.number as number))].sort(
+    (a, b) => a - b,
+  );
+  return numbers.flatMap((n) =>
+    ticketsFromOrderRound(order, n).filter((ticket) =>
+      open.some((r: any) => r.number === n && r.station === ticket.station),
+    ),
+  );
+}
+
 /** A boxed note on a printed document; allergy notes are labelled "Alergia". */
 export function DocNote({
   label,

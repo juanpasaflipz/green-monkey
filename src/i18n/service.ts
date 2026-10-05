@@ -157,6 +157,14 @@ export default defineArea({
       "No pudimos confirmar si esta orden ya llegó a cocina. Revísala en Órdenes antes de enviarla como orden nueva.",
     serviceDraftParked:
       "Guardamos la orden que estabas capturando en Borradores.",
+    serviceSendChanged:
+      "Parte de esta orden ya había llegado a cocina y después cambiaste cantidades o notas. En el carrito quedó solo lo que falta o cambió; revisa las cantidades y notas antes de enviar.",
+    serviceDraftRound: "#{n} · ronda sin enviar",
+    servicePayDueChanged:
+      "El saldo pendiente cambió a {due}. Revisa el importe antes de confirmar.",
+    serviceReprintKitchen: "Reimprimir comanda",
+    serviceKdsNoteUpdated: "Nota actualizada",
+    serviceKdsNoteAnnounce: "Nota actualizada en ticket #{n}",
     serviceResumeClosed: "La orden #{n} ya se cerró. Empieza una nueva.",
     serviceDetailsButton: "Detalles",
     serviceDetailsTitle: "Detalles de la orden",
@@ -393,6 +401,14 @@ export default defineArea({
     serviceSendUnconfirmed:
       "We could not confirm whether this order already reached the kitchen. Check Orders before sending it as a new order.",
     serviceDraftParked: "The order you were entering was saved in Drafts.",
+    serviceSendChanged:
+      "Part of this order had already reached the kitchen, and quantities or notes changed afterwards. The cart keeps only what is missing or changed; review quantities and notes before sending.",
+    serviceDraftRound: "#{n} · unsent round",
+    servicePayDueChanged:
+      "The balance due changed to {due}. Review the amount before confirming.",
+    serviceReprintKitchen: "Reprint kitchen ticket",
+    serviceKdsNoteUpdated: "Note updated",
+    serviceKdsNoteAnnounce: "Note updated on ticket #{n}",
     serviceResumeClosed: "Order #{n} is already closed. Start a new one.",
     serviceDetailsButton: "Details",
     serviceDetailsTitle: "Order details",

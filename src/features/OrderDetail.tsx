@@ -12,6 +12,7 @@ import { VoidDialog } from "./VoidDialog";
 import { ServiceAssignment } from "./ServiceAssignment";
 import { RefundDialog } from "./RefundDialog";
 import { ReceiptDocument, auditPrint, checkStateOf } from "./Receipt";
+import { KitchenTicketDocument, ticketsForOpenRounds } from "./KitchenTicket";
 
 const reasonKey: Record<string, Key> = {
   settled: "serviceCloseReasonSettled",
@@ -42,6 +43,8 @@ export function OrderDetail({
   const [order, setOrder] = useState<Order | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  /** After a note edit, comandas printed at send time still show the old note. */
+  const [offerReprint, setOfferReprint] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dialog, setDialog] = useState<
     "void" | "service" | "refund" | "note" | null
@@ -104,6 +107,26 @@ export function OrderDetail({
         <p className="notice" role="status">
           {notice}
         </p>
+      )}
+      {offerReprint && order && ticketsForOpenRounds(order).length > 0 && (
+        <Button
+          onClick={() =>
+            void printDocument(
+              ticketsForOpenRounds(order).map((ticket, i) => (
+                <KitchenTicketDocument
+                  key={i}
+                  ticket={ticket}
+                  locale={locale}
+                  timezone={zone}
+                />
+              )),
+              settings.paper,
+            )
+          }
+        >
+          <Printer size={16} />
+          {t("serviceReprintKitchen")}
+        </Button>
       )}
       {!order ? (
         !error && <p>{t("loading")}</p>
@@ -438,6 +461,7 @@ export function OrderDetail({
           saved={async () => {
             await saved();
             setNotice(t("serviceDetailNoteSaved"));
+            setOfferReprint(settings.kitchenOnSend);
           }}
         />
       )}

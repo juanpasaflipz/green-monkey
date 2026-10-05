@@ -85,6 +85,12 @@ export function Kitchen({
   );
   const [feed, setFeed] = useState<FullFeed | null>(null);
   const [newIds, setNewIds] = useState<Map<string, number>>(new Map());
+  /**
+   * Tickets whose note changed after the cook saw them. The badge shows only
+   * while the ticket is highlighted (newIds); a round id is fresh only once,
+   * so an entry here never relabels a later new ticket.
+   */
+  const [notedIds, setNotedIds] = useState<Set<string>>(new Set());
   const [announcement, setAnnouncement] = useState("");
   const [actionError, setActionError] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -99,6 +105,8 @@ export function Kitchen({
   const offset = useRef(0);
   const seenRounds = useRef<Set<string> | null>(null);
   const seenVoids = useRef<Set<string>>(new Set());
+  /** The order and round notes each seen ticket last showed. */
+  const seenNotes = useRef<Map<string, string>>(new Map());
   const loadedStation = useRef<Station | null>(null);
   const loadedRefresh = useRef(refreshKey);
   const generation = useRef(0);
@@ -117,6 +125,7 @@ export function Kitchen({
       generation.current++;
       version.current = null;
       seenRounds.current = null;
+      seenNotes.current = new Map();
     }
     if (loadedRefresh.current !== refreshKey) {
       loadedRefresh.current = refreshKey;
@@ -141,40 +150,57 @@ export function Kitchen({
 
   function detect(r: FullFeed) {
     const voidIds = r.rounds.flatMap((x) => x.pendingVoids.map((v) => v.id));
+    const notesOf = (x: KitchenRound) => x.orderNote + "\u0000" + x.roundNote;
     if (seenRounds.current === null) {
       // The first load of a station fills the seen sets silently.
       seenRounds.current = new Set(r.rounds.map((x) => x.id));
       seenVoids.current = new Set(voidIds);
+      seenNotes.current = new Map(r.rounds.map((x) => [x.id, notesOf(x)]));
       return;
     }
     const fresh = r.rounds.filter((x) => !seenRounds.current!.has(x.id));
+    // SVC-R6: an order note edited after sending changes a ticket the cook
+    // already read; it is announced like a new ticket, never silently.
+    const noted = r.rounds.filter(
+      (x) =>
+        seenRounds.current!.has(x.id) &&
+        seenNotes.current.has(x.id) &&
+        seenNotes.current.get(x.id) !== notesOf(x),
+    );
     const voided = r.rounds.filter((x) =>
       x.pendingVoids.some((v) => !seenVoids.current.has(v.id)),
     );
     for (const x of fresh) seenRounds.current.add(x.id);
     for (const id of voidIds) seenVoids.current.add(id);
+    for (const x of r.rounds) seenNotes.current.set(x.id, notesOf(x));
     const messages = [
       ...fresh.map((x) =>
         t("serviceKdsAnnounce")
           .replace("{n}", String(x.orderNumber))
           .replace("{r}", String(x.roundNumber)),
       ),
+      ...noted.map((x) =>
+        t("serviceKdsNoteAnnounce").replace("{n}", String(x.orderNumber)),
+      ),
       ...voided.map((x) =>
         t("serviceKdsVoidAnnounce").replace("{n}", String(x.orderNumber)),
       ),
     ];
     if (messages.length) setAnnouncement(messages.join(". "));
-    if (fresh.length) {
+    const alerted = [...fresh, ...noted];
+    if (noted.length)
+      setNotedIds((old) => new Set([...old, ...noted.map((x) => x.id)]));
+    if (alerted.length) {
       const until = Date.now() + NEW_MS;
       setNewIds((old) => {
         const next = new Map(old);
-        for (const x of fresh) next.set(x.id, until);
+        for (const x of alerted) next.set(x.id, until);
         return next;
       });
       if (soundRef.current === "on") beep(audio.current, 880, 2);
       if (settingsRef.current.kdsAutoPrint)
         void printDocument(
-          fresh.map((x) => (
+          alerted.map((x) => (
             <KitchenTicketDocument
               key={x.id}
               ticket={ticketFromKitchenRound(x)}
@@ -318,6 +344,7 @@ export function Kitchen({
                 onChange={() => {
                   setStation(s);
                   setNewIds(new Map());
+                  setNotedIds(new Set());
                 }}
               />
               <span>{s === "all" ? t("serviceKdsAll") : stationName(s)}</span>
@@ -398,6 +425,7 @@ export function Kitchen({
           );
           const tone = age >= 20 ? "red" : age >= 10 ? "amber" : "neutral";
           const isNew = newIds.has(r.id);
+          const noteUpdated = isNew && notedIds.has(r.id);
           const action = actionFor(r);
           const allowed =
             action && (action.state === "completed" ? canServe : canProgress);
@@ -423,7 +451,13 @@ export function Kitchen({
                   </span>
                 </div>
                 <div className="ticket-badges">
-                  {isNew && <Badge tone="green">{t("serviceKdsNew")}</Badge>}
+                  {isNew && (
+                    <Badge tone={noteUpdated ? "amber" : "green"}>
+                      {t(
+                        noteUpdated ? "serviceKdsNoteUpdated" : "serviceKdsNew",
+                      )}
+                    </Badge>
+                  )}
                   {r.channel !== "pos" && (
                     <Badge tone="amber">
                       {channelLabel(r.channel, locale)}

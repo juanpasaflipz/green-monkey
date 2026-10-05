@@ -130,6 +130,45 @@ test("kitchen display persists station, alerts new tickets and recalls a bump", 
   }
 });
 
+test("an order note edited after sending alerts the ticket the cook already saw", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  await kitchenScreen(page);
+  const owner = await ownerPage(browser, baseURL!);
+  try {
+    const name = "Nota " + tag();
+    const order = await createOrder(owner, name);
+    const ticket = page.locator(".kitchen-ticket").filter({ hasText: name });
+    await expect(ticket).toBeVisible({ timeout: 15000 });
+    await ticket.getByRole("button", { name: "Confirmar recepción" }).click();
+    await expect(ticket).toContainText("Cocina recibió");
+    await owner.evaluate(async (id) => {
+      const s = await (await fetch("/api/session")).json();
+      const r = await fetch(`/api/service/orders/${id}/note`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-csrf-token": s.csrf },
+        body: JSON.stringify({
+          operationId: crypto.randomUUID(),
+          note: "ALERGIA: mariscos",
+        }),
+      });
+      if (!r.ok) throw new Error("note " + r.status);
+    }, order.id);
+    await expect(ticket).toContainText("ALERGIA: mariscos", { timeout: 15000 });
+    await expect(ticket).toHaveClass(/ticket-new/);
+    await expect(ticket).toContainText("Nota actualizada");
+    await expect(
+      page
+        .getByRole("status")
+        .filter({ hasText: `Nota actualizada en ticket #${order.number}` }),
+    ).toHaveCount(1);
+  } finally {
+    await owner.close();
+  }
+});
+
 test("kitchen polling is single-flight and backs off", async ({ page }) => {
   await kitchenScreen(page);
   let inFlight = 0,
