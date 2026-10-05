@@ -8,7 +8,12 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Tx } from "./db.js";
-import { DomainError, businessDate, type Session } from "../shared/domain.js";
+import {
+  DomainError,
+  businessDate,
+  type Order,
+  type Session,
+} from "../shared/domain.js";
 import { allocatePayment } from "../shared/settlement.js";
 import { permit, operators } from "./auth.js";
 import type {
@@ -183,38 +188,104 @@ appliers.payment = async (tx, s, p, ctx) => {
   };
 };
 
-reviewTargets.resolve = async (tx, p) => {
-  if (!isV3(p) || !("target" in p)) return null;
+/**
+ * Where a payment's money can go on the manager path (§4.3.6):
+ * - `pending`: its original order record is still queued (on this or another
+ *   device). Nothing is recorded: the order would later sync unpaid and the
+ *   money would count twice (I5).
+ * - `unresolvable`: the original order was archived, does not exist, or is
+ *   cancelled or in recovery. Only a financial-only recovery can hold the money.
+ * - `closed`: a closed check is never written (contract §3.4).
+ * - `open`: the order takes the payment if it fits the balance (I2).
+ */
+type PaymentTarget =
+  | { state: "pending"; code: string }
+  | { state: "unresolvable"; code: string }
+  | { state: "closed"; order: Order }
+  | { state: "open"; order: Order };
+
+async function paymentTarget(
+  tx: Tx,
+  target: OrderTarget,
+  lock: boolean,
+): Promise<PaymentTarget> {
+  let orderId: string;
   try {
-    const order = await getOrder(tx, await resolveTarget(tx, p.target));
-    if (CLOSED_STATES.includes(order.state)) return null;
-    return {
-      orderId: order.id,
-      number: order.number,
-      due: order.total - order.paid,
-    };
+    orderId = await resolveTarget(tx, target);
   } catch (e) {
-    if (e instanceof DomainError) return null;
+    if (!(e instanceof DomainError)) throw e;
+    if (e.code === "offline_dependency_pending")
+      return { state: "pending", code: e.code };
+    // offline_dependency_archived, or an order id this tenant does not have.
+    return { state: "unresolvable", code: e.code };
+  }
+  const [row] = lock
+    ? await tx`select * from orders where id=${orderId} for update`
+    : await tx`select * from orders where id=${orderId}`;
+  if (!row || CLOSED_STATES.includes(row.state))
+    return { state: "unresolvable", code: "offline_order_closed" };
+  const order = await getOrder(tx, orderId);
+  try {
+    assertCheckWritable(row as { check_state?: string; state: string });
+  } catch (e) {
+    if (e instanceof DomainError) return { state: "closed", order };
     throw e;
   }
+  return { state: "open", order };
+}
+
+const dueOf = (order: Order) => order.total - order.paid;
+
+/** A payment that cannot go into its order: why, as a sync error code. */
+function refusal(p: OfflinePaymentV3, order: Order) {
+  return p.payment.amount > dueOf(order)
+    ? "offline_payment_exceeds_due"
+    : "offline_order_closed";
+}
+
+reviewTargets.resolve = async (tx, p) => {
+  if (!isV3(p) || !("target" in p)) return null;
+  const found = await paymentTarget(tx, p.target, false);
+  if (found.state === "pending" || found.state === "unresolvable")
+    return {
+      target: null,
+      reconcile:
+        found.state === "unresolvable" && p.kind === "payment"
+          ? "financial"
+          : "none",
+      problem: found.code,
+    };
+  const target = {
+    orderId: found.order.id,
+    number: found.order.number,
+    due: dueOf(found.order),
+  };
+  if (p.kind !== "payment") return { target, reconcile: "none", problem: null };
+  if (found.state === "open" && p.payment.amount <= target.due)
+    return { target, reconcile: "order", problem: null };
+  return { target, reconcile: "none", problem: refusal(p, found.order) };
 };
 
 /**
  * Manager reconcile of a payment to its order: the tender goes to the original
  * drawer (open or closed) with the same allocations the payment command would
- * make. No recovery order, so the order stays a normal, serviceable order.
+ * make. No recovery order, so the order stays a normal, serviceable order. The
+ * caller holds the order row lock.
  */
 async function reconcilePaymentToOrder(
   tx: Tx,
   s: Session,
   p: OfflinePaymentV3,
   ctx: EvidenceContext,
-  orderId: string,
+  order: Order,
   reason: string,
 ): Promise<OfflineSyncResult> {
-  const order = await getOrder(tx, orderId);
-  if (p.payment.amount > order.total - order.paid)
+  const orderId = order.id;
+  if (p.payment.amount > dueOf(order))
     throw new DomainError("offline_payment_exceeds_due", 409);
+  // Global lock order (contract §3.14): the drawer after the order, so a
+  // concurrent drawer close waits for this tender and counts it.
+  await tx`select id from cash_sessions where id=${p.cashSessionId} for update`;
   const allocations = order.itemSplitAvailable
     ? allocatePayment(order.paymentUnits!, p.payment.amount)
     : [];
@@ -260,19 +331,22 @@ async function reconcilePaymentToOrder(
 
 reconcilers.payment = async (tx, s, p: OfflineRecord, ctx, reason) => {
   const record = p as OfflinePaymentV3;
-  let orderId: string | null;
-  try {
-    orderId = await resolveTarget(tx, record.target);
-    await writableOrder(tx, orderId);
-  } catch (e) {
-    if (!(e instanceof DomainError)) throw e;
-    orderId = null;
+  const found = await paymentTarget(tx, record.target, true);
+  switch (found.state) {
+    case "pending":
+      // The original order is still queued: recording the money now would
+      // make it count twice once that order syncs unpaid.
+      throw new DomainError("offline_dependency_pending", 409);
+    case "unresolvable":
+      // The order will never exist as a sale: only a financial-only recovery
+      // in the original drawer can hold the money.
+      return financialRecovery(tx, s, p, ctx, reason);
+    case "closed":
+      // Never into a closed check (contract §3.4); the manager archives.
+      throw new DomainError(refusal(record, found.order), 409);
+    case "open":
+      return reconcilePaymentToOrder(tx, s, record, ctx, found.order, reason);
   }
-  // Never into a closed check: an unresolvable or closed target becomes a
-  // financial-only recovery in the original drawer.
-  return orderId
-    ? reconcilePaymentToOrder(tx, s, record, ctx, orderId, reason)
-    : financialRecovery(tx, s, p, ctx, reason);
 };
 
 /**

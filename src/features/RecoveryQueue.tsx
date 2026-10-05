@@ -20,7 +20,7 @@ import {
   scope,
   type Pending,
 } from "../offline";
-import { isResolved, syncPending } from "../offline-queue";
+import { dependencyOf, isResolved, syncPending } from "../offline-queue";
 import { backupFileName, buildBackups, downloadJson } from "../offline-backup";
 import { CLOCK_WARNING_MS, FISCAL_LATE_MS } from "../offline-policy";
 import { setWorkOffline, serverNow, useConnectivity } from "../connectivity";
@@ -307,6 +307,20 @@ export function RecoveryQueue({
     (row.result as { orderNumber?: number } | undefined)?.orderNumber ??
     (row.result as { number?: number } | undefined)?.number ??
     null;
+  /**
+   * A round or payment whose original local order is still queued: it waits
+   * for that order (I5). Its money is never reconciled first, or the order
+   * would later sync unpaid and the guest could be charged twice.
+   */
+  const waitingForOriginal = (row: Pending) => {
+    const parent = dependencyOf(row.body);
+    if (!parent) return false;
+    const local = rows.find((other) => other.id === parent);
+    return (
+      (row.waitReason === "dependency" && !isResolved(row)) ||
+      (!!local && !isResolved(local))
+    );
+  };
   const reconciled = (row: Pending) =>
     !!(
       (row.result as { recovery?: unknown } | undefined)?.recovery ??
@@ -814,7 +828,12 @@ export function RecoveryQueue({
               </>
             )}
           </dl>
-          {review.detail.reconcilable && (
+          {waitingForOriginal(review.row) && (
+            <p className="warning-panel" role="status">
+              {translateError("offline_dependency_pending", locale)}
+            </p>
+          )}
+          {review.detail.reconcilable && !waitingForOriginal(review.row) && (
             <>
               <p>
                 {es

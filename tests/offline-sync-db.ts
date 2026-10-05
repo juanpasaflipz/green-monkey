@@ -1296,6 +1296,70 @@ try {
   assert.equal(orphanCash.state, "recovery_pending");
   assert.equal(orphanCash.paid, 100);
 
+  // OFF-R1 (shift change): a payment whose original order record is still
+  // queued is never reconciled. Recording it now would leave the money in a
+  // recovery order while the real order later syncs unpaid: revenue twice and
+  // a balance the guest already paid.
+  const queuedTable = orderRecord(s1, [line(ids.plate)]);
+  const queuedPayment = paymentRecord(
+    s1,
+    { localOrderOperationId: queuedTable.operationId },
+    40,
+  );
+  const queuedReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, queuedPayment),
+  );
+  assert.equal(queuedReview.authentic, true);
+  assert.equal(queuedReview.target, null);
+  assert.equal(queuedReview.reconcilable, false, "parent still queued");
+  assert(queuedReview.problems.includes("offline_dependency_pending"));
+  const recoveriesBefore = await count("offline_recoveries");
+  const tendersBefore = await count("tenders");
+  await expectCode(
+    run((tx) =>
+      reconcileOfflineRecord(tx, manager1, {
+        record: queuedPayment,
+        reason: "Shift change before the table order synced",
+        confirmed: true,
+      }),
+    ),
+    "offline_dependency_pending",
+  );
+  assert.equal(await count("offline_recoveries"), recoveriesBefore);
+  assert.equal(await count("tenders"), tendersBefore, "no money recorded");
+  assert.equal(
+    await count("operations", "id=$2", queuedPayment.operationId),
+    0,
+    "the payment can still sync or reconcile later",
+  );
+  // Once its order syncs, the same payment reconciles into that order, once.
+  const queuedOpened = await run((tx) =>
+    syncOfflineRecord(tx, s1, queuedTable),
+  );
+  const queuedReady = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, queuedPayment),
+  );
+  assert.equal(queuedReady.reconcilable, true);
+  assert.equal(queuedReady.target?.orderId, queuedOpened.orderId);
+  const intoOrder = await run((tx) =>
+    reconcileOfflineRecord(tx, manager1, {
+      record: queuedPayment,
+      reason: "Shift change; cash counted for the table",
+      confirmed: true,
+    }),
+  );
+  assert.equal(intoOrder.id, queuedOpened.orderId, "into the real order");
+  assert.equal(intoOrder.paid, 40);
+  assert(!intoOrder.state.startsWith("recovery"));
+  const replayed = await run((tx) => syncOfflineRecord(tx, s1, queuedPayment));
+  assert.equal(replayed.orderId, queuedOpened.orderId);
+  assert.equal(
+    await count("tenders", "order_id=$2", queuedOpened.orderId),
+    1,
+    "a later automatic sync replays, never a second tender",
+  );
+  assert.equal(await count("offline_recoveries"), recoveriesBefore);
+
   // Rounds on a onlineOrder order are additive; a cancelled order is closed (I6).
   const onlineOrder = await run((tx) =>
     createOrder(tx, s1, {
@@ -1399,6 +1463,64 @@ try {
     ),
     "offline_reconcile_unsupported",
   );
+  // OFF-R1: a fully paid order never takes a reconciled payment (I2): the
+  // guest already paid, so the manager archives instead.
+  const paidTab = await run((tx) =>
+    createOrder(tx, s1, {
+      operationId: randomUUID(),
+      lines: [line(ids.plate)],
+      mode: "dine_in",
+      tableId: null,
+      name: "Pagada en línea",
+      note: "",
+      channel: "pos",
+    }),
+  );
+  await run((tx) =>
+    recordPayment(tx, s1, paidTab.id, {
+      operationId: randomUUID(),
+      amount: paidTab.total,
+      tip: 0,
+      received: paidTab.total,
+      method: "cash",
+    }),
+  );
+  const paidTwice = paymentRecord(s1, { orderId: paidTab.id }, paidTab.total);
+  const paidTwiceReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, paidTwice),
+  );
+  assert.equal(paidTwiceReview.target?.due, 0);
+  assert.equal(paidTwiceReview.reconcilable, false);
+  assert(paidTwiceReview.problems.includes("offline_payment_exceeds_due"));
+  await expectCode(
+    run((tx) =>
+      reconcileOfflineRecord(tx, manager1, {
+        record: paidTwice,
+        reason: "Paid online and offline for the same table",
+        confirmed: true,
+      }),
+    ),
+    "offline_payment_exceeds_due",
+  );
+  assert.equal(await count("tenders", "order_id=$2", paidTab.id), 1);
+  // A cancelled order can never hold the money: financial-only recovery.
+  const cancelledCash = paymentRecord(s1, { orderId: cancelled.id }, 50);
+  const cancelledReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, cancelledCash),
+  );
+  assert.equal(cancelledReview.target, null);
+  assert.equal(cancelledReview.reconcilable, true);
+  assert(cancelledReview.problems.includes("offline_order_closed"));
+  const cancelledRecovery = await run((tx) =>
+    reconcileOfflineRecord(tx, manager1, {
+      record: cancelledCash,
+      reason: "Cash for a table cancelled on another device",
+      confirmed: true,
+    }),
+  );
+  assert.equal(cancelledRecovery.state, "recovery_pending");
+  assert.equal(cancelledRecovery.paid, 50);
+  assert.equal(await count("tenders", "order_id=$2", cancelled.id), 0);
   // Reconciling a record that already synced replays its result (I1).
   assert.equal(
     (

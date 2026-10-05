@@ -580,12 +580,20 @@ export async function synchronizeOffline(
   return withLegacyCodes(async () => (await syncOfflineRecord(tx, s, p)).order);
 }
 
-/** Server order a round/payment targets, for review (offline-tables series). */
+/**
+ * What review can say about the order a round or payment targets
+ * (offline-tables series). `reconcile` is the manager path for a payment: into
+ * the order, as a financial-only recovery, or none (the manager must wait for
+ * the original order or archive). `problem` explains a refusal or the
+ * financial-only path.
+ */
+export type ReviewTarget = {
+  target: { orderId: string; number: number; due: number } | null;
+  reconcile: "order" | "financial" | "none";
+  problem: string | null;
+};
 export const reviewTargets: {
-  resolve?: (
-    tx: Tx,
-    p: OfflineRecord,
-  ) => Promise<{ orderId: string; number: number; due: number } | null>;
+  resolve?: (tx: Tx, p: OfflineRecord) => Promise<ReviewTarget | null>;
 } = {};
 
 /** Manager review. Throws only invalid_input or forbidden, never for evidence. */
@@ -614,7 +622,8 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
     } catch {
       /* Unavailable/deleted menu is explicitly unknown. */
     }
-  const target = (await reviewTargets.resolve?.(tx, p)) ?? null;
+  const targeted = (await reviewTargets.resolve?.(tx, p)) ?? null;
+  const target = targeted?.target ?? null;
   const session = evidence.authentic ? evidence.ctx.session : evidence.session;
   const [employee] = session
     ? await tx`select name from employees where id=${session.employee_id}`
@@ -624,15 +633,23 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
     ? await tx`select id,closed_at from cash_sessions where id=${drawerId}`
     : [];
   const amount = payment?.amount ?? 0;
+  // A payment is reconcilable only into an open order it fits, or as a
+  // financial-only recovery when its order can never be resolved. Never while
+  // its original order is still queued, and never into a paid or closed
+  // check (I2, I5).
   const reconcilable =
     evidence.authentic &&
     !prior &&
     !archived &&
     !!payment &&
-    (kind === "sale" || !target || amount <= target.due);
+    !!reconcilers[kind] &&
+    (kind !== "payment" || (!!targeted && targeted.reconcile !== "none"));
+  const problems: string[] = evidence.authentic ? [...evidence.problems] : [];
+  if (targeted?.problem && !problems.includes(targeted.problem))
+    problems.push(targeted.problem);
   return {
     authentic: evidence.authentic,
-    problems: evidence.authentic ? evidence.problems : [],
+    problems,
     kind,
     formatVersion: formatVersionOf(p),
     collected: amount,
