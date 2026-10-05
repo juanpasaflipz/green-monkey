@@ -16,6 +16,8 @@ regexes = [
   '''demo-green-monkey''',
   '''whsec_fixture''',
   '''sk_test_fixture''',
+  # tests/config.test.ts: placeholder proving deployed web refuses Stripe keys.
+  '''sk_live_supersecret''',
 ]
 paths = [
   '''docs/evidence/''',
