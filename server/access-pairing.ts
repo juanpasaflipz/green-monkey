@@ -131,6 +131,21 @@ export async function cancelPairingCode(
   return { ok: true };
 }
 
+/**
+ * Cancels the open codes an employee created, when they are deactivated or no
+ * longer a manager (A11): a code outlives neither its creator's access nor role.
+ */
+export async function cancelCodesCreatedBy(
+  tx: Tx,
+  employeeId: string,
+  actorId: string,
+): Promise<number> {
+  const rows = await tx`update device_pairing_codes set cancelled_at=now(),cancelled_by=${actorId}
+    where created_by=${employeeId} and consumed_at is null and cancelled_at is null
+    returning id`;
+  return rows.length;
+}
+
 const redeemInput = z
   .object({ code: z.string().trim().min(8).max(20) })
   .strict();
@@ -156,6 +171,10 @@ export async function redeemPairingCode(
       await tx`select tenant_id,id,device_name,created_by from device_pairing_codes where code_hash=${codeHash}`;
     if (!row) throw new DomainError("pairing_code_invalid", 400);
     await tx`select set_config('app.tenant_id',${row.tenant_id},true)`;
+    // The creator must still be an active owner or manager (A11).
+    const [creator] = await tx`select 1 from employees
+      where id=${row.created_by} and active and role in ('owner','manager')`;
+    if (!creator) throw new DomainError("pairing_code_invalid", 400);
     const device: DeviceCookie = {
       id: randomUUID(),
       tenantId: row.tenant_id,

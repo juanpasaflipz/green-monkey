@@ -9,6 +9,7 @@ import {
   hashSecret,
   requireRecentAuth,
 } from "./access.js";
+import { cancelCodesCreatedBy } from "./access-pairing.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
 import { pinInput, type Approver, type StaffRow } from "../shared/access.js";
 
@@ -226,6 +227,8 @@ export async function updateStaff(
         await endEmployeeSessions(tx, employeeId, "role_changed", {
           revoke: false,
         });
+      if (roleChanged && !managers.includes(p.role))
+        await cancelCodesCreatedBy(tx, employeeId, s.employeeId);
       await audit(tx, s, "access.employee_updated", employeeId, {
         name: p.name,
         role: p.role,
@@ -275,9 +278,11 @@ export async function setStaffActive(
           "employee_deactivated",
           { revoke: true },
         );
+        const codes = await cancelCodesCreatedBy(tx, employeeId, s.employeeId);
         await audit(tx, s, "access.employee_deactivated", employeeId, {
           name: e.name,
           sessions,
+          pairingCodes: codes,
         });
       } else {
         const slot = await employeeSlot(tx, employeeId, true, e.role);

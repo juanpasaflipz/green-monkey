@@ -311,6 +311,51 @@ try {
     );
   });
 
+  await test("A11: a code dies with its creator's access or manager role; deactivation cancels the creator's open codes", async () => {
+    const creatorId = randomUUID();
+    await admin`insert into employees(tenant_id,id,name,login,secret_hash,role,pin_set_at)
+      values(${tenantId},${creatorId},'Gerente saliente',${"mgr-out-" + creatorId.slice(0, 8)},${password("975319")},'manager',now())`;
+    const creator = as(creatorId, "manager", terminalA.id, {});
+    const first = await run((tx) =>
+      createPairingCode(tx, creator, { deviceName: "Código saliente 1" }),
+    );
+    const second = await run((tx) =>
+      createPairingCode(tx, creator, { deviceName: "Código saliente 2" }),
+    );
+    // Deactivation by the owner cancels every open code the manager created.
+    await run((tx) =>
+      setStaffActive(tx, as(ownerId, "owner", terminalA.id, {}), creatorId, {
+        operationId: randomUUID(),
+        active: false,
+      }),
+    );
+    const codes =
+      await admin`select cancelled_by from device_pairing_codes where id in (${first.id},${second.id})`;
+    assert.deepEqual(
+      codes.map((c) => c.cancelled_by),
+      [ownerId, ownerId],
+    );
+    for (const code of [first.code, second.code])
+      await rejects(
+        redeemPairingCode(sql, { code }, null),
+        "pairing_code_invalid",
+      );
+    // A code whose creator lost the manager role some other way is refused too.
+    await admin`update employees set active=true,deactivated_at=null where id=${creatorId}`;
+    const third = await run((tx) =>
+      createPairingCode(tx, creator, { deviceName: "Código saliente 3" }),
+    );
+    await admin`update employees set role='cashier' where id=${creatorId}`;
+    await rejects(
+      redeemPairingCode(sql, { code: third.code }, null),
+      "pairing_code_invalid",
+    );
+    const [devices] =
+      await admin`select count(*)::int as n from devices where tenant_id=${tenantId} and name like 'Código saliente%'`;
+    assert.equal(devices.n, 0);
+    await admin`update employees set active=false where id=${creatorId}`;
+  });
+
   await test("expired and cancelled codes are rejected with the same error", async () => {
     const expired = generatePairingCode();
     await admin`insert into device_pairing_codes(tenant_id,id,code_hash,device_name,created_by,created_at,expires_at)
