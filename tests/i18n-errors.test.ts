@@ -68,6 +68,19 @@ const ownedElsewhere: Record<string, keyof typeof areas> = {
   rate_limited: "offline",
   fiscal_total_mismatch: "fiscal",
   fiscal_refund_exceeds: "fiscal",
+  // CFDI and reports cores (pure modules); the full tracks own the wording.
+  cfdi_currency_unsupported: "cfdi",
+  cfdi_duplicate_ticket: "cfdi",
+  cfdi_generic_rfc: "cfdi",
+  cfdi_nothing_to_invoice: "cfdi",
+  cfdi_parent_receptor_missing: "cfdi",
+  cfdi_provider_unavailable: "cfdi",
+  cfdi_refund_netted_twice: "cfdi",
+  cfdi_request_invalid: "cfdi",
+  cfdi_stamping_rejected: "cfdi",
+  cfdi_use_not_allowed: "cfdi",
+  reports_corte_hidden: "reports",
+  reports_range_invalid: "reports",
 };
 const pendingElsewhere = (code: string) => {
   const owner = ownedElsewhere[code];
