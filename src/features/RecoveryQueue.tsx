@@ -24,7 +24,7 @@ import { isResolved, syncPending } from "../offline-queue";
 import { backupFileName, buildBackups, downloadJson } from "../offline-backup";
 import { CLOCK_WARNING_MS, FISCAL_LATE_MS } from "../offline-policy";
 import { setWorkOffline, serverNow, useConnectivity } from "../connectivity";
-import { persistenceStatus } from "../platform";
+import { persistenceStatus } from "../storage-persistence";
 import { serviceWorkerSupported } from "../service-worker";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";

@@ -1,8 +1,10 @@
 /**
- * Browser capability gate and storage persistence (OFF-11). The POS needs
+ * Browser capability gate and Web Locks helper (OFF-11). The POS needs
  * IndexedDB, Web Locks, AbortController, AbortSignal.timeout and
  * crypto.randomUUID; these match Vite 8's default build target (Chrome/Edge 111,
  * Safari/iOS 16.4, Firefox 114). A missing service worker is only a warning.
+ * This module loads before the app chunk, so it must not import the offline
+ * store; storage persistence lives in src/storage-persistence.ts.
  */
 export type PlatformSupport = {
   ok: boolean;
@@ -33,60 +35,6 @@ export function platformSupport(
     missing,
     serviceWorker: !!scope.navigator && "serviceWorker" in scope.navigator,
   };
-}
-
-const PERSIST_KEY = "device:persist";
-const PERSIST_INTERVAL_MS = 86_400_000;
-
-/**
- * Requests persistent storage after a successful online load: at most once per
- * 24 h while not granted. Firefox shows a permission prompt; Chromium and Safari
- * decide automatically. Returns null when the API is unavailable.
- */
-export async function requestPersistence(): Promise<boolean | null> {
-  const storage = typeof navigator !== "undefined" ? navigator.storage : null;
-  if (!storage?.persist || !storage.persisted) return null;
-  try {
-    if (await storage.persisted()) {
-      await remember(true);
-      return true;
-    }
-    const { db } = await import("./offline");
-    const last = (await db.cache.get(PERSIST_KEY))?.value as
-      { requestedAt: number; granted: boolean } | undefined;
-    if (last && Date.now() - last.requestedAt < PERSIST_INTERVAL_MS)
-      return last.granted;
-    const granted = await storage.persist();
-    await remember(granted);
-    return granted;
-  } catch {
-    return null;
-  }
-}
-
-async function remember(granted: boolean) {
-  try {
-    const { db } = await import("./offline");
-    await db.cache.put({
-      id: PERSIST_KEY,
-      value: { requestedAt: Date.now(), granted },
-    });
-  } catch {
-    /* Persistence status is advisory. */
-  }
-}
-
-/** Last automatic persistence result recorded on this device, if any. */
-export async function persistenceStatus(): Promise<{
-  requestedAt: number;
-  granted: boolean;
-} | null> {
-  try {
-    const { db } = await import("./offline");
-    return ((await db.cache.get(PERSIST_KEY))?.value as never) ?? null;
-  } catch {
-    return null;
-  }
 }
 
 /**

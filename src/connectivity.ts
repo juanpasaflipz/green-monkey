@@ -86,10 +86,28 @@ function dispatch(event: ConnectivityEvent) {
   if (wasReachable !== snapshot.serverReachable) reschedule();
 }
 
+/** The device cache (Dexie `cache` store) where the measured offset survives reloads. */
+export type ClockStore = {
+  get(id: string): PromiseLike<{ value: unknown } | undefined>;
+  put(row: { id: string; value: unknown }): PromiseLike<unknown>;
+};
+let clockStore: ClockStore | null = null;
+
+/**
+ * src/offline.ts attaches its device cache here when it loads. Injecting it,
+ * rather than importing it, keeps this module out of an import cycle with the
+ * offline store.
+ */
+export function attachClockStore(store: ClockStore) {
+  if (clockStore) return;
+  clockStore = store;
+  if (started) void loadClock();
+}
+
 async function loadClock() {
+  if (!clockStore) return;
   try {
-    const { db } = await import("./offline");
-    const saved = (await db.cache.get(CLOCK_KEY))?.value as
+    const saved = (await clockStore.get(CLOCK_KEY))?.value as
       { offsetMs: number } | undefined;
     if (offset === null && typeof saved?.offsetMs === "number") {
       offset = saved.offsetMs;
@@ -105,12 +123,13 @@ function addSample(offsetMs: number, rttMs: number) {
   samples.push(offsetMs);
   if (samples.length > 5) samples.shift();
   offset = medianOffset(samples);
-  if (persistedOffset === null || Math.abs(offset - persistedOffset) > 1000) {
+  if (
+    clockStore &&
+    (persistedOffset === null || Math.abs(offset - persistedOffset) > 1000)
+  ) {
     persistedOffset = offset;
     const value = { offsetMs: offset, rttMs, measuredAt: Date.now() };
-    void import("./offline")
-      .then(({ db }) => db.cache.put({ id: CLOCK_KEY, value }))
-      .catch(() => {});
+    Promise.resolve(clockStore.put({ id: CLOCK_KEY, value })).catch(() => {});
   }
 }
 

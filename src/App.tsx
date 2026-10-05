@@ -26,7 +26,7 @@ import {
 } from "./connectivity";
 import { useOfflineQueue } from "./offline-queue";
 import { ensureDevicePrefix } from "./offline-records";
-import { requestPersistence } from "./platform";
+import { requestPersistence } from "./storage-persistence";
 import { ConnectionPill } from "./features/offline/ConnectionPill";
 import { ConnectionBanner } from "./features/offline/ConnectionBanner";
 import { UpdatePrompt } from "./features/offline/UpdatePrompt";

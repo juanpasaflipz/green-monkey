@@ -5,7 +5,7 @@ import type {
   OfflineRecordKind,
   PaymentAttempt,
 } from "../shared/offline-recovery";
-import { getConnectivitySnapshot } from "./connectivity";
+import { attachClockStore, getConnectivitySnapshot } from "./connectivity";
 import {
   evidenceKey,
   normalizePaymentAttempt,
@@ -55,6 +55,7 @@ db.version(1).stores({
   pending: "id,scope,status",
   cache: "id",
 });
+attachClockStore(db.cache);
 export const scope = (s: Session) =>
   `${s.tenantId}:${s.deviceId}:${s.employeeId}`;
 export { db };
