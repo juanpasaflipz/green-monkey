@@ -443,6 +443,22 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
 - **Limiter key (ops merge, LD-9).** Every access limiter keys on `ipKey(req)`
   in `server/routes/access.ts`; switch that one function to `clientIp(req)` from
   `server/logging.ts`.
+- **Unlocking owners (platform-prep, wave-2 A3).** Hardening A5 lets a manager
+  unlock only cashiers, servers and kitchen staff (never a hard lock, at most
+  3 times per employee a day); owners and managers are unlocked by the owner.
+  This supersedes the wave-2 spec text "Managers can still unlock a locked
+  owner" (access spec §2.2 C step 4), "unlockStaff is unchanged: managers and
+  owners may unlock an owner" (§4.7 A3) and the StaffManagement note that the
+  unlock block lets another owner be unlocked (§5.4). Access-db test 28 in
+  §7.9 must expect `unlock_owner_only` (403) for a manager unlocking an owner
+  and a successful unlock by the owner; the owner-PIN self-only part of A3 is
+  unaffected.
+- **Retiring a departed owner's devices (account, decision 17).** Deactivation
+  now unpairs the employee's personal devices through
+  `retirePersonalDevices(tx, s, employeeId)` in `server/access-devices.ts`
+  (ACC-R6-2). Account's `revokeOwnerSeat` should call it with the acting
+  owner's session, or mirror its statements and audit row, instead of the
+  §6.3 item 7 sketch.
 - **"Descartar intento" (offline or RecoveryQueue).** A manager-only discard,
   with step-up and an audit row, for attempts in state `missing` with
   `retryAllowed=false`, so a missing attempt that can no longer be retried
