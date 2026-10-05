@@ -23,6 +23,8 @@ import { api, setSession, clearSessionScope } from "./api";
 import { db, cacheSession, scope, syncPending } from "./offline";
 import { Button, Modal } from "./components/ui";
 import { Selling } from "./features/Selling";
+import { MenuArea, SetupNav, setupViews } from "./features/menu/MenuArea";
+import { menuBaseline, watchMenuRevision } from "./features/menu/freshness";
 import { Operations } from "./features/Operations";
 import { OwnerAccess } from "./features/OwnerAccess";
 import {
@@ -194,6 +196,27 @@ export default function App() {
       window.removeEventListener("storage", changedElsewhere);
     };
   }, []);
+  useEffect(() => {
+    // Catalog freshness (FOH-8): poll the menu revision while selling so
+    // 86'd items leave the grid without a view change; refetch on focus and
+    // whenever another feature dispatches "gm-menu-refresh". Only the catalog
+    // cache entry is written: the "session" entry belongs to load() and
+    // access's heartbeat (D15), and this effect's copy may be stale.
+    if (view !== "sell" || !session || !online) return;
+    const key = scope(session);
+    return watchMenuRevision({
+      revision: async () =>
+        (await api<{ revision: number }>("/menu/revision")).revision,
+      catalog: () => api<Product[]>("/catalog"),
+      apply: async (c) => {
+        setCatalog(c);
+        await db.cache.put({ id: key + ":catalog", value: c });
+      },
+      baseline: menuBaseline(key),
+      win: window,
+      doc: document,
+    });
+  }, [view, session?.id, online]);
   useEffect(() => {
     let current = true;
     if (view === "sell" && session && online)
@@ -595,13 +618,21 @@ export default function App() {
             const name = key as string;
             const Glyph = Icon as typeof ShoppingBag;
             const current =
-              view === name || (name === "operation" && operational);
+              view === name ||
+              (name === "operation" && operational) ||
+              (name === "inventory" && setupViews.includes(view));
             return (
               <button
                 key={name}
                 className={current ? "selected" : ""}
                 onClick={() => {
-                  setView(name === "operation" ? "sell" : name);
+                  setView(
+                    name === "operation"
+                      ? "sell"
+                      : name === "inventory"
+                        ? "menu"
+                        : name,
+                  );
                   setError("");
                 }}
                 aria-current={current ? "page" : undefined}
@@ -678,7 +709,9 @@ export default function App() {
       <main
         className={
           (view === "sell" ? "selling-main" : "workspace") +
-          (management && operational ? " with-subnav" : "")
+          (management && (operational || setupViews.includes(view))
+            ? " with-subnav"
+            : "")
         }
       >
         {management && operational && (
@@ -696,6 +729,9 @@ export default function App() {
               ),
             )}
           </nav>
+        )}
+        {management && setupViews.includes(view) && (
+          <SetupNav view={view} setView={setView} locale={locale} />
         )}
         {expiring && (
           <div role="status" className="expiry-banner">
@@ -739,15 +775,25 @@ export default function App() {
             navigate={setView}
           />
         </div>
-        {view !== "sell" && (
-          <Operations
-            key={`${scope(session)}:${view}`}
-            view={view}
-            session={session}
-            locale={locale}
-            navigate={setView}
-          />
-        )}
+        {view !== "sell" &&
+          (["menu", "stock", "floor"].includes(view) ? (
+            <MenuArea
+              key={`${scope(session)}:${view}`}
+              view={view}
+              session={session}
+              locale={locale}
+              online={online}
+              navigate={setView}
+            />
+          ) : (
+            <Operations
+              key={`${scope(session)}:${view}`}
+              view={view}
+              session={session}
+              locale={locale}
+              navigate={setView}
+            />
+          ))}
       </main>
       {lock && (
         <LockScreen

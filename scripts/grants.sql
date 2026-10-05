@@ -28,6 +28,17 @@ GRANT UPDATE(version,updated_at) ON kitchen_feed_versions TO gm_app;
 GRANT SELECT,INSERT ON owner_location_commands,restaurant_invitations,owner_browser_devices TO gm_app;
 GRANT UPDATE(revoked,accepted_by,accepted_at,employee_id) ON restaurant_invitations TO gm_app;
 GRANT UPDATE(free_location) ON restaurants TO gm_app;
+-- 025 menu
+GRANT SELECT,INSERT ON menu_state TO gm_app;
+GRANT UPDATE(revision,updated_at) ON menu_state TO gm_app;
+GRANT SELECT,INSERT,UPDATE ON menu_categories,modifier_groups,dining_areas TO gm_app;
+GRANT UPDATE(negative_stock_policy) ON restaurants TO gm_app;
+-- on_hand / negative_since are written only by the SECURITY DEFINER ledger trigger,
+-- so the runtime role can neither update them nor set them on insert (they default).
+REVOKE UPDATE ON stock_items FROM gm_app;
+GRANT UPDATE(name,unit,kind,threshold,version,par_level,settings_version,archived_at) ON stock_items TO gm_app;
+REVOKE INSERT ON stock_items FROM gm_app;
+GRANT INSERT(tenant_id,id,name,unit,kind,threshold,version,par_level,settings_version,archived_at) ON stock_items TO gm_app;
 GRANT SELECT,INSERT ON offline_leases,offline_recoveries,offline_recovery_tasks TO gm_app;
 GRANT UPDATE(state,resolved_by,resolution,resolved_at) ON offline_recovery_tasks TO gm_app;
 GRANT SELECT,INSERT ON line_voids TO gm_app;

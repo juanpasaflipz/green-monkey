@@ -21,14 +21,15 @@ export function ManagementTools({
   const parseAmount = (s: string) => minor(s, exponent);
   const [mode, setMode] = useState("");
   const [error, setError] = useState("");
-  const [catalog, setCatalog] = useState<any[]>([]);
   const [stock, setStock] = useState<any[]>([]);
   const [suppliers, setSuppliers] = useState<any[]>([]);
   const [team, setTeam] = useState<any[]>([]);
-  const [selected, setSelected] = useState<any>(null);
-  const [recipe, setRecipe] = useState<{ stockId: string; quantity: string }[]>(
-    [],
+  // MON-3: one idempotency key per opened dialog, so a retried submit after a
+  // lost response replays instead of recording the same command twice.
+  const [dialogOperationId, setDialogOperationId] = useState(() =>
+    crypto.randomUUID(),
   );
+  useEffect(() => setDialogOperationId(crypto.randomUUID()), [mode]);
   const [rawImport, setRawImport] = useState("");
   const [preview, setPreview] = useState<any>(null);
   const [records, setRecords] = useState<any[]>([]);
@@ -38,7 +39,6 @@ export function ManagementTools({
     if (mode) {
       setError("");
       void Promise.all([
-        api("/catalog").then(setCatalog),
         api("/inventory").then(setStock),
         api("/suppliers").then(setSuppliers),
         api("/team").then(setTeam),
@@ -49,7 +49,7 @@ export function ManagementTools({
     try {
       await api(path, body);
       setMode("");
-      setSelected(null);
+      setDialogOperationId(crypto.randomUUID());
       await refresh();
     } catch (e) {
       setError(translateError((e as Error).message, locale));
@@ -60,15 +60,6 @@ export function ManagementTools({
       <div className="row wrap">
         {view === "inventory" && (
           <>
-            <Button
-              onClick={() => {
-                setSelected(null);
-                setRecipe([]);
-                setMode("menu");
-              }}
-            >
-              {t("editMenu")}
-            </Button>
             <Button onClick={() => setMode("supplier")}>
               {t("addSupplier")}
             </Button>
@@ -132,7 +123,6 @@ export function ManagementTools({
           title={t(
             (
               {
-                menu: "editMenu",
                 supplier: "addSupplier",
                 receiving: "receivePurchase",
                 shift: "shifts",
@@ -144,7 +134,6 @@ export function ManagementTools({
           )}
           close={() => setMode("")}
           closeLabel={t("close")}
-          wide={mode === "menu"}
         >
           {error && (
             <p className="error" role="alert">
@@ -240,22 +229,9 @@ export function ManagementTools({
                 e.preventDefault();
                 setError("");
                 const f = new FormData(e.currentTarget);
-                const operationId = crypto.randomUUID();
+                const operationId = dialogOperationId;
                 const val = (key: string) => String(f.get(key) ?? "");
                 try {
-                  if (mode === "menu")
-                    void save("/catalog/save", {
-                      operationId,
-                      id: selected?.id ?? crypto.randomUUID(),
-                      name: { es: val("es"), en: val("en") },
-                      category: { es: val("catEs"), en: val("catEn") },
-                      price: parseAmount(val("price")),
-                      available: f.get("available") === "on",
-                      station: val("station"),
-                      expectedVersion: selected?.version ?? 0,
-                      cost: val("cost") ? parseAmount(val("cost")) : null,
-                      recipe,
-                    });
                   if (mode === "supplier")
                     void save("/suppliers", { operationId, name: val("name") });
                   if (mode === "receiving")
@@ -287,162 +263,6 @@ export function ManagementTools({
                 }
               }}
             >
-              {mode === "menu" && (
-                <>
-                  <Field label={t("product")}>
-                    <select
-                      onChange={(e) => {
-                        const product =
-                          catalog.find((p) => p.id === e.target.value) ?? null;
-                        setSelected(product);
-                        setRecipe(
-                          (product?.recipe ?? []).map(
-                            (line: { stockId: string; quantity: string }) => ({
-                              ...line,
-                            }),
-                          ),
-                        );
-                      }}
-                    >
-                      <option value="">{t("newProduct")}</option>
-                      {catalog.map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name[locale]}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                  <div key={selected?.id ?? "new"}>
-                    <div className="form-grid">
-                      <Field label="Nombre · Español">
-                        <input
-                          name="es"
-                          defaultValue={selected?.name.es}
-                          required
-                        />
-                      </Field>
-                      <Field label="Name · English">
-                        <input
-                          name="en"
-                          defaultValue={selected?.name.en}
-                          required
-                        />
-                      </Field>
-                      <Field label="Categoría · Español">
-                        <input
-                          name="catEs"
-                          defaultValue={selected?.category.es}
-                          required
-                        />
-                      </Field>
-                      <Field label="Category · English">
-                        <input
-                          name="catEn"
-                          defaultValue={selected?.category.en}
-                          required
-                        />
-                      </Field>
-                      <Field label={t("price")}>
-                        <input
-                          name="price"
-                          inputMode="decimal"
-                          defaultValue={selected ? selected.price / scale : ""}
-                          required
-                        />
-                      </Field>
-                      <Field label={t("cost")}>
-                        <input
-                          name="cost"
-                          inputMode="decimal"
-                          defaultValue={
-                            selected?.cost !== null && selected
-                              ? selected.cost / scale
-                              : ""
-                          }
-                        />
-                      </Field>
-                    </div>
-                    <Field label={t("station")}>
-                      <select
-                        name="station"
-                        defaultValue={selected?.station ?? "kitchen"}
-                      >
-                        <option value="kitchen">{t("kitchen")}</option>
-                        <option value="bar">{t("bar")}</option>
-                      </select>
-                    </Field>
-                    <fieldset>
-                      <legend>{t("recipe")}</legend>
-                      {recipe.map((line, index) => (
-                        <div className="form-grid" key={index}>
-                          <Field label={`${t("stock")} ${index + 1}`}>
-                            <select
-                              required
-                              value={line.stockId}
-                              onChange={(e) =>
-                                setRecipe(
-                                  recipe.map((r, i) =>
-                                    i === index
-                                      ? { ...r, stockId: e.target.value }
-                                      : r,
-                                  ),
-                                )
-                              }
-                            >
-                              <option value="">—</option>
-                              {stock.map((i) => (
-                                <option key={i.id} value={i.id}>
-                                  {i.name} ({i.unit})
-                                </option>
-                              ))}
-                            </select>
-                          </Field>
-                          <Field label={`${t("quantity")} ${index + 1}`}>
-                            <input
-                              required
-                              inputMode="decimal"
-                              value={line.quantity}
-                              onChange={(e) =>
-                                setRecipe(
-                                  recipe.map((r, i) =>
-                                    i === index
-                                      ? { ...r, quantity: e.target.value }
-                                      : r,
-                                  ),
-                                )
-                              }
-                            />
-                          </Field>
-                          <Button
-                            aria-label={`${t("remove")} ${t("recipe")} ${index + 1}`}
-                            onClick={() =>
-                              setRecipe(recipe.filter((_, i) => i !== index))
-                            }
-                          >
-                            {t("remove")}
-                          </Button>
-                        </div>
-                      ))}
-                      <Button
-                        disabled={recipe.length >= 30}
-                        onClick={() =>
-                          setRecipe([...recipe, { stockId: "", quantity: "1" }])
-                        }
-                      >
-                        {t("addIngredient")}
-                      </Button>
-                    </fieldset>
-                    <label className="option">
-                      <input
-                        name="available"
-                        type="checkbox"
-                        defaultChecked={selected?.available ?? true}
-                      />
-                      {t("available")}
-                    </label>
-                  </div>
-                </>
-              )}
               {mode === "supplier" && (
                 <Field label={t("name")}>
                   <input name="name" required />

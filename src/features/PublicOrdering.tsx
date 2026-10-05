@@ -1,20 +1,40 @@
 import { BrandLogo } from "../components/BrandLogo";
-import { currencyExponent } from "../../shared/domain";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { strings, translateError, type Key } from "../i18n";
-import { Button, Field, Modal, Badge } from "../components/ui";
+import { Button, Field, Badge } from "../components/ui";
+import { ModifierPicker } from "../components/ModifierPicker";
+import { orderable, pickerNeeded } from "../../shared/menu";
+import { moneyFormatter } from "./menu/format";
+import { CATALOG_ERRORS, priceCart } from "./menu/cart";
 import {
-  quote,
+  MENU_REFRESH_EVENT,
+  PUBLIC_MENU_POLL,
+  advanceBaseline,
+  watchMenuRevision,
+} from "./menu/freshness";
+import { UnavailableLines } from "./menu/UnavailableLines";
+import {
   type Product,
   type OrderInput,
   type Locale,
 } from "../../shared/domain";
+
+type PublicCatalog = {
+  restaurant: { name: string; currency: string };
+  /** Menu revision the catalog includes (read before it). */
+  revision?: number;
+  catalog: Product[];
+};
+/** Refetch the catalog now (after a catalog error and on each kiosk reset). */
+const refreshCatalog = () =>
+  window.dispatchEvent(new Event(MENU_REFRESH_EVENT));
+
 export function PublicOrdering() {
   const [, channel, token] = location.pathname.split("/");
   const [locale, setLocale] = useState<Locale>("es");
   const t = (k: Key) => strings[locale][k];
-  const [data, setData] = useState<any>(null);
+  const [data, setData] = useState<PublicCatalog | null>(null);
   const [draft, setDraft] = useState<OrderInput>({
     operationId: crypto.randomUUID(),
     lines: [],
@@ -24,16 +44,53 @@ export function PublicOrdering() {
     note: "",
     channel: channel as "qr" | "kiosk",
   });
-  const [product, setProduct] = useState<Product | null>(null);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [picker, setPicker] = useState<Product | null>(null);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const baseline = useRef<number | null>(null);
+  // MENU-R1: a page showing its sent order no longer polls.
+  const sent = useRef(false);
   useEffect(() => {
-    void api("/public/" + token + "/catalog")
-      .then(setData)
+    sent.current = result !== null;
+  }, [result]);
+  useEffect(() => {
+    void api<PublicCatalog>("/public/" + token + "/catalog")
+      .then((d) => {
+        advanceBaseline(baseline, d.revision);
+        setData(d);
+      })
       .catch((e) => setError(translateError(e.message, locale)));
   }, [token]);
+  // OWNER-2: a kiosk or a table's QR page stays open for hours. Poll the menu
+  // revision about every minute and when the page becomes visible again, and
+  // refetch the catalog when it moved, so an 86 or a price change reaches
+  // the customer before they order. MENU-R1: diners share the venue's IP, so
+  // a hidden page or one showing its sent order does not poll, polls are
+  // spread (PUBLIC_MENU_POLL), and every catalog payload moves the baseline
+  // so a refetch after an error or a kiosk reset is not repeated by the poll.
+  const ready = data !== null;
+  useEffect(() => {
+    if (!ready) return;
+    return watchMenuRevision<PublicCatalog>({
+      revision: async () =>
+        (await api<{ revision: number }>("/public/" + token + "/revision"))
+          .revision,
+      catalog: () => api<PublicCatalog>("/public/" + token + "/catalog"),
+      apply: (d) => {
+        advanceBaseline(baseline, d.revision);
+        setData(d);
+      },
+      baseline: {
+        get: () => baseline.current,
+        set: (revision) => advanceBaseline(baseline, revision),
+      },
+      win: window,
+      doc: document,
+      ...PUBLIC_MENU_POLL,
+      active: () => document.visibilityState === "visible" && !sent.current,
+    });
+  }, [token, ready]);
   useEffect(() => {
     if (channel !== "kiosk") return;
     let timer: ReturnType<typeof setTimeout>;
@@ -48,7 +105,10 @@ export function PublicOrdering() {
           note: "",
         }));
         setResult(null);
-        setProduct(null);
+        setPicker(null);
+        // The next customer starts clean, on the current menu.
+        setError("");
+        refreshCatalog();
       }, 90000);
     };
     reset();
@@ -60,29 +120,33 @@ export function PublicOrdering() {
       window.removeEventListener("keydown", reset);
     };
   }, [channel]);
-  const m = (n: number) =>
-    new Intl.NumberFormat(locale, {
-      style: "currency",
-      currency: data?.restaurant.currency ?? "MXN",
-    }).format(n / 10 ** currencyExponent(data?.restaurant.currency ?? "MXN"));
-  const lines = data ? quote(draft.lines, data.catalog) : [];
-  const total = lines.reduce((a, l) => a + l.total, 0);
-  function add(p: Product, options: string[]) {
-    setDraft((d) => ({
-      ...d,
-      lines: [
-        ...d.lines,
-        {
-          id: crypto.randomUUID(),
-          productId: p.id,
-          quantity: 1,
-          options,
-          note: "",
-        },
-      ],
-    }));
-    setProduct(null);
+  // Same es-MX / en-US currency format as the POS and the picker.
+  const m = moneyFormatter(locale, data?.restaurant.currency ?? "MXN");
+  // Per line: one product 86'd after it was added never blanks the order.
+  const cart = priceCart(draft.lines, data?.catalog ?? [], false);
+  const lines = cart.lines.flatMap((l) => (l.priced ? [l.priced] : []));
+  const total = cart.total;
+  function setLines(
+    update: (lines: OrderInput["lines"]) => OrderInput["lines"],
+  ) {
+    setDraft((d) => ({ ...d, lines: update(d.lines) }));
+    setError("");
   }
+  function add(p: Product, selection: { options: string[] } = { options: [] }) {
+    setLines((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        productId: p.id,
+        quantity: 1,
+        options: selection.options,
+        note: "",
+      },
+    ]);
+    setPicker(null);
+  }
+  const remove = (id: string) =>
+    setLines((current) => current.filter((x) => x.id !== id));
   return (
     <div className="public-ordering">
       <header className="row between">
@@ -129,15 +193,12 @@ export function PublicOrdering() {
             {data?.catalog.map((p: Product) => (
               <Button
                 key={p.id}
-                disabled={!p.available}
-                onClick={() => {
-                  if (p.groups.some((g) => g.min > 0)) {
-                    setProduct(p);
-                    setSelected([]);
-                  } else add(p, []);
-                }}
+                disabled={!orderable(p)}
+                onClick={() => (pickerNeeded(p) ? setPicker(p) : add(p))}
               >
-                {p.name[locale]} · {m(p.price)}
+                {p.name[locale]} ·{" "}
+                {p.openAmount ? t("menuOpenPriceBadge") : m(p.price)}
+                {!orderable(p) && ` · ${t("menuSoldOut")}`}
               </Button>
             ))}
           </div>
@@ -145,21 +206,29 @@ export function PublicOrdering() {
             <h2>{t("order")}</h2>
             {lines.map((l) => (
               <div className="report-row" key={l.id}>
-                <span>{l.name[locale]}</span>
+                <span>
+                  {l.name[locale]}
+                  {l.optionNames.length > 0 && (
+                    <small className="public-line-options">
+                      {l.optionNames.map((o) => o[locale]).join(" · ")}
+                    </small>
+                  )}
+                </span>
                 <strong>{m(l.total)}</strong>
                 <Button
-                  aria-label={t("remove")}
-                  onClick={() =>
-                    setDraft((d) => ({
-                      ...d,
-                      lines: d.lines.filter((x) => x.id !== l.id),
-                    }))
-                  }
+                  aria-label={`${t("remove")} ${l.name[locale]}`}
+                  onClick={() => remove(l.id)}
                 >
                   −
                 </Button>
               </div>
             ))}
+            <UnavailableLines
+              lines={cart.lines}
+              catalog={data?.catalog ?? []}
+              locale={locale}
+              onRemove={remove}
+            />
             <Field label={t("name")}>
               <input
                 value={draft.name}
@@ -172,13 +241,18 @@ export function PublicOrdering() {
             <p>{t("payAtCounter")}</p>
             <Button
               variant="primary"
-              disabled={!lines.length || busy}
+              disabled={!draft.lines.length || busy || cart.blocked}
               onClick={async () => {
                 setBusy(true);
+                setError("");
                 try {
                   setResult(await api("/public/" + token + "/orders", draft));
                 } catch (e) {
-                  setError(translateError((e as Error).message, locale));
+                  const code = (e as Error).message;
+                  setError(translateError(code, locale));
+                  // The menu changed under the order: refetch it so the
+                  // stale line is marked with "Quitar".
+                  if (CATALOG_ERRORS.has(code)) refreshCatalog();
                 } finally {
                   setBusy(false);
                 }
@@ -189,57 +263,15 @@ export function PublicOrdering() {
           </section>
         </>
       )}
-      {product && (
-        <Modal
-          title={product.name[locale]}
-          close={() => setProduct(null)}
-          closeLabel={t("close")}
-        >
-          {product.groups.map((g) => (
-            <fieldset key={g.id}>
-              <legend>
-                {g.name[locale]} · {g.min}–{g.max}
-              </legend>
-              {g.options.map((o) => (
-                <label className="option" key={o.id}>
-                  <input
-                    type={g.max === 1 ? "radio" : "checkbox"}
-                    name={g.id}
-                    disabled={!o.available}
-                    checked={selected.includes(o.id)}
-                    onChange={() =>
-                      setSelected((old) =>
-                        g.max === 1
-                          ? [
-                              ...old.filter(
-                                (id) => !g.options.some((o) => o.id === id),
-                              ),
-                              o.id,
-                            ]
-                          : old.includes(o.id)
-                            ? old.filter((id) => id !== o.id)
-                            : [...old, o.id],
-                      )
-                    }
-                  />
-                  {o.name[locale]} {m(o.price)}
-                </label>
-              ))}
-            </fieldset>
-          ))}
-          <Button
-            variant="primary"
-            disabled={product.groups.some((g) => {
-              const n = selected.filter((id) =>
-                g.options.some((o) => o.id === id),
-              ).length;
-              return n < g.min || n > g.max;
-            })}
-            onClick={() => add(product, selected)}
-          >
-            {t("add")}
-          </Button>
-        </Modal>
+      {picker && (
+        <ModifierPicker
+          product={picker}
+          locale={locale}
+          currency={data?.restaurant.currency ?? "MXN"}
+          canOpen={false}
+          onConfirm={(selection) => add(picker, selection)}
+          onClose={() => setPicker(null)}
+        />
       )}
     </div>
   );
