@@ -14,6 +14,11 @@ REVOKE UPDATE ON restaurants FROM gm_app;
 GRANT UPDATE(name,currency,timezone,cutoff,opening_days,config_version) ON restaurants TO gm_app;
 GRANT SELECT,INSERT ON oauth_login_attempts TO gm_app;
 GRANT UPDATE(consumed_at) ON oauth_login_attempts TO gm_app;
+-- 023 access
+GRANT SELECT,INSERT,UPDATE ON pin_throttles TO gm_app;
+GRANT SELECT,INSERT ON device_pairing_codes TO gm_app;
+GRANT UPDATE(consumed_at,device_id,cancelled_at,cancelled_by) ON device_pairing_codes TO gm_app;
+GRANT SELECT,INSERT ON offline_lease_renewals TO gm_app;
 GRANT SELECT,INSERT ON owner_accounts,owner_sessions,owner_memberships,organizations,restaurants TO gm_app;
 GRANT UPDATE(revoked) ON owner_sessions TO gm_app;
 GRANT INSERT ON signup_billing_intents TO gm_app;
