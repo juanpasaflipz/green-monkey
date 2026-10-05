@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
-import { readFileSync } from "node:fs";
+import { swShellPlugin } from "./vite/sw-shell-plugin.ts";
 const buildId =
   process.env.RAILWAY_GIT_COMMIT_SHA ??
   process.env.GITHUB_SHA ??
@@ -11,25 +11,7 @@ export default defineConfig({
   plugins: [
     react(),
     tailwindcss(),
-    {
-      name: "complete-offline-shell",
-      generateBundle(_options, bundle) {
-        const assets = Object.keys(bundle)
-          .filter((name) => name.startsWith("assets/"))
-          .map((name) => "/" + name);
-        this.emitFile({
-          type: "asset",
-          fileName: "sw.js",
-          source: readFileSync(
-            new URL("./public/sw.js", import.meta.url),
-            "utf8",
-          ).replace(
-            "const SHELL_ASSETS = [];",
-            `const SHELL_ASSETS = ${JSON.stringify(assets)};`,
-          ),
-        });
-      },
-    },
+    swShellPlugin(buildId),
   ],
   build: {
     rolldownOptions: {
