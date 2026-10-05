@@ -18,6 +18,7 @@ import { main } from "../scripts/migrate.js";
 import { requireReadySchema } from "../server/readiness.js";
 import { runRetention } from "../server/ops/retention.js";
 import { setLogSink } from "../server/logging.js";
+import { lintMigrations } from "../scripts/ops/migrations-lint.js";
 
 const lines: string[] = [];
 setLogSink((line) => lines.push(line));
@@ -390,6 +391,118 @@ try {
         await tx`delete from restaurants where id=${tenantId}`;
         await tx`delete from organizations where id=${org}`;
       });
+    },
+  );
+
+  await check(
+    "backfills as the non-superuser owner change rows only with NO FORCE / FORCE on every table they write and read; the lint flags the others (OPS-R2)",
+    async () => {
+      const adminReal = pool(urlFor(real));
+      const owner = pool(migratorUrl);
+      const fixtureDir = mkdtempSync(join(tmpdir(), "gm-backfill-"));
+      const tenants = [randomUUID(), randomUUID()];
+      const org = randomUUID();
+      const devices = [randomUUID(), randomUUID(), randomUUID()];
+      const writeFixture = (name: string, body: string) =>
+        writeFileSync(join(fixtureDir, name), body);
+      const apply = async (name: string) => {
+        const file = readMigrations(fixtureDir).find((f) => f.name === name)!;
+        assert.deepEqual(
+          await applyMigrations(owner, [file], { sleep: noSleep }),
+          [name],
+        );
+      };
+      const noted = async () => {
+        const rows = await adminReal`
+          select fixture_note from devices where tenant_id = any(${tenants}) order by id`;
+        return rows.map((r) => r.fixture_note);
+      };
+      try {
+        await adminReal.begin(async (tx) => {
+          await tx`insert into organizations(id,name) values(${org},'Backfill fixture')`;
+          for (const [i, id] of tenants.entries())
+            await tx`insert into restaurants(id,organization_id,name) values(${id},${org},${"Backfill " + i})`;
+          for (const [i, id] of devices.entries())
+            await tx`insert into devices(tenant_id,id,name,token_hash)
+              values(${tenants[i % 2]},${id},'Caja',${"fixture-" + id})`;
+        });
+        await adminReal`alter table devices add column fixture_note text`;
+        // 023 as written: the owner's UPDATE is filtered by FORCE RLS.
+        writeFixture(
+          "900_plain.sql",
+          "SET LOCAL lock_timeout = '5s';\nUPDATE devices SET fixture_note = 'plain';\n",
+        );
+        // Only the written table unforced: the joined table still looks empty.
+        writeFixture(
+          "901_target_only.sql",
+          `SET LOCAL lock_timeout = '5s';
+ALTER TABLE devices NO FORCE ROW LEVEL SECURITY;
+UPDATE devices d SET fixture_note = r.name FROM restaurants r WHERE r.id = d.tenant_id;
+ALTER TABLE devices FORCE ROW LEVEL SECURITY;
+`,
+        );
+        // The owner pattern on every table it writes and reads (menu 025).
+        writeFixture(
+          "902_owner_pattern.sql",
+          `SET LOCAL lock_timeout = '5s';
+ALTER TABLE devices NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE restaurants NO FORCE ROW LEVEL SECURITY;
+UPDATE devices d SET fixture_note = r.name FROM restaurants r WHERE r.id = d.tenant_id;
+ALTER TABLE devices FORCE ROW LEVEL SECURITY;
+ALTER TABLE restaurants FORCE ROW LEVEL SECURITY;
+`,
+        );
+        const findings = lintMigrations([
+          ...readMigrations(),
+          ...readMigrations(fixtureDir),
+        ]);
+        const flagged = (file: string) =>
+          [
+            ...new Set(
+              findings
+                .filter(
+                  (f) => f.file === file && f.rule === "backfill_owner_pattern",
+                )
+                .map((f) => f.detail.split(":")[0]),
+            ),
+          ].sort();
+        assert.deepEqual(flagged("900_plain.sql"), ["devices"]);
+        assert.deepEqual(flagged("901_target_only.sql"), ["restaurants"]);
+        assert.deepEqual(flagged("902_owner_pattern.sql"), []);
+
+        await apply("900_plain.sql");
+        assert.deepEqual(
+          await noted(),
+          [null, null, null],
+          "without the owner pattern the backfill silently changes nothing",
+        );
+        await apply("901_target_only.sql");
+        assert.deepEqual(
+          await noted(),
+          [null, null, null],
+          "a forced table read by the backfill looks empty",
+        );
+        await apply("902_owner_pattern.sql");
+        const expected = await adminReal`
+          select r.name from devices d join restaurants r on r.id = d.tenant_id
+          where d.tenant_id = any(${tenants}) order by d.id`;
+        assert.deepEqual(
+          await noted(),
+          expected.map((r) => r.name),
+        );
+        assert.equal(new Set(expected.map((r) => r.name)).size, 2);
+        const [forced] = await adminReal`
+          select bool_and(relforcerowsecurity) as forced from pg_class
+          where oid in (to_regclass('public.devices'), to_regclass('public.restaurants'))`;
+        assert.equal(forced.forced, true, "FORCE is restored in the same file");
+      } finally {
+        rmSync(fixtureDir, { recursive: true, force: true });
+        await adminReal`delete from schema_migrations where name in ('900_plain.sql','901_target_only.sql','902_owner_pattern.sql')`;
+        await adminReal`alter table devices drop column if exists fixture_note`;
+        await adminReal`delete from devices where tenant_id = any(${tenants})`;
+        await adminReal`delete from restaurants where id = any(${tenants})`;
+        await adminReal`delete from organizations where id = ${org}`;
+      }
     },
   );
 

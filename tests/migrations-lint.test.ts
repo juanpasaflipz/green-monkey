@@ -1,73 +1,50 @@
 import { describe, expect, it } from "vitest";
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync } from "node:fs";
 import {
   isNoTransaction,
   readMigrations,
   splitStatements,
+  type MigrationFile,
 } from "../server/ops/schema.js";
 import { retentionRules } from "../server/ops/retention.js";
+import {
+  createdTables,
+  destructive,
+  dmlStatements,
+  dmlTables,
+  lintMigrations,
+  RLS_ALLOWLIST,
+  RULES_FROM,
+  rlsTables,
+  scan,
+} from "../scripts/ops/migrations-lint.js";
 
 /**
  * Migration rules for every area (wave 1 contract §1.3 plus the runner's
- * constraints). Files numbered 022 and later follow them; earlier files
- * predate the rules and are only checked for names and transactions.
- * Destructive DDL needs an explicit `-- gm:contract-approved` line agreed
- * with the tech lead (docs/RELEASE.md).
+ * constraints); the rules live in scripts/ops/migrations-lint.ts so any track
+ * can run them on its own directory. Files numbered 022 and later follow
+ * them; earlier files predate the rules and are only checked for names and
+ * transactions.
  */
-const RULES_FROM = 22;
-/** Platform metadata tables that are deliberately not row-level secured. */
-const RLS_ALLOWLIST = new Set(["schema_grants", "schema_migrations"]);
-
-/** Removes comments and dollar-quoted bodies (functions, DO blocks). */
-function code(body: string) {
-  return body
-    .replace(/\$([a-z_]*)\$[\s\S]*?\$\1\$/gi, "$$body$$")
-    .replace(/--[^\n]*/g, "")
-    .replace(/\/\*[\s\S]*?\*\//g, "");
-}
-const statements = (body: string) =>
-  code(body)
-    .split(";")
-    .map((s) => s.trim().replace(/\s+/g, " "))
-    .filter(Boolean);
-const ident = String.raw`(?:public\.)?"?([a-z_][a-z0-9_]*)"?`;
-
 const files = readMigrations();
 const ruled = files.filter((f) => f.number >= RULES_FROM);
+const findings = lintMigrations(files);
+const rule = (name: string) => findings.filter((f) => f.rule === name);
 
-/** Returns the destructive statements not covered by a same-file replacement. */
-function destructive(body: string): string[] {
-  const all = statements(body);
-  const text = all.join(";\n").toLowerCase();
-  return all.filter((s) => {
-    const lower = s.toLowerCase();
-    if (
-      /^drop (table|schema|database|type|sequence|view|materialized view|role|owned)\b/.test(
-        lower,
-      )
-    )
-      return true;
-    if (/\bdrop column\b/.test(lower)) return true;
-    if (/\brename\b/.test(lower)) return true;
-    if (/\balter column \S+ (set data )?type\b/.test(lower)) return true;
-    // Replacing a constraint, index, policy, trigger or function in the same
-    // file (drop then create with the same name) widens or rebuilds; a bare
-    // drop is a contract change.
-    const constraint = lower.match(
-      /\bdrop constraint (?:if exists )?"?([a-z0-9_]+)"?/,
-    );
-    if (constraint)
-      return !new RegExp(`add constraint "?${constraint[1]}"?\\b`).test(text);
-    const other = lower.match(
-      /^drop (index|policy|trigger|function)(?: concurrently)?(?: if exists)? "?([a-z0-9_]+)"?/,
-    );
-    if (other)
-      return !new RegExp(
-        `create (or replace )?(unique )?${other[1]}( concurrently)?( if not exists)? "?${other[2]}"?\\b`,
-      ).test(text);
-    return false;
-  });
-}
+const base = files.filter((f) => f.number < RULES_FROM);
+const fixture = (name: string, body: string): MigrationFile => ({
+  name,
+  number: Number(name.slice(0, 3)),
+  body,
+  hash: "fixture",
+  transactional: !isNoTransaction(body),
+});
+/** Findings for one extra file linted together with the bundled 001-021. */
+const lintWith = (name: string, body: string) =>
+  lintMigrations([...base, fixture(name, body)]).filter((f) => f.file === name);
+
+const tenantScope = (t: string) =>
+  `EXECUTE format('CREATE POLICY tenant_scope ON %I USING (tenant_id = nullif(current_setting(''app.tenant_id'',true),'''')::uuid) WITH CHECK (tenant_id = nullif(current_setting(''app.tenant_id'',true),'''')::uuid)',${t});`;
 
 describe("migrations lint", () => {
   it("file names match NNN_name.sql with unique numbers", () => {
@@ -78,22 +55,37 @@ describe("migrations lint", () => {
     expect(new Set(numbers).size).toBe(numbers.length);
   });
 
+  it("the bundled migrations pass every rule", () => {
+    expect(findings).toEqual([]);
+  });
+
   it("migrations ≥ 022 start with SET LOCAL lock_timeout (wave 1 contract §1.3)", () => {
     expect(ruled.map((f) => f.name)).toContain("022_ops.sql");
-    for (const f of ruled.filter((f) => f.transactional))
-      expect(statements(f.body)[0], f.name).toMatch(
-        /^set local lock_timeout\s*=\s*'\d+(ms|s)?'$/i,
-      );
+    expect(rule("lock_timeout")).toEqual([]);
+    expect(
+      lintWith("030_x.sql", "CREATE INDEX x_a ON jobs(state);\n").map(
+        (f) => f.rule,
+      ),
+    ).toEqual(["lock_timeout"]);
+    expect(
+      lintWith("030_x.sql", "-- header\nSET LOCAL lock_timeout = '5s';\n"),
+    ).toEqual([]);
   });
 
   it("transactional files contain no CONCURRENTLY/BEGIN/COMMIT", () => {
-    for (const f of files.filter((f) => f.transactional)) {
-      const c = code(f.body);
-      expect(c, f.name).not.toMatch(/\bconcurrently\b/i);
-      expect(c, f.name).not.toMatch(
-        /(^|;)\s*(begin|commit|rollback|start transaction|end)\s*(transaction|work)?\s*;/i,
-      );
-    }
+    expect(rule("transaction_control")).toEqual([]);
+    expect(
+      lintWith(
+        "030_x.sql",
+        "SET LOCAL lock_timeout = '5s';\nCREATE INDEX CONCURRENTLY x ON jobs(state);\n",
+      ).map((f) => f.rule),
+    ).toEqual(["transaction_control"]);
+    expect(
+      lintWith(
+        "030_x.sql",
+        "SET LOCAL lock_timeout = '5s';\nCREATE TABLE x();\nCOMMIT;\n",
+      ).map((f) => f.rule),
+    ).toContain("transaction_control");
   });
 
   it("no-transaction files contain only concurrent index/validate statements split by gm:statement-break", () => {
@@ -110,60 +102,175 @@ describe("migrations lint", () => {
         "-- gm:no-transaction\nA;\n-- gm:statement-break\nB;\n-- gm:statement-break\n",
       ),
     ).toEqual(["-- gm:no-transaction\nA;", "B;"]);
-    for (const f of files.filter((f) => !f.transactional))
-      for (const part of splitStatements(f.body)) {
-        const parts = statements(part);
-        expect(parts.length, `${f.name}: one statement per break`).toBe(1);
-        expect(parts[0], f.name).toMatch(
-          /^(create (unique )?index concurrently|drop index concurrently if exists|reindex (index|table) concurrently|alter table \S+ validate constraint)\b/i,
-        );
-      }
+    expect(rule("no_transaction_statement")).toEqual([]);
+    expect(
+      lintWith(
+        "030_x.sql",
+        "-- gm:no-transaction\nCREATE INDEX CONCURRENTLY a ON jobs(state);\nCREATE INDEX CONCURRENTLY b ON jobs(kind);\n",
+      ).map((f) => f.rule),
+    ).toEqual(["no_transaction_statement"]);
   });
 
-  it("new tables in ≥ 022 enable and force RLS (allowlist: schema_grants)", () => {
-    for (const f of ruled) {
-      const c = code(f.body);
-      for (const m of c.matchAll(
-        new RegExp(String.raw`create table (?:if not exists )?${ident}`, "gi"),
-      )) {
-        const table = m[1].toLowerCase();
-        if (RLS_ALLOWLIST.has(table)) continue;
-        for (const mode of ["enable", "force"])
-          expect(c, `${f.name}: ${table} ${mode} RLS`).toMatch(
-            new RegExp(
-              String.raw`alter table (?:if exists )?(?:public\.)?"?${table}"? ${mode} row level security`,
-              "i",
-            ),
-          );
-      }
+  it("the scanner keeps strings, drops comments and lifts dollar-quoted bodies", () => {
+    const { code, bodies } = scan(
+      "-- a comment with $$ and ;\nSELECT 'it''s; $$ fine';\nDO $tag$ BEGIN PERFORM 1; END $tag$;\n/* block ; */ SELECT $1;",
+    );
+    expect(code).not.toMatch(/comment|block/);
+    expect(code).toContain("'it''s; $$ fine'");
+    expect(code).toContain("DO $q0$;");
+    expect(code).toContain("SELECT $1;");
+    expect(bodies).toEqual([" BEGIN PERFORM 1; END "]);
+  });
+
+  it("recognises every RLS table of the bundled migrations, including DO loops (OPS-R1 regression)", () => {
+    // tests/ops-db.ts proves on a live database that every public table
+    // except schema_migrations forces RLS; the parser must see the same.
+    const forced = new Set<string>(),
+      enabled = new Set<string>();
+    for (const f of files) {
+      const r = rlsTables(f.body);
+      r.force.forEach((t) => forced.add(t));
+      r.enable.forEach((t) => enabled.add(t));
+    }
+    const created = files.flatMap((f) => createdTables(f.body));
+    expect(created).toContain("devices");
+    for (const table of created.filter((t) => !RLS_ALLOWLIST.has(t))) {
+      expect(enabled.has(table), `${table} enable`).toBe(true);
+      expect(forced.has(table), `${table} force`).toBe(true);
     }
   });
 
-  it("backfill DML runs with NO FORCE / FORCE row level security on that table", () => {
-    // The deployed migration role owns the tables but is not a superuser, so
-    // FORCE ROW LEVEL SECURITY applies to it: without the owner pattern an
-    // UPDATE, DELETE or INSERT ... SELECT silently touches zero rows.
-    for (const f of ruled)
-      for (const s of statements(f.body)) {
-        const m = s.match(
-          new RegExp(
-            String.raw`^(?:with .* )?(?:update|insert into|delete from) ${ident}`,
-            "i",
-          ),
-        );
-        if (!m) continue;
-        const table = m[1].toLowerCase();
-        for (const mode of ["no force", "force"])
-          expect(
-            code(f.body),
-            `${f.name}: ${mode} RLS around DML on ${table}`,
-          ).toMatch(
-            new RegExp(
-              String.raw`alter table (?:public\.)?"?${table}"? ${mode} row level security`,
-              "i",
-            ),
-          );
-      }
+  it("new tables in ≥ 022 enable and force RLS (allowlist: schema_grants)", () => {
+    expect(rule("rls_on_new_table")).toEqual([]);
+    const columns =
+      "(tenant_id uuid NOT NULL REFERENCES restaurants(id), id uuid NOT NULL, PRIMARY KEY (tenant_id, id))";
+    // The standard DO loop (001, 023, 025, 026) passes.
+    expect(
+      lintWith(
+        "030_x.sql",
+        `SET LOCAL lock_timeout = '5s';
+CREATE TABLE pin_like${columns};
+CREATE TABLE codes_like${columns};
+DO $$ DECLARE t text; BEGIN
+ FOREACH t IN ARRAY ARRAY['pin_like','codes_like'] LOOP
+  EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY',t);
+  EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+  ${tenantScope("t")}
+ END LOOP;
+END $$;`,
+      ),
+    ).toEqual([]);
+    // Literal statements pass too.
+    expect(
+      lintWith(
+        "030_x.sql",
+        `SET LOCAL lock_timeout = '5s';
+CREATE TABLE public.literal_like${columns};
+ALTER TABLE literal_like ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ONLY public.literal_like FORCE ROW LEVEL SECURITY;`,
+      ),
+    ).toEqual([]);
+    // A table left out of the loop, or a loop without FORCE, fails.
+    const missing = lintWith(
+      "030_x.sql",
+      `SET LOCAL lock_timeout = '5s';
+CREATE TABLE listed${columns};
+CREATE TABLE forgotten${columns};
+DO $$ DECLARE t text; BEGIN
+ FOREACH t IN ARRAY ARRAY['listed'] LOOP
+  EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+ END LOOP;
+END $$;
+CREATE TABLE schema_grants_like_allowlisted_by_name_only${columns};`,
+    ).map((f) => f.detail);
+    expect(missing).toEqual(
+      expect.arrayContaining([
+        "listed: force row level security",
+        "forgotten: enable row level security",
+        "forgotten: force row level security",
+      ]),
+    );
+    expect(missing).not.toContain("listed: enable row level security");
+  });
+
+  it("backfill DML runs with NO FORCE / FORCE row level security on every table it writes or reads (OPS-R2)", () => {
+    expect(rule("backfill_owner_pattern")).toEqual([]);
+    // access 023 as written: two UPDATEs on devices with no owner pattern.
+    const access = lintWith(
+      "023_x.sql",
+      `SET LOCAL lock_timeout = '5s';
+ALTER TABLE devices ADD COLUMN kind text;
+UPDATE devices SET kind = CASE WHEN name = 'Owner browser' THEN 'personal' ELSE 'terminal' END;
+UPDATE devices SET token_expires_at = now() + interval '30 days' WHERE active;`,
+    );
+    expect(access.map((f) => f.detail)).toEqual([
+      "devices: ALTER TABLE devices NO FORCE ROW LEVEL SECURITY around the backfill",
+      "devices: ALTER TABLE devices FORCE ROW LEVEL SECURITY around the backfill",
+    ]);
+    // service 024 as written: the CTE reads tenders, the UPDATE writes orders.
+    const service = `WITH money AS (
+  SELECT o.tenant_id, o.id, coalesce(sum(t.amount), 0) AS paid
+  FROM orders o LEFT JOIN tenders t ON t.tenant_id = o.tenant_id AND t.order_id = o.id
+  GROUP BY o.tenant_id, o.id)
+UPDATE orders o SET check_state = 'closed' FROM money m
+WHERE m.tenant_id = o.tenant_id AND m.id = o.id AND m.paid >= o.total;`;
+    expect(dmlTables(dmlStatements(service)[0])).toEqual({
+      target: "orders",
+      reads: ["tenders"],
+    });
+    const flagged = lintWith(
+      "024_x.sql",
+      `SET LOCAL lock_timeout = '5s';\n${service}`,
+    ).map((f) => f.detail.split(":")[0]);
+    expect([...new Set(flagged)].sort()).toEqual(["orders", "tenders"]);
+    // Wrapping only the written table still leaves the read table hidden.
+    expect(
+      lintWith(
+        "024_x.sql",
+        `SET LOCAL lock_timeout = '5s';
+ALTER TABLE orders NO FORCE ROW LEVEL SECURITY;
+${service}
+ALTER TABLE orders FORCE ROW LEVEL SECURITY;`,
+      ).map((f) => f.detail.split(":")[0]),
+    ).toEqual(["tenders", "tenders"]);
+    // The owner pattern on both passes (menu 025's reference form).
+    expect(
+      lintWith(
+        "024_x.sql",
+        `SET LOCAL lock_timeout = '5s';
+ALTER TABLE orders NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE tenders NO FORCE ROW LEVEL SECURITY;
+${service}
+ALTER TABLE orders FORCE ROW LEVEL SECURITY;
+ALTER TABLE tenders FORCE ROW LEVEL SECURITY;`,
+      ),
+    ).toEqual([]);
+    // DML in a DO block runs at migration time and is checked as well.
+    expect(
+      lintWith(
+        "030_x.sql",
+        `SET LOCAL lock_timeout = '5s';
+DO $$ BEGIN
+  UPDATE stock_items SET name = name WHERE false;
+END $$;`,
+      ).map((f) => f.detail.split(":")[0]),
+    ).toEqual(["stock_items", "stock_items"]);
+    // Function bodies run later, inside a tenant transaction: not backfills.
+    expect(
+      lintWith(
+        "030_x.sql",
+        `SET LOCAL lock_timeout = '5s';
+CREATE FUNCTION touch() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN UPDATE stock_items SET name = name WHERE id = NEW.id; RETURN NEW; END $$;`,
+      ),
+    ).toEqual([]);
+    // Tables without forced RLS (and CTE names) need nothing.
+    expect(
+      lintWith(
+        "030_x.sql",
+        "SET LOCAL lock_timeout = '5s';\nWITH x AS (SELECT 1 AS n) UPDATE schema_migrations SET name = name FROM x WHERE false;",
+      ),
+    ).toEqual([]);
   });
 
   it("destructive DDL requires gm:contract-approved", () => {
@@ -178,22 +285,29 @@ describe("migrations lint", () => {
       ),
     ).toHaveLength(0);
     expect(destructive("DROP INDEX old_idx;")).toHaveLength(1);
-    for (const f of ruled) {
-      const found = destructive(f.body);
-      if (found.length)
-        expect(f.body, `${f.name}: ${found[0]}`).toMatch(
-          /^-- gm:contract-approved\b/m,
-        );
-    }
+    expect(rule("destructive_ddl")).toEqual([]);
+    expect(
+      lintWith(
+        "030_x.sql",
+        "SET LOCAL lock_timeout = '5s';\nALTER TABLE jobs DROP COLUMN payload;",
+      ).map((f) => f.rule),
+    ).toEqual(["destructive_ddl"]);
+    expect(
+      lintWith(
+        "030_x.sql",
+        "-- gm:contract-approved (lead, 2026-10-05)\nSET LOCAL lock_timeout = '5s';\nALTER TABLE jobs DROP COLUMN payload;",
+      ),
+    ).toEqual([]);
   });
 
   it("022 creates only hot-path indexes and no CHECK constraints (wave 1 contract)", () => {
-    const body = readFileSync("migrations/022_ops.sql", "utf8");
-    for (const s of statements(body))
-      expect(s, s).toMatch(
-        /^(set local (lock|statement)_timeout|create index \w+ on )/i,
-      );
-    expect(code(body)).not.toMatch(/\bcheck\b/i);
+    expect(rule("ops_022_scope")).toEqual([]);
+    expect(
+      lintWith(
+        "022_x.sql",
+        "SET LOCAL lock_timeout = '5s';\nALTER TABLE jobs ADD CONSTRAINT j CHECK (attempts >= 0);",
+      ).map((f) => f.rule),
+    ).toEqual(["ops_022_scope", "ops_022_scope"]);
   });
 
   it("retention touches only the allow-listed tables and terminal rows", () => {
