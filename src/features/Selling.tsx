@@ -1431,7 +1431,12 @@ export function Selling({
             {t("drafts")}
           </Button>
           {!online && offline.tableService && (
-            <Button onClick={() => setOpenOrders(true)}>
+            // SVC-R10: a control that replaces the cart waits for a send or
+            // payment in flight (SERVICE.md "Nueva orden").
+            <Button
+              disabled={busy || paying}
+              onClick={() => setOpenOrders(true)}
+            >
               {t("offlineOpenOrders")}
             </Button>
           )}
@@ -1648,13 +1653,18 @@ export function Selling({
           locale={locale}
           close={() => setOpenOrders(false)}
           onPick={(order) => {
-            void replaceContext(order, {
-              ...fresh(),
-              mode: order.mode as OrderInput["mode"],
-              tableId: order.tableId,
-              name: order.name,
-            });
             setOpenOrders(false);
+            // Unsent lines go to Borradores first, as for every other order
+            // that replaces the cart.
+            void parkCurrentCart().then((parkedCart) => {
+              void replaceContext(order, {
+                ...fresh(),
+                mode: order.mode as OrderInput["mode"],
+                tableId: order.tableId,
+                name: order.name,
+              });
+              setNotice(parkedCart ? t("serviceDraftParked") : "");
+            });
           }}
         />
       )}
