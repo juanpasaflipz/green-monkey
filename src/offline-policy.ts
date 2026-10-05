@@ -130,7 +130,8 @@ export function nextProbeDelay(
   return Math.min(15_000, 2_000 * 2 ** Math.max(0, offlineProbeCount - 1));
 }
 
-export type SyncClass = "transient" | "auth" | "conflict" | "archived" | "synced";
+export type SyncClass =
+  "transient" | "auth" | "conflict" | "archived" | "synced";
 
 const TRANSIENT_CODES = new Set([
   "network_unavailable",
@@ -144,7 +145,11 @@ const TRANSIENT_CODES = new Set([
   "offline_recorded_in_future",
   "offline_dependency_pending",
 ]);
-const AUTH_CODES = new Set(["unauthorized", "session_changed", "missing_tenant"]);
+const AUTH_CODES = new Set([
+  "unauthorized",
+  "session_changed",
+  "missing_tenant",
+]);
 
 /**
  * Only explicit domain codes become conflicts. Anything that might succeed on

@@ -30,7 +30,12 @@ export function ConnectionPill({
         : t("offlineStatusOnline");
   const count = queued > 0 ? t("offlineQueuedCount", { n: queued }) : "";
   const warning = !net.canUseServer || net.slow;
-  const Icon = syncing && net.serverReachable ? RefreshCw : warning && !net.slow ? WifiOff : Wifi;
+  const Icon =
+    syncing && net.serverReachable
+      ? RefreshCw
+      : warning && !net.slow
+        ? WifiOff
+        : Wifi;
   return (
     <button
       className={`connection ${warning ? "warning" : ""}`}

@@ -51,8 +51,7 @@ export function printTickets(
 export async function recentTickets(session: Session, locale: Locale) {
   const tables =
     ((await db.cache.get(tablesKey(session)))?.value as
-      | { id: string; name: string }[]
-      | undefined) ?? [];
+      { id: string; name: string }[] | undefined) ?? [];
   return localKitchenTickets(
     session,
     Date.now() - 86_400_000,

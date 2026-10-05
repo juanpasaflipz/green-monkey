@@ -28,8 +28,10 @@ const json = (status: number, body: unknown) => () =>
     status,
     headers: { "content-type": "application/json" },
   });
-const text = (status: number, body: string, type = "text/html") => () =>
-  new Response(body, { status, headers: { "content-type": type } });
+const text =
+  (status: number, body: string, type = "text/html") =>
+  () =>
+    new Response(body, { status, headers: { "content-type": type } });
 const hang = () => new Promise<Response>(() => {});
 
 async function failure(promise: Promise<unknown>) {
@@ -76,7 +78,9 @@ describe("api transport", () => {
     // Regression FOH-6: a hung server used to leave the payment modal stuck.
     vi.useFakeTimers();
     const calls = mockFetch(hang);
-    const pending = failure(api("/orders/1/payments", {}, { idempotent: true }));
+    const pending = failure(
+      api("/orders/1/payments", {}, { idempotent: true }),
+    );
     await vi.advanceTimersByTimeAsync(15_000);
     const e = await pending;
     expect([e.message, e.kind]).toEqual(["request_timeout", "timeout"]);
@@ -128,7 +132,10 @@ describe("api transport", () => {
 
   it("GET retries once on 503 but not on timeout", async () => {
     vi.useFakeTimers();
-    const retried = mockFetch(json(503, { error: "database_unavailable" }), json(200, { ok: true }));
+    const retried = mockFetch(
+      json(503, { error: "database_unavailable" }),
+      json(200, { ok: true }),
+    );
     const ok = api("/catalog");
     await vi.advanceTimersByTimeAsync(400);
     expect(await ok).toEqual({ ok: true });

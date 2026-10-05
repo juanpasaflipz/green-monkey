@@ -58,14 +58,11 @@ export default function App() {
   /** Offline restore: only a cached session whose offline window is still open. */
   async function restoreCached() {
     const cached = (await db.cache.get("session"))?.value as
-      | Session
-      | undefined;
+      Session | undefined;
     if (cached && Date.parse(cached.offlineUntil) > serverNow()) {
       setActiveSession(cached);
       setSession(cached);
-      setCatalog(
-        (await db.cache.get(scope(cached) + ":catalog"))?.value ?? [],
-      );
+      setCatalog((await db.cache.get(scope(cached) + ":catalog"))?.value ?? []);
     }
   }
   async function load(resetView = true) {

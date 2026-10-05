@@ -6,7 +6,9 @@ const LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXY".split("");
 /** A..Y, then A1..Y1, ..., A9..Y9: 250 server-assignable prefixes. "Z" is reserved. */
 export const OFFLINE_PREFIXES = [
   ...LETTERS,
-  ...Array.from({ length: 9 }, (_, i) => LETTERS.map((l) => l + (i + 1))).flat(),
+  ...Array.from({ length: 9 }, (_, i) =>
+    LETTERS.map((l) => l + (i + 1)),
+  ).flat(),
 ];
 
 /**

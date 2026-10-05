@@ -90,8 +90,7 @@ async function loadClock() {
   try {
     const { db } = await import("./offline");
     const saved = (await db.cache.get(CLOCK_KEY))?.value as
-      | { offsetMs: number }
-      | undefined;
+      { offsetMs: number } | undefined;
     if (offset === null && typeof saved?.offsetMs === "number") {
       offset = saved.offsetMs;
       persistedOffset = saved.offsetMs;

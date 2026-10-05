@@ -15,13 +15,22 @@ async function hasUnsyncedWork(session: Session) {
     .filter((row) => row.scope.startsWith(prefix) && !isResolved(row))
     .count();
   const attempts = await db.cache
-    .filter((row) => row.id.startsWith(prefix) && /:payment(:[0-9a-f-]{36})?$/i.test(row.id))
+    .filter(
+      (row) =>
+        row.id.startsWith(prefix) && /:payment(:[0-9a-f-]{36})?$/i.test(row.id),
+    )
     .count();
   return rows + attempts > 0;
 }
 
 /** "A new version is ready" bar (OFF-10). Applies only with nothing unsynced. */
-export function UpdatePrompt({ locale, session }: { locale: Locale; session: Session }) {
+export function UpdatePrompt({
+  locale,
+  session,
+}: {
+  locale: Locale;
+  session: Session;
+}) {
   const t = translator(locale);
   const [ready, setReady] = useState(false);
   const [blocked, setBlocked] = useState(true);

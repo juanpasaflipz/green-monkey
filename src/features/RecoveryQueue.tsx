@@ -596,9 +596,7 @@ export function RecoveryQueue({
           <p>{archive.reason}</p>
           <p className="muted">
             {t("offlineArchivedBy", { name: archive.actorName })} ·{" "}
-            {new Date(archive.createdAt).toLocaleString(
-              es ? "es-MX" : "en-US",
-            )}
+            {new Date(archive.createdAt).toLocaleString(es ? "es-MX" : "en-US")}
           </p>
         </article>
       ))}

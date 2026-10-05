@@ -165,7 +165,9 @@ export async function evaluateEvidence(
       issuedAt: w.issued_at,
       validUntil: w.valid_until,
     })),
-    drawer: cash ? { openedAt: cash.opened_at, closedAt: cash.closed_at } : null,
+    drawer: cash
+      ? { openedAt: cash.opened_at, closedAt: cash.closed_at }
+      : null,
   });
   const snapshot = lease.restaurant_snapshot;
   const day = businessDate(
@@ -575,9 +577,7 @@ export async function synchronizeOffline(
   raw: unknown,
 ): Promise<Order> {
   const p = offlineInput.parse(raw);
-  return withLegacyCodes(
-    async () => (await syncOfflineRecord(tx, s, p)).order,
-  );
+  return withLegacyCodes(async () => (await syncOfflineRecord(tx, s, p)).order);
 }
 
 /** Server order a round/payment targets, for review (offline-tables series). */
@@ -973,7 +973,8 @@ export async function listOfflineRecoveriesPage(
 ) {
   permit(s, managers);
   const c = cursorOf(q);
-  const rows = await tx`select r.id,r.operation_id,r.order_id,r.reason,r.original_sold_at,
+  const rows =
+    await tx`select r.id,r.operation_id,r.order_id,r.reason,r.original_sold_at,
       r.recognized_at,r.original_employee_id,r.original_device_id,
       r.original_drawer_id,r.item_allocation_complete,
       coalesce(jsonb_agg(jsonb_build_object('id',t.id,'kind',t.kind,'state',t.state,
@@ -997,7 +998,8 @@ export async function listOfflineRecoveriesPage(
 export async function listOfflineArchives(tx: Tx, s: Session, q: unknown) {
   permit(s, managers);
   const c = cursorOf(q);
-  const rows = await tx`select a.id,a.operation_id,a.kind,a.amount,a.tip,a.currency,
+  const rows =
+    await tx`select a.id,a.operation_id,a.kind,a.amount,a.tip,a.currency,
       a.recorded_at,a.claimed_device_id,a.claimed_drawer_id,a.reason,e.name as actor_name,
       a.created_at,a.evidence_valid,
       to_char(a.created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as cursor_at

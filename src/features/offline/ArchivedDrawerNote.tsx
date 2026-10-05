@@ -27,7 +27,8 @@ export function ArchivedDrawerNote({
         .filter(
           (row) =>
             row.scope.startsWith(prefix) &&
-            (row.body as { cashSessionId?: string | null }).cashSessionId === drawerId,
+            (row.body as { cashSessionId?: string | null }).cashSessionId ===
+              drawerId,
         )
         .reduce((total, row) => {
           const { amount: collected, tip } = recordAmounts(row.body);

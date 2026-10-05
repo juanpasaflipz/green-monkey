@@ -19,14 +19,15 @@ function useTicketCount(session: Session) {
   const key = scope(session);
   useEffect(() => {
     const since = Date.now() - 86_400_000;
-    const subscription = liveQuery(async () =>
-      (await db.pending.where("scope").equals(key).toArray()).filter(
-        (row) =>
-          row.status !== "archived" &&
-          "kind" in row.body &&
-          (row.body.kind as string) !== "payment" &&
-          Date.parse(row.body.recordedAt) >= since,
-      ).length,
+    const subscription = liveQuery(
+      async () =>
+        (await db.pending.where("scope").equals(key).toArray()).filter(
+          (row) =>
+            row.status !== "archived" &&
+            "kind" in row.body &&
+            (row.body.kind as string) !== "payment" &&
+            Date.parse(row.body.recordedAt) >= since,
+        ).length,
     ).subscribe({ next: setCount, error: () => {} });
     return () => subscription.unsubscribe();
   }, [key]);
@@ -69,12 +70,22 @@ export function ConnectionBanner({
       ? Math.round(Math.abs(net.offsetMs) / 60_000)
       : null;
   const lease = offlineWindow(session.offlineUntil, now);
-  const until = clockTime(session.offlineUntil, session.restaurant.timezone, locale);
+  const until = clockTime(
+    session.offlineUntil,
+    session.restaurant.timezone,
+    locale,
+  );
   const extra = (
     <>
-      {fiscalLate && <p className="connection-banner-line strong">{t("offlineFiscalLate")}</p>}
+      {fiscalLate && (
+        <p className="connection-banner-line strong">
+          {t("offlineFiscalLate")}
+        </p>
+      )}
       {skew !== null && skew > 0 && (
-        <p className="connection-banner-line">{t("offlineClockSkew", { min: skew })}</p>
+        <p className="connection-banner-line">
+          {t("offlineClockSkew", { min: skew })}
+        </p>
       )}
     </>
   );
@@ -88,7 +99,9 @@ export function ConnectionBanner({
             {extra}
           </div>
           <div className="connection-banner-actions">
-            <Button onClick={() => setWorkOffline(true)}>{t("offlineWorkOffline")}</Button>
+            <Button onClick={() => setWorkOffline(true)}>
+              {t("offlineWorkOffline")}
+            </Button>
           </div>
         </div>
       );
@@ -104,11 +117,17 @@ export function ConnectionBanner({
     );
   }
   const windowLine = kitchen ? null : lease.expired ? (
-    <p className="connection-banner-line strong">{t("offlineWindowExpired", { time: until })}</p>
+    <p className="connection-banner-line strong">
+      {t("offlineWindowExpired", { time: until })}
+    </p>
   ) : lease.minutesLeft <= 30 ? (
-    <p className="connection-banner-line strong">{t("offlineWindowEnding", { time: until })}</p>
+    <p className="connection-banner-line strong">
+      {t("offlineWindowEnding", { time: until })}
+    </p>
   ) : (
-    <p className="connection-banner-line">{t("offlineWindowUntil", { time: until })}</p>
+    <p className="connection-banner-line">
+      {t("offlineWindowUntil", { time: until })}
+    </p>
   );
   return (
     <div
@@ -126,17 +145,23 @@ export function ConnectionBanner({
               : t("offlineBannerOffline")}
         </p>
         {net.manual && net.serverReachable && (
-          <p className="connection-banner-line">{t("offlineBannerAvailable")}</p>
+          <p className="connection-banner-line">
+            {t("offlineBannerAvailable")}
+          </p>
         )}
         {windowLine}
         {extra}
       </div>
       <div className="connection-banner-actions">
         {net.manual && (
-          <Button onClick={() => setWorkOffline(false)}>{t("offlineGoOnline")}</Button>
+          <Button onClick={() => setWorkOffline(false)}>
+            {t("offlineGoOnline")}
+          </Button>
         )}
         {!kitchen && (
-          <Button onClick={onOpenTickets}>{t("offlineTickets", { n: tickets })}</Button>
+          <Button onClick={onOpenTickets}>
+            {t("offlineTickets", { n: tickets })}
+          </Button>
         )}
         <Button onClick={onOpenSync}>{t("offlineViewSync")}</Button>
       </div>

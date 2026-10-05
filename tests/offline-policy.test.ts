@@ -34,9 +34,9 @@ describe("connectivity state machine", () => {
     expect(run([fail()]).mode).toBe("online");
     expect(run([fail(), fail()]).mode).toBe("offline");
     expect(run([fail(), ok(), fail()]).mode).toBe("online");
-    expect(
-      deriveConnectivity(run([fail(), fail()])).serverReachable,
-    ).toBe(false);
+    expect(deriveConnectivity(run([fail(), fail()])).serverReachable).toBe(
+      false,
+    );
   });
 
   it("browser offline goes offline immediately", () => {
@@ -102,9 +102,9 @@ describe("connectivity state machine", () => {
     const offline = run([fail(), fail()]);
     expect(nextProbeDelay(online, false, 0)).toBe(30_000);
     expect(nextProbeDelay(online, true, 0)).toBe(120_000);
-    expect([1, 2, 3, 4, 5, 9].map((n) => nextProbeDelay(offline, false, n))).toEqual([
-      2_000, 4_000, 8_000, 15_000, 15_000, 15_000,
-    ]);
+    expect(
+      [1, 2, 3, 4, 5, 9].map((n) => nextProbeDelay(offline, false, n)),
+    ).toEqual([2_000, 4_000, 8_000, 15_000, 15_000, 15_000]);
     const manualOnline = run([{ type: "manual", value: true }]);
     expect(nextProbeDelay(manualOnline, false, 0)).toBe(30_000);
   });
@@ -192,15 +192,18 @@ describe("clock and numbering", () => {
     const prefix = fallbackPrefix("0f8fad5b-d9cb-469f-a165-70867728950e");
     expect(prefix).toMatch(/^Z[A-Z2-7]{2}$/);
     expect(fallbackPrefix("0f8fad5b-d9cb-469f-a165-70867728950e")).toBe(prefix);
-    expect(provisionalNumber.safeParse(formatProvisional(prefix, 1)).success).toBe(
-      true,
-    );
+    expect(
+      provisionalNumber.safeParse(formatProvisional(prefix, 1)).success,
+    ).toBe(true);
   });
 
   it("offlineWindow expiry with server offset", () => {
     const until = "2026-10-04T20:00:00.000Z";
     const at = Date.parse("2026-10-04T19:00:00.000Z");
-    expect(offlineWindow(until, at)).toEqual({ expired: false, minutesLeft: 60 });
+    expect(offlineWindow(until, at)).toEqual({
+      expired: false,
+      minutesLeft: 60,
+    });
     // A device 2 hours behind still expires on server time.
     expect(offlineWindow(until, at + 2 * 3600_000).expired).toBe(true);
     expect(offlineWindow(until, Date.parse(until)).expired).toBe(true);

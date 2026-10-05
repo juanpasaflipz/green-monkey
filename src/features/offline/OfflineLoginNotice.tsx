@@ -4,7 +4,11 @@ import type { Locale } from "../../../shared/domain";
 import { useConnectivity } from "../../connectivity";
 import { db } from "../../offline";
 import { isResolved } from "../../offline-queue";
-import { backupFileName, buildBackups, downloadJson } from "../../offline-backup";
+import {
+  backupFileName,
+  buildBackups,
+  downloadJson,
+} from "../../offline-backup";
 import { Button } from "../../components/ui";
 import { translator } from "./format";
 

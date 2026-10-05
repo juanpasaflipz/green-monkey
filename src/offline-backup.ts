@@ -13,7 +13,12 @@ export type BackupV3 = {
   format: "green-monkey-recovery-v3";
   tenantId: string;
   exportedAt: string;
-  records: { id: string; scope: string; body: Pending["body"]; receipt?: Pending["receipt"] }[];
+  records: {
+    id: string;
+    scope: string;
+    body: Pending["body"];
+    receipt?: Pending["receipt"];
+  }[];
   paymentAttempts: { key: string; attempt: PaymentAttempt }[];
 };
 
@@ -22,7 +27,11 @@ const unresolved = (row: Pending) =>
 
 /** Builds backups for every tenant with unresolved evidence on this device. */
 export async function buildBackups(
-  filter: { tenantId?: string; include?: (row: Pending) => boolean; attempt?: (a: PaymentAttempt) => boolean } = {},
+  filter: {
+    tenantId?: string;
+    include?: (row: Pending) => boolean;
+    attempt?: (a: PaymentAttempt) => boolean;
+  } = {},
 ): Promise<BackupV3[]> {
   const rows = (await db.pending.toArray()).filter(
     (row) =>
@@ -30,8 +39,13 @@ export async function buildBackups(
       (!filter.tenantId || row.scope.startsWith(filter.tenantId + ":")) &&
       (filter.include?.(row) ?? true),
   );
-  const attempts = (await db.cache.filter((row) => isAttemptKey(row.id)).toArray())
-    .map((row) => ({ key: row.id, attempt: normalizePaymentAttempt(row.value, row.id) }))
+  const attempts = (
+    await db.cache.filter((row) => isAttemptKey(row.id)).toArray()
+  )
+    .map((row) => ({
+      key: row.id,
+      attempt: normalizePaymentAttempt(row.value, row.id),
+    }))
     .filter(
       (row): row is { key: string; attempt: PaymentAttempt } =>
         row.attempt !== null &&
@@ -55,7 +69,9 @@ export async function buildBackups(
         body,
         ...(receipt ? { receipt } : {}),
       })),
-    paymentAttempts: attempts.filter((row) => row.attempt.tenantId === tenantId),
+    paymentAttempts: attempts.filter(
+      (row) => row.attempt.tenantId === tenantId,
+    ),
   }));
 }
 

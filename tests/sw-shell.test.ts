@@ -84,7 +84,10 @@ function loadWorker({
     handlers.install!({ waitUntil: (p: Promise<unknown>) => (done = p) });
     return done;
   };
-  const request = (url: string, init: { method?: string; mode?: string } = {}) => {
+  const request = (
+    url: string,
+    init: { method?: string; mode?: string } = {},
+  ) => {
     let response: Promise<Response> | null = null;
     handlers.fetch!({
       request: {
@@ -119,7 +122,11 @@ describe("service worker shell", () => {
     const writes = worker.log.map((entry) => entry.split(":")[1]);
     expect(writes.slice(-2)).toEqual(["/index.html", "/"]);
     expect(new Set(writes.slice(0, -2))).toEqual(
-      new Set(["/assets/index-a.js", "/assets/index-a.css", "/assets/lazy-b.js"]),
+      new Set([
+        "/assets/index-a.js",
+        "/assets/index-a.css",
+        "/assets/lazy-b.js",
+      ]),
     );
   });
 
@@ -133,13 +140,17 @@ describe("service worker shell", () => {
       "green-monkey-shell-build-old",
     ]);
     const oldStore = worker.caches.stores.get("green-monkey-shell-build-old")!;
-    expect([...oldStore.keys()].sort()).toEqual(["/assets/old.js", "/index.html"]);
+    expect([...oldStore.keys()].sort()).toEqual([
+      "/assets/old.js",
+      "/index.html",
+    ]);
     expect(await oldStore.get("/index.html")!.clone().text()).toBe("old shell");
   });
 
   it("an HTML fallback page is never cached as a hashed asset", async () => {
     const worker = loadWorker({ html: undefined });
-    const html = '<html><head><meta name="gm-build" content="build-new"></head></html>';
+    const html =
+      '<html><head><meta name="gm-build" content="build-new"></head></html>';
     worker.fetch.mockImplementation(async (input: Key) => {
       const p = path(input);
       return p.startsWith("/assets/lazy")
@@ -148,7 +159,8 @@ describe("service worker shell", () => {
           })
         : new Response(p === "/index.html" ? html : `asset ${p}`, {
             headers: {
-              "content-type": p === "/index.html" ? "text/html" : "text/javascript",
+              "content-type":
+                p === "/index.html" ? "text/html" : "text/javascript",
             },
           });
     });
@@ -156,7 +168,11 @@ describe("service worker shell", () => {
     expect(worker.caches.stores.size).toBe(0);
     const response = await worker.request("/assets/lazy-c.js")!;
     expect(await response.text()).toBe("<html>spa fallback</html>");
-    expect(worker.caches.stores.get("green-monkey-shell-build-new")?.has("/assets/lazy-c.js") ?? false).toBe(false);
+    expect(
+      worker.caches.stores
+        .get("green-monkey-shell-build-new")
+        ?.has("/assets/lazy-c.js") ?? false,
+    ).toBe(false);
   });
 
   it("HTML with a different gm-build meta aborts install", async () => {
@@ -183,7 +199,9 @@ describe("service worker shell", () => {
     const fresh = await worker.request("/assets/new-c.js")!;
     expect(await fresh.text()).toBe("asset /assets/new-c.js");
     expect(
-      worker.caches.stores.get("green-monkey-shell-build-new")!.has("/assets/new-c.js"),
+      worker.caches.stores
+        .get("green-monkey-shell-build-new")!
+        .has("/assets/new-c.js"),
     ).toBe(true);
   });
 
@@ -209,7 +227,9 @@ describe("service worker shell", () => {
     await worker.caches.api.open("green-monkey-shell-build-old");
     await worker.caches.api.open("unrelated-cache");
     let done: Promise<unknown> = Promise.resolve();
-    worker.handlers.activate!({ waitUntil: (p: Promise<unknown>) => (done = p) });
+    worker.handlers.activate!({
+      waitUntil: (p: Promise<unknown>) => (done = p),
+    });
     await done;
     expect([...worker.caches.stores.keys()].sort()).toEqual([
       "green-monkey-shell-build-new",

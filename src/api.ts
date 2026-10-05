@@ -13,7 +13,9 @@ export class ApiError extends Error {
   /** Worth retrying later: the server was not reached or failed, not a domain answer. */
   get transient() {
     return (
-      this.kind === "network" || this.kind === "timeout" || this.kind === "server"
+      this.kind === "network" ||
+      this.kind === "timeout" ||
+      this.kind === "server"
     );
   }
 }
@@ -45,7 +47,9 @@ export type TransportOutcome = {
 };
 let observer: ((o: TransportOutcome) => void) | null = null;
 /** Receives every request outcome; src/connectivity.ts registers it. */
-export function setTransportObserver(fn: ((o: TransportOutcome) => void) | null) {
+export function setTransportObserver(
+  fn: ((o: TransportOutcome) => void) | null,
+) {
   observer = fn;
 }
 let retryGate: (() => boolean) | null = null;
@@ -110,7 +114,11 @@ async function request<T>(
           : new ApiError("network_unavailable", 0, "network");
       }
       let data: any;
-      if ((response.headers.get("content-type") ?? "").includes("application/json"))
+      if (
+        (response.headers.get("content-type") ?? "").includes(
+          "application/json",
+        )
+      )
         try {
           data = JSON.parse(text);
         } catch {

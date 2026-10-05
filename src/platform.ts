@@ -53,8 +53,7 @@ export async function requestPersistence(): Promise<boolean | null> {
     }
     const { db } = await import("./offline");
     const last = (await db.cache.get(PERSIST_KEY))?.value as
-      | { requestedAt: number; granted: boolean }
-      | undefined;
+      { requestedAt: number; granted: boolean } | undefined;
     if (last && Date.now() - last.requestedAt < PERSIST_INTERVAL_MS)
       return last.granted;
     const granted = await storage.persist();

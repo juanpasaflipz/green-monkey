@@ -13,11 +13,17 @@ export function transformServiceWorker(
   source: string,
   { buildId, assets }: { buildId: string; assets: string[] },
 ): string {
-  if (!source.includes(BUILD_ID_PLACEHOLDER) || !source.includes(ASSETS_PLACEHOLDER))
+  if (
+    !source.includes(BUILD_ID_PLACEHOLDER) ||
+    !source.includes(ASSETS_PLACEHOLDER)
+  )
     throw Error("service worker placeholders missing");
   return source
     .replace(BUILD_ID_PLACEHOLDER, JSON.stringify(buildId))
-    .replace(ASSETS_PLACEHOLDER, `const SHELL_ASSETS = ${JSON.stringify(assets)};`);
+    .replace(
+      ASSETS_PLACEHOLDER,
+      `const SHELL_ASSETS = ${JSON.stringify(assets)};`,
+    );
 }
 
 /** Emits dist/sw.js for this build and stamps index.html with the same build id. */

@@ -73,7 +73,10 @@ export function OfflineKitchenReview({
     }, 10_000);
     return () => clearInterval(timer);
   }, [net.canUseServer, load]);
-  async function decide(roundId: string, decision: "prepare" | "already_served") {
+  async function decide(
+    roundId: string,
+    decision: "prepare" | "already_served",
+  ) {
     const result = await api<{ alreadyDecided: boolean }>(
       `/offline/kitchen/${roundId}/decision`,
       { operationId: crypto.randomUUID(), decision },
@@ -95,9 +98,13 @@ export function OfflineKitchenReview({
     }
   }
   if (!items.length) return null;
-  const time = (iso: string) => clockTime(iso, session.restaurant.timezone, locale);
+  const time = (iso: string) =>
+    clockTime(iso, session.restaurant.timezone, locale);
   return (
-    <section className="offline-review-lane" aria-labelledby="offline-review-title">
+    <section
+      className="offline-review-lane"
+      aria-labelledby="offline-review-title"
+    >
       <header>
         <div>
           <h2 id="offline-review-title">
@@ -129,14 +136,16 @@ export function OfflineKitchenReview({
             </h3>
             <p>
               {t(item.station === "bar" ? "bar" : "kitchen")} ·{" "}
-              {t("offlineTicketRound", { n: item.round })} · {t(item.mode as "takeaway")}
+              {t("offlineTicketRound", { n: item.round })} ·{" "}
+              {t(item.mode as "takeaway")}
               {item.tableName ? ` · ${item.tableName}` : ""}
               {item.name ? ` · ${item.name}` : ""}
             </p>
             <ul>
               {item.lines.map((line) => (
                 <li key={line.id}>
-                  {Math.max(0, line.quantity - line.voidedQuantity)} × {line.name[locale]}
+                  {Math.max(0, line.quantity - line.voidedQuantity)} ×{" "}
+                  {line.name[locale]}
                   {line.optionNames.length
                     ? ` (${line.optionNames.map((o) => o[locale]).join(", ")})`
                     : ""}
@@ -159,7 +168,9 @@ export function OfflineKitchenReview({
                 <Button
                   variant="primary"
                   disabled={busy}
-                  onClick={() => void run(() => decide(item.roundId, "already_served"))}
+                  onClick={() =>
+                    void run(() => decide(item.roundId, "already_served"))
+                  }
                 >
                   {t("offlineKitchenAlreadyServed")}
                 </Button>
@@ -167,7 +178,9 @@ export function OfflineKitchenReview({
               {canPrepare && (
                 <Button
                   disabled={busy}
-                  onClick={() => void run(() => decide(item.roundId, "prepare"))}
+                  onClick={() =>
+                    void run(() => decide(item.roundId, "prepare"))
+                  }
                 >
                   {t("offlineKitchenPrepare")}
                 </Button>
@@ -199,7 +212,9 @@ export function OfflineKitchenReview({
             >
               {t("offlineKitchenAlreadyServed")}
             </Button>
-            <Button onClick={() => setConfirmAll(false)}>{t("offlineCancel")}</Button>
+            <Button onClick={() => setConfirmAll(false)}>
+              {t("offlineCancel")}
+            </Button>
           </div>
         </Modal>
       )}
