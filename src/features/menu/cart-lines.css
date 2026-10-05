@@ -11,3 +11,11 @@
   padding: 8px 12px;
   color: var(--negative);
 }
+/* QR/kiosk order summary: the chosen options under each line (OWNER-11). */
+.public-line-options {
+  display: block;
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--text-2);
+}

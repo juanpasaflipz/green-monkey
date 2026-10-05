@@ -805,3 +805,39 @@ describe("OWNER-6/OWNER-2: per-line cart pricing after a catalog refresh", () =>
     });
   });
 });
+
+describe("OWNER-2: QR/kiosk catalog freshness", () => {
+  afterEach(() => vi.useRealTimers());
+  it("the same watcher keeps the public catalog payload fresh from its revision", async () => {
+    vi.useFakeTimers();
+    type Payload = { revision: number; catalog: { id: string }[] };
+    const server: Payload = { revision: 3, catalog: [{ id: "taco" }] };
+    let known: number | null = 3;
+    const applied: Payload[] = [];
+    let fetched = 0;
+    const win = new EventTarget();
+    const stop = watchMenuRevision<Payload>({
+      revision: async () => server.revision,
+      catalog: async () => (fetched++, { ...server }),
+      apply: (d) => void applied.push(d),
+      baseline: { get: () => known, set: (r) => void (known = r) },
+      win,
+      doc: Object.assign(new EventTarget(), {
+        visibilityState: "visible" as DocumentVisibilityState,
+      }),
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // Seeded from the revision served with the catalog: no extra fetch.
+    expect(fetched).toBe(0);
+    server.revision = 4;
+    server.catalog = [];
+    await vi.advanceTimersByTimeAsync(MENU_POLL_MS);
+    expect(applied).toEqual([{ revision: 4, catalog: [] }]);
+    expect(known).toBe(4);
+    // A kiosk reset or a catalog error refetches without asking.
+    win.dispatchEvent(new Event(MENU_REFRESH_EVENT));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetched).toBe(2);
+    stop();
+  });
+});

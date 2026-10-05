@@ -7,17 +7,17 @@ export const MENU_REFRESH_EVENT = "gm-menu-refresh";
 
 type Listeners = Pick<EventTarget, "addEventListener" | "removeEventListener">;
 
-export type MenuFreshness = {
-  /** GET /menu/revision. */
+export type MenuFreshness<T = Product[]> = {
+  /** GET /menu/revision (POS) or /public/:token/revision (QR/kiosk). */
   revision: () => Promise<number>;
-  /** GET /catalog. */
-  catalog: () => Promise<Product[]>;
+  /** GET /catalog (POS) or the public catalog payload (QR/kiosk). */
+  catalog: () => Promise<T>;
   /**
    * Shows and caches a fresh catalog. It must not touch the cached session:
    * access's heartbeat owns that entry (contract D15), and a copy captured
    * when polling started would overwrite a renewed offline window.
    */
-  apply: (catalog: Product[]) => void | Promise<void>;
+  apply: (catalog: T) => void | Promise<void>;
   /**
    * Revision the shown catalog is known to include, kept across restarts of
    * the watcher (view changes) for one session scope.
@@ -37,7 +37,9 @@ export type MenuFreshness = {
  * MENU_REFRESH_EVENT refetches without asking. Errors are ignored; the next
  * tick retries. Returns the cleanup function.
  */
-export function watchMenuRevision(d: MenuFreshness): () => void {
+export function watchMenuRevision<T = Product[]>(
+  d: MenuFreshness<T>,
+): () => void {
   let live = true;
   const refetch = async () => {
     const c = await d.catalog();

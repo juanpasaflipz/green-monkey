@@ -5,7 +5,7 @@ import type postgres from "postgres";
 import { tenant } from "./db.js";
 import { verify, sign } from "./auth.js";
 import { createOrder, getOrder } from "./orders.js";
-import { publicCatalog } from "./menu-read.js";
+import { menuRevision, publicCatalog } from "./menu-read.js";
 import { DomainError, orderInput, type Session } from "../shared/domain.js";
 function publicOrder(o: any) {
   return {
@@ -79,10 +79,28 @@ export function publicOrdering(sql: postgres.Sql) {
       res.json(
         await context(req.params.token, async (tx, s) => {
           await requirePro(tx);
+          // Revision first: a menu change committed between the two reads
+          // then only causes one extra refetch, never a missed one.
+          const { revision } = await menuRevision(tx);
           return {
             restaurant: s.restaurant,
+            revision,
             catalog: await publicCatalog(tx),
           };
+        }),
+      );
+    } catch (e) {
+      next(e);
+    }
+  });
+  // QR/kiosk freshness (OWNER-2): a small poll; the catalog is refetched only
+  // when the revision moves.
+  router.get("/:token/revision", async (req, res, next) => {
+    try {
+      res.json(
+        await context(req.params.token, async (tx) => {
+          await requirePro(tx);
+          return menuRevision(tx);
         }),
       );
     } catch (e) {

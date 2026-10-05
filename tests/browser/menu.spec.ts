@@ -933,3 +933,99 @@ test("OWNER-6: an 86 while a product is in the POS cart flags that line with Qui
     await setAvailable(page, product.id, true);
   }
 });
+
+test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale line, list the choices, and a kiosk reset starts clean", async ({
+  page,
+  context,
+}) => {
+  // Fake timers for the whole context (staff, QR and kiosk pages).
+  await page.clock.install();
+  const id = suffix();
+  const tostada = `Tostada ${id}`;
+  const agua = `Agua de jamaica ${id}`;
+  await login(page);
+  const first = await createProduct(page, tostada, 4000, "Antojitos");
+  const second = await createProduct(page, agua, 2500, "Bebidas");
+  try {
+    const qr = await call(page, "/ordering-links", {
+      channel: "qr",
+      tableId: null,
+    });
+    const customer = await context.newPage();
+    await customer.goto(qr.data.path);
+    await expect(
+      customer.getByRole("heading", { name: "Casa del Bosque · Demo" }),
+    ).toBeVisible();
+    // OWNER-11: the order summary lists the chosen options.
+    await customer.getByRole("button", { name: /Taco de asada/ }).click();
+    const picker = customer.getByRole("dialog");
+    await picker.getByRole("radio", { name: /Salsa roja/ }).check();
+    await picker.getByRole("checkbox", { name: /Queso/ }).check();
+    await picker.getByRole("button", { name: "Agregar a la orden" }).click();
+    await expect(customer.locator(".report-row").first()).toContainText(
+      "Salsa roja · Queso",
+    );
+    const grid = customer
+      .locator(".product-grid")
+      .getByRole("button", { name: new RegExp(tostada) });
+    await grid.click();
+    await expect(customer.locator(".large-money")).toHaveText("$110.00");
+
+    // OWNER-2: the open page learns about the 86 on its minute poll.
+    await setAvailable(page, first.id, false);
+    await page.clock.fastForward(60_000);
+    await expect(grid).toBeDisabled();
+    await expect(grid).toContainText("Agotado");
+    const stale = customer.locator(".line-unavailable");
+    await expect(stale).toContainText(tostada);
+    await expect(stale.getByRole("alert")).toHaveText(
+      "Ya no está disponible. Quítalo de la orden.",
+    );
+    await expect(customer.locator(".large-money")).toHaveText("$70.00");
+    const send = customer.getByRole("button", {
+      name: "Enviar a cocina",
+      exact: true,
+    });
+    await expect(send).toBeDisabled();
+    await stale.getByRole("button", { name: `Quitar ${tostada}` }).click();
+    await customer
+      .getByRole("textbox", { name: "Nombre para llamar" })
+      .fill(`QR ${id}`);
+    await send.click();
+    await expect(
+      customer.getByText("Enviado a cocina", { exact: true }),
+    ).toBeVisible();
+    await customer.close();
+
+    // Kiosk: an item 86'd before any poll is refused by the server; the page
+    // refetches at once and marks the line. The idle reset clears the order
+    // and the message for the next customer.
+    const kioskLink = await call(page, "/ordering-links", {
+      channel: "kiosk",
+      tableId: null,
+    });
+    const kiosk = await context.newPage();
+    await kiosk.goto(kioskLink.data.path);
+    await kiosk
+      .locator(".product-grid")
+      .getByRole("button", { name: new RegExp(agua) })
+      .click();
+    await setAvailable(page, second.id, false);
+    await kiosk
+      .getByRole("button", { name: "Enviar a cocina", exact: true })
+      .click();
+    const message = kiosk.locator(".public-ordering > p.error");
+    await expect(message).toHaveText(
+      "Un producto ya no está disponible. Quítalo de la orden.",
+    );
+    await expect(kiosk.locator(".line-unavailable")).toContainText(agua);
+    await page.clock.fastForward(90_000);
+    await expect(message).toHaveCount(0);
+    await expect(kiosk.locator(".line-unavailable")).toHaveCount(0);
+    await expect(kiosk.locator(".large-money")).toHaveText("$0.00");
+    await kiosk.close();
+  } finally {
+    await setAvailable(page, first.id, true);
+    await setAvailable(page, second.id, true);
+  }
+});
