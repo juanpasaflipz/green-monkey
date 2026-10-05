@@ -3,7 +3,7 @@ import { Lock } from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import type { TerminalState, TerminalStaff } from "../../shared/access";
 import { strings, translateError, type Key } from "../i18n";
-import { api } from "../api";
+import { api, holdRequests } from "../api";
 import { Button } from "../components/ui";
 import {
   drainBeforeLeaving,
@@ -69,6 +69,9 @@ export function LockScreen({
   async function unlock(employeeId: string, secret: string) {
     setBusy(true);
     setError("");
+    // A different employee (or a renewal) gets a new gm_session cookie before
+    // App knows the new session id; background polls wait until it does.
+    const release = holdRequests();
     try {
       await finishPendingLogout();
       await api("/access/pin", { employeeId, secret });
@@ -79,6 +82,7 @@ export function LockScreen({
       if (["pin_locked", "pin_hard_locked"].includes(code))
         setTerminal(await api<TerminalState>("/access/terminal"));
     } finally {
+      release();
       setBusy(false);
     }
   }

@@ -1,5 +1,5 @@
 import type { Session } from "../../shared/domain";
-import { ApiError, api } from "../api";
+import { ApiError, api, requestsBlocked } from "../api";
 import { db, scope, syncPending } from "../offline";
 
 /** Set when a logout could not reach the server; finished before anything else. */
@@ -46,13 +46,17 @@ export async function unsyncedFor(
   };
 }
 
-/** Forces one sync pass when online, then recounts what is still unsent (OFF-7). */
+/**
+ * Forces one sync pass when online, then recounts what is still unsent (OFF-7).
+ * After a session 401 the server would refuse the sync, and each refused try
+ * would count toward the conflict threshold, so only the count runs then.
+ */
 export async function drainBeforeLeaving(
   s: Session,
   online: boolean,
 ): Promise<{ sales: number; payment: boolean }> {
   const before = await unsyncedFor(s);
-  if (online && before.sales > 0) {
+  if (online && before.sales > 0 && !requestsBlocked()) {
     try {
       await syncPending(s, true);
     } catch {

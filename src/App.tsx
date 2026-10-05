@@ -25,7 +25,7 @@ import { Button, Modal } from "./components/ui";
 import { Selling } from "./features/Selling";
 import { Operations } from "./features/Operations";
 import { OwnerAccess } from "./features/OwnerAccess";
-import { ApiError, registerStepUpHandler } from "./api";
+import { ApiError, registerStepUpHandler, requestsBlocked } from "./api";
 import { AccessGate } from "./features/AccessGate";
 import { LockScreen } from "./features/LockScreen";
 import { StepUpDialog } from "./features/StepUpDialog";
@@ -270,7 +270,9 @@ export default function App() {
     if (!session || sessionChanged) return;
     const s = session;
     const poll = async () => {
-      if (navigator.onLine) await syncPending(s);
+      // Blocked calls would count as sync attempts and push queued sales
+      // toward conflict (OFF-7); offline carries this rule at merge.
+      if (navigator.onLine && !requestsBlocked()) await syncPending(s);
       setQueued(
         (await db.pending.where("scope").equals(scope(s)).toArray()).filter(
           (p) => p.status !== "synced",

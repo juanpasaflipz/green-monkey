@@ -127,6 +127,82 @@ describe("api() session policy", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it("concurrent step_up_required requests share one PIN prompt and both retry (ACC-12)", async () => {
+    const { api, setSession, registerStepUpHandler } = await load();
+    setSession(session);
+    let confirm!: () => void;
+    const handler = vi.fn(
+      () => new Promise<void>((resolve) => (confirm = resolve)),
+    );
+    registerStepUpHandler(handler);
+    replies.push({ status: 403, body: { error: "step_up_required" } });
+    replies.push({ status: 403, body: { error: "step_up_required" } });
+    replies.push({ status: 200, body: { id: "a" } });
+    replies.push({ status: 200, body: { id: "b" } });
+    const a = api("/refunds", { operationId: "op-a" });
+    const b = api("/cash/paid-out", { operationId: "op-b" });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    // Let the second request reach its own step_up_required as well.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(handler).toHaveBeenCalledTimes(1);
+    confirm();
+    const results = await Promise.all([a, b]);
+    expect(results.map((r) => r.id).sort()).toEqual(["a", "b"]);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    // A later step-up opens a fresh prompt.
+    replies.push({ status: 403, body: { error: "step_up_required" } });
+    const c = api("/refunds", { operationId: "op-c" });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+    confirm();
+    await expect(c).resolves.toEqual({ ok: true });
+  });
+
+  it("held requests wait for the release and then carry the new session headers (ACC-5)", async () => {
+    const { api, setSession, holdRequests } = await load();
+    setSession(session);
+    const release = holdRequests();
+    const poll = api("/kitchen");
+    // Access calls (the PIN sign-in itself) are never held.
+    await api("/access/pin", { employeeId: "e", secret: "123456" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const next = { ...session, id: "50000000-0000-4000-8000-000000000002" };
+    setSession(next);
+    release();
+    await poll;
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    expect((init.headers as Record<string, string>)["x-session-id"]).toBe(
+      next.id,
+    );
+    // A forgotten hold releases itself.
+    vi.useFakeTimers();
+    try {
+      holdRequests(1000);
+      const late = api("/orders");
+      await vi.advanceTimersByTimeAsync(1001);
+      await late;
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("requestsBlocked reports a session 401 until a new session is set (ACC-6)", async () => {
+    const { api, setSession, requestsBlocked } = await load();
+    setSession(session);
+    expect(requestsBlocked()).toBe(false);
+    replies.push({ status: 401, body: { error: "session_ended" } });
+    await expect(api("/sync", {})).rejects.toMatchObject({
+      message: "session_ended",
+    });
+    expect(requestsBlocked()).toBe(true);
+    setSession(session);
+    expect(requestsBlocked()).toBe(false);
+  });
+
   it("cancelled step-up surfaces step_up_cancelled", async () => {
     const { api, setSession, registerStepUpHandler, ApiError } = await load();
     setSession(session);

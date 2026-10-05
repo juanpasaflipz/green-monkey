@@ -64,7 +64,34 @@ const SESSION_CODES = new Set([
 ]);
 /** After a session 401, stop calling the server until a new session is set. */
 let blocked = false;
+/** True while a session 401 keeps non-access calls from reaching the server. */
+export function requestsBlocked() {
+  return blocked;
+}
+/** While set, non-access calls wait: a PIN sign-in may be replacing the session cookie. */
+let held: Promise<void> | null = null;
+/**
+ * Pauses non-access requests until the returned release runs (or maxMs passes),
+ * so background polls never send the old x-session-id with a new gm_session
+ * cookie while the lock screen signs someone in (session_changed race).
+ */
+export function holdRequests(maxMs = 15_000): () => void {
+  let open!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    open = resolve;
+  });
+  held = gate;
+  const release = () => {
+    clearTimeout(timer);
+    if (held === gate) held = null;
+    open();
+  };
+  const timer = setTimeout(release, maxMs);
+  return release;
+}
 let stepUp: null | (() => Promise<void>) = null;
+/** One "Confirma con tu PIN" prompt at a time; concurrent requests share it. */
+let stepUpInFlight: Promise<void> | null = null;
 /** App registers the "Confirma con tu PIN" dialog; it rejects when cancelled. */
 export function registerStepUpHandler(fn: (() => Promise<void>) | null) {
   stepUp = fn;
@@ -101,8 +128,9 @@ export async function api<T = any>(
   body?: unknown,
   options: ApiOptions = {},
 ): Promise<T> {
-  if (blocked && !path.startsWith("/access/"))
-    throw new ApiError("session_expired", 401);
+  const access = path.startsWith("/access/");
+  while (held && !access) await held;
+  if (blocked && !access) throw new ApiError("session_expired", 401);
   try {
     return await guarded<T>(path, body, options);
   } catch (e) {
@@ -113,7 +141,10 @@ export async function api<T = any>(
       !stepUp
     )
       throw e;
-    await stepUp();
+    stepUpInFlight ??= stepUp().finally(() => {
+      stepUpInFlight = null;
+    });
+    await stepUpInFlight;
     return guarded<T>(path, body, options);
   }
 }
