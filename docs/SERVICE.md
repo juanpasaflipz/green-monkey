@@ -155,6 +155,21 @@ cached before the deploy keep working. A later contract change removes them.
 Allergy notes (matching "alerg") are labelled **Alergia** on tickets and
 receipts alike.
 
+## Changes while a send is in flight
+
+While **Enviar a cocina** waits for the server, the lines being sent show
+"Enviando a cocina…" and cannot be edited (quantity, note, remove), the round
+or order note is read-only, and **Guardar borrador**, **Nueva orden** and
+**Borradores** are disabled. Everything else keeps working: a product tapped
+meanwhile, including the product being sent, starts a new cart line, which can
+take its own note. When the send succeeds, Selling compares the latest cart
+with the order it returned (the same comparison as below) instead of emptying
+it: the lines that landed leave, everything added meanwhile stays under a new
+`operationId`, and the note leaves only if it reached the order. The order and
+the cart change in the same render, so the balance is never counted twice; the
+payment dialog compares the balance only after a collect settles, so
+**Cobrar** sending the cart first never announces "El saldo pendiente cambió".
+
 ## Lost responses while sending
 
 Every send carries the cart's `operationId`. If the response is lost and the
@@ -290,6 +305,19 @@ integrator:
   it previously locked the drawer between orders. This removes a deadlock with
   concurrent rounds and payments (DB test "kitchen feed and progress do not
   deadlock with concurrent payments and rounds").
+- `src/features/Selling.tsx` `add()` (contracts 4.8 golden form): keep
+  service's form, which derives the lines inside the `setDraft` updater
+  (`mergeLine(d.lines, p, choice, opts)`) with a pre-generated `newId` and the
+  in-flight `locked` set. The golden form's
+  `setDraft((d) => ({ ...d, lines: r.lines }))`, with `r` computed from render
+  state, would again let a tap that lands just after a send bring the sent
+  lines back (SVC-R7). `mergeLine` keeps the D16 call form; the fourth `opts`
+  argument is optional.
+- `src/features/Selling.tsx` **Nueva orden** button (base line 613, offline's
+  region 612-640): service changed `disabled={pendingPayment}` to
+  `disabled={pendingPayment || busy}` and disabled **Borradores** while `busy`.
+  When offline removes `disabled={pendingPayment}`, keep `disabled={busy}` so a
+  cart cannot be parked or replaced while its send is in flight.
 - `tests/voids-db.ts` "paid units cannot be voided…" (base lines ~215-260, next
   to menu's stock-assertion region 188-216): the order is now dine-in, because a
   fully paid takeaway check closes and would answer `check_closed` instead of
