@@ -2245,6 +2245,11 @@ try {
       "cash_movements",
       "cash_sessions",
       "recipe_versions",
+      // menu (025): the legacy product save now bumps menu_state and files
+      // the product under a menu category.
+      "menu_state",
+      "menu_categories",
+      "modifier_groups",
       "catalog",
       "offline_leases",
       "sessions",
@@ -2255,6 +2260,8 @@ try {
       "restaurant_entitlements",
       "kitchen_feed_versions",
       "dining_tables",
+      // menu (025): after dining_tables, which reference their area.
+      "dining_areas",
     ])
       await admin.unsafe(`delete from ${table} where tenant_id=$1`, [id]);
     await admin`delete from restaurants where id=${id}`;
