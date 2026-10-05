@@ -41,7 +41,11 @@ import {
   type LeaseWindow,
   type OfflineLeaseRow,
 } from "./compat/offline-access.js";
-import { refreshCheckState } from "./compat/offline-service.js";
+import {
+  assertCheckWritable,
+  refreshCheckState,
+} from "./compat/offline-service.js";
+import { allocatePayment } from "../shared/settlement.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
 
 /** Legacy v1/v2 cash-sale input (unchanged). */
@@ -321,10 +325,43 @@ async function assertReusable(
         where t.tenant_id=o.tenant_id and t.order_id=o.id) as paid
     from orders o where o.id=${orderId}`;
   if (!order) throw new DomainError("offline_order_closed", 409);
-  if (order.paid > 0)
-    throw new DomainError("offline_payment_exceeds_due", 409);
+  if (order.paid > 0) throw new DomainError("offline_payment_exceeds_due", 409);
   if (order.total !== p.expectedTotal)
     throw new DomainError("price_conflict", 409);
+}
+
+/**
+ * OFF-R27: the order an online create already made under a sale or order
+ * record's draft id (the create committed and its response was lost), and the
+ * code its sync gives: null when the record reuses that order. Null when the
+ * draft id was never used online. Read-only.
+ */
+export async function onlineCreateOf(
+  tx: Tx,
+  p: OfflineRecord,
+): Promise<{ orderId: string | null; problem: string | null } | null> {
+  if (!("order" in p)) return null;
+  const record = p as OrderRecord;
+  const [prior] =
+    await tx`select kind,hash,result from operations where id=${record.order.operationId}`;
+  if (!prior) return null;
+  const orderId =
+    prior.kind === "create_order" && typeof prior.result?.id === "string"
+      ? (prior.result.id as string)
+      : null;
+  const online = hash(
+    JSON.stringify(orderInput.parse({ ...record.order, channel: "pos" })),
+  );
+  // A different draft under the same order id is a conflict, never a merge.
+  if (!orderId || prior.hash !== online)
+    return { orderId, problem: "offline_order_already_exists" };
+  try {
+    await assertReusable(tx, record, orderId, prior.result);
+    return { orderId, problem: null };
+  } catch (e) {
+    if (e instanceof DomainError) return { orderId, problem: e.code };
+    throw e;
+  }
 }
 
 /**
@@ -338,17 +375,14 @@ export async function resolveOrCreateOrder(
   p: OrderRecord,
   ctx: EvidenceContext,
 ): Promise<{ orderId: string; reused: boolean }> {
-  const [prior] =
-    await tx`select kind,hash,result from operations where id=${p.order.operationId}`;
-  if (prior) {
-    const online = hash(
-      JSON.stringify(orderInput.parse({ ...p.order, channel: "pos" })),
-    );
-    if (prior.kind === "create_order" && prior.hash === online) {
-      await assertReusable(tx, p, prior.result.id, prior.result);
-      return { orderId: prior.result.id, reused: true };
-    }
-    throw new DomainError("offline_order_already_exists", 409);
+  const created = await onlineCreateOf(tx, p);
+  if (created) {
+    if (created.problem || !created.orderId)
+      throw new DomainError(
+        created.problem ?? "offline_order_already_exists",
+        409,
+      );
+    return { orderId: created.orderId, reused: true };
   }
   await verifyLines(tx, p.order.lines, snapshotLines(p), p.expectedTotal);
   await assertLinesNotRecorded(tx, p.order.lines);
@@ -625,20 +659,100 @@ export async function synchronizeOffline(
 }
 
 /**
- * What review can say about the order a round or payment targets
- * (offline-tables series). `reconcile` is the manager path for a payment: into
- * the order, as a financial-only recovery, or none (the manager must wait for
- * the original order or archive). `problem` explains a refusal or the
- * financial-only path.
+ * What review can say about the order a record's money would go to: the
+ * order a round or payment targets (offline-tables series), or the order an
+ * online create already made for a sale or order (OFF-R27). `reconcile` is
+ * the manager path: into that order, as a financial-only recovery, or none
+ * (the manager must wait for the original order or archive). `problems`
+ * explain a refusal or the financial-only path.
  */
 export type ReviewTarget = {
   target: { orderId: string; number: number; due: number } | null;
   reconcile: "order" | "financial" | "none";
-  problem: string | null;
+  problems: string[];
 };
 export const reviewTargets: {
   resolve?: (tx: Tx, p: OfflineRecord) => Promise<ReviewTarget | null>;
 } = {};
+
+/**
+ * An existing order as a place for a record's money on the manager path:
+ * `unresolvable` when it is gone, cancelled or in recovery (it can never hold
+ * money), `closed` when its check takes no more payments (contract §3.4), or
+ * `open`. `lock` takes the order row lock first (class 5, §4.4.1).
+ */
+export type MoneyTarget =
+  | { state: "unresolvable"; code: string }
+  | { state: "closed" | "open"; order: Order };
+
+export async function moneyTarget(
+  tx: Tx,
+  orderId: string,
+  lock: boolean,
+): Promise<MoneyTarget> {
+  const [row] = lock
+    ? await tx`select * from orders where id=${orderId} for update`
+    : await tx`select * from orders where id=${orderId}`;
+  if (!row || CLOSED_STATES.includes(row.state))
+    return { state: "unresolvable", code: "offline_order_closed" };
+  const order = await getOrder(tx, orderId);
+  try {
+    assertCheckWritable(row as { check_state?: string; state: string });
+  } catch (e) {
+    if (e instanceof DomainError) return { state: "closed", order };
+    throw e;
+  }
+  return { state: "open", order };
+}
+
+export const dueOf = (order: Order) => order.total - order.paid;
+
+/** Why money of `amount` cannot go into an order that is not open or too small. */
+export const moneyRefusal = (amount: number, order: Order) =>
+  amount > dueOf(order)
+    ? "offline_payment_exceeds_due"
+    : "offline_order_closed";
+
+/**
+ * OFF-R27: review of a sale or order whose create already committed online.
+ * The existing order is named so the manager knows which order took (or
+ * should take) the money. A sale's money goes into it when it is open and the
+ * amount fits its balance (I2); otherwise nothing is reconcilable, because a
+ * financial-only recovery would leave that order open and unpaid.
+ */
+async function onlineCreateTarget(
+  tx: Tx,
+  p: OfflineRecord,
+): Promise<ReviewTarget | null> {
+  const created = await onlineCreateOf(tx, p);
+  if (!created) return null;
+  const problems = created.problem ? [created.problem] : [];
+  if (!created.orderId)
+    return {
+      target: null,
+      reconcile: "none",
+      problems: problems.length ? problems : ["offline_order_already_exists"],
+    };
+  const found = await moneyTarget(tx, created.orderId, false);
+  const order =
+    found.state === "unresolvable"
+      ? await getOrder(tx, created.orderId)
+      : found.order;
+  const target = { orderId: order.id, number: order.number, due: dueOf(order) };
+  const payment = paymentOf(p);
+  if (!payment) return { target, reconcile: "none", problems };
+  if (found.state === "open" && payment.amount <= target.due)
+    return { target, reconcile: "order", problems };
+  const refusal =
+    found.state === "unresolvable"
+      ? found.code
+      : moneyRefusal(payment.amount, order);
+  return {
+    target,
+    reconcile: "none",
+    problems: problems.includes(refusal) ? problems : [...problems, refusal],
+  };
+}
 
 /** Manager review. Throws only invalid_input or forbidden, never for evidence. */
 export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
@@ -666,7 +780,8 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
     } catch {
       /* Unavailable/deleted menu is explicitly unknown. */
     }
-  const targeted = (await reviewTargets.resolve?.(tx, p)) ?? null;
+  const targeted =
+    (await reviewTargets.resolve?.(tx, p)) ?? (await onlineCreateTarget(tx, p));
   const target = targeted?.target ?? null;
   const session = evidence.authentic ? evidence.ctx.session : evidence.session;
   const [employee] = session
@@ -677,20 +792,21 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
     ? await tx`select id,closed_at from cash_sessions where id=${drawerId}`
     : [];
   const amount = payment?.amount ?? 0;
-  // A payment is reconcilable only into an open order it fits, or as a
-  // financial-only recovery when its order can never be resolved. Never while
-  // its original order is still queued, and never into a paid or closed
-  // check (I2, I5).
+  // Money is reconcilable only into an open order it fits, or as a
+  // financial-only recovery when no order holds it: never while a payment's
+  // original order is still queued, never into a paid or closed check, and
+  // never beside an order an online create already made for the sale (I2,
+  // I5, OFF-R27).
   const reconcilable =
     evidence.authentic &&
     !prior &&
     !archived &&
     !!payment &&
     !!reconcilers[kind] &&
-    (kind !== "payment" || (!!targeted && targeted.reconcile !== "none"));
+    (targeted ? targeted.reconcile !== "none" : kind !== "payment");
   const problems: string[] = evidence.authentic ? [...evidence.problems] : [];
-  if (targeted?.problem && !problems.includes(targeted.problem))
-    problems.push(targeted.problem);
+  for (const problem of targeted?.problems ?? [])
+    if (!problems.includes(problem)) problems.push(problem);
   return {
     authentic: evidence.authentic,
     problems,
@@ -803,6 +919,106 @@ export async function financialRecovery(
   };
 }
 
+/**
+ * Manager reconcile of a record's money into an existing open order: the
+ * tender goes to the original drawer (open or closed) with the same
+ * allocations the payment command would make. No recovery order, so the order
+ * stays a normal, serviceable order. The caller holds the order row lock.
+ * Used for a payment of its target order, and for a sale whose create already
+ * committed online (OFF-R27), which is that order's first round.
+ */
+export async function reconcileIntoOrder(
+  tx: Tx,
+  s: Session,
+  p: OfflineRecord,
+  ctx: EvidenceContext,
+  order: Order,
+  reason: string,
+): Promise<OfflineSyncResult> {
+  const kind = recordKind(p);
+  const payment = paymentOf(p)!;
+  const drawerId = drawerOf(p)!;
+  const orderId = order.id;
+  if (payment.amount > dueOf(order))
+    throw new DomainError("offline_payment_exceeds_due", 409);
+  // Global lock order (§4.4.1): the drawer after the order, so a concurrent
+  // drawer close waits for this tender and counts it.
+  await tx`select id from cash_sessions where id=${drawerId} for update`;
+  const allocations = order.itemSplitAvailable
+    ? allocatePayment(order.paymentUnits!, payment.amount)
+    : [];
+  const tenderId = randomUUID();
+  await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,source,source_id,created_at)
+    values(${s.tenantId},${tenderId},${orderId},${drawerId},${payment.method},${payment.amount},${payment.tip},${payment.received},${payment.reference || null},'offline_recovery',${p.operationId},clock_timestamp())`;
+  for (const allocation of allocations)
+    await tx`insert into tender_allocations(tenant_id,order_id,tender_id,line_id,unit_index,amount)
+      values(${s.tenantId},${orderId},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;
+  const sale = kind === "sale";
+  await ledger(tx, s, p, ctx, {
+    kind,
+    orderId,
+    roundNumber: sale ? 1 : null,
+    tenderId,
+    reused: sale,
+    path: "manager",
+    reason,
+  });
+  await audit(tx, s, "offline.payment_reconciled", orderId, {
+    reason,
+    kind,
+    operationId: p.operationId,
+    amount: payment.amount,
+    tip: payment.tip,
+    method: payment.method,
+    drawerId,
+    provisionalNumber: isV3(p) ? p.provisionalNumber : null,
+  });
+  await refreshCheckState(tx, s, orderId);
+  const result = await getOrder(tx, orderId);
+  return {
+    kind,
+    operationId: p.operationId,
+    orderId,
+    orderNumber: result.number,
+    provisionalNumber: isV3(p) ? p.provisionalNumber : null,
+    roundNumber: sale ? 1 : null,
+    tenderId,
+    soldAt: ctx.soldAt.toISOString(),
+    businessDate: ctx.businessDate,
+    reusedOnlineOrder: sale,
+    kitchenReview: false,
+    order: result,
+  };
+}
+
+/**
+ * Manager reconcile of a sale. A sale whose create never reached the server
+ * is a financial-only recovery. One whose create committed online (its
+ * response lost) already has its order, which the kitchen made: the money
+ * goes into that order when it is open and the amount fits (OFF-R27), and is
+ * refused otherwise, never recorded beside it.
+ */
+async function reconcileSale(
+  tx: Tx,
+  s: Session,
+  p: OfflineRecord,
+  ctx: EvidenceContext,
+  reason: string,
+): Promise<OfflineSyncResult> {
+  const record = p as OrderRecord;
+  // Serialized with an online create of the same draft (once() locks its id).
+  await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + record.order.operationId},0))`;
+  const created = await onlineCreateOf(tx, p);
+  if (!created) return financialRecovery(tx, s, p, ctx, reason);
+  if (!created.orderId)
+    throw new DomainError("offline_order_already_exists", 409);
+  const found = await moneyTarget(tx, created.orderId, true);
+  if (found.state === "unresolvable") throw new DomainError(found.code, 409);
+  if (found.state === "closed")
+    throw new DomainError(moneyRefusal(paymentOf(p)!.amount, found.order), 409);
+  return reconcileIntoOrder(tx, s, p, ctx, found.order, reason);
+}
+
 export type Reconciler = (
   tx: Tx,
   s: Session,
@@ -812,7 +1028,7 @@ export type Reconciler = (
 ) => Promise<OfflineSyncResult>;
 /** Per-kind manager reconcilers; the offline-tables series registers more kinds. */
 export const reconcilers: Partial<Record<OfflineRecordKind, Reconciler>> = {
-  sale: financialRecovery,
+  sale: reconcileSale,
 };
 
 const reconcileInput = z

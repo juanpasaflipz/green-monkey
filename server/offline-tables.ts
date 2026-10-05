@@ -6,45 +6,39 @@
  * tenders with direct SQL, except the manager reconcile of a payment into its
  * original drawer, which never targets a closed check.
  */
-import { randomUUID } from "node:crypto";
 import type { Tx } from "./db.js";
-import {
-  DomainError,
-  businessDate,
-  type Order,
-  type Session,
-} from "../shared/domain.js";
-import { allocatePayment } from "../shared/settlement.js";
+import { DomainError, businessDate, type Session } from "../shared/domain.js";
 import { permit, operators } from "./auth.js";
-import type {
-  OfflineOrderV3,
-  OfflinePaymentV3,
-  OfflineRecord,
-  OfflineRoundV3,
-  OrderTarget,
-} from "../shared/offline-recovery.js";
-import { audit, getOrder } from "./orders.js";
 import {
-  applyRound,
-  assertCheckWritable,
-  refreshCheckState,
-} from "./compat/offline-service.js";
+  offlineRecord,
+  type OfflineOrderV3,
+  type OfflinePaymentV3,
+  type OfflineRecord,
+  type OfflineRoundV3,
+  type OrderTarget,
+} from "../shared/offline-recovery.js";
+import { getOrder } from "./orders.js";
+import { applyRound, assertCheckWritable } from "./compat/offline-service.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
 import { requireTableService } from "./offline-settings.js";
 import {
   appliers,
   assertLinesNotRecorded,
   CLOSED_STATES,
+  dueOf,
   financialRecovery,
   isV3,
   ledger,
+  moneyRefusal,
+  moneyTarget,
   newTender,
+  onlineCreateOf,
+  reconcileIntoOrder,
   reconcilers,
   resolveOrCreateOrder,
   reviewTargets,
   verifyLines,
-  type EvidenceContext,
-  type OfflineSyncResult,
+  type MoneyTarget,
 } from "./offline-sync.js";
 
 /**
@@ -219,11 +213,7 @@ appliers.payment = async (tx, s, p, ctx) => {
  * - `closed`: a closed check is never written (contract §3.4).
  * - `open`: the order takes the payment if it fits the balance (I2).
  */
-type PaymentTarget =
-  | { state: "pending"; code: string }
-  | { state: "unresolvable"; code: string }
-  | { state: "closed"; order: Order }
-  | { state: "open"; order: Order };
+type PaymentTarget = { state: "pending"; code: string } | MoneyTarget;
 
 async function paymentTarget(
   tx: Tx,
@@ -237,31 +227,35 @@ async function paymentTarget(
     if (!(e instanceof DomainError)) throw e;
     if (e.code === "offline_dependency_pending")
       return { state: "pending", code: e.code };
+    // OFF-R27: a local order archived because its create had already
+    // committed online is that online order: its payments belong there.
+    const online =
+      e.code === "offline_dependency_archived" &&
+      "localOrderOperationId" in target
+        ? await archivedOnlineOrder(tx, target.localOrderOperationId)
+        : null;
     // offline_dependency_archived, or an order id this tenant does not have.
-    return { state: "unresolvable", code: e.code };
+    if (!online) return { state: "unresolvable", code: e.code };
+    orderId = online;
   }
-  const [row] = lock
-    ? await tx`select * from orders where id=${orderId} for update`
-    : await tx`select * from orders where id=${orderId}`;
-  if (!row || CLOSED_STATES.includes(row.state))
-    return { state: "unresolvable", code: "offline_order_closed" };
-  const order = await getOrder(tx, orderId);
-  try {
-    assertCheckWritable(row as { check_state?: string; state: string });
-  } catch (e) {
-    if (e instanceof DomainError) return { state: "closed", order };
-    throw e;
-  }
-  return { state: "open", order };
+  return moneyTarget(tx, orderId, lock);
 }
 
-const dueOf = (order: Order) => order.total - order.paid;
-
-/** A payment that cannot go into its order: why, as a sync error code. */
-function refusal(p: OfflinePaymentV3, order: Order) {
-  return p.payment.amount > dueOf(order)
-    ? "offline_payment_exceeds_due"
-    : "offline_order_closed";
+/**
+ * The online order behind an archived local order record whose create had
+ * already committed online (its response lost): the archived evidence is a
+ * valid order record and the operation of its draft id created that order.
+ */
+async function archivedOnlineOrder(
+  tx: Tx,
+  operationId: string,
+): Promise<string | null> {
+  const [archived] =
+    await tx`select evidence from offline_archives where operation_id=${operationId} and evidence_valid and kind='order'`;
+  if (!archived) return null;
+  const parsed = offlineRecord.safeParse(archived.evidence);
+  if (!parsed.success || parsed.data.operationId !== operationId) return null;
+  return (await onlineCreateOf(tx, parsed.data))?.orderId ?? null;
 }
 
 reviewTargets.resolve = async (tx, p) => {
@@ -274,81 +268,22 @@ reviewTargets.resolve = async (tx, p) => {
         found.state === "unresolvable" && p.kind === "payment"
           ? "financial"
           : "none",
-      problem: found.code,
+      problems: [found.code],
     };
   const target = {
     orderId: found.order.id,
     number: found.order.number,
     due: dueOf(found.order),
   };
-  if (p.kind !== "payment") return { target, reconcile: "none", problem: null };
+  if (p.kind !== "payment") return { target, reconcile: "none", problems: [] };
   if (found.state === "open" && p.payment.amount <= target.due)
-    return { target, reconcile: "order", problem: null };
-  return { target, reconcile: "none", problem: refusal(p, found.order) };
-};
-
-/**
- * Manager reconcile of a payment to its order: the tender goes to the original
- * drawer (open or closed) with the same allocations the payment command would
- * make. No recovery order, so the order stays a normal, serviceable order. The
- * caller holds the order row lock.
- */
-async function reconcilePaymentToOrder(
-  tx: Tx,
-  s: Session,
-  p: OfflinePaymentV3,
-  ctx: EvidenceContext,
-  order: Order,
-  reason: string,
-): Promise<OfflineSyncResult> {
-  const orderId = order.id;
-  if (p.payment.amount > dueOf(order))
-    throw new DomainError("offline_payment_exceeds_due", 409);
-  // Global lock order (contract §3.14): the drawer after the order, so a
-  // concurrent drawer close waits for this tender and counts it.
-  await tx`select id from cash_sessions where id=${p.cashSessionId} for update`;
-  const allocations = order.itemSplitAvailable
-    ? allocatePayment(order.paymentUnits!, p.payment.amount)
-    : [];
-  const tenderId = randomUUID();
-  await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,source,source_id,created_at)
-    values(${s.tenantId},${tenderId},${orderId},${p.cashSessionId},${p.payment.method},${p.payment.amount},${p.payment.tip},${p.payment.received},${p.payment.reference || null},'offline_recovery',${p.operationId},clock_timestamp())`;
-  for (const allocation of allocations)
-    await tx`insert into tender_allocations(tenant_id,order_id,tender_id,line_id,unit_index,amount)
-      values(${s.tenantId},${orderId},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;
-  await ledger(tx, s, p, ctx, {
-    kind: "payment",
-    orderId,
-    roundNumber: null,
-    tenderId,
-    path: "manager",
-    reason,
-  });
-  await audit(tx, s, "offline.payment_reconciled", orderId, {
-    reason,
-    operationId: p.operationId,
-    amount: p.payment.amount,
-    tip: p.payment.tip,
-    method: p.payment.method,
-    drawerId: p.cashSessionId,
-  });
-  await refreshCheckState(tx, s, orderId);
-  const result = await getOrder(tx, orderId);
+    return { target, reconcile: "order", problems: [] };
   return {
-    kind: "payment",
-    operationId: p.operationId,
-    orderId,
-    orderNumber: result.number,
-    provisionalNumber: p.provisionalNumber,
-    roundNumber: null,
-    tenderId,
-    soldAt: ctx.soldAt.toISOString(),
-    businessDate: ctx.businessDate,
-    reusedOnlineOrder: false,
-    kitchenReview: false,
-    order: result,
+    target,
+    reconcile: "none",
+    problems: [moneyRefusal(p.payment.amount, found.order)],
   };
-}
+};
 
 reconcilers.payment = async (tx, s, p: OfflineRecord, ctx, reason) => {
   const record = p as OfflinePaymentV3;
@@ -364,9 +299,12 @@ reconcilers.payment = async (tx, s, p: OfflineRecord, ctx, reason) => {
       return financialRecovery(tx, s, p, ctx, reason);
     case "closed":
       // Never into a closed check (contract §3.4); the manager archives.
-      throw new DomainError(refusal(record, found.order), 409);
+      throw new DomainError(
+        moneyRefusal(record.payment.amount, found.order),
+        409,
+      );
     case "open":
-      return reconcilePaymentToOrder(tx, s, record, ctx, found.order, reason);
+      return reconcileIntoOrder(tx, s, record, ctx, found.order, reason);
   }
 };
 

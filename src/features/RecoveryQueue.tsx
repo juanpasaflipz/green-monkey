@@ -838,12 +838,38 @@ export function RecoveryQueue({
               {translateError("offline_dependency_pending", locale)}
             </p>
           )}
+          {/* OFF-R27: a sale or order whose create already committed online
+              names that order; money that does not fit it is never
+              reconciled beside it. */}
+          {!review.detail.reconcilable &&
+            review.detail.target &&
+            (review.detail.kind === "sale" ||
+              review.detail.kind === "order") && (
+              <p className="warning-panel" role="status">
+                {review.detail.kind === "order"
+                  ? t("offlineExistingOrderSent", {
+                      n: review.detail.target.number,
+                    })
+                  : review.detail.target.due > 0
+                    ? t("offlineExistingOrderCharge", {
+                        n: review.detail.target.number,
+                        due: format(review.detail.target.due),
+                      })
+                    : t("offlineExistingOrderPaid", {
+                        n: review.detail.target.number,
+                      })}
+              </p>
+            )}
           {review.detail.reconcilable && !waitingForOriginal(review.row) && (
             <>
               <p>
-                {es
-                  ? "Conservaremos el importe original en la caja original. No se cobra al cliente otra vez. No se reconstruyen precios por producto ni se envía a cocina o descuenta inventario; revisa esas tareas por separado."
-                  : "We will preserve the original amount in the original drawer. The customer is not charged again. Item prices are not reconstructed, kitchen tickets are not sent and inventory is not deducted; review those tasks separately."}
+                {review.detail.target
+                  ? t("offlineReconcileIntoOrder", {
+                      n: review.detail.target.number,
+                    })
+                  : es
+                    ? "Conservaremos el importe original en la caja original. No se cobra al cliente otra vez. No se reconstruyen precios por producto ni se envía a cocina o descuenta inventario; revisa esas tareas por separado."
+                    : "We will preserve the original amount in the original drawer. The customer is not charged again. Item prices are not reconstructed, kitchen tickets are not sent and inventory is not deducted; review those tasks separately."}
               </p>
               <Field
                 label={es ? "Motivo de conciliación" : "Reconciliation reason"}
@@ -862,9 +888,13 @@ export function RecoveryQueue({
                   checked={confirmed}
                   onChange={(e) => setConfirmed(e.target.checked)}
                 />
-                {es
-                  ? "Verifiqué el efectivo original y revisaré cocina e inventario."
-                  : "I verified the original cash and will review kitchen and inventory."}
+                {review.detail.target
+                  ? t("offlineReconcileIntoOrderConfirm", {
+                      n: review.detail.target.number,
+                    })
+                  : es
+                    ? "Verifiqué el efectivo original y revisaré cocina e inventario."
+                    : "I verified the original cash and will review kitchen and inventory."}
               </label>
               <Button
                 type="submit"

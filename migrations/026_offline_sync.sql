@@ -64,7 +64,9 @@ CREATE TABLE offline_sync_records (
   FOREIGN KEY (tenant_id, employee_id) REFERENCES employees(tenant_id, id),
   FOREIGN KEY (tenant_id, actor_id) REFERENCES employees(tenant_id, id),
   CHECK ((path = 'manager') = (reason IS NOT NULL)),
-  CHECK (path = 'automatic' OR kind = 'payment'),
+  -- The manager path records money into an existing order: a payment, or a
+  -- sale whose create had already committed online (its response lost).
+  CHECK (path = 'automatic' OR kind IN ('sale','payment')),
   CHECK ((kind IN ('sale','payment')) = (tender_id IS NOT NULL)),
   CHECK (kind = 'payment' OR round_number IS NOT NULL)
 );

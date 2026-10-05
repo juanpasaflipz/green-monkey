@@ -1750,6 +1750,225 @@ try {
   );
   assert.equal(stillServiceable.total, 150);
 
+  // OFF-R27: a sale or order refused because its create had already
+  // committed online (response lost) names that order in the manager review.
+  // A sale's money goes into it when it is open and the amount fits; it is
+  // never reconciled beside it as a second, financial-only order.
+  const lostCreate = (name: string, quantity = 1) => ({
+    operationId: randomUUID(),
+    lines: [line(ids.plate, quantity)],
+    mode: "dine_in" as const,
+    tableId: null,
+    name,
+    note: "",
+    channel: "pos" as const,
+  });
+  const reconcileWith = (record: unknown, reason: string) =>
+    run((tx) =>
+      reconcileOfflineRecord(tx, manager1, { record, reason, confirmed: true }),
+    );
+  const r27Recoveries = await count("offline_recoveries");
+  // Stale device price (90) below the server's (100): reconciled into the
+  // online order, which keeps the difference as its balance.
+  const cheapDraft = lostCreate("Respuesta perdida, precio viejo");
+  const cheapOnline = await run((tx) => createOrder(tx, s1, cheapDraft));
+  const cheapSale = sale(s1, {
+    lines: cheapDraft.lines,
+    order: cheapDraft,
+    total: 90,
+  });
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, cheapSale)),
+    "price_conflict",
+  );
+  const cheapReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, cheapSale),
+  );
+  assert.equal(cheapReview.authentic, true);
+  assert.deepEqual(cheapReview.target, {
+    orderId: cheapOnline.id,
+    number: cheapOnline.number,
+    due: 100,
+  });
+  assert(cheapReview.problems.includes("price_conflict"));
+  assert.equal(cheapReview.reconcilable, true);
+  const intoOnline = await reconcileWith(
+    cheapSale,
+    "Cash for the order created online; price changed",
+  );
+  assert.equal(intoOnline.id, cheapOnline.id, "the online order took it");
+  assert.equal(intoOnline.paid, 90);
+  assert.equal(intoOnline.total, 100, "server price kept; 10 still due");
+  assert(!intoOnline.state.startsWith("recovery"));
+  const [cheapTender] =
+    await admin`select session_id,source,source_id,amount from tenders where tenant_id=${tenantId} and order_id=${cheapOnline.id}`;
+  assert.deepEqual(
+    { ...cheapTender },
+    {
+      session_id: ids.drawer1,
+      source: "offline_recovery",
+      source_id: cheapSale.operationId,
+      amount: 90,
+    },
+  );
+  const [cheapLedger] =
+    await admin`select kind,path,reason,round_number,reused_online_order,order_id from offline_sync_records where tenant_id=${tenantId} and operation_id=${cheapSale.operationId}`;
+  assert.deepEqual(
+    { ...cheapLedger },
+    {
+      kind: "sale",
+      path: "manager",
+      reason: "Cash for the order created online; price changed",
+      round_number: 1,
+      reused_online_order: true,
+      order_id: cheapOnline.id,
+    },
+  );
+  // Exactly once: a replayed reconcile and a later sync return the same order.
+  assert.equal(
+    (await reconcileWith(cheapSale, "Second click on the same reconcile")).id,
+    cheapOnline.id,
+  );
+  assert.equal(
+    (await run((tx) => syncOfflineRecord(tx, s1, cheapSale))).orderId,
+    cheapOnline.id,
+  );
+  assert.equal(await count("tenders", "order_id=$2", cheapOnline.id), 1);
+  const cheapAgain = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, cheapSale),
+  );
+  assert.equal(cheapAgain.reconcilable, false, "already applied");
+  // Stale device price (120) above the server's (100): it does not fit the
+  // order, so nothing is reconcilable and no second order is created.
+  const dearDraft = lostCreate("Respuesta perdida, precio alto");
+  const dearOnline = await run((tx) => createOrder(tx, s1, dearDraft));
+  const dearSale = sale(s1, {
+    lines: dearDraft.lines,
+    order: dearDraft,
+    total: 120,
+  });
+  const dearReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, dearSale),
+  );
+  assert.equal(dearReview.target?.orderId, dearOnline.id);
+  assert.equal(dearReview.reconcilable, false);
+  assert(dearReview.problems.includes("price_conflict"));
+  assert(dearReview.problems.includes("offline_payment_exceeds_due"));
+  await expectCode(
+    reconcileWith(dearSale, "Trying to reconcile beside the online order"),
+    "offline_payment_exceeds_due",
+  );
+  assert.equal(await count("tenders", "order_id=$2", dearOnline.id), 0);
+  // Already paid online: the guest paid twice; nothing more is recorded.
+  const paidDraft = lostCreate("Respuesta perdida, cobrada en línea");
+  const paidOnline = await run((tx) => createOrder(tx, s1, paidDraft));
+  await run((tx) =>
+    recordPayment(tx, s1, paidOnline.id, {
+      operationId: randomUUID(),
+      amount: 100,
+      tip: 0,
+      received: 100,
+      method: "cash",
+    }),
+  );
+  const paidSale = sale(s1, { lines: paidDraft.lines, order: paidDraft });
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, paidSale)),
+    "offline_payment_exceeds_due",
+  );
+  const paidReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, paidSale),
+  );
+  assert.equal(paidReview.target?.due, 0);
+  assert.equal(paidReview.reconcilable, false);
+  await expectCode(
+    reconcileWith(paidSale, "Paid online and offline for the same order"),
+    "offline_payment_exceeds_due",
+  );
+  assert.equal(await count("tenders", "order_id=$2", paidOnline.id), 1);
+  // A different draft under the same order id: still named, and its money
+  // goes into that order only when it fits the balance.
+  const twiceDraft = lostCreate("Respuesta perdida, borrador cambiado", 2);
+  const twiceOnline = await run((tx) => createOrder(tx, s1, twiceDraft));
+  const oneLine = [line(ids.plate)];
+  const changedSale = sale(s1, {
+    lines: oneLine,
+    order: { ...twiceDraft, lines: oneLine },
+  });
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, changedSale)),
+    "offline_order_already_exists",
+  );
+  const changedSaleReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, changedSale),
+  );
+  assert.equal(changedSaleReview.target?.orderId, twiceOnline.id);
+  assert.equal(changedSaleReview.target?.due, 200);
+  assert(changedSaleReview.problems.includes("offline_order_already_exists"));
+  assert.equal(changedSaleReview.reconcilable, true);
+  const changedPaid = await reconcileWith(
+    changedSale,
+    "Cash for the order created online",
+  );
+  assert.equal(changedPaid.id, twiceOnline.id);
+  assert.equal(changedPaid.paid, 100);
+  assert.equal(
+    await count("offline_recoveries"),
+    r27Recoveries,
+    "never a financial-only order beside the online one",
+  );
+  // A local order (Enviar offline) whose create had committed online: the
+  // review names the online order. Once a manager archives the order record,
+  // its offline payment goes into that online order, not a recovery order.
+  const tabDraft = lostCreate("Mesa con respuesta perdida");
+  const tabOnline = await run((tx) => createOrder(tx, s1, tabDraft));
+  const tabRecord = {
+    ...orderRecord(s1, tabDraft.lines),
+    order: tabDraft,
+    expectedTotal: 90,
+  };
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, tabRecord)),
+    "price_conflict",
+  );
+  const tabReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, tabRecord),
+  );
+  assert.equal(tabReview.target?.orderId, tabOnline.id);
+  assert.equal(tabReview.reconcilable, false, "an order carries no money");
+  const tabPayment = paymentRecord(
+    s1,
+    { localOrderOperationId: tabRecord.operationId },
+    90,
+  );
+  assert.equal(
+    (await run((tx) => reviewOfflineRecord(tx, manager1, tabPayment)))
+      .reconcilable,
+    false,
+    "waits while its order record is queued (I5)",
+  );
+  await run((tx) =>
+    archiveOfflineRecord(tx, manager1, {
+      operationId: randomUUID(),
+      record: tabRecord,
+      localError: "price_conflict",
+      reason: "The order already exists online; kitchen made it",
+      confirmed: true,
+    }),
+  );
+  const tabPaymentReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, tabPayment),
+  );
+  assert.equal(tabPaymentReview.target?.orderId, tabOnline.id);
+  assert.equal(tabPaymentReview.reconcilable, true);
+  const tabPaid = await reconcileWith(
+    tabPayment,
+    "Cash for the table that exists online",
+  );
+  assert.equal(tabPaid.id, tabOnline.id);
+  assert.equal(tabPaid.paid, 90);
+  assert.equal(await count("offline_recoveries"), r27Recoveries);
+
   // 22. LD-7: offline table service is a per-restaurant beta, OFF by default.
   // Every table record above synced with it off: sync never consults the
   // setting, because a record saved while it was on is a real sale.
@@ -1907,7 +2126,7 @@ try {
   }
 
   console.log(
-    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse (only at the server's price), overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, lines already sent online, rounds on paid checks, open-orders snapshot) and the LD-7 setting (off by default, managers only, audited once, gates the snapshot, never sync).",
+    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse (only at the server's price; the manager path pays the online order, never a second one), overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, lines already sent online, rounds on paid checks, open-orders snapshot) and the LD-7 setting (off by default, managers only, audited once, gates the snapshot, never sync).",
   );
 } finally {
   for (const table of [

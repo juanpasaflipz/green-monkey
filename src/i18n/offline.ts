@@ -161,6 +161,16 @@ export default defineArea({
     offlineKitchenOtherStation: "{n} por revisar en {station}.",
     offlineLoginManual:
       "Este dispositivo está en modo sin conexión. Puedes iniciar sesión; las ventas se guardarán aquí hasta que vuelvas a conectarte.",
+    offlineReconcileIntoOrder:
+      "Registraremos el cobro en la orden #{n}, en la caja original. No se cobra al cliente otra vez. Si a la orden le queda saldo, cóbralo o anúlalo en la orden.",
+    offlineReconcileIntoOrderConfirm:
+      "Verifiqué el dinero original y que corresponde a la orden #{n}.",
+    offlineExistingOrderCharge:
+      "Esta venta ya existe en línea como la orden #{n}, con saldo de {due}, y no se puede conciliar aquí. Cobra esa orden en línea con el dinero ya recibido, sin cobrarle otra vez al cliente, y archiva este registro.",
+    offlineExistingOrderPaid:
+      "Esta venta ya existe en línea como la orden #{n} y no le queda saldo. No cobres otra vez: archiva este registro con el motivo.",
+    offlineExistingOrderSent:
+      "Esta orden ya existe en línea como la #{n} y la cocina ya la recibió. Archiva este registro: sus cobros sin conexión se podrán conciliar en la orden #{n}.",
   },
   en: {
     offlineStatusOnline: "Connected",
@@ -318,6 +328,16 @@ export default defineArea({
     offlineKitchenOtherStation: "{n} to review at {station}.",
     offlineLoginManual:
       "This device is in offline mode. You can sign in; sales are saved here until you go back online.",
+    offlineReconcileIntoOrder:
+      "We will record the payment on order #{n}, in the original drawer. The customer is not charged again. If the order still has a balance, collect or void it on the order.",
+    offlineReconcileIntoOrderConfirm:
+      "I verified the original money and that it belongs to order #{n}.",
+    offlineExistingOrderCharge:
+      "This sale already exists online as order #{n}, with a balance of {due}, and cannot be reconciled here. Charge that order online with the money already received, without charging the customer again, and archive this record.",
+    offlineExistingOrderPaid:
+      "This sale already exists online as order #{n} and has no balance left. Do not charge again: archive this record with the reason.",
+    offlineExistingOrderSent:
+      "This order already exists online as #{n} and the kitchen already received it. Archive this record: its offline payments can then be reconciled on order #{n}.",
   },
   errors: {
     network_unavailable: [
