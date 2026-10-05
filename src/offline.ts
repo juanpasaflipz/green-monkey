@@ -40,6 +40,8 @@ export type Pending = {
     mode?: string;
     tableName?: string | null;
     name?: string;
+    /** The round number the record's kitchen ticket shows until it syncs. */
+    round?: number;
   };
 };
 export type CachedValue =

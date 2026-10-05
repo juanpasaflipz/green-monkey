@@ -1133,19 +1133,26 @@ export async function saveOfflineRound(
   );
 }
 
-/** Keeps the cached server order's heading on the row for its kitchen ticket. */
-function withContext(row: Pending, order: LocalOrderView | null): Pending {
-  return order && !order.offline.localOperationId
-    ? {
-        ...row,
-        context: {
+/**
+ * Keeps what the round's kitchen ticket says on the row: the round number it
+ * takes in the order as this device sees it (the cached copy's rounds plus
+ * this device's rounds not in it yet, OFF-R28) and, for a cached server
+ * order, its heading.
+ */
+function withContext(row: Pending, order: LocalOrderView): Pending {
+  const round = Math.max(1, ...order.lines.map((line) => line.round ?? 1)) + 1;
+  return {
+    ...row,
+    context: order.offline.localOperationId
+      ? { round }
+      : {
           orderNumber: order.number,
           mode: order.mode,
           tableName: order.tableName ?? null,
           name: order.name,
+          round,
         },
-      }
-    : row;
+  };
 }
 
 /**
@@ -1571,13 +1578,20 @@ ticketHeadings.order = (row, _rows, tableName) => {
 };
 ticketHeadings.round = (row, rows, tableName) => {
   const body = row.body as OfflineRecordV3 & { kind: "round" };
-  const earlier = rows.filter(
-    (other) =>
-      (other.sequence ?? 0) < (row.sequence ?? 0) &&
-      isV3(other.body) &&
-      other.body.kind === "round" &&
-      JSON.stringify(other.body.target) === JSON.stringify(body.target),
-  ).length;
+  // The order's real round once synced; before that, the number it took in
+  // the order this device saw when it was saved (OFF-R28). Rows saved before
+  // that was kept count this device's earlier rounds of the same target.
+  const synced = row.status === "synced" ? resultOf(row)?.roundNumber : null;
+  const round =
+    (typeof synced === "number" ? synced : null) ??
+    row.context?.round ??
+    rows.filter(
+      (other) =>
+        (other.sequence ?? 0) < (row.sequence ?? 0) &&
+        isV3(other.body) &&
+        other.body.kind === "round" &&
+        JSON.stringify(other.body.target) === JSON.stringify(body.target),
+    ).length + 2;
   if ("localOrderOperationId" in body.target) {
     const parent = rows.find(
       (other) =>
@@ -1587,7 +1601,7 @@ ticketHeadings.round = (row, rows, tableName) => {
     )?.body as (OfflineRecordV3 & { kind: "order" }) | undefined;
     return {
       label: body.provisionalNumber ?? parent?.provisionalNumber ?? "—",
-      round: earlier + 2,
+      round,
       mode: parent?.order.mode ?? "dine_in",
       tableName: tableName(parent?.order.tableId ?? null),
       callName: parent?.order.name ?? "",
@@ -1596,7 +1610,7 @@ ticketHeadings.round = (row, rows, tableName) => {
   }
   return {
     label: `#${row.context?.orderNumber ?? "—"}`,
-    round: earlier + 2,
+    round,
     mode: row.context?.mode ?? "dine_in",
     tableName: row.context?.tableName ?? null,
     callName: row.context?.name ?? "",

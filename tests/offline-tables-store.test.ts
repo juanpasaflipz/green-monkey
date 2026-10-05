@@ -31,6 +31,7 @@ import {
   findOpenOrder,
   isLocalOrder,
   linkFromRows,
+  localKitchenTickets,
   localOpenOrders,
   orderTicketIds,
   reconciledResult,
@@ -950,6 +951,61 @@ describe("online charge guard: rounds saved offline (OFF-R26)", () => {
     await expect(
       assertNoUnsyncedRecords(s, serverOrder(table)),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("kitchen ticket round labels (OFF-R28)", () => {
+  const copy = {
+    banner: "COMANDA · SIN CONEXIÓN",
+    footer: "Número provisional.",
+    round: (n: number) => `Ronda ${n}`,
+  };
+  const labels = async (s: Session) =>
+    Object.fromEntries(
+      (await localKitchenTickets(s, 0, copy)).map((item) => [
+        item.operationId,
+        item.ticket.label,
+      ]),
+    );
+
+  it("a round on a cached server order takes the order's next round, then its real one once synced", async () => {
+    const s = session();
+    const table = uuid(90);
+    // The server order already has rounds 1 to 3 (other devices, online).
+    await cacheSnapshot(s, [serverCopy(table, { rounds: [1, 2, 3] })]);
+    const first = roundInput(50);
+    await saveOfflineRound(ctxOf(s), { target: { orderId: table }, ...first });
+    const second = roundInput(70);
+    await saveOfflineRound(ctxOf(s), { target: { orderId: table }, ...second });
+    expect(await labels(s)).toEqual({
+      [first.operationId]: "#42 · Ronda 4",
+      [second.operationId]: "#42 · Ronda 5",
+    });
+    // Synced: the ticket shows the round the order and the KDS lane show.
+    await markSynced(
+      first.operationId,
+      { orderId: table, roundNumber: 6 },
+      Date.now(),
+    );
+    expect(await labels(s)).toEqual({
+      [first.operationId]: "#42 · Ronda 6",
+      [second.operationId]: "#42 · Ronda 5",
+    });
+  });
+
+  it("rounds of a local order count from its first round", async () => {
+    const s = session();
+    const open = await localOrder(s);
+    const round = roundInput(40);
+    await saveOfflineRound(ctxOf(s), {
+      target: { localOrderOperationId: open.id },
+      ...round,
+    });
+    const number = open.offline.provisionalNumber!;
+    expect(await labels(s)).toEqual({
+      [open.id]: number,
+      [round.operationId]: `${number} · Ronda 2`,
+    });
   });
 });
 
