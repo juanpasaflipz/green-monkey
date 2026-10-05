@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
 import {
   currencyExponent,
-  minor,
   type Locale,
   type Product,
   type Session,
@@ -20,7 +19,7 @@ import { Button, Field, Modal } from "../../components/ui";
 import { CategoryDialog } from "./CategoryDialog";
 import { GroupEditor } from "./GroupEditor";
 import { RecipeEditor } from "./RecipeEditor";
-import { amountText, groupRuleText, translator } from "./format";
+import { amountText, groupRuleText, moneyInput, translator } from "./format";
 
 const NEW = "__new";
 
@@ -135,7 +134,7 @@ export function ProductEditor({
     const invalid = new Set<string>();
     const money = (text: string, key: string) => {
       try {
-        return minor(text.trim().replace(",", "."), exponent);
+        return moneyInput(text, exponent);
       } catch {
         invalid.add(key);
         return 0;

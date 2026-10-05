@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { currencyExponent, minor, type Locale } from "../../../shared/domain";
+import { currencyExponent, type Locale } from "../../../shared/domain";
 import type { MenuEditorPayload, MenuGroup } from "../../../shared/menu";
 import { groupInput } from "../../../shared/menu-schema";
 import { api } from "../../api";
 import { translateError } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
-import { amountText, groupRuleText, translator } from "./format";
+import { amountText, groupRuleText, moneyInput, translator } from "./format";
 import {
   draftOption,
   groupTemplates,
@@ -106,7 +106,7 @@ export function GroupEditor({
     const money = (text: string, key: string, optional = false) => {
       if (optional && !text.trim()) return null;
       try {
-        return minor(text.trim().replace(",", ".") || "0", exponent);
+        return moneyInput(text.trim() || "0", exponent);
       } catch {
         invalid.add(key);
         return 0;

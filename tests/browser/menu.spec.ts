@@ -578,3 +578,45 @@ test("MON-3: a management dialog keeps one operation id, so a retry after a lost
   const expenses = (await call(page, "/expenses")).data as any[];
   expect(expenses.filter((e) => e.reason === reason)).toHaveLength(1);
 });
+
+test('money and quantity entry: "1,200" is $1,200.00 and an ambiguous "25,50" is refused, never read as a decimal', async ({
+  page,
+}) => {
+  const name = `Pastel ${suffix()}`;
+  await login(page);
+  await openMenu(page);
+  await page
+    .getByRole("button", { name: "Nuevo producto", exact: true })
+    .click();
+  let dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Nombre en español").fill(name);
+  await dialog
+    .getByRole("combobox", { name: "Categoría *", exact: true })
+    .selectOption({ label: "Postres" });
+  await dialog.getByLabel("Precio al cliente (con IVA)").fill("1,200");
+  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  const saved = ((await call(page, "/catalog")).data as any[]).find(
+    (p) => p.name.es === name,
+  );
+  expect(saved.price).toBe(120000);
+
+  await page
+    .getByRole("button", { name: `Editar ${name}`, exact: true })
+    .click();
+  dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Precio al cliente (con IVA)").fill("25,50");
+  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Escribe un importe válido.",
+  );
+  await expect(
+    dialog.getByLabel("Precio al cliente (con IVA)"),
+  ).toHaveAttribute("aria-invalid", "true");
+  await dialog.getByRole("button", { name: "Cerrar" }).click();
+  const unchanged = ((await call(page, "/catalog")).data as any[]).find(
+    (p) => p.name.es === name,
+  );
+  expect(unchanged.price).toBe(120000);
+  expect(unchanged.version).toBe(saved.version);
+});

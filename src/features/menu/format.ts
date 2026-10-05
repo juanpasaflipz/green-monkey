@@ -1,5 +1,7 @@
 import {
   currencyExponent,
+  DomainError,
+  minor,
   type Group,
   type Locale,
 } from "../../../shared/domain";
@@ -30,6 +32,26 @@ export function moneyFormatter(locale: Locale, currency: string) {
     currency,
   });
   return (minor: number) => format.format(minor / scale);
+}
+
+/**
+ * Typed decimal → plain decimal text, or null when it is not a number.
+ * es-MX and en-US both use "," for thousands and "." for decimals, so a
+ * well-formed grouping ("1,200", "12,500.50") drops its commas. Any other
+ * comma ("25,50", "1,20") is ambiguous and rejected; it is never read as a
+ * decimal point, so "1,200" can never become 1.20.
+ */
+export function decimalInput(text: string): string | null {
+  const value = text.trim();
+  if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(value)) return value.replace(/,/g, "");
+  return /^\d+(\.\d+)?$/.test(value) ? value : null;
+}
+
+/** Typed amount in currency units → integer minor units; throws invalid_amount. */
+export function moneyInput(text: string, exponent: number): number {
+  const value = decimalInput(text);
+  if (value === null) throw new DomainError("invalid_amount");
+  return minor(value, exponent);
 }
 
 /** Minor units → plain decimal text for an input ("25.5" → "25.50"). */

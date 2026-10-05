@@ -22,8 +22,10 @@ import {
 import {
   groupInput,
   productInput,
+  stockItemInput,
   tablesBulkInput,
 } from "../shared/menu-schema";
+import { decimalInput, moneyInput } from "../src/features/menu/format";
 
 const tortilla = "00000000-0000-4000-8000-0000000000a1";
 const queso = "00000000-0000-4000-8000-0000000000a2";
@@ -504,5 +506,56 @@ describe("menu input schemas", () => {
     expect(tablesBulkInput.safeParse({ ...b, from: 5, to: 4 }).success).toBe(
       false,
     );
+  });
+});
+
+describe("menu number entry (es-MX thousands separator)", () => {
+  it('a thousands comma never becomes a decimal point: "1,200" is $1,200.00, not $1.20', () => {
+    expect(moneyInput("1,200", 2)).toBe(120000);
+    expect(moneyInput(" 1,450 ", 2)).toBe(145000);
+    expect(moneyInput("12,500.50", 2)).toBe(1250050);
+    expect(moneyInput("1,000,000", 2)).toBe(100000000);
+    expect(moneyInput("25.50", 2)).toBe(2550);
+    expect(moneyInput("1200", 2)).toBe(120000);
+    expect(moneyInput("1,200", 0)).toBe(1200);
+  });
+
+  it("an ambiguous comma is rejected instead of guessed", () => {
+    for (const text of [
+      "25,50",
+      "1,20",
+      "1,2000",
+      ",500",
+      "1,",
+      "1.200,50",
+      "",
+      "abc",
+      "-5",
+    ])
+      expect(() => moneyInput(text, 2), text).toThrow(DomainError);
+    expect(decimalInput("25,50")).toBeNull();
+    expect(decimalInput("1,20")).toBeNull();
+  });
+
+  it('recipe and stock quantities keep their magnitude: "1,000" g stays 1000 g', () => {
+    expect(decimalInput("1,000")).toBe("1000");
+    expect(decimalInput("2,500.125")).toBe("2500.125");
+    expect(decimalInput("0.03")).toBe("0.03");
+    const stock = {
+      operationId: randomUUID(),
+      id: randomUUID(),
+      expectedVersion: 0,
+      name: "Harina",
+      unit: "g",
+      kind: "raw",
+      threshold: decimalInput("1,000"),
+      parLevel: decimalInput("5,000"),
+      openingQuantity: decimalInput("1,000"),
+    };
+    expect(stockItemInput.parse(stock).openingQuantity).toBe("1000");
+    // A malformed value stays as typed in the dialog, so the schema flags it.
+    expect(
+      stockItemInput.safeParse({ ...stock, openingQuantity: "1,5" }).success,
+    ).toBe(false);
   });
 });

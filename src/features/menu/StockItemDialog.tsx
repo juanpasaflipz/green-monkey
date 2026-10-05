@@ -5,7 +5,7 @@ import { stockItemInput, stockUnits } from "../../../shared/menu-schema";
 import { api } from "../../api";
 import { translateError } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
-import { translator, trimDecimal } from "./format";
+import { decimalInput, translator, trimDecimal } from "./format";
 
 const unitKeys = {
   g: "menuUnitG",
@@ -53,7 +53,8 @@ export function StockItemDialog({
     (item.hasMovements ||
       item.usedBy.products.length > 0 ||
       item.usedBy.options.length > 0);
-  const decimal = (text: string) => text.trim().replace(",", ".");
+  // A malformed value (e.g. "1,5") stays as typed so the schema flags the field.
+  const decimal = (text: string) => decimalInput(text) ?? text.trim();
 
   async function save() {
     const body = {

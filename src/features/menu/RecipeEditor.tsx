@@ -6,7 +6,12 @@ import {
   type RecipeLine,
 } from "../../../shared/menu";
 import { Button, Field } from "../../components/ui";
-import { translator, trimDecimal, type Translate } from "./format";
+import {
+  decimalInput,
+  translator,
+  trimDecimal,
+  type Translate,
+} from "./format";
 
 type Row = {
   key: string;
@@ -29,8 +34,9 @@ export function unitLabel(unit: string, t: Translate) {
 /** Converts one row to a recipe line in the stock item's unit, or null. */
 function toLine(row: Row, items: MenuStockOption[]): RecipeLine | null {
   const item = items.find((i) => i.id === row.stockId);
-  const text = row.quantity.trim().replace(",", ".");
-  if (!item || !/^\d{1,9}(\.\d{1,6})?$/.test(text)) return null;
+  const text = decimalInput(row.quantity);
+  if (!item || text === null || !/^\d{1,9}(\.\d{1,6})?$/.test(text))
+    return null;
   try {
     const quantity = trimDecimal(convert(text, row.entryUnit, item.unit));
     return /^\d{1,9}(\.\d{1,6})?$/.test(quantity) && Number(quantity) > 0

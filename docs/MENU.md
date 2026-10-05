@@ -55,6 +55,11 @@ every 60 seconds while selling, and again on focus, and refetches the catalog
 when the revision changes. Any feature can force a refetch with
 `window.dispatchEvent(new Event("gm-menu-refresh"))`.
 
+**Typing amounts and quantities.** Editors accept "1200", "1,200" and
+"1,200.50": a comma is read only as a thousands separator in a well-formed
+grouping. Any other comma ("25,50") is rejected with a field error; it is never
+taken as a decimal point (`decimalInput()` in `src/features/menu/format.ts`).
+
 ## Selling with choices, combos and open price
 
 - The picker opens for **any** product with groups or an open price, in the POS

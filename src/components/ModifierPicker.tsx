@@ -2,7 +2,6 @@ import { useState } from "react";
 import { Minus, Plus } from "lucide-react";
 import {
   currencyExponent,
-  minor,
   quote,
   type Group,
   type Locale,
@@ -18,6 +17,7 @@ import {
   amountText,
   groupRuleText,
   moneyFormatter,
+  moneyInput,
   translator,
 } from "../features/menu/format";
 import { Button, Field, Modal } from "./ui";
@@ -56,7 +56,7 @@ export function ModifierPicker(props: {
   let amountInvalid = false;
   if (product.openAmount && amount.trim()) {
     try {
-      openAmount = minor(amount.trim(), currencyExponent(currency));
+      openAmount = moneyInput(amount, currencyExponent(currency));
     } catch {
       amountInvalid = true;
     }
