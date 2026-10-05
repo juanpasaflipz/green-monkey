@@ -7,8 +7,8 @@ The requirement is to keep the same provider setup—Neon, Railway, and the usef
 | Concern | Inspected source | Green Monkey target |
 | --- | --- | --- |
 | Application DB | POS Lite: Neon/postgres.js; Luma: Supabase | Neon PostgreSQL only |
-| Runtime | POS Lite Dockerfile: Node 20; Express serves `dist` and `dist-kiosk` | Supported Node LTS, TypeScript server build, one web service |
-| Railway config | `NIXPACKS`, `npm run build`, `node server/index.js`, retry count 5 | Explicit Dockerfile build, migration pre-deploy command, readiness check |
+| Runtime | POS Lite Dockerfile: Node 20; Express serves `dist` and `dist-kiosk` | Node 24.21.0 (`.nvmrc`, Dockerfile), TypeScript server build; `web` service (API + jobs runner) and `worker` service (billing provider loop, watchdog, deploy-time migrations) |
+| Railway config | `NIXPACKS`, `npm run build`, `node server/index.js`, retry count 5 | `.railway/railway.ts` infrastructure as code: Dockerfile build, worker preDeploy (migrate, grants, retention), readiness checks, draining |
 | Luma scheduling | `0 15 * * 1` weekly; `0 8 1 * *` monthly in Vercel config | Railway scheduled jobs with deliberate restaurant timezone semantics |
 | DB auth | Owner connection plus app_user role and PG_APP_* credentials | Runtime app role; separately configured migration/provisioning privileges |
 | Assets | POS Lite R2 with local-disk fallback | R2 in production; local storage only for disposable development |
@@ -18,43 +18,68 @@ The requirement is to keep the same provider setup—Neon, Railway, and the usef
 
 ## Deployment blueprint
 
-Create a new Railway project/service associated with `juanpasaflipz/green-monkey`. Do not reuse existing service IDs, domains, custom host bindings, or source repo integrations implicitly. Use a separate Neon development/test branch or project and a deliberate production target when cutover is authorized.
+Railway project `proactive-upliftment`, two services built from the root
+`Dockerfile` (multi-stage, Node 24.21.0, `npm ci` from the lockfile, compiled
+frontend/server, migrations, `scripts/grants.sql`, `scripts/db/post-migrate.sql`
+and the stamped `build-info.json`). Both start through
+`node --import ./build/server/instrument.js`, which loads and validates the
+configuration before any application module (`server/config.ts`).
 
-Use a reproducible multi-stage Dockerfile. The image contains compiled frontend/server, runtime dependencies, migration runner/files, and version metadata. Lock dependency versions. Bind to `0.0.0.0` and Railway's `PORT`. Preserve `RAILWAY_GIT_COMMIT_SHA` in the build stamp and expose a safe `/api/version`. Implement SIGTERM draining and database shutdown.
+`railway.json` is gone: Railway stops reading config-as-code files on
+2026-12-01. `.railway/railway.ts` (TypeScript IaC, `railway/iac`) declares:
 
-A target configuration, to create **only after these scripts exist**, is:
+| Service | Start | Health | Notes |
+| --- | --- | --- | --- |
+| `web` | `build/server/index.js` | `/api/health` (300 s) | Runtime role only (plus the billing login when billing is enabled). `replicas: 1` because rate limits are in memory. `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=20`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=10`. |
+| `worker` | `build/server/worker.js` | `/healthz` (300 s) | No public domain. `preDeploy: node build/scripts/migrate.js --grants --retention` runs as the non-superuser `gm_migrator`, so the owner credential never reaches `web`. Draining 30 s. Holds the Stripe secret key. |
 
-```json
-{
-  "$schema": "https://railway.com/railway.schema.json",
-  "build": {
-    "builder": "DOCKERFILE",
-    "dockerfilePath": "Dockerfile"
-  },
-  "deploy": {
-    "preDeployCommand": ["npm run db:migrate"],
-    "startCommand": "npm start",
-    "healthcheckPath": "/api/health",
-    "healthcheckTimeout": 120,
-    "restartPolicyType": "ON_FAILURE",
-    "restartPolicyMaxRetries": 5
-  }
-}
-```
+Every variable that holds a secret is `preserve()`d: IaC never writes secret
+values; `scripts/ops/railway-vars.sh` sets them from a private file via stdin.
+CD (`.github/workflows/deploy.yml`) runs `railway config apply --yes` without
+`--confirm-destructive`, so a plan that would delete a service or variable
+stops for review. Domains are deliberately not in IaC. Settings IaC cannot
+express are manual and listed in [RUNBOOK.md](RUNBOOK.md): restart policy
+(On Failure), region, custom domain, serverless sleep (off), deploy webhook.
 
-Railway documents Dockerfile selection, pre-deploy commands, and these config fields in its [configuration reference](https://docs.railway.com/config-as-code/reference). The application now includes an active `railway.json`, Dockerfile, compiled migration runner and health check. The isolated staging deployment is recorded in [STAGING.md](STAGING.md). Railway currently warns that this configuration format must migrate to its new infrastructure-as-code format before December 1, 2026.
+`/health` is process liveness. `/api/health` returns 200 only when the newest
+bundled migration is applied and the instance is not draining; otherwise 503
+(`schema_not_ready`, `server_draining`). `/api/ops/status` is the public,
+tenant-free status document for uptime checks. Startup waits for the database
+with capped backoff instead of crash-looping (`waitForDatabase`), and SIGTERM
+drains in-flight requests and jobs before closing the pools.
 
-`/health` can be process liveness; `/api/health` should check DB connectivity and required schema readiness with a bounded query. Do not expose configuration values. Railway deployment health checks expect an HTTP success response; separately implement ongoing service monitoring. See [Railway health checks](https://docs.railway.com/deployments/healthchecks).
-
-Run versioned, forward-compatible migrations under an advisory lock in the pre-deploy phase. Never execute destructive demo seeds at server boot. Use expand/contract migrations so old and new app revisions can coexist during rollout. Application rollback is not a database rollback; document both and rehearse restore/reconciliation.
+Migrations are expand-only, applied one file per transaction with
+`lock_timeout` 5 s and retries; see [RELEASE.md](RELEASE.md). Application
+rollback is a redeploy of an older SHA, not a database rollback; see
+[RUNBOOK.md](RUNBOOK.md) and [BACKUP_RESTORE.md](BACKUP_RESTORE.md).
 
 ## Neon connections
 
-Keep application and migration/provisioning credentials distinct. Proposed default: `DATABASE_URL` is an app-role runtime connection; `MIGRATION_DATABASE_URL` is a direct privileged connection available only to migration/provisioning execution. If Railway makes the latter available to the web container, the web code must neither instantiate it nor log it; prefer a separately scoped migration job/service when feasible.
+Each role has one job ([PROVISIONING.md](PROVISIONING.md) creates them):
 
-`PG_APP_USER` and `PG_APP_PASSWORD` retain a documented compatibility path for the legacy configuration shape. They must not silently create an owner-credential fallback or derive a new endpoint by string replacement. Validate role/host/database at startup and document which values the resolver uses. Tenant queries still require transaction-local context.
+| Login | Endpoint | Used by | Defaults (`ALTER ROLE … SET`) |
+| --- | --- | --- | --- |
+| `gm_<env>_app` (`DATABASE_URL`) | pooled (`-pooler`) | web | `statement_timeout` 10 s, `lock_timeout` 8 s, `idle_in_transaction_session_timeout` 15 s |
+| `gm_<env>_billing` (`BILLING_DATABASE_URL`) | pooled | web (owner billing commands, webhook), worker (provider loop); member of `gm_billing_worker` | 30 s / 8 s / 60 s |
+| `gm_migrator` (`MIGRATION_DATABASE_URL`) | direct | worker preDeploy only; owns the schema; no superuser, BYPASSRLS or CREATEROLE | `lock_timeout` 5 s, `statement_timeout` 10 min |
+| `gm_<env>_backup` (`BACKUP_DATABASE_URL`) | direct | GitHub backup workflow; member of `gm_backup_reader` (reads through `ops_backup_read` policies) | no timeouts |
+| `neondb_owner` | direct | provisioning and rotation scripts only; password kept offline | — |
 
-Use a bounded postgres.js pool, connection/query timeouts, and explicit SSL settings appropriate to the Neon connection string. Validate both pooled application access and direct migration access in staging. Do not reuse source pool sizes blindly; size for measured concurrency and account limits. Neon explains pooled endpoint naming and connection behavior in its [connection pooling support recap](https://neon.com/blog/postgres-support-case-recap) and documents direct connections for session-dependent operations in its [connection guidance update](https://neon.com/docs/changelog/2025-01-24). Recheck current docs before implementation.
+TLS: `connect()` passes `ssl: 'verify-full'` for every non-loopback host and
+drops URL query parameters, so `sslmode=require` can no longer downgrade to an
+unverified connection (OPS-14); configuration refuses `sslmode=disable` for a
+remote host. Neon's pooler (PgBouncer, transaction mode) drops startup
+parameters, so timeouts come from role defaults and from `tenant()`, which
+sets `app.tenant_id` and `statement_timeout` in one `set_config` statement
+(`DB_STATEMENT_TIMEOUT_MS`, default 10000). Pool size is `DB_POOL_MAX`
+(default 20) until the load test chooses a value ([LOAD_TEST.md](LOAD_TEST.md)).
+
+Deployed processes refuse credentials they must not hold
+(`server/config-rules.ts`): web refuses `MIGRATION_DATABASE_URL`,
+`BACKUP_DATABASE_URL`, `PROVISION_DATABASE_URL` and `STRIPE_SECRET_KEY`;
+the worker refuses `DATABASE_URL`, `BACKUP_DATABASE_URL` and
+`PROVISION_DATABASE_URL`. Tenant queries still require transaction-local
+context; the runtime role has no DELETE anywhere.
 
 ## Environment mapping
 
@@ -64,12 +89,19 @@ Use a bounded postgres.js pool, connection/query timeouts, and explicit SSL sett
 | --- | --- |
 | `DATABASE_URL`, `PG_APP_USER`, `PG_APP_PASSWORD` | Retain names; explicit least-privilege runtime behavior |
 | `MIGRATION_DATABASE_URL`, `TEST_DATABASE_URL`, `TEST_DATABASE_HOST_ALLOWLIST` | New: separate migration/test targets and fail-closed test checks |
+| `APP_ENV`, `PROCESS_KIND`, `LOG_LEVEL` | New: environment (`staging`/`production` enable the deployed checks), process kind, log threshold |
+| `DB_POOL_MAX`, `DB_STATEMENT_TIMEOUT_MS`, `RAILWAY_DEPLOYMENT_DRAINING_SECONDS`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS` | New: pool size, per-transaction timeout, graceful shutdown window and overlap (set in IaC) |
+| `WORKER_URL`, `WORKER_PORT` | New: worker `/healthz` over private networking for `/api/ops/status`; local worker port |
+| `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_KIND`, `SENTRY_DSN` | New: alert webhook (ntfy by default) and optional error tracking |
+| `BILLING_DATABASE_URL` | Billing capability login; web (commands, webhook) and worker (provider loop) |
+| `BACKUP_DATABASE_URL`, `PROVISION_DATABASE_URL` | Backup workflow and operator scripts only; refused by deployed services |
+| `TRUST_PROXY` | Express trust proxy; unset means `loopback, 100.0.0.0/8` in production (Railway edge) |
 | `JWT_SECRET` | Retain; generated per environment, rotated deliberately |
 | `ADMIN_SECRET` | Legacy compatibility only; empty/disabled normally; no universal browser admin bypass |
 | `APP_URL`, `PORT`, `NODE_ENV`, `RESTAURANT_TZ` | Retain; timezone is default, restaurant data takes precedence |
 | `DEFAULT_TENANT_ID` | Development convenience only; reject production fallback |
 | `VITE_API_BASE` | Public browser config, same-origin by default; reconcile other legacy `VITE_API_URL*` aliases |
-| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Server-only Stripe credentials; distinguish billing versus restaurant merchant scope |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Server-only Stripe credentials; the secret key lives only in the worker, the webhook secret in web; distinguish billing versus restaurant merchant scope |
 | `VITE_STRIPE_PUBLISHABLE_KEY` | Browser-safe publishable key, only if that payment surface needs it |
 | `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_FOUNDERS` | Compatibility candidates from POS Lite; map plans explicitly rather than assuming old prices |
 | Luma `STRIPE_PRICE_MONTHLY`, `*_ANNUAL`, `*_POS_MONTHLY`, `*_PRO_*` | Map existing subscriptions/products during migration; not a second billing engine |
@@ -88,7 +120,7 @@ Store tenant-specific provider credentials encrypted with access audit. Never tr
 
 ## Scheduling, printing, and providers
 
-Railway cron schedules use UTC and are for jobs that exit; they are unsuitable for continuous print/KDS loops. See [Railway scheduled jobs](https://docs.railway.com/cron-jobs). Use scheduled runs to enqueue due reports based on each restaurant's calendar and a unique period key; a worker handles generation/delivery with retry. Reconcile the source schedules rather than copying their offsets unquestioningly.
+Railway cron schedules use UTC and are for jobs that exit; they are unsuitable for continuous print/KDS loops. See [Railway scheduled jobs](https://docs.railway.com/cron-jobs). Background work uses the jobs outbox (`server/jobs.ts`): business code enqueues in its own tenant transaction, and the web process's runner claims per tenant with the runtime role (lease-fenced, retry with backoff, dead after 8 attempts, alert on dead). Handlers must be idempotent and must not hold a transaction across a network call. Reconcile the source schedules rather than copying their offsets unquestioningly.
 
 Printer bridge pairing needs short-lived setup credentials, a revocable device token, station routing, job acknowledgements, and an operator test-print step. The cloud web process must not try to access restaurant USB hardware. Do not carry over Luma's Supabase-dependent bridge directly.
 

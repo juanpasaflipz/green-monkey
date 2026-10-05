@@ -51,7 +51,7 @@ This is an in-progress implementation, not release approval. Required features r
 | SMS/WhatsApp and voice operations | optional follow-on | Not implemented. | Provider/account/device verification required; none performed. |
 | AI receipt/menu parsing and recipe matching | pending | Not implemented. | — |
 | Kiosk suggestions, menu boards/displays | optional follow-on | Not implemented. | — |
-| Incident monitoring / AI sentinel | pending | Safe error IDs, health/version endpoints, explicit capabilities. Metrics/alerts and incident workflow pending. | — |
+| Incident monitoring / AI sentinel | partial | Structured JSON logs with request ids and route templates, `/api/ops/status`, worker watchdog alerts (web down, billing review/retrying), dead-job alerts, hourly uptime and backup-freshness workflow, optional Sentry; locally verified by `tests/ops-http.test.ts`, `tests/drain-http.ts` and `tests/browser/ops.spec.ts`. Alert topic and Railway deploy webhook are the owner's setup steps; no on-call staffing; AI sentinel not implemented. | — |
 | Financing, settlement/disbursement, marketing/site fragments | optional follow-on | Excluded from base POS per approved matrix. | — |
 
 ## Verified subsets
@@ -73,7 +73,7 @@ This is an in-progress implementation, not release approval. Required features r
   Checkout, portal and signed subscription webhook sandbox checks passed;
   approving the offer does not activate billing.
 
-- Separate Neon staging/test databases and Railway staging are provisioned. Seventeen Neon integration checks and a live cash/KDS/receipt browser smoke passed; [STAGING.md](STAGING.md) records targets and evidence. Staging restore/rollback, broader cloud acceptance and provider checks remain pending.
+- Separate Neon staging/test databases and Railway staging are provisioned. Seventeen Neon integration checks and a live cash/KDS/receipt browser smoke passed; [STAGING.md](STAGING.md) records targets and evidence. The CD path (GitHub Actions → Railway IaC, worker preDeploy migrations as `gm_migrator`), encrypted R2 backups and the Neon restore rehearsal are scripted but have not run against staging yet ([RUNBOOK.md](RUNBOOK.md) "Staging cutover"); staging restore/rollback, broader cloud acceptance and provider checks remain pending.
 - No approved legacy exports/schema metadata: historical mapping, totals reconciliation and migration rehearsal remain pending. The Luma ZIP is not a database backup.
 - No payment sandbox merchant/terminal, FacturAPI sandbox, printer bridge/device, verified Resend sender or R2 target configured. These integrations remain disabled. Clip has no assumed request schema or amount units.
-- Docker CLI is absent; the image has not been built locally.
+- Docker CLI is absent locally; CI now builds the image and smoke-tests web, worker and `migrate --check` inside it (`.github/workflows/qualification.yml`), pending its first GitHub run.
