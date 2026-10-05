@@ -184,6 +184,8 @@ test("inventory receipt, count conflict-safe adjustment and owner drilldown", as
   await page
     .getByRole("button", { name: "Menú e inventario", exact: true })
     .click();
+  // The rail item now opens Menú; stock operations live under Existencias.
+  await page.getByRole("button", { name: "Existencias", exact: true }).click();
   const stock = page
     .locator(".stock-grid .panel")
     .filter({ hasText: "Tortilla preparada" });
@@ -445,37 +447,40 @@ test("menu editor preserves multiple recipe ingredients across price edits", asy
   await page
     .getByRole("button", { name: "Menú e inventario", exact: true })
     .click();
-  await page.getByRole("button", { name: "Editar menú", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Nuevo producto", exact: true })
+    .click();
   const dialog = page.getByRole("dialog");
   const name = `Receta ${Date.now()}`;
-  await dialog.getByLabel("Nombre · Español").fill(name);
-  await dialog.getByLabel("Name · English").fill(name);
-  await dialog.getByLabel("Categoría · Español").fill("Pruebas");
-  await dialog.getByLabel("Category · English").fill("Tests");
-  await dialog.getByLabel("Precio", { exact: true }).fill("50");
-  await dialog.getByLabel("Costo", { exact: true }).fill("15");
-  await dialog.getByRole("button", { name: "Agregar ingrediente" }).click();
+  await dialog.getByLabel("Nombre en español").fill(name);
   await dialog
-    .getByRole("combobox", { name: "Existencias 1", exact: true })
+    .getByRole("combobox", { name: "Categoría *", exact: true })
+    .selectOption({ label: "Antojitos" });
+  await dialog.getByLabel("Precio al cliente (con IVA)").fill("50");
+  await dialog.getByLabel("Costo estimado por unidad").fill("15");
+  await dialog.getByRole("button", { name: "Agregar insumo" }).click();
+  await dialog
+    .getByRole("combobox", { name: "Insumo 1", exact: true })
     .selectOption({ index: 1 });
-  await dialog.getByRole("button", { name: "Agregar ingrediente" }).click();
+  await dialog.getByRole("button", { name: "Agregar insumo" }).click();
   await dialog
-    .getByRole("combobox", { name: "Existencias 2", exact: true })
+    .getByRole("combobox", { name: "Insumo 2", exact: true })
     .selectOption({ index: 2 });
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(dialog).not.toBeVisible();
-  await page.getByRole("button", { name: "Editar menú", exact: true }).click();
-  await dialog
-    .getByRole("combobox", { name: "Producto", exact: true })
-    .selectOption({ label: name });
+  await page
+    .getByRole("button", { name: `Editar ${name}`, exact: true })
+    .click();
   await expect(
-    dialog.getByRole("combobox", { name: "Existencias 2", exact: true }),
+    dialog.getByRole("combobox", { name: "Insumo 2", exact: true }),
   ).toBeVisible();
-  await dialog.getByLabel("Precio", { exact: true }).fill("55");
+  await dialog.getByLabel("Precio al cliente (con IVA)").fill("55");
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(dialog).not.toBeVisible();
   const products = await page.evaluate(async () =>
     (await fetch("/api/catalog")).json(),
   );
-  expect(products.find((p: any) => p.name.es === name).recipe).toHaveLength(2);
+  const saved = products.find((p: any) => p.name.es === name);
+  expect(saved.recipe).toHaveLength(2);
+  expect(saved.price).toBe(5500);
 });

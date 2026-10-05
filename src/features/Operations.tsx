@@ -594,12 +594,16 @@ export function Operations({
                       <h2>{r.name}</h2>
                       <Badge
                         tone={
-                          Number(r.quantity) <= Number(r.threshold)
-                            ? "amber"
-                            : "green"
+                          Number(r.quantity) < 0
+                            ? "red"
+                            : Number(r.quantity) <= Number(r.threshold)
+                              ? "amber"
+                              : "green"
                         }
                       >
-                        {r.unit}
+                        {Number(r.quantity) < 0
+                          ? `${t("menuStockNegative")} · ${r.unit}`
+                          : r.unit}
                       </Badge>
                     </div>
                     <div className="large-money">

@@ -23,6 +23,7 @@ import { api, setSession, clearSessionScope } from "./api";
 import { db, cacheSession, scope, syncPending } from "./offline";
 import { Button, Field } from "./components/ui";
 import { Selling } from "./features/Selling";
+import { MenuArea, SetupNav, setupViews } from "./features/menu/MenuArea";
 import { Operations } from "./features/Operations";
 import { OwnerAccess } from "./features/OwnerAccess";
 export default function App() {
@@ -97,6 +98,48 @@ export default function App() {
       window.removeEventListener("storage", changedElsewhere);
     };
   }, []);
+  useEffect(() => {
+    // Catalog freshness (FOH-8): poll the menu revision while selling so
+    // 86'd items leave the grid without a view change; refetch on focus and
+    // whenever another feature dispatches "gm-menu-refresh".
+    if (view !== "sell" || !session || !online) return;
+    const s = session;
+    let live = true;
+    let revision: number | null = null;
+    const refetch = async () => {
+      const c = await api<Product[]>("/catalog");
+      if (!live) return;
+      setCatalog(c);
+      await cacheSession(s, c);
+    };
+    const check = async () => {
+      try {
+        const r = await api<{ revision: number }>("/menu/revision");
+        if (!live) return;
+        const changed = revision !== null && r.revision !== revision;
+        revision = r.revision;
+        if (changed) await refetch();
+      } catch {
+        /* The next tick or focus retries. */
+      }
+    };
+    const refresh = () => void refetch().catch(() => {});
+    const visible = () => {
+      if (document.visibilityState === "visible") void check();
+    };
+    void check();
+    const timer = setInterval(() => void check(), 60_000);
+    window.addEventListener("focus", visible);
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("gm-menu-refresh", refresh);
+    return () => {
+      live = false;
+      clearInterval(timer);
+      window.removeEventListener("focus", visible);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("gm-menu-refresh", refresh);
+    };
+  }, [view, session?.id, online]);
   useEffect(() => {
     let current = true;
     if (view === "sell" && session && online)
@@ -297,13 +340,21 @@ export default function App() {
             const name = key as string;
             const Glyph = Icon as typeof ShoppingBag;
             const current =
-              view === name || (name === "operation" && operational);
+              view === name ||
+              (name === "operation" && operational) ||
+              (name === "inventory" && setupViews.includes(view));
             return (
               <button
                 key={name}
                 className={current ? "selected" : ""}
                 onClick={() => {
-                  setView(name === "operation" ? "sell" : name);
+                  setView(
+                    name === "operation"
+                      ? "sell"
+                      : name === "inventory"
+                        ? "menu"
+                        : name,
+                  );
                   setError("");
                 }}
                 aria-current={current ? "page" : undefined}
@@ -386,7 +437,9 @@ export default function App() {
       <main
         className={
           (view === "sell" ? "selling-main" : "workspace") +
-          (management && operational ? " with-subnav" : "")
+          (management && (operational || setupViews.includes(view))
+            ? " with-subnav"
+            : "")
         }
       >
         {management && operational && (
@@ -404,6 +457,9 @@ export default function App() {
               ),
             )}
           </nav>
+        )}
+        {management && setupViews.includes(view) && (
+          <SetupNav view={view} setView={setView} locale={locale} />
         )}
         {session.sellingAllowed === false && (
           <p role="status" className="warning">
@@ -427,15 +483,25 @@ export default function App() {
             navigate={setView}
           />
         </div>
-        {view !== "sell" && (
-          <Operations
-            key={view}
-            view={view}
-            session={session}
-            locale={locale}
-            navigate={setView}
-          />
-        )}
+        {view !== "sell" &&
+          (["menu", "stock", "floor"].includes(view) ? (
+            <MenuArea
+              key={`${scope(session)}:${view}`}
+              view={view}
+              session={session}
+              locale={locale}
+              online={online}
+              navigate={setView}
+            />
+          ) : (
+            <Operations
+              key={view}
+              view={view}
+              session={session}
+              locale={locale}
+              navigate={setView}
+            />
+          ))}
       </main>
     </div>
   );

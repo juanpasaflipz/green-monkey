@@ -1,0 +1,454 @@
+/* Menu, ingredient and floor editors. Uses the global tokens in styles.css. */
+.menu-workspace {
+  max-width: 1100px;
+}
+.menu-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.menu-tabs button {
+  min-height: 44px;
+  padding: 0 18px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.menu-tabs button:hover {
+  color: var(--ink);
+}
+.menu-tabs button.selected {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+.menu-status {
+  min-height: 1.4em;
+  margin: 4px 0 8px;
+  font-size: 14px;
+  color: var(--positive);
+}
+.menu-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin: 8px 0 20px;
+}
+.menu-search {
+  flex: 1 1 240px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 0 18px;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--fill);
+  font: inherit;
+  color: var(--ink);
+}
+.menu-search:focus {
+  border-color: var(--ink);
+  background: var(--surface);
+  outline: none;
+}
+.menu-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-size: 15px;
+}
+.menu-check input {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--ink);
+}
+.menu-section-list {
+  margin-bottom: 28px;
+}
+.menu-section-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 20px;
+  margin-bottom: 8px;
+}
+.menu-section-title small {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+.menu-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.menu-row:last-child {
+  border-bottom: 0;
+}
+.menu-row-main {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.menu-row-main > strong {
+  display: block;
+  font-size: 16px;
+}
+.menu-row-note {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.menu-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+.menu-price {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.menu-row-actions {
+  margin: 0;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.menu-row-actions .button.ghost {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 12px;
+}
+
+/* Availability switch: a checkbox with role="switch". */
+.menu-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.menu-switch input {
+  appearance: none;
+  position: relative;
+  flex-shrink: 0;
+  width: 44px;
+  height: 26px;
+  margin: 0;
+  border-radius: 999px;
+  background: var(--line-strong);
+  cursor: pointer;
+  transition: background-color 0.12s;
+}
+.menu-switch input::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px #00000040;
+  transition: transform 0.12s;
+}
+.menu-switch input:checked {
+  background: var(--positive);
+}
+.menu-switch input:checked::after {
+  transform: translateX(18px);
+}
+.menu-switch input:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.menu-switch input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.menu-header-switch {
+  margin-bottom: 8px;
+}
+
+.menu-onboarding ol {
+  margin: 12px 0;
+  padding-left: 24px;
+}
+.menu-onboarding li {
+  margin: 6px 0;
+}
+.menu-rename {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+.menu-rename input {
+  flex: 1 1 180px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: var(--fill);
+  font: inherit;
+}
+.menu-rename input:focus {
+  border-color: var(--ink);
+  background: var(--surface);
+  outline: none;
+}
+.menu-group-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+.menu-group-card h2 {
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+.menu-rule {
+  margin: 4px 0;
+  font-weight: 500;
+}
+
+/* Editors. */
+.menu-form fieldset {
+  margin: 0;
+}
+.menu-section {
+  margin-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.menu-section legend {
+  padding-top: 12px;
+}
+.menu-radios {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 12px;
+  padding-bottom: 4px;
+}
+.menu-radios legend,
+.menu-radios p {
+  grid-column: 1 / -1;
+}
+.menu-hint {
+  margin: -6px 0 12px;
+}
+.menu-grid-full {
+  grid-column: 1 / -1;
+}
+.menu-linked-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  margin: 8px 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.menu-linked-group > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.menu-linked-group small {
+  display: block;
+  color: var(--text-2);
+}
+.menu-locked {
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--fill);
+  color: var(--text-2);
+  font-weight: 500;
+}
+.menu-editor-footer {
+  display: grid;
+  gap: 8px;
+}
+.menu-editor-footer p {
+  margin: 0;
+}
+.menu-footer-actions {
+  margin: 0;
+}
+.menu-alert {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0;
+}
+.menu-options {
+  border-top: 1px solid var(--line);
+  margin-top: 8px;
+}
+.menu-option-row {
+  padding: 12px;
+  margin: 12px 0;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.menu-option-recipe summary {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 500;
+}
+.recipe-editor {
+  margin: 4px 0 12px;
+}
+.recipe-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 0 12px;
+  align-items: end;
+}
+.recipe-row .field {
+  min-width: 0;
+}
+.recipe-remove.button {
+  min-width: 44px;
+  margin-bottom: 16px;
+}
+.recipe-converted {
+  grid-column: 1 / -1;
+  margin: -8px 0 8px;
+}
+
+/* Ingredients. */
+.menu-policy {
+  padding: 16px 20px;
+}
+.menu-policy legend {
+  padding: 0 4px;
+}
+.menu-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-right: auto;
+}
+.menu-table {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+}
+.menu-table th,
+.menu-table td {
+  padding: 12px 14px;
+  vertical-align: top;
+}
+.menu-table th {
+  white-space: normal;
+}
+.menu-table tbody th {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  white-space: normal;
+}
+.menu-table tbody th small,
+.menu-negative-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  max-width: 280px;
+}
+.menu-table .badge {
+  margin-left: 6px;
+}
+.menu-table td.numeric {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.menu-table tbody tr:last-child th {
+  border-bottom: 0;
+}
+
+@media (max-width: 1190px) {
+  .menu-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .menu-table,
+  .menu-table tbody,
+  .menu-table tr,
+  .menu-table th,
+  .menu-table td {
+    display: block;
+    width: 100%;
+  }
+  .menu-table tr {
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .menu-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .menu-table th,
+  .menu-table td {
+    border: 0;
+    padding: 4px 16px;
+  }
+  .menu-table td[data-label]::before {
+    content: attr(data-label) ": ";
+    color: var(--text-2);
+    font-size: 14px;
+  }
+  .menu-table td.numeric {
+    white-space: normal;
+  }
+  .menu-table .menu-row-actions {
+    justify-content: flex-start;
+  }
+}
+@media (max-width: 650px) {
+  .menu-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .menu-row-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+  .menu-radios {
+    grid-template-columns: 1fr;
+  }
+  .recipe-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+  .recipe-row .field:first-child {
+    grid-column: 1 / -1;
+  }
+  .menu-toolbar > .button {
+    flex: 1 1 auto;
+  }
+}
