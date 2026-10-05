@@ -268,6 +268,44 @@ try {
     const terminal = await valid.browser.request("GET", "/api/access/terminal");
     assert.equal(terminal.json.paired, false);
   });
+  await check("anonymous floods from the restaurant's IP never spend a paired terminal's PIN or gate budget, and one device's budget is its own (A9/ACC-FLOOR-4)", async () => {
+    // Guest Wi-Fi on the same public IP: cookie-less requests, then a forged cookie.
+    const anonymous = new Browser();
+    for (let i = 0; i < 30; i++) {
+      const r = await anonymous.request("POST", "/api/access/pin", {});
+      assert.equal(r.status, 401, `anonymous pin ${i}`);
+      assert.equal(r.json.error, "device_not_paired");
+    }
+    const flooded = await anonymous.request("POST", "/api/access/pin", {});
+    assert.equal(flooded.status, 429);
+    assert.equal(flooded.json.error, "too_many_attempts");
+    const forged = new Browser();
+    forged.cookies.set("gm_device", "eyJpZCI6IngifQ.forged");
+    assert.equal((await forged.request("POST", "/api/access/pin", {})).status, 429);
+    // Earlier checks already spent a few of this IP's anonymous gate requests.
+    let served = 0;
+    for (; served <= 120; served++) {
+      const r = await anonymous.request("GET", "/api/access/terminal");
+      if (r.status === 429) break;
+      assert.equal(r.status, 200, `anonymous gate ${served}`);
+    }
+    assert.ok(served > 100 && served <= 120, `anonymous gate limit after ${served}`);
+    // Paired terminals on the same IP still sign in and load the gate.
+    const a = await pairedCashier(`HTTP flood A ${randomUUID().slice(0, 4)}`);
+    const gate = await a.browser.request("GET", "/api/access/terminal");
+    assert.equal(gate.status, 200);
+    assert.equal(gate.json.paired, true);
+    // One device spending its own budget does not affect another device.
+    for (let i = 0; i < 29; i++)
+      assert.equal(
+        (await a.browser.request("POST", "/api/access/pin", {})).status,
+        400,
+        `device A pin ${i}`,
+      );
+    assert.equal((await a.browser.request("POST", "/api/access/pin", {})).status, 429);
+    const b = await pairedCashier(`HTTP flood B ${randomUUID().slice(0, 4)}`);
+    assert.equal(b.session.employeeId, CASHIER);
+  });
   await check("the 11th failed pairing attempt in a minute → 429 too_many_attempts", async () => {
     const b = new Browser();
     for (let i = 0; i < 10; i++) {

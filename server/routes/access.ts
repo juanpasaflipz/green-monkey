@@ -1,5 +1,5 @@
 import type express from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type { PreAuthContext, RouteContext } from "../http.js";
 import { cookieOptions, sign, type AuthRequest } from "../auth.js";
 import {
@@ -48,6 +48,43 @@ function limit(max: number, skipSuccessfulRequests = false) {
   });
 }
 
+/** The verified (signed) gm_device of a request, as a limiter key; null without one. */
+export function deviceLimitKey(req: express.Request): string | null {
+  const device = readDeviceCookie(req.cookies?.gm_device);
+  return device ? `device:${device.tenantId}:${device.id}` : null;
+}
+/**
+ * Limits for routes every terminal uses (A9/ACC-FLOOR-4). A restaurant's
+ * terminals usually share one public IP with its guest Wi-Fi, so a request
+ * with a valid signed gm_device spends only its own device's budget, and
+ * requests without one share a separate per-IP budget that can never block a
+ * paired terminal. A much higher per-IP ceiling on device requests remains as
+ * a backstop. PIN guessing itself is bounded per employee and device by
+ * checkPin.
+ */
+function limitPerDevice(perDevice: number, perAnonymousIp: number) {
+  return [
+    rateLimit({
+      windowMs: 60_000,
+      limit: (req) => (deviceLimitKey(req) ? perDevice : perAnonymousIp),
+      keyGenerator: (req) =>
+        deviceLimitKey(req) ?? `ip:${ipKeyGenerator(req.ip ?? "", 56)}`,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: "too_many_attempts" },
+    }),
+    rateLimit({
+      windowMs: 60_000,
+      limit: perDevice * 20,
+      skip: (req) => !deviceLimitKey(req),
+      requestPropertyName: "rateLimitBackstop",
+      standardHeaders: false,
+      legacyHeaders: false,
+      message: { error: "too_many_attempts" },
+    }),
+  ];
+}
+
 const noStore: express.RequestHandler = (_req, res, next) => {
   res.set("Cache-Control", "no-store");
   next();
@@ -75,7 +112,7 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
   app.use("/api/access", noStore);
   app.get(
     "/api/access/terminal",
-    limit(120),
+    limitPerDevice(120, 120),
     json((req, res) => terminalState(sql, req, res)),
   );
   app.post(
@@ -100,7 +137,7 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
   );
   app.post(
     "/api/access/pin",
-    limit(30),
+    limitPerDevice(30, 30),
     json((req, res) => pinSignIn(sql, req, res)),
   );
   app.post(
@@ -111,8 +148,8 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
   );
   // Logout runs before authentication and always succeeds (FOH-7).
   const logout = json((req, res) => signOut(sql, req, res));
-  app.post("/api/access/logout", limit(60), logout);
-  app.post("/api/logout", limit(60), noStore, logout);
+  app.post("/api/access/logout", limitPerDevice(60, 60), logout);
+  app.post("/api/logout", limitPerDevice(60, 60), noStore, logout);
 }
 
 /** access area authenticated routes; use ctx.route for tenant-scoped handlers. */
