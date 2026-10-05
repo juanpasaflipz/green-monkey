@@ -645,22 +645,43 @@ export async function syncOfflineRecord(
 ): Promise<OfflineSyncResult> {
   permit(s, operators);
   const p = offlineRecord.parse(raw);
-  const result = await once(
-    tx,
-    s,
-    p.operationId,
-    "offline_sync",
-    p,
-    async () => {
+  let result: unknown;
+  try {
+    result = await once(tx, s, p.operationId, "offline_sync", p, async () => {
       const evidence = await evaluateEvidence(tx, s, p);
       if (!evidence.authentic)
         throw new DomainError("offline_evidence_invalid", 409);
       if (evidence.problems.length)
         throw new DomainError(evidence.problems[0]!, 409);
       return applyRecord(tx, s, p, evidence.ctx);
-    },
-  );
+    });
+  } catch (e) {
+    throw integrityConflict(e, p.operationId);
+  }
   return normalizeSyncResult(result, p.operationId, s.restaurant);
+}
+
+/**
+ * OFFLINE-MONEY-6: a record that collides with rows the server already has
+ * (a unique or foreign-key violation, for example a line id repeated in the
+ * record) can never apply on a later attempt. As a 500 the device would
+ * retry it forever and block drawer close; as a domain conflict a manager
+ * reviews it. Every other error passes through unchanged.
+ */
+function integrityConflict(e: unknown, operationId: string): unknown {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (e instanceof DomainError || (code !== "23505" && code !== "23503"))
+    return e;
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      event: "offline.sync_integrity_conflict",
+      operationId,
+      code,
+      constraint: (e as { constraint_name?: unknown }).constraint_name,
+    }),
+  );
+  return new DomainError("offline_record_conflict", 409);
 }
 
 /** Codes older clients understand (POST /api/sync). */
@@ -911,7 +932,14 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
             currentTotal,
             versions,
           );
-    if (sent) addProblem("offline_lines_already_sent");
+    // A table deleted after the outage refuses the order (foreign key).
+    const tableId = "order" in p ? p.order.tableId : null;
+    const [table] = tableId
+      ? await tx`select 1 from dining_tables where id=${tableId}`
+      : [{}];
+    if (new Set(lines.map((l) => l.id)).size !== lines.length || !table)
+      addProblem("offline_record_conflict");
+    else if (sent) addProblem("offline_lines_already_sent");
     else if (linesCode) addProblem(linesCode);
   }
   // OFFLINE-RECOVERY-04: a record nothing blocks syncs by itself once the

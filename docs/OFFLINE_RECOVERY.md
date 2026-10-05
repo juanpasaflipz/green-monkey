@@ -299,7 +299,10 @@ reuses an order that already took money; otherwise the record goes to a manager
 payment. Items an online send already recorded (its response was lost, so the
 draft kept their ids) are never inserted again: the record becomes
 `offline_lines_already_sent` for a manager, who archives it when the order already
-has them, instead of a server error retried forever. Payments go through the normal payment command,
+has them, instead of a server error retried forever. More generally, a record that
+collides with rows the server already has (a unique or foreign-key violation, for
+example a table deleted after the outage) is `offline_record_conflict` for a manager,
+never a 500 retried forever. Payments go through the normal payment command,
 so a record can never pay past the order's balance (`offline_payment_exceeds_due`).
 Offline-collected sales may take stock negative because the sale physically
 happened. The order's business date comes from the validated sale time, not the

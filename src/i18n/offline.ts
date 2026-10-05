@@ -618,6 +618,10 @@ export default defineArea({
       "Esta orden no está guardada en este dispositivo. Ábrela desde Órdenes abiertas o cóbrala al volver la conexión.",
       "This order is not saved on this device. Open it from Open orders or charge it when the connection returns.",
     ],
+    offline_record_conflict: [
+      "El servidor no puede aplicar este registro porque choca con datos que ya tiene (por ejemplo, un producto repetido). No se reintenta solo: un gerente debe revisarlo; concilia su cobro o archívalo.",
+      "The server cannot apply this record because it collides with data it already has (for example, a repeated item). It is not retried by itself: a manager must review it; reconcile its payment or archive it.",
+    ],
     offline_why_conflict: [
       "No se sincroniza solo: la sesión, el empleado o el dispositivo que lo registró ya no está activo, o no tenía permiso de vender sin conexión. Un gerente debe revisarlo en Sincronización.",
       "It does not sync by itself: the session, employee or device that saved it is no longer active, or was not allowed to sell offline. A manager must review it on the Sync screen.",

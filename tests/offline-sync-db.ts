@@ -2103,6 +2103,29 @@ try {
   assert(repriced.problems.includes("price_conflict"));
   assert.equal(repriced.autoSyncAs, null);
   assert.equal(repriced.reconcileAs, "financial");
+  // OFFLINE-MONEY-6: a record that collides with the server's rows (here a
+  // table deleted after the outage: the foreign key refuses the order) is a
+  // conflict for a manager, never a 500 the device retries forever; nothing
+  // of it is applied.
+  const goneTable = sale(s1, {
+    order: { mode: "dine_in", tableId: randomUUID(), name: "Mesa borrada" },
+  });
+  const ordersBeforeGone = await count("orders");
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, goneTable)),
+    "offline_record_conflict",
+  );
+  assert.equal(await count("orders"), ordersBeforeGone, "rolled back");
+  assert.equal(
+    await count("operations", "id=$2", goneTable.operationId),
+    0,
+    "not recorded as applied",
+  );
+  const goneReview = await reviewOf(goneTable);
+  assert.equal(goneReview.authentic, true);
+  assert(goneReview.problems.includes("offline_record_conflict"));
+  assert.equal(goneReview.autoSyncAs, null, "it will not sync by itself");
+  assert.equal(goneReview.reconcilable, true, "its money can be kept");
   // RECOVERY-03: which eligibility rule failed, not "connect and sign in".
   const revokedReview = await reviewOf(sale(revoked));
   assert(revokedReview.problems.includes("offline_conflict"));
