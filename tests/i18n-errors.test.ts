@@ -100,11 +100,11 @@ describe("error translations", () => {
     const operations = new Set<string>();
     for (const [, text] of serverSources) {
       for (const m of text.matchAll(
-        /audit\(\s*tx,\s*\w+,\s*"([a-z_]+(?:\.[a-z_]+)?)"\s*,/g,
+        /audit\(\s*tx,\s*\w+,\s*"([a-z_]+(?:\.[a-z_]+)*)"\s*,/g,
       ))
         operations.add(m[1]);
       for (const m of text.matchAll(
-        /insert into audit\([^)]*\)\s*values\([^']*'([a-z_]+\.[a-z_]+)'/gi,
+        /insert into audit\([^)]*\)\s*values\([^']*'([a-z_]+(?:\.[a-z_]+)+)'/gi,
       ))
         operations.add(m[1]);
     }
