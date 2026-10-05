@@ -42,13 +42,21 @@ import {
 } from "./access/session";
 import {
   LOCK_KEY,
+  allowsContinueOffline,
   forgetLock,
-  lockedFor,
+  idleElsewhereWait,
+  lockFromOtherTab,
+  nextLock,
   noteActivity,
   rememberLock,
   restoredLock,
 } from "./access/lock";
 import "./access/access.css";
+type StepUpRequest = {
+  sessionId: string;
+  resolve: () => void;
+  reject: (e: unknown) => void;
+};
 export default function App() {
   const [locale, setLocale] = useState<Locale>(
     localStorage.getItem("gm-locale") === "en" ? "en" : "es",
@@ -70,10 +78,11 @@ export default function App() {
   // "Continuar como" offline: unlocked without a PIN until the connection or
   // the offline window ends (contract 8.2), then locked again.
   const [softUnlocked, setSoftUnlocked] = useState(false);
-  const [stepUpRequest, setStepUpRequest] = useState<null | {
-    resolve: () => void;
-    reject: (e: unknown) => void;
-  }>(null);
+  // A pending "Confirma con tu PIN", for the session whose command asked for it.
+  const [stepUpRequest, setStepUpRequest] = useState<null | StepUpRequest>(
+    null,
+  );
+  const stepUpRef = useRef<StepUpRequest | null>(null);
   const [gateReason, setGateReason] = useState("");
   const [leaving, setLeaving] = useState<
     | null
@@ -84,6 +93,16 @@ export default function App() {
   const sessionRef = useRef<Session | null>(null);
   const onlineRef = useRef(online);
   const t = (key: Key) => strings[locale][key];
+  /**
+   * Cancels a pending step-up (ACC-20): after a switch, a sign-out or a new
+   * sign-in, the next person must never confirm the previous one's command.
+   */
+  function cancelStepUp() {
+    const pending = stepUpRef.current;
+    stepUpRef.current = null;
+    setStepUpRequest(null);
+    pending?.reject(new ApiError("step_up_cancelled", 403));
+  }
   async function load(resetView = true) {
     await finishPendingLogout();
     // Never restore a session while a logout is still pending (SEC-6).
@@ -137,7 +156,7 @@ export default function App() {
    */
   function resumeLock(s: Session) {
     const reason = restoredLock(s);
-    if (reason) setLock({ reason });
+    if (reason) setLock((current) => nextLock(current, reason));
     else noteActivity(s.id, true);
   }
   useEffect(() => {
@@ -189,27 +208,30 @@ export default function App() {
       void settleRejectedSession(code);
       if (!sessionRef.current) return;
       if (code === "device_revoked" || code === "device_not_paired") {
+        cancelStepUp();
         clearSessionScope();
         setLock(null);
         setActiveSession(null);
         setCatalog([]);
         setGateReason(code);
       } else {
-        // The server's reason replaces an idle, manual or renew lock, so no
-        // offline "Continuar como" remains for a session it rejected.
-        setLock((current) =>
-          current && !["idle", "manual", "renew"].includes(current.reason)
-            ? current
-            : { reason: code },
-        );
+        // The server's reason replaces an idle, manual or renew lock (and
+        // ends a soft unlock), so no offline "Continuar como" remains for a
+        // session it rejected; nothing replaces it but a PIN (ACC-18).
+        setSoftUnlocked(false);
+        setLock((current) => nextLock(current, code));
       }
     };
     window.addEventListener("gm-unauthorized", unauthorized);
     registerStepUpHandler(
-      () =>
-        new Promise<void>((resolve, reject) =>
-          setStepUpRequest({ resolve, reject }),
-        ),
+      (sessionId) =>
+        new Promise<void>((resolve, reject) => {
+          // One prompt at a time: a newer request replaces an older one.
+          stepUpRef.current?.reject(new ApiError("step_up_cancelled", 403));
+          const request = { sessionId, resolve, reject };
+          stepUpRef.current = request;
+          setStepUpRequest(request);
+        }),
     );
     const tick = setInterval(() => setNow(Date.now()), 30_000);
     return () => {
@@ -221,7 +243,14 @@ export default function App() {
   useIdleLock(
     session?.access?.idleLockSeconds ?? null,
     Boolean(session) && !lock && !sessionChanged,
-    () => setLock({ reason: "idle" }),
+    () => {
+      // Another tab of this session still in use defers the lock (ACC-21).
+      const s = sessionRef.current;
+      const seconds = s?.access?.idleLockSeconds;
+      const wait = s && seconds ? idleElsewhereWait(s.id, seconds) : 0;
+      if (wait > 0) return wait;
+      setLock((current) => nextLock(current, "idle"));
+    },
     () => {
       if (sessionRef.current) noteActivity(sessionRef.current.id);
     },
@@ -231,14 +260,17 @@ export default function App() {
     if (session && lock) rememberLock(session.id, lock.reason);
   }, [session?.id, lock?.reason]);
   useEffect(() => {
-    // A lock in another tab of the same session locks this tab too (SEC-6).
+    // A lock in another tab of the same session locks this tab too (SEC-6),
+    // except an idle one: each tab judges idleness itself (ACC-21).
     const lockedElsewhere = (event: StorageEvent) => {
       const s = sessionRef.current;
       const reason =
-        event.key === LOCK_KEY && s ? lockedFor(event.newValue, s.id) : null;
+        event.key === LOCK_KEY && s
+          ? lockFromOtherTab(event.newValue, s.id)
+          : null;
       if (!reason) return;
       setSoftUnlocked(false);
-      setLock((current) => current ?? { reason });
+      setLock((current) => nextLock(current, reason));
     };
     window.addEventListener("storage", lockedElsewhere);
     return () => window.removeEventListener("storage", lockedElsewhere);
@@ -251,9 +283,14 @@ export default function App() {
       (online || new Date(session.offlineUntil).getTime() <= now)
     ) {
       setSoftUnlocked(false);
-      setLock({ reason: "idle" });
+      setLock((current) => nextLock(current, "idle"));
     }
   }, [softUnlocked, online, now, session?.offlineUntil]);
+  useEffect(() => {
+    // Whatever replaced or ended the session, its pending step-up goes (ACC-20).
+    if (stepUpRef.current && stepUpRef.current.sessionId !== session?.id)
+      cancelStepUp();
+  }, [session?.id]);
   useEffect(() => {
     if (!session || sessionChanged) return;
     // Keeps the sliding expiry and renewed offline window current (OFF-3);
@@ -312,6 +349,10 @@ export default function App() {
     return () => clearInterval(timer);
   }, [session, online, sessionChanged]);
   async function ownerReady() {
+    cancelStepUp();
+    setLeaving(null);
+    setSoftUnlocked(false);
+    setLock(null);
     clearSessionScope();
     setActiveSession(null);
     setCatalog([]);
@@ -344,6 +385,7 @@ export default function App() {
       }
     }
     setLeaving(null);
+    cancelStepUp();
     await serverSignOut(s.id);
     await db.cache.delete("session");
     clearSessionScope();
@@ -414,9 +456,13 @@ export default function App() {
               reason={gateReason}
               signupFirst={new URLSearchParams(location.search).has("signup")}
               onSignedIn={async () => {
-                // The PIN just entered supersedes any remembered lock or logout.
+                // The PIN just entered supersedes any remembered lock, logout
+                // or step-up of the previous session.
                 clearPendingLogout();
                 forgetLock();
+                cancelStepUp();
+                setSoftUnlocked(false);
+                setLock(null);
                 setGateReason("");
                 await load();
               }}
@@ -543,7 +589,7 @@ export default function App() {
             variant="ghost"
             className="round"
             aria-label={t("accessLockNow")}
-            onClick={() => setLock({ reason: "manual" })}
+            onClick={() => setLock((current) => nextLock(current, "manual"))}
           >
             <Lock size={18} />
           </Button>
@@ -592,7 +638,9 @@ export default function App() {
                   ),
                 )}
             </p>
-            <Button onClick={() => setLock({ reason: "renew" })}>
+            <Button
+              onClick={() => setLock((current) => nextLock(current, "renew"))}
+            >
               {t("accessRenew")}
             </Button>
           </div>
@@ -642,8 +690,12 @@ export default function App() {
             forgetLock();
             setSoftUnlocked(false);
             noteActivity(s.id, true);
-            if (s.id !== session.id)
+            if (s.id !== session.id) {
+              // The previous session's prompts and warnings are not the new one's.
+              cancelStepUp();
+              setLeaving(null);
               localStorage.setItem("gm-session-generation", crypto.randomUUID());
+            }
             void db.cache.put({ id: "session", value: s });
             setLock(null);
             setActiveSession(s);
@@ -664,6 +716,8 @@ export default function App() {
             }
           }}
           onContinueOffline={() => {
+            // Never past a lock the server imposed (ACC-18).
+            if (!allowsContinueOffline(lock.reason)) return;
             // The lock stays remembered: a reload or the connection returning
             // asks for the PIN again.
             setSoftUnlocked(true);
@@ -672,18 +726,17 @@ export default function App() {
           onSignOut={() => void signOut()}
         />
       )}
-      {stepUpRequest && (
+      {/* Never over the lock, and only for the session that asked (ACC-20). */}
+      {stepUpRequest && !lock && stepUpRequest.sessionId === session.id && (
         <StepUpDialog
           session={session}
           locale={locale}
           onConfirmed={() => {
+            stepUpRef.current = null;
             stepUpRequest.resolve();
             setStepUpRequest(null);
           }}
-          onCancel={() => {
-            stepUpRequest.reject(new ApiError("step_up_cancelled", 403));
-            setStepUpRequest(null);
-          }}
+          onCancel={cancelStepUp}
         />
       )}
       {leaving && (
@@ -700,11 +753,13 @@ export default function App() {
               <Button variant="primary" onClick={() => setLeaving(null)}>
                 {t("accessStay")}
               </Button>
-              {leaving.kind === "offline" && (
+              {/* Already locked: a lock the server imposed must keep its
+                  reason, so no manual lock is offered over it (ACC-18). */}
+              {leaving.kind === "offline" && !lock && (
                 <Button
                   onClick={() => {
                     setLeaving(null);
-                    setLock({ reason: "manual" });
+                    setLock((current) => nextLock(current, "manual"));
                   }}
                 >
                   {t("accessLockNow")}
