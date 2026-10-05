@@ -548,3 +548,33 @@ test("menu editor and picker are accessible and fit at 1440, 1024, 768 and 390 (
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "EN", exact: true }).click();
 });
+
+test("MON-3: a management dialog keeps one operation id, so a retry after a lost response does not duplicate", async ({
+  page,
+}) => {
+  const reason = `Hielo ${suffix()}`;
+  await login(page);
+  await page.getByRole("button", { name: "Finanzas", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Agregar gasto", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Importe", { exact: true }).fill("800");
+  await dialog.getByLabel("Explicación").fill(reason);
+  // The first save commits on the server but its response never arrives.
+  let lost = false;
+  await page.route("**/api/expenses", async (route) => {
+    if (route.request().method() === "POST" && !lost) {
+      lost = true;
+      await route.fetch();
+      await route.abort("failed");
+    } else await route.continue();
+  });
+  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toBeVisible();
+  expect(lost).toBe(true);
+  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  const expenses = (await call(page, "/expenses")).data as any[];
+  expect(expenses.filter((e) => e.reason === reason)).toHaveLength(1);
+});
