@@ -11,8 +11,13 @@ import { paymentAttemptV1 } from "../shared/offline-recovery.js";
  * revoked session (deactivation, unpaired device) or one still live elsewhere
  * goes to review instead (ACC-FLOOR-1).
  */
-async function sameSessionLine(tx: Tx, s: Session, sessionId: string) {
+async function sameSessionLine(
+  tx: Tx,
+  s: Session,
+  sessionId: string | null,
+) {
   if (sessionId === s.id) return true;
+  if (!sessionId) return false;
   const [prior] = await tx`select employee_id,device_id,revoked,
       (ended_at is not null or expires_at<=now()) as finished
     from sessions where id=${sessionId}`;
