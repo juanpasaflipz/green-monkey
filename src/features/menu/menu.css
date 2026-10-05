@@ -452,3 +452,10 @@
     flex: 1 1 auto;
   }
 }
+
+/* Invalid fields: red border and tint, kept while focused (OWNER-12). */
+.menu-form .field [aria-invalid="true"],
+.recipe-editor .field [aria-invalid="true"] {
+  border-color: var(--negative);
+  background: var(--negative-bg);
+}

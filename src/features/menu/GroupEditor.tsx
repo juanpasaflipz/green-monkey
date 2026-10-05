@@ -72,10 +72,12 @@ export function GroupEditor({
   const [draft, setDraft] = useState<GroupDraft>(() =>
     group
       ? fromGroup(group, currency)
-      : {
+      : // A blank group starts optional: a required group with one priced
+        // choice would charge every sale (templates set their own rules).
+        {
           es: "",
           en: "",
-          min: 1,
+          min: 0,
           max: 1,
           repeat: false,
           options: [draftOption()],
@@ -108,6 +110,17 @@ export function GroupEditor({
     Number.isInteger(min) && Number.isInteger(max) && min <= max && max >= 1
       ? groupRuleText({ min, max, repeat: draft.repeat }, t)
       : "";
+  /** Required, one choice, and it costs extra: every sale pays it. */
+  const forcedExtra =
+    min >= 1 &&
+    draft.options.length === 1 &&
+    (() => {
+      try {
+        return moneyInput(draft.options[0].price.trim() || "0", exponent) > 0;
+      } catch {
+        return false;
+      }
+    })();
 
   async function save() {
     const invalid = new Set<string>();
@@ -142,10 +155,18 @@ export function GroupEditor({
     if (!parsed.success)
       for (const issue of parsed.error.issues) {
         const [head, index, field] = issue.path as (string | number)[];
-        if (head === "options" && typeof index === "number")
-          invalid.add(
-            `${field === "price" ? "price" : field === "cost" ? "cost" : field === "recipe" ? "recipe" : "name"}:${draft.options[index]?.id}`,
-          );
+        if (head === "options" && typeof index === "number") {
+          const optionId = draft.options[index]?.id;
+          const kind =
+            field === "price" || field === "cost" || field === "recipe"
+              ? field
+              : field === "name" && issue.message === "duplicate"
+                ? "duplicate"
+                : "name";
+          invalid.add(`${kind}:${optionId}`);
+        } else if (head === "max" && issue.message === "max_above_options")
+          invalid.add("maxOptions");
+        else if (head === "min" || head === "max") invalid.add("range");
         else invalid.add(String(head === "name" ? "name" : head));
       }
     setErrors(invalid);
@@ -257,6 +278,11 @@ export function GroupEditor({
               onChange={(e) => setDraft({ ...draft, es: e.target.value })}
             />
           </Field>
+          {errors.has("name") && (
+            <p role="alert" className="error tiny menu-grid-full">
+              {t("menuNameInvalid")}
+            </p>
+          )}
           <Field label={t("menuGroupNameEn")}>
             <input
               value={draft.en}
@@ -271,7 +297,7 @@ export function GroupEditor({
               min={0}
               max={30}
               value={minText}
-              aria-invalid={bad("min")}
+              aria-invalid={bad("range")}
               onChange={(e) => setMinText(e.target.value)}
             />
           </Field>
@@ -282,7 +308,11 @@ export function GroupEditor({
               min={1}
               max={30}
               value={maxText}
-              aria-invalid={bad("max")}
+              aria-invalid={
+                errors.has("range") || errors.has("maxOptions")
+                  ? true
+                  : undefined
+              }
               onChange={(e) => setMaxText(e.target.value)}
             />
           </Field>
@@ -298,18 +328,32 @@ export function GroupEditor({
         <p className="muted" aria-live="polite">
           {rule ? t("menuRule", { rule }) : ""}
         </p>
-        {(errors.has("min") || errors.has("max")) && (
-          <p role="alert" className="error">
-            {translateError("invalid_group", locale)}
+        {errors.has("range") && (
+          <p role="alert" className="error tiny">
+            {t("menuGroupRangeInvalid")}
           </p>
+        )}
+        {errors.has("maxOptions") && (
+          <p role="alert" className="error tiny">
+            {t("menuGroupMaxAboveOptions", { n: draft.options.length })}
+          </p>
+        )}
+        {forcedExtra && (
+          <p className="warning-panel tiny">{t("menuGroupForcedExtra")}</p>
         )}
         <fieldset className="menu-options">
           <legend>{t("menuOptions")}</legend>
           {draft.options.map((o, index) => {
             const n = index + 1;
-            const optionInvalid = ["name", "price", "cost", "recipe"].some(
-              (k) => errors.has(`${k}:${o.id}`),
-            );
+            const optionErrors = (
+              [
+                ["name", t("menuOptionNameInvalid")],
+                ["duplicate", t("menuOptionNameDuplicate")],
+                ["price", t("menuOptionPriceInvalid")],
+                ["cost", t("menuOptionCostInvalid")],
+                ["recipe", translateError("invalid_recipe", locale)],
+              ] as const
+            ).filter(([k]) => errors.has(`${k}:${o.id}`));
             return (
               <div className="menu-option-row" key={o.id}>
                 <div className="form-grid">
@@ -318,7 +362,12 @@ export function GroupEditor({
                       value={o.es}
                       maxLength={80}
                       required
-                      aria-invalid={bad(`name:${o.id}`)}
+                      aria-invalid={
+                        errors.has(`name:${o.id}`) ||
+                        errors.has(`duplicate:${o.id}`)
+                          ? true
+                          : undefined
+                      }
                       onChange={(e) => setOption(o.id, { es: e.target.value })}
                     />
                   </Field>
@@ -389,16 +438,11 @@ export function GroupEditor({
                     {t("menuOptionRecipe")} · {t("menuProRequired")}
                   </p>
                 )}
-                {optionInvalid && (
-                  <p role="alert" className="error">
-                    {translateError(
-                      errors.has(`recipe:${o.id}`)
-                        ? "invalid_recipe"
-                        : "invalid_group",
-                      locale,
-                    )}
+                {optionErrors.map(([key, message]) => (
+                  <p role="alert" className="error tiny" key={key}>
+                    {message}
                   </p>
-                )}
+                ))}
                 <div className="row wrap menu-row-actions">
                   {o.saved && group && (
                     <label className="menu-switch">

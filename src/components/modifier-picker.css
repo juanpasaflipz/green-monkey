@@ -84,3 +84,8 @@
   font-size: 12px;
   font-weight: 600;
 }
+
+.picker-amount .field [aria-invalid="true"] {
+  border-color: var(--negative);
+  background: var(--negative-bg);
+}

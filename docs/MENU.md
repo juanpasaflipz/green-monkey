@@ -49,6 +49,12 @@ not re-link it, and is refused with `invalid_recipe` when a choice recipe names
 an ingredient archived meanwhile (restore the ingredient first). Saving a product
 also checks the choice recipes of every group it links.
 
+**Group editor.** A blank group starts optional (minimum 0, maximum 1); the
+templates set their own rules. A required group with a single priced choice
+shows a warning that every sale will pay that extra. Field errors name the
+field (choice name, duplicate name, price, cost, recipe, minimum/maximum), and
+invalid fields are marked with a red border as well as `aria-invalid`.
+
 **Availability ("86") is live state.** The switches in the product list, the
 product editor and the group editor save at once, last write wins, bump the menu
 revision and never bump product versions. A product whose required group has no

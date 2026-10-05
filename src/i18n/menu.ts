@@ -254,6 +254,18 @@ export default defineArea({
     menuSavesAs: "Se guardará: {value}",
     menuAmountInvalid:
       "Escribe un importe válido, por ejemplo 1250.50 o 1,250.50. Usa punto para los centavos.",
+    menuGroupRangeInvalid:
+      "El mínimo va de 0 a 30 y el máximo de 1 a 30; el mínimo no puede superar al máximo.",
+    menuGroupMaxAboveOptions:
+      "Sin “Permitir repetir”, el máximo no puede superar el número de opciones ({n}).",
+    menuGroupForcedExtra:
+      "Todos los clientes pagarán este extra: el grupo es obligatorio y tiene una sola opción con precio. Si es opcional, pon el mínimo en 0.",
+    menuOptionNameInvalid:
+      "Escribe el nombre de la opción (hasta 80 caracteres).",
+    menuOptionNameDuplicate: "Ya hay otra opción con este nombre en el grupo.",
+    menuOptionPriceInvalid:
+      "Escribe un precio válido, por ejemplo 15.00 (sin signo de pesos).",
+    menuOptionCostInvalid: "Escribe un costo válido, por ejemplo 4.50.",
   },
   en: {
     menuNavLabel: "Menu & inventory",
@@ -507,6 +519,17 @@ export default defineArea({
     menuSavesAs: "Will be saved as: {value}",
     menuAmountInvalid:
       "Enter a valid amount, for example 1250.50 or 1,250.50. Use a point for cents.",
+    menuGroupRangeInvalid:
+      "The minimum goes from 0 to 30 and the maximum from 1 to 30; the minimum cannot exceed the maximum.",
+    menuGroupMaxAboveOptions:
+      "Without “Allow repeating”, the maximum cannot exceed the number of choices ({n}).",
+    menuGroupForcedExtra:
+      "Every customer will pay this extra: the group is required and has a single priced choice. If it is optional, set the minimum to 0.",
+    menuOptionNameInvalid: "Enter the choice name (up to 80 characters).",
+    menuOptionNameDuplicate: "Another choice in this group has this name.",
+    menuOptionPriceInvalid:
+      "Enter a valid price, for example 15.00 (no currency sign).",
+    menuOptionCostInvalid: "Enter a valid cost, for example 4.50.",
   },
   errors: {
     menu_changed: [

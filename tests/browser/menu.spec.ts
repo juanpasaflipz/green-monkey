@@ -795,3 +795,55 @@ test('money and quantity entry: "1,200" is $1,200.00 and an ambiguous "25,50" is
   expect(unchanged.price).toBe(120000);
   expect(unchanged.version).toBe(saved.version);
 });
+
+test("modifier groups: a blank group starts optional, a forced paid extra is flagged, and each bad choice field says what is wrong", async ({
+  page,
+}) => {
+  const name = `Extra queso ${suffix()}`;
+  await login(page);
+  await openMenu(page);
+  await page.getByRole("tab", { name: "Modificadores" }).click();
+  await page
+    .getByRole("button", { name: "Nuevo grupo de modificadores", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByLabel("Mínimo a elegir")).toHaveValue("0");
+  await expect(dialog.getByText("Regla: Opcional · hasta 1")).toBeVisible();
+  await dialog.getByLabel("Nombre del grupo", { exact: true }).fill(name);
+  await dialog.getByLabel("Opción 1", { exact: true }).fill("Queso");
+  await dialog.getByLabel("Precio extra 1").fill("15");
+  const warning = dialog.getByText("Todos los clientes pagarán este extra");
+  await expect(warning).toHaveCount(0);
+  // Making it required with one priced choice warns that every sale pays it.
+  await dialog.getByLabel("Mínimo a elegir").fill("1");
+  await expect(warning).toBeVisible();
+
+  // A currency sign in the price: the message names the price, not the rules.
+  await dialog.getByLabel("Precio extra 1").fill("$15");
+  await dialog.getByRole("button", { name: "Agregar opción" }).click();
+  await dialog.getByLabel("Opción 2", { exact: true }).fill("queso");
+  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(
+    dialog.getByText("Escribe un precio válido, por ejemplo 15.00"),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("Ya hay otra opción con este nombre en el grupo."),
+  ).toBeVisible();
+  await expect(dialog.getByText(/Revisa el grupo/)).toHaveCount(0);
+  const price = dialog.getByLabel("Precio extra 1");
+  await expect(price).toHaveAttribute("aria-invalid", "true");
+  // Invalid fields are visibly marked (red border), not only for screen readers.
+  expect(
+    await price.evaluate((el) => getComputedStyle(el).borderTopColor),
+  ).toBe("rgb(192, 39, 28)");
+
+  await price.fill("15");
+  await dialog.getByLabel("Opción 2", { exact: true }).fill("Doble queso");
+  await dialog.getByLabel("Mínimo a elegir").fill("0");
+  await expect(warning).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+  await expect(
+    page.locator(".menu-group-card").filter({ hasText: name }),
+  ).toContainText("Opcional · hasta 1");
+});
