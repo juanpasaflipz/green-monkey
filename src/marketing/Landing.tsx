@@ -131,8 +131,8 @@ export default function Landing() {
         "What happens if the internet goes down?",
       ),
       t(
-        "Una sesión previamente autorizada puede guardar ventas en efectivo en el dispositivo durante su periodo permitido. La sincronización queda pendiente hasta recuperar la conexión. Esto no confirma recepción en cocina ni permite cobros integrados con tarjeta sin conexión.",
-        "A previously authorized session can save cash sales on the device within its allowed period. Sync stays pending until connectivity returns. This does not confirm kitchen receipt or enable integrated offline card charges.",
+        "Una sesión autorizada puede seguir vendiendo sin internet: guarda cobros en efectivo o con terminal externa, imprime comandas desde el navegador y sincroniza al volver la conexión, durante su periodo permitido. No hay cobros integrados con tarjeta sin conexión.",
+        "An authorized session can keep selling without internet: it saves cash or external-terminal payments, prints kitchen tickets from the browser and syncs when the connection returns, within its allowed period. There are no integrated offline card charges.",
       ),
     ],
     [

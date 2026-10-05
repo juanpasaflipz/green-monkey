@@ -16,7 +16,8 @@ import { minor, type Session, type Locale } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
 import { integrationLabel, operationLabel, stockCauseLabel } from "../labels";
 import { api } from "../api";
-import { db } from "../offline";
+import { db, isResolved } from "../offline";
+import { ArchivedDrawerNote } from "./offline/ArchivedDrawerNote";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 export function Operations({
   view,
@@ -88,7 +89,7 @@ export function Operations({
           (p) =>
             p.scope.startsWith(
               session.tenantId + ":" + session.deviceId + ":",
-            ) && p.status !== "synced",
+            ) && !isResolved(p),
         )
         .count();
       if (pending) {
@@ -576,9 +577,17 @@ export function Operations({
               }}
             >
               {modal.kind === "close" && (
-                <p>
-                  {t("expected")}: <strong>{m(data.expected)}</strong>
-                </p>
+                <>
+                  <p>
+                    {t("expected")}: <strong>{m(data.expected)}</strong>
+                  </p>
+                  <ArchivedDrawerNote
+                    session={session}
+                    drawerId={data.id}
+                    locale={locale}
+                    money={m}
+                  />
+                </>
               )}
               {modal.kind === "prep" ? (
                 <>

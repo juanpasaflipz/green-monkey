@@ -29,7 +29,19 @@ import {
 } from "../../shared/service";
 import { strings, translateError, type Key } from "../i18n";
 import { api, ApiError, isSessionRejection } from "../api";
-import { clearPaymentAttempt, db, scope, type Draft } from "../offline";
+import {
+  attemptsForOrder,
+  clearPaymentAttempt,
+  db,
+  parkPaymentAttempt,
+  scope,
+  type Draft,
+} from "../offline";
+import { useOfflineSelling } from "./offline/useOfflineSelling";
+import { useOfflineCurrent } from "./offline/useOfflineCurrent";
+import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
+import { fmt, orderLabel } from "./offline/format";
+import { isServerOrder, type LocalOrderView } from "../offline-records";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 import { useMediaQuery } from "../serviceHooks";
 import {
@@ -172,6 +184,30 @@ export function Selling({
   /** Service-owned record of the check a parked round belongs to. */
   const parkedOrderId = (operationId: string) =>
     scope(session) + ":parked-order:" + operationId;
+  const offline = useOfflineSelling({
+    session,
+    catalog,
+    locale,
+    cashSession,
+    active,
+  });
+  const [openOrders, setOpenOrders] = useState(false);
+  /** Records behind the local receipt on screen, for "Imprimir comanda" (§2.5). */
+  const [receiptOps, setReceiptOps] = useState<string[]>([]);
+  /** The record just sent to the kitchen offline, while printing is "Preguntar". */
+  const [sentOffline, setSentOffline] = useState<string[]>([]);
+  /** Order record id for a new order paid in part offline, one per dialog. */
+  const orderOperationKey = useRef(crypto.randomUUID());
+  // I13, OFF-R2, OFF-R5: the order on screen follows this device's records.
+  useOfflineCurrent({ session, online, current, setCurrent, contextId });
+  /** OFF-2: an attempt the server cannot confirm is parked, not retried forever. */
+  const shouldPark = (e: unknown) =>
+    (e as Error).message === "payment_review_required" ||
+    (e instanceof ApiError &&
+      e.kind === "domain" &&
+      e.status >= 400 &&
+      e.status < 500 &&
+      e.message !== "operation_conflict");
   async function recoverPayment(value: unknown): Promise<Order> {
     const attempt = normalizePaymentAttempt(value, attemptId);
     if (!attempt) throw Error("payment_review_required");
@@ -182,7 +218,9 @@ export function Selling({
     }>("/payments/recovery/status", attempt);
     if (status.state === "committed" && status.result) return status.result;
     if (!status.retryAllowed) throw Error("payment_review_required");
-    return api<Order>("/payments/recovery/retry", attempt);
+    return api<Order>("/payments/recovery/retry", attempt, {
+      idempotent: true,
+    });
   }
   /**
    * Stores a cart in Borradores. A cart of rounds for an existing check keeps
@@ -382,7 +420,15 @@ export function Selling({
             }
           }
         } catch (e) {
-          if (live) setError(translateError((e as Error).message, locale));
+          // OFF-2: park an attempt that needs review so it blocks only its order.
+          if (a && shouldPark(e)) {
+            await parkPaymentAttempt(attemptId, a.value);
+            if (live) {
+              setPendingPayment(false);
+              setError(t("offlineAttemptParked"));
+            }
+          } else if (live)
+            setError(translateError((e as Error).message, locale));
         }
       })();
     }
@@ -556,6 +602,7 @@ export function Selling({
     setReceipt(null);
     setCartOpen(false);
     setNotice("");
+    setSentOffline([]);
   }
   function printNewRound(o: Order) {
     printRounds(o, [Math.max(0, ...o.lines.map((l) => l.round ?? 0))]);
@@ -596,10 +643,32 @@ export function Selling({
     const moved = () => epoch !== contextEpoch.current;
     // SVC-REV-1: false until every line of this send is known to have landed.
     let landed = false;
+    setSentOffline([]);
     try {
+      // I13: a local order only ever changes through offline records.
+      if (!online || offline.isLocalOrder(target)) {
+        const { operationId, view } = await offline.sendOffline(target, d, {
+          priced,
+          total: draftTotal,
+        });
+        landed = true;
+        offline.afterSave([operationId]);
+        // SVC-R10: a record saved for a cart the screen left is never written
+        // into the cart now on screen.
+        if (moved()) throw new HandledError("context_changed");
+        setCurrent(view);
+        setDraft((x) => ({
+          ...x,
+          operationId: crypto.randomUUID(),
+          lines: [],
+        }));
+        if (offline.printSetting === "ask") setSentOffline([operationId]);
+        return view as Order;
+      }
       const o = await api<Order>(
         target ? `/orders/${target.id}/rounds` : "/orders",
         target ? { ...d, expectedVersion: target.version } : d,
+        { idempotent: true },
       );
       landed = true;
       if (moved()) {
@@ -704,6 +773,8 @@ export function Selling({
           throw new HandledError(code, true);
         }
       }
+      // offline §2.3: a paid check takes no offline round; offer a new order.
+      if (code === "offline_check_paid") setClosedCheck(true);
       if (CATALOG_CODES.includes(code))
         window.dispatchEvent(new Event("gm-menu-refresh"));
       setError(translateError(code, locale));
@@ -725,6 +796,7 @@ export function Selling({
     // One key per opened dialog (MON-3): a duplicate submit replays the stored
     // result instead of recording a second tender.
     paymentKey.current = crypto.randomUUID();
+    orderOperationKey.current = crypto.randomUUID();
     if (online)
       void api("/cash")
         .then(setCashSession)
@@ -762,6 +834,99 @@ export function Selling({
         ),
     );
   }
+  /**
+   * OFF-2: settles the single active attempt before any new charge. It blocks
+   * only its own order: a resolved attempt for another order is cleared, an
+   * unconfirmable one is parked, and nothing is ever overwritten (I9).
+   * Returns true when the attempt was for `targetOrderId` and its receipt is shown.
+   */
+  async function settleActiveAttempt(
+    targetOrderId: string | null,
+    finish: (result: Order, owned: boolean) => void,
+  ): Promise<boolean> {
+    const previous = await db.cache.get(attemptId);
+    const attempt = previous
+      ? normalizePaymentAttempt(previous.value, attemptId)
+      : null;
+    const same = !!targetOrderId && attempt?.orderId === targetOrderId;
+    if (previous && !online) {
+      if (same) throw new Error("offline_payment_pending_for_order");
+    } else if (previous) {
+      try {
+        const result = await recoverPayment(previous.value);
+        await clearPaymentAttempt(attemptId, previous.value);
+        setPendingPayment(false);
+        if (same) {
+          // SVC-REV-2: the receipt replaces the cart only if the cart still
+          // shows that check (or is an empty new order); otherwise announced.
+          const shown = currentRef.current;
+          finish(
+            result,
+            shown ? shown.id === result.id : !draftRef.current.lines.length,
+          );
+          paymentKey.current = crypto.randomUUID();
+          return true;
+        }
+        setNotice(fmt(t("offlineAttemptResolvedOther"), { n: result.number }));
+      } catch (e) {
+        if (!shouldPark(e)) throw e;
+        await parkPaymentAttempt(attemptId, previous.value);
+        setPendingPayment(false);
+        if (same) throw new Error("payment_review_required", { cause: e });
+      }
+    }
+    if (
+      targetOrderId &&
+      (await attemptsForOrder(session, targetOrderId)).some(
+        (row) => row.key !== attemptId,
+      )
+    )
+      throw new Error(
+        online
+          ? "payment_review_required"
+          : "offline_payment_pending_for_order",
+      );
+    return false;
+  }
+  /** "Recuperar pago": resolves the pending attempt without starting a charge. */
+  async function recoverPending() {
+    return navigator.locks.request(
+      "green-monkey-session-transition",
+      { mode: "shared" },
+      () =>
+        navigator.locks.request(
+          "green-monkey-payment:" + scope(session),
+          async () => {
+            setBusy(true);
+            setError("");
+            try {
+              const previous = await db.cache.get(attemptId);
+              const orderId = previous
+                ? normalizePaymentAttempt(previous.value, attemptId)?.orderId
+                : null;
+              await settleActiveAttempt(orderId ?? null, (result, owned) => {
+                setPayment(false);
+                if (owned) {
+                  setCurrent(result);
+                  setReceipt(result);
+                } else
+                  setNotice(
+                    t("servicePaidAfterSwitch").replace(
+                      "{n}",
+                      String(result.number),
+                    ),
+                  );
+              });
+            } catch (e) {
+              setError(translateError((e as Error).message, locale));
+            } finally {
+              setPendingPayment(!!(await db.cache.get(attemptId)));
+              setBusy(false);
+            }
+          },
+        ),
+    );
+  }
   async function collectLocked(values: PaymentValues | null, items?: string[]) {
     let submittedAttempt: unknown;
     setBusy(true);
@@ -782,92 +947,48 @@ export function Selling({
       setReceipt(result);
     };
     try {
-      const previous = await db.cache.get(attemptId);
-      if (previous) {
-        const result = await recoverPayment(previous.value);
-        await clearPaymentAttempt(attemptId, previous.value);
-        // SVC-REV-2: the stored attempt may belong to a check the cart left
-        // before "Reintentar" (another table opened after a lost response).
-        // Its receipt never replaces that cart or drops its unsent lines.
-        const shown = currentRef.current;
-        settled(
-          result,
-          shown ? shown.id === result.id : !draftRef.current.lines.length,
-        );
-        return;
+      const hadAttempt = !!(await db.cache.get(attemptId));
+      // OFF-2: settle the single active attempt first; it blocks only its own
+      // order and finishes through settled() (SVC-R10).
+      if (await settleActiveAttempt(current?.id ?? null, settled)) return;
+      if (!values) {
+        if (hadAttempt) return;
+        throw new Error("invalid_input");
       }
-      if (!values) throw new Error("invalid_input");
-      const n = values.amount,
-        cash = values.received,
-        tips = values.tip;
-      if (!online) {
-        if (
-          current ||
-          !cashSession ||
-          cashSession.closed_at ||
-          values.method !== "cash" ||
-          session.sellingAllowed === false ||
-          new Date(session.offlineUntil) < new Date() ||
-          n !== draftTotal ||
-          cash < n + tips
-        )
-          throw new Error("offline_conflict");
-        const operationId = paymentKey.current;
-        const receiptSnapshot = {
-          lines: priced,
-          restaurant: session.restaurant,
-        };
-        await db.pending.put({
-          id: operationId,
-          scope: scope(session),
-          receipt: receiptSnapshot,
-          body: {
-            formatVersion: 2,
-            operationId,
-            order: draft,
-            expectedTotal: draftTotal,
-            received: cash,
-            tip: tips,
-            recordedAt: new Date().toISOString(),
-            sessionId: session.id,
-            cashSessionId: cashSession.id,
-            tenantId: session.tenantId,
-            employeeId: session.employeeId,
-            deviceId: session.deviceId,
-            leaseVersion: session.offlineLeaseVersion ?? 0,
-            currency: session.restaurant.currency,
-            currencyExponent: exponent,
-            configurationVersion: session.restaurant.configVersion ?? null,
-            receiptSnapshot,
+      // I13: a local order only ever changes through offline records.
+      if (!online || offline.isLocalOrder(current)) {
+        const saved = await offline.collectOffline(
+          {
+            amount: values.amount,
+            tip: values.tip,
+            received: values.received,
+            method: values.method,
+            reference: values.reference,
+            confirmed: values.confirmed,
           },
-          status: "pending",
-          attempts: 0,
-          nextAt: 0,
-        });
-        await db.drafts.delete(activeId);
-        setReceipt({
-          id: operationId,
-          number: 0,
-          version: 1,
-          lines: priced,
-          total: draftTotal,
-          paid: 0,
-          refunded: 0,
-          state: "local",
-          mode: draft.mode,
-          tableId: draft.tableId,
-          name: draft.name,
-          note: draft.note,
-          createdAt: new Date().toISOString(),
-          rounds: [],
-          tenders: [],
-        });
+          {
+            draft,
+            priced,
+            total: draftTotal,
+            current,
+            operationId: paymentKey.current,
+            orderOperationId: orderOperationKey.current,
+          },
+          items,
+        );
+        setReceipt(saved.receipt);
+        setReceiptOps(saved.operationIds);
+        setCurrent(saved.view);
         setPayment(false);
         setDraft(fresh());
+        paymentKey.current = crypto.randomUUID();
+        orderOperationKey.current = crypto.randomUUID();
+        offline.afterSave(saved.operationIds, saved.receipt);
         return;
       }
       // MON-8: nothing reaches the kitchen unless this device has an open drawer.
       if (!drawerOpen) throw new Error("drawer_required");
+      await offline.guardOnlinePayment(current);
       let o = current;
       if (draft.lines.length)
         o = await sendWith(current, draft, { keepBusy: true });
@@ -897,7 +1018,9 @@ export function Selling({
       };
       await db.cache.put({ id: attemptId, value: submittedAttempt });
       setPendingPayment(true);
-      const result = await api<Order>(`/orders/${o.id}/payments`, payload);
+      const result = await api<Order>(`/orders/${o.id}/payments`, payload, {
+        idempotent: true,
+      });
       await clearPaymentAttempt(attemptId, submittedAttempt);
       settled(result);
     } catch (e) {
@@ -911,6 +1034,14 @@ export function Selling({
       )
         await clearPaymentAttempt(attemptId, submittedAttempt);
       setPendingPayment(!!(await db.cache.get(attemptId)));
+      // OFF-R26: the order on screen lacks a round this device synced: read
+      // it again (the dialog's prefilled amount follows the new balance).
+      if ((e as Error).message === "offline_order_outdated" && current) {
+        const fresh = await api<Order>("/orders/" + current.id).catch(
+          () => null,
+        );
+        if (fresh) setCurrent(fresh);
+      }
       // SVC-REV-1: a switch waiting for this payment keeps its error on screen.
       if (epoch === contextEpoch.current) requestFailed();
       if (!(e instanceof HandledError))
@@ -972,7 +1103,7 @@ export function Selling({
       <div className="cart-heading">
         <div>
           <span className="eyebrow">
-            {current ? "#" + current.number : t("newOrder")}
+            {current ? orderLabel(current) : t("newOrder")}
           </span>
           <h2>{t("order")}</h2>
         </div>
@@ -1055,7 +1186,7 @@ export function Selling({
         {current && (
           <div className="existing">
             <strong>
-              #{current.number} · {t("sent")}
+              {orderLabel(current)} · {t("sent")}
             </strong>
             <p>
               {current.lines
@@ -1080,6 +1211,20 @@ export function Selling({
                 {t("serviceDetailEditNote")}
               </Button>
             )}
+            {!isServerOrder(current) && (
+              <Button
+                variant="ghost"
+                onClick={() => void offline.printOrder(current)}
+              >
+                {t("offlinePrintKitchen")}
+              </Button>
+            )}
+            {(!online || offline.isLocalOrder(current)) &&
+              !offline.tableService && (
+                <p className="warning-panel" role="status">
+                  {t("offlineAvailableOnReconnect")}
+                </p>
+              )}
           </div>
         )}
         {!draft.lines.length && !current ? (
@@ -1177,23 +1322,49 @@ export function Selling({
             )}
           </div>
         )}
+        {sentOffline.length > 0 && (
+          <div className="warning-panel" role="status">
+            <p>{t("offlineSentToDevice")}</p>
+            <Button onClick={() => void offline.printKitchen(sentOffline)}>
+              {t("offlinePrintKitchen")}
+            </Button>
+          </div>
+        )}
         <div className="row">
           <Button
-            disabled={!draft.lines.length || busy || !online || cart.blocked}
+            disabled={
+              !draft.lines.length ||
+              busy ||
+              cart.blocked ||
+              ((!online || offline.isLocalOrder(current)) &&
+                !!offline.sendBlockReason)
+            }
             onClick={() => void send().catch(() => {})}
           >
             <Send size={16} />
-            {t("send")}
+            {t(online ? "send" : "offlineSendLocal")}
           </Button>
           <Button
             variant="primary"
-            disabled={due <= 0 || busy || paying || cart.blocked}
+            disabled={
+              due <= 0 ||
+              busy ||
+              paying ||
+              cart.blocked ||
+              // LD-7: an existing check is paid offline only with table service.
+              ((!online || offline.isLocalOrder(current)) &&
+                !!current &&
+                !offline.tableService)
+            }
             onClick={openPay}
           >
             {t("pay")}
             <ArrowUpRight size={18} />
           </Button>
         </div>
+        {!online && !current && !offline.tableService && (
+          <p className="muted tiny">{t("offlineTableServiceOffHint")}</p>
+        )}
         <div className="row between">
           <button
             className="text-button"
@@ -1225,7 +1396,7 @@ export function Selling({
                 <p>{t("pendingPaymentRecovery")}</p>
                 <Button
                   disabled={!online || busy || paying}
-                  onClick={() => startCollect(null)}
+                  onClick={() => void recoverPending()}
                 >
                   {t("retryPayment")}
                 </Button>
@@ -1233,7 +1404,7 @@ export function Selling({
             )}
           </div>
           <Button
-            disabled={pendingPayment || busy}
+            disabled={busy}
             onClick={async () => {
               if (draft.lines.length) await parkDraft(draft, current);
               reset();
@@ -1244,6 +1415,11 @@ export function Selling({
           <Button disabled={busy} onClick={() => void openDrafts()}>
             {t("drafts")}
           </Button>
+          {!online && offline.tableService && (
+            <Button onClick={() => setOpenOrders(true)}>
+              {t("offlineOpenOrders")}
+            </Button>
+          )}
         </div>
         <div className="search">
           <Search size={20} />
@@ -1385,6 +1561,20 @@ export function Selling({
               return null;
             }
           }}
+          offline={{
+            ...offline.paymentSlot,
+            // §8.1.3: paying a cached server order offline warns first.
+            hint: (method) => (
+              <>
+                {offline.paymentSlot.hint(method)}
+                {!!(current as LocalOrderView | null)?.offline?.cachedAt && (
+                  <span className="block" role="status">
+                    {t("offlinePayCachedWarning")}
+                  </span>
+                )}
+              </>
+            ),
+          }}
           onClose={() => setPayment(false)}
           onGoToCash={() => {
             setPayment(false);
@@ -1399,6 +1589,16 @@ export function Selling({
           locale={locale}
           onNext={reset}
           onBack={() => setReceipt(null)}
+          label={offline.receiptProps(receipt)?.label}
+          labelHint={offline.receiptProps(receipt)?.labelHint}
+          extraActions={
+            receipt.state === "local" &&
+            receiptOps.length > 0 && (
+              <Button onClick={() => void offline.printKitchen(receiptOps)}>
+                {t("offlinePrintKitchen")}
+              </Button>
+            )
+          }
           onRelease={
             receipt.state !== "local" && checkStateOf(receipt) === "paid"
               ? () => release(receipt)
@@ -1425,6 +1625,22 @@ export function Selling({
               </>
             )
           }
+        />
+      )}
+      {openOrders && (
+        <OfflineOrdersModal
+          session={session}
+          locale={locale}
+          close={() => setOpenOrders(false)}
+          onPick={(order) => {
+            void replaceContext(order, {
+              ...fresh(),
+              mode: order.mode as OrderInput["mode"],
+              tableId: order.tableId,
+              name: order.name,
+            });
+            setOpenOrders(false);
+          }}
         />
       )}
       {parked && (

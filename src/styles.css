@@ -466,7 +466,8 @@ main > p.warning {
   background: var(--fill-hover);
 }
 .connection svg {
-  display: none;
+  display: block;
+  flex-shrink: 0;
 }
 .status-dot {
   width: 8px;
@@ -1362,12 +1363,15 @@ th {
   .brand span {
     display: none;
   }
-  .top-actions .connection span:not(.status-dot) {
+  .top-actions .connection .connection-label,
+  .top-actions .connection .connection-count-separator,
+  .top-actions .connection .connection-count-unit {
     display: none;
   }
   .top-actions .connection {
-    padding: 0;
-    width: 44px;
+    padding: 0 12px;
+    width: auto;
+    min-width: 44px;
   }
   .sell-layout {
     grid-template-columns: minmax(0, 1fr) 320px;

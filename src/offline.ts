@@ -1,7 +1,12 @@
 import Dexie, { type EntityTable } from "dexie";
 import type { OrderInput, Session, Product } from "../shared/domain";
-import type { OfflineSale, PaymentAttempt } from "../shared/offline-recovery";
-import { api } from "./api";
+import type {
+  OfflineRecord,
+  OfflineRecordKind,
+  PaymentAttempt,
+} from "../shared/offline-recovery";
+import { attachClockStore, getConnectivitySnapshot } from "./connectivity";
+import { activeAttemptKey, isAttemptKey, scope } from "./offline-keys";
 import {
   evidenceKey,
   normalizePaymentAttempt,
@@ -15,13 +20,29 @@ export type Draft = {
 export type Pending = {
   id: string;
   scope: string;
-  body: OfflineSale;
+  /** Immutable once written: the record the server applies exactly once. */
+  body: OfflineRecord;
   receipt?: { lines: unknown[]; restaurant: Session["restaurant"] };
-  status: "pending" | "syncing" | "conflict" | "synced";
+  status: "pending" | "syncing" | "conflict" | "synced" | "archived";
   attempts: number;
   nextAt: number;
   error?: string;
   result?: any;
+  kind?: OfflineRecordKind;
+  sequence?: number;
+  syncedAt?: number;
+  archivedAt?: number;
+  lastAttemptAt?: number;
+  waitReason?: "auth" | "dependency";
+  /** Local display context of a cached server order (never sent). */
+  context?: {
+    orderNumber?: number;
+    mode?: string;
+    tableName?: string | null;
+    name?: string;
+    /** The round number the record's kitchen ticket shows until it syncs. */
+    round?: number;
+  };
 };
 export type CachedValue =
   { id: string; value: unknown } | { id: string; value: PaymentAttempt };
@@ -30,14 +51,23 @@ const db = new Dexie("green-monkey-v1") as Dexie & {
   pending: EntityTable<Pending, "id">;
   cache: EntityTable<{ id: string; value: any }, "id">;
 };
+// No schema version bump: new fields live in existing stores, so old tabs are
+// never closed by a versionchange.
 db.version(1).stores({
   drafts: "id,scope,updatedAt",
   pending: "id,scope,status",
   cache: "id",
 });
-export const scope = (s: Session) =>
-  `${s.tenantId}:${s.deviceId}:${s.employeeId}`;
+attachClockStore(db.cache);
 export { db };
+export {
+  scope,
+  activeAttemptKey,
+  parkedAttemptKey,
+  isAttemptKey,
+} from "./offline-keys";
+export { syncPending, isResolved, unsyncedCount } from "./offline-queue";
+
 export async function clearPaymentAttempt(key: string, evidence: unknown) {
   await db.transaction("rw", db.cache, async () => {
     const current = await db.cache.get(key);
@@ -49,78 +79,76 @@ export async function clearPaymentAttempt(key: string, evidence: unknown) {
       await db.cache.delete(key);
   });
 }
+
+/**
+ * Moves an unresolved attempt from the active slot to its own key, in one
+ * transaction and only if the slot still holds this exact evidence. The
+ * attempt is never overwritten or dropped (invariant I9).
+ */
+export async function parkPaymentAttempt(activeKey: string, evidence: unknown) {
+  await db.transaction("rw", db.cache, async () => {
+    const current = await db.cache.get(activeKey);
+    const attempt = normalizePaymentAttempt(evidence, activeKey);
+    if (
+      !current ||
+      !attempt ||
+      evidenceKey(normalizePaymentAttempt(current.value, activeKey)) !==
+        evidenceKey(attempt)
+    )
+      return;
+    const parked = `${activeKey}:${attempt.payload.operationId}`;
+    const existing = await db.cache.get(parked);
+    if (
+      existing &&
+      evidenceKey(normalizePaymentAttempt(existing.value, parked)) !==
+        evidenceKey(attempt)
+    )
+      throw Error("operation_conflict");
+    await db.cache.put({ id: parked, value: attempt });
+    await db.cache.delete(activeKey);
+  });
+}
+
+/** Active or parked attempts recorded for one server order in this scope. */
+export async function attemptsForOrder(
+  s: Session,
+  orderId: string,
+): Promise<{ key: string; attempt: PaymentAttempt }[]> {
+  const prefix = activeAttemptKey(s);
+  return (
+    await db.cache
+      .filter((row) => row.id === prefix || row.id.startsWith(prefix + ":"))
+      .toArray()
+  )
+    .map((row) => ({
+      key: row.id,
+      attempt: normalizePaymentAttempt(
+        row.value,
+        row.id.split(":").slice(0, 4).join(":"),
+      ),
+    }))
+    .filter(
+      (row): row is { key: string; attempt: PaymentAttempt } =>
+        row.attempt?.orderId === orderId,
+    );
+}
+
 export async function cacheSession(s: Session, catalog: Product[]) {
   await db.cache.put({ id: "session", value: s });
   await db.cache.put({ id: scope(s) + ":catalog", value: catalog });
 }
-export async function syncPending(s: Session, force = false) {
-  return navigator.locks.request(
-    "green-monkey-session-transition",
-    { mode: "shared" },
-    () => syncScopedPending(s, force),
-  );
-}
-async function syncScopedPending(s: Session, force = false) {
-  return navigator.locks.request(
-    "green-monkey-sync:" + scope(s),
-    { ifAvailable: !force },
-    async (lock) => {
-      if (!lock) return;
-      const rows = await db.pending.where("scope").equals(scope(s)).toArray();
-      for (const row of rows) {
-        if (
-          row.status === "synced" ||
-          (row.status === "conflict" && !force) ||
-          (row.nextAt > Date.now() && !force)
-        )
-          continue;
-        await db.pending.update(row.id, { status: "syncing" });
-        try {
-          const result = await api("/sync", row.body);
-          await db.pending.update(row.id, {
-            status: "synced",
-            result,
-            error: undefined,
-          });
-        } catch (e) {
-          const code = (e as Error).message;
-          await db.pending.update(row.id, {
-            status: [
-              "price_conflict",
-              "offline_drawer_conflict",
-              "offline_context_invalid",
-              "unauthorized",
-              "forbidden",
-              "free_selection_required",
-              "operation_conflict",
-              "settings_changed",
-              "drawer_required",
-              "offline_conflict",
-              "insufficient_stock",
-              "unavailable",
-            ].includes(code)
-              ? "conflict"
-              : row.attempts >= 7
-                ? "conflict"
-                : "pending",
-            attempts: row.attempts + 1,
-            nextAt:
-              Date.now() +
-              Math.min(300000, 2000 * 2 ** Math.min(row.attempts, 8)),
-            error: code,
-          });
-          if (code === "session_changed") return;
-        }
-      }
-    },
-  );
+
+/** Caches a renewed session without touching the offline catalog (access, D15). */
+export async function cacheSessionOnly(s: Session) {
+  await db.cache.put({ id: "session", value: s });
 }
 
 export async function changeRestaurant<T>(
   tenantId: string,
   command: () => Promise<T>,
 ) {
-  if (!navigator.onLine) throw Error("switch_requires_connection");
+  if (!getConnectivitySnapshot().canUseServer)
+    throw Error("switch_requires_connection");
   return navigator.locks.request(
     "green-monkey-session-transition",
     async () => {
@@ -128,10 +156,13 @@ export async function changeRestaurant<T>(
       const attempts = await db.cache.toArray();
       if (
         pending.some(
-          (p) => p.status !== "synced" && !p.scope.startsWith(tenantId + ":"),
+          (p) =>
+            p.status !== "synced" &&
+            p.status !== "archived" &&
+            !p.scope.startsWith(tenantId + ":"),
         ) ||
         attempts.some(
-          (a) => a.id.endsWith(":payment") && !a.id.startsWith(tenantId + ":"),
+          (a) => isAttemptKey(a.id) && !a.id.startsWith(tenantId + ":"),
         )
       )
         throw Error("pending_before_switch");

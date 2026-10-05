@@ -349,6 +349,7 @@ export type Order = {
   createdAt: string;
   rounds: any[];
   tenders: any[];
+  offline?: { provisionalNumber: string | null; soldAt: string } | null;
 };
 
 export function currencyExponent(currency: string): number {
