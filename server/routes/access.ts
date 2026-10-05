@@ -34,7 +34,7 @@ import {
   unlockStaff,
   updateStaff,
 } from "../access-staff.js";
-import { clientIp } from "../logging.js";
+import { clientIp, log } from "../logging.js";
 import { id } from "../../shared/domain.js";
 import { ACCESS } from "../../shared/access.js";
 
@@ -133,7 +133,7 @@ const json =
 export function registerPreAuth({ app, sql }: PreAuthContext) {
   assertDemoAccessAllowed();
   const demo = demoTenantId();
-  if (demo) console.log(`DEMO ACCESS ENABLED for tenant ${demo}`);
+  if (demo) log.info("demo_access_enabled", { demoTenantId: demo });
   // Access responses carry credentials or roster data: never cache them.
   app.use("/api/access", noStore);
   app.get(

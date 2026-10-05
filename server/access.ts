@@ -8,6 +8,7 @@ import { withOwner } from "./owner-accounts.js";
 import { selectFirstDevice, sellingAllowed } from "./free-limits.js";
 import { issueOfflineLease, renewOfflineLease } from "./offline-leases.js";
 import { googleConfig } from "./google-identity.js";
+import { log } from "./logging.js";
 import { DomainError, type Session } from "../shared/domain.js";
 import {
   ACCESS,
@@ -701,13 +702,7 @@ export async function signOut(
           where id=${c.id} and token_hash=${hash(c.token)} and ended_at is null`,
       );
     } catch (error) {
-      console.error(
-        JSON.stringify({
-          level: "error",
-          route: "access.logout",
-          message: error instanceof Error ? error.message : "logout_failed",
-        }),
-      );
+      log.error("logout_failed", { route: "access.logout" }, error);
     }
   }
   res.clearCookie("gm_session", cookieOptions);
@@ -735,13 +730,7 @@ export async function endOwnerAccount(
   } catch (error) {
     // An absent or expired account must not prevent logout or pairing.
     if (!(error instanceof DomainError && error.status === 401))
-      console.error(
-        JSON.stringify({
-          level: "error",
-          route,
-          message: error instanceof Error ? error.message : "owner_logout_failed",
-        }),
-      );
+      log.error("owner_logout_failed", { route }, error);
   }
   res.clearCookie("gm_account", cookieOptions);
 }
