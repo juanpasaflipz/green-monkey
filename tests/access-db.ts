@@ -41,6 +41,11 @@ import {
 import { leaseCovers, renewOfflineLease } from "../server/offline-leases.js";
 import { synchronizeOffline } from "../server/offline-sync.js";
 import { verifyApproval } from "../server/voids.js";
+import { createOrder } from "../server/orders.js";
+import {
+  paymentRecoveryStatus,
+  retryPaymentRecovery,
+} from "../server/payment-recovery.js";
 import { saveEmployee, saveProduct } from "../server/management.js";
 import {
   createOwnerRestaurant,
@@ -957,6 +962,89 @@ try {
       await admin`select valid_until from offline_lease_renewals where session_id=${near}`;
     assert.equal(renewal.valid_until.getTime(), nearRow.absolute_expires_at.getTime());
     assert.equal(touched.offlineUntil.getTime(), nearRow.absolute_expires_at.getTime());
+  });
+
+  await test("ACC-FLOOR-1: a payment attempt left by an ended or expired session of the same employee and device is retried by the next session; a live, revoked or other employee's session goes to review", async () => {
+    const terminal = await device("Cobro pendiente");
+    const cookieFor = (c: { id: string; token: string }) => ({
+      gm_device: sign(terminal),
+      gm_session: sign({ id: c.id, tenantId, token: c.token }),
+    });
+    const newSession = async (employeeId = cashierId) => {
+      const created = await run((tx) =>
+        createSession(tx, { employeeId, deviceId: terminal.id }),
+      );
+      return {
+        ...created,
+        session: (await authenticate(cookieFor(created))).session,
+      };
+    };
+    const original = await newSession();
+    const drawerId = randomUUID();
+    await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at)
+      values(${tenantId},${drawerId},${terminal.id},${cashierId},0,now())`;
+    const order = await run((tx) =>
+      createOrder(tx, original.session, {
+        operationId: randomUUID(),
+        lines: [
+          { id: randomUUID(), productId, quantity: 2, options: [], note: "" },
+        ],
+        mode: "takeaway",
+        tableId: null,
+        name: "Cobro pendiente",
+        note: "",
+        channel: "pos",
+      }),
+    );
+    const attempt = (sessionId: string, employeeId = cashierId) => ({
+      formatVersion: 1 as const,
+      tenantId,
+      employeeId,
+      deviceId: terminal.id,
+      sessionId,
+      cashSessionId: drawerId,
+      orderId: order.id,
+      createdAt: new Date().toISOString(),
+      payload: {
+        operationId: randomUUID(),
+        amount: 100,
+        tip: 0,
+        received: 100,
+        method: "cash" as const,
+        externalConfirmed: false,
+        reference: "",
+      },
+    });
+    const status = (s: Session, a: ReturnType<typeof attempt>) =>
+      run((tx) => paymentRecoveryStatus(tx, s, a));
+    const next = await newSession();
+    // The original session is still live: another session may not retry it.
+    const pending = attempt(original.id);
+    assert.equal((await status(next.session, pending)).retryAllowed, false);
+    // Ended normally (logout, renewal, PIN after session_ended): retried once.
+    await run((tx) => endSession(tx, original.id, "logout"));
+    assert.equal((await status(next.session, pending)).retryAllowed, true);
+    const paid = await run((tx) =>
+      retryPaymentRecovery(tx, next.session, pending),
+    );
+    assert.equal(paid.paid, 100);
+    assert.equal((await status(next.session, pending)).state, "committed");
+    // Expired at the absolute cap without an end: also the same line.
+    const expired = await newSession();
+    await admin`update sessions set expires_at=now()-interval '1 second' where id=${expired.id}`;
+    assert.equal((await status(next.session, attempt(expired.id))).retryAllowed, true);
+    // Revoked (deactivation or unpaired device): review only.
+    const revoked = await newSession();
+    await run((tx) => endSession(tx, revoked.id, "employee_deactivated", true));
+    await rejects(
+      run((tx) => retryPaymentRecovery(tx, next.session, attempt(revoked.id))),
+      "payment_review_required",
+    );
+    // Another employee on the same device never retries a cashier's attempt.
+    const manager = await newSession(managerId);
+    const ended = await newSession();
+    await run((tx) => endSession(tx, ended.id, "switched"));
+    assert.equal((await status(manager.session, attempt(ended.id))).retryAllowed, false);
   });
 
   await test("OFF-7 regression: logout ends without revoking and the same employee's new session on the same device syncs the queued sale", async () => {

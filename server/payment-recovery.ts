@@ -4,6 +4,27 @@ import { paymentInput, recordPayment } from "./orders.js";
 import { DomainError, type Session } from "../shared/domain.js";
 import { paymentAttemptV1 } from "../shared/offline-recovery.js";
 
+/**
+ * The attempt's session, or a successor of it: the same employee on the same
+ * device after that session ended normally or expired (logout, switch back,
+ * renewal, PIN reset, role change, the 16 h cap), as with OFF-7 evidence. A
+ * revoked session (deactivation, unpaired device) or one still live elsewhere
+ * goes to review instead (ACC-FLOOR-1).
+ */
+async function sameSessionLine(tx: Tx, s: Session, sessionId: string) {
+  if (sessionId === s.id) return true;
+  const [prior] = await tx`select employee_id,device_id,revoked,
+      (ended_at is not null or expires_at<=now()) as finished
+    from sessions where id=${sessionId}`;
+  return Boolean(
+    prior &&
+    prior.employee_id === s.employeeId &&
+    prior.device_id === s.deviceId &&
+    !prior.revoked &&
+    prior.finished,
+  );
+}
+
 export async function paymentRecoveryStatus(tx: Tx, s: Session, raw: unknown) {
   permit(s, operators);
   const attempt = paymentAttemptV1.parse(raw);
@@ -36,7 +57,7 @@ export async function paymentRecoveryStatus(tx: Tx, s: Session, raw: unknown) {
     ? await tx`select id,device_id,closed_at from cash_sessions where id=${attempt.cashSessionId}`
     : [];
   const retryAllowed = Boolean(
-    attempt.sessionId === s.id &&
+    (await sameSessionLine(tx, s, attempt.sessionId)) &&
     attempt.employeeId === s.employeeId &&
     attempt.deviceId === s.deviceId &&
     cash &&

@@ -23,7 +23,7 @@ import {
   type LineInput,
 } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
-import { api, ApiError } from "../api";
+import { api, ApiError, isSessionRejection } from "../api";
 import { clearPaymentAttempt, db, scope, type Draft } from "../offline";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 const fresh = (): OrderInput => ({
@@ -400,8 +400,10 @@ export function Selling({
       if (
         submittedAttempt &&
         e instanceof ApiError &&
-        [400, 404, 409].includes(e.status) &&
-        e.message !== "operation_conflict"
+        (([400, 404, 409].includes(e.status) &&
+          e.message !== "operation_conflict") ||
+          // A session 401 is answered before the payment runs (ACC-FLOOR-1).
+          isSessionRejection(e))
       )
         await clearPaymentAttempt(attemptId, submittedAttempt);
       setPendingPayment(!!(await db.cache.get(attemptId)));

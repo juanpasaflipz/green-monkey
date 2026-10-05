@@ -62,6 +62,13 @@ const SESSION_CODES = new Set([
   "device_revoked",
   "device_not_paired",
 ]);
+/**
+ * True for a 401 that authentication answered before any handler ran (or that
+ * api() raised without sending while blocked): the command was not processed.
+ */
+export function isSessionRejection(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 401 && SESSION_CODES.has(e.message);
+}
 /** After a session 401, stop calling the server until a new session is set. */
 let blocked = false;
 /** True while a session 401 keeps non-access calls from reaching the server. */

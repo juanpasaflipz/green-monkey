@@ -190,6 +190,20 @@ describe("api() session policy", () => {
     }
   });
 
+  it("isSessionRejection is true only for session 401s, including a blocked call that was never sent (ACC-FLOOR-1)", async () => {
+    const { api, setSession, isSessionRejection, ApiError } = await load();
+    setSession(session);
+    replies.push({ status: 401, body: { error: "session_ended" } });
+    const rejected = await api("/orders/x/payments", {}).catch((e) => e);
+    expect(isSessionRejection(rejected)).toBe(true);
+    const unsent = await api("/orders/x/payments", {}).catch((e) => e);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(isSessionRejection(unsent)).toBe(true);
+    expect(isSessionRejection(new ApiError("invalid_pin", 401))).toBe(false);
+    expect(isSessionRejection(new ApiError("session_expired", 409))).toBe(false);
+    expect(isSessionRejection(new TypeError("Failed to fetch"))).toBe(false);
+  });
+
   it("requestsBlocked reports a session 401 until a new session is set (ACC-6)", async () => {
     const { api, setSession, requestsBlocked } = await load();
     setSession(session);
