@@ -7,7 +7,9 @@ test-results/
 playwright-report/
 .env
 .env.*
+**/.env*
 !.env.example
+*.age
 *.pem
 *.p12
 *.key
@@ -21,3 +23,6 @@ build/
 
 # Local editor history (contains .env snapshots)
 .history/
+
+# Load-test fixtures hold generated PINs (scripts/load/seed-load.ts).
+work/load/

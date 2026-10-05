@@ -12,8 +12,13 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/build ./build
 COPY --from=build /app/migrations ./migrations
-ARG RAILWAY_GIT_COMMIT_SHA=unknown
-ENV RAILWAY_GIT_COMMIT_SHA=$RAILWAY_GIT_COMMIT_SHA
+# The migrate/grants preDeploy and the readiness check read these at runtime.
+COPY --from=build /app/scripts/grants.sql ./scripts/grants.sql
+COPY --from=build /app/scripts/db/post-migrate.sql ./scripts/db/post-migrate.sql
+# Stamped by CD (scripts/ops/stamp-build.mjs) so /api/version reports the build.
+COPY --from=build /app/build-info.json ./build-info.json
 USER node
 EXPOSE 3001
-CMD ["node","build/server/index.js"]
+# instrument.js loads and validates configuration before the app (SEC-9, DB-1).
+# The worker service overrides the start command with build/server/worker.js.
+CMD ["node","--import","./build/server/instrument.js","build/server/index.js"]
