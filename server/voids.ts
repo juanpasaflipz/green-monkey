@@ -226,9 +226,10 @@ export async function refreshOrderState(tx: Tx, orderId: string) {
     return;
   }
   const all = await tx`select state from rounds where order_id=${orderId}`;
+  // Rounds awaiting the offline review decision keep the order active.
   const state = all.every((r) => r.state === "completed")
     ? "completed"
-    : all.every((r) => r.state !== "active")
+    : all.every((r) => r.state !== "active" && r.state !== "offline_review")
       ? "ready"
       : "active";
   await tx`update orders set state=${state} where id=${orderId} and state not like 'recovery%'`;

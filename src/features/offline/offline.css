@@ -1,0 +1,186 @@
+/* Offline area styles (connection banner, review lane, local tickets, update bar). */
+.connection .connection-count {
+  display: inline-flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+}
+.connection-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-left: 4px solid var(--warning-line);
+  padding: 12px 16px;
+  font-size: 14px;
+}
+.connection-banner > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.connection-banner.error {
+  background: var(--negative-bg);
+  color: var(--negative);
+  border-left-color: var(--negative);
+}
+.connection-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+.connection-banner-text p {
+  margin: 0;
+}
+.connection-banner-line {
+  margin-top: 4px !important;
+}
+.connection-banner-line.strong {
+  font-weight: 700;
+}
+.connection-banner-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.connection-banner-actions .button {
+  min-height: 40px;
+}
+.update-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--fill);
+  border-bottom: 1px solid var(--line);
+  font-size: 14px;
+}
+.update-bar p {
+  margin: 0;
+  flex: 1;
+  min-width: 200px;
+}
+.offline-review-lane {
+  border: 1px solid var(--warning-line);
+  background: var(--warning-bg);
+  border-radius: 16px;
+  padding: 20px;
+  margin: 16px 0 24px;
+}
+.offline-review-lane > header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.offline-review-lane h2 {
+  margin: 0;
+  font-size: 20px;
+}
+.offline-review-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.offline-review-card,
+.offline-ticket {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+}
+.offline-review-card h3,
+.offline-ticket h3 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+.offline-review-card ul,
+.offline-ticket ul {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+.offline-review-card .row,
+.offline-ticket .row {
+  flex-wrap: wrap;
+}
+.offline-ticket-list {
+  display: grid;
+  gap: 12px;
+}
+.offline-chip-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.offline-chip-group button {
+  border: 1px solid var(--line-strong);
+  background: var(--surface);
+  border-radius: 999px;
+  padding: 6px 12px;
+  min-height: 36px;
+  font: inherit;
+  font-size: 14px;
+}
+.offline-chip-group button[aria-pressed="true"] {
+  background: var(--ink);
+  color: var(--surface);
+  border-color: var(--ink);
+}
+.offline-sync-header {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.offline-sync-header .row {
+  flex-wrap: wrap;
+}
+.offline-row-status {
+  font-weight: 600;
+}
+.offline-evidence {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  margin: 12px 0;
+  font-size: 14px;
+}
+.offline-evidence dt {
+  color: var(--text-2);
+}
+.offline-evidence dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.platform-gate {
+  max-width: 560px;
+  margin: 15vh auto;
+  padding: 24px;
+}
+@media (max-width: 800px) {
+  .connection-banner {
+    flex-wrap: wrap;
+  }
+  .connection-banner-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+}
+/* With a banner above it, the selling grid shares the viewport height instead
+   of pushing the page to scroll under the fixed top bar. */
+@media (min-width: 651px) {
+  .selling-main:has(> .connection-banner, > .update-bar) {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - var(--topbar));
+  }
+  .selling-main:has(> .connection-banner, > .update-bar)
+    > div:not([hidden]):has(> .sell-layout) {
+    flex: 1;
+    min-height: 0;
+  }
+  .selling-main:has(> .connection-banner, > .update-bar) .sell-layout {
+    height: 100%;
+  }
+}

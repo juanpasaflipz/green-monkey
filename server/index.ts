@@ -1,11 +1,4 @@
 import {
-  synchronizeOffline,
-  reviewOffline,
-  reconcileOffline,
-  listOfflineRecoveries,
-  resolveOfflineRecoveryTask,
-} from "./offline-sync.js";
-import {
   requireSelling,
   freeSelection,
   saveFreeSelection,
@@ -240,15 +233,6 @@ route("post", "/kitchen/:id/voids/ack", (tx, s, req) =>
 );
 route("post", "/settlements", (tx, s, req) =>
   recordSettlement(tx, s, req.body),
-);
-route("post", "/sync", (tx, s, req) => synchronizeOffline(tx, s, req.body));
-route("post", "/sync/review", (tx, s, req) => reviewOffline(tx, s, req.body));
-route("post", "/sync/reconcile", (tx, s, req) =>
-  reconcileOffline(tx, s, req.body),
-);
-route("get", "/sync/recoveries", (tx, s) => listOfflineRecoveries(tx, s));
-route("post", "/sync/recoveries/resolve", (tx, s, req) =>
-  resolveOfflineRecoveryTask(tx, s, req.body),
 );
 route("get", "/operations/:id", async (tx, s, req) => {
   permit(s, managers);

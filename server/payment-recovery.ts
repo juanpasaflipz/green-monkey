@@ -43,16 +43,18 @@ export async function paymentRecoveryStatus(tx: Tx, s: Session, raw: unknown) {
   const [operation] =
     await tx`select kind,hash,result from operations where id=${attempt.payload.operationId}`;
   if (operation) {
-    if (
-      operation.kind !== "payment" ||
-      operation.hash !==
-        hash(
-          JSON.stringify({
-            orderId: attempt.orderId,
-            ...paymentInput.parse(attempt.payload),
-          }),
-        )
-    )
+    const same =
+      operation.hash ===
+      hash(
+        JSON.stringify({
+          orderId: attempt.orderId,
+          ...paymentInput.parse(attempt.payload),
+        }),
+      );
+    // A manager verified the guest was not charged (OFFLINE-RECOVERY-05).
+    if (same && operation.kind === "payment_attempt_discarded")
+      return { state: "discarded" as const, retryAllowed: false };
+    if (operation.kind !== "payment" || !same)
       throw new DomainError("operation_conflict", 409);
     return { state: "committed" as const, result: operation.result };
   }

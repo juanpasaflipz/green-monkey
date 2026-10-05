@@ -96,6 +96,7 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
     roundRows,
     allocationRows,
     recoveryRows,
+    offlineRows,
   ] = await Promise.all([
     tx`select o.*,o.business_date::text as business_day,e.name as waiter_name,
           opener.name as opened_by,t.name as table_name
@@ -126,6 +127,11 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
           on t.tenant_id=r.tenant_id and t.recovery_id=r.id
         where r.order_id=any(${list}::uuid[])
         group by r.tenant_id,r.id`,
+    // offline (026): provisional number and sale time of orders created by sync.
+    tx`select distinct on (order_id) order_id,provisional_number,sold_at
+        from offline_sync_records
+        where order_id=any(${list}::uuid[]) and kind in ('sale','order')
+        order by order_id,sold_at`,
   ]);
   const linesBy = byOrder(
     lineRows as unknown as {
@@ -150,6 +156,9 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
   const recoveryBy = byOrder(
     recoveryRows as unknown as ({ order_id: string } & Record<string, any>)[],
   );
+  const offlineBy = byOrder(
+    offlineRows as unknown as ({ order_id: string } & Record<string, any>)[],
+  );
   const found = new Map(orders.map((o) => [o.id as string, o]));
   return ids.flatMap((orderId) => {
     const o = found.get(orderId);
@@ -170,6 +179,7 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
     const allocated = sum(allocations.map((a) => a.amount));
     const paid = sum(tenders.map((t) => t.amount));
     const recovery = recoveryBy.get(orderId)?.[0];
+    const offline = offlineBy.get(orderId)?.[0];
     return [
       {
         recovery: recovery
@@ -236,6 +246,12 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
         createdAt: o.created_at.toISOString(),
         rounds,
         tenders,
+        offline: offline
+          ? {
+              provisionalNumber: offline.provisional_number,
+              soldAt: offline.sold_at.toISOString(),
+            }
+          : null,
       } as Order,
     ];
   });
@@ -285,13 +301,13 @@ export async function createOrder(
   tx: Tx,
   s: Session,
   raw: unknown,
-  authorizedOfflineRecovery = false,
+  offline?: { businessDate: string },
 ) {
   permit(s, operators);
   const input = orderInput.parse(raw);
   return once(tx, s, input.operationId, "create_order", input, async () => {
     if (["qr", "kiosk"].includes(input.channel)) await requirePro(tx);
-    else if (!authorizedOfflineRecovery) await requireSelling(tx, s);
+    else if (!offline) await requireSelling(tx, s);
     const lines = quote(
       input.lines,
       await catalog(tx),
@@ -302,17 +318,19 @@ export async function createOrder(
         await tx`select id from dining_tables where id=${input.tableId} and archived_at is null for share`;
       if (!t) throw new DomainError("invalid_table", 400);
     }
-    const date = businessDate(
-      new Date().toISOString(),
-      s.restaurant.timezone,
-      s.restaurant.cutoff,
-    );
+    const date =
+      offline?.businessDate ??
+      businessDate(
+        new Date().toISOString(),
+        s.restaurant.timezone,
+        s.restaurant.cutoff,
+      );
     const [number] =
       await tx`insert into order_numbers(tenant_id,business_date,value) values(${s.tenantId},${date},1) on conflict(tenant_id,business_date) do update set value=order_numbers.value+1 returning value`;
     const orderId = randomUUID();
     await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))},${tx.json(s.restaurant)})`;
     await append(tx, s, orderId, lines, 1, {
-      stockPolicy: authorizedOfflineRecovery ? "allow" : undefined,
+      stockPolicy: offline ? "allow" : undefined,
     });
     await audit(tx, s, "order.created", orderId, {
       channel: input.channel,

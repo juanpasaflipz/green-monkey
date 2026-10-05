@@ -4,9 +4,10 @@ import { lazy, Suspense } from "react";
 import Landing from "./marketing/Landing";
 const App = lazy(() => import("./App"));
 import { PublicOrdering } from "./features/PublicOrdering";
+import { PlatformGate } from "./features/offline/PlatformGate";
+import { registerServiceWorker } from "./service-worker";
 import "@fontsource-variable/inter/opsz.css";
 import "./styles.css";
-declare const __BUILD_ID__: string;
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <Suspense fallback={<p role="status">Green Monkey…</p>}>
@@ -17,12 +18,13 @@ createRoot(document.getElementById("root")!).render(
         !new URLSearchParams(location.search).has("auth_error") ? (
         <Landing />
       ) : (
-        <App />
+        <PlatformGate>
+          <App />
+        </PlatformGate>
       )}
     </Suspense>
   </React.StrictMode>,
 );
+// The worker is registered at a fixed URL with its build id baked in (OFF-10).
 if ("serviceWorker" in navigator && import.meta.env.PROD)
-  void navigator.serviceWorker.register(
-    `/sw.js?revision=${encodeURIComponent(__BUILD_ID__)}`,
-  );
+  void registerServiceWorker();

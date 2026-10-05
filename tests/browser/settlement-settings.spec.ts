@@ -88,14 +88,19 @@ test("one of three items is paid once and stays allocated after refresh", async 
   await expect(
     page.getByRole("dialog").getByLabel("Importe", { exact: true }),
   ).toHaveValue("45.00");
+  // The payment commits but its response is lost, and so is the client's one
+  // automatic idempotent retry, so the recovery path is exercised.
+  let paymentCalls = 0;
   await page.route(
     "**/api/orders/*/payments",
     async (route) => {
-      const response = await route.fetch();
-      expect(response.ok()).toBe(true);
+      if (++paymentCalls === 1) {
+        const response = await route.fetch();
+        expect(response.ok()).toBe(true);
+      }
       await route.abort("failed");
     },
-    { times: 1 },
+    { times: 2 },
   );
   await page
     .getByRole("button", { name: "Confirmar cobro", exact: true })
@@ -103,6 +108,8 @@ test("one of three items is paid once and stays allocated after refresh", async 
   await expect(
     page.getByRole("dialog").getByText(/Hay un pago anterior por confirmar/),
   ).toBeVisible();
+  // Wait until the lost request and its retry have both failed.
+  await expect(page.getByRole("dialog").getByRole("alert")).toBeVisible();
   await page.screenshot({ path: "docs/evidence/payment-recovery-1440.png" });
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).not.toBeVisible();

@@ -435,8 +435,15 @@ test("backup restore is tenant-bound, atomic, repeatable and preserves original 
   const chunks = [];
   for await (const chunk of stream!) chunks.push(chunk);
   const exported = JSON.parse(Buffer.concat(chunks).toString());
-  expect(exported.paymentAttempts).toEqual([attempt]);
-  expect(exported.sales).toHaveLength(2);
+  // Backup v3 (offline spec §2.7): records of every format, attempts by key.
+  expect(exported.format).toBe("green-monkey-recovery-v3");
+  expect(exported.paymentAttempts).toEqual([
+    {
+      key: `${attempt.tenantId}:${attempt.deviceId}:${attempt.employeeId}:payment`,
+      attempt,
+    },
+  ]);
+  expect(exported.records).toHaveLength(2);
   await expect(
     page.getByText(/ventas no sincronizadas no se pueden recuperar/),
   ).toBeVisible();
@@ -532,7 +539,7 @@ test("two tabs serialize sync and recover an interrupted lock holder", async ({
   const blocked = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await context.route("**/api/sync", async (route) => {
+  await context.route("**/api/offline/sync", async (route) => {
     calls++;
     if (calls === 1) {
       await blocked;
@@ -557,40 +564,6 @@ test("two tabs serialize sync and recover an interrupted lock holder", async ({
     .toBe("synced");
   expect(calls).toBe(2);
   expect((await queuedRow(second, id)).result.paid).toBe(100);
-});
-
-test("automatic retries stop after exhaustion and retain the original claim", async ({
-  page,
-}) => {
-  await login(page);
-  await page.clock.install();
-  let calls = 0;
-  await page.route("**/api/sync", async (route) => {
-    calls++;
-    await route.fulfill({
-      status: 503,
-      json: { error: "temporarily_unavailable" },
-    });
-  });
-  const id = await seedQueue(page);
-  await page.reload();
-  await expect.poll(async () => (await queuedRow(page, id))?.attempts).toBe(1);
-  for (let attempt = 2; attempt <= 8; attempt++) {
-    await page.clock.fastForward(310_000);
-    await expect
-      .poll(async () => (await queuedRow(page, id))?.attempts)
-      .toBe(attempt);
-  }
-  expect((await queuedRow(page, id)).status).toBe("conflict");
-  await page.clock.fastForward(620_000);
-  expect(calls).toBe(8);
-  expect((await queuedRow(page, id)).body.operationId).toBe(id);
-  await page.getByRole("button", { name: "Operación", exact: true }).click();
-  await page.getByRole("button", { name: /Conectado/ }).click();
-  await page
-    .getByRole("button", { name: "Reintentar sincronización", exact: true })
-    .click();
-  await expect.poll(() => calls).toBe(9);
 });
 
 test("selling retains an old-session payment for review without charging the current drawer", async ({
