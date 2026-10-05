@@ -17,6 +17,9 @@ GRANT UPDATE(consumed_at) ON oauth_login_attempts TO gm_app;
 GRANT SELECT,INSERT ON owner_accounts,owner_sessions,owner_memberships,organizations,restaurants TO gm_app;
 GRANT UPDATE(revoked) ON owner_sessions TO gm_app;
 GRANT INSERT ON signup_billing_intents TO gm_app;
+-- 024 service: kitchen feed version counter (no DELETE; the upsert needs UPDATE on the set columns)
+GRANT SELECT,INSERT ON kitchen_feed_versions TO gm_app;
+GRANT UPDATE(version,updated_at) ON kitchen_feed_versions TO gm_app;
 GRANT SELECT,INSERT ON owner_location_commands,restaurant_invitations,owner_browser_devices TO gm_app;
 GRANT UPDATE(revoked,accepted_by,accepted_at,employee_id) ON restaurant_invitations TO gm_app;
 GRANT UPDATE(free_location) ON restaurants TO gm_app;
