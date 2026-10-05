@@ -17,6 +17,7 @@ vi.mock("../src/api", async (importOriginal) => ({
 }));
 
 import { api } from "../src/api";
+import { syncPending } from "../src/offline-queue";
 import { resetConnectivityForTests } from "../src/connectivity";
 import { scope } from "../src/offline-keys";
 import {
@@ -761,5 +762,72 @@ describe("online payment guard (OFF-R5)", () => {
     await expect(
       assertNoUnsyncedPayment(s, serverOrder(uuid(79))),
     ).resolves.toBeUndefined();
+  });
+});
+
+/** A queued row as the builders store it (only the fields the loop reads). */
+function row(
+  s: Session,
+  over: Record<string, any> = {},
+  body: Record<string, any> = {},
+) {
+  const id = crypto.randomUUID();
+  return {
+    id,
+    scope: scope(s),
+    kind: body.kind ?? "sale",
+    status: "pending",
+    attempts: 0,
+    nextAt: 0,
+    body: {
+      formatVersion: 3,
+      kind: "sale",
+      operationId: id,
+      recordedAt: new Date().toISOString(),
+      sequence: 1,
+      ...body,
+    },
+    ...over,
+  };
+}
+
+describe("sync loop and table records", () => {
+  it("I5: a dependent row waits for its queued parent without counting attempts", async () => {
+    const s = session();
+    const parent = row(
+      s,
+      { status: "conflict", error: "settings_changed" },
+      { kind: "order", sequence: 1 },
+    );
+    const child = row(
+      s,
+      {},
+      {
+        kind: "payment",
+        sequence: 2,
+        target: { localOrderOperationId: parent.id },
+      },
+    );
+    await fakeDb.pending.put(parent);
+    await fakeDb.pending.put(child);
+    await syncPending(s, { reason: "poll" });
+    expect(mockedApi).not.toHaveBeenCalled();
+    expect(await fakeDb.pending.get(child.id)).toMatchObject({
+      status: "pending",
+      waitReason: "dependency",
+      attempts: 0,
+    });
+    await fakeDb.pending.update(parent.id, {
+      status: "synced",
+      result: { orderId: uuid(50) },
+      syncedAt: Date.now(),
+    });
+    mockedApi.mockResolvedValueOnce({ orderId: uuid(50), tenderId: uuid(51) });
+    await syncPending(s, { reason: "poll" });
+    expect(mockedApi).toHaveBeenCalledTimes(1);
+    expect(mockedApi.mock.calls[0]![1]).toEqual(child.body);
+    const synced = await fakeDb.pending.get(child.id);
+    expect(synced).toMatchObject({ status: "synced", attempts: 0 });
+    expect(synced!.waitReason).toBeUndefined();
   });
 });
