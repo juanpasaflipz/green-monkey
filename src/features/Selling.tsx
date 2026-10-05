@@ -134,8 +134,16 @@ export function Selling({
   const [tables, setTables] = useState<any[]>([]);
   const [cashSession, setCashSession] = useState<any>(null);
   const [notice, setNotice] = useState("");
-  /** Offers "Enviar como orden nueva" (closed check or unconfirmed send). */
-  const [closedCheck, setClosedCheck] = useState(false);
+  /**
+   * Offers "Enviar como orden nueva", and remembers which refusal offered it:
+   * "server" for a check the server closed or a send whose outcome is unknown
+   * (online only: the lines may already be on a check), "offline" for a paid
+   * check that refused an offline round (offline §2.3, offline_check_paid),
+   * whose lines were never saved, so the new order may be local.
+   */
+  const [closedCheck, setClosedCheck] = useState<false | "server" | "offline">(
+    false,
+  );
   const [lastAddedId, setLastAddedId] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   /** The order whose note "Editar nota" is editing (cart or receipt). */
@@ -371,7 +379,7 @@ export function Selling({
     }
     await replaceContext(null, d.order);
     if (target) {
-      setClosedCheck(true);
+      setClosedCheck("server");
       setError(t("serviceCheckClosedKeep"));
     }
   }
@@ -711,7 +719,7 @@ export function Selling({
           if (moved()) throw failedAfterSwitch(target, code);
           setCurrent(latest);
           if (checkStateOf(latest) === "closed") {
-            setClosedCheck(true);
+            setClosedCheck("server");
             setError(t("serviceCheckClosedKeep"));
             throw new HandledError(code, true);
           }
@@ -723,7 +731,7 @@ export function Selling({
         throw new HandledError(code);
       }
       if (code === "check_closed") {
-        setClosedCheck(true);
+        setClosedCheck("server");
         setError(t("serviceCheckClosedKeep"));
         throw new HandledError(code, true);
       }
@@ -755,7 +763,7 @@ export function Selling({
             return latest;
           }
           if (checkStateOf(latest) === "closed") {
-            setClosedCheck(true);
+            setClosedCheck("server");
             setError(t("serviceCheckClosedKeep"));
             throw new HandledError(code, true);
           }
@@ -768,13 +776,13 @@ export function Selling({
         if (!target) {
           // The outcome is unknown: the cashier checks Órdenes first, and only
           // "Enviar como orden nueva" gives the cart a new operation id.
-          setClosedCheck(true);
+          setClosedCheck("server");
           setError(t("serviceSendUnconfirmed"));
           throw new HandledError(code, true);
         }
       }
       // offline §2.3: a paid check takes no offline round; offer a new order.
-      if (code === "offline_check_paid") setClosedCheck(true);
+      if (code === "offline_check_paid") setClosedCheck("offline");
       if (CATALOG_CODES.includes(code))
         window.dispatchEvent(new Event("gm-menu-refresh"));
       setError(translateError(code, locale));
@@ -1314,7 +1322,14 @@ export function Selling({
             <p>{error}</p>
             {closedCheck && (
               <Button
-                disabled={busy || !online || cart.blocked}
+                disabled={
+                  busy ||
+                  cart.blocked ||
+                  (closedCheck === "offline"
+                    ? // A new order without the server is a local open order.
+                      !online && !!offline.sendBlockReason
+                    : !online)
+                }
                 onClick={() => void sendAsNew().catch(() => {})}
               >
                 {t("serviceSendAsNew")}

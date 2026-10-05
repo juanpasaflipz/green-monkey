@@ -146,7 +146,6 @@ export default defineArea({
     offlineOpSettingsChanged: "Servicio de mesa sin conexión cambiado",
     offlinePayCachedWarning:
       "Esta orden se guardó antes de perder la conexión. Si pudo cobrarse en otro dispositivo, no la cobres hasta confirmarlo.",
-    offlineSendAsNew: "Enviar como orden nueva",
     offlineSentToDevice:
       "Comanda guardada en este dispositivo. Cocina no la recibe por la red: imprímela o cántala.",
     offlineAvailableOnReconnect:
@@ -383,7 +382,6 @@ export default defineArea({
     offlineOpSettingsChanged: "Offline table service changed",
     offlinePayCachedWarning:
       "This order was saved before the connection dropped. If it may have been paid on another device, do not charge it until you confirm.",
-    offlineSendAsNew: "Send as a new order",
     offlineSentToDevice:
       "Kitchen ticket saved on this device. The kitchen does not receive it over the network: print it or call it out.",
     offlineAvailableOnReconnect:
