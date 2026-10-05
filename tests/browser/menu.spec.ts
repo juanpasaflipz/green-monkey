@@ -454,6 +454,19 @@ test("ingredients: opening stock, recipe link, Negativo badge under allow, block
     await page.getByRole("button", { name: "Insumos", exact: true }).click();
     await expect(row).toContainText("Negativo");
     await expect(row).toContainText("no indica faltante por sí sola");
+    // History: translated causes and the running balance, never internal
+    // reason codes such as "dispatch" (MENU-4).
+    await row.getByRole("button", { name: "Movimientos", exact: true }).click();
+    dialog = page.getByRole("dialog", { name: `Movimientos de ${ingredient}` });
+    const sale = dialog.locator("tbody tr").filter({ hasText: "Venta" });
+    await expect(sale).toHaveCount(1);
+    await expect(sale.locator('td[data-label="Saldo"]')).toHaveText("-1");
+    await expect(
+      dialog.locator("tbody tr").filter({ hasText: "Existencia inicial" }),
+    ).toHaveCount(1);
+    await expect(dialog).not.toContainText("dispatch");
+    await dialog.getByRole("button", { name: "Cerrar" }).click();
+    await expect(dialog).not.toBeVisible();
     await page
       .getByRole("button", { name: "Existencias", exact: true })
       .click();

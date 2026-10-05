@@ -115,6 +115,13 @@ cannot be archived (`stock_in_use`); archived items leave the recipe pickers and
 Existencias. Creating and editing stock items, and recipe or cost changes, need
 Pro; archiving does not.
 
+**History.** Insumos → Movimientos lists each movement with its translated cause
+(Venta, Compra recibida, Merma, Conteo físico, Existencia inicial, Anulación,
+Preparación), the running balance ("Saldo") and who recorded it. The reason is
+shown only for movements a person explains (receipts, waste, counts and prep);
+sales, voids and opening stock carry internal reasons that are not displayed.
+Dates use the restaurant's time zone.
+
 **Cached balance (DB-4).** `stock_items.on_hand` is maintained by the
 `stock_movements_ledger` BEFORE INSERT trigger (SECURITY DEFINER, pinned
 `search_path`, EXECUTE revoked from PUBLIC):

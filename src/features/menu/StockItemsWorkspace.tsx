@@ -30,13 +30,19 @@ const causeKeys: Record<string, Key> = {
   prep_input: "menuCausePrepInput",
   prep_output: "menuCausePrepOutput",
 };
+/**
+ * Causes written by the system carry an internal reason ("dispatch",
+ * "void_return", "Existencia inicial"); the translated cause says it all.
+ * Receipts, waste, counts and prep keep the reason the person typed.
+ */
+const systemCauses = new Set(["sale", "void", "opening"]);
 const negative = (i: StockItem) => new Decimal(i.onHand).isNegative();
 const low = (i: StockItem) =>
   new Decimal(i.onHand).lte(new Decimal(i.threshold));
 
 /** Insumos: stock item setup, the negative-stock policy and history. */
 export function StockItemsWorkspace({
-  session: _session,
+  session,
   locale,
   online,
 }: {
@@ -145,6 +151,7 @@ export function StockItemsWorkspace({
     new Date(iso).toLocaleString(locale === "es" ? "es-MX" : "en-US", {
       dateStyle: "medium",
       timeStyle: "short",
+      timeZone: session.restaurant.timezone,
     });
 
   return (
@@ -462,9 +469,17 @@ export function StockItemsWorkspace({
                       {m.balanceAfter !== null ? qty(m.balanceAfter) : "—"}
                     </td>
                     <td data-label={t("menuStockReason")}>
-                      {m.reason}
-                      {m.actorName && (
-                        <small className="muted"> · {m.actorName}</small>
+                      {systemCauses.has(m.cause) ? (
+                        m.actorName && (
+                          <small className="muted">{m.actorName}</small>
+                        )
+                      ) : (
+                        <>
+                          {m.reason}
+                          {m.actorName && (
+                            <small className="muted"> · {m.actorName}</small>
+                          )}
+                        </>
                       )}
                     </td>
                   </tr>
