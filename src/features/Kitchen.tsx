@@ -93,7 +93,9 @@ export function Kitchen({
   const [notedIds, setNotedIds] = useState<Set<string>>(new Set());
   const [announcement, setAnnouncement] = useState("");
   const [actionError, setActionError] = useState("");
-  const [busyId, setBusyId] = useState<string | null>(null);
+  /** SVC-K5: tickets (and "clear") with a request in flight, one per ticket. */
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
+  const busyRef = useRef(new Set<string>());
   const [audioState, setAudioState] = useState<string>("none");
   const [recentOpen, setRecentOpen] = useState(false);
   const [clearOpen, setClearOpen] = useState(false);
@@ -268,6 +270,23 @@ export function Kitchen({
     [],
   );
 
+  useEffect(() => {
+    // SVC-K8: the system can suspend or interrupt Web Audio (a call, a
+    // notification, an app switch). Try to resume when the screen is shown
+    // again; if that is refused, the live state shows "Activar sonido" again.
+    const visibility = () => {
+      const context = audio.current;
+      if (document.hidden || !context || soundRef.current !== "on") return;
+      if (context.state !== "running")
+        void context
+          .resume()
+          .catch(() => {})
+          .finally(() => setAudioState(context.state));
+    };
+    document.addEventListener("visibilitychange", visibility);
+    return () => document.removeEventListener("visibilitychange", visibility);
+  }, []);
+
   async function enableSound() {
     // Autoplay policy: the context is created or resumed inside the tap.
     try {
@@ -276,7 +295,12 @@ export function Kitchen({
         (window as unknown as { webkitAudioContext?: typeof AudioContext })
           .webkitAudioContext;
       if (!Ctor) return;
-      audio.current ??= new Ctor();
+      if (!audio.current) {
+        const context = new Ctor();
+        // SVC-K8: the label and the banner follow the live state.
+        context.onstatechange = () => setAudioState(context.state);
+        audio.current = context;
+      }
       await audio.current.resume();
       setAudioState(audio.current.state);
       setSound("on");
@@ -286,18 +310,47 @@ export function Kitchen({
     }
   }
 
-  async function act(id: string, fn: () => Promise<unknown>) {
-    setBusyId(id);
+  /**
+   * SVC-K5: one request per ticket. A ticket stays disabled while its own
+   * request is in flight (another ticket's request never re-enables it), and
+   * on success it shows the result at once: a feed fetched before the change
+   * is discarded, so the old action never reappears under the finger.
+   */
+  async function act(
+    id: string,
+    fn: () => Promise<unknown>,
+    apply?: (rounds: KitchenRound[]) => KitchenRound[],
+  ) {
+    if (busyRef.current.has(id)) return;
+    busyRef.current.add(id);
+    setBusyIds(new Set(busyRef.current));
     try {
       await fn();
+      if (apply) {
+        generation.current++;
+        setFeed((f) => (f ? { ...f, rounds: apply(f.rounds) } : f));
+      }
       setActionError("");
     } catch (e) {
       setActionError(translateError((e as Error).message, locale));
     } finally {
-      setBusyId(null);
+      busyRef.current.delete(id);
+      setBusyIds(new Set(busyRef.current));
       poll.refresh();
     }
   }
+  const progressed =
+    (id: string, state: "seen" | "ready" | "completed") =>
+    (rounds: KitchenRound[]) =>
+      state === "completed"
+        ? rounds.filter((x) => x.id !== id)
+        : rounds.map((x) =>
+            x.id !== id
+              ? x
+              : state === "seen"
+                ? { ...x, seenAt: x.seenAt ?? new Date().toISOString() }
+                : { ...x, state: "ready" as const },
+          );
 
   const rounds = feed?.rounds ?? [];
   const recent = feed?.recent ?? [];
@@ -413,7 +466,12 @@ export function Kitchen({
           </Button>
         </div>
       )}
-      {feed?.truncated && <p className="muted">{t("serviceKdsTruncated")}</p>}
+      {feed?.truncated && (
+        // SVC-K7: new tickets fall outside a truncated feed, so say so loudly.
+        <p className="warning-panel" role="alert">
+          {t("serviceKdsTruncated")}
+        </p>
+      )}
       {beforeTickets}
       <div className="kitchen-grid">
         {rounds.map((r) => {
@@ -429,6 +487,10 @@ export function Kitchen({
           const action = actionFor(r);
           const allowed =
             action && (action.state === "completed" ? canServe : canProgress);
+          // SVC-K6: a delivered ticket leaves the screen, and with it the
+          // only place its void is acknowledged, so the void comes first.
+          const serveBlocked =
+            action?.state === "completed" && r.pendingVoids.length > 0;
           const orderAllergy = ALLERGY_PATTERN.test(r.orderNote);
           const roundAllergy = ALLERGY_PATTERN.test(r.roundNote);
           return (
@@ -543,12 +605,18 @@ export function Kitchen({
                   {canAckVoids && (
                     <Button
                       className="full"
-                      disabled={busyId === r.id}
+                      disabled={busyIds.has(r.id)}
                       onClick={() =>
-                        void act(r.id, () =>
-                          api("/kitchen/" + r.id + "/voids/ack", {
-                            operationId: crypto.randomUUID(),
-                          }),
+                        void act(
+                          r.id,
+                          () =>
+                            api("/kitchen/" + r.id + "/voids/ack", {
+                              operationId: crypto.randomUUID(),
+                            }),
+                          (rounds) =>
+                            rounds.map((x) =>
+                              x.id === r.id ? { ...x, pendingVoids: [] } : x,
+                            ),
                         )
                       }
                     >
@@ -560,17 +628,23 @@ export function Kitchen({
               <p>
                 {t(r.state === "ready" ? "ready" : r.seenAt ? "seen" : "sent")}
               </p>
-              {action && allowed && (
+              {serveBlocked && (
+                <p className="muted tiny">{t("serviceKdsAckFirst")}</p>
+              )}
+              {action && allowed && !serveBlocked && (
                 <Button
                   variant="primary"
                   className="full"
-                  disabled={busyId === r.id}
+                  disabled={busyIds.has(r.id)}
                   onClick={() =>
-                    void act(r.id, () =>
-                      api("/kitchen/" + r.id, {
-                        operationId: crypto.randomUUID(),
-                        state: action.state,
-                      }),
+                    void act(
+                      r.id,
+                      () =>
+                        api("/kitchen/" + r.id, {
+                          operationId: crypto.randomUUID(),
+                          state: action.state,
+                        }),
+                      progressed(r.id, action.state),
                     )
                   }
                 >
@@ -609,7 +683,7 @@ export function Kitchen({
                   </span>
                   {canRecall && (
                     <Button
-                      disabled={busyId === r.id}
+                      disabled={busyIds.has(r.id)}
                       onClick={() =>
                         void act(r.id, async () => {
                           await api(`/service/kitchen/rounds/${r.id}/recall`, {
@@ -645,11 +719,13 @@ export function Kitchen({
           <div className="row">
             <Button
               variant="primary"
-              disabled={busyId === "clear"}
+              disabled={busyIds.has("clear")}
               onClick={() =>
                 void act("clear", async () => {
+                  // SVC-K9: only the station on screen, matching the count.
                   await api("/service/kitchen/clear-stale", {
                     operationId: clearKey.current,
+                    station,
                   });
                   clearKey.current = crypto.randomUUID();
                   setClearOpen(false);

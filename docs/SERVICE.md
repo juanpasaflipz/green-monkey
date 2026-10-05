@@ -127,13 +127,26 @@ cached before the deploy keep working. A later contract change removes them.
   It is never bumped by payments, settlements, refunds or cash commands, because
   those lock several orders and the drawer one after another. DB test "kitchen
   feed and progress do not deadlock" runs mixed concurrent bursts.
-- The feed is bounded to the 200 oldest open rounds ("Se muestran los 200
-  tickets más antiguos") and excludes rounds held for offline review.
+- The feed is bounded to the 200 oldest open rounds and excludes rounds held
+  for offline review. A truncated feed shows an alert that new tickets do not
+  appear until tickets are delivered and that a manager can retire the ones
+  from previous days.
 - Tickets show the order note, round note and line notes (allergy notes are
   emphasized), every modifier, voided quantities and pending cancellations.
 - New tickets get a highlight, an aria-live announcement and, after a tap on
   **Activar sonido**, a beep (browsers block audio until a tap after each
   reload; a banner says so). Pending cancellations announce with a lower tone.
+  The button and the banner follow the live audio state: when the system
+  suspends or interrupts audio (a call, a notification, an app switch) the
+  screen tries to resume it when shown again and otherwise asks for
+  **Activar sonido** again.
+- Each ticket's action stays disabled while its own request is in flight
+  (another ticket's request never re-enables it) and shows the next step as
+  soon as it succeeds; a feed fetched before the change is discarded.
+- **Marcar entregado** waits for **Enterado de la cancelación**: a delivered
+  ticket leaves the screen, and with it the only place a pending cancellation
+  is acknowledged, so the server answers `void_ack_required` and the ticket
+  says "Confirma la cancelación antes de marcar el ticket como entregado."
 - When the order note of a ticket already on screen changes (**Editar nota**),
   the ticket is alerted like a new one: highlight with a "Nota actualizada"
   badge, the announcement "Nota actualizada en ticket #N", the beep and, when
@@ -143,8 +156,11 @@ cached before the deploy keep working. A later contract change removes them.
   served.
 - **Entregados recientes** recalls tickets served in the last 2 hours of the
   current business day. Managers can retire tickets left open from previous
-  business days; the action is audited and acknowledges their pending
-  cancellations, and retired tickets are never listed or recallable.
+  business days for the station on screen (the count on the button is that
+  station's; `POST /api/service/kitchen/clear-stale` takes an optional
+  `station`, default all); the action is audited with the station and
+  acknowledges their pending cancellations, and retired tickets are never
+  listed or recallable.
 - The selected station, sound preference and auto-print setting are per device.
   The screen requests a wake lock when the browser supports it; dedicated KDS
   devices should also disable screen sleep.

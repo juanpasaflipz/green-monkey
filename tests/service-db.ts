@@ -13,7 +13,11 @@ import {
   recordPayment,
 } from "../server/orders.js";
 import { assignService, progressPreparation } from "../server/service.js";
-import { verifyApproval, voidLines } from "../server/voids.js";
+import {
+  acknowledgeVoids,
+  verifyApproval,
+  voidLines,
+} from "../server/voids.js";
 import {
   closeCheck,
   listOrders,
@@ -1170,6 +1174,72 @@ try {
     assert.equal(again.cleared, 0);
   });
 
+  await test("clear stale can be limited to the station on screen", async () => {
+    const o = await newOrder({ lines: [{}, { productId: drink }] });
+    await asAdmin(
+      (
+        tx,
+      ) => tx`update orders set business_date=business_date-1,number=${700000 + Math.floor(Math.random() * 90000)}
+        where tenant_id=${tenantId} and id=${o.id}`,
+    );
+    const states = async () =>
+      Object.fromEntries(
+        (await read(o.id)).rounds.map((r) => [r.station, r.state]),
+      );
+    await run(manager, (tx) =>
+      clearStaleRounds(tx, manager, {
+        operationId: randomUUID(),
+        station: "bar",
+      }),
+    );
+    assert.deepEqual(await states(), { kitchen: "active", bar: "completed" });
+    const [audit] = await run(
+      owner,
+      (tx) =>
+        tx`select detail from audit where operation='kitchen.cleared' order by created_at desc limit 1`,
+    );
+    assert.equal(audit.detail.station, "bar");
+    await rejects(
+      run(manager, (tx) =>
+        clearStaleRounds(tx, manager, {
+          operationId: randomUUID(),
+          station: "terraza",
+        }),
+      ),
+      /invalid_input|ZodError|invalid_enum|Invalid/i,
+    );
+    await run(manager, (tx) =>
+      clearStaleRounds(tx, manager, {
+        operationId: randomUUID(),
+        station: "kitchen",
+      }),
+    );
+    assert.deepEqual(await states(), {
+      kitchen: "completed",
+      bar: "completed",
+    });
+  });
+
+  await test("a ticket with an unacknowledged void is not delivered until the kitchen acknowledges it", async () => {
+    const o = await newOrder({ lines: [{ quantity: 3 }] });
+    const r = kitchenRound(o);
+    await progress(r.id, "seen");
+    await progress(r.id, "ready");
+    const voided = await voidAs(owner, o, 1);
+    assert.equal(voided.voids!.at(-1)!.kitchenPending, true);
+    await rejects(progress(r.id, "completed"), "void_ack_required");
+    // Runners may deliver, but not past the kitchen's acknowledgement.
+    await rejects(progress(r.id, "completed", server), "void_ack_required");
+    assert.equal((await read(o.id)).rounds[0].state, "ready");
+    await run(kitchen, (tx) =>
+      acknowledgeVoids(tx, kitchen, r.id, { operationId: randomUUID() }),
+    );
+    await progress(r.id, "completed", server);
+    const done = await read(o.id);
+    assert.equal(done.state, "completed");
+    assert.equal(done.voids!.at(-1)!.kitchenPending, false);
+  });
+
   await test("external payments ignore received and store references only for external tenders", async () => {
     const o = await newOrder({
       mode: "dine_in",
@@ -1444,6 +1514,8 @@ try {
       "overpayment",
       "check_closed",
       "unallocated_history",
+      // SVC-K6: completing a round whose void the kitchen has not acknowledged.
+      "void_ack_required",
     ];
     // Three bursts of 20 mixed commands on 3 orders: rounds, progress, voids,
     // payments and grouped settlements that interleave order and drawer locks.

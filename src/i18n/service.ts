@@ -111,7 +111,10 @@ export default defineArea({
     serviceKdsClearStale: "Retirar tickets de días anteriores ({n})",
     serviceKdsClearStaleConfirm:
       "Se marcarán como entregados {n} tickets de días anteriores. Queda registrado quién lo hizo.",
-    serviceKdsTruncated: "Se muestran los 200 tickets más antiguos.",
+    serviceKdsTruncated:
+      "Se muestran los 200 tickets más antiguos; los nuevos no aparecen hasta que se entreguen tickets. Un gerente puede retirar los de días anteriores.",
+    serviceKdsAckFirst:
+      "Confirma la cancelación antes de marcar el ticket como entregado.",
     serviceKdsDismiss: "Descartar",
     serviceKdsUpdated: "Última actualización {time}",
     serviceKdsReady: "Listo",
@@ -362,7 +365,10 @@ export default defineArea({
     serviceKdsClearStale: "Clear tickets from previous days ({n})",
     serviceKdsClearStaleConfirm:
       "{n} tickets from previous days will be marked delivered. Who did it is recorded.",
-    serviceKdsTruncated: "Showing the 200 oldest tickets.",
+    serviceKdsTruncated:
+      "Showing the 200 oldest tickets; new ones do not appear until tickets are delivered. A manager can clear those from previous days.",
+    serviceKdsAckFirst:
+      "Acknowledge the cancellation before marking the ticket delivered.",
     serviceKdsDismiss: "Dismiss",
     serviceKdsUpdated: "Last update {time}",
     serviceKdsReady: "Ready",
@@ -512,6 +518,10 @@ export default defineArea({
     round_not_recallable: [
       "Ese ticket ya no se puede regresar a la pantalla.",
       "That ticket can no longer be recalled.",
+    ],
+    void_ack_required: [
+      "Cocina debe confirmar la cancelación antes de marcar el ticket como entregado.",
+      "The kitchen must acknowledge the cancellation before the ticket is marked delivered.",
     ],
     // Previously untranslated generic codes (FOH-8 recount), minus the codes
     // owned by access, menu and offline (wave contracts 3.12).

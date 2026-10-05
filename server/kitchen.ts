@@ -153,6 +153,13 @@ export async function kitchenFeed(
 }
 
 const operationInput = z.object({ operationId: id }).strict();
+/** SVC-K9: the clear acts on the station the manager sees (default all). */
+const clearInput = z
+  .object({
+    operationId: id,
+    station: z.enum(["all", "kitchen", "bar"]).default("all"),
+  })
+  .strict();
 
 /** Returns a round bumped in the last two hours to the screen as ready. */
 export async function recallRound(
@@ -217,17 +224,20 @@ export async function clearStaleRounds(
   raw: unknown,
 ): Promise<{ cleared: number }> {
   permit(s, managers);
-  const p = operationInput.parse(raw);
+  const p = clearInput.parse(raw);
   return once(tx, s, p.operationId, "kitchen.clear_stale", p, async () => {
     const before = businessDate(
       new Date().toISOString(),
       s.restaurant.timezone,
       s.restaurant.cutoff,
     );
+    const station =
+      p.station === "all" ? tx`` : tx`and r.station = ${p.station}`;
     const ids = (
       await tx`select distinct r.order_id from rounds r
         join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id
         where r.state <> 'completed' and r.state <> 'offline_review' and o.business_date < ${before}
+          ${station}
         order by 1 limit 500`
     ).map((r) => r.order_id as string);
     if (!ids.length) return { cleared: 0 };
@@ -238,6 +248,7 @@ export async function clearStaleRounds(
       from orders o
       where o.tenant_id=r.tenant_id and o.id=r.order_id and r.order_id = any(${tx.array(ids)}::uuid[])
         and r.state <> 'completed' and r.state <> 'offline_review' and o.business_date < ${before}
+        ${station}
       returning r.id,r.order_id,r.number,r.station`;
     if (cleared.length)
       await tx`update line_voids v set kitchen_acknowledged_at=now(),kitchen_acknowledged_by=${s.employeeId}
@@ -251,6 +262,7 @@ export async function clearStaleRounds(
     await audit(tx, s, "kitchen.cleared", s.tenantId, {
       rounds: cleared.map((c) => c.id),
       before,
+      station: p.station,
     });
     await bumpKitchenFeed(tx, s);
     return { cleared: cleared.length };

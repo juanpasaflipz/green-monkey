@@ -169,6 +169,87 @@ test("an order note edited after sending alerts the ticket the cook already saw"
   }
 });
 
+test("a ticket stays disabled while its own request is in flight and shows the next step at once", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  // SVC-K5: one shared busy id let another ticket's tap re-enable this one,
+  // and the old action stayed under the finger until the next poll.
+  await kitchenScreen(page);
+  const owner = await ownerPage(browser, baseURL!);
+  try {
+    const nameA = "Uno " + tag();
+    const nameB = "Dos " + tag();
+    await createOrder(owner, nameA);
+    await createOrder(owner, nameB);
+    const a = page.locator(".kitchen-ticket").filter({ hasText: nameA });
+    const b = page.locator(".kitchen-ticket").filter({ hasText: nameB });
+    await expect(a).toBeVisible({ timeout: 15000 });
+    await expect(b).toBeVisible({ timeout: 15000 });
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let held = 0;
+    await page.route("**/api/kitchen/*", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      held++;
+      await gate;
+      await route.continue();
+    });
+    const ackA = a.getByRole("button", { name: "Confirmar recepción" });
+    await ackA.click();
+    await expect(ackA).toBeDisabled();
+    await b.getByRole("button", { name: "Confirmar recepción" }).click();
+    await expect.poll(() => held).toBe(2);
+    await expect(ackA).toBeDisabled();
+    // From here the feed never answers, so the next step can only come from
+    // each ticket's own result.
+    await page.route("**/api/service/kitchen*", (route) => route.abort());
+    release();
+    await expect(a.getByRole("button", { name: "Marcar listo" })).toBeEnabled();
+    await expect(b.getByRole("button", { name: "Marcar listo" })).toBeEnabled();
+    await expect(
+      a.getByRole("button", { name: "Confirmar recepción" }),
+    ).toHaveCount(0);
+  } finally {
+    await owner.close();
+  }
+});
+
+test("the sound button and banner follow the live audio state", async ({
+  page,
+}) => {
+  // SVC-K8: an interrupted or suspended context must not keep "Sonido activado".
+  await page.addInitScript(() => {
+    const Base = window.AudioContext;
+    (window as any).AudioContext = class extends Base {
+      constructor(options?: AudioContextOptions) {
+        super(options);
+        (window as any).__kdsAudio = this;
+      }
+    };
+  });
+  await kitchenScreen(page);
+  await page.getByRole("button", { name: "Activar sonido" }).click();
+  await expect(
+    page.getByRole("button", { name: "Sonido activado" }),
+  ).toBeVisible();
+  await page.evaluate(() => (window as any).__kdsAudio.suspend());
+  await expect(
+    page.getByRole("button", { name: "Activar sonido" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Toca «Activar sonido» para escuchar los tickets nuevos."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Activar sonido" }).click();
+  await expect(
+    page.getByRole("button", { name: "Sonido activado" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Toca «Activar sonido» para escuchar los tickets nuevos."),
+  ).toHaveCount(0);
+});
+
 test("kitchen polling is single-flight and backs off", async ({ page }) => {
   await kitchenScreen(page);
   let inFlight = 0,

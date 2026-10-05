@@ -103,6 +103,17 @@ export async function progressPreparation(
       // Lock the parent before a round, matching additions and financial commands.
       await tx`select id from orders where id=${pointer.order_id} for update`;
       const [r] = await tx`select * from rounds where id=${roundId} for update`;
+      if (p.state === "completed") {
+        // SVC-K6: a delivered round leaves the KDS, and with it the only place
+        // its void can be acknowledged. The kitchen confirms the void first.
+        const [pending] = await tx`select 1 from line_voids v
+          join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id
+          where v.tenant_id=${r.tenant_id} and v.order_id=${r.order_id}
+            and l.round=${r.number} and l.data->>'station'=${r.station}
+            and v.kitchen_ack_required and v.kitchen_acknowledged_at is null
+          limit 1`;
+        if (pending) throw new DomainError("void_ack_required", 409);
+      }
       if (p.state === "seen")
         await tx`update rounds set seen_at=coalesce(seen_at,now()) where id=${r.id}`;
       else {
