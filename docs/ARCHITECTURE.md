@@ -118,6 +118,8 @@ Scope IndexedDB by tenant/device/session and schema version. Drafts, queued cash
 
 Use a durable outbox with unique job keys, retries/backoff, leases, expiry, and a recovery screen. Workers may deliver at least once, so consumers deduplicate. Printer jobs have queued, claimed, acknowledged/failed/uncertain states. A socket write alone does not prove paper emerged; manual reprints record actor/reason and a duplicate mark. Separate kitchen screen acknowledgement from print status.
 
+Implemented ([Service](SERVICE.md), migration 024): every order has a kitchen state (`orders.state`, derived from rounds) and a check state (`check_state` open/paid/closed with `close_reason`); `refreshCheckState` runs after any write that changes total, lines, voids, tenders, mode or table, a closed check's total never changes (trigger), and the KDS polls `kitchen_feed_versions`, which `bumpKitchenFeed` advances as the last lock-taking statement of kitchen-affecting commands and never in money commands.
+
 For KDS updates, begin with efficient version/cursor polling or a recoverable SSE stream. Ensure reconnect catches missed events; avoid relying on in-memory broadcast across Railway replicas. Notifications must not hold a tenant transaction open indefinitely.
 
 Logs include correlation IDs, operation type, tenant identifier where appropriate, and safe error codes. Redact credentials, card data, PINs, invoice keys, and sensitive customer fields. Monitor provider-unknown attempts, job failures, stale kitchen devices, sync backlog, stock variance, and database saturation.

@@ -102,6 +102,8 @@ Tables use a clear list/grid with name, party/order count if recorded, waiter, e
 
 Kitchen tickets emphasize item quantities, modifiers, notes, table/call name, round, age, and source. Payment status is a separate badge. Filter by station; don't hide active orders just because another payment method created them. Changed/voided lines show a visible delta and acknowledgement. Deduplicate sounds and dispatch. Show a stale-data banner when the feed stops. Cancellation after preparation is an explicit exception, not an invisible deletion.
 
+Implemented as described in [Service](SERVICE.md): Órdenes and Mesas lists with check badges, **Liberar mesa** for paid dine-in checks, the KDS with station filter, round and order notes (allergy notes highlighted), void deltas with acknowledgement and a stale-feed banner, and receipts, pre-bills and kitchen tickets printed through one browser print path on 80 or 58 mm paper.
+
 ## Inventory and owner screens
 
 Inventory has task tabs: Existencias, Recibir, Preparación, Conteo, Mermas. A stock row shows unit, available/prepared quantity, threshold, recent movement, and action. Count entry keeps focus in a rapid-entry sequence, supports partial saved counts, and previews variance reasons before posting adjustments.
