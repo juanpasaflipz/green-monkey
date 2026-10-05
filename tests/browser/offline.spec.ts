@@ -1,5 +1,11 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { test, expect, type BrowserContext, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type Browser,
+  type BrowserContext,
+  type Page,
+} from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { transformServiceWorker } from "../../vite/sw-shell-plugin";
 
@@ -84,6 +90,19 @@ async function openDrawer(page: Page) {
 
 const pill = (page: Page, name: RegExp) =>
   page.locator(".top-actions").getByRole("button", { name });
+/** A catalog product button (never the cart's quantity buttons). */
+const product = (page: Page, name: string) =>
+  page.locator("button.product").filter({ hasText: name });
+/**
+ * Advances a page clock in 5 s steps, letting each step's requests finish
+ * (one big jump would fire their timeouts and flap the connection).
+ */
+async function advance(page: Page, ms: number) {
+  for (let elapsed = 0; elapsed < ms; elapsed += 5_000) {
+    await page.clock.runFor(5_000);
+    await page.waitForTimeout(150);
+  }
+}
 
 /** Saves the current draft as an offline cash sale; returns its provisional number. */
 async function saveOfflineSale(page: Page) {
@@ -380,6 +399,157 @@ test("Manual Trabajar sin conexión saves locally with API up; turning it off sy
   );
 });
 
+test("Manual offline mode never locks the device at sign-in: the next employee's session is used", async ({
+  page,
+}) => {
+  // Regression OFF-R16: with manual mode on, a successful login stayed on the
+  // login screen (and could restore another employee's cached session).
+  await login(page);
+  await pill(page, /^Conectado/).click();
+  await page.getByRole("switch", { name: "Trabajar sin conexión" }).check();
+  await expect(pill(page, /^Sin conexión \(manual\)/)).toBeVisible();
+  await page.getByRole("button", { name: "Salir", exact: true }).click();
+  const notice = page.locator(".login-form .warning-panel");
+  await expect(notice).toContainText(
+    "Este dispositivo está en modo sin conexión",
+  );
+  await expect(
+    notice.getByRole("button", { name: "Volver a conectarme", exact: true }),
+  ).toBeVisible();
+  await page.getByLabel("Usuario").fill("cashier");
+  await page.getByLabel("Contraseña o PIN").fill("123456");
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
+  await expect(page.locator(".store-text")).toContainText("Dani Demo");
+  await expect(pill(page, /^Sin conexión \(manual\)/)).toBeVisible();
+  expect((await session(page)).role).toBe("cashier");
+  // From the login screen the device can also leave manual mode.
+  await page.getByRole("button", { name: "Salir", exact: true }).click();
+  await notice
+    .getByRole("button", { name: "Volver a conectarme", exact: true })
+    .click();
+  await expect(notice).toHaveCount(0);
+});
+
+test("With offline table service off (the default), existing checks wait for the connection and only new orders paid in full are saved", async ({
+  page,
+  context,
+}) => {
+  // LD-7: table service ships off. GAP-4: nothing fetches open orders.
+  let openOrders = 0;
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/offline/open-orders")
+      openOrders++;
+  });
+  await login(page);
+  await openDrawer(page);
+  const order = await sendTableOnline(page, "Mesa 04");
+  await goOffline(context, page);
+  const existing = page.locator(".existing");
+  await expect(existing).toContainText(`#${order.number}`);
+  await expect(existing).toContainText("Disponible al volver la conexión");
+  await expect(
+    page.getByRole("button", { name: "Cobrar", exact: true }),
+  ).toBeDisabled();
+  await product(page, "Taco de hongos").click();
+  await expect(
+    page.getByRole("button", { name: "Enviar (sin conexión)", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Órdenes abiertas", exact: true }),
+  ).toHaveCount(0);
+  // A new order: no kitchen send without paying, no partial payment.
+  await page.getByRole("button", { name: "Nueva orden", exact: true }).click();
+  await product(page, "Taco de hongos").click();
+  await expect(page.locator(".cart-bottom")).toContainText(
+    "Sin conexión solo se cobran órdenes nuevas completas",
+  );
+  await expect(
+    page.getByRole("button", { name: "Enviar (sin conexión)", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Cobrar" });
+  await dialog.getByLabel("Importe").fill("20.00");
+  const save = dialog.getByRole("button", {
+    name: "Guardar cobro en este dispositivo",
+    exact: true,
+  });
+  await save.click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Sin conexión solo se guardan órdenes nuevas cobradas completas",
+  );
+  expect(
+    (await allRows(page)).filter((row) => row.status !== "synced"),
+  ).toHaveLength(0);
+  await dialog.getByLabel("Importe").fill("45.00");
+  await save.click();
+  await expect(page.locator(".receipt")).toContainText("Número provisional");
+  await nextSale(page);
+  await context.setOffline(false);
+  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  expect(openOrders).toBe(0);
+});
+
+test("Open orders are never fetched while offline table service is off", async ({
+  page,
+}) => {
+  // Regression GAP-4 / LD-7: every selling device fetched the snapshot every
+  // 120 s whether or not anything could use it.
+  const counts = { openOrders: 0, settings: 0 };
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/offline/open-orders") counts.openOrders++;
+    if (path === "/api/offline/settings" && request.method() === "GET")
+      counts.settings++;
+  });
+  await page.clock.install();
+  await login(page);
+  await expect.poll(() => counts.settings).toBeGreaterThan(0);
+  await page.waitForTimeout(500);
+  const settingsReads = counts.settings;
+  await advance(page, 300_000);
+  expect(counts.openOrders).toBe(0);
+  // The setting itself is read when selling opens, never polled.
+  expect(counts.settings).toBe(settingsReads);
+});
+
+test("Owners turn offline table service on and off on the Sync screen, labelled Beta", async ({
+  page,
+  browser,
+}) => {
+  await login(page);
+  await pill(page, /^Conectado/).click();
+  const setting = page.locator("fieldset.offline-table-service");
+  await expect(setting).toContainText("Servicio de mesa sin conexión");
+  await expect(setting).toContainText("Beta");
+  await expect(setting).toContainText("viene apagado");
+  const toggle = setting.getByRole("switch", {
+    name: "Activar servicio de mesa sin conexión",
+  });
+  await expect(toggle).not.toBeChecked();
+  try {
+    const saved = page.waitForResponse(
+      (r) =>
+        new URL(r.url()).pathname === "/api/offline/settings" &&
+        r.request().method() === "POST",
+    );
+    await toggle.check();
+    expect((await (await saved).json()).tableService).toBe(true);
+    await page.reload();
+    await pill(page, /^Conectado/).click();
+    await expect(toggle).toBeChecked();
+    await toggle.uncheck();
+    await expect(toggle).not.toBeChecked();
+    expect(
+      await page.evaluate(
+        async () =>
+          (await (await fetch("/api/offline/settings")).json()).tableService,
+      ),
+    ).toBe(false);
+  } finally {
+    await setTableService(browser, false);
+  }
+});
+
 test("Unresolved payment does not block new orders or offline sales", async ({
   page,
   context,
@@ -623,6 +793,8 @@ test("KDS shows offline sales in the review lane with provisional and server num
   context,
 }) => {
   // Regression OFF-4: synced offline orders reached the KDS as fresh tickets.
+  // OFF-R23: the lane shows the selected station only, so clearing the
+  // kitchen never marks the bar's rounds as served.
   await login(page);
   await openDrawer(page);
   await page.getByRole("button", { name: /Taco de hongos/ }).click();
@@ -661,22 +833,114 @@ test("KDS shows offline sales in the review lane with provisional and server num
   const lane = page.locator(".offline-review-lane");
   await expect(lane).toContainText("Ventas sin conexión por revisar");
   const cards = lane.locator(".offline-review-card").filter({ hasText: label });
-  await expect(cards).toHaveCount(2);
+  // Kitchen station (the default): only the kitchen round, and a count of
+  // what waits at the bar.
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("Cocina");
+  await expect(lane).toContainText(/\d+ por revisar en Barra\./);
   await expect(cards.first()).toContainText("Vendida");
   await expect(cards.first()).toContainText(
     "Comanda en la lista del dispositivo",
   );
   await page.screenshot({ path: "docs/evidence/offline-kds-lane-1440.png" });
-  await cards
-    .filter({ hasText: "Cocina" })
-    .getByRole("button", { name: "Ya se preparó", exact: true })
+  // Clearing the kitchen lane marks only kitchen rounds.
+  await lane
+    .getByRole("button", { name: "Marcar todas como ya preparadas" })
+    .click();
+  const confirm = page.getByRole("dialog", {
+    name: "Marcar todas como ya preparadas",
+  });
+  await expect(confirm).toContainText("No aparecerán en cocina");
+  await confirm.getByRole("button", { name: "Ya se preparó" }).click();
+  await expect(cards).toHaveCount(0);
+  await page
+    .getByRole("main")
+    .getByRole("button", { name: "Barra", exact: true })
     .click();
   await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText("Barra");
   await cards
-    .filter({ hasText: "Barra" })
     .getByRole("button", { name: "Preparar ahora", exact: true })
     .click();
   await expect(cards).toHaveCount(0);
+});
+
+test("The KDS review lane polls every 10 s with items and every 30 s while empty", async ({
+  page,
+  context,
+}) => {
+  // Regression GAP-4: the lane polled every 10 s even when empty.
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await goOffline(context, page);
+  const number = await saveOfflineSale(page);
+  await nextSale(page);
+  await context.setOffline(false);
+  await expect
+    .poll(
+      async () =>
+        (await allRows(page)).find((r) => r.body.provisionalNumber === number)
+          ?.status,
+      { timeout: 60_000 },
+    )
+    .toBe("synced");
+  await page.evaluate(
+    async ({ tenantId }) => {
+      const s = await (await fetch("/api/session")).json();
+      await fetch("/api/logout", {
+        method: "POST",
+        headers: { "x-csrf-token": s.csrf },
+      });
+      await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId, login: "kitchen", secret: "654321" }),
+      });
+    },
+    { tenantId },
+  );
+  let polls = 0;
+  page.on("request", (request) => {
+    if (
+      request.method() === "GET" &&
+      new URL(request.url()).pathname === "/api/offline/kitchen"
+    )
+      polls++;
+  });
+  await page.clock.install();
+  await page.goto("/app");
+  const lane = page.locator(".offline-review-lane");
+  await expect(lane).toContainText("Ventas sin conexión por revisar");
+  // With items: every 10 s.
+  polls = 0;
+  await advance(page, 60_000);
+  expect(polls).toBeGreaterThanOrEqual(5);
+  // Empty the lane at both stations (earlier tests may have left items).
+  for (const station of ["Cocina", "Barra"]) {
+    await page
+      .getByRole("main")
+      .getByRole("button", { name: station, exact: true })
+      .click();
+    const all = lane.getByRole("button", {
+      name: "Marcar todas como ya preparadas",
+    });
+    if (await all.isVisible()) {
+      await all.click();
+      await page
+        .getByRole("dialog", { name: "Marcar todas como ya preparadas" })
+        .getByRole("button", { name: "Ya se preparó" })
+        .click();
+      await expect(all).toHaveCount(0);
+    }
+  }
+  await expect(lane).toHaveCount(0);
+  // Let the chain pick up the empty lane, then every 30 s.
+  await advance(page, 10_000);
+  polls = 0;
+  await advance(page, 60_000);
+  expect(polls).toBeGreaterThanOrEqual(1);
+  expect(polls).toBeLessThanOrEqual(3);
 });
 
 test("Device clock 3 minutes fast still syncs", async ({ page, context }) => {
@@ -1105,165 +1369,6 @@ test("Service worker update keeps the old revision intact; the prompt applies on
   }
 });
 
-test("Offline payment on a cached open table order; an external terminal payment requires a reference", async ({
-  page,
-  context,
-}) => {
-  // Regression OFF-5: open table checks could not be settled offline.
-  await login(page);
-  await openDrawer(page);
-  await page.getByRole("button", { name: "En mesa", exact: true }).click();
-  await page.getByLabel("Seleccionar mesa").selectOption({ label: "Mesa 03" });
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
-  const created = page.waitForResponse(
-    (r) =>
-      new URL(r.url()).pathname === "/api/orders" &&
-      r.request().method() === "POST",
-  );
-  await page
-    .getByRole("button", { name: "Enviar a cocina", exact: true })
-    .click();
-  const order = await (await created).json();
-  await expect(page.locator(".existing")).toContainText(`#${order.number}`);
-  // Reopening selling refreshes the open-orders cache used during outages.
-  await page.getByRole("button", { name: "Caja", exact: true }).click();
-  const cached = page.waitForResponse(
-    (r) => new URL(r.url()).pathname === "/api/offline/open-orders",
-  );
-  await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await cached;
-  await page.getByRole("button", { name: "Nueva orden", exact: true }).click();
-  await goOffline(context, page);
-  await page
-    .getByRole("button", { name: "Órdenes abiertas", exact: true })
-    .click();
-  const picker = page.getByRole("dialog", { name: "Órdenes abiertas" });
-  await expect(picker).toContainText(
-    "Órdenes guardadas antes de perder la conexión",
-  );
-  await picker
-    .getByRole("button", { name: new RegExp(`#${order.number} · Mesa 03`) })
-    .click();
-  await expect(page.locator(".existing")).toContainText(`#${order.number}`);
-  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Cobrar" });
-  await expect(dialog).toContainText(
-    "Esta orden se guardó antes de perder la conexión",
-  );
-  await dialog
-    .getByRole("button", { name: "Terminal externa", exact: true })
-    .click();
-  const save = dialog.getByRole("button", {
-    name: "Guardar cobro con terminal",
-    exact: true,
-  });
-  await save.click();
-  await expect(dialog.getByRole("alert")).toContainText(
-    "Confirma la aprobación e ingresa la referencia",
-  );
-  await dialog.getByLabel("Referencia").fill("AUTH-55");
-  await dialog.getByRole("checkbox").check();
-  await save.click();
-  await expect(page.locator(".receipt")).toContainText(
-    "Pendiente de sincronizar",
-  );
-  await nextSale(page);
-  await context.setOffline(false);
-  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
-  await expect
-    .poll(
-      async () =>
-        (
-          await page.evaluate(
-            async (id) => (await fetch(`/api/orders/${id}`)).json(),
-            order.id,
-          )
-        ).paid,
-      { timeout: 45_000 },
-    )
-    .toBe(order.total);
-  const synced = await page.evaluate(
-    async (id) => (await fetch(`/api/orders/${id}`)).json(),
-    order.id,
-  );
-  expect(synced.tenders).toHaveLength(1);
-  expect(synced.tenders[0]).toMatchObject({
-    method: "external",
-    external_reference: "AUTH-55",
-  });
-});
-
-test("Offline Enviar, add a round and pay later sync as one order with two rounds", async ({
-  page,
-  context,
-}) => {
-  // Regression OFF-5: Enviar was disabled offline and rounds could not be added.
-  await page.addInitScript(() => {
-    window.print = () => {};
-  });
-  await login(page);
-  await openDrawer(page);
-  await goOffline(context, page);
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
-  await page
-    .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
-    .click();
-  const heading = page.locator(".cart-heading .eyebrow").first();
-  await expect(heading).toHaveText(PROVISIONAL);
-  const number = (await heading.textContent())!.trim();
-  await page.getByRole("button", { name: /Agua de jamaica/ }).click();
-  await page
-    .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
-    .click();
-  await expect(page.locator(".existing")).toContainText("Agua de jamaica");
-  await page.getByRole("button", { name: "Comandas (2)", exact: true }).click();
-  const tickets = page
-    .getByRole("dialog", { name: "Comandas sin conexión" })
-    .locator(".offline-ticket");
-  await expect(tickets).toHaveCount(2);
-  await expect(tickets.filter({ hasText: "Ronda 2" })).toContainText(number);
-  await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  await page
-    .getByRole("button", {
-      name: "Guardar cobro en este dispositivo",
-      exact: true,
-    })
-    .click();
-  await expect(page.locator(".receipt")).toContainText(number);
-  await nextSale(page);
-  await context.setOffline(false);
-  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
-  await expect
-    .poll(
-      async () =>
-        (await allRows(page)).filter((row) => row.status === "synced").length,
-      { timeout: 60_000 },
-    )
-    .toBe(3);
-  const rows = await allRows(page);
-  const orderIds = new Set(rows.map((row) => row.result?.orderId));
-  expect(orderIds.size).toBe(1);
-  const [orderId] = [...orderIds];
-  const synced = await page.evaluate(
-    async (id) => (await fetch(`/api/orders/${id}`)).json(),
-    orderId,
-  );
-  expect(synced.offline.provisionalNumber).toBe(number);
-  expect(new Set(synced.lines.map((line: any) => line.round))).toEqual(
-    new Set([1, 2]),
-  );
-  expect(synced.paid).toBe(synced.total);
-  expect(synced.tenders).toHaveLength(1);
-  expect(
-    synced.rounds.every((round: any) => round.state === "offline_review"),
-  ).toBe(true);
-  await pill(page, /^Conectado/).click();
-  await expect(page.locator(".workspace")).toContainText(
-    new RegExp(`${number} → #${synced.number}`),
-  );
-});
-
 /** Holds every offline record on the device (a transient answer: never a conflict). */
 async function holdSync(context: BrowserContext) {
   await context.route("**/api/offline/sync", (route) =>
@@ -1308,7 +1413,12 @@ async function sendTableOnline(page: Page, table: string) {
     .click();
   const order = await (await created).json();
   await expect(page.locator(".existing")).toContainText(`#${order.number}`);
-  return order as { id: string; number: number; total: number };
+  return order as {
+    id: string;
+    number: number;
+    total: number;
+    tableId: string;
+  };
 }
 
 const serverOrder = (page: Page, id: string) =>
@@ -1317,162 +1427,589 @@ const serverOrder = (page: Page, id: string) =>
     id,
   );
 
-test("The order on screen when the connection drops is payable offline at its full balance", async ({
-  page,
-  context,
-}) => {
-  // Regression OFF-R2: the open-orders cache refreshed only every 120 s, so the
-  // order just sent online was missing from it (or had a stale balance).
-  await login(page);
-  await openDrawer(page);
-  const order = await sendTableOnline(page, "Mesa 05");
-  await goOffline(context, page);
-  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Cobrar" });
-  await expect(dialog.getByLabel("Importe")).toHaveValue(
-    (order.total / 100).toFixed(2),
-  );
-  await dialog
-    .getByRole("button", {
-      name: "Guardar cobro en este dispositivo",
-      exact: true,
-    })
-    .click();
-  await expect(page.locator(".receipt")).toContainText(
-    "Pendiente de sincronizar",
-  );
-  await nextSale(page);
-  await context.setOffline(false);
-  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
-  await expect
-    .poll(async () => (await serverOrder(page, order.id)).paid, {
-      timeout: 45_000,
-    })
-    .toBe(order.total);
-  expect((await serverOrder(page, order.id)).tenders).toHaveLength(1);
-});
+/**
+ * LD-7: offline table service (open checks, rounds and partial payments
+ * offline) is a per-restaurant beta, off by default. The fixture restaurant
+ * keeps it off; these tests turn it on through the API and off again after.
+ */
+async function setTableService(browser: Browser, on: boolean) {
+  const page = await browser.newPage({
+    baseURL: process.env.TEST_BASE_URL ?? "http://127.0.0.1:5173",
+  });
+  try {
+    await page.goto("/app");
+    const status = await page.evaluate(
+      async ({ tenantId, on }) => {
+        await fetch("/api/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tenantId,
+            login: "owner",
+            secret: "demo-green-monkey",
+          }),
+        });
+        const s = await (await fetch("/api/session")).json();
+        const r = await fetch("/api/offline/settings", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-csrf-token": s.csrf,
+          },
+          body: JSON.stringify({
+            operationId: crypto.randomUUID(),
+            tableService: on,
+          }),
+        });
+        await fetch("/api/logout", {
+          method: "POST",
+          headers: { "x-csrf-token": s.csrf },
+        });
+        return r.status;
+      },
+      { tenantId, on },
+    );
+    expect(status).toBe(200);
+  } finally {
+    await page.close();
+  }
+}
 
-test("A local order paid while online goes through records and then follows its server order", async ({
-  page,
-  context,
-}) => {
-  // Invariant I13: a local, unsynced order changes only through offline
-  // records, even online; after its record syncs Selling shows the server order.
-  await page.addInitScript(() => {
-    window.print = () => {};
-  });
-  const payments = onlinePayments(page);
-  await login(page);
-  await openDrawer(page);
-  await goOffline(context, page);
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
-  await page
-    .getByRole("button", { name: "Cantidad + Taco de hongos", exact: true })
-    .click();
-  await page
-    .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
-    .click();
-  await expect(page.locator(".cart-heading .eyebrow").first()).toHaveText(
-    PROVISIONAL,
-  );
-  await holdSync(context);
-  await context.setOffline(false);
-  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
-  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Cobrar" });
-  await dialog.getByLabel("Importe").fill("45.00");
-  await dialog.getByLabel("Efectivo recibido").fill("45.00");
-  await dialog
-    .getByRole("button", { name: "Confirmar cobro", exact: true })
-    .click();
-  await expect(page.locator(".receipt")).toContainText(
-    "Pendiente de sincronizar",
-  );
-  expect(payments, "the local order is never charged online").toEqual([]);
-  await page.getByRole("button", { name: "Volver", exact: true }).click();
-  await expect(page.locator(".existing")).toContainText("Cobrado: $45.00");
-  await releaseSync(context);
-  await expect
-    .poll(
-      async () =>
-        (await allRows(page)).filter((row) => row.status === "synced").length,
-      { timeout: 60_000 },
-    )
-    .toBe(2);
-  const orderRow = (await allRows(page)).find(
-    (row) => row.body.kind === "order",
-  );
-  const { orderId, orderNumber } = orderRow.result;
-  await expect(page.locator(".existing")).toContainText(`#${orderNumber}`, {
-    timeout: 30_000,
-  });
-  await expect(page.locator(".existing")).toContainText("Cobrado: $45.00", {
-    timeout: 30_000,
-  });
-  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  await expect(dialog.getByLabel("Importe")).toHaveValue("45.00");
-  await dialog
-    .getByRole("button", { name: "Confirmar cobro", exact: true })
-    .click();
-  await expect(page.locator(".receipt")).toContainText("Cobrado");
-  expect(payments).toHaveLength(1);
-  const synced = await serverOrder(page, orderId);
-  expect(synced.paid).toBe(synced.total);
-  expect(synced.tenders).toHaveLength(2);
-});
+test.describe("offline table service (Beta) turned on", () => {
+  test.beforeAll(async ({ browser }) => setTableService(browser, true));
+  test.afterAll(async ({ browser }) => setTableService(browser, false));
 
-test("Online payment waits for this device's offline payment of the same order", async ({
-  page,
-  context,
-}) => {
-  // Regression OFF-R5: after reconnect Selling could show the balance before
-  // the offline payment synced and staff could charge it again online.
-  const payments = onlinePayments(page);
-  await login(page);
-  await openDrawer(page);
-  const order = await sendTableOnline(page, "Mesa 06");
-  await goOffline(context, page);
-  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Cobrar" });
-  await dialog.getByLabel("Importe").fill("45.00");
-  await dialog.getByLabel("Efectivo recibido").fill("45.00");
-  await dialog
-    .getByRole("button", {
-      name: "Guardar cobro en este dispositivo",
+  test("Offline payment on a cached open table order; an external terminal payment requires a reference", async ({
+    page,
+    context,
+  }) => {
+    // Regression OFF-5: open table checks could not be settled offline.
+    await login(page);
+    await openDrawer(page);
+    await page.getByRole("button", { name: "En mesa", exact: true }).click();
+    await page
+      .getByLabel("Seleccionar mesa")
+      .selectOption({ label: "Mesa 03" });
+    await page.getByRole("button", { name: /Taco de hongos/ }).click();
+    const created = page.waitForResponse(
+      (r) =>
+        new URL(r.url()).pathname === "/api/orders" &&
+        r.request().method() === "POST",
+    );
+    await page
+      .getByRole("button", { name: "Enviar a cocina", exact: true })
+      .click();
+    const order = await (await created).json();
+    await expect(page.locator(".existing")).toContainText(`#${order.number}`);
+    // Reopening selling refreshes the open-orders cache used during outages.
+    await page.getByRole("button", { name: "Caja", exact: true }).click();
+    const cached = page.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/offline/open-orders",
+    );
+    await page.getByRole("button", { name: "Vender", exact: true }).click();
+    await cached;
+    await page
+      .getByRole("button", { name: "Nueva orden", exact: true })
+      .click();
+    await goOffline(context, page);
+    await page
+      .getByRole("button", { name: "Órdenes abiertas", exact: true })
+      .click();
+    const picker = page.getByRole("dialog", { name: "Órdenes abiertas" });
+    await expect(picker).toContainText(
+      "Órdenes guardadas antes de perder la conexión",
+    );
+    await picker
+      .getByRole("button", { name: new RegExp(`#${order.number} · Mesa 03`) })
+      .click();
+    await expect(page.locator(".existing")).toContainText(`#${order.number}`);
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Cobrar" });
+    await expect(dialog).toContainText(
+      "Esta orden se guardó antes de perder la conexión",
+    );
+    await dialog
+      .getByRole("button", { name: "Terminal externa", exact: true })
+      .click();
+    const save = dialog.getByRole("button", {
+      name: "Guardar cobro con terminal",
       exact: true,
-    })
-    .click();
-  await page.getByRole("button", { name: "Volver", exact: true }).click();
-  await expect(page.locator(".existing")).toContainText("Cobrado: $45.00");
-  await holdSync(context);
-  await context.setOffline(false);
-  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
-  // The server order replaces the projection: it does not show the payment yet.
-  await expect(page.locator(".existing")).toContainText("Cobrado: $0.00", {
-    timeout: 30_000,
+    });
+    await save.click();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "Confirma la aprobación e ingresa la referencia",
+    );
+    await dialog.getByLabel("Referencia").fill("AUTH-55");
+    await dialog.getByRole("checkbox").check();
+    await save.click();
+    await expect(page.locator(".receipt")).toContainText(
+      "Pendiente de sincronizar",
+    );
+    await nextSale(page);
+    await context.setOffline(false);
+    await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(
+        async () =>
+          (
+            await page.evaluate(
+              async (id) => (await fetch(`/api/orders/${id}`)).json(),
+              order.id,
+            )
+          ).paid,
+        { timeout: 45_000 },
+      )
+      .toBe(order.total);
+    const synced = await page.evaluate(
+      async (id) => (await fetch(`/api/orders/${id}`)).json(),
+      order.id,
+    );
+    expect(synced.tenders).toHaveLength(1);
+    expect(synced.tenders[0]).toMatchObject({
+      method: "external",
+      external_reference: "AUTH-55",
+    });
   });
-  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  await dialog
-    .getByRole("button", { name: "Confirmar cobro", exact: true })
-    .click();
-  await expect(dialog.getByRole("alert")).toContainText(
-    "Esta orden tiene un pago por confirmar",
-  );
-  expect(payments, "never charged online twice").toEqual([]);
-  await page.keyboard.press("Escape");
-  await releaseSync(context);
-  // Once the offline payment syncs, Selling reads the order again.
-  await expect(page.locator(".existing")).toContainText("Cobrado: $45.00", {
-    timeout: 60_000,
+
+  test("Offline Enviar, add a round and pay later sync as one order with two rounds", async ({
+    page,
+    context,
+  }) => {
+    // Regression OFF-5: Enviar was disabled offline and rounds could not be added.
+    await page.addInitScript(() => {
+      window.print = () => {};
+    });
+    await login(page);
+    await openDrawer(page);
+    await goOffline(context, page);
+    await page.getByRole("button", { name: /Taco de hongos/ }).click();
+    await page
+      .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+      .click();
+    const heading = page.locator(".cart-heading .eyebrow").first();
+    await expect(heading).toHaveText(PROVISIONAL);
+    const number = (await heading.textContent())!.trim();
+    await page.getByRole("button", { name: /Agua de jamaica/ }).click();
+    await page
+      .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+      .click();
+    await expect(page.locator(".existing")).toContainText("Agua de jamaica");
+    await page
+      .getByRole("button", { name: "Comandas (2)", exact: true })
+      .click();
+    const tickets = page
+      .getByRole("dialog", { name: "Comandas sin conexión" })
+      .locator(".offline-ticket");
+    await expect(tickets).toHaveCount(2);
+    await expect(tickets.filter({ hasText: "Ronda 2" })).toContainText(number);
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await page
+      .getByRole("button", {
+        name: "Guardar cobro en este dispositivo",
+        exact: true,
+      })
+      .click();
+    await expect(page.locator(".receipt")).toContainText(number);
+    await nextSale(page);
+    await context.setOffline(false);
+    await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(
+        async () =>
+          (await allRows(page)).filter((row) => row.status === "synced").length,
+        { timeout: 60_000 },
+      )
+      .toBe(3);
+    const rows = await allRows(page);
+    const orderIds = new Set(rows.map((row) => row.result?.orderId));
+    expect(orderIds.size).toBe(1);
+    const [orderId] = [...orderIds];
+    const synced = await page.evaluate(
+      async (id) => (await fetch(`/api/orders/${id}`)).json(),
+      orderId,
+    );
+    expect(synced.offline.provisionalNumber).toBe(number);
+    expect(new Set(synced.lines.map((line: any) => line.round))).toEqual(
+      new Set([1, 2]),
+    );
+    expect(synced.paid).toBe(synced.total);
+    expect(synced.tenders).toHaveLength(1);
+    expect(
+      synced.rounds.every((round: any) => round.state === "offline_review"),
+    ).toBe(true);
+    await pill(page, /^Conectado/).click();
+    await expect(page.locator(".workspace")).toContainText(
+      new RegExp(`${number} → #${synced.number}`),
+    );
   });
-  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  await expect(dialog.getByLabel("Importe")).toHaveValue("45.00");
-  await dialog
-    .getByRole("button", { name: "Confirmar cobro", exact: true })
-    .click();
-  await expect(page.locator(".receipt")).toContainText("Cobrado");
-  expect(payments).toHaveLength(1);
-  const synced = await serverOrder(page, order.id);
-  expect(synced.paid).toBe(order.total);
-  expect(synced.tenders).toHaveLength(2);
+
+  test("The order on screen when the connection drops is payable offline at its full balance", async ({
+    page,
+    context,
+  }) => {
+    // Regression OFF-R2: the open-orders cache refreshed only every 120 s, so the
+    // order just sent online was missing from it (or had a stale balance).
+    await login(page);
+    await openDrawer(page);
+    const order = await sendTableOnline(page, "Mesa 05");
+    await goOffline(context, page);
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Cobrar" });
+    await expect(dialog.getByLabel("Importe")).toHaveValue(
+      (order.total / 100).toFixed(2),
+    );
+    await dialog
+      .getByRole("button", {
+        name: "Guardar cobro en este dispositivo",
+        exact: true,
+      })
+      .click();
+    await expect(page.locator(".receipt")).toContainText(
+      "Pendiente de sincronizar",
+    );
+    await nextSale(page);
+    await context.setOffline(false);
+    await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(async () => (await serverOrder(page, order.id)).paid, {
+        timeout: 45_000,
+      })
+      .toBe(order.total);
+    expect((await serverOrder(page, order.id)).tenders).toHaveLength(1);
+  });
+
+  test("A local order paid while online goes through records and then follows its server order", async ({
+    page,
+    context,
+  }) => {
+    // Invariant I13: a local, unsynced order changes only through offline
+    // records, even online; after its record syncs Selling shows the server order.
+    await page.addInitScript(() => {
+      window.print = () => {};
+    });
+    const payments = onlinePayments(page);
+    await login(page);
+    await openDrawer(page);
+    await goOffline(context, page);
+    await page.getByRole("button", { name: /Taco de hongos/ }).click();
+    await page
+      .getByRole("button", { name: "Cantidad + Taco de hongos", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+      .click();
+    await expect(page.locator(".cart-heading .eyebrow").first()).toHaveText(
+      PROVISIONAL,
+    );
+    await holdSync(context);
+    await context.setOffline(false);
+    await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Cobrar" });
+    await dialog.getByLabel("Importe").fill("45.00");
+    await dialog.getByLabel("Efectivo recibido").fill("45.00");
+    await dialog
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(page.locator(".receipt")).toContainText(
+      "Pendiente de sincronizar",
+    );
+    expect(payments, "the local order is never charged online").toEqual([]);
+    await page.getByRole("button", { name: "Volver", exact: true }).click();
+    await expect(page.locator(".existing")).toContainText("Cobrado: $45.00");
+    await releaseSync(context);
+    await expect
+      .poll(
+        async () =>
+          (await allRows(page)).filter((row) => row.status === "synced").length,
+        { timeout: 60_000 },
+      )
+      .toBe(2);
+    const orderRow = (await allRows(page)).find(
+      (row) => row.body.kind === "order",
+    );
+    const { orderId, orderNumber } = orderRow.result;
+    await expect(page.locator(".existing")).toContainText(`#${orderNumber}`, {
+      timeout: 30_000,
+    });
+    await expect(page.locator(".existing")).toContainText("Cobrado: $45.00", {
+      timeout: 30_000,
+    });
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await expect(dialog.getByLabel("Importe")).toHaveValue("45.00");
+    await dialog
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(page.locator(".receipt")).toContainText("Cobrado");
+    expect(payments).toHaveLength(1);
+    const synced = await serverOrder(page, orderId);
+    expect(synced.paid).toBe(synced.total);
+    expect(synced.tenders).toHaveLength(2);
+  });
+
+  test("Online payment waits for this device's offline payment of the same order", async ({
+    page,
+    context,
+  }) => {
+    // Regression OFF-R5: after reconnect Selling could show the balance before
+    // the offline payment synced and staff could charge it again online.
+    const payments = onlinePayments(page);
+    await login(page);
+    await openDrawer(page);
+    const order = await sendTableOnline(page, "Mesa 06");
+    await goOffline(context, page);
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Cobrar" });
+    await dialog.getByLabel("Importe").fill("45.00");
+    await dialog.getByLabel("Efectivo recibido").fill("45.00");
+    await dialog
+      .getByRole("button", {
+        name: "Guardar cobro en este dispositivo",
+        exact: true,
+      })
+      .click();
+    await page.getByRole("button", { name: "Volver", exact: true }).click();
+    await expect(page.locator(".existing")).toContainText("Cobrado: $45.00");
+    await holdSync(context);
+    await context.setOffline(false);
+    await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    // The server order replaces the projection: it does not show the payment yet.
+    await expect(page.locator(".existing")).toContainText("Cobrado: $0.00", {
+      timeout: 30_000,
+    });
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await dialog
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "Esta orden tiene un pago por confirmar",
+    );
+    expect(payments, "never charged online twice").toEqual([]);
+    await page.keyboard.press("Escape");
+    await releaseSync(context);
+    // Once the offline payment syncs, Selling reads the order again.
+    await expect(page.locator(".existing")).toContainText("Cobrado: $45.00", {
+      timeout: 60_000,
+    });
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await expect(dialog.getByLabel("Importe")).toHaveValue("45.00");
+    await dialog
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(page.locator(".receipt")).toContainText("Cobrado");
+    expect(payments).toHaveLength(1);
+    const synced = await serverOrder(page, order.id);
+    expect(synced.paid).toBe(order.total);
+    expect(synced.tenders).toHaveLength(2);
+  });
+
+  test("Open orders refresh on mount and every 120 s while offline table service is on", async ({
+    page,
+  }) => {
+    // GAP-4 / LD-7: the snapshot is fetched only with the setting on.
+    let openOrders = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/offline/open-orders")
+        openOrders++;
+    });
+    await page.clock.install();
+    await login(page);
+    await expect.poll(() => openOrders).toBe(1);
+    await advance(page, 60_000);
+    expect(openOrders).toBe(1);
+    await advance(page, 65_000);
+    await expect.poll(() => openOrders).toBe(2);
+  });
+
+  test("A local order that synced and was paid online never comes back as an unpaid open order", async ({
+    page,
+    context,
+  }) => {
+    // Regression OFF-R12: once its server copy left the open-orders cache, the
+    // synced local order reappeared as a local open order with its full total.
+    await page.addInitScript(() => {
+      window.print = () => {};
+    });
+    await login(page);
+    await openDrawer(page);
+    await goOffline(context, page);
+    await product(page, "Taco de hongos").click();
+    await page
+      .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+      .click();
+    const heading = page.locator(".cart-heading .eyebrow").first();
+    await expect(heading).toHaveText(PROVISIONAL);
+    const number = (await heading.textContent())!.trim();
+    await context.setOffline(false);
+    await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(
+        async () =>
+          (await allRows(page)).find((r) => r.body.kind === "order")?.status,
+        { timeout: 60_000 },
+      )
+      .toBe("synced");
+    const { orderId, orderNumber } = (await allRows(page)).find(
+      (r) => r.body.kind === "order",
+    ).result;
+    await expect(heading).toHaveText(`${number} → #${orderNumber}`, {
+      timeout: 30_000,
+    });
+    // The kitchen confirms it and the guest pays online: the check closes.
+    await page.evaluate(async (id) => {
+      const s = await (await fetch("/api/session")).json();
+      const lane = await (await fetch("/api/offline/kitchen")).json();
+      for (const item of lane.items.filter((i: any) => i.orderId === id))
+        await fetch(`/api/offline/kitchen/${item.roundId}/decision`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-csrf-token": s.csrf,
+          },
+          body: JSON.stringify({
+            operationId: crypto.randomUUID(),
+            decision: "already_served",
+          }),
+        });
+    }, orderId);
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Cobrar" })
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(page.locator(".receipt")).toContainText("Cobrado");
+    await nextSale(page);
+    expect((await serverOrder(page, orderId)).state).toBe("completed");
+    // The next refresh no longer lists it.
+    await page.getByRole("button", { name: "Caja", exact: true }).click();
+    const refreshed = page.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/offline/open-orders",
+    );
+    await page.getByRole("button", { name: "Vender", exact: true }).click();
+    await refreshed;
+    await goOffline(context, page);
+    await page
+      .getByRole("button", { name: "Órdenes abiertas", exact: true })
+      .click();
+    const picker = page.getByRole("dialog", { name: "Órdenes abiertas" });
+    await expect(picker.getByText("Cargando…")).toHaveCount(0);
+    await expect(picker).not.toContainText(number);
+    await expect(picker).not.toContainText(
+      new RegExp(`#${orderNumber}(?!\\d)`),
+    );
+    await context.setOffline(false);
+  });
+
+  test("Offline round on a paid table check offers Enviar como orden nueva and saves a new local order for the same table", async ({
+    page,
+    context,
+  }) => {
+    // §2.3 (Revision 2): a check with no balance takes no offline round.
+    await page.addInitScript(() => {
+      window.print = () => {};
+    });
+    await login(page);
+    await openDrawer(page);
+    const order = await sendTableOnline(page, "Mesa 07");
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Cobrar" })
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(page.locator(".receipt")).toContainText("Cobrado");
+    // Close the receipt: the paid check stays on screen.
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".receipt")).toHaveCount(0);
+    await goOffline(context, page);
+    await expect(page.locator(".existing")).toContainText(`#${order.number}`);
+    await product(page, "Agua de jamaica").click();
+    await page
+      .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+      .click();
+    await expect(page.locator(".cart-bottom").getByRole("alert")).toContainText(
+      "Esta cuenta ya está pagada",
+    );
+    expect(
+      (await allRows(page)).filter((row) => row.body.kind === "round"),
+    ).toHaveLength(0);
+    await page
+      .getByRole("button", { name: "Enviar como orden nueva", exact: true })
+      .click();
+    const heading = page.locator(".cart-heading .eyebrow").first();
+    await expect(heading).toHaveText(PROVISIONAL);
+    const orderRow = (await allRows(page)).find(
+      (row) => row.body.kind === "order",
+    );
+    expect(orderRow.body.order.mode).toBe("dine_in");
+    expect(orderRow.body.order.tableId).toBe(order.tableId);
+    await context.setOffline(false);
+    await expect
+      .poll(async () => (await getRow(page, orderRow.id))?.status, {
+        timeout: 60_000,
+      })
+      .toBe("synced");
+    const synced = await getRow(page, orderRow.id);
+    expect(synced.result.orderId).not.toBe(order.id);
+    expect(
+      (await allRows(page)).filter((row) => row.status === "conflict"),
+    ).toHaveLength(0);
+  });
+
+  test("Imprimir comanda prints the new round, never round 1 again; Enviar offers printing when set to ask", async ({
+    page,
+    context,
+  }) => {
+    // Regression OFF-R19: the receipt printed the order's first ticket.
+    await page.addInitScript(() => {
+      (window as any).__printed = [];
+      window.print = () => {
+        (window as any).__printed.push(
+          document.getElementById("gm-offline-print-root")?.textContent ?? "",
+        );
+      };
+    });
+    const printed = () =>
+      page.evaluate(() => (window as any).__printed as string[]);
+    await login(page);
+    await openDrawer(page);
+    await goOffline(context, page);
+    await product(page, "Taco de hongos").click();
+    await page
+      .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+      .click();
+    const heading = page.locator(".cart-heading .eyebrow").first();
+    await expect(heading).toHaveText(PROVISIONAL);
+    const number = (await heading.textContent())!.trim();
+    // "Preguntar" (the default): the save offers printing its ticket.
+    const sent = page.locator(".cart-bottom .warning-panel");
+    await expect(sent).toContainText("Comanda guardada en este dispositivo");
+    await sent
+      .getByRole("button", { name: "Imprimir comanda", exact: true })
+      .click();
+    await expect.poll(async () => (await printed()).length).toBe(1);
+    expect((await printed())[0]).toContain("Taco de hongos");
+    expect((await printed())[0]).toContain(number);
+    // Pay it with a new item: the receipt prints that round only.
+    await product(page, "Agua de jamaica").click();
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await page
+      .getByRole("button", {
+        name: "Guardar cobro en este dispositivo",
+        exact: true,
+      })
+      .click();
+    const receipt = page.getByRole("dialog", { name: "Recibo local" });
+    await expect(receipt.locator(".receipt")).toContainText(number);
+    await receipt
+      .getByRole("button", { name: "Imprimir comanda", exact: true })
+      .click();
+    await expect.poll(async () => (await printed()).length).toBe(2);
+    const roundTicket = (await printed())[1]!;
+    expect(roundTicket).toContain(`${number} · Ronda 2`);
+    expect(roundTicket).toContain("Agua de jamaica");
+    expect(roundTicket).not.toContain("Taco de hongos");
+    await nextSale(page);
+    await context.setOffline(false);
+  });
 });
