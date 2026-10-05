@@ -335,16 +335,21 @@ se atrasó desde la última conexión…" until a ping measures the server time 
 
 ## Lock order
 
-Offline sync follows the wave-2 global lock order (offline spec §4.4.1, written
-in full by fiscal into `docs/ARCHITECTURE.md`): `once()` key, restaurant row,
-area locks (including the offline prefix and archive), order numbers, orders,
-tender keys, rounds, voids and discounts, stock items, kitchen feed, drawer, and
-the fiscal folio counter always last. Offline sync is no longer an exception to
-it: a sale takes order numbers → order → stock → feed (inside `createOrder`), then
-the drawer and the folio (inside `recordPayment`); a payment takes the order, then
-the drawer; a round never bumps the feed; a manager reconcile takes the order,
-then the drawer. No offline path bumps the feed in a payment, reconcile or
-archive, and none locks an order after the drawer.
+Offline sync follows the global lock order (contracts §3.14), which binds every
+command: the `once()` key, the restaurant row (`FOR SHARE`), area serialization
+locks (including the offline prefix and archive advisory locks, which are config
+paths only), `order_numbers`, `orders` (several sorted by id), `rounds`,
+`line_voids`, `stock_items` (all at once through `lockStockItems`), the drawer
+(`cash_sessions`), and `kitchen_feed_versions` last, never in a money command.
+
+Offline sync's sale path is the one documented exception: a sale takes order
+numbers → order → stock → feed inside `createOrder`, then `recordPayment` locks
+its own new order and the drawer. This is safe because no transaction holds the
+drawer while it waits on the feed (service §4.9); no other exception is allowed.
+Every other offline path follows the order: a payment takes the order, then the
+drawer; a round never bumps the feed; a manager reconcile takes the order, then
+the drawer. No offline path bumps the feed in a payment, reconcile or archive,
+and none locks an order after the drawer.
 
 ## Late sales and the global invoice
 
