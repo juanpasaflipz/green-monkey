@@ -663,11 +663,18 @@ export async function syncOfflineRecord(
  * (a unique or foreign-key violation, for example an order for a table
  * deleted after the outage) can never apply on a later attempt. As a 500 the device would
  * retry it forever and block drawer close; as a domain conflict a manager
- * reviews it. Every other error passes through unchanged.
+ * reviews it. Since menu (025), createOrder refuses a table archived or
+ * deleted after the outage itself (invalid_table) before the foreign key
+ * would; that is the same collision. Every other error passes through
+ * unchanged.
  */
 function integrityConflict(e: unknown, operationId: string): unknown {
   const code = (e as { code?: unknown } | null)?.code;
-  if (e instanceof DomainError || (code !== "23505" && code !== "23503"))
+  const goneTable = e instanceof DomainError && code === "invalid_table";
+  if (
+    !goneTable &&
+    (e instanceof DomainError || (code !== "23505" && code !== "23503"))
+  )
     return e;
   console.warn(
     JSON.stringify({
@@ -929,10 +936,11 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
             currentTotal,
             versions,
           );
-    // A table deleted after the outage refuses the order (foreign key).
+    // A table deleted or archived (menu 025, D10) after the outage refuses
+    // the order, as createOrder does.
     const tableId = "order" in p ? p.order.tableId : null;
     const [table] = tableId
-      ? await tx`select 1 from dining_tables where id=${tableId}`
+      ? await tx`select 1 from dining_tables where id=${tableId} and archived_at is null`
       : [{}];
     if (new Set(lines.map((l) => l.id)).size !== lines.length || !table)
       addProblem("offline_record_conflict");

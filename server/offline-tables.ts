@@ -17,7 +17,7 @@ import {
   type OfflineRoundV3,
   type OrderTarget,
 } from "../shared/offline-recovery.js";
-import { applyRound, getOrder } from "./orders.js";
+import { applyRound } from "./orders.js";
 import { assertCheckWritable } from "./checks.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
 import { requireTableService } from "./offline-settings.js";
@@ -175,8 +175,20 @@ appliers.round = async (tx, s, p, ctx) => {
 appliers.payment = async (tx, s, p, ctx) => {
   const record = p as OfflinePaymentV3;
   const orderId = await resolveTarget(tx, record.target);
-  await writableOrder(tx, orderId);
-  const order = await getOrder(tx, orderId);
+  // Locks the order (FOR UPDATE) and refuses a missing, cancelled or
+  // recovery order (I6), as writableOrder does.
+  const found = await moneyTarget(tx, orderId, true);
+  if (found.state === "unresolvable") throw new DomainError(found.code, 409);
+  // A closed check takes no money (contract §3.4). Since service's lifecycle
+  // a fully paid takeaway or offline check is closed, so, as in review and
+  // reconcile, the refusal says why: past its balance (paid elsewhere, I2;
+  // the manager returns the money) or closed.
+  if (found.state === "closed")
+    throw new DomainError(
+      moneyRefusal(record.payment.amount, found.order),
+      409,
+    );
+  const order = found.order;
   // Revalidated against the balance now: it may have been paid elsewhere (I2).
   if (record.payment.amount > order.total - order.paid)
     throw new DomainError("offline_payment_exceeds_due", 409);
