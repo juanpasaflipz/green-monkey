@@ -94,7 +94,11 @@ jobs:
           NODE_ENV=production node --import ./build/server/instrument.js build/server/index.js > /tmp/green-monkey-server.log 2>&1 &
           NODE_ENV=production WORKER_PORT=3005 DATABASE_URL= npm run start:worker > /tmp/green-monkey-worker.log 2>&1 &
           node --input-type=module -e 'for(let i=0;i<60;i++){try{if((await fetch("http://127.0.0.1:3002/api/health")).ok&&(await fetch("http://127.0.0.1:3005/healthz")).ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
-          TEST_BASE_URL=http://127.0.0.1:3002 TEST_PRODUCTION=1 npm run test:browser
+          # Only the test runner gets the fixture admin URL (owner/Free fixtures);
+          # the web and worker processes above never see a migration credential.
+          TEST_BASE_URL=http://127.0.0.1:3002 TEST_PRODUCTION=1 \
+            MIGRATION_DATABASE_URL=postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_dev \
+            npm run test:browser
       - name: Load smoke (3 tenants, 60 s)
         env:
           LOAD_PROFILE: smoke
