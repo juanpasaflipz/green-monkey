@@ -279,6 +279,7 @@ export type Session = {
   expiresAt: string;
   offlineUntil: string;
   offlineLeaseVersion?: number;
+  offlineLeaseConfigVersion?: number | null;
   csrf: string;
   restaurant: {
     name: string;
@@ -287,6 +288,7 @@ export type Session = {
     cutoff: number;
     configVersion?: number;
   };
+  access?: import("./access.js").SessionAccess;
 };
 export type Order = {
   recovery?: {

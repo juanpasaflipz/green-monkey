@@ -487,6 +487,7 @@ try {
     "cash_sessions",
     "recipe_versions",
     "catalog",
+    "offline_lease_renewals",
     "sessions",
     "devices",
     "employees",

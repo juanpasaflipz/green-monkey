@@ -28,6 +28,12 @@ async function start() {
       PORT: String(port),
       APP_URL: origin,
       BILLING_SANDBOX_ENABLED: "false",
+      // The demo owner login below needs demo access for the fictional tenant.
+      DEMO_TENANT_ID:
+        process.env.DEMO_TENANT_ID ?? "10000000-0000-4000-8000-000000000001",
+      ACCESS_STEP_UP_SECONDS: process.env.ACCESS_STEP_UP_SECONDS ?? "1800",
+      ACCESS_IDLE_LOCK_DEFAULT_SECONDS:
+        process.env.ACCESS_IDLE_LOCK_DEFAULT_SECONDS ?? "0",
     },
     stdio: "ignore",
   });

@@ -25,6 +25,9 @@ ALLOW_DEMO_SEED=green-monkey-local
 TEST_DATABASE_URL=postgresql://gm_app:local-only-green-monkey@127.0.0.1:55439/green_monkey_test
 TEST_MIGRATION_DATABASE_URL=postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:55439/green_monkey_test
 TEST_DATABASE_HOST_ALLOWLIST=127.0.0.1:55439/green_monkey_test
+DEMO_TENANT_ID=10000000-0000-4000-8000-000000000001
+ACCESS_STEP_UP_SECONDS=1800
+ACCESS_IDLE_LOCK_DEFAULT_SECONDS=0
 JWT_SECRET='''+secrets.token_hex(32)+'\n')
 Path('.env').chmod(0o600)
 PY

@@ -3,11 +3,17 @@ import { api } from "../api";
 import { Button, Field, Modal } from "../components/ui";
 import { strings, translateError, type Key } from "../i18n";
 import type { Locale, Order, Session } from "../../shared/domain";
+import { stepUpExempt } from "../../shared/access";
+import {
+  ManagerApproval,
+  type ApprovalValue,
+} from "../components/ManagerApproval";
 
 /**
  * Voids unpaid units of an order. Paid units are excluded (they need a refund).
- * Cashiers and servers need a manager's login and PIN, checked by the server for
- * this single request; nothing about the approval is stored on the device.
+ * Cashiers and servers need a manager's PIN, checked by the server for this
+ * single request; nothing about the approval is stored on the device. Managers
+ * on a shared terminal confirm with their own PIN instead of self-approving.
  */
 export function VoidDialog({
   order,
@@ -26,6 +32,12 @@ export function VoidDialog({
 }) {
   const t = (key: Key) => strings[locale][key];
   const manager = ["owner", "manager"].includes(session.role);
+  // Only a Google-entered session on a personal device self-approves (A4).
+  const needsApproval = !manager || !stepUpExempt(session.access);
+  const [approval, setApproval] = useState<ApprovalValue>({
+    employeeId: "",
+    secret: "",
+  });
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [returnStock, setReturnStock] = useState(false);
   const [error, setError] = useState("");
@@ -90,14 +102,14 @@ export function VoidDialog({
                 reason: String(f.get("reason") ?? ""),
                 stockDisposition:
                   returnStock && returnAllowed ? "return" : "no_return",
-                ...(manager
-                  ? {}
-                  : {
+                ...(needsApproval
+                  ? {
                       approval: {
-                        login: String(f.get("managerLogin") ?? ""),
-                        secret: String(f.get("managerPin") ?? ""),
+                        employeeId: approval.employeeId,
+                        secret: approval.secret,
                       },
-                    }),
+                    }
+                  : {}),
               });
               await saved();
               close();
@@ -168,29 +180,13 @@ export function VoidDialog({
               <p className="muted">{t("voidReturnUnavailable")}</p>
             )}
           </fieldset>
-          {!manager && (
-            <fieldset className="field">
-              <legend>{t("voidApproval")}</legend>
-              <p className="muted">{t("voidApprovalHint")}</p>
-              <Field label={t("managerLogin")}>
-                <input
-                  name="managerLogin"
-                  required
-                  autoComplete="off"
-                  autoCapitalize="none"
-                />
-              </Field>
-              <Field label={t("managerPin")}>
-                <input
-                  name="managerPin"
-                  type="password"
-                  inputMode="numeric"
-                  required
-                  minLength={4}
-                  autoComplete="off"
-                />
-              </Field>
-            </fieldset>
+          {needsApproval && (
+            <ManagerApproval
+              session={session}
+              locale={locale}
+              value={approval}
+              onChange={setApproval}
+            />
           )}
           {error && (
             <p className="error" role="alert">

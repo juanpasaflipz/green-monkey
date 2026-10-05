@@ -103,11 +103,17 @@ try {
           },
           headers: {},
         } as any,
-        {} as any,
+        { clearCookie() {} } as any,
         (error?: unknown) => (error ? reject(error) : resolve()),
       );
     });
   await authenticate();
+  // Google entry creates a personal device and a session capped by the owner session.
+  const [entered] = await admin`select d.kind,
+      s.absolute_expires_at<=o.expires_at and o.expires_at-s.absolute_expires_at<interval '1 millisecond' as capped
+    from sessions s join devices d on d.tenant_id=s.tenant_id and d.id=s.device_id
+    join owner_sessions o on o.id=s.owner_session_id where s.id=${entry.session.id}`;
+  assert.deepEqual(entered, { kind: "personal", capped: true });
   const [counts] =
     await admin`select (select count(*)::int from employees where tenant_id=${tenantId}) as employees,(select count(*)::int from audit where tenant_id=${tenantId}) as audit,(select count(*)::int from restaurant_entitlements where tenant_id=${tenantId}) as entitlements`;
   assert.deepEqual(
@@ -150,6 +156,7 @@ try {
     for (const row of rows) {
       await admin`delete from signup_billing_intents where tenant_id=${row.tenant_id}`;
       await admin`delete from audit where tenant_id=${row.tenant_id}`;
+      await admin`delete from pin_throttles where tenant_id=${row.tenant_id}`;
       await admin`delete from sessions where tenant_id=${row.tenant_id}`;
       await admin`delete from devices where tenant_id=${row.tenant_id}`;
       await admin`delete from owner_memberships where tenant_id=${row.tenant_id}`;

@@ -640,14 +640,6 @@ const baseErrors: Record<string, readonly [string, string]> = {
     "La caja original ya cambió. Conservamos la venta para conciliación.",
     "The original drawer changed. The sale remains available for reconciliation.",
   ],
-  invalid_login: [
-    "Usuario o contraseña incorrectos.",
-    "Incorrect username or password.",
-  ],
-  pair_device: [
-    "Primero ingresa como propietario para vincular el dispositivo.",
-    "Sign in as owner first to pair this device.",
-  ],
   drawer_required: [
     "Abre caja antes de cobrar.",
     "Open the drawer before collecting payment.",
@@ -675,18 +667,6 @@ const baseErrors: Record<string, readonly [string, string]> = {
   count_changed: [
     "Hubo movimientos durante el conteo. Actualiza antes de confirmar.",
     "Stock moved during the count. Refresh before confirming.",
-  ],
-  approval_required: [
-    "Esta acción requiere la autorización de un gerente.",
-    "This action requires a manager approval.",
-  ],
-  approval_denied: [
-    "Usuario o PIN de gerente incorrecto.",
-    "Manager login or PIN is incorrect.",
-  ],
-  pin_locked: [
-    "Demasiados intentos. Espera unos minutos.",
-    "Too many attempts. Wait a few minutes.",
   ],
   void_exceeds_unpaid: [
     "Solo se pueden anular productos sin cobrar. Usa un reembolso para lo cobrado.",

@@ -52,6 +52,18 @@ test("device PIN, server permission, CSRF and public capability isolation", asyn
         channel: "qr",
       }),
     });
+    // SEC-2/SEC-4: without a device paired to that restaurant, a login for
+    // another tenant is refused before any PIN counter is touched.
+    const unpaired = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tenantId: "10000000-0000-4000-8000-000000000002",
+        login: "cashier",
+        secret: "000000",
+      }),
+    });
+    const unpairedError = (await unpaired.json()).error;
     const pin = await fetch("/api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -76,6 +88,7 @@ test("device PIN, server permission, CSRF and public capability isolation", asyn
       costLeak: "cost" in publicCatalog.catalog[0],
       recipeLeak: "recipe" in publicCatalog.catalog[0],
       crossPublic: badProduct.status,
+      unpaired: `${unpaired.status} ${unpairedError}`,
       pin: pin.status,
       role: cashier.role,
       forbidden: forbidden.status,
@@ -87,6 +100,7 @@ test("device PIN, server permission, CSRF and public capability isolation", asyn
     costLeak: false,
     recipeLeak: false,
     crossPublic: 400,
+    unpaired: "401 device_not_paired",
     pin: 200,
     role: "cashier",
     forbidden: 403,

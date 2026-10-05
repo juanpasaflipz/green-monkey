@@ -5,7 +5,15 @@ import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
 import type { Tx } from "./db.js";
 import { id, money, DomainError, type Session } from "../shared/domain.js";
-import { permit, managers, password, hash } from "./auth.js";
+import { permit, managers } from "./auth.js";
+import {
+  endEmployeeSessions,
+  hashSecret,
+  requireRecentAuth,
+} from "./access.js";
+import { pinFingerprint } from "./access-staff.js";
+import { cancelCodesCreatedBy } from "./access-pairing.js";
+import { retirePersonalDevices } from "./access-devices.js";
 import { once, audit, stock } from "./orders.js";
 const label = z
   .object({ es: z.string().min(1).max(120), en: z.string().min(1).max(120) })
@@ -72,6 +80,9 @@ export async function saveProduct(tx: Tx, s: Session, raw: unknown) {
 }
 export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
   permit(s, ["owner"]);
+  // Same rule as the Equipo commands: staff mutations on a shared terminal
+  // need a PIN entered recently (SEC-6), so this legacy route is no bypass.
+  requireRecentAuth(s);
   const p = z
     .object({
       operationId: id,
@@ -90,12 +101,39 @@ export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
     s,
     p.operationId,
     "employee.save",
-    { ...p, secret: hash(p.secret) },
+    { ...p, secret: pinFingerprint(p.secret) },
     async () => {
       await requireSelling(tx, s);
+      const [old] =
+        await tx`select role from employees where id=${p.id} for update`;
       const slot = await employeeSlot(tx, p.id, p.active, p.role);
-      await tx`insert into employees(tenant_id,id,name,login,role,secret_hash,active,free_slot) values(${s.tenantId},${p.id},${p.name},${p.login},${p.role},${password(p.secret)},${p.active},${slot}) on conflict(tenant_id,id) do update set name=excluded.name,login=excluded.login,role=excluded.role,secret_hash=excluded.secret_hash,active=excluded.active,free_slot=excluded.free_slot`;
-      await tx`update sessions set revoked=true where employee_id=${p.id}`;
+      await tx`insert into employees(tenant_id,id,name,login,role,secret_hash,active,free_slot,pin_set_at,deactivated_at)
+        values(${s.tenantId},${p.id},${p.name},${p.login},${p.role},${await hashSecret(p.secret)},${p.active},${slot},now(),
+          case when ${p.active} then null else now() end)
+        on conflict(tenant_id,id) do update set name=excluded.name,login=excluded.login,role=excluded.role,
+          secret_hash=excluded.secret_hash,active=excluded.active,free_slot=excluded.free_slot,pin_set_at=now(),
+          deactivated_at=case when not excluded.active then coalesce(employees.deactivated_at,now()) end,
+          failed_attempts=0,locked_until=null`;
+      await tx`update pin_throttles set failures=0,lock_level=0,locked_until=null,last_failure_at=null
+        where employee_id=${p.id}`;
+      // The secret is always sent, so a name-only edit counts as a PIN reset.
+      // Only deactivation revokes; other changes end sessions so queued
+      // offline evidence still syncs (OFF-7).
+      if (!p.active) {
+        await endEmployeeSessions(tx, p.id, "employee_deactivated", {
+          revoke: true,
+        });
+        await cancelCodesCreatedBy(tx, p.id, s.employeeId);
+        await retirePersonalDevices(tx, s, p.id);
+      } else if (old && old.role !== p.role) {
+        await endEmployeeSessions(tx, p.id, "role_changed", { revoke: false });
+        if (!managers.includes(p.role))
+          await cancelCodesCreatedBy(tx, p.id, s.employeeId);
+      } else
+        await endEmployeeSessions(tx, p.id, "pin_reset", {
+          revoke: false,
+          exceptSessionId: p.id === s.employeeId ? s.id : undefined,
+        });
       await audit(tx, s, "employee.saved", p.id, {
         role: p.role,
         active: p.active,

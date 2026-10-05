@@ -4,6 +4,7 @@ import type { Tx } from "./db.js";
 import { id, money, DomainError, type Session } from "../shared/domain.js";
 import { once, audit, drawer, getOrder } from "./orders.js";
 import { permit, managers } from "./auth.js";
+import { requireRecentAuth } from "./access.js";
 export async function cashSummary(tx: Tx, s: Session, drawerId?: string) {
   if (drawerId) permit(s, managers);
   const [d] = drawerId
@@ -50,6 +51,7 @@ export async function cashHistory(tx: Tx, s: Session, offset: number) {
 }
 export async function refund(tx: Tx, s: Session, raw: unknown) {
   permit(s, managers);
+  requireRecentAuth(s);
   const p = z
     .object({
       operationId: id,

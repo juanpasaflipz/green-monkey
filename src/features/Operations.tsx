@@ -1,4 +1,6 @@
 import { CashHistory } from "./CashHistory";
+import { DeviceManagement } from "./DeviceManagement";
+import { StaffManagement } from "./StaffManagement";
 import { RecoveryQueue } from "./RecoveryQueue";
 import { FreeSelection } from "./FreeSelection";
 import { PlanSettings } from "./PlanSettings";
@@ -162,6 +164,7 @@ export function Operations({
         <>
           <RestaurantSettings session={session} locale={locale} />
           {session.role === "owner" && <FreeSelection locale={locale} />}
+          {manager && <DeviceManagement session={session} locale={locale} />}
           <PlanSettings
             tenantId={session.tenantId}
             locale={locale}
@@ -730,26 +733,7 @@ export function Operations({
             </>
           )}
           {view === "team" && (
-            <div className="data-table">
-              <table>
-                <thead>
-                  <tr>
-                    <th>{t("name")}</th>
-                    <th>{t("user")}</th>
-                    <th>{t("permission")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data?.map((e: any) => (
-                    <tr key={e.id}>
-                      <td>{e.name}</td>
-                      <td>{e.login}</td>
-                      <td>{t(e.role as Key)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <StaffManagement session={session} locale={locale} />
           )}
           {view === "settings" && (
             <>

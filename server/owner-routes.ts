@@ -1,7 +1,14 @@
-import { Router } from "express";
+import {
+  Router,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from "express";
 import rateLimit from "express-rate-limit";
 import type postgres from "postgres";
 import { cookieOptions, sign } from "./auth.js";
+import { isTerminalRequest } from "./access.js";
+import { DomainError } from "../shared/domain.js";
 import { googleConfig, googleIdentityService } from "./google-identity.js";
 import { googleAttemptStore } from "./google-attempt-store.js";
 import {
@@ -59,14 +66,48 @@ export function ownerRoutes(sql: postgres.Sql) {
         !["/providers", "/account", "/account/invitations"].includes(req.path),
     }),
   );
-  router.get("/providers", (_req, res) =>
-    res.json({
-      google: Boolean(google),
-      apple: false,
-      billingSandbox: process.env.BILLING_SANDBOX_ENABLED === "true",
-    }),
+  // GAP-2: a shared terminal never starts Google sign-in or owner account
+  // commands, even if its UI is bypassed. The refusal is attached with the
+  // router's own matching (route middleware and prefix mounts), never by
+  // comparing raw path strings, so case variants, a trailing slash and HEAD
+  // (which runs GET routes) reach it exactly as they reach the handlers.
+  const refuseOnTerminal =
+    (mode: "redirect" | "error"): RequestHandler =>
+    async (req, res, next) => {
+      try {
+        // Fails closed: a failed device lookup refuses instead of allowing.
+        if (!(await isTerminalRequest(sql, req.cookies ?? {}, true)))
+          return next();
+        if (mode === "redirect")
+          return res.redirect(303, "/app?auth_error=terminal");
+        next(new DomainError("device_is_terminal", 403));
+      } catch (error) {
+        next(error);
+      }
+    };
+  const refuseCommand = refuseOnTerminal("error");
+  // Every non-GET request under /account and /account-center (wave 2, R2:
+  // account mounts that router after this one, so an unmatched request runs
+  // this guard first), including routes added later.
+  router.use(["/account", "/account-center"], (req, res, next) =>
+    req.method === "GET" || req.method === "HEAD"
+      ? next()
+      : refuseCommand(req, res, next),
   );
-  router.get("/google/start", async (_req, res, next) => {
+  router.get("/providers", async (req, res, next) => {
+    try {
+      const terminal = await isTerminalRequest(sql, req.cookies ?? {});
+      res.json({
+        google: Boolean(google) && !terminal,
+        terminal,
+        apple: false,
+        billingSandbox: process.env.BILLING_SANDBOX_ENABLED === "true",
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.get("/google/start", refuseOnTerminal("redirect"), async (_req, res, next) => {
     if (!google) return res.status(503).json({ error: "google_unavailable" });
     try {
       const flow = await google.begin();
@@ -139,8 +180,27 @@ export function ownerRoutes(sql: postgres.Sql) {
   });
   router.post("/account/enter", async (req, res, next) => {
     try {
-      const browser = ownerBrowserCookie(req.cookies.gm_owner_browser);
-      const result = await withOwner(
+      await enterRestaurant(req, res);
+    } catch (error) {
+      if (error instanceof DomainError && error.code === "owner_reauth_required") {
+        // This Google sign-in predates the device's revocation: end it, so the
+        // browser must sign in with Google again (A6).
+        try {
+          await withOwner(sql, req.cookies.gm_account ?? "", undefined, (tx, a) =>
+            tx`update owner_sessions set revoked=true where id=${a.sessionId}`,
+          );
+        } catch {
+          /* Already invalid: nothing left to end. */
+        }
+        res.clearCookie("gm_account", cookieOptions);
+      }
+      next(error);
+    }
+  });
+  async function enterRestaurant(req: Request, res: Response) {
+    let browser = ownerBrowserCookie(req.cookies.gm_owner_browser);
+    const enter = () =>
+      withOwner(
         sql,
         req.cookies.gm_account ?? "",
         req.get("x-csrf-token") ?? "",
@@ -153,23 +213,31 @@ export function ownerRoutes(sql: postgres.Sql) {
             browser,
           ),
       );
-      res.cookie("gm_owner_browser", sign(browser), {
-        ...cookieOptions,
-        maxAge: 30 * 86400_000,
-      });
-      res.cookie("gm_device", sign(result.device), {
-        ...cookieOptions,
-        maxAge: 30 * 86400_000,
-      });
-      res.cookie("gm_session", sign(result.session), {
-        ...cookieOptions,
-        maxAge: 12 * 3600_000,
-      });
-      res.json({ ok: true });
+    let result;
+    try {
+      result = await enter();
     } catch (error) {
-      next(error);
+      // The browser's personal device expired, or was revoked before this
+      // Google sign-in: issue a fresh browser identity once.
+      if (!(error instanceof DomainError && error.code === "owner_browser_reset"))
+        throw error;
+      browser = ownerBrowserCookie(undefined);
+      result = await enter();
     }
-  });
+    res.cookie("gm_owner_browser", sign(browser), {
+      ...cookieOptions,
+      maxAge: 30 * 86400_000,
+    });
+    res.cookie("gm_device", sign(result.device), {
+      ...cookieOptions,
+      maxAge: 30 * 86400_000,
+    });
+    res.cookie("gm_session", sign(result.session), {
+      ...cookieOptions,
+      maxAge: Math.max(0, result.absoluteExpiresAt.getTime() - Date.now()),
+    });
+    res.json({ ok: true });
+  }
   router.post("/account/free-location", async (req, res, next) => {
     try {
       res.json(

@@ -81,13 +81,15 @@ test("cashier voids an item with manager approval and the kitchen acknowledges i
     .getByLabel("Motivo de la anulación")
     .fill("Cliente cambió de opinión");
   await dialog.getByLabel("Regresar ingredientes al inventario").check();
-  await dialog.getByLabel("Usuario del gerente").fill("owner");
+  await dialog
+    .getByLabel("Gerente que autoriza")
+    .selectOption({ label: "Alex Demo" });
   await dialog.getByLabel("PIN del gerente").fill("0000");
   const axe = await new AxeBuilder({ page }).include("dialog").analyze();
   expect(axe.violations).toEqual([]);
   await dialog.getByRole("button", { name: /Anular 1 productos/ }).click();
   await expect(dialog.getByRole("alert")).toContainText(
-    "Usuario o PIN de gerente incorrecto.",
+    "PIN de gerente incorrecto o el empleado no es gerente.",
   );
   await dialog.getByLabel("PIN del gerente").fill("demo-green-monkey");
   await dialog.getByRole("button", { name: /Anular 1 productos/ }).click();

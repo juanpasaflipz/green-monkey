@@ -79,11 +79,6 @@ export function ManagementTools({
         )}
         {view === "team" && (
           <>
-            {session.role === "owner" && (
-              <Button onClick={() => setMode("employee")}>
-                {t("addEmployee")}
-              </Button>
-            )}
             <Button onClick={() => setMode("shift")}>{t("shifts")}</Button>
             <Button
               onClick={async () => {
@@ -140,7 +135,6 @@ export function ManagementTools({
                 menu: "editMenu",
                 supplier: "addSupplier",
                 receiving: "receivePurchase",
-                employee: "addEmployee",
                 shift: "shifts",
                 payroll: "payroll",
                 import: "importMenu",
@@ -273,16 +267,6 @@ export function ManagementTools({
                       cost: parseAmount(val("cost")),
                       expiresOn: val("expiry") || null,
                       reason: val("reason"),
-                    });
-                  if (mode === "employee")
-                    void save("/team/save", {
-                      operationId,
-                      id: crypto.randomUUID(),
-                      name: val("name"),
-                      login: val("login"),
-                      secret: val("secret"),
-                      role: val("role"),
-                      active: true,
                     });
                   if (mode === "shift")
                     void save("/shifts", {
@@ -495,36 +479,6 @@ export function ManagementTools({
                   </Field>
                   <Field label={t("reason")}>
                     <input name="reason" required minLength={3} />
-                  </Field>
-                </>
-              )}
-              {mode === "employee" && (
-                <>
-                  <Field label={t("name")}>
-                    <input name="name" required />
-                  </Field>
-                  <Field label={t("user")}>
-                    <input name="login" required autoComplete="off" />
-                  </Field>
-                  <Field label={t("secret")}>
-                    <input
-                      name="secret"
-                      required
-                      minLength={6}
-                      type="password"
-                      autoComplete="new-password"
-                    />
-                  </Field>
-                  <Field label={t("role")}>
-                    <select name="role">
-                      {["cashier", "server", "kitchen", "manager", "owner"].map(
-                        (r) => (
-                          <option key={r} value={r}>
-                            {t(r as Key)}
-                          </option>
-                        ),
-                      )}
-                    </select>
                   </Field>
                 </>
               )}

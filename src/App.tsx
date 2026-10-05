@@ -1,5 +1,5 @@
 import { BrandLogo } from "./components/BrandLogo";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ShoppingBag,
   ClipboardList,
@@ -9,22 +9,62 @@ import {
   House,
   Package,
   Users,
+  Lock,
   Settings,
   ChefHat,
   LogOut,
   Wifi,
   WifiOff,
-  ArrowRight,
   ChevronDown,
 } from "lucide-react";
 import type { Session, Locale, Product } from "../shared/domain";
-import { strings, translateError, type Key } from "./i18n";
+import { strings, type Key } from "./i18n";
 import { api, setSession, clearSessionScope } from "./api";
 import { db, cacheSession, scope, syncPending } from "./offline";
-import { Button, Field } from "./components/ui";
+import { Button, Modal } from "./components/ui";
 import { Selling } from "./features/Selling";
 import { Operations } from "./features/Operations";
 import { OwnerAccess } from "./features/OwnerAccess";
+import {
+  ApiError,
+  blockedReason,
+  registerSoftUnlockCheck,
+  registerStepUpHandler,
+  requestsBlocked,
+} from "./api";
+import { AccessGate } from "./features/AccessGate";
+import { LockScreen } from "./features/LockScreen";
+import { StepUpDialog } from "./features/StepUpDialog";
+import { useIdleLock } from "./access/idle";
+import {
+  LOGOUT_PENDING_KEY,
+  clearPendingLogout,
+  drainBeforeLeaving,
+  finishPendingLogout,
+  serverSignOut,
+  settleRejectedSession,
+  startHeartbeat,
+  unsyncedFor,
+} from "./access/session";
+import {
+  LOCK_KEY,
+  allowsContinueOffline,
+  forgetLock,
+  idleElsewhereWait,
+  idleLock,
+  lockFromOtherTab,
+  nextLock,
+  noteActivity,
+  rememberLock,
+  remembered,
+  restoredLock,
+} from "./access/lock";
+import "./access/access.css";
+type StepUpRequest = {
+  sessionId: string;
+  resolve: () => void;
+  reject: (e: unknown) => void;
+};
 export default function App() {
   const [locale, setLocale] = useState<Locale>(
     localStorage.getItem("gm-locale") === "en" ? "en" : "es",
@@ -36,18 +76,61 @@ export default function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [error, setError] = useState("");
   const [queued, setQueued] = useState(0);
-  const [ownerAccess, setOwnerAccess] = useState(false);
+  const [, setOwnerAccess] = useState(false);
   const [showAccount, setShowAccount] = useState(
     new URLSearchParams(location.search).has("account") ||
       location.hash.startsWith("#invite="),
   );
   const [sessionChanged, setSessionChanged] = useState(false);
+  const [lock, setLock] = useState<null | { reason: string }>(null);
+  // "Continuar como" offline: unlocked without a PIN until the server is
+  // reachable again or the offline window ends (contract 8.2), then locked
+  // again with the same reason.
+  const [softUnlocked, setSoftUnlocked] = useState<string | null>(null);
+  // The lock screen could not reach the server although the device reports a
+  // connection (router up, internet down). Cleared by a health probe; offline's
+  // probe-based canUseServer replaces this at merge (ACC-FLOOR-6).
+  const [serverDown, setServerDown] = useState(false);
+  const reachable = online && !serverDown;
+  // A pending "Confirma con tu PIN", for the session whose command asked for it.
+  const [stepUpRequest, setStepUpRequest] = useState<null | StepUpRequest>(
+    null,
+  );
+  const stepUpRef = useRef<StepUpRequest | null>(null);
+  const [gateReason, setGateReason] = useState("");
+  const [leaving, setLeaving] = useState<
+    | null
+    | { kind: "offline" }
+    | { kind: "pending"; sales: number; payment: boolean }
+  >(null);
+  const [now, setNow] = useState(() => Date.now());
+  const sessionRef = useRef<Session | null>(null);
+  const onlineRef = useRef(online);
   const t = (key: Key) => strings[locale][key];
+  /**
+   * Cancels a pending step-up (ACC-20): after a switch, a sign-out or a new
+   * sign-in, the next person must never confirm the previous one's command.
+   */
+  function cancelStepUp() {
+    const pending = stepUpRef.current;
+    stepUpRef.current = null;
+    setStepUpRequest(null);
+    pending?.reject(new ApiError("step_up_cancelled", 403));
+  }
   async function load(resetView = true) {
+    await finishPendingLogout();
+    // Never restore a session while a logout is still pending (SEC-6).
+    if (localStorage.getItem(LOGOUT_PENDING_KEY)) {
+      setActiveSession(null);
+      setCatalog([]);
+      setLoading(false);
+      return;
+    }
     try {
       const s = await api<Session>("/session");
       setSession(s);
       const c = await api<Product[]>("/catalog");
+      resumeLock(s);
       setActiveSession(s);
       setCatalog(c);
       await cacheSession(s, c);
@@ -59,12 +142,16 @@ export default function App() {
               ? "today"
               : "sell",
         );
-    } catch {
+    } catch (e) {
       setActiveSession(null);
       setCatalog([]);
+      // A session the server rejected never comes back unlocked from the cache.
+      if (e instanceof ApiError && e.status === 401)
+        await settleRejectedSession(e.message);
       if (!navigator.onLine) {
         const cached = await db.cache.get("session");
         if (cached && new Date(cached.value.offlineUntil) > new Date()) {
+          resumeLock(cached.value);
           setActiveSession(cached.value);
           setSession(cached.value);
           setCatalog(
@@ -75,6 +162,16 @@ export default function App() {
     } finally {
       setLoading(false);
     }
+  }
+  /**
+   * A reload, a reopened tab or an offline restore never opens a locked
+   * session unlocked (SEC-6): the remembered lock, or a pause longer than the
+   * auto-lock, starts the restored session behind the lock screen.
+   */
+  function resumeLock(s: Session) {
+    const reason = restoredLock(s);
+    if (reason) setLock((current) => nextLock(current, reason));
+    else noteActivity(s.id, true);
   }
   useEffect(() => {
     void load();
@@ -104,13 +201,197 @@ export default function App() {
         .then((c) => {
           if (!current) return;
           setCatalog(c);
-          void cacheSession(session, c);
+          // A session 401 meanwhile must not put that session back in the cache.
+          if (!requestsBlocked()) void cacheSession(session, c);
         })
         .catch(() => {});
     return () => {
       current = false;
     };
   }, [view, session?.id, online]);
+  useEffect(() => {
+    sessionRef.current = session;
+    onlineRef.current = online;
+  }, [session, online]);
+  useEffect(() => {
+    // A session 401 locks the screen with its reason; a device 401 unpairs (FOH-7).
+    const unauthorized = (event: Event) => {
+      const code = (event as CustomEvent<string>).detail;
+      // Also on a cold start: a revoked session leaves the offline cache, and
+      // a deactivated employee cannot keep selling offline from it.
+      void settleRejectedSession(code);
+      if (!sessionRef.current) return;
+      if (code === "device_revoked" || code === "device_not_paired") {
+        cancelStepUp();
+        clearSessionScope();
+        setLock(null);
+        setActiveSession(null);
+        setCatalog([]);
+        setGateReason(code);
+      } else {
+        // The server's reason replaces an idle, manual or renew lock (and
+        // ends a soft unlock), so no offline "Continuar como" remains for a
+        // session it rejected; nothing replaces it but a PIN (ACC-18).
+        setSoftUnlocked(null);
+        setLock((current) => nextLock(current, code));
+      }
+    };
+    window.addEventListener("gm-unauthorized", unauthorized);
+    registerStepUpHandler(
+      (sessionId) =>
+        new Promise<void>((resolve, reject) => {
+          // One prompt at a time: a newer request replaces an older one.
+          stepUpRef.current?.reject(new ApiError("step_up_cancelled", 403));
+          const request = { sessionId, resolve, reject };
+          stepUpRef.current = request;
+          setStepUpRequest(request);
+        }),
+    );
+    const tick = setInterval(() => setNow(Date.now()), 30_000);
+    return () => {
+      window.removeEventListener("gm-unauthorized", unauthorized);
+      registerStepUpHandler(null);
+      clearInterval(tick);
+    };
+  }, []);
+  useIdleLock(
+    session?.access?.idleLockSeconds ?? null,
+    // A renewal prompt left on screen still auto-locks (its "Ahora no" must
+    // not outlive the auto-lock, ACC-FLOOR-6).
+    Boolean(session) && (!lock || lock.reason === "renew") && !sessionChanged,
+    () => {
+      // Another tab of this session still in use defers the lock (ACC-21).
+      const s = sessionRef.current;
+      const seconds = s?.access?.idleLockSeconds;
+      const wait = s && seconds ? idleElsewhereWait(s.id, seconds) : 0;
+      if (wait > 0) return wait;
+      setLock(idleLock);
+    },
+    () => {
+      if (sessionRef.current) noteActivity(sessionRef.current.id);
+    },
+  );
+  useEffect(() => {
+    // Remembered until a PIN unlock, a new sign-in or a sign-out (SEC-6);
+    // a renewal prompt is this tab's own and is not.
+    if (session && lock && remembered(lock.reason))
+      rememberLock(session.id, lock.reason);
+  }, [session?.id, lock?.reason]);
+  useEffect(() => {
+    // A lock in another tab of the same session locks this tab too (SEC-6),
+    // except an idle one: each tab judges idleness itself (ACC-21).
+    const lockedElsewhere = (event: StorageEvent) => {
+      const s = sessionRef.current;
+      const reason =
+        event.key === LOCK_KEY && s
+          ? lockFromOtherTab(event.newValue, s.id)
+          : null;
+      if (!reason) return;
+      setSoftUnlocked(null);
+      setLock((current) => nextLock(current, reason));
+    };
+    window.addEventListener("storage", lockedElsewhere);
+    return () => window.removeEventListener("storage", lockedElsewhere);
+  }, []);
+  useEffect(() => {
+    // The offline soft unlock ends when the server is reachable again or the
+    // offline window ends; the same lock comes back.
+    if (
+      softUnlocked &&
+      session &&
+      (reachable || new Date(session.offlineUntil).getTime() <= now)
+    ) {
+      const reason = softUnlocked;
+      setSoftUnlocked(null);
+      setLock((current) => nextLock(current, reason));
+    }
+  }, [softUnlocked, reachable, now, session?.offlineUntil]);
+  useEffect(() => {
+    // A soft unlock over a real lock never works online (ACC-R-2): before any
+    // call, ask the server; if it answers, the same lock comes back at once
+    // and the call is refused unsent. A renewal prompt's soft unlock is not a
+    // lock (the session is valid), so its calls go through.
+    if (!softUnlocked || softUnlocked === "renew") return;
+    const reason = softUnlocked;
+    registerSoftUnlockCheck(async () => {
+      if (!navigator.onLine) return false;
+      try {
+        const r = await fetch("/api/health", {
+          cache: "no-store",
+          signal: AbortSignal.timeout(3_000),
+        });
+        if (!r.ok) return false;
+      } catch {
+        return false;
+      }
+      setServerDown(false);
+      setSoftUnlocked(null);
+      setLock((current) => nextLock(current, reason));
+      return true;
+    });
+    return () => registerSoftUnlockCheck(null);
+  }, [softUnlocked]);
+  useEffect(() => {
+    // While the server is known unreachable, probe it; the lock screen (or the
+    // soft unlock's re-lock) follows as soon as it answers.
+    if (!serverDown || !online) return;
+    let live = true;
+    const probe = async () => {
+      try {
+        const r = await fetch("/api/health", { cache: "no-store" });
+        if (live && r.ok) setServerDown(false);
+      } catch {
+        /* Still unreachable. */
+      }
+    };
+    void probe();
+    const timer = setInterval(() => void probe(), 10_000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [serverDown, online]);
+  useEffect(() => {
+    // Whatever replaced or ended the session, its pending step-up goes (ACC-20).
+    if (stepUpRef.current && stepUpRef.current.sessionId !== session?.id)
+      cancelStepUp();
+  }, [session?.id]);
+  useEffect(() => {
+    if (!session || sessionChanged) return;
+    // Keeps the sliding expiry and renewed offline window current (OFF-3);
+    // only the "session" cache entry is written (D15).
+    return startHeartbeat(
+      (s) => {
+        // A reply sent before a session 401 seen meanwhile neither unblocks
+        // requests nor puts the rejected session back in the cache.
+        if (requestsBlocked()) return;
+        setSession(s);
+        void db.cache.put({ id: "session", value: s });
+        setActiveSession((current) =>
+          current &&
+          current.id === s.id &&
+          JSON.stringify([
+            current.offlineUntil,
+            current.expiresAt,
+            current.access,
+            current.sellingAllowed,
+          ]) !==
+            JSON.stringify([
+              s.offlineUntil,
+              s.expiresAt,
+              s.access,
+              s.sellingAllowed,
+            ])
+            ? s
+            : current,
+        );
+      },
+      () => onlineRef.current,
+    );
+  }, [session?.id, sessionChanged]);
+  useEffect(() => {
+    if (online) void finishPendingLogout();
+  }, [online]);
   useEffect(() => {
     document.documentElement.lang = locale;
     localStorage.setItem("gm-locale", locale);
@@ -119,7 +400,16 @@ export default function App() {
     if (!session || sessionChanged) return;
     const s = session;
     const poll = async () => {
-      if (navigator.onLine) await syncPending(s);
+      // A session 401 always shows its lock: if nothing shows one while calls
+      // are blocked, put it back (ACC-FLOOR-2).
+      const rejected = blockedReason();
+      if (rejected) {
+        setSoftUnlocked(null);
+        setLock((current) => nextLock(current, rejected));
+      }
+      // Blocked calls would count as sync attempts and push queued sales
+      // toward conflict (OFF-7); offline carries this rule at merge.
+      if (navigator.onLine && !requestsBlocked()) await syncPending(s);
       setQueued(
         (await db.pending.where("scope").equals(scope(s)).toArray()).filter(
           (p) => p.status !== "synced",
@@ -130,6 +420,54 @@ export default function App() {
     const timer = setInterval(() => void poll(), 10000);
     return () => clearInterval(timer);
   }, [session, online, sessionChanged]);
+  async function ownerReady() {
+    cancelStepUp();
+    setLeaving(null);
+    setSoftUnlocked(null);
+    setLock(null);
+    clearSessionScope();
+    setActiveSession(null);
+    setCatalog([]);
+    setLoading(true);
+    setShowAccount(false);
+    setGateReason("");
+    history.replaceState(null, "", "/app");
+    await load();
+  }
+  /**
+   * Flow H: sync first, warn about unsent sales or a missing connection, then
+   * end the server session. Signing out always succeeds locally (SEC-6/OFF-7).
+   */
+  async function signOut(force = false) {
+    const s = session;
+    if (!s) return;
+    if (!force) {
+      if (!online) {
+        setLeaving({ kind: "offline" });
+        return;
+      }
+      // A session the server already ended cannot sync; only count.
+      const left =
+        lock && !["idle", "manual", "renew"].includes(lock.reason)
+          ? await unsyncedFor(s)
+          : await drainBeforeLeaving(s, online);
+      if (left.sales > 0 || left.payment) {
+        setLeaving({ kind: "pending", ...left });
+        return;
+      }
+    }
+    setLeaving(null);
+    cancelStepUp();
+    await serverSignOut(s.id);
+    await db.cache.delete("session");
+    clearSessionScope();
+    localStorage.setItem("gm-session-generation", crypto.randomUUID());
+    forgetLock();
+    setSoftUnlocked(null);
+    setLock(null);
+    setActiveSession(null);
+    setCatalog([]);
+  }
   if (loading)
     return (
       <div className="login">
@@ -159,7 +497,7 @@ export default function App() {
             <BrandLogo />
           </div>
           <h1>{t("loginTitle")}</h1>
-          <p>{t("loginHint")}</p>
+          <p>{t("accessArtHint")}</p>
           <div className="login-grid" aria-hidden="true">
             <span />
             <span />
@@ -168,90 +506,50 @@ export default function App() {
           </div>
         </div>
         <div className="login-form">
-          {session && (
-            <Button onClick={() => setShowAccount(false)}>
-              {locale === "es" ? "Volver al restaurante" : "Back to restaurant"}
-            </Button>
-          )}
-          {ownerAccess && (
-            <Button onClick={() => setLocale(locale === "es" ? "en" : "es")}>
-              {locale === "es" ? "English" : "Español"}
-            </Button>
-          )}
-          <OwnerAccess
-            locale={locale}
-            onReady={async () => {
-              clearSessionScope();
-              setActiveSession(null);
-              setCatalog([]);
-              setLoading(true);
-              setShowAccount(false);
-              history.replaceState(null, "", "/app");
-              await load();
-            }}
-            onAccount={setOwnerAccess}
-          />
-          <form
-            hidden={ownerAccess}
-            onSubmit={async (e) => {
-              e.preventDefault();
-              setError("");
-              const f = new FormData(e.currentTarget);
-              try {
-                await api("/login", Object.fromEntries(f));
-                await load();
-              } catch (err) {
-                setError(translateError((err as Error).message, locale));
-              }
-            }}
-          >
-            <div className="row between">
-              <h2>{t("login")}</h2>
-              <Button
-                onClick={() => setLocale(locale === "es" ? "en" : "es")}
-                type="button"
-              >
+          {session ? (
+            <>
+              <Button onClick={() => setShowAccount(false)}>
+                {locale === "es" ? "Volver al restaurante" : "Back to restaurant"}
+              </Button>
+              <Button onClick={() => setLocale(locale === "es" ? "en" : "es")}>
                 {locale === "es" ? "English" : "Español"}
               </Button>
-            </div>
-            <Field label={t("restaurant")}>
-              <input
-                name="tenantId"
-                defaultValue="10000000-0000-4000-8000-000000000001"
-                required
+              <OwnerAccess
+                locale={locale}
+                onReady={ownerReady}
+                onAccount={setOwnerAccess}
               />
-            </Field>
-            <Field label={t("user")}>
-              <input
-                name="login"
-                autoComplete="username"
-                defaultValue="owner"
-                required
-              />
-            </Field>
-            <Field label={t("secret")}>
-              <input
-                name="secret"
-                type="password"
-                autoComplete="current-password"
-                required
-              />
-            </Field>
-            {error && (
-              <p role="alert" className="error">
-                {error}
-              </p>
-            )}
-            <Button variant="primary" type="submit">
-              {t("login")}
-              <ArrowRight size={20} />
-            </Button>
-            <p className="muted">{t("demo")}</p>
-          </form>
+            </>
+          ) : (
+            <AccessGate
+              locale={locale}
+              setLocale={setLocale}
+              online={online}
+              reason={gateReason}
+              signupFirst={new URLSearchParams(location.search).has("signup")}
+              onSignedIn={async () => {
+                // The PIN just entered supersedes any remembered lock, logout
+                // or step-up of the previous session.
+                clearPendingLogout();
+                forgetLock();
+                cancelStepUp();
+                setSoftUnlocked(null);
+                setLock(null);
+                setGateReason("");
+                await load();
+              }}
+              onOwnerReady={ownerReady}
+            />
+          )}
         </div>
       </div>
     );
   const management = ["owner", "manager"].includes(session.role);
+  const absoluteEnd = session.access?.absoluteExpiresAt
+    ? new Date(session.access.absoluteExpiresAt).getTime()
+    : null;
+  const expiring =
+    absoluteEnd !== null && absoluteEnd - now <= 30 * 60_000;
   const nav =
     session.role === "kitchen"
       ? [["kitchen", ChefHat]]
@@ -326,7 +624,7 @@ export default function App() {
               {session.name} · {t(session.role as Key)}
             </span>
           </span>
-          {management && (
+          {management && session.access?.deviceKind !== "terminal" && (
             <Button
               variant="ghost"
               className="store-switch"
@@ -362,22 +660,16 @@ export default function App() {
           <Button
             variant="ghost"
             className="round"
+            aria-label={t("accessLockNow")}
+            onClick={() => setLock((current) => nextLock(current, "manual"))}
+          >
+            <Lock size={18} />
+          </Button>
+          <Button
+            variant="ghost"
+            className="round"
             aria-label={t("logout")}
-            onClick={async () => {
-              try {
-                await api("/logout", {});
-                await db.cache.delete("session");
-                clearSessionScope();
-                localStorage.setItem(
-                  "gm-session-generation",
-                  crypto.randomUUID(),
-                );
-                setActiveSession(null);
-                setCatalog([]);
-              } catch (e) {
-                setError(translateError((e as Error).message, locale));
-              }
-            }}
+            onClick={() => void signOut()}
           >
             <LogOut size={18} />
           </Button>
@@ -405,6 +697,26 @@ export default function App() {
             )}
           </nav>
         )}
+        {expiring && (
+          <div role="status" className="expiry-banner">
+            <p>
+              {t("accessExpiryWarning")
+                .replace("{name}", session.name)
+                .replace(
+                  "{time}",
+                  new Date(session.access!.absoluteExpiresAt!).toLocaleTimeString(
+                    locale === "es" ? "es-MX" : "en-US",
+                    { hour: "2-digit", minute: "2-digit" },
+                  ),
+                )}
+            </p>
+            <Button
+              onClick={() => setLock((current) => nextLock(current, "renew"))}
+            >
+              {t("accessRenew")}
+            </Button>
+          </div>
+        )}
         {session.sellingAllowed === false && (
           <p role="status" className="warning">
             {locale === "es"
@@ -417,7 +729,7 @@ export default function App() {
             {error}
           </p>
         )}
-        <div hidden={view !== "sell"}>
+        <div hidden={view !== "sell"} key={scope(session)}>
           <Selling
             session={session}
             catalog={catalog}
@@ -429,7 +741,7 @@ export default function App() {
         </div>
         {view !== "sell" && (
           <Operations
-            key={view}
+            key={`${scope(session)}:${view}`}
             view={view}
             session={session}
             locale={locale}
@@ -437,6 +749,133 @@ export default function App() {
           />
         )}
       </main>
+      {lock && (
+        <LockScreen
+          session={session}
+          reason={lock.reason}
+          online={reachable}
+          locale={locale}
+          overlayOpen={Boolean(leaving)}
+          onUnreachable={() => setServerDown(true)}
+          onDismiss={() => {
+            // Only a renewal the cashier started; the session is still valid.
+            // A pending offline soft unlock keeps its own re-lock.
+            if (lock.reason !== "renew") return;
+            setLock(null);
+          }}
+          onUnlocked={(s) => {
+            const sameEmployee = scope(s) === scope(session);
+            setSession(s);
+            setServerDown(false);
+            clearPendingLogout();
+            forgetLock();
+            setSoftUnlocked(null);
+            noteActivity(s.id, true);
+            if (s.id !== session.id) {
+              // The previous session's prompts and warnings are not the new one's.
+              cancelStepUp();
+              setLeaving(null);
+              localStorage.setItem("gm-session-generation", crypto.randomUUID());
+            }
+            void db.cache.put({ id: "session", value: s });
+            setLock(null);
+            setActiveSession(s);
+            if (!sameEmployee) {
+              setView(
+                s.role === "kitchen"
+                  ? "kitchen"
+                  : s.role === "owner"
+                    ? "today"
+                    : "sell",
+              );
+              void api<Product[]>("/catalog")
+                .then((c) => {
+                  setCatalog(c);
+                  return cacheSession(s, c);
+                })
+                .catch(() => {});
+            }
+          }}
+          onContinueOffline={() => {
+            // Never past a lock the server imposed (ACC-18), nor while a
+            // session 401 blocks calls (ACC-FLOOR-2).
+            if (!allowsContinueOffline(lock.reason) || requestsBlocked()) return;
+            // The lock stays remembered: a reload or the server answering
+            // again asks for the PIN again. An earlier soft unlock keeps its
+            // reason, so a renewal prompt never turns an idle re-lock into one
+            // that offers "Ahora no".
+            const reason = lock.reason;
+            setSoftUnlocked((current) => current ?? reason);
+            setLock(null);
+          }}
+          onSignOut={() => void signOut()}
+        />
+      )}
+      {/* Never over the lock, and only for the session that asked (ACC-20). */}
+      {stepUpRequest && !lock && stepUpRequest.sessionId === session.id && (
+        <StepUpDialog
+          session={session}
+          locale={locale}
+          onConfirmed={() => {
+            stepUpRef.current = null;
+            stepUpRequest.resolve();
+            setStepUpRequest(null);
+          }}
+          onCancel={cancelStepUp}
+          onSessionEnded={(error) => {
+            const pending = stepUpRef.current;
+            stepUpRef.current = null;
+            setStepUpRequest(null);
+            pending?.reject(error);
+          }}
+        />
+      )}
+      {leaving && (
+        <Modal
+          title={
+            leaving.kind === "offline"
+              ? t("accessOfflineLogoutTitle")
+              : t("accessPendingTitle")
+          }
+          close={() => setLeaving(null)}
+          closeLabel={t("close")}
+          footer={
+            <div className="row wrap">
+              <Button variant="primary" onClick={() => setLeaving(null)}>
+                {t("accessStay")}
+              </Button>
+              {/* Already locked: a lock the server imposed must keep its
+                  reason, so no manual lock is offered over it (ACC-18). */}
+              {leaving.kind === "offline" && !lock && (
+                <Button
+                  onClick={() => {
+                    setLeaving(null);
+                    setLock((current) => nextLock(current, "manual"));
+                  }}
+                >
+                  {t("accessLockNow")}
+                </Button>
+              )}
+              <Button variant="danger" onClick={() => void signOut(true)}>
+                {t("accessLeaveAnyway")}
+              </Button>
+            </div>
+          }
+        >
+          {leaving.kind === "offline" ? (
+            <p>{t("accessOfflineLogoutBody")}</p>
+          ) : (
+            <>
+              <p>
+                {t("accessPendingBody")
+                  .replace("{n}", String(leaving.sales))
+                  .replace("{name}", session.name)}
+              </p>
+              {leaving.payment && <p>{t("accessPendingPayment")}</p>}
+            </>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

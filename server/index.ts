@@ -6,8 +6,6 @@ import {
   resolveOfflineRecoveryTask,
 } from "./offline-sync.js";
 import {
-  selectFirstDevice,
-  sellingAllowed,
   requireSelling,
   freeSelection,
   saveFreeSelection,
@@ -15,7 +13,6 @@ import {
 import { billingRuntime } from "./billing-runtime.js";
 import { entitlement, requirePro } from "./entitlements.js";
 import { ownerRoutes } from "./owner-routes.js";
-import { withOwner } from "./owner-accounts.js";
 import {
   serviceOptions,
   assignService,
@@ -27,8 +24,7 @@ import "dotenv/config";
 import express from "express";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
-import rateLimit from "express-rate-limit";
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { z, ZodError } from "zod";
 import { Decimal } from "decimal.js";
@@ -36,10 +32,7 @@ import { connect, tenant, waitForDatabase } from "./db.js";
 import {
   authentication,
   type AuthRequest,
-  hash,
   sign,
-  verify,
-  cookieOptions,
   permit,
   operators,
   managers,
@@ -61,7 +54,6 @@ import { commitImport } from "./imports.js";
 import { cashHistory, cashSummary, closeCash, refund } from "./operations.js";
 import {
   acknowledgeVoids,
-  checkEmployeeSecret,
   verifyApproval,
   voidLines,
 } from "./voids.js";
@@ -86,7 +78,7 @@ import * as discountsRoutes from "./routes/discounts.js";
 import * as reportsRoutes from "./routes/reports.js";
 import * as cfdiRoutes from "./routes/cfdi.js";
 import * as accountRoutes from "./routes/account.js";
-import { issueOfflineLease } from "./offline-leases.js";
+import { requireRecentAuth } from "./access.js";
 import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
@@ -155,78 +147,6 @@ app.get("/api/version", (_req, res) =>
     commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? "local",
   }),
 );
-app.post(
-  "/api/login",
-  rateLimit({
-    windowMs: 60_000,
-    limit: 10,
-    skipSuccessfulRequests: true,
-    standardHeaders: true,
-    legacyHeaders: false,
-  }),
-  async (req, res, next) => {
-    try {
-      const p = z
-        .object({
-          tenantId: id,
-          login: z.string().min(1).max(100),
-          secret: z.string().min(4).max(200),
-        })
-        .strict()
-        .parse(req.body);
-      const result = await tenant(sql, p.tenantId, async (tx) => {
-        // A wrong secret must commit its failed-attempt count, so it returns a
-        // marker instead of throwing inside this transaction.
-        const check = await checkEmployeeSecret(tx, p.login, p.secret);
-        if (check.outcome !== "ok") return { rejected: check.outcome } as const;
-        const e = check.employee;
-        let device;
-        try {
-          device = verify(req.cookies.gm_device ?? "");
-        } catch {
-          device = null;
-        }
-        if (device?.tenantId !== p.tenantId) device = null;
-        if (!device) {
-          if (e.role !== "owner") throw new DomainError("pair_device", 403);
-          const token = randomBytes(32).toString("hex");
-          device = { id: randomUUID(), tenantId: p.tenantId, token };
-          await tx`insert into devices(tenant_id,id,name,token_hash) values(${p.tenantId},${device.id},'POS',${hash(token)})`;
-        } else {
-          const [d] =
-            await tx`select id from devices where id=${device.id} and token_hash=${hash(device.token)} and active`;
-          if (!d) throw new DomainError("pair_device", 403);
-        }
-        const token = randomBytes(32).toString("hex"),
-          sessionId = randomUUID(),
-          csrf = randomBytes(24).toString("hex");
-        await selectFirstDevice(tx, device.id);
-        const selling = await sellingAllowed(tx, e.id, device.id);
-        await tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,offline_until,selling_authorized) values(${p.tenantId},${sessionId},${e.id},${device.id},${hash(token)},${csrf},now()+interval '12 hours',now()+interval '4 hours',${selling})`;
-        await issueOfflineLease(tx, sessionId);
-        return {
-          device,
-          session: { id: sessionId, tenantId: p.tenantId, token },
-        };
-      });
-      if ("rejected" in result)
-        throw result.rejected === "locked"
-          ? new DomainError("pin_locked", 423)
-          : new DomainError("invalid_login", 401);
-      res.cookie("gm_device", sign(result.device), {
-        ...cookieOptions,
-        maxAge: 30 * 86400_000,
-      });
-      res.cookie("gm_session", sign(result.session), {
-        ...cookieOptions,
-        maxAge: 12 * 3600_000,
-      });
-      res.json({ ok: true });
-    } catch (e) {
-      next(e);
-    }
-  },
-);
 app.use("/api/public", publicOrdering(sql));
 app.use("/api/auth", ownerRoutes(sql));
 app.use("/api/billing", billing.routes);
@@ -251,37 +171,6 @@ route("get", "/plan/selection", freeSelection);
 route("post", "/plan/selection", (tx, s, req) =>
   saveFreeSelection(tx, s, req.body),
 );
-app.post("/api/logout", async (req, res, next) => {
-  try {
-    const s = (req as AuthRequest).session;
-    await tenant(
-      sql,
-      s.tenantId,
-      (tx) => tx`update sessions set revoked=true where id=${s.id}`,
-    );
-    res.clearCookie("gm_session", cookieOptions);
-    if (req.cookies.gm_account) {
-      try {
-        await withOwner(
-          sql,
-          req.cookies.gm_account,
-          undefined,
-          async (tx, account) => {
-            await tx`update owner_sessions set revoked=true where id=${account.sessionId}`;
-          },
-        );
-      } catch (error) {
-        /* An absent or expired account must not prevent POS logout. */
-        if (!(error instanceof DomainError && error.status === 401))
-          throw error;
-      }
-      res.clearCookie("gm_account", cookieOptions);
-    }
-    res.json({ ok: true });
-  } catch (e) {
-    next(e);
-  }
-});
 route("post", "/imports/preview", async (_tx, s, req) => {
   permit(s, managers);
   return previewImport(req.body);
@@ -322,7 +211,14 @@ app.post("/api/orders/:id/voids", async (req, res, next) => {
     const s = (req as unknown as AuthRequest).session;
     const orderId = id.parse(req.params.id);
     // Approval is checked in its own transaction so failed PINs are counted.
-    const approverId = await verifyApproval(sql, s, req.body?.approval);
+    // The full body lets a lost-response retry replay its recorded void.
+    const approverId = await verifyApproval(
+      sql,
+      s,
+      req.body?.approval,
+      orderId,
+      req.body,
+    );
     res.json(
       await tenant(sql, s.tenantId, (tx) =>
         voidLines(tx, s, orderId, req.body, approverId),
@@ -437,6 +333,7 @@ route("post", "/cash/open", async (tx, s, req) => {
 route("post", "/cash/close", (tx, s, req) => closeCash(tx, s, req.body));
 route("post", "/cash/paid-out", async (tx, s, req) => {
   permit(s, managers);
+  requireRecentAuth(s);
   const p = z
     .object({
       operationId: id,

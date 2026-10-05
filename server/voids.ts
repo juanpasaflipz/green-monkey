@@ -3,12 +3,15 @@ import { Decimal } from "decimal.js";
 import type postgres from "postgres";
 import { z } from "zod";
 import { tenant, type Tx } from "./db.js";
-import { managers, matches, operators, permit } from "./auth.js";
+import { hash, managers, operators, permit } from "./auth.js";
+import { checkPin, deviceScope, pinError, stepUpSeconds } from "./access.js";
+import { ACCESS, isRecentAuth } from "../shared/access.js";
 import { audit, getOrder, once, stock } from "./orders.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
 
-export const MAX_FAILED_ATTEMPTS = 5;
-export const LOCK_MINUTES = 5;
+/** First-stage throttle values (see shared/access.ts ACCESS.pin). */
+export const MAX_FAILED_ATTEMPTS = ACCESS.pin.firstStage;
+export const LOCK_MINUTES = ACCESS.pin.baseLockMinutes;
 
 type SecretCheck =
   | { outcome: "ok"; employee: { id: string; role: string; name: string } }
@@ -16,58 +19,171 @@ type SecretCheck =
   | { outcome: "locked" };
 
 /**
- * Checks an employee login and secret, maintaining the per-employee lockout.
- * Never throws for a wrong secret: callers must let the transaction commit so the
- * failed-attempt counter persists, then reject outside the transaction.
+ * Compatibility wrapper over checkPin (server/access.ts): throttling is per
+ * employee and device scope. Never throws for a wrong secret: callers must let
+ * the transaction commit so the counters persist, then reject outside.
  */
 export async function checkEmployeeSecret(
   tx: Tx,
   login: string,
   secret: string,
+  scope = "unpaired",
 ): Promise<SecretCheck> {
-  const [e] =
-    await tx`select id,role,name,secret_hash,coalesce(locked_until>now(),false) as locked
-      from employees where login=${login} and active for update`;
-  if (!e) return { outcome: "invalid" };
-  if (e.locked) return { outcome: "locked" };
-  if (!matches(secret, e.secret_hash)) {
-    await tx`update employees set
-        failed_attempts=failed_attempts+1,
-        locked_until=case when failed_attempts+1>=${MAX_FAILED_ATTEMPTS}
-          then now()+make_interval(mins=>${LOCK_MINUTES}) else locked_until end
-      where id=${e.id}`;
-    return { outcome: "invalid" };
-  }
-  await tx`update employees set failed_attempts=0,locked_until=null where id=${e.id} and (failed_attempts>0 or locked_until is not null)`;
-  return { outcome: "ok", employee: { id: e.id, role: e.role, name: e.name } };
+  const check = await checkPin(tx, { login }, secret, scope);
+  if (check.outcome === "ok") return check;
+  if (check.outcome === "locked" || check.outcome === "hard_locked")
+    return { outcome: "locked" };
+  return { outcome: "invalid" };
 }
 
-export const approvalInput = z
-  .object({
-    login: z.string().min(1).max(100),
-    secret: z.string().min(4).max(200),
-  })
-  .strict();
+export const approvalInput = z.union([
+  z.object({ employeeId: id, secret: z.string().min(4).max(200) }).strict(),
+  z
+    .object({
+      login: z.string().min(1).max(100),
+      secret: z.string().min(4).max(200),
+    })
+    .strict(),
+]);
+
+/** Rejected PIN approvals one session may make per minute (A5), per process. */
+export const APPROVAL_FAILURES_PER_MINUTE = 10;
+const approvalFailures = new Map<string, number[]>();
+function recentApprovalFailures(sessionId: string, now: number) {
+  const recent = (approvalFailures.get(sessionId) ?? []).filter(
+    (at) => now - at < 60_000,
+  );
+  if (recent.length) approvalFailures.set(sessionId, recent);
+  else approvalFailures.delete(sessionId);
+  return recent;
+}
+/**
+ * A per-session ceiling on rejected PIN approvals, on top of the per-device
+ * throttle and the 100-failure hard lock, so one session cannot drive a
+ * guessing loop across approvers. Successful approvals never count.
+ */
+function noteApprovalFailure(sessionId: string, now = Date.now()) {
+  approvalFailures.set(sessionId, [
+    ...recentApprovalFailures(sessionId, now),
+    now,
+  ]);
+  if (approvalFailures.size > 5_000)
+    for (const key of [...approvalFailures.keys()])
+      recentApprovalFailures(key, now);
+}
 
 /**
- * Verifies a manager's credentials for one sensitive command, in its own
- * transaction so failed attempts are recorded even though the command is refused.
- * Returns the approver's employee id. The approval is not stored or reusable.
+ * What once() fingerprints for a void. It names the approver but never
+ * includes the secret; legacy login fingerprints stay stable.
+ */
+function voidFingerprint(orderId: string, input: z.infer<typeof voidInput>) {
+  const { approval, ...rest } = input;
+  return {
+    orderId,
+    ...rest,
+    approver: approval
+      ? "employeeId" in approval
+        ? approval.employeeId
+        : approval.login
+      : null,
+  };
+}
+
+/**
+ * True when this exact void (same operationId, kind and fingerprint, so the
+ * same order, lines, version and approver) is already recorded. Only an exact
+ * match counts: any other reuse of an operationId still gets the order check
+ * before the PIN, then once()'s operation_conflict.
+ */
+async function recordedVoid(tx: Tx, orderId: string, raw: unknown) {
+  const input = voidInput.safeParse(raw);
+  if (!input.success) return false;
+  const [prior] =
+    await tx`select kind,hash from operations where id=${input.data.operationId}`;
+  return (
+    !!prior &&
+    prior.kind === "void" &&
+    prior.hash === hash(JSON.stringify(voidFingerprint(orderId, input.data)))
+  );
+}
+
+/**
+ * Verifies a manager's PIN for one sensitive command, in its own transaction so
+ * failed attempts are recorded even though the command is refused. Attempts
+ * count against the approver on the session's device only (SEC-2). Without a
+ * payload, a manager may approve their own action only from a Google-entered
+ * session on a personal device or with a recent PIN (SEC-6/A4). Returns the
+ * approver's id. With orderId, the order must exist, be open and still have an
+ * unpaid unit before any PIN is checked, so approvals cannot be tried against
+ * made-up, closed or fully paid orders (A5/ACC-R-5). The read takes no lock:
+ * voidLines re-checks all of it under the order's FOR UPDATE. voidRequest is
+ * the void's full body: when that exact void is already recorded (a retry
+ * after a lost response), the order check is skipped so voidLines' once()
+ * returns the stored result instead of refusing the order the first attempt
+ * cancelled or fully voided (ACC-R6-1). The PIN is still checked.
  */
 export async function verifyApproval(
   sql: postgres.Sql,
   s: Session,
   raw: unknown,
+  orderId?: string,
+  voidRequest?: unknown,
 ): Promise<string> {
-  if (managers.includes(s.role)) return s.employeeId;
+  if (raw === undefined || raw === null) {
+    if (
+      managers.includes(s.role) &&
+      isRecentAuth(s.access, Date.now(), stepUpSeconds())
+    )
+      return s.employeeId;
+    throw new DomainError("approval_required", 403);
+  }
   const approval = approvalInput.safeParse(raw);
   if (!approval.success) throw new DomainError("approval_required", 403);
-  const result = await tenant(sql, s.tenantId, (tx) =>
-    checkEmployeeSecret(tx, approval.data.login, approval.data.secret),
-  );
-  if (result.outcome === "locked") throw new DomainError("pin_locked", 423);
-  if (result.outcome === "invalid" || !managers.includes(result.employee.role))
+  const target =
+    "employeeId" in approval.data
+      ? { employeeId: approval.data.employeeId }
+      : { login: approval.data.login };
+  if (
+    recentApprovalFailures(s.id, Date.now()).length >=
+    APPROVAL_FAILURES_PER_MINUTE
+  )
+    throw new DomainError("too_many_attempts", 429);
+  const result = await tenant(sql, s.tenantId, async (tx) => {
+    if (
+      orderId &&
+      !(
+        voidRequest !== undefined &&
+        (await recordedVoid(tx, orderId, voidRequest))
+      )
+    ) {
+      const [order] = await tx`select state from orders where id=${orderId}`;
+      if (!order) throw new DomainError("not_found", 404);
+      if (closedStates.includes(order.state))
+        throw new DomainError("stale_order", 409);
+      const detail = await getOrder(tx, orderId);
+      if (!detail.itemSplitAvailable)
+        throw new DomainError("unallocated_history", 409);
+      if (!detail.paymentUnits!.some((u) => u.paid === 0))
+        throw new DomainError("void_exceeds_unpaid", 409);
+    }
+    const check = await checkPin(
+      tx,
+      target,
+      approval.data.secret,
+      deviceScope(s.deviceId),
+    );
+    if (check.outcome === "ok" && check.employee.id === s.employeeId)
+      await tx`update sessions set authenticated_at=now() where id=${s.id}`;
+    return check;
+  });
+  if (result.outcome !== "ok") {
+    noteApprovalFailure(s.id);
+    throw pinError(result, "approval");
+  }
+  if (!managers.includes(result.employee.role)) {
+    noteApprovalFailure(s.id);
     throw new DomainError("approval_denied", 403);
+  }
   return result.employee.id;
 }
 
@@ -147,9 +263,7 @@ export async function voidLines(
 ) {
   permit(s, operators);
   const input = voidInput.parse(raw);
-  const { approval, ...rest } = input;
-  // The fingerprint names the approver but never includes the secret.
-  const fingerprint = { orderId, ...rest, approver: approval?.login ?? null };
+  const fingerprint = voidFingerprint(orderId, input);
   return once(tx, s, input.operationId, "void", fingerprint, async () => {
     const [locked] =
       await tx`select state,version from orders where id=${orderId} for update`;
