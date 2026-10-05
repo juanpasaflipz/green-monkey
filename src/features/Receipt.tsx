@@ -12,6 +12,7 @@ import { api } from "../api";
 import { tenderMethodLabel } from "../labels";
 import { Badge, Button, Modal } from "../components/ui";
 import { printDocument, usePrintSettings, type PaperWidth } from "../print";
+import type { LocalReceipt } from "../offline-records";
 import { DocNote } from "./KitchenTicket";
 
 export function moneyFormatter(currency: string, locale: Locale) {
@@ -42,6 +43,18 @@ export function noteEditableOf(order: Order) {
       closeReason: order.closeReason,
     })
   );
+}
+
+/**
+ * What this device collected for a local (offline) receipt. Offline's records
+ * carry their payment, which may be partial with offline table service
+ * (LD-7); a local receipt without one was collected in full before it was
+ * saved, so it never prints as unpaid (SERVICE-MONEY-5).
+ */
+function localCollected(order: Order) {
+  return (order as Partial<LocalReceipt>).offline?.method
+    ? order.paid
+    : order.total;
 }
 
 export type ReceiptKind = "receipt" | "check" | "local";
@@ -104,6 +117,12 @@ export function ReceiptDocument({
   // LD-1: the order note and round notes print for the customer as well as
   // the kitchen; round notes identical to the order note are left out.
   const notes = roundNotes(order);
+  // offline (026), LD-10 B4: the payment this device collected for a local
+  // receipt, which has no tender until it syncs.
+  const localPayment =
+    kind === "local" && !order.tenders.length
+      ? ((order as Partial<LocalReceipt>).offline ?? null)
+      : null;
   const paidTone =
     kind === "local"
       ? "neutral"
@@ -242,13 +261,71 @@ export function ReceiptDocument({
         </div>
       )}
       {kind === "local" && !order.tenders.length ? (
-        // A local (offline) sale is collected in full before it is saved, but
-        // its record carries no tender until it syncs: never print it as
-        // unpaid (SERVICE-MONEY-5).
-        <div className="row between">
-          <span>{t.serviceReceiptLocalPaid}</span>
-          <strong>{money(order.total)}</strong>
-        </div>
+        // A local (offline) payment carries no tender until it syncs: print
+        // what this device collected (LD-10 B4) and never print it as unpaid
+        // (SERVICE-MONEY-5); with offline table service (LD-7) it may be a
+        // partial payment, with its balance.
+        <>
+          {localPayment?.method && (
+            <div className="doc-tender">
+              <div className="row between">
+                <span>
+                  {tenderMethodLabel(localPayment.method, undefined, locale)}
+                </span>
+                {localPayment.amount !== undefined && (
+                  <strong>{money(localPayment.amount)}</strong>
+                )}
+              </div>
+              {localPayment.method === "external" &&
+                localPayment.reference && (
+                  <div className="muted">
+                    {t.serviceReceiptReference.replace(
+                      "{ref}",
+                      localPayment.reference,
+                    )}
+                  </div>
+                )}
+              {!!localPayment.tip && (
+                <div className="row between muted">
+                  <span>{t.serviceReceiptTip}</span>
+                  <span>{money(localPayment.tip)}</span>
+                </div>
+              )}
+              {localPayment.method === "cash" &&
+                localPayment.received !== undefined &&
+                localPayment.amount !== undefined && (
+                  <>
+                    <div className="row between muted">
+                      <span>{t.serviceReceiptReceived}</span>
+                      <span>{money(localPayment.received)}</span>
+                    </div>
+                    <div className="row between muted">
+                      <span>{t.change}</span>
+                      <span>
+                        {money(
+                          changeDue(
+                            localPayment.received,
+                            localPayment.amount,
+                            localPayment.tip ?? 0,
+                          ),
+                        )}
+                      </span>
+                    </div>
+                  </>
+                )}
+            </div>
+          )}
+          <div className="row between">
+            <span>{t.serviceReceiptLocalPaid}</span>
+            <strong>{money(localCollected(order))}</strong>
+          </div>
+          {localCollected(order) < order.total && (
+            <div className="row between">
+              <span>{t.remaining}</span>
+              <strong>{money(order.total - localCollected(order))}</strong>
+            </div>
+          )}
+        </>
       ) : (
         <>
           <div className="row between">
@@ -324,7 +401,13 @@ export function ReceiptModal({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const local = order.state === "local";
-  const state = local ? "closed" : checkStateOf(order);
+  // A local receipt with a balance (a partial offline payment, LD-7) goes
+  // back to its order, like an open check; paid in full, on to the next sale.
+  const state = local
+    ? localCollected(order) >= order.total
+      ? "closed"
+      : "open"
+    : checkStateOf(order);
   const kind = local ? "local" : "receipt";
   return (
     <Modal

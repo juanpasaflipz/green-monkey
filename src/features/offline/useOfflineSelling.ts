@@ -42,7 +42,7 @@ import { translateError } from "../../i18n";
 import { KitchenTicketDocument } from "../KitchenTicket";
 import { printDocument, readPrintSettings } from "../../print";
 import { recentTickets } from "./LocalKitchenTickets";
-import { LocalReceiptDocument } from "./LocalReceiptDocument";
+import { ReceiptDocument } from "../Receipt";
 import { translator } from "./format";
 
 export type PrintSetting = "ask" | "kitchen" | "kitchen_receipt";
@@ -149,8 +149,19 @@ export function useOfflineSelling({
         timezone: session.restaurant.timezone,
       }),
     );
+    // Service's receipt, kind "local" (§3.8, LD-10 B4): order and round notes
+    // (LD-1), options, payment method, external reference and change.
     if (receipt)
-      sections.push(createElement(LocalReceiptDocument, { receipt, locale }));
+      sections.push(
+        createElement(ReceiptDocument, {
+          order: receipt,
+          session,
+          locale,
+          kind: "local",
+          label: receipt.offline.provisionalNumber ?? undefined,
+          labelHint: t("offlineProvisionalHint"),
+        }),
+      );
     if (sections.length)
       await printDocument(sections, readPrintSettings().paper);
   }

@@ -133,6 +133,62 @@ describe("receipt document", () => {
     expect(server).toContain("$0.00");
   });
 
+  it("prints an offline payment's method, reference, change and balance on a local receipt (LD-10 B4)", () => {
+    const offline = {
+      provisionalNumber: "A1-0001",
+      soldAt: order.createdAt,
+      method: "cash" as const,
+      reference: "",
+      amount: 9000,
+      tip: 0,
+      received: 10000,
+    };
+    const cash = render({
+      order: { ...order, state: "local", paid: 9000, offline } as Order,
+      kind: "local",
+    });
+    expect(cash).toContain("Efectivo");
+    expect(cash).toContain("Recibido");
+    expect(cash).toContain("$100.00");
+    expect(cash).toContain("Cambio");
+    expect(cash).toContain("$10.00");
+    expect(cash).toContain("Cobrado · pendiente de sincronizar");
+    expect(cash).not.toContain("Saldo pendiente");
+    expect(cash).toContain("ALERGIA: cacahuate");
+    const external = render({
+      order: {
+        ...order,
+        state: "local",
+        paid: 9000,
+        offline: {
+          ...offline,
+          method: "external",
+          reference: "AUT-7781",
+          received: 9000,
+        },
+      } as Order,
+      kind: "local",
+    });
+    expect(external).toContain("Terminal bancaria externa");
+    expect(external).toContain("Ref. AUT-7781");
+    expect(external).not.toContain("Cambio");
+    // LD-7 table service: a partial offline payment prints what was collected
+    // and the balance, never the total as collected.
+    const partial = render({
+      order: {
+        ...order,
+        state: "local",
+        paid: 5000,
+        offline: { ...offline, amount: 5000, received: 5000 },
+      } as Order,
+      kind: "local",
+    });
+    expect(partial).toContain("Cobrado · pendiente de sincronizar");
+    expect(partial).toContain("$50.00");
+    expect(partial).toContain("Saldo pendiente");
+    expect(partial).toContain("$40.00");
+  });
+
   it("shows registered fiscal slots on every receipt; props win", () => {
     setReceiptSlots({
       header: ({ kind, reprint }) =>

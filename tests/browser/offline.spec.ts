@@ -962,6 +962,60 @@ test("Offline kitchen ticket prints and appears in the device list", async ({
   await context.setOffline(false);
 });
 
+test("An offline external-terminal sale shows and prints service's local receipt with the method, the reference and the order note (LD-10 B4, LD-1)", async ({
+  page,
+  context,
+}) => {
+  // LD-10 B4: one receipt component (service's ReceiptDocument kind "local")
+  // for the shown and the printed offline receipt.
+  await page.addInitScript(() => {
+    (window as any).__printed = [];
+    window.print = () => {
+      (window as any).__printed.push(
+        document.getElementById("print-root")?.innerText ?? "",
+      );
+    };
+  });
+  const printed = () =>
+    page.evaluate(() => (window as any).__printed as string[]);
+  await login(page);
+  await openDrawer(page);
+  await goOffline(context, page);
+  await product(page, "Taco de hongos").click();
+  await page.getByLabel("Nota de la orden (cocina)").fill("ALERGIA: nuez");
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Cobrar" });
+  await dialog
+    .getByRole("button", { name: "Terminal externa", exact: true })
+    .click();
+  await dialog.getByLabel("Referencia").fill("AUT-B4-77");
+  await dialog.getByRole("checkbox").check();
+  await dialog
+    .getByRole("button", { name: "Guardar cobro con terminal", exact: true })
+    .click();
+  const receipt = page.locator(".receipt");
+  await expect(receipt).toContainText("Pendiente de sincronizar");
+  await expect(receipt).toContainText("Terminal bancaria externa");
+  await expect(receipt).toContainText("Ref. AUT-B4-77");
+  await expect(receipt).toContainText("ALERGIA: nuez");
+  await expect(receipt).toContainText("Cobrado · pendiente de sincronizar");
+  await expect(receipt).not.toContainText("Cambio");
+  await expect(receipt).not.toContainText("Saldo pendiente");
+  await page
+    .getByRole("dialog", { name: "Recibo local" })
+    .getByRole("button", { name: "Imprimir", exact: true })
+    .click();
+  await expect.poll(async () => (await printed()).length).toBe(1);
+  const doc = (await printed())[0]!;
+  expect(doc).toContain("Terminal bancaria externa");
+  expect(doc).toContain("Ref. AUT-B4-77");
+  expect(doc).toContain("ALERGIA: nuez");
+  expect(doc).toContain("Taco de hongos");
+  expect(doc).toMatch(PROVISIONAL);
+  await nextSale(page);
+  await context.setOffline(false);
+});
+
 test("KDS shows offline sales in the review lane with provisional and server numbers", async ({
   page,
   context,

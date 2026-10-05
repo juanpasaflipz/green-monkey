@@ -65,8 +65,15 @@ export type LocalReceipt = Order & {
   offline: {
     provisionalNumber: string | null;
     soldAt: string;
+    /**
+     * This device's payment, which has no tender until it syncs; service's
+     * ReceiptDocument kind="local" prints it (LD-10 B4).
+     */
     method: "cash" | "external";
     reference: string;
+    amount: number;
+    tip: number;
+    received: number;
     localOperationId?: string | null;
     cachedAt?: string | null;
     serverOrderId?: string | null;
@@ -378,6 +385,9 @@ export async function saveOfflineSale(
       soldAt: record.recordedAt,
       method: input.payment.method,
       reference: input.payment.reference,
+      amount: input.payment.amount,
+      tip: input.payment.tip,
+      received: input.payment.received,
     },
   };
 }
@@ -1244,6 +1254,9 @@ export async function saveOfflinePayment(
       soldAt: correctedIso(),
       method: input.payment.method,
       reference: input.payment.reference,
+      amount: input.payment.amount,
+      tip: input.payment.tip,
+      received: input.payment.received,
     },
   };
 }
@@ -1316,6 +1329,9 @@ export async function saveOfflinePartial(
       ...view.offline,
       method: input.payment.method,
       reference: input.payment.reference,
+      amount: input.payment.amount,
+      tip: input.payment.tip,
+      received: input.payment.received,
     },
   };
 }
