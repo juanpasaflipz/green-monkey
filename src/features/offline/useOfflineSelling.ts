@@ -137,6 +137,17 @@ export function useOfflineSelling({
   const sendBlockReason =
     blockReason ?? (tableService ? null : "offline_table_service_off");
   const autoPrint = printSetting !== "ask";
+  /**
+   * A local receipt's label and hint for service's receipt (§3.8): the label
+   * replaces "#number" and reads "Número provisional B-07" (OFFLINE_RECOVERY
+   * "Provisional numbers"), so the bare prefix is never taken for a folio.
+   */
+  const localLabel = (receipt: LocalReceipt) => ({
+    label: receipt.offline.provisionalNumber
+      ? t("offlineProvisional", { n: receipt.offline.provisionalNumber })
+      : undefined,
+    labelHint: t("offlineProvisionalHint"),
+  });
   /** Prints the kitchen tickets of these records, and a receipt when given. */
   async function print(operationIds: string[], receipt: LocalReceipt | null) {
     const tickets = (await recentTickets(session, locale)).filter((item) =>
@@ -158,8 +169,7 @@ export function useOfflineSelling({
           session,
           locale,
           kind: "local",
-          label: receipt.offline.provisionalNumber ?? undefined,
-          labelHint: t("offlineProvisionalHint"),
+          ...localLabel(receipt),
         }),
       );
     if (sections.length)
@@ -268,11 +278,7 @@ export function useOfflineSelling({
     /** Receipt props for service's ReceiptModal (§3.8). */
     receiptProps(order: Order) {
       return isLocalReceipt(order)
-        ? {
-            label: order.offline.provisionalNumber ?? undefined,
-            labelHint: t("offlineProvisionalHint"),
-            kind: "local" as const,
-          }
+        ? { ...localLabel(order), kind: "local" as const }
         : null;
     },
     printKitchen: (operationIds: string[]) => print(operationIds, null),
