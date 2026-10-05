@@ -33,9 +33,9 @@ import {
   type Draft,
 } from "../offline";
 import { useOfflineSelling } from "./offline/useOfflineSelling";
+import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
 import { fmt } from "./offline/format";
-import { liveQuery } from "dexie";
 import type { LocalOrderView } from "../offline-records";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 const fresh = (): OrderInput => ({
@@ -112,36 +112,8 @@ export function Selling({
   const [openOrders, setOpenOrders] = useState(false);
   /** Order record id for a new order paid in part offline, one per dialog. */
   const orderOperationKey = useRef(crypto.randomUUID());
-  // I13: once a local order has synced (or a cached order is reachable again),
-  // keep selling against the authoritative server order.
-  useEffect(() => {
-    const view = current as LocalOrderView | null;
-    if (!online || !view?.offline || !("cachedAt" in view.offline)) return;
-    let live = true;
-    const subscription = liveQuery(async () => {
-      if (!view.offline.localOperationId) return view.offline.serverOrderId;
-      const row = await db.pending.get(view.offline.localOperationId);
-      return row?.status === "synced"
-        ? ((row.result as { orderId?: string } | null)?.orderId ?? null)
-        : null;
-    }).subscribe({
-      next: (orderId) => {
-        if (!orderId || !live) return;
-        void api<Order>("/orders/" + orderId)
-          .then((order) => {
-            if (!live) return;
-            setCurrent(order);
-            void db.cache.put({ id: contextId, value: order.id });
-          })
-          .catch(() => {});
-      },
-      error: () => {},
-    });
-    return () => {
-      live = false;
-      subscription.unsubscribe();
-    };
-  }, [online, current?.id]);
+  // I13, OFF-R2, OFF-R5: the order on screen follows this device's records.
+  useOfflineCurrent({ session, online, current, setCurrent, contextId });
   /** OFF-2: an attempt the server cannot confirm is parked, not retried forever. */
   const shouldPark = (e: unknown) =>
     (e as Error).message === "payment_review_required" ||
@@ -482,6 +454,7 @@ export function Selling({
         offline.afterSave(saved.operationIds, saved.receipt);
         return;
       }
+      await offline.guardOnlinePayment(current);
       let o = current;
       if (draft.lines.length) o = await send();
       if (!o) throw new Error("invalid_input");

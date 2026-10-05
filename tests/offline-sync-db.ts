@@ -1633,7 +1633,22 @@ try {
   const deliveredView = snapshot.orders.find((o) => o.id === delivered.id)!;
   assert.equal(deliveredView.lines.length, 1);
   assert.equal(deliveredView.total - deliveredView.paid, 100);
+  assert.deepEqual(deliveredView.tenderIds, []);
+  assert.deepEqual(deliveredView.offlineOperationIds, []);
   assert(snapshot.orders.length <= 200);
+  // OFF-R3: each copy lists exactly the tenders and offline records it already
+  // contains, so a device never counts its own synced rows twice.
+  const tableView = snapshot.orders.find((o) => o.id === opened.orderId)!;
+  assert.equal(tableView.tenderIds.length, 2);
+  assert.deepEqual(
+    new Set(tableView.offlineOperationIds),
+    new Set([
+      table.operationId,
+      tableRound.operationId,
+      partial.operationId,
+      rest.operationId,
+    ]),
+  );
 
   // 20. Heartbeat: no auth, no-store, single-flight DB check.
   const app = express();

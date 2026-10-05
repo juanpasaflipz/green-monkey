@@ -31,7 +31,11 @@ import { api } from "./api";
 import { clockOffset, correctedIso, deviceIso, serverNow } from "./clock";
 import { getConnectivitySnapshot } from "./connectivity";
 import { db, type Pending } from "./offline";
-import { scope } from "./offline-keys";
+import {
+  devicePrefix as deviceRowsPrefix,
+  isAttemptKey,
+  scope,
+} from "./offline-keys";
 import {
   fallbackPrefix,
   formatProvisional,
@@ -450,6 +454,7 @@ export type LocalOrderView = Order & {
   };
 };
 
+/** A server open order as this device keeps it for an outage. */
 type CachedOrder = {
   id: string;
   number: number;
@@ -476,24 +481,186 @@ type CachedOrder = {
     station: string;
     voidedQuantity: number;
   }[];
+  /** Tenders this copy already contains. */
+  tenderIds: string[];
+  /** Offline records the server had applied to the order in this copy. */
+  offlineOperationIds: string[];
+  /** Device time this copy was stored; compared only with other device times. */
+  receivedAt: number;
 };
+type OpenOrdersCache = {
+  format: typeof OPEN_ORDERS_FORMAT;
+  refreshedAt: string | null;
+  orders: CachedOrder[];
+};
+/** Copies stored before applied-record lists existed are not trusted. */
+const OPEN_ORDERS_FORMAT = 2;
 
 export const openOrdersKey = (s: Session) => `${scope(s)}:open-orders`;
 
-async function cachedSnapshot(
-  session: Session,
-): Promise<{ refreshedAt: string | null; orders: CachedOrder[] }> {
+async function cachedSnapshot(session: Session): Promise<OpenOrdersCache> {
   const value = (await db.cache.get(openOrdersKey(session)))?.value as
-    { refreshedAt: string; orders: CachedOrder[] } | undefined;
-  return value ?? { refreshedAt: null, orders: [] };
+    OpenOrdersCache | undefined;
+  // An older cache cannot say which of this device's records it contains, so
+  // it is never projected; the next refresh replaces it.
+  return value?.format === OPEN_ORDERS_FORMAT
+    ? value
+    : { format: OPEN_ORDERS_FORMAT, refreshedAt: null, orders: [] };
+}
+
+const CLOSED_STATES = ["cancelled", "recovery_pending", "recovery_reviewed"];
+/** The server's open-orders rule (openOrdersSnapshot in offline-tables.ts). */
+const stillOpen = (order: Pick<CachedOrder, "state" | "total" | "paid">) =>
+  !CLOSED_STATES.includes(order.state) &&
+  (order.state !== "completed" || order.total > order.paid);
+
+/** Server facts that only ever grow: rounds, tenders and voided units. */
+const progress = (order: CachedOrder) => [
+  order.version,
+  order.tenderIds.length,
+  order.lines.reduce((n, line) => n + (Number(line.voidedQuantity) || 0), 0),
+];
+
+/** True when copy `a` of an order was taken strictly after copy `b`. */
+function newer(a: CachedOrder, b: CachedOrder) {
+  const pa = progress(a),
+    pb = progress(b);
+  return pa.every((v, i) => v >= pb[i]!) && pa.some((v, i) => v > pb[i]!);
+}
+
+/**
+ * The later of two copies of one order. An older copy never replaces a newer
+ * one, whichever arrives last; the applied-record lists are merged because
+ * the server only ever adds to them.
+ */
+function later(previous: CachedOrder | undefined, incoming: CachedOrder) {
+  const keep = previous && newer(previous, incoming) ? previous : incoming;
+  return {
+    ...keep,
+    offlineOperationIds: [
+      ...new Set([
+        ...(previous?.offlineOperationIds ?? []),
+        ...incoming.offlineOperationIds,
+      ]),
+    ],
+  };
+}
+
+async function storeOrders(
+  session: Session,
+  refreshedAt: string | null,
+  orders: CachedOrder[],
+) {
+  orders.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+  await db.cache.put({
+    id: openOrdersKey(session),
+    value: {
+      format: OPEN_ORDERS_FORMAT,
+      refreshedAt,
+      orders,
+    } satisfies OpenOrdersCache,
+  });
 }
 
 /** GET /offline/open-orders into the device cache (called while online). */
 export async function refreshOpenOrders(session: Session): Promise<void> {
-  const snapshot = await api<{ refreshedAt: string; orders: CachedOrder[] }>(
-    "/offline/open-orders",
+  const requestedAt = Date.now();
+  const snapshot = await api<{
+    refreshedAt: string;
+    orders: Omit<CachedOrder, "receivedAt">[];
+  }>("/offline/open-orders");
+  const receivedAt = Date.now();
+  await db.transaction("rw", db.cache, async () => {
+    const cache = await cachedSnapshot(session);
+    const previous = new Map(cache.orders.map((order) => [order.id, order]));
+    const listed = new Set<string>();
+    const orders: CachedOrder[] = [];
+    for (const order of snapshot.orders) {
+      listed.add(order.id);
+      orders.push(
+        later(previous.get(order.id), {
+          ...order,
+          tenderIds: order.tenderIds ?? [],
+          offlineOperationIds: order.offlineOperationIds ?? [],
+          receivedAt,
+        }),
+      );
+    }
+    // Missing from the snapshot means closed on the server, unless Selling
+    // stored this copy after the request left (the snapshot may predate it).
+    for (const order of cache.orders)
+      if (!listed.has(order.id) && order.receivedAt > requestedAt)
+        orders.push(order);
+    await storeOrders(session, snapshot.refreshedAt, orders);
+  });
+}
+
+/** True for an order as the server returned it, not a device projection. */
+export function isServerOrder(order: Order | null | undefined): order is Order {
+  return (
+    !!order &&
+    order.state !== "local" &&
+    order.state !== "local_open" &&
+    !(order.offline && "cachedAt" in order.offline)
   );
-  await db.cache.put({ id: openOrdersKey(session), value: snapshot });
+}
+
+function cachedFrom(order: Order, receivedAt: number): CachedOrder {
+  return {
+    id: order.id,
+    number: order.number,
+    version: order.version,
+    mode: order.mode,
+    tableId: order.tableId,
+    tableName: order.tableName ?? null,
+    name: order.name,
+    note: order.note,
+    total: order.total,
+    paid: order.paid,
+    state: order.state,
+    createdAt: order.createdAt,
+    serviceVersion: order.serviceVersion,
+    lines: order.lines.map((line) => ({
+      id: line.id,
+      productId: line.productId,
+      round: line.round ?? 1,
+      quantity: line.quantity,
+      name: line.name,
+      optionNames: line.optionNames ?? [],
+      unitPrice: line.unitPrice,
+      total: line.total,
+      station: line.station,
+      voidedQuantity: line.voidedUnits?.length ?? 0,
+    })),
+    tenderIds: (order.tenders ?? []).map((tender: { id: string }) => tender.id),
+    offlineOperationIds: [],
+    receivedAt,
+  };
+}
+
+/**
+ * Remembers a server order Selling just received (send, round, payment,
+ * resume), so the order on screen when an outage starts can still be served
+ * offline with its current balance (OFF-R2). Kept even when it closed, so an
+ * older snapshot arriving later cannot reopen it.
+ */
+export async function rememberOpenOrder(
+  session: Session,
+  order: Order,
+): Promise<void> {
+  if (!isServerOrder(order)) return;
+  const incoming = cachedFrom(order, Date.now());
+  await db.transaction("rw", db.cache, async () => {
+    const cache = await cachedSnapshot(session);
+    const orders = cache.orders.filter((cached) => cached.id !== order.id);
+    orders.push(
+      later(
+        cache.orders.find((cached) => cached.id === order.id),
+        incoming,
+      ),
+    );
+    await storeOrders(session, cache.refreshedAt, orders);
+  });
 }
 
 async function scopedV3Rows(session: Session) {
@@ -502,16 +669,61 @@ async function scopedV3Rows(session: Session) {
     .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
 }
 
+/**
+ * Every employee's records on this device. Money another employee collected
+ * here (before a shift change) is still money the guest already paid.
+ */
+async function deviceV3Rows(session: Session) {
+  return liveV3(await deviceRows(session)()).sort(
+    (a, b) =>
+      Date.parse(a.body.recordedAt) - Date.parse(b.body.recordedAt) ||
+      (a.sequence ?? 0) - (b.sequence ?? 0),
+  );
+}
+
 const targetsLocal = (body: OfflineRecordV3, operationId: string) =>
   "target" in body &&
   "localOrderOperationId" in body.target &&
   body.target.localOrderOperationId === operationId;
-const targetsServer = (body: OfflineRecordV3, orderId: string) =>
-  "target" in body &&
-  "orderId" in body.target &&
-  body.target.orderId === orderId;
 
-type SyncResult = { orderId?: string; orderNumber?: number };
+type SyncResult = {
+  orderId?: string;
+  orderNumber?: number;
+  tenderId?: string | null;
+  roundNumber?: number | null;
+};
+const resultOf = (row: Pending | undefined) =>
+  (row?.result ?? null) as SyncResult | null;
+
+/** The server order a round or payment targets, when this device knows it. */
+function serverTargetOf(
+  body: OfflineRecordV3,
+  rows: Map<string, Pending>,
+): string | null {
+  if (!("target" in body)) return null;
+  if ("orderId" in body.target) return body.target.orderId;
+  const parent = rows.get(body.target.localOrderOperationId);
+  return parent?.status === "synced"
+    ? (resultOf(parent)?.orderId ?? null)
+    : null;
+}
+
+/**
+ * True when a server copy already contains this record: the copy lists it as
+ * applied, or it synced and its tender or round is in the copy. Never decided
+ * by comparing the device clock with the server clock (OFF-R3).
+ */
+function reflected(order: CachedOrder, row: Pending): boolean {
+  if (order.offlineOperationIds.includes(row.id)) return true;
+  const result = row.status === "synced" ? resultOf(row) : null;
+  if (!result || (result.orderId && result.orderId !== order.id)) return false;
+  const body = row.body as OfflineRecordV3;
+  if (body.kind === "payment")
+    return !!result.tenderId && order.tenderIds.includes(result.tenderId);
+  if (body.kind === "round")
+    return order.lines.some((line) => line.round === result.roundNumber);
+  return false;
+}
 
 /** Orders created on this device (Enviar or partial payment), with their local rounds and payments. */
 async function localOrders(session: Session): Promise<LocalOrderView[]> {
@@ -523,9 +735,10 @@ async function localOrders(session: Session): Promise<LocalOrderView[]> {
   for (const row of rows) {
     const body = row.body as OfflineRecordV3;
     if (body.kind !== "order") continue;
-    const result = row.result as SyncResult | undefined;
+    const result = resultOf(row);
     const serverId = result?.orderId ?? null;
-    // Once a refreshed server snapshot carries the order, it lives there.
+    // Once a server copy of the order is cached, it lives there, with these
+    // rounds and payments added until the copy contains them.
     if (serverId && cachedIds.has(serverId)) continue;
     const lines = pricedFrom(row).map((line) => ({ ...line, round: 1 }));
     let total = body.expectedTotal,
@@ -580,20 +793,17 @@ export async function localOpenOrders(
 
 /**
  * Server open orders cached before the outage, plus this device's rounds and
- * payments for them. A row synced after the snapshot still counts, so a payment
- * that already reached the server never makes the order look unpaid again.
+ * payments the cached copy does not contain yet (including those that target
+ * a local order now synced into it). Exact whatever the device clock says: a
+ * record counts unless the copy itself shows it (OFF-R3).
  */
 export async function cachedServerOpenOrders(
   session: Session,
 ): Promise<{ refreshedAt: string | null; orders: LocalOrderView[] }> {
   const snapshot = await cachedSnapshot(session);
-  const refreshedAt = snapshot.refreshedAt
-    ? Date.parse(snapshot.refreshedAt)
-    : 0;
-  const rows = (await scopedV3Rows(session)).filter(
-    (row) => row.status !== "synced" || (row.syncedAt ?? 0) > refreshedAt,
-  );
-  const orders = snapshot.orders.map((order): LocalOrderView => {
+  const rows = await deviceV3Rows(session);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const orders = snapshot.orders.filter(stillOpen).map((order) => {
     const lines: PricedLine[] = order.lines.map((line) => ({
       id: line.id,
       productId: line.productId,
@@ -619,12 +829,14 @@ export async function cachedServerOpenOrders(
       round = Math.max(0, ...order.lines.map((line) => line.round));
     for (const row of rows) {
       const body = row.body as OfflineRecordV3;
-      if (!targetsServer(body, order.id)) continue;
+      if (body.kind !== "round" && body.kind !== "payment") continue;
+      if (serverTargetOf(body, byId) !== order.id || reflected(order, row))
+        continue;
       if (body.kind === "round") {
         round++;
         lines.push(...pricedFrom(row).map((line) => ({ ...line, round })));
         total += body.expectedTotal;
-      } else if (body.kind === "payment") paid += body.payment.amount;
+      } else paid += body.payment.amount;
     }
     return {
       id: order.id,
@@ -651,7 +863,7 @@ export async function cachedServerOpenOrders(
         cachedAt: snapshot.refreshedAt,
         serverOrderId: order.id,
       },
-    };
+    } satisfies LocalOrderView;
   });
   return { refreshedAt: snapshot.refreshedAt, orders };
 }
@@ -675,16 +887,23 @@ export async function findOpenOrder(
   session: Session,
   target: OrderTarget,
 ): Promise<LocalOrderView | null> {
-  if ("localOrderOperationId" in target)
-    return (
-      (await localOrders(session)).find(
-        (order) =>
-          order.offline.localOperationId === target.localOrderOperationId,
-      ) ?? null
+  let orderId: string | null;
+  if ("localOrderOperationId" in target) {
+    const local = (await localOrders(session)).find(
+      (order) =>
+        order.offline.localOperationId === target.localOrderOperationId,
     );
+    if (local) return local;
+    // Its order record synced and a server copy is cached: the record keeps
+    // its local target (I5); the balance comes from the server copy.
+    const parent = await db.pending.get(target.localOrderOperationId);
+    orderId =
+      parent?.status === "synced" ? (resultOf(parent)?.orderId ?? null) : null;
+    if (!orderId) return null;
+  } else orderId = target.orderId;
   return (
     (await cachedServerOpenOrders(session)).orders.find(
-      (order) => order.id === target.orderId,
+      (order) => order.id === orderId,
     ) ?? null
   );
 }
@@ -695,11 +914,12 @@ async function targetNumber(target: OrderTarget): Promise<string | null> {
   return parent && isV3(parent.body) ? parent.body.provisionalNumber : null;
 }
 
-/** Online payment attempts (active or parked) recorded for one server order. */
+/** Online payment attempts (active or parked) on this device for one server order. */
 async function hasAttemptFor(session: Session, orderId: string) {
-  const prefix = scope(session) + ":payment";
   const rows = await db.cache
-    .filter((row) => row.id === prefix || row.id.startsWith(prefix + ":"))
+    .where("id")
+    .startsWith(deviceRowsPrefix(session))
+    .filter((row) => isAttemptKey(row.id))
     .toArray();
   return rows.some(
     (row) => (row.value as { orderId?: string } | null)?.orderId === orderId,
@@ -747,7 +967,7 @@ export async function saveOfflineOrder(
   return (
     (await findOpenOrder(ctx.session, {
       localOrderOperationId: input.operationId,
-    })) ?? fail("invalid_input")
+    })) ?? fail("offline_record_invalid")
   );
 }
 
@@ -794,9 +1014,9 @@ export async function saveOfflineRound(
 ): Promise<LocalOrderView> {
   check(ctx, false);
   checkLines(input.lines);
-  if (!(await findOpenOrder(ctx.session, input.target))) fail("invalid_input");
-  const number = await targetNumber(input.target);
   const target = await findOpenOrder(ctx.session, input.target);
+  if (!target) fail("offline_order_not_cached");
+  const number = await targetNumber(input.target);
   await write(async () => {
     const { body, snapshot } = await roundBody(
       ctx,
@@ -810,7 +1030,8 @@ export async function saveOfflineRound(
     await deleteDraft(ctx.session);
   });
   return (
-    (await findOpenOrder(ctx.session, input.target)) ?? fail("invalid_input")
+    (await findOpenOrder(ctx.session, input.target)) ??
+    fail("offline_order_not_cached")
   );
 }
 
@@ -832,7 +1053,8 @@ function withContext(row: Pending, order: LocalOrderView | null): Pending {
 /**
  * Payment of a local or cached order, with the round being added in the same
  * checkout written atomically, so a refused payment never leaves half a
- * checkout. Never more than the balance this device can see.
+ * checkout. Never more than the balance this device can see, and never while
+ * an online attempt for the same order is unresolved (I9).
  */
 export async function saveOfflinePayment(
   ctx: SaveContext,
@@ -844,15 +1066,17 @@ export async function saveOfflinePayment(
   },
 ): Promise<LocalReceipt> {
   check(ctx, true);
-  if (
-    "orderId" in input.target &&
-    (await hasAttemptFor(ctx.session, input.target.orderId))
-  )
-    fail("offline_payment_pending_for_order");
   if (input.round) checkLines(input.round.lines);
-  const current = await findOpenOrder(ctx.session, input.target);
-  if (!current) fail("invalid_input");
-  const due = current!.total - current!.paid + (input.round?.total ?? 0);
+  const found = await findOpenOrder(ctx.session, input.target);
+  if (!found) return fail("offline_order_not_cached");
+  const current = found;
+  const serverId =
+    "orderId" in input.target
+      ? input.target.orderId
+      : current.offline.serverOrderId;
+  if (serverId && (await hasAttemptFor(ctx.session, serverId)))
+    fail("offline_payment_pending_for_order");
+  const due = current.total - current.paid + (input.round?.total ?? 0);
   checkPayment(input.payment, due);
   const number = await targetNumber(input.target);
   await write(async () => {
@@ -884,7 +1108,7 @@ export async function saveOfflinePayment(
     await insertOnce(pendingRow(ctx.session, body));
     await deleteDraft(ctx.session);
   });
-  const after = (await findOpenOrder(ctx.session, input.target)) ?? current!;
+  const after = (await findOpenOrder(ctx.session, input.target)) ?? current;
   return {
     ...after,
     state: "local",
@@ -912,7 +1136,7 @@ export async function saveOfflinePartial(
 ): Promise<LocalReceipt> {
   check(ctx, true);
   checkLines(input.draft.lines);
-  if (input.payment.amount >= input.total) fail("invalid_amount");
+  if (input.payment.amount >= input.total) fail("offline_amount_invalid");
   checkPayment(input.payment, input.total);
   const prefix = await devicePrefix(ctx.session);
   const snapshot = {
@@ -956,16 +1180,210 @@ export async function saveOfflinePartial(
   const view = await findOpenOrder(ctx.session, {
     localOrderOperationId: input.orderOperationId,
   });
-  if (!view) fail("invalid_input");
+  if (!view) return fail("offline_record_invalid");
   return {
-    ...view!,
+    ...view,
     state: "local",
     offline: {
-      ...view!.offline,
+      ...view.offline,
       method: input.payment.method,
       reference: input.payment.reference,
     },
   };
+}
+
+/** Payment values with the same names as service's PaymentValues (§4.8). */
+export type OfflinePaymentValues = {
+  amount: number;
+  tip: number;
+  received: number;
+  method: "cash" | "external";
+  reference: string;
+  confirmed: boolean;
+};
+
+/** The order to keep selling against after a partial offline payment. */
+function openView(receipt: LocalReceipt, state: string): LocalOrderView | null {
+  if (receipt.paid >= receipt.total) return null;
+  return {
+    ...receipt,
+    state,
+    offline: {
+      provisionalNumber: receipt.offline.provisionalNumber,
+      soldAt: receipt.offline.soldAt,
+      localOperationId: receipt.offline.localOperationId ?? null,
+      cachedAt: receipt.offline.cachedAt ?? null,
+      serverOrderId: receipt.offline.serverOrderId ?? null,
+    },
+  };
+}
+
+/**
+ * Saves an offline checkout (§2.3): a new order paid in full (sale) or in part
+ * (order + payment), or a payment of the current local or cached order with
+ * the draft's items as a round in the same transaction. Item split is never
+ * available offline (I8). Returns the records to print and the order to keep
+ * selling against when a balance remains.
+ */
+export async function saveOfflineCheckout(
+  ctx: SaveContext,
+  values: OfflinePaymentValues,
+  cart: {
+    draft: OrderInput;
+    priced: PricedLine[];
+    total: number;
+    current: Order | null;
+    operationId: string;
+    orderOperationId: string;
+    autoPrint: boolean;
+  },
+  items?: string[],
+): Promise<{
+  receipt: LocalReceipt;
+  operationIds: string[];
+  view: LocalOrderView | null;
+}> {
+  if (items) fail("offline_split_unavailable");
+  const payment = {
+    method: values.method,
+    amount: values.amount,
+    tip: values.tip,
+    received:
+      values.method === "external"
+        ? values.amount + values.tip
+        : values.received,
+    reference: values.method === "external" ? values.reference.trim() : "",
+    externalConfirmed: values.method === "external" && values.confirmed,
+  };
+  if (cart.current) {
+    const roundId = crypto.randomUUID();
+    const receipt = await saveOfflinePayment(ctx, {
+      target: targetOf(cart.current as LocalOrderView),
+      payment,
+      operationId: cart.operationId,
+      round: cart.draft.lines.length
+        ? {
+            lines: cart.draft.lines,
+            priced: cart.priced,
+            total: cart.total,
+            operationId: roundId,
+            autoPrint: cart.autoPrint,
+          }
+        : undefined,
+    });
+    return {
+      receipt,
+      operationIds: cart.draft.lines.length ? [roundId] : [],
+      view: openView(receipt, cart.current.state),
+    };
+  }
+  if (values.amount > cart.total) fail("offline_amount_exceeds_due");
+  if (values.amount < cart.total) {
+    const receipt = await saveOfflinePartial(ctx, {
+      draft: cart.draft,
+      priced: cart.priced,
+      total: cart.total,
+      payment,
+      orderOperationId: cart.orderOperationId,
+      paymentOperationId: cart.operationId,
+      autoPrint: cart.autoPrint,
+    });
+    return {
+      receipt,
+      operationIds: [cart.orderOperationId],
+      view: openView(receipt, "local_open"),
+    };
+  }
+  const receipt = await saveOfflineSale(ctx, {
+    draft: cart.draft,
+    priced: cart.priced,
+    total: cart.total,
+    operationId: cart.operationId,
+    autoPrint: cart.autoPrint,
+    payment,
+  });
+  return { receipt, operationIds: [receipt.id], view: null };
+}
+
+/** Every row of this device, as one direct Dexie query (a liveQuery querier). */
+export const deviceRows = (session: Session) => () =>
+  db.pending.where("scope").startsWith(deviceRowsPrefix(session)).toArray();
+
+const liveV3 = (rows: Pending[]) =>
+  rows.filter((row) => row.status !== "archived" && isV3(row.body));
+
+/** The server order behind an order on screen, when this device knows it. */
+function serverIdOf(order: Order, rows: Map<string, Pending>): string | null {
+  if (isServerOrder(order)) return order.id;
+  const view = order as LocalOrderView;
+  if (view.offline?.localOperationId) {
+    const parent = rows.get(view.offline.localOperationId);
+    return parent?.status === "synced"
+      ? (resultOf(parent)?.orderId ?? null)
+      : null;
+  }
+  return view.offline?.serverOrderId ?? null;
+}
+
+/**
+ * Online payment guard (OFF-R5): while an offline payment for this order is
+ * still unresolved on this device (pending, syncing or in review), the server
+ * balance does not include it, so charging that balance could charge the
+ * guest twice. Blocks until it syncs or a manager resolves it.
+ */
+export async function assertNoUnsyncedPayment(
+  session: Session,
+  order: Order | null,
+): Promise<void> {
+  if (!order) return;
+  const rows = liveV3(await deviceRows(session)());
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const orderId = serverIdOf(order, byId);
+  if (!orderId) return;
+  if (
+    rows.some(
+      (row) =>
+        row.status !== "synced" &&
+        (row.body as OfflineRecordV3).kind === "payment" &&
+        serverTargetOf(row.body as OfflineRecordV3, byId) === orderId,
+    )
+  )
+    fail("offline_payment_pending_for_order");
+}
+
+/**
+ * How an order on screen relates to this device's records (I13, OFF-R5): the
+ * server order it corresponds to, and whether the copy on screen is stale. A
+ * projection is always stale once its server order is known; a server order is
+ * stale when one of this device's synced rounds or payments for it is missing
+ * from it. Pure, so a liveQuery can run it on the rows it observed.
+ */
+export function linkFromRows(
+  order: Order,
+  rowsOfDevice: Pending[],
+): { orderId: string | null; stale: boolean } {
+  const rows = liveV3(rowsOfDevice);
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const orderId = serverIdOf(order, byId);
+  if (!orderId) return { orderId: null, stale: false };
+  if (!isServerOrder(order)) return { orderId, stale: true };
+  const copy = cachedFrom(order, 0);
+  const stale = rows.some((row) => {
+    const body = row.body as OfflineRecordV3;
+    return (
+      row.status === "synced" &&
+      !!resultOf(row) &&
+      (body.kind === "round" || body.kind === "payment") &&
+      serverTargetOf(body, byId) === orderId &&
+      !reflected(copy, row)
+    );
+  });
+  return { orderId, stale };
+}
+
+/** linkFromRows over the rows stored now. */
+export async function serverLink(session: Session, order: Order) {
+  return linkFromRows(order, await deviceRows(session)());
 }
 
 ticketHeadings.order = (row, _rows, tableName) => {

@@ -1263,3 +1263,216 @@ test("Offline Enviar, add a round and pay later sync as one order with two round
     new RegExp(`${number} → #${synced.number}`),
   );
 });
+
+/** Holds every offline record on the device (a transient answer: never a conflict). */
+async function holdSync(context: BrowserContext) {
+  await context.route("**/api/offline/sync", (route) =>
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "offline_recorded_in_future" }),
+    }),
+  );
+}
+const releaseSync = (context: BrowserContext) =>
+  context.unroute("**/api/offline/sync");
+
+/** Counts online payment requests (POST /api/orders/:id/payments). */
+function onlinePayments(page: Page) {
+  const seen: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      /^\/api\/orders\/[^/]+\/payments$/.test(new URL(request.url()).pathname)
+    )
+      seen.push(request.url());
+  });
+  return seen;
+}
+
+/** Sends a two-taco table order online and returns the server order. */
+async function sendTableOnline(page: Page, table: string) {
+  await page.getByRole("button", { name: "En mesa", exact: true }).click();
+  await page.getByLabel("Seleccionar mesa").selectOption({ label: table });
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page
+    .getByRole("button", { name: "Cantidad + Taco de hongos", exact: true })
+    .click();
+  const created = page.waitForResponse(
+    (r) =>
+      new URL(r.url()).pathname === "/api/orders" &&
+      r.request().method() === "POST",
+  );
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
+  const order = await (await created).json();
+  await expect(page.locator(".existing")).toContainText(`#${order.number}`);
+  return order as { id: string; number: number; total: number };
+}
+
+const serverOrder = (page: Page, id: string) =>
+  page.evaluate(
+    async (orderId) => (await fetch(`/api/orders/${orderId}`)).json(),
+    id,
+  );
+
+test("The order on screen when the connection drops is payable offline at its full balance", async ({
+  page,
+  context,
+}) => {
+  // Regression OFF-R2: the open-orders cache refreshed only every 120 s, so the
+  // order just sent online was missing from it (or had a stale balance).
+  await login(page);
+  await openDrawer(page);
+  const order = await sendTableOnline(page, "Mesa 05");
+  await goOffline(context, page);
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Cobrar" });
+  await expect(dialog.getByLabel("Importe")).toHaveValue(
+    (order.total / 100).toFixed(2),
+  );
+  await dialog
+    .getByRole("button", {
+      name: "Guardar cobro en este dispositivo",
+      exact: true,
+    })
+    .click();
+  await expect(page.locator(".receipt")).toContainText(
+    "Pendiente de sincronizar",
+  );
+  await nextSale(page);
+  await context.setOffline(false);
+  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(async () => (await serverOrder(page, order.id)).paid, {
+      timeout: 45_000,
+    })
+    .toBe(order.total);
+  expect((await serverOrder(page, order.id)).tenders).toHaveLength(1);
+});
+
+test("A local order paid while online goes through records and then follows its server order", async ({
+  page,
+  context,
+}) => {
+  // Invariant I13: a local, unsynced order changes only through offline
+  // records, even online; after its record syncs Selling shows the server order.
+  await page.addInitScript(() => {
+    window.print = () => {};
+  });
+  const payments = onlinePayments(page);
+  await login(page);
+  await openDrawer(page);
+  await goOffline(context, page);
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page
+    .getByRole("button", { name: "Cantidad + Taco de hongos", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+    .click();
+  await expect(page.locator(".cart-heading .eyebrow").first()).toHaveText(
+    PROVISIONAL,
+  );
+  await holdSync(context);
+  await context.setOffline(false);
+  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Cobrar" });
+  await dialog.getByLabel("Importe").fill("45.00");
+  await dialog.getByLabel("Efectivo recibido").fill("45.00");
+  await dialog
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
+  await expect(page.locator(".receipt")).toContainText(
+    "Pendiente de sincronizar",
+  );
+  expect(payments, "the local order is never charged online").toEqual([]);
+  await page.getByRole("button", { name: "Volver", exact: true }).click();
+  await expect(page.locator(".existing")).toContainText("Cobrado: $45.00");
+  await releaseSync(context);
+  await expect
+    .poll(
+      async () =>
+        (await allRows(page)).filter((row) => row.status === "synced").length,
+      { timeout: 60_000 },
+    )
+    .toBe(2);
+  const orderRow = (await allRows(page)).find(
+    (row) => row.body.kind === "order",
+  );
+  const { orderId, orderNumber } = orderRow.result;
+  await expect(page.locator(".existing")).toContainText(`#${orderNumber}`, {
+    timeout: 30_000,
+  });
+  await expect(page.locator(".existing")).toContainText("Cobrado: $45.00", {
+    timeout: 30_000,
+  });
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await expect(dialog.getByLabel("Importe")).toHaveValue("45.00");
+  await dialog
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
+  await expect(page.locator(".receipt")).toContainText("Cobrado");
+  expect(payments).toHaveLength(1);
+  const synced = await serverOrder(page, orderId);
+  expect(synced.paid).toBe(synced.total);
+  expect(synced.tenders).toHaveLength(2);
+});
+
+test("Online payment waits for this device's offline payment of the same order", async ({
+  page,
+  context,
+}) => {
+  // Regression OFF-R5: after reconnect Selling could show the balance before
+  // the offline payment synced and staff could charge it again online.
+  const payments = onlinePayments(page);
+  await login(page);
+  await openDrawer(page);
+  const order = await sendTableOnline(page, "Mesa 06");
+  await goOffline(context, page);
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Cobrar" });
+  await dialog.getByLabel("Importe").fill("45.00");
+  await dialog.getByLabel("Efectivo recibido").fill("45.00");
+  await dialog
+    .getByRole("button", {
+      name: "Guardar cobro en este dispositivo",
+      exact: true,
+    })
+    .click();
+  await page.getByRole("button", { name: "Volver", exact: true }).click();
+  await expect(page.locator(".existing")).toContainText("Cobrado: $45.00");
+  await holdSync(context);
+  await context.setOffline(false);
+  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  // The server order replaces the projection: it does not show the payment yet.
+  await expect(page.locator(".existing")).toContainText("Cobrado: $0.00", {
+    timeout: 30_000,
+  });
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "Esta orden tiene un pago por confirmar",
+  );
+  expect(payments, "never charged online twice").toEqual([]);
+  await page.keyboard.press("Escape");
+  await releaseSync(context);
+  // Once the offline payment syncs, Selling reads the order again.
+  await expect(page.locator(".existing")).toContainText("Cobrado: $45.00", {
+    timeout: 60_000,
+  });
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await expect(dialog.getByLabel("Importe")).toHaveValue("45.00");
+  await dialog
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
+  await expect(page.locator(".receipt")).toContainText("Cobrado");
+  expect(payments).toHaveLength(1);
+  const synced = await serverOrder(page, order.id);
+  expect(synced.paid).toBe(order.total);
+  expect(synced.tenders).toHaveLength(2);
+});

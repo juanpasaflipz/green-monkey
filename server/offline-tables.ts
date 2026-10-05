@@ -364,6 +364,7 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
   const rows =
     await tx`select o.id,o.number,o.version,o.mode,o.table_id,t.name as table_name,
       o.name,o.note,o.total,o.state,o.created_at,o.service_version,o.paid,
+      o.tender_ids,o.offline_operation_ids,
       (select coalesce(jsonb_agg(jsonb_build_object(
           'id',l.id,'productId',l.product_id,'round',l.round,
           'quantity',(l.data->>'quantity')::int,'name',l.data->'name',
@@ -374,7 +375,12 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
              where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) order by l.round,l.id),'[]'::jsonb)
         from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id) as lines
     from (select o.*,(select coalesce(sum(x.amount),0)::int from tenders x
-            where x.tenant_id=o.tenant_id and x.order_id=o.id) as paid
+            where x.tenant_id=o.tenant_id and x.order_id=o.id) as paid,
+          (select coalesce(jsonb_agg(x.id order by x.created_at,x.id),'[]'::jsonb) from tenders x
+            where x.tenant_id=o.tenant_id and x.order_id=o.id) as tender_ids,
+          (select coalesce(jsonb_agg(r.operation_id order by r.synced_at,r.operation_id),'[]'::jsonb)
+            from offline_sync_records r
+            where r.tenant_id=o.tenant_id and r.order_id=o.id) as offline_operation_ids
           from orders o
           where o.business_date >= ${today}::date - 1
             and o.state not in ('cancelled','recovery_pending','recovery_reviewed')) o
@@ -399,6 +405,10 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
       createdAt: o.created_at.toISOString(),
       serviceVersion: o.service_version,
       lines: o.lines,
+      // Exactly what this copy already contains, so a device never counts one
+      // of its own synced rounds or payments twice, whatever its clock says.
+      tenderIds: o.tender_ids as string[],
+      offlineOperationIds: o.offline_operation_ids as string[],
     })),
   };
 }

@@ -17,21 +17,20 @@ import { api } from "../../api";
 import { useConnectivity } from "../../connectivity";
 import { db } from "../../offline";
 import {
-  OfflineSaveError,
+  assertNoUnsyncedPayment,
   cachedServerOpenOrders,
   isLocalOrder,
   localOpenOrders,
   offlineBlockReason,
   refreshOpenOrders,
+  saveOfflineCheckout,
   saveOfflineOrder,
-  saveOfflinePartial,
-  saveOfflinePayment,
   saveOfflineRound,
-  saveOfflineSale,
   tablesKey,
   targetOf,
   type LocalOrderView,
   type LocalReceipt,
+  type OfflinePaymentValues,
   type SaveContext,
 } from "../../offline-records";
 import { translateError } from "../../i18n";
@@ -56,34 +55,10 @@ export function readPrintSetting(): PrintSetting {
   }
 }
 
-/** Payment values with the same names as service's PaymentValues (§4.8). */
-export type OfflinePaymentValues = {
-  amount: number;
-  tip: number;
-  received: number;
-  method: "cash" | "external";
-  reference: string;
-  confirmed: boolean;
-};
+export type { OfflinePaymentValues } from "../../offline-records";
 
 export const isLocalReceipt = (order: Order | null): order is LocalReceipt =>
   order?.state === "local";
-
-/** The order view to keep selling against after a partial offline payment. */
-function openView(receipt: LocalReceipt, state: string): LocalOrderView | null {
-  if (receipt.paid >= receipt.total) return null;
-  return {
-    ...receipt,
-    state,
-    offline: {
-      provisionalNumber: receipt.offline.provisionalNumber,
-      soldAt: receipt.offline.soldAt,
-      localOperationId: receipt.offline.localOperationId ?? null,
-      cachedAt: receipt.offline.cachedAt ?? null,
-      serverOrderId: receipt.offline.serverOrderId ?? null,
-    },
-  };
-}
 
 /**
  * Offline selling for Selling.tsx: the payment-dialog slot, the record
@@ -229,68 +204,14 @@ export function useOfflineSelling({
       /** The order to keep selling against when a balance remains. */
       view: LocalOrderView | null;
     }> {
-      if (items) throw new OfflineSaveError("offline_split_unavailable");
-      const payment = {
-        method: values.method,
-        amount: values.amount,
-        tip: values.tip,
-        received:
-          values.method === "external"
-            ? values.amount + values.tip
-            : values.received,
-        reference: values.method === "external" ? values.reference.trim() : "",
-        externalConfirmed: values.method === "external" && values.confirmed,
-      };
-      if (cart.current) {
-        const roundId = crypto.randomUUID();
-        const receipt = await saveOfflinePayment(ctx, {
-          target: targetOf(cart.current as LocalOrderView),
-          payment,
-          operationId: cart.operationId,
-          round: cart.draft.lines.length
-            ? {
-                lines: cart.draft.lines,
-                priced: cart.priced,
-                total: cart.total,
-                operationId: roundId,
-                autoPrint,
-              }
-            : undefined,
-        });
-        return {
-          receipt,
-          operationIds: cart.draft.lines.length ? [roundId] : [],
-          view: openView(receipt, cart.current.state),
-        };
-      }
-      if (values.amount > cart.total)
-        throw new OfflineSaveError("offline_amount_exceeds_due");
-      if (values.amount < cart.total) {
-        const receipt = await saveOfflinePartial(ctx, {
-          draft: cart.draft,
-          priced: cart.priced,
-          total: cart.total,
-          payment,
-          orderOperationId: cart.orderOperationId,
-          paymentOperationId: cart.operationId,
-          autoPrint,
-        });
-        return {
-          receipt,
-          operationIds: [cart.orderOperationId],
-          view: openView(receipt, "local_open"),
-        };
-      }
-      const receipt = await saveOfflineSale(ctx, {
-        draft: cart.draft,
-        priced: cart.priced,
-        total: cart.total,
-        operationId: cart.operationId,
-        autoPrint,
-        payment,
-      });
-      return { receipt, operationIds: [receipt.id], view: null };
+      return saveOfflineCheckout(ctx, values, { ...cart, autoPrint }, items);
     },
+    /**
+     * Before an online charge: refuses while an offline payment for the same
+     * order is unresolved on this device (OFF-R5), so it is never charged twice.
+     */
+    guardOnlinePayment: (order: Order | null) =>
+      assertNoUnsyncedPayment(session, order),
     /** Cached server orders and orders created on this device. */
     async openOrders(): Promise<{
       refreshedAt: string | null;
