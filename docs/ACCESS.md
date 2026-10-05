@@ -217,8 +217,8 @@ lock staff out (SEC-2).
   PIN reset clears every lock.
 - Manager approvals count against the approving manager on the session's device
   only. A void approval checks that the order exists, is open and still has an
-  unpaid unit before any PIN (`not_found`, `stale_order`,
-  `void_exceeds_unpaid`), so a made-up, closed or fully paid order cannot serve
+  unpaid unit before any PIN (`not_found`, `check_closed`, `stale_order` for
+  recovery orders, `void_exceeds_unpaid`), so a made-up, closed or fully paid order cannot serve
   as a PIN check, and one session's rejected approvals are capped at 10 per
   minute
   (`too_many_attempts`, in-process).
@@ -446,14 +446,14 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
   uses `clientIp(req)` from `server/logging.ts`; the CD smoke
   (`scripts/ops/smoke.mjs`) fails a deployed run whose edge sends no
   X-Forwarded-For hop.
-- **Void approval pre-check (service merge, contracts §4.2).** `verifyApproval`
-  refuses a closed or fully paid order before checking any PIN (ACC-R-5) and
-  reads `closedStates` for that. Service removes `closedStates` and guards
-  `voidLines` with `check_state` and `assertCheckWritable`; at that merge,
-  make the pre-check refuse exactly what `voidLines` refuses, with the same
-  codes, still without a lock. Keep its `recordedVoid` bypass (ACC-R6-1): an
-  identical retry of a recorded void must reach `voidLines`' `once()` and get
-  the stored result.
+- **Void approval pre-check (service merge, contracts §4.2): done at service's
+  integration.** `verifyApproval` refuses a closed or fully paid order before
+  checking any PIN (ACC-R-5). It now reads `check_state` and calls service's
+  `assertCheckWritable`, still without a lock, so it refuses exactly what
+  `voidLines` refuses with the same codes (`stale_order` for recovery orders,
+  `check_closed` for closed checks and cancelled orders). Its `recordedVoid`
+  bypass (ACC-R6-1) stays: an identical retry of a recorded void reaches
+  `voidLines`' `once()` and gets the stored result.
 - **Unlocking owners (platform-prep, wave-2 A3).** Hardening A5 lets a manager
   unlock only cashiers, servers and kitchen staff (never a hard lock, at most
   3 times per employee a day); owners and managers are unlocked by the owner.
