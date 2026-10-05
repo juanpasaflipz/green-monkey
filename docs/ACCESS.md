@@ -128,8 +128,14 @@ error, and App probes `/api/health` every 10 s. At merge, offline's probe-based
 `canUseServer` replaces this local reachability flag. That soft unlock is not a
 PIN unlock: the lock stays remembered, a reload asks again, and the same lock
 comes back as soon as the server answers again or the offline window ends, so
-the PIN is required before any online work. Switching
-user needs a connection. A server session code also applies to the offline
+the PIN is required before any online work. While a soft unlock over an idle or
+manual lock is in effect, `api()` asks App before every call (except the lock
+screen's `/access/*` calls and `/sync` of offline evidence, which also runs
+behind any lock) whether `/api/health` answers; when it does, the lock comes
+back at once and the call is refused unsent (`session_locked`), so a cash close
+or menu edit cannot slip through in the seconds before the 10 s probe notices.
+A renewal prompt's soft unlock is not gated: that session is still valid.
+Switching user needs a connection. A server session code also applies to the offline
 cache, including on a cold start before any session is shown:
 - a revoked session or device (`session_revoked`, `device_revoked`,
   `device_not_paired`) is removed from the cache, so an offline reload shows

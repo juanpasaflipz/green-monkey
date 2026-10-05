@@ -64,12 +64,19 @@ const SESSION_CODES = new Set([
   "device_revoked",
   "device_not_paired",
 ]);
+/** Raised by api() itself without sending: an offline soft unlock re-locked (ACC-R-2). */
+const UNSENT_CODES = new Set(["session_locked"]);
 /**
  * True for a 401 that authentication answered before any handler ran (or that
- * api() raised without sending while blocked): the command was not processed.
+ * api() raised without sending, while blocked or re-locking): the command was
+ * not processed.
  */
 export function isSessionRejection(e: unknown): boolean {
-  return e instanceof ApiError && e.status === 401 && SESSION_CODES.has(e.message);
+  return (
+    e instanceof ApiError &&
+    e.status === 401 &&
+    (SESSION_CODES.has(e.message) || UNSENT_CODES.has(e.message))
+  );
 }
 /** After a session 401, stop calling the server until a new session is set. */
 let blocked = false;
@@ -106,6 +113,18 @@ export function holdRequests(maxMs = 15_000): () => void {
   };
   const timer = setTimeout(release, maxMs);
   return release;
+}
+let softUnlockCheck: null | (() => Promise<boolean>) = null;
+/**
+ * While the offline "Continuar como" is in effect, App checks before each
+ * non-access call whether the server answers again (ACC-R-2). When it does,
+ * App re-locks and the call is refused unsent (session_locked), so a locked
+ * session never works online, even in the seconds before the background
+ * health probe notices. Offline evidence (/sync) is not held back: it also
+ * syncs behind any lock.
+ */
+export function registerSoftUnlockCheck(fn: (() => Promise<boolean>) | null) {
+  softUnlockCheck = fn;
 }
 let stepUp: null | ((sessionId: string) => Promise<void>) = null;
 /**
@@ -164,6 +183,13 @@ export async function api<T = any>(
   const access = path.startsWith("/access/");
   while (held && !access) await held;
   if (blocked && !access) throw new ApiError("session_expired", 401);
+  if (
+    softUnlockCheck &&
+    !access &&
+    path !== "/sync" &&
+    (await softUnlockCheck())
+  )
+    throw new ApiError("session_locked", 401);
   const owner = sessionId;
   try {
     return await guarded<T>(path, body, options);

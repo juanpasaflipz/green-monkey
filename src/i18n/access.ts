@@ -385,6 +385,10 @@ export default defineArea({
       "Un responsable cerró esta sesión o desactivó al empleado.",
       "A manager closed this session or deactivated the employee.",
     ],
+    session_locked: [
+      "La conexión volvió y la pantalla sigue bloqueada. Ingresa tu PIN para continuar.",
+      "The connection is back and the screen is still locked. Enter your PIN to continue.",
+    ],
     session_changed: [
       "La sesión cambió en otra pestaña. Recarga para continuar.",
       "The session changed in another tab. Reload to continue.",

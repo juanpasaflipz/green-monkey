@@ -1560,6 +1560,57 @@ test("a renewal can be put off, and an unreachable server shows the offline lock
   }
 });
 
+test("a soft unlock that began with the server unreachable never works online: the first call once it answers brings the lock back, unsent (ACC-R-2)", async ({
+  page,
+  browser,
+}) => {
+  await ownerLogin(page);
+  const { context, page: tablet } = await pairTerminal(
+    browser,
+    page,
+    `Sin internet ${tag()}`,
+  );
+  await signIn(tablet, CASHIER.name, CASHIER.pin);
+  await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+  const lock = tablet.getByRole("dialog", { name: "Pantalla bloqueada" });
+  await tablet.getByRole("button", { name: "Bloquear pantalla" }).click();
+  await expect(lock).toBeVisible();
+  // The router is up but the internet is down: navigator.onLine stays true.
+  await tablet.route("**/api/access/pin", (r) => r.abort("internetdisconnected"));
+  await tablet.route("**/api/health", (r) => r.abort("internetdisconnected"));
+  await enterSecret(lock, CASHIER.name, CASHIER.pin);
+  await expect(lock).toContainText(
+    `Sin conexión no se puede verificar el PIN. Las ventas se registran a nombre de ${CASHIER.name}.`,
+  );
+  await lock
+    .getByRole("button", { name: `Continuar como ${CASHIER.name}` })
+    .click();
+  await expect(lock).toBeHidden();
+  const sent: string[] = [];
+  tablet.on("request", (request) => {
+    if (new URL(request.url()).pathname === "/api/orders")
+      sent.push(request.method());
+  });
+  // The internet comes back before the background probe notices.
+  await tablet.unroute("**/api/health");
+  await tablet.unroute("**/api/access/pin");
+  // Opening Órdenes is online work: it is refused unsent and the lock returns.
+  // (If a background call re-locked first, the lock blocks the click.)
+  await tablet
+    .getByRole("button", { name: "Órdenes", exact: true })
+    .click({ timeout: 5_000 })
+    .catch(() => {});
+  await expect(lock).toBeVisible({ timeout: 5_000 });
+  await expect(
+    lock.getByLabel(`PIN de ${CASHIER.name}`),
+  ).toBeVisible();
+  expect(sent).toEqual([]);
+  await enterSecret(lock, CASHIER.name, CASHIER.pin);
+  await expect(lock).toBeHidden();
+  await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+  await context.close();
+});
+
 test("a dialog opened after the lock stays below it, inert, until the PIN unlocks (ACC-FLOOR-9)", async ({
   page,
   browser,

@@ -28,6 +28,7 @@ import { OwnerAccess } from "./features/OwnerAccess";
 import {
   ApiError,
   blockedReason,
+  registerSoftUnlockCheck,
   registerStepUpHandler,
   requestsBlocked,
 } from "./api";
@@ -305,6 +306,31 @@ export default function App() {
       setLock((current) => nextLock(current, reason));
     }
   }, [softUnlocked, reachable, now, session?.offlineUntil]);
+  useEffect(() => {
+    // A soft unlock over a real lock never works online (ACC-R-2): before any
+    // call, ask the server; if it answers, the same lock comes back at once
+    // and the call is refused unsent. A renewal prompt's soft unlock is not a
+    // lock (the session is valid), so its calls go through.
+    if (!softUnlocked || softUnlocked === "renew") return;
+    const reason = softUnlocked;
+    registerSoftUnlockCheck(async () => {
+      if (!navigator.onLine) return false;
+      try {
+        const r = await fetch("/api/health", {
+          cache: "no-store",
+          signal: AbortSignal.timeout(3_000),
+        });
+        if (!r.ok) return false;
+      } catch {
+        return false;
+      }
+      setServerDown(false);
+      setSoftUnlocked(null);
+      setLock((current) => nextLock(current, reason));
+      return true;
+    });
+    return () => registerSoftUnlockCheck(null);
+  }, [softUnlocked]);
   useEffect(() => {
     // While the server is known unreachable, probe it; the lock screen (or the
     // soft unlock's re-lock) follows as soon as it answers.

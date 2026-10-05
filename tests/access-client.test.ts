@@ -204,6 +204,40 @@ describe("api() session policy", () => {
     expect(isSessionRejection(new TypeError("Failed to fetch"))).toBe(false);
   });
 
+  it("while a soft unlock is in effect and the server answers again, calls are refused unsent; access calls and offline sync still go (ACC-R-2)", async () => {
+    const { api, setSession, isSessionRejection, registerSoftUnlockCheck } =
+      await load();
+    setSession(session);
+    let reachable = false,
+      checks = 0;
+    registerSoftUnlockCheck(async () => {
+      checks++;
+      return reachable;
+    });
+    // Still unreachable: the call is sent (and, offline, fails as usual).
+    await api("/orders");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(checks).toBe(1);
+    // The server answers again: App re-locks and the call never leaves.
+    reachable = true;
+    const refused = await api("/cash/close", { operationId: "x" }).catch(
+      (e) => e,
+    );
+    expect(refused).toMatchObject({ message: "session_locked", status: 401 });
+    expect(isSessionRejection(refused)).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(events).toEqual([]);
+    // The lock screen's own calls and queued offline evidence are not held.
+    await api("/access/terminal");
+    await api("/sync", {});
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(checks).toBe(2);
+    // Unregistered once the lock is back: calls go out again.
+    registerSoftUnlockCheck(null);
+    await api("/orders");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
   it("requestsBlocked reports a session 401 until a new session is set (ACC-6)", async () => {
     const { api, setSession, requestsBlocked } = await load();
     setSession(session);
