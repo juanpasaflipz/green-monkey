@@ -432,8 +432,8 @@ export default defineArea({
       "That code was already used, expired or cancelled.",
     ],
     too_many_attempts: [
-      "Demasiados intentos desde esta red. Espera un minuto.",
-      "Too many attempts from this network. Wait a minute.",
+      "Demasiados intentos. Espera un minuto e inténtalo de nuevo.",
+      "Too many attempts. Wait a minute and try again.",
     ],
     invalid_pin: ["PIN incorrecto.", "Incorrect PIN."],
     invalid_login: [

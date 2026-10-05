@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { translateError } from "../src/i18n";
 import {
   ACCESS,
   decayPinState,
@@ -169,5 +170,16 @@ describe("shared-terminal rules", () => {
     expect(stepUpExempt(undefined)).toBe(true);
     expect(stepUpExempt({ ...terminal, deviceKind: "personal", ownerAccount: true })).toBe(true);
     expect(stepUpExempt({ ...terminal, deviceKind: "personal" })).toBe(false);
+  });
+});
+
+describe("access error copy", () => {
+  it("too_many_attempts blames no network: limits count per device, restaurant and IP, or session (ACC-R6-5)", () => {
+    expect(translateError("too_many_attempts", "es")).toBe(
+      "Demasiados intentos. Espera un minuto e inténtalo de nuevo.",
+    );
+    expect(translateError("too_many_attempts", "en")).toBe(
+      "Too many attempts. Wait a minute and try again.",
+    );
   });
 });
