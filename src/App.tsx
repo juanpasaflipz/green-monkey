@@ -733,8 +733,8 @@ export default function App() {
           onUnreachable={() => setServerDown(true)}
           onDismiss={() => {
             // Only a renewal the cashier started; the session is still valid.
+            // A pending offline soft unlock keeps its own re-lock.
             if (lock.reason !== "renew") return;
-            setSoftUnlocked(null);
             setLock(null);
           }}
           onUnlocked={(s) => {
@@ -775,8 +775,11 @@ export default function App() {
             // session 401 blocks calls (ACC-FLOOR-2).
             if (!allowsContinueOffline(lock.reason) || requestsBlocked()) return;
             // The lock stays remembered: a reload or the server answering
-            // again asks for the PIN again.
-            setSoftUnlocked(lock.reason);
+            // again asks for the PIN again. An earlier soft unlock keeps its
+            // reason, so a renewal prompt never turns an idle re-lock into one
+            // that offers "Ahora no".
+            const reason = lock.reason;
+            setSoftUnlocked((current) => current ?? reason);
             setLock(null);
           }}
           onSignOut={() => void signOut()}

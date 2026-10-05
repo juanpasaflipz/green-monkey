@@ -268,6 +268,16 @@ describe("renewal prompt (ACC-FLOOR-6)", () => {
     expect(idleLock(null)).toEqual({ reason: "idle" });
     const manual = { reason: "manual" };
     expect(idleLock(manual)).toBe(manual);
+    // Any real lock (another tab's manual lock, a soft unlock's re-lock)
+    // replaces a renewal prompt, whose "Ahora no" would otherwise pass it.
+    const { nextLock } = await load();
+    expect(nextLock({ reason: "renew" }, "manual")).toEqual({ reason: "manual" });
+    expect(nextLock({ reason: "renew" }, "session_ended")).toEqual({
+      reason: "session_ended",
+    });
+    const renew = { reason: "renew" };
+    expect(nextLock(renew, "renew")).toBe(renew);
+    expect(nextLock({ reason: "idle" }, "renew")).toEqual({ reason: "idle" });
     const server = { reason: "session_ended" };
     expect(idleLock(server)).toBe(server);
     // A renewal prompt is never remembered across reloads or tabs; every

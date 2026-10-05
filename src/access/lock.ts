@@ -119,13 +119,12 @@ export function allowsContinueOffline(reason: string) {
 }
 /**
  * The lock after the auto-lock fires. A renewal prompt left on screen becomes
- * an idle lock, so its "Ahora no" never outlives the auto-lock; otherwise as
- * nextLock (ACC-FLOOR-6).
+ * an idle lock, so its "Ahora no" never outlives the auto-lock (ACC-FLOOR-6).
  */
 export function idleLock(current: { reason: string } | null): {
   reason: string;
 } {
-  return current?.reason === "renew" ? { reason: "idle" } : nextLock(current, "idle");
+  return nextLock(current, "idle");
 }
 /** Locks remembered across reloads and tabs; a renewal prompt is per tab and voluntary. */
 export function remembered(reason: string) {
@@ -135,8 +134,8 @@ export function remembered(reason: string) {
  * The lock after a request to lock with `reason` (ACC-18). A lock the server
  * imposed (a session code) is never replaced, so only a PIN unlock, a switch or
  * a sign-out ends it and no client lock can turn it into one with a soft
- * unlock. A server code replaces an idle, manual or renew lock; otherwise the
- * lock already up stays as it is.
+ * unlock. A server code replaces an idle, manual or renew lock, and any other
+ * lock replaces a renewal prompt; otherwise the lock already up stays as it is.
  */
 export function nextLock(
   current: { reason: string } | null,
@@ -144,7 +143,11 @@ export function nextLock(
 ): { reason: string } {
   if (!current) return { reason };
   if (!CLIENT_LOCKS.has(current.reason)) return current;
-  return CLIENT_LOCKS.has(reason) ? current : { reason };
+  if (!CLIENT_LOCKS.has(reason)) return { reason };
+  // A renewal prompt can be put off ("Ahora no"), so any real lock (idle,
+  // manual, another tab's, a soft unlock's re-lock) replaces it (ACC-FLOOR-6).
+  if (current.reason === "renew" && reason !== "renew") return { reason };
+  return current;
 }
 
 /** A revoked session or device: the cached session is removed. */
