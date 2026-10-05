@@ -272,8 +272,11 @@ try {
   await check("the server refuses to start with DEMO_TENANT_ID in production (D22)", async () => {
     const child = spawn(process.execPath, ["build/server/index.js"], {
       env: env(true, { RAILWAY_ENVIRONMENT_NAME: "Production" }),
-      stdio: "ignore",
+      stdio: ["ignore", "ignore", "pipe"],
     });
+    let stderr = "";
+    child.stderr!.setEncoding("utf8");
+    child.stderr!.on("data", (chunk: string) => (stderr += chunk));
     const [code] = await Promise.race([
       once(child, "exit"),
       delay(15000).then(() => {
@@ -282,6 +285,8 @@ try {
       }),
     ]);
     assert.notEqual(code, 0);
+    // The guard itself refused, not some other startup failure.
+    assert.match(stderr, /DEMO_TENANT_ID must not be set in production/);
   });
   console.log(`Access HTTP passed: ${checks} checks.`);
 } finally {

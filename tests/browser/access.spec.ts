@@ -104,6 +104,36 @@ async function enterSecret(
 async function sessionOf(page: Page) {
   return page.evaluate(async () => (await fetch("/api/session")).json());
 }
+/** Offline sales queued in this browser's IndexedDB (green-monkey-v1 / pending). */
+async function queuedSales(page: Page) {
+  return page.evaluate(
+    () =>
+      new Promise<
+        { id: string; scope: string; status: string; orderOperationId: string }[]
+      >((resolve, reject) => {
+        const open = indexedDB.open("green-monkey-v1");
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const request = open.result
+            .transaction("pending")
+            .objectStore("pending")
+            .getAll();
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            open.result.close();
+            resolve(
+              request.result.map((r) => ({
+                id: r.id,
+                scope: r.scope,
+                status: r.status,
+                orderOperationId: r.body.order.operationId,
+              })),
+            );
+          };
+        };
+      }),
+  );
+}
 /** No horizontal overflow at four widths; axe and evidence at 1440 and 390. */
 async function checkLayout(page: Page, evidence: string, include?: string) {
   for (const [width, height] of [
@@ -517,6 +547,11 @@ test("logout with unsent sales warns, and the sales sync when the same employee 
     await expect(tablet.locator(".receipt")).toContainText(
       "Pendiente de sincronizar",
     );
+    const queued = (await queuedSales(tablet)).filter(
+      (r) => r.scope === `${first.tenantId}:${first.deviceId}:${first.employeeId}`,
+    );
+    expect(queued).toHaveLength(1);
+    const [sale] = queued;
     await tablet.getByRole("button", { name: "Siguiente venta" }).click();
     // Back online, but the sync endpoint is failing.
     await tablet.route("**/api/sync", (route) =>
@@ -544,10 +579,29 @@ test("logout with unsent sales warns, and the sales sync when the same employee 
     await expect(
       tablet.getByRole("button", { name: "Conectado", exact: true }),
     ).toBeVisible({ timeout: 30_000 });
-    const [synced] =
-      await admin`select count(*)::int as n from orders where channel='offline' and employee_id=${first.employeeId}
-        and created_at>now()-interval '5 minutes'`;
-    expect(synced.n).toBeGreaterThanOrEqual(1);
+    // This exact queued sale synced under the cashier, not a reconciliation.
+    await expect
+      .poll(
+        async () =>
+          (await admin`select kind from operations where id=${sale.id}`)[0]
+            ?.kind ?? null,
+        { timeout: 30_000 },
+      )
+      .toBe("offline_sync");
+    const [created] =
+      await admin`select o.employee_id,o.channel from operations op
+        join orders o on o.tenant_id=op.tenant_id and o.id=(op.result->>'id')::uuid
+        where op.id=${sale.orderOperationId}`;
+    expect(created).toEqual({
+      employee_id: first.employeeId,
+      channel: "offline",
+    });
+    const [recovered] =
+      await admin`select count(*)::int as n from offline_recoveries where operation_id=${sale.id}`;
+    expect(recovered.n).toBe(0);
+    await expect
+      .poll(async () => (await queuedSales(tablet)).find((r) => r.id === sale.id)?.status)
+      .toBe("synced");
     await context.close();
   } finally {
     await admin.end();
