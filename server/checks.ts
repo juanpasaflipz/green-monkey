@@ -457,8 +457,10 @@ export async function tableOccupancy(
     left join lateral (select count(*) filter (where r.state <> 'completed')::int as open_rounds,
                               count(*) filter (where r.state='ready')::int as ready_rounds
                        from rounds r where r.tenant_id=o.tenant_id and r.order_id=o.id) k on true
-    group by t.tenant_id,t.id,t.name
-    order by t.name`;
+    left join dining_areas a on a.tenant_id=t.tenant_id and a.id=t.area_id
+    where t.archived_at is null
+    group by t.tenant_id,t.id,t.name,t.position,a.position
+    order by a.position nulls first,t.position,t.name,t.id`;
   return rows.map((r) => ({
     id: r.id,
     name: r.name,

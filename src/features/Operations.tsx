@@ -170,6 +170,7 @@ export function Operations({
               locale={locale}
               navigate={navigate}
               refreshKey={refreshKey}
+              onEditTables={manager ? () => navigate("floor") : undefined}
             />
           )}
           {view === "kitchen" && (

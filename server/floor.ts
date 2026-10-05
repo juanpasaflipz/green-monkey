@@ -64,10 +64,10 @@ async function lockFloor(tx: Tx) {
 
 /**
  * The ids of tables with an open check, optionally limited to some tables.
- * The single home of the "open check" rule (contract D10): until the service
- * lifecycle merges it is state-based (not cancelled or in recovery, and either
- * not completed or completed with an unpaid balance); at menu's merge it
- * becomes `o.check_state <> 'closed'`.
+ * The single home of the "open check" rule (contract D10): the service
+ * lifecycle's `o.check_state <> 'closed'`, written literally so the partial
+ * index orders_table_open (024) serves it. A paid dine-in check still holds
+ * its table until "Liberar mesa" closes it.
  */
 export async function tablesWithOpenChecks(
   tx: Tx,
@@ -76,9 +76,7 @@ export async function tablesWithOpenChecks(
   const rows = await tx`select distinct o.table_id from orders o
     where o.table_id is not null
       ${tableIds ? tx`and o.table_id=any(${tx.array(tableIds)}::uuid[])` : tx``}
-      and o.state not in ('cancelled','recovery_pending','recovery_reviewed')
-      and (o.state<>'completed' or o.total>coalesce((select sum(t.amount) from tenders t
-                                                      where t.tenant_id=o.tenant_id and t.order_id=o.id),0))`;
+      and o.check_state <> 'closed'`;
   return new Set(rows.map((r) => r.table_id as string));
 }
 
