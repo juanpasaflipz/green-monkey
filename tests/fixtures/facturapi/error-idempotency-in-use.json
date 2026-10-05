@@ -1,0 +1,15 @@
+{
+  "provenance": "docs@1c2e617",
+  "source": "openapi_v2.en.yaml#/components/responses/Conflict",
+  "status": 409,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "ok": false,
+    "message": "La llave de idempotencia ya está siendo utilizada por otra solicitud.",
+    "status": 409,
+    "code": "idempotency_key_in_use"
+  },
+  "note": "Authored. idempotency_key_in_use is a documented RequestErrorCode ('The idempotency key is already being used by another request'); its HTTP status is NOT documented for POST /invoices, so 409 (the documented Conflict response) is an assumption. cfdi classifies by code, never by this status."
+}

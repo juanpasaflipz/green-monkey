@@ -1,0 +1,16 @@
+{
+  "provenance": "docs@1c2e617",
+  "source": "openapi_v2.en.yaml#/components/responses/RateLimited",
+  "status": 429,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "retry-after": "30"
+  },
+  "body": {
+    "message": "Se excedió el límite de solicitudes.",
+    "status": 429,
+    "ok": false,
+    "code": "rate_limit_exceeded"
+  },
+  "note": "Body verbatim the documented RateLimited example; the Retry-After header (documented, 'Recommended seconds to wait before retrying') carries an authored value."
+}
