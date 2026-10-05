@@ -18,6 +18,7 @@ import { integrationLabel, operationLabel, stockCauseLabel } from "../labels";
 import { api } from "../api";
 import { db, isResolved } from "../offline";
 import { ArchivedDrawerNote } from "./offline/ArchivedDrawerNote";
+import { OfflineKitchenReview } from "./offline/OfflineKitchenReview";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 export function Operations({
   view,
@@ -179,6 +180,14 @@ export function Operations({
               session={session}
               locale={locale}
               refreshKey={refreshKey}
+              beforeTickets={(station) => (
+                <OfflineKitchenReview
+                  session={session}
+                  locale={locale}
+                  station={station}
+                  onDecided={() => setRefreshKey((n) => n + 1)}
+                />
+              )}
             />
           )}
           {view === "cash" && manager && (
