@@ -112,7 +112,16 @@ repository variables `RAILWAY_CLI_VERSION` and `RAILWAY_IAC_VERSION`.
   matching `"degraded":false` (5-minute interval) in addition to the hourly
   uptime workflow.
 
-## 9. First deploy and rehearsal
+## 9. Legal entity values (lead decision LD-3)
+
+The platform privacy notice and terms read the legal entity name, address and
+support contact from configuration. The owner supplies the production values at
+launch; CI and staging use clearly fictional values flagged as such. The
+production readiness check that refuses placeholder legal values belongs to the
+account area (wave 2); until it lands, confirm the values by hand on
+`https://<domain>` before inviting restaurants.
+
+## 10. First deploy and rehearsal
 
 1. Dispatch Deploy for the SHA already live on staging, outside service hours.
    The worker's preDeploy creates the schema on the empty database.
