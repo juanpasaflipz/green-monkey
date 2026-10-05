@@ -34,9 +34,11 @@ const clientCodes = [
 /** Machine-facing responses that no operator screen ever renders. */
 const machineOnly = new Set(["stripe_webhook_invalid"]);
 /**
- * Codes another wave-1 area translates in its own module (wave contracts
- * 3.12). Until that area merges they are skipped here; once its module
- * declares them they are checked like every other code.
+ * Codes another area translates in its own module (wave contracts 3.12).
+ * Until that area merges they are skipped here; once its module declares
+ * them they are checked like every other code. `rate_limited` (ops's public
+ * /api/ops/* limiter) is offline's; the two fiscal codes come from the pure
+ * fiscal core (shared/fiscal.ts), which no route calls until fiscal 027.
  */
 const ownedElsewhere: Record<string, keyof typeof areas> = {
   unauthorized: "access",
@@ -48,6 +50,9 @@ const ownedElsewhere: Record<string, keyof typeof areas> = {
   invalid_recipe: "menu",
   invalid_unit: "menu",
   unavailable: "menu",
+  rate_limited: "offline",
+  fiscal_total_mismatch: "fiscal",
+  fiscal_refund_exceeds: "fiscal",
 };
 const pendingElsewhere = (code: string) => {
   const owner = ownedElsewhere[code];

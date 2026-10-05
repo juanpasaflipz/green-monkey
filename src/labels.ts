@@ -48,6 +48,19 @@ const operations: Record<string, Key> = {
   "plan.free_location": "serviceOpFreeLocation",
   "plan.free_selection": "serviceOpFreeSelection",
   "restaurant.signup": "serviceOpSignup",
+  // access (023), added at service's merge (contracts 3.13)
+  "access.device_paired": "accessOpDevicePaired",
+  "access.device_renamed": "accessOpDeviceRenamed",
+  "access.device_revoked": "accessOpDeviceRevoked",
+  "access.device_session_ended": "accessOpDeviceSessionEnded",
+  "access.pairing_code_created": "accessOpPairingCodeCreated",
+  "access.pairing_code_cancelled": "accessOpPairingCodeCancelled",
+  "access.employee_created": "accessOpEmployeeCreated",
+  "access.employee_updated": "accessOpEmployeeUpdated",
+  "access.employee_deactivated": "accessOpEmployeeDeactivated",
+  "access.employee_reactivated": "accessOpEmployeeReactivated",
+  "access.employee_pin_reset": "accessOpEmployeePinReset",
+  "access.employee_unlocked": "accessOpEmployeeUnlocked",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",

@@ -517,5 +517,13 @@ export default defineArea({
       "No se identificó la sucursal. Vuelve a entrar.",
       "The location could not be identified. Sign in again.",
     ],
+    logout_failed: [
+      "No se pudo cerrar la sesión en el servidor. Se cerrará al volver la conexión.",
+      "The session could not be closed on the server. It will close when the connection returns.",
+    ],
+    owner_browser_reset: [
+      "Este navegador necesita volver a entrar. Inicia sesión con Google de nuevo.",
+      "This browser needs to sign in again. Sign in with Google again.",
+    ],
   },
 });
