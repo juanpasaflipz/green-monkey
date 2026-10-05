@@ -29,7 +29,10 @@ import {
 } from "../shared/offline-recovery";
 import { api } from "./api";
 import { clockOffset, correctedIso, deviceIso, serverNow } from "./clock";
-import { getConnectivitySnapshot } from "./connectivity";
+import {
+  clockMovedBackSinceLastContact,
+  getConnectivitySnapshot,
+} from "./connectivity";
 import { db, type Pending } from "./offline";
 import {
   devicePrefix as deviceRowsPrefix,
@@ -166,6 +169,9 @@ export function offlineBlockReason(
   if (session.sellingAllowed === false) return "free_selection_required";
   if (offlineWindow(session.offlineUntil, serverNow()).expired)
     return "offline_window_expired";
+  // OFF-R24: the device clock went back while the app was closed; the window
+  // cannot be trusted until a probe measures the server time again.
+  if (clockMovedBackSinceLastContact()) return "offline_clock_moved_back";
   if (needsDrawer && (!cashSession || cashSession.closed_at))
     return "offline_drawer_missing";
   return null;

@@ -15,7 +15,11 @@ vi.mock("../src/api", async (importOriginal) => ({
 }));
 
 import { api, ApiError } from "../src/api";
-import { resetConnectivityForTests } from "../src/connectivity";
+import {
+  loadClockForTests,
+  resetConnectivityForTests,
+} from "../src/connectivity";
+import { offlineTableServiceOn } from "../src/offline-settings";
 import { strings, translateError } from "../src/i18n";
 import { scope } from "../src/offline-keys";
 import {
@@ -148,6 +152,29 @@ describe("offline sale preconditions", () => {
     expect(fakeDb.pending.rows.size).toBe(1);
   });
 
+  it("OFF-R24: no offline save while the device clock is known to have moved back", async () => {
+    const s = session();
+    // The device last showed a time 30 min later than its clock says now.
+    await loadClockForTests({
+      get: async (id) =>
+        id === "device:clock-floor"
+          ? { value: { serverMs: Date.now() + 30 * 60_000 } }
+          : undefined,
+      put: async () => undefined,
+    });
+    expect(offlineBlockReason(s, drawer, true)).toBe(
+      "offline_clock_moved_back",
+    );
+    expect(await refusal(sale(s))).toBe("offline_clock_moved_back");
+    expect(fakeDb.pending.rows.size).toBe(0);
+  });
+
+  it("LD-7: the offline sale (new order, full payment) needs no table service", async () => {
+    const s = session();
+    expect(offlineTableServiceOn(s)).toBe(false);
+    await expect(sale(s)).resolves.toMatchObject({ state: "local" });
+  });
+
   it("offline_drawer_missing without a cached open drawer", async () => {
     const s = session();
     const l = line(1);
@@ -208,6 +235,11 @@ describe("offline sale preconditions", () => {
       "offline_payment_pending_for_order",
       "offline_split_unavailable",
       "offline_storage_full",
+      "offline_check_paid",
+      "offline_table_service_off",
+      "offline_clock_moved_back",
+      "offline_lines_already_sent",
+      "offline_order_closed",
     ])
       for (const locale of ["es", "en"] as const)
         expect(translateError(code, locale), code).not.toBe(

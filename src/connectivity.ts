@@ -7,6 +7,7 @@
 import { useSyncExternalStore } from "react";
 import { setRetryGate, setTransportObserver } from "./api";
 import {
+  CLOCK_ROLLBACK_TOLERANCE_MS,
   deriveConnectivity,
   initialConnectivity,
   medianOffset,
@@ -22,6 +23,10 @@ declare const __BUILD_ID__: string;
 
 export const WORK_OFFLINE_KEY = "gm-work-offline";
 const CLOCK_KEY = "device:clock";
+/** Highest server-corrected time this device has seen, kept across reloads. */
+const CLOCK_FLOOR_KEY = "device:clock-floor";
+/** The floor is written at most this often (plus whenever the page hides). */
+const FLOOR_EVERY_MS = 300_000;
 
 export type ConnectivitySnapshot = {
   serverReachable: boolean;
@@ -32,6 +37,8 @@ export type ConnectivitySnapshot = {
   offsetMs: number | null;
   lastContactAt: number | null;
   lastFailureCode: string | null;
+  /** The device clock was found behind the last time it showed: saves wait for a probe. */
+  clockMovedBack: boolean;
 };
 
 function readManual(): boolean {
@@ -49,6 +56,18 @@ let state: ConnectivityState = initialConnectivity(
 let offset: number | null = null;
 let persistedOffset: number | null = null;
 const samples: number[] = [];
+/**
+ * Monotonic anchor of the corrected clock (OFF-R24): the server time at one
+ * instant of a clock that setting the device time cannot move. Set by every
+ * successful probe, and at load from the stored offset and floor.
+ */
+let monotonic: () => number = () =>
+  typeof performance !== "undefined" ? performance.now() : Date.now();
+let anchor: { server: number; mono: number } | null = null;
+/** Highest device-based estimate seen since the anchor: a drop means the clock moved back. */
+let highestEstimate = 0;
+let clockMovedBack = false;
+let floorWrittenAt = 0;
 let snapshot = compute();
 const listeners = new Set<() => void>();
 let started = false;
@@ -66,6 +85,7 @@ function compute(): ConnectivitySnapshot {
     offsetMs: offset,
     lastContactAt: state.lastContactAt,
     lastFailureCode: state.lastFailureCode,
+    clockMovedBack,
   };
 }
 
@@ -109,14 +129,39 @@ async function loadClock() {
   try {
     const saved = (await clockStore.get(CLOCK_KEY))?.value as
       { offsetMs: number } | undefined;
+    const floor = (await clockStore.get(CLOCK_FLOOR_KEY))?.value as
+      { serverMs: number } | undefined;
     if (offset === null && typeof saved?.offsetMs === "number") {
       offset = saved.offsetMs;
       persistedOffset = saved.offsetMs;
-      emit();
     }
+    if (!anchor) {
+      // No probe yet in this page: anchor the corrected clock now, so moving
+      // the device time back from here on changes nothing. If the device clock
+      // is already behind the last time this device showed, it was moved back
+      // while the app was closed: continue from that time and refuse offline
+      // saves until a probe measures the real time again.
+      const estimate = Date.now() + (offset ?? 0);
+      const last = typeof floor?.serverMs === "number" ? floor.serverMs : 0;
+      clockMovedBack = estimate < last - CLOCK_ROLLBACK_TOLERANCE_MS;
+      anchor = { server: Math.max(estimate, last), mono: monotonic() };
+      highestEstimate = Math.max(estimate, last);
+    }
+    emit();
   } catch {
     /* Storage may be unavailable (private window); the offset stays unknown. */
   }
+}
+
+/** Keeps the highest corrected time seen, so a reload can detect a clock moved back. */
+function writeFloor(force = false) {
+  if (!clockStore || (!force && Date.now() - floorWrittenAt < FLOOR_EVERY_MS))
+    return;
+  floorWrittenAt = Date.now();
+  const value = { serverMs: serverNow() };
+  Promise.resolve(clockStore.put({ id: CLOCK_FLOOR_KEY, value })).catch(
+    () => {},
+  );
 }
 
 function addSample(offsetMs: number, rttMs: number) {
@@ -165,6 +210,11 @@ export function probeNow(): Promise<void> {
       if (response.ok && json?.ok === true && typeof json.now === "number") {
         const sample = offsetFromSample(t0, t1, json.now);
         addSample(sample.offsetMs, sample.rttMs);
+        // The server's own time, independent of the device clock.
+        anchor = { server: json.now + sample.rttMs / 2, mono: monotonic() };
+        highestEstimate = Date.now() + (offset ?? 0);
+        clockMovedBack = false;
+        writeFloor();
         offlineProbes = 0;
         dispatch({ type: "probe_ok", at: Date.now(), latencyMs: t1 - t0 });
         maybeUpdate(json.build);
@@ -247,8 +297,12 @@ export function startConnectivity() {
   );
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") void probeNow();
-    else reschedule();
+    else {
+      writeFloor(true);
+      reschedule();
+    }
   });
+  window.addEventListener("pagehide", () => writeFloor(true));
   window.addEventListener("storage", (event) => {
     if (event.key === WORK_OFFLINE_KEY)
       dispatch({ type: "manual", value: event.newValue === "1" });
@@ -290,9 +344,28 @@ export function clockOffsetMs(): number | null {
   return offset;
 }
 
-/** Best estimate of the server clock. */
+/**
+ * Best estimate of the server clock (OFF-R24). The device clock plus the
+ * measured offset follows real time even across sleep; the monotonic anchor
+ * cannot be moved back by changing the device time. Taking the later of the
+ * two means setting the clock back never reopens the offline window (I14) or
+ * backdates a record. A device clock that drops more than the tolerance below
+ * its highest reading (for example set back while the tablet slept, when the
+ * monotonic clock may not have run) also stops offline saves until a probe
+ * measures the server time again.
+ */
 export function serverNow(): number {
-  return Date.now() + (offset ?? 0);
+  const estimate = Date.now() + (offset ?? 0);
+  if (!anchor) return estimate;
+  if (estimate < highestEstimate - CLOCK_ROLLBACK_TOLERANCE_MS)
+    clockMovedBack = true;
+  highestEstimate = Math.max(highestEstimate, estimate);
+  return Math.max(estimate, anchor.server + (monotonic() - anchor.mono));
+}
+
+/** True while offline saves must wait for a probe (the device clock moved back). */
+export function clockMovedBackSinceLastContact(): boolean {
+  return clockMovedBack;
 }
 
 /** Test seam: reset the singleton to a known state. */
@@ -304,5 +377,26 @@ export function resetConnectivityForTests(
   offset = offsetMs;
   persistedOffset = offsetMs;
   samples.length = 0;
+  anchor = null;
+  highestEstimate = 0;
+  clockMovedBack = false;
+  floorWrittenAt = 0;
   snapshot = compute();
+}
+
+/** Test seam: a controllable monotonic clock, and the stored-clock load. */
+export function setMonotonicClockForTests(source: (() => number) | null) {
+  monotonic =
+    source ??
+    (() =>
+      typeof performance !== "undefined" ? performance.now() : Date.now());
+}
+export async function loadClockForTests(store: ClockStore) {
+  const previous = clockStore;
+  clockStore = store;
+  try {
+    await loadClock();
+  } finally {
+    clockStore = previous;
+  }
 }
