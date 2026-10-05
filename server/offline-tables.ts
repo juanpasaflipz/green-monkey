@@ -70,7 +70,8 @@ async function writableOrder(tx: Tx, orderId: string) {
   try {
     assertCheckWritable(row as { check_state?: string; state: string });
   } catch (e) {
-    if (e instanceof DomainError) throw new DomainError("offline_order_closed", 409);
+    if (e instanceof DomainError)
+      throw new DomainError("offline_order_closed", 409);
     throw e;
   }
   return row;
@@ -286,7 +287,8 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
     s.restaurant.timezone,
     s.restaurant.cutoff,
   );
-  const rows = await tx`select o.id,o.number,o.version,o.mode,o.table_id,t.name as table_name,
+  const rows =
+    await tx`select o.id,o.number,o.version,o.mode,o.table_id,t.name as table_name,
       o.name,o.note,o.total,o.state,o.created_at,o.service_version,o.paid,
       (select coalesce(jsonb_agg(jsonb_build_object(
           'id',l.id,'productId',l.product_id,'round',l.round,
