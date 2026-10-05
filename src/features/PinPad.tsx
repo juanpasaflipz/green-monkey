@@ -15,6 +15,9 @@ export function lockTime(iso: string, locale: Locale) {
 /**
  * Masked PIN entry with an on-screen keypad (a physical keyboard also works).
  * "Usar contraseña" switches to a text password for legacy owner passwords.
+ * While the keypad is shown the field asks for no virtual keyboard
+ * (inputmode="none"), so focusing it after each tap never opens the tablet's
+ * keyboard over the keypad; the password mode uses the normal keyboard.
  */
 export function PinPad({
   employee,
@@ -76,7 +79,7 @@ export function PinPad({
           ref={input}
           name="secret"
           type="password"
-          inputMode={password ? "text" : "numeric"}
+          inputMode={password ? "text" : "none"}
           autoComplete="off"
           maxLength={password ? 200 : 8}
           value={value}

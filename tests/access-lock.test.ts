@@ -177,3 +177,19 @@ describe("session 401 and the offline cache (ACC-15)", () => {
     expect(restoredLock(session(B))).toBeNull();
   });
 });
+
+describe("lock across tabs (ACC-16)", () => {
+  it("another tab's lock applies only to the same session, and every write is new", async () => {
+    const { rememberLock, lockedFor, LOCK_KEY } = await load();
+    expect(lockedFor(null, A)).toBeNull();
+    expect(lockedFor("{not json", A)).toBeNull();
+    rememberLock(A, "manual", 1);
+    const first = store.get(LOCK_KEY)!;
+    expect(lockedFor(first, A)).toBe("manual");
+    expect(lockedFor(first, B)).toBeNull();
+    // The same reason again is still a different value, so a storage event fires.
+    rememberLock(A, "manual", 2);
+    expect(store.get(LOCK_KEY)).not.toBe(first);
+    expect(lockedFor(store.get(LOCK_KEY)!, A)).toBe("manual");
+  });
+});

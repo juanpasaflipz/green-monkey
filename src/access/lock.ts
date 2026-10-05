@@ -36,8 +36,12 @@ function parse(raw: string | null): Record<string, unknown> | null {
   }
 }
 
-export function rememberLock(sessionId: string, reason: string) {
-  write(LOCK_KEY, JSON.stringify({ sessionId, reason }));
+/**
+ * Remembers the lock of a session. Each write carries its own time, so other
+ * tabs always receive a storage event, even for the same reason again.
+ */
+export function rememberLock(sessionId: string, reason: string, now = Date.now()) {
+  write(LOCK_KEY, JSON.stringify({ sessionId, reason, at: now }));
 }
 export function forgetLock() {
   write(LOCK_KEY, null);

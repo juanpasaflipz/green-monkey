@@ -41,7 +41,9 @@ import {
   unsyncedFor,
 } from "./access/session";
 import {
+  LOCK_KEY,
   forgetLock,
+  lockedFor,
   noteActivity,
   rememberLock,
   restoredLock,
@@ -228,6 +230,19 @@ export default function App() {
     // Remembered until a PIN unlock, a new sign-in or a sign-out (SEC-6).
     if (session && lock) rememberLock(session.id, lock.reason);
   }, [session?.id, lock?.reason]);
+  useEffect(() => {
+    // A lock in another tab of the same session locks this tab too (SEC-6).
+    const lockedElsewhere = (event: StorageEvent) => {
+      const s = sessionRef.current;
+      const reason =
+        event.key === LOCK_KEY && s ? lockedFor(event.newValue, s.id) : null;
+      if (!reason) return;
+      setSoftUnlocked(false);
+      setLock((current) => current ?? { reason });
+    };
+    window.addEventListener("storage", lockedElsewhere);
+    return () => window.removeEventListener("storage", lockedElsewhere);
+  }, []);
   useEffect(() => {
     // The offline soft unlock ends with the connection or the offline window.
     if (
