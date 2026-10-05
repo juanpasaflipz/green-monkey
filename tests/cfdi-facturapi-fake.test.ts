@@ -2,6 +2,7 @@
 // builders and XML parser, in process (no sockets). These pin the fake's behaviour that DB and
 // browser suites will rely on; they say nothing about Facturapi itself (see the contract tests).
 import { describe, expect, it } from "vitest";
+import { extractTax } from "../shared/fiscal";
 import {
   buildGlobalRequests,
   buildInvoiceRequest,
@@ -116,6 +117,60 @@ function invoiceBody(
     cardForm: "04",
     timezone: "America/Mexico_City",
   }).body;
+}
+
+/** New external_id and idempotency_key: another document with the same concepts. */
+function freshIds() {
+  const id = fakeId();
+  return { external_id: id, idempotency_key: id };
+}
+
+/**
+ * The six_decimals XML is internally consistent: every concept Importe and concept traslado keeps
+ * 6 decimals; SubTotal is Σ concept Importe and each comprobante traslado is Σ its concept
+ * traslados, each rounded once to centavos; TotalImpuestosTrasladados is Σ comprobante traslados
+ * and Total = SubTotal + TotalImpuestosTrasladados.
+ */
+function sixDecimalsConsistent(xml: string) {
+  const totals = parseCfdiTotals(xml);
+  const micros = (v: string) => {
+    expect(v).toMatch(/^\d+\.\d{6}$/);
+    const [whole, fraction] = v.split(".");
+    return BigInt(whole) * 1_000_000n + BigInt(fraction);
+  };
+  const centavos = (m: bigint) => Number((2n * m + 10_000n) / 20_000n);
+  const attr = (tag: string, name: string) =>
+    new RegExp(`\\s${name}="([^"]*)"`).exec(tag)?.[1];
+  const conceptsXml = /<cfdi:Conceptos>([\s\S]*)<\/cfdi:Conceptos>/.exec(
+    xml,
+  )![1];
+  const conceptTags = conceptsXml.match(/<cfdi:Concepto\s[^>]*>/g) ?? [];
+  expect(conceptTags).toHaveLength(totals.concepts.length);
+  const importe = conceptTags.reduce(
+    (s, tag) => s + micros(attr(tag, "Importe")!),
+    0n,
+  );
+  expect(centavos(importe)).toBe(totals.subtotal);
+  const byRate = new Map<string, { base: bigint; tax: bigint }>();
+  for (const tag of conceptsXml.match(/<cfdi:Traslado\s[^>]*\/>/g) ?? []) {
+    const key = `${attr(tag, "TipoFactor")}:${attr(tag, "TasaOCuota") ?? ""}`;
+    const sums = byRate.get(key) ?? { base: 0n, tax: 0n };
+    sums.base += micros(attr(tag, "Base")!);
+    const tax = attr(tag, "Importe");
+    if (tax !== undefined) sums.tax += micros(tax);
+    byRate.set(key, sums);
+  }
+  expect(totals.traslados).toHaveLength(byRate.size);
+  for (const t of totals.traslados) {
+    const sums = byRate.get(`${t.factor}:${t.rate ?? ""}`)!;
+    expect(t.base).toBe(centavos(sums.base));
+    if (t.importe !== null) expect(t.importe).toBe(centavos(sums.tax));
+  }
+  expect(totals.traslados.reduce((s, t) => s + (t.importe ?? 0), 0)).toBe(
+    totals.taxTraslados,
+  );
+  expect(totals.subtotal + totals.taxTraslados).toBe(totals.total);
+  return totals;
 }
 
 function globalBody(): FInvoiceInput {
@@ -491,6 +546,126 @@ describe("Facturapi fake: invoices", () => {
     );
     expect(totals.taxTraslados).not.toBe(canonicalTax(body));
     expect(totals.total).toBe(11599 + 5000);
+  });
+
+  it("FAKE SIX DECIMALS keeps 6-decimal concepts that add up to the comprobante totals, and can stamp another IVA than canonicalTax", async () => {
+    const s = setup();
+    const { test } = await organization(s);
+
+    // Marker on a nominative invoice (iva16 + iva0 concepts).
+    const body = invoiceBody("FAKE SIX DECIMALS", 11599);
+    const { invoice } = await s.client.createInvoice(test, body);
+    const totals = sixDecimalsConsistent(
+      new TextDecoder().decode(
+        await s.client.download(test, invoice.id, "xml"),
+      ),
+    );
+    expect(totals.concepts).toHaveLength(2);
+    expect(totals.total).toBe(11599 + 5000);
+
+    // Queued on a global: three iva16 tickets of $10.02. Rounding the 6-decimal sums once gives
+    // IVA $4.15; half up per concept (canonicalTax, what cfdi expects) gives $4.14.
+    const global = buildGlobalRequests({
+      docIds: () => fakeId(),
+      tickets: [201, 202, 203].map((n) => ({
+        id: fakeId(),
+        folio: `A-000${n}`,
+        groups: netGroups(
+          [
+            {
+              category: "iva16",
+              gross: 1002,
+              tax: extractTax(1002, 1600).tax,
+            },
+          ],
+          [],
+        ),
+        payments: [{ method: "cash", amount: 1002 }],
+      })),
+      period: { periodicity: "day", months: "10", year: 2026 },
+      issuerPostalCode: ISSUER_POSTAL_CODE,
+      cardForm: "04",
+    })[0].body;
+    s.fake.fault({ op: "invoices.create", fault: "six_decimals" });
+    const stamped = (await s.client.createInvoice(test, global)).invoice;
+    const g = sixDecimalsConsistent(
+      new TextDecoder().decode(
+        await s.client.download(test, stamped.id, "xml"),
+      ),
+    );
+    expect(g.concepts).toHaveLength(3);
+    expect(g.total).toBe(3006);
+    expect(stamped.total).toBe(30.06);
+    expect(canonicalTax(global)).toBe(414);
+    expect(g.taxTraslados).toBe(415);
+    expect(g.subtotal).toBe(3006 - 415);
+    // The fault was used once: the next global is stamped half up per concept again.
+    const next = (
+      await s.client.createInvoice(test, { ...global, ...freshIds() })
+    ).invoice;
+    expect(
+      parseCfdiTotals(await s.client.download(test, next.id, "xml"))
+        .taxTraslados,
+    ).toBe(414);
+  });
+
+  it("a queued conflict answers 409 conflict before the idempotency lookup; it is retried as an unknown outcome and the invoice is adopted", async () => {
+    const s = setup();
+    const { test } = await organization(s);
+    const body = invoiceBody();
+
+    // The first attempt collides: nothing exists yet, the retry with the same key stamps it.
+    s.fake.fault({ op: "invoices.create", fault: "conflict" });
+    const e = await failure(s.client.createInvoice(test, body));
+    expect(e).toMatchObject({ kind: "http", status: 409, code: "conflict" });
+    expect(classifyFacturapiError(e)).toMatchObject({
+      retry: true,
+      afterMs: 15_000,
+      code: "cfdi_provider_in_progress",
+      unknownOutcome: true,
+      providerCode: "conflict",
+    });
+    expect(
+      await s.client.findInvoiceByExternalId(test, body.external_id),
+    ).toBeNull();
+    const stamped = (await s.client.createInvoice(test, body)).invoice;
+    expect(stamped.status).toBe("valid");
+
+    // A retry of an invoice that already exists collides too: adoption by external_id finds it,
+    // and the same key keeps returning it. Never a second invoice.
+    s.fake.fault({ op: "invoices.create", fault: "conflict" });
+    const again = await failure(s.client.createInvoice(test, body));
+    expect(classifyFacturapiError(again)).toMatchObject({
+      retry: true,
+      unknownOutcome: true,
+    });
+    expect(
+      (await s.client.findInvoiceByExternalId(test, body.external_id))?.id,
+    ).toBe(stamped.id);
+    expect((await s.client.createInvoice(test, body)).invoice.id).toBe(
+      stamped.id,
+    );
+    expect(s.fake.invoices.size).toBe(1);
+    expect(
+      s.fake.requests
+        .filter((r) => r.method === "POST" && r.path === "/v2/invoices")
+        .map((r) => r.status),
+    ).toEqual([409, 200, 409, 200]);
+
+    // A queued conflict does not consume another queued fault for the same request.
+    s.fake.fault({ op: "invoices.create", fault: "stamp_failed" });
+    s.fake.fault({ op: "invoices.create", fault: "conflict" });
+    const other = invoiceBody();
+    expect((await failure(s.client.createInvoice(test, other))).code).toBe(
+      "conflict",
+    );
+    expect((await failure(s.client.createInvoice(test, other))).code).toBe(
+      "invoice_stamping_failed",
+    );
+    expect(
+      (await s.client.createInvoice(test, { ...other, ...freshIds() })).invoice
+        .status,
+    ).toBe("valid");
   });
 
   it("cancellation: immediate within 24 h, receptor acceptance after that for nominative totals over $1,000, substitution rules and acuse", async () => {

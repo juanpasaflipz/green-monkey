@@ -53,10 +53,14 @@ key gets a ready shared sandbox organization. A receptor name containing one of 
 triggers a documented provider behaviour: `FAKE NAME MISMATCH`, `FAKE RFC NOT FOUND`,
 `FAKE ZIP MISMATCH`, `FAKE REGIME MISMATCH`, `FAKE PAC REJECT`, `FAKE STAMP FAILED`,
 `FAKE UNAVAILABLE`, `FAKE RATE LIMIT`, `FAKE PENDING`, `FAKE PENDING FAILED`, `FAKE TIMEOUT`,
-`FAKE LOST RESPONSE`, `FAKE ROUNDING`, `FAKE CANCEL PENDING`, `FAKE REJECT CANCEL` (details in the
-file header). Globals are always PUBLICO EN GENERAL, so their faults are queued with
-`POST /__fake/faults` (or `fake.fault()`). Passing against the fake proves cfdi's own logic, not
-Facturapi's behaviour.
+`FAKE LOST RESPONSE`, `FAKE ROUNDING`, `FAKE SIX DECIMALS`, `FAKE CANCEL PENDING`,
+`FAKE REJECT CANCEL` (details in the file header). `FAKE SIX DECIMALS` keeps each concept's Base
+and Importe at 6 decimals and rounds only the comprobante sums (the other reading of Facturapi's
+rounding, decision D18), so the stamped IVA can differ from `canonicalTax` by a centavo. Globals
+are always PUBLICO EN GENERAL, so their faults are queued with `POST /__fake/faults` (or
+`fake.fault()`). The queued-only fault `conflict` answers `POST /invoices` with 409 `conflict`
+before the idempotency lookup, like a retry colliding with a request still in process. Passing
+against the fake proves cfdi's own logic, not Facturapi's behaviour.
 
 ## Tests
 

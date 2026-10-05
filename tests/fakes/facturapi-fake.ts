@@ -36,11 +36,18 @@
  *   FAKE TIMEOUT       → creates the invoice, then never answers (once per idempotency key)
  *   FAKE LOST RESPONSE → creates the invoice, then drops the connection (once per idempotency key)
  *   FAKE ROUNDING      → stamps IVA truncated per concept (an amount_check "differs" case)
+ *   FAKE SIX DECIMALS  → keeps each concept's Base and Importe at 6 decimals (Base = round6(G/(1+r)),
+ *                        Importe = round6(Base·r)) and rounds only the comprobante sums: the other
+ *                        reading of Facturapi's rounding (decision D18); the stamped totals can then
+ *                        differ from cfdi's expected figures by a centavo
  *   FAKE CANCEL PENDING → a cancellation needs receptor acceptance, accepted at the next read
  *   FAKE REJECT CANCEL  → a cancellation needs acceptance and is rejected at the next read
  * An organization name containing FAKE LOST RESPONSE is created and its response dropped; an
  * email whose local part starts with "bounce" fails delivery. Faults that data cannot carry
- * (globals are always PUBLICO EN GENERAL) are queued with `fault()` or POST /__fake/faults.
+ * (globals are always PUBLICO EN GENERAL) are queued with `fault()` or POST /__fake/faults. The
+ * queued-only fault "conflict" answers POST /invoices with 409 `conflict` (CommonErrorCode) BEFORE
+ * the idempotency lookup, as a retry colliding with a first request still in process would; the
+ * next request with the same key gets the invoice.
  *
  * Control API (loopback CLI only, also methods on the fake): POST /__fake/reset,
  * POST /__fake/faults {op, fault, times?, match?}, POST /__fake/organizations/{id}/manifesto,
@@ -103,6 +110,8 @@ export type FakeFault =
   | "stamp_rejected"
   | "stamp_failed"
   | "rounding"
+  | "six_decimals"
+  | "conflict"
   | "cancel_pending"
   | "cancel_rejected"
   | "email_failed";
@@ -137,6 +146,8 @@ const faultRule = z
       "stamp_rejected",
       "stamp_failed",
       "rounding",
+      "six_decimals",
+      "conflict",
       "cancel_pending",
       "cancel_rejected",
       "email_failed",
@@ -178,6 +189,8 @@ type Concept = {
   base: number;
   tax: number | null; // null: exento
   rate: string | null;
+  /** six_decimals mode: Base and Importe kept in micro-pesos (6 decimals) in the XML. */
+  micro?: { base: bigint; tax: bigint | null };
 };
 type Invoice = {
   id: string;
@@ -235,12 +248,17 @@ const MARKERS: [string, FakeFault | "name" | "rfc" | "zip" | "regime"][] = [
   ["FAKE TIMEOUT", "timeout"],
   ["FAKE LOST RESPONSE", "lost_response"],
   ["FAKE ROUNDING", "rounding"],
+  ["FAKE SIX DECIMALS", "six_decimals"],
   ["FAKE CANCEL PENDING", "cancel_pending"],
   ["FAKE REJECT CANCEL", "cancel_rejected"],
 ];
 
 /** Spanish and English messages for the documented codes the fake returns. */
 const MESSAGES: Record<string, [string, string]> = {
+  conflict: [
+    "La solicitud no se puede completar por un conflicto.",
+    "The request cannot be completed because of a conflict.",
+  ],
   api_key_invalid: [
     "La llave de API es inválida.",
     "The provided API key is invalid.",
@@ -409,6 +427,47 @@ const TEST_ISSUER = {
 };
 
 const pesos = (c: number) => (c / 100).toFixed(2);
+/** Micro-pesos (1e-6) → centavos, half up. */
+const microToCentavos = (m: bigint) => Number((2n * m + 10_000n) / 20_000n);
+/** Micro-pesos as a 6-decimal amount: 13793103n → "13.793103". */
+const micro6 = (m: bigint) =>
+  `${m / 1_000_000n}.${String(m % 1_000_000n).padStart(6, "0")}`;
+/** A concept's Base and Importe in micro-pesos (exact for the 2-decimal modes). */
+const microOf = (c: Concept) =>
+  c.micro ?? {
+    base: BigInt(c.base) * 10_000n,
+    tax: c.tax === null ? null : BigInt(c.tax) * 10_000n,
+  };
+/**
+ * Comprobante-level traslados, one per tax rate (Anexo 20): the concepts' Base and Importe summed
+ * and rounded once to centavos. Exact sums in the 2-decimal modes; in six_decimals mode this is the
+ * only rounding, so the comprobante adds up while each concept keeps 6 decimals.
+ */
+function rateGroups(
+  concepts: Concept[],
+): { base: number; tax: number | null; rate: string | null }[] {
+  const groups = new Map<
+    string,
+    { base: bigint; tax: bigint | null; rate: string | null }
+  >();
+  for (const c of concepts) {
+    const m = microOf(c);
+    const key = c.tax === null ? "exento" : String(c.rate);
+    const g = groups.get(key) ?? {
+      base: 0n,
+      tax: c.tax === null ? null : 0n,
+      rate: c.rate,
+    };
+    g.base += m.base;
+    if (g.tax !== null && m.tax !== null) g.tax += m.tax;
+    groups.set(key, g);
+  }
+  return [...groups.values()].map((g) => ({
+    base: microToCentavos(g.base),
+    tax: g.tax === null ? null : microToCentavos(g.tax),
+    rate: g.rate,
+  }));
+}
 const xmlEscape = (s: string) =>
   s.replace(/[&<>"']/g, (c) =>
     c === "&"
@@ -538,10 +597,15 @@ export function createFacturapiFake(
     offsetMs = 0;
   }
 
-  function takeFault(op: FakeOp, body?: FInvoiceInput): FakeFault | null {
+  function takeFault(
+    op: FakeOp,
+    body?: FInvoiceInput,
+    accept: (fault: FakeFault) => boolean = () => true,
+  ): FakeFault | null {
     const i = faults.findIndex(
       (f) =>
         f.op === op &&
+        accept(f.fault) &&
         (!f.match?.type || f.match.type === body?.type) &&
         (f.match?.global === undefined ||
           f.match.global === Boolean(body?.global)) &&
@@ -761,26 +825,26 @@ export function createFacturapiFake(
         .filter(([, v]) => v !== null && v !== undefined)
         .map(([k, v]) => `${k}="${xmlEscape(String(v))}"`)
         .join(" ");
-    const traslado = (
-      base: number,
-      c: { tax: number | null; rate: string | null },
-    ) =>
+    const traslado = (base: string, tax: string | null, rate: string | null) =>
       `<cfdi:Traslado ${attrs([
-        ["Base", pesos(base)],
+        ["Base", base],
         ["Impuesto", "002"],
-        ["TipoFactor", c.tax === null ? "Exento" : "Tasa"],
-        ["TasaOCuota", c.rate],
-        ["Importe", c.tax === null ? null : pesos(c.tax)],
+        ["TipoFactor", tax === null ? "Exento" : "Tasa"],
+        ["TasaOCuota", rate],
+        ["Importe", tax],
       ])}/>`;
     const concepts = inv.concepts
       .map((c) => {
         const qty = c.item.quantity;
+        const m = microOf(c);
+        // Concept amounts: 2 decimals, or the 6 decimals of the six_decimals mode.
+        const amount = (centavos: number, micros: bigint) =>
+          c.micro ? micro6(micros) : pesos(centavos);
         // ValorUnitario = Importe / Cantidad at 6 decimals, rounded half up (exact integers).
         const qtyMicros = BigInt(Math.round(qty * 1_000_000));
-        const micros =
-          (2n * BigInt(c.base) * 10_000_000_000n + qtyMicros) /
-          (2n * qtyMicros);
-        const unit = `${micros / 1_000_000n}.${String(micros % 1_000_000n).padStart(6, "0")}`;
+        const unit = micro6(
+          (2n * m.base * 1_000_000n + qtyMicros) / (2n * qtyMicros),
+        );
         return (
           `<cfdi:Concepto ${attrs([
             ["ClaveProdServ", c.item.product.product_key],
@@ -790,28 +854,17 @@ export function createFacturapiFake(
             ["Unidad", c.item.product.unit_name],
             ["Descripcion", c.item.product.description],
             ["ValorUnitario", unit],
-            ["Importe", pesos(c.base)],
+            ["Importe", amount(c.base, m.base)],
             ["ObjetoImp", "02"],
           ])}>` +
-          `<cfdi:Impuestos><cfdi:Traslados>${traslado(c.base, c)}</cfdi:Traslados></cfdi:Impuestos></cfdi:Concepto>`
+          `<cfdi:Impuestos><cfdi:Traslados>${traslado(
+            amount(c.base, m.base),
+            c.tax === null || m.tax === null ? null : amount(c.tax, m.tax),
+            c.rate,
+          )}</cfdi:Traslados></cfdi:Impuestos></cfdi:Concepto>`
         );
       })
       .join("");
-    const groups = new Map<
-      string,
-      { base: number; tax: number | null; rate: string | null }
-    >();
-    for (const c of inv.concepts) {
-      const key = c.tax === null ? "exento" : String(c.rate);
-      const g = groups.get(key) ?? {
-        base: 0,
-        tax: c.tax === null ? null : 0,
-        rate: c.rate,
-      };
-      g.base += c.base;
-      if (g.tax !== null && c.tax !== null) g.tax += c.tax;
-      groups.set(key, g);
-    }
     const anyTaxed = inv.concepts.some((c) => c.tax !== null);
     const related = b.related_documents?.length
       ? b.related_documents
@@ -863,10 +916,12 @@ export function createFacturapiFake(
         ["UsoCFDI", b.use],
       ])}/>` +
       `<cfdi:Conceptos>${concepts}</cfdi:Conceptos>` +
-      `<cfdi:Impuestos${anyTaxed ? ` TotalImpuestosTrasladados="${pesos(inv.tax)}"` : ""}><cfdi:Traslados>${[
-        ...groups.values(),
-      ]
-        .map((g) => traslado(g.base, g))
+      `<cfdi:Impuestos${anyTaxed ? ` TotalImpuestosTrasladados="${pesos(inv.tax)}"` : ""}><cfdi:Traslados>${rateGroups(
+        inv.concepts,
+      )
+        .map((g) =>
+          traslado(pesos(g.base), g.tax === null ? null : pesos(g.tax), g.rate),
+        )
         .join("")}</cfdi:Traslados></cfdi:Impuestos>` +
       `<cfdi:Complemento><tfd:TimbreFiscalDigital xmlns:tfd="${TFD_NS}" ${attrs(
         [
@@ -1124,16 +1179,48 @@ export function createFacturapiFake(
     inv.stampedAt = now();
   }
 
-  function concepts(b: FInvoiceInput, truncate: boolean): Concept[] {
+  /**
+   * Concept amounts. "half_up" is the rounding cfdi assumes (spec §4.3); "truncate" is FAKE
+   * ROUNDING; "six_decimals" is the other reading of Facturapi's docs (pdf_options.round_unit_price:
+   * "keep the 6 decimals in the XML"): Base = round6(gross / (1 + r)) and Importe = round6(Base · r)
+   * per concept, and the comprobante rounds only the sums to 2 decimals (decision D18 hypothesis).
+   */
+  function concepts(
+    b: FInvoiceInput,
+    mode: "half_up" | "truncate" | "six_decimals",
+  ): Concept[] {
     return b.items.map((item) => {
       const t = item.product.taxes[0];
       const gross = conceptCentavos(item);
       if (t.factor === "Exento")
-        return { item, gross, base: gross, tax: null, rate: null };
+        return {
+          item,
+          gross,
+          base: gross,
+          tax: null,
+          rate: null,
+          ...(mode === "six_decimals"
+            ? { micro: { base: BigInt(gross) * 10_000n, tax: null } }
+            : {}),
+        };
       const rate = Math.round(t.rate * 10000);
-      const tax = truncate
-        ? Math.floor((gross * rate) / (10000 + rate))
-        : extractTax(gross, rate).tax;
+      if (mode === "six_decimals") {
+        const d = BigInt(10000 + rate);
+        const base6 = (2n * BigInt(gross) * 10_000n * 10_000n + d) / (2n * d);
+        const tax6 = (2n * base6 * BigInt(rate) + 10_000n) / 20_000n;
+        return {
+          item,
+          gross,
+          base: microToCentavos(base6),
+          tax: microToCentavos(tax6),
+          rate: t.rate.toFixed(6),
+          micro: { base: base6, tax: tax6 },
+        };
+      }
+      const tax =
+        mode === "truncate"
+          ? Math.floor((gross * rate) / (10000 + rate))
+          : extractTax(gross, rate).tax;
       return { item, gross, base: gross - tax, tax, rate: t.rate.toFixed(6) };
     });
   }
@@ -1153,6 +1240,10 @@ export function createFacturapiFake(
     const live = a.kind === "live";
     const org = a.org;
 
+    // A queued "conflict" answers 409 `conflict` (CommonErrorCode) before the idempotency lookup:
+    // the shape of a retry that collides with a first request Facturapi is still processing.
+    if (takeFault("invoices.create", b, (f) => f === "conflict"))
+      return error(409, "conflict");
     // Idempotency: the same key returns the same invoice (this fake answers synchronously, so a
     // key is never "in use"; idempotency_key_in_use is covered by the contract fixtures).
     const idemKey = `${org.id}:${live}:${b.idempotency_key}`;
@@ -1169,7 +1260,8 @@ export function createFacturapiFake(
       );
 
     const fault =
-      takeFault("invoices.create", b) ?? marker(b.customer.legal_name);
+      takeFault("invoices.create", b, (f) => f !== "conflict") ??
+      marker(b.customer.legal_name);
     switch (fault) {
       case "name":
         return error(400, "legal_name_mismatch", {
@@ -1225,9 +1317,20 @@ export function createFacturapiFake(
         return error(400, "certificate_expired");
     }
 
-    const lines = concepts(b, fault === "rounding");
-    const subtotal = lines.reduce((s, c) => s + c.base, 0);
-    const tax = lines.reduce((s, c) => s + (c.tax ?? 0), 0);
+    const lines = concepts(
+      b,
+      fault === "rounding"
+        ? "truncate"
+        : fault === "six_decimals"
+          ? "six_decimals"
+          : "half_up",
+    );
+    // SubTotal = Σ concept Importe and TotalImpuestosTrasladados = Σ comprobante traslados, each
+    // rounded once (exact sums in the 2-decimal modes; six_decimals rounds only here).
+    const subtotal = microToCentavos(
+      lines.reduce((s, c) => s + microOf(c).base, 0n),
+    );
+    const tax = rateGroups(lines).reduce((s, g) => s + (g.tax ?? 0), 0);
     const folioKey = `${org.id}:${live}:${b.series}`;
     const folio = (folios.get(folioKey) ?? 0) + 1;
     folios.set(folioKey, folio);
