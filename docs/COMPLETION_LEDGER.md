@@ -107,15 +107,15 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | OFF-01 | partial | Compiled offline refresh/reconnect, reload during an API outage and exactly-once replay pass locally (`offline.spec.ts`, `offline-sync-db.ts`); staging and real-device close/reopen remain. |
 | OFF-02 | partial | Lost committed cash response, idempotent payment retry, reuse of an online order whose response was lost, exact payment fingerprint/status and interrupted tab recovery pass locally; full process-restart HTTP matrix remains. |
 | OFF-03 | partial | Two tabs serialize sync; closing the lock holder recovers its syncing row. Concurrent sync/reconcile and sync/archive of one record apply exactly once (`offline-sync-db.ts`). Staging pending. |
-| OFF-04 | partial | Redefined: transient failures never exhaust or become conflicts and attempts are not counted offline (`offline-policy.test.ts`, `offline.spec.ts` with 503 responses); every conflict can be reconciled or archived (`offline-sync-db.ts`, `offline.spec.ts`). Locally verified; staging pending. |
+| OFF-04 | partial | Redefined: transient failures never exhaust or become conflicts and attempts are not counted offline (`offline-policy.test.ts`, `offline.spec.ts` with 503 responses); a later record of the same order waits behind one retrying a 5xx instead of being refused out of order (`offline-tables-store.test.ts` "a 5xx on the round leaves the payment pending…"); every conflict can be reconciled or archived (`offline-sync-db.ts`, `offline.spec.ts`). Locally verified; staging pending. |
 | OFF-05 | partial | Server repricing refuses price and product-revision changes; review never throws for evidence; lease-cited config change stays reconcilable; manager cash review, immutable evidence, kitchen/stock review, old-drawer corrections and refund cap pass locally; remaining refund browser matrix pending. |
 | OFF-06 | partial | Tenant-bound atomic backups (v1/v2/v3), wrong-tenant rejection, parked review-required payment attempts, ended-session evidence auto-syncing for the same employee and device (DB fixture; on this branch logout still revokes the session, so the logout flow needs a manager until access merges), and revoked-session manager recovery pass locally; access's logout guard and renewal evidence join at access's merge. |
 | OFF-07 | partial | Item split disabled and refused offline; settlements, voids, refunds, discounts and drawer operations unavailable offline (they need the server and fail with a connection message); external terminal recording requires reference and confirmation; kitchen tickets say they are not network deliveries; no provider offline capability claimed. |
 | OFF-08 | partial | Build id baked into the worker; a failed install leaves the old revision intact and an offline reload still renders; the update prompt applies only with nothing unsynced (`sw-shell.test.ts`, `offline.spec.ts`). Exact staging update proof between two deployed builds pending. |
-| OFF-09 | partial | API down with the browser online, HTML 502 and a hung server switch to offline selling and sync on recovery (`offline.spec.ts`, Chromium and emulated WebKit iPad). Real ISP outage pending. |
-| OFF-10 | partial | Kitchen tickets print and stay on the device; KDS review lane decisions pass locally. Live-KDS exclusion lands with service (D13); real printer pending. |
-| OFF-11 | partial | External terminal offline sales and provisional numbers mapped at sync pass locally. Offline table service (`feat(offline-tables)` series): cached open orders (including the order on screen when the connection drops), Enviar offline, additive rounds, full and partial payments, dependency ordering, closed targets, balance revalidation, clock-independent balances, the online payment guard and manager reconcile that waits for the original order pass locally (`offline-sync-db.ts`, `offline-tables-store.test.ts`, `offline.spec.ts`). Staging and real devices pending. |
-| OFF-12 | partial | Fast device clock syncs; out-of-window and unverifiable evidence archived with a reason unblocks drawer close (`offline.spec.ts`, `offline-sync-db.ts`). Locally verified. |
+| OFF-09 | partial | API down with the browser online, HTML 502 and a hung server switch to offline selling and sync on recovery (`offline.spec.ts`, Chromium and emulated WebKit iPad); manual offline mode never blocks the next employee's sign-in ("Manual offline mode never locks the device at sign-in…"). Real ISP outage pending. |
+| OFF-10 | partial | Kitchen tickets print and stay on the device, and a receipt prints only the round its checkout added ("Imprimir comanda prints the new round…"); KDS review lane decisions per station and its 10 s / 30 s cadence pass locally (`offline.spec.ts`, `offline-policy.test.ts` "lanePollDelay…"). Live-KDS exclusion lands with service (D13); real printer pending. |
+| OFF-11 | partial | External terminal offline sales and provisional numbers mapped at sync pass locally. Offline table service (`feat(offline-tables)` series) ships off by default as a per-restaurant beta (LD-7); both settings are tested, the off path in the default fixture ("With offline table service off…", "Open orders are never fetched…", `offline-sync-db.ts` section 22). With it on: cached open orders (including the order on screen when the connection drops), Enviar offline, additive rounds, full and partial payments, dependency ordering, closed targets, balance revalidation, clock-independent balances, the online payment guard, reconciled payments counted once, synced local orders that closed online never served again, rounds on paid checks refused with "Enviar como orden nueva" (the §7.4 tests "a round on a cached server order with zero projected balance…", "a round on a local order paid in full…", "a payment with an inline round on a zero-balance order…", "a round on a cached order with a positive balance…"), reuse of a lost online create only at the server's price, and lines already sent online pass locally (`offline-sync-db.ts`, `offline-tables-store.test.ts`, `offline.spec.ts`). Staging and real devices pending. |
+| OFF-12 | partial | Fast device clock syncs; a device clock set back after a ping neither reopens the offline window nor backdates a record, and stops offline saves until the next ping (`offline-clock.test.ts`, `offline-store.test.ts`); out-of-window and unverifiable evidence archived with a reason unblocks drawer close (`offline.spec.ts`, `offline-sync-db.ts`). Locally verified. |
 | OPS-01 | pending | Printer jobs explicitly blocked; printer worker/hardware recovery pending. |
 | OPS-02 | partial | Persisted KDS rounds and polling; disconnect/cancellation scenario pending. |
 | OPS-03 | pending | Durable report/email worker not implemented. |
@@ -135,20 +135,26 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 - `tests/offline-sync-db.ts` (wave 1, migration 026): exactly-once v3 sale sync and
   replay, external terminal tenders, business date from the sale time, clock
   tolerance and clamping, lease-cited configuration, authenticity vs eligibility,
-  archive idempotency and sync/archive races, reuse of a committed online order,
-  overpayment refusal, negative stock for offline sales, repricing, drawer guard and
-  late reconcile, kitchen review lane, device prefixes, revoked vs ended sessions,
-  legacy `/sync` compatibility, RLS, grants, immutability, pagination, heartbeat.
+  archive idempotency and sync/archive races, reuse of a committed online order
+  (only at the server's price), overpayment refusal, negative stock for offline
+  sales, repricing, lines already sent online, rounds on paid checks, drawer guard
+  and late reconcile, kitchen review lane, device prefixes, revoked vs ended
+  sessions, legacy `/sync` compatibility, RLS, grants, immutability, pagination,
+  heartbeat, and the LD-7 table-service setting (off by default, managers only,
+  audited, gating the open-orders snapshot but never sync).
 - `tests/offline-recovery-db.ts`: automatic/legacy replay, revoked-session manager
   recognition, price/recipe/settings/permission conflicts, exact payment status,
   original-drawer checks, two-writer deduplication, concurrent task completion,
   close/recovery serialization, historical drawer visibility, bounded refunds.
 - `tests/browser/offline.spec.ts`: API down and HTML 502 with the browser online,
-  hung server, reload during an outage, manual offline mode, parked payment
-  attempts, transient retries, offline kitchen tickets, KDS review lane, fast
-  device clock, archive and drawer close, service-worker update, 768 px state,
-  persistence, manifest, browser gate, no polling, pruning. `@cross` tests also run
-  on Playwright's emulated WebKit iPad, which is not real-device evidence.
+  hung server, reload during an outage, manual offline mode (including sign-in),
+  parked payment attempts, transient retries, offline kitchen tickets and the
+  round a receipt prints, KDS review lane per station and its cadence, fast device
+  clock, archive and drawer close, service-worker update, 768 px state,
+  persistence, manifest, browser gate, no polling, pruning, and table service off
+  by default and on (cached checks, rounds, paid checks, synced orders paid
+  online). `@cross` tests also run on Playwright's emulated WebKit iPad, which is
+  not real-device evidence.
 - `tests/browser/recovery.spec.ts`: real unavailable-catalog conflict and closed
   drawer review; unallocated report coverage; atomic backup failures and repeated
   import; JPY/KWD display; interrupted two-tab sync; old-session payment retained
