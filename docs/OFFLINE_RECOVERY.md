@@ -126,11 +126,25 @@ after the last refresh) is refused and shown for review; it is never partially
 applied. Local orders are only changed through offline records, even after the
 connection returns; once their record syncs, selling continues on the server order.
 
-What this does and does not guarantee about charging twice:
+What this does and does not guarantee about charging twice, or too little:
 
 - On this device, while an offline payment for an order is still unresolved,
   charging that order online is refused ("Esta orden tiene un pago por
   confirmar…"), and selling reads the order again as soon as the payment syncs.
+- On this device, while an offline round for an order is still unsynced (its
+  sync failed transiently, for example during a deploy, or it waits in backoff),
+  the server balance does not include its items, so charging that order online
+  is refused ("Esta orden tiene productos guardados sin conexión que aún no se
+  sincronizan…") and the device syncs it at once. A round in review blocks the
+  charge until a manager decides ("Un gerente debe revisarlos en Sincronización
+  antes de cobrar"); rounds cannot be reconciled, so the manager archives it and
+  the items are added again online before charging. Another employee's round on
+  this device syncs only in that employee's session, and the refusal says so.
+  Once the round syncs, selling reads the order again, and an amount still at the
+  old balance in the open payment dialog follows the new one; a charge started
+  from the old copy is refused with "La orden cambió…". This keeps a guest from
+  leaving without paying items served offline, and keeps the round from being
+  refused later on a paid check.
 - The device cannot know about money taken elsewhere after its last refresh. A
   cached copy can be stale (the check was paid on another device or online after
   the snapshot), so staff may collect money for a balance that no longer exists.
@@ -190,7 +204,11 @@ time for reprints.
 
 During the outage the KDS receives nothing over the network. Each offline sale
 produces one comanda per station (kitchen, bar) with "COMANDA · SIN CONEXIÓN",
-the provisional number, mode, table, call name, time and lines.
+the provisional number, mode, table, call name, time and lines. A round's comanda
+shows the round it takes in the order as the device saw it (the cached copy's
+last round plus this device's earlier unsynced rounds, so "#142 · Ronda 4" when the
+order already had three) and, once synced, the order's real round, the one the KDS
+review lane shows.
 
 - **Print**: a local receipt offers **Imprimir comanda** for exactly what that
   save sent to the kitchen: the new order, or the new round added while paying,
@@ -351,6 +369,18 @@ On the Sync screen a manager can:
   and stock follow-up tasks. A reconciled payment of a table check goes into its
   order (see "Table service offline"); the device stores the tender the reconcile
   made, so offline balances count it once.
+- A sale whose online create had already committed (its response was lost) and
+  that sync refused (`price_conflict`, `offline_payment_exceeds_due` or
+  `offline_order_already_exists`) already has its order, which the kitchen made.
+  The review names it ("Registraremos el cobro en la orden #N…"). When that order
+  is open and the sale's amount fits its balance, **Conciliar** records the money
+  into it, in the original drawer, with no recovery order; any balance left (the
+  device's price was lower) is collected or voided on the order. Otherwise the
+  review explains why nothing can be reconciled (the order is paid, closed, or
+  smaller than the money) and offers only archive; the money is never recorded
+  beside that order as a second one. An offline order (Enviar) in the same
+  situation is archived, and its offline payments are then reconciled into the
+  online order instead of a recovery order.
 - **Archivar registro local** for anything, including evidence that cannot be
   verified or does not parse: a reason (10–500 characters) and confirmation are
   required, the evidence is kept verbatim on the server with its hash and the
@@ -470,25 +500,30 @@ TEST_BASE_URL=http://127.0.0.1:<port> TEST_PRODUCTION=1 npx playwright test
   retry, classification and pruning rules, the clock-rollback refusal) and
   `tests/offline-tables-store.test.ts` (table-service preconditions I8, I9, I13,
   I14, atomic checkouts, projections with a skewed clock, the open-orders cache, the
-  online payment guard, both LD-7 settings, rounds on paid checks, synced local
-  orders that closed online, reconciled payments, table names, the tickets an order
-  prints, and the sync loop holding an order's later records behind a 5xx), both
-  against an in-memory store (`tests/offline-fake-db.ts`). `tests/offline-clock.test.ts`
-  sets the device clock back after a ping and checks the window still expires.
+  online charge guard for unsynced payments and rounds (this or another employee's,
+  in backoff after a 503 or in review), both LD-7 settings, rounds on paid checks,
+  synced local orders that closed online, reconciled payments, table names, the
+  tickets an order prints and their round labels, and the sync loop holding an
+  order's later records behind a 5xx), both against an in-memory store
+  (`tests/offline-fake-db.ts`). `tests/offline-clock.test.ts` sets the device
+  clock back after a ping and checks the window still expires.
 - Database: `tests/offline-sync-db.ts` (exactly-once sync, archive races, repricing,
-  reuse only at the server's price, lines already sent online, rounds on paid
-  checks, drawer guard, clock tolerance, lease-cited config, review lane decisions,
-  device prefixes, RLS, grants, immutability, pagination, the ping, and the LD-7
-  setting: off by default, managers only, audited once, gating the snapshot but
-  never sync) and the updated `tests/offline-recovery-db.ts`.
+  reuse only at the server's price and the manager path for a lost online create
+  (reconciled into that order once, or refused, never a second order), lines
+  already sent online, rounds on paid checks, drawer guard, clock tolerance,
+  lease-cited config, review lane decisions, device prefixes, RLS, grants,
+  immutability, pagination, the ping, and the LD-7 setting: off by default,
+  managers only, audited once, gating the snapshot but never sync) and the
+  updated `tests/offline-recovery-db.ts`.
 - Browser: `tests/browser/offline.spec.ts` on Chromium, and its `@cross` tests on the
   `webkit-ipad` project (Playwright WebKit with an emulated iPad, not a real device).
   The default fixture keeps table service off ("With offline table service off…",
   "Open orders are never fetched while offline table service is off", the Beta
   switch); the table-service tests run in a group that turns it on and off again
-  (cached checks, Enviar and rounds, the order on screen, the online payment guard,
-  the 120 s refresh, a synced order paid online, "Enviar como orden nueva" on a paid
-  check, and printing the new round). The KDS tests cover the station filter and the
+  (cached checks, Enviar and rounds, the order on screen, the online charge guard
+  for an offline payment and for an offline round whose sync is held, the 120 s
+  refresh, a synced order paid online, "Enviar como orden nueva" on a paid check,
+  and printing the new round). The KDS tests cover the station filter and the
   10 s / 30 s lane cadence; another test signs in with manual offline mode on.
 
 Not verified, and still release gates: real tablets (iPad Safari and installed app,
