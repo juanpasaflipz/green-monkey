@@ -420,6 +420,13 @@ function EditStaff({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const ownerRow = row.role === "owner";
+  // Deactivation unpairs the personal devices; terminals stay for review (ACC-R6-2).
+  const personalDevices = row.pairedDevices.filter(
+    (d) => d.kind === "personal",
+  );
+  const pairedTerminals = row.pairedDevices.filter(
+    (d) => d.kind === "terminal",
+  );
   async function run(
     path: string,
     body: object,
@@ -611,6 +618,25 @@ function EditStaff({
             <p>{t.accessStaffDeactivateGoogle}</p>
           )}
           <p>{t.accessStaffDeactivatePending}</p>
+          {personalDevices.length > 0 && (
+            <p>
+              {t.accessStaffDeactivatePersonal.replace(
+                "{names}",
+                personalDevices.map((d) => d.name).join(", "),
+              )}
+            </p>
+          )}
+          {personalDevices.some((d) => d.current) && (
+            <p className="warning-note">{t.accessDevicesRevokeSelf}</p>
+          )}
+          {pairedTerminals.length > 0 && (
+            <p>
+              {t.accessStaffDeactivateTerminals.replace(
+                "{names}",
+                pairedTerminals.map((d) => d.name).join(", "),
+              )}
+            </p>
+          )}
         </Modal>
       )}
     </Modal>

@@ -13,6 +13,7 @@ import {
 } from "./access.js";
 import { pinFingerprint } from "./access-staff.js";
 import { cancelCodesCreatedBy } from "./access-pairing.js";
+import { retirePersonalDevices } from "./access-devices.js";
 import { once, audit, stock } from "./orders.js";
 const label = z
   .object({ es: z.string().min(1).max(120), en: z.string().min(1).max(120) })
@@ -123,6 +124,7 @@ export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
           revoke: true,
         });
         await cancelCodesCreatedBy(tx, p.id, s.employeeId);
+        await retirePersonalDevices(tx, s, p.id);
       } else if (old && old.role !== p.role) {
         await endEmployeeSessions(tx, p.id, "role_changed", { revoke: false });
         if (!managers.includes(p.role))

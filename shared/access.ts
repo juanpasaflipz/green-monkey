@@ -218,6 +218,16 @@ export type StaffRow = {
   pinSetAt: string | null;
   deactivatedAt: string | null;
   isSelf: boolean;
+  /**
+   * Active devices this employee paired. Deactivation unpairs the personal
+   * ones; terminals stay paired for the owner to review (ACC-R6-2).
+   */
+  pairedDevices: {
+    id: string;
+    name: string;
+    kind: DeviceKind;
+    current: boolean;
+  }[];
 };
 export type ManagedDevice = {
   id: string;

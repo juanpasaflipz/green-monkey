@@ -161,6 +161,50 @@ async function revokeOwnerSessions(tx: Tx, deviceId: string): Promise<number> {
   return ended;
 }
 
+/**
+ * Offboarding (SEC-3/SEC-5, ACC-R6-2): retires the personal devices an
+ * employee entered through Google (paired_by = the employee, effective kind
+ * personal), as Desvincular would, so a fired person's own phone or laptop
+ * stops loading the roster and accepting colleagues' PINs. Their sessions are
+ * revoked and the Google sign-ins that entered them end. Terminals the
+ * employee paired are left alone, since they are usually the restaurant's own
+ * tablets: Equipo lists them so the owner can review them in Dispositivos.
+ * An open drawer stays open (recorded in the audit row), as with any revoke.
+ */
+export async function retirePersonalDevices(
+  tx: Tx,
+  s: Session,
+  employeeId: string,
+): Promise<number> {
+  const devices = await tx`select id,name,
+      exists(select 1 from cash_sessions c where c.device_id=devices.id and c.closed_at is null) as open_drawer
+    from devices
+    where active and paired_by=${employeeId}
+      and coalesce(kind, case when name='Owner browser' then 'personal' else 'terminal' end)='personal'
+    order by id
+    for update`;
+  for (const d of devices) {
+    await tx`update devices set active=false,revoked_at=now(),revoked_by=${s.employeeId},
+        revoked_reason='revoked',free_slot=null
+      where id=${d.id}`;
+    const sessions = await endDeviceSessions(tx, d.id, "device_revoked", {
+      revoke: true,
+    });
+    const ownerSessions = await revokeOwnerSessions(tx, d.id);
+    await audit(tx, s, "access.device_revoked", d.id, {
+      name: d.name,
+      kind: "personal",
+      reason: "employee_deactivated",
+      employeeId,
+      openDrawer: d.open_drawer,
+      sessions,
+      ownerSessions,
+      self: d.id === s.deviceId,
+    });
+  }
+  return devices.length;
+}
+
 const revokeInput = z
   .object({ operationId: id, acknowledgeOpenDrawer: z.boolean().default(false) })
   .strict();

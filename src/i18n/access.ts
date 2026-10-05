@@ -112,6 +112,10 @@ export default defineArea({
       "También pierde el acceso con Google a esta sucursal.",
     accessStaffDeactivatePending:
       "Si tiene ventas sin enviar en algún dispositivo, quedarán para conciliación de un responsable.",
+    accessStaffDeactivatePersonal:
+      "También se desvincularán sus dispositivos personales: {names}.",
+    accessStaffDeactivateTerminals:
+      "Vinculó estas terminales compartidas, que seguirán vinculadas: {names}. Revísalas en Dispositivos y desvincula las que no reconozcas.",
     accessStaffReactivate: "Reactivar",
     accessStaffOwnerFixed: "El rol de propietario no se puede cambiar aquí.",
     accessStaffSaved: "Cambios guardados",
@@ -142,6 +146,7 @@ export default defineArea({
     accessDevicesThis: "Este dispositivo",
     accessDevicesKind: "Tipo",
     accessDevicesTerminal: "Terminal compartida",
+    accessDevicesPairedBy: "Vinculado por {name}",
     accessDevicesPersonal: "Personal · {name}",
     accessDevicesShared:
       "Lo usan varios empleados. Vincúlalo como terminal con un código.",
@@ -295,6 +300,10 @@ export default defineArea({
       "They also lose Google access to this location.",
     accessStaffDeactivatePending:
       "Any unsent sales on a device will wait for a manager's reconciliation.",
+    accessStaffDeactivatePersonal:
+      "Their personal devices will be unpaired too: {names}.",
+    accessStaffDeactivateTerminals:
+      "They paired these shared terminals, which stay paired: {names}. Review them in Devices and unpair any you do not recognize.",
     accessStaffReactivate: "Reactivate",
     accessStaffOwnerFixed: "The owner role cannot be changed here.",
     accessStaffSaved: "Changes saved",
@@ -325,6 +334,7 @@ export default defineArea({
     accessDevicesThis: "This device",
     accessDevicesKind: "Type",
     accessDevicesTerminal: "Shared terminal",
+    accessDevicesPairedBy: "Paired by {name}",
     accessDevicesPersonal: "Personal · {name}",
     accessDevicesShared:
       "Several employees use it. Pair it as a terminal with a code.",

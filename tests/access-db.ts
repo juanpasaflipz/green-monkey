@@ -32,6 +32,7 @@ import {
 import { revokeDevice } from "../server/access-devices.js";
 import {
   createStaff,
+  listStaff,
   pinFingerprint,
   resetStaffPin,
   setStaffActive,
@@ -1627,12 +1628,13 @@ try {
   });
 
   await test("invited Google employee deactivation blocks enterOwnerRestaurant", async () => {
-    const cookie = await signInGoogleOwner(sql, {
+    const identity = {
       issuer: "https://accounts.google.com",
       subject: randomUUID(),
       email: "invited-member@example.com",
       name: "Invited fixture",
-    });
+    };
+    const cookie = await signInGoogleOwner(sql, identity);
     const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
     accountIds.push(account.id);
     const memberId = randomUUID();
@@ -1657,12 +1659,129 @@ try {
       }),
     );
     assert.equal((await sessionRow(entered.session.id)).revoked, true);
+    // The Google sign-in that entered the member's own device ends with that
+    // device (ACC-R6-2); a new Google sign-in is refused: the member is inactive.
     await rejects(
       withOwner(sql, cookie, undefined, (tx, a) =>
         enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, ownerBrowserCookie()),
       ),
+      "unauthorized",
+    );
+    const again = await signInGoogleOwner(sql, identity);
+    await rejects(
+      withOwner(sql, again, undefined, (tx, a) =>
+        enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, ownerBrowserCookie()),
+      ),
       "forbidden",
     );
+  });
+
+  await test("ACC-R6-2: deactivation unpairs the member's personal device, which then loads no roster and signs no colleague in by PIN; terminals they paired stay paired and are listed; the legacy team save does the same", async () => {
+    const cookie = await signInGoogleOwner(sql, {
+      issuer: "https://accounts.google.com",
+      subject: randomUUID(),
+      email: "fired-member@example.com",
+      name: "Fired fixture",
+    });
+    const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
+    accountIds.push(account.id);
+    const memberId = randomUUID();
+    await admin`insert into employees(tenant_id,id,name,login,secret_hash,role)
+      values(${tenantId},${memberId},'Fired fixture',${"account-" + account.id},${password(randomUUID())},'manager')`;
+    await admin`insert into owner_memberships(account_id,tenant_id,employee_id) values(${account.id},${tenantId},${memberId})`;
+    const enter = () =>
+      withOwner(sql, cookie, undefined, (tx, a) =>
+        enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, ownerBrowserCookie()),
+      );
+    const entered = await enter();
+    const phone = entered.device;
+    // A terminal the member paired with a code (redeem records the code's creator).
+    const tablet = await device("Caja del responsable");
+    await admin`update devices set paired_by=${memberId} where id=${tablet.id}`;
+    const gate = (c: Cookie) =>
+      terminalState(sql, req({ gm_device: sign(c) }), stubRes() as any);
+    const member = async () =>
+      (await run((tx) => listStaff(tx, owner))).find((r) => r.id === memberId)!;
+
+    // Before: the member's phone shows the roster and signs a colleague in.
+    assert.equal((await gate(phone)).paired, true);
+    const colleague = await pin(phone, cashierId, CASHIER_PIN);
+    const listed = await member();
+    assert.deepEqual(
+      listed.pairedDevices.map((d) => `${d.kind}:${d.id}`).sort(),
+      [`personal:${phone.id}`, `terminal:${tablet.id}`].sort(),
+    );
+
+    await run((tx) =>
+      setStaffActive(tx, owner, memberId, { operationId: randomUUID(), active: false }),
+    );
+    const [retired] = await admin`select active,revoked_reason,revoked_by,
+        revoked_at is not null as stamped,free_slot from devices where id=${phone.id}`;
+    assert.deepEqual(retired, {
+      active: false,
+      revoked_reason: "revoked",
+      revoked_by: ownerId,
+      stamped: true,
+      free_slot: null,
+    });
+    // The colleague's session on that phone is revoked; the phone is unpaired.
+    assert.equal((await sessionRow(colleague.sessionId)).revoked, true);
+    await rejects(
+      authenticate({ gm_device: sign(phone), gm_session: colleague.cookie }),
+      "device_revoked",
+    );
+    const after = await gate(phone);
+    assert.equal(after.paired, false);
+    assert.equal(after.staff, undefined);
+    await rejects(pin(phone, cashierId, CASHIER_PIN), "device_revoked");
+    await rejects(pin(phone, managerId, MANAGER_PIN), "device_revoked");
+    // The Google sign-in that entered it is over as well.
+    await rejects(enter(), "unauthorized");
+    const [audited] = await admin`select detail from audit
+      where entity_id=${phone.id} and operation='access.device_revoked'`;
+    assert.equal(audited.detail.reason, "employee_deactivated");
+    assert.equal(audited.detail.employeeId, memberId);
+    const [offboarded] = await admin`select detail from audit
+      where entity_id=${memberId} and operation='access.employee_deactivated'`;
+    assert.equal(offboarded.detail.personalDevices, 1);
+    // The terminal they paired keeps working and stays listed for review.
+    assert.equal((await gate(tablet)).paired, true);
+    const onTablet = await pin(tablet, cashierId, CASHIER_PIN);
+    assert.equal(onTablet.reused, false);
+    assert.deepEqual(
+      (await member()).pairedDevices.map((d) => d.id),
+      [tablet.id],
+    );
+
+    // The legacy team save retires a deactivated employee's personal device too.
+    const legacyId = randomUUID();
+    const legacy = {
+      id: legacyId,
+      name: "Legacy personal fixture",
+      login: `legacy-p-${legacyId.slice(0, 8)}`,
+      role: "cashier",
+      secret: "864209",
+    };
+    const ownerOnTerminal = as(ownerId, "owner", terminalA.id, {});
+    await run((tx) =>
+      saveEmployee(tx, ownerOnTerminal, {
+        operationId: randomUUID(),
+        ...legacy,
+        active: true,
+      }),
+    );
+    const laptop = await device("Owner browser", { kind: "personal" });
+    await admin`update devices set paired_by=${legacyId} where id=${laptop.id}`;
+    assert.equal((await gate(laptop)).paired, true);
+    await run((tx) =>
+      saveEmployee(tx, ownerOnTerminal, {
+        operationId: randomUUID(),
+        ...legacy,
+        active: false,
+      }),
+    );
+    assert.equal((await gate(laptop)).paired, false);
+    await rejects(pin(laptop, cashierId, CASHIER_PIN), "device_revoked");
   });
 
   await test("revoked personal device: its Google sign-ins end, an older sign-in cannot pair the browser again, a new one gets a fresh owner-browser mapping (A6)", async () => {

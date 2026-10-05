@@ -284,8 +284,14 @@ so its attempt is cleared at once.
 - **Equipo** (owner; managers see the list and can unlock): add staff with a
   PIN, edit name and role, reset PINs (including the owner's own "PIN para
   terminales compartidas" for Google owners), deactivate and reactivate.
-  Deactivation revokes the employee's sessions on every device and blocks Google
-  re-entry; records are kept. Owner role changes, owner deactivation and
+  Deactivation revokes the employee's sessions on every device, unpairs the
+  personal devices they entered through Google (their sessions are revoked and
+  the Google sign-ins that entered them end, as with Desvincular) and blocks
+  Google re-entry; records are kept. Terminals the employee paired stay paired,
+  because they are usually the restaurant's own tablets: the confirmation lists
+  them and Dispositivos shows "Vinculado por {name}" on each terminal. The
+  legacy team save deactivates the same way. Owner role changes, owner
+  deactivation and
   self-deactivation are refused. These commands work from downgraded or
   unselected Free sessions; the Free team limit still applies.
 - **Dispositivos** (owner and manager; personal devices are owner-only): kind,
@@ -336,9 +342,20 @@ from before the unpairing can no longer pair that browser again
 (`owner_reauth_required`); only a new Google sign-in can. Change the Google
 account's password if the device itself may still be signed in to Google.
 
-**Fired employee.** Equipo → Editar → **Desactivar empleado**. Every session on
-every device is revoked; an invited Google member also loses Google entry to the
-location. Unsent sales on a device wait for manager reconciliation.
+**Fired employee.**
+1. Equipo → Editar → **Desactivar empleado**. Every session on every device is
+   revoked, and an invited Google member also loses Google entry to the
+   location. Their personal devices (the phone or laptop they entered with
+   Google) are unpaired at once, so those devices no longer show the roster or
+   accept anyone's PIN. Unsent sales on a device wait for manager
+   reconciliation.
+2. Review the devices they paired. The confirmation lists the shared terminals
+   they paired, which stay paired; in Dispositivos each terminal shows
+   "Vinculado por {name}". **Desvincular** any you do not recognise as the
+   restaurant's own (for example a laptop paired as a terminal), then pair a
+   replacement with a new code if needed.
+3. If they may have seen other people's PINs (for example a manager's typed on
+   a shared tablet), reset those PINs in Equipo.
 
 **Locked manager or owner.** The owner opens Equipo → Editar →
 **Desbloquear** (managers cannot unlock managers or owners). Otherwise wait for

@@ -10,8 +10,14 @@ import {
   requireRecentAuth,
 } from "./access.js";
 import { cancelCodesCreatedBy } from "./access-pairing.js";
+import { retirePersonalDevices } from "./access-devices.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
-import { pinInput, type Approver, type StaffRow } from "../shared/access.js";
+import {
+  pinInput,
+  type Approver,
+  type DeviceKind,
+  type StaffRow,
+} from "../shared/access.js";
 
 /**
  * Operation fingerprints never contain a PIN: an HMAC under the server secret
@@ -39,7 +45,12 @@ async function staffRows(
       greatest(
         (select max(t.locked_until) from pin_throttles t where t.employee_id=e.id and t.locked_until>now()),
         case when e.locked_until>now() and e.locked_until<>'infinity' then e.locked_until end
-      ) as locked_until
+      ) as locked_until,
+      (select coalesce(jsonb_agg(jsonb_build_object('id',d.id,'name',d.name,
+            'kind',coalesce(d.kind, case when d.name='Owner browser' then 'personal' else 'terminal' end))
+            order by d.name,d.id),'[]'::jsonb)
+         from devices d
+        where d.paired_by=e.id and d.active and coalesce(d.token_expires_at,'infinity')>now()) as paired_devices
     from employees e
     where ${only ?? null}::uuid is null or e.id=${only ?? null}::uuid
     order by e.active desc,e.name,e.id`;
@@ -63,6 +74,9 @@ async function staffRows(
       pinSetAt: e.pin_set_at?.toISOString() ?? null,
       deactivatedAt: e.deactivated_at?.toISOString() ?? null,
       isSelf: e.id === s.employeeId,
+      pairedDevices: (
+        e.paired_devices as { id: string; name: string; kind: DeviceKind }[]
+      ).map((d) => ({ ...d, current: d.id === s.deviceId })),
     };
   });
 }
@@ -245,9 +259,11 @@ const activeInput = z
   .strict();
 /**
  * Offboarding (SEC-3): deactivation revokes every session of the employee on
- * every device; Google entry is refused because enterOwnerRestaurant requires
- * an active employee. Sales and records are kept. Reactivation re-applies the
- * Free team slot rules.
+ * every device and unpairs the personal devices they entered through Google
+ * (ACC-R6-2); Google entry is refused because enterOwnerRestaurant requires
+ * an active employee. Terminals they paired stay paired (listed in Equipo for
+ * review). Sales and records are kept. Reactivation re-applies the Free team
+ * slot rules; a reactivated member's browser then gets a fresh device.
  */
 export async function setStaffActive(
   tx: Tx,
@@ -279,10 +295,12 @@ export async function setStaffActive(
           { revoke: true },
         );
         const codes = await cancelCodesCreatedBy(tx, employeeId, s.employeeId);
+        const personalDevices = await retirePersonalDevices(tx, s, employeeId);
         await audit(tx, s, "access.employee_deactivated", employeeId, {
           name: e.name,
           sessions,
           pairingCodes: codes,
+          personalDevices,
         });
       } else {
         const slot = await employeeSlot(tx, employeeId, true, e.role);

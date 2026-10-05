@@ -157,7 +157,10 @@ export function DeviceManagement({
                 </div>
                 <p className="muted tiny">
                   {d.kind === "terminal"
-                    ? t.accessDevicesTerminal
+                    ? t.accessDevicesTerminal +
+                      (d.pairedBy
+                        ? ` · ${t.accessDevicesPairedBy.replace("{name}", d.pairedBy)}`
+                        : "")
                     : t.accessDevicesPersonal.replace(
                         "{name}",
                         d.pairedBy ?? "—",
