@@ -321,13 +321,26 @@ const prep = (
     await stock(tx, s, outputId, outputQuantity, "prep_output", key, "Prep");
   });
 async function drift(): Promise<unknown[]> {
-  // Owner-scoped and across every tenant: the cache must equal the ledger.
-  return [
-    ...(await admin`select i.tenant_id,i.id,i.on_hand,coalesce(m.total,0) as ledger from stock_items i
-    left join (select tenant_id,stock_id,sum(quantity) as total from stock_movements group by 1,2) m
-      on m.tenant_id=i.tenant_id and m.stock_id=i.id
-    where i.on_hand<>coalesce(m.total,0)`),
-  ];
+  // The cache must equal the ledger. Run per fixture tenant with
+  // app.tenant_id set: under FORCE ROW LEVEL SECURITY a migration role
+  // without BYPASSRLS sees no rows at all otherwise, and the check would pass
+  // vacuously. It must also see the stock items the suite created.
+  const rows: unknown[] = [];
+  let seen = 0;
+  for (const tenantId of [a.tenantId, b.tenantId])
+    await asAdmin(tenantId, async (tx) => {
+      const [count] =
+        await tx`select count(*)::int as n from stock_items where tenant_id=${tenantId}`;
+      seen += count.n;
+      rows.push(
+        ...(await tx`select i.tenant_id,i.id,i.on_hand,coalesce(m.total,0) as ledger from stock_items i
+        left join (select tenant_id,stock_id,sum(quantity) as total from stock_movements group by 1,2) m
+          on m.tenant_id=i.tenant_id and m.stock_id=i.id
+        where i.on_hand<>coalesce(m.total,0)`),
+      );
+    });
+  assert(seen > 0, "the drift check must see the suite's stock items");
+  return rows;
 }
 
 const a = await makeTenant("A"),

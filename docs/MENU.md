@@ -183,16 +183,29 @@ group, 12 groups and 30 choices per product, 30 areas, 300 tables (50 per batch)
 otherwise), then `scripts/grants.sql`, then serve the new revision. Without the
 grants, `GET /tables` and every menu route fail; selling keeps working.
 
-**Ledger drift check** (run as the owner; it must return no rows):
+**Ledger drift check** (it must return no rows). `stock_items` and
+`stock_movements` use FORCE ROW LEVEL SECURITY, so a role that does not bypass
+RLS (the table owner without SUPERUSER or BYPASSRLS, which is the Neon migration
+role) sees **no rows** unless `app.tenant_id` is set, and the check would pass
+whatever the drift. Run it per restaurant in one transaction, and confirm the
+first statement counts the restaurant's items:
 
 ```sql
+begin;
+select set_config('app.tenant_id', '<restaurant uuid>', true);
+select count(*) from stock_items;           -- must be > 0 for a restaurant with items
 select i.tenant_id, i.id, i.on_hand, coalesce(m.total, 0) as ledger
   from stock_items i
   left join (select tenant_id, stock_id, sum(quantity) as total
                from stock_movements group by 1, 2) m
     on m.tenant_id = i.tenant_id and m.stock_id = i.id
  where i.on_hand <> coalesce(m.total, 0);
+commit;
 ```
+
+A role with BYPASSRLS can run the last query once, without `set_config`, for
+every restaurant. `tests/menu-db.ts` runs it per fixture restaurant and asserts
+that it saw the suite's items.
 
 **After a deploy overlap.** The previous revision may have written products in
 the legacy format (no `categoryId` or `groupIds`). Adopt them as the owner; the
@@ -227,6 +240,10 @@ would make the drift check fail.
   `archived_at is null` with area and position ordering in service's
   `tableOccupancy` (contract D10).
 - Wire `onEditTables={() => navigate("floor")}` into service's `Tables`.
+- Existencias history (`src/features/Operations.tsx`, outside menu's in-wave
+  lines 595-603) does not yet show `balance_after`. Until the merge adds the
+  "Saldo" column there (spec §2.10), the running balance is shown in Menú e
+  inventario → Insumos → Movimientos.
 - Resolve `add()` and the product card in Selling to the golden forms, and add
   `labels.ts` entries for the `menu.*`, `floor.*` and `stock.*` audit operations
   (keys `menuOp*` in `src/i18n/menu.ts`).
