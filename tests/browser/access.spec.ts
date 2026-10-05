@@ -1272,7 +1272,8 @@ test("devices: rename, end session, unpair shows the pairing screen on that term
   await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
   await page.getByRole("button", { name: "Configuración", exact: true }).click();
   const device = page.locator(".device-row").filter({ hasText: `Barra ${id}` });
-  await expect(device).toContainText("Terminal compartida");
+  // The code's creator is shown, so a fired manager's terminals can be reviewed (ACC-R6-2).
+  await expect(device).toContainText("Terminal compartida · Vinculado por Alex Demo");
   await expect(device).toContainText(`En uso por ${CASHIER.name}`);
   await expect(
     page.locator(".device-row").filter({ hasText: "Este dispositivo" }),
