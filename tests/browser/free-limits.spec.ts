@@ -18,7 +18,7 @@ test("Free register selection preserves access and permits one selling browser",
   const u = new URL(process.env.DATABASE_URL!);
   if (
     u.hostname !== "127.0.0.1" ||
-    u.pathname !== "/green_monkey_dev" ||
+    !/^\/green_monkey(_[a-z]+)?_dev$/.test(u.pathname) ||
     new URL(baseURL!).hostname !== "127.0.0.1"
   )
     throw Error("Local dev fixture only");
@@ -96,13 +96,13 @@ test("Free register selection preserves access and permits one selling browser",
         {
           csrf: selectedSession.csrf,
           input: {
-          operationId: randomUUID(),
-          id: randomUUID(),
-          name,
-          login: `free-${index}-${randomUUID()}`,
-          role: index ? "server" : "cashier",
-          secret: "123456",
-          active: true,
+            operationId: randomUUID(),
+            id: randomUUID(),
+            name,
+            login: `free-${index}-${randomUUID()}`,
+            role: index ? "server" : "cashier",
+            secret: "123456",
+            active: true,
           },
         },
       );
