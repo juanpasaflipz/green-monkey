@@ -27,7 +27,8 @@ export default defineArea({
     offlineClockSkew:
       "La hora de este dispositivo difiere {min} min de la del servidor. Activa la hora automática.",
     offlineLastContact: "Último contacto con el servidor: {time}",
-    offlineNeverContacted: "Sin contacto con el servidor desde que se abrió la app.",
+    offlineNeverContacted:
+      "Sin contacto con el servidor desde que se abrió la app.",
     offlineWorkOffline: "Trabajar sin conexión",
     offlineGoOnline: "Volver a conectarme",
     offlineWorkOfflineHint:
@@ -55,7 +56,8 @@ export default defineArea({
     offlineTicketsTitle: "Comandas sin conexión",
     offlineTicketsHint:
       "Lista local de este dispositivo. Cocina no la ve; úsala para cantar y reimprimir comandas.",
-    offlineTicketsEmpty: "No hay comandas sin conexión en las últimas 24 horas.",
+    offlineTicketsEmpty:
+      "No hay comandas sin conexión en las últimas 24 horas.",
     offlineTicketPending: "Pendiente",
     offlineTicketReady: "Lista",
     offlineTicketDelivered: "Entregada",
@@ -111,7 +113,8 @@ export default defineArea({
     offlineKitchenDeliveryList: "Comanda en la lista del dispositivo",
     offlineUpdateReady: "Hay una nueva versión lista.",
     offlineUpdateApply: "Actualizar ahora",
-    offlineUpdateBlocked: "Sincroniza las ventas pendientes antes de actualizar.",
+    offlineUpdateBlocked:
+      "Sincroniza las ventas pendientes antes de actualizar.",
     offlineUnsupportedTitle: "Este navegador no es compatible",
     offlineUnsupportedBody:
       "Green Monkey necesita Chrome o Edge 111+, Safari 16.4+ (iPadOS/iOS 16.4 o posterior) o Firefox 114+. Actualiza el navegador o usa otro dispositivo.",
@@ -189,7 +192,8 @@ export default defineArea({
     offlinePrintAutoKitchen: "Print kitchen ticket",
     offlinePrintAutoBoth: "Print ticket and receipt",
     offlineTicketHeader: "KITCHEN TICKET · OFFLINE",
-    offlineTicketFooter: "Provisional number. Syncs when the connection returns.",
+    offlineTicketFooter:
+      "Provisional number. Syncs when the connection returns.",
     offlineTicketRound: "Round {n}",
     offlineTicketsTitle: "Offline tickets",
     offlineTicketsHint:
@@ -200,7 +204,8 @@ export default defineArea({
     offlineTicketDelivered: "Delivered",
     offlineReprint: "Reprint",
     offlineOpenOrders: "Open orders",
-    offlineOpenOrdersCached: "Orders saved before the connection dropped ({time})",
+    offlineOpenOrdersCached:
+      "Orders saved before the connection dropped ({time})",
     offlineOpenOrdersLocal: "Orders created on this device",
     offlineOpenOrdersEmpty: "No open orders are saved on this device.",
     offlineKindSale: "Sale",
@@ -224,7 +229,8 @@ export default defineArea({
     offlineArchiveWarning:
       "The record will not be added to sales or the drawer. A copy is kept on the server with your name and reason. Use this only if it cannot be verified or was already entered another way.",
     offlineArchiveReason: "Reason",
-    offlineArchiveConfirm: "I understand this record will not be added to sales.",
+    offlineArchiveConfirm:
+      "I understand this record will not be added to sales.",
     offlineArchiveSubmit: "Archive",
     offlineArchivedList: "Archived local records",
     offlineArchivedBy: "Archived by {name}",
@@ -232,7 +238,8 @@ export default defineArea({
       "This device archived {amount} of local sales from this drawer. That cash may show as an overage.",
     offlineAttemptParked:
       "An earlier payment needs manager review in Sync; do not charge that order again. You can continue with other orders.",
-    offlineAttemptResolvedOther: "The earlier payment for order #{n} was recorded.",
+    offlineAttemptResolvedOther:
+      "The earlier payment for order #{n} was recorded.",
     offlineAttemptInReview: "In review",
     offlineKitchenReviewTitle: "Offline sales to review ({n})",
     offlineKitchenReviewHint:

@@ -17,9 +17,7 @@ const id = (value: number) =>
   `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const order = {
   operationId: id(2),
-  lines: [
-    { id: id(3), productId: id(4), quantity: 2, options: [], note: "" },
-  ],
+  lines: [{ id: id(3), productId: id(4), quantity: 2, options: [], note: "" }],
   mode: "takeaway" as const,
   tableId: null,
   name: "Mesa",
@@ -113,7 +111,9 @@ describe("offline record v3 contracts", () => {
     expect(
       offlineRecordV3.safeParse({ ...sale, provisionalNumber: null }).success,
     ).toBe(false);
-    expect(offlineRecordV3.safeParse({ ...sale, extra: 1 }).success).toBe(false);
+    expect(offlineRecordV3.safeParse({ ...sale, extra: 1 }).success).toBe(
+      false,
+    );
   });
 
   it("external payment requires reference, confirmation and received === amount + tip", () => {
@@ -125,9 +125,9 @@ describe("offline record v3 contracts", () => {
       reference: "AUTH-1",
       externalConfirmed: true,
     };
-    expect(offlineRecordV3.safeParse({ ...sale, payment: external }).success).toBe(
-      true,
-    );
+    expect(
+      offlineRecordV3.safeParse({ ...sale, payment: external }).success,
+    ).toBe(true);
     for (const broken of [
       { ...external, reference: "" },
       { ...external, reference: "   " },
@@ -206,9 +206,9 @@ describe("offline record v3 contracts", () => {
 
   it("orderTarget accepts exactly one of orderId/localOrderOperationId", () => {
     expect(orderTarget.safeParse({ orderId: id(1) }).success).toBe(true);
-    expect(orderTarget.safeParse({ localOrderOperationId: id(1) }).success).toBe(
-      true,
-    );
+    expect(
+      orderTarget.safeParse({ localOrderOperationId: id(1) }).success,
+    ).toBe(true);
     expect(
       orderTarget.safeParse({ orderId: id(1), localOrderOperationId: id(2) })
         .success,
@@ -236,8 +236,12 @@ describe("offline record v3 contracts", () => {
     };
     const parsed = recoveryBackupV3.parse(JSON.parse(JSON.stringify(backup)));
     expect(parsed.format).toBe("green-monkey-recovery-v3");
-    expect(evidenceKey(parsed)).toBe(evidenceKey(recoveryBackupV3.parse(backup)));
-    expect(recoveryBackup.parse(backup).format).toBe("green-monkey-recovery-v3");
+    expect(evidenceKey(parsed)).toBe(
+      evidenceKey(recoveryBackupV3.parse(backup)),
+    );
+    expect(recoveryBackup.parse(backup).format).toBe(
+      "green-monkey-recovery-v3",
+    );
     expect(
       recoveryBackup.parse({
         format: "green-monkey-offline-v1",
@@ -302,7 +306,10 @@ describe("offline record v3 contracts", () => {
     expect(tolerated.verdict).toBe("ok");
     expect(tolerated.soldAt.toISOString()).toBe(lease.validUntil.toISOString());
     // Drawer closed at 11:00: 10:59 is fine, 11:03 is past the 2 min tolerance.
-    const closed = { openedAt: opened, closedAt: new Date("2026-09-19T11:00:00.000Z") };
+    const closed = {
+      openedAt: opened,
+      closedAt: new Date("2026-09-19T11:00:00.000Z"),
+    };
     expect(check(at(-3_660_000), closed).verdict).toBe("ok");
     expect(check(at(-3_420_000), closed).verdict).toBe("too_late");
     // A renewed window (access renewals) covers a sale after the base lease.

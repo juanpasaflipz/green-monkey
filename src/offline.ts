@@ -122,7 +122,10 @@ export async function attemptsForOrder(
   )
     .map((row) => ({
       key: row.id,
-      attempt: normalizePaymentAttempt(row.value, row.id.split(":").slice(0, 4).join(":")),
+      attempt: normalizePaymentAttempt(
+        row.value,
+        row.id.split(":").slice(0, 4).join(":"),
+      ),
     }))
     .filter(
       (row): row is { key: string; attempt: PaymentAttempt } =>

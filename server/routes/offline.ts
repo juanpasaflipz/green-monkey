@@ -14,7 +14,10 @@ import {
   synchronizeOffline,
   syncOfflineRecord,
 } from "../offline-sync.js";
-import { decideOfflineKitchen, listOfflineKitchen } from "../offline-kitchen.js";
+import {
+  decideOfflineKitchen,
+  listOfflineKitchen,
+} from "../offline-kitchen.js";
 import { offlineDevicePrefix } from "../offline-device.js";
 import { openOrdersSnapshot } from "../offline-tables.js";
 

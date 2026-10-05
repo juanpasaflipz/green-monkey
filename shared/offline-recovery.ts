@@ -287,7 +287,10 @@ export const formatVersionOf = (p: OfflineRecord): 1 | 2 | 3 =>
   "formatVersion" in p ? p.formatVersion : 1;
 
 /** Money a record collected (0 when it collected none). */
-export function recordAmounts(p: OfflineRecord): { amount: number; tip: number } {
+export function recordAmounts(p: OfflineRecord): {
+  amount: number;
+  tip: number;
+} {
   if (!("kind" in p)) return { amount: p.expectedTotal, tip: p.tip };
   return "payment" in p
     ? { amount: p.payment.amount, tip: p.payment.tip }

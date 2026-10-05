@@ -8,11 +8,7 @@ const buildId =
   `${process.env.npm_package_version ?? "dev"}-${Date.now()}`;
 export default defineConfig({
   define: { __BUILD_ID__: JSON.stringify(buildId) },
-  plugins: [
-    react(),
-    tailwindcss(),
-    swShellPlugin(buildId),
-  ],
+  plugins: [react(), tailwindcss(), swShellPlugin(buildId)],
   build: {
     rolldownOptions: {
       output: {
