@@ -347,6 +347,14 @@ test("Hung server times out and the payment dialog becomes closable within 16 s"
   await context.route("**/api/orders", () => {
     /* never answers */
   });
+  // Service's collect (024) first settles a stored attempt and runs offline's
+  // charge guard, so the request (and its 15 s timer) starts a moment after
+  // the dialog turns busy: fast-forward only once it is out.
+  const sent = page.waitForRequest(
+    (request) =>
+      new URL(request.url()).pathname === "/api/orders" &&
+      request.method() === "POST",
+  );
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   await page
     .getByRole("button", { name: "Confirmar cobro", exact: true })
@@ -354,6 +362,7 @@ test("Hung server times out and the payment dialog becomes closable within 16 s"
   await expect(
     page.getByRole("dialog").getByRole("button", { name: "Cargando…" }),
   ).toBeVisible();
+  await sent;
   await page.clock.fastForward(15_500);
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
     "El servidor tardó demasiado en responder",
@@ -1003,7 +1012,7 @@ test("An offline external-terminal sale shows and prints service's local receipt
   await expect(receipt).not.toContainText("Saldo pendiente");
   await page
     .getByRole("dialog", { name: "Recibo local" })
-    .getByRole("button", { name: "Imprimir", exact: true })
+    .getByRole("button", { name: "Imprimir recibo", exact: true })
     .click();
   await expect.poll(async () => (await printed()).length).toBe(1);
   const doc = (await printed())[0]!;
@@ -1918,11 +1927,17 @@ test.describe("offline table service (Beta) turned on", () => {
       name: "Guardar cobro con terminal",
       exact: true,
     });
-    await save.click();
-    await expect(dialog.getByRole("alert")).toContainText(
-      "Confirma la aprobación e ingresa la referencia",
+    // Service's PaymentDialog (024) asks for both inline and keeps the save
+    // disabled until the reference and the terminal approval are given.
+    await expect(save).toBeDisabled();
+    await expect(dialog).toContainText(
+      "Escribe la referencia de aprobación de la terminal.",
     );
     await dialog.getByLabel("Referencia").fill("AUTH-55");
+    await expect(save).toBeDisabled();
+    await expect(dialog).toContainText(
+      "Marca la confirmación de que la terminal aprobó el pago.",
+    );
     await dialog.getByRole("checkbox").check();
     await save.click();
     await expect(page.locator(".receipt")).toContainText(
@@ -2091,7 +2106,7 @@ test.describe("offline table service (Beta) turned on", () => {
     await page.getByRole("button", { name: "Cobrar", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Cobrar" });
     await dialog.getByLabel("Importe").fill("45.00");
-    await dialog.getByLabel("Efectivo recibido").fill("45.00");
+    await dialog.getByLabel("Efectivo recibido", { exact: true }).fill("45.00");
     await dialog
       .getByRole("button", { name: "Confirmar cobro", exact: true })
       .click();
@@ -2145,7 +2160,7 @@ test.describe("offline table service (Beta) turned on", () => {
     await page.getByRole("button", { name: "Cobrar", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: "Cobrar" });
     await dialog.getByLabel("Importe").fill("45.00");
-    await dialog.getByLabel("Efectivo recibido").fill("45.00");
+    await dialog.getByLabel("Efectivo recibido", { exact: true }).fill("45.00");
     await dialog
       .getByRole("button", {
         name: "Guardar cobro en este dispositivo",
@@ -2372,6 +2387,11 @@ test.describe("offline table service (Beta) turned on", () => {
     // Without it, both orders are charged in full, the round's items included.
     await deleteRow(page, foreign);
     await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+    // Service's SettlementDialog (024) shows the result; "Listo" closes it.
+    await expect(dialog.getByRole("status")).toContainText(
+      "Cobro conjunto registrado",
+    );
+    await dialog.getByRole("button", { name: "Listo", exact: true }).click();
     await expect(dialog).not.toBeVisible();
     expect(settlements).toHaveLength(1);
     const paid = await serverOrder(page, order.id);
@@ -2494,9 +2514,28 @@ test.describe("offline table service (Beta) turned on", () => {
       .getByRole("button", { name: "Confirmar cobro", exact: true })
       .click();
     await expect(page.locator(".receipt")).toContainText("Cobrado");
-    // Close the receipt: the paid check stays on screen.
+    // Service's receipt (024) finishes a paid table check ("Siguiente venta");
+    // the check stays open until "Liberar mesa" and a waiter adding one more
+    // round opens it again from Órdenes. Selling then refreshes the
+    // open-orders cache, which lists paid checks (D19).
     await page.keyboard.press("Escape");
     await expect(page.locator(".receipt")).toHaveCount(0);
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    const cached = page.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/offline/open-orders",
+    );
+    await page
+      .getByRole("article")
+      .filter({
+        has: page.getByRole("checkbox", {
+          name: `Seleccionar orden #${order.number}`,
+          exact: true,
+        }),
+      })
+      .getByRole("button", { name: /Abrir orden/ })
+      .click();
+    await expect(page.locator(".existing")).toContainText(`#${order.number}`);
+    await cached;
     await goOffline(context, page);
     await expect(page.locator(".existing")).toContainText(`#${order.number}`);
     await product(page, "Agua de jamaica").click();
