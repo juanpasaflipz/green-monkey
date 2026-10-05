@@ -443,6 +443,14 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
 - **Limiter key (ops merge, LD-9).** Every access limiter keys on `ipKey(req)`
   in `server/routes/access.ts`; switch that one function to `clientIp(req)` from
   `server/logging.ts`.
+- **Void approval pre-check (service merge, contracts §4.2).** `verifyApproval`
+  refuses a closed or fully paid order before checking any PIN (ACC-R-5) and
+  reads `closedStates` for that. Service removes `closedStates` and guards
+  `voidLines` with `check_state` and `assertCheckWritable`; at that merge,
+  make the pre-check refuse exactly what `voidLines` refuses, with the same
+  codes, still without a lock. Keep its `recordedVoid` bypass (ACC-R6-1): an
+  identical retry of a recorded void must reach `voidLines`' `once()` and get
+  the stored result.
 - **Unlocking owners (platform-prep, wave-2 A3).** Hardening A5 lets a manager
   unlock only cashiers, servers and kitchen staff (never a hard lock, at most
   3 times per employee a day); owners and managers are unlocked by the owner.

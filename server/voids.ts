@@ -73,6 +73,41 @@ function noteApprovalFailure(sessionId: string, now = Date.now()) {
 }
 
 /**
+ * What once() fingerprints for a void. It names the approver but never
+ * includes the secret; legacy login fingerprints stay stable.
+ */
+function voidFingerprint(orderId: string, input: z.infer<typeof voidInput>) {
+  const { approval, ...rest } = input;
+  return {
+    orderId,
+    ...rest,
+    approver: approval
+      ? "employeeId" in approval
+        ? approval.employeeId
+        : approval.login
+      : null,
+  };
+}
+
+/**
+ * True when this exact void (same operationId, kind and fingerprint, so the
+ * same order, lines, version and approver) is already recorded. Only an exact
+ * match counts: any other reuse of an operationId still gets the order check
+ * before the PIN, then once()'s operation_conflict.
+ */
+async function recordedVoid(tx: Tx, orderId: string, raw: unknown) {
+  const input = voidInput.safeParse(raw);
+  if (!input.success) return false;
+  const [prior] =
+    await tx`select kind,hash from operations where id=${input.data.operationId}`;
+  return (
+    !!prior &&
+    prior.kind === "void" &&
+    prior.hash === hash(JSON.stringify(voidFingerprint(orderId, input.data)))
+  );
+}
+
+/**
  * Verifies a manager's PIN for one sensitive command, in its own transaction so
  * failed attempts are recorded even though the command is refused. Attempts
  * count against the approver on the session's device only (SEC-2). Without a
@@ -176,41 +211,6 @@ const closedStates = [
   "recovery_pending",
   "recovery_reviewed",
 ];
-
-/**
- * What once() fingerprints for a void. It names the approver but never
- * includes the secret; legacy login fingerprints stay stable.
- */
-function voidFingerprint(orderId: string, input: z.infer<typeof voidInput>) {
-  const { approval, ...rest } = input;
-  return {
-    orderId,
-    ...rest,
-    approver: approval
-      ? "employeeId" in approval
-        ? approval.employeeId
-        : approval.login
-      : null,
-  };
-}
-
-/**
- * True when this exact void (same operationId, kind and fingerprint, so the
- * same order, lines, version and approver) is already recorded. Only an exact
- * match counts: any other reuse of an operationId still gets the order check
- * before the PIN, then once()'s operation_conflict.
- */
-async function recordedVoid(tx: Tx, orderId: string, raw: unknown) {
-  const input = voidInput.safeParse(raw);
-  if (!input.success) return false;
-  const [prior] =
-    await tx`select kind,hash from operations where id=${input.data.operationId}`;
-  return (
-    !!prior &&
-    prior.kind === "void" &&
-    prior.hash === hash(JSON.stringify(voidFingerprint(orderId, input.data)))
-  );
-}
 
 /** Recomputes an order's preparation state from its rounds and voids. */
 export async function refreshOrderState(tx: Tx, orderId: string) {
