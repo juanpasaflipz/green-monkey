@@ -115,9 +115,10 @@ async function recordedVoid(tx: Tx, orderId: string, raw: unknown) {
  * count against the approver on the session's device only (SEC-2). Without a
  * payload, a manager may approve their own action only from a Google-entered
  * session on a personal device or with a recent PIN (SEC-6/A4). Returns the
- * approver's id. With orderId, the order must exist, be open and still have an
- * unpaid unit before any PIN is checked, so approvals cannot be tried against
- * made-up, closed or fully paid orders (A5/ACC-R-5). The read takes no lock:
+ * approver's id. With orderId, the order must exist, pass assertCheckWritable
+ * and still have an unpaid unit before any PIN is checked, so approvals cannot
+ * be tried against made-up, closed or fully paid orders (A5/ACC-R-5). The read
+ * takes no lock:
  * voidLines re-checks all of it under the order's FOR UPDATE. voidRequest is
  * the void's full body: when that exact void is already recorded (a retry
  * after a lost response), the order check is skipped so voidLines' once()
@@ -158,10 +159,13 @@ export async function verifyApproval(
         (await recordedVoid(tx, orderId, voidRequest))
       )
     ) {
-      const [order] = await tx`select state from orders where id=${orderId}`;
+      const [order] =
+        await tx`select state,check_state from orders where id=${orderId}`;
       if (!order) throw new DomainError("not_found", 404);
-      if (closedStates.includes(order.state))
-        throw new DomainError("stale_order", 409);
+      // Exactly what voidLines refuses, with the same codes (service 024):
+      // stale_order for recovery orders, check_closed for closed checks and
+      // cancelled orders. Served (completed) orders stay voidable while open.
+      assertCheckWritable(order as { check_state: string; state: string });
       const detail = await getOrder(tx, orderId);
       if (!detail.itemSplitAvailable)
         throw new DomainError("unallocated_history", 409);
