@@ -58,7 +58,22 @@ invalid fields are marked with a red border as well as `aria-invalid`.
 **Availability ("86") is live state.** The switches in the product list, the
 product editor and the group editor save at once, last write wins, bump the menu
 revision and never bump product versions. A product whose required group has no
-available choice shows "Agotado" in the POS and cannot be added.
+available choice shows "Agotado" in the POS and cannot be added. Every switch
+moves at once and goes back if the save fails. A switch flipped inside an editor
+updates the list behind it right away, and a reload that started earlier never
+undoes a newer switch. Group cards mark sold-out choices with "Agotado", and a
+"Disponibilidad de opciones" list on each card switches a choice in one tap.
+
+**Unsaved edits.** The product, group and ingredient editors ask "¿Descartar los
+cambios?" before closing a changed form, whether closed with X, Escape or the
+Android back gesture. Duplicar on a changed product and a template picked over
+typed choices ask the same way. Availability switches are saved at once and do
+not count as unsaved edits. Archiving a product or a table asks first.
+
+**Adding products.** Each category heading has its own add button, which opens
+a new product in that category. "Nuevo producto" starts in the category last
+saved to. "Guardar y agregar otro" saves a new product and opens another one
+with the same category, groups, station and type.
 
 **Menu revision.** Every menu write bumps `menu_state.revision`, and its row lock
 serializes all menu writes of a restaurant. The POS polls `GET /menu/revision`
@@ -69,6 +84,19 @@ revision read. Any feature can force a refetch with
 `window.dispatchEvent(new Event("gm-menu-refresh"))`. A refetch writes only the
 offline catalog cache entry, never the cached session, which belongs to sign-in
 and access's heartbeat (contract D15).
+
+**QR and kiosk freshness.** `GET /public/:token/catalog` also returns the menu
+revision, read before the catalog. An open QR or kiosk page polls
+`GET /public/:token/revision` every 60 seconds and when it becomes visible again,
+and refetches the catalog only when the revision moved. It also refetches after
+the server refuses an order with a catalog error, and on every kiosk idle reset.
+The reset also clears the previous customer's error message.
+
+**Carts price line by line.** In the POS cart and the QR/kiosk order, each line
+is priced on its own (`priceCart()` in `src/features/menu/cart.ts`). A product
+86'd or archived after it was added only marks its own line ("Ya no está
+disponible. Quítalo de la orden.") with a Quitar button. The rest of the cart
+keeps its prices, and Enviar and Cobrar stay disabled until the line is removed.
 
 **Typing amounts and quantities.** Editors accept "1200", "1,200" and
 "1,200.50": a comma is read only as a thousands separator in a well-formed
@@ -91,7 +119,9 @@ and stock quantities show it when the text has a thousands comma.
   choice price times its count. The shown price is computed by the same
   `quote()` the server runs.
 - `optionNames` carry the count ("2× Asada"), so kitchen tickets and receipts
-  need no change.
+  need no change. The QR/kiosk order summary lists them under each line.
+- The live price stays in view at the top of the picker while long lists of
+  choices scroll.
 - The line recipe is the product recipe plus each chosen choice recipe times its
   count, merged into one line per stock item; plain lines keep the product
   recipe byte for byte. The line cost adds choice costs only when the product
@@ -264,3 +294,9 @@ would make the drift check fail.
   (keys `menuOp*` in `src/i18n/menu.ts`).
 - Offline sync quotes with `canOpen = true` in offline's rewrite (D11); until
   then, open-price lines recorded offline are not accepted by `/sync`.
+- Selling's per-line pricing: menu's in-wave fallback (`priceCart` in
+  `src/features/menu/cart.ts`, `UnavailableLines`, and the `pricing.blocked`
+  checks on Enviar and Cobrar) has the same signature and result as service's
+  `priceCart`/`CartLine`. Resolve Selling to service's golden form (contract
+  4.8) and drop menu's three Selling hunks. QR/kiosk ordering keeps using
+  `cart.ts` (or switches its import to `shared/service.ts`).
