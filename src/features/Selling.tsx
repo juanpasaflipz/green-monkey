@@ -124,7 +124,9 @@ export function Selling({
     }>("/payments/recovery/status", attempt);
     if (status.state === "committed" && status.result) return status.result;
     if (!status.retryAllowed) throw Error("payment_review_required");
-    return api<Order>("/payments/recovery/retry", attempt);
+    return api<Order>("/payments/recovery/retry", attempt, {
+      idempotent: true,
+    });
   }
   useEffect(() => {
     let live = true;
@@ -277,6 +279,7 @@ export function Selling({
       const o = await api<Order>(
         current ? `/orders/${current.id}/rounds` : "/orders",
         current ? { ...draft, expectedVersion: current.version } : draft,
+        { idempotent: true },
       );
       setCurrent(o);
       await db.cache.put({ id: contextId, value: o.id });
