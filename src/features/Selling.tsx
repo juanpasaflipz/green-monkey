@@ -47,6 +47,8 @@ import {
   ticketsFromOrderRound,
   type KitchenTicketModel,
 } from "./KitchenTicket";
+import { ModifierPicker } from "../components/ModifierPicker";
+import { pickerNeeded, orderable } from "../../shared/menu";
 const fresh = (): OrderInput => ({
   operationId: crypto.randomUUID(),
   lines: [],
@@ -108,8 +110,7 @@ export function Selling({
   const [saved, setSaved] = useState(false);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
-  const [modifier, setModifier] = useState<Product | null>(null);
-  const [options, setOptions] = useState<string[]>([]);
+  const [picker, setPicker] = useState<Product | null>(null);
   const [cartOpen, setCartOpen] = useState(false);
   const [payment, setPayment] = useState(false);
   const [receipt, setReceipt] = useState<Order | null>(null);
@@ -530,13 +531,8 @@ export function Selling({
     inCart.set(l.productId, (inCart.get(l.productId) ?? 0) + l.quantity);
   function add(
     p: Product,
-    selection: string[] | { options: string[]; openAmount?: number } = {
-      options: [],
-    },
+    selection: { options: string[]; openAmount?: number } = { options: [] },
   ) {
-    const choice = Array.isArray(selection)
-      ? { options: selection }
-      : selection;
     // SVC-R7: the lines come from React's latest state inside the updater, so
     // a tap that lands right after a send emptied the cart can never bring the
     // sent lines back, and lines still in flight are never merge targets. The
@@ -546,14 +542,13 @@ export function Selling({
       newId: crypto.randomUUID(),
       locked: sendingRef.current ?? undefined,
     };
-    const preview = mergeLine(draftRef.current.lines, p, choice, opts);
+    const preview = mergeLine(draftRef.current.lines, p, selection, opts);
     draftRef.current = { ...draftRef.current, lines: preview.lines };
     setDraft((d) => ({
       ...d,
-      lines: mergeLine(d.lines, p, choice, opts).lines,
+      lines: mergeLine(d.lines, p, selection, opts).lines,
     }));
     setLastAddedId(preview.lineId);
-    setModifier(null);
   }
   function reset() {
     void replaceContext(null, fresh());
@@ -1288,14 +1283,9 @@ export function Selling({
           {filtered.map((p, i) => (
             <button
               className="product"
-              disabled={!p.available}
+              disabled={!orderable(p)}
               key={p.id}
-              onClick={() => {
-                if (p.groups.some((g) => g.min > 0)) {
-                  setOptions([]);
-                  setModifier(p);
-                } else add(p);
-              }}
+              onClick={() => (pickerNeeded(p) ? setPicker(p) : add(p))}
             >
               <div className={`product-art art-${i % 4}`} aria-hidden="true">
                 <div className="dish-mark">
@@ -1311,8 +1301,13 @@ export function Selling({
               </div>
               <span className="product-category">{p.category[locale]}</span>
               <strong>{p.name[locale]}</strong>
-              <span className="product-price">{money(p.price)}</span>
-              {!p.available && <span>{t("soldOut")}</span>}
+              <span className="product-price">
+                {p.openAmount ? t("menuOpenPriceBadge") : money(p.price)}
+              </span>
+              {p.kind === "combo" && (
+                <span className="product-tag">{t("menuKindCombo")}</span>
+              )}
+              {!orderable(p) && <span>{t("menuSoldOut")}</span>}
               {(inCart.get(p.id) ?? 0) > 0 && (
                 <span className="in-cart">
                   ·{" "}
@@ -1322,7 +1317,12 @@ export function Selling({
             </button>
           ))}
         </div>
-        {!filtered.length && <Empty title={t("noResults")} />}
+        {!filtered.length && (
+          <Empty
+            title={t("noResults")}
+            detail={catalog.length ? undefined : t("menuPosEmptyHint")}
+          />
+        )}
         <button className="mobile-order" onClick={() => setCartOpen(true)}>
           <ShoppingBag size={20} />
           <span>
@@ -1341,68 +1341,18 @@ export function Selling({
           {cartPanel}
         </Modal>
       )}
-      {modifier && (
-        <Modal
-          title={modifier.name[locale]}
-          close={() => setModifier(null)}
-          closeLabel={t("close")}
-        >
-          <p className="large-money">
-            {money(
-              modifier.price +
-                modifier.groups
-                  .flatMap((g) => g.options)
-                  .filter((o) => options.includes(o.id))
-                  .reduce((a, o) => a + o.price, 0),
-            )}
-          </p>
-          {modifier.groups.map((g) => (
-            <fieldset key={g.id}>
-              <legend>
-                {g.name[locale]} · {t("choose")} {g.min}–{g.max}
-              </legend>
-              {g.options.map((o) => (
-                <label className="option" key={o.id}>
-                  <input
-                    type={g.max === 1 ? "radio" : "checkbox"}
-                    name={g.id}
-                    disabled={!o.available}
-                    checked={options.includes(o.id)}
-                    onChange={() =>
-                      setOptions((old) =>
-                        g.max === 1
-                          ? [
-                              ...old.filter(
-                                (id) => !g.options.some((o) => o.id === id),
-                              ),
-                              o.id,
-                            ]
-                          : old.includes(o.id)
-                            ? old.filter((id) => id !== o.id)
-                            : [...old, o.id],
-                      )
-                    }
-                  />
-                  <span>{o.name[locale]}</span>
-                  <strong>
-                    {o.price ? "+" + money(o.price) : t("available")}
-                  </strong>
-                </label>
-              ))}
-            </fieldset>
-          ))}
-          <Button
-            variant="primary"
-            className="full"
-            disabled={modifier.groups.some((g) => {
-              const n = g.options.filter((o) => options.includes(o.id)).length;
-              return n < g.min || n > g.max;
-            })}
-            onClick={() => add(modifier, options)}
-          >
-            {t("add")}
-          </Button>
-        </Modal>
+      {picker && (
+        <ModifierPicker
+          product={picker}
+          locale={locale}
+          currency={session.restaurant.currency}
+          canOpen
+          onConfirm={(selection) => {
+            add(picker, selection);
+            setPicker(null);
+          }}
+          onClose={() => setPicker(null)}
+        />
       )}
       {payment && (
         <PaymentDialog

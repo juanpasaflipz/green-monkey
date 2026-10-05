@@ -10,6 +10,11 @@ import { Decimal } from "decimal.js";
 import { z } from "zod";
 import type { Tx } from "./db.js";
 import { hash, permit, operators } from "./auth.js";
+import { catalog } from "./menu-read.js";
+export { catalog };
+import { stock, lockStockItems } from "./stock.js";
+export { stock };
+import { recipeStockIds } from "../shared/menu.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { bumpKitchenFeed } from "./kitchen.js";
 import {
@@ -21,7 +26,6 @@ import {
   money,
   id,
   type Session,
-  type Product,
   type Order,
   type PricedLine,
 } from "../shared/domain.js";
@@ -65,11 +69,6 @@ export async function once<T>(
   const result = await fn();
   await tx`insert into operations(tenant_id,id,kind,hash,result) values(${s.tenantId},${key},${kind},${fingerprint},${tx.json(result as any)})`;
   return result;
-}
-export async function catalog(tx: Tx): Promise<Product[]> {
-  return (
-    await tx`select data from catalog order by data->'category'->>'es',data->'name'->>'es'`
-  ).map((r) => r.data as Product);
 }
 /** Groups rows by order id, keeping each group's query order. */
 function byOrder<T extends { order_id: string }>(rows: readonly T[]) {
@@ -246,30 +245,6 @@ export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
   if (!order) throw new DomainError("not_found", 404);
   return order;
 }
-export async function stock(
-  tx: Tx,
-  s: Session,
-  stockId: string,
-  quantity: string,
-  cause: string,
-  causeId: string,
-  reason: string,
-  allowNegative = false,
-) {
-  const [item] =
-    await tx`select * from stock_items where id=${stockId} for update`;
-  if (!item) throw new DomainError("not_found", 404);
-  const [existing] =
-    await tx`select id from stock_movements where stock_id=${stockId} and cause=${cause} and cause_id=${causeId}`;
-  if (existing) return;
-  const [balance] =
-    await tx`select coalesce(sum(quantity),0)::text as quantity from stock_movements where stock_id=${stockId}`;
-  const next = new Decimal(balance.quantity).add(quantity);
-  if (next.isNegative() && !allowNegative)
-    throw new DomainError("insufficient_stock", 409);
-  await tx`insert into stock_movements(tenant_id,id,stock_id,quantity,cause,cause_id,reason,actor_id) values(${s.tenantId},${randomUUID()},${stockId},${quantity},${cause},${causeId},${reason},${s.employeeId})`;
-  await tx`update stock_items set version=version+1 where id=${stockId}`;
-}
 export type AppendOptions = {
   /** service (024): kitchen note for this round (rounds.note). */
   note?: string;
@@ -284,11 +259,11 @@ export async function append(
   round: number,
   opts: AppendOptions = {},
 ) {
+  // DB-5: every stock row of every line, locked once in uuid order.
+  await lockStockItems(tx, recipeStockIds(lines));
   for (const l of lines) {
     await tx`insert into order_lines(tenant_id,id,order_id,product_id,round,data) values(${s.tenantId},${l.id},${orderId},${l.productId},${round},${tx.json(l)})`;
-    for (const r of [...l.recipe].sort((a, b) =>
-      a.stockId.localeCompare(b.stockId),
-    ))
+    for (const r of l.recipe)
       await stock(
         tx,
         s,
@@ -297,6 +272,7 @@ export async function append(
         "sale",
         l.id,
         "dispatch",
+        opts.stockPolicy,
       );
   }
   for (const station of new Set(lines.map((l) => l.station))) {
@@ -319,8 +295,13 @@ export async function createOrder(
     const lines = quote(
       input.lines,
       await catalog(tx),
-      ["manager", "owner"].includes(s.role),
+      !["qr", "kiosk"].includes(input.channel),
     );
+    if (input.tableId) {
+      const [t] =
+        await tx`select id from dining_tables where id=${input.tableId} and archived_at is null for share`;
+      if (!t) throw new DomainError("invalid_table", 400);
+    }
     const date = businessDate(
       new Date().toISOString(),
       s.restaurant.timezone,
@@ -330,7 +311,9 @@ export async function createOrder(
       await tx`insert into order_numbers(tenant_id,business_date,value) values(${s.tenantId},${date},1) on conflict(tenant_id,business_date) do update set value=order_numbers.value+1 returning value`;
     const orderId = randomUUID();
     await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))},${tx.json(s.restaurant)})`;
-    await append(tx, s, orderId, lines, 1);
+    await append(tx, s, orderId, lines, 1, {
+      stockPolicy: authorizedOfflineRecovery ? "allow" : undefined,
+    });
     await audit(tx, s, "order.created", orderId, {
       channel: input.channel,
       deviceId: s.deviceId,
@@ -391,11 +374,7 @@ export async function addRound(
       if (o.version !== input.expectedVersion)
         throw new DomainError("stale_order", 409);
       assertCheckWritable(o as { check_state: string; state: string });
-      const lines = quote(
-        input.lines,
-        await catalog(tx),
-        ["manager", "owner"].includes(s.role),
-      );
+      const lines = quote(input.lines, await catalog(tx), true);
       await applyRound(tx, s, o as RoundTarget, lines, { note: input.note });
       await bumpKitchenFeed(tx, s);
       return getOrder(tx, orderId);

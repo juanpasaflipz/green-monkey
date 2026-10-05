@@ -1,7 +1,6 @@
 import { employeeSlot, requireSelling } from "./free-limits.js";
 import { requirePro } from "./entitlements.js";
 import { z } from "zod";
-import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
 import type { Tx } from "./db.js";
 import { id, money, DomainError, type Session } from "../shared/domain.js";
@@ -15,68 +14,10 @@ import { pinFingerprint } from "./access-staff.js";
 import { cancelCodesCreatedBy } from "./access-pairing.js";
 import { retirePersonalDevices } from "./access-devices.js";
 import { once, audit, stock } from "./orders.js";
-const label = z
-  .object({ es: z.string().min(1).max(120), en: z.string().min(1).max(120) })
-  .strict();
+import { saveLegacyProduct } from "./menu.js";
 export async function saveProduct(tx: Tx, s: Session, raw: unknown) {
-  permit(s, managers);
-  const p = z
-    .object({
-      operationId: id,
-      id,
-      name: label,
-      category: label,
-      price: money,
-      available: z.boolean(),
-      station: z.enum(["kitchen", "bar"]),
-      expectedVersion: z.number().int().nonnegative(),
-      cost: money.nullable(),
-      recipe: z
-        .array(
-          z.object({
-            stockId: id,
-            quantity: z.string().regex(/^\d+(\.\d{1,6})?$/),
-          }),
-        )
-        .max(30),
-    })
-    .strict()
-    .parse(raw);
-  return once(tx, s, p.operationId, "catalog.save", p, async () => {
-    await requireSelling(tx, s);
-    const [old] =
-      await tx`select data from catalog where id=${p.id} for update`;
-    if (
-      JSON.stringify(old?.data.recipe ?? []) !== JSON.stringify(p.recipe) ||
-      (old?.data.cost ?? null) !== p.cost
-    )
-      await requirePro(tx);
-    if ((old?.data.version ?? 0) !== p.expectedVersion)
-      throw new DomainError("stale_order", 409);
-    if (new Set(p.recipe.map((line) => line.stockId)).size !== p.recipe.length)
-      throw new DomainError("invalid_recipe");
-    for (const line of p.recipe) {
-      const [i] = await tx`select id from stock_items where id=${line.stockId}`;
-      if (!i || new Decimal(line.quantity).lte(0))
-        throw new DomainError("invalid_recipe");
-    }
-    const data = {
-      ...(old?.data ?? { groups: [] }),
-      id: p.id,
-      name: p.name,
-      category: p.category,
-      price: p.price,
-      available: p.available,
-      station: p.station,
-      cost: p.cost,
-      recipe: p.recipe,
-      version: p.expectedVersion + 1,
-    };
-    await tx`insert into catalog(tenant_id,id,data) values(${s.tenantId},${p.id},${tx.json(data)}) on conflict(tenant_id,id) do update set data=excluded.data`;
-    await tx`insert into recipe_versions(tenant_id,id,product_id,version,data) values(${s.tenantId},${randomUUID()},${p.id},${data.version},${tx.json({ recipe: p.recipe, cost: p.cost })})`;
-    await audit(tx, s, "catalog.saved", p.id, { version: data.version });
-    return data;
-  });
+  // Clients of the previous revision; the menu editor uses /menu/products/save.
+  return saveLegacyProduct(tx, s, raw);
 }
 export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
   permit(s, ["owner"]);

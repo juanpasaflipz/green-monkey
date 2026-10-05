@@ -7,6 +7,8 @@ import { hash, managers, operators, permit } from "./auth.js";
 import { checkPin, deviceScope, pinError, stepUpSeconds } from "./access.js";
 import { ACCESS, isRecentAuth } from "../shared/access.js";
 import { audit, getOrder, once, stock } from "./orders.js";
+import { lockStockItems } from "./stock.js";
+import { recipeStockIds } from "../shared/menu.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { bumpKitchenFeed } from "./kitchen.js";
@@ -283,6 +285,16 @@ export async function voidLines(
     if (!order.itemSplitAvailable)
       throw new DomainError("unallocated_history", 409);
 
+    // DB-5: lock every stock row the returns touch, in one global order.
+    if (input.stockDisposition === "return")
+      await lockStockItems(
+        tx,
+        recipeStockIds(
+          input.lines.flatMap((r) =>
+            order.lines.filter((l) => l.id === r.lineId),
+          ),
+        ),
+      );
     let voided = 0;
     for (const request of input.lines) {
       const line = order.lines.find((l) => l.id === request.lineId);
@@ -323,6 +335,7 @@ export async function voidLines(
             "void",
             voidId,
             "void_return",
+            "allow",
           );
       await audit(tx, s, "order.void", orderId, {
         voidId,

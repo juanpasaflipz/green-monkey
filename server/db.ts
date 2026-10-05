@@ -80,15 +80,32 @@ export async function checkRole(sql: postgres.Sql) {
     await sql`select count(*)::int as count from pg_tables where schemaname='public' and tableowner=current_user`;
   if (owner.count) throw Error("Runtime role must not own application tables");
 }
+const RETRYABLE = new Set(["40P01", "40001"]);
+/**
+ * Runs fn in one tenant-scoped transaction. A deadlock or serialization
+ * failure rolls the whole transaction back and is retried once; a second one
+ * becomes concurrent_update (409). fn must therefore be safe to replay: no
+ * side effects outside the database transaction.
+ */
 export async function tenant<T>(
   sql: postgres.Sql,
   tenantId: string,
   fn: (tx: Tx) => Promise<T>,
 ): Promise<T> {
   if (!tenantId) throw new DomainError("missing_tenant", 403);
-  return sql.begin(async (raw) => {
-    const tx = raw as Tx;
-    await tx`select set_config('app.tenant_id',${tenantId},true), set_config('statement_timeout',${STATEMENT_TIMEOUT},true)`;
-    return fn(tx);
-  }) as Promise<T>;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return (await sql.begin(async (raw) => {
+        const tx = raw as Tx;
+        await tx`select set_config('app.tenant_id',${tenantId},true), set_config('statement_timeout',${STATEMENT_TIMEOUT},true)`;
+        return fn(tx);
+      })) as T;
+    } catch (e) {
+      if (!RETRYABLE.has((e as { code?: string })?.code ?? "")) throw e;
+      if (attempt >= 2) throw new DomainError("concurrent_update", 409);
+      await new Promise((r) =>
+        setTimeout(r, 25 + Math.floor(Math.random() * 75)),
+      );
+    }
+  }
 }

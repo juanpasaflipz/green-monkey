@@ -212,7 +212,7 @@ try {
     const results = await Promise.allSettled(
       [1, 2].map(() =>
         tenant(sql, s.tenantId, (tx) =>
-          stock(tx, s, stockId, "-1", "sale", randomUUID(), "test"),
+          stock(tx, s, stockId, "-1", "sale", randomUUID(), "test", "block"),
         ),
       ),
     );

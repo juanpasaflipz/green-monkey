@@ -14,7 +14,8 @@ import { refreshOrderState } from "./voids.js";
 export async function serviceOptions(tx: Tx, s: Session) {
   permit(s, operators);
   return {
-    tables: await tx`select id,name from dining_tables order by name`,
+    tables:
+      await tx`select t.id,t.name,t.area_id from dining_tables t left join dining_areas a on a.tenant_id=t.tenant_id and a.id=t.area_id where t.archived_at is null order by a.position nulls first,t.position,t.name`,
     employees:
       await tx`select id,name from employees where active and role in ('owner','manager','server','cashier') order by name`,
   };
@@ -55,7 +56,7 @@ export async function assignService(
       if (!employee) throw new DomainError("invalid_assignee", 400);
       if (p.tableId) {
         const [table] =
-          await tx`select id from dining_tables where id=${p.tableId}`;
+          await tx`select id from dining_tables where id=${p.tableId} and archived_at is null for share`;
         if (!table || p.mode !== "dine_in")
           throw new DomainError("invalid_table", 400);
       }
