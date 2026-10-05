@@ -24,7 +24,16 @@ import {
 } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
 import { api, ApiError } from "../api";
-import { clearPaymentAttempt, db, scope, type Draft } from "../offline";
+import {
+  attemptsForOrder,
+  clearPaymentAttempt,
+  db,
+  parkPaymentAttempt,
+  scope,
+  type Draft,
+} from "../offline";
+import { useOfflineSelling } from "./offline/useOfflineSelling";
+import { fmt } from "./offline/format";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 const fresh = (): OrderInput => ({
   operationId: crypto.randomUUID(),
@@ -89,6 +98,22 @@ export function Selling({
   const activeId = scope(session) + ":active";
   const contextId = scope(session) + ":order";
   const attemptId = scope(session) + ":payment";
+  const offline = useOfflineSelling({
+    session,
+    catalog,
+    locale,
+    cashSession,
+    active,
+  });
+  const [notice, setNotice] = useState("");
+  /** OFF-2: an attempt the server cannot confirm is parked, not retried forever. */
+  const shouldPark = (e: unknown) =>
+    (e as Error).message === "payment_review_required" ||
+    (e instanceof ApiError &&
+      e.kind === "domain" &&
+      e.status >= 400 &&
+      e.status < 500 &&
+      e.message !== "operation_conflict");
   async function recoverPayment(value: unknown): Promise<Order> {
     const attempt = normalizePaymentAttempt(value, attemptId);
     if (!attempt) throw Error("payment_review_required");
@@ -134,7 +159,14 @@ export function Selling({
             }
           }
         } catch (e) {
-          if (live) setError(translateError((e as Error).message, locale));
+          // OFF-2: park an attempt that needs review so it blocks only its order.
+          if (a && shouldPark(e)) {
+            await parkPaymentAttempt(attemptId, a.value);
+            if (live) {
+              setPendingPayment(false);
+              setError(t("offlineAttemptParked"));
+            }
+          } else if (live) setError(translateError((e as Error).message, locale));
         }
       })();
     }
@@ -278,89 +310,114 @@ export function Selling({
         ),
     );
   }
+  /**
+   * OFF-2: settles the single active attempt before any new charge. It blocks
+   * only its own order: a resolved attempt for another order is cleared, an
+   * unconfirmable one is parked, and nothing is ever overwritten (I9).
+   * Returns true when the attempt was for `targetOrderId` and its receipt is shown.
+   */
+  async function settleActiveAttempt(
+    targetOrderId: string | null,
+  ): Promise<boolean> {
+    const previous = await db.cache.get(attemptId);
+    const attempt = previous
+      ? normalizePaymentAttempt(previous.value, attemptId)
+      : null;
+    const same = !!targetOrderId && attempt?.orderId === targetOrderId;
+    if (previous && !online) {
+      if (same) throw new Error("offline_payment_pending_for_order");
+    } else if (previous) {
+      try {
+        const result = await recoverPayment(previous.value);
+        await clearPaymentAttempt(attemptId, previous.value);
+        setPendingPayment(false);
+        if (same) {
+          setCurrent(result);
+          setPayment(false);
+          setReceipt(result);
+          paymentKey.current = crypto.randomUUID();
+          return true;
+        }
+        setNotice(fmt(t("offlineAttemptResolvedOther"), { n: result.number }));
+      } catch (e) {
+        if (!shouldPark(e)) throw e;
+        await parkPaymentAttempt(attemptId, previous.value);
+        setPendingPayment(false);
+        if (same) throw new Error("payment_review_required", { cause: e });
+      }
+    }
+    if (
+      targetOrderId &&
+      (await attemptsForOrder(session, targetOrderId)).some(
+        (row) => row.key !== attemptId,
+      )
+    )
+      throw new Error(
+        online ? "payment_review_required" : "offline_payment_pending_for_order",
+      );
+    return false;
+  }
+  /** "Recuperar pago": resolves the pending attempt without starting a charge. */
+  async function recoverPending() {
+    return navigator.locks.request(
+      "green-monkey-session-transition",
+      { mode: "shared" },
+      () =>
+        navigator.locks.request(
+          "green-monkey-payment:" + scope(session),
+          async () => {
+            setBusy(true);
+            setError("");
+            try {
+              const previous = await db.cache.get(attemptId);
+              const orderId = previous
+                ? normalizePaymentAttempt(previous.value, attemptId)?.orderId
+                : null;
+              await settleActiveAttempt(orderId ?? null);
+            } catch (e) {
+              setError(translateError((e as Error).message, locale));
+            } finally {
+              setPendingPayment(!!(await db.cache.get(attemptId)));
+              setBusy(false);
+            }
+          },
+        ),
+    );
+  }
   async function collectLocked() {
     let submittedAttempt: unknown;
     setBusy(true);
     setError("");
+    setNotice("");
     try {
-      const previous = await db.cache.get(attemptId);
-      if (previous) {
-        const result = await recoverPayment(previous.value);
-        await clearPaymentAttempt(attemptId, previous.value);
-        setCurrent(result);
-        setPendingPayment(false);
-        setPayment(false);
-        setReceipt(result);
-        paymentKey.current = crypto.randomUUID();
-        return;
-      }
+      if (await settleActiveAttempt(current?.id ?? null)) return;
       const n = parseAmount(amount),
         cash = parseAmount(received),
         tips = parseAmount(tip);
       if (!online) {
-        if (
-          current ||
-          !cashSession ||
-          cashSession.closed_at ||
-          method !== "cash" ||
-          session.sellingAllowed === false ||
-          new Date(session.offlineUntil) < new Date() ||
-          n !== draftTotal ||
-          cash < n + tips
-        )
-          throw new Error("offline_conflict");
-        const operationId = paymentKey.current;
-        const receiptSnapshot = {
-          lines: priced,
-          restaurant: session.restaurant,
-        };
-        await db.pending.put({
-          id: operationId,
-          scope: scope(session),
-          receipt: receiptSnapshot,
-          body: {
-            formatVersion: 2,
-            operationId,
-            order: draft,
-            expectedTotal: draftTotal,
-            received: cash,
+        const local = await offline.collectOffline(
+          {
+            amount: n,
             tip: tips,
-            recordedAt: new Date().toISOString(),
-            sessionId: session.id,
-            cashSessionId: cashSession.id,
-            tenantId: session.tenantId,
-            employeeId: session.employeeId,
-            deviceId: session.deviceId,
-            leaseVersion: session.offlineLeaseVersion ?? 0,
-            currency: session.restaurant.currency,
-            currencyExponent: exponent,
-            configurationVersion: session.restaurant.configVersion ?? null,
-            receiptSnapshot,
+            received: cash,
+            method: method as "cash" | "external",
+            reference,
+            confirmed,
           },
-          status: "pending",
-          attempts: 0,
-          nextAt: 0,
-        });
-        await db.drafts.delete(activeId);
-        setReceipt({
-          id: operationId,
-          number: 0,
-          version: 1,
-          lines: priced,
-          total: draftTotal,
-          paid: 0,
-          refunded: 0,
-          state: "local",
-          mode: draft.mode,
-          tableId: draft.tableId,
-          name: draft.name,
-          note: draft.note,
-          createdAt: new Date().toISOString(),
-          rounds: [],
-          tenders: [],
-        });
+          {
+            draft,
+            priced,
+            total: draftTotal,
+            current,
+            operationId: paymentKey.current,
+          },
+          splitItems ? selectedItems : undefined,
+        );
+        setReceipt(local);
         setPayment(false);
         setDraft(fresh());
+        paymentKey.current = crypto.randomUUID();
+        offline.afterSave(local);
         return;
       }
       let o = current;
@@ -389,7 +446,9 @@ export function Selling({
       };
       await db.cache.put({ id: attemptId, value: submittedAttempt });
       setPendingPayment(true);
-      const result = await api<Order>(`/orders/${o.id}/payments`, payload);
+      const result = await api<Order>(`/orders/${o.id}/payments`, payload, {
+        idempotent: true,
+      });
       await clearPaymentAttempt(attemptId, submittedAttempt);
       setCurrent(result);
       setPendingPayment(false);
@@ -415,7 +474,9 @@ export function Selling({
       <div className="cart-heading">
         <div>
           <span className="eyebrow">
-            {current ? "#" + current.number : t("newOrder")}
+            {current
+              ? (current.offline?.provisionalNumber ?? "#" + current.number)
+              : t("newOrder")}
           </span>
           <h2>{t("order")}</h2>
         </div>
@@ -549,6 +610,7 @@ export function Selling({
             {error}
           </p>
         )}
+        {notice && <p role="status">{notice}</p>}
         <div className="row">
           <Button
             disabled={!draft.lines.length || busy || !online}
@@ -602,7 +664,7 @@ export function Selling({
                 <p>{t("pendingPaymentRecovery")}</p>
                 <Button
                   disabled={!online || busy}
-                  onClick={() => void collect()}
+                  onClick={() => void recoverPending()}
                 >
                   {t("retryPayment")}
                 </Button>
@@ -610,7 +672,6 @@ export function Selling({
             )}
           </div>
           <Button
-            disabled={pendingPayment}
             onClick={async () => {
               if (draft.lines.length)
                 await db.drafts.put({
@@ -809,10 +870,20 @@ export function Selling({
               <Button
                 variant="primary"
                 className="full"
-                disabled={busy || (splitItems && !selectedItems.length)}
+                disabled={
+                  busy ||
+                  (splitItems && !selectedItems.length) ||
+                  (!online && !!offline.paymentSlot.blockReason)
+                }
                 onClick={() => void collect()}
               >
-                {busy ? t("loading") : t(online ? "confirmPay" : "saveOffline")}
+                {busy
+                  ? t("loading")
+                  : online
+                    ? t("confirmPay")
+                    : offline.paymentSlot.confirmLabel(
+                        method as "cash" | "external",
+                      )}
                 <Check size={20} />
               </Button>
             </>
@@ -826,7 +897,16 @@ export function Selling({
               {t("pendingPaymentRecovery")}
             </p>
           )}
-          {!online && <p className="warning-panel">{t("offlineHint")}</p>}
+          {!online && (
+            <p className="warning-panel">
+              {offline.paymentSlot.hint(method as "cash" | "external")}
+            </p>
+          )}
+          {!online && offline.paymentSlot.blockReason && (
+            <p className="error" role="alert">
+              {offline.paymentSlot.blockReason}
+            </p>
+          )}
           <div className="service-tabs">
             <button
               className={method === "cash" ? "selected" : ""}
@@ -835,7 +915,6 @@ export function Selling({
               {t("cashMethod")}
             </button>
             <button
-              disabled={!online}
               className={method === "external" ? "selected" : ""}
               onClick={() => setMethod("external")}
             >
@@ -988,8 +1067,21 @@ export function Selling({
                   ? t("paid")
                   : t("partial")}
             </Badge>
+            {receipt.offline?.provisionalNumber && (
+              <p>
+                <strong>
+                  {fmt(t("offlineProvisional"), {
+                    n: receipt.offline.provisionalNumber,
+                  })}
+                </strong>
+                <br />
+                <span className="tiny muted">{t("offlineProvisionalHint")}</span>
+              </p>
+            )}
             <p>
-              #{receipt.number || receipt.id.slice(0, 8)} ·{" "}
+              {receipt.offline?.provisionalNumber ??
+                "#" + (receipt.number || receipt.id.slice(0, 8))}{" "}
+              ·{" "}
               {new Date(receipt.createdAt).toLocaleString(locale, {
                 timeZone:
                   receipt.restaurantSnapshot?.timezone ??
@@ -1032,6 +1124,17 @@ export function Selling({
           <p className="muted tiny">{t("receiptPrintHint")}</p>
           <div className="row">
             <Button onClick={() => window.print()}>{t("print")}</Button>
+            {receipt.state === "local" && (
+              <Button
+                onClick={() =>
+                  void offline.printKitchen(
+                    receipt as Parameters<typeof offline.printKitchen>[0],
+                  )
+                }
+              >
+                {t("offlinePrintKitchen")}
+              </Button>
+            )}
             <Button
               variant="primary"
               onClick={() =>

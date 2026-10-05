@@ -12,15 +12,26 @@ import {
   Settings,
   ChefHat,
   LogOut,
-  Wifi,
-  WifiOff,
   ArrowRight,
   ChevronDown,
 } from "lucide-react";
 import type { Session, Locale, Product } from "../shared/domain";
 import { strings, translateError, type Key } from "./i18n";
-import { api, setSession, clearSessionScope } from "./api";
-import { db, cacheSession, scope, syncPending } from "./offline";
+import { api, ApiError, setSession, clearSessionScope } from "./api";
+import { db, cacheSession, scope } from "./offline";
+import {
+  getConnectivitySnapshot,
+  serverNow,
+  useConnectivity,
+} from "./connectivity";
+import { useOfflineQueue } from "./offline-queue";
+import { ensureDevicePrefix } from "./offline-records";
+import { requestPersistence } from "./platform";
+import { ConnectionPill } from "./features/offline/ConnectionPill";
+import { ConnectionBanner } from "./features/offline/ConnectionBanner";
+import { UpdatePrompt } from "./features/offline/UpdatePrompt";
+import { OfflineLoginNotice } from "./features/offline/OfflineLoginNotice";
+import { LocalKitchenTickets } from "./features/offline/LocalKitchenTickets";
 import { Button, Field } from "./components/ui";
 import { Selling } from "./features/Selling";
 import { Operations } from "./features/Operations";
@@ -33,9 +44,10 @@ export default function App() {
   const [catalog, setCatalog] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("sell");
-  const [online, setOnline] = useState(navigator.onLine);
+  const net = useConnectivity();
+  const online = net.canUseServer;
   const [error, setError] = useState("");
-  const [queued, setQueued] = useState(0);
+  const [ticketsOpen, setTicketsOpen] = useState(false);
   const [ownerAccess, setOwnerAccess] = useState(false);
   const [showAccount, setShowAccount] = useState(
     new URLSearchParams(location.search).has("account") ||
@@ -43,7 +55,25 @@ export default function App() {
   );
   const [sessionChanged, setSessionChanged] = useState(false);
   const t = (key: Key) => strings[locale][key];
+  /** Offline restore: only a cached session whose offline window is still open. */
+  async function restoreCached() {
+    const cached = (await db.cache.get("session"))?.value as
+      | Session
+      | undefined;
+    if (cached && Date.parse(cached.offlineUntil) > serverNow()) {
+      setActiveSession(cached);
+      setSession(cached);
+      setCatalog(
+        (await db.cache.get(scope(cached) + ":catalog"))?.value ?? [],
+      );
+    }
+  }
   async function load(resetView = true) {
+    if (getConnectivitySnapshot().manual) {
+      await restoreCached();
+      setLoading(false);
+      return;
+    }
     try {
       const s = await api<Session>("/session");
       setSession(s);
@@ -51,6 +81,8 @@ export default function App() {
       setActiveSession(s);
       setCatalog(c);
       await cacheSession(s, c);
+      void requestPersistence();
+      void ensureDevicePrefix(s);
       if (resetView)
         setView(
           s.role === "kitchen"
@@ -59,19 +91,13 @@ export default function App() {
               ? "today"
               : "sell",
         );
-    } catch {
+    } catch (e) {
       setActiveSession(null);
       setCatalog([]);
-      if (!navigator.onLine) {
-        const cached = await db.cache.get("session");
-        if (cached && new Date(cached.value.offlineUntil) > new Date()) {
-          setActiveSession(cached.value);
-          setSession(cached.value);
-          setCatalog(
-            (await db.cache.get(scope(cached.value) + ":catalog"))?.value ?? [],
-          );
-        }
-      }
+      // OFF-1: any transient failure (network, timeout, 5xx), not only a
+      // browser that reports itself offline, falls back to the cached session.
+      if ((e instanceof ApiError && e.transient) || !navigator.onLine)
+        await restoreCached();
     } finally {
       setLoading(false);
     }
@@ -86,13 +112,8 @@ export default function App() {
     window.addEventListener("storage", changedElsewhere);
     const refreshSession = () => void load(false);
     window.addEventListener("gm-session-refresh", refreshSession);
-    const on = () => setOnline(navigator.onLine);
-    window.addEventListener("online", on);
-    window.addEventListener("offline", on);
     return () => {
       window.removeEventListener("gm-session-refresh", refreshSession);
-      window.removeEventListener("online", on);
-      window.removeEventListener("offline", on);
       window.removeEventListener("gm-session-changed", changed);
       window.removeEventListener("storage", changedElsewhere);
     };
@@ -115,21 +136,9 @@ export default function App() {
     document.documentElement.lang = locale;
     localStorage.setItem("gm-locale", locale);
   }, [locale]);
-  useEffect(() => {
-    if (!session || sessionChanged) return;
-    const s = session;
-    const poll = async () => {
-      if (navigator.onLine) await syncPending(s);
-      setQueued(
-        (await db.pending.where("scope").equals(scope(s)).toArray()).filter(
-          (p) => p.status !== "synced",
-        ).length,
-      );
-    };
-    void poll();
-    const timer = setInterval(() => void poll(), 10000);
-    return () => clearInterval(timer);
-  }, [session, online, sessionChanged]);
+  const { queued, oldestUnresolvedAt } = useOfflineQueue(
+    session && !sessionChanged ? session : null,
+  );
   if (loading)
     return (
       <div className="login">
@@ -168,6 +177,7 @@ export default function App() {
           </div>
         </div>
         <div className="login-form">
+          <OfflineLoginNotice locale={locale} />
           {session && (
             <Button onClick={() => setShowAccount(false)}>
               {locale === "es" ? "Volver al restaurante" : "Back to restaurant"}
@@ -340,18 +350,11 @@ export default function App() {
           )}
         </div>
         <div className="top-actions">
-          <button
-            className={`connection ${online ? "" : "warning"}`}
-            aria-label={`${t(online ? "connected" : "offline")}${queued > 0 ? ` · ${queued}` : ""}`}
-            onClick={() => setView("sync")}
-          >
-            <span className="status-dot" aria-hidden="true" />
-            {online ? <Wifi size={16} /> : <WifiOff size={16} />}
-            <span>
-              {t(online ? "connected" : "offline")}
-              {queued > 0 ? ` · ${queued}` : ""}
-            </span>
-          </button>
+          <ConnectionPill
+            locale={locale}
+            queued={queued}
+            onOpen={() => setView("sync")}
+          />
           <Button
             variant="ghost"
             className="round"
@@ -405,6 +408,15 @@ export default function App() {
             )}
           </nav>
         )}
+        <ConnectionBanner
+          session={session}
+          locale={locale}
+          queued={queued}
+          oldestUnresolvedAt={oldestUnresolvedAt}
+          onOpenSync={() => setView("sync")}
+          onOpenTickets={() => setTicketsOpen(true)}
+        />
+        <UpdatePrompt locale={locale} session={session} />
         {session.sellingAllowed === false && (
           <p role="status" className="warning">
             {locale === "es"
@@ -437,6 +449,13 @@ export default function App() {
           />
         )}
       </main>
+      {ticketsOpen && (
+        <LocalKitchenTickets
+          session={session}
+          locale={locale}
+          close={() => setTicketsOpen(false)}
+        />
+      )}
     </div>
   );
 }

@@ -4,6 +4,7 @@ import { lazy, Suspense } from "react";
 import Landing from "./marketing/Landing";
 const App = lazy(() => import("./App"));
 import { PublicOrdering } from "./features/PublicOrdering";
+import { PlatformGate } from "./features/offline/PlatformGate";
 import { registerServiceWorker } from "./service-worker";
 import "@fontsource-variable/inter/opsz.css";
 import "./styles.css";
@@ -17,7 +18,9 @@ createRoot(document.getElementById("root")!).render(
         !new URLSearchParams(location.search).has("auth_error") ? (
         <Landing />
       ) : (
-        <App />
+        <PlatformGate>
+          <App />
+        </PlatformGate>
       )}
     </Suspense>
   </React.StrictMode>,

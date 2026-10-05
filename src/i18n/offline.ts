@@ -1,7 +1,374 @@
 import { defineArea } from "./define";
 
 export default defineArea({
-  es: {},
-  en: {},
-  errors: {},
+  es: {
+    offlineStatusOnline: "Conectado",
+    offlineStatusOffline: "Sin conexión",
+    offlineStatusManual: "Sin conexión (manual)",
+    offlineStatusSlow: "Conexión lenta",
+    offlineStatusSyncing: "Sincronizando",
+    offlineQueuedCount: "{n} por sincronizar",
+    offlineBannerOffline:
+      "Sin conexión con el servidor. Las ventas se guardan en este dispositivo y se envían al volver la conexión.",
+    offlineBannerManual:
+      "Trabajando sin conexión por decisión del equipo. Las ventas se guardan en este dispositivo.",
+    offlineBannerAvailable: "La conexión volvió.",
+    offlineBannerSlow:
+      "La conexión está lenta. Si los cobros tardan, trabaja sin conexión.",
+    offlineBannerKitchen:
+      "Sin conexión: esta pantalla no recibe pedidos nuevos. Pide las comandas impresas o en voz al mostrador.",
+    offlineWindowUntil: "Puedes vender sin conexión hasta las {time}.",
+    offlineWindowEnding:
+      "El periodo sin conexión termina a las {time}. Conecta el dispositivo antes para renovarlo.",
+    offlineWindowExpired:
+      "El periodo sin conexión terminó a las {time}. No se pueden guardar ventas nuevas hasta reconectar e iniciar sesión. Usa papel y captúralas después.",
+    offlineFiscalLate:
+      "Hay ventas sin sincronizar de hace más de 20 horas. Pueden quedar fuera de la factura global; conéctate o pide a un gerente que las revise.",
+    offlineClockSkew:
+      "La hora de este dispositivo difiere {min} min de la del servidor. Activa la hora automática.",
+    offlineLastContact: "Último contacto con el servidor: {time}",
+    offlineNeverContacted: "Sin contacto con el servidor desde que se abrió la app.",
+    offlineWorkOffline: "Trabajar sin conexión",
+    offlineGoOnline: "Volver a conectarme",
+    offlineWorkOfflineHint:
+      "Las ventas se guardan en este dispositivo; la sincronización sigue en segundo plano cuando hay conexión.",
+    offlineViewSync: "Ver sincronización",
+    offlineTickets: "Comandas ({n})",
+    offlineSendLocal: "Enviar (sin conexión)",
+    offlineSaveExternal: "Guardar cobro con terminal",
+    offlineHintCash:
+      "Sin conexión: el cobro se guarda en este dispositivo. Cocina no recibe la orden por la red; imprime o canta la comanda.",
+    offlineHintExternal:
+      "Confirma que la terminal aprobó el cobro y escribe su referencia. No se verifica con el banco.",
+    offlineProvisional: "Número provisional {n}",
+    offlineProvisionalHint: "El número definitivo se asigna al sincronizar.",
+    offlinePrintKitchen: "Imprimir comanda",
+    offlinePrintReceipt: "Imprimir recibo",
+    offlinePrintSetting: "Al guardar sin conexión",
+    offlinePrintAsk: "Preguntar",
+    offlinePrintAutoKitchen: "Imprimir comanda",
+    offlinePrintAutoBoth: "Imprimir comanda y recibo",
+    offlineTicketHeader: "COMANDA · SIN CONEXIÓN",
+    offlineTicketFooter:
+      "Número provisional. Se sincroniza al volver la conexión.",
+    offlineTicketRound: "Ronda {n}",
+    offlineTicketsTitle: "Comandas sin conexión",
+    offlineTicketsHint:
+      "Lista local de este dispositivo. Cocina no la ve; úsala para cantar y reimprimir comandas.",
+    offlineTicketsEmpty: "No hay comandas sin conexión en las últimas 24 horas.",
+    offlineTicketPending: "Pendiente",
+    offlineTicketReady: "Lista",
+    offlineTicketDelivered: "Entregada",
+    offlineReprint: "Reimprimir",
+    offlineOpenOrders: "Órdenes abiertas",
+    offlineOpenOrdersCached:
+      "Órdenes guardadas antes de perder la conexión ({time})",
+    offlineOpenOrdersLocal: "Órdenes creadas en este dispositivo",
+    offlineOpenOrdersEmpty:
+      "No hay órdenes abiertas guardadas en este dispositivo.",
+    offlineKindSale: "Venta",
+    offlineKindOrder: "Orden enviada",
+    offlineKindRound: "Ronda",
+    offlineKindPayment: "Cobro",
+    offlineRowPending: "Pendiente",
+    offlineRowSyncing: "Sincronizando",
+    offlineRowConflict: "Requiere revisión",
+    offlineRowSynced: "Registrado en el servidor",
+    offlineRowArchived: "Archivado",
+    offlineRowWaitingAuth: "Esperando inicio de sesión",
+    offlineRowWaitingDependency: "Esperando la orden original",
+    offlineNextAttempt: "Siguiente intento en {s} s",
+    offlineMapped: "{provisional} → #{number}",
+    offlineReview: "Revisar",
+    offlineReviewCash: "Revisar efectivo",
+    offlineReconcile: "Conciliar cobro",
+    offlineArchive: "Archivar registro local",
+    offlineArchiveTitle: "Archivar sin registrar venta",
+    offlineArchiveWarning:
+      "El registro no se sumará a ventas ni a caja. Se guarda una copia en el servidor con tu nombre y el motivo. Úsalo solo si no se puede verificar o ya se capturó de otra forma.",
+    offlineArchiveReason: "Motivo",
+    offlineArchiveConfirm: "Entiendo que este registro no se sumará a ventas.",
+    offlineArchiveSubmit: "Archivar",
+    offlineArchivedList: "Registros locales archivados",
+    offlineArchivedBy: "Archivado por {name}",
+    offlineArchivedDrawerNote:
+      "Este dispositivo archivó {amount} de ventas locales de esta caja. Ese efectivo puede aparecer como sobrante.",
+    offlineAttemptParked:
+      "Un pago anterior requiere revisión de un gerente en Sincronización; no cobres otra vez esa orden. Puedes seguir con otras órdenes.",
+    offlineAttemptResolvedOther:
+      "El pago anterior de la orden #{n} sí se registró.",
+    offlineAttemptInReview: "En revisión",
+    offlineKitchenReviewTitle: "Ventas sin conexión por revisar ({n})",
+    offlineKitchenReviewHint:
+      "Se vendieron sin conexión. Confirma si cocina ya las preparó para no repetirlas.",
+    offlineKitchenAlreadyServed: "Ya se preparó",
+    offlineKitchenPrepare: "Preparar ahora",
+    offlineKitchenAllServed: "Marcar todas como ya preparadas",
+    offlineKitchenAllServedConfirm:
+      "¿Marcar {n} comandas como ya preparadas? No aparecerán en cocina.",
+    offlineKitchenSold: "Vendida {time} · sincronizada {synced}",
+    offlineKitchenDeliveryPrinted: "Comanda impresa en caja",
+    offlineKitchenDeliveryList: "Comanda en la lista del dispositivo",
+    offlineUpdateReady: "Hay una nueva versión lista.",
+    offlineUpdateApply: "Actualizar ahora",
+    offlineUpdateBlocked: "Sincroniza las ventas pendientes antes de actualizar.",
+    offlineUnsupportedTitle: "Este navegador no es compatible",
+    offlineUnsupportedBody:
+      "Green Monkey necesita Chrome o Edge 111+, Safari 16.4+ (iPadOS/iOS 16.4 o posterior) o Firefox 114+. Actualiza el navegador o usa otro dispositivo.",
+    offlineNoServiceWorker:
+      "Este navegador no permite abrir la app sin conexión (por ejemplo, en modo privado).",
+    offlineInstallHint:
+      "Instala Green Monkey en la pantalla de inicio para conservar mejor los datos sin conexión.",
+    offlinePersistGranted:
+      "Conservación local concedida automáticamente; no sustituye una copia.",
+    offlinePersistDenied:
+      "El navegador no concedió la conservación local. Descarga una copia con frecuencia.",
+    offlineLoginNoServer:
+      "Sin conexión con el servidor. Iniciar sesión requiere conexión.",
+    offlineLoginPending:
+      "Este dispositivo tiene {n} registros sin sincronizar. Se enviarán cuando la misma persona inicie sesión en este dispositivo, o un gerente puede revisarlos.",
+    offlineLoginDownload: "Descargar respaldo",
+    offlineSyncCounts:
+      "{pending} pendientes · {conflict} por revisar · {synced} registrados · {archived} archivados",
+    offlineLoadMore: "Cargar más",
+    offlineRecordedAt: "Registrado {time}",
+    offlineCancel: "Cancelar",
+    offlineDecided: "Otra persona ya decidió esta comanda.",
+    offlineOpSynced: "Venta sin conexión sincronizada",
+    offlineOpKitchenDecision: "Decisión de cocina sobre venta sin conexión",
+    offlineOpArchived: "Registro local archivado",
+    offlineOpPaymentReconciled: "Cobro sin conexión conciliado",
+  },
+  en: {
+    offlineStatusOnline: "Connected",
+    offlineStatusOffline: "Offline",
+    offlineStatusManual: "Offline (manual)",
+    offlineStatusSlow: "Slow connection",
+    offlineStatusSyncing: "Syncing",
+    offlineQueuedCount: "{n} to sync",
+    offlineBannerOffline:
+      "No connection to the server. Sales are saved on this device and sent when the connection returns.",
+    offlineBannerManual:
+      "Working offline by choice. Sales are saved on this device.",
+    offlineBannerAvailable: "The connection is back.",
+    offlineBannerSlow:
+      "The connection is slow. If payments take too long, work offline.",
+    offlineBannerKitchen:
+      "Offline: this screen is not receiving new orders. Ask the counter for printed or called-out tickets.",
+    offlineWindowUntil: "You can sell offline until {time}.",
+    offlineWindowEnding:
+      "The offline period ends at {time}. Reconnect before then to renew it.",
+    offlineWindowExpired:
+      "The offline period ended at {time}. New sales cannot be saved until you reconnect and sign in. Use paper and enter them later.",
+    offlineFiscalLate:
+      "Some sales have been unsynced for more than 20 hours. They may miss the global invoice; reconnect or ask a manager to review them.",
+    offlineClockSkew:
+      "This device's clock differs from the server by {min} min. Turn on automatic time.",
+    offlineLastContact: "Last server contact: {time}",
+    offlineNeverContacted: "No server contact since the app opened.",
+    offlineWorkOffline: "Work offline",
+    offlineGoOnline: "Go back online",
+    offlineWorkOfflineHint:
+      "Sales are saved on this device; sync continues in the background whenever the server is reachable.",
+    offlineViewSync: "View sync",
+    offlineTickets: "Tickets ({n})",
+    offlineSendLocal: "Send (offline)",
+    offlineSaveExternal: "Save terminal payment",
+    offlineHintCash:
+      "Offline: the payment is saved on this device. The kitchen does not receive the order over the network; print or call out the ticket.",
+    offlineHintExternal:
+      "Confirm the terminal approved the charge and enter its reference. It is not verified with the bank.",
+    offlineProvisional: "Provisional number {n}",
+    offlineProvisionalHint: "The final number is assigned when it syncs.",
+    offlinePrintKitchen: "Print kitchen ticket",
+    offlinePrintReceipt: "Print receipt",
+    offlinePrintSetting: "When saving offline",
+    offlinePrintAsk: "Ask",
+    offlinePrintAutoKitchen: "Print kitchen ticket",
+    offlinePrintAutoBoth: "Print ticket and receipt",
+    offlineTicketHeader: "KITCHEN TICKET · OFFLINE",
+    offlineTicketFooter: "Provisional number. Syncs when the connection returns.",
+    offlineTicketRound: "Round {n}",
+    offlineTicketsTitle: "Offline tickets",
+    offlineTicketsHint:
+      "Local list on this device. The kitchen cannot see it; use it to call out and reprint tickets.",
+    offlineTicketsEmpty: "No offline tickets in the last 24 hours.",
+    offlineTicketPending: "Pending",
+    offlineTicketReady: "Ready",
+    offlineTicketDelivered: "Delivered",
+    offlineReprint: "Reprint",
+    offlineOpenOrders: "Open orders",
+    offlineOpenOrdersCached: "Orders saved before the connection dropped ({time})",
+    offlineOpenOrdersLocal: "Orders created on this device",
+    offlineOpenOrdersEmpty: "No open orders are saved on this device.",
+    offlineKindSale: "Sale",
+    offlineKindOrder: "Order sent",
+    offlineKindRound: "Round",
+    offlineKindPayment: "Payment",
+    offlineRowPending: "Pending",
+    offlineRowSyncing: "Syncing",
+    offlineRowConflict: "Needs review",
+    offlineRowSynced: "Recorded on server",
+    offlineRowArchived: "Archived",
+    offlineRowWaitingAuth: "Waiting for sign-in",
+    offlineRowWaitingDependency: "Waiting for the original order",
+    offlineNextAttempt: "Next attempt in {s} s",
+    offlineMapped: "{provisional} → #{number}",
+    offlineReview: "Review",
+    offlineReviewCash: "Review cash",
+    offlineReconcile: "Reconcile payment",
+    offlineArchive: "Archive local record",
+    offlineArchiveTitle: "Archive without recording a sale",
+    offlineArchiveWarning:
+      "The record will not be added to sales or the drawer. A copy is kept on the server with your name and reason. Use this only if it cannot be verified or was already entered another way.",
+    offlineArchiveReason: "Reason",
+    offlineArchiveConfirm: "I understand this record will not be added to sales.",
+    offlineArchiveSubmit: "Archive",
+    offlineArchivedList: "Archived local records",
+    offlineArchivedBy: "Archived by {name}",
+    offlineArchivedDrawerNote:
+      "This device archived {amount} of local sales from this drawer. That cash may show as an overage.",
+    offlineAttemptParked:
+      "An earlier payment needs manager review in Sync; do not charge that order again. You can continue with other orders.",
+    offlineAttemptResolvedOther: "The earlier payment for order #{n} was recorded.",
+    offlineAttemptInReview: "In review",
+    offlineKitchenReviewTitle: "Offline sales to review ({n})",
+    offlineKitchenReviewHint:
+      "These were sold offline. Confirm whether the kitchen already prepared them so they are not made twice.",
+    offlineKitchenAlreadyServed: "Already prepared",
+    offlineKitchenPrepare: "Prepare now",
+    offlineKitchenAllServed: "Mark all as already prepared",
+    offlineKitchenAllServedConfirm:
+      "Mark {n} tickets as already prepared? They will not appear in the kitchen.",
+    offlineKitchenSold: "Sold {time} · synced {synced}",
+    offlineKitchenDeliveryPrinted: "Ticket printed at the counter",
+    offlineKitchenDeliveryList: "Ticket on the device list",
+    offlineUpdateReady: "A new version is ready.",
+    offlineUpdateApply: "Update now",
+    offlineUpdateBlocked: "Sync pending sales before updating.",
+    offlineUnsupportedTitle: "This browser is not supported",
+    offlineUnsupportedBody:
+      "Green Monkey needs Chrome or Edge 111+, Safari 16.4+ (iPadOS/iOS 16.4 or later) or Firefox 114+. Update the browser or use another device.",
+    offlineNoServiceWorker:
+      "This browser cannot open the app offline (for example, in private mode).",
+    offlineInstallHint:
+      "Install Green Monkey on the home screen to better preserve offline data.",
+    offlinePersistGranted:
+      "Local persistence granted automatically; it does not replace a backup.",
+    offlinePersistDenied:
+      "The browser did not grant local persistence. Download a backup often.",
+    offlineLoginNoServer:
+      "No connection to the server. Signing in requires a connection.",
+    offlineLoginPending:
+      "This device has {n} unsynced records. They will be sent when the same person signs in on this device, or a manager can review them.",
+    offlineLoginDownload: "Download backup",
+    offlineSyncCounts:
+      "{pending} pending · {conflict} to review · {synced} recorded · {archived} archived",
+    offlineLoadMore: "Load more",
+    offlineRecordedAt: "Recorded {time}",
+    offlineCancel: "Cancel",
+    offlineDecided: "Someone else already decided this ticket.",
+    offlineOpSynced: "Offline sale synced",
+    offlineOpKitchenDecision: "Kitchen decision on an offline sale",
+    offlineOpArchived: "Local record archived",
+    offlineOpPaymentReconciled: "Offline payment reconciled",
+  },
+  errors: {
+    network_unavailable: [
+      "Sin conexión con el servidor. Puedes seguir vendiendo; las ventas se guardan en este dispositivo.",
+      "No connection to the server. You can keep selling; sales are saved on this device.",
+    ],
+    request_timeout: [
+      "El servidor tardó demasiado en responder. Revisa la conexión o trabaja sin conexión.",
+      "The server took too long to respond. Check the connection or work offline.",
+    ],
+    server_unavailable: [
+      "El servidor no está disponible por ahora. Las ventas se pueden guardar en este dispositivo.",
+      "The server is unavailable right now. Sales can be saved on this device.",
+    ],
+    invalid_response: [
+      "Respuesta inesperada del servidor. Intenta de nuevo.",
+      "Unexpected server response. Try again.",
+    ],
+    rate_limited: [
+      "Demasiadas solicitudes. Espera unos segundos.",
+      "Too many requests. Wait a few seconds.",
+    ],
+    database_unavailable: [
+      "El servidor no puede consultar sus datos por ahora. Las ventas se pueden guardar en este dispositivo.",
+      "The server cannot reach its data right now. Sales can be saved on this device.",
+    ],
+    offline_evidence_invalid: [
+      "No se pudo verificar este registro local (sesión, caja o dispositivo no coinciden). Un gerente puede archivarlo con un motivo.",
+      "This local record could not be verified (session, drawer or device do not match). A manager can archive it with a reason.",
+    ],
+    offline_recorded_in_future: [
+      "La hora de este dispositivo está adelantada. Reintentaremos automáticamente; ajusta la hora del dispositivo.",
+      "This device's clock is ahead. We will retry automatically; fix the device time.",
+    ],
+    offline_outside_lease: [
+      "La venta quedó fuera del periodo sin conexión autorizado. Requiere revisión de un gerente.",
+      "The sale falls outside the authorized offline period. A manager must review it.",
+    ],
+    offline_catalog_changed: [
+      "El producto cambió desde la venta. Un gerente debe conciliarla.",
+      "The product changed after the sale. A manager must reconcile it.",
+    ],
+    offline_dependency_pending: [
+      "Esperando a que se sincronice la orden original.",
+      "Waiting for the original order to sync.",
+    ],
+    offline_dependency_archived: [
+      "La orden original fue archivada. Un gerente debe revisar este registro.",
+      "The original order was archived. A manager must review this record.",
+    ],
+    offline_order_closed: [
+      "La orden ya está cancelada o en conciliación. Un gerente debe revisar este registro.",
+      "The order is cancelled or under reconciliation. A manager must review this record.",
+    ],
+    offline_payment_exceeds_due: [
+      "El cobro supera el saldo actual de la orden (quizá ya se cobró). Un gerente debe revisarlo; no cobres otra vez.",
+      "The payment exceeds the order's current balance (it may already be paid). A manager must review it; do not charge again.",
+    ],
+    offline_archived: [
+      "Este registro local fue archivado por un gerente.",
+      "This local record was archived by a manager.",
+    ],
+    offline_already_synced: [
+      "Este registro ya está en el servidor.",
+      "This record is already on the server.",
+    ],
+    offline_reconcile_unsupported: [
+      "Este registro no tiene cobro que conciliar. Archívalo con un motivo o vuelve a capturarlo en línea.",
+      "This record has no payment to reconcile. Archive it with a reason or enter it again online.",
+    ],
+    offline_prefix_exhausted: [
+      "No hay más prefijos de dispositivo disponibles. Contacta a soporte.",
+      "No device prefixes are left. Contact support.",
+    ],
+    offline_window_expired: [
+      "El periodo sin conexión de esta sesión terminó. Conéctate e inicia sesión para seguir vendiendo.",
+      "This session's offline period ended. Reconnect and sign in to keep selling.",
+    ],
+    offline_drawer_missing: [
+      "Abre caja con conexión antes de cobrar sin conexión.",
+      "Open the drawer while online before taking offline payments.",
+    ],
+    offline_payment_pending_for_order: [
+      "Esta orden tiene un pago por confirmar. Se resolverá al volver la conexión; no cobres otra vez.",
+      "This order has a payment awaiting confirmation. It will be resolved when the connection returns; do not charge again.",
+    ],
+    offline_split_unavailable: [
+      "Dividir por productos no está disponible sin conexión. Divide por importe.",
+      "Item split is unavailable offline. Split by amount.",
+    ],
+    offline_storage_full: [
+      "No hay espacio en este dispositivo para guardar la venta. Libera espacio y descarga un respaldo.",
+      "There is no space on this device to save the sale. Free up space and download a backup.",
+    ],
+    offline_amount_exceeds_due: [
+      "El importe supera el saldo de la orden guardada en este dispositivo.",
+      "The amount exceeds the balance of the order saved on this device.",
+    ],
+  },
 });

@@ -18,7 +18,9 @@ import {
 } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
 import { api } from "../api";
-import { db, scope } from "../offline";
+import { db, isResolved } from "../offline";
+import { OfflineKitchenReview } from "./offline/OfflineKitchenReview";
+import { ArchivedDrawerNote } from "./offline/ArchivedDrawerNote";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 export function Operations({
   view,
@@ -54,10 +56,7 @@ export function Operations({
   const [lastRefresh, setLastRefresh] = useState("");
   async function load() {
     try {
-      if (view === "sync")
-        setData(
-          await db.pending.where("scope").equals(scope(session)).toArray(),
-        );
+      if (view === "sync") setData(null);
       else if (view === "settings") {
         setData(await api("/capabilities"));
       } else {
@@ -81,7 +80,7 @@ export function Operations({
     setData(null);
     setDetail(null);
     void load();
-    const timer = ["kitchen", "sync"].includes(view)
+    const timer = ["kitchen"].includes(view)
       ? setInterval(() => void load(), 1500)
       : null;
     return () => {
@@ -95,7 +94,7 @@ export function Operations({
           (p) =>
             p.scope.startsWith(
               session.tenantId + ":" + session.deviceId + ":",
-            ) && p.status !== "synced",
+            ) && !isResolved(p),
         )
         .count();
       if (pending) {
@@ -370,6 +369,11 @@ export function Operations({
                 </span>
               </div>
               {error && <p className="warning-panel">{t("stale")}</p>}
+              <OfflineKitchenReview
+                session={session}
+                locale={locale}
+                onDecided={() => void load()}
+              />
               <div className="kitchen-grid">
                 {data
                   ?.filter((r: any) => r.station === station)
@@ -915,9 +919,17 @@ export function Operations({
                 </>
               )}
               {modal.kind === "close" && (
-                <p>
-                  {t("expected")}: <strong>{m(data.expected)}</strong>
-                </p>
+                <>
+                  <p>
+                    {t("expected")}: <strong>{m(data.expected)}</strong>
+                  </p>
+                  <ArchivedDrawerNote
+                    session={session}
+                    drawerId={data.id}
+                    locale={locale}
+                    money={m}
+                  />
+                </>
               )}
               {modal.kind === "refund" && (
                 <>
