@@ -61,6 +61,40 @@ try {
     expect(cookie?.secure).toBe(true);
     expect(cookie?.httpOnly).toBe(true);
   }
+  // Access: pair a second browser with a single-use code and sign the cashier
+  // in from the employee picker; no restaurant ID is typed anywhere.
+  let pairedDevice = null;
+  if (process.env.FIXTURE_CASHIER_PIN) {
+    await page
+      .getByRole("button", { name: "Configuración", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Vincular un dispositivo" }).click();
+    const pairing = page.getByRole("dialog", {
+      name: "Vincular un dispositivo",
+    });
+    const deviceName = `Smoke ${Date.now().toString(36)}`;
+    await pairing.getByLabel("Nombre del dispositivo").fill(deviceName);
+    await pairing.getByRole("button", { name: "Generar código" }).click();
+    const code = await pairing.locator(".pairing-code-value").textContent();
+    const terminal = await browser.newContext({ baseURL: url });
+    try {
+      const tablet = await terminal.newPage();
+      await tablet.goto("/app");
+      await tablet.getByLabel("Código de vinculación").fill(code);
+      await tablet.getByRole("button", { name: "Vincular", exact: true }).click();
+      await tablet.getByRole("button", { name: /^Dani Demo/ }).click();
+      for (const digit of process.env.FIXTURE_CASHIER_PIN)
+        await tablet.getByRole("button", { name: digit, exact: true }).click();
+      await tablet.getByRole("button", { name: "Entrar", exact: true }).click();
+      await expect(tablet.locator(".scope")).toContainText("Dani Demo");
+      pairedDevice = (await (await terminal.request.get("/api/session")).json())
+        .deviceId;
+    } finally {
+      await terminal.close();
+    }
+    await expect(pairing).toContainText(`Vinculado: ${deviceName}`);
+    await pairing.getByRole("button", { name: "Cerrar" }).click();
+  }
   await page.getByRole("button", { name: "Operación", exact: true }).click();
   await page.getByRole("button", { name: "Caja", exact: true }).click();
   await page.getByRole("button", { name: "Abrir caja", exact: true }).click();
@@ -122,6 +156,10 @@ try {
   const cash = await (await context.request.get("/api/cash")).json();
   const tender = cash.tenders.at(-1);
   expect(tender.amount).toBeGreaterThan(0);
+  // Refunds on a shared terminal need a recent PIN (access step-up).
+  await post("/api/access/step-up", {
+    secret: process.env.FIXTURE_OWNER_PASSWORD,
+  });
   await post("/api/refunds", {
     operationId: crypto.randomUUID(),
     tenderId: tender.id,
@@ -136,6 +174,16 @@ try {
     counted: finalCash.expected,
     reason: "Synthetic staging smoke complete",
   });
+  if (pairedDevice) {
+    // Leave staging as found: unpair the synthetic terminal.
+    await post("/api/access/step-up", {
+      secret: process.env.FIXTURE_OWNER_PASSWORD,
+    });
+    await post(`/api/access/devices/${pairedDevice}/revoke`, {
+      operationId: crypto.randomUUID(),
+      acknowledgeOpenDrawer: false,
+    });
+  }
   await page
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();
@@ -156,6 +204,9 @@ try {
           "anonymous session denied",
           "owner login",
           "secure HttpOnly cookies",
+          ...(process.env.FIXTURE_CASHIER_PIN
+            ? ["pairing code and cashier PIN sign-in", "terminal unpaired"]
+            : []),
           "four viewports without overflow",
           "keyboard search",
           "modifier",
@@ -163,6 +214,7 @@ try {
           "ready",
           "cash payment",
           "receipt",
+          "PIN step-up",
           "cash refund",
           "drawer close",
           "axe selling",
