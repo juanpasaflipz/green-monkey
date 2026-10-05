@@ -152,6 +152,13 @@ const TRANSIENT_CODES = new Set([
   "database_unavailable",
   "offline_recorded_in_future",
   "offline_dependency_pending",
+  // Contention the server gave up retrying (contract §3.11, menu's tenant()
+  // after exhausted deadlock or serialization retries): it may succeed later.
+  "concurrent_update",
+  // The /api 404 handler: the sync endpoint itself is missing (a server rolled
+  // back to a build without it). The sync never answers it for a record, so it
+  // is no verdict on the record and must not need a manager.
+  "not_found",
 ]);
 const AUTH_CODES = new Set([
   "unauthorized",

@@ -156,6 +156,11 @@ describe("sync error classification and retry", () => {
       "database_unavailable",
       "offline_recorded_in_future",
       "offline_dependency_pending",
+      // OFFLINE-MONEY-8: contention the server gave up retrying (409).
+      "concurrent_update",
+      // OFFLINE-OUTAGE-012: the /api 404 handler (the endpoint is missing
+      // after a rollback); the sync never answers it for a record.
+      "not_found",
     ])
       expect(classifySyncError(code, "domain")).toBe("transient");
     for (const code of ["unauthorized", "session_changed", "missing_tenant"])
