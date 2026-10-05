@@ -128,14 +128,17 @@ Dates use the restaurant's time zone.
 `search_path`, EXECUTE revoked from PUBLIC):
 
 1. It rejects a movement for a tenant other than the current `app.tenant_id`.
-2. It locks the stock row, so movements on one item serialize.
+2. It takes a transaction advisory lock on the movement id, then locks the
+   stock row, so movements on one item serialize and a movement id repeated on
+   two items waits for the first insert.
 3. It skips a movement that repeats an existing `(stock, cause, cause_id)` or
    id. BEFORE triggers fire before `ON CONFLICT` arbitration, so applying the
    delta first would drift the balance on a skipped insert.
 4. It adds the quantity to `on_hand`, sets or clears `negative_since`, and
    stores `balance_after` on the movement (null for movements before 025).
 
-The runtime role has no UPDATE on `on_hand` or `negative_since`, and
+The runtime role can neither update `on_hand` or `negative_since` nor set them
+on insert (column-level INSERT and UPDATE grants; they start at 0 and null), and
 `stock_movements` rejects UPDATE and DELETE even for the table owner. Sales read
 the balance from the row they already lock; nothing sums the ledger at sale time.
 `stock_items.version` still changes with every movement, so a count started before

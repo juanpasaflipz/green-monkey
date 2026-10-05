@@ -106,6 +106,11 @@ ALTER TABLE stock_movements FORCE ROW LEVEL SECURITY;
 -- A movement that repeats an existing (stock, cause, cause_id) or id is skipped
 -- without effect: BEFORE INSERT triggers fire before ON CONFLICT arbitration,
 -- so applying the delta first would let a skipped insert drift on_hand.
+-- The stock row lock serializes repeats on one item; a repeated movement id on
+-- two different items is serialized by a transaction advisory lock on the id,
+-- taken before any row lock, so the second insert sees the first one committed
+-- (the EXISTS below takes a fresh snapshot) instead of applying its delta and
+-- then being dropped by ON CONFLICT DO NOTHING.
 -- When a tenant context is set it must match the row (RLS WITH CHECK on the
 -- movement is evaluated only after BEFORE triggers).
 CREATE FUNCTION stock_ledger_apply() RETURNS trigger
@@ -118,6 +123,8 @@ BEGIN
   IF scope IS NOT NULL AND scope IS DISTINCT FROM NEW.tenant_id THEN
     RAISE EXCEPTION 'stock movement outside the current tenant' USING ERRCODE = '42501';
   END IF;
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended('stock_movement:' || NEW.tenant_id::text || ':' || NEW.id::text, 0));
   PERFORM 1 FROM public.stock_items
     WHERE tenant_id = NEW.tenant_id AND id = NEW.stock_id FOR UPDATE;
   IF NOT FOUND THEN

@@ -1790,6 +1790,40 @@ try {
       ),
     );
     assert.equal(Number((await onHand(manager, stockId)).q), 1);
+    // Nor can it create an item with a cached balance the ledger never saw.
+    const forged = randomUUID();
+    await assert.rejects(
+      run(
+        manager,
+        (tx) =>
+          tx`insert into stock_items(tenant_id,id,name,unit,kind,on_hand)
+             values(${a.tenantId},${forged},'Arrachera forjada','kg','raw',500)`,
+      ),
+      /permission denied/,
+    );
+    await assert.rejects(
+      run(
+        manager,
+        (tx) =>
+          tx`insert into stock_items(tenant_id,id,name,unit,kind,negative_since)
+             values(${a.tenantId},${forged},'Arrachera forjada','kg','raw',now())`,
+      ),
+      /permission denied/,
+    );
+    const [none] = await run(
+      manager,
+      (tx) => tx`select count(*)::int as n from stock_items where id=${forged}`,
+    );
+    assert.equal(none.n, 0);
+    // The columns the app writes on create stay insertable; on_hand defaults.
+    await run(
+      manager,
+      (tx) =>
+        tx`insert into stock_items(tenant_id,id,name,unit,kind,threshold,version,par_level,settings_version,archived_at)
+           values(${a.tenantId},${forged},'Arrachera directa','kg','raw',1,0,4,1,null)`,
+    );
+    assert.equal(Number((await onHand(manager, forged)).q), 0);
+    assert.deepEqual(await drift(), []);
   });
 
   await test("stock movements are append-only even for the table owner", async () => {
@@ -1829,6 +1863,57 @@ try {
           tx`insert into stock_movements(tenant_id,id,stock_id,quantity,cause,cause_id,reason,actor_id)
           values(${a.tenantId},${randomUUID()},${stockId},5,'receipt','foreign','Ajeno',${owner.employeeId})`,
       ),
+    );
+    assert.deepEqual(await drift(), []);
+  });
+
+  await test("a movement id repeated concurrently on two items with ON CONFLICT DO NOTHING moves one balance only", async () => {
+    const first = await newStock(manager, "Carrera A", "piece", "1");
+    const second = await newStock(manager, "Carrera B", "piece", "1");
+    const movementId = randomUUID();
+    const insert = (tx: any, stockId: string) =>
+      tx`insert into stock_movements(tenant_id,id,stock_id,quantity,cause,cause_id,reason,actor_id)
+         values(${a.tenantId},${movementId},${stockId},5,'receipt',${op()},'Carrera',${manager.employeeId})
+         on conflict do nothing`;
+    let inserted!: () => void;
+    const holding = new Promise<void>((resolve) => (inserted = resolve));
+    let release!: () => void;
+    const released = new Promise<void>((resolve) => (release = resolve));
+    // The first transaction inserts the movement and stays open.
+    const one = run(manager, async (tx) => {
+      await insert(tx, first);
+      inserted();
+      await released;
+    });
+    await holding;
+    // The second repeats the id on another item (different row lock).
+    const two = run(manager, (tx) => insert(tx, second));
+    // Commit the first only once the second is waiting inside the database.
+    let waiting = 0;
+    for (let i = 0; i < 250 && !waiting; i++) {
+      const [r] = await admin`select count(*)::int as n from pg_locks l
+        join pg_stat_activity s on s.pid=l.pid
+        where not l.granted and s.datname=current_database()`;
+      waiting = r.n;
+      if (!waiting) await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert(waiting > 0, "the repeated movement must wait for the first one");
+    release();
+    await Promise.all([one, two]);
+    assert.equal(Number((await onHand(manager, first)).q), 6);
+    assert.equal(
+      Number((await onHand(manager, second)).q),
+      1,
+      "the skipped insert must not move the other item's balance",
+    );
+    const rows = await run(
+      manager,
+      (tx) =>
+        tx`select stock_id from stock_movements where id=${movementId}`,
+    );
+    assert.deepEqual(
+      rows.map((r: { stock_id: string }) => r.stock_id),
+      [first],
     );
     assert.deepEqual(await drift(), []);
   });
