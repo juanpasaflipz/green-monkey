@@ -1479,6 +1479,11 @@ test("a second Confirmar cobro tap while the payment is in flight records one te
     name: "Confirmar cobro",
     exact: true,
   });
+  // "Operación" opens Vender before openDrawer's API call lands, so the cart
+  // may only learn of the drawer from Cobrar's own /cash refresh; Confirm stays
+  // disabled (MON-8) until then. evaluate() skips Playwright's actionability
+  // wait, so wait for it here: both taps must reach an enabled button.
+  await expect(confirm).toBeEnabled();
   // Two taps in the same task, before React can render the button disabled.
   await confirm.evaluate((button: HTMLButtonElement) => {
     button.click();
