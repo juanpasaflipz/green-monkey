@@ -137,6 +137,28 @@ describe("service worker shell", () => {
     expect(await oldStore.get("/index.html")!.clone().text()).toBe("old shell");
   });
 
+  it("an HTML fallback page is never cached as a hashed asset", async () => {
+    const worker = loadWorker({ html: undefined });
+    const html = '<html><head><meta name="gm-build" content="build-new"></head></html>';
+    worker.fetch.mockImplementation(async (input: Key) => {
+      const p = path(input);
+      return p.startsWith("/assets/lazy")
+        ? new Response("<html>spa fallback</html>", {
+            headers: { "content-type": "text/html" },
+          })
+        : new Response(p === "/index.html" ? html : `asset ${p}`, {
+            headers: {
+              "content-type": p === "/index.html" ? "text/html" : "text/javascript",
+            },
+          });
+    });
+    await expect(worker.install()).rejects.toThrow("shell_asset_failed");
+    expect(worker.caches.stores.size).toBe(0);
+    const response = await worker.request("/assets/lazy-c.js")!;
+    expect(await response.text()).toBe("<html>spa fallback</html>");
+    expect(worker.caches.stores.get("green-monkey-shell-build-new")?.has("/assets/lazy-c.js") ?? false).toBe(false);
+  });
+
   it("HTML with a different gm-build meta aborts install", async () => {
     const worker = loadWorker({
       html: `<html><head><meta name="gm-build" content="someone-else"></head></html>`,

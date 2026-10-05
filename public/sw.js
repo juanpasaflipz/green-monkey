@@ -5,6 +5,15 @@ const BUILD_ID = "__GM_BUILD_ID__";
 const CACHE = `green-monkey-shell-${BUILD_ID.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
 const SHELL_ASSETS = [];
 
+// The SPA fallback answers unknown paths with index.html; an HTML body is
+// never a valid hashed asset.
+function isAsset(response) {
+  return (
+    response.ok &&
+    !(response.headers.get("content-type") || "").includes("text/html")
+  );
+}
+
 function buildOf(html) {
   const tag = html.match(/<meta[^>]*name="gm-build"[^>]*>/);
   const content = tag && tag[0].match(/content="([^"]*)"/);
@@ -26,7 +35,7 @@ async function cacheShell() {
     const results = await Promise.allSettled(
       [...new Set([...assets, ...SHELL_ASSETS])].map(async (url) => {
         const asset = await fetch(url, { cache: "no-store" });
-        if (!asset.ok) throw new Error("shell_asset_failed");
+        if (!isAsset(asset)) throw new Error("shell_asset_failed");
         await cache.put(url, asset);
       }),
     );
@@ -90,7 +99,7 @@ self.addEventListener("fetch", (event) => {
         const hit = await caches.match(event.request);
         if (hit) return hit;
         const response = await fetch(event.request);
-        if (response.ok)
+        if (isAsset(response))
           await (await caches.open(CACHE)).put(event.request, response.clone());
         return response;
       }
