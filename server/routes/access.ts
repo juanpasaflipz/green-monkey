@@ -37,11 +37,20 @@ import {
 import { id } from "../../shared/domain.js";
 import { ACCESS } from "../../shared/access.js";
 
-/** Per-IP limits; req.ip is the real client behind Railway via trustProxy. */
+/**
+ * The client network every access limit keys on: req.ip (the real client
+ * behind Railway via trustProxy), IPv6 per /56. The one place to change when
+ * the ops merge keys limits on clientIp(req) from server/logging.ts (LD-9).
+ */
+function ipKey(req: express.Request): string {
+  return ipKeyGenerator(req.ip ?? "", 56);
+}
+/** Per-IP limits. */
 function limit(max: number, skipSuccessfulRequests = false) {
   return rateLimit({
     windowMs: 60_000,
     limit: max,
+    keyGenerator: ipKey,
     skipSuccessfulRequests,
     standardHeaders: true,
     legacyHeaders: false,
@@ -64,7 +73,7 @@ export function deviceLimitKey(req: express.Request): string | null {
 export function backstopLimitKey(req: express.Request): string | null {
   const device = readDeviceCookie(req.cookies?.gm_device);
   return device
-    ? `tenant:${device.tenantId}:${ipKeyGenerator(req.ip ?? "", 56)}`
+    ? `tenant:${device.tenantId}:${ipKey(req)}`
     : null;
 }
 /**
@@ -83,7 +92,7 @@ function limitPerDevice(perDevice: number, perAnonymousIp: number) {
       windowMs: 60_000,
       limit: (req) => (deviceLimitKey(req) ? perDevice : perAnonymousIp),
       keyGenerator: (req) =>
-        deviceLimitKey(req) ?? `ip:${ipKeyGenerator(req.ip ?? "", 56)}`,
+        deviceLimitKey(req) ?? `ip:${ipKey(req)}`,
       standardHeaders: true,
       legacyHeaders: false,
       message: { error: "too_many_attempts" },
