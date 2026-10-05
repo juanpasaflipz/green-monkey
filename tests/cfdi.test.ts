@@ -1267,7 +1267,7 @@ const http = (
   );
 
 describe("classifyFacturapiError", () => {
-  it("20. retryable (network, timeout, 5xx, rate_limit_exceeded with Retry-After, invoice_stamping_service_unavailable, idempotency_key_in_use, stamping_in_progress) vs permanent", () => {
+  it("20. retryable (network, timeout, any 5xx even with a mapped code, rate_limit_exceeded with Retry-After, invoice_stamping_service_unavailable, idempotency_key_in_use, stamping_in_progress, a conflict or unknown 409, invoice_already_stamped adopted) vs permanent", () => {
     const retryable: [
       FacturapiError,
       Partial<ReturnType<typeof classifyFacturapiError>>,
@@ -1326,6 +1326,105 @@ describe("classifyFacturapiError", () => {
         { afterMs: 15_000, unknownOutcome: true },
       ],
       [http(408, "http_408"), { code: "cfdi_provider_timeout" }],
+      // CFDI-CORE-1: a 409 that is not a known final state may be a retry colliding with the
+      // first request (attempt 1 timed out, adoption did not see the invoice yet): retry the same
+      // key in 15 s and never fail the document.
+      [
+        http(409, "conflict"),
+        {
+          afterMs: 15_000,
+          code: "cfdi_provider_in_progress",
+          unknownOutcome: true,
+          providerCode: "conflict",
+        },
+      ],
+      [
+        http(409, "something_new"),
+        {
+          afterMs: 15_000,
+          code: "cfdi_provider_in_progress",
+          unknownOutcome: true,
+        },
+      ],
+      [
+        http(409, "http_409"),
+        { code: "cfdi_provider_in_progress", unknownOutcome: true },
+      ],
+      // A permanent code on 409 that is not a resource state (e.g. stamping) is not trusted either.
+      [
+        http(409, "invoice_stamping_failed"),
+        { code: "cfdi_provider_in_progress", unknownOutcome: true },
+      ],
+      // Any 5xx leaves the outcome unknown, even with a documented (mapped) code.
+      [
+        http(503, "not_found"),
+        { code: "cfdi_provider_unavailable", unknownOutcome: true },
+      ],
+      [
+        http(500, "invoice_stamping_failed"),
+        {
+          code: "cfdi_provider_unavailable",
+          unknownOutcome: true,
+          providerCode: "invoice_stamping_failed",
+        },
+      ],
+      [
+        http(502, "invoice_stamping_validation_error", {
+          details: [
+            {
+              code: "tax_id_not_found",
+              message: "x",
+              source: "facturapi",
+              path: "customer.tax_id",
+            },
+          ],
+        }),
+        { code: "cfdi_provider_unavailable", unknownOutcome: true },
+      ],
+      [
+        http(500, "certificate_expired"),
+        { code: "cfdi_provider_unavailable", unknownOutcome: true },
+      ],
+      [
+        http(503, "invoice_stamping_service_unavailable", {
+          retryAfterMs: 5000,
+        }),
+        {
+          afterMs: 5000,
+          code: "cfdi_provider_unavailable",
+          unknownOutcome: true,
+        },
+      ],
+      [
+        http(503, "rate_limit_exceeded"),
+        { code: "cfdi_provider_rate_limited", unknownOutcome: true },
+      ],
+      // The generic CommonErrorCode `conflict` is never final, whatever status carries it.
+      [
+        http(400, "conflict"),
+        {
+          afterMs: 15_000,
+          code: "cfdi_provider_in_progress",
+          unknownOutcome: true,
+        },
+      ],
+      // CFDI-ADV-4: InvoiceErrorCode invoice_already_stamped asserts a stamped CFDI exists. It is
+      // adopted by external_id on the next attempt, never a failure that releases the claims.
+      ...[400, 409, 422].map(
+        (status) =>
+          [
+            http(status, "invoice_already_stamped"),
+            {
+              afterMs: 15_000,
+              code: "cfdi_provider_already_stamped",
+              unknownOutcome: true,
+              providerCode: "invoice_already_stamped",
+            },
+          ] as [
+            FacturapiError,
+            Partial<ReturnType<typeof classifyFacturapiError>>,
+          ],
+      ),
     ];
     for (const [e, expected] of retryable)
       expect(classifyFacturapiError(e), `${e.status} ${e.code}`).toMatchObject({
@@ -1360,7 +1459,45 @@ describe("classifyFacturapiError", () => {
       ],
       [
         http(409, "invoice_not_cancelable"),
-        { code: "cfdi_cancel_rejected_provider" },
+        { code: "cfdi_cancel_rejected_provider", unknownOutcome: false },
+      ],
+      // 409s that state a final fact about the resource stay permanent with a known outcome.
+      [
+        http(409, "invoice_cancellation_in_progress"),
+        { code: "cfdi_cancellation_in_progress", unknownOutcome: false },
+      ],
+      [
+        http(409, "invoice_not_cancelable_by_sat"),
+        { code: "cfdi_cancel_rejected_provider", unknownOutcome: false },
+      ],
+      // CFDI-ADV-8: every cancellation failure code is final on 409 as on 400.
+      [
+        http(409, "invoice_cancellation_failed"),
+        { code: "cfdi_cancel_rejected_provider", unknownOutcome: false },
+      ],
+      [
+        http(400, "invoice_cancellation_failed"),
+        { code: "cfdi_cancel_rejected_provider", unknownOutcome: false },
+      ],
+      [
+        http(409, "substitution_invoice_status_not_allowed"),
+        { code: "cfdi_substitute_invalid", unknownOutcome: false },
+      ],
+      [
+        http(409, "invoice_email_status_not_allowed"),
+        { code: "cfdi_email_not_allowed", unknownOutcome: false },
+      ],
+      [
+        http(409, "certificate_previous_rfc_mismatch"),
+        { code: "cfdi_csd_rfc_mismatch", unknownOutcome: false },
+      ],
+      [
+        http(409, "legal_name_mismatch"),
+        {
+          code: "cfdi_receptor_name_mismatch",
+          path: "customer.legal_name",
+          unknownOutcome: false,
+        },
       ],
       [
         http(400, "substitution_invoice_not_found"),
@@ -1502,6 +1639,57 @@ describe("classifyFacturapiError", () => {
       expect(c.code, `${e.kind} ${e.status} ${e.code}`).toMatch(CODE);
       expect(c.message?.length ?? 0).toBeLessThanOrEqual(1000);
       if (c.afterMs !== undefined) expect(c.afterMs).toBeGreaterThan(0);
+      // Never a known outcome after a server error, whatever the code.
+      if (e.kind === "http" && e.status >= 500)
+        expect(c, `${e.status} ${e.code}`).toMatchObject({
+          retry: true,
+          unknownOutcome: true,
+        });
+    }
+    // Every documented root code that is not a final resource state (or receptor/CSD data) is a
+    // retry with an unknown outcome on 409, never a permanent failure.
+    for (const code of [
+      "conflict",
+      "not_found",
+      "internal_error",
+      "invalid_request",
+      "invoice_stamping_validation_error",
+      "invoice_stamping_failed",
+      "organization_incomplete",
+      "product_key_not_found",
+    ])
+      expect(classifyFacturapiError(http(409, code)), code).toMatchObject({
+        retry: true,
+        unknownOutcome: true,
+      });
+    // The documented cancellation, substitution and email codes (errors.mdx
+    // InvoiceCancellationErrorCode and InvoiceDeliveryErrorCode, except the *_service_unavailable
+    // and delivery codes that are not resource states) state a final fact: same permanent class on
+    // 409 as on 400, with a known outcome.
+    for (const code of [
+      "invoice_cancellation_in_progress",
+      "invoice_cancellation_receipt_external",
+      "invoice_cancellation_receipt_unavailable",
+      "invoice_cancellation_failed",
+      "invoice_cancellation_not_allowed",
+      "invoice_cancellation_not_found",
+      "invoice_cancellation_rfc_mismatch",
+      "invoice_not_cancelable",
+      "invoice_not_cancelable_by_sat",
+      "substitution_invoice_canceled",
+      "substitution_invoice_not_found",
+      "substitution_invoice_required",
+      "substitution_invoice_status_not_allowed",
+      "invoice_email_recipient_required",
+      "invoice_email_status_not_allowed",
+    ]) {
+      const on400 = classifyFacturapiError(http(400, code));
+      expect(on400, code).toMatchObject({
+        retry: false,
+        unknownOutcome: false,
+      });
+      expect(on400.code, code).not.toBe("cfdi_provider_rejected");
+      expect(classifyFacturapiError(http(409, code)), code).toEqual(on400);
     }
     expect(TAX_CATEGORIES).toHaveLength(4);
   });

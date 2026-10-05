@@ -24,9 +24,10 @@ export type FacturapiFailure = {
   /** Request field the error is about (customer.tax_id, customer.legal_name, …). */
   path?: string;
   /**
-   * The provider may have acted although we saw no success (timeout, network failure, 5xx, or a
-   * 2xx we could not read). A stamping job must first look the invoice up by external_id and
-   * must never auto-fail the document or release its claims on such an outcome.
+   * The provider may have acted although we saw no success (timeout, network failure, any 5xx
+   * whatever its code, a 409 that is not a known final state, `invoice_already_stamped`, or a 2xx
+   * we could not read). A stamping job must first look the invoice up by external_id and must
+   * never auto-fail the document or release its claims on such an outcome.
    */
   unknownOutcome: boolean;
   /** Facturapi root code (or http_<status>), for events and logs. */
@@ -44,6 +45,39 @@ const RETRYABLE: Record<string, string> = {
 /** In-flight duplicates: the first request is still being processed; retry the same key soon. */
 const IN_FLIGHT = new Set(["idempotency_key_in_use", "stamping_in_progress"]);
 const IN_FLIGHT_RETRY_MS = 15_000;
+/**
+ * Codes that assert the CFDI already exists (InvoiceErrorCode `invoice_already_stamped`: "The
+ * invoice has already been stamped"). What POST /invoices answers when a retried idempotency_key
+ * already produced a stamped invoice is not documented, so such an answer is never a failure: the
+ * job retries soon with an unknown outcome, which makes it look the invoice up by external_id and
+ * adopt it. Failing the document here would release its claims while a valid CFDI exists.
+ */
+const ADOPT = new Set(["invoice_already_stamped"]);
+/**
+ * Root codes that state a final fact about a resource even when they arrive with HTTP 409: the
+ * cancellation, substitution and email states, CSD upload problems and receptor data. Any OTHER
+ * 409 (Facturapi's generic CommonErrorCode `conflict`, or a code the docs do not list) may be a
+ * request that collided with an earlier one still being processed (the HTTP status of an in-use
+ * idempotency key is not documented), so it is classified like the in-flight case: retry the same
+ * key, outcome unknown. Never a permanent failure: the provider may already hold an invoice.
+ */
+const TERMINAL_ON_CONFLICT = new Set([
+  "invoice_cancellation_in_progress",
+  "invoice_cancellation_failed",
+  "invoice_cancellation_not_found",
+  "invoice_not_cancelable",
+  "invoice_not_cancelable_by_sat",
+  "invoice_cancellation_not_allowed",
+  "invoice_cancellation_rfc_mismatch",
+  "invoice_cancellation_receipt_unavailable",
+  "invoice_cancellation_receipt_external",
+  "substitution_invoice_canceled",
+  "substitution_invoice_not_found",
+  "substitution_invoice_required",
+  "substitution_invoice_status_not_allowed",
+  "invoice_email_status_not_allowed",
+  "invoice_email_recipient_required",
+]);
 const RATE_LIMIT_DEFAULT_MS = 60_000;
 /** Retry-After is honoured but bounded so a bad header cannot park a job for days. */
 const RATE_LIMIT_MAX_MS = 60 * 60_000;
@@ -124,6 +158,7 @@ const PERMANENT: Record<string, string> = {
   invoice_cancellation_not_allowed: "cfdi_cancel_rejected_provider",
   invoice_cancellation_failed: "cfdi_cancel_rejected_provider",
   invoice_cancellation_rfc_mismatch: "cfdi_cancel_rejected_provider",
+  invoice_cancellation_not_found: "cfdi_provider_not_found",
   substitution_invoice_canceled: "cfdi_substitute_invalid",
   substitution_invoice_not_found: "cfdi_substitute_invalid",
   substitution_invoice_required: "cfdi_substitute_invalid",
@@ -212,7 +247,8 @@ export function classifyFacturapiError(e: unknown): FacturapiFailure {
       retry: true,
       afterMs: boundedRetryAfter(e.retryAfterMs),
       code: "cfdi_provider_rate_limited",
-      unknownOutcome: false,
+      // Every status ≥ 500 leaves the outcome unknown, even with a documented code.
+      unknownOutcome: e.status >= 500,
     };
   if (IN_FLIGHT.has(e.code))
     return {
@@ -220,6 +256,14 @@ export function classifyFacturapiError(e: unknown): FacturapiFailure {
       retry: true,
       afterMs: IN_FLIGHT_RETRY_MS,
       code: "cfdi_provider_in_progress",
+      unknownOutcome: true,
+    };
+  if (ADOPT.has(e.code))
+    return {
+      ...base,
+      retry: true,
+      afterMs: IN_FLIGHT_RETRY_MS,
+      code: "cfdi_provider_already_stamped",
       unknownOutcome: true,
     };
   if (RETRYABLE[e.code])
@@ -230,7 +274,35 @@ export function classifyFacturapiError(e: unknown): FacturapiFailure {
         ? { afterMs: boundedRetryAfter(e.retryAfterMs) }
         : {}),
       code: RETRYABLE[e.code],
-      unknownOutcome: e.status >= 500,
+      unknownOutcome: e.status >= 500 || e.status === 409,
+    };
+  // A server error (or a status we never received) is transient and its outcome unknown, whatever
+  // code it carries: a 5xx "invoice_stamping_failed" or "not_found" does not prove that nothing was
+  // stamped, so it must never fail the document or release its claims.
+  if (e.status >= 500 || e.status === 0)
+    return {
+      ...base,
+      retry: true,
+      ...(e.retryAfterMs !== undefined
+        ? { afterMs: boundedRetryAfter(e.retryAfterMs) }
+        : {}),
+      code: "cfdi_provider_unavailable",
+      unknownOutcome: true,
+    };
+  // The generic `conflict` code is never final, whatever status carries it.
+  if (
+    e.code === "conflict" ||
+    (e.status === 409 &&
+      !TERMINAL_ON_CONFLICT.has(e.code) &&
+      !RECEPTOR[e.code] &&
+      !CERTIFICATE[e.code])
+  )
+    return {
+      ...base,
+      retry: true,
+      afterMs: IN_FLIGHT_RETRY_MS,
+      code: "cfdi_provider_in_progress",
+      unknownOutcome: true,
     };
 
   // Receptor and certificate problems, as the root code or as the first matching detail.
@@ -268,18 +340,7 @@ export function classifyFacturapiError(e: unknown): FacturapiFailure {
       path: pathOf(),
       unknownOutcome: false,
     };
-  // Undocumented codes: a server error (or anything ≥ 500) is transient and its outcome unknown;
-  // a client error is permanent.
-  if (e.status >= 500 || e.status === 0)
-    return {
-      ...base,
-      retry: true,
-      ...(e.retryAfterMs !== undefined
-        ? { afterMs: boundedRetryAfter(e.retryAfterMs) }
-        : {}),
-      code: "cfdi_provider_unavailable",
-      unknownOutcome: true,
-    };
+  // Undocumented codes on a client error (4xx other than 409, handled above) are permanent.
   if (e.status === 401)
     return {
       ...base,
