@@ -8,11 +8,8 @@ import {
   type LocalTicket,
 } from "../../offline-records";
 import { Button, Empty, Modal } from "../../components/ui";
-import {
-  KitchenTicketDocument,
-  printDocument,
-  readPrintSettings,
-} from "../../compat/offline-print";
+import { KitchenTicketDocument } from "../KitchenTicket";
+import { printDocument, readPrintSettings } from "../../print";
 import { translator } from "./format";
 import "./offline.css";
 

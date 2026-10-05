@@ -52,7 +52,7 @@ import {
 import {
   ticketsFromLines,
   type KitchenTicketModel,
-} from "./compat/offline-print";
+} from "./features/KitchenTicket";
 
 export type OfflinePaymentInput = OfflinePayment;
 export type SaveContext = {

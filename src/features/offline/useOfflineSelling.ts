@@ -39,11 +39,8 @@ import {
 } from "../../offline-settings";
 import { guardOnlineCharge } from "../../offline-queue";
 import { translateError } from "../../i18n";
-import {
-  KitchenTicketDocument,
-  printDocument,
-  readPrintSettings,
-} from "../../compat/offline-print";
+import { KitchenTicketDocument } from "../KitchenTicket";
+import { printDocument, readPrintSettings } from "../../print";
 import { recentTickets } from "./LocalKitchenTickets";
 import { LocalReceiptDocument } from "./LocalReceiptDocument";
 import { translator } from "./format";

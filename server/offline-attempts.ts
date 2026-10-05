@@ -25,8 +25,8 @@ import { paymentAttemptV1 } from "../shared/offline-recovery.js";
 import { allocatePayment } from "../shared/settlement.js";
 import { hash, managers, permit } from "./auth.js";
 import { audit, getOrder, once, paymentInput } from "./orders.js";
-import { requireRecentAuth } from "./compat/offline-access.js";
-import { refreshCheckState } from "./compat/offline-service.js";
+import { requireRecentAuth } from "./access.js";
+import { refreshCheckState } from "./checks.js";
 import { dueOf, moneyRefusal, moneyTarget } from "./offline-sync.js";
 
 export const DISCARDED_ATTEMPT = "payment_attempt_discarded";
