@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowUpRight } from "lucide-react";
 import type { Locale, Order, Session } from "../../shared/domain";
 import {
@@ -22,6 +22,7 @@ import { RefundDialog } from "./RefundDialog";
 import { SettlementDialog } from "./SettlementDialog";
 import { OrderDetail } from "./OrderDetail";
 import { moneyFormatter } from "./Receipt";
+import { useOnlineChargeBlocks } from "./offline/useOnlineChargeBlocks";
 
 type Tab = "current" | "open" | "closed";
 const isTab = (v: unknown): v is Tab =>
@@ -140,6 +141,33 @@ export function Orders({
   }, [filterKey]);
   const refresh = () =>
     tab === "closed" ? void loadFirst().catch(() => {}) : poll.refresh();
+  // OFF-R29 (offline 026): a check with this device's unsynced offline rounds
+  // or payments cannot be selected for Cobrar juntas, and says why. List rows
+  // carry no lines, so a row is never judged "outdated" here: the list is read
+  // again whenever a block clears (that record just synced), and
+  // SettlementDialog re-checks the full orders right before charging.
+  const chargeViews = useMemo(
+    () =>
+      items
+        .filter((o) => o.checkState !== "closed" && o.balance > 0)
+        .map((o) => ({ id: o.id, number: o.number }) as unknown as Order),
+    [items],
+  );
+  const chargeBlocks = useOnlineChargeBlocks(
+    session,
+    chargeViews.length ? chargeViews : null,
+    refresh,
+  );
+  const blockedIds = Object.keys(chargeBlocks).sort().join();
+  const lastBlocked = useRef(blockedIds);
+  useEffect(() => {
+    const cleared = lastBlocked.current
+      .split(",")
+      .some((id) => id && !chargeBlocks[id]);
+    lastBlocked.current = blockedIds;
+    setSelected((ids) => ids.filter((id) => !chargeBlocks[id]));
+    if (cleared) refresh();
+  }, [blockedIds]);
   async function loadMore() {
     if (!nextCursor) return;
     const key = filterKey;
@@ -271,7 +299,7 @@ export function Orders({
                   <input
                     type="checkbox"
                     aria-label={t("selectOrder") + " #" + o.number}
-                    disabled={closed || o.balance <= 0}
+                    disabled={closed || o.balance <= 0 || !!chargeBlocks[o.id]}
                     checked={selected.includes(o.id)}
                     onChange={() =>
                       setSelected((ids) =>
@@ -308,6 +336,11 @@ export function Orders({
                         "{note}",
                         o.note.length > 80 ? o.note.slice(0, 79) + "…" : o.note,
                       )}
+                    </p>
+                  )}
+                  {chargeBlocks[o.id] && !closed && o.balance > 0 && (
+                    <p className="tiny warning-panel" role="status">
+                      {translateError(chargeBlocks[o.id]!, locale)}
                     </p>
                   )}
                   <div className="badges">
