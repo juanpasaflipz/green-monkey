@@ -125,8 +125,12 @@ cached before the deploy keep working. A later contract change removes them.
   the next poll. A poll with the current version returns `unchanged` after one
   row read.
 - **Lock order.** Commands lock order rows (several sorted by id), then rounds,
-  line voids, stock items and the drawer; the feed row is always taken **last**.
-  It is never bumped by payments, settlements, refunds or cash commands, because
+  line voids, stock items and the drawer; the feed row is the **last new lock**
+  a command takes. Offline sync is the one command that already holds its
+  drawer (`FOR UPDATE`, from the start) when `createOrder` bumps the feed. In
+  wave 1 no command waits for a drawer while holding the feed row, so this
+  forms no cycle (spec 4.9, which also gives the wave-2 order). The feed is
+  never bumped by payments, settlements, refunds or cash commands, because
   those lock several orders and the drawer one after another. DB test "kitchen
   feed and progress do not deadlock" runs mixed concurrent bursts.
 - The feed is bounded to the 200 oldest open rounds and excludes rounds held
@@ -202,7 +206,14 @@ While a send or a payment is in flight, or its receipt is on screen, Selling
 keeps the request and says "Primero termina el envío en curso; después se abre
 la cuenta que elegiste."; the switch happens as soon as the request settles, so
 a late response can never put the previous check back in the cart, bill items
-to it or post the next round to it. Every switch (and **Nueva orden**,
+to it or post the next round to it. If that send or payment **fails**, the switch
+is dropped instead: its error and actions (such as **Enviar como orden nueva**)
+stay on screen with "No abrimos la cuenta que elegiste porque el envío o cobro
+en curso no se completó. Revisa el aviso y vuelve a elegirla.", the cart still
+holds the unsent lines, and choosing the table or order again switches (parking
+the cart in Borradores). The same happens when a send fails while Vender is
+hidden (the waiter is in Mesas or Órdenes) and the next request to switch
+arrives: the waiter sees the failure first. Every switch (and **Nueva orden**,
 **Guardar borrador**, restoring a draft, **Enviar como orden nueva**) goes
 through one function that also bumps a context counter. As a backstop, a send
 that answers after the counter moved (an **Abrir orden** that was still loading
@@ -211,9 +222,14 @@ copy of its cart that the switch parked in Borradores drops the lines that
 landed (and disappears when nothing is left), "La orden #N llegó a cocina
 mientras cambiabas de cuenta." is shown, and its comanda prints when printing
 on send is on. A failed send in that position stays in Borradores under its
-`operationId`, so sending it from there replays or recovers it. A payment that
-settles after a switch is announced ("…quedó registrado. Su recibo está en
-Órdenes.") instead of replacing the cart with its receipt.
+`operationId`, so sending it from there replays or recovers it, and the cart on
+screen says so ("La ronda para la orden #N no llegó a cocina: … Quedó en
+Borradores; envíala desde ahí."). A payment that settles after a switch is
+announced ("…quedó registrado. Su recibo está en Órdenes.") instead of
+replacing the cart with its receipt. The same applies to **Recuperar pago** for
+a stored payment of a check the cart already left (another check on screen, or
+a new cart with items), and to the payment recovery and cached order loaded when
+Selling mounts if a check was chosen meanwhile.
 
 ## Lost responses while sending
 
@@ -366,7 +382,10 @@ integrator:
   When offline removes `disabled={pendingPayment}`, keep `disabled={busy}` so a
   cart cannot be parked or replaced while its send is in flight. Requests from
   Mesas and Órdenes wait the same way (the `gm-resume`/`gm-table` effect
-  returns early while `busy`, `paying` or a receipt is shown, SVC-R10).
+  returns early while `busy`, `paying` or a receipt is shown, SVC-R10), and a
+  request that a failed send or payment was holding is dropped once
+  (`requestFailed()`/`unseenFailure`, SVC-REV-1); offline's send and collect
+  paths should call `requestFailed()` on failure the same way.
 - `src/features/Selling.tsx` context switches (SVC-R10): every place that
   replaces the cart's order calls `replaceContext(order, draft)`, which bumps
   `contextEpoch`; `sendWith` and `collectLocked` compare the epoch after each
