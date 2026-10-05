@@ -1,5 +1,5 @@
 import { BrandLogo } from "./components/BrandLogo";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ShoppingBag,
   ClipboardList,
@@ -9,22 +9,36 @@ import {
   House,
   Package,
   Users,
+  Lock,
   Settings,
   ChefHat,
   LogOut,
   Wifi,
   WifiOff,
-  ArrowRight,
   ChevronDown,
 } from "lucide-react";
 import type { Session, Locale, Product } from "../shared/domain";
-import { strings, translateError, type Key } from "./i18n";
+import { strings, type Key } from "./i18n";
 import { api, setSession, clearSessionScope } from "./api";
 import { db, cacheSession, scope, syncPending } from "./offline";
-import { Button, Field } from "./components/ui";
+import { Button, Modal } from "./components/ui";
 import { Selling } from "./features/Selling";
 import { Operations } from "./features/Operations";
 import { OwnerAccess } from "./features/OwnerAccess";
+import { ApiError, registerStepUpHandler } from "./api";
+import { AccessGate } from "./features/AccessGate";
+import { LockScreen } from "./features/LockScreen";
+import { StepUpDialog } from "./features/StepUpDialog";
+import { useIdleLock } from "./access/idle";
+import {
+  LOGOUT_PENDING_KEY,
+  drainBeforeLeaving,
+  finishPendingLogout,
+  serverSignOut,
+  startHeartbeat,
+  unsyncedFor,
+} from "./access/session";
+import "./access/access.css";
 export default function App() {
   const [locale, setLocale] = useState<Locale>(
     localStorage.getItem("gm-locale") === "en" ? "en" : "es",
@@ -36,14 +50,36 @@ export default function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [error, setError] = useState("");
   const [queued, setQueued] = useState(0);
-  const [ownerAccess, setOwnerAccess] = useState(false);
+  const [, setOwnerAccess] = useState(false);
   const [showAccount, setShowAccount] = useState(
     new URLSearchParams(location.search).has("account") ||
       location.hash.startsWith("#invite="),
   );
   const [sessionChanged, setSessionChanged] = useState(false);
+  const [lock, setLock] = useState<null | { reason: string }>(null);
+  const [stepUpRequest, setStepUpRequest] = useState<null | {
+    resolve: () => void;
+    reject: (e: unknown) => void;
+  }>(null);
+  const [gateReason, setGateReason] = useState("");
+  const [leaving, setLeaving] = useState<
+    | null
+    | { kind: "offline" }
+    | { kind: "pending"; sales: number; payment: boolean }
+  >(null);
+  const [now, setNow] = useState(() => Date.now());
+  const sessionRef = useRef<Session | null>(null);
+  const onlineRef = useRef(online);
   const t = (key: Key) => strings[locale][key];
   async function load(resetView = true) {
+    await finishPendingLogout();
+    // Never restore a session while a logout is still pending (SEC-6).
+    if (localStorage.getItem(LOGOUT_PENDING_KEY)) {
+      setActiveSession(null);
+      setCatalog([]);
+      setLoading(false);
+      return;
+    }
     try {
       const s = await api<Session>("/session");
       setSession(s);
@@ -112,6 +148,76 @@ export default function App() {
     };
   }, [view, session?.id, online]);
   useEffect(() => {
+    sessionRef.current = session;
+    onlineRef.current = online;
+  }, [session, online]);
+  useEffect(() => {
+    // A session 401 locks the screen with its reason; a device 401 unpairs (FOH-7).
+    const unauthorized = (event: Event) => {
+      const code = (event as CustomEvent<string>).detail;
+      if (!sessionRef.current) return;
+      if (code === "device_revoked" || code === "device_not_paired") {
+        void db.cache.delete("session");
+        clearSessionScope();
+        setLock(null);
+        setActiveSession(null);
+        setCatalog([]);
+        setGateReason(code);
+      } else setLock((current) => current ?? { reason: code });
+    };
+    window.addEventListener("gm-unauthorized", unauthorized);
+    registerStepUpHandler(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          setStepUpRequest({ resolve, reject }),
+        ),
+    );
+    const tick = setInterval(() => setNow(Date.now()), 30_000);
+    return () => {
+      window.removeEventListener("gm-unauthorized", unauthorized);
+      registerStepUpHandler(null);
+      clearInterval(tick);
+    };
+  }, []);
+  useIdleLock(
+    session?.access?.idleLockSeconds ?? null,
+    Boolean(session) && !lock && !sessionChanged,
+    () => setLock({ reason: "idle" }),
+  );
+  useEffect(() => {
+    if (!session || sessionChanged) return;
+    // Keeps the sliding expiry and renewed offline window current (OFF-3);
+    // only the "session" cache entry is written (D15).
+    return startHeartbeat(
+      (s) => {
+        setSession(s);
+        void db.cache.put({ id: "session", value: s });
+        setActiveSession((current) =>
+          current &&
+          current.id === s.id &&
+          JSON.stringify([
+            current.offlineUntil,
+            current.expiresAt,
+            current.access,
+            current.sellingAllowed,
+          ]) !==
+            JSON.stringify([
+              s.offlineUntil,
+              s.expiresAt,
+              s.access,
+              s.sellingAllowed,
+            ])
+            ? s
+            : current,
+        );
+      },
+      () => onlineRef.current,
+    );
+  }, [session?.id, sessionChanged]);
+  useEffect(() => {
+    if (online) void finishPendingLogout();
+  }, [online]);
+  useEffect(() => {
     document.documentElement.lang = locale;
     localStorage.setItem("gm-locale", locale);
   }, [locale]);
@@ -130,6 +236,47 @@ export default function App() {
     const timer = setInterval(() => void poll(), 10000);
     return () => clearInterval(timer);
   }, [session, online, sessionChanged]);
+  async function ownerReady() {
+    clearSessionScope();
+    setActiveSession(null);
+    setCatalog([]);
+    setLoading(true);
+    setShowAccount(false);
+    setGateReason("");
+    history.replaceState(null, "", "/app");
+    await load();
+  }
+  /**
+   * Flow H: sync first, warn about unsent sales or a missing connection, then
+   * end the server session. Signing out always succeeds locally (SEC-6/OFF-7).
+   */
+  async function signOut(force = false) {
+    const s = session;
+    if (!s) return;
+    if (!force) {
+      if (!online) {
+        setLeaving({ kind: "offline" });
+        return;
+      }
+      // A session the server already ended cannot sync; only count.
+      const left =
+        lock && !["idle", "manual", "renew"].includes(lock.reason)
+          ? await unsyncedFor(s)
+          : await drainBeforeLeaving(s, online);
+      if (left.sales > 0 || left.payment) {
+        setLeaving({ kind: "pending", ...left });
+        return;
+      }
+    }
+    setLeaving(null);
+    await serverSignOut(s.id);
+    await db.cache.delete("session");
+    clearSessionScope();
+    localStorage.setItem("gm-session-generation", crypto.randomUUID());
+    setLock(null);
+    setActiveSession(null);
+    setCatalog([]);
+  }
   if (loading)
     return (
       <div className="login">
@@ -159,7 +306,7 @@ export default function App() {
             <BrandLogo />
           </div>
           <h1>{t("loginTitle")}</h1>
-          <p>{t("loginHint")}</p>
+          <p>{t("accessArtHint")}</p>
           <div className="login-grid" aria-hidden="true">
             <span />
             <span />
@@ -168,90 +315,42 @@ export default function App() {
           </div>
         </div>
         <div className="login-form">
-          {session && (
-            <Button onClick={() => setShowAccount(false)}>
-              {locale === "es" ? "Volver al restaurante" : "Back to restaurant"}
-            </Button>
-          )}
-          {ownerAccess && (
-            <Button onClick={() => setLocale(locale === "es" ? "en" : "es")}>
-              {locale === "es" ? "English" : "Español"}
-            </Button>
-          )}
-          <OwnerAccess
-            locale={locale}
-            onReady={async () => {
-              clearSessionScope();
-              setActiveSession(null);
-              setCatalog([]);
-              setLoading(true);
-              setShowAccount(false);
-              history.replaceState(null, "", "/app");
-              await load();
-            }}
-            onAccount={setOwnerAccess}
-          />
-          <form
-            hidden={ownerAccess}
-            onSubmit={async (e) => {
-              e.preventDefault();
-              setError("");
-              const f = new FormData(e.currentTarget);
-              try {
-                await api("/login", Object.fromEntries(f));
-                await load();
-              } catch (err) {
-                setError(translateError((err as Error).message, locale));
-              }
-            }}
-          >
-            <div className="row between">
-              <h2>{t("login")}</h2>
-              <Button
-                onClick={() => setLocale(locale === "es" ? "en" : "es")}
-                type="button"
-              >
+          {session ? (
+            <>
+              <Button onClick={() => setShowAccount(false)}>
+                {locale === "es" ? "Volver al restaurante" : "Back to restaurant"}
+              </Button>
+              <Button onClick={() => setLocale(locale === "es" ? "en" : "es")}>
                 {locale === "es" ? "English" : "Español"}
               </Button>
-            </div>
-            <Field label={t("restaurant")}>
-              <input
-                name="tenantId"
-                defaultValue="10000000-0000-4000-8000-000000000001"
-                required
+              <OwnerAccess
+                locale={locale}
+                onReady={ownerReady}
+                onAccount={setOwnerAccess}
               />
-            </Field>
-            <Field label={t("user")}>
-              <input
-                name="login"
-                autoComplete="username"
-                defaultValue="owner"
-                required
-              />
-            </Field>
-            <Field label={t("secret")}>
-              <input
-                name="secret"
-                type="password"
-                autoComplete="current-password"
-                required
-              />
-            </Field>
-            {error && (
-              <p role="alert" className="error">
-                {error}
-              </p>
-            )}
-            <Button variant="primary" type="submit">
-              {t("login")}
-              <ArrowRight size={20} />
-            </Button>
-            <p className="muted">{t("demo")}</p>
-          </form>
+            </>
+          ) : (
+            <AccessGate
+              locale={locale}
+              setLocale={setLocale}
+              reason={gateReason}
+              signupFirst={new URLSearchParams(location.search).has("signup")}
+              onSignedIn={async () => {
+                setGateReason("");
+                await load();
+              }}
+              onOwnerReady={ownerReady}
+            />
+          )}
         </div>
       </div>
     );
   const management = ["owner", "manager"].includes(session.role);
+  const absoluteEnd = session.access?.absoluteExpiresAt
+    ? new Date(session.access.absoluteExpiresAt).getTime()
+    : null;
+  const expiring =
+    absoluteEnd !== null && absoluteEnd - now <= 30 * 60_000;
   const nav =
     session.role === "kitchen"
       ? [["kitchen", ChefHat]]
@@ -326,7 +425,7 @@ export default function App() {
               {session.name} · {t(session.role as Key)}
             </span>
           </span>
-          {management && (
+          {management && session.access?.deviceKind !== "terminal" && (
             <Button
               variant="ghost"
               className="store-switch"
@@ -362,22 +461,16 @@ export default function App() {
           <Button
             variant="ghost"
             className="round"
+            aria-label={t("accessLockNow")}
+            onClick={() => setLock({ reason: "manual" })}
+          >
+            <Lock size={18} />
+          </Button>
+          <Button
+            variant="ghost"
+            className="round"
             aria-label={t("logout")}
-            onClick={async () => {
-              try {
-                await api("/logout", {});
-                await db.cache.delete("session");
-                clearSessionScope();
-                localStorage.setItem(
-                  "gm-session-generation",
-                  crypto.randomUUID(),
-                );
-                setActiveSession(null);
-                setCatalog([]);
-              } catch (e) {
-                setError(translateError((e as Error).message, locale));
-              }
-            }}
+            onClick={() => void signOut()}
           >
             <LogOut size={18} />
           </Button>
@@ -405,6 +498,24 @@ export default function App() {
             )}
           </nav>
         )}
+        {expiring && (
+          <div role="status" className="expiry-banner">
+            <p>
+              {t("accessExpiryWarning")
+                .replace("{name}", session.name)
+                .replace(
+                  "{time}",
+                  new Date(session.access!.absoluteExpiresAt!).toLocaleTimeString(
+                    locale === "es" ? "es-MX" : "en-US",
+                    { hour: "2-digit", minute: "2-digit" },
+                  ),
+                )}
+            </p>
+            <Button onClick={() => setLock({ reason: "renew" })}>
+              {t("accessRenew")}
+            </Button>
+          </div>
+        )}
         {session.sellingAllowed === false && (
           <p role="status" className="warning">
             {locale === "es"
@@ -417,7 +528,7 @@ export default function App() {
             {error}
           </p>
         )}
-        <div hidden={view !== "sell"}>
+        <div hidden={view !== "sell"} key={scope(session)}>
           <Selling
             session={session}
             catalog={catalog}
@@ -429,7 +540,7 @@ export default function App() {
         </div>
         {view !== "sell" && (
           <Operations
-            key={view}
+            key={`${scope(session)}:${view}`}
             view={view}
             session={session}
             locale={locale}
@@ -437,6 +548,98 @@ export default function App() {
           />
         )}
       </main>
+      {lock && (
+        <LockScreen
+          session={session}
+          reason={lock.reason}
+          online={online}
+          locale={locale}
+          onUnlocked={(s) => {
+            const sameEmployee = scope(s) === scope(session);
+            setSession(s);
+            if (s.id !== session.id)
+              localStorage.setItem("gm-session-generation", crypto.randomUUID());
+            void db.cache.put({ id: "session", value: s });
+            setLock(null);
+            setActiveSession(s);
+            if (!sameEmployee) {
+              setView(
+                s.role === "kitchen"
+                  ? "kitchen"
+                  : s.role === "owner"
+                    ? "today"
+                    : "sell",
+              );
+              void api<Product[]>("/catalog")
+                .then((c) => {
+                  setCatalog(c);
+                  return cacheSession(s, c);
+                })
+                .catch(() => {});
+            }
+          }}
+          onContinueOffline={() => setLock(null)}
+          onSignOut={() => void signOut()}
+        />
+      )}
+      {stepUpRequest && (
+        <StepUpDialog
+          session={session}
+          locale={locale}
+          onConfirmed={() => {
+            stepUpRequest.resolve();
+            setStepUpRequest(null);
+          }}
+          onCancel={() => {
+            stepUpRequest.reject(new ApiError("step_up_cancelled", 403));
+            setStepUpRequest(null);
+          }}
+        />
+      )}
+      {leaving && (
+        <Modal
+          title={
+            leaving.kind === "offline"
+              ? t("accessOfflineLogoutTitle")
+              : t("accessPendingTitle")
+          }
+          close={() => setLeaving(null)}
+          closeLabel={t("close")}
+          footer={
+            <div className="row wrap">
+              <Button variant="primary" onClick={() => setLeaving(null)}>
+                {t("accessStay")}
+              </Button>
+              {leaving.kind === "offline" && (
+                <Button
+                  onClick={() => {
+                    setLeaving(null);
+                    setLock({ reason: "manual" });
+                  }}
+                >
+                  {t("accessLockNow")}
+                </Button>
+              )}
+              <Button variant="danger" onClick={() => void signOut(true)}>
+                {t("accessLeaveAnyway")}
+              </Button>
+            </div>
+          }
+        >
+          {leaving.kind === "offline" ? (
+            <p>{t("accessOfflineLogoutBody")}</p>
+          ) : (
+            <>
+              <p>
+                {t("accessPendingBody")
+                  .replace("{n}", String(leaving.sales))
+                  .replace("{name}", session.name)}
+              </p>
+              {leaving.payment && <p>{t("accessPendingPayment")}</p>}
+            </>
+          )}
+        </Modal>
+      )}
     </div>
   );
 }

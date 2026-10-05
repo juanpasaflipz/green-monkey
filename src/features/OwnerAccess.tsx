@@ -4,6 +4,7 @@ import { Button, Field } from "../components/ui";
 import { changeRestaurant, db } from "../offline";
 import { clearSessionScope } from "../api";
 import { OwnerManagement } from "./OwnerManagement";
+import { strings } from "../i18n";
 
 type Account = {
   name: string;
@@ -28,7 +29,7 @@ const copy = {
       "¿Nuevo en Green Monkey? Crea tu restaurante gratis con tu cuenta de Google. Si ya tienes cuenta, entras con el mismo botón.",
     signupUnavailable:
       "La creación de cuentas con Google no está configurada en este entorno.",
-    or: "o entra con el usuario de tu restaurante",
+    or: "o vincula este dispositivo con un código",
     title: "Tu restaurante",
     name: "Nombre del restaurante",
     currency: "Moneda",
@@ -64,7 +65,7 @@ const copy = {
     signupHint:
       "New to Green Monkey? Create your restaurant for free with your Google account. If you already have an account, the same button signs you in.",
     signupUnavailable: "Google account creation is not configured here.",
-    or: "or sign in with your restaurant user",
+    or: "or pair this device with a code",
     title: "Your restaurant",
     name: "Restaurant name",
     currency: "Currency",
@@ -106,6 +107,10 @@ export function OwnerAccess({
   const t = copy[locale];
   const [account, setAccount] = useState<Account | null>(null);
   const [google, setGoogle] = useState(false);
+  // GAP-2: on a shared terminal the owner's Google account is never offered.
+  const [terminal, setTerminal] = useState(
+    new URLSearchParams(location.search).get("auth_error") === "terminal",
+  );
   const [billingSandbox, setBillingSandbox] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -141,6 +146,7 @@ export function OwnerAccess({
         throw Error();
       const providers = await providerResponse.json();
       setGoogle(providers.google);
+      if (providers.terminal) setTerminal(true);
       setBillingSandbox(providers.billingSandbox === true);
       const value = accountResponse.ok ? await accountResponse.json() : null;
       setAccount(value);
@@ -166,7 +172,8 @@ export function OwnerAccess({
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       setInvalid(error.error === "invalid_input");
-      throw Error();
+      if (error.error === "device_is_terminal") setTerminal(true);
+      throw Error(error.error ?? "");
     }
     return response.json();
   }
@@ -192,6 +199,12 @@ export function OwnerAccess({
       setBusy(false);
     }
   }
+  if (terminal)
+    return (
+      <section className="owner-access" aria-label={t.title}>
+        <p role="status">{strings[locale].accessTerminalNoGoogle}</p>
+      </section>
+    );
   if (loading && !account) return <p role="status">{t.loading}</p>;
   return (
     <section className="owner-access" aria-label={t.title}>
