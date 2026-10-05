@@ -171,7 +171,8 @@ Code security:
   device insert, so a code pairs at most one device. Unknown, expired, cancelled
   and used codes all return `pairing_code_invalid`.
 - `POST /api/access/pair` allows 10 failed attempts per minute per IP
-  (`too_many_attempts`); `req.ip` is the real client behind Railway (`trust proxy`).
+  (`too_many_attempts`), keyed on `clientIp(req)` (`server/logging.ts`): the real
+  client behind Railway's edge (`trust proxy`), IPv6 per /56.
 - A code dies with its creator's access: deactivating the creator, or a role
   change away from owner/manager, cancels their open codes, and redemption
   requires an active owner or manager creator.

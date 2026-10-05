@@ -38,6 +38,14 @@ Accessibility target: keyboard-operable flows, focus containment/restoration for
 
 Avoid showing administrative navigation while a cashier takes payment. Offer a visible workspace switch for people with multiple roles. Do not make role detection rely solely on screen width.
 
+Access screens (built; [ACCESS.md](ACCESS.md)):
+- **Unpaired browser:** "Vincular este dispositivo" takes a pairing code; the owner's Google entry appears only where allowed (never on a terminal).
+- **PIN pad:** a paired device shows the restaurant and device name, then "¿Quién entra?" with the active staff list; the employee taps their name and enters their PIN on an on-screen keypad (no system keyboard).
+- **Lock screen** ("Pantalla bloqueada"): shown after the auto-lock, from "Bloquear pantalla" in the header, or when the server ends the session. The workspace stays mounted behind it; the same employee's PIN resumes the cart and open dialogs, another employee's PIN starts their own session. Offline, the locked employee may "Continuar como {name}" while the device's offline window is valid.
+- **Step-up** ("Confirma con tu PIN"): one shared dialog before sensitive commands on terminals; the command is retried unchanged after the PIN.
+- **Manager approval:** a void needing approval asks for "Gerente que autoriza" and "PIN del gerente" in the same dialog.
+- **Equipo** and **Dispositivos** (Configuración): staff with PIN reset, deactivation and unlock; devices with kind, last activity, auto-lock, end session and unpair, plus the pairing-code dialog.
+
 ## Selling layout
 
 ```text

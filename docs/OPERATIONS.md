@@ -2,7 +2,7 @@
 
 This application is under implementation and is not approved for live service.
 
-1. Sign in as the fictional owner: login `owner`, password `demo-green-monkey`. This binds a new browser device. Employee access on that paired browser uses `cashier` / `123456`, or `kitchen` / `654321`.
+1. With `DEMO_TENANT_ID` set to the fictional restaurant (local only), sign in on the demo form as the owner: login `owner`, password `demo-green-monkey`. This pairs the browser as a terminal. Any other browser pairs with a single-use code from **Configuración → Dispositivos → Vincular un dispositivo** (10 minutes). On a paired browser staff tap their name under **¿Quién entra?** and enter their PIN: `cashier` / `123456`, or `kitchen` / `654321`. PIN sessions lock after 3 minutes without input (per-device setting; kitchen staff do not lock by default); refunds, paid-outs, self-approved voids and staff/device commands ask for a fresh PIN on terminals. Staff, devices, lockout and runbooks (lost tablet, fired employee, locked manager): [access](ACCESS.md).
 2. Owners open **Operación → Caja**; cashiers open **Caja**, enter the opening float, and save. The cash drawer belongs to the paired device.
 3. Open **Vender**. Tap an ordinary product once; asada requires a salsa choice. Set service mode, table, call name, and notes.
 4. **Enviar a cocina** persists an order and its first round. Use **Cocina** to acknowledge and mark tickets ready. The bar has its own station filter.
@@ -17,7 +17,7 @@ This application is under implementation and is not approved for live service.
 
 Offline refresh requires the compiled server and service worker, not Vite development serving. Log in and open a drawer while connected first. Cash drafts and queued payments persist in IndexedDB. The sync screen retains errors and retries. Integrated payments, existing server-order checkout, protected overrides, and stock guarantees are unavailable offline.
 
-A pending local sale is not a kitchen acknowledgement. The four-hour eligibility window is bounded by the authenticated session. Pending records survive logout, but revoked-session reconciliation is not yet implemented; do not use this development build for operational offline sales.
+A pending local sale is not a kitchen acknowledgement. A selling session's offline window is a rolling four hours: while the device is in contact, the server appends a renewal whenever the window ends within 3 h 45 min, never past the session's absolute expiry (16 h after a PIN sign-in), and synchronization accepts a sale recorded inside any of those windows. Pending records survive logout. A session that **ended** (logout, switch, PIN reset, role change) still syncs its sales when the same employee signs in again on the same device; a **revoked** session (employee deactivated or device unpaired) sends its sales to manager reconciliation ([access](ACCESS.md)). Do not use this development build for operational offline sales.
 
 ## Database roles
 

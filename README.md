@@ -34,7 +34,7 @@ npm run dev
 npm run dev:ui
 ```
 
-Open **http://127.0.0.1:5173** for the marketing page, or **http://127.0.0.1:5173/app** for the POS/login. Fictional restaurant ID: `10000000-0000-4000-8000-000000000001`. Owner login: `owner` / `demo-green-monkey`. Employee PIN access after owner device pairing: `cashier` / `123456`; kitchen: `kitchen` / `654321`.
+Open **http://127.0.0.1:5173** for the marketing page, or **http://127.0.0.1:5173/app** for the POS/login. The demo owner form ("Acceso de demostración") appears only when `.env` sets `DEMO_TENANT_ID=10000000-0000-4000-8000-000000000001` (the fictional restaurant; `npm run setup:local` writes it, and the server refuses to start with it in production). Owner login: `owner` / `demo-green-monkey`; that pairs the browser as a terminal. Pair any other browser with a code from **Configuración → Dispositivos**. On a paired browser, staff tap their name and enter their PIN: `cashier` / `123456`; kitchen: `kitchen` / `654321`. Pairing, PIN lockout, step-up, the lock screen and staff/device management: [access](docs/ACCESS.md).
 
 New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
 
@@ -50,6 +50,7 @@ npm run test:db
 npm run test:db:qualification
 npm run build
 npm run test:restart # isolated local dev fixture; starts its own server on 3003
+npm run test:access-http # access checks against the compiled server; same fixture and port
 npm run test:drain # compiled web and worker exit cleanly on SIGTERM; same fixture and port
 NODE_ENV=production npm start
 npm run start:worker # compiled worker; `npm run worker` runs it from source
@@ -57,15 +58,20 @@ npm run start:worker # compiled worker; `npm run worker` runs it from source
 
 `test:db` runs the 17 core operational scenarios. `test:db:qualification`
 also runs the identity, owner management, entitlement, billing, Free-limit,
-offline-recovery, item-void and ops (roles, migrations, jobs, backups,
-provisioning) suites in a fixed order. `npm run test:db:recovery` runs the
-recovery database slice directly. All database runners require both
+offline-recovery, item-void, ops (roles, migrations, jobs, backups,
+provisioning) and access (`npm run test:db:access`: pairing codes, PIN
+throttling, sessions, step-up, staff and devices) suites in a fixed order.
+`npm run test:db:recovery` runs the recovery database slice directly. All database runners require both
 `TEST_DATABASE_URL` and `TEST_MIGRATION_DATABASE_URL`; the runtime target must end
 in `_test`, and both local or Neon endpoints must satisfy the exact allowlists
 described below. Prepare that separate target with migrations, grants and
 fictional fixtures first. The runners never fall back to `DATABASE_URL`.
 
-Browser checks require a running server and Chromium:
+Browser checks require a running server and Chromium. The server under test
+needs `DEMO_TENANT_ID=10000000-0000-4000-8000-000000000001`,
+`ACCESS_STEP_UP_SECONDS=1800` and `ACCESS_IDLE_LOCK_DEFAULT_SECONDS=0` (the
+suites sign in through the demo form and fast-forward the clock past the
+default auto-lock); `scripts/compiled-local.sh` sets them:
 
 ```sh
 npx playwright install chromium

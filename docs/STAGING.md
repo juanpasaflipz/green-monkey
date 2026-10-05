@@ -73,7 +73,14 @@ Staging is running at https://green-monkey-staging.up.railway.app. It is a devel
 
 ## Access
 
-On the provisioning workstation, `.env.staging-access` holds the generated owner password and employee PINs, together with the URL and restaurant ID. The file is ignored by Git and readable only by its owner. The public local-demo password does not work in staging. Login as owner first to pair a browser before employee PIN access.
+On the provisioning workstation, `.env.staging-access` holds the generated owner password and employee PINs, together with the URL and restaurant ID. The file is ignored by Git and readable only by its owner. The public local-demo password does not work in staging.
+
+From the access release on (migration 023, [ACCESS.md](ACCESS.md); not yet deployed to staging):
+- The owner-password form ("Acceso de demostración") appears only for the restaurant named by `DEMO_TENANT_ID` on `web`. On staging set it to the **fictional** staging restaurant only; never set it in production (the server refuses to start, and `.railway/railway.ts` declares it for non-production environments only). Railway's documentation does not say what `preserve()` does for a variable that is not set yet, so set `DEMO_TENANT_ID` on staging's `web` **before** the first `railway config apply` that declares it, and check that apply's plan.
+- Every other browser pairs with a single-use code from **Configuración → Dispositivos → Vincular un dispositivo** (10 minutes, at most 5 open). Staff then pick their name and enter their PIN; nobody types a restaurant ID.
+- `ACCESS_STEP_UP_SECONDS` and `ACCESS_IDLE_LOCK_DEFAULT_SECONDS` are optional (defaults 120 s and 180 s) and declared with `preserve()`; leave them unset on staging unless a check needs otherwise.
+- `npm run access:pairing-code` is a support fallback that writes a code straight into the database with the migration credential and the target's `JWT_SECRET`; on staging prefer a code from Dispositivos.
+- `scripts/staging-smoke.mjs` now signs in on the demo form, pairs a second browser with a code, signs the cashier in by PIN, passes a refund's PIN step-up and unpairs the synthetic terminal afterwards. It has not run against staging yet.
 
 The other ignored files separate provisioning credentials, staging runtime credentials, test credentials, workspace API access and a staging-only Railway deployment token. Do not copy these files into source archives, screenshots or tickets.
 

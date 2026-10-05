@@ -13,8 +13,12 @@ review records and finish outstanding work, but cannot start new Free sales.
 
 Canonical order/round creation checks the live selection and entitlement after
 idempotency replay. Forging the offline channel does not bypass the gate. Signup,
-password pairing, invitation acceptance and employee management share serialized
-selection logic and database unique slots. Creating extra owner-role employees is
+device pairing (single-use codes from Dispositivos; owner-password pairing only on
+the fictional `DEMO_TENANT_ID` tenant), the first sign-in on a device, invitation
+acceptance and employee management share serialized selection logic and database
+unique slots. The first device that signs in takes the Free selling slot; a
+terminal paired later shows that it is not selected until the owner selects it,
+and unpairing a device frees its slot. Creating extra owner-role employees is
 rejected. Expired Pro immediately uses Free selections for new online sales.
 Previously issued offline leases remain bounded to four hours; accepted queued
 cash is not erased or paywalled. Server sessions record whether selling was
@@ -67,6 +71,8 @@ accepted result.
 | Automatic offline sync | `/api/sync` | Original operator identity/device | Recovery of bounded prior authorization only. Requires the original unrevoked session, issued selling authorization, device, employee, drawer, recorded time and offline deadline. |
 | Manager offline review/reconciliation | `/api/sync/review`, `/api/sync/reconcile` | Manager/owner | Audited correction. Never a general `channel: offline` bypass. Item 4 must replace the current draft reconciliation model before release. |
 | Public QR/kiosk order | scoped public ordering token | Token scope plus Pro tenant | New operational action. Pro is checked server-side; expired Free access cannot create an order. |
+| Staff management | `/api/access/staff*`, legacy team save | Owner (managers list and unlock) | Recovery/configuration. Allowed from unselected or downgraded sessions so an owner can always fix the team; adding or reactivating staff still takes a Free team slot (`employeeSlot`). Step-up on terminals. |
+| Device management and pairing codes | `/api/access/devices*`, `/api/access/pairing-codes*` | Owner and manager (personal devices owner-only) | Recovery/configuration. Allowed from unselected or downgraded sessions; unpairing frees the device's Free slot. Pairing itself never grants selling. Step-up on terminals. |
 | Account/location/invitation/billing commands | `/api/auth/account/*`, `/api/billing/*` | Owner account and CSRF; billing worker where applicable | Account administration, not POS recovery. Organization ownership, invitation identity, one-Free-location and canonical billing rules apply independently of device selection. |
 
 `tests/free-limits-db.ts` covers selected versus unselected sales and management,
