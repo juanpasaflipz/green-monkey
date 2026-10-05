@@ -1804,6 +1804,69 @@ test.describe("offline table service (Beta) turned on", () => {
     expect(synced.tenders).toHaveLength(2);
   });
 
+  test("Online charge waits for this device's offline round of the same order, so its items are charged", async ({
+    page,
+    context,
+  }) => {
+    // Regression OFF-R26: after reconnect Selling showed the server order
+    // without an offline round whose sync was still failing; charging that
+    // balance left the round's items unpaid, and the round was then refused
+    // on the paid check.
+    await page.addInitScript(() => {
+      window.print = () => {};
+    });
+    const payments = onlinePayments(page);
+    await login(page);
+    await openDrawer(page);
+    const order = await sendTableOnline(page, "Mesa 08");
+    await goOffline(context, page);
+    await product(page, "Agua de jamaica").click();
+    await page
+      .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+      .click();
+    const existing = page.locator(".existing");
+    await expect(existing).toContainText("Agua de jamaica");
+    // The connection returns, but the round's sync keeps failing (transient).
+    await holdSync(context);
+    await context.setOffline(false);
+    await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    // The server order replaces the projection: it lacks the round.
+    await expect(existing).not.toContainText("Agua de jamaica", {
+      timeout: 30_000,
+    });
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Cobrar" });
+    const confirm = dialog.getByRole("button", {
+      name: "Confirmar cobro",
+      exact: true,
+    });
+    await confirm.click();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "productos guardados sin conexión que aún no se sincronizan",
+    );
+    expect(payments, "the server balance lacks the round").toEqual([]);
+    // Once the round syncs, Selling reads the order again with the round; the
+    // amount still at the old balance in the open dialog follows the new one.
+    await releaseSync(context);
+    await expect(existing).toContainText("Agua de jamaica", {
+      timeout: 60_000,
+    });
+    const withRound = await serverOrder(page, order.id);
+    expect(withRound.total).toBeGreaterThan(order.total);
+    await expect(dialog.getByLabel("Importe")).toHaveValue(
+      (withRound.total / 100).toFixed(2),
+    );
+    await confirm.click();
+    await expect(page.locator(".receipt")).toContainText("Cobrado");
+    expect(payments).toHaveLength(1);
+    const paid = await serverOrder(page, order.id);
+    expect(paid.paid).toBe(withRound.total);
+    expect(paid.tenders).toHaveLength(1);
+    expect(
+      (await allRows(page)).filter((row) => row.status === "conflict"),
+    ).toHaveLength(0);
+  });
+
   test("Open orders refresh on mount and every 120 s while offline table service is on", async ({
     page,
   }) => {

@@ -1427,13 +1427,28 @@ function serverIdOf(order: Order, rows: Map<string, Pending>): string | null {
   return view.offline?.serverOrderId ?? null;
 }
 
+/** Guard codes after which syncing this device's records now may clear the way. */
+export const SYNC_TO_CHARGE_CODES = [
+  "offline_payment_pending_for_order",
+  "offline_round_pending_for_order",
+  "offline_round_review_for_order",
+];
+
 /**
- * Online payment guard (OFF-R5): while an offline payment for this order is
- * still unresolved on this device (pending, syncing or in review), the server
- * balance does not include it, so charging that balance could charge the
- * guest twice. Blocks until it syncs or a manager resolves it.
+ * Online charge guard: the server balance is only the whole bill once it
+ * contains every record this device (any employee) saved offline for the
+ * order. Blocks, until those records sync or a manager resolves them:
+ * - an unresolved payment (pending, syncing or in review): the server balance
+ *   lacks it, so charging it could charge the guest twice (OFF-R5);
+ * - an unresolved round: the server balance lacks its items, so the guest
+ *   would never be charged for them and the round, refused later on a paid
+ *   check, could only be archived (OFF-R26). A round in review needs a
+ *   manager first. Another employee's round syncs only in that employee's
+ *   session (E2), so it is named as such: syncing now cannot clear it;
+ * - a server order on screen without one of this device's synced rounds: it
+ *   is being read again, and its amount was taken from the old total.
  */
-export async function assertNoUnsyncedPayment(
+export async function assertNoUnsyncedRecords(
   session: Session,
   order: Order | null,
 ): Promise<void> {
@@ -1442,15 +1457,37 @@ export async function assertNoUnsyncedPayment(
   const byId = new Map(rows.map((row) => [row.id, row]));
   const orderId = serverIdOf(order, byId);
   if (!orderId) return;
+  const forOrder = rows.filter((row) => {
+    const body = row.body as OfflineRecordV3;
+    return (
+      (body.kind === "payment" || body.kind === "round") &&
+      serverTargetOf(body, byId) === orderId
+    );
+  });
+  const kindOf = (row: Pending) => (row.body as OfflineRecordV3).kind;
   if (
-    rows.some(
-      (row) =>
-        row.status !== "synced" &&
-        (row.body as OfflineRecordV3).kind === "payment" &&
-        serverTargetOf(row.body as OfflineRecordV3, byId) === orderId,
-    )
+    forOrder.some((row) => kindOf(row) === "payment" && row.status !== "synced")
   )
     fail("offline_payment_pending_for_order");
+  const rounds = forOrder.filter((row) => kindOf(row) === "round");
+  if (rounds.some((row) => row.status === "conflict"))
+    fail("offline_round_review_for_order");
+  const unsynced = rounds.filter((row) => row.status !== "synced");
+  if (unsynced.some((row) => row.scope === scope(session)))
+    fail("offline_round_pending_for_order");
+  if (unsynced.length) fail("offline_round_other_employee_for_order");
+  if (
+    isServerOrder(order) &&
+    rounds.some((row) => {
+      const result = resultOf(row);
+      return (
+        typeof result?.roundNumber === "number" &&
+        (!result.orderId || result.orderId === order.id) &&
+        !order.lines.some((line) => (line.round ?? 1) === result.roundNumber)
+      );
+    })
+  )
+    fail("offline_order_outdated");
 }
 
 /**

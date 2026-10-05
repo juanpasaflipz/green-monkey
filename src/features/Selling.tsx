@@ -261,6 +261,18 @@ export function Selling({
   }
   const draftTotal = priced.reduce((a, l) => a + l.total, 0);
   const due = (current ? current.total - current.paid : 0) + draftTotal;
+  // OFF-R26: the order on screen can be read again while the payment dialog
+  // is open (one of this device's offline rounds or payments synced). An
+  // amount still at the old balance follows the new one.
+  const shownDue = useRef(due);
+  useEffect(() => {
+    const before = (shownDue.current / scale).toFixed(exponent),
+      after = (due / scale).toFixed(exponent);
+    shownDue.current = due;
+    if (!payment || splitItems || before === after) return;
+    setAmount((value) => (value === before ? after : value));
+    setReceived((value) => (value === before ? after : value));
+  }, [due]);
   const categories = [...new Set(catalog.map((p) => p.category[locale]))];
   const filtered = catalog.filter(
     (p) =>
@@ -519,6 +531,14 @@ export function Selling({
       )
         await clearPaymentAttempt(attemptId, submittedAttempt);
       setPendingPayment(!!(await db.cache.get(attemptId)));
+      // OFF-R26: the order on screen lacks a round this device synced: read
+      // it again (an amount still at the old balance follows the new one).
+      if ((e as Error).message === "offline_order_outdated" && current) {
+        const fresh = await api<Order>("/orders/" + current.id).catch(
+          () => null,
+        );
+        if (fresh) setCurrent(fresh);
+      }
       setError(translateError((e as Error).message, locale));
     } finally {
       setBusy(false);

@@ -440,6 +440,22 @@ export default defineArea({
       "Esta orden tiene un pago por confirmar. Se resolverá al volver la conexión; no cobres otra vez.",
       "This order has a payment awaiting confirmation. It will be resolved when the connection returns; do not charge again.",
     ],
+    offline_round_pending_for_order: [
+      "Esta orden tiene productos guardados sin conexión que aún no se sincronizan, y el saldo del servidor no los incluye. Los estamos sincronizando; vuelve a cobrar en unos segundos.",
+      "This order has items saved offline that have not synced yet, and the server balance does not include them. We are syncing them now; charge again in a few seconds.",
+    ],
+    offline_round_other_employee_for_order: [
+      "Esta orden tiene productos que otra persona guardó sin conexión en este dispositivo y que aún no se sincronizan, y el saldo del servidor no los incluye. Se sincronizan cuando esa persona vuelve a iniciar sesión aquí; si no puede, un gerente debe revisarlos en Sincronización antes de cobrar.",
+      "This order has items another person saved offline on this device that have not synced yet, and the server balance does not include them. They sync when that person signs in here again; if they cannot, a manager must review them on the Sync screen before charging.",
+    ],
+    offline_round_review_for_order: [
+      "Esta orden tiene productos guardados sin conexión que no se pudieron sincronizar, y el saldo del servidor no los incluye. Un gerente debe revisarlos en Sincronización antes de cobrar.",
+      "This order has items saved offline that could not sync, and the server balance does not include them. A manager must review them on the Sync screen before charging.",
+    ],
+    offline_order_outdated: [
+      "La orden cambió: ya incluye productos guardados sin conexión. Revisa el importe y vuelve a cobrar.",
+      "The order changed: it now includes items saved offline. Check the amount and charge again.",
+    ],
     offline_split_unavailable: [
       "Dividir por productos no está disponible sin conexión. Divide por importe.",
       "Item split is unavailable offline. Split by amount.",

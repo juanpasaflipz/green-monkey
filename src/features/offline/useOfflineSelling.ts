@@ -17,7 +17,6 @@ import { api } from "../../api";
 import { useConnectivity } from "../../connectivity";
 import { db } from "../../offline";
 import {
-  assertNoUnsyncedPayment,
   cachedServerOpenOrders,
   isLocalOrder,
   localOpenOrders,
@@ -38,6 +37,7 @@ import {
   refreshOfflineSettings,
   useOfflineTableService,
 } from "../../offline-settings";
+import { guardOnlineCharge } from "../../offline-queue";
 import { translateError } from "../../i18n";
 import {
   KitchenTicketDocument,
@@ -232,11 +232,14 @@ export function useOfflineSelling({
       return saveOfflineCheckout(ctx, values, { ...cart, autoPrint }, items);
     },
     /**
-     * Before an online charge: refuses while an offline payment for the same
-     * order is unresolved on this device (OFF-R5), so it is never charged twice.
+     * Before an online charge: refuses while this device has an unresolved
+     * offline payment (OFF-R5) or round (OFF-R26) for the same order, so the
+     * guest is never charged twice and never leaves without paying the items
+     * saved offline. The refusal syncs those records now, without waiting
+     * for the retry backoff.
      */
     guardOnlinePayment: (order: Order | null) =>
-      assertNoUnsyncedPayment(session, order),
+      guardOnlineCharge(session, order),
     /** Cached server orders and orders created on this device. */
     async openOrders(): Promise<{
       refreshedAt: string | null;

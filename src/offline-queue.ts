@@ -8,12 +8,17 @@
  */
 import { liveQuery } from "dexie";
 import { useEffect, useState } from "react";
-import type { Session } from "../shared/domain";
+import type { Order, Session } from "../shared/domain";
 import { api, ApiError } from "./api";
 import { getConnectivitySnapshot, useConnectivity } from "./connectivity";
 import { db, type Pending } from "./offline";
 import { scope } from "./offline-keys";
-import { rememberSyncedOrder } from "./offline-records";
+import {
+  assertNoUnsyncedRecords,
+  OfflineSaveError,
+  rememberSyncedOrder,
+  SYNC_TO_CHARGE_CODES,
+} from "./offline-records";
 import {
   classifySyncError,
   RESOLVED_RETENTION_MS,
@@ -75,6 +80,30 @@ export function orderKeys(
     ?.orderId;
   if (parent?.status === "synced" && orderId) keys.push(`server:${orderId}`);
   return keys;
+}
+
+/**
+ * Before an online charge: refuses while this device has an unresolved
+ * offline payment (OFF-R5) or round (OFF-R26) for the same order, so the guest
+ * is never charged twice and never leaves without paying the items saved
+ * offline. The refusal syncs this employee's records now, without waiting for
+ * the retry backoff (a conflict is retried too; it stays for a manager if the
+ * server refuses it again).
+ */
+export async function guardOnlineCharge(
+  s: Session,
+  order: Order | null,
+): Promise<void> {
+  try {
+    await assertNoUnsyncedRecords(s, order);
+  } catch (e) {
+    if (
+      e instanceof OfflineSaveError &&
+      SYNC_TO_CHARGE_CODES.includes(e.message)
+    )
+      void syncPending(s, { force: true, reason: "manual" }).catch(() => {});
+    throw e;
+  }
 }
 
 /**

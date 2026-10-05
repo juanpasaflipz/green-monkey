@@ -21,12 +21,12 @@ vi.mock("../src/api", async (importOriginal) => ({
 }));
 
 import { api, ApiError } from "../src/api";
-import { syncPending } from "../src/offline-queue";
+import { guardOnlineCharge, syncPending } from "../src/offline-queue";
 import { resetConnectivityForTests } from "../src/connectivity";
 import { scope } from "../src/offline-keys";
 import {
   OfflineSaveError,
-  assertNoUnsyncedPayment,
+  assertNoUnsyncedRecords,
   cachedServerOpenOrders,
   findOpenOrder,
   isLocalOrder,
@@ -754,7 +754,7 @@ describe("online payment guard (OFF-R5)", () => {
       operationId: crypto.randomUUID(),
     });
     const online = serverOrder(table);
-    expect(await refusal(assertNoUnsyncedPayment(s, online))).toBe(
+    expect(await refusal(assertNoUnsyncedRecords(s, online))).toBe(
       "offline_payment_pending_for_order",
     );
     const [payment] = [...fakeDb.pending.rows.values()];
@@ -762,7 +762,7 @@ describe("online payment guard (OFF-R5)", () => {
       status: "conflict",
       error: "offline_payment_exceeds_due",
     });
-    expect(await refusal(assertNoUnsyncedPayment(s, online))).toBe(
+    expect(await refusal(assertNoUnsyncedRecords(s, online))).toBe(
       "offline_payment_pending_for_order",
     );
     await markSynced(
@@ -770,7 +770,7 @@ describe("online payment guard (OFF-R5)", () => {
       { orderId: table, tenderId: uuid(76) },
       Date.now(),
     );
-    await expect(assertNoUnsyncedPayment(s, online)).resolves.toBeUndefined();
+    await expect(assertNoUnsyncedRecords(s, online)).resolves.toBeUndefined();
     // The copy on screen lacks that tender: Selling reads the order again.
     expect(await serverLink(s, online)).toEqual({
       orderId: table,
@@ -783,7 +783,172 @@ describe("online payment guard (OFF-R5)", () => {
       ),
     ).toEqual({ orderId: table, stale: false });
     await expect(
-      assertNoUnsyncedPayment(s, serverOrder(uuid(79))),
+      assertNoUnsyncedRecords(s, serverOrder(uuid(79))),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("online charge guard: rounds saved offline (OFF-R26)", () => {
+  it("an unsynced offline round blocks charging its server order online until it syncs and the order on screen shows it", async () => {
+    const s = session();
+    const table = uuid(80);
+    await cacheSnapshot(s, [serverCopy(table)]);
+    const round = roundInput(100);
+    await saveOfflineRound(ctxOf(s), { target: { orderId: table }, ...round });
+    // Online again, Selling shows the server order, which lacks the round.
+    const online = serverOrder(table);
+    expect(await refusal(assertNoUnsyncedRecords(s, online))).toBe(
+      "offline_round_pending_for_order",
+    );
+    // The deploy or database outage the spec targets: the sync answers 503.
+    mockedApi.mockRejectedValueOnce(
+      new ApiError("server_unavailable", 503, "server"),
+    );
+    await syncPending(s, { force: true, reason: "manual" });
+    expect(await fakeDb.pending.get(round.operationId)).toMatchObject({
+      status: "pending",
+      error: "server_unavailable",
+    });
+    expect(await refusal(assertNoUnsyncedRecords(s, online))).toBe(
+      "offline_round_pending_for_order",
+    );
+    // Refused as a conflict (settings changed, catalog changed): a manager
+    // must review it before anyone charges the order.
+    await fakeDb.pending.update(round.operationId, {
+      status: "conflict",
+      error: "settings_changed",
+    });
+    expect(await refusal(assertNoUnsyncedRecords(s, online))).toBe(
+      "offline_round_review_for_order",
+    );
+    // Synced as round 2: the order on screen, read before, is outdated.
+    await markSynced(
+      round.operationId,
+      { orderId: table, roundNumber: 2 },
+      Date.now(),
+    );
+    expect(await refusal(assertNoUnsyncedRecords(s, online))).toBe(
+      "offline_order_outdated",
+    );
+    // Synced and shown: the server balance is the whole bill.
+    await expect(
+      assertNoUnsyncedRecords(s, serverOrder(table, { rounds: [1, 2] })),
+    ).resolves.toBeUndefined();
+    // Other orders were never blocked.
+    await expect(
+      assertNoUnsyncedRecords(s, serverOrder(uuid(81))),
+    ).resolves.toBeUndefined();
+  });
+
+  it("the refusal syncs the round now, past its backoff, and the next charge goes through once the order shows it", async () => {
+    const s = session();
+    const table = uuid(88);
+    await cacheSnapshot(s, [serverCopy(table)]);
+    const round = roundInput(100);
+    await saveOfflineRound(ctxOf(s), { target: { orderId: table }, ...round });
+    // A transient failure put the round in backoff for a minute.
+    await fakeDb.pending.update(round.operationId, {
+      attempts: 5,
+      nextAt: Date.now() + 60_000,
+      error: "server_unavailable",
+    });
+    mockedApi.mockResolvedValueOnce({
+      kind: "round",
+      orderId: table,
+      roundNumber: 2,
+    });
+    await expect(guardOnlineCharge(s, serverOrder(table))).rejects.toThrow(
+      "offline_round_pending_for_order",
+    );
+    await vi.waitFor(async () =>
+      expect(await fakeDb.pending.get(round.operationId)).toMatchObject({
+        status: "synced",
+      }),
+    );
+    expect(mockedApi).toHaveBeenCalledWith(
+      "/offline/sync",
+      expect.objectContaining({ operationId: round.operationId }),
+      expect.anything(),
+    );
+    await expect(guardOnlineCharge(s, serverOrder(table))).rejects.toThrow(
+      "offline_order_outdated",
+    );
+    await expect(
+      guardOnlineCharge(s, serverOrder(table, { rounds: [1, 2] })),
+    ).resolves.toBeUndefined();
+  });
+
+  it("another employee's unsynced round on this device, and a round of a synced local order, block too; an archived one does not", async () => {
+    const s = session();
+    const table = uuid(82);
+    await cacheSnapshot(s, [serverCopy(table)]);
+    const other = session({ id: uuid(83), employeeId: uuid(84) });
+    await cacheSnapshot(other, [serverCopy(table)]);
+    const round = roundInput(60);
+    await saveOfflineRound(ctxOf(other), {
+      target: { orderId: table },
+      ...round,
+    });
+    // It syncs only in that employee's session (E2): the refusal says so, and
+    // this session's forced sync never sends it.
+    expect(await refusal(assertNoUnsyncedRecords(s, serverOrder(table)))).toBe(
+      "offline_round_other_employee_for_order",
+    );
+    await expect(guardOnlineCharge(s, serverOrder(table))).rejects.toThrow(
+      "offline_round_other_employee_for_order",
+    );
+    await syncPending(s, { force: true, reason: "manual" });
+    expect(mockedApi).not.toHaveBeenCalledWith(
+      "/offline/sync",
+      expect.objectContaining({ operationId: round.operationId }),
+      expect.anything(),
+    );
+    // In review, a manager decides first, whoever saved it.
+    await fakeDb.pending.update(round.operationId, {
+      status: "conflict",
+      error: "offline_catalog_changed",
+    });
+    expect(await refusal(assertNoUnsyncedRecords(s, serverOrder(table)))).toBe(
+      "offline_round_review_for_order",
+    );
+    await fakeDb.pending.update(round.operationId, {
+      status: "archived",
+      archivedAt: Date.now(),
+    });
+    await expect(
+      assertNoUnsyncedRecords(s, serverOrder(table)),
+    ).resolves.toBeUndefined();
+    // A local order that synced as uuid(85), with a round still queued
+    // against the local order.
+    const open = await localOrder(s);
+    const localRound = roundInput(40);
+    await saveOfflineRound(ctxOf(s), {
+      target: { localOrderOperationId: open.id },
+      ...localRound,
+    });
+    await markSynced(
+      open.id,
+      { orderId: uuid(85), orderNumber: 7 },
+      Date.now(),
+    );
+    expect(
+      await refusal(assertNoUnsyncedRecords(s, serverOrder(uuid(85)))),
+    ).toBe("offline_round_pending_for_order");
+  });
+
+  it("a synced round whose result names another order never blocks this one", async () => {
+    const s = session();
+    const table = uuid(86);
+    await cacheSnapshot(s, [serverCopy(table)]);
+    const round = roundInput(30);
+    await saveOfflineRound(ctxOf(s), { target: { orderId: table }, ...round });
+    await markSynced(
+      round.operationId,
+      { orderId: uuid(87), roundNumber: 2 },
+      Date.now(),
+    );
+    await expect(
+      assertNoUnsyncedRecords(s, serverOrder(table)),
     ).resolves.toBeUndefined();
   });
 });
@@ -1065,7 +1230,9 @@ describe("synced local orders (OFF-R12)", () => {
     expect(await localOpenOrders(s)).toEqual([]);
     const served = await findOpenOrder(s, { localOrderOperationId: open.id });
     expect(served).toMatchObject({ id: serverId, total: 250, paid: 0 });
-    expect(served!.offline.provisionalNumber).toBe(open.offline.provisionalNumber);
+    expect(served!.offline.provisionalNumber).toBe(
+      open.offline.provisionalNumber,
+    );
     // Paid online in full; Selling caches the paid copy.
     vi.setSystemTime(new Date("2026-10-05T20:05:00.000Z"));
     await rememberOpenOrder(
@@ -1225,9 +1392,9 @@ describe("kitchen tickets of an order on screen (OFF-R19)", () => {
     });
     expect(paid.operationIds).toHaveLength(1);
     expect(paid.operationIds[0]).not.toBe(open.id);
-    expect((await fakeDb.pending.get(paid.operationIds[0]!))!.body).toMatchObject(
-      { kind: "round" },
-    );
+    expect(
+      (await fakeDb.pending.get(paid.operationIds[0]!))!.body,
+    ).toMatchObject({ kind: "round" });
   });
 });
 
