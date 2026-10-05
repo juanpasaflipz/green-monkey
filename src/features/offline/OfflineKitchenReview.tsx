@@ -51,7 +51,7 @@ export function OfflineKitchenReview({
 }: {
   session: Session;
   locale: Locale;
-  /** The KDS's selected station ("kitchen" or "bar"). */
+  /** The KDS's selected station: "all", "kitchen" or "bar" (service's Kitchen). */
   station: string;
   onDecided?: () => void;
 }) {
@@ -109,7 +109,10 @@ export function OfflineKitchenReview({
       document.removeEventListener("visibilitychange", visible);
     };
   }, [net.canUseServer, load]);
-  const items = all.filter((item) => item.station === station);
+  // "all" (service's KDS) shows every station, so clearing it clears what is
+  // on screen; a single-station screen never clears the other one (OFF-R23).
+  const items =
+    station === "all" ? all : all.filter((item) => item.station === station);
   const others = all.length - items.length;
   async function decide(
     roundId: string,

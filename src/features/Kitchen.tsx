@@ -21,7 +21,7 @@ import { usePoll, useStoredState } from "../serviceHooks";
 import { PrintSettingsDialog, printDocument, usePrintSettings } from "../print";
 import { KitchenTicketDocument, ticketFromKitchenRound } from "./KitchenTicket";
 
-type Station = "all" | "kitchen" | "bar";
+export type Station = "all" | "kitchen" | "bar";
 type FullFeed = Extract<KitchenFeed, { unchanged: false }>;
 const isStation = (v: unknown): v is Station =>
   v === "all" || v === "kitchen" || v === "bar";
@@ -67,8 +67,12 @@ export function Kitchen({
   session: Session;
   locale: Locale;
   refreshKey: number;
-  /** Slot rendered above the tickets (offline 026 passes its review lane). */
-  beforeTickets?: ReactNode;
+  /**
+   * Slot rendered above the tickets (offline 026 passes its review lane). A
+   * function receives the station on screen, so the lane shows only what this
+   * screen shows (offline OFF-R23).
+   */
+  beforeTickets?: ReactNode | ((station: Station) => ReactNode);
 }) {
   const t = (k: Key) => strings[locale][k];
   const role = session.role;
@@ -472,7 +476,9 @@ export function Kitchen({
           {t("serviceKdsTruncated")}
         </p>
       )}
-      {beforeTickets}
+      {typeof beforeTickets === "function"
+        ? beforeTickets(station)
+        : beforeTickets}
       <div className="kitchen-grid">
         {rounds.map((r) => {
           const age = Math.max(
