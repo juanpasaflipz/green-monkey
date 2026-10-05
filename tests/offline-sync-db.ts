@@ -1341,6 +1341,38 @@ try {
   );
   assert.equal(queuedReady.reconcilable, true);
   assert.equal(queuedReady.target?.orderId, queuedOpened.orderId);
+  // OFF-R10: a reconcile into an order waits for a drawer close in progress
+  // (which holds the drawer row), so the close either counts the tender or
+  // happens first and the tender is a late adjustment; never a lost tender.
+  let releaseDrawer!: () => void;
+  const drawerHeld = new Promise<void>((resolve) => (releaseDrawer = resolve));
+  let drawerLocked!: () => void;
+  const locked = new Promise<void>((resolve) => (drawerLocked = resolve));
+  const closing = admin.begin(async (a) => {
+    await a`select id from cash_sessions where tenant_id=${tenantId} and id=${ids.drawer1} for update`;
+    drawerLocked();
+    await drawerHeld;
+  });
+  await locked;
+  await assert.rejects(
+    run(async (tx) => {
+      await tx`set local lock_timeout = '300ms'`;
+      return reconcileOfflineRecord(tx, manager1, {
+        record: queuedPayment,
+        reason: "Shift change; cash counted for the table",
+        confirmed: true,
+      });
+    }),
+    /lock timeout/,
+    "waits for the drawer row",
+  );
+  releaseDrawer();
+  await closing;
+  assert.equal(
+    await count("tenders", "order_id=$2", queuedOpened.orderId),
+    0,
+    "nothing recorded while it waited",
+  );
   const intoOrder = await run((tx) =>
     reconcileOfflineRecord(tx, manager1, {
       record: queuedPayment,
