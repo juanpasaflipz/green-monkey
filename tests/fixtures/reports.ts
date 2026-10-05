@@ -369,6 +369,13 @@ export function aggregateWorld(world: World, range: DateRange) {
  * fiscalSummary totals for the world's tickets in `range` (null when the restaurant issues no
  * tickets). The base uses a flat 16 % extraction per ticket; reports never recomputes IVA, it only
  * needs consistent totals to compose the margin and the fiscal checks.
+ *
+ * `refundGross` is every refund after fiscal_epoch() in range, ticketed order or not: fiscal's
+ * recordRefundTax (fiscal spec §4.7 step 4) writes fiscal_adjustments for a refund of an order
+ * without a ticket too (kill switch, pre-epoch order, pre-ticket item refund), from the order's
+ * provisional tax groups, and fiscalSummary sums every adjustment by its business date. Only a
+ * batchless refund recorded by the previous revision during a deploy overlap has no adjustment;
+ * refunds_vs_fiscal fails on purpose for that day (reports spec §2.2, DB test 37).
  */
 export function worldFiscalTotals(
   world: World,

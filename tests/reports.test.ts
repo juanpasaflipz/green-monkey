@@ -23,6 +23,7 @@ import {
   differenceKind,
   drawerRow,
   drawerSummary,
+  drawersUpTo,
   encodeReportCursor,
   escapeLike,
   EXCEPTION_KINDS,
@@ -426,6 +427,59 @@ describe("business-day formula (FIN-04, DB-7, OFF-9)", () => {
         ),
       ).toBeLessThan(0);
     }
+  });
+
+  it("wideWindow needs its full ±3 days: the far-apart worst cases (UTC+14 vs UTC−12, cutoff 0 vs 23:59) fall outside ±2 days", () => {
+    const east = { timezone: "Pacific/Kiritimati", cutoff: 0 }; // UTC+14, no DST
+    const west = { timezone: "Etc/GMT+12", cutoff: 1439 }; // UTC−12, no DST
+    const range = { from: "2026-10-05", to: "2026-10-07" };
+    const instant = (s: string) => Temporal.Instant.from(s);
+    const minus1ms = (s: string) =>
+      instant(s).subtract({ milliseconds: 1 }).toString();
+    const inside = (at: string, w: { start: string; end: string }) =>
+      Temporal.Instant.compare(instant(w.start), instant(at)) <= 0 &&
+      Temporal.Instant.compare(instant(at), instant(w.end)) < 0;
+    const narrow = (settings: typeof east, days: number) => ({
+      start: boundaries(
+        addDays(range.from, -days),
+        settings.timezone,
+        settings.cutoff,
+      ).start,
+      end: boundaries(
+        addDays(range.to, days),
+        settings.timezone,
+        settings.cutoff,
+      ).end,
+    });
+    for (const [current, past] of [
+      [west, east],
+      [east, west],
+    ]) {
+      const w = wideWindow(range, current);
+      expect(w).toEqual(narrow(current, 3));
+      // Every edge instant of both range ends under the past settings is inside the window.
+      for (const date of [range.from, range.to]) {
+        const day = boundaries(date, past.timezone, past.cutoff);
+        for (const at of [day.start, minus1ms(day.end)]) {
+          expect(wallClockBusinessDate(at, past.timezone, past.cutoff)).toBe(
+            date,
+          );
+          expect(inside(at, w), `${current.timezone} ${at}`).toBe(true);
+        }
+      }
+    }
+    // A ±2-day window would drop the first instant of the range (current west, past east) and the
+    // last one (current east, past west).
+    const firstEast = boundaries(range.from, east.timezone, east.cutoff).start;
+    const lastWest = minus1ms(
+      boundaries(range.to, west.timezone, west.cutoff).end,
+    );
+    expect(firstEast).toBe("2026-10-04T10:00:00Z");
+    expect(lastWest).toBe("2026-10-09T11:58:59.999Z");
+    expect(inside(firstEast, narrow(west, 2))).toBe(false);
+    expect(inside(lastWest, narrow(east, 2))).toBe(false);
+    expect(inside(firstEast, wideWindow(range, west))).toBe(true);
+    expect(inside(lastWest, wideWindow(range, east))).toBe(true);
   });
 });
 
@@ -1286,6 +1340,9 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
       voids: 0,
       cancelledAmount: 0,
     };
+    // Fiscal adjusts refunds of orders without a ticket too (fiscal §4.7 step 4, provisional
+    // groups), so refunds_vs_fiscal must pass with them in range (only fiscal worlds count).
+    let refundOnUnticketed = 0;
     for (let n = 0; n < 400; n++) {
       const from = addDays("2026-10-01", random.int(0, 120));
       const range = { from, to: addDays(from, random.pick([0, 0, 1, 6, 30])) };
@@ -1312,6 +1369,22 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
       if (s.sales.openChecks > 0) seen.openChecks++;
       if (s.sales.voids.units > 0) seen.voids++;
       if (s.sales.cancelledAmount > 0) seen.cancelledAmount++;
+      const unticketedTenders = new Set(
+        world.orders
+          .filter((o) => !o.ticketed)
+          .flatMap((o) => o.tenders.map((t) => t.id)),
+      );
+      if (
+        world.fiscal &&
+        world.refunds.some(
+          (r) =>
+            r.afterEpoch &&
+            r.date >= range.from &&
+            r.date <= range.to &&
+            unticketedTenders.has(r.tenderId),
+        )
+      )
+        refundOnUnticketed++;
       const inRange = (d: string) => d >= range.from && d <= range.to;
       const orders = world.orders.filter((o) => inRange(o.date));
       const tenders = world.orders
@@ -1435,6 +1508,7 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
     }
     for (const [figure, worlds] of Object.entries(seen))
       expect(worlds, figure).toBeGreaterThan(100);
+    expect(refundOnUnticketed).toBeGreaterThan(40);
   });
 
   it("property: a one-centavo drift (+1 or −1) in a guarded aggregate fails its own check, plus paid_identity only when a lower S1 total makes outstanding negative, and Ventas brutas − Descuentos = Ventas totales holds under any drift", () => {
@@ -2222,6 +2296,7 @@ describe("corte documents (FIT-10)", () => {
       tips: 31_000,
       refunds: 9_000,
       paidOuts: 50_000,
+      payIns: 0,
       expected: 497_000,
       counted: null,
       difference: null,
@@ -2270,6 +2345,7 @@ describe("corte documents (FIT-10)", () => {
       tips: 31_000,
       refunds: 9_000,
       paidOuts: 50_000,
+      payIns: 0,
       expected: 497_000,
       counted: 495_000,
       difference: -2_000,
@@ -2322,6 +2398,7 @@ describe("corte documents (FIT-10)", () => {
   it("FIT-10: the blind count slip carries no expected cash, cash sales, refunds, paid-outs, difference, controls, folios, late cash or review", () => {
     const doc = buildCorteDocument(
       closedFacts({
+        payIns: 12_345,
         review: {
           reviewerName: "Mara",
           note: "faltaron 20",
@@ -2353,6 +2430,7 @@ describe("corte documents (FIT-10)", () => {
       "faltaron",
       "A-000101",
       "5500",
+      "12345",
     ])
       expect(text).not.toContain(hidden);
     // Every operator sees the terminal figures (discounts §2.7).
@@ -2401,6 +2479,7 @@ describe("corte documents (FIT-10)", () => {
           lateTips: extLateTips,
         },
         paidOuts: { count: 1, amount: random.int(0, 100_000) },
+        payIns: random.next() < 0.3 ? random.int(1, 50_000) : 0,
       });
       const live = liveExpectedCash(f);
       const asOfClose = live - lateAmount - lateTips;
@@ -2433,9 +2512,22 @@ describe("corte documents (FIT-10)", () => {
         currentBusinessDate: "2026-10-05",
       });
       const c = doc.cash!;
-      expect(c.opening + c.sales + c.tips - c.refunds - c.paidOuts).toBe(
-        c.expected,
-      );
+      expect(
+        c.opening + c.sales + c.tips - c.refunds - c.paidOuts + c.payIns,
+      ).toBe(c.expected);
+      expect(c.payIns).toBe(f.payIns);
+      expect(row.payIns).toBe(f.payIns);
+      // The row's components add up to its expected cash too (late cash is in the row's figures but
+      // not in the stored as-of-close expected).
+      expect(
+        row.opening +
+          row.cashSales +
+          row.cashTips -
+          row.cashRefunds -
+          row.paidOuts +
+          row.payIns -
+          row.lateCash,
+      ).toBe(row.expected);
       expect(c.expected).toBe(closed ? asOfClose : live);
       expect(row.expected).toBe(c.expected);
       expect(row.difference).toBe(closed ? counted - asOfClose : null);
@@ -2536,30 +2628,84 @@ describe("corte documents (FIT-10)", () => {
 
   it("drawerSummary splits differences into shortage and overage amounts and counts unreviewed and earlier-day drawers", () => {
     const ctx = { canSeeExpected: true, currentBusinessDate: "2026-10-06" };
+    const review = {
+      reviewerName: "Mara",
+      note: "sobró cambio",
+      at: "2026-10-06T16:00:00Z",
+    };
     const rows = [
       drawerRow(closedFacts(), ctx), // −2,000, unreviewed
       drawerRow(
         closedFacts({ stored: { ...closedFacts().stored, counted: 497_700 } }),
         ctx,
-      ), // +700
+      ), // +700, unreviewed
       drawerRow(
         closedFacts({ stored: { ...closedFacts().stored, counted: 497_000 } }),
         ctx,
       ), // exact
+      // +300, reviewed: in the difference amounts, not in "diferencias sin revisar".
+      drawerRow(
+        closedFacts({
+          stored: { ...closedFacts().stored, counted: 497_300 },
+          review,
+        }),
+        ctx,
+      ),
       drawerRow(facts(), ctx), // open since the 5th
       drawerRow(facts({ businessDate: "2026-10-06" }), ctx),
     ];
+    expect(rows[3]).toMatchObject({ difference: 300, needsReview: false });
     expect(drawerSummary(rows)).toEqual({
       open: 2,
-      closed: 3,
-      differenceNet: -1_300,
+      closed: 4,
+      differenceNet: -1_000,
       shortages: 2_000,
-      overages: 700,
+      overages: 1_000,
       unreviewed: 2,
       openFromEarlierDays: 1,
     });
     expect(differenceKind(700)).toBe("over");
     expect(differenceKind(0)).toBe("exact");
+  });
+
+  it("a past range's Cajas card leaves out drawers opened after the range (drawerList also returns every open drawer)", () => {
+    const ctx = { canSeeExpected: true, currentBusinessDate: "2026-10-12" };
+    const rows = [
+      drawerRow(closedFacts(), ctx), // opened on the 5th, closed
+      drawerRow(facts({ businessDate: "2026-10-04" }), ctx), // still open since the 4th
+      drawerRow(facts({ businessDate: "2026-10-12" }), ctx), // opened today, after the range
+    ];
+    expect(drawersUpTo(rows, "2026-10-05").map((r) => r.businessDate)).toEqual([
+      "2026-10-05",
+      "2026-10-04",
+    ]);
+    expect(() => drawersUpTo(rows, "2026-10-5")).toThrow("invalid_date");
+    const day = (date: string) =>
+      composeSalesSummary({
+        range: { from: date, to: date },
+        currency: "MXN",
+        generatedAt: "2026-10-12T18:00:00Z",
+        currentBusinessDate: "2026-10-12",
+        sales: [],
+        lines: [],
+        collections: [],
+        refunds: [],
+        restocks: [],
+        paidOuts: [],
+        drawers: rows,
+        fiscal: null,
+      }).drawers;
+    expect(day("2026-10-05")).toEqual({
+      open: 1,
+      closed: 1,
+      differenceNet: -2_000,
+      shortages: 2_000,
+      overages: 0,
+      unreviewed: 1,
+      openFromEarlierDays: 1,
+    });
+    // Today's report still counts today's drawer.
+    expect(day("2026-10-12").open).toBe(2);
   });
 
   it("formats folio runs per series with fiscal's formatFolio", () => {
@@ -2581,16 +2727,21 @@ describe("corte access (§4.7, D7)", () => {
   const own = fakeId(7002);
   const other = fakeId(7099);
   const now = "2026-10-06T12:00:00Z";
-  const open = { deviceId: own, closedAt: null };
-  const closedAt = (minutesAgo: number) => ({
+  const open = { deviceId: own, closedAt: null, latestOnDevice: true };
+  const closedAt = (minutesAgo: number, latestOnDevice = true) => ({
     deviceId: own,
     closedAt: Temporal.Instant.from(now)
       .subtract({ minutes: minutesAgo })
       .toString(),
+    latestOnDevice,
   });
   const access = (
     role: string,
-    drawer: { deviceId: string; closedAt: string | null },
+    drawer: {
+      deviceId: string;
+      closedAt: string | null;
+      latestOnDevice: boolean;
+    },
     canSeeExpected: boolean,
     deviceId = own,
   ) => corteAccess({ role, deviceId, canSeeExpected, drawer, now });
@@ -2619,13 +2770,23 @@ describe("corte access (§4.7, D7)", () => {
     expect(
       access(
         "manager",
-        { deviceId: other, closedAt: "2026-01-01T00:00:00Z" },
+        {
+          deviceId: other,
+          closedAt: "2026-01-01T00:00:00Z",
+          latestOnDevice: false,
+        },
         false,
       ),
     ).toEqual({
       kind: "z",
       visibility: "full",
     });
+    // Any closed drawer, not only the device's last one.
+    for (const role of ["owner", "manager"])
+      expect(access(role, closedAt(60, false), false)).toEqual({
+        kind: "z",
+        visibility: "full",
+      });
   });
 
   it("cashiers and servers: own device only; corte X needs expected cash; corte Z within 12 h, blind unless they may see expected", () => {
@@ -2653,6 +2814,26 @@ describe("corte access (§4.7, D7)", () => {
       expect(err(() => access(role, closedAt(60), false, other))).toBe(
         "forbidden",
       );
+    }
+  });
+
+  it("§2.12: cashiers and servers print only the corte Z of their device's last drawer, so the next shift on a shared device cannot print the previous shift's count slip", () => {
+    for (const role of ["cashier", "server"]) {
+      // Shift A closed 60 min ago; shift B has since opened a drawer on the same device.
+      expect(err(() => access(role, closedAt(60, false), false))).toBe(
+        "forbidden",
+      );
+      expect(err(() => access(role, closedAt(60, false), true))).toBe(
+        "forbidden",
+      );
+      expect(
+        domainError(() => access(role, closedAt(60, false), true)).status,
+      ).toBe(403);
+      // The last drawer itself stays printable within the 12 h window.
+      expect(access(role, closedAt(60, true), false)).toEqual({
+        kind: "z",
+        visibility: "blind",
+      });
     }
   });
 });
@@ -2707,6 +2888,57 @@ describe("corte del día", () => {
     }),
     ctx,
   );
+
+  it("a past day's corte leaves out drawers opened after that day: no open-drawer warning, no row, no effect on other-day collections", () => {
+    // Printed on the 12th for the 5th: the drawer of the 5th is closed; today's drawer is open.
+    const later = { canSeeExpected: true, currentBusinessDate: "2026-10-12" };
+    const closedFifth = drawerRow(
+      closedFacts({
+        cash: { ...closedFacts().cash, amount: 25_000, lateAmount: 0 },
+        external: { ...closedFacts().external, amount: 20_000, lateAmount: 0 },
+      }),
+      later,
+    );
+    const today = drawerRow(
+      facts({
+        id: fakeId(7003),
+        businessDate: "2026-10-12",
+        cash: { ...facts().cash, amount: 7_777 },
+      }),
+      later,
+    );
+    const doc = buildDayCorteDocument({
+      date,
+      restaurant,
+      printedAt: "2026-10-12T18:00:00Z",
+      printedByName: "Luis",
+      summary,
+      drawers: [closedFifth, today],
+      exceptions: [],
+    });
+    expect(doc.drawers.map((d) => d.id)).toEqual([closedFifth.id]);
+    expect(doc.drawersOpen).toBe(0);
+    expect(doc.otherDayDrawerCollections).toBe(5_000);
+    // A drawer opened before the date and still open stays: the day's corte can still change.
+    const stillOpen = drawerRow(
+      facts({ id: fakeId(7004), businessDate: "2026-10-04" }),
+      later,
+    );
+    const withOpen = buildDayCorteDocument({
+      date,
+      restaurant,
+      printedAt: "2026-10-12T18:00:00Z",
+      printedByName: "Luis",
+      summary,
+      drawers: [closedFifth, stillOpen, today],
+      exceptions: [],
+    });
+    expect(withOpen.drawers.map((d) => d.id)).toEqual([
+      closedFifth.id,
+      stillOpen.id,
+    ]);
+    expect(withOpen.drawersOpen).toBe(1);
+  });
 
   it("otherDayDrawerCollections is the day's collections minus the sales of drawers opened that day", () => {
     expect(otherDayDrawerCollections(50_000, [sameDay, earlier], date)).toBe(

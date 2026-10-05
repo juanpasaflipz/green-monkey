@@ -828,6 +828,12 @@ export type DrawerRow = {
   cashTips: number;
   cashRefunds: number;
   paidOuts: number;
+  /**
+   * Σ positive cash_movements. No command records one today (always 0), but expected cash adds
+   * it, so the row carries it and opening + cashSales + cashTips − cashRefunds − paidOuts + payIns
+   * equals the live expected cash of an open drawer.
+   */
+  payIns: number;
   expected: number | null;
   counted: number | null;
   difference: number | null;
@@ -892,6 +898,11 @@ export type CorteDocument = {
     tips: number;
     refunds: number;
     paidOuts: number;
+    /**
+     * Pay-ins (Σ positive cash movements; 0 until a pay-in command exists). The printed corte shows
+     * it only when ≠ 0, so opening + sales + tips − refunds − paidOuts + payIns = expected on paper.
+     */
+    payIns: number;
     expected: number;
     counted: number | null;
     difference: number | null;
@@ -1329,7 +1340,7 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
     refunds,
     collections,
     margin,
-    drawers: drawerSummary(input.drawers),
+    drawers: drawerSummary(drawersUpTo(input.drawers, range.to)),
     days,
     checks,
   };
@@ -1613,6 +1624,7 @@ export function drawerRow(
     cashTips: f.cash.tips,
     cashRefunds: f.cash.refunds,
     paidOuts: f.paidOuts.amount,
+    payIns: f.payIns,
     expected: closed
       ? f.stored.expected
       : ctx.canSeeExpected
@@ -1638,7 +1650,22 @@ export function drawerRow(
   };
 }
 
-/** The Cajas card of Resumen. */
+/**
+ * The drawers that belong to a report ending on `to`. The §4.5 drawerList filter (`day between
+ * from and to or closed_at is null`) also returns drawers opened after `to` that are still open:
+ * they hold no collection of the range, so a past range's Cajas card and a past day's corte del
+ * día must not count or list them. Drawers opened before `from` and still open stay (they may
+ * hold the range's collections).
+ */
+export function drawersUpTo<T extends Pick<DrawerRow, "businessDate">>(
+  rows: readonly T[],
+  to: string,
+): T[] {
+  if (!isBusinessDate(to)) throw new RangeError("invalid_date");
+  return rows.filter((r) => r.businessDate <= to);
+}
+
+/** The Cajas card of Resumen (pass the rows through drawersUpTo first; composeSalesSummary does). */
 export function drawerSummary(rows: readonly DrawerRow[]): DrawerSummary {
   const differences = rows.flatMap((r) =>
     r.status === "closed" && r.difference !== null ? [r.difference] : [],
@@ -1663,17 +1690,28 @@ export function drawerSummary(rows: readonly DrawerRow[]): DrawerSummary {
 export const CORTE_BLIND_WINDOW_HOURS = 12;
 
 /**
- * §4.7 assertCorteAccess. Kitchen (and any unknown role) is forbidden. Owners and managers read
- * every closed drawer in full, and an open drawer (corte X) only when they may see expected cash
- * during the shift. Cashiers and servers read only their own device's drawer: a corte X when they
- * may see expected cash, a corte Z within 12 h of its close (blind unless they may see expected).
- * The owner always passes canSeeExpected.
+ * §4.7 assertCorteAccess with the §2.12 "own device's last drawer" condition. Kitchen (and any
+ * unknown role) is forbidden. Owners and managers read every closed drawer in full, and an open
+ * drawer (corte X) only when they may see expected cash during the shift. Cashiers and servers
+ * read only their own device's drawer: a corte X when they may see expected cash; a corte Z (blind
+ * unless they may see expected) only of the device's last drawer, within 12 h of its close. So on a
+ * shared device the next shift cannot print the previous shift's count slip. The owner always
+ * passes canSeeExpected.
  */
 export function corteAccess(i: {
   role: string;
   deviceId: string;
   canSeeExpected: boolean;
-  drawer: { deviceId: string; closedAt: string | null };
+  drawer: {
+    deviceId: string;
+    closedAt: string | null;
+    /**
+     * No other drawer of the same device was opened after this one (by `(opened_at, id)`). The
+     * server computes it: `not exists (select 1 from cash_sessions n where n.device_id =
+     * d.device_id and (n.opened_at, n.id) > (d.opened_at, d.id))`.
+     */
+    latestOnDevice: boolean;
+  };
   now: string;
 }): { kind: "x" | "z"; visibility: "full" | "blind" } {
   const forbidden = () => new DomainError("forbidden", 403);
@@ -1690,6 +1728,7 @@ export function corteAccess(i: {
     if (!seesExpected) throw hidden();
     return { kind: "x", visibility: "full" };
   }
+  if (!i.drawer.latestOnDevice) throw forbidden();
   const since = Temporal.Instant.from(i.now).subtract({
     hours: CORTE_BLIND_WINDOW_HOURS,
   });
@@ -1761,6 +1800,7 @@ export function buildCorteDocument(
           tips: f.cash.tips - f.cash.lateTips,
           refunds: f.cash.refunds,
           paidOuts: f.paidOuts.amount,
+          payIns: f.payIns,
           expected:
             f.stored.expected ??
             liveExpectedCash(f) - add(f.cash.lateAmount, f.cash.lateTips),
@@ -1774,6 +1814,7 @@ export function buildCorteDocument(
           tips: f.cash.tips,
           refunds: f.cash.refunds,
           paidOuts: f.paidOuts.amount,
+          payIns: f.payIns,
           expected: liveExpectedCash(f),
           counted: null,
           difference: null,
@@ -1849,6 +1890,8 @@ export function buildDayCorteDocument(input: {
   if (!isBusinessDate(input.date) || from !== input.date || to !== input.date)
     throw new RangeError("day_corte_range");
   const order = (k: ExceptionKind) => EXCEPTION_KINDS.indexOf(k);
+  // A drawer opened after the date is not part of that day's corte (see drawersUpTo).
+  const drawers = drawersUpTo(input.drawers, input.date);
   return {
     date: input.date,
     restaurant: input.restaurant,
@@ -1856,11 +1899,11 @@ export function buildDayCorteDocument(input: {
     printedByName: input.printedByName,
     printNumber: input.printNumber ?? null,
     summary: input.summary,
-    drawers: [...input.drawers],
-    drawersOpen: input.drawers.filter((d) => d.status === "open").length,
+    drawers,
+    drawersOpen: drawers.filter((d) => d.status === "open").length,
     otherDayDrawerCollections: otherDayDrawerCollections(
       input.summary.collections.collected,
-      input.drawers,
+      drawers,
       input.date,
     ),
     exceptions: input.exceptions
