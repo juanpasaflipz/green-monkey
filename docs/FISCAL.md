@@ -111,8 +111,9 @@ from 0 to 2,000,000 centavos at both rates.
 - The `quote()` tax snapshot in `shared/domain.ts` and the order hooks.
 - Settings panel, ticket register with CSV, and the fiscal header and footer of the printed ticket.
 - `src/i18n/fiscal.ts` strings. The core already throws `fiscal_total_mismatch` and
-  `fiscal_refund_exceeds`, so both need Spanish and English text when this core merges with
-  service's error-translation test.
+  `fiscal_refund_exceeds`. Since service's merge, `tests/i18n-errors.test.ts` lists both as
+  owned by fiscal and skips them until `src/i18n/fiscal.ts` declares them; from then on they
+  need Spanish and English text like every other code.
 - README, DELIVERY_STATUS, COMPLETION_LEDGER, ARCHITECTURE and OPERATIONS updates;
   `FISCAL_TICKETS_ENABLED` in `.env.example`.
 
