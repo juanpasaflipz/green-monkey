@@ -369,9 +369,8 @@ function PairingDialog({
         </>
       ) : (
         <div className="pairing-code">
-          <p className="pairing-code-value" aria-label={t.accessPairCode}>
-            {code.code}
-          </p>
+          <p className="muted pairing-code-label">{t.accessPairCode}</p>
+          <p className="pairing-code-value">{code.code}</p>
           <p role="timer" aria-live="off">
             {t.accessDevicesExpiresIn.replace("{time}", countdown(remaining))}
           </p>

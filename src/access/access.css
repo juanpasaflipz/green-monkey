@@ -174,11 +174,18 @@ dialog.lock-screen::backdrop {
 .expiry-banner p {
   margin: 0;
 }
+.selling-main > .expiry-banner {
+  margin: 16px 24px 0;
+}
 .manager-approval {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 12px 16px;
   margin: 12px 0;
+}
+/* Contains the visually hidden header text inside the scrolling table. */
+.staff-management .data-table {
+  position: relative;
 }
 .staff-management .data-table td.actions {
   text-align: right;
