@@ -40,10 +40,17 @@ RTO/RPO will be recorded under `docs/evidence/restore/` when they do.
    `ops_backup_read` policies the migration runner keeps on every RLS table).
    The stream is encrypted with `age` to the public recipients in
    `ops/backup/age-recipients.txt`; the sha256 of the encrypted bytes goes into
-   a manifest. Objects go to `daily/<env>/YYYY/MM/` (35-day lifecycle) and, on
-   the 1st, `monthly/<env>/YYYY/MM/` (1,900 days). The workflow verifies the
-   stored sizes and alerts on failure; the uptime workflow alerts if the last
-   successful backup is older than 26 hours.
+   a manifest. Objects go to `daily/<env>/YYYY/MM/` (35-day lifecycle) and,
+   while the month has no complete copy (dump plus manifest) yet,
+   `monthly/<env>/YYYY/MM/` (1,900 days): the first successful backup of each
+   UTC month writes it, so a failed run on the 1st leaves no gap. `pg_dump` is
+   the runner's PostgreSQL 18 client (`BACKUP_PG_DUMP`), verifying Neon's
+   certificate with `sslmode=verify-full&sslrootcert=system`; the
+   `postgres:18` image ships no CA bundle, so the container fallback mounts
+   the host's (`BACKUP_CA_FILE`). The workflow verifies the stored sizes and
+   alerts on failure; the uptime workflow alerts if the last successful
+   production backup is older than 26 hours. Run one staging backup by hand
+   (Actions → Backup → staging) before relying on the schedule.
 
 ## Key custody
 

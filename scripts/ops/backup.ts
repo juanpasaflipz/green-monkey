@@ -6,23 +6,37 @@
 //   R2_ACCOUNT_ID, R2_BUCKET and AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
 //                         (R2 API token scoped to the bucket) for the upload
 // Options: --skip-upload, --out <dir> (default work/backup).
-// Command overrides for local rehearsals only: BACKUP_PG_DUMP (a pg_dump
-// binary instead of `docker run postgres:18 pg_dump`) and BACKUP_ENCRYPT
-// (a command reading stdin, writing stdout); the plaintext pass-through is
-// refused for any non-loopback database.
+// pg_dump: BACKUP_PG_DUMP names a PostgreSQL 18 pg_dump binary (the backup
+// workflow installs postgresql-client-18 and verifies TLS against the
+// runner's trust store with sslrootcert=system). Without it the dump runs in
+// `docker run postgres:18`, whose image ships no CA certificates, so the
+// host bundle BACKUP_CA_FILE (default /etc/ssl/certs/ca-certificates.crt) is
+// mounted read-only and named as sslrootcert (OPS-R5).
+// BACKUP_ENCRYPT (a command reading stdin, writing stdout) is for local
+// rehearsals only; the plaintext pass-through is refused for any non-loopback
+// database.
 //
 // 1. One read-only REPEATABLE READ transaction exports a snapshot; the
 //    control totals are computed inside it.
 // 2. pg_dump --snapshot dumps exactly that state (--enable-row-security, so
 //    the backup role reads through the ops_backup_read policies), piped
 //    through age; the sha256 is computed on the encrypted bytes.
-// 3. Upload to R2 daily/<env>/YYYY/MM/ (and monthly/ on the 1st) with a
-//    manifest, then verify the stored size. Prints one JSON summary.
+// 3. Upload to R2 daily/<env>/YYYY/MM/ with a manifest, and to
+//    monthly/<env>/YYYY/MM/ when that month has no copy yet (the first
+//    successful backup of the month, so a failed run on the 1st leaves no
+//    gap in the 5-year series), then verify the stored sizes. Prints one JSON
+//    summary.
 import "dotenv/config";
 import postgres from "postgres";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createWriteStream, mkdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
@@ -36,12 +50,94 @@ export interface BackupOptions {
   outDir?: string;
   skipUpload?: boolean;
   pgDump?: string;
+  /** Host CA bundle mounted into the postgres:18 container (docker path only). */
+  caFile?: string;
   encrypt?: string[];
   now?: Date;
 }
 
 const isLoopback = (url: URL) =>
   ["127.0.0.1", "localhost", "::1", "[::1]"].includes(url.hostname);
+
+export const DEFAULT_CA_FILE = "/etc/ssl/certs/ca-certificates.crt";
+const CONTAINER_CA = "/run/gm-backup/ca.crt";
+
+/**
+ * The pg_dump command line for one exported snapshot (pure; tested). Off
+ * loopback, TLS is always verify-full: a native pg_dump trusts the system
+ * store; the postgres:18 container gets the host bundle mounted, because the
+ * image purges ca-certificates and `sslrootcert=system` would find nothing.
+ */
+export function pgDumpCommand(o: {
+  url: URL;
+  snapshot: string;
+  pgDump?: string;
+  caFile?: string;
+}): { dump: string[]; version: string[] } {
+  const dsn = new URL(withoutParams(o.url).href);
+  dsn.password = "";
+  const local = isLoopback(o.url);
+  if (!local) {
+    dsn.searchParams.set("sslmode", "verify-full");
+    dsn.searchParams.set("sslrootcert", o.pgDump ? "system" : CONTAINER_CA);
+  }
+  const args = [
+    `--snapshot=${o.snapshot}`,
+    "--enable-row-security",
+    "--format=custom",
+    "--no-owner",
+    "--no-privileges",
+    `--dbname=${dsn.href}`,
+  ];
+  if (o.pgDump)
+    return { dump: [o.pgDump, ...args], version: [o.pgDump, "--version"] };
+  const mount = local
+    ? []
+    : ["-v", `${o.caFile ?? DEFAULT_CA_FILE}:${CONTAINER_CA}:ro`];
+  return {
+    dump: [
+      "docker",
+      "run",
+      "--rm",
+      "-i",
+      "--network",
+      "host",
+      "-e",
+      "PGPASSWORD",
+      ...mount,
+      "postgres:18",
+      "pg_dump",
+      ...args,
+    ],
+    version: ["docker", "run", "--rm", "postgres:18", "pg_dump", "--version"],
+  };
+}
+
+/** The month's object-key prefixes (UTC): daily/<env>/YYYY/MM and monthly/<env>/YYYY/MM. */
+export function monthPrefixes(env: string, now: Date) {
+  const month = now.toISOString().slice(0, 7).replace("-", "/");
+  return { daily: `daily/${env}/${month}`, monthly: `monthly/${env}/${month}` };
+}
+
+/**
+ * Object-key prefixes for one backup: always the daily prefix, plus the
+ * monthly one while that month has no complete long-term copy yet, so the
+ * first successful backup of the month writes it even when the run on the
+ * 1st failed (OPS-R13). A copy is complete once its manifest exists: the
+ * manifest is uploaded after the dump and both sizes are verified, so a
+ * dump left without a manifest by a failed run does not count.
+ */
+export function uploadPrefixes(
+  env: string,
+  now: Date,
+  monthlyKeys: readonly string[],
+): { daily: string; monthly: string | null } {
+  const { daily, monthly } = monthPrefixes(env, now);
+  const complete = monthlyKeys.some(
+    (key) => key.startsWith(`${monthly}/`) && key.endsWith(".manifest.json"),
+  );
+  return { daily, monthly: complete ? null : monthly };
+}
 
 function run(
   command: string,
@@ -120,6 +216,10 @@ export async function runBackup(o: BackupOptions) {
     throw Error("backups need the direct endpoint");
   if (o.encrypt && !isLoopback(url))
     throw Error("custom encryption commands are for local rehearsals only");
+  if (!o.pgDump && !isLoopback(url) && !existsSync(o.caFile ?? DEFAULT_CA_FILE))
+    throw Error(
+      "no CA bundle for the pg_dump container: set BACKUP_PG_DUMP or BACKUP_CA_FILE",
+    );
   const now = o.now ?? new Date();
   const stamp = now
     .toISOString()
@@ -150,46 +250,18 @@ export async function runBackup(o: BackupOptions) {
       await reserved`select version() as server, now() as "snapshotAt"`;
     const totals = await controlTotals(reserved);
     const schema = await schemaFingerprint(reserved);
-    // Same connection parameters as the app policy: verified TLS off-host.
-    const dsn = new URL(withoutParams(url).href);
-    dsn.password = "";
-    if (!isLoopback(url)) {
-      dsn.searchParams.set("sslmode", "verify-full");
-      dsn.searchParams.set("sslrootcert", "system");
-    }
-    const dumpArgs = [
-      `--snapshot=${snapshot}`,
-      "--enable-row-security",
-      "--format=custom",
-      "--no-owner",
-      "--no-privileges",
-      `--dbname=${dsn.href}`,
-    ];
-    const pgDump = o.pgDump
-      ? [o.pgDump, ...dumpArgs]
-      : [
-          "docker",
-          "run",
-          "--rm",
-          "-i",
-          "--network",
-          "host",
-          "-e",
-          "PGPASSWORD",
-          "postgres:18",
-          "pg_dump",
-          ...dumpArgs,
-        ];
+    // Same connection policy as the app: verified TLS off-host.
+    const command = pgDumpCommand({
+      url,
+      snapshot,
+      pgDump: o.pgDump,
+      caFile: o.caFile,
+    });
     const pgDumpVersion = (
-      await run(
-        pgDump[0],
-        o.pgDump
-          ? ["--version"]
-          : ["run", "--rm", "postgres:18", "pg_dump", "--version"],
-      )
+      await run(command.version[0], command.version.slice(1))
     ).trim();
     const { sha256, bytes } = await dumpEncrypted(
-      { pgDump, encrypt, file },
+      { pgDump: command.dump, encrypt, file },
       { ...process.env, PGPASSWORD: decodeURIComponent(url.password) },
     );
     await reserved`commit`;
@@ -217,9 +289,30 @@ export async function runBackup(o: BackupOptions) {
       if (!account || !bucket)
         throw Error("R2_ACCOUNT_ID and R2_BUCKET required");
       const endpoint = `https://${account}.r2.cloudflarestorage.com`;
-      const month = now.toISOString().slice(0, 7).replace("-", "/");
-      const prefixes = [`daily/${o.env}/${month}`];
-      if (now.getUTCDate() === 1) prefixes.push(`monthly/${o.env}/${month}`);
+      const s3 = ["--endpoint-url", endpoint, "--region", "auto"];
+      // The month's long-term copy comes from its first successful backup.
+      const listed = (
+        await run("aws", [
+          "s3api",
+          "list-objects-v2",
+          "--bucket",
+          bucket,
+          "--prefix",
+          `${monthPrefixes(o.env, now).monthly}/`,
+          "--query",
+          "Contents[].Key",
+          "--output",
+          "json",
+          ...s3,
+        ])
+      ).trim();
+      const keys: unknown = listed ? JSON.parse(listed) : null;
+      const { daily, monthly } = uploadPrefixes(
+        o.env,
+        now,
+        Array.isArray(keys) ? keys.map(String) : [],
+      );
+      const prefixes = monthly ? [daily, monthly] : [daily];
       for (const prefix of prefixes)
         for (const source of [file, `${file}.manifest.json`]) {
           const key = `${prefix}/${basename(source)}`;
@@ -285,6 +378,7 @@ if (invokedDirectly()) {
       outDir: outIndex >= 0 ? args[outIndex + 1] : undefined,
       skipUpload: args.includes("--skip-upload"),
       pgDump: process.env.BACKUP_PG_DUMP,
+      caFile: process.env.BACKUP_CA_FILE,
       encrypt: process.env.BACKUP_ENCRYPT
         ? process.env.BACKUP_ENCRYPT.split(" ")
         : undefined,

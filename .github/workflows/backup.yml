@@ -34,14 +34,22 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - name: Tools (age, pg_dump 18 image)
+      # pg_dump runs natively: the postgres:18 image purges ca-certificates,
+      # so sslrootcert=system would find no trust store inside it (OPS-R5).
+      - name: Tools (age, PostgreSQL 18 client)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq age
-          docker pull -q postgres:18
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq age postgresql-client-18
+          /usr/lib/postgresql/18/bin/pg_dump --version
           aws --version
       - name: Dump, encrypt, upload and verify
         env:
           BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_PG_DUMP: /usr/lib/postgresql/18/bin/pg_dump
           AGE_RECIPIENTS_FILE: ops/backup/age-recipients.txt
           R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ vars.R2_BUCKET }}
