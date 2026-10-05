@@ -407,9 +407,9 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
 - During a rolling deploy the previous revision still auto-pairs owner password
   logins, revokes on logout and validates offline sales against the base lease
   only, for the minutes of overlap.
-- `sessions_live_by_device` and `sessions_live_by_employee` are created inside
-  the migration transaction. That is safe while `sessions` is small; on a large
-  table, build them beforehand.
+- `sessions_live_by_device`, `sessions_live_by_employee`, `sessions_by_device`
+  and `sessions_by_employee` are created inside the migration transaction. That
+  is safe while `sessions` is small; on a large table, build them beforehand.
 - A missing payment attempt that cannot be retried (for example its drawer was
   closed overnight) still blocks that employee's next Cobrar on that device
   with `payment_review_required`; there is no manager "Descartar intento" yet

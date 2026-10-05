@@ -279,6 +279,19 @@ try {
     });
   });
 
+  await test("ACC-R6-6: sessions are indexed per employee and per device (staff list, device list, revoke paths)", async () => {
+    const indexes = await admin`select indexname,indexdef from pg_indexes
+      where schemaname='public' and tablename='sessions' and indexname in ('sessions_by_employee','sessions_by_device')
+      order by indexname`;
+    assert.deepEqual(
+      indexes.map((i) => [i.indexname, /\(tenant_id, (\w+)\)$/.exec(i.indexdef)?.[1]]),
+      [
+        ["sessions_by_device", "device_id"],
+        ["sessions_by_employee", "employee_id"],
+      ],
+    );
+  });
+
   await test("pairing code redeems once, atomically, and only by its exact hash (GAP-2/SEC-5)", async () => {
     const code = await run((tx) =>
       createPairingCode(tx, owner, { deviceName: "Caja doble" }),

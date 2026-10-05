@@ -66,6 +66,11 @@ CREATE INDEX sessions_live_by_device ON sessions(tenant_id, device_id)
   WHERE ended_at IS NULL AND NOT revoked;
 CREATE INDEX sessions_live_by_employee ON sessions(tenant_id, employee_id)
   WHERE ended_at IS NULL AND NOT revoked;
+-- Every session of one employee or device, live or not: Equipo's last sign-in,
+-- Dispositivos' recent employee count and the revoke paths (endEmployeeSessions
+-- and endDeviceSessions with revoke, revokeOwnerSessions) read them per row.
+CREATE INDEX sessions_by_employee ON sessions(tenant_id, employee_id);
+CREATE INDEX sessions_by_device ON sessions(tenant_id, device_id);
 
 -- PIN throttling (operational state, mutable; never financial evidence) ----
 CREATE TABLE pin_throttles (
