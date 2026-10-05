@@ -30,6 +30,21 @@ const clientCodes = [
   "switch_requires_connection",
   "pending_before_switch",
   "drawer_required",
+  // offline (026): raised on the device through fail() and the charge guard,
+  // which the Error("…") scan below does not see.
+  "offline_amount_exceeds_due",
+  "offline_amount_invalid",
+  "offline_check_paid",
+  "offline_order_not_cached",
+  "offline_order_outdated",
+  "offline_payment_pending_for_order",
+  "offline_record_invalid",
+  "offline_round_other_employee_for_order",
+  "offline_round_pending_for_order",
+  "offline_round_review_for_order",
+  "offline_split_unavailable",
+  "offline_storage_full",
+  "offline_table_service_off",
 ];
 /** Machine-facing responses that no operator screen ever renders. */
 const machineOnly = new Set(["stripe_webhook_invalid"]);

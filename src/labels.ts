@@ -82,6 +82,14 @@ const operations: Record<string, Key> = {
   "stock.item.saved": "menuOpStockItemSaved",
   "stock.item.archived": "menuOpStockItemArchived",
   "stock.policy.changed": "menuOpStockPolicyChanged",
+  // offline (026), added at offline's merge (contracts 3.13)
+  "offline.synced": "offlineOpSynced",
+  "offline.kitchen_decision": "offlineOpKitchenDecision",
+  "offline.archived": "offlineOpArchived",
+  "offline.payment_reconciled": "offlineOpPaymentReconciled",
+  "offline.settings_changed": "offlineOpSettingsChanged",
+  "offline.payment_attempt_recorded": "offlineOpAttemptRecorded",
+  "offline.payment_attempt_discarded": "offlineOpAttemptDiscarded",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",
