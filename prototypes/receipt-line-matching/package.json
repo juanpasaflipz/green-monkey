@@ -1,0 +1,20 @@
+{
+  "name": "receipt-line-matching-prototype",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Prototype: TypeSafe-assisted supplier receipt line to ingredient matching",
+  "type": "module",
+  "scripts": {
+    "match": "tsx src/run.ts",
+    "match:dry": "tsx src/run.ts --dry-run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@typesafe-ai/sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
