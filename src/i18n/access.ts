@@ -380,6 +380,10 @@ export default defineArea({
       "Este dispositivo fue desvinculado o su vinculación venció. Pide un código nuevo a un responsable.",
       "This device was unpaired or its pairing expired. Ask a manager for a new code.",
     ],
+    owner_reauth_required: [
+      "Este dispositivo fue desvinculado. Vuelve a iniciar sesión con Google para entrar desde aquí.",
+      "This device was unpaired. Sign in with Google again to enter from here.",
+    ],
     device_is_terminal: [
       "Esta es una terminal compartida. Entra con tu PIN; la cuenta del propietario se administra desde tu propio dispositivo.",
       "This is a shared terminal. Sign in with your PIN; the owner account is managed from your own device.",

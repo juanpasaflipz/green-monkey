@@ -140,6 +140,27 @@ export async function endDeviceSession(
   );
 }
 
+/**
+ * Ends the Google sign-ins (owner_sessions) that entered a personal device, so
+ * the 12-hour gm_account left on a lost or stolen phone or laptop cannot enter
+ * the restaurant again (A6). owner_sessions is scoped by app.account_id, which
+ * is set per account and cleared again inside this tenant transaction.
+ */
+async function revokeOwnerSessions(tx: Tx, deviceId: string): Promise<number> {
+  const rows = await tx`select distinct owner_account_id,owner_session_id from sessions
+    where device_id=${deviceId} and owner_session_id is not null`;
+  let ended = 0;
+  for (const row of rows) {
+    await tx`select set_config('app.account_id',${row.owner_account_id},true)`;
+    const done = await tx`update owner_sessions set revoked=true
+      where id=${row.owner_session_id} and account_id=${row.owner_account_id} and not revoked
+      returning id`;
+    ended += done.length;
+  }
+  if (rows.length) await tx`select set_config('app.account_id','',true)`;
+  return ended;
+}
+
 const revokeInput = z
   .object({ operationId: id, acknowledgeOpenDrawer: z.boolean().default(false) })
   .strict();
@@ -172,12 +193,15 @@ export async function revokeDevice(
       const revoked = await endDeviceSessions(tx, deviceId, "device_revoked", {
         revoke: true,
       });
+      const ownerSessions =
+        d.kind === "personal" ? await revokeOwnerSessions(tx, deviceId) : 0;
       await audit(tx, s, "access.device_revoked", deviceId, {
         name: d.name,
         kind: d.kind,
         openDrawer: d.open_drawer,
         acknowledgedOpenDrawer: p.acknowledgeOpenDrawer,
         sessions: revoked,
+        ownerSessions,
         self: deviceId === s.deviceId,
       });
       return one(tx, s, deviceId);

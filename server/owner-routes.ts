@@ -1,4 +1,9 @@
-import { Router, type RequestHandler } from "express";
+import {
+  Router,
+  type Request,
+  type RequestHandler,
+  type Response,
+} from "express";
 import rateLimit from "express-rate-limit";
 import type postgres from "postgres";
 import { cookieOptions, sign } from "./auth.js";
@@ -175,49 +180,64 @@ export function ownerRoutes(sql: postgres.Sql) {
   });
   router.post("/account/enter", async (req, res, next) => {
     try {
-      let browser = ownerBrowserCookie(req.cookies.gm_owner_browser);
-      const enter = () =>
-        withOwner(
-          sql,
-          req.cookies.gm_account ?? "",
-          req.get("x-csrf-token") ?? "",
-          (tx, account) =>
-            enterOwnerRestaurant(
-              tx,
-              account.id,
-              req.body.tenantId,
-              account.sessionId,
-              browser,
-            ),
-        );
-      let result;
-      try {
-        result = await enter();
-      } catch (error) {
-        // The browser's personal device was revoked or expired: Google identity
-        // is re-verified by gm_account, so issue a fresh browser identity once.
-        if (!(error instanceof DomainError && error.code === "owner_browser_reset"))
-          throw error;
-        browser = ownerBrowserCookie(undefined);
-        result = await enter();
-      }
-      res.cookie("gm_owner_browser", sign(browser), {
-        ...cookieOptions,
-        maxAge: 30 * 86400_000,
-      });
-      res.cookie("gm_device", sign(result.device), {
-        ...cookieOptions,
-        maxAge: 30 * 86400_000,
-      });
-      res.cookie("gm_session", sign(result.session), {
-        ...cookieOptions,
-        maxAge: Math.max(0, result.absoluteExpiresAt.getTime() - Date.now()),
-      });
-      res.json({ ok: true });
+      await enterRestaurant(req, res);
     } catch (error) {
+      if (error instanceof DomainError && error.code === "owner_reauth_required") {
+        // This Google sign-in predates the device's revocation: end it, so the
+        // browser must sign in with Google again (A6).
+        try {
+          await withOwner(sql, req.cookies.gm_account ?? "", undefined, (tx, a) =>
+            tx`update owner_sessions set revoked=true where id=${a.sessionId}`,
+          );
+        } catch {
+          /* Already invalid: nothing left to end. */
+        }
+        res.clearCookie("gm_account", cookieOptions);
+      }
       next(error);
     }
   });
+  async function enterRestaurant(req: Request, res: Response) {
+    let browser = ownerBrowserCookie(req.cookies.gm_owner_browser);
+    const enter = () =>
+      withOwner(
+        sql,
+        req.cookies.gm_account ?? "",
+        req.get("x-csrf-token") ?? "",
+        (tx, account) =>
+          enterOwnerRestaurant(
+            tx,
+            account.id,
+            req.body.tenantId,
+            account.sessionId,
+            browser,
+          ),
+      );
+    let result;
+    try {
+      result = await enter();
+    } catch (error) {
+      // The browser's personal device expired, or was revoked before this
+      // Google sign-in: issue a fresh browser identity once.
+      if (!(error instanceof DomainError && error.code === "owner_browser_reset"))
+        throw error;
+      browser = ownerBrowserCookie(undefined);
+      result = await enter();
+    }
+    res.cookie("gm_owner_browser", sign(browser), {
+      ...cookieOptions,
+      maxAge: 30 * 86400_000,
+    });
+    res.cookie("gm_device", sign(result.device), {
+      ...cookieOptions,
+      maxAge: 30 * 86400_000,
+    });
+    res.cookie("gm_session", sign(result.session), {
+      ...cookieOptions,
+      maxAge: Math.max(0, result.absoluteExpiresAt.getTime() - Date.now()),
+    });
+    res.json({ ok: true });
+  }
   router.post("/account/free-location", async (req, res, next) => {
     try {
       res.json(

@@ -1359,32 +1359,54 @@ try {
     );
   });
 
-  await test("revoked personal device: enter issues a fresh owner-browser mapping", async () => {
-    const cookie = await signInGoogleOwner(sql, {
+  await test("revoked personal device: its Google sign-ins end, an older sign-in cannot pair the browser again, a new one gets a fresh owner-browser mapping (A6)", async () => {
+    const identity = {
       issuer: "https://accounts.google.com",
       subject: randomUUID(),
       email: "owner-browser@example.com",
       name: "Owner browser fixture",
-    });
+    };
+    const cookie = await signInGoogleOwner(sql, identity);
+    // A second sign-in of the same Google account from before the revocation
+    // that never entered this device (a fresher gm_account in that browser).
+    const older = await signInGoogleOwner(sql, identity);
     const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
     accountIds.push(account.id);
     await admin`insert into owner_memberships(account_id,tenant_id,employee_id) values(${account.id},${tenantId},${secondOwnerId})`;
     const browser = ownerBrowserCookie();
-    const enter = (b: ReturnType<typeof ownerBrowserCookie>) =>
-      withOwner(sql, cookie, undefined, (tx, a) =>
+    const enter = (
+      c: string,
+      b: ReturnType<typeof ownerBrowserCookie>,
+    ) =>
+      withOwner(sql, c, undefined, (tx, a) =>
         enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, b),
       );
-    const first = await enter(browser);
-    const again = await enter(browser);
+    const first = await enter(cookie, browser);
+    const again = await enter(cookie, browser);
     assert.equal(again.device.id, first.device.id);
-    await run((tx) =>
+    const revoked = await run((tx) =>
       revokeDevice(tx, owner, first.device.id, { operationId: randomUUID() }),
     );
-    await rejects(enter(browser), "owner_browser_reset");
-    const fresh = await enter(ownerBrowserCookie());
+    assert.equal(revoked.status, "revoked");
+    // The Google sign-in that entered the stolen device is over.
+    await rejects(enter(cookie, browser), "unauthorized");
+    await rejects(enter(cookie, ownerBrowserCookie()), "unauthorized");
+    const [audited] =
+      await admin`select detail->>'ownerSessions' as n from audit where entity_id=${first.device.id} and operation='access.device_revoked'`;
+    assert.equal(audited.n, "1");
+    // A sign-in from before the revocation cannot replace the device.
+    await rejects(enter(older, browser), "owner_reauth_required");
+    // A new Google sign-in may: the stale mapping is reset, then a new device.
+    const renewed = await signInGoogleOwner(sql, identity);
+    await rejects(enter(renewed, browser), "owner_browser_reset");
+    const laptop = ownerBrowserCookie();
+    const fresh = await enter(renewed, laptop);
     assert.notEqual(fresh.device.id, first.device.id);
     const [d] = await admin`select kind,active from devices where id=${fresh.device.id}`;
     assert.deepEqual(d, { kind: "personal", active: true });
+    // An expired (not revoked) device still resets without a new sign-in.
+    await admin`update devices set token_expires_at=now()-interval '1 minute' where id=${fresh.device.id}`;
+    await rejects(enter(older, laptop), "owner_browser_reset");
   });
 
   await test("legacy rows: NULL kind infers personal for 'Owner browser'; NULL token_expires_at is valid", async () => {

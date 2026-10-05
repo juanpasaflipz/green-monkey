@@ -4,7 +4,7 @@ import { Button, Field } from "../components/ui";
 import { changeRestaurant, db } from "../offline";
 import { clearSessionScope } from "../api";
 import { OwnerManagement } from "./OwnerManagement";
-import { strings } from "../i18n";
+import { strings, translateError } from "../i18n";
 
 type Account = {
   name: string;
@@ -185,8 +185,16 @@ export function OwnerAccess({
       await changeRestaurant(tenantId, () => command("enter", { tenantId }));
       await onReady();
     } catch (error) {
+      const code = (error as Error).message;
+      if (code === "owner_reauth_required") {
+        // The device was unpaired after this Google sign-in, which the server
+        // has now ended: show the Google sign-in again (A6).
+        setTransitionError(translateError(code, locale));
+        await refresh();
+        return;
+      }
       setTransitionError(
-        (error as Error).message === "pending_before_switch"
+        code === "pending_before_switch"
           ? locale === "es"
             ? "Sincroniza o resuelve las ventas pendientes antes de cambiar de restaurante."
             : "Sync or resolve pending sales before switching restaurants."

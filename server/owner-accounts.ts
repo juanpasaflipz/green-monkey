@@ -187,9 +187,20 @@ export async function enterOwnerRestaurant(
       const [valid] =
         await tx`select id from devices where id=${prior.device_id} and token_hash=${hash(device.token)}
           and active and coalesce(token_expires_at,'infinity')>now()`;
-      // A revoked or expired personal device is never revived: the route
-      // retries once with a fresh browser identity, creating a new device.
-      if (!valid) throw new DomainError("owner_browser_reset", 409);
+      if (!valid) {
+        // A device unpaired after this Google sign-in (a lost or stolen phone
+        // or laptop) is never replaced on the strength of the old gm_account:
+        // only a new Google sign-in may pair this browser again (A6). Owner
+        // sessions last 12 hours from issuance (signInGoogleOwner).
+        const [state] = await tx`select d.revoked_at,
+            (select os.expires_at-interval '12 hours' from owner_sessions os where os.id=${ownerSessionId}) as issued
+          from devices d where d.id=${prior.device_id}`;
+        if (state?.revoked_at && !(state.issued > state.revoked_at))
+          throw new DomainError("owner_reauth_required", 401);
+        // An expired one is never revived either: the route retries once with
+        // a fresh browser identity, creating a new device.
+        throw new DomainError("owner_browser_reset", 409);
+      }
       device.id = prior.device_id;
       existingDevice = true;
       await tx`update devices set token_expires_at=now()+interval '30 days',last_seen_at=now() where id=${device.id}`;
