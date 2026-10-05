@@ -129,6 +129,13 @@ cached before the deploy keep working. A later contract change removes them.
 - New tickets get a highlight, an aria-live announcement and, after a tap on
   **Activar sonido**, a beep (browsers block audio until a tap after each
   reload; a banner says so). Pending cancellations announce with a lower tone.
+- When the order note of a ticket already on screen changes (**Editar nota**),
+  the ticket is alerted like a new one: highlight with a "Nota actualizada"
+  badge, the announcement "Nota actualizada en ticket #N", the beep and, when
+  enabled, auto-print. Paper comandas printed at send time keep the old note,
+  so after a note edit Selling and order detail offer **Reimprimir comanda**
+  (when "Imprimir comanda al enviar a cocina" is on) for the tickets not yet
+  served.
 - **Entregados recientes** recalls tickets served in the last 2 hours of the
   current business day. Managers can retire tickets left open from previous
   business days; the action is audited and acknowledges their pending
@@ -154,11 +161,33 @@ Every send carries the cart's `operationId`. If the response is lost and the
 cashier sends the same cart again, the server replays the stored result. If the
 cart changed in between, the server answers `operation_conflict`; Selling then
 asks `GET /api/service/operations/:id/order` for the order that the first send
-produced, makes it the current order, removes from the cart every line the
-order already holds, and gives the rest a new `operationId` ("Parte de esta
-orden ya había llegado a cocina…"). Nothing reaches the kitchen twice. If the
-order cannot be found, Selling says so and only **Enviar como orden nueva**
-gives the cart a new operation id.
+produced, makes it the current order, compares every cart line the order
+already holds with the stored line, and gives what is left a new
+`operationId`:
+
+| Cart line compared with the stored line | What stays in the cart |
+| --- | --- |
+| Identical (quantity, option set, note, open amount) | nothing |
+| Only the quantity grew (a tap on the same product) | the extra units, as a new line |
+| Note, options or open amount changed, or fewer units | a copy with a new id, for review |
+
+Lines the order does not hold stay as they are. When every line landed
+unchanged the send counts as done. Otherwise Selling explains what happened
+("Parte de esta orden ya había llegado a cocina…", or, when a landed line was
+edited afterwards, "…revisa las cantidades y notas antes de enviar"), so a
+line is never sent twice and never dropped silently. If the order cannot be
+found, Selling says so and only **Enviar como orden nueva** gives the cart a
+new operation id.
+
+## Parked carts
+
+**Guardar borrador**, **Nueva orden**, resuming an order and restoring a draft
+store the unsent cart in Borradores. A cart of rounds for an open check also
+keeps that check (IndexedDB cache record `…:parked-order:{operationId}`), is
+listed as "#N · ronda sin enviar" and, when restored, goes back onto that check
+and is sent as a round. If the check closed meanwhile, the cart offers
+**Enviar como orden nueva**; if the check cannot be loaded (offline), the
+draft stays parked.
 
 ## Payment dialog
 
@@ -169,8 +198,24 @@ MXN 20/50/100/200/500/1000 bills). Change uses this payment's own amount. Tips
 are voluntary (Profeco); 10 % and 15 % shortcuts round to whole pesos. Amounts
 accept es-MX thousands separators ("1,250.50"). The first invalid field is shown
 inline and **Confirmar cobro** stays disabled. Online, the device's drawer is
-refetched when the dialog opens, and nothing is sent to the kitchen unless the
-drawer is open.
+refetched when the dialog opens, and neither **Confirmar cobro** nor
+**Enviar ronda y dividir por productos** sends anything to the kitchen unless
+the drawer is open.
+
+- **One payment at a time.** The tap sets an in-flight flag synchronously and
+  it clears only when the whole collect (round send, payment, recovery)
+  settles. Confirm stays disabled ("Cargando…") and the "retry is safe" hint is
+  hidden meanwhile. The payment `operationId` is created once per opened dialog,
+  so a duplicate that still reached the server would replay the stored result.
+- **Feedback inside the dialog.** Selling's notices (`stale_order`, a recovered
+  send) show inside the dialog. When the balance changes under the open dialog,
+  "El saldo pendiente cambió a {saldo}" is shown and a prefilled **Importe**
+  moves to the new balance (an amount the cashier typed stays). When the cart
+  must offer **Enviar como orden nueva** (`check_closed`, an unconfirmed send),
+  the dialog closes so the button is reachable.
+- **Cobrar juntas** fixes the checks and balances when it opens, so a retry
+  after a lost response sends the same amounts under the same `operationId`
+  even if the list behind it refreshed, and shows the change.
 
 ## Printing (browser/OS)
 
