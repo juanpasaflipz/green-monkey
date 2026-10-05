@@ -51,11 +51,14 @@ export function idleLockDefault(env: NodeJS.ProcessEnv = process.env): number {
 /**
  * Refuses to start production with demo access enabled (D22): the demo form
  * and owner-password pairing must only exist on local and fictional staging.
+ * Production is Railway's `production` environment or the ops configuration's
+ * APP_ENV=production (server/config-rules.ts), whichever says so.
  */
 export function assertDemoAccessAllowed(env: NodeJS.ProcessEnv = process.env) {
   if (
     env.DEMO_TENANT_ID?.trim() &&
-    env.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase() === "production"
+    (env.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase() === "production" ||
+      env.APP_ENV?.trim().toLowerCase() === "production")
   )
     throw Error("DEMO_TENANT_ID must not be set in production");
 }

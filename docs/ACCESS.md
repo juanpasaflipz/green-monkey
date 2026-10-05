@@ -313,7 +313,7 @@ so its attempt is cleared at once.
 
 | Variable | Meaning |
 | --- | --- |
-| `DEMO_TENANT_ID` | Enables the demo owner form and owner-password pairing for this one fictional tenant. Local and fictional staging only; the server refuses to start when it is set and `RAILWAY_ENVIRONMENT_NAME` is `production`. |
+| `DEMO_TENANT_ID` | Enables the demo owner form and owner-password pairing for this one fictional tenant. Local and fictional staging only; the server refuses to start when it is set and `RAILWAY_ENVIRONMENT_NAME` or `APP_ENV` is `production`. |
 | `ACCESS_STEP_UP_SECONDS` | Step-up window, 30..1800 (default 120). Browser suites use 1800. |
 | `ACCESS_IDLE_LOCK_DEFAULT_SECONDS` | Default terminal auto-lock: 0 (never), 60, 120, 180, 300, 600 or 900 (default 180). Browser suites use 0; the access idle test sets the device explicitly. |
 
