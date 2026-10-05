@@ -295,6 +295,9 @@ export async function listOrders(
   } catch {
     throw new DomainError("invalid_input");
   }
+  // The cursor time travels as text (created_at::text) and is cast in SQL:
+  // a timestamptz parameter would pass through a JS Date and drop the
+  // microseconds, skipping rows that share a millisecond.
   const cursor = q.cursor ? decodeCursor(q.cursor) : null;
   const scope =
     q.status === "open"
@@ -346,9 +349,14 @@ export async function listOrders(
                     or e.name ilike ${term} escape '\\' ${num !== null ? tx`or o.number = ${num}` : tx``})`
           : tx``
       }
-      ${cursor ? tx`and (o.created_at, o.id) < (${cursor.t}::timestamptz, ${cursor.i}::uuid)` : tx``}
+      ${cursor ? tx`and (o.created_at, o.id) < (${cursor.t}::text::timestamptz, ${cursor.i}::uuid)` : tx``}
     order by o.created_at desc, o.id desc
-    limit ${q.limit + 1}`;
+    limit ${q.limit + 1}`.catch((e: { code?: string }) => {
+      // A forged cursor can carry an impossible timestamp (for example Feb 30).
+      if (e?.code === "22007" || e?.code === "22008")
+        throw new DomainError("invalid_input");
+      throw e;
+    });
   const page = rows.slice(0, q.limit);
   const last = page.at(-1);
   return {

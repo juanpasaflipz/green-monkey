@@ -304,6 +304,9 @@ describe("service lifecycle rules", () => {
     expect(tampered(forge({ ...c, t: "now(); drop table orders" }))).toBe(
       "invalid_input",
     );
+    expect(tampered(forge({ ...c, t: "2026-13-40 25:61:00+00" }))).toBe(
+      "invalid_input",
+    );
   });
 
   it("paymentStatus and kitchenStatus derive badges", () => {

@@ -550,6 +550,12 @@ try {
       await tx`update orders set business_date=business_date-3,created_at=created_at-interval '3 days',
           number=${800000 + Math.floor(Math.random() * 100000)} where tenant_id=${tenantId} and id=${aged.id}`;
     });
+    // Three checks share one microsecond-precise created_at, as orders created
+    // in one transaction do; keyset pages must still return each once.
+    await asAdmin(async (tx) => {
+      await tx`update orders set created_at=date_trunc('second', now()) - interval '1 hour' + interval '123457 microseconds'
+        where tenant_id=${tenantId} and id = any(${tx.array([made[2].id, made[3].id, made[4].id])}::uuid[])`;
+    });
     const closedOne = made[1];
     await pay(closedOne, closedOne.total);
     const current = await list(owner, { q: tag });
@@ -633,6 +639,10 @@ try {
     const tampered = first.nextCursor!.slice(0, -3) + "AAA";
     await rejects(list(owner, { q: tag, cursor: tampered }), "invalid_input");
     await rejects(list(owner, { q: tag, cursor: "%%%" }), "invalid_input");
+    const impossible = Buffer.from(
+      JSON.stringify({ t: "2026-02-30 10:00:00+00", i: randomUUID() }),
+    ).toString("base64url");
+    await rejects(list(owner, { q: tag, cursor: impossible }), "invalid_input");
     await rejects(
       list(owner, { status: "closed", date: "2026-02-30" }),
       "invalid_input",
