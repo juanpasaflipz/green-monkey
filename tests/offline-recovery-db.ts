@@ -464,13 +464,19 @@ try {
         recoverySale,
       ),
     ),
-    /offline_context_invalid/,
+    // Review no longer throws for evidence problems (OFF-8); evidence that
+    // names another tenant is refused outright instead.
+    /forbidden/,
+    "another tenant cannot review this tenant's evidence",
   );
   console.log(
     "Offline recovery DB passed: v1 compatibility, v2 lease evidence, exact sync/reconciliation replay, price conflict review, uncertain-payment status/retry, revoked-session manager recovery, closed-drawer late correction, durable kitchen/stock task resolution, tenant isolation and capped refund.",
   );
 } finally {
   for (const table of [
+    "offline_kitchen_reviews",
+    "offline_sync_records",
+    "offline_archives",
     "refunds",
     "tender_allocations",
     "offline_recovery_tasks",

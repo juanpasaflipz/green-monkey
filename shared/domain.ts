@@ -279,6 +279,7 @@ export type Session = {
   expiresAt: string;
   offlineUntil: string;
   offlineLeaseVersion?: number;
+  offlineLeaseConfigVersion?: number | null;
   csrf: string;
   restaurant: {
     name: string;
@@ -322,6 +323,7 @@ export type Order = {
   createdAt: string;
   rounds: any[];
   tenders: any[];
+  offline?: { provisionalNumber: string | null; soldAt: string } | null;
 };
 
 export function currencyExponent(currency: string): number {

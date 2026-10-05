@@ -62,7 +62,8 @@ export function authentication(sql: postgres.Sql) {
       const session = await tenant(sql, c.tenantId, async (tx) => {
         const [s] =
           await tx`select s.*,e.name,e.role,r.name as restaurant_name,r.currency,r.timezone,r.cutoff,r.config_version,
-            (select contract_version from offline_leases l where l.session_id=s.id) as offline_lease_version
+            (select contract_version from offline_leases l where l.session_id=s.id) as offline_lease_version,
+            (select configuration_version from offline_leases l where l.session_id=s.id) as offline_lease_config_version
           from sessions s join employees e on e.tenant_id=s.tenant_id and e.id=s.employee_id
           join devices d on d.tenant_id=s.tenant_id and d.id=s.device_id
           join restaurants r on r.id=s.tenant_id
@@ -88,6 +89,7 @@ export function authentication(sql: postgres.Sql) {
           expiresAt: s.expires_at.toISOString(),
           offlineUntil: s.offline_until.toISOString(),
           offlineLeaseVersion: s.offline_lease_version,
+          offlineLeaseConfigVersion: s.offline_lease_config_version ?? null,
           csrf: s.csrf,
           restaurant: {
             name: s.restaurant_name,

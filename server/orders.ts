@@ -108,6 +108,8 @@ export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
       on t.tenant_id=r.tenant_id and t.recovery_id=r.id
     where r.order_id=${orderId}
     group by r.tenant_id,r.id`;
+  const [offline] =
+    await tx`select provisional_number,sold_at from offline_sync_records where order_id=${orderId} and kind in ('sale','order') limit 1`;
   return {
     recovery: recovery
       ? {
@@ -167,6 +169,12 @@ export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
     createdAt: o.created_at.toISOString(),
     rounds,
     tenders,
+    offline: offline
+      ? {
+          provisionalNumber: offline.provisional_number,
+          soldAt: offline.sold_at.toISOString(),
+        }
+      : null,
   };
 }
 export async function stock(
@@ -193,12 +201,19 @@ export async function stock(
   await tx`insert into stock_movements(tenant_id,id,stock_id,quantity,cause,cause_id,reason,actor_id) values(${s.tenantId},${randomUUID()},${stockId},${quantity},${cause},${causeId},${reason},${s.employeeId})`;
   await tx`update stock_items set version=version+1 where id=${stockId}`;
 }
-async function append(
+export type AppendOptions = {
+  /** service (024): kitchen note for this round (rounds.note). */
+  note?: string;
+  /** menu (025): negative-stock policy; offline-collected sales pass "allow". */
+  stockPolicy?: "allow" | "block";
+};
+export async function append(
   tx: Tx,
   s: Session,
   orderId: string,
   lines: ReturnType<typeof quote>,
   round: number,
+  opts: AppendOptions = {},
 ) {
   for (const l of lines) {
     await tx`insert into order_lines(tenant_id,id,order_id,product_id,round,data) values(${s.tenantId},${l.id},${orderId},${l.productId},${round},${tx.json(l)})`;
@@ -213,6 +228,7 @@ async function append(
         "sale",
         l.id,
         "dispatch",
+        opts.stockPolicy === "allow",
       );
   }
   for (const station of new Set(lines.map((l) => l.station))) {
@@ -224,28 +240,32 @@ export async function createOrder(
   tx: Tx,
   s: Session,
   raw: unknown,
-  authorizedOfflineRecovery = false,
+  offline?: { businessDate: string },
 ) {
   permit(s, operators);
   const input = orderInput.parse(raw);
   return once(tx, s, input.operationId, "create_order", input, async () => {
     if (["qr", "kiosk"].includes(input.channel)) await requirePro(tx);
-    else if (!authorizedOfflineRecovery) await requireSelling(tx, s);
+    else if (!offline) await requireSelling(tx, s);
     const lines = quote(
       input.lines,
       await catalog(tx),
       ["manager", "owner"].includes(s.role),
     );
-    const date = businessDate(
-      new Date().toISOString(),
-      s.restaurant.timezone,
-      s.restaurant.cutoff,
-    );
+    const date =
+      offline?.businessDate ??
+      businessDate(
+        new Date().toISOString(),
+        s.restaurant.timezone,
+        s.restaurant.cutoff,
+      );
     const [number] =
       await tx`insert into order_numbers(tenant_id,business_date,value) values(${s.tenantId},${date},1) on conflict(tenant_id,business_date) do update set value=order_numbers.value+1 returning value`;
     const orderId = randomUUID();
     await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${s.employeeId},${input.tableId},${input.mode},${input.name},${input.note},${input.channel},${sum(lines.map((l) => l.total))},${tx.json(s.restaurant)})`;
-    await append(tx, s, orderId, lines, 1);
+    await append(tx, s, orderId, lines, 1, {
+      stockPolicy: offline ? "allow" : undefined,
+    });
     await audit(tx, s, "order.created", orderId, {
       channel: input.channel,
       deviceId: s.deviceId,
