@@ -96,12 +96,41 @@ A hidden page, or one showing its sent order, does not poll, and checks from
 focus or visibility changes less than 15 seconds apart are skipped.
 
 **Public request limits.** Diners on a restaurant's guest Wi-Fi share one public
-IP. Catalog loads and order submissions keep sharing a limit of 30 requests a
-minute per client IP (IPv6 grouped by /56). The revision poll is not counted
-there: it has its own limit of 20 a minute per link and client IP, so open pages
-can never use up the budget a diner needs to send an order. A refused poll is
-retried on the next tick. Refusals answer 429 with `{"error":"rate_limited"}`.
-Per-link and per-table limits on stored links are public-ordering's (032).
+IP, so every limit below is per client IP (IPv6 grouped by /56) and the three
+kinds of request never share a budget (`server/public-ordering.ts`):
+
+| Request | Limit per client IP per minute |
+| --- | --- |
+| Catalog loads (and receipt reads) | 30 |
+| Order submissions | 30, their own, so catalog refetches after a menu change can never refuse an order |
+| Revision polls | 240 in total, whatever the token, and within that 20 per link |
+
+The 240-a-minute ceiling is what bounds the database work one client can cause:
+each served poll is one short transaction on the pool the POS sells from. A page
+polls once a minute, plus focus checks at least 15 seconds apart (five a minute
+at worst), so one guest Wi-Fi IP still carries about 50 pages that are refocused
+constantly, and several times that many ordinary ones. The per-link budget keys
+on the server-signed link id, so one busy table cannot slow another table or the
+kiosk. Public routes accept a link only spelled exactly as the server signed
+it: the shared token
+check (`verify()` in `server/auth.ts`) also accepts other spellings of the same
+signature (anything after a second `.`, a trailing `=` or `!`), which are
+refused here with 401 before any database work. A refused poll is retried on
+the next tick. Refusals answer 429 with `{"error":"rate_limited"}`. Per-link and
+per-table limits on stored links are public-ordering's (032).
+
+**QR/kiosk status, stated honestly.** Menu's part of QR and kiosk ordering is
+done: optional and required groups are offered through the same picker as the
+POS, and money is formatted for es-MX. QR/kiosk ordering is still **not ready
+for production**:
+
+- ordering links still expire after 24 hours and cannot be revoked;
+- QR and kiosk orders still reach the kitchen unpaid;
+- all of this belongs to public-ordering (migration 032, wave 3), which brings
+  stored, revocable links and held orders;
+- until then, production keeps QR/kiosk ordering off through
+  `PUBLIC_ORDERING_ENABLED` (account, migration 031): when it is false,
+  `/api/public/*` and link creation answer 404 `public_ordering_disabled`.
 
 **Carts price line by line.** In the POS cart and the QR/kiosk order, each line
 is priced on its own (`priceCart()` in `src/features/menu/cart.ts`). A product
@@ -292,6 +321,21 @@ would make the drift check fail.
 - Substitutions, yields, lots and purchase orders.
 - The "Impuestos" section of the product editor: `ProductEditor` exposes a
   `renderFiscal` slot that the fiscal wave fills; no tax logic exists here.
+
+**Fiscal extension points.** Product tax is configured by fiscal's wave-2
+wiring (027); menu only leaves the extension points:
+
+- `Product.fiscal` (`shared/domain.ts`). Every menu write keeps a stored value
+  and none sets one: editor and legacy saves spread the stored document, group
+  recompiles and unlinks spread it too, and availability, category rename and
+  reorder, product reorder, archive and restore merge into it. DB test "menu
+  writes keep a stored product fiscal value (reserved for 027)" guards this.
+- The reserved comment on the strict `productInput` (`shared/menu-schema.ts`).
+- The inert `ProductEditor.renderFiscal` slot.
+- The `quote()` anchor comment `// fiscal (027): append line tax snapshot here`.
+
+Until fiscal merges, the editor has no Impuestos section and every product uses
+the restaurant default.
 
 ## Integration notes (menu's merge)
 

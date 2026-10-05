@@ -48,9 +48,9 @@ export const REVISION_POLLS_PER_MINUTE = 20;
  * Freshness polls per client IP per minute across every link and every token
  * (MENU-R3). This ceiling, not the per-link budget, bounds the database work
  * one client can cause: a served poll is one short transaction on the pool
- * the POS sells from. A page polls at most four times a minute (once a minute
- * plus focus checks at least 15 s apart) and usually once, so one guest Wi-Fi
- * IP still carries 60 or more open pages.
+ * the POS sells from. A page polls once a minute plus focus checks at least
+ * 15 s apart (five a minute at worst), so one guest Wi-Fi IP still carries
+ * about 50 constantly refocused pages and several times as many ordinary ones.
  */
 export const REVISION_POLLS_PER_IP_PER_MINUTE = 240;
 const isRevisionPoll = (req: express.Request) =>
