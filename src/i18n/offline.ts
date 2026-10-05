@@ -171,6 +171,73 @@ export default defineArea({
       "Esta venta ya existe en línea como la orden #{n} y no le queda saldo. No cobres otra vez: archiva este registro con el motivo.",
     offlineExistingOrderSent:
       "Esta orden ya existe en línea como la #{n} y la cocina ya la recibió. Archiva este registro: sus cobros sin conexión se podrán conciliar en la orden #{n}.",
+    offlineExistingOrderWillSync:
+      "Esta orden ya existe en línea como la #{n} y la cocina ya la recibió. Este registro se sincroniza con ella: no lo archives.",
+    offlineExistingOrderOtherDraft:
+      "Con el mismo identificador ya existe en línea la orden #{n}, con otros productos. Este registro no se puede sincronizar: archívalo. Sus cobros sin conexión se conciliarán solo como dinero; agrega en línea los productos que falten.",
+    offlineDependentsRounds:
+      "Sus rondas sin conexión no se pueden conciliar. Antes de conciliar sus cobros o de cobrar la orden #{n}, agrégalas en línea a la orden #{n}:",
+    offlineDependentRound: "Ronda: {items}",
+    offlineDependentPayment: "Cobro sin conexión de {amount}",
+    offlineReviewTitleCash: "Conciliar efectivo ya recibido",
+    offlineReviewTitleExternal: "Conciliar cobro con terminal ya recibido",
+    offlineReviewTitleOrder: "Revisar orden enviada",
+    offlineReviewTitleRound: "Revisar ronda",
+    offlineReviewExternal: "Revisar cobro con terminal",
+    offlineMethodCash: "efectivo",
+    offlineMethodExternal: "terminal externa",
+    offlineReviewSession: "Sesión original",
+    offlineReviewSessionRevoked:
+      "revocada (empleado o dispositivo dado de baja)",
+    offlineReviewSessionValid: "válida",
+    offlineReviewOnServer: "En el servidor",
+    offlineReviewRecorded: "ya registrado",
+    offlineReviewArchived: "archivado",
+    offlineReviewNotYet: "aún no",
+    offlineAutoSyncOther:
+      "Este registro se envía solo cuando {name} inicie sesión en {device}. Concilia solo si eso no es posible: conciliar conserva el dinero, pero no los productos, la cocina ni el inventario.",
+    offlineAutoSyncSelf:
+      "Este registro se envía solo desde este dispositivo con tu sesión: usa Reintentar sincronización. Concilia solo si no se sincroniza.",
+    offlineReconcileAnyway: "Conciliar de todos modos",
+    offlineMarkRecorded: "Marcar como registrado",
+    offlineAlreadyRecorded:
+      "Este registro ya está en el servidor: no lo concilies ni lo archives. Márcalo como registrado.",
+    offlineAlreadyArchived: "Este registro ya se archivó en el servidor.",
+    offlineNoMoney:
+      "Las órdenes enviadas y las rondas no llevan cobro que conciliar: se sincronizan solas o se archivan. Si archivas una, agrega sus productos en línea.",
+    offlineNotReconcilable:
+      "No se puede conciliar por el motivo indicado. Archívalo solo si el dinero ya se registró de otra forma o se devolvió al cliente.",
+    offlineReconcileRecovery:
+      "Conservaremos el importe original en la caja original. No se cobra al cliente otra vez. No se reconstruyen precios por producto ni se envía a cocina o descuenta inventario; revisa esas tareas por separado.",
+    offlineReconcileRecoveryExternal:
+      "Registraremos el cobro con terminal original en la caja original, como una orden de conciliación; no suma efectivo a la caja. No se cobra al cliente otra vez. No se reconstruyen precios por producto ni se envía a cocina o descuenta inventario; revisa esas tareas por separado.",
+    offlineReconcileConfirmCash:
+      "Verifiqué el efectivo original y revisaré cocina e inventario.",
+    offlineReconcileConfirmExternal:
+      "Verifiqué el cobro con terminal original y su referencia, y revisaré cocina e inventario.",
+    offlineReconcileConfirmIntoOrderExternal:
+      "Verifiqué el cobro con terminal original y que corresponde a la orden #{n}.",
+    offlineReconcileReason: "Motivo de conciliación",
+    offlineReconcileSubmitCash: "Registrar efectivo verificado",
+    offlineReconcileSubmitExternal: "Registrar cobro verificado",
+    offlineRetryScope:
+      "Reintentar envía los registros de {name} en este dispositivo. Los de otras personas se envían cuando esa persona inicia sesión aquí.",
+    offlineRowOtherEmployee:
+      "Lo registró otra persona: se envía cuando esa persona inicie sesión en este dispositivo. Reintentar no lo envía.",
+    offlineAttemptRecord: "Registrar cobro verificado",
+    offlineAttemptDiscard: "Descartar intento (no se cobró)",
+    offlineAttemptRecordHint:
+      "Registraremos este cobro en su orden, en la caja original del intento. Hazlo solo si verificaste que el cliente pagó; no se le cobra otra vez.",
+    offlineAttemptDiscardHint:
+      "El intento se cierra sin registrar dinero y la orden vuelve a poder cobrarse. Hazlo solo si verificaste que el cliente no pagó.",
+    offlineAttemptReason: "Motivo",
+    offlineAttemptConfirm: "Lo verifiqué con la caja y con el cliente.",
+    offlineAttemptSubmitRecord: "Registrar cobro",
+    offlineAttemptSubmitDiscard: "Descartar intento",
+    offlineAttemptDiscarded: "Un gerente descartó este intento: no se cobró.",
+    offlineAttemptDismiss: "Cerrar intento",
+    offlineOpAttemptRecorded: "Pago por confirmar registrado por un gerente",
+    offlineOpAttemptDiscarded: "Pago por confirmar descartado por un gerente",
   },
   en: {
     offlineStatusOnline: "Connected",
@@ -338,6 +405,73 @@ export default defineArea({
       "This sale already exists online as order #{n} and has no balance left. Do not charge again: archive this record with the reason.",
     offlineExistingOrderSent:
       "This order already exists online as #{n} and the kitchen already received it. Archive this record: its offline payments can then be reconciled on order #{n}.",
+    offlineExistingOrderWillSync:
+      "This order already exists online as #{n} and the kitchen already received it. This record syncs into it: do not archive it.",
+    offlineExistingOrderOtherDraft:
+      "Order #{n} already exists online under the same identifier, with other items. This record cannot sync: archive it. Its offline payments will be reconciled as money only; add any missing items online.",
+    offlineDependentsRounds:
+      "Its offline rounds cannot be reconciled. Before reconciling its payments or charging order #{n}, add them online to order #{n}:",
+    offlineDependentRound: "Round: {items}",
+    offlineDependentPayment: "Offline payment of {amount}",
+    offlineReviewTitleCash: "Reconcile cash already received",
+    offlineReviewTitleExternal: "Reconcile terminal payment already received",
+    offlineReviewTitleOrder: "Review sent order",
+    offlineReviewTitleRound: "Review round",
+    offlineReviewExternal: "Review terminal payment",
+    offlineMethodCash: "cash",
+    offlineMethodExternal: "external terminal",
+    offlineReviewSession: "Original session",
+    offlineReviewSessionRevoked: "revoked (employee or device deactivated)",
+    offlineReviewSessionValid: "valid",
+    offlineReviewOnServer: "On the server",
+    offlineReviewRecorded: "already recorded",
+    offlineReviewArchived: "archived",
+    offlineReviewNotYet: "not yet",
+    offlineAutoSyncOther:
+      "This record is sent by itself when {name} signs in on {device}. Reconcile only if that is not possible: reconciling keeps the money, but not the items, the kitchen or the inventory.",
+    offlineAutoSyncSelf:
+      "This record is sent by itself from this device with your session: use Retry sync. Reconcile only if it does not sync.",
+    offlineReconcileAnyway: "Reconcile anyway",
+    offlineMarkRecorded: "Mark as recorded",
+    offlineAlreadyRecorded:
+      "This record is already on the server: do not reconcile or archive it. Mark it as recorded.",
+    offlineAlreadyArchived: "This record was already archived on the server.",
+    offlineNoMoney:
+      "Sent orders and rounds carry no payment to reconcile: they sync by themselves or are archived. If you archive one, add its items online.",
+    offlineNotReconcilable:
+      "It cannot be reconciled for the reason shown. Archive it only if the money was already recorded another way or returned to the guest.",
+    offlineReconcileRecovery:
+      "We will preserve the original amount in the original drawer. The customer is not charged again. Item prices are not reconstructed, kitchen tickets are not sent and inventory is not deducted; review those tasks separately.",
+    offlineReconcileRecoveryExternal:
+      "We will record the original terminal payment in the original drawer, as a reconciliation order; it adds no cash to the drawer. The customer is not charged again. Item prices are not reconstructed, kitchen tickets are not sent and inventory is not deducted; review those tasks separately.",
+    offlineReconcileConfirmCash:
+      "I verified the original cash and will review kitchen and inventory.",
+    offlineReconcileConfirmExternal:
+      "I verified the original terminal payment and its reference, and will review kitchen and inventory.",
+    offlineReconcileConfirmIntoOrderExternal:
+      "I verified the original terminal payment and that it belongs to order #{n}.",
+    offlineReconcileReason: "Reconciliation reason",
+    offlineReconcileSubmitCash: "Record verified cash",
+    offlineReconcileSubmitExternal: "Record verified payment",
+    offlineRetryScope:
+      "Retry sends {name}'s records on this device. Other people's records are sent when that person signs in here.",
+    offlineRowOtherEmployee:
+      "Saved by someone else: it is sent when that person signs in on this device. Retry does not send it.",
+    offlineAttemptRecord: "Record verified payment",
+    offlineAttemptDiscard: "Discard attempt (not charged)",
+    offlineAttemptRecordHint:
+      "We will record this payment on its order, in the attempt's original drawer. Do it only if you verified the guest paid; they are not charged again.",
+    offlineAttemptDiscardHint:
+      "The attempt is closed without recording money and the order can be charged again. Do it only if you verified the guest did not pay.",
+    offlineAttemptReason: "Reason",
+    offlineAttemptConfirm: "I verified it with the drawer and with the guest.",
+    offlineAttemptSubmitRecord: "Record payment",
+    offlineAttemptSubmitDiscard: "Discard attempt",
+    offlineAttemptDiscarded:
+      "A manager discarded this attempt: it was not charged.",
+    offlineAttemptDismiss: "Close attempt",
+    offlineOpAttemptRecorded: "Pending payment recorded by a manager",
+    offlineOpAttemptDiscarded: "Pending payment discarded by a manager",
   },
   errors: {
     network_unavailable: [
@@ -479,6 +613,42 @@ export default defineArea({
     offline_order_not_cached: [
       "Esta orden no está guardada en este dispositivo. Ábrela desde Órdenes abiertas o cóbrala al volver la conexión.",
       "This order is not saved on this device. Open it from Open orders or charge it when the connection returns.",
+    ],
+    offline_why_conflict: [
+      "No se sincroniza solo: la sesión, el empleado o el dispositivo que lo registró ya no está activo, o no tenía permiso de vender sin conexión. Un gerente debe revisarlo en Sincronización.",
+      "It does not sync by itself: the session, employee or device that saved it is no longer active, or was not allowed to sell offline. A manager must review it on the Sync screen.",
+    ],
+    offline_why_session_revoked: [
+      "La sesión que lo registró se revocó (el empleado o el dispositivo se dio de baja), así que no se sincroniza solo. Concilia su cobro o archívalo.",
+      "The session that saved it was revoked (the employee or device was deactivated), so it does not sync by itself. Reconcile its payment or archive it.",
+    ],
+    offline_why_employee_inactive: [
+      "El empleado que lo registró está inactivo, así que no se sincroniza solo. Concilia su cobro o archívalo; si reactivas al empleado, se envía cuando inicie sesión en ese dispositivo.",
+      "The employee who saved it is inactive, so it does not sync by itself. Reconcile its payment or archive it; if you reactivate the employee, it is sent when they sign in on that device.",
+    ],
+    offline_why_device_inactive: [
+      "El dispositivo que lo registró está dado de baja, así que no se sincroniza solo. Concilia su cobro o archívalo.",
+      "The device that saved it is deactivated, so it does not sync by itself. Reconcile its payment or archive it.",
+    ],
+    offline_why_selling_not_authorized: [
+      "La sesión que lo registró no tenía permiso para vender sin conexión. Concilia su cobro o archívalo.",
+      "The session that saved it was not allowed to sell offline. Reconcile its payment or archive it.",
+    ],
+    offline_why_settings_changed: [
+      "Se registró con otra configuración del restaurante y no se sincroniza solo; actualizar no lo cambia. Un gerente debe conciliar su cobro o archivarlo.",
+      "It was saved under other restaurant settings and does not sync by itself; refreshing does not change that. A manager must reconcile its payment or archive it.",
+    ],
+    offline_why_settings_items: [
+      "Se registró con otra configuración del restaurante y no se sincroniza. No lleva cobro que conciliar: archívalo y agrega sus productos en línea.",
+      "It was saved under other restaurant settings and does not sync. It carries no payment to reconcile: archive it and add its items online.",
+    ],
+    offline_why_price_items: [
+      "El precio cambió desde que se registró y no se sincroniza. No lleva cobro que conciliar: archívalo y agrega sus productos en línea con el precio actual.",
+      "The price changed since it was saved and it does not sync. It carries no payment to reconcile: archive it and add its items online at the current price.",
+    ],
+    offline_why_catalog_items: [
+      "Un producto cambió desde que se registró y no se sincroniza. No lleva cobro que conciliar: archívalo y agrega sus productos en línea.",
+      "A product changed since it was saved and it does not sync. It carries no payment to reconcile: archive it and add its items online.",
     ],
   },
 });

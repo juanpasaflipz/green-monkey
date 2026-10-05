@@ -701,6 +701,161 @@ test("Review-required attempt is parked and other orders can be paid online", as
   ).toBeVisible();
 });
 
+test("A manager records or discards a parked payment attempt, and its order is no longer blocked", async ({
+  page,
+}) => {
+  // Regression OFFLINE-RECOVERY-05: a parked attempt the server reports as
+  // missing and not resendable had no resolution; its order stayed blocked.
+  await login(page);
+  await openDrawer(page);
+  const fixture = await page.evaluate(async () => {
+    const s = await (await fetch("/api/session")).json();
+    const drawer = await (await fetch("/api/cash")).json();
+    const products = await (await fetch("/api/catalog")).json();
+    const p = products.find((p: any) => p.name.es === "Taco de hongos");
+    const scope = `${s.tenantId}:${s.deviceId}:${s.employeeId}`;
+    const made: { orderId: string; number: number; operationId: string }[] = [];
+    for (const name of ["Cobro por registrar", "Cobro por descartar"]) {
+      const order = await (
+        await fetch("/api/orders", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-csrf-token": s.csrf,
+          },
+          body: JSON.stringify({
+            operationId: crypto.randomUUID(),
+            lines: [
+              {
+                id: crypto.randomUUID(),
+                productId: p.id,
+                quantity: 1,
+                options: [],
+                note: "",
+              },
+            ],
+            mode: "takeaway",
+            tableId: null,
+            name: `${name} ${crypto.randomUUID()}`,
+            note: "",
+            channel: "pos",
+          }),
+        })
+      ).json();
+      const operationId = crypto.randomUUID();
+      // From an earlier session in this drawer: the device may not resend it.
+      const attempt = {
+        formatVersion: 1,
+        tenantId: s.tenantId,
+        employeeId: s.employeeId,
+        deviceId: s.deviceId,
+        sessionId: crypto.randomUUID(),
+        cashSessionId: drawer.id,
+        orderId: order.id,
+        createdAt: new Date().toISOString(),
+        payload: {
+          operationId,
+          amount: order.total,
+          tip: 0,
+          received: order.total,
+          method: "cash",
+          externalConfirmed: false,
+          reference: "",
+        },
+      };
+      await new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("green-monkey-v1");
+        request.onsuccess = () => {
+          const db = request.result,
+            tx = db.transaction("cache", "readwrite");
+          tx.objectStore("cache").put({
+            id: `${scope}:payment:${operationId}`,
+            value: attempt,
+          });
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+      });
+      made.push({ orderId: order.id, number: order.number, operationId });
+    }
+    return made;
+  });
+  const [toRecord, toDiscard] = fixture as [
+    (typeof fixture)[0],
+    (typeof fixture)[0],
+  ];
+  await page.reload();
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await pill(page, /^Conectado/).click();
+  const card = (operationId: string) =>
+    page
+      .locator("article.panel")
+      .filter({ hasText: `Pago por confirmar · ${operationId.slice(0, 8)}` });
+  // Recorded: the verified money goes into its order, once.
+  const recorded = card(toRecord.operationId);
+  await recorded
+    .getByRole("button", { name: "Consultar estado", exact: true })
+    .click();
+  await expect(recorded).toContainText("No se encontró un resultado seguro");
+  await recorded
+    .getByRole("button", { name: "Registrar cobro verificado", exact: true })
+    .click();
+  await recorded
+    .getByLabel("Motivo")
+    .fill("El cliente pagó en efectivo; la caja cuadra con el ticket");
+  await recorded.getByRole("checkbox").check();
+  await recorded
+    .getByRole("button", { name: "Registrar cobro", exact: true })
+    .click();
+  await expect(recorded).toHaveCount(0);
+  const paid = await serverOrder(page, toRecord.orderId);
+  expect(paid.paid).toBe(paid.total);
+  expect(paid.tenders).toHaveLength(1);
+  // Discarded: the guest was not charged; the server refuses the original.
+  const discarded = card(toDiscard.operationId);
+  await discarded
+    .getByRole("button", { name: "Consultar estado", exact: true })
+    .click();
+  await discarded
+    .getByRole("button", {
+      name: "Descartar intento (no se cobró)",
+      exact: true,
+    })
+    .click();
+  await discarded
+    .getByLabel("Motivo")
+    .fill("El cliente se fue sin pagar; la caja no tiene el dinero");
+  await discarded.getByRole("checkbox").check();
+  await discarded
+    .getByRole("button", { name: "Descartar intento", exact: true })
+    .click();
+  await expect(discarded).toHaveCount(0);
+  expect((await serverOrder(page, toDiscard.orderId)).paid).toBe(0);
+  // That order is no longer blocked on this device: it is charged online.
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+  await page
+    .getByRole("article")
+    .filter({
+      has: page.getByRole("checkbox", {
+        name: `Seleccionar orden #${toDiscard.number}`,
+        exact: true,
+      }),
+    })
+    .getByRole("button", { name: /Abrir orden/ })
+    .click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
+  await expect(page.locator(".receipt")).toContainText("Cobrado");
+  const charged = await serverOrder(page, toDiscard.orderId);
+  expect(charged.paid).toBe(charged.total);
+});
+
 test("Transient sync failures keep retrying and never become conflicts", async ({
   page,
 }) => {
@@ -1002,6 +1157,89 @@ test("Device clock 3 minutes fast still syncs", async ({ page, context }) => {
     // One request timeout (20 s) plus a retry, if the first attempt stalls.
     { timeout: 45_000 },
   );
+});
+
+/**
+ * Signs this browser in as another fixture employee through the API. The
+ * previous session ends without a logout: until the access merge, logout
+ * revokes the session (E3), while a switch must end it (contract D6).
+ */
+async function switchEmployee(page: Page, login: string, secret: string) {
+  const status = await page.evaluate(
+    async ({ tenantId, login, secret }) => {
+      const r = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId, login, secret }),
+      });
+      return r.status;
+    },
+    { tenantId, login, secret },
+  );
+  expect(status).toBe(200);
+  await page.goto("/app");
+}
+
+test("Manager review says another employee's sale syncs when they sign in, and keeps reconcile behind a second step", async ({
+  page,
+  context,
+}) => {
+  // Regression OFFLINE-RECOVERY-04: a valid sale of a signed-out employee
+  // showed no problem and the full reconcile, which keeps only its money.
+  await login(page);
+  await openDrawer(page);
+  const cached = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/cash",
+  );
+  await switchEmployee(page, "cashier", "123456");
+  await cached;
+  await goOffline(context, page);
+  await product(page, "Taco de hongos").click();
+  const number = await saveOfflineSale(page);
+  await nextSale(page);
+  // The connection returns before the cashier's sale syncs; the owner signs in.
+  await holdSync(context);
+  await context.setOffline(false);
+  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  await switchEmployee(page, "owner", "demo-green-monkey");
+  await releaseSync(context);
+  await pill(page, /^Conectado/).click();
+  const row = page
+    .locator("article.panel")
+    .filter({ hasText: `Venta · ${number}` });
+  await expect(row).toContainText("Lo registró otra persona");
+  await expect(
+    page.getByText(/Reintentar envía los registros de/),
+  ).toBeVisible();
+  await row
+    .getByRole("button", { name: "Revisar efectivo", exact: true })
+    .click();
+  const review = page
+    .locator("form.panel")
+    .filter({ hasText: "Conciliar efectivo ya recibido" });
+  await expect(review).toContainText(
+    /Este registro se envía solo cuando Dani Demo inicie sesión en .+\./,
+  );
+  await expect(review).toContainText("Sesión original");
+  const submit = review.getByRole("button", {
+    name: "Registrar efectivo verificado",
+  });
+  await expect(submit).toHaveCount(0);
+  await review
+    .getByRole("button", { name: "Conciliar de todos modos", exact: true })
+    .click();
+  await expect(submit).toBeVisible();
+  await review.getByRole("button", { name: "Cancelar", exact: true }).click();
+  // As the review said: the cashier signs in here and the sale syncs in full.
+  await switchEmployee(page, "cashier", "123456");
+  await expect
+    .poll(
+      async () =>
+        (await allRows(page)).find((r) => r.body?.provisionalNumber === number)
+          ?.status,
+      { timeout: 30_000 },
+    )
+    .toBe("synced");
 });
 
 test("Manager archives an unverifiable local record and drawer close unblocks", async ({
@@ -1383,6 +1621,25 @@ test("Service worker update keeps the old revision intact; the prompt applies on
     );
     // Once nothing is unsynced, applying the update reloads into the new revision.
     await putRow(page, { ...row, status: "archived", archivedAt: Date.now() });
+    // A parked attempt waits for a manager and survives the update: it never
+    // blocks it (spec §2.9, OFFLINE-RECOVERY-05).
+    await page.evaluate(
+      (key) =>
+        new Promise<void>((resolve, reject) => {
+          const request = indexedDB.open("green-monkey-v1");
+          request.onsuccess = () => {
+            const db = request.result,
+              tx = db.transaction("cache", "readwrite");
+            tx.objectStore("cache").put({ id: key, value: { parked: true } });
+            tx.oncomplete = () => {
+              db.close();
+              resolve();
+            };
+            tx.onerror = () => reject(tx.error);
+          };
+        }),
+      `${s.tenantId}:${s.deviceId}:${s.employeeId}:payment:${crypto.randomUUID()}`,
+    );
     await page.reload();
     await expect(
       bar.getByRole("button", { name: "Actualizar ahora" }),

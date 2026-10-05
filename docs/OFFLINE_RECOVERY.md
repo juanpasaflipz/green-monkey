@@ -377,8 +377,22 @@ revoked, so records left by a logged-out session go to **Requiere revisión**
 On the Sync screen a manager can:
 
 - **Revisar** any unresolved row. Review never fails because evidence is bad; it
-  shows the problems, the original employee, drawer, amounts, method, reference and
-  sale time.
+  shows the original employee and whether that session is still valid, drawer,
+  amounts, method (efectivo or terminal externa), reference, sale time and whether
+  the server already has the record. Each problem is explained with its way out:
+  which rule stopped it (session revoked, employee or device inactive, selling not
+  authorized, settings changed, price or product changed, lines already sent), and
+  for a sent order or round, which carry no money, that the way out is to archive
+  it and add the items online. The panel title follows the record ("Conciliar
+  efectivo ya recibido", "Conciliar cobro con terminal ya recibido", "Revisar orden
+  enviada", "Revisar ronda"), and when nothing can be reconciled it says why.
+- A record that nothing blocks syncs by itself once the employee who saved it
+  signs in on that device; the review says so ("Este registro se envía solo cuando
+  Dani inicie sesión en Caja 2…") and keeps reconcile behind **Conciliar de todos
+  modos**, because a reconcile keeps only the money (no lines, kitchen or stock).
+  **Reintentar sincronización** sends only the signed-in employee's records, and
+  rows saved by someone else say so. A record already on the server offers
+  **Marcar como registrado** instead of reconcile or archive.
 - **Conciliar** authentic cash or terminal sales: the money is recorded once in the
   original drawer (even if closed) as a financial-only recovery order, with kitchen
   and stock follow-up tasks. A reconciled payment of a table check goes into its
@@ -393,9 +407,15 @@ On the Sync screen a manager can:
   device's price was lower) is collected or voided on the order. Otherwise the
   review explains why nothing can be reconciled (the order is paid, closed, or
   smaller than the money) and offers only archive; the money is never recorded
-  beside that order as a second one. An offline order (Enviar) in the same
-  situation is archived, and its offline payments are then reconciled into the
-  online order instead of a recovery order.
+  beside that order as a second one. If that online order was cancelled (every
+  line voided), the money is reconciled as a financial-only recovery instead, once
+  per draft. An offline order (Enviar) whose create committed online with the same
+  draft and price syncs into that order by itself, and the review says not to
+  archive it. At another price it is archived; its offline payments are then
+  reconciled into the online order instead of a recovery order, and the review
+  lists its offline rounds, which cannot be reconciled, so their items are added
+  online to that order first. A different draft under the same id is never merged:
+  its payments are reconciled as money only.
 - **Archivar registro local** for anything, including evidence that cannot be
   verified or does not parse: a reason (10–500 characters) and confirmation are
   required, the evidence is kept verbatim on the server with its hash and the
@@ -411,6 +431,17 @@ needs a manager (for example the attempt belongs to an older session), the attem
 is **parked** under its own key: it blocks only its own order, "Nueva orden" and
 other sales stay available, and the Sync screen lists it as "En revisión". An
 attempt is never overwritten.
+
+When **Consultar estado** finds no safe result (the server never recorded it and
+the device may not resend it), a manager resolves it: **Registrar cobro
+verificado** records the money the guest handed over in that order, in the
+attempt's original drawer (open or closed), never past the balance; **Descartar
+intento (no se cobró)** records that the guest was not charged. Both need a reason
+and a confirmation, are audited with the original employee, device and drawer, and
+close the attempt's own operation id on the server, so the original request can
+never also apply. The attempt then leaves the device and its order can be charged
+again. A parked attempt never blocks an app update; only unsynced records and a
+payment in flight do.
 
 ## Service-worker updates
 

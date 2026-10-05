@@ -1,4 +1,5 @@
 import type { Locale } from "../../../shared/domain";
+import type { OfflineRecordKind } from "../../../shared/offline-recovery";
 import { strings, type Key } from "../../i18n";
 
 /** Replaces {name} placeholders in a translated string. */
@@ -60,4 +61,27 @@ export function moneyFormatter(
     currency,
   });
   return (minor: number) => format.format(minor / 10 ** exponent);
+}
+
+/** Sales and payments carry money; orders and rounds do not. */
+export const carriesMoney = (kind: OfflineRecordKind) =>
+  kind === "sale" || kind === "payment";
+
+/**
+ * The explanation of a sync error for a record of this kind
+ * (OFFLINE-RECOVERY-03): an order or round carries no money, so its way out
+ * is archive, never "reconcile the payment"; offline_conflict is told as the
+ * eligibility problem it is, never "connect and sign in".
+ */
+export function rowErrorCode(code: string, kind: OfflineRecordKind): string {
+  const money = carriesMoney(kind);
+  if (code === "offline_conflict") return "offline_why_conflict";
+  if (code === "settings_changed")
+    return money
+      ? "offline_why_settings_changed"
+      : "offline_why_settings_items";
+  if (code === "price_conflict" && !money) return "offline_why_price_items";
+  if (code === "offline_catalog_changed" && !money)
+    return "offline_why_catalog_items";
+  return code;
 }

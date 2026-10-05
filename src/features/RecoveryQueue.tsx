@@ -31,35 +31,17 @@ import { Button, Field } from "../components/ui";
 import { translateError } from "../i18n";
 import { ArchiveRecordForm } from "./offline/ArchiveRecordForm";
 import { OfflineTableServiceSetting } from "./offline/OfflineTableServiceSetting";
-import { reconciledResult } from "../offline-records";
-import { clockTime, translator } from "./offline/format";
+import { clockTime, rowErrorCode, translator } from "./offline/format";
+import {
+  OfflineReviewPanel,
+  type OfflineReviewDetail,
+} from "./offline/OfflineReviewPanel";
+import { AttemptResolution } from "./offline/AttemptResolution";
 import "./offline/offline.css";
 
 const PRINT_KEY = "gm-offline-print";
 type Page<T> = { items: T[]; nextCursor: string | null };
-type Review = {
-  authentic: boolean;
-  problems: string[];
-  kind: string;
-  collected: number;
-  tip: number;
-  method: string | null;
-  reference: string | null;
-  recordedAt: string;
-  recordedAtDevice: string | null;
-  clockOffsetMs: number | null;
-  soldAt: string | null;
-  provisionalNumber: string | null;
-  currentTotal: number | null;
-  originalEmployee: string | null;
-  originalDrawerId: string | null;
-  drawerClosed: boolean | null;
-  sessionRevoked: boolean | null;
-  prior: { kind: string } | null;
-  archived: boolean;
-  target: { orderId: string; number: number; due: number } | null;
-  reconcilable: boolean;
-};
+type Review = OfflineReviewDetail;
 type AttemptRow = { key: string; attempt: PaymentAttempt; parked: boolean };
 
 function readPrintSetting(): string {
@@ -107,8 +89,6 @@ export function RecoveryQueue({
       null,
     ),
     [archiving, setArchiving] = useState<Pending | null>(null),
-    [reason, setReason] = useState(""),
-    [confirmed, setConfirmed] = useState(false),
     [printSetting, setPrintSetting] = useState(readPrintSetting),
     [, setTick] = useState(0);
   const format = (minor: number, currency = session.restaurant.currency) =>
@@ -238,8 +218,6 @@ export function RecoveryQueue({
     try {
       const detail = await api<Review>("/offline/review", row.body);
       setReview({ row, detail });
-      setReason("");
-      setConfirmed(false);
     } catch (e) {
       // An unparseable record can only be archived.
       if ((e as Error).message === "invalid_input") setArchiving(row);
@@ -303,6 +281,9 @@ export function RecoveryQueue({
       return (row.body as { expectedTotal: number }).expectedTotal;
     return recordAmounts(row.body).amount;
   };
+  /** v1/v2 sales are cash; v3 sales and payments say their method. */
+  const methodOf = (row: Pending) =>
+    (row.body as { payment?: { method?: string } }).payment?.method ?? "cash";
   const provisional = (row: Pending) =>
     "provisionalNumber" in row.body ? row.body.provisionalNumber : null;
   const serverNumber = (row: Pending) =>
@@ -451,6 +432,11 @@ export function RecoveryQueue({
           {es ? "Descargar pendientes" : "Download pending sales"}
         </Button>
       </div>
+      {rows.some((row) => !isResolved(row) && row.scope !== scope(session)) && (
+        <p className="muted tiny">
+          {t("offlineRetryScope", { name: session.name })}
+        </p>
+      )}
       {manager && (
         <Field
           label={
@@ -519,7 +505,13 @@ export function RecoveryQueue({
                   })}`
                 : ""}
             </p>
-            {row.error && <p>{translateError(row.error, locale)}</p>}
+            {row.error && (
+              <p>{translateError(rowErrorCode(row.error, kind), locale)}</p>
+            )}
+            {/* OFFLINE-RECOVERY-04: only its own employee's session sends it. */}
+            {!isResolved(row) && row.scope !== scope(session) && (
+              <p className="muted tiny">{t("offlineRowOtherEmployee")}</p>
+            )}
             {reconciled(row) && (
               <p>
                 {es
@@ -533,7 +525,11 @@ export function RecoveryQueue({
                   disabled={busy || !net.canUseServer}
                   onClick={() => void run(() => openReview(row))}
                 >
-                  {cashLike ? t("offlineReviewCash") : t("offlineReview")}
+                  {!cashLike
+                    ? t("offlineReview")
+                    : methodOf(row) === "external"
+                      ? t("offlineReviewExternal")
+                      : t("offlineReviewCash")}
                 </Button>
                 <Button
                   disabled={busy || !net.canUseServer}
@@ -636,7 +632,12 @@ export function RecoveryQueue({
               {parked ? ` · ${t("offlineAttemptInReview")}` : ""}
             </h3>
             <p>
-              {format(attempt.payload.amount)} · {attempt.payload.method}
+              {format(attempt.payload.amount)} ·{" "}
+              {t(
+                attempt.payload.method === "external"
+                  ? "offlineMethodExternal"
+                  : "offlineMethodCash",
+              )}
             </p>
             <p>
               {status?.state === "committed"
@@ -651,9 +652,15 @@ export function RecoveryQueue({
                     : es
                       ? "No se encontró un resultado seguro. Requiere revisión; no cobres otra vez."
                       : "No safe result was found. Review is required; do not charge again."
-                  : es
-                    ? "Consulta primero el resultado canónico; no inicies otro cobro."
-                    : "Check canonical status first; do not start another charge."}
+                  : status?.state === "order_missing"
+                    ? es
+                      ? "La orden de este pago no existe en el servidor. Requiere revisión; no cobres otra vez."
+                      : "This payment's order does not exist on the server. Review is required; do not charge again."
+                    : status?.state === "discarded"
+                      ? t("offlineAttemptDiscarded")
+                      : es
+                        ? "Consulta primero el resultado canónico; no inicies otro cobro."
+                        : "Check canonical status first; do not start another charge."}
             </p>
             <Button
               disabled={busy}
@@ -700,6 +707,19 @@ export function RecoveryQueue({
                 {es ? "Reintentar el mismo pago" : "Retry same payment"}
               </Button>
             )}
+            {manager && (
+              <AttemptResolution
+                attemptKey={key}
+                attempt={attempt}
+                status={status}
+                locale={locale}
+                busy={busy}
+                run={(fn) => void run(fn)}
+                resolved={(next) =>
+                  setAttemptStatus((old) => ({ ...old, [statusKey]: next }))
+                }
+              />
+            )}
           </article>
         );
       })}
@@ -723,194 +743,21 @@ export function RecoveryQueue({
         />
       )}
       {review && (
-        <form
-          className="panel"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void run(async () => {
-              await navigator.locks.request(
-                "green-monkey-session-transition",
-                { mode: "shared" },
-                () =>
-                  navigator.locks.request(
-                    "green-monkey-sync:" + review.row.scope,
-                    async () => {
-                      const order = await api(
-                        "/offline/reconcile",
-                        { record: review.row.body, reason, confirmed },
-                        { idempotent: true },
-                      );
-                      // OFF-R18: store the tender the reconcile made, so
-                      // offline balances never count this payment twice.
-                      await db.pending.update(review.row.id, {
-                        status: "synced",
-                        result: reconciledResult(review.row.id, order),
-                        syncedAt: Date.now(),
-                        error: undefined,
-                        waitReason: undefined,
-                      });
-                    },
-                  ),
-              );
-              setReview(null);
-            });
-          }}
-        >
-          <h3>
-            {es
-              ? "Conciliar efectivo ya recibido"
-              : "Reconcile cash already received"}
-          </h3>
-          <dl className="offline-evidence">
-            <dt>{es ? "Registro" : "Record"}</dt>
-            <dd>
-              {kindLabel(review.row)}
-              {review.detail.provisionalNumber
-                ? ` · ${review.detail.provisionalNumber}`
-                : ""}
-            </dd>
-            <dt>{es ? "Verificación" : "Verification"}</dt>
-            <dd>
-              {review.detail.authentic
-                ? es
-                  ? "Evidencia verificada"
-                  : "Evidence verified"
-                : translateError("offline_evidence_invalid", locale)}
-            </dd>
-            {review.detail.problems.length > 0 && (
-              <>
-                <dt>{es ? "Motivo" : "Reason"}</dt>
-                <dd>
-                  {review.detail.problems
-                    .map((code) => translateError(code, locale))
-                    .join(" ")}
-                </dd>
-              </>
-            )}
-            <dt>{es ? "Empleado" : "Employee"}</dt>
-            <dd>{review.detail.originalEmployee ?? "—"}</dd>
-            <dt>{es ? "Cobrado" : "Collected"}</dt>
-            <dd>
-              {format(review.detail.collected)} + {format(review.detail.tip)}{" "}
-              {es ? "propina" : "tip"}
-              {review.detail.method ? ` · ${review.detail.method}` : ""}
-              {review.detail.reference ? ` · ${review.detail.reference}` : ""}
-            </dd>
-            <dt>{es ? "Precio actual" : "Current price"}</dt>
-            <dd>
-              {review.detail.currentTotal === null
-                ? es
-                  ? "No disponible"
-                  : "Unavailable"
-                : format(review.detail.currentTotal)}
-            </dd>
-            <dt>{es ? "Hora de venta" : "Sale time"}</dt>
-            <dd>
-              {new Date(
-                review.detail.soldAt ?? review.detail.recordedAt,
-              ).toLocaleString(es ? "es-MX" : "en-US", {
-                timeZone: session.restaurant.timezone,
-              })}
-            </dd>
-            <dt>{es ? "Caja original" : "Original drawer"}</dt>
-            <dd>
-              {review.detail.originalDrawerId?.slice(0, 8) ?? "—"} ·{" "}
-              {review.detail.drawerClosed
-                ? es
-                  ? "cerrada; se mostrará un ajuste posterior"
-                  : "closed; a late adjustment will be shown"
-                : es
-                  ? "abierta"
-                  : "open"}
-            </dd>
-            {review.detail.target && (
-              <>
-                <dt>{es ? "Orden" : "Order"}</dt>
-                <dd>
-                  #{review.detail.target.number} ·{" "}
-                  {format(review.detail.target.due)}
-                </dd>
-              </>
-            )}
-          </dl>
-          {waitingForOriginal(review.row) && (
-            <p className="warning-panel" role="status">
-              {translateError("offline_dependency_pending", locale)}
-            </p>
-          )}
-          {/* OFF-R27: a sale or order whose create already committed online
-              names that order; money that does not fit it is never
-              reconciled beside it. */}
-          {!review.detail.reconcilable &&
-            review.detail.target &&
-            (review.detail.kind === "sale" ||
-              review.detail.kind === "order") && (
-              <p className="warning-panel" role="status">
-                {review.detail.kind === "order"
-                  ? t("offlineExistingOrderSent", {
-                      n: review.detail.target.number,
-                    })
-                  : review.detail.target.due > 0
-                    ? t("offlineExistingOrderCharge", {
-                        n: review.detail.target.number,
-                        due: format(review.detail.target.due),
-                      })
-                    : t("offlineExistingOrderPaid", {
-                        n: review.detail.target.number,
-                      })}
-              </p>
-            )}
-          {review.detail.reconcilable && !waitingForOriginal(review.row) && (
-            <>
-              <p>
-                {review.detail.target
-                  ? t("offlineReconcileIntoOrder", {
-                      n: review.detail.target.number,
-                    })
-                  : es
-                    ? "Conservaremos el importe original en la caja original. No se cobra al cliente otra vez. No se reconstruyen precios por producto ni se envía a cocina o descuenta inventario; revisa esas tareas por separado."
-                    : "We will preserve the original amount in the original drawer. The customer is not charged again. Item prices are not reconstructed, kitchen tickets are not sent and inventory is not deducted; review those tasks separately."}
-              </p>
-              <Field
-                label={es ? "Motivo de conciliación" : "Reconciliation reason"}
-              >
-                <textarea
-                  required
-                  minLength={10}
-                  maxLength={500}
-                  value={reason}
-                  onChange={(e) => setReason(e.target.value)}
-                />
-              </Field>
-              <label className="row">
-                <input
-                  type="checkbox"
-                  checked={confirmed}
-                  onChange={(e) => setConfirmed(e.target.checked)}
-                />
-                {review.detail.target
-                  ? t("offlineReconcileIntoOrderConfirm", {
-                      n: review.detail.target.number,
-                    })
-                  : es
-                    ? "Verifiqué el efectivo original y revisaré cocina e inventario."
-                    : "I verified the original cash and will review kitchen and inventory."}
-              </label>
-              <Button
-                type="submit"
-                disabled={busy || !confirmed || reason.trim().length < 10}
-              >
-                {es ? "Registrar efectivo verificado" : "Record verified cash"}
-              </Button>
-            </>
-          )}
-          <Button onClick={() => setArchiving(review.row)}>
-            {t("offlineArchive")}
-          </Button>
-          <Button onClick={() => setReview(null)}>
-            {es ? "Cancelar" : "Cancel"}
-          </Button>
-        </form>
+        <OfflineReviewPanel
+          key={review.row.id}
+          row={review.row}
+          detail={review.detail}
+          rows={rows}
+          locale={locale}
+          session={session}
+          busy={busy}
+          waiting={waitingForOriginal(review.row)}
+          kindLabel={kindLabel(review.row)}
+          format={(minor) => format(minor, currencyOf(review.row))}
+          run={(fn) => void run(fn)}
+          onArchive={() => setArchiving(review.row)}
+          onClose={() => setReview(null)}
+        />
       )}
       {taskReview && (
         <form

@@ -4,7 +4,12 @@
  * device alone knows the order; afterwards "B-07 → #142".
  */
 import { describe, expect, it } from "vitest";
-import { orderLabel, provisionalOnly } from "../src/features/offline/format";
+import {
+  orderLabel,
+  provisionalOnly,
+  rowErrorCode,
+} from "../src/features/offline/format";
+import { errorText } from "../src/i18n";
 
 const id = "00000000-0000-4000-8000-000000000142";
 
@@ -26,5 +31,48 @@ describe("order labels (OFF-R22)", () => {
     expect(provisionalOnly({ number: 142, offline: null })).toBe(false);
     // A legacy record without a number falls back to its id prefix.
     expect(orderLabel({ id, number: 0 })).toBe("#00000000");
+  });
+});
+
+describe("sync row explanations (OFFLINE-RECOVERY-03)", () => {
+  it("never tells a manager to sign in for a conflict, and gives orders and rounds their own way out", () => {
+    // offline_conflict (E3-E5) is an eligibility problem, not "connect and
+    // sign in with an open drawer".
+    for (const kind of ["sale", "order", "round", "payment"] as const)
+      expect(rowErrorCode("offline_conflict", kind)).toBe(
+        "offline_why_conflict",
+      );
+    // settings_changed is permanent for the lease: refreshing never fixes it.
+    expect(rowErrorCode("settings_changed", "sale")).toBe(
+      "offline_why_settings_changed",
+    );
+    expect(rowErrorCode("settings_changed", "round")).toBe(
+      "offline_why_settings_items",
+    );
+    // An order or round carries no money: it is archived, never reconciled.
+    expect(rowErrorCode("price_conflict", "order")).toBe(
+      "offline_why_price_items",
+    );
+    expect(rowErrorCode("offline_catalog_changed", "round")).toBe(
+      "offline_why_catalog_items",
+    );
+    expect(rowErrorCode("price_conflict", "sale")).toBe("price_conflict");
+    expect(rowErrorCode("offline_payment_exceeds_due", "payment")).toBe(
+      "offline_payment_exceeds_due",
+    );
+    for (const code of [
+      "offline_why_conflict",
+      "offline_why_settings_changed",
+      "offline_why_settings_items",
+      "offline_why_price_items",
+      "offline_why_catalog_items",
+      "offline_why_session_revoked",
+      "offline_why_employee_inactive",
+      "offline_why_device_inactive",
+      "offline_why_selling_not_authorized",
+    ]) {
+      expect(errorText[code], code).toBeDefined();
+      expect(errorText[code]![0]).not.toMatch(/Conecta|Actualiza antes/);
+    }
   });
 });

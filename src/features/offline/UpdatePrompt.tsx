@@ -8,17 +8,19 @@ import { Button } from "../../components/ui";
 import { translator } from "./format";
 import "./offline.css";
 
-/** True when this device holds unresolved records or a payment attempt for the tenant. */
-async function hasUnsyncedWork(session: Session) {
+/**
+ * True when this device holds unresolved records or a payment in flight (an
+ * active attempt) for the tenant (spec §2.9). A parked attempt waits for a
+ * manager on the Sync screen and survives the update unchanged, so it never
+ * blocks it (OFFLINE-RECOVERY-05).
+ */
+export async function hasUnsyncedWork(session: Session) {
   const prefix = `${session.tenantId}:${session.deviceId}:`;
   const rows = await db.pending
     .filter((row) => row.scope.startsWith(prefix) && !isResolved(row))
     .count();
   const attempts = await db.cache
-    .filter(
-      (row) =>
-        row.id.startsWith(prefix) && /:payment(:[0-9a-f-]{36})?$/i.test(row.id),
-    )
+    .filter((row) => row.id.startsWith(prefix) && /:payment$/.test(row.id))
     .count();
   return rows + attempts > 0;
 }
