@@ -215,4 +215,95 @@ describe("api() session policy", () => {
     ).rejects.toMatchObject({ message: "step_up_cancelled", status: 403 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+  it("a switch while the PIN prompt is open never sends the retry as the new employee (ACC-20)", async () => {
+    const { api, setSession, registerStepUpHandler } = await load();
+    setSession(session);
+    let confirm!: () => void;
+    const handler = vi.fn(
+      (_sessionId: string) => new Promise<void>((resolve) => (confirm = resolve)),
+    );
+    registerStepUpHandler(handler);
+    replies.push({ status: 403, body: { error: "step_up_required" } });
+    const refund = api("/refunds", { operationId: "op-a", amount: 100 });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    // The prompt is for the session that sent the command.
+    expect(handler).toHaveBeenCalledWith(session.id);
+    // Manager B switches in from the lock, then the prompt resolves.
+    setSession({ ...session, id: "50000000-0000-4000-8000-0000000000b2", csrf: "csrf-b" });
+    confirm();
+    await expect(refund).rejects.toMatchObject({
+      message: "session_changed",
+      status: 409,
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a step_up_required answered after a switch asks nobody and is not retried (ACC-20)", async () => {
+    const { api, setSession, registerStepUpHandler } = await load();
+    setSession(session);
+    const handler = vi.fn(async (_sessionId: string) => {});
+    registerStepUpHandler(handler);
+    let answer!: () => void;
+    const answered = new Promise<void>((resolve) => (answer = resolve));
+    fetchMock.mockImplementationOnce(async () => {
+      await answered;
+      return {
+        ok: false,
+        status: 403,
+        json: async () => ({ error: "step_up_required" }),
+      };
+    });
+    const paidOut = api("/cash/paid-out", { operationId: "op-p", amount: 1 });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    setSession({ ...session, id: "50000000-0000-4000-8000-0000000000b3" });
+    answer();
+    await expect(paidOut).rejects.toMatchObject({ message: "session_changed" });
+    expect(handler).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a sign-out while the PIN prompt is open never sends the retry (ACC-20)", async () => {
+    const { api, setSession, clearSessionScope, registerStepUpHandler } =
+      await load();
+    setSession(session);
+    let confirm!: () => void;
+    registerStepUpHandler(
+      () => new Promise<void>((resolve) => (confirm = resolve)),
+    );
+    replies.push({ status: 403, body: { error: "step_up_required" } });
+    const request = api("/access/devices/revoke", { operationId: "op-d" });
+    await vi.waitFor(() => expect(confirm).toBeTypeOf("function"));
+    clearSessionScope();
+    confirm();
+    await expect(request).rejects.toMatchObject({ message: "session_changed" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("prompts are never shared across sessions (ACC-20)", async () => {
+    const { api, setSession, registerStepUpHandler } = await load();
+    const b = { ...session, id: "50000000-0000-4000-8000-0000000000b4" };
+    setSession(session);
+    const confirms: Record<string, () => void> = {};
+    const handler = vi.fn(
+      (sessionId: string) =>
+        new Promise<void>((resolve) => (confirms[sessionId] = resolve)),
+    );
+    registerStepUpHandler(handler);
+    replies.push({ status: 403, body: { error: "step_up_required" } });
+    const first = api("/refunds", { operationId: "op-1" });
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+    setSession(b);
+    replies.push({ status: 403, body: { error: "step_up_required" } });
+    replies.push({ status: 200, body: { id: "b-refund" } });
+    const second = api("/refunds", { operationId: "op-2" });
+    // B gets a prompt of its own instead of joining A's.
+    await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(2));
+    expect(handler.mock.calls.map(([id]) => id)).toEqual([session.id, b.id]);
+    confirms[b.id]!();
+    await expect(second).resolves.toEqual({ id: "b-refund" });
+    confirms[session.id]!();
+    await expect(first).rejects.toMatchObject({ message: "session_changed" });
+    // A's command was sent once and never retried.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
 });

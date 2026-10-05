@@ -89,11 +89,19 @@ export function holdRequests(maxMs = 15_000): () => void {
   const timer = setTimeout(release, maxMs);
   return release;
 }
-let stepUp: null | (() => Promise<void>) = null;
-/** One "Confirma con tu PIN" prompt at a time; concurrent requests share it. */
-let stepUpInFlight: Promise<void> | null = null;
-/** App registers the "Confirma con tu PIN" dialog; it rejects when cancelled. */
-export function registerStepUpHandler(fn: (() => Promise<void>) | null) {
+let stepUp: null | ((sessionId: string) => Promise<void>) = null;
+/**
+ * One "Confirma con tu PIN" prompt at a time; concurrent requests of the same
+ * session share it. A prompt is never shared across sessions (ACC-20).
+ */
+let stepUpInFlight: { sessionId: string; prompt: Promise<void> } | null = null;
+/**
+ * App registers the "Confirma con tu PIN" dialog. It receives the session the
+ * prompt is for, and rejects when cancelled or when that session is replaced.
+ */
+export function registerStepUpHandler(
+  fn: ((sessionId: string) => Promise<void>) | null,
+) {
   stepUp = fn;
 }
 async function guarded<T>(
@@ -122,6 +130,10 @@ async function guarded<T>(
  * Calls the API. A session 401 shows the lock screen once (gm-unauthorized)
  * and blocks further calls (FOH-7); a 403 step_up_required asks for the PIN
  * and retries the identical request once, so operationIds stay idempotent.
+ * The step-up belongs to the session that sent the request: when another
+ * employee switches in or the session ends meanwhile, nobody is asked and the
+ * retry is never sent (session_changed, ACC-20), because it would run with the
+ * new employee's cookie and CSRF token.
  */
 export async function api<T = any>(
   path: string,
@@ -131,6 +143,7 @@ export async function api<T = any>(
   const access = path.startsWith("/access/");
   while (held && !access) await held;
   if (blocked && !access) throw new ApiError("session_expired", 401);
+  const owner = sessionId;
   try {
     return await guarded<T>(path, body, options);
   } catch (e) {
@@ -141,10 +154,15 @@ export async function api<T = any>(
       !stepUp
     )
       throw e;
-    stepUpInFlight ??= stepUp().finally(() => {
-      stepUpInFlight = null;
-    });
-    await stepUpInFlight;
+    if (sessionId !== owner) throw new ApiError("session_changed", 409);
+    if (stepUpInFlight?.sessionId !== owner) {
+      const asked: Promise<void> = stepUp(owner).finally(() => {
+        if (stepUpInFlight?.prompt === asked) stepUpInFlight = null;
+      });
+      stepUpInFlight = { sessionId: owner, prompt: asked };
+    }
+    await stepUpInFlight.prompt;
+    if (sessionId !== owner) throw new ApiError("session_changed", 409);
     return guarded<T>(path, body, options);
   }
 }
