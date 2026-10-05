@@ -25,7 +25,8 @@ Provisions the global roles, migrates both databases as the non-superuser
 `gm_migrator` with `APP_ENV=staging` (migrate, then grants, then retention),
 seeds fixtures, then: typecheck, lint, unit tests (including the migrations
 lint), every DB suite (`npm run test:db:qualification`, which includes
-`test:db:ops`), build, restart test, drain test, the compiled browser suite
+`test:db:ops` and `test:db:access`), build, restart test, access HTTP checks
+(`npm run test:access-http`), drain test, the compiled browser suite
 with web and worker running, a 60 s load smoke, and an image smoke: the
 Dockerfile is built with a stamped commit and the container must pass
 `/api/health`, report the commit on `/api/version`, start the worker

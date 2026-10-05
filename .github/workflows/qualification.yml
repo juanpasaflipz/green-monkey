@@ -84,6 +84,13 @@ jobs:
       - run: npm run test:db:qualification
       - run: npm run build
       - run: npm run test:restart
+      # Access's compiled-server checks (terminal guard, device-keyed limits,
+      # D22 refusal). The runner seeds pairing codes with the fixture admin
+      # URL; it never passes that URL to the servers it starts.
+      - name: Access HTTP checks
+        env:
+          MIGRATION_DATABASE_URL: postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_dev
+        run: npm run test:access-http
       - name: Graceful drain of the compiled web and worker
         run: npm run test:drain
       - run: npx playwright install --with-deps chromium webkit

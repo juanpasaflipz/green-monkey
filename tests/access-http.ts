@@ -38,6 +38,9 @@ function env(demo: boolean, extra: Record<string, string> = {}) {
   };
   if (demo) e.DEMO_TENANT_ID = TENANT;
   else delete e.DEMO_TENANT_ID;
+  // Only this runner uses the fixture admin URL; the server under test never
+  // holds a migration credential (as in CI's browser step).
+  delete e.MIGRATION_DATABASE_URL;
   return e;
 }
 async function start(demo: boolean) {
