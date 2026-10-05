@@ -12,6 +12,7 @@ import { Button, Field, Modal } from "../components/ui";
 import { strings, translateError, type Key } from "../i18n";
 import { printDocument, usePrintSettings } from "../print";
 import { ReceiptDocument, auditPrint } from "./Receipt";
+import { onlineChargeRefusal } from "./offline/useOnlineChargeBlocks";
 
 /**
  * Grouped cash settlement of several checks, with one operation id per dialog.
@@ -132,6 +133,17 @@ export function SettlementDialog({
           setError("");
           try {
             const amount = parseMoneyInput(receivedText, exponent);
+            // OFF-R29 (offline 026): never charge a check while this device
+            // holds unsynced offline rounds or payments of it. Checked on the
+            // full orders right before sending, retries included.
+            const full = await Promise.all(
+              checks.map((c) => api<Order>("/orders/" + c.id)),
+            );
+            const refused = await onlineChargeRefusal(session, full, locale);
+            if (refused) {
+              setError(refused);
+              return;
+            }
             const result = await api<Order[]>("/settlements", {
               operationId,
               orders: checks.map((o) => ({ id: o.id, amount: o.balance })),

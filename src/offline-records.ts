@@ -1521,6 +1521,9 @@ export function chargeBlockFromRows(
   if (unsynced.length) return "offline_round_other_employee_for_order";
   if (
     isServerOrder(order) &&
+    // A list row without lines (service's Órdenes) re-reads its list when a
+    // block clears instead; the charge itself re-checks the full order.
+    Array.isArray(order.lines) &&
     rounds.some((row) => {
       const result = resultOf(row);
       return (
