@@ -1,7 +1,7 @@
 // Migration runner (DB-6). Compiled to build/scripts/migrate.js and run by the
 // worker service's Railway preDeploy as the non-superuser gm_migrator role.
 //
-//   node build/scripts/migrate.js [--grants] [--retention] [--grants-only] [--check] [--dry-run]
+//   node build/scripts/migrate.js [--grants] [--retention] [--grants-only] [--retention-only] [--check] [--dry-run]
 //     default       apply pending migrations, then reconcile backup policies
 //     --grants      also apply the runtime grants manifest (the Railway
 //                   preDeploy always passes this: migrate, then grants). When
@@ -10,6 +10,10 @@
 //     --retention   then run the retention pass (oauth attempts, done/dead
 //                   jobs); a failure alerts retention_failed, never fails
 //     --grants-only only apply grants and reconcile policies
+//     --retention-only
+//                   only run the retention pass: no migrations, grants or
+//                   reconcile; exits 1 when a table fails (it has alerted).
+//                   `npm run ops:retention` runs this mode.
 //     --check       exit 3 if migrations are pending; performs no writes
 //     --dry-run     print pending migration names; performs no writes
 import "dotenv/config";
@@ -41,6 +45,7 @@ const FLAGS = [
   "--grants",
   "--retention",
   "--grants-only",
+  "--retention-only",
   "--check",
   "--dry-run",
 ] as const;
@@ -87,10 +92,19 @@ export function parseFlags(args: string[]): Set<Flag> {
       throw new UsageError("unknown_flag");
     flags.add(arg as Flag);
   }
-  const modes = ["--grants-only", "--check", "--dry-run"].filter((f) =>
-    flags.has(f as Flag),
-  );
+  const modes = [
+    "--grants-only",
+    "--retention-only",
+    "--check",
+    "--dry-run",
+  ].filter((f) => flags.has(f as Flag));
   if (modes.length > 1) throw new UsageError("conflicting_flags");
+  // --retention-only applies no grants and already runs retention.
+  if (
+    flags.has("--retention-only") &&
+    (flags.has("--grants") || flags.has("--retention"))
+  )
+    throw new UsageError("conflicting_flags");
   return flags;
 }
 
@@ -141,6 +155,19 @@ export async function main(
       return flags.has("--check") && pending.length ? 3 : 0;
     }
     await assertMigrationRole(sql, appEnv);
+    if (flags.has("--retention-only")) {
+      // An operator purge (npm run ops:retention): never migrates, grants or
+      // reconciles the target. Unlike the deploy's --retention, a failed
+      // table fails the run; retentionPass has already alerted.
+      configureAlerts(alertTargetFromEnv(env), appEnv);
+      const result = await retentionPass(sql, sendAlert);
+      log.info("retention_only_complete", {
+        ok: Boolean(result && !result.failed.length),
+        deleted: result?.deleted ?? {},
+        skipped: result?.skipped ?? [],
+      });
+      return result && !result.failed.length ? 0 : 1;
+    }
     const database = decodeURIComponent(target.pathname.slice(1));
     let granted: string | null = null;
     if (!flags.has("--grants-only")) {

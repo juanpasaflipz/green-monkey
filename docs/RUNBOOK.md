@@ -139,6 +139,15 @@ nothing was deleted and sales were not affected, but the table now keeps
 growing until the follow-up below ships. Do not raise the bounds in
 service hours.
 
+To purge by hand (for example after a failed night), run one pass and
+nothing else, with `MIGRATION_DATABASE_URL` (`gm_migrator`, direct
+endpoint), `APP_ENV` and optionally `ALERT_WEBHOOK_URL` in a private 0600
+file, never on the command line:
+`node --env-file=<file> --import tsx scripts/migrate.ts --retention-only`
+(what `npm run ops:retention` runs). It applies no migrations, grants or
+policy reconcile and exits 1 when a table fails, after alerting. Run it
+outside service hours for the same reason.
+
 ## Deploy window
 
 Production deploys are refused between 12:00 and 23:59 America/Mexico_City

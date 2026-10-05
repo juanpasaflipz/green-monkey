@@ -534,6 +534,104 @@ try {
   );
 
   await check(
+    "--retention-only (npm run ops:retention) deletes expired rows, applies no pending migration and no grants, and exits 1 when a table fails (OPS-R16)",
+    async () => {
+      const adminReal = pool(urlFor(real));
+      const org = randomUUID(),
+        tenantId = randomUUID();
+      const doneOld = randomUUID(),
+        doneRecent = randomUUID();
+      await adminReal.begin(async (tx) => {
+        await tx`insert into organizations(id,name) values(${org},'Retention-only fixture')`;
+        await tx`insert into restaurants(id,organization_id,name) values(${tenantId},${org},'Retention-only fixture')`;
+        for (const [id, created] of [
+          [doneOld, "now() - interval '40 days'"],
+          [doneRecent, "now()"],
+        ])
+          await tx.unsafe(
+            `insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,created_at)
+             values($1,$2,'kitchen_dispatch',$3,'{}','done',${created})`,
+            [tenantId, id, id],
+          );
+      });
+      try {
+        // No PG_APP_USER: the mode never grants, so it needs no runtime role.
+        lines.length = 0;
+        assert.equal(
+          await main(["--retention-only"], {
+            MIGRATION_DATABASE_URL: migratorUrl,
+            APP_ENV: "staging",
+          }),
+          0,
+        );
+        const [left] =
+          await adminReal`select array_agg(id::text) as ids from jobs where tenant_id=${tenantId}`;
+        assert.deepEqual(left.ids, [doneRecent], "only the old done job goes");
+        for (const event of [
+          "migrations_complete",
+          "grants_applied",
+          "policies_reconciled",
+        ])
+          assert.ok(
+            !lines.some((l) => l.includes(`"${event}"`)),
+            `${event} never runs in --retention-only`,
+          );
+        assert.ok(
+          lines.some(
+            (l) =>
+              l.includes('"retention_only_complete"') &&
+              l.includes('"ok":true'),
+          ),
+        );
+
+        // A target with pending migrations and without the retention tables:
+        // nothing is migrated, and the failed tables fail the run.
+        const [before] =
+          await sql`select count(*)::int as n from schema_migrations`;
+        lines.length = 0;
+        assert.equal(
+          await main(["--retention-only"], {
+            MIGRATION_DATABASE_URL: urlFor(synthetic),
+            APP_ENV: "development",
+          }),
+          1,
+        );
+        assert.ok(lines.some((l) => l.includes('"retention_failed"')));
+        const [after] =
+          await sql`select count(*)::int as n from schema_migrations`;
+        assert.equal(after.n, before.n, "no pending migration was applied");
+        assert.equal(
+          await main(["--check"], {
+            ...env(),
+            MIGRATION_DATABASE_URL: urlFor(synthetic),
+          }),
+          3,
+          "the synthetic database is still pending",
+        );
+
+        for (const other of [
+          "--grants",
+          "--retention",
+          "--grants-only",
+          "--check",
+          "--dry-run",
+        ])
+          assert.equal(
+            await main(["--retention-only", other], env()),
+            2,
+            `--retention-only conflicts with ${other}`,
+          );
+      } finally {
+        await adminReal.begin(async (tx) => {
+          await tx`delete from jobs where tenant_id=${tenantId}`;
+          await tx`delete from restaurants where id=${tenantId}`;
+          await tx`delete from organizations where id=${org}`;
+        });
+      }
+    },
+  );
+
+  await check(
     "retention holds jobs' ACCESS EXCLUSIVE lock only within its bounds: order-path inserts stay fast on a large table, a slow pass aborts and alerts, and a blocked ALTER queues inserts at most the lock timeout (OPS-R10)",
     async () => {
       const adminReal = pool(urlFor(real));

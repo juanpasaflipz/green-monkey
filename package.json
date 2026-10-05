@@ -24,7 +24,7 @@
     "test:drain": "tsx tests/drain-http.ts",
     "worker": "tsx server/worker.ts",
     "start:worker": "node --import ./build/server/instrument.js build/server/worker.js",
-    "ops:retention": "tsx scripts/migrate.ts --retention",
+    "ops:retention": "tsx scripts/migrate.ts --retention-only",
     "ops:backup": "tsx scripts/ops/backup.ts",
     "ops:rehearse-restore": "tsx scripts/ops/rehearse-neon-restore.ts",
     "load:seed": "tsx scripts/load/seed-load.ts",
