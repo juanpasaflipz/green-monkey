@@ -272,52 +272,37 @@ test("offline cash persists and synchronizes after reconnect", async ({
     "Efectivo registrado localmente; pendiente en el servidor",
   );
   await page.screenshot({ path: "docs/evidence/offline-queue-1440.png" });
-  await context.setOffline(false);
-  const update = await page.evaluate(async () => {
-    const registration = await navigator.serviceWorker.register(
-      "/sw.js?revision=browser-recovery-test",
-    );
-    const worker = registration.installing ?? registration.waiting;
-    if (worker && !["installed", "activated"].includes(worker.state))
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-          () => reject(new Error("service_worker_update_timeout")),
-          10000,
-        );
-        worker.addEventListener("statechange", () => {
-          if (["installed", "activated"].includes(worker.state)) {
-            clearTimeout(timeout);
-            resolve();
-          }
-        });
-      });
+  // OFF-10: the page is controlled by the fixed /sw.js, whose cache name is the
+  // build id baked into the worker and stamped on the HTML.
+  const shell = await page.evaluate(async () => {
+    const build =
+      document.querySelector('meta[name="gm-build"]')?.getAttribute("content") ??
+      "";
     const names = await caches.keys();
-    const updated = names.find((name) =>
-      name.includes("browser-recovery-test"),
-    );
-    const requests = updated
-      ? await (await caches.open(updated)).keys()
+    const name = `green-monkey-shell-${build.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+    const requests = names.includes(name)
+      ? await (await caches.open(name)).keys()
       : [];
     return {
-      waiting: !!registration.waiting,
+      build,
+      scriptURL: navigator.serviceWorker.controller?.scriptURL ?? "",
       names,
+      name,
       paths: requests.map((request) => new URL(request.url).pathname),
     };
   });
-  expect(update.waiting).toBe(true);
-  expect(update.names.some((name) => name.includes("browser-recovery-test"))).toBe(
+  expect(shell.build).not.toBe("");
+  expect(new URL(shell.scriptURL).pathname).toBe("/sw.js");
+  expect(new URL(shell.scriptURL).search).toBe("");
+  expect(shell.names).toContain(shell.name);
+  expect(shell.paths).toContain("/index.html");
+  expect(shell.paths.some((path) => path.startsWith("/assets/App-"))).toBe(true);
+  expect(shell.paths.some((path) => path.startsWith("/assets/dexie-"))).toBe(
     true,
   );
-  expect(update.paths.some((path) => path.startsWith("/assets/"))).toBe(true);
-  expect(update.paths.some((path) => path.startsWith("/assets/App-"))).toBe(true);
-  expect(update.paths.some((path) => path.startsWith("/assets/dexie-"))).toBe(true);
-  expect(update.paths.some((path) => path.startsWith("/api/"))).toBe(false);
-  await expect(page.locator(".workspace")).toContainText(
-    "Efectivo registrado localmente; pendiente en el servidor",
-  );
-  await page
-    .getByRole("button", { name: "Reintentar sincronización", exact: true })
-    .click();
+  expect(shell.paths.some((path) => path.startsWith("/api/"))).toBe(false);
+  // Reconnecting syncs the queued sale automatically (OFF-6).
+  await context.setOffline(false);
   await expect(page.locator(".workspace")).toContainText(
     "Registrado en el servidor",
   );
