@@ -2358,6 +2358,184 @@ try {
     assert.equal(forced, 2);
   });
 
+  // ------------------------------------------------- fiscal extension point
+  // Spec §7.2 test 34 (MENU-R4): fiscal (027) stores a product's tax in
+  // data.fiscal, and menu promises never to drop or replace it. No assertion
+  // on the schema: fiscal's wave-2 change must not have to edit this test.
+  await test("menu writes keep a stored product fiscal value (reserved for 027)", async () => {
+    const fiscal = {
+      taxCategory: "iva0",
+      satProductKey: null,
+      satUnitKey: null,
+    };
+    const category = await newCategory(
+      manager,
+      "Fiscal " + randomUUID().slice(0, 4),
+    );
+    let { group } = await run(manager, (tx) =>
+      saveGroup(tx, manager, groupBody({ name: { es: "Salsa fiscal" } })),
+    );
+    const linked = await newProduct(manager, category.id, {
+      groupIds: [group.id],
+    });
+    const plain = await newProduct(manager, category.id);
+    const ids = [linked.id, plain.id];
+    await asAdmin(
+      a.tenantId,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{fiscal}',${tx.json(fiscal)}::jsonb)
+          where id in (${linked.id},${plain.id})`,
+    );
+    /** Both stored docs, after asserting each still carries the fiscal value. */
+    const kept = async (step: string) => {
+      const rows: { id: string; data: Product }[] = await run(
+        manager,
+        (tx) =>
+          tx`select id,data from catalog where id in (${linked.id},${plain.id})`,
+      );
+      const docs: Record<string, Product> = Object.fromEntries(
+        rows.map((r) => [r.id, r.data]),
+      );
+      for (const id of ids)
+        assert.deepEqual(
+          docs[id].fiscal,
+          fiscal,
+          `${step} kept fiscal on the ${id === linked.id ? "linked" : "plain"} product`,
+        );
+      return docs;
+    };
+    let docs = await kept("setup");
+    assert.deepEqual(docs[linked.id].groupIds, [group.id]);
+
+    for (const id of ids) {
+      const doc = docs[id];
+      const saved = await run(manager, (tx) =>
+        saveMenuProduct(tx, manager, {
+          ...productBody(category.id, { groupIds: doc.groupIds }),
+          id,
+          expectedVersion: doc.version,
+          name: doc.name,
+          price: doc.price + 100,
+        }),
+      );
+      assert.equal(saved.version, doc.version + 1, "the editor save bumps");
+    }
+    docs = await kept("an editor save without fiscal");
+
+    for (const id of ids) {
+      const doc = docs[id];
+      const saved = await run(manager, (tx) =>
+        saveProduct(tx, manager, {
+          operationId: op(),
+          id,
+          name: { es: doc.name.es, en: doc.name.en || doc.name.es },
+          category: {
+            es: category.name.es,
+            en: category.name.en || category.name.es,
+          },
+          price: doc.price + 100,
+          available: doc.available,
+          station: doc.station,
+          expectedVersion: doc.version,
+          cost: null,
+          recipe: [],
+        }),
+      );
+      assert.equal(saved.version, doc.version + 1, "the legacy save bumps");
+      assert.equal(saved.categoryId, category.id);
+    }
+    docs = await kept("a legacy /catalog/save");
+    assert.deepEqual(docs[linked.id].groupIds, [group.id]);
+
+    for (const available of [false, true]) {
+      for (const id of ids)
+        await run(manager, (tx) =>
+          setProductAvailability(tx, manager, {
+            operationId: op(),
+            id,
+            available,
+          }),
+        );
+      await kept(`a product availability toggle (${available})`);
+    }
+
+    const edited = await run(manager, (tx) =>
+      saveGroup(tx, manager, {
+        ...groupBody(),
+        id: group.id,
+        expectedVersion: group.version,
+        name: group.name,
+        options: group.options.map((o: any, i: number) => ({
+          id: o.id,
+          name: o.name,
+          price: i === 0 ? 300 : o.price,
+        })),
+      }),
+    );
+    assert.equal(edited.recompiled, 1);
+    group = edited.group;
+    docs = await kept("a linked group save (recompile)");
+    assert.equal(docs[linked.id].groups[0].options[0].price, 300);
+
+    for (const available of [false, true]) {
+      await run(manager, (tx) =>
+        setOptionAvailability(tx, manager, {
+          operationId: op(),
+          groupId: group.id,
+          optionId: group.options[1].id,
+          available,
+        }),
+      );
+      await kept(`a choice availability toggle (${available})`);
+    }
+
+    const renamed = await run(manager, (tx) =>
+      saveCategory(tx, manager, {
+        operationId: op(),
+        id: category.id,
+        expectedVersion: category.version,
+        name: { es: category.name.es + " IVA 0", en: "VAT 0" },
+      }),
+    );
+    docs = await kept("a category rename");
+    assert.equal(docs[plain.id].category.es, renamed.name.es);
+
+    const editor = await run(manager, (tx) => menuEditor(tx, manager));
+    const active = editor.categories
+      .filter((c) => !c.archived)
+      .map((c) => c.id);
+    await run(manager, (tx) =>
+      reorderCategories(tx, manager, {
+        operationId: op(),
+        ids: [...active].reverse(),
+      }),
+    );
+    await kept("a category reorder");
+
+    await run(manager, (tx) =>
+      reorderProducts(tx, manager, {
+        operationId: op(),
+        scopeId: category.id,
+        ids: [plain.id, linked.id],
+      }),
+    );
+    docs = await kept("a product reorder");
+
+    for (const archived of [true, false]) {
+      for (const id of ids)
+        await run(manager, (tx) =>
+          archiveProduct(tx, manager, {
+            operationId: op(),
+            id,
+            expectedVersion: docs[id].version,
+            archived,
+          }),
+        );
+      docs = await kept(archived ? "an archive" : "a restore");
+      for (const id of ids) assert.equal(docs[id].archived, archived);
+    }
+  });
+
   // --------------------------------------------------------- public ordering
   /** The real public router on a loopback port; every request comes from one
    * client IP, like diners on a restaurant's guest Wi-Fi. */
