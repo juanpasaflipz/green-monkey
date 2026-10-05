@@ -395,17 +395,23 @@ export async function sessionFailure(
   return "unauthorized";
 }
 
-/** True when the request carries a valid, active shared-terminal device cookie. */
+/**
+ * True when the request carries a valid, active shared-terminal device cookie.
+ * failClosed (guards that refuse terminals): a failed lookup throws instead of
+ * answering "not a terminal", so a database error never lets a terminal through.
+ */
 export async function isTerminalRequest(
   sql: postgres.Sql,
   cookies: Record<string, string | undefined>,
+  failClosed = false,
 ): Promise<boolean> {
   const c = readDeviceCookie(cookies.gm_device);
   if (!c) return false;
   try {
     const device = await tenant(sql, c.tenantId, (tx) => loadDevice(tx, c));
     return device?.kind === "terminal";
-  } catch {
+  } catch (error) {
+    if (failClosed) throw error;
     return false;
   }
 }

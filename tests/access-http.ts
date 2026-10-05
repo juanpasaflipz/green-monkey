@@ -185,6 +185,49 @@ try {
     });
     assert.equal(plain.json.error, "unauthorized");
   });
+  await check("the terminal guard also refuses case variants, a trailing slash, HEAD and account-center commands (RESIDUAL-ACC-22)", async () => {
+    const { browser } = await pairedCashier(`HTTP variants ${randomUUID().slice(0, 4)}`);
+    const cookie = [...browser.cookies].map(([k, v]) => `${k}=${v}`).join("; ");
+    for (const [method, path] of [
+      ["GET", "/api/auth/google/start/"],
+      ["GET", "/api/auth/Google/Start"],
+      ["GET", "/api/auth/GOOGLE/START/"],
+      ["HEAD", "/api/auth/google/start"],
+      ["HEAD", "/api/auth/Google/start/"],
+    ] as const) {
+      const r = await fetch(origin + path, {
+        method,
+        redirect: "manual",
+        headers: { cookie },
+      });
+      assert.equal(r.status, 303, `${method} ${path}`);
+      assert.equal(
+        r.headers.get("location"),
+        "/app?auth_error=terminal",
+        `${method} ${path}`,
+      );
+    }
+    for (const path of [
+      "/api/auth/Account/enter",
+      "/api/auth/account/enter/",
+      "/api/auth/ACCOUNT/signup",
+      "/api/auth/Account/Invitations",
+      "/api/auth/account/locations/",
+      "/api/auth/account-center/recovery-codes",
+      "/api/auth/Account-Center/anything",
+    ]) {
+      const r = await browser.request("POST", path, { tenantId: TENANT });
+      assert.equal(r.status, 403, path);
+      assert.equal(r.json.error, "device_is_terminal", path);
+    }
+    // Reads stay open, and an unpaired browser still reaches account auth.
+    const summary = await browser.request("GET", "/api/auth/Account");
+    assert.equal(summary.json.error, "unauthorized");
+    const plain = await new Browser().request("POST", "/api/auth/Account/enter/", {
+      tenantId: TENANT,
+    });
+    assert.equal(plain.json.error, "unauthorized");
+  });
   await check("logout succeeds with no cookies, an expired session and a valid session, and clears gm_session only (FOH-7)", async () => {
     const anonymous = await new Browser().request("POST", "/api/logout");
     assert.equal(anonymous.status, 200);

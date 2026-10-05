@@ -1281,6 +1281,16 @@ try {
     assert.equal(await isTerminalRequest(sql, { gm_device: sign(terminal) }), true);
     assert.equal(await isTerminalRequest(sql, {}), false);
     assert.equal(await isTerminalRequest(sql, { gm_device: "forged.value" }), false);
+    // The GAP-2 guards fail closed: a failed device lookup throws (refusal)
+    // instead of answering "not a terminal" (A3).
+    const down = {
+      begin: () => Promise.reject(new Error("database unavailable")),
+    } as unknown as postgres.Sql;
+    assert.equal(await isTerminalRequest(down, { gm_device: sign(terminal) }), false);
+    await rejects(
+      isTerminalRequest(down, { gm_device: sign(terminal) }, true),
+      /database unavailable/,
+    );
     const s = await pin(terminal, cashierId, CASHIER_PIN);
     const { session } = await authenticate({
       gm_device: sign(terminal),

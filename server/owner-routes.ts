@@ -1,4 +1,4 @@
-import { Router } from "express";
+import { Router, type RequestHandler } from "express";
 import rateLimit from "express-rate-limit";
 import type postgres from "postgres";
 import { cookieOptions, sign } from "./auth.js";
@@ -62,21 +62,33 @@ export function ownerRoutes(sql: postgres.Sql) {
     }),
   );
   // GAP-2: a shared terminal never starts Google sign-in or owner account
-  // commands, even if its UI is bypassed (covers future /account/* routes too).
-  router.use(async (req, res, next) => {
-    const guarded =
-      (req.method === "GET" && req.path === "/google/start") ||
-      (req.method === "POST" && req.path.startsWith("/account/"));
-    if (!guarded) return next();
-    try {
-      if (!(await isTerminalRequest(sql, req.cookies ?? {}))) return next();
-      if (req.path === "/google/start")
-        return res.redirect(303, "/app?auth_error=terminal");
-      next(new DomainError("device_is_terminal", 403));
-    } catch (error) {
-      next(error);
-    }
-  });
+  // commands, even if its UI is bypassed. The refusal is attached with the
+  // router's own matching (route middleware and prefix mounts), never by
+  // comparing raw path strings, so case variants, a trailing slash and HEAD
+  // (which runs GET routes) reach it exactly as they reach the handlers.
+  const refuseOnTerminal =
+    (mode: "redirect" | "error"): RequestHandler =>
+    async (req, res, next) => {
+      try {
+        // Fails closed: a failed device lookup refuses instead of allowing.
+        if (!(await isTerminalRequest(sql, req.cookies ?? {}, true)))
+          return next();
+        if (mode === "redirect")
+          return res.redirect(303, "/app?auth_error=terminal");
+        next(new DomainError("device_is_terminal", 403));
+      } catch (error) {
+        next(error);
+      }
+    };
+  const refuseCommand = refuseOnTerminal("error");
+  // Every non-GET request under /account and /account-center (wave 2, R2:
+  // account mounts that router after this one, so an unmatched request runs
+  // this guard first), including routes added later.
+  router.use(["/account", "/account-center"], (req, res, next) =>
+    req.method === "GET" || req.method === "HEAD"
+      ? next()
+      : refuseCommand(req, res, next),
+  );
   router.get("/providers", async (req, res, next) => {
     try {
       const terminal = await isTerminalRequest(sql, req.cookies ?? {});
@@ -90,7 +102,7 @@ export function ownerRoutes(sql: postgres.Sql) {
       next(error);
     }
   });
-  router.get("/google/start", async (_req, res, next) => {
+  router.get("/google/start", refuseOnTerminal("redirect"), async (_req, res, next) => {
     if (!google) return res.status(503).json({ error: "google_unavailable" });
     try {
       const flow = await google.begin();
