@@ -4,23 +4,19 @@ import { StaffManagement } from "./StaffManagement";
 import { RecoveryQueue } from "./RecoveryQueue";
 import { FreeSelection } from "./FreeSelection";
 import { PlanSettings } from "./PlanSettings";
-import { ServiceAssignment } from "./ServiceAssignment";
-import { VoidDialog } from "./VoidDialog";
-import { lineRemaining } from "../../shared/settlement";
+import { Orders } from "./Orders";
+import { Tables } from "./Tables";
+import { Kitchen } from "./Kitchen";
 import { RestaurantSettings } from "./RestaurantSettings";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
 import { useEffect, useState } from "react";
-import { ArrowUpRight, RefreshCw, Clock, Check, Plus } from "lucide-react";
-import {
-  minor,
-  type Session,
-  type Locale,
-  type Order,
-} from "../../shared/domain";
+import { ArrowUpRight, RefreshCw } from "lucide-react";
+import { minor, type Session, type Locale } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
+import { integrationLabel, operationLabel, stockCauseLabel } from "../labels";
 import { api } from "../api";
-import { db, scope } from "../offline";
+import { db } from "../offline";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 export function Operations({
   view,
@@ -45,32 +41,33 @@ export function Operations({
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const [modal, setModal] = useState<{ kind: string; item?: any } | null>(null);
-  const [orders, setOrders] = useState<Order[]>([]);
+  // One operation id per opened dialog, kept across retries (MON-3).
+  const [modal, setModalState] = useState<{
+    kind: string;
+    item?: any;
+    operationId: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [serviceOrder, setServiceOrder] = useState<Order | null>(null);
-  const [voidOrder, setVoidOrder] = useState<Order | null>(null);
-  const [selectedOrders, setSelectedOrders] = useState<string[]>([]);
-  const [station, setStation] = useState("kitchen");
   const [detail, setDetail] = useState<any[] | null>(null);
-  const [lastRefresh, setLastRefresh] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+  /** Opening a dialog creates its operation id; closing it discards the id. */
+  const setModal = (next: { kind: string; item?: any } | null) =>
+    setModalState(next && { ...next, operationId: crypto.randomUUID() });
   async function load() {
     try {
-      if (view === "sync")
-        setData(
-          await db.pending.where("scope").equals(scope(session)).toArray(),
-        );
-      else if (view === "settings") {
-        setData(await api("/capabilities"));
-      } else {
+      // These views load and poll by themselves.
+      if (["orders", "tables", "kitchen", "sync"].includes(view)) {
+        setData(null);
+        return;
+      }
+      if (view === "settings") setData(await api("/capabilities"));
+      else {
         const endpoint =
           ({ today: "report", finance: "report" } as Record<string, string>)[
             view
           ] ?? view;
         setData(await api("/" + endpoint));
-        if (view === "tables") setOrders(await api("/orders"));
       }
-      setLastRefresh(new Date().toISOString());
       setError("");
     } catch (e) {
       setError(translateError((e as Error).message, locale));
@@ -83,12 +80,6 @@ export function Operations({
     setData(null);
     setDetail(null);
     void load();
-    const timer = ["kitchen", "sync"].includes(view)
-      ? setInterval(() => void load(), 1500)
-      : null;
-    return () => {
-      if (timer) clearInterval(timer);
-    };
   }, [view]);
   async function action(path: string, body: unknown) {
     if (path === "/cash/close") {
@@ -117,37 +108,21 @@ export function Operations({
       setBusy(false);
     }
   }
-  function openOrder(o: Order) {
-    localStorage.setItem("gm-resume", o.id);
-    navigate("sell");
-  }
   const manager = ["owner", "manager"].includes(session.role);
   return (
     <>
-      {voidOrder && (
-        <VoidDialog
-          order={voidOrder}
-          session={session}
-          locale={locale}
-          money={m}
-          close={() => setVoidOrder(null)}
-          saved={load}
-        />
-      )}
-      {serviceOrder && (
-        <ServiceAssignment
-          order={serviceOrder}
-          locale={locale}
-          close={() => setServiceOrder(null)}
-          saved={load}
-        />
-      )}
       <div className="section-title">
         <div>
           <span className="eyebrow">{session.restaurant.name}</span>
           <h1>{t(view as Key)}</h1>
         </div>
-        <Button aria-label={t("reload")} onClick={() => void load()}>
+        <Button
+          aria-label={t("reload")}
+          onClick={() => {
+            setRefreshKey((n) => n + 1);
+            void load();
+          }}
+        >
           <RefreshCw size={18} />
           {t("reload")}
         </Button>
@@ -182,313 +157,34 @@ export function Operations({
       ) : (
         <>
           {view === "orders" && (
-            <>
-              <Button
-                disabled={selectedOrders.length < 2}
-                onClick={() => setModal({ kind: "settlement" })}
-              >
-                {t("settleOrders")} ({selectedOrders.length})
-              </Button>
-              {data?.length ? (
-                <div className="order-list">
-                  {data.map((o: Order) => (
-                    <article className="order-summary" key={o.id}>
-                      <label className="selection-check">
-                        <input
-                          type="checkbox"
-                          aria-label={t("selectOrder") + " #" + o.number}
-                          disabled={o.paid >= o.total}
-                          checked={selectedOrders.includes(o.id)}
-                          onChange={() =>
-                            setSelectedOrders((ids) =>
-                              ids.includes(o.id)
-                                ? ids.filter((id) => id !== o.id)
-                                : [...ids, o.id],
-                            )
-                          }
-                        />
-                      </label>
-                      <div>
-                        <span className="eyebrow">
-                          #{o.number} · {t(o.mode as Key)}
-                        </span>
-                        <h3>{o.name || t("order")}</h3>
-                        <p>
-                          {o.tableName ?? t("noTable")} · {o.waiterName}
-                        </p>
-                        <p>
-                          {o.lines
-                            .filter((l) => lineRemaining(l).quantity > 0)
-                            .map(
-                              (l) =>
-                                `${lineRemaining(l).quantity} ${l.name[locale]}`,
-                            )
-                            .join(" · ")}
-                        </p>
-                        {!!o.voids?.length && (
-                          <details className="void-history">
-                            <summary>
-                              {t("voidHistory")} ({o.voids.length})
-                            </summary>
-                            <ul>
-                              {o.voids.map((v) => (
-                                <li key={v.id}>
-                                  {v.quantity} ×{" "}
-                                  {o.lines.find((l) => l.id === v.lineId)?.name[
-                                    locale
-                                  ] ?? ""}{" "}
-                                  · −{m(v.amount)} · {v.reason}
-                                  <br />
-                                  <small className="muted">
-                                    {t("voidBy")
-                                      .replace("{actor}", v.actorName)
-                                      .replace("{approver}", v.approverName)}
-                                    {v.kitchenPending &&
-                                      " · " + t("voidKitchenPending")}
-                                  </small>
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
-                        )}
-                        <Badge tone={o.paid >= o.total ? "green" : "amber"}>
-                          {t(
-                            o.refunded
-                              ? "refunded"
-                              : o.paid >= o.total
-                                ? "paid"
-                                : o.paid
-                                  ? "partial"
-                                  : "unpaid",
-                          )}
-                        </Badge>{" "}
-                        <Badge>{t(o.state as Key)}</Badge>
-                      </div>
-                      <div className="order-summary-actions">
-                        <strong>{m(o.total - o.paid)}</strong>
-                        <Button onClick={() => openOrder(o)}>
-                          {t("resume")}
-                          <ArrowUpRight size={16} />
-                        </Button>
-                        {o.state !== "completed" &&
-                          o.state !== "cancelled" &&
-                          !o.recovery && (
-                            <Button onClick={() => setServiceOrder(o)}>
-                              {t("assignService")}
-                            </Button>
-                          )}
-                        {!["completed", "cancelled"].includes(o.state) &&
-                          !o.recovery &&
-                          o.paymentUnits?.some((u) => u.paid === 0) && (
-                            <Button
-                              variant="ghost"
-                              onClick={() => setVoidOrder(o)}
-                            >
-                              {t("voidAction")}
-                            </Button>
-                          )}
-                        {manager &&
-                          o.tenders.some(
-                            (x) => x.method === "cash" && x.amount > x.refunded,
-                          ) && (
-                            <Button
-                              variant="ghost"
-                              onClick={() =>
-                                setModal({ kind: "refund", item: o })
-                              }
-                            >
-                              {t("refund")}
-                            </Button>
-                          )}
-                      </div>
-                    </article>
-                  ))}
-                </div>
-              ) : (
-                <Empty title={t("noOrders")} detail={t("noOrdersHint")} />
-              )}
-            </>
+            <Orders
+              session={session}
+              locale={locale}
+              navigate={navigate}
+              refreshKey={refreshKey}
+            />
           )}
           {view === "tables" && (
-            <div className="table-grid">
-              {data?.map((table: any) => {
-                const active = orders.filter(
-                  (o) => o.tableId === table.id && o.state !== "completed",
-                );
-                return (
-                  <article
-                    className={`table-card ${active.length ? "occupied" : ""}`}
-                    key={table.id}
-                  >
-                    <div className="row between">
-                      <h2>{table.name}</h2>
-                      <Badge tone={active.length ? "amber" : "green"}>
-                        {active.length ? t("active") : t("available")}
-                      </Badge>
-                    </div>
-                    {active.map((o) => (
-                      <Button
-                        className="full"
-                        key={o.id}
-                        onClick={() => openOrder(o)}
-                      >
-                        #{o.number} · {o.name}{" "}
-                        <strong>{m(o.total - o.paid)}</strong>
-                      </Button>
-                    ))}
-                    <Button
-                      onClick={() => {
-                        localStorage.setItem("gm-table", table.id);
-                        navigate("sell");
-                      }}
-                    >
-                      <Plus size={18} />
-                      {t("newOrder")}
-                    </Button>
-                  </article>
-                );
-              })}
-            </div>
+            <Tables
+              session={session}
+              locale={locale}
+              navigate={navigate}
+              refreshKey={refreshKey}
+            />
           )}
           {view === "kitchen" && (
-            <>
-              <div className="row">
-                <Button
-                  variant={station === "kitchen" ? "primary" : "secondary"}
-                  onClick={() => setStation("kitchen")}
-                >
-                  {t("kitchen")}
-                </Button>
-                <Button
-                  variant={station === "bar" ? "primary" : "secondary"}
-                  onClick={() => setStation("bar")}
-                >
-                  {t("bar")}
-                </Button>
-                <span className="muted">
-                  {t("refresh")}{" "}
-                  {lastRefresh
-                    ? new Date(lastRefresh).toLocaleTimeString(locale)
-                    : ""}
-                </span>
-              </div>
-              {error && <p className="warning-panel">{t("stale")}</p>}
-              <div className="kitchen-grid">
-                {data
-                  ?.filter((r: any) => r.station === station)
-                  .map((r: any) => (
-                    <article className="kitchen-ticket" key={r.id}>
-                      <header>
-                        <div>
-                          <h2>
-                            #{r.order_number} <span>{r.name}</span>
-                          </h2>
-                          <span>
-                            {t("round")} {r.number} · {t(r.mode as Key)}
-                          </span>
-                        </div>
-                        <Badge tone={r.state === "ready" ? "green" : "amber"}>
-                          <Clock size={14} />
-                          {Math.max(
-                            0,
-                            Math.floor(
-                              (Date.now() - new Date(r.created_at).getTime()) /
-                                60000,
-                            ),
-                          )}{" "}
-                          min
-                        </Badge>
-                      </header>
-                      <p>
-                        {r.table_name ?? t("noTable")} · {r.waiter_name}
-                      </p>
-                      {r.service_version > 0 && (
-                        <Badge>{t("serviceUpdated")}</Badge>
-                      )}
-                      <div className="ticket-lines">
-                        {r.lines?.map((l: any) => (
-                          <div
-                            key={l.id}
-                            className={
-                              l.voidedQuantity >= l.quantity ? "voided" : ""
-                            }
-                          >
-                            <strong>
-                              {l.quantity - l.voidedQuantity} × {l.name[locale]}
-                              {l.voidedQuantity > 0 && (
-                                <s className="muted"> ({l.quantity})</s>
-                              )}
-                            </strong>
-                            <p>
-                              {l.optionNames
-                                .map((o: any) => o[locale])
-                                .join(" · ")}
-                            </p>
-                            {l.note && (
-                              <p className="warning-panel">{l.note}</p>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                      {!!r.pending_voids?.length && (
-                        <div className="void-alert" role="alert">
-                          <strong>{t("kitchenVoided")}</strong>
-                          {r.pending_voids.map((v: any) => (
-                            <p key={v.id}>
-                              {v.quantity} × {v.name[locale]} · {v.reason}
-                            </p>
-                          ))}
-                          {["owner", "manager", "kitchen"].includes(
-                            session.role,
-                          ) && (
-                            <Button
-                              className="full"
-                              disabled={busy}
-                              onClick={() =>
-                                void action("/kitchen/" + r.id + "/voids/ack", {
-                                  operationId: crypto.randomUUID(),
-                                })
-                              }
-                            >
-                              {t("kitchenVoidAck")}
-                            </Button>
-                          )}
-                        </div>
-                      )}
-                      <p>{t(r.seen_at ? "seen" : "sent")}</p>
-                      <Button
-                        variant="primary"
-                        className="full"
-                        disabled={busy}
-                        onClick={() =>
-                          void action("/kitchen/" + r.id, {
-                            operationId: crypto.randomUUID(),
-                            state: !r.seen_at
-                              ? "seen"
-                              : r.state === "active"
-                                ? "ready"
-                                : "completed",
-                          })
-                        }
-                      >
-                        <Check size={20} />
-                        {t(
-                          !r.seen_at
-                            ? "ack"
-                            : r.state === "active"
-                              ? "markReady"
-                              : "serve",
-                        )}
-                      </Button>
-                    </article>
-                  ))}
-              </div>
-              {!data?.some((r: any) => r.station === station) && (
-                <Empty title={t("noOrders")} />
-              )}
-            </>
+            <Kitchen
+              session={session}
+              locale={locale}
+              refreshKey={refreshKey}
+            />
           )}
-          {view === "cash" && manager && <CashHistory locale={locale} />}
+          {view === "cash" && manager && (
+            <CashHistory
+              locale={locale}
+              currency={session.restaurant.currency}
+            />
+          )}
           {view === "cash" && (
             <>
               {!data || data.closed_at ? (
@@ -750,7 +446,7 @@ export function Operations({
                 {Object.entries(data ?? {}).map(([key, v]) => (
                   <div className="panel" key={key}>
                     <div className="row between">
-                      <h3>{key}</h3>
+                      <h3>{integrationLabel(key, locale)}</h3>
                       <Badge tone={(v as any).enabled ? "green" : "amber"}>
                         {t((v as any).enabled ? "available" : "disabled")}
                       </Badge>
@@ -779,7 +475,6 @@ export function Operations({
           title={t(
             (
               {
-                settlement: "settleOrders",
                 open: "openDrawer",
                 close: "closeDrawer",
                 paidout: "paidOut",
@@ -797,8 +492,10 @@ export function Operations({
               {detail?.map((r: any) => (
                 <div className="report-row" key={r.id}>
                   <span>
-                    {r.cause ?? r.operation}
-                    <small>{r.reason ?? r.entity_id}</small>
+                    {r.cause !== undefined
+                      ? stockCauseLabel(r.cause, locale)
+                      : operationLabel(r.operation, locale)}
+                    {r.reason && <small>{r.reason}</small>}
                   </span>
                   <strong>{r.quantity ?? ""}</strong>
                   <time>
@@ -814,21 +511,9 @@ export function Operations({
               onSubmit={async (e) => {
                 e.preventDefault();
                 const f = new FormData(e.currentTarget);
-                const operationId = crypto.randomUUID();
+                const operationId = modal.operationId;
                 try {
-                  if (modal.kind === "settlement") {
-                    await action("/settlements", {
-                      operationId,
-                      orders: data
-                        .filter((o: Order) => selectedOrders.includes(o.id))
-                        .map((o: Order) => ({
-                          id: o.id,
-                          amount: o.total - o.paid,
-                        })),
-                      received: parseAmount(String(f.get("amount"))),
-                    });
-                    setSelectedOrders([]);
-                  } else if (modal.kind === "open")
+                  if (modal.kind === "open")
                     await action("/cash/open", {
                       operationId,
                       opening: parseAmount(String(f.get("amount"))),
@@ -844,14 +529,6 @@ export function Operations({
                       operationId,
                       amount: parseAmount(String(f.get("amount"))),
                       reason: f.get("reason"),
-                    });
-                  else if (modal.kind === "refund")
-                    await action("/refunds", {
-                      operationId,
-                      tenderId: f.get("tenderId"),
-                      amount: parseAmount(String(f.get("amount"))),
-                      reason: f.get("reason"),
-                      disposition: f.get("disposition"),
                     });
                   else if (modal.kind === "prep")
                     await action("/inventory/prep", {
@@ -876,56 +553,10 @@ export function Operations({
                 }
               }}
             >
-              {modal.kind === "settlement" && (
-                <>
-                  {data
-                    .filter((o: Order) => selectedOrders.includes(o.id))
-                    .map((o: Order) => (
-                      <p key={o.id}>
-                        #{o.number} · {m(o.total - o.paid)}
-                      </p>
-                    ))}
-                  <p>
-                    {t("cashMethod")} · {t("total")}:{" "}
-                    {m(
-                      data
-                        .filter((o: Order) => selectedOrders.includes(o.id))
-                        .reduce(
-                          (a: number, o: Order) => a + o.total - o.paid,
-                          0,
-                        ),
-                    )}
-                  </p>
-                </>
-              )}
               {modal.kind === "close" && (
                 <p>
                   {t("expected")}: <strong>{m(data.expected)}</strong>
                 </p>
-              )}
-              {modal.kind === "refund" && (
-                <>
-                  <Field label={t("method")}>
-                    <select name="tenderId">
-                      {modal.item.tenders
-                        .filter(
-                          (t: any) =>
-                            t.method === "cash" && t.amount > t.refunded,
-                        )
-                        .map((p: any) => (
-                          <option key={p.id} value={p.id}>
-                            {t("cashMethod")} · {m(p.amount - p.refunded)}
-                          </option>
-                        ))}
-                    </select>
-                  </Field>
-                  <Field label={t("refundReason")}>
-                    <select name="disposition">
-                      <option value="discard">{t("discard")}</option>
-                      <option value="no_stock_return">{t("noReturn")}</option>
-                    </select>
-                  </Field>
-                </>
               )}
               {modal.kind === "prep" ? (
                 <>
@@ -956,7 +587,7 @@ export function Operations({
                   label={t(
                     modal.kind === "close"
                       ? "counted"
-                      : modal.item && modal.kind !== "refund"
+                      : modal.item
                         ? "quantity"
                         : "amount",
                   )}
@@ -966,26 +597,11 @@ export function Operations({
                     inputMode="decimal"
                     required
                     pattern="[0-9]+(\.[0-9]{1,6})?"
-                    defaultValue={
-                      modal.kind === "settlement"
-                        ? (
-                            data
-                              .filter((o: Order) =>
-                                selectedOrders.includes(o.id),
-                              )
-                              .reduce(
-                                (a: number, o: Order) => a + o.total - o.paid,
-                                0,
-                              ) / scale
-                          ).toFixed(exponent)
-                        : modal.kind === "open"
-                          ? "500.00"
-                          : ""
-                    }
+                    defaultValue={modal.kind === "open" ? "500.00" : ""}
                   />
                 </Field>
               )}
-              {!["open", "settlement"].includes(modal.kind) && (
+              {modal.kind !== "open" && (
                 <Field label={t("reason")}>
                   <textarea
                     name="reason"

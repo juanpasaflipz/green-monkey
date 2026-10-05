@@ -40,24 +40,31 @@ import {
 import {
   catalog,
   getOrder,
+  getOrders,
   createOrder,
   addRound,
   recordPayment,
   once,
   audit,
   stock,
-  drawer,
 } from "./orders.js";
 import { saveProduct, saveEmployee, receive } from "./management.js";
 import { previewImport } from "../shared/import.js";
 import { commitImport } from "./imports.js";
-import { cashHistory, cashSummary, closeCash, refund } from "./operations.js";
+import {
+  cashHistory,
+  cashSummary,
+  closeCash,
+  recordPaidOut,
+  refund,
+} from "./operations.js";
 import {
   acknowledgeVoids,
   verifyApproval,
   voidLines,
 } from "./voids.js";
 import { requireReadySchema } from "./readiness.js";
+import { recordSettlement } from "./checks.js";
 import { makeRoute, trustProxy } from "./http.js";
 import { log, logRequestError, requestIdOf, requestLog } from "./logging.js";
 import { createJobRunner } from "./jobs/runner.js";
@@ -78,7 +85,6 @@ import * as discountsRoutes from "./routes/discounts.js";
 import * as reportsRoutes from "./routes/reports.js";
 import * as cfdiRoutes from "./routes/cfdi.js";
 import * as accountRoutes from "./routes/account.js";
-import { requireRecentAuth } from "./access.js";
 import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
@@ -185,9 +191,13 @@ route(
   async (tx) => tx`select * from dining_tables order by name`,
 );
 route("get", "/orders", async (tx) => {
+  // legacy: removed after one release (docs/SERVICE.md); new screens use /service/orders.
   const rows =
     await tx`select id from orders order by created_at desc limit 100`;
-  return Promise.all(rows.map((r: any) => getOrder(tx, r.id)));
+  return getOrders(
+    tx,
+    rows.map((r: any) => r.id),
+  );
 });
 route("get", "/orders/:id", async (tx, _s, req) =>
   getOrder(tx, id.parse(req.params.id)),
@@ -231,50 +241,9 @@ app.post("/api/orders/:id/voids", async (req, res, next) => {
 route("post", "/kitchen/:id/voids/ack", (tx, s, req) =>
   acknowledgeVoids(tx, s, id.parse(req.params.id), req.body),
 );
-route("post", "/settlements", async (tx, s, req) => {
-  permit(s, operators);
-  const p = z
-    .object({
-      operationId: id,
-      orders: z
-        .array(z.object({ id, amount: money.refine((n) => n > 0) }))
-        .min(2)
-        .max(20),
-      received: money,
-    })
-    .strict()
-    .parse(req.body);
-  return once(tx, s, p.operationId, "settlement", p, async () => {
-    if (new Set(p.orders.map((o) => o.id)).size !== p.orders.length)
-      throw new DomainError("invalid_split");
-    const total = p.orders.reduce((a, o) => a + o.amount, 0);
-    if (total > p.received) throw new DomainError("insufficient_cash");
-    const result = [];
-    for (const o of [...p.orders].sort((a, b) => a.id.localeCompare(b.id)))
-      result.push(
-        await recordPayment(
-          tx,
-          s,
-          o.id,
-          {
-            operationId: randomUUID(),
-            amount: o.amount,
-            tip: 0,
-            received: o.amount,
-            method: "cash",
-          },
-          p.operationId,
-        ),
-      );
-    await audit(tx, s, "settlement.recorded", p.operationId, {
-      orders: p.orders,
-      received: p.received,
-      total,
-      change: p.received - total,
-    });
-    return result;
-  });
-});
+route("post", "/settlements", (tx, s, req) =>
+  recordSettlement(tx, s, req.body),
+);
 route("post", "/sync", (tx, s, req) => synchronizeOffline(tx, s, req.body));
 route("post", "/sync/review", (tx, s, req) => reviewOffline(tx, s, req.body));
 route("post", "/sync/reconcile", (tx, s, req) =>
@@ -292,7 +261,7 @@ route("get", "/operations/:id", async (tx, s, req) => {
 });
 route("get", "/kitchen", async (tx, s) => {
   permit(s, ["owner", "manager", "kitchen", "server", "cashier"]);
-  return tx`select r.*,o.number as order_number,o.name,o.mode,o.table_id,(select name from dining_tables t where t.id=o.table_id) as table_name,(select name from employees e where e.id=coalesce(o.assigned_employee_id,o.employee_id)) as waiter_name,o.service_version,(select jsonb_agg(l.data || jsonb_build_object('voidedQuantity',coalesce((select sum(cardinality(v.units)) from line_voids v where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) order by l.id) from order_lines l where l.order_id=o.id and l.round=r.number and l.data->>'station'=r.station) as lines,(select jsonb_agg(jsonb_build_object('id',v.id,'lineId',v.line_id,'quantity',cardinality(v.units),'name',l.data->'name','reason',v.reason,'createdAt',v.created_at) order by v.created_at) from line_voids v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id where v.order_id=o.id and l.round=r.number and l.data->>'station'=r.station and v.kitchen_ack_required and v.kitchen_acknowledged_at is null) as pending_voids from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id where r.state<>'completed' order by r.created_at`;
+  return tx`select r.*,o.number as order_number,o.name,o.mode,o.table_id,(select name from dining_tables t where t.id=o.table_id) as table_name,(select name from employees e where e.id=coalesce(o.assigned_employee_id,o.employee_id)) as waiter_name,o.service_version,(select jsonb_agg(l.data || jsonb_build_object('voidedQuantity',coalesce((select sum(cardinality(v.units)) from line_voids v where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) order by l.id) from order_lines l where l.order_id=o.id and l.round=r.number and l.data->>'station'=r.station) as lines,(select jsonb_agg(jsonb_build_object('id',v.id,'lineId',v.line_id,'quantity',cardinality(v.units),'name',l.data->'name','reason',v.reason,'createdAt',v.created_at) order by v.created_at) from line_voids v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id where v.order_id=o.id and l.round=r.number and l.data->>'station'=r.station and v.kitchen_ack_required and v.kitchen_acknowledged_at is null) as pending_voids from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id where r.state <> 'completed' and r.state <> 'offline_review' order by r.created_at`;
 });
 route("post", "/kitchen/:id", (tx, s, req) =>
   progressPreparation(tx, s, id.parse(req.params.id), req.body),
@@ -331,25 +300,7 @@ route("post", "/cash/open", async (tx, s, req) => {
   });
 });
 route("post", "/cash/close", (tx, s, req) => closeCash(tx, s, req.body));
-route("post", "/cash/paid-out", async (tx, s, req) => {
-  permit(s, managers);
-  requireRecentAuth(s);
-  const p = z
-    .object({
-      operationId: id,
-      amount: money.refine((n) => n > 0),
-      reason: z.string().min(3).max(300),
-    })
-    .strict()
-    .parse(req.body);
-  return once(tx, s, p.operationId, "cash.paidout", p, async () => {
-    await requireSelling(tx, s);
-    const d = await drawer(tx, s);
-    await tx`insert into cash_movements(tenant_id,id,session_id,amount,reason) values(${s.tenantId},${randomUUID()},${d.id},${-p.amount},${p.reason})`;
-    await audit(tx, s, "cash.paidout", d.id, p);
-    return cashSummary(tx, s);
-  });
-});
+route("post", "/cash/paid-out", (tx, s, req) => recordPaidOut(tx, s, req.body));
 route("get", "/inventory", async (tx, s) => {
   permit(s, managers);
   return tx`select i.*,coalesce(sum(m.quantity),0)::text as quantity from stock_items i left join stock_movements m on m.tenant_id=i.tenant_id and m.stock_id=i.id group by i.tenant_id,i.id order by i.name`;

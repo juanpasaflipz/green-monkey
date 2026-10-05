@@ -243,7 +243,31 @@ try {
   });
 
   await test("paid units cannot be voided; the remaining total never drops below paid", async () => {
-    const o = await newOrder(2);
+    // Dine-in at a table: at balance zero the check stays "paid" (service 024),
+    // so the last void still reaches the unpaid-units rule instead of check_closed.
+    const [table] = await run(
+      owner,
+      (tx) => tx`select id from dining_tables order by name limit 1`,
+    );
+    const o = await run(owner, (tx) =>
+      createOrder(tx, owner, {
+        operationId: randomUUID(),
+        lines: [
+          {
+            id: randomUUID(),
+            productId: product.id,
+            quantity: 2,
+            options: [],
+            note: "",
+          },
+        ],
+        mode: "dine_in",
+        tableId: table.id,
+        name: "Voids",
+        note: "",
+        channel: "pos",
+      }),
+    );
     const unit = o.lines[0].unitPrice;
     const paid = await run(owner, (tx) =>
       recordPayment(tx, owner, o.id, {
@@ -261,6 +285,7 @@ try {
     const v = await voidAs(owner, o.id, voidBody(paid, 1));
     assert.equal(v.total, v.paid);
     assert.deepEqual(v.lines[0].voidedUnits, [1]);
+    assert.equal(v.checkState, "paid");
     await rejects(voidAs(owner, o.id, voidBody(v, 1)), "void_exceeds_unpaid");
   });
 
@@ -345,6 +370,10 @@ try {
     const after = await run(owner, (tx) => getOrder(tx, o.id));
     assert.equal(after.state, "cancelled");
     assert.equal(after.voids![0].kitchenPending, false);
+    assert.equal(after.checkState, "closed");
+    assert.equal(after.closeReason, "voided");
+    // service (024): a fully voided check is closed, so a new round is
+    // rejected as check_closed (it was stale_order before the lifecycle split).
     await rejects(
       run(owner, (tx) =>
         addRound(tx, owner, o.id, {
@@ -362,7 +391,7 @@ try {
           mode: "takeaway",
         }),
       ),
-      "stale_order",
+      "check_closed",
     );
   });
 

@@ -10,6 +10,8 @@ import { Decimal } from "decimal.js";
 import { z } from "zod";
 import type { Tx } from "./db.js";
 import { hash, permit, operators } from "./auth.js";
+import { assertCheckWritable, refreshCheckState } from "./checks.js";
+import { bumpKitchenFeed } from "./kitchen.js";
 import {
   DomainError,
   orderInput,
@@ -69,105 +71,180 @@ export async function catalog(tx: Tx): Promise<Product[]> {
     await tx`select data from catalog order by data->'category'->>'es',data->'name'->>'es'`
   ).map((r) => r.data as Product);
 }
+/** Groups rows by order id, keeping each group's query order. */
+function byOrder<T extends { order_id: string }>(rows: readonly T[]) {
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const group = groups.get(row.order_id);
+    if (group) group.push(row);
+    else groups.set(row.order_id, [row]);
+  }
+  return groups;
+}
+/**
+ * Loads several orders with a constant number of statements (pipelined on the
+ * transaction connection), whatever the number of ids. Input order is kept and
+ * missing ids are skipped.
+ */
+export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
+  if (!ids.length) return [];
+  const list = tx.array(ids);
+  const [
+    orders,
+    lineRows,
+    voidRows,
+    tenderRows,
+    roundRows,
+    allocationRows,
+    recoveryRows,
+  ] = await Promise.all([
+    tx`select o.*,o.business_date::text as business_day,e.name as waiter_name,
+          opener.name as opened_by,t.name as table_name
+        from orders o
+        join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id)
+        join employees opener on opener.tenant_id=o.tenant_id and opener.id=o.employee_id
+        left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id
+        where o.id=any(${list}::uuid[])`,
+    tx`select l.order_id,l.data,l.round,coalesce((select array_agg(u order by u) from line_voids v, unnest(v.units) u
+          where v.tenant_id=l.tenant_id and v.line_id=l.id),'{}') as voided_units
+        from order_lines l where l.order_id=any(${list}::uuid[]) order by l.round,l.id`,
+    tx`select v.order_id,v.id,v.line_id,cardinality(v.units)::int as quantity,v.amount,v.reason,
+          v.stock_disposition,v.preparation_state,v.created_at,v.kitchen_ack_required,v.kitchen_acknowledged_at,
+          a.name as actor_name,m.name as approver_name
+        from line_voids v
+        join employees a on a.tenant_id=v.tenant_id and a.id=v.actor_id
+        join employees m on m.tenant_id=v.tenant_id and m.id=v.approver_id
+        where v.order_id=any(${list}::uuid[]) order by v.created_at,v.id`,
+    tx`select t.*,coalesce((select sum(r.amount) from refunds r where r.tenant_id=t.tenant_id and r.tender_id=t.id),0)::int as refunded
+        from tenders t where t.order_id=any(${list}::uuid[]) order by t.created_at,t.id`,
+    tx`select * from rounds where order_id=any(${list}::uuid[]) order by number,station`,
+    tx`select order_id,line_id as "lineId",unit_index as unit,amount
+        from tender_allocations where order_id=any(${list}::uuid[])`,
+    tx`select r.order_id,r.id,r.reason,r.original_sold_at,
+          r.recognized_at,r.evidence_version,r.item_allocation_complete,
+          coalesce(jsonb_object_agg(t.kind,t.state) filter(where t.kind is not null),'{}') as tasks
+        from offline_recoveries r left join offline_recovery_tasks t
+          on t.tenant_id=r.tenant_id and t.recovery_id=r.id
+        where r.order_id=any(${list}::uuid[])
+        group by r.tenant_id,r.id`,
+  ]);
+  const linesBy = byOrder(
+    lineRows as unknown as {
+      order_id: string;
+      data: PricedLine;
+      round: number;
+      voided_units: number[];
+    }[],
+  );
+  const voidsBy = byOrder(
+    voidRows as unknown as ({ order_id: string } & Record<string, any>)[],
+  );
+  const tendersBy = byOrder(
+    tenderRows as unknown as ({ order_id: string } & Record<string, any>)[],
+  );
+  const roundsBy = byOrder(
+    roundRows as unknown as ({ order_id: string } & Record<string, any>)[],
+  );
+  const allocationsBy = byOrder(
+    allocationRows as unknown as ({ order_id: string } & Allocation)[],
+  );
+  const recoveryBy = byOrder(
+    recoveryRows as unknown as ({ order_id: string } & Record<string, any>)[],
+  );
+  const found = new Map(orders.map((o) => [o.id as string, o]));
+  return ids.flatMap((orderId) => {
+    const o = found.get(orderId);
+    if (!o) return [];
+    const lines = (linesBy.get(orderId) ?? []).map((l) => ({
+      data: {
+        ...l.data,
+        round: l.round,
+        voidedUnits: l.voided_units,
+      } as PricedLine,
+    }));
+    const voids = voidsBy.get(orderId) ?? [];
+    const tenders = tendersBy.get(orderId) ?? [];
+    const rounds = roundsBy.get(orderId) ?? [];
+    const allocations = (allocationsBy.get(orderId) ?? []).map(
+      ({ order_id: _order, ...a }) => a as Allocation,
+    );
+    const allocated = sum(allocations.map((a) => a.amount));
+    const paid = sum(tenders.map((t) => t.amount));
+    const recovery = recoveryBy.get(orderId)?.[0];
+    return [
+      {
+        recovery: recovery
+          ? {
+              id: recovery.id,
+              reason: recovery.reason,
+              original: { recordedAt: recovery.original_sold_at.toISOString() },
+              recognizedAt: recovery.recognized_at.toISOString(),
+              evidenceVersion: recovery.evidence_version,
+              itemAllocationComplete: recovery.item_allocation_complete,
+              fulfillment: recovery.tasks.kitchen,
+              stock: recovery.tasks.stock,
+            }
+          : null,
+        serviceVersion: o.service_version,
+        assignedEmployeeId: o.assigned_employee_id ?? o.employee_id,
+        waiterName: o.waiter_name,
+        tableName: o.table_name,
+        restaurantSnapshot: o.restaurant_snapshot,
+        itemSplitAvailable: allocated === paid,
+        paymentUnits:
+          allocated === paid
+            ? payableUnits(
+                lines.map((l) => l.data),
+                allocations,
+              ).filter(
+                (unit) =>
+                  !lines
+                    .find((l) => l.data.id === unit.lineId)
+                    ?.data.voidedUnits?.includes(unit.unit),
+              )
+            : [],
+        voids: voids.map((v) => ({
+          id: v.id,
+          lineId: v.line_id,
+          quantity: v.quantity,
+          amount: v.amount,
+          reason: v.reason,
+          stockDisposition: v.stock_disposition,
+          preparationState: v.preparation_state,
+          actorName: v.actor_name,
+          approverName: v.approver_name,
+          createdAt: v.created_at.toISOString(),
+          kitchenPending: v.kitchen_ack_required && !v.kitchen_acknowledged_at,
+        })),
+        checkState: o.check_state,
+        closedAt: o.closed_at ? o.closed_at.toISOString() : null,
+        closeReason: o.close_reason ?? null,
+        channel: o.channel,
+        businessDate: o.business_day,
+        openedBy: o.opened_by,
+        id: o.id,
+        number: o.number,
+        version: o.version,
+        mode: o.mode,
+        tableId: o.table_id,
+        name: o.name,
+        note: o.note,
+        lines: lines.map((l) => l.data),
+        total: o.total,
+        paid,
+        refunded: sum(tenders.map((t) => t.refunded)),
+        state: o.state,
+        createdAt: o.created_at.toISOString(),
+        rounds,
+        tenders,
+      } as Order,
+    ];
+  });
+}
 export async function getOrder(tx: Tx, orderId: string): Promise<Order> {
-  const [o] =
-    await tx`select o.*,e.name as waiter_name,t.name as table_name from orders o join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id) left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id where o.id=${orderId}`;
-  if (!o) throw new DomainError("not_found", 404);
-  const lines = (
-    await tx`select l.data,l.round,coalesce((select array_agg(u order by u) from line_voids v, unnest(v.units) u
-        where v.tenant_id=l.tenant_id and v.line_id=l.id),'{}') as voided_units
-      from order_lines l where l.order_id=${orderId} order by l.round,l.id`
-  ).map((l) => ({
-    data: {
-      ...l.data,
-      round: l.round,
-      voidedUnits: l.voided_units as number[],
-    } as PricedLine,
-  }));
-  const voids =
-    await tx`select v.id,v.line_id,cardinality(v.units)::int as quantity,v.amount,v.reason,
-      v.stock_disposition,v.preparation_state,v.created_at,v.kitchen_ack_required,v.kitchen_acknowledged_at,
-      a.name as actor_name,m.name as approver_name
-    from line_voids v
-    join employees a on a.tenant_id=v.tenant_id and a.id=v.actor_id
-    join employees m on m.tenant_id=v.tenant_id and m.id=v.approver_id
-    where v.order_id=${orderId} order by v.created_at,v.id`;
-  const tenders =
-    await tx`select t.*,coalesce((select sum(r.amount) from refunds r where r.tender_id=t.id),0)::int as refunded from tenders t where order_id=${orderId} order by created_at`;
-  const rounds =
-    await tx`select * from rounds where order_id=${orderId} order by number,station`;
-  const allocations = await tx<
-    Allocation[]
-  >`select line_id as "lineId", unit_index as unit, amount from tender_allocations where order_id=${orderId}`;
-  const allocated = sum(allocations.map((a) => a.amount));
-  const paid = sum(tenders.map((t) => t.amount));
-  const [recovery] = await tx`select r.id,r.reason,r.original_sold_at,
-    r.recognized_at,r.evidence_version,r.item_allocation_complete,
-    coalesce(jsonb_object_agg(t.kind,t.state) filter(where t.kind is not null),'{}') as tasks
-    from offline_recoveries r left join offline_recovery_tasks t
-      on t.tenant_id=r.tenant_id and t.recovery_id=r.id
-    where r.order_id=${orderId}
-    group by r.tenant_id,r.id`;
-  return {
-    recovery: recovery
-      ? {
-          id: recovery.id,
-          reason: recovery.reason,
-          original: { recordedAt: recovery.original_sold_at.toISOString() },
-          recognizedAt: recovery.recognized_at.toISOString(),
-          evidenceVersion: recovery.evidence_version,
-          itemAllocationComplete: recovery.item_allocation_complete,
-          fulfillment: recovery.tasks.kitchen,
-          stock: recovery.tasks.stock,
-        }
-      : null,
-    serviceVersion: o.service_version,
-    assignedEmployeeId: o.assigned_employee_id ?? o.employee_id,
-    waiterName: o.waiter_name,
-    tableName: o.table_name,
-    restaurantSnapshot: o.restaurant_snapshot,
-    itemSplitAvailable: allocated === paid,
-    paymentUnits:
-      allocated === paid
-        ? payableUnits(
-            lines.map((l) => l.data),
-            allocations,
-          ).filter(
-            (unit) =>
-              !lines
-                .find((l) => l.data.id === unit.lineId)
-                ?.data.voidedUnits?.includes(unit.unit),
-          )
-        : [],
-    voids: voids.map((v) => ({
-      id: v.id,
-      lineId: v.line_id,
-      quantity: v.quantity,
-      amount: v.amount,
-      reason: v.reason,
-      stockDisposition: v.stock_disposition,
-      preparationState: v.preparation_state,
-      actorName: v.actor_name,
-      approverName: v.approver_name,
-      createdAt: v.created_at.toISOString(),
-      kitchenPending: v.kitchen_ack_required && !v.kitchen_acknowledged_at,
-    })),
-    id: o.id,
-    number: o.number,
-    version: o.version,
-    mode: o.mode,
-    tableId: o.table_id,
-    name: o.name,
-    note: o.note,
-    lines: lines.map((l) => l.data),
-    total: o.total,
-    paid: sum(tenders.map((t) => t.amount)),
-    refunded: sum(tenders.map((t) => t.refunded)),
-    state: o.state,
-    createdAt: o.created_at.toISOString(),
-    rounds,
-    tenders,
-  };
+  const [order] = await getOrders(tx, [orderId]);
+  if (!order) throw new DomainError("not_found", 404);
+  return order;
 }
 export async function stock(
   tx: Tx,
@@ -193,12 +270,19 @@ export async function stock(
   await tx`insert into stock_movements(tenant_id,id,stock_id,quantity,cause,cause_id,reason,actor_id) values(${s.tenantId},${randomUUID()},${stockId},${quantity},${cause},${causeId},${reason},${s.employeeId})`;
   await tx`update stock_items set version=version+1 where id=${stockId}`;
 }
-async function append(
+export type AppendOptions = {
+  /** service (024): kitchen note for this round (rounds.note). */
+  note?: string;
+  /** menu (025): negative-stock policy; offline-collected sales pass "allow". */
+  stockPolicy?: "allow" | "block";
+};
+export async function append(
   tx: Tx,
   s: Session,
   orderId: string,
   lines: ReturnType<typeof quote>,
   round: number,
+  opts: AppendOptions = {},
 ) {
   for (const l of lines) {
     await tx`insert into order_lines(tenant_id,id,order_id,product_id,round,data) values(${s.tenantId},${l.id},${orderId},${l.productId},${round},${tx.json(l)})`;
@@ -216,7 +300,8 @@ async function append(
       );
   }
   for (const station of new Set(lines.map((l) => l.station))) {
-    await tx`insert into rounds(tenant_id,id,order_id,number,station) values(${s.tenantId},${randomUUID()},${orderId},${round},${station})`;
+    await tx`insert into rounds(tenant_id,id,order_id,number,station,note)
+             values(${s.tenantId},${randomUUID()},${orderId},${round},${station},${opts.note ?? ""})`;
   }
   await tx`insert into jobs(tenant_id,id,kind,dedupe_key,payload,state) values(${s.tenantId},${randomUUID()},'kitchen_dispatch',${orderId + ":" + round},${tx.json({ orderId, round })},'available')`;
 }
@@ -251,8 +336,36 @@ export async function createOrder(
       deviceId: s.deviceId,
       capabilityId: s.id,
     });
+    // A zero-total takeaway closes at once; the kitchen feed bump stays last.
+    await refreshCheckState(tx, s, orderId);
+    await bumpKitchenFeed(tx, s);
     return getOrder(tx, orderId);
   });
+}
+type RoundTarget = {
+  id: string;
+  version: number;
+  state: string;
+  check_state: string;
+};
+/**
+ * The shared tail of every round (online rounds and offline round sync). The
+ * caller holds FOR UPDATE on the order row and did its own version check.
+ */
+export async function applyRound(
+  tx: Tx,
+  s: Session,
+  order: RoundTarget,
+  lines: PricedLine[],
+  opts: AppendOptions & { detail?: Record<string, unknown> } = {},
+): Promise<number> {
+  assertCheckWritable(order);
+  const n = order.version + 1;
+  await append(tx, s, order.id, lines, n, opts);
+  await tx`update orders set total=total+${sum(lines.map((l) => l.total))},version=version+1,state='active' where id=${order.id}`;
+  await audit(tx, s, "order.round", order.id, opts.detail ?? {});
+  await refreshCheckState(tx, s, order.id);
+  return n;
 }
 export async function addRound(
   tx: Tx,
@@ -274,24 +387,17 @@ export async function addRound(
       await requireSelling(tx, s);
       const [o] = await tx`select * from orders where id=${orderId} for update`;
       if (!o) throw new DomainError("not_found", 404);
-      if (
-        o.version !== input.expectedVersion ||
-        [
-          "completed",
-          "cancelled",
-          "recovery_pending",
-          "recovery_reviewed",
-        ].includes(o.state)
-      )
+      // A stale client is refreshed first; served (completed) orders accept rounds.
+      if (o.version !== input.expectedVersion)
         throw new DomainError("stale_order", 409);
+      assertCheckWritable(o as { check_state: string; state: string });
       const lines = quote(
         input.lines,
         await catalog(tx),
         ["manager", "owner"].includes(s.role),
       );
-      await append(tx, s, orderId, lines, o.version + 1);
-      await tx`update orders set total=total+${sum(lines.map((l) => l.total))},version=version+1,state='active' where id=${orderId}`;
-      await audit(tx, s, "order.round", orderId);
+      await applyRound(tx, s, o as RoundTarget, lines, { note: input.note });
+      await bumpKitchenFeed(tx, s);
       return getOrder(tx, orderId);
     },
   );
@@ -329,10 +435,14 @@ export async function recordPayment(
   permit(s, operators);
   const p = paymentInput.parse(raw);
   return once(tx, s, p.operationId, "payment", { orderId, ...p }, async () => {
-    await tx`select id from orders where id=${orderId} for update`;
+    const [row] =
+      await tx`select id,state,check_state from orders where id=${orderId} for update`;
+    if (!row) throw new DomainError("not_found", 404);
+    assertCheckWritable(row as { check_state: string; state: string });
     const o = await getOrder(tx, orderId);
     if (p.amount > o.total - o.paid) throw new DomainError("overpayment", 409);
-    if (p.received < p.amount + p.tip)
+    // An external terminal collects no cash: received is ignored for it.
+    if (p.method === "cash" && p.received < p.amount + p.tip)
       throw new DomainError("insufficient_cash");
     if (
       p.method === "external" &&
@@ -348,7 +458,9 @@ export async function recordPayment(
     if (expectedDrawerId && d.id !== expectedDrawerId)
       throw new DomainError("payment_review_required", 409);
     const tenderId = randomUUID();
-    await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,group_id) values(${s.tenantId},${tenderId},${orderId},${d.id},${p.method},${p.amount},${p.tip},${p.received},${p.reference},${groupId})`;
+    const received = p.method === "external" ? p.amount + p.tip : p.received;
+    const reference = p.method === "external" ? p.reference.trim() : null;
+    await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,group_id) values(${s.tenantId},${tenderId},${orderId},${d.id},${p.method},${p.amount},${p.tip},${received},${reference},${groupId})`;
     for (const allocation of allocations)
       await tx`insert into tender_allocations(tenant_id,order_id,tender_id,line_id,unit_index,amount) values(${s.tenantId},${orderId},${tenderId},${allocation.lineId},${allocation.unit},${allocation.amount})`;
     await audit(tx, s, "payment.recorded", orderId, {
@@ -356,6 +468,9 @@ export async function recordPayment(
       amount: p.amount,
       tip: p.tip,
     });
+    // Settle the check before the receipt is read. Payments never bump the
+    // kitchen feed (lock order: the feed row is last and never in money commands).
+    await refreshCheckState(tx, s, orderId);
     const receipt = await getOrder(tx, orderId);
     await tx`insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,error_code) values(${s.tenantId},${randomUUID()},'receipt',${p.operationId},${tx.json({ orderId, receipt })},'blocked','printer_not_paired')`;
     return receipt;
