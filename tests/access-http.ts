@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { generatePairingCode, pairingHash } from "../server/access-pairing.js";
+import { signInGoogleOwner } from "../server/owner-accounts.js";
 
 // Local development fixtures only, like tests/restart-http.ts.
 const target = new URL(process.env.DATABASE_URL ?? "");
@@ -345,6 +346,35 @@ try {
       (await ours.browser.request("POST", "/api/access/logout", {})).status,
       200,
     );
+  });
+  await check("pairing a browser as a terminal ends the Google owner sign-in it held and clears gm_account (ACC-R-3)", async () => {
+    // A legacy tablet where the owner used Google "Entrar" before this release.
+    const account = await signInGoogleOwner(admin, {
+      issuer: "https://accounts.google.com",
+      subject: randomUUID(),
+      email: "legacy-tablet@example.com",
+      name: "Legacy tablet fixture",
+    });
+    const tablet = new Browser();
+    tablet.cookies.set("gm_account", account);
+    assert.equal((await tablet.request("GET", "/api/auth/account")).status, 200);
+    const paired = await tablet.request("POST", "/api/access/pair", {
+      code: await newCode(`HTTP legacy ${randomUUID().slice(0, 4)}`),
+    });
+    assert.equal(paired.status, 200, JSON.stringify(paired.json));
+    assert.ok(paired.cleared.includes("gm_account"), paired.cleared.join());
+    assert.equal(tablet.cookies.has("gm_account"), false);
+    assert.equal((await tablet.request("GET", "/api/auth/account")).status, 401);
+    assert.equal(
+      (await tablet.request("GET", "/api/auth/account/invitations")).status,
+      401,
+    );
+    // A copy of the old cookie is ended on the server too.
+    const copy = new Browser();
+    copy.cookies.set("gm_account", account);
+    const stale = await copy.request("GET", "/api/auth/account");
+    assert.equal(stale.status, 401);
+    assert.equal(stale.json.error, "unauthorized");
   });
   await check("the 11th failed pairing attempt in a minute → 429 too_many_attempts", async () => {
     const b = new Browser();

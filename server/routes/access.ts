@@ -5,6 +5,7 @@ import { cookieOptions, sign, type AuthRequest } from "../auth.js";
 import {
   assertDemoAccessAllowed,
   demoTenantId,
+  endOwnerAccount,
   legacyLogin,
   pinSignIn,
   readDeviceCookie,
@@ -144,6 +145,8 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
         maxAge: ACCESS.deviceTokenDays * 86400_000,
       });
       res.clearCookie("gm_session", cookieOptions);
+      // A terminal never keeps an owner's Google sign-in (ACC-R-3).
+      await endOwnerAccount(sql, req, res, "access.pair");
       return {
         device: { id: paired.device.id, name: paired.name, kind: "terminal" },
         restaurant: { name: paired.restaurant },

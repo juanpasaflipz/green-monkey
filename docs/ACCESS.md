@@ -171,6 +171,11 @@ Code security:
   requires an active owner or manager creator.
 - Re-pairing a browser that already holds this restaurant's terminal cookie
   retires the old device (`revoked_reason = 'replaced'`).
+- Pairing also ends any Google owner sign-in the browser still holds (the
+  `owner_sessions` row is revoked and `gm_account` cleared), so a legacy tablet
+  where the owner used Google "Entrar" and that is re-paired as a terminal no
+  longer answers `GET /api/auth/account` with the owner's account, restaurants
+  or invitations.
 
 Operator fallback (support only, privileged database URL):
 

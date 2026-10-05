@@ -708,25 +708,39 @@ export async function signOut(
     }
   }
   res.clearCookie("gm_session", cookieOptions);
-  if (req.cookies?.gm_account) {
-    try {
-      await withOwner(sql, req.cookies.gm_account, undefined, (tx, account) =>
-        tx`update owner_sessions set revoked=true where id=${account.sessionId}`,
-      );
-    } catch (error) {
-      // An absent or expired account must not prevent POS logout.
-      if (!(error instanceof DomainError && error.status === 401))
-        console.error(
-          JSON.stringify({
-            level: "error",
-            route: "access.logout",
-            message: error instanceof Error ? error.message : "owner_logout_failed",
-          }),
-        );
-    }
-    res.clearCookie("gm_account", cookieOptions);
-  }
+  await endOwnerAccount(sql, req, res, "access.logout");
   return { ok: true };
+}
+
+/**
+ * Best effort: ends the Google owner sign-in (gm_account) the browser holds
+ * and clears its cookie. Used by logout, and by pairing, because a terminal
+ * must never keep an owner's account: a legacy tablet re-paired as a terminal
+ * would otherwise still answer GET /api/auth/account (ACC-R-3).
+ */
+export async function endOwnerAccount(
+  sql: postgres.Sql,
+  req: express.Request,
+  res: express.Response,
+  route: string,
+) {
+  if (!req.cookies?.gm_account) return;
+  try {
+    await withOwner(sql, req.cookies.gm_account, undefined, (tx, account) =>
+      tx`update owner_sessions set revoked=true where id=${account.sessionId}`,
+    );
+  } catch (error) {
+    // An absent or expired account must not prevent logout or pairing.
+    if (!(error instanceof DomainError && error.status === 401))
+      console.error(
+        JSON.stringify({
+          level: "error",
+          route,
+          message: error instanceof Error ? error.message : "owner_logout_failed",
+        }),
+      );
+  }
+  res.clearCookie("gm_account", cookieOptions);
 }
 
 const stepUpBody = z.object({ secret: z.string().min(4).max(200) }).strict();
