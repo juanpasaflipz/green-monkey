@@ -34,7 +34,9 @@ Every order has two independent states.
 
 A check **holds its table** when `mode = 'dine_in'`, it has a table and
 `channel <> 'offline'`. Takeaway, delivery, tableless and synced offline sales
-close automatically when settled.
+close automatically when settled. In Mesas a paid check shows **Abrir orden**
+next to **Liberar mesa**, so "la última ronda" goes onto the same bill (the
+check reopens) instead of a second check.
 
 | Action | open | paid | closed |
 | --- | --- | --- | --- |
@@ -191,6 +193,28 @@ the cart change in the same render, so the balance is never counted twice; the
 payment dialog compares the balance only after a collect settles, so
 **Cobrar** sending the cart first never announces "El saldo pendiente cambió".
 
+### Switching checks while a send or payment is in flight
+
+**Nueva cuenta** and **Abrir orden** in Mesas, and **Abrir orden** in Órdenes
+and order detail, ask Selling to switch the cart to another check
+(`requestSellingContext()` in `src/serviceHooks.ts`; the latest request wins).
+While a send or a payment is in flight, or its receipt is on screen, Selling
+keeps the request and says "Primero termina el envío en curso; después se abre
+la cuenta que elegiste."; the switch happens as soon as the request settles, so
+a late response can never put the previous check back in the cart, bill items
+to it or post the next round to it. Every switch (and **Nueva orden**,
+**Guardar borrador**, restoring a draft, **Enviar como orden nueva**) goes
+through one function that also bumps a context counter. As a backstop, a send
+that answers after the counter moved (an **Abrir orden** that was still loading
+when the waiter tapped **Enviar a cocina**) leaves the cart on screen alone: the
+copy of its cart that the switch parked in Borradores drops the lines that
+landed (and disappears when nothing is left), "La orden #N llegó a cocina
+mientras cambiabas de cuenta." is shown, and its comanda prints when printing
+on send is on. A failed send in that position stays in Borradores under its
+`operationId`, so sending it from there replays or recovers it. A payment that
+settles after a switch is announced ("…quedó registrado. Su recibo está en
+Órdenes.") instead of replacing the cart with its receipt.
+
 ## Lost responses while sending
 
 Every send carries the cart's `operationId`. If the response is lost and the
@@ -264,7 +288,9 @@ the drawer is open.
 - Documents: receipt (after payment, or a reprint marked "REIMPRESIÓN"),
   pre-bill "Cuenta · no es comprobante de pago", and kitchen ticket (comanda).
   Receipts and pre-bills carry the order note, round notes, modifiers and
-  line notes. Fiscal fields are added later through the receipt
+  line notes. A local (offline) receipt whose record has no tender yet is a
+  sale collected in full before it was saved: it prints "Cobrado · pendiente de
+  sincronizar" with the total instead of "Cobrado $0.00 / Saldo pendiente". Fiscal fields are added later through the receipt
   `header`/`footer` slots (see integration points).
 - Per-device settings (localStorage `gm-print-settings`): paper width, print a
   kitchen ticket on send (off by default) and auto-print new KDS tickets (off).
@@ -338,7 +364,18 @@ integrator:
   region 612-640): service changed `disabled={pendingPayment}` to
   `disabled={pendingPayment || busy}` and disabled **Borradores** while `busy`.
   When offline removes `disabled={pendingPayment}`, keep `disabled={busy}` so a
-  cart cannot be parked or replaced while its send is in flight.
+  cart cannot be parked or replaced while its send is in flight. Requests from
+  Mesas and Órdenes wait the same way (the `gm-resume`/`gm-table` effect
+  returns early while `busy`, `paying` or a receipt is shown, SVC-R10).
+- `src/features/Selling.tsx` context switches (SVC-R10): every place that
+  replaces the cart's order calls `replaceContext(order, draft)`, which bumps
+  `contextEpoch`; `sendWith` and `collectLocked` compare the epoch after each
+  await. Offline's `sendOffline`/`collectOffline` and the restored
+  `settleActiveAttempt` path should do the same: replace the cart through
+  `replaceContext` and, in `collectLocked`, finish through `settled(result)`
+  (which announces instead of showing a receipt when the epoch moved). Offline's
+  own local `setDraft(fresh())` after a local sale is a reset of the same cart
+  and may stay as it is.
 - `tests/voids-db.ts` "paid units cannot be voided…" (base lines ~215-260, next
   to menu's stock-assertion region 188-216): the order is now dine-in, because a
   fully paid takeaway check closes and would answer `check_closed` instead of

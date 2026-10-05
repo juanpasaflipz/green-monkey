@@ -5,7 +5,7 @@ import type { TableCheck, TableOccupancy } from "../../shared/service";
 import { api } from "../api";
 import { strings, translateError, type Key } from "../i18n";
 import { Badge, Button, Empty, Modal } from "../components/ui";
-import { usePoll } from "../serviceHooks";
+import { requestSellingContext, usePoll } from "../serviceHooks";
 import { moneyFormatter } from "./Receipt";
 
 /**
@@ -47,11 +47,11 @@ export function Tables({
     [refreshKey],
   );
   function resume(check: TableCheck) {
-    localStorage.setItem("gm-resume", check.id);
+    requestSellingContext({ resume: check.id });
     navigate("sell");
   }
   function open(table: TableOccupancy) {
-    localStorage.setItem("gm-table", table.id);
+    requestSellingContext({ table: table.id });
     navigate("sell");
   }
   async function release(check: TableCheck) {
@@ -138,12 +138,22 @@ export function Tables({
                         String(c.number),
                       )}
                     </span>
-                    <Button
-                      disabled={busy}
-                      onClick={() => void act(() => release(c))}
-                    >
-                      {t("serviceReleaseTable")}
-                    </Button>
+                    <div className="row wrap">
+                      {/* A paid check still takes rounds ("la última ronda"),
+                          which reopen it on the same bill (SVC-K10). */}
+                      <Button
+                        aria-label={`${t("resume")} #${c.number}`}
+                        onClick={() => resume(c)}
+                      >
+                        {t("resume")}
+                      </Button>
+                      <Button
+                        disabled={busy}
+                        onClick={() => void act(() => release(c))}
+                      >
+                        {t("serviceReleaseTable")}
+                      </Button>
+                    </div>
                   </div>
                 ) : (
                   <Button className="full" key={c.id} onClick={() => resume(c)}>

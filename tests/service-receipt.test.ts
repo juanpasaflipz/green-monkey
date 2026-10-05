@@ -117,6 +117,22 @@ describe("receipt document", () => {
     expect(html).not.toContain("Round 2 note");
   });
 
+  it("never prints an offline sale collected in full as unpaid (SERVICE-MONEY-5)", () => {
+    const local = { ...order, state: "local", paid: 0, tenders: [] };
+    const html = render({ order: local, kind: "local" });
+    expect(html).toContain("Cobrado · pendiente de sincronizar");
+    expect(html).toContain("$90.00");
+    expect(html).not.toContain("Saldo pendiente");
+    expect(html).not.toContain("$0.00");
+    expect(render({ order: local, kind: "local", locale: "en" })).toContain(
+      "Collected · pending sync",
+    );
+    // A server receipt keeps its paid and remaining rows.
+    const server = render();
+    expect(server).toContain("Saldo pendiente");
+    expect(server).toContain("$0.00");
+  });
+
   it("shows registered fiscal slots on every receipt; props win", () => {
     setReceiptSlots({
       header: ({ kind, reprint }) =>

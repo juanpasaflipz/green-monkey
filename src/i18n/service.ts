@@ -61,6 +61,7 @@ export default defineArea({
     serviceReceiptCheckTitle: "Cuenta · no es comprobante de pago",
     serviceReceiptReference: "Ref. {ref}",
     serviceReceiptReceived: "Recibido",
+    serviceReceiptLocalPaid: "Cobrado · pendiente de sincronizar",
     serviceReceiptRefund: "Reembolso",
     serviceReceiptTable: "Mesa {name}",
     serviceReceiptServer: "Atendió {name}",
@@ -170,6 +171,12 @@ export default defineArea({
     serviceKdsNoteUpdated: "Nota actualizada",
     serviceKdsNoteAnnounce: "Nota actualizada en ticket #{n}",
     serviceResumeClosed: "La orden #{n} ya se cerró. Empieza una nueva.",
+    serviceSwitchWaits:
+      "Primero termina el envío en curso; después se abre la cuenta que elegiste.",
+    serviceSentAfterSwitch:
+      "La orden #{n} llegó a cocina mientras cambiabas de cuenta.",
+    servicePaidAfterSwitch:
+      "El cobro pendiente de la orden #{n} quedó registrado. Su recibo está en Órdenes.",
     serviceDetailsButton: "Detalles",
     serviceDetailsTitle: "Detalles de la orden",
     serviceUnnamed: "Sin nombre",
@@ -319,6 +326,7 @@ export default defineArea({
     serviceReceiptCheckTitle: "Check · not a proof of payment",
     serviceReceiptReference: "Ref. {ref}",
     serviceReceiptReceived: "Received",
+    serviceReceiptLocalPaid: "Collected · pending sync",
     serviceReceiptRefund: "Refund",
     serviceReceiptTable: "Table {name}",
     serviceReceiptServer: "Served by {name}",
@@ -418,6 +426,12 @@ export default defineArea({
     serviceKdsNoteUpdated: "Note updated",
     serviceKdsNoteAnnounce: "Note updated on ticket #{n}",
     serviceResumeClosed: "Order #{n} is already closed. Start a new one.",
+    serviceSwitchWaits:
+      "The send in progress finishes first; then the check you chose opens.",
+    serviceSentAfterSwitch:
+      "Order #{n} reached the kitchen while you switched checks.",
+    servicePaidAfterSwitch:
+      "The pending payment on order #{n} was recorded. Its receipt is in Orders.",
     serviceDetailsButton: "Details",
     serviceDetailsTitle: "Order details",
     serviceUnnamed: "No name",

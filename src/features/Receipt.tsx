@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { lineRemaining } from "../../shared/settlement";
-import { changeDue, roundNotes } from "../../shared/service";
+import { changeDue, orderNoteEditable, roundNotes } from "../../shared/service";
 import {
   currencyExponent,
   type Locale,
@@ -26,6 +26,22 @@ export function moneyFormatter(currency: string, locale: Locale) {
 /** Effective check state, with a fallback for replies stored before 024. */
 export function checkStateOf(order: Order) {
   return order.checkState ?? (order.paid >= order.total ? "closed" : "open");
+}
+
+/**
+ * Whether "Editar nota" is offered: open and paid checks, and closed checks
+ * whose kitchen tickets are still open (SVC-K3).
+ */
+export function noteEditableOf(order: Order) {
+  return (
+    order.state !== "local" &&
+    !order.recovery &&
+    orderNoteEditable({
+      checkState: checkStateOf(order),
+      state: order.state,
+      closeReason: order.closeReason,
+    })
+  );
 }
 
 export type ReceiptKind = "receipt" | "check" | "local";
@@ -225,14 +241,26 @@ export function ReceiptDocument({
           <strong>−{money(order.refunded)}</strong>
         </div>
       )}
-      <div className="row between">
-        <span>{t.paid}</span>
-        <strong>{money(order.paid)}</strong>
-      </div>
-      <div className="row between">
-        <span>{t.remaining}</span>
-        <strong>{money(order.total - order.paid)}</strong>
-      </div>
+      {kind === "local" && !order.tenders.length ? (
+        // A local (offline) sale is collected in full before it is saved, but
+        // its record carries no tender until it syncs: never print it as
+        // unpaid (SERVICE-MONEY-5).
+        <div className="row between">
+          <span>{t.serviceReceiptLocalPaid}</span>
+          <strong>{money(order.total)}</strong>
+        </div>
+      ) : (
+        <>
+          <div className="row between">
+            <span>{t.paid}</span>
+            <strong>{money(order.paid)}</strong>
+          </div>
+          <div className="row between">
+            <span>{t.remaining}</span>
+            <strong>{money(order.total - order.paid)}</strong>
+          </div>
+        </>
+      )}
       {bottom}
     </div>
   );
@@ -267,6 +295,7 @@ export function ReceiptModal({
   label,
   labelHint,
   extraActions,
+  noteActions,
   header,
   footer,
 }: {
@@ -281,6 +310,11 @@ export function ReceiptModal({
   label?: string;
   labelHint?: string;
   extraActions?: ReactNode;
+  /**
+   * Selling's "Editar nota" (and "Reimprimir comanda" after an edit) while the
+   * kitchen still has open tickets for this order (SVC-K3).
+   */
+  noteActions?: ReactNode;
   /** Forwarded to the shown and the printed ReceiptDocument. */
   header?: ReactNode;
   footer?: ReactNode;
@@ -369,6 +403,7 @@ export function ReceiptModal({
             {t.serviceReleaseTable}
           </Button>
         )}
+        {noteActions}
         {extraActions}
         <Button
           variant="primary"

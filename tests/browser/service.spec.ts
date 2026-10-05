@@ -80,6 +80,35 @@ const printed = (page: Page) =>
 const letters = (n: number) =>
   Array.from(String(n), (d) => "abcdefghij"[Number(d)]).join("");
 const tag = () => "svc" + letters(Date.now() % 1e8);
+/** Pays what is left on a check and releases it, so its table is free again. */
+async function freeCheck(page: Page, orderId: string) {
+  await openDrawer(page);
+  const o = await call(page, "/orders/" + orderId);
+  if (o.total > o.paid)
+    await call(page, `/orders/${o.id}/payments`, {
+      operationId: uuid(),
+      amount: o.total - o.paid,
+      tip: 0,
+      received: o.total - o.paid,
+      method: "cash",
+    });
+  if ((await call(page, "/orders/" + orderId)).checkState !== "closed")
+    await call(page, `/service/orders/${orderId}/close`, {
+      operationId: uuid(),
+    });
+}
+/** Releases leftover paid checks and returns the tables with no check. */
+async function freeTables(page: Page) {
+  for (const t of await call<any[]>(page, "/service/tables"))
+    for (const c of t.checks)
+      if (c.checkState === "paid")
+        await call(page, `/service/orders/${c.id}/close`, {
+          operationId: uuid(),
+        });
+  return (await call<any[]>(page, "/service/tables")).filter(
+    (t) => !t.checks.length,
+  );
+}
 
 test("dine-in table accepts dessert after delivery, stays occupied until paid and released", async ({
   page,
@@ -804,6 +833,233 @@ test("cart changes made while a send is in flight stay in the cart and nothing i
   expect(order.rounds.map((r: any) => r.note)).toContain("Bebidas primero");
 });
 
+const SWITCH_WAITS =
+  "Primero termina el envío en curso; después se abre la cuenta que elegiste.";
+
+test("a table chosen in Mesas while a send is in flight opens only after the send lands", async ({
+  page,
+}) => {
+  // SVC-R10: "Nueva cuenta" on another table during a slow send must not let
+  // the late response put the first check back in the cart.
+  await login(page);
+  const free = await freeTables(page);
+  expect(free.length, "two fixture tables must be free").toBeGreaterThan(1);
+  const [first, second] = free;
+  const name = "Mesa uno " + tag();
+  const send = page.getByRole("button", {
+    name: "Enviar a cocina",
+    exact: true,
+  });
+  const cart = page.locator(".order-line");
+  const existing = page.locator(".existing");
+  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const tableSelect = page.getByLabel("Seleccionar mesa");
+  const card = (t: { name: string }) =>
+    page.getByRole("article", { name: t.name, exact: true });
+  let release = () => {};
+  let gate = Promise.resolve();
+  let creates = 0,
+    rounds = 0;
+  await page.route("**/api/orders", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    creates++;
+    await gate;
+    await route.continue();
+  });
+  await page.route("**/api/orders/*/rounds", async (route) => {
+    rounds++;
+    await route.continue();
+  });
+
+  await page.getByRole("button", { name: "Mesas", exact: true }).click();
+  await card(first)
+    .getByRole("button", { name: "Nueva cuenta", exact: true })
+    .click();
+  await expect(tableSelect).toHaveValue(first.id);
+  await tile("Taco de hongos").click();
+  await page.getByLabel("Nombre para llamar").fill(name);
+  gate = new Promise<void>((resolve) => (release = resolve));
+  await send.click();
+  await expect.poll(() => creates).toBe(1);
+
+  await page.getByRole("button", { name: "Mesas", exact: true }).click();
+  await card(second)
+    .getByRole("button", { name: "Nueva cuenta", exact: true })
+    .click();
+  // The first table's cart stays on screen until its own send lands.
+  await expect(page.getByText(SWITCH_WAITS)).toBeVisible();
+  await expect(tableSelect).toHaveValue(first.id);
+  await expect(cart.filter({ hasText: "Enviando a cocina…" })).toHaveCount(1);
+  release();
+  await expect(tableSelect).toHaveValue(second.id);
+  await expect(page.locator(".cart .cart-heading .eyebrow")).toHaveText(
+    "Nueva orden",
+  );
+  await expect(existing).toHaveCount(0);
+  await expect(cart).toHaveCount(0);
+  await expect(page.getByLabel("Nombre para llamar")).toHaveValue("");
+
+  // The next Enviar opens a check on the second table, never a round on the first.
+  await tile("Agua de jamaica").click();
+  await page.getByLabel("Nombre para llamar").fill(name + " dos");
+  await send.click();
+  await expect(existing).toContainText("Agua de jamaica");
+  expect(creates).toBe(2);
+  expect(rounds).toBe(0);
+  const tables = await call<any[]>(page, "/service/tables");
+  const on = (t: { id: string }) => tables.find((x) => x.id === t.id)!.checks;
+  expect(on(first)).toHaveLength(1);
+  expect(on(second)).toHaveLength(1);
+  const a = await call(page, "/orders/" + on(first)[0].id);
+  const b = await call(page, "/orders/" + on(second)[0].id);
+  expect(a.lines.map((l: any) => l.name.es)).toEqual(["Taco de hongos"]);
+  expect(b.lines.map((l: any) => l.name.es)).toEqual(["Agua de jamaica"]);
+  expect(b.tableId).toBe(second.id);
+  // Nothing was parked: the first cart finished on its own check.
+  await page.getByRole("button", { name: "Borradores", exact: true }).click();
+  await expect(page.getByRole("dialog")).not.toContainText(name);
+  await page.keyboard.press("Escape");
+  await freeCheck(page, a.id);
+  await freeCheck(page, b.id);
+});
+
+test("Abrir orden on another check while a round is in flight keeps the round on its own check", async ({
+  page,
+}) => {
+  // SVC-R10, resume path: the late response of check A's round must not turn
+  // the cart back to A after the waiter opened check B.
+  await login(page);
+  const nameA = "Ronda A " + tag();
+  const nameB = "Ronda B " + tag();
+  const a = await apiOrder(page, nameA);
+  const b = await apiOrder(page, nameB);
+  const send = page.getByRole("button", {
+    name: "Enviar a cocina",
+    exact: true,
+  });
+  const cart = page.locator(".order-line");
+  const existing = page.locator(".existing");
+  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  let release = () => {};
+  let gate = Promise.resolve();
+  const roundsTo: string[] = [];
+  await page.route("**/api/orders/*/rounds", async (route) => {
+    roundsTo.push(new URL(route.request().url()).pathname.split("/")[3]);
+    await gate;
+    await route.continue();
+  });
+  const resume = async (name: string) => {
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await page
+      .locator(".order-summary")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "Abrir orden", exact: true })
+      .click();
+  };
+
+  await resume(nameA);
+  await expect(existing).toContainText(`#${a.number} ·`);
+  await tile("Flan de vainilla").click();
+  gate = new Promise<void>((resolve) => (release = resolve));
+  await send.click();
+  await expect.poll(() => roundsTo.length).toBe(1);
+  await resume(nameB);
+  await expect(page.getByText(SWITCH_WAITS)).toBeVisible();
+  await expect(existing).toContainText(`#${a.number} ·`);
+  release();
+  await expect(existing).toContainText(`#${b.number} ·`);
+  await expect(existing).not.toContainText("Flan de vainilla");
+  await expect(cart).toHaveCount(0);
+
+  gate = Promise.resolve();
+  await tile("Agua de jamaica").click();
+  await send.click();
+  await expect(existing).toContainText("Agua de jamaica");
+  expect(roundsTo).toEqual([a.id, b.id]);
+  const names = async (id: string) =>
+    (await call(page, "/orders/" + id)).lines.map((l: any) => l.name.es).sort();
+  expect(await names(a.id)).toEqual(["Flan de vainilla", "Taco de hongos"]);
+  expect(await names(b.id)).toEqual(["Agua de jamaica", "Taco de hongos"]);
+});
+
+test("a round that answers after its cart moved to another check never comes back to the cart", async ({
+  page,
+}) => {
+  // SVC-R10 backstop: check B is still loading when the waiter sends check
+  // A's round, so B opens (parking A's cart) before A's response arrives.
+  await login(page);
+  const nameA = "Tarde A " + tag();
+  const nameB = "Tarde B " + tag();
+  const a = await apiOrder(page, nameA);
+  const b = await apiOrder(page, nameB);
+  const send = page.getByRole("button", {
+    name: "Enviar a cocina",
+    exact: true,
+  });
+  const cart = page.locator(".order-line");
+  const existing = page.locator(".existing");
+  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  let release = () => {};
+  let gate = Promise.resolve();
+  let releaseLoad = () => {};
+  let loadGate = Promise.resolve();
+  const roundsTo: string[] = [];
+  await page.route("**/api/orders/*/rounds", async (route) => {
+    roundsTo.push(new URL(route.request().url()).pathname.split("/")[3]);
+    await gate;
+    await route.continue();
+  });
+  await page.route(`**/api/orders/${b.id}`, async (route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    await loadGate;
+    await route.continue();
+  });
+  const resume = async (name: string) => {
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await page
+      .locator(".order-summary")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "Abrir orden", exact: true })
+      .click();
+  };
+
+  await resume(nameA);
+  await expect(existing).toContainText(`#${a.number} ·`);
+  await tile("Flan de vainilla").click();
+  loadGate = new Promise<void>((resolve) => (releaseLoad = resolve));
+  await resume(nameB);
+  // B is loading; the cart still shows A and the waiter sends its round.
+  await expect(existing).toContainText(`#${a.number} ·`);
+  gate = new Promise<void>((resolve) => (release = resolve));
+  await send.click();
+  await expect.poll(() => roundsTo.length).toBe(1);
+  releaseLoad();
+  await expect(existing).toContainText(`#${b.number} ·`);
+  release();
+  await expect(
+    page.getByText(
+      `La orden #${a.number} llegó a cocina mientras cambiabas de cuenta.`,
+    ),
+  ).toBeVisible();
+  await expect(existing).toContainText(`#${b.number} ·`);
+  await expect(existing).not.toContainText("Flan de vainilla");
+  await expect(cart).toHaveCount(0);
+  // The copy of A's cart parked by the switch left Borradores with the send.
+  await page.getByRole("button", { name: "Borradores", exact: true }).click();
+  await expect(page.getByRole("dialog")).not.toContainText(nameA);
+  await page.keyboard.press("Escape");
+
+  gate = Promise.resolve();
+  await tile("Agua de jamaica").click();
+  await send.click();
+  await expect(existing).toContainText("Agua de jamaica");
+  expect(roundsTo).toEqual([a.id, b.id]);
+  const names = async (id: string) =>
+    (await call(page, "/orders/" + id)).lines.map((l: any) => l.name.es).sort();
+  expect(await names(a.id)).toEqual(["Flan de vainilla", "Taco de hongos"]);
+  expect(await names(b.id)).toEqual(["Agua de jamaica", "Taco de hongos"]);
+});
+
 test("Cobrar with unsent items does not announce a balance change it made itself", async ({
   page,
 }) => {
@@ -1460,4 +1716,121 @@ test("tables release a paid check from the card and before a new check", async (
   const released = await call(page, "/orders/" + second.id);
   expect(released.checkState).toBe("closed");
   expect(released.closeReason).toBe("released");
+});
+
+test("a counter check closed at payment still takes a note edit while its ticket is open", async ({
+  page,
+}) => {
+  // SERVICE-KITCHEN-3: the customer mentions an allergy right after paying.
+  await login(page);
+  await openDrawer(page);
+  const name = "Mostrador " + tag();
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page.getByLabel("Nombre para llamar").fill(name);
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
+  const receipt = page
+    .getByRole("dialog")
+    .filter({ has: page.locator(".receipt") });
+  await expect(receipt).toContainText("Cobrado");
+  const list = await call(
+    page,
+    `/service/orders?q=${encodeURIComponent(name)}`,
+  );
+  const id = list.items[0].id;
+  expect((await call(page, "/orders/" + id)).checkState).toBe("closed");
+  await receipt
+    .getByRole("button", { name: "Editar nota", exact: true })
+    .click();
+  const noteDialog = page.getByRole("dialog", { name: "Editar nota" });
+  await noteDialog.getByLabel("Nota de la orden").fill("Alergia: piña");
+  await noteDialog
+    .getByRole("button", { name: "Guardar", exact: true })
+    .click();
+  await expect(noteDialog).toBeHidden();
+  await expect(receipt.locator(".receipt")).toContainText("Alergia: piña");
+  const edited = await call(page, "/orders/" + id);
+  expect(edited.note).toBe("Alergia: piña");
+  expect(edited.checkState).toBe("closed");
+  expect(edited.paid).toBe(edited.total);
+  await receipt
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
+
+  // Order detail offers it too, until the kitchen serves the ticket.
+  const detail = async () => {
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await page.getByLabel("Buscar por número, nombre o mesa").fill(name);
+    await page
+      .locator(".order-summary")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "Detalle", exact: true })
+      .click();
+    return page.getByRole("dialog", { name: `Orden #${edited.number}` });
+  };
+  let dialog = await detail();
+  await expect(dialog).toContainText("Alergia: piña");
+  await expect(
+    dialog.getByRole("button", { name: "Editar nota", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  for (const state of ["ready", "completed"])
+    await call(page, "/kitchen/" + edited.rounds[0].id, {
+      operationId: uuid(),
+      state,
+    });
+  dialog = await detail();
+  await expect(dialog).toContainText("Alergia: piña");
+  await expect(
+    dialog.getByRole("button", { name: "Editar nota", exact: true }),
+  ).toHaveCount(0);
+});
+
+test("a paid table check takes one more round from Mesas on the same bill", async ({
+  page,
+}) => {
+  // SERVICE-KITCHEN-10: "la última ronda" after paying stays on the check.
+  await login(page);
+  await openDrawer(page);
+  const [table] = await freeTables(page);
+  expect(table, "a fixture table must be free").toBeTruthy();
+  const o = await apiOrder(page, "Última " + tag(), "Taco de hongos", {
+    mode: "dine_in",
+    tableId: table.id,
+  });
+  await call(page, `/orders/${o.id}/payments`, {
+    operationId: uuid(),
+    amount: o.total,
+    tip: 0,
+    received: o.total,
+    method: "cash",
+  });
+  await page.getByRole("button", { name: "Mesas", exact: true }).click();
+  const card = page.getByRole("article", { name: table.name, exact: true });
+  await expect(card).toContainText(`#${o.number} · Pagada · por liberar`);
+  await card
+    .getByRole("button", { name: `Abrir orden #${o.number}`, exact: true })
+    .click();
+  const existing = page.locator(".existing");
+  await expect(existing).toContainText(`#${o.number} ·`);
+  await expect(page.locator(".cart .check-badge")).toHaveText(
+    "Pagada · por liberar",
+  );
+  await page.getByRole("button", { name: /Agua de jamaica/ }).click();
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
+  await expect(existing).toContainText("Agua de jamaica");
+  const water = await product(page, "Agua de jamaica");
+  const after = await call(page, "/orders/" + o.id);
+  expect(after.checkState).toBe("open");
+  expect(after.total - after.paid).toBe(water.price);
+  const tables = await call<any[]>(page, "/service/tables");
+  expect(
+    tables.find((t) => t.id === table.id)!.checks.map((c: any) => c.id),
+  ).toEqual([o.id]);
+  await freeCheck(page, o.id);
 });

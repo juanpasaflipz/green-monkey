@@ -8,10 +8,16 @@ import { strings, translateError, type Key } from "../i18n";
 import { channelLabel, tenderMethodLabel } from "../labels";
 import { Badge, Button, Field, Modal } from "../components/ui";
 import { printDocument, usePrintSettings } from "../print";
+import { requestSellingContext } from "../serviceHooks";
 import { VoidDialog } from "./VoidDialog";
 import { ServiceAssignment } from "./ServiceAssignment";
 import { RefundDialog } from "./RefundDialog";
-import { ReceiptDocument, auditPrint, checkStateOf } from "./Receipt";
+import {
+  ReceiptDocument,
+  auditPrint,
+  checkStateOf,
+  noteEditableOf,
+} from "./Receipt";
 import { KitchenTicketDocument, ticketsForOpenRounds } from "./KitchenTicket";
 
 const reasonKey: Record<string, Key> = {
@@ -237,7 +243,7 @@ export function OrderDetail({
             <p className={order.note ? "line-note" : "muted"}>
               {order.note || t("serviceDetailNoNote")}
             </p>
-            {!closed && !order.recovery && (
+            {noteEditableOf(order) && (
               <Button onClick={() => setDialog("note")}>
                 {t("serviceDetailEditNote")}
               </Button>
@@ -336,7 +342,7 @@ export function OrderDetail({
             {!closed && !order.recovery && (
               <Button
                 onClick={() => {
-                  localStorage.setItem("gm-resume", order.id);
+                  requestSellingContext({ resume: order.id });
                   close();
                   navigate("sell");
                 }}

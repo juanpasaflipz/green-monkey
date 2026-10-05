@@ -11,7 +11,11 @@ import { api } from "../api";
 import { strings, translateError, type Key } from "../i18n";
 import { channelLabel } from "../labels";
 import { Badge, Button, Empty, Field } from "../components/ui";
-import { usePoll, useStoredState } from "../serviceHooks";
+import {
+  requestSellingContext,
+  usePoll,
+  useStoredState,
+} from "../serviceHooks";
 import { VoidDialog } from "./VoidDialog";
 import { ServiceAssignment } from "./ServiceAssignment";
 import { RefundDialog } from "./RefundDialog";
@@ -366,7 +370,7 @@ export function Orders({
                   {!closed && !o.recovery && (
                     <Button
                       onClick={() => {
-                        localStorage.setItem("gm-resume", o.id);
+                        requestSellingContext({ resume: o.id });
                         navigate("sell");
                       }}
                     >

@@ -143,3 +143,20 @@ export function readStored<T>(
     return initial;
   }
 }
+
+/**
+ * Asks Selling to resume a check or to open a new check on a table. Selling
+ * applies the request when it is shown and nothing is in flight (SVC-R10);
+ * the latest request wins, so a pending request of the other kind is dropped.
+ */
+export function requestSellingContext(
+  request: { resume: string } | { table: string },
+) {
+  if ("resume" in request) {
+    localStorage.removeItem("gm-table");
+    localStorage.setItem("gm-resume", request.resume);
+  } else {
+    localStorage.removeItem("gm-resume");
+    localStorage.setItem("gm-table", request.table);
+  }
+}

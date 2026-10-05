@@ -39,7 +39,7 @@ import {
 } from "../print";
 import { CartLine } from "./CartLine";
 import { PaymentDialog } from "./PaymentDialog";
-import { ReceiptModal, checkStateOf } from "./Receipt";
+import { ReceiptModal, checkStateOf, noteEditableOf } from "./Receipt";
 import { NoteDialog } from "./OrderDetail";
 import {
   KitchenTicketDocument,
@@ -125,7 +125,8 @@ export function Selling({
   const [closedCheck, setClosedCheck] = useState(false);
   const [lastAddedId, setLastAddedId] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
-  const [noteDialogOpen, setNoteDialogOpen] = useState(false);
+  /** The order whose note "Editar nota" is editing (cart or receipt). */
+  const [noteFor, setNoteFor] = useState<Order | null>(null);
   const [printOpen, setPrintOpen] = useState(false);
   /** The order whose open comandas can be reprinted after a note edit. */
   const [noteReprint, setNoteReprint] = useState<Order | null>(null);
@@ -139,6 +140,12 @@ export function Selling({
   const [sending, setSending] = useState<ReadonlySet<string> | null>(null);
   const sendingRef = useRef<ReadonlySet<string> | null>(null);
   const payingRef = useRef(false);
+  /**
+   * SVC-R10: bumped whenever the cart moves to another order (resume, a new
+   * table check, Nueva orden, restore, send as new). A send or payment that
+   * answers after a move never writes its order into the new cart.
+   */
+  const contextEpoch = useRef(0);
   const nameCache = useRef(new Map<string, Label>());
   const draftRef = useRef(draft);
   draftRef.current = draft;
@@ -191,6 +198,60 @@ export function Selling({
     await parkDraft(d, currentRef.current);
     return true;
   }
+  /**
+   * SVC-R10: the one place that moves the cart to another order (or to a new
+   * one). It bumps the context epoch in the same synchronous block that
+   * replaces the order and the lines, so a request started on the previous
+   * cart can tell that it no longer owns the screen.
+   */
+  function replaceContext(order: Order | null, next: OrderInput) {
+    contextEpoch.current++;
+    currentRef.current = order;
+    draftRef.current = next;
+    setCurrent(order);
+    setDraft(next);
+    setError("");
+    setClosedCheck(false);
+    setNoteReprint(null);
+    return order
+      ? db.cache.put({ id: contextId, value: order.id })
+      : db.cache.delete(contextId);
+  }
+  /**
+   * SVC-R10: a send that answers after the cart moved to another order. The
+   * cart it came from was parked under the same operation id, so the lines
+   * that landed leave that copy (removed when nothing is left, otherwise kept
+   * as a round of the order they reached) and the cart on screen is left alone.
+   */
+  async function settleParkedCopy(sent: OrderInput, order: Order) {
+    const copy = await db.drafts.get(sent.operationId);
+    let remaining = false;
+    if (copy && copy.scope === scope(session)) {
+      const ids = idSequence();
+      const next = reconcileLostSend(
+        copy.order,
+        order,
+        crypto.randomUUID(),
+        ids(),
+      );
+      await db.drafts.delete(copy.id);
+      await db.cache.delete(parkedOrderId(copy.id));
+      if (next.draft.lines.length) {
+        await parkDraft(next.draft, order);
+        remaining = true;
+      }
+    }
+    // The same check may be on screen again (resumed meanwhile).
+    const shown = currentRef.current;
+    if (shown && shown.id === order.id && order.version > shown.version)
+      setCurrent(order);
+    setNotice(
+      [
+        t("serviceSentAfterSwitch").replace("{n}", String(order.number)),
+        ...(remaining ? [t("serviceDraftParked")] : []),
+      ].join(" "),
+    );
+  }
   async function openDrafts() {
     const drafts = (
       await db.drafts.where("scope").equals(scope(session)).toArray()
@@ -224,21 +285,15 @@ export function Selling({
       }
     }
     const parkedCart = await parkCurrentCart();
-    setDraft(d.order);
     await db.drafts.delete(d.id);
     await db.cache.delete(parkedOrderId(d.id));
     setParked(null);
-    setError("");
-    setClosedCheck(false);
-    setNoteReprint(null);
     setNotice(parkedCart ? t("serviceDraftParked") : "");
     if (target && checkStateOf(target) !== "closed") {
-      setCurrent(target);
-      await db.cache.put({ id: contextId, value: target.id });
+      await replaceContext(target, d.order);
       return;
     }
-    setCurrent(null);
-    await db.cache.delete(contextId);
+    await replaceContext(null, d.order);
     if (target) {
       setClosedCheck(true);
       setError(t("serviceCheckClosedKeep"));
@@ -312,9 +367,20 @@ export function Selling({
         .catch(() => {});
     else void db.cache.get(key).then((d) => setCashSession(d?.value ?? null));
   }, [active, online]);
+  const showingReceipt = !!receipt;
   useEffect(() => {
     if (!active) return;
     const resume = localStorage.getItem("gm-resume");
+    const table = localStorage.getItem("gm-table");
+    if (!resume && !table) return;
+    // SVC-R10: a send or payment in flight (and the receipt it shows) finishes
+    // on its own cart first. The request stays in localStorage and this effect
+    // runs again once busy, paying and the receipt clear, so a late response
+    // can never land on the order the waiter switched to.
+    if (busy || paying || showingReceipt) {
+      setNotice(t("serviceSwitchWaits"));
+      return;
+    }
     if (resume) {
       localStorage.removeItem("gm-resume");
       void api<Order>("/orders/" + resume)
@@ -323,40 +389,40 @@ export function Selling({
           const notes = parkedCart ? [t("serviceDraftParked")] : [];
           if (checkStateOf(o) === "closed") {
             // A closed check cannot take rounds: start a new order instead.
+            void replaceContext(null, fresh());
             setNotice(
               [
                 ...notes,
                 t("serviceResumeClosed").replace("{n}", String(o.number)),
               ].join(" "),
             );
-            setCurrent(null);
-            void db.cache.delete(contextId);
-            setDraft(fresh());
             return;
           }
-          setNotice(notes.join(" "));
-          setCurrent(o);
-          void db.cache.put({ id: contextId, value: o.id });
-          setDraft({
+          void replaceContext(o, {
             ...fresh(),
             mode: o.mode as OrderInput["mode"],
             tableId: o.tableId,
             name: o.name,
           });
+          setNotice(notes.join(" "));
         })
         .catch((e) => setError(translateError((e as Error).message, locale)));
     }
-    const table = localStorage.getItem("gm-table");
     if (table) {
       // A new check for a table never adds rounds to the order on screen.
       localStorage.removeItem("gm-table");
       void parkCurrentCart().then((parkedCart) => {
+        void replaceContext(null, {
+          ...fresh(),
+          mode: "dine_in",
+          tableId: table,
+        });
         setNotice(parkedCart ? t("serviceDraftParked") : "");
-        setCurrent(null);
-        void db.cache.delete(contextId);
-        setDraft({ ...fresh(), mode: "dine_in", tableId: table });
       });
     }
+  }, [active, busy, paying, showingReceipt]);
+  useEffect(() => {
+    if (!active) return;
     const key = (e: KeyboardEvent) => {
       if (
         e.key === "/" &&
@@ -422,16 +488,11 @@ export function Selling({
     setModifier(null);
   }
   function reset() {
-    void db.cache.delete(contextId);
-    setDraft(fresh());
-    setCurrent(null);
+    void replaceContext(null, fresh());
     setPayment(false);
     setReceipt(null);
     setCartOpen(false);
-    setError("");
     setNotice("");
-    setClosedCheck(false);
-    setNoteReprint(null);
   }
   function printNewRound(o: Order) {
     printRounds(o, [Math.max(0, ...o.lines.map((l) => l.round ?? 0))]);
@@ -466,11 +527,21 @@ export function Selling({
     const inFlight = new Set(d.lines.map((l) => l.id));
     sendingRef.current = inFlight;
     setSending(inFlight);
+    // SVC-R10: the cart this send belongs to; see replaceContext.
+    const epoch = contextEpoch.current;
+    const moved = () => epoch !== contextEpoch.current;
     try {
       const o = await api<Order>(
         target ? `/orders/${target.id}/rounds` : "/orders",
         target ? { ...d, expectedVersion: target.version } : d,
       );
+      if (moved()) {
+        // The cart moved to another order while this send was in flight: the
+        // order it reached is never written into the cart on screen.
+        await settleParkedCopy(d, o);
+        if (readPrintSettings().kitchenOnSend) printNewRound(o);
+        throw new HandledError("context_changed");
+      }
       // SVC-R7: the cart may have changed while the request was in flight.
       // Compare the latest cart with the order instead of emptying it: lines
       // that landed leave, anything added meanwhile (another product, another
@@ -490,11 +561,17 @@ export function Selling({
       if (readPrintSettings().kitchenOnSend) printNewRound(o);
       return o;
     } catch (e) {
+      if (e instanceof HandledError) throw e;
       const code = (e as Error).message;
+      // SVC-R10: the cart this send came from is in Borradores under the same
+      // operation id, so sending it from there replays or recovers it (FOH-11);
+      // the cart on screen belongs to another order and stays as it is.
+      if (moved()) throw new HandledError(code);
       if (code === "stale_order" && target) {
         // Refresh in place; the unsent lines and their operation id stay.
         try {
           const latest = await api<Order>("/orders/" + target.id);
+          if (moved()) throw new HandledError(code);
           setCurrent(latest);
           if (checkStateOf(latest) === "closed") {
             setClosedCheck(true);
@@ -523,6 +600,8 @@ export function Selling({
         ).catch(() =>
           target ? api<Order>("/orders/" + target.id).catch(() => null) : null,
         );
+        // SVC-R10: the parked copy recovers the same way when it is sent.
+        if (moved()) throw new HandledError(code);
         if (latest) {
           const operationId = crypto.randomUUID();
           const ids = idSequence();
@@ -567,9 +646,7 @@ export function Selling({
   const send = () => sendWith(current, draft);
   async function sendAsNew() {
     const d = { ...draft, operationId: crypto.randomUUID() };
-    await db.cache.delete(contextId);
-    setCurrent(null);
-    setDraft(d);
+    await replaceContext(null, d);
     return sendWith(null, d);
   }
   function openPay() {
@@ -617,15 +694,27 @@ export function Selling({
     let submittedAttempt: unknown;
     setBusy(true);
     setError("");
+    // SVC-R10: a payment that settles after the cart moved to another order
+    // is announced instead of replacing that cart with its receipt.
+    const epoch = contextEpoch.current;
+    const settled = (result: Order) => {
+      setPendingPayment(false);
+      setPayment(false);
+      if (epoch !== contextEpoch.current) {
+        setNotice(
+          t("servicePaidAfterSwitch").replace("{n}", String(result.number)),
+        );
+        return;
+      }
+      setCurrent(result);
+      setReceipt(result);
+    };
     try {
       const previous = await db.cache.get(attemptId);
       if (previous) {
         const result = await recoverPayment(previous.value);
         await clearPaymentAttempt(attemptId, previous.value);
-        setCurrent(result);
-        setPendingPayment(false);
-        setPayment(false);
-        setReceipt(result);
+        settled(result);
         return;
       }
       if (!values) throw new Error("invalid_input");
@@ -731,10 +820,7 @@ export function Selling({
       setPendingPayment(true);
       const result = await api<Order>(`/orders/${o.id}/payments`, payload);
       await clearPaymentAttempt(attemptId, submittedAttempt);
-      setCurrent(result);
-      setPendingPayment(false);
-      setPayment(false);
-      setReceipt(result);
+      settled(result);
     } catch (e) {
       if (
         submittedAttempt &&
@@ -902,11 +988,11 @@ export function Selling({
                 {t("serviceOrderNoteLabel").replace("{note}", current.note)}
               </p>
             )}
-            {checkState !== "closed" && (
+            {noteEditableOf(current) && (
               <Button
                 variant="ghost"
                 className="small"
-                onClick={() => setNoteDialogOpen(true)}
+                onClick={() => setNoteFor(current)}
               >
                 {t("serviceDetailEditNote")}
               </Button>
@@ -1280,6 +1366,27 @@ export function Selling({
               ? () => release(receipt)
               : undefined
           }
+          noteActions={
+            // SVC-K3: a check that closed at payment still reaches the
+            // kitchen's open tickets with a corrected note.
+            noteEditableOf(receipt) && (
+              <>
+                <Button onClick={() => setNoteFor(receipt)}>
+                  {t("serviceDetailEditNote")}
+                </Button>
+                {noteReprint?.id === receipt.id && (
+                  <Button
+                    onClick={() =>
+                      printTickets(ticketsForOpenRounds(noteReprint))
+                    }
+                  >
+                    <Printer size={16} />
+                    {t("serviceReprintKitchen")}
+                  </Button>
+                )}
+              </>
+            )
+          }
         />
       )}
       {parked && (
@@ -1330,13 +1437,14 @@ export function Selling({
           </Button>
         </Modal>
       )}
-      {noteDialogOpen && current && (
+      {noteFor && (
         <NoteDialog
-          order={current}
+          order={noteFor}
           locale={locale}
-          close={() => setNoteDialogOpen(false)}
+          close={() => setNoteFor(null)}
           saved={(o) => {
-            setCurrent(o);
+            if (currentRef.current?.id === o.id) setCurrent(o);
+            setReceipt((r) => (r && r.id === o.id ? o : r));
             setNotice(t("serviceDetailNoteSaved"));
             // Paper comandas printed at send time keep the old note.
             if (readPrintSettings().kitchenOnSend) setNoteReprint(o);
