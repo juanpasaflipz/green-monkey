@@ -613,8 +613,11 @@ test("a send whose response was lost recovers after the cart changes", async ({
     if (route.request().method() !== "POST") return route.continue();
     creates++;
     if (creates === 1) {
+      // The server commits; its answer is lost as a server error. A dropped
+      // connection is no longer an unknown outcome: offline's transport (026)
+      // retries an idempotent POST once and the replay lands.
       await route.fetch();
-      await route.abort("failed");
+      await route.fulfill({ status: 500, json: { error: "internal_error" } });
     } else await route.continue();
   });
   await productTile(page, "Taco de hongos").click();
@@ -638,8 +641,11 @@ test("a send whose response was lost recovers after the cart changes", async ({
   await page.route("**/api/orders/*/rounds", async (route) => {
     rounds++;
     if (rounds === 1) {
+      // The server commits; its answer is lost as a server error. A dropped
+      // connection is no longer an unknown outcome: offline's transport (026)
+      // retries an idempotent POST once and the replay lands.
       await route.fetch();
-      await route.abort("failed");
+      await route.fulfill({ status: 500, json: { error: "internal_error" } });
     } else await route.continue();
   });
   await productTile(page, "Limonada natural").click();
@@ -690,8 +696,11 @@ test("a lost send keeps the extra unit tapped onto a line that already landed", 
     if (route.request().method() !== "POST") return route.continue();
     creates++;
     if (creates === 1) {
+      // The server commits; its answer is lost as a server error. A dropped
+      // connection is no longer an unknown outcome: offline's transport (026)
+      // retries an idempotent POST once and the replay lands.
       await route.fetch();
-      await route.abort("failed");
+      await route.fulfill({ status: 500, json: { error: "internal_error" } });
     } else await route.continue();
   });
   await productTile(page, "Taco de hongos").click();
@@ -1128,10 +1137,11 @@ test("a send that fails while a table switch waits keeps its error and cart unti
     if (route.request().method() !== "POST") return route.continue();
     operations.push(route.request().postDataJSON().operationId);
     if (operations.length === 1) {
-      // The first send hangs, then the connection drops without reaching
-      // the server.
+      // The first send hangs, then fails without reaching the server (a
+      // server error: a dropped connection would be retried once by offline's
+      // transport, 026, and land).
       await gate;
-      await route.abort("failed");
+      await route.fulfill({ status: 500, json: { error: "internal_error" } });
     } else await route.continue();
   });
 
@@ -1386,7 +1396,9 @@ test("a recovered payment for a check the cart already left is announced, not sh
     async (route) => {
       const response = await route.fetch();
       expect(response.ok()).toBe(true);
-      await route.abort("failed");
+      // Lost as a server error: a dropped connection would be retried once by
+      // offline's transport (026) and the replay would answer.
+      await route.fulfill({ status: 500, json: { error: "internal_error" } });
     },
     { times: 1 },
   );
