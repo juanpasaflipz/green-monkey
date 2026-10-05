@@ -4,8 +4,9 @@
 //   node scripts/ops/smoke.mjs --base-url https://app.example.com \
 //     --expect-commit <40-char sha> [--timeout 600] [--local]
 // Checks: the new revision is live (/api/version), health, ops status with a
-// healthy worker, the proxy hop (client IP is public and spoofed forwarding
-// headers are ignored; --local skips this for loopback runs), malformed JSON
+// healthy worker, the proxy hop (client IP is public, arrives as a forwarded
+// hop and spoofed forwarding headers are ignored; --local skips this for
+// loopback runs), malformed JSON
 // handling with a matching request id, and that the API requires a session.
 // Prints one JSON report and exits 1 on any failure.
 
@@ -149,6 +150,12 @@ await check("client_ip", async () => {
     throw Error("client IP is a proxy or private address");
   if (spoofed.ip !== plain.ip)
     throw Error("forwarding headers changed the client IP");
+  // Access's PIN, pairing and logout limits key on this address (clientIp),
+  // so a deployed edge must hand Express the real client as an
+  // X-Forwarded-For hop; otherwise every client of a restaurant could fall
+  // into the proxy's bucket (LD-9, OPS-INT-R3).
+  if (plain.forwardedHop !== true)
+    throw Error("the edge sent no X-Forwarded-For hop for the client");
   return { peerTrusted: plain.peerTrusted, forwardedHop: plain.forwardedHop };
 });
 await check("malformed_json", async () => {

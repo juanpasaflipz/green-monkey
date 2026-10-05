@@ -122,8 +122,9 @@ consent: [RUNBOOK.md](RUNBOOK.md) "Staging cutover"). After the cutover:
   `http://worker.railway.internal:3002` (`WORKER_URL`) for `/api/ops/status`.
 - Health: `/api/health` (schema ready, not draining); public status:
   `/api/ops/status`; client-address probe: `/api/ops/diagnostics/ip`, which the
-  CD smoke uses to prove Railway's proxy hop is trusted and spoofed headers are
-  not.
+  CD smoke uses to prove Railway's proxy hop is trusted, the client arrives as
+  a forwarded hop (`forwardedHop: true`, which access's per-IP limits rely on)
+  and spoofed headers are not.
 
 Until the cutover, the existing one-service setup described in the checkpoints
 above remains what is deployed. Do not redeploy it from this tree before the

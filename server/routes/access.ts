@@ -34,16 +34,17 @@ import {
   unlockStaff,
   updateStaff,
 } from "../access-staff.js";
+import { clientIp } from "../logging.js";
 import { id } from "../../shared/domain.js";
 import { ACCESS } from "../../shared/access.js";
 
 /**
- * The client network every access limit keys on: req.ip (the real client
- * behind Railway via trustProxy), IPv6 per /56. The one place to change when
- * the ops merge keys limits on clientIp(req) from server/logging.ts (LD-9).
+ * The client network every access limit keys on: clientIp(req) from
+ * server/logging.ts (the real client behind Railway's edge, the same address
+ * the request log and the ops limiter use; LD-9, OPS-INT-R3), IPv6 per /56.
  */
 function ipKey(req: express.Request): string {
-  return ipKeyGenerator(req.ip ?? "", 56);
+  return ipKeyGenerator(clientIp(req), 56);
 }
 /** Per-IP limits. */
 function limit(max: number, skipSuccessfulRequests = false) {

@@ -440,9 +440,11 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
   and keep exactly `/sync` and the lock screen's calls (`/access/terminal`,
   `/access/pin`, `/access/step-up`, `/access/logout`) exempt; authenticated
   `/access/*` reads such as the staff and device lists are checked.
-- **Limiter key (ops merge, LD-9).** Every access limiter keys on `ipKey(req)`
-  in `server/routes/access.ts`; switch that one function to `clientIp(req)` from
-  `server/logging.ts`.
+- **Limiter key (ops merge, LD-9): done at access's integration.** Every
+  access limiter keys on `ipKey(req)` in `server/routes/access.ts`, which now
+  uses `clientIp(req)` from `server/logging.ts`; the CD smoke
+  (`scripts/ops/smoke.mjs`) fails a deployed run whose edge sends no
+  X-Forwarded-For hop.
 - **Void approval pre-check (service merge, contracts §4.2).** `verifyApproval`
   refuses a closed or fully paid order before checking any PIN (ACC-R-5) and
   reads `closedStates` for that. Service removes `closedStates` and guards
