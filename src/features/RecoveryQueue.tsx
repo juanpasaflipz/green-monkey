@@ -466,8 +466,12 @@ export function RecoveryQueue({
         return (
           <article className="panel" key={row.id}>
             <h3>
-              {kindLabel(row)} · {number ?? row.id.slice(0, 8)} ·{" "}
-              {format(amountOf(row), currencyOf(row))}
+              {kindLabel(row)} ·{" "}
+              {number ??
+                (row.context?.orderNumber
+                  ? `#${row.context.orderNumber}`
+                  : row.id.slice(0, 8))}{" "}
+              · {format(amountOf(row), currencyOf(row))}
             </h3>
             <p className="tiny muted">{row.id.slice(0, 8)}</p>
             <p>

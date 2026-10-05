@@ -1086,6 +1086,37 @@ describe("kitchen ticket round labels (OFF-R28)", () => {
     });
   });
 
+  it("a payment of a cached server order keeps that order's number for the Sync screen (OUTAGE-009)", async () => {
+    const s = session();
+    const table = uuid(91);
+    await cacheSnapshot(s, [serverCopy(table)]);
+    const paymentId = crypto.randomUUID();
+    await saveOfflinePayment(ctxOf(s), {
+      target: { orderId: table },
+      payment: cash(100),
+      operationId: paymentId,
+    });
+    expect((await fakeDb.pending.get(paymentId))?.context).toEqual({
+      orderNumber: 42,
+      mode: "dine_in",
+      tableName: "Mesa 03",
+      name: "Mesa 3",
+    });
+    // A local order's payment is named by its provisional number instead.
+    const open = await localOrder(s);
+    const localPayment = crypto.randomUUID();
+    await saveOfflinePayment(ctxOf(s), {
+      target: { localOrderOperationId: open.id },
+      payment: cash(100),
+      operationId: localPayment,
+    });
+    const row = await fakeDb.pending.get(localPayment);
+    expect(row?.context).toBeUndefined();
+    expect(
+      (row?.body as { provisionalNumber?: string }).provisionalNumber,
+    ).toBe(open.offline.provisionalNumber);
+  });
+
   it("rounds of a local order count from its first round", async () => {
     const s = session();
     const open = await localOrder(s);

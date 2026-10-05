@@ -1156,6 +1156,25 @@ function withContext(row: Pending, order: LocalOrderView): Pending {
 }
 
 /**
+ * How the Sync screen names a payment of a cached server order, which has no
+ * provisional number: its server number (OUTAGE-009). A local order's records
+ * carry its provisional number instead.
+ */
+function withOrderContext(row: Pending, order: LocalOrderView): Pending {
+  return order.offline.localOperationId
+    ? row
+    : {
+        ...row,
+        context: {
+          orderNumber: order.number,
+          mode: order.mode,
+          tableName: order.tableName ?? null,
+          name: order.name,
+        },
+      };
+}
+
+/**
  * Payment of a local or cached order, with the round being added in the same
  * checkout written atomically, so a refused payment never leaves half a
  * checkout. Never more than the balance this device can see, and never while
@@ -1213,7 +1232,7 @@ export async function saveOfflinePayment(
       expectedDue: due,
       payment: input.payment,
     });
-    await insertOnce(pendingRow(ctx.session, body));
+    await insertOnce(withOrderContext(pendingRow(ctx.session, body), current));
     await deleteDraft(ctx.session);
   });
   const after = (await findOpenOrder(ctx.session, input.target)) ?? current;
