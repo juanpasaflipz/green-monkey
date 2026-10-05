@@ -6,11 +6,16 @@ import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 
 const target = new URL(process.env.DATABASE_URL ?? "");
-if (target.hostname !== "127.0.0.1" || target.pathname !== "/green_monkey_dev")
+// Local development fixtures only: green_monkey_dev or a per-worktree
+// green_monkey_<name>_dev database on localhost.
+if (
+  target.hostname !== "127.0.0.1" ||
+  !/^\/green_monkey(_[a-z]+)?_dev$/.test(target.pathname)
+)
   throw Error(
     "Restart qualification requires the isolated local development fixture",
   );
-const port = 3003,
+const port = Number(process.env.RESTART_TEST_PORT ?? 3003),
   origin = `http://127.0.0.1:${port}`;
 let server: ChildProcess | undefined,
   csrf = "";
