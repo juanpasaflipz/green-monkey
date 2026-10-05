@@ -80,6 +80,8 @@ export const carriesMoney = (kind: OfflineRecordKind) =>
 export function rowErrorCode(code: string, kind: OfflineRecordKind): string {
   const money = carriesMoney(kind);
   if (code === "offline_conflict") return "offline_why_conflict";
+  // A line id repeated in the record (refused before it reaches the database).
+  if (code === "duplicate_line") return "offline_record_conflict";
   if (code === "settings_changed")
     return money
       ? "offline_why_settings_changed"

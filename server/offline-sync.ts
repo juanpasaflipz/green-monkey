@@ -663,8 +663,8 @@ export async function syncOfflineRecord(
 
 /**
  * OFFLINE-MONEY-6: a record that collides with rows the server already has
- * (a unique or foreign-key violation, for example a line id repeated in the
- * record) can never apply on a later attempt. As a 500 the device would
+ * (a unique or foreign-key violation, for example an order for a table
+ * deleted after the outage) can never apply on a later attempt. As a 500 the device would
  * retry it forever and block drawer close; as a domain conflict a manager
  * reviews it. Every other error passes through unchanged.
  */

@@ -58,6 +58,9 @@ describe("sync row explanations (OFFLINE-RECOVERY-03)", () => {
       "offline_why_catalog_items",
     );
     expect(rowErrorCode("price_conflict", "sale")).toBe("price_conflict");
+    expect(rowErrorCode("duplicate_line", "sale")).toBe(
+      "offline_record_conflict",
+    );
     expect(rowErrorCode("offline_payment_exceeds_due", "payment")).toBe(
       "offline_payment_exceeds_due",
     );
@@ -71,6 +74,7 @@ describe("sync row explanations (OFFLINE-RECOVERY-03)", () => {
       "offline_why_employee_inactive",
       "offline_why_device_inactive",
       "offline_why_selling_not_authorized",
+      "offline_record_conflict",
     ]) {
       expect(errorText[code], code).toBeDefined();
       expect(errorText[code]![0]).not.toMatch(/Conecta|Actualiza antes/);
