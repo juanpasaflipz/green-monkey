@@ -52,9 +52,10 @@ export function Orders({
   const [selected, setSelected] = useState<string[]>([]);
   const [tables, setTables] = useState<{ id: string; name: string }[]>([]);
   const [detailId, setDetailId] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<
-    { kind: "void" | "service" | "refund"; order: Order } | null
-  >(null);
+  const [dialog, setDialog] = useState<{
+    kind: "void" | "service" | "refund";
+    order: Order;
+  } | null>(null);
   const [settling, setSettling] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   // One key per check release, kept across retries until it succeeds.
@@ -104,7 +105,9 @@ export function Orders({
       if (limit >= PAGE + extra.current) setNextCursor(r.nextCursor);
       setSelected((ids) =>
         ids.filter((id) =>
-          r.items.some((o) => o.id === id && o.checkState !== "closed" && o.balance > 0),
+          r.items.some(
+            (o) => o.id === id && o.checkState !== "closed" && o.balance > 0,
+          ),
         ),
       );
       setError("");
@@ -115,9 +118,11 @@ export function Orders({
       setLoaded(true);
     }
   }
-  const poll = usePoll(loadFirst, { intervalMs: 15000, enabled: tab !== "closed" }, [
-    filterKey,
-  ]);
+  const poll = usePoll(
+    loadFirst,
+    { intervalMs: 15000, enabled: tab !== "closed" },
+    [filterKey],
+  );
   useEffect(() => {
     if (tab === "closed") void loadFirst().catch(() => {});
   }, [filterKey]);
@@ -173,7 +178,11 @@ export function Orders({
     });
   return (
     <div className="orders-view">
-      <div className="orders-toolbar" role="search" aria-label={t("serviceOrdersFilters")}>
+      <div
+        className="orders-toolbar"
+        role="search"
+        aria-label={t("serviceOrdersFilters")}
+      >
         <div className="service-tabs" role="group">
           {(["current", "open", "closed"] as const).map((key) => (
             <button
@@ -263,7 +272,8 @@ export function Orders({
                 </label>
                 <div>
                   <span className="eyebrow">
-                    #{o.number} · {t(o.mode as Key)} · {channelLabel(o.channel, locale)}
+                    #{o.number} · {t(o.mode as Key)} ·{" "}
+                    {channelLabel(o.channel, locale)}
                   </span>
                   <h3>{o.name || t("order")}</h3>
                   <p>
@@ -274,7 +284,11 @@ export function Orders({
                       .map((l) => `${l.quantity} ${l.name[locale]}`)
                       .join(" · ")}
                     {o.previewMore > 0 &&
-                      " " + t("serviceOrdersMore").replace("{n}", String(o.previewMore))}
+                      " " +
+                        t("serviceOrdersMore").replace(
+                          "{n}",
+                          String(o.previewMore),
+                        )}
                   </p>
                   {o.note && (
                     <p className="line-note">
@@ -286,12 +300,24 @@ export function Orders({
                   )}
                   <div className="badges">
                     <Badge
-                      tone={pay === "paid" ? "green" : pay === "refunded" ? "neutral" : "amber"}
+                      tone={
+                        pay === "paid"
+                          ? "green"
+                          : pay === "refunded"
+                            ? "neutral"
+                            : "amber"
+                      }
                     >
                       {t(pay)}
                     </Badge>
                     <Badge
-                      tone={closed ? "neutral" : o.checkState === "paid" ? "green" : "amber"}
+                      tone={
+                        closed
+                          ? "neutral"
+                          : o.checkState === "paid"
+                            ? "green"
+                            : "amber"
+                      }
                     >
                       {t(
                         o.closeReason === "voided"
@@ -319,7 +345,10 @@ export function Orders({
                     )}
                     {today && o.businessDate < today && (
                       <Badge tone="amber">
-                        {t("serviceOrdersFromDay").replace("{date}", dateLabel(o.businessDate))}
+                        {t("serviceOrdersFromDay").replace(
+                          "{date}",
+                          dateLabel(o.businessDate),
+                        )}
                       </Badge>
                     )}
                   </div>
@@ -381,7 +410,11 @@ export function Orders({
         </div>
       ) : (
         <Empty
-          title={t(tab === "closed" ? "serviceOrdersEmptyDay" : "serviceOrdersEmptyOpen")}
+          title={t(
+            tab === "closed"
+              ? "serviceOrdersEmptyDay"
+              : "serviceOrdersEmptyOpen",
+          )}
         />
       )}
       {nextCursor && (

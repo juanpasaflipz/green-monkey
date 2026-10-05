@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Check, Clock, Printer, Volume2, VolumeX, RotateCcw } from "lucide-react";
+import {
+  Check,
+  Clock,
+  Printer,
+  Volume2,
+  VolumeX,
+  RotateCcw,
+} from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import {
   ALLERGY_PATTERN,
@@ -29,7 +36,8 @@ export function actionFor(r: Pick<KitchenRound, "state" | "seenAt">) {
     return r.seenAt
       ? ({ state: "ready", label: "markReady" } as const)
       : ({ state: "seen", label: "ack" } as const);
-  if (r.state === "ready") return { state: "completed", label: "serve" } as const;
+  if (r.state === "ready")
+    return { state: "completed", label: "serve" } as const;
   return null;
 }
 
@@ -65,8 +73,16 @@ export function Kitchen({
   const t = (k: Key) => strings[locale][k];
   const role = session.role;
   const manager = ["owner", "manager"].includes(role);
-  const [station, setStation] = useStoredState<Station>("gm-kds-station", "all", isStation);
-  const [sound, setSound] = useStoredState<"on" | "off">("gm-kds-sound", "off", isSound);
+  const [station, setStation] = useStoredState<Station>(
+    "gm-kds-station",
+    "all",
+    isStation,
+  );
+  const [sound, setSound] = useStoredState<"on" | "off">(
+    "gm-kds-sound",
+    "off",
+    isSound,
+  );
   const [feed, setFeed] = useState<FullFeed | null>(null);
   const [newIds, setNewIds] = useState<Map<string, number>>(new Map());
   const [announcement, setAnnouncement] = useState("");
@@ -168,7 +184,8 @@ export function Kitchen({
           )),
           settingsRef.current.paper,
         );
-    } else if (voided.length && soundRef.current === "on") beep(audio.current, 440, 2);
+    } else if (voided.length && soundRef.current === "on")
+      beep(audio.current, 440, 2);
   }
 
   const poll = usePoll(load, { intervalMs: 3000 }, [station, refreshKey]);
@@ -186,9 +203,13 @@ export function Kitchen({
 
   useEffect(() => {
     // Keep the screen awake on dedicated kitchen devices when supported.
-    const wake = (navigator as Navigator & {
-      wakeLock?: { request(type: "screen"): Promise<{ release(): Promise<void> }> };
-    }).wakeLock;
+    const wake = (
+      navigator as Navigator & {
+        wakeLock?: {
+          request(type: "screen"): Promise<{ release(): Promise<void> }>;
+        };
+      }
+    ).wakeLock;
     if (!wake) return;
     let sentinel: { release(): Promise<void> } | null = null;
     let alive = true;
@@ -259,8 +280,7 @@ export function Kitchen({
   ).length;
   const lastSuccess = poll.lastSuccess;
   const staleFeed = lastSuccess ? now - lastSuccess > STALE_MS : poll.failing;
-  const soundBlocked =
-    sound === "on" && audioState !== "running";
+  const soundBlocked = sound === "on" && audioState !== "running";
   const canProgress = ["owner", "manager", "kitchen"].includes(role);
   const canServe = canProgress || role === "server";
   const canAckVoids = ["owner", "manager", "kitchen"].includes(role);
@@ -372,14 +392,15 @@ export function Kitchen({
         {rounds.map((r) => {
           const age = Math.max(
             0,
-            Math.floor((now + offset.current - Date.parse(r.createdAt)) / 60000),
+            Math.floor(
+              (now + offset.current - Date.parse(r.createdAt)) / 60000,
+            ),
           );
           const tone = age >= 20 ? "red" : age >= 10 ? "amber" : "neutral";
           const isNew = newIds.has(r.id);
           const action = actionFor(r);
           const allowed =
-            action &&
-            (action.state === "completed" ? canServe : canProgress);
+            action && (action.state === "completed" ? canServe : canProgress);
           const orderAllergy = ALLERGY_PATTERN.test(r.orderNote);
           const roundAllergy = ALLERGY_PATTERN.test(r.roundNote);
           return (
@@ -404,7 +425,9 @@ export function Kitchen({
                 <div className="ticket-badges">
                   {isNew && <Badge tone="green">{t("serviceKdsNew")}</Badge>}
                   {r.channel !== "pos" && (
-                    <Badge tone="amber">{channelLabel(r.channel, locale)}</Badge>
+                    <Badge tone="amber">
+                      {channelLabel(r.channel, locale)}
+                    </Badge>
                   )}
                   <Badge tone={tone}>
                     <Clock size={14} />
@@ -417,17 +440,25 @@ export function Kitchen({
               </p>
               {r.serviceUpdated && <Badge>{t("serviceUpdated")}</Badge>}
               {r.orderNote && (
-                <div className={"ticket-note" + (orderAllergy ? " allergy" : "")}>
+                <div
+                  className={"ticket-note" + (orderAllergy ? " allergy" : "")}
+                >
                   <strong>
-                    {orderAllergy ? t("serviceKdsAllergy") : t("serviceKdsOrderNote")}
+                    {orderAllergy
+                      ? t("serviceKdsAllergy")
+                      : t("serviceKdsOrderNote")}
                   </strong>{" "}
                   {r.orderNote}
                 </div>
               )}
               {r.roundNote && r.roundNote !== r.orderNote && (
-                <div className={"ticket-note" + (roundAllergy ? " allergy" : "")}>
+                <div
+                  className={"ticket-note" + (roundAllergy ? " allergy" : "")}
+                >
                   <strong>
-                    {roundAllergy ? t("serviceKdsAllergy") : t("serviceKdsRoundNote")}
+                    {roundAllergy
+                      ? t("serviceKdsAllergy")
+                      : t("serviceKdsRoundNote")}
                   </strong>{" "}
                   {r.roundNote}
                 </div>
@@ -452,8 +483,14 @@ export function Kitchen({
                         </p>
                       ))}
                       {l.note && (
-                        <p className={"ticket-note line" + (allergy ? " allergy" : "")}>
-                          {allergy && <strong>{t("serviceKdsAllergy")} </strong>}
+                        <p
+                          className={
+                            "ticket-note line" + (allergy ? " allergy" : "")
+                          }
+                        >
+                          {allergy && (
+                            <strong>{t("serviceKdsAllergy")} </strong>
+                          )}
                           {l.note}
                         </p>
                       )}
@@ -486,7 +523,9 @@ export function Kitchen({
                   )}
                 </div>
               )}
-              <p>{t(r.state === "ready" ? "ready" : r.seenAt ? "seen" : "sent")}</p>
+              <p>
+                {t(r.state === "ready" ? "ready" : r.seenAt ? "seen" : "sent")}
+              </p>
               {action && allowed && (
                 <Button
                   variant="primary"
@@ -566,7 +605,9 @@ export function Kitchen({
           close={() => setClearOpen(false)}
           closeLabel={t("close")}
         >
-          <p>{t("serviceKdsClearStaleConfirm").replace("{n}", String(stale))}</p>
+          <p>
+            {t("serviceKdsClearStaleConfirm").replace("{n}", String(stale))}
+          </p>
           <div className="row">
             <Button
               variant="primary"

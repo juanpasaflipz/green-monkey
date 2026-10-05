@@ -276,7 +276,10 @@ route("get", "/orders", async (tx) => {
   // legacy: removed after one release (docs/SERVICE.md); new screens use /service/orders.
   const rows =
     await tx`select id from orders order by created_at desc limit 100`;
-  return getOrders(tx, rows.map((r: any) => r.id));
+  return getOrders(
+    tx,
+    rows.map((r: any) => r.id),
+  );
 });
 route("get", "/orders/:id", async (tx, _s, req) =>
   getOrder(tx, id.parse(req.params.id)),
@@ -372,9 +375,7 @@ route("post", "/cash/open", async (tx, s, req) => {
   });
 });
 route("post", "/cash/close", (tx, s, req) => closeCash(tx, s, req.body));
-route("post", "/cash/paid-out", (tx, s, req) =>
-  recordPaidOut(tx, s, req.body),
-);
+route("post", "/cash/paid-out", (tx, s, req) => recordPaidOut(tx, s, req.body));
 route("get", "/inventory", async (tx, s) => {
   permit(s, managers);
   return tx`select i.*,coalesce(sum(m.quantity),0)::text as quantity from stock_items i left join stock_movements m on m.tenant_id=i.tenant_id and m.stock_id=i.id group by i.tenant_id,i.id order by i.name`;

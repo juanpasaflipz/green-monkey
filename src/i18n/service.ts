@@ -158,7 +158,8 @@ export default defineArea({
     serviceDetailsTitle: "Detalles de la orden",
     serviceUnnamed: "Sin nombre",
     serviceInCart: "{n} en la orden",
-    serviceSendsOnPay: "Al confirmar, los productos nuevos se enviarán a cocina.",
+    serviceSendsOnPay:
+      "Al confirmar, los productos nuevos se enviarán a cocina.",
     serviceOrderNoteLabel: "Nota: {note}",
     // Payment
     serviceQuickCash: "Efectivo recibido rápido",
@@ -398,11 +399,13 @@ export default defineArea({
       "Tips are voluntary; record one only if the customer offers it.",
     serviceGoToCash: "Go to Cash drawer",
     servicePayDrawer: "Open a drawer on this device before collecting.",
-    servicePayAmountInvalid: "Enter a valid amount, for example 150 or 1,250.50.",
+    servicePayAmountInvalid:
+      "Enter a valid amount, for example 150 or 1,250.50.",
     servicePayAmountZero: "The amount must be greater than zero.",
     servicePayAmountExceeds: "The amount exceeds the remaining balance.",
     servicePayTipInvalid: "Enter a valid tip or leave it blank.",
-    servicePayReceivedShort: "Cash received does not cover the amount plus tip.",
+    servicePayReceivedShort:
+      "Cash received does not cover the amount plus tip.",
     servicePayReferenceRequired: "Enter the terminal approval reference.",
     servicePayConfirmRequired:
       "Check the confirmation that the terminal approved the payment.",
@@ -533,7 +536,10 @@ export default defineArea({
       "Item payments do not add up. Refresh the order.",
     ],
     invalid_amount: ["Escribe un importe válido.", "Enter a valid amount."],
-    invalid_discount: ["El descuento no es válido.", "The discount is not valid."],
+    invalid_discount: [
+      "El descuento no es válido.",
+      "The discount is not valid.",
+    ],
     invalid_split: [
       "La división no es válida. Revisa los importes o productos.",
       "The split is not valid. Review amounts or items.",

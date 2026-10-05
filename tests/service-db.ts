@@ -21,10 +21,17 @@ import {
   recordPrint,
   recordSettlement,
 } from "../server/checks.js";
-import { clearStaleRounds, kitchenFeed, recallRound } from "../server/kitchen.js";
+import {
+  clearStaleRounds,
+  kitchenFeed,
+  recallRound,
+} from "../server/kitchen.js";
 import { recordPaidOut, refund, cashSummary } from "../server/operations.js";
 import { issueOfflineLease } from "../server/offline-leases.js";
-import { reconcileOffline, synchronizeOffline } from "../server/offline-sync.js";
+import {
+  reconcileOffline,
+  synchronizeOffline,
+} from "../server/offline-sync.js";
 import type { Order, Session } from "../shared/domain.js";
 import type { KitchenFeed, OrderListResponse } from "../shared/service.js";
 import { isolatedTarget } from "./isolated-target.js";
@@ -56,7 +63,11 @@ const restaurant = {
   timezone: "America/Mexico_City",
   cutoff: 240,
 };
-const session = (role: string, employeeId: string, tenant = tenantId): Session => ({
+const session = (
+  role: string,
+  employeeId: string,
+  tenant = tenantId,
+): Session => ({
   id: randomUUID(),
   tenantId: tenant,
   employeeId,
@@ -83,7 +94,12 @@ const plain = randomUUID(), // kitchen, recipe
   withOptions = randomUUID(), // kitchen, one optional group
   drink = randomUUID(), // bar
   salsa = randomUUID();
-const product = (id: string, es: string, price: number, extra: object = {}) => ({
+const product = (
+  id: string,
+  es: string,
+  price: number,
+  extra: object = {},
+) => ({
   id,
   name: { es, en: es },
   category: { es: "Pruebas", en: "Tests" },
@@ -105,7 +121,8 @@ async function test(name: string, fn: () => Promise<void>) {
 }
 async function rejects(promise: Promise<unknown>, code: string | RegExp) {
   await assert.rejects(promise, (e: any) => {
-    if (code instanceof RegExp) assert.match(`${e.code ?? ""} ${e.message}`, code);
+    if (code instanceof RegExp)
+      assert.match(`${e.code ?? ""} ${e.message}`, code);
     else assert.equal(e.code ?? e.message, code);
     return true;
   });
@@ -115,7 +132,12 @@ const run = <T>(s: Session, fn: (tx: Tx) => Promise<T>) =>
 const asAdmin = <T>(fn: (tx: postgres.TransactionSql) => Promise<T>) =>
   admin.begin(fn) as Promise<T>;
 
-type LineSpec = { productId?: string; quantity?: number; options?: string[]; note?: string };
+type LineSpec = {
+  productId?: string;
+  quantity?: number;
+  options?: string[];
+  note?: string;
+};
 const line = (l: LineSpec = {}) => ({
   id: randomUUID(),
   productId: l.productId ?? plain,
@@ -188,7 +210,12 @@ const full = async (s: Session, q: object = {}) => {
 };
 const list = (s: Session, q: Record<string, string> = {}) =>
   run(s, (tx) => listOrders(tx, s, q)) as Promise<OrderListResponse>;
-async function voidAs(s: Session, o: Order, quantity: number, extra: object = {}) {
+async function voidAs(
+  s: Session,
+  o: Order,
+  quantity: number,
+  extra: object = {},
+) {
   const body = {
     operationId: randomUUID(),
     expectedVersion: o.version,
@@ -238,7 +265,12 @@ try {
           min: 0,
           max: 1,
           options: [
-            { id: salsa, name: { es: "Salsa verde", en: "Green salsa" }, price: 500, available: true },
+            {
+              id: salsa,
+              name: { es: "Salsa verde", en: "Green salsa" },
+              price: 500,
+              available: true,
+            },
           ],
         },
       ],
@@ -262,7 +294,11 @@ try {
   });
 
   await test("delivered rounds keep the check open for more rounds and voids", async () => {
-    const o = await newOrder({ mode: "dine_in", tableId: tables[0].id, lines: [{ quantity: 2 }] });
+    const o = await newOrder({
+      mode: "dine_in",
+      tableId: tables[0].id,
+      lines: [{ quantity: 2 }],
+    });
     const r = kitchenRound(o);
     await progress(r.id, "seen");
     await progress(r.id, "ready");
@@ -300,7 +336,11 @@ try {
     const paidTakeaway = await pay(takeaway, takeaway.total);
     assert.equal(paidTakeaway.checkState, "closed");
     assert.equal(paidTakeaway.closeReason, "settled");
-    assert.equal(paidTakeaway.state, "active", "the kitchen continues independently");
+    assert.equal(
+      paidTakeaway.state,
+      "active",
+      "the kitchen continues independently",
+    );
 
     const dine = await newOrder({ mode: "dine_in", tableId: tables[1].id });
     const paid = await pay(dine, dine.total);
@@ -339,7 +379,10 @@ try {
     );
     await rejects(
       run(owner, (tx) =>
-        updateOrderNote(tx, owner, dine.id, { operationId: randomUUID(), note: "x" }),
+        updateOrderNote(tx, owner, dine.id, {
+          operationId: randomUUID(),
+          note: "x",
+        }),
       ),
       "check_closed",
     );
@@ -357,7 +400,8 @@ try {
     assert.equal(again.checkState, "closed");
     const audits = await run(
       owner,
-      (tx) => tx`select detail from audit where entity_id=${o.id} and operation='check.closed'`,
+      (tx) =>
+        tx`select detail from audit where entity_id=${o.id} and operation='check.closed'`,
     );
     assert.equal(audits.length, 1);
     assert.equal(audits[0].detail.reason, "released");
@@ -365,7 +409,11 @@ try {
   });
 
   await test("fully voided unpaid check closes as voided and frees its table", async () => {
-    const o = await newOrder({ mode: "dine_in", tableId: tables[3].id, lines: [{ quantity: 1 }] });
+    const o = await newOrder({
+      mode: "dine_in",
+      tableId: tables[3].id,
+      lines: [{ quantity: 1 }],
+    });
     const before = await run(owner, (tx) => tableOccupancy(tx, owner));
     assert.equal(before.find((t) => t.id === tables[3].id)!.checks.length, 1);
     const v = await voidAs(owner, o, 1);
@@ -382,9 +430,15 @@ try {
       run(owner, (tx) => tx`update orders set total=total+1 where id=${o.id}`),
       /closed checks are immutable/,
     );
-    await run(owner, (tx) => tx`update orders set state='completed' where id=${o.id}`);
+    await run(
+      owner,
+      (tx) => tx`update orders set state='completed' where id=${o.id}`,
+    );
     await rejects(
-      run(owner, (tx) => tx`update orders set check_state='open' where id=${o.id}`),
+      run(
+        owner,
+        (tx) => tx`update orders set check_state='open' where id=${o.id}`,
+      ),
       /closed checks are immutable/,
     );
     await rejects(
@@ -455,7 +509,11 @@ try {
     const synced = (await tenant(sql, rTenant, (tx) =>
       synchronizeOffline(tx, s, sale("dine_in")),
     )) as Order;
-    assert.equal(synced.checkState, "closed", "offline sales never hold a table");
+    assert.equal(
+      synced.checkState,
+      "closed",
+      "offline sales never hold a table",
+    );
     assert.equal(synced.closeReason, "settled");
     const reconciled = (await tenant(sql, rTenant, (tx) =>
       reconcileOffline(tx, s, {
@@ -470,13 +528,22 @@ try {
   });
 
   await test("order list returns open checks of any age, filters and pages without gaps", async () => {
-    const tag = "lst" + randomUUID().replace(/[^a-f]/g, "").slice(0, 8);
+    const tag =
+      "lst" +
+      randomUUID()
+        .replace(/[^a-f]/g, "")
+        .slice(0, 8);
     const made: Order[] = [];
-    for (let i = 0; i < 4; i++) made.push(await newOrder({ name: `${tag} uno ${i}` }));
+    for (let i = 0; i < 4; i++)
+      made.push(await newOrder({ name: `${tag} uno ${i}` }));
     made.push(await newOrder({ name: `${tag} 50%_off` }));
     made.push(await newOrder({ name: `${tag} 50xxoff` }));
     made.push(
-      await newOrder({ name: `${tag} mesa`, mode: "dine_in", tableId: tables[3].id }),
+      await newOrder({
+        name: `${tag} mesa`,
+        mode: "dine_in",
+        tableId: tables[3].id,
+      }),
     );
     const aged = made[0];
     await asAdmin(async (tx) => {
@@ -488,7 +555,10 @@ try {
     const current = await list(owner, { q: tag });
     const currentIds = current.items.map((o) => o.id);
     assert.ok(currentIds.includes(aged.id), "an old open check stays visible");
-    assert.ok(currentIds.includes(closedOne.id), "today's closed checks are listed");
+    assert.ok(
+      currentIds.includes(closedOne.id),
+      "today's closed checks are listed",
+    );
     assert.equal(current.items.length, 7);
     const open = await list(owner, { status: "open", q: tag });
     assert.ok(open.items.some((o) => o.id === aged.id));
@@ -501,7 +571,11 @@ try {
     assert.ok(closed.items.every((o) => o.checkState === "closed"));
     const agedRow = current.items.find((o) => o.id === aged.id)!;
     assert.ok(agedRow.businessDate < current.businessDate);
-    const day = await list(owner, { status: "all", date: agedRow.businessDate, q: tag });
+    const day = await list(owner, {
+      status: "all",
+      date: agedRow.businessDate,
+      q: tag,
+    });
     assert.deepEqual(
       day.items.map((o) => o.id),
       [aged.id],
@@ -513,7 +587,12 @@ try {
     );
     const tableName = await list(owner, { q: tables[3].name });
     assert.ok(tableName.items.some((o) => o.id === made[6].id));
-    assert.ok(tableName.items.every((o) => o.tableName === tables[3].name || o.name.includes(tables[3].name)));
+    assert.ok(
+      tableName.items.every(
+        (o) =>
+          o.tableName === tables[3].name || o.name.includes(tables[3].name),
+      ),
+    );
     const escaped = await list(owner, { q: `${tag} 50%_off` });
     assert.deepEqual(
       escaped.items.map((o) => o.id),
@@ -539,16 +618,29 @@ try {
       pages.push(...page.items.map((o) => o.id));
       cursor = page.nextCursor;
     } while (cursor);
-    assert.deepEqual(pages, currentIds, "keyset pages return every id once, in order");
+    assert.deepEqual(
+      pages,
+      currentIds,
+      "keyset pages return every id once, in order",
+    );
     assert.equal(new Set(pages).size, 7);
     const created = current.items.map((o) => Date.parse(o.createdAt));
-    assert.deepEqual(created, [...created].sort((a, b) => b - a));
+    assert.deepEqual(
+      created,
+      [...created].sort((a, b) => b - a),
+    );
     const first = await list(owner, { q: tag, limit: "2" });
     const tampered = first.nextCursor!.slice(0, -3) + "AAA";
     await rejects(list(owner, { q: tag, cursor: tampered }), "invalid_input");
     await rejects(list(owner, { q: tag, cursor: "%%%" }), "invalid_input");
-    await rejects(list(owner, { status: "closed", date: "2026-02-30" }), "invalid_input");
-    await rejects(list(owner, { unknown: "1" }), /invalid_input|ZodError|unrecognized/i);
+    await rejects(
+      list(owner, { status: "closed", date: "2026-02-30" }),
+      "invalid_input",
+    );
+    await rejects(
+      list(owner, { unknown: "1" }),
+      /invalid_input|ZodError|unrecognized/i,
+    );
     await rejects(list(session("kitchen", ids.kitchen), {}), "forbidden");
     const theirs = await list(foreign, { q: tag });
     assert.equal(theirs.items.length, 0);
@@ -575,22 +667,38 @@ try {
       return n;
     };
     try {
-      const tag = "cnt" + randomUUID().replace(/[^a-f]/g, "").slice(0, 8);
+      const tag =
+        "cnt" +
+        randomUUID()
+          .replace(/[^a-f]/g, "")
+          .slice(0, 8);
       for (let i = 0; i < 2; i++) await newOrder({ name: `${tag} ${i}` });
       const small = await count((tx) => listOrders(tx, owner, { q: tag }));
       for (let i = 2; i < 20; i++) await newOrder({ name: `${tag} ${i}` });
-      const large = await count((tx) => listOrders(tx, owner, { q: tag, limit: "100" }));
+      const large = await count((tx) =>
+        listOrders(tx, owner, { q: tag, limit: "100" }),
+      );
       assert.equal(small, 1);
       assert.equal(large, 1);
       assert.equal(await count((tx) => tableOccupancy(tx, owner)), 1);
       const page = await list(owner, { q: tag, limit: "10" });
       const one = await count((tx) => getOrders(tx, [page.items[0].id]));
-      const ten = await count((tx) => getOrders(tx, page.items.map((o) => o.id)));
+      const ten = await count((tx) =>
+        getOrders(
+          tx,
+          page.items.map((o) => o.id),
+        ),
+      );
       // Constant for any n; at most 8 (offline adds one batched lookup).
       assert.equal(one, ten);
       assert.ok(one <= 8, `getOrders used ${one} statements`);
       const f = await full(kitchen);
-      assert.equal(await count((tx) => kitchenFeed(tx, kitchen, { version: String(f.version) })), 1);
+      assert.equal(
+        await count((tx) =>
+          kitchenFeed(tx, kitchen, { version: String(f.version) }),
+        ),
+        1,
+      );
       assert.equal(await count((tx) => kitchenFeed(tx, kitchen, {})), 3);
       // A partial index serves each literal predicate (both open-check
       // indexes qualify; on a tiny table the planner may pick either).
@@ -602,13 +710,17 @@ try {
           }),
         );
       assert.match(
-        await plan((tx) => tx`explain (format json) select id from orders o
-          where o.check_state <> 'closed' order by o.created_at desc, o.id desc limit 51`),
+        await plan(
+          (tx) => tx`explain (format json) select id from orders o
+          where o.check_state <> 'closed' order by o.created_at desc, o.id desc limit 51`,
+        ),
         /orders_open_checks|orders_table_open/,
       );
       assert.match(
-        await plan((tx) => tx`explain (format json) select id from rounds r
-          where r.state <> 'completed' and r.state <> 'offline_review' order by r.created_at, r.id limit 201`),
+        await plan(
+          (tx) => tx`explain (format json) select id from rounds r
+          where r.state <> 'completed' and r.state <> 'offline_review' order by r.created_at, r.id limit 201`,
+        ),
         /rounds_open/,
       );
     } finally {
@@ -617,7 +729,9 @@ try {
   });
 
   await test("getOrders batch matches getOrder for every id", async () => {
-    const a = await newOrder({ lines: [{ quantity: 2 }, { productId: drink }] });
+    const a = await newOrder({
+      lines: [{ quantity: 2 }, { productId: drink }],
+    });
     const b = await newOrder({ mode: "dine_in", tableId: tables[0].id });
     await pay(b, 1000);
     const c = await newOrder({ lines: [{ quantity: 3 }] });
@@ -641,12 +755,21 @@ try {
   await test("kitchen feed carries order, round and line notes with modifiers and versions", async () => {
     const o = await newOrder({
       note: "ALERGIA cacahuate",
-      lines: [{ productId: withOptions, options: [salsa], note: "Sin cebolla" }, { productId: drink }],
+      lines: [
+        { productId: withOptions, options: [salsa], note: "Sin cebolla" },
+        { productId: drink },
+      ],
     });
     const second = await round(o, [{}], "Postres al final");
-    assert.equal(second.rounds.find((r) => r.number === 2)!.note, "Postres al final");
+    assert.equal(
+      second.rounds.find((r) => r.number === 2)!.note,
+      "Postres al final",
+    );
     const f = await full(kitchen);
-    const r1 = f.rounds.find((r) => r.orderId === o.id && r.roundNumber === 1 && r.station === "kitchen")!;
+    const r1 = f.rounds.find(
+      (r) =>
+        r.orderId === o.id && r.roundNumber === 1 && r.station === "kitchen",
+    )!;
     assert.equal(r1.orderNote, "ALERGIA cacahuate");
     assert.equal(r1.lines[0].optionNames[0].es, "Salsa verde");
     assert.equal(r1.lines[0].note, "Sin cebolla");
@@ -664,7 +787,10 @@ try {
     assert.ok(bar.rounds.length > 0);
     assert.ok(bar.rounds.every((r) => r.station === "bar"));
     assert.ok(bar.rounds.some((r) => r.orderId === o.id));
-    await rejects(feed(kitchen, { station: "pantry" }), /invalid_input|ZodError|Invalid/i);
+    await rejects(
+      feed(kitchen, { station: "pantry" }),
+      /invalid_input|ZodError|Invalid/i,
+    );
   });
 
   await test("kitchen feed versions are tenant scoped", async () => {
@@ -672,11 +798,15 @@ try {
     await newOrder();
     const again = await feed(foreign, { version: String(theirs.version) });
     assert.equal(again.unchanged, true);
-    const rows = await run(foreign, (tx) => tx`select tenant_id from kitchen_feed_versions`);
+    const rows = await run(
+      foreign,
+      (tx) => tx`select tenant_id from kitchen_feed_versions`,
+    );
     assert.ok(rows.every((r) => r.tenant_id === otherTenantId));
     const hidden = await run(
       foreign,
-      (tx) => tx`update kitchen_feed_versions set version=0 where tenant_id=${tenantId}`,
+      (tx) =>
+        tx`update kitchen_feed_versions set version=0 where tenant_id=${tenantId}`,
     );
     assert.equal(hidden.count, 0, "RLS hides another tenant's feed row");
     await rejects(
@@ -693,10 +823,14 @@ try {
     const f = await full(kitchen);
     assert.ok(f.recent.some((x) => x.id === r.id));
     await rejects(
-      run(cashier, (tx) => recallRound(tx, cashier, r.id, { operationId: randomUUID() })),
+      run(cashier, (tx) =>
+        recallRound(tx, cashier, r.id, { operationId: randomUUID() }),
+      ),
       "forbidden",
     );
-    await run(server, (tx) => recallRound(tx, server, r.id, { operationId: randomUUID() }));
+    await run(server, (tx) =>
+      recallRound(tx, server, r.id, { operationId: randomUUID() }),
+    );
     const after = await read(o.id);
     const recalled = after.rounds.find((x) => x.id === r.id)!;
     assert.equal(recalled.state, "ready");
@@ -704,7 +838,9 @@ try {
     assert.ok(recalled.ready_at);
     assert.equal(after.state, "ready");
     await rejects(
-      run(kitchen, (tx) => recallRound(tx, kitchen, r.id, { operationId: randomUUID() })),
+      run(kitchen, (tx) =>
+        recallRound(tx, kitchen, r.id, { operationId: randomUUID() }),
+      ),
       "round_not_recallable",
     );
     const old = await newOrder();
@@ -712,24 +848,32 @@ try {
     await progress(oldRound.id, "ready");
     await progress(oldRound.id, "completed");
     await asAdmin(
-      (tx) => tx`update rounds set completed_at=now()-interval '3 hours' where tenant_id=${tenantId} and id=${oldRound.id}`,
+      (tx) =>
+        tx`update rounds set completed_at=now()-interval '3 hours' where tenant_id=${tenantId} and id=${oldRound.id}`,
     );
     await rejects(
-      run(kitchen, (tx) => recallRound(tx, kitchen, oldRound.id, { operationId: randomUUID() })),
+      run(kitchen, (tx) =>
+        recallRound(tx, kitchen, oldRound.id, { operationId: randomUUID() }),
+      ),
       "round_not_recallable",
     );
     const gone = await newOrder();
     const goneRound = kitchenRound(gone);
     await voidAs(owner, gone, 1);
     await asAdmin(
-      (tx) => tx`update rounds set state='completed',completed_at=now() where tenant_id=${tenantId} and id=${goneRound.id}`,
+      (tx) =>
+        tx`update rounds set state='completed',completed_at=now() where tenant_id=${tenantId} and id=${goneRound.id}`,
     );
     await rejects(
-      run(kitchen, (tx) => recallRound(tx, kitchen, goneRound.id, { operationId: randomUUID() })),
+      run(kitchen, (tx) =>
+        recallRound(tx, kitchen, goneRound.id, { operationId: randomUUID() }),
+      ),
       "round_not_recallable",
     );
     await rejects(
-      run(kitchen, (tx) => recallRound(tx, kitchen, randomUUID(), { operationId: randomUUID() })),
+      run(kitchen, (tx) =>
+        recallRound(tx, kitchen, randomUUID(), { operationId: randomUUID() }),
+      ),
       "not_found",
     );
   });
@@ -740,16 +884,22 @@ try {
     const voided = await voidAs(owner, yesterday, 1);
     assert.equal(voided.voids![0].kitchenPending, true);
     await asAdmin(
-      (tx) => tx`update orders set business_date=business_date-1,number=${700000 + Math.floor(Math.random() * 90000)}
+      (
+        tx,
+      ) => tx`update orders set business_date=business_date-1,number=${700000 + Math.floor(Math.random() * 90000)}
         where tenant_id=${tenantId} and id=${yesterday.id}`,
     );
     const today = await newOrder();
     await rejects(
-      run(cashier, (tx) => clearStaleRounds(tx, cashier, { operationId: randomUUID() })),
+      run(cashier, (tx) =>
+        clearStaleRounds(tx, cashier, { operationId: randomUUID() }),
+      ),
       "forbidden",
     );
     await rejects(
-      run(kitchen, (tx) => clearStaleRounds(tx, kitchen, { operationId: randomUUID() })),
+      run(kitchen, (tx) =>
+        clearStaleRounds(tx, kitchen, { operationId: randomUUID() }),
+      ),
       "forbidden",
     );
     const result = await run(manager, (tx) =>
@@ -763,7 +913,8 @@ try {
     assert.ok(fresh.rounds.every((r) => r.state === "active"));
     const [audit] = await run(
       owner,
-      (tx) => tx`select actor_id,detail from audit where operation='kitchen.cleared' order by created_at desc limit 1`,
+      (tx) =>
+        tx`select actor_id,detail from audit where operation='kitchen.cleared' order by created_at desc limit 1`,
     );
     assert.equal(audit.actor_id, ids.manager);
     const again = await run(manager, (tx) =>
@@ -773,7 +924,11 @@ try {
   });
 
   await test("external payments ignore received and store references only for external tenders", async () => {
-    const o = await newOrder({ mode: "dine_in", tableId: tables[2].id, lines: [{ quantity: 2 }] });
+    const o = await newOrder({
+      mode: "dine_in",
+      tableId: tables[2].id,
+      lines: [{ quantity: 2 }],
+    });
     const half = o.total / 2;
     const external = await pay(o, half, {
       method: "external",
@@ -788,10 +943,17 @@ try {
     const cash = await pay(o, half, { reference: "4821" });
     assert.equal(cash.tenders[1].external_reference, null);
     await rejects(
-      pay(await newOrder(), 100, { method: "external", received: 0, reference: "" }),
+      pay(await newOrder(), 100, {
+        method: "external",
+        received: 0,
+        reference: "",
+      }),
       "external_confirmation",
     );
-    await rejects(pay(await newOrder(), 3000, { received: 100 }), "insufficient_cash");
+    await rejects(
+      pay(await newOrder(), 3000, { received: 100 }),
+      "insufficient_cash",
+    );
   });
 
   await test("concurrent close and round serialize", async () => {
@@ -799,18 +961,28 @@ try {
       const o = await newOrder({ mode: "dine_in", tableId: tables[i % 4].id });
       const paid = await pay(o, o.total);
       assert.equal(paid.checkState, "paid");
-      const [closing, adding] = await Promise.allSettled([close(o.id), round(paid)]);
+      const [closing, adding] = await Promise.allSettled([
+        close(o.id),
+        round(paid),
+      ]);
       const after = await read(o.id);
       if (closing.status === "fulfilled") {
         assert.equal(adding.status, "rejected");
-        assert.equal((adding as PromiseRejectedResult).reason.code, "check_closed");
+        assert.equal(
+          (adding as PromiseRejectedResult).reason.code,
+          "check_closed",
+        );
         assert.equal(after.checkState, "closed");
       } else {
-        assert.equal((closing as PromiseRejectedResult).reason.code, "balance_due");
+        assert.equal(
+          (closing as PromiseRejectedResult).reason.code,
+          "balance_due",
+        );
         assert.equal(adding.status, "fulfilled");
         assert.equal(after.checkState, "open");
       }
-      if (after.checkState === "closed") assert.equal(after.total - after.paid, 0);
+      if (after.checkState === "closed")
+        assert.equal(after.total - after.paid, 0);
     }
   });
 
@@ -818,32 +990,53 @@ try {
     const o = await newOrder({ note: "Sin prisa" });
     const before = await full(kitchen);
     const edited = await run(cashier, (tx) =>
-      updateOrderNote(tx, cashier, o.id, { operationId: randomUUID(), note: "  Alergia: nuez  " }),
+      updateOrderNote(tx, cashier, o.id, {
+        operationId: randomUUID(),
+        note: "  Alergia: nuez  ",
+      }),
     );
     assert.equal(edited.note, "Alergia: nuez");
     const changed = await feed(kitchen, { version: String(before.version) });
     assert.equal(changed.unchanged, false);
     const f = changed as Extract<KitchenFeed, { unchanged: false }>;
-    assert.equal(f.rounds.find((r) => r.orderId === o.id)!.orderNote, "Alergia: nuez");
+    assert.equal(
+      f.rounds.find((r) => r.orderId === o.id)!.orderNote,
+      "Alergia: nuez",
+    );
     const [audit] = await run(
       owner,
-      (tx) => tx`select detail from audit where entity_id=${o.id} and operation='order.note'`,
+      (tx) =>
+        tx`select detail from audit where entity_id=${o.id} and operation='order.note'`,
     );
-    assert.deepEqual(audit.detail, { before: "Sin prisa", after: "Alergia: nuez" });
+    assert.deepEqual(audit.detail, {
+      before: "Sin prisa",
+      after: "Alergia: nuez",
+    });
     await rejects(
       run(cashier, (tx) =>
-        updateOrderNote(tx, cashier, o.id, { operationId: randomUUID(), note: "x".repeat(501) }),
+        updateOrderNote(tx, cashier, o.id, {
+          operationId: randomUUID(),
+          note: "x".repeat(501),
+        }),
       ),
       /invalid_input|ZodError|too_big|Too big/i,
     );
     await run(cashier, (tx) =>
-      recordPrint(tx, cashier, o.id, { operationId: randomUUID(), document: "check", reprint: false }),
+      recordPrint(tx, cashier, o.id, {
+        operationId: randomUUID(),
+        document: "check",
+        reprint: false,
+      }),
     );
     const printed = await run(
       owner,
-      (tx) => tx`select operation from audit where entity_id=${o.id} and operation like '%printed'`,
+      (tx) =>
+        tx`select operation from audit where entity_id=${o.id} and operation like '%printed'`,
     );
-    assert.deepEqual(printed.map((p) => p.operation), ["check.printed"]);
+    assert.deepEqual(
+      printed.map((p) => p.operation),
+      ["check.printed"],
+    );
   });
 
   await test("refund and paid-out replays with one operation id record once", async () => {
@@ -860,16 +1053,25 @@ try {
     const second = await run(owner, (tx) => refund(tx, owner, body));
     assert.equal(first.refunded, 1000);
     assert.equal(second.refunded, 1000);
-    const rows = await run(owner, (tx) => tx`select id from refunds where tender_id=${body.tenderId}`);
+    const rows = await run(
+      owner,
+      (tx) => tx`select id from refunds where tender_id=${body.tenderId}`,
+    );
     assert.equal(rows.length, 1);
     const before = (await run(owner, (tx) => cashSummary(tx, owner)))!.expected;
-    const paidOut = { operationId: randomUUID(), amount: 500, reason: "Compra de hielo" };
+    const paidOut = {
+      operationId: randomUUID(),
+      amount: 500,
+      reason: "Compra de hielo",
+    };
     await run(owner, (tx) => recordPaidOut(tx, owner, paidOut));
     await run(owner, (tx) => recordPaidOut(tx, owner, paidOut));
     const after = (await run(owner, (tx) => cashSummary(tx, owner)))!.expected;
     assert.equal(after, before - 500);
     await rejects(
-      run(cashier, (tx) => recordPaidOut(tx, cashier, { ...paidOut, operationId: randomUUID() })),
+      run(cashier, (tx) =>
+        recordPaidOut(tx, cashier, { ...paidOut, operationId: randomUUID() }),
+      ),
       "forbidden",
     );
   });
@@ -900,7 +1102,11 @@ try {
       const orders = [
         await newOrder({ lines: [{ quantity: 6 }] }),
         await newOrder({ lines: [{ quantity: 6 }] }),
-        await newOrder({ mode: "dine_in", tableId: tables[0].id, lines: [{ quantity: 6 }] }),
+        await newOrder({
+          mode: "dine_in",
+          tableId: tables[0].id,
+          lines: [{ quantity: 6 }],
+        }),
       ];
       const fresh = (i: number) => read(orders[i].id);
       const commands: (() => Promise<unknown>)[] = [];
@@ -912,7 +1118,9 @@ try {
           if (kind === 0) return round(o);
           if (kind === 1) {
             const r = o.rounds.find((x) => x.state !== "completed");
-            return r && progress(r.id, r.state === "active" ? "ready" : "completed");
+            return (
+              r && progress(r.id, r.state === "active" ? "ready" : "completed")
+            );
           }
           if (kind === 2) return voidAs(owner, o, 1);
           if (kind === 3) return pay(o, 100);
@@ -927,7 +1135,11 @@ try {
       const failures = results
         .filter((r): r is PromiseRejectedResult => r.status === "rejected")
         .map((r) => String(r.reason?.code ?? r.reason));
-      assert.equal(failures.filter((c) => c === "40P01").length, 0, "no deadlocks");
+      assert.equal(
+        failures.filter((c) => c === "40P01").length,
+        0,
+        "no deadlocks",
+      );
       assert.deepEqual(
         failures.filter((c) => !expected.includes(c)),
         [],

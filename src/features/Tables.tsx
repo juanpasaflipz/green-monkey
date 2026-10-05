@@ -74,7 +74,14 @@ export function Tables({
   }
   const minutes = (iso: string) =>
     Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
-  if (!tables) return error ? <p className="error" role="alert">{error}</p> : <p>{t("loading")}</p>;
+  if (!tables)
+    return error ? (
+      <p className="error" role="alert">
+        {error}
+      </p>
+    ) : (
+      <p>{t("loading")}</p>
+    );
   if (!tables.length)
     return (
       <>
@@ -117,14 +124,22 @@ export function Tables({
                   {t(occupied ? "serviceTableOccupied" : "serviceTableFree")}
                 </Badge>
               </div>
-              {ready && <Badge tone="green">{t("serviceTableFoodReady")}</Badge>}
+              {ready && (
+                <Badge tone="green">{t("serviceTableFoodReady")}</Badge>
+              )}
               {table.checks.map((c) =>
                 c.checkState === "paid" ? (
                   <div className="table-check paid" key={c.id}>
                     <span>
-                      {t("serviceTablePaidLine").replace("{n}", String(c.number))}
+                      {t("serviceTablePaidLine").replace(
+                        "{n}",
+                        String(c.number),
+                      )}
                     </span>
-                    <Button disabled={busy} onClick={() => void act(() => release(c))}>
+                    <Button
+                      disabled={busy}
+                      onClick={() => void act(() => release(c))}
+                    >
                       {t("serviceReleaseTable")}
                     </Button>
                   </div>
@@ -174,7 +189,9 @@ export function Tables({
               disabled={busy}
               onClick={() =>
                 void act(async () => {
-                  for (const c of prompt.checks.filter((c) => c.checkState === "paid"))
+                  for (const c of prompt.checks.filter(
+                    (c) => c.checkState === "paid",
+                  ))
                     await release(c);
                   const table = prompt;
                   setPrompt(null);

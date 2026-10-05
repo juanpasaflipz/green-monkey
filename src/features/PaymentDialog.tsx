@@ -110,7 +110,8 @@ export function PaymentDialog({
   });
   const waitingForItems = splitItems && !selected.length;
   const problem =
-    !validation.ok && !(waitingForItems && validation.problem.field === "amount")
+    !validation.ok &&
+    !(waitingForItems && validation.problem.field === "amount")
       ? validation.problem
       : null;
   const units = (splitOrder ?? current)?.paymentUnits ?? [];
@@ -124,7 +125,9 @@ export function PaymentDialog({
     ) : null;
   const total = amount !== null && tip !== null ? amount + tip : null;
   const suggestions =
-    total !== null && total > 0 ? cashSuggestions(total, currency, exponent) : [];
+    total !== null && total > 0
+      ? cashSuggestions(total, currency, exponent)
+      : [];
   const slot = online ? undefined : offline;
   const blockReason = slot?.blockReason ?? null;
   const externalAllowed = online || !!slot?.allowExternal;
@@ -315,7 +318,8 @@ export function PaymentDialog({
             key={p}
             disabled={amount === null}
             onClick={() =>
-              amount !== null && setTipText(text(tipFromPercent(amount, p, exponent)))
+              amount !== null &&
+              setTipText(text(tipFromPercent(amount, p, exponent)))
             }
           >
             {t("serviceTipPercent").replace("{p}", String(p))}

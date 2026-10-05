@@ -41,7 +41,11 @@ export const kitchenQuery = z
   .strict();
 
 const iso = (v: unknown) =>
-  v instanceof Date ? v.toISOString() : v === null || v === undefined ? null : String(v);
+  v instanceof Date
+    ? v.toISOString()
+    : v === null || v === undefined
+      ? null
+      : String(v);
 
 /**
  * Kitchen display feed. The version is read before the data, so a concurrent
@@ -63,7 +67,8 @@ export async function kitchenFeed(
   const station = q.station === "all" ? tx`` : tx`and r.station = ${q.station}`;
   // rounds_open serves this: the predicates stay literal. Rounds held for
   // offline review never reach the live KDS until a manager decides (offline 026).
-  const rounds = await tx`select r.id,r.order_id,r.number,r.station,r.state,r.seen_at,r.ready_at,r.created_at,r.note as round_note,
+  const rounds =
+    await tx`select r.id,r.order_id,r.number,r.station,r.state,r.seen_at,r.ready_at,r.created_at,r.note as round_note,
       o.number as order_number,o.name as call_name,o.mode,o.channel,o.note as order_note,
       o.created_at as order_created_at,o.business_date::text as business_date,o.service_version,
       t.name as table_name,e.name as waiter_name,
@@ -87,7 +92,8 @@ export async function kitchenFeed(
     order by r.created_at, r.id
     limit ${KITCHEN_FEED_LIMIT + 1}`;
   // rounds_recent_completed serves this; only rounds with items left recall.
-  const recent = await tx`select r.id,r.number,r.station,r.completed_at,o.number as order_number,o.name as call_name,t.name as table_name
+  const recent =
+    await tx`select r.id,r.number,r.station,r.completed_at,o.number as order_number,o.name as call_name,t.name as table_name
     from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id
     left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id
     where r.completed_at is not null and r.completed_at > now() - interval '120 minutes'
@@ -107,42 +113,38 @@ export async function kitchenFeed(
       s.restaurant.cutoff,
     ),
     truncated: rounds.length > KITCHEN_FEED_LIMIT,
-    rounds: rounds.slice(0, KITCHEN_FEED_LIMIT).map(
-      (r): KitchenRound => ({
-        id: r.id,
-        orderId: r.order_id,
-        orderNumber: r.order_number,
-        roundNumber: r.number,
-        station: r.station,
-        state: r.state,
-        seenAt: iso(r.seen_at),
-        readyAt: iso(r.ready_at),
-        createdAt: iso(r.created_at)!,
-        orderCreatedAt: iso(r.order_created_at)!,
-        businessDate: r.business_date,
-        mode: r.mode,
-        channel: r.channel,
-        callName: r.call_name,
-        tableName: r.table_name,
-        waiterName: r.waiter_name,
-        serviceUpdated: r.service_version > 0,
-        orderNote: r.order_note,
-        roundNote: r.round_note,
-        lines: r.lines,
-        pendingVoids: r.pending_voids,
-      }),
-    ),
-    recent: recent.map(
-      (r): KitchenRecent => ({
-        id: r.id,
-        orderNumber: r.order_number,
-        callName: r.call_name,
-        tableName: r.table_name,
-        roundNumber: r.number,
-        station: r.station,
-        completedAt: iso(r.completed_at)!,
-      }),
-    ),
+    rounds: rounds.slice(0, KITCHEN_FEED_LIMIT).map((r): KitchenRound => ({
+      id: r.id,
+      orderId: r.order_id,
+      orderNumber: r.order_number,
+      roundNumber: r.number,
+      station: r.station,
+      state: r.state,
+      seenAt: iso(r.seen_at),
+      readyAt: iso(r.ready_at),
+      createdAt: iso(r.created_at)!,
+      orderCreatedAt: iso(r.order_created_at)!,
+      businessDate: r.business_date,
+      mode: r.mode,
+      channel: r.channel,
+      callName: r.call_name,
+      tableName: r.table_name,
+      waiterName: r.waiter_name,
+      serviceUpdated: r.service_version > 0,
+      orderNote: r.order_note,
+      roundNote: r.round_note,
+      lines: r.lines,
+      pendingVoids: r.pending_voids,
+    })),
+    recent: recent.map((r): KitchenRecent => ({
+      id: r.id,
+      orderNumber: r.order_number,
+      callName: r.call_name,
+      tableName: r.table_name,
+      roundNumber: r.number,
+      station: r.station,
+      completedAt: iso(r.completed_at)!,
+    })),
   };
 }
 
@@ -157,27 +159,35 @@ export async function recallRound(
 ): Promise<{ ok: true }> {
   permit(s, ["owner", "manager", "kitchen", "server"]);
   const p = operationInput.parse(raw);
-  return once(tx, s, p.operationId, "kitchen.recall", { ...p, roundId }, async () => {
-    const [pointer] = await tx`select order_id from rounds where id=${roundId}`;
-    if (!pointer) throw new DomainError("not_found", 404);
-    // Lock the parent before the round, matching every other order command.
-    await tx`select id from orders where id=${pointer.order_id} for update`;
-    const [r] = await tx`select r.*,
+  return once(
+    tx,
+    s,
+    p.operationId,
+    "kitchen.recall",
+    { ...p, roundId },
+    async () => {
+      const [pointer] =
+        await tx`select order_id from rounds where id=${roundId}`;
+      if (!pointer) throw new DomainError("not_found", 404);
+      // Lock the parent before the round, matching every other order command.
+      await tx`select id from orders where id=${pointer.order_id} for update`;
+      const [r] = await tx`select r.*,
         coalesce(r.completed_at > now() - interval '120 minutes',false) as in_window,
         exists (select 1 from order_lines l where l.tenant_id=r.tenant_id and l.order_id=r.order_id
           and l.round=r.number and l.data->>'station'=r.station
           and (l.data->>'quantity')::int > coalesce((select sum(cardinality(v.units)) from line_voids v
                where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) as has_items
       from rounds r where r.id=${roundId} for update of r`;
-    if (!r.completed_at || !r.in_window || !r.has_items)
-      throw new DomainError("round_not_recallable", 409);
-    const next = recallPreparation(r.state);
-    await tx`update rounds set state=${next} where id=${roundId}`;
-    await refreshOrderState(tx, r.order_id);
-    await audit(tx, s, "kitchen.recall", roundId, { orderId: r.order_id });
-    await bumpKitchenFeed(tx, s);
-    return { ok: true as const };
-  });
+      if (!r.completed_at || !r.in_window || !r.has_items)
+        throw new DomainError("round_not_recallable", 409);
+      const next = recallPreparation(r.state);
+      await tx`update rounds set state=${next} where id=${roundId}`;
+      await refreshOrderState(tx, r.order_id);
+      await audit(tx, s, "kitchen.recall", roundId, { orderId: r.order_id });
+      await bumpKitchenFeed(tx, s);
+      return { ok: true as const };
+    },
+  );
 }
 
 /**
@@ -206,7 +216,8 @@ export async function clearStaleRounds(
     if (!ids.length) return { cleared: 0 };
     // Orders first, sorted by id, before any round (see bumpKitchenFeed).
     await tx`select id from orders where id = any(${tx.array(ids)}::uuid[]) order by id for update`;
-    const cleared = await tx`update rounds r set state='completed',seen_at=coalesce(r.seen_at,now())
+    const cleared =
+      await tx`update rounds r set state='completed',seen_at=coalesce(r.seen_at,now())
       from orders o
       where o.tenant_id=r.tenant_id and o.id=r.order_id and r.order_id = any(${tx.array(ids)}::uuid[])
         and r.state <> 'completed' and r.state <> 'offline_review' and o.business_date < ${before}

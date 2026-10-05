@@ -15,7 +15,9 @@ function files(dir: string, pattern: RegExp): string[] {
   });
 }
 const source = (dirs: string[], pattern: RegExp) =>
-  dirs.flatMap((d) => files(d, pattern)).map((f) => [f, readFileSync(f, "utf8")] as const);
+  dirs
+    .flatMap((d) => files(d, pattern))
+    .map((f) => [f, readFileSync(f, "utf8")] as const);
 const serverSources = source(["server", "shared"], /\.ts$/);
 
 /**
@@ -56,11 +58,14 @@ describe("error translations", () => {
   it("every server DomainError code has Spanish and English text", () => {
     const codes = new Set(clientCodes);
     for (const [, text] of serverSources) {
-      for (const m of text.matchAll(/DomainError\(\s*"([a-z_]+)"/g)) codes.add(m[1]);
+      for (const m of text.matchAll(/DomainError\(\s*"([a-z_]+)"/g))
+        codes.add(m[1]);
       for (const m of text.matchAll(/error:\s*"([a-z_]+)"/g)) codes.add(m[1]);
     }
     for (const [, text] of source(["src"], /\.tsx?$/))
-      for (const m of text.matchAll(/(?:Api)?Error\(\s*"([a-z]+(?:_[a-z]+)+)"/g))
+      for (const m of text.matchAll(
+        /(?:Api)?Error\(\s*"([a-z]+(?:_[a-z]+)+)"/g,
+      ))
         codes.add(m[1]);
     const missing = [...codes]
       .filter((code) => !machineOnly.has(code) && !pendingElsewhere(code))
@@ -75,7 +80,9 @@ describe("error translations", () => {
 
   it("service strings are prefixed, unique and present in both locales", () => {
     const service = areas.service;
-    expect(Object.keys(service.en).sort()).toEqual(Object.keys(service.es).sort());
+    expect(Object.keys(service.en).sort()).toEqual(
+      Object.keys(service.es).sort(),
+    );
     for (const locale of ["es", "en"] as const)
       for (const [key, text] of Object.entries(service[locale])) {
         expect(key.startsWith("service"), key).toBe(true);
@@ -97,10 +104,13 @@ describe("error translations", () => {
         operations.add(m[1]);
     }
     // Dynamic operations are composed from a known prefix and value set.
-    for (const kind of ["receipt", "waste", "count_adjust"]) operations.add(`stock.${kind}`);
-    for (const state of ["seen", "ready", "completed"]) operations.add(`kitchen.${state}`);
+    for (const kind of ["receipt", "waste", "count_adjust"])
+      operations.add(`stock.${kind}`);
+    for (const state of ["seen", "ready", "completed"])
+      operations.add(`kitchen.${state}`);
     for (const action of ["start", "end"]) operations.add(`shift.${action}`);
-    for (const task of ["kitchen", "stock"]) operations.add(`offline.${task}_reviewed`);
+    for (const task of ["kitchen", "stock"])
+      operations.add(`offline.${task}_reviewed`);
     const fallback = operationLabel("not.an.operation", "es");
     const unlabelled = [...operations]
       .filter((op) => !labelledOperations.includes(op))

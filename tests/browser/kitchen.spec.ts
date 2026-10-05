@@ -1,17 +1,23 @@
 import { test, expect, type Browser, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
-const tenantId = process.env.DEMO_TENANT_ID ?? "10000000-0000-4000-8000-000000000001";
+const tenantId =
+  process.env.DEMO_TENANT_ID ?? "10000000-0000-4000-8000-000000000001";
 
 /** Pairs this browser as an owner device, then signs in the kitchen employee. */
 async function kitchenScreen(page: Page) {
   await page.goto("/app");
   await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
   await page.getByRole("button", { name: "Entrar", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Hoy", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Hoy", exact: true }),
+  ).toBeVisible();
   const status = await page.evaluate(async (tenantId) => {
     const s = await (await fetch("/api/session")).json();
-    await fetch("/api/logout", { method: "POST", headers: { "x-csrf-token": s.csrf } });
+    await fetch("/api/logout", {
+      method: "POST",
+      headers: { "x-csrf-token": s.csrf },
+    });
     const r = await fetch("/api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -30,10 +36,16 @@ async function ownerPage(browser: Browser, baseURL: string) {
   await page.goto("/app");
   await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
   await page.getByRole("button", { name: "Entrar", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Hoy", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Hoy", exact: true }),
+  ).toBeVisible();
   return page;
 }
-async function createOrder(owner: Page, name: string, productName = "Taco de asada") {
+async function createOrder(
+  owner: Page,
+  name: string,
+  productName = "Taco de asada",
+) {
   return owner.evaluate(
     async ({ name, productName }) => {
       const s = await (await fetch("/api/session")).json();
@@ -46,7 +58,13 @@ async function createOrder(owner: Page, name: string, productName = "Taco de asa
         body: JSON.stringify({
           operationId: crypto.randomUUID(),
           lines: [
-            { id: crypto.randomUUID(), productId: p.id, quantity: 2, options, note: "Sin cebolla" },
+            {
+              id: crypto.randomUUID(),
+              productId: p.id,
+              quantity: 2,
+              options,
+              note: "Sin cebolla",
+            },
           ],
           mode: "takeaway",
           tableId: null,
@@ -61,7 +79,9 @@ async function createOrder(owner: Page, name: string, productName = "Taco de asa
     { name, productName },
   );
 }
-const tag = () => "kds" + Array.from(String(Date.now() % 1e8), (d) => "abcdefghij"[Number(d)]).join("");
+const tag = () =>
+  "kds" +
+  Array.from(String(Date.now() % 1e8), (d) => "abcdefghij"[Number(d)]).join("");
 
 test("kitchen display persists station, alerts new tickets and recalls a bump", async ({
   page,
@@ -82,19 +102,29 @@ test("kitchen display persists station, alerts new tickets and recalls a bump", 
     await expect(ticket).toBeVisible({ timeout: 15000 });
     await expect(ticket).toHaveClass(/ticket-new/);
     await expect(ticket).toContainText("Nuevo");
-    await expect(page.getByRole("status").filter({ hasText: `Nuevo ticket #${order.number}, ronda 1` })).toHaveCount(1);
+    await expect(
+      page
+        .getByRole("status")
+        .filter({ hasText: `Nuevo ticket #${order.number}, ronda 1` }),
+    ).toHaveCount(1);
     await ticket.getByRole("button", { name: "Confirmar recepción" }).click();
     await ticket.getByRole("button", { name: "Marcar listo" }).click();
     await ticket.getByRole("button", { name: "Marcar entregado" }).click();
     await expect(ticket).toHaveCount(0);
-    await page.getByRole("button", { name: /Entregados recientes \(\d+\)/ }).click();
+    await page
+      .getByRole("button", { name: /Entregados recientes \(\d+\)/ })
+      .click();
     const recent = page.getByRole("dialog");
-    const row = recent.locator("li").filter({ hasText: `#${order.number} · ${name}` });
+    const row = recent
+      .locator("li")
+      .filter({ hasText: `#${order.number} · ${name}` });
     await row.getByRole("button", { name: "Regresar a pantalla" }).click();
     await expect(recent).toBeHidden();
     await expect(ticket).toBeVisible();
     await expect(ticket).toContainText("Listo");
-    await expect(ticket.getByRole("button", { name: "Marcar entregado" })).toBeVisible();
+    await expect(
+      ticket.getByRole("button", { name: "Marcar entregado" }),
+    ).toBeVisible();
   } finally {
     await owner.close();
   }
@@ -126,13 +156,23 @@ test("kitchen polling is single-flight and backs off", async ({ page }) => {
   expect(requests).toBeGreaterThan(0);
   expect(requests).toBeLessThanOrEqual(4);
   fail = true;
-  await expect(page.getByRole("alert").filter({ hasText: "Sin actualizar desde" })).toBeVisible({
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Sin actualizar desde" }),
+  ).toBeVisible({
     timeout: 25000,
   });
-  await expect(page.getByRole("alert").filter({ hasText: "los tickets pueden estar desactualizados" })).toBeVisible();
+  await expect(
+    page
+      .getByRole("alert")
+      .filter({ hasText: "los tickets pueden estar desactualizados" }),
+  ).toBeVisible();
 });
 
-test("kitchen ticket prints through the browser print path", async ({ page, browser, baseURL }) => {
+test("kitchen ticket prints through the browser print path", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
   await kitchenScreen(page);
   const owner = await ownerPage(browser, baseURL!);
   try {
@@ -144,7 +184,10 @@ test("kitchen ticket prints through the browser print path", async ({ page, brow
       (window as any).__printed = [];
       window.print = () => {
         const root = document.getElementById("print-root")!;
-        (window as any).__printed.push({ text: root.innerText, html: root.innerHTML });
+        (window as any).__printed.push({
+          text: root.innerText,
+          html: root.innerHTML,
+        });
       };
     });
     await ticket.getByRole("button", { name: "Imprimir comanda" }).click();
@@ -177,7 +220,10 @@ test("manager clears previous-day tickets", async () => {
   // The server exposes no business-date control, so previous-day tickets cannot
   // be created through the browser. tests/service-db.ts covers clear-stale
   // ("clear stale completes only previous-day rounds and acknowledges their voids").
-  test.skip(true, "covered by the isolated DB suite; no browser date control exists");
+  test.skip(
+    true,
+    "covered by the isolated DB suite; no browser date control exists",
+  );
 });
 
 test("kitchen display has no accessibility violations", async ({ page }) => {

@@ -66,7 +66,8 @@ export async function refreshCheckState(
   s: Session,
   orderId: string,
 ): Promise<CheckState> {
-  const [o] = await tx`select o.mode,o.table_id,o.channel,o.total,o.state,o.check_state,
+  const [o] =
+    await tx`select o.mode,o.table_id,o.channel,o.total,o.state,o.check_state,
       coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)::int as paid,
       (select count(*) from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id)::int as lines,
       (select count(*) from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id
@@ -82,7 +83,11 @@ export async function refreshCheckState(
     return "closed";
   }
   if (o.lines > 0 && o.total - o.paid <= 0) {
-    if (holdsTable(o as { mode: string; table_id: string | null; channel: string })) {
+    if (
+      holdsTable(
+        o as { mode: string; table_id: string | null; channel: string },
+      )
+    ) {
       if (o.check_state !== "paid")
         await tx`update orders set check_state='paid' where id=${orderId}`;
       return "paid";
@@ -107,18 +112,25 @@ export async function closeCheck(
 ): Promise<Order> {
   permit(s, operators);
   const p = closeInput.parse(raw);
-  return once(tx, s, p.operationId, "check.close", { orderId, ...p }, async () => {
-    const [o] = await tx`select * from orders where id=${orderId} for update`;
-    if (!o) throw new DomainError("not_found", 404);
-    if (o.check_state === "closed") return getOrder(tx, orderId);
-    if (String(o.state).startsWith("recovery"))
-      throw new DomainError("stale_order", 409);
-    const [m] =
-      await tx`select coalesce(sum(amount),0)::int as paid from tenders where order_id=${orderId}`;
-    if (o.total - m.paid > 0) throw new DomainError("balance_due", 409);
-    await close(tx, s, orderId, "released", { total: o.total, paid: m.paid });
-    return getOrder(tx, orderId);
-  });
+  return once(
+    tx,
+    s,
+    p.operationId,
+    "check.close",
+    { orderId, ...p },
+    async () => {
+      const [o] = await tx`select * from orders where id=${orderId} for update`;
+      if (!o) throw new DomainError("not_found", 404);
+      if (o.check_state === "closed") return getOrder(tx, orderId);
+      if (String(o.state).startsWith("recovery"))
+        throw new DomainError("stale_order", 409);
+      const [m] =
+        await tx`select coalesce(sum(amount),0)::int as paid from tenders where order_id=${orderId}`;
+      if (o.total - m.paid > 0) throw new DomainError("balance_due", 409);
+      await close(tx, s, orderId, "released", { total: o.total, paid: m.paid });
+      return getOrder(tx, orderId);
+    },
+  );
 }
 
 const settlementInput = z
@@ -185,15 +197,25 @@ export async function updateOrderNote(
 ): Promise<Order> {
   permit(s, operators);
   const p = noteInput.parse(raw);
-  return once(tx, s, p.operationId, "order.note", { orderId, ...p }, async () => {
-    const [o] = await tx`select * from orders where id=${orderId} for update`;
-    if (!o) throw new DomainError("not_found", 404);
-    assertCheckWritable(o as { check_state: string; state: string });
-    await tx`update orders set note=${p.note} where id=${orderId}`;
-    await audit(tx, s, "order.note", orderId, { before: o.note, after: p.note });
-    await bumpKitchenFeed(tx, s);
-    return getOrder(tx, orderId);
-  });
+  return once(
+    tx,
+    s,
+    p.operationId,
+    "order.note",
+    { orderId, ...p },
+    async () => {
+      const [o] = await tx`select * from orders where id=${orderId} for update`;
+      if (!o) throw new DomainError("not_found", 404);
+      assertCheckWritable(o as { check_state: string; state: string });
+      await tx`update orders set note=${p.note} where id=${orderId}`;
+      await audit(tx, s, "order.note", orderId, {
+        before: o.note,
+        after: p.note,
+      });
+      await bumpKitchenFeed(tx, s);
+      return getOrder(tx, orderId);
+    },
+  );
 }
 
 const printInput = z
@@ -212,22 +234,29 @@ export async function recordPrint(
 ): Promise<{ ok: true }> {
   permit(s, operators);
   const p = printInput.parse(raw);
-  return once(tx, s, p.operationId, "receipt.print", { orderId, ...p }, async () => {
-    const [o] = await tx`select id from orders where id=${orderId}`;
-    if (!o) throw new DomainError("not_found", 404);
-    await audit(
-      tx,
-      s,
-      p.document === "check"
-        ? "check.printed"
-        : p.reprint
-          ? "receipt.reprinted"
-          : "receipt.printed",
-      orderId,
-      { document: p.document, reprint: p.reprint },
-    );
-    return { ok: true as const };
-  });
+  return once(
+    tx,
+    s,
+    p.operationId,
+    "receipt.print",
+    { orderId, ...p },
+    async () => {
+      const [o] = await tx`select id from orders where id=${orderId}`;
+      if (!o) throw new DomainError("not_found", 404);
+      await audit(
+        tx,
+        s,
+        p.document === "check"
+          ? "check.printed"
+          : p.reprint
+            ? "receipt.reprinted"
+            : "receipt.printed",
+        orderId,
+        { document: p.document, reprint: p.reprint },
+      );
+      return { ok: true as const };
+    },
+  );
 }
 
 export const orderListQuery = z
@@ -277,7 +306,8 @@ export async function listOrders(
           : tx`(o.check_state <> 'closed' or o.business_date = ${now})`;
   const term = q.q ? "%" + q.q.replace(/[\\%_]/g, (c) => "\\" + c) + "%" : null;
   const num = q.q && /^\d{1,6}$/.test(q.q) ? Number(q.q) : null;
-  const rows = await tx`select o.id,o.number,o.business_date::text as business_date,o.created_at,
+  const rows =
+    await tx`select o.id,o.number,o.business_date::text as business_date,o.created_at,
       o.created_at::text as cursor_t,o.mode,o.channel,o.table_id,t.name as table_name,
       o.name,o.note,e.name as waiter_name,o.state,o.check_state,o.closed_at,o.close_reason,
       o.total,p.paid,p.refunded,p.refundable_cash,k.open_rounds,k.ready_rounds,
@@ -368,7 +398,8 @@ export async function tableOccupancy(
   s: Session,
 ): Promise<TableOccupancy[]> {
   permit(s, operators);
-  const rows = await tx`select t.id,t.name,coalesce(jsonb_agg(jsonb_build_object(
+  const rows =
+    await tx`select t.id,t.name,coalesce(jsonb_agg(jsonb_build_object(
         'id',o.id,'number',o.number,'name',o.name,'createdAt',o.created_at,
         'businessDate',o.business_date,'waiterName',e.name,'total',o.total,'paid',p.paid,
         'balance',o.total-p.paid,'checkState',o.check_state,

@@ -171,7 +171,11 @@ export function KitchenTicketDocument({
         {ticket.waiterName ? ` · ${ticket.waiterName}` : ""}
       </p>
       {ticket.orderNote && (
-        <Note label={t.serviceKdsOrderNote} text={ticket.orderNote} locale={locale} />
+        <Note
+          label={t.serviceKdsOrderNote}
+          text={ticket.orderNote}
+          locale={locale}
+        />
       )}
       {roundNote && (
         <Note label={t.serviceKdsRoundNote} text={roundNote} locale={locale} />

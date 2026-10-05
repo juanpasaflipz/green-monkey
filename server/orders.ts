@@ -89,44 +89,68 @@ function byOrder<T extends { order_id: string }>(rows: readonly T[]) {
 export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
   if (!ids.length) return [];
   const list = tx.array(ids);
-  const [orders, lineRows, voidRows, tenderRows, roundRows, allocationRows, recoveryRows] =
-    await Promise.all([
-      tx`select o.*,o.business_date::text as business_day,e.name as waiter_name,
+  const [
+    orders,
+    lineRows,
+    voidRows,
+    tenderRows,
+    roundRows,
+    allocationRows,
+    recoveryRows,
+  ] = await Promise.all([
+    tx`select o.*,o.business_date::text as business_day,e.name as waiter_name,
           opener.name as opened_by,t.name as table_name
         from orders o
         join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id)
         join employees opener on opener.tenant_id=o.tenant_id and opener.id=o.employee_id
         left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id
         where o.id=any(${list}::uuid[])`,
-      tx`select l.order_id,l.data,l.round,coalesce((select array_agg(u order by u) from line_voids v, unnest(v.units) u
+    tx`select l.order_id,l.data,l.round,coalesce((select array_agg(u order by u) from line_voids v, unnest(v.units) u
           where v.tenant_id=l.tenant_id and v.line_id=l.id),'{}') as voided_units
         from order_lines l where l.order_id=any(${list}::uuid[]) order by l.round,l.id`,
-      tx`select v.order_id,v.id,v.line_id,cardinality(v.units)::int as quantity,v.amount,v.reason,
+    tx`select v.order_id,v.id,v.line_id,cardinality(v.units)::int as quantity,v.amount,v.reason,
           v.stock_disposition,v.preparation_state,v.created_at,v.kitchen_ack_required,v.kitchen_acknowledged_at,
           a.name as actor_name,m.name as approver_name
         from line_voids v
         join employees a on a.tenant_id=v.tenant_id and a.id=v.actor_id
         join employees m on m.tenant_id=v.tenant_id and m.id=v.approver_id
         where v.order_id=any(${list}::uuid[]) order by v.created_at,v.id`,
-      tx`select t.*,coalesce((select sum(r.amount) from refunds r where r.tenant_id=t.tenant_id and r.tender_id=t.id),0)::int as refunded
+    tx`select t.*,coalesce((select sum(r.amount) from refunds r where r.tenant_id=t.tenant_id and r.tender_id=t.id),0)::int as refunded
         from tenders t where t.order_id=any(${list}::uuid[]) order by t.created_at,t.id`,
-      tx`select * from rounds where order_id=any(${list}::uuid[]) order by number,station`,
-      tx`select order_id,line_id as "lineId",unit_index as unit,amount
+    tx`select * from rounds where order_id=any(${list}::uuid[]) order by number,station`,
+    tx`select order_id,line_id as "lineId",unit_index as unit,amount
         from tender_allocations where order_id=any(${list}::uuid[])`,
-      tx`select r.order_id,r.id,r.reason,r.original_sold_at,
+    tx`select r.order_id,r.id,r.reason,r.original_sold_at,
           r.recognized_at,r.evidence_version,r.item_allocation_complete,
           coalesce(jsonb_object_agg(t.kind,t.state) filter(where t.kind is not null),'{}') as tasks
         from offline_recoveries r left join offline_recovery_tasks t
           on t.tenant_id=r.tenant_id and t.recovery_id=r.id
         where r.order_id=any(${list}::uuid[])
         group by r.tenant_id,r.id`,
-    ]);
-  const linesBy = byOrder(lineRows as unknown as { order_id: string; data: PricedLine; round: number; voided_units: number[] }[]);
-  const voidsBy = byOrder(voidRows as unknown as ({ order_id: string } & Record<string, any>)[]);
-  const tendersBy = byOrder(tenderRows as unknown as ({ order_id: string } & Record<string, any>)[]);
-  const roundsBy = byOrder(roundRows as unknown as ({ order_id: string } & Record<string, any>)[]);
-  const allocationsBy = byOrder(allocationRows as unknown as ({ order_id: string } & Allocation)[]);
-  const recoveryBy = byOrder(recoveryRows as unknown as ({ order_id: string } & Record<string, any>)[]);
+  ]);
+  const linesBy = byOrder(
+    lineRows as unknown as {
+      order_id: string;
+      data: PricedLine;
+      round: number;
+      voided_units: number[];
+    }[],
+  );
+  const voidsBy = byOrder(
+    voidRows as unknown as ({ order_id: string } & Record<string, any>)[],
+  );
+  const tendersBy = byOrder(
+    tenderRows as unknown as ({ order_id: string } & Record<string, any>)[],
+  );
+  const roundsBy = byOrder(
+    roundRows as unknown as ({ order_id: string } & Record<string, any>)[],
+  );
+  const allocationsBy = byOrder(
+    allocationRows as unknown as ({ order_id: string } & Allocation)[],
+  );
+  const recoveryBy = byOrder(
+    recoveryRows as unknown as ({ order_id: string } & Record<string, any>)[],
+  );
   const found = new Map(orders.map((o) => [o.id as string, o]));
   return ids.flatMap((orderId) => {
     const o = found.get(orderId);

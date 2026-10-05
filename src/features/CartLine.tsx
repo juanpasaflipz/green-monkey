@@ -47,8 +47,9 @@ export function CartLine({
   const noteRef = useRef<HTMLTextAreaElement>(null);
   const [editing, setEditing] = useState(false);
   const noteId = useId();
-  const label =
-    line.priced?.name ?? product?.name ?? fallbackName ?? { es: "—", en: "—" };
+  const label = line.priced?.name ??
+    product?.name ??
+    fallbackName ?? { es: "—", en: "—" };
   const name = label[locale];
   useEffect(() => {
     if (justAdded) ref.current?.scrollIntoView({ block: "nearest" });

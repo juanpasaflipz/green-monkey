@@ -236,10 +236,12 @@ export function validatePayment(input: {
   exponent: number;
   drawerOpen: boolean;
   online: boolean;
-}): { ok: true; values: PaymentValues } | { ok: false; problem: PaymentProblem } {
+}):
+  { ok: true; values: PaymentValues } | { ok: false; problem: PaymentProblem } {
   const fail = (field: PaymentProblem["field"], key: string) =>
     ({ ok: false, problem: { field, key } }) as const;
-  if (input.online && !input.drawerOpen) return fail("drawer", "servicePayDrawer");
+  if (input.online && !input.drawerOpen)
+    return fail("drawer", "servicePayDrawer");
   let amount: number;
   try {
     amount = parseMoneyInput(input.amountText, input.exponent);
@@ -265,7 +267,14 @@ export function validatePayment(input: {
       return fail("received", "servicePayReceivedShort");
     return {
       ok: true,
-      values: { amount, tip, received, method: "cash", reference: "", confirmed: false },
+      values: {
+        amount,
+        tip,
+        received,
+        method: "cash",
+        reference: "",
+        confirmed: false,
+      },
     };
   }
   if (!input.reference.trim())
@@ -297,7 +306,11 @@ export function priceCart(
 ): { lines: CartLine[]; total: number; blocked: boolean } {
   const result = lines.map((input): CartLine => {
     try {
-      return { input, priced: quote([input], catalog, canOpen)[0], error: null };
+      return {
+        input,
+        priced: quote([input], catalog, canOpen)[0],
+        error: null,
+      };
     } catch (e) {
       return {
         input,
@@ -358,7 +371,10 @@ export function mergeLine(
 const cursorTime =
   /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d{1,6})?(Z|[+-]\d{2}(:?\d{2})?)?$/;
 export const orderCursor = z
-  .object({ t: z.string().min(10).max(64).regex(cursorTime), i: z.string().uuid() })
+  .object({
+    t: z.string().min(10).max(64).regex(cursorTime),
+    i: z.string().uuid(),
+  })
   .strict();
 const toBase64Url = (s: string) =>
   btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");

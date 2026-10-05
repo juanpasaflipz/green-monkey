@@ -43,10 +43,13 @@ export function OrderDetail({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [dialog, setDialog] = useState<"void" | "service" | "refund" | "note" | null>(null);
+  const [dialog, setDialog] = useState<
+    "void" | "service" | "refund" | "note" | null
+  >(null);
   const [settings] = usePrintSettings();
   const closeKey = useRef(crypto.randomUUID());
-  const zone = order?.restaurantSnapshot?.timezone ?? session.restaurant.timezone;
+  const zone =
+    order?.restaurantSnapshot?.timezone ?? session.restaurant.timezone;
   const time = (v: string | Date | null | undefined) =>
     v
       ? new Date(v).toLocaleTimeString(locale, {
@@ -75,7 +78,9 @@ export function OrderDetail({
   const closed = state === "closed";
   const balance = order ? order.total - order.paid : 0;
   const refundable = order
-    ? order.tenders.some((x: any) => x.method === "cash" && x.amount > x.refunded)
+    ? order.tenders.some(
+        (x: any) => x.method === "cash" && x.amount > x.refunded,
+      )
     : false;
   const voidable = order?.paymentUnits?.some((u) => u.paid === 0) ?? false;
   const holdsTable = order?.mode === "dine_in" && !!order?.tableId;
@@ -91,7 +96,10 @@ export function OrderDetail({
   return (
     <Modal
       wide
-      title={t("serviceDetailTitle").replace("{n}", String(order?.number ?? ""))}
+      title={t("serviceDetailTitle").replace(
+        "{n}",
+        String(order?.number ?? ""),
+      )}
       close={close}
       closeLabel={t("close")}
     >
@@ -110,9 +118,12 @@ export function OrderDetail({
       ) : (
         <div className="order-detail">
           <p className="muted">
-            {new Date(order.createdAt).toLocaleString(locale, { timeZone: zone })} ·{" "}
-            {channelLabel(order.channel ?? "pos", locale)} · {t(order.mode as Key)} ·{" "}
-            {order.tableName ?? t("noTable")} · {order.waiterName}
+            {new Date(order.createdAt).toLocaleString(locale, {
+              timeZone: zone,
+            })}{" "}
+            · {channelLabel(order.channel ?? "pos", locale)} ·{" "}
+            {t(order.mode as Key)} · {order.tableName ?? t("noTable")} ·{" "}
+            {order.waiterName}
             <br />
             {t("serviceDetailOpenedBy")
               .replace("{name}", order.openedBy ?? order.waiterName ?? "")
@@ -124,13 +135,18 @@ export function OrderDetail({
                   .replace("{time}", time(order.closedAt))
                   .replace(
                     "{reason}",
-                    t(reasonKey[order.closeReason ?? "settled"] ?? "serviceCloseReasonSettled"),
+                    t(
+                      reasonKey[order.closeReason ?? "settled"] ??
+                        "serviceCloseReasonSettled",
+                    ),
                   )}
               </>
             )}
           </p>
           <div className="row wrap">
-            <Badge tone={closed ? "neutral" : state === "paid" ? "green" : "amber"}>
+            <Badge
+              tone={closed ? "neutral" : state === "paid" ? "green" : "amber"}
+            >
               {order.closeReason === "voided"
                 ? t("serviceCheckVoided")
                 : t(
@@ -183,7 +199,9 @@ export function OrderDetail({
                     <li key={v.id}>
                       <s>
                         {v.quantity} ×{" "}
-                        {order.lines.find((l) => l.id === v.lineId)?.name[locale] ?? ""}
+                        {order.lines.find((l) => l.id === v.lineId)?.name[
+                          locale
+                        ] ?? ""}
                       </s>{" "}
                       · −{money(v.amount)} · {v.reason}
                       <br />
@@ -223,7 +241,10 @@ export function OrderDetail({
                 <li key={r.id}>
                   {t("serviceRoundState")
                     .replace("{n}", String(r.number))
-                    .replace("{station}", r.station === "bar" ? t("bar") : t("kitchen"))
+                    .replace(
+                      "{station}",
+                      r.station === "bar" ? t("bar") : t("kitchen"),
+                    )
                     .replace(
                       "{state}",
                       t(
@@ -255,7 +276,8 @@ export function OrderDetail({
               <div className="detail-line" key={x.id}>
                 <div className="row between">
                   <span>
-                    {tenderMethodLabel(x.method, x.source, locale)} · {time(x.created_at)}
+                    {tenderMethodLabel(x.method, x.source, locale)} ·{" "}
+                    {time(x.created_at)}
                   </span>
                   <strong>{money(x.amount)}</strong>
                 </div>
@@ -264,7 +286,10 @@ export function OrderDetail({
                   {x.method === "cash"
                     ? `${t("serviceReceiptReceived")}: ${money(x.received)} · ${t("change")}: ${money(changeDue(x.received, x.amount, x.tip))}`
                     : x.external_reference
-                      ? t("serviceReceiptReference").replace("{ref}", x.external_reference)
+                      ? t("serviceReceiptReference").replace(
+                          "{ref}",
+                          x.external_reference,
+                        )
                       : ""}
                   {x.refunded > 0 &&
                     ` · ${t("serviceReceiptRefund")} −${money(x.refunded)}`}
@@ -304,7 +329,9 @@ export function OrderDetail({
               </Button>
             )}
             {!closed && !order.recovery && (
-              <Button onClick={() => setDialog("service")}>{t("assignService")}</Button>
+              <Button onClick={() => setDialog("service")}>
+                {t("assignService")}
+              </Button>
             )}
             {!closed && !order.recovery && balance > 0 && voidable && (
               <Button variant="ghost" onClick={() => setDialog("void")}>
@@ -343,7 +370,12 @@ export function OrderDetail({
                 onClick={() => {
                   void auditPrint(order.id, "check", false);
                   void printDocument(
-                    <ReceiptDocument order={order} session={session} locale={locale} kind="check" />,
+                    <ReceiptDocument
+                      order={order}
+                      session={session}
+                      locale={locale}
+                      kind="check"
+                    />,
                     settings.paper,
                   );
                 }}
@@ -437,7 +469,11 @@ export function NoteDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   return (
-    <Modal title={t("serviceDetailEditNote")} close={close} closeLabel={t("close")}>
+    <Modal
+      title={t("serviceDetailEditNote")}
+      close={close}
+      closeLabel={t("close")}
+    >
       <form
         onSubmit={async (e) => {
           e.preventDefault();
@@ -471,7 +507,12 @@ export function NoteDialog({
             {error}
           </p>
         )}
-        <Button variant="primary" className="full" type="submit" disabled={busy}>
+        <Button
+          variant="primary"
+          className="full"
+          type="submit"
+          disabled={busy}
+        >
           {t("save")}
         </Button>
       </form>

@@ -1,5 +1,9 @@
 import { useState } from "react";
-import { currencyExponent, type Locale, type Session } from "../../shared/domain";
+import {
+  currencyExponent,
+  type Locale,
+  type Session,
+} from "../../shared/domain";
 import { parseMoneyInput, type OrderSummary } from "../../shared/service";
 import { api } from "../api";
 import { Button, Field, Modal } from "../components/ui";
@@ -39,7 +43,10 @@ export function SettlementDialog({
             await api("/settlements", {
               operationId,
               orders: orders.map((o) => ({ id: o.id, amount: o.balance })),
-              received: parseMoneyInput(String(f.get("amount") ?? ""), exponent),
+              received: parseMoneyInput(
+                String(f.get("amount") ?? ""),
+                exponent,
+              ),
             });
             await saved();
             close();
@@ -71,7 +78,12 @@ export function SettlementDialog({
             {error}
           </p>
         )}
-        <Button variant="primary" className="full" type="submit" disabled={busy}>
+        <Button
+          variant="primary"
+          className="full"
+          type="submit"
+          disabled={busy}
+        >
           {t("save")}
         </Button>
       </form>

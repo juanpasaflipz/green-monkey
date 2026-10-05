@@ -88,7 +88,9 @@ describe("service money input", () => {
   });
 
   it("cashSuggestions offers exact and next MXN bill amounts", () => {
-    expect(cashSuggestions(8750, "MXN", 2)).toEqual([8750, 10000, 20000, 50000]);
+    expect(cashSuggestions(8750, "MXN", 2)).toEqual([
+      8750, 10000, 20000, 50000,
+    ]);
     expect(cashSuggestions(20000, "MXN", 2)).toEqual([
       20000, 22000, 25000, 30000,
     ]);
@@ -173,7 +175,11 @@ describe("payment validation", () => {
     );
     const ok = payment({ amountText: "1,00", due: 1000000 });
     expect(field(ok)).toBe("amount:servicePayAmountInvalid");
-    const cash = payment({ amountText: "50", tipText: "", receivedText: "1,000" });
+    const cash = payment({
+      amountText: "50",
+      tipText: "",
+      receivedText: "1,000",
+    });
     expect(cash).toEqual({
       ok: true,
       values: {
@@ -218,7 +224,12 @@ describe("cart pricing and merging", () => {
           min: 0,
           max: 1,
           options: [
-            { id: option, name: { es: "Verde", en: "Green" }, price: 0, available: true },
+            {
+              id: option,
+              name: { es: "Verde", en: "Green" },
+              price: 0,
+              available: true,
+            },
           ],
         },
       ],
@@ -258,12 +269,24 @@ describe("service lifecycle rules", () => {
 
   it("holdsTable keeps dine-in table checks and releases takeaway, tableless and offline", () => {
     const table = randomUUID();
-    expect(holdsTable({ mode: "dine_in", tableId: table, channel: "pos" })).toBe(true);
-    expect(holdsTable({ mode: "dine_in", table_id: table, channel: "qr" })).toBe(true);
-    expect(holdsTable({ mode: "dine_in", tableId: null, channel: "pos" })).toBe(false);
-    expect(holdsTable({ mode: "takeaway", tableId: table, channel: "pos" })).toBe(false);
-    expect(holdsTable({ mode: "delivery", tableId: null, channel: "pos" })).toBe(false);
-    expect(holdsTable({ mode: "dine_in", tableId: table, channel: "offline" })).toBe(false);
+    expect(
+      holdsTable({ mode: "dine_in", tableId: table, channel: "pos" }),
+    ).toBe(true);
+    expect(
+      holdsTable({ mode: "dine_in", table_id: table, channel: "qr" }),
+    ).toBe(true);
+    expect(holdsTable({ mode: "dine_in", tableId: null, channel: "pos" })).toBe(
+      false,
+    );
+    expect(
+      holdsTable({ mode: "takeaway", tableId: table, channel: "pos" }),
+    ).toBe(false);
+    expect(
+      holdsTable({ mode: "delivery", tableId: null, channel: "pos" }),
+    ).toBe(false);
+    expect(
+      holdsTable({ mode: "dine_in", tableId: table, channel: "offline" }),
+    ).toBe(false);
   });
 
   it("order cursor round-trips microsecond timestamps and rejects tampering", () => {
@@ -285,9 +308,15 @@ describe("service lifecycle rules", () => {
 
   it("paymentStatus and kitchenStatus derive badges", () => {
     expect(paymentStatus({ total: 1000, paid: 0, refunded: 0 })).toBe("unpaid");
-    expect(paymentStatus({ total: 1000, paid: 400, refunded: 0 })).toBe("partial");
-    expect(paymentStatus({ total: 1000, paid: 1000, refunded: 0 })).toBe("paid");
-    expect(paymentStatus({ total: 1000, paid: 1000, refunded: 100 })).toBe("refunded");
+    expect(paymentStatus({ total: 1000, paid: 400, refunded: 0 })).toBe(
+      "partial",
+    );
+    expect(paymentStatus({ total: 1000, paid: 1000, refunded: 0 })).toBe(
+      "paid",
+    );
+    expect(paymentStatus({ total: 1000, paid: 1000, refunded: 100 })).toBe(
+      "refunded",
+    );
     expect(paymentStatus({ total: 0, paid: 0, refunded: 0 })).toBe("unpaid");
     expect(kitchenStatus({ openRounds: 2, readyRounds: 1 })).toBe("preparing");
     expect(kitchenStatus({ openRounds: 2, readyRounds: 2 })).toBe("ready");
@@ -295,7 +324,11 @@ describe("service lifecycle rules", () => {
   });
 
   it("flags allergy notes in Spanish and English", () => {
-    for (const note of ["ALERGIA: cacahuate", "alérgico al maní", "Allergy: nuts"])
+    for (const note of [
+      "ALERGIA: cacahuate",
+      "alérgico al maní",
+      "Allergy: nuts",
+    ])
       expect(ALLERGY_PATTERN.test(note)).toBe(true);
     expect(ALLERGY_PATTERN.test("Sin cebolla")).toBe(false);
   });

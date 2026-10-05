@@ -2019,7 +2019,9 @@ th {
     width: 72mm;
     padding: 2mm 4mm;
     color: #000;
-    font: 12px/1.35 system-ui, sans-serif;
+    font:
+      12px/1.35 system-ui,
+      sans-serif;
   }
   .print-doc.paper-58 {
     width: 48mm;

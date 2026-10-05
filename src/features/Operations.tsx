@@ -12,7 +12,7 @@ import { useEffect, useState } from "react";
 import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { minor, type Session, type Locale } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
-import { integrationLabel, operationLabel, stockCauseLabel, tenderMethodLabel } from "../labels";
+import { integrationLabel, operationLabel, stockCauseLabel } from "../labels";
 import { api } from "../api";
 import { db } from "../offline";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
@@ -40,7 +40,7 @@ export function Operations({
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   // One operation id per opened dialog, kept across retries (MON-3).
-  const [modal, setModal] = useState<{
+  const [modal, setModalState] = useState<{
     kind: string;
     item?: any;
     operationId: string;
@@ -48,8 +48,9 @@ export function Operations({
   const [busy, setBusy] = useState(false);
   const [detail, setDetail] = useState<any[] | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const openModal = (kind: string, item?: any) =>
-    setModal({ kind, item, operationId: crypto.randomUUID() });
+  /** Opening a dialog creates its operation id; closing it discards the id. */
+  const setModal = (next: { kind: string; item?: any } | null) =>
+    setModalState(next && { ...next, operationId: crypto.randomUUID() });
   async function load() {
     try {
       // These views load and poll by themselves.
@@ -169,7 +170,11 @@ export function Operations({
             />
           )}
           {view === "kitchen" && (
-            <Kitchen session={session} locale={locale} refreshKey={refreshKey} />
+            <Kitchen
+              session={session}
+              locale={locale}
+              refreshKey={refreshKey}
+            />
           )}
           {view === "cash" && manager && (
             <CashHistory
@@ -186,7 +191,7 @@ export function Operations({
                   <p>{t("noDrawer")}</p>
                   <Button
                     variant="primary"
-                    onClick={() => openModal("open")}
+                    onClick={() => setModal({ kind: "open" })}
                   >
                     {t("openDrawer")}
                   </Button>
@@ -223,12 +228,12 @@ export function Operations({
                     <Badge tone="green">{t("drawerOpen")}</Badge>
                     {manager && (
                       <>
-                        <Button onClick={() => openModal("paidout")}>
+                        <Button onClick={() => setModal({ kind: "paidout" })}>
                           {t("paidOut")}
                         </Button>
                         <Button
                           variant="primary"
-                          onClick={() => openModal("close")}
+                          onClick={() => setModal({ kind: "close" })}
                         >
                           {t("closeDrawer")}
                         </Button>
@@ -255,7 +260,9 @@ export function Operations({
                               )}
                             </td>
                             <td>
-                              {tenderMethodLabel(r.method, r.source, locale)}
+                              {t(
+                                r.method === "cash" ? "cashMethod" : "external",
+                              )}
                             </td>
                             <td>{m(r.amount)}</td>
                             <td>{m(r.tip)}</td>
@@ -272,7 +279,7 @@ export function Operations({
             <>
               <div className="row between">
                 <p className="muted">{t("inventoryHint")}</p>
-                <Button onClick={() => openModal("prep")}>
+                <Button onClick={() => setModal({ kind: "prep" })}>
                   {t("prep")}
                 </Button>
               </div>
@@ -299,17 +306,19 @@ export function Operations({
                     </p>
                     <div className="row wrap">
                       <Button
-                        onClick={() => openModal("receipt", r)}
+                        onClick={() => setModal({ kind: "receipt", item: r })}
                       >
                         {t("receive")}
                       </Button>
                       <Button
-                        onClick={() => openModal("count_adjust", r)}
+                        onClick={() =>
+                          setModal({ kind: "count_adjust", item: r })
+                        }
                       >
                         {t("count")}
                       </Button>
                       <Button
-                        onClick={() => openModal("waste", r)}
+                        onClick={() => setModal({ kind: "waste", item: r })}
                       >
                         {t("waste")}
                       </Button>
@@ -317,7 +326,7 @@ export function Operations({
                         variant="ghost"
                         onClick={async () => {
                           setDetail(await api("/inventory/" + r.id));
-                          openModal("history");
+                          setModal({ kind: "history" });
                         }}
                       >
                         {t("history")}
@@ -465,7 +474,7 @@ export function Operations({
               <Button
                 onClick={async () => {
                   setDetail(await api("/audit"));
-                  openModal("audit");
+                  setModal({ kind: "audit" });
                 }}
               >
                 {t("audit")}

@@ -14,7 +14,11 @@ async function login(page: Page) {
 }
 
 /** Calls the API from the page with the session's CSRF token. */
-async function call<T = any>(page: Page, path: string, body?: unknown): Promise<T> {
+async function call<T = any>(
+  page: Page,
+  path: string,
+  body?: unknown,
+): Promise<T> {
   return page.evaluate(
     async ({ path, body }) => {
       const s = await (await fetch("/api/session")).json();
@@ -40,11 +44,18 @@ async function product(page: Page, name: string) {
   const catalog = await call<any[]>(page, "/catalog");
   return catalog.find((p) => p.name.es === name);
 }
-async function apiOrder(page: Page, name: string, productName = "Taco de hongos", extra: object = {}) {
+async function apiOrder(
+  page: Page,
+  name: string,
+  productName = "Taco de hongos",
+  extra: object = {},
+) {
   const p = await product(page, productName);
   return call(page, "/orders", {
     operationId: uuid(),
-    lines: [{ id: uuid(), productId: p.id, quantity: 1, options: [], note: "" }],
+    lines: [
+      { id: uuid(), productId: p.id, quantity: 1, options: [], note: "" },
+    ],
     mode: "takeaway",
     tableId: null,
     name,
@@ -80,7 +91,9 @@ test("dine-in table accepts dessert after delivery, stays occupied until paid an
   for (const t of tables)
     for (const c of t.checks)
       if (c.checkState === "paid")
-        await call(page, `/service/orders/${c.id}/close`, { operationId: uuid() });
+        await call(page, `/service/orders/${c.id}/close`, {
+          operationId: uuid(),
+        });
   const free = (await call<any[]>(page, "/service/tables")).find(
     (t) => !t.checks.length,
   );
@@ -92,10 +105,15 @@ test("dine-in table accepts dessert after delivery, stays occupied until paid an
   await card.getByRole("button", { name: "Nueva cuenta", exact: true }).click();
   await page.getByRole("button", { name: /Taco de hongos/ }).click();
   await page.getByLabel("Nombre para llamar").fill(name);
-  await page.getByRole("button", { name: "Enviar a cocina", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
   await expect(page.locator(".existing")).toContainText("Enviado a cocina");
 
-  await page.getByRole("button", { name: "Cocina", exact: true }).first().click();
+  await page
+    .getByRole("button", { name: "Cocina", exact: true })
+    .first()
+    .click();
   const ticket = page.locator(".kitchen-ticket").filter({ hasText: name });
   await ticket.getByRole("button", { name: "Confirmar recepción" }).click();
   await ticket.getByRole("button", { name: "Marcar listo" }).click();
@@ -104,13 +122,19 @@ test("dine-in table accepts dessert after delivery, stays occupied until paid an
 
   await page.getByRole("button", { name: "Mesas", exact: true }).click();
   await expect(card).toContainText("Ocupada");
-  await card.getByRole("button", { name: new RegExp(`${name} · .* por cobrar`) }).click();
+  await card
+    .getByRole("button", { name: new RegExp(`${name} · .* por cobrar`) })
+    .click();
   await expect(page.locator(".existing")).toContainText("Taco de hongos");
   await page.getByRole("button", { name: /Flan de vainilla/ }).click();
-  await page.getByRole("button", { name: "Enviar a cocina", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
   await expect(page.locator(".existing")).toContainText("Flan de vainilla");
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  await page.getByRole("button", { name: "Confirmar cobro", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
   await expect(page.locator(".receipt")).toContainText("Cobrado");
   await page.getByRole("button", { name: "Liberar mesa", exact: true }).click();
   await expect(page.locator(".receipt")).toHaveCount(0);
@@ -130,19 +154,31 @@ test("kitchen sees order, line and round notes with modifiers; receipt shows mod
   const name = "Notas " + tag();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
   await page.getByRole("button", { name: /Taco de asada/ }).click();
-  await page.getByRole("dialog").getByRole("radio", { name: /Salsa verde/ }).check();
-  await page.getByRole("button", { name: "Agregar a la orden", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("radio", { name: /Salsa verde/ })
+    .check();
+  await page
+    .getByRole("button", { name: "Agregar a la orden", exact: true })
+    .click();
   await page.getByRole("button", { name: "Nota para Taco de asada" }).click();
   await page.getByRole("button", { name: "Sin cebolla", exact: true }).click();
   await page.getByRole("button", { name: "Listo", exact: true }).click();
-  await expect(page.locator(".order-line").first()).toContainText("Sin cebolla");
+  await expect(page.locator(".order-line").first()).toContainText(
+    "Sin cebolla",
+  );
   await page.getByLabel("Nota de la orden (cocina)").fill("ALERGIA: cacahuate");
   await page.getByLabel("Nombre para llamar").fill(name);
-  await page.getByRole("button", { name: "Enviar a cocina", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
   await expect(page.locator(".existing")).toContainText("ALERGIA: cacahuate");
   await expect(page.getByLabel("Nota para esta ronda")).toHaveValue("");
 
-  await page.getByRole("button", { name: "Cocina", exact: true }).first().click();
+  await page
+    .getByRole("button", { name: "Cocina", exact: true })
+    .first()
+    .click();
   const first = page.locator(".kitchen-ticket").filter({ hasText: name });
   await expect(first).toContainText("Salsa verde");
   await expect(first).toContainText("Sin cebolla");
@@ -152,9 +188,14 @@ test("kitchen sees order, line and round notes with modifiers; receipt shows mod
   await page.getByRole("button", { name: "Vender", exact: true }).click();
   await page.getByRole("button", { name: /Flan de vainilla/ }).click();
   await page.getByLabel("Nota para esta ronda").fill("Postres al final");
-  await page.getByRole("button", { name: "Enviar a cocina", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
   await expect(page.locator(".existing")).toContainText("Flan de vainilla");
-  await page.getByRole("button", { name: "Cocina", exact: true }).first().click();
+  await page
+    .getByRole("button", { name: "Cocina", exact: true })
+    .first()
+    .click();
   const second = page
     .locator(".kitchen-ticket")
     .filter({ hasText: name })
@@ -163,12 +204,18 @@ test("kitchen sees order, line and round notes with modifiers; receipt shows mod
 
   await page.getByRole("button", { name: "Vender", exact: true }).click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  await page.getByRole("button", { name: "Confirmar cobro", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
   await expect(page.locator(".receipt")).toContainText("Salsa verde");
   await expect(page.locator(".receipt")).toContainText("Sin cebolla");
   await stubPrint(page);
-  await page.getByRole("button", { name: "Imprimir recibo", exact: true }).click();
-  await expect.poll(async () => (await printed(page)).join("\n")).toContain("Sin cebolla");
+  await page
+    .getByRole("button", { name: "Imprimir recibo", exact: true })
+    .click();
+  await expect
+    .poll(async () => (await printed(page)).join("\n"))
+    .toContain("Sin cebolla");
   expect((await printed(page))[0]).toContain("Salsa verde");
   expect((await printed(page))[0]).not.toContain("Green Monkey");
 });
@@ -182,25 +229,37 @@ test("terminal fields reset between sales and change follows a partial cash amou
   await page.getByRole("button", { name: /Taco de hongos/ }).click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("button", { name: "Terminal externa", exact: true }).click();
-  await expect(dialog.getByLabel("Efectivo recibido", { exact: true })).toHaveCount(0);
+  await dialog
+    .getByRole("button", { name: "Terminal externa", exact: true })
+    .click();
+  await expect(
+    dialog.getByLabel("Efectivo recibido", { exact: true }),
+  ).toHaveCount(0);
   await dialog.getByLabel("Referencia de aprobación").fill("4821");
   await dialog.getByLabel("Confirmo que la terminal aprobó este pago").check();
-  await dialog.getByRole("button", { name: "Confirmar cobro", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
   await expect(page.locator(".receipt")).toContainText("Ref. 4821");
-  await page.getByRole("button", { name: "Siguiente venta", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
 
   await page.getByRole("button", { name: /Taco de hongos/ }).click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const cash = dialog.getByRole("button", { name: "Efectivo", exact: true });
   await expect(cash).toHaveAttribute("aria-pressed", "true");
-  await dialog.getByRole("button", { name: "Terminal externa", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "Terminal externa", exact: true })
+    .click();
   await expect(dialog.getByLabel("Referencia de aprobación")).toHaveValue("");
   await expect(
     dialog.getByLabel("Confirmo que la terminal aprobó este pago"),
   ).not.toBeChecked();
   await cash.click();
-  await dialog.getByRole("textbox", { name: "Importe", exact: true }).fill("30");
+  await dialog
+    .getByRole("textbox", { name: "Importe", exact: true })
+    .fill("30");
   await expect(
     dialog.getByRole("textbox", { name: "Efectivo recibido", exact: true }),
   ).toHaveValue("30.00");
@@ -216,7 +275,9 @@ test("terminal fields reset between sales and change follows a partial cash amou
     page.locator(".order-line").filter({ hasText: "Bowl de la casa" }),
   ).toHaveCount(1);
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
-  await dialog.getByRole("textbox", { name: "Importe", exact: true }).fill("1,000");
+  await dialog
+    .getByRole("textbox", { name: "Importe", exact: true })
+    .fill("1,000");
   await expect(dialog.locator(".field-error")).toHaveCount(0);
   await expect(
     dialog.getByRole("textbox", { name: "Efectivo recibido", exact: true }),
@@ -251,7 +312,9 @@ test("pay is blocked until a drawer is open and nothing reaches the kitchen", as
   const feed = await call(page, "/service/kitchen?station=all");
   expect(feed.rounds.some((r: any) => r.callName === name)).toBe(false);
   await dialog.getByRole("button", { name: "Ir a Caja" }).click();
-  await expect(page.getByRole("button", { name: "Abrir caja", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Abrir caja", exact: true }),
+  ).toBeVisible();
 });
 
 test("sold-out item is flagged in the cart and removable", async ({ page }) => {
@@ -282,11 +345,22 @@ test("sold-out item is flagged in the cart and removable", async ({ page }) => {
     await page.getByRole("button", { name: "Vender", exact: true }).click();
     const line = page.locator(".order-line").filter({ hasText: "Guacamole" });
     await expect(line).toContainText("No disponible. Quítalo para continuar.");
-    await expect(page.locator(".order-line").filter({ hasText: "Limonada natural" })).toBeVisible();
-    await expect(page.getByText("Quita los productos no disponibles para enviar o cobrar.")).toBeVisible();
-    const send = page.getByRole("button", { name: "Enviar a cocina", exact: true });
+    await expect(
+      page.locator(".order-line").filter({ hasText: "Limonada natural" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
+        "Quita los productos no disponibles para enviar o cobrar.",
+      ),
+    ).toBeVisible();
+    const send = page.getByRole("button", {
+      name: "Enviar a cocina",
+      exact: true,
+    });
     await expect(send).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Cobrar", exact: true })).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Cobrar", exact: true }),
+    ).toBeDisabled();
     await line.getByRole("button", { name: "Quitar", exact: true }).click();
     await expect(line).toHaveCount(0);
     await expect(send).toBeEnabled();
@@ -309,33 +383,48 @@ test("sold-out item is flagged in the cart and removable", async ({ page }) => {
   }
 });
 
-test("stale order refreshes in place and keeps unsent items", async ({ page }) => {
+test("stale order refreshes in place and keeps unsent items", async ({
+  page,
+}) => {
   await login(page);
   const name = "Ronda " + tag();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
   await page.getByRole("button", { name: /Taco de hongos/ }).click();
   await page.getByLabel("Nombre para llamar").fill(name);
-  await page.getByRole("button", { name: "Enviar a cocina", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
   await expect(page.locator(".existing")).toContainText("Taco de hongos");
-  const list = await call(page, `/service/orders?q=${encodeURIComponent(name)}`);
+  const list = await call(
+    page,
+    `/service/orders?q=${encodeURIComponent(name)}`,
+  );
   const order = await call(page, "/orders/" + list.items[0].id);
   const water = await product(page, "Agua de jamaica");
   await call(page, `/orders/${order.id}/rounds`, {
     operationId: uuid(),
     expectedVersion: order.version,
-    lines: [{ id: uuid(), productId: water.id, quantity: 1, options: [], note: "" }],
+    lines: [
+      { id: uuid(), productId: water.id, quantity: 1, options: [], note: "" },
+    ],
     mode: order.mode,
   });
   await page.getByRole("button", { name: /Limonada natural/ }).click();
-  await page.getByRole("button", { name: "Enviar a cocina", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
   await expect(
     page.getByText(
       "La orden cambió en otro dispositivo. Ya la actualizamos y tus productos sin enviar siguen aquí. Revisa y envía de nuevo.",
     ),
   ).toBeVisible();
   await expect(page.locator(".existing")).toContainText("Agua de jamaica");
-  await expect(page.locator(".order-line").filter({ hasText: "Limonada natural" })).toBeVisible();
-  await page.getByRole("button", { name: "Enviar a cocina", exact: true }).click();
+  await expect(
+    page.locator(".order-line").filter({ hasText: "Limonada natural" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
   await expect(page.locator(".existing")).toContainText("Limonada natural");
   const after = await call(page, "/orders/" + order.id);
   expect(after.rounds.map((r: any) => r.number)).toContain(3);
@@ -345,11 +434,16 @@ test("stale order refreshes in place and keeps unsent items", async ({ page }) =
   await page.getByRole("button", { name: "Nueva orden", exact: true }).click();
   await page.getByRole("button", { name: /Café de olla/ }).click();
   await page.getByLabel("Nombre para llamar").fill(draftB);
-  await page.getByRole("button", { name: "Guardar borrador", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Guardar borrador", exact: true })
+    .click();
   await page.getByRole("button", { name: /Ensalada verde/ }).click();
   await page.getByLabel("Nombre para llamar").fill(draftA);
   await page.getByRole("button", { name: "Borradores", exact: true }).click();
-  await page.getByRole("dialog").getByRole("button", { name: new RegExp(draftB) }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: new RegExp(draftB) })
+    .click();
   await expect(
     page.getByText("Guardamos la orden que estabas capturando en Borradores."),
   ).toBeVisible();
@@ -377,7 +471,15 @@ test("orders: current tab, search, closed tab, detail, reprint and paging", asyn
         headers: { "Content-Type": "application/json", "x-csrf-token": s.csrf },
         body: JSON.stringify({
           operationId: crypto.randomUUID(),
-          lines: [{ id: crypto.randomUUID(), productId: p.id, quantity: 1, options: [], note: "" }],
+          lines: [
+            {
+              id: crypto.randomUUID(),
+              productId: p.id,
+              quantity: 1,
+              options: [],
+              note: "",
+            },
+          ],
           mode: "takeaway",
           tableId: null,
           name: `${label} ${"abcdefghij"[i % 10]}${"abcdefghij"[Math.floor(i / 10)]}`,
@@ -397,7 +499,10 @@ test("orders: current tab, search, closed tab, detail, reprint and paging", asyn
         for (const state of ["ready", "completed"])
           await fetch("/api/kitchen/" + r.id, {
             method: "POST",
-            headers: { "Content-Type": "application/json", "x-csrf-token": s.csrf },
+            headers: {
+              "Content-Type": "application/json",
+              "x-csrf-token": s.csrf,
+            },
             body: JSON.stringify({ operationId: crypto.randomUUID(), state }),
           });
   }, created);
@@ -432,7 +537,11 @@ test("orders: current tab, search, closed tab, detail, reprint and paging", asyn
   const target = created[7];
   await search(String(target.number));
   await expect(
-    rows.filter({ has: page.locator(".eyebrow", { hasText: new RegExp(`^#${target.number} ·`) }) }),
+    rows.filter({
+      has: page.locator(".eyebrow", {
+        hasText: new RegExp(`^#${target.number} ·`),
+      }),
+    }),
   ).toHaveCount(1);
 
   const closedTab = page.waitForResponse(
@@ -447,7 +556,10 @@ test("orders: current tab, search, closed tab, detail, reprint and paging", asyn
   await expect(rows).toHaveCount(1);
   await expect(rows.first()).toContainText(paid.name);
   await expect(rows.first()).toContainText("Cerrada");
-  await rows.first().getByRole("button", { name: "Detalle", exact: true }).click();
+  await rows
+    .first()
+    .getByRole("button", { name: "Detalle", exact: true })
+    .click();
   const detail = page.getByRole("dialog", { name: `Orden #${paid.number}` });
   await expect(detail).toContainText("Efectivo");
   await expect(detail).toContainText("Cobrada");
@@ -458,12 +570,16 @@ test("orders: current tab, search, closed tab, detail, reprint and paging", asyn
   expect(detailAxe.violations).toEqual([]);
   await stubPrint(page);
   await detail.getByRole("button", { name: "Reimprimir recibo" }).click();
-  await expect.poll(async () => (await printed(page)).join("\n")).toContain("REIMPRESIÓN");
+  await expect
+    .poll(async () => (await printed(page)).join("\n"))
+    .toContain("REIMPRESIÓN");
   await page.keyboard.press("Escape");
   await expect(detail).toBeHidden();
 });
 
-test("operation dialogs keep one operation id across a lost response", async ({ page }) => {
+test("operation dialogs keep one operation id across a lost response", async ({
+  page,
+}) => {
   await login(page);
   await openDrawer(page);
   const name = "Reembolso " + tag();
@@ -508,7 +624,9 @@ test("operation dialogs keep one operation id across a lost response", async ({ 
     } else await route.continue();
   });
   await page.getByRole("button", { name: "Caja", exact: true }).click();
-  await page.getByRole("button", { name: "Registrar salida", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Registrar salida", exact: true })
+    .click();
   await dialog.getByLabel("Importe", { exact: true }).fill("5");
   await dialog.getByLabel("Explicación").fill("Compra de hielo");
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
@@ -519,17 +637,23 @@ test("operation dialogs keep one operation id across a lost response", async ({ 
   expect((await call(page, "/cash")).expected).toBe(before - 500);
 });
 
-test("10-inch landscape cart keeps three dine-in lines visible", async ({ page }) => {
+test("10-inch landscape cart keeps three dine-in lines visible", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1024, height: 768 });
   await login(page);
   await page.getByRole("button", { name: "Vender", exact: true }).click();
   await page.getByRole("button", { name: "En mesa", exact: true }).click();
   await page.getByRole("button", { name: /^Detalles/ }).click();
   const details = page.getByRole("dialog", { name: "Detalles de la orden" });
-  await details.getByRole("combobox", { name: "Seleccionar mesa" }).selectOption({ label: "Mesa 01" });
+  await details
+    .getByRole("combobox", { name: "Seleccionar mesa" })
+    .selectOption({ label: "Mesa 01" });
   await details.getByLabel("Nombre para llamar").fill("Tableta");
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("button", { name: /^Detalles/ })).toContainText("Mesa 01");
+  await expect(page.getByRole("button", { name: /^Detalles/ })).toContainText(
+    "Mesa 01",
+  );
   for (const name of ["Taco de hongos", "Agua de jamaica", "Guacamole"])
     await page.getByRole("button", { name: new RegExp(name) }).click();
   const lines = page.locator(".order-line");
@@ -540,14 +664,20 @@ test("10-inch landscape cart keeps three dine-in lines visible", async ({ page }
   const water = lines.filter({ hasText: "Agua de jamaica" });
   await expect(water).toHaveCount(1);
   await expect(water.locator(".quantity span")).toHaveText("2");
-  await expect(page.getByRole("button", { name: /Agua de jamaica.*2 en la orden/ })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Agua de jamaica.*2 en la orden/ }),
+  ).toBeVisible();
   expect(
-    await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
   ).toBe(true);
   await page.screenshot({ path: "docs/evidence/service-selling-1024.png" });
 });
 
-test("Spanish operator screens show labels instead of codes", async ({ page }) => {
+test("Spanish operator screens show labels instead of codes", async ({
+  page,
+}) => {
   await login(page);
   await openDrawer(page);
   const order = await apiOrder(page, "Etiquetas " + tag());
@@ -564,10 +694,16 @@ test("Spanish operator screens show labels instead of codes", async ({ page }) =
     counted: drawer.expected,
     reason: "",
   });
-  await page.getByRole("button", { name: "Configuración", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Configuración", exact: true })
+    .click();
   await expect(page.getByText("Facturación CFDI (Facturapi)")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "facturapi", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Historial de auditoría", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "facturapi", exact: true }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Historial de auditoría", exact: true })
+    .click();
   const audit = page.getByRole("dialog");
   await expect(audit).toContainText("Orden creada");
   await expect(audit).not.toContainText("order.created");
@@ -575,8 +711,13 @@ test("Spanish operator screens show labels instead of codes", async ({ page }) =
   await page.getByRole("button", { name: "Operación", exact: true }).click();
   await page.getByRole("button", { name: "Caja", exact: true }).click();
   await page.getByText("Historial de cajas").click();
-  const history = page.locator("details.panel").filter({ hasText: "Historial de cajas" });
-  await history.getByRole("button", { name: "Ver movimientos" }).first().click();
+  const history = page
+    .locator("details.panel")
+    .filter({ hasText: "Historial de cajas" });
+  await history
+    .getByRole("button", { name: "Ver movimientos" })
+    .first()
+    .click();
   const movements = history.locator("ul").first();
   await expect(movements).toContainText("Efectivo");
   await expect(movements).not.toContainText(/\bcash\b/);

@@ -20,17 +20,17 @@ import {
   type Order,
   type Label,
 } from "../../shared/domain";
-import {
-  mergeLine,
-  priceCart,
-  type PaymentValues,
-} from "../../shared/service";
+import { mergeLine, priceCart, type PaymentValues } from "../../shared/service";
 import { strings, translateError, type Key } from "../i18n";
 import { api, ApiError } from "../api";
 import { clearPaymentAttempt, db, scope, type Draft } from "../offline";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 import { useMediaQuery } from "../serviceHooks";
-import { PrintSettingsDialog, printDocument, readPrintSettings } from "../print";
+import {
+  PrintSettingsDialog,
+  printDocument,
+  readPrintSettings,
+} from "../print";
 import { CartLine } from "./CartLine";
 import { PaymentDialog } from "./PaymentDialog";
 import { ReceiptModal, checkStateOf } from "./Receipt";
@@ -290,7 +290,9 @@ export function Selling({
       options: [],
     },
   ) {
-    const choice = Array.isArray(selection) ? { options: selection } : selection;
+    const choice = Array.isArray(selection)
+      ? { options: selection }
+      : selection;
     const r = mergeLine(draftRef.current.lines, p, choice);
     // Keep the ref current so two quick taps before a render both count.
     draftRef.current = { ...draftRef.current, lines: r.lines };
@@ -409,7 +411,10 @@ export function Selling({
     setPayment(true);
     setError("");
   }
-  async function collect(values: PaymentValues | null = null, items?: string[]) {
+  async function collect(
+    values: PaymentValues | null = null,
+    items?: string[],
+  ) {
     return navigator.locks.request(
       "green-monkey-session-transition",
       { mode: "shared" },
@@ -768,7 +773,9 @@ export function Selling({
           <>
             {noteField}
             {!current && (
-              <p className="muted tiny note-hint">{t("serviceOrderNoteHint")}</p>
+              <p className="muted tiny note-hint">
+                {t("serviceOrderNoteHint")}
+              </p>
             )}
           </>
         )}
@@ -954,7 +961,8 @@ export function Selling({
               {!p.available && <span>{t("soldOut")}</span>}
               {(inCart.get(p.id) ?? 0) > 0 && (
                 <span className="in-cart">
-                  · {t("serviceInCart").replace("{n}", String(inCart.get(p.id)))}
+                  ·{" "}
+                  {t("serviceInCart").replace("{n}", String(inCart.get(p.id)))}
                 </span>
               )}
             </button>

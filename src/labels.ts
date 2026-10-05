@@ -88,9 +88,12 @@ export function tenderMethodLabel(
   source: string | undefined,
   locale: Locale,
 ): string {
-  if (source === "offline_recovery") return strings[locale].serviceTenderRecovered;
+  if (source === "offline_recovery")
+    return strings[locale].serviceTenderRecovered;
   return strings[locale][
-    method === "external" ? "serviceIntegrationExternal" : "serviceIntegrationCash"
+    method === "external"
+      ? "serviceIntegrationExternal"
+      : "serviceIntegrationCash"
   ];
 }
 export function channelLabel(channel: string, locale: Locale): string {
