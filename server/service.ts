@@ -8,6 +8,9 @@ import {
 } from "../shared/domain.js";
 import { permit, operators } from "./auth.js";
 import { once, audit, getOrder } from "./orders.js";
+import { assertCheckWritable, refreshCheckState } from "./checks.js";
+import { bumpKitchenFeed } from "./kitchen.js";
+import { refreshOrderState } from "./voids.js";
 export async function serviceOptions(tx: Tx, s: Session) {
   permit(s, operators);
   return {
@@ -44,12 +47,8 @@ export async function assignService(
       const [old] =
         await tx`select * from orders where id=${orderId} for update`;
       if (!old) throw new DomainError("not_found", 404);
-      if (
-        ["completed", "cancelled", "recovery_pending", "recovery_reviewed"].includes(
-          old.state,
-        ) ||
-        old.service_version !== p.expectedVersion
-      )
+      assertCheckWritable(old as { check_state: string; state: string });
+      if (old.service_version !== p.expectedVersion)
         throw new DomainError("stale_order", 409);
       const [employee] =
         await tx`select id from employees where id=${p.employeeId} and active and role in ('owner','manager','server','cashier') for share`;
@@ -70,6 +69,9 @@ export async function assignService(
         after: { employeeId: p.employeeId, tableId: p.tableId, mode: p.mode },
         reason: p.reason,
       });
+      // A paid check moved off its table settles; the feed bump stays last.
+      await refreshCheckState(tx, s, orderId);
+      await bumpKitchenFeed(tx, s);
       return getOrder(tx, orderId);
     },
   );
@@ -101,21 +103,27 @@ export async function progressPreparation(
       // Lock the parent before a round, matching additions and financial commands.
       await tx`select id from orders where id=${pointer.order_id} for update`;
       const [r] = await tx`select * from rounds where id=${roundId} for update`;
+      if (p.state === "completed") {
+        // SVC-K6: a delivered round leaves the KDS, and with it the only place
+        // its void can be acknowledged. The kitchen confirms the void first.
+        const [pending] = await tx`select 1 from line_voids v
+          join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id
+          where v.tenant_id=${r.tenant_id} and v.order_id=${r.order_id}
+            and l.round=${r.number} and l.data->>'station'=${r.station}
+            and v.kitchen_ack_required and v.kitchen_acknowledged_at is null
+          limit 1`;
+        if (pending) throw new DomainError("void_ack_required", 409);
+      }
       if (p.state === "seen")
         await tx`update rounds set seen_at=coalesce(seen_at,now()) where id=${r.id}`;
       else {
         nextPreparation(r.state, p.state);
         await tx`update rounds set state=${p.state},seen_at=coalesce(seen_at,now()) where id=${r.id}`;
       }
-      const all =
-        await tx`select state from rounds where order_id=${r.order_id}`;
-      const state = all.every((r) => r.state === "completed")
-        ? "completed"
-        : all.every((r) => r.state !== "active")
-          ? "ready"
-          : "active";
-      await tx`update orders set state=${state} where id=${r.order_id}`;
+      // Never resurrects a cancelled order or touches recovery orders.
+      await refreshOrderState(tx, r.order_id);
       await audit(tx, s, "kitchen." + p.state, r.id);
+      await bumpKitchenFeed(tx, s);
       return { ok: true };
     },
   );

@@ -492,6 +492,7 @@ try {
     "devices",
     "employees",
     "restaurant_entitlements",
+    "kitchen_feed_versions",
   ])
     await admin.unsafe(`delete from ${table} where tenant_id=$1`, [tenantId]);
   await admin`delete from restaurants where id=${tenantId}`;

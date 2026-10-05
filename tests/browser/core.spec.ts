@@ -424,6 +424,14 @@ test("grouped cash settlement preserves distinct kitchen orders", async ({
     .getByRole("dialog")
     .getByRole("button", { name: "Guardar", exact: true })
     .click();
+  // The dialog stays open with each check's result (SVC-REV-3).
+  await expect(
+    page.getByRole("dialog").getByText(/^Cobro conjunto registrado/),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Listo", exact: true })
+    .click();
   await expect(page.getByRole("dialog")).not.toBeVisible();
   for (const o of created) {
     const order = await page.evaluate(async (id) => {

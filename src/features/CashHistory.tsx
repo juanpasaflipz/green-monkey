@@ -3,9 +3,17 @@ import type { Locale } from "../../shared/domain";
 import { currencyExponent } from "../../shared/domain";
 import { api } from "../api";
 import { translateError } from "../i18n";
+import { tenderMethodLabel } from "../labels";
 import { Button } from "../components/ui";
 
-export function CashHistory({ locale }: { locale: Locale }) {
+export function CashHistory({
+  locale,
+  currency,
+}: {
+  locale: Locale;
+  /** Restaurant currency, used when a drawer has no tender currency evidence. */
+  currency: string;
+}) {
   const es = locale === "es";
   const [rows, setRows] = useState<any[]>([]),
     [offset, setOffset] = useState(0),
@@ -24,13 +32,16 @@ export function CashHistory({ locale }: { locale: Locale }) {
       live = false;
     };
   }, [offset, locale]);
-  const format = (value: number, row: any) =>
-    row.currencies?.length === 1 && row.currencies[0]
-      ? new Intl.NumberFormat(es ? "es-MX" : "en-US", {
-          style: "currency",
-          currency: row.currencies[0],
-        }).format(value / 10 ** currencyExponent(row.currencies[0]))
-      : `${value} ${es ? "unidades menores; moneda sin evidencia" : "minor units; currency evidence unavailable"}`;
+  const format = (value: number, row: any) => {
+    const code =
+      row.currencies?.length === 1 && row.currencies[0]
+        ? row.currencies[0]
+        : currency;
+    return new Intl.NumberFormat(es ? "es-MX" : "en-US", {
+      style: "currency",
+      currency: code,
+    }).format(value / 10 ** currencyExponent(code));
+  };
   return (
     <details className="panel">
       <summary>{es ? "Historial de cajas" : "Drawer history"}</summary>
@@ -76,12 +87,9 @@ export function CashHistory({ locale }: { locale: Locale }) {
             <ul>
               {detail.tenders.map((t: any) => (
                 <li key={t.id}>
-                  {t.source === "offline_recovery"
-                    ? es
-                      ? "Efectivo recuperado"
-                      : "Recovered cash"
-                    : t.method}{" "}
-                  · {format(t.amount + t.tip, row)} · {t.source_id ?? t.id}
+                  {tenderMethodLabel(t.method, t.source, locale)} ·{" "}
+                  {format(t.amount + t.tip, row)} ·{" "}
+                  {new Date(t.created_at).toLocaleTimeString(locale)}
                 </li>
               ))}
             </ul>

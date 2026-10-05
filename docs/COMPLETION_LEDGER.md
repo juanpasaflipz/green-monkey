@@ -14,7 +14,7 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | M1 Free limits | local/Neon and deployed device selection passed | Remaining combined entitlement scenarios in M3 |
 | M2 recovery | local/Neon and deployed recovery HTTP passed | Deployed backup restore/download also passed; combined billing cases remain |
 | M3 staging candidate | deployed; core flows passed | Finish remaining exact-candidate sandbox billing cases; see STAGING.md |
-| M4 selling/pricing/cash/kitchen | partial | Item voids with manager approval and kitchen deltas done locally (Sept 26); next: discounts/courtesies with approval, item-level refunds, saved drawer close, combos/open amounts, promotions |
+| M4 selling/pricing/cash/kitchen | partial | Item voids with manager approval and kitchen deltas done locally (Sept 26); service lifecycle, notes, KDS and payment UX done locally (Oct 5: `test:db:service`, `tests/browser/service.spec.ts`, `tests/browser/kitchen.spec.ts`); next: discounts/courtesies with approval, item-level refunds, saved drawer close, combos/open amounts, promotions, physical printer check |
 | M5 jobs/printing/merchant payments | incomplete | Jobs outbox runner done locally (Oct 5: dedupe, lease fencing, backoff, dead-job alerts, restart resume; `tests/jobs-db.ts`); next: printer, report/email and payment handlers once devices/providers are selected |
 | M6 inventory/procurement | partial | Purchase orders, substitutions, lots, yields, saved counts |
 | M7 finance/imports/reports | partial | Complete metric contract, recurring expenses, settlement imports, PDF/schedules |
@@ -37,11 +37,11 @@ unverified unless a dated checkpoint explicitly records it.
 | Catalog/categories/search/photos | 2, required; R2 when images enabled | See DELIVERY_STATUS.md and corresponding M1–M9 section | Search, categories, bilingual product names, availability, menu editor; image assets not implemented. |
 | Modifiers, combos, open amount | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Required modifier groups and authoritative prices. Combo slots and open-amount UI pending. |
 | Promotions, scheduled offers, discounts/courtesies | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
-| Tables, waiter attribution, service rounds | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Table selection, additional rounds, table moves and server reassignment with separate service version/audit. Verified creator/payment/round preservation and cross-tenant rejection. |
-| Parked carts/templates, call names, fulfillment | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | IndexedDB drafts and call names. Templates and richer line edits pending. |
-| Kitchen/bar, status, seen acknowledgement | 2–3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Station queues, seen/ready/completed actions, persisted rounds and polling. Cancellation deltas pending. |
-| Thermal receipts, kitchen printing, reprints | 2–3, required; hardware validation gate | See DELIVERY_STATUS.md and corresponding M1–M9 section | Browser receipt and durable blocked print records. Printer pairing/acknowledgement/reprint worker pending. |
-| Cash, separate external bank terminal recording | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Cash and explicit external-terminal recording. Cash flow browser-tested; external-terminal recording not sandbox verification. |
+| Tables, waiter attribution, service rounds | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Table selection, additional rounds, table moves and server reassignment with separate service version/audit. Verified creator/payment/round preservation and cross-tenant rejection. Oct 5 (local): check lifecycle separate from kitchen state, Liberar mesa, occupancy from checks that are not closed, Orders list with filters and paging; not staged. |
+| Parked carts/templates, call names, fulfillment | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | IndexedDB drafts and call names. Oct 5 (local): resume/restore park the unsent cart, line merging, line notes with presets, sold-out lines with Quitar. Templates pending. |
+| Kitchen/bar, status, seen acknowledgement | 2–3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Station queues, seen/ready/completed actions, persisted rounds and polling; cancellation deltas (Sept 26). Oct 5 (local): notes and modifiers on tickets, versioned single-flight feed, alerts, recall, stale banner, clear of previous-day tickets; not staged. |
+| Thermal receipts, kitchen printing, reprints | 2–3, required; hardware validation gate | See DELIVERY_STATUS.md and corresponding M1–M9 section | Browser receipt and durable blocked print records. Oct 5 (local): browser/OS 58/80 mm receipt, pre-bill, kitchen ticket and audited reprint, verified in Chromium print emulation only. Physical printer check and printer worker pending. |
+| Cash, separate external bank terminal recording | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Cash and explicit external-terminal recording. Oct 5 (local): per-sale payment form reset, change from this payment, quick cash, voluntary tips, drawer gate before sending; external-terminal recording is not sandbox verification. |
 | Integrated payments and terminal binding | 3, required for configured providers | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Split by items/amount; grouped settlement | 3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Amount/item splits and grouped settlement API/UI; immutable per-unit allocations, partial-unit balances and concurrent selection checks verified. Pre-allocation history remains explicitly unallocated. |
 | Full/partial refunds, cancellations, history | 2–3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Partial/full amount cash refund API and UI, reason and no-return disposition. Item-level and provider refunds/cancellation pending. |
@@ -81,15 +81,15 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | --- | --- | --- |
 | UX-01 | partial | Modifier validation and persistent cart tested; exact three-item task measurement pending. |
 | UX-02 | partial | Cash checkout and receipt tested; primary activation budget not measured. |
-| UX-03 | partial | Additional rounds, table/server reassignment and creator/round preservation tested; full table-service lifecycle pending. |
-| UX-04 | partial | KDS acknowledgement/ready and independent payment tested; complete service scenario pending. |
+| UX-03 | partial | Additional rounds, table/server reassignment and creator/round preservation tested; full dine-in table lifecycle (send, serve, dessert round, pay, Liberar mesa) browser-tested locally Oct 5; staging pending. |
+| UX-04 | partial | KDS acknowledgement/ready/served, recall, new-ticket alert and independent payment browser-tested locally (Oct 5); complete multi-device service scenario pending. |
 | UX-05 | partial | Amount/item splits, lost cash-response recovery and reload tested; integrated provider failure recovery pending. |
 | UX-06 | verified | Browser grouped cash settlement retains separate order IDs, tenders and rounds. |
-| UX-07 | partial | Draft persistence implemented; complete parked-ticket restart scenario pending. |
+| UX-07 | partial | Draft persistence implemented; resume and draft restore park the unsent cart (browser-tested Oct 5); complete parked-ticket restart scenario pending. |
 | UX-08 | partial | Cash discrepancy links and inventory evidence implemented; full alert correction scenario pending. |
 | UX-09 | partial | Count adjustment and concurrent stock version validation implemented; saved count workflow pending. |
 | UX-10 | partial | Drawer close and refund tested; tip/paid-out combined scenario and saved close draft pending. |
-| UX-11 | partial | Selling/cart and item-payment screenshots at all four sizes; fixed payment footer and mobile confirmation checked. All-workspace review pending. |
+| UX-11 | partial | Selling/cart and item-payment screenshots at all four sizes; fixed payment footer and mobile confirmation checked; 10-inch landscape (1024×768) cart keeps three dine-in lines fully visible (Oct 5). All-workspace review pending. |
 | UX-12 | partial | Keyboard search, modal dismissal/focus and one-state axe check; full screen-reader review pending. |
 | UX-13 | pending | Restaurant settings persist with English labels, timezone/cutoff/opening days. Organization switching and complete locale acceptance pending. |
 | UX-14 | partial | Catalog import and cash sale independently verified; complete onboarding flow pending. |
@@ -113,7 +113,7 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | OFF-07 | partial | Unsupported offline actions disabled; no provider offline capability claimed. |
 | OFF-08 | partial | Waiting revision keeps unresolved work; complete hashed shell graph is precached and API responses are excluded. Exact staging update proof pending. |
 | OPS-01 | pending | Printer jobs explicitly blocked; the jobs runner never touches blocked jobs and provides lease fencing, retries and restart resume for a future printer handler (`tests/jobs-db.ts`, 2026-10-05). Printer worker/hardware recovery pending. |
-| OPS-02 | partial | Persisted KDS rounds and polling; disconnect/cancellation scenario pending. |
+| OPS-02 | partial | Persisted KDS rounds; versioned single-flight polling with backoff and a stale banner browser-tested locally (Oct 5); disconnect recovery on staging pending. |
 | OPS-03 | pending | Durable jobs outbox locally verified: one job per (tenant, kind, dedupe key), two runners never lease the same job, bounded retries then dead with an alert (`tests/jobs-db.ts`, 2026-10-05). Report/email handler not implemented. |
 | INV-01 | partial | Receiving/preparation/sale/count/waste ledger implemented; complete chained cost reconciliation pending. |
 | INV-02 | verified | Two concurrent last-portion deductions serialize; only one succeeds. |

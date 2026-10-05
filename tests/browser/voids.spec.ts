@@ -95,10 +95,18 @@ test("cashier voids an item with manager approval and the kitchen acknowledges i
   await dialog.getByRole("button", { name: /Anular 1 productos/ }).click();
   await expect(dialog).toBeHidden();
   await expect(card).toContainText(`1 ${product}`);
-  await expect(card).toContainText("Anulaciones (1)");
-  await card.getByText("Anulaciones (1)").click();
-  await expect(card).toContainText("autorizó Alex Demo");
+  // service (024): the void history moved from the row into the order detail.
+  await expect(
+    card.getByRole("button", { name: "Anular", exact: true }),
+  ).toBeVisible();
   await expect(card).toContainText("Cocina aún no confirma");
+  await card.getByRole("button", { name: "Detalle", exact: true }).click();
+  const detail = page.getByRole("dialog");
+  await expect(detail).toContainText("Anulaciones (1)");
+  await expect(detail).toContainText("autorizó Alex Demo");
+  await expect(detail).toContainText("Cocina aún no confirma");
+  await page.keyboard.press("Escape");
+  await expect(detail).toBeHidden();
 
   await switchEmployee(page, "kitchen", "654321");
   const ticket = page.locator(".kitchen-ticket").filter({ hasText: name });

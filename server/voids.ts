@@ -8,6 +8,8 @@ import { checkPin, deviceScope, pinError, stepUpSeconds } from "./access.js";
 import { ACCESS, isRecentAuth } from "../shared/access.js";
 import { audit, getOrder, once, stock } from "./orders.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
+import { assertCheckWritable, refreshCheckState } from "./checks.js";
+import { bumpKitchenFeed } from "./kitchen.js";
 
 /** First-stage throttle values (see shared/access.ts ACCESS.pin). */
 export const MAX_FAILED_ATTEMPTS = ACCESS.pin.firstStage;
@@ -205,13 +207,6 @@ export const voidInput = z
   })
   .strict();
 
-const closedStates = [
-  "completed",
-  "cancelled",
-  "recovery_pending",
-  "recovery_reviewed",
-];
-
 /** Recomputes an order's preparation state from its rounds and voids. */
 export async function refreshOrderState(tx: Tx, orderId: string) {
   const [counts] = await tx`select
@@ -266,13 +261,12 @@ export async function voidLines(
   const fingerprint = voidFingerprint(orderId, input);
   return once(tx, s, input.operationId, "void", fingerprint, async () => {
     const [locked] =
-      await tx`select state,version from orders where id=${orderId} for update`;
+      await tx`select state,check_state,version from orders where id=${orderId} for update`;
     if (!locked) throw new DomainError("not_found", 404);
-    if (
-      closedStates.includes(locked.state) ||
-      locked.version !== input.expectedVersion
-    )
+    if (locked.version !== input.expectedVersion)
       throw new DomainError("stale_order", 409);
+    // Served (completed) orders stay voidable while the check is open.
+    assertCheckWritable(locked as { check_state: string; state: string });
     if (approverId !== s.employeeId) {
       const [approver] =
         await tx`select id from employees where id=${approverId} and active and role in ('owner','manager') for share`;
@@ -341,6 +335,9 @@ export async function voidLines(
     await tx`update orders set total=total-${voided},version=version+1 where id=${orderId}`;
     await closeFullyVoidedRounds(tx, orderId);
     await refreshOrderState(tx, orderId);
+    // Balance 0 settles or holds the table; every line voided closes as voided.
+    await refreshCheckState(tx, s, orderId);
+    await bumpKitchenFeed(tx, s);
     return getOrder(tx, orderId);
   });
 }
@@ -378,6 +375,7 @@ export async function acknowledgeVoids(
       await audit(tx, s, "kitchen.void_ack", r.id, {
         voids: acknowledged.map((v) => v.id),
       });
+      await bumpKitchenFeed(tx, s);
       return { ok: true, acknowledged: acknowledged.length };
     },
   );
