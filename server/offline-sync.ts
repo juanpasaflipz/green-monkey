@@ -675,8 +675,6 @@ export async function financialRecovery(
 ): Promise<OfflineSyncResult> {
   const payment = paymentOf(p)!;
   const order = "order" in p ? p.order : null;
-  const [cash] =
-    await tx`select * from cash_sessions where id=${drawerOf(p)} for update`;
   if (order) {
     await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + order.operationId},0))`;
     const [existingOrder] =
@@ -695,6 +693,10 @@ export async function financialRecovery(
   // Keep the claimed source lines in audit; do not invent historical unit prices,
   // repeat kitchen dispatch, or deduct current recipes from stock.
   await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,state,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${lease.employee_id},null,${order?.mode ?? "takeaway"},${order?.name ?? ""},${"Offline cash reconciliation: " + reason},'offline',${payment.amount},'recovery_pending',${tx.json(lease.restaurant_snapshot)})`;
+  // Global lock order (contract §3.14): the drawer after order_numbers and the
+  // order, so a concurrent drawer close waits for this tender.
+  const [cash] =
+    await tx`select * from cash_sessions where id=${drawerOf(p)} for update`;
   await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,source,source_id,created_at) values(${s.tenantId},${tenderId},${orderId},${cash.id},${payment.method},${payment.amount},${payment.tip},${payment.received},${payment.reference || null},'offline_recovery',${p.operationId},clock_timestamp())`;
   await tx`insert into offline_recoveries(
       tenant_id,id,operation_id,order_operation_id,original_session_id,
