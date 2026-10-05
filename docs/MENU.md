@@ -97,7 +97,10 @@ focus or visibility changes less than 15 seconds apart are skipped.
 
 **Public request limits.** Diners on a restaurant's guest Wi-Fi share one public
 IP, so every limit below is per client IP (IPv6 grouped by /56) and the three
-kinds of request never share a budget (`server/public-ordering.ts`):
+kinds of request never share a budget (`server/public-ordering.ts`). The client
+IP is `clientIp(req)` from `server/logging.ts`, the address the request log and
+the access and ops limits use: behind Railway's edge it is the diner's network,
+never the edge's own address.
 
 | Request | Limit per client IP per minute |
 | --- | --- |
@@ -133,10 +136,25 @@ for production**:
   `/api/public/*` and link creation answer 404 `public_ordering_disabled`.
 
 **Carts price line by line.** In the POS cart and the QR/kiosk order, each line
-is priced on its own (`priceCart()` in `src/features/menu/cart.ts`). A product
-86'd or archived after it was added only marks its own line ("Ya no está
-disponible. Quítalo de la orden.") with a Quitar button. The rest of the cart
-keeps its prices, and Enviar and Cobrar stay disabled until the line is removed.
+is priced on its own by service's `priceCart()` (`shared/service.ts`; QR/kiosk
+import it through `src/features/menu/cart.ts`). A product 86'd or archived after
+it was added, or a line that no longer prices for another reason, only marks its
+own line, with a Quitar button. The rest of the cart keeps its prices, and
+nothing can be sent or paid until the line is removed.
+
+- **POS (Vender).** Service's `CartLine` (`src/features/CartLine.tsx`) flags the
+  line in place: "No disponible. Quítalo para continuar." for an 86'd or
+  archived product, and the error's own message for any other reason (for
+  example "El importe supera el máximo permitido para este producto." when an
+  open amount is now above the product's maximum). "Quita los productos no
+  disponibles para enviar o cobrar." shows under the total, and Enviar a cocina,
+  Cobrar and "Enviar como orden nueva" (offered after the check closed
+  elsewhere) stay disabled.
+- **QR and kiosk.** Menu's `UnavailableLines`
+  (`src/features/menu/UnavailableLines.tsx`) lists the flagged lines above the
+  order: "Ya no está disponible. Quítalo de la orden." for an 86'd or archived
+  product, "Sus opciones cambiaron. Quítalo y vuelve a agregarlo." when a choice
+  changed, and the error's own message otherwise. Sending stays disabled.
 
 **Typing amounts and quantities.** Editors accept "1200", "1,200" and
 "1,200.50": a comma is read only as a thousands separator in a well-formed
@@ -338,22 +356,30 @@ the restaurant default.
 
 ## Integration notes (menu's merge)
 
-- Swap `tablesWithOpenChecks()` to `o.check_state <> 'closed'` and apply
-  `archived_at is null` with area and position ordering in service's
-  `tableOccupancy` (contract D10).
-- Wire `onEditTables={() => navigate("floor")}` into service's `Tables`.
-- Existencias history (`src/features/Operations.tsx`, outside menu's in-wave
-  lines 595-603) does not yet show `balance_after`. Until the merge adds the
-  "Saldo" column there (spec §2.10), the running balance is shown in Menú e
-  inventario → Insumos → Movimientos.
-- Resolve `add()` and the product card in Selling to the golden forms, and add
-  `labels.ts` entries for the `menu.*`, `floor.*` and `stock.*` audit operations
+Menu's merge resolved every hand-off it owned:
+
+- Table occupancy follows the service lifecycle (contract D10):
+  `tablesWithOpenChecks()` (`server/floor.ts`) and service's `tableOccupancy`
+  (`server/checks.ts`) both count checks with `o.check_state <> 'closed'`, so a
+  paid dine-in check holds its table until "Liberar mesa". `tableOccupancy`
+  skips archived tables and orders by area, then table position.
+- Service's `Tables` gets `onEditTables={() => navigate("floor")}` for owners
+  and managers ("Editar mesas").
+- Existencias history (`src/features/Operations.tsx`) shows the ledger's
+  `balance_after` as "Saldo" after each movement (spec §2.10, LD-10 B5), like
+  Menú e inventario → Insumos → Movimientos.
+- Selling resolves `add()` and the product card to the golden forms, and
+  `src/labels.ts` labels the `menu.*`, `floor.*` and `stock.*` audit operations
   (keys `menuOp*` in `src/i18n/menu.ts`).
-- Offline sync quotes with `canOpen = true` in offline's rewrite (D11); until
-  then, open-price lines recorded offline are not accepted by `/sync`.
-- Selling's per-line pricing: menu's in-wave fallback (`priceCart` in
-  `src/features/menu/cart.ts`, `UnavailableLines`, and the `pricing.blocked`
-  checks on Enviar and Cobrar) has the same signature and result as service's
-  `priceCart`/`CartLine`. Resolve Selling to service's golden form (contract
-  4.8) and drop menu's three Selling hunks. QR/kiosk ordering keeps using
-  `cart.ts` (or switches its import to `shared/service.ts`).
+- Per-line pricing is service's `priceCart` (contract 4.8) everywhere: Selling
+  imports it from `shared/service.ts` and flags lines with service's
+  `CartLine`; menu's three in-wave Selling hunks are gone. QR/kiosk import the
+  same function through `src/features/menu/cart.ts` and keep `UnavailableLines`
+  (see "Carts price line by line").
+- Public ordering limits key on the real client address, `clientIp(req)` from
+  `server/logging.ts`, like the access and ops limits (LD-11). IPv6 clients are
+  grouped per /56; the per-link revision budget adds the signed link id.
+
+Carried by offline's merge: `/sync` quotes with `canOpen = true` in offline's
+rewrite (D11). Until then, open-price lines recorded offline are not accepted by
+`/sync`.

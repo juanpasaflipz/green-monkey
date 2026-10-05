@@ -6,6 +6,7 @@ import { tenant } from "./db.js";
 import { verify, sign } from "./auth.js";
 import { createOrder, getOrder } from "./orders.js";
 import { menuRevision, publicCatalog } from "./menu-read.js";
+import { clientIp } from "./logging.js";
 import { DomainError, orderInput, type Session } from "../shared/domain.js";
 function publicOrder(o: any) {
   return {
@@ -79,6 +80,16 @@ export function signedClaims(token: string): Record<string, any> | null {
     return null;
   }
 }
+/**
+ * The client network every public ordering limit keys on: clientIp(req) from
+ * server/logging.ts (the real client behind Railway's edge, the address the
+ * request log, the access limits and the ops limiter use; LD-11 MENU-INT-1),
+ * IPv6 per /56. Keying on req.ip alone would put every client the edge
+ * forwards with only X-Real-IP in one bucket.
+ */
+function publicIpKey(req: express.Request): string {
+  return ipKeyGenerator(clientIp(req), 56);
+}
 const limiter = (
   limit: number,
   options: {
@@ -92,6 +103,7 @@ const limiter = (
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "rate_limited" },
+    keyGenerator: publicIpKey,
     ...options,
   });
 export function publicOrdering(sql: postgres.Sql) {
@@ -110,16 +122,15 @@ export function publicOrdering(sql: postgres.Sql) {
   // its token, so no spelling or number of links lifts the bound.
   const revisionIpLimit = limiter(REVISION_POLLS_PER_IP_PER_MINUTE);
   const revisionLinkLimit = limiter(REVISION_POLLS_PER_MINUTE, {
-    // Per link and client (IPv6 grouped by /56, the library default): one
-    // busy table cannot slow another table's or the kiosk's freshness. The
-    // key is the server-signed link id, so a client cannot mint new keys;
-    // any other token shares one key per IP and is refused before the
-    // database.
+    // Per link and client (publicIpKey: IPv6 grouped by /56): one busy
+    // table cannot slow another table's or the kiosk's freshness. The key is
+    // the server-signed link id, so a client cannot mint new keys; any other
+    // token shares one key per IP and is refused before the database.
     keyGenerator: (req) => {
       const c = signedClaims(String(req.params.token));
       const link =
         c?.purpose === "ordering" && typeof c.id === "string" ? c.id : "-";
-      return ipKeyGenerator(req.ip ?? "") + ":" + link;
+      return publicIpKey(req) + ":" + link;
     },
   });
   async function context(

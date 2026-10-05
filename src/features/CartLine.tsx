@@ -70,10 +70,9 @@ export function CartLine({
         <div>
           <strong>{name}</strong>
           <p className="error" role="alert">
-            {line.error === "invalid_modifier" ||
-            line.error === "required_modifier"
-              ? translateError(line.error, locale)
-              : t("serviceLineUnavailable")}
+            {line.error === "unavailable"
+              ? t("serviceLineUnavailable")
+              : translateError(line.error, locale)}
           </p>
         </div>
         <Button disabled={locked} onClick={onRemove}>

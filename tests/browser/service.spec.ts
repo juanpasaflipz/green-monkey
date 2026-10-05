@@ -44,6 +44,26 @@ async function product(page: Page, name: string) {
   const catalog = await call<any[]>(page, "/catalog");
   return catalog.find((p) => p.name.es === name);
 }
+/** 86es (or brings back) a seeded product, as another terminal would. */
+async function setSeededAvailable(
+  page: Page,
+  name: string,
+  available: boolean,
+) {
+  const current = await product(page, name);
+  await call(page, "/catalog/save", {
+    operationId: uuid(),
+    id: current.id,
+    name: current.name,
+    category: current.category,
+    price: current.price,
+    available,
+    station: current.station,
+    expectedVersion: current.version,
+    cost: current.cost,
+    recipe: current.recipe ?? [],
+  });
+}
 /**
  * The Vender tile of one catalog product, matched by its exact name. Other
  * specs add products to the same demo tenant, so a substring or regex match
@@ -2036,9 +2056,36 @@ test("cart note edits reach the kitchen, comandas print on send and a closed che
   await expect(
     page.locator(".order-line").filter({ hasText: "Agua de jamaica" }),
   ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Enviar como orden nueva", exact: true })
-    .click();
+  const sendAsNew = page.getByRole("button", {
+    name: "Enviar como orden nueva",
+    exact: true,
+  });
+  await expect(sendAsNew).toBeEnabled();
+  // LD-11 MENU-INT-3: while a kept line is no longer sold, "Enviar como orden
+  // nueva" waits for it to be removed, like Enviar and Cobrar.
+  await productTile(page, "Guacamole").click();
+  await setSeededAvailable(page, "Guacamole", false);
+  try {
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("gm-menu-refresh")),
+    );
+    const stale = page
+      .locator(".order-line.line-error")
+      .filter({ hasText: "Guacamole" });
+    await expect(stale).toContainText("No disponible. Quítalo para continuar.");
+    await expect(
+      page.getByText(
+        "Esta cuenta ya se cerró. Tus productos sin enviar siguen aquí.",
+      ),
+    ).toBeVisible();
+    await expect(sendAsNew).toBeDisabled();
+    await stale.getByRole("button", { name: "Quitar", exact: true }).click();
+    await expect(stale).toHaveCount(0);
+    await expect(sendAsNew).toBeEnabled();
+  } finally {
+    await setSeededAvailable(page, "Guacamole", true);
+  }
+  await sendAsNew.click();
   await expect(page.locator(".existing")).toContainText("Agua de jamaica");
   await expect(page.locator(".existing")).not.toContainText("Taco de hongos");
   const both = await call(

@@ -1169,7 +1169,7 @@ export function Selling({
             <p>{error}</p>
             {closedCheck && (
               <Button
-                disabled={busy || !online}
+                disabled={busy || !online || cart.blocked}
                 onClick={() => void sendAsNew().catch(() => {})}
               >
                 {t("serviceSendAsNew")}
