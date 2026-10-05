@@ -41,7 +41,8 @@
     "import:dry-run": "tsx scripts/import.ts",
     "setup:local": "bash scripts/setup-local.sh",
     "test:restart": "tsx tests/restart-http.ts",
-    "test:db:voids": "tsx tests/voids-db.ts"
+    "test:db:voids": "tsx tests/voids-db.ts",
+    "dev:facturapi-fake": "tsx tests/fakes/facturapi-fake.ts"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",
