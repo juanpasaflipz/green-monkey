@@ -132,7 +132,12 @@ app.use(
 app.use("/api/billing/webhook", billing.webhook);
 app.use(express.json({ limit: "256kb" }));
 app.use(cookieParser());
-app.use(requestLog((tenantId) => jobs.noteTenant(tenantId)));
+app.use(
+  requestLog(
+    (tenantId) => jobs.noteTenant(tenantId),
+    (tenantId) => jobs.noteTenant(tenantId, "read"),
+  ),
+);
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", async (_req, res, next) => {
   try {

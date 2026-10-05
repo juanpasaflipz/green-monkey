@@ -252,10 +252,13 @@ export const ipHash = (ip: string) =>
  * finish: method, route template, status, latency, tenant and role, never
  * URLs, query strings, bodies or cookies. Successful reads log at debug so
  * KDS polling does not flood the logs; every write and every error is logged.
- * onTenantWrite receives the tenant of each successful authenticated write.
+ * onTenantWrite receives the tenant of each successful authenticated write,
+ * onTenantRead the tenant of each successful authenticated read (the jobs
+ * runner uses it to resume a tenant it has not seen since a restart).
  */
 export function requestLog(
   onTenantWrite?: (tenantId: string) => void,
+  onTenantRead?: (tenantId: string) => void,
 ): express.RequestHandler {
   return (req, res, next) => {
     const requestId = requestIdOf(req);
@@ -279,9 +282,10 @@ export function requestLog(
       else if (status < 400 && (read || QUIET_PATHS.has(req.path)))
         log.debug("http_request", attrs);
       else log.info("http_request", attrs);
-      if (!read && status < 400 && r.session?.tenantId)
+      if (status < 400 && r.session?.tenantId)
         try {
-          onTenantWrite?.(r.session.tenantId);
+          if (read) onTenantRead?.(r.session.tenantId);
+          else onTenantWrite?.(r.session.tenantId);
         } catch {
           /* observers never affect the response */
         }

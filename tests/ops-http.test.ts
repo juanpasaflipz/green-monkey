@@ -16,10 +16,12 @@ import { DomainError } from "../shared/domain.js";
 let lines: Record<string, any>[] = [];
 let server: http.Server | null = null;
 const writes: string[] = [];
+const reads: string[] = [];
 
 beforeEach(() => {
   lines = [];
   writes.length = 0;
+  reads.length = 0;
   process.env.LOG_LEVEL = "debug";
   setLogSink((line) => lines.push(JSON.parse(line)));
 });
@@ -44,7 +46,12 @@ async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
       };
     next();
   });
-  app.use(requestLog((tenantId) => writes.push(tenantId)));
+  app.use(
+    requestLog(
+      (tenantId) => writes.push(tenantId),
+      (tenantId) => reads.push(tenantId),
+    ),
+  );
   app.get("/api/limited", opsLimiter("test", 2), (req, res) =>
     res.json({ ip: clientIp(req) }),
   );
@@ -195,8 +202,15 @@ describe("request log, client address and error logging", () => {
       method: "POST",
       headers: { "x-test-tenant": "t-failed" },
     });
+    // A failed read and an anonymous read notify nobody.
+    await fetch(`${origin}/api/public/abc/orders`, {
+      headers: { "x-test-tenant": "t-read-failed" },
+    });
+    await fetch(`${origin}/api/ip`);
     await new Promise((r) => setTimeout(r, 20));
     expect(writes).toEqual(["t-write"]);
+    // Reads go to the separate observer (jobs resume after a restart, OPS-R12).
+    expect(reads).toEqual(["t-read"]);
     const read = lines.find(
       (l) => l.message === "http_request" && l.route === "/api/ip",
     )!;

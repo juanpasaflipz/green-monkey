@@ -331,8 +331,94 @@ try {
     },
   );
 
+  await check(
+    "stop() bounds a drain blocked on a hung handler, then aborts it (OPS-R12 regression)",
+    async () => {
+      const hang = kind + "_hang";
+      const aborted: string[] = [];
+      registerJobHandler(
+        hang,
+        (ctx) =>
+          new Promise((resolve) =>
+            ctx.signal.addEventListener("abort", () => {
+              aborted.push(String((ctx.signal.reason as Error)?.message));
+              resolve({ status: "retry", code: "shutdown", afterMs: 0 });
+            }),
+          ),
+        { concurrency: 1 },
+      );
+      await tenant(app, tenantId, async (tx) => {
+        for (const dedupeKey of ["h1", "h2"])
+          await enqueueJob(tx, owner, { kind: hang, dedupeKey, payload: {} });
+      });
+      const only = new Map([[hang, handlers().get(hang)!]]);
+      const runner = createJobRunner(app, { handlers: () => only });
+      // Saturated (concurrency 1, two jobs): the drain waits on the hung job.
+      const drain = runner.drainTenant(tenantId);
+      for (let i = 0; i < 100 && runner.running() === 0; i++)
+        await new Promise((r) => setTimeout(r, 20));
+      assert.equal(runner.running(), 1);
+      const started = Date.now();
+      await runner.stop(300);
+      const took = Date.now() - started;
+      // Before the fix stop() waited for the drain, i.e. for the lease
+      // timer to abort the handler (118 s).
+      assert.ok(took < 3000, `stop took ${took} ms`);
+      assert.deepEqual(aborted, ["shutdown"]);
+      assert.equal(await drain, 1, "the drain ends without claiming more");
+      const states = await admin`
+      select state, error_code from jobs where kind=${hang}`;
+      // The aborted job is released for retry; the other was never claimed.
+      assert.deepEqual(states.map((r) => `${r.state}:${r.error_code}`).sort(), [
+        "available:null",
+        "available:shutdown",
+      ]);
+      await admin`delete from jobs where kind=${hang}`;
+    },
+  );
+
+  await check(
+    "after a restart, a tenant's first authenticated read resumes its jobs; reads add no drains for known tenants (OPS-R12)",
+    async () => {
+      const resume = kind + "_resume";
+      registerJobHandler(resume, async () => ({ status: "done" }));
+      const only = new Map([[resume, handlers().get(resume)!]]);
+      const add = (dedupeKey: string) =>
+        tenant(app, tenantId, (tx) =>
+          enqueueJob(tx, owner, { kind: resume, dedupeKey, payload: {} }),
+        );
+      const state = async (dedupeKey: string) =>
+        (
+          await admin`select state from jobs where kind=${resume} and dedupe_key=${dedupeKey}`
+        )[0].state as string;
+      const until = async (dedupeKey: string, wanted: string) => {
+        for (let i = 0; i < 100; i++) {
+          if ((await state(dedupeKey)) === wanted) return;
+          await new Promise((r) => setTimeout(r, 30));
+        }
+        assert.fail(`${dedupeKey} never reached ${wanted}`);
+      };
+      // A fresh runner plays the restarted web process; no sweep runs.
+      const runner = createJobRunner(app, {
+        handlers: () => only,
+        debounceMs: 10,
+      });
+      await add("before-restart");
+      runner.noteTenant(tenantId, "read");
+      await until("before-restart", "done");
+      await add("later");
+      runner.noteTenant(tenantId, "read");
+      await new Promise((r) => setTimeout(r, 300));
+      assert.equal(await state("later"), "available");
+      runner.noteTenant(tenantId);
+      await until("later", "done");
+      await runner.stop(5000);
+      await admin`delete from jobs where kind=${resume}`;
+    },
+  );
+
   console.log(
-    `Jobs DB checks passed: ${passed()} checks (runtime-role claims, lease fencing, retry/dead, requeue, tenant scope, kitchen drain).`,
+    `Jobs DB checks passed: ${passed()} checks (runtime-role claims, lease fencing, retry/dead, requeue, tenant scope, kitchen drain, bounded stop, resume after restart).`,
   );
 } finally {
   await admin`delete from jobs where kind like ${kind + "%"}`.catch(

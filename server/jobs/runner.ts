@@ -4,9 +4,20 @@
  * The runtime role can only see one tenant's jobs at a time (RLS), so the
  * runner works per tenant: every successful authenticated write marks its
  * tenant active (server/logging.ts requestLog), which schedules a drain for
- * that tenant, and a periodic sweep revisits recently active tenants for
- * retries whose backoff has elapsed. Jobs are only created by tenant writes,
- * so an active tenant always gets its jobs claimed.
+ * that tenant, and a periodic sweep (30 s) revisits tenants active in the
+ * last 24 h for retries whose backoff has elapsed.
+ *
+ * What a handler author (cfdi) can rely on, and what not:
+ * - The tenant list lives in memory. After a restart or deploy, a tenant's
+ *   pending jobs and retries resume on its first authenticated request of
+ *   any kind (a read from a terminal, KDS or manager screen is enough), then
+ *   the sweep keeps them going. A tenant with no signed-in activity at all
+ *   is not drained until it has some.
+ * - Jobs enqueued by an unauthenticated request (public ordering) are
+ *   claimed by the sweep if the tenant is already known, otherwise on its
+ *   next authenticated request.
+ * - Delivery is at least once and latency is not bounded; handlers must be
+ *   idempotent and must not assume a job runs within a deadline.
  */
 import type postgres from "postgres";
 import { tenant } from "../db.js";
@@ -61,11 +72,18 @@ export function resolveOutcome(
 export interface JobRunner {
   /** Starts the periodic sweep. */
   start(): void;
-  /** Marks a tenant active and schedules a drain for it. */
-  noteTenant(tenantId: string): void;
+  /**
+   * A successful authenticated write marks the tenant active and schedules a
+   * drain. A read only introduces a tenant this runner does not know yet
+   * (after a restart), so reads never add load for known tenants.
+   */
+  noteTenant(tenantId: string, activity?: "write" | "read"): void;
   /** Claims and runs the tenant's runnable jobs; resolves with the number claimed. */
   drainTenant(tenantId: string): Promise<number>;
-  /** Stops claiming, waits for running handlers, then aborts the rest. */
+  /**
+   * Stops claiming and waits for in-flight drains and running handlers, all
+   * within `timeoutMs`; then aborts whatever is still running.
+   */
   stop(timeoutMs: number): Promise<void>;
   running(): number;
 }
@@ -248,8 +266,9 @@ export function createJobRunner(
       sweepTimer = setInterval(sweep, sweepMs);
       sweepTimer.unref();
     },
-    noteTenant(tenantId) {
+    noteTenant(tenantId, activity = "write") {
       if (stopping || getHandlers().size === 0) return;
+      if (activity === "read" && seen.has(tenantId)) return;
       seen.delete(tenantId);
       seen.set(tenantId, Date.now());
       // Bound memory: forget the least recently active tenant.
@@ -262,21 +281,32 @@ export function createJobRunner(
       if (sweepTimer) clearInterval(sweepTimer);
       for (const timer of scheduled.values()) clearTimeout(timer);
       scheduled.clear();
-      await Promise.allSettled([...draining.values()]);
-      const settled = Promise.allSettled(
-        [...active.values()].map((a) => a.promise),
-      );
-      const timedOut = await Promise.race([
-        settled.then(() => false),
-        new Promise<boolean>((r) =>
-          setTimeout(() => r(true), Math.max(0, timeoutMs)).unref(),
-        ),
+      // One deadline for both waits: a drain blocked on a hung handler
+      // (drainTenant awaits a running job) must not hold stop() past it.
+      const deadline = Date.now() + Math.max(0, timeoutMs);
+      const expired = () =>
+        new Promise<true>((r) =>
+          setTimeout(() => r(true), Math.max(0, deadline - Date.now())).unref(),
+        );
+      let timedOut = await Promise.race([
+        Promise.allSettled([...draining.values()]).then(() => false as const),
+        expired(),
       ]);
+      if (!timedOut)
+        timedOut = await Promise.race([
+          Promise.allSettled([...active.values()].map((a) => a.promise)).then(
+            () => false as const,
+          ),
+          expired(),
+        ]);
       if (timedOut) {
         log.warn("jobs_stop_aborting", { running: active.size });
         for (const a of active.values()) a.abort.abort(new Error("shutdown"));
         await Promise.race([
-          settled,
+          Promise.allSettled([
+            ...[...active.values()].map((a) => a.promise),
+            ...draining.values(),
+          ]),
           new Promise((r) => setTimeout(r, 1000).unref()),
         ]);
       }
