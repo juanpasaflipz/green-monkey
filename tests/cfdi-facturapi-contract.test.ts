@@ -19,6 +19,7 @@ import {
   FacturapiError,
   keyKindOf,
   resolveBaseUrl,
+  stampFacts,
   type FacturapiKey,
 } from "../server/cfdi/facturapi";
 import {
@@ -730,6 +731,75 @@ describe("Facturapi client contract", () => {
     });
   });
 
+  it("3b. a documented-minimal invoice (id, created_at, livemode, status) parses; stampFacts requires uuid, total and a date only where a stamp is recorded", async () => {
+    const minimal = {
+      id: "590ce6c56d04f840aa8438af",
+      created_at: "2026-10-05T18:00:00.000Z",
+      livemode: false,
+      status: "pending",
+    };
+    // A 202 pending object without total, date or type (CFDI-ADV-5).
+    let r = replay(
+      () => new Response(JSON.stringify(minimal), { status: 202 }),
+    );
+    const pending = await r.client.createInvoice(TEST_KEY, sampleInvoice());
+    expect(pending).toMatchObject({
+      httpStatus: 202,
+      invoice: { status: "pending", cancellation_status: "none" },
+    });
+    // The same shape is found while adopting by external_id, so a document can always be adopted.
+    const external = "0b6a1a8e-3f1e-4c55-9d1e-2f6d1c0a9b11";
+    r = replay(
+      () =>
+        new Response(
+          JSON.stringify({
+            data: [{ ...minimal, external_id: external }],
+          }),
+          { status: 200 },
+        ),
+    );
+    expect(
+      await r.client.findInvoiceByExternalId(TEST_KEY, external),
+    ).toMatchObject({ id: minimal.id, status: "pending" });
+
+    // Recording a stamp: the documented valid example gives the facts in centavos.
+    const valid = invoiceResponse.parse(fixture("invoice-valid.json").body);
+    const facts = stampFacts(valid);
+    expect(facts.uuid).toBe(valid.uuid);
+    expect(facts.total).toBe(Math.round(valid.total! * 100));
+    expect(facts.stampedAt).toBe(valid.stamp?.date ?? valid.date);
+    // A "valid" invoice without uuid, total or any date is drift: an unreadable 2xx whose outcome
+    // is unknown (adopt later), never a failure.
+    for (const [over, what] of [
+      [{ uuid: null }, "uuid"],
+      [{ total: null }, "total"],
+      [{ date: null, stamp: null }, "date"],
+      [{ status: "pending" }, "status"],
+    ] as const) {
+      const broken = invoiceResponse.parse({
+        ...(fixture("invoice-valid.json").body as object),
+        ...over,
+      });
+      let thrown: unknown = null;
+      try {
+        stampFacts(broken);
+      } catch (e) {
+        thrown = e;
+      }
+      expect(thrown, what).toBeInstanceOf(FacturapiError);
+      expect(thrown, what).toMatchObject({
+        kind: "schema",
+        status: 200,
+        code: "cfdi_provider_schema",
+      });
+      expect((thrown as Error).message).toContain(what);
+      expect(classifyFacturapiError(thrown)).toMatchObject({
+        retry: false,
+        unknownOutcome: true,
+      });
+    }
+  });
+
   it("4. cancelInvoice sends DELETE /invoices/{id}?motive=01&substitution=<uuid> and parses cancellation_status", async () => {
     const substitute = "8e5b2b7a-5c0f-4d1e-9b9a-1f2e3d4c5b6a";
     let r = replay(fixture("invoice-canceled.json"));
@@ -1153,6 +1223,46 @@ describe("Facturapi client contract", () => {
         baseUrl: "https://facturapi.io.evil.example/v2",
       }),
     ).toThrow("cfdi_base_url_not_allowed");
+    // CFDI-ADV-6: a deployed process (APP_ENV staging or production) only ever uses the official
+    // URL, so a loopback listener can never receive a provider key there.
+    for (const appEnv of ["staging", "production", " production "]) {
+      expect(resolveBaseUrl(undefined, appEnv)).toBe(FACTURAPI_BASE_URL);
+      expect(resolveBaseUrl(`${FACTURAPI_BASE_URL}/`, appEnv)).toBe(
+        FACTURAPI_BASE_URL,
+      );
+      for (const local of [
+        "http://127.0.0.1:4799/v2",
+        "http://localhost:4799/v2",
+        "https://[::1]:4799/v2",
+      ])
+        expect(() => resolveBaseUrl(local, appEnv), appEnv).toThrow(
+          "cfdi_base_url_not_allowed",
+        );
+    }
+    for (const appEnv of [undefined, "", "development", "test"])
+      expect(resolveBaseUrl("http://127.0.0.1:4799/v2", appEnv)).toBe(
+        "http://127.0.0.1:4799/v2",
+      );
+    const saved = {
+      APP_ENV: process.env.APP_ENV,
+      FACTURAPI_BASE_URL: process.env.FACTURAPI_BASE_URL,
+    };
+    try {
+      process.env.APP_ENV = "production";
+      process.env.FACTURAPI_BASE_URL = "http://127.0.0.1:4799/v2";
+      expect(() => createFacturapiClient()).toThrow(
+        "cfdi_base_url_not_allowed",
+      );
+      expect(() =>
+        createFacturapiClient({ baseUrl: "http://127.0.0.1:4799/v2" }),
+      ).toThrow("cfdi_base_url_not_allowed");
+      delete process.env.FACTURAPI_BASE_URL;
+      expect(() => createFacturapiClient()).not.toThrow();
+    } finally {
+      for (const [name, value] of Object.entries(saved))
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+    }
 
     expect(keyKindOf("sk_user_x")).toBe("user");
     expect(keyKindOf("sk_test_x")).toBe("test");

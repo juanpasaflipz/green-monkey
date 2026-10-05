@@ -217,6 +217,50 @@ export function assertLivemode(
     );
 }
 
+/**
+ * What a stamping job records from a stamped invoice (spec §4.8.3 step 6): the UUID, the total in
+ * centavos and the stamp date. The response schema keeps these optional (see invoiceResponse); here
+ * they are required. A stamped invoice without them is provider drift, thrown as an unreadable 2xx
+ * (kind schema, status 200), which classifyFacturapiError treats as an unknown outcome: the
+ * document is adopted later, never failed.
+ */
+export function stampFacts(invoice: FInvoice): {
+  uuid: string;
+  /** Centavos. */
+  total: number;
+  stampedAt: string;
+  folioNumber: number | null;
+  verificationUrl: string | null;
+} {
+  const stampedAt = invoice.stamp?.date ?? invoice.date ?? null;
+  const total =
+    invoice.total === null || invoice.total === undefined
+      ? null
+      : Math.round(invoice.total * 100);
+  const missing = [
+    invoice.status === "valid" || invoice.status === "canceled"
+      ? null
+      : "status",
+    invoice.uuid ? null : "uuid",
+    total !== null && Number.isSafeInteger(total) ? null : "total",
+    stampedAt && !Number.isNaN(Date.parse(stampedAt)) ? null : "date",
+  ].filter((m) => m !== null);
+  if (missing.length || !invoice.uuid || total === null || !stampedAt)
+    throw new FacturapiError(
+      "schema",
+      200,
+      "cfdi_provider_schema",
+      `stamped invoice without ${missing.join(", ") || "stamp data"}`,
+    );
+  return {
+    uuid: invoice.uuid,
+    total,
+    stampedAt,
+    folioNumber: invoice.folio_number ?? null,
+    verificationUrl: invoice.verification_url ?? null,
+  };
+}
+
 function isLoopback(hostname: string): boolean {
   const host = hostname.replace(/^\[|\]$/g, "").toLowerCase();
   return (
@@ -226,11 +270,19 @@ function isLoopback(hostname: string): boolean {
 
 /**
  * The official base URL, or an http(s) URL on a loopback host (the fake in development and tests).
- * server/cfdi/config.ts additionally restricts the override to APP_ENV development/test.
+ * A deployed process (APP_ENV staging or production) only ever talks to the official URL: the
+ * override is refused here as well as by server/cfdi/config.ts (not built yet), so a worker started
+ * with FACTURAPI_BASE_URL pointing at a local listener can never send it a provider key.
  */
-export function resolveBaseUrl(value: string | undefined): string {
+export function resolveBaseUrl(
+  value: string | undefined,
+  appEnv: string | undefined = process.env.APP_ENV,
+): string {
   const raw = (value ?? "").trim().replace(/\/+$/, "") || FACTURAPI_BASE_URL;
   if (raw === FACTURAPI_BASE_URL) return raw;
+  const env = (appEnv ?? "").trim();
+  if (env === "staging" || env === "production")
+    throw new Error("cfdi_base_url_not_allowed");
   let url: URL;
   try {
     url = new URL(raw);
