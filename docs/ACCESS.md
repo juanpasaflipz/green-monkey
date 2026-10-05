@@ -43,7 +43,8 @@ a stolen device.
   pairing screen (device codes) instead of a generic error.
 
 **Step-up**: on a terminal, refunds, paid-outs, manager self-approved voids and
-every staff, device and pairing-code command need a PIN entered within
+every staff, device and pairing-code command (including the legacy
+`POST /api/team/save`) need a PIN entered within
 `ACCESS_STEP_UP_SECONDS` (default 120). The client asks "Confirma con tu PIN"
 and retries the identical request (same `operationId`). Personal devices are
 exempt.
@@ -52,9 +53,20 @@ exempt.
 overrides; kitchen role and personal devices never lock by default). The lock
 keeps the workspace mounted: the same employee's PIN resumes with the cart and
 open dialogs intact; another employee's PIN starts their own session and a
-fresh workspace. Offline, the PIN cannot be verified, so the locked employee may
-"Continuar como {name}" while the cached offline window is still valid; switching
-user needs a connection.
+fresh workspace. The lock is remembered per session in the browser
+(`localStorage["gm-lock"]`) until a PIN unlock, a new sign-in or a sign-out, so
+a reload, a new tab or an offline restore of the cached session opens locked.
+A restore after a pause longer than the device's auto-lock (last input in
+`localStorage["gm-activity"]`) also opens locked.
+
+Offline, the PIN cannot be verified, so the locked employee may "Continuar como
+{name}" (idle or manual lock only) while the cached offline window is still
+valid. That soft unlock is not a PIN unlock: the lock stays remembered, a reload
+asks again, and the screen locks again as soon as the connection returns or the
+offline window ends, so the PIN is required before any online work. Switching
+user needs a connection. After a server session code (ended, expired, revoked)
+there is no soft unlock, and a revoked session is also removed from the offline
+cache.
 
 ## Pairing a terminal
 
@@ -139,7 +151,10 @@ reconciliation). Offline, "Sin conexión" offers to lock the screen instead.
 Logout always succeeds: the server endpoint never fails on an invalid session,
 and a logout that cannot reach the server is remembered
 (`localStorage["gm-logout-pending"]`), blocks restoring the cached session, and
-completes on the next load or reconnect.
+completes on the next load or reconnect. A PIN sign-in on the device clears it
+(that sign-in already ended or deliberately resumed the old session), so a late
+logout never ends the new session. The sign-in screen says when the device is
+offline and fills in by itself when the connection returns.
 
 ## Staff and devices
 
@@ -155,6 +170,11 @@ completes on the next load or reconnect.
   personal device is used by several employees. Rename, auto-lock, end the live
   session, unpair (an open drawer needs an explicit acknowledgement and stays
   open for reconciliation in Caja).
+- **Free selling slot**: the first device that signs in takes the Free selling
+  slot, and in a new restaurant that is usually the owner's phone (Google
+  entry). A terminal paired afterwards shows "Free: … no está seleccionado"
+  until the owner selects it in "Registro y equipo Free"; the pairing dialog
+  says so when the plan is Free.
 
 ## Configuration
 
@@ -192,8 +212,11 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
 - Clearing a terminal's site data unpairs it; it then shows the Google entry
   like any unpaired browser. Owners must never leave a personal Google session
   in a terminal's browser profile.
-- Offline unlock without a PIN ("Continuar como") gives accountability only;
-  sensitive commands need a connection anyway.
+- Offline unlock without a PIN ("Continuar como") attributes offline sales to
+  the locked employee without proof that they are the one at the terminal. It
+  lasts only while the device is offline and its offline window is valid, and
+  re-locks on reconnect, so it never reaches online commands. Clearing the
+  browser's site data removes the remembered lock, but also unpairs the device.
 - Insider PIN guessing on a paired terminal is bounded (about 50 attempts per
   12 h per device) but not impossible against legacy 4-digit secrets.
 - Revoking a device with an open drawer leaves that drawer open with no device
@@ -217,11 +240,11 @@ This keeps the personal data proportional to the purpose (LFPDPPP 2025,
 
 ## Verification (local)
 
-- `npm run test:db:access` (26 checks), plus the updated voids, owner and
+- `npm run test:db:access` (29 checks), plus the updated voids, owner and
   offline-recovery suites in `npm run test:db:qualification`.
 - `npm run build && npm run test:access-http` (9 checks against the compiled
   server, with and without `DEMO_TENANT_ID`).
-- `tests/browser/access.spec.ts` (11 flows, axe at 1440 and 390, no horizontal
+- `tests/browser/access.spec.ts` (12 flows, axe at 1440 and 390, no horizontal
   overflow at 1440/1024/768/390); evidence in `docs/evidence/access-*.png`.
 - `tests/access.test.ts` and `tests/access-client.test.ts` (unit).
 
