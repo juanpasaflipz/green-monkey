@@ -659,6 +659,15 @@ async function recompileLinked(
       : (doc.data.groupIds ?? []);
     const groups = await compileGroups(tx, groupIds);
     if (bumpVersions && !unlink) checkProductGroups(doc.data.kind, groups);
+    // Unlinking must not leave an active combo without a required choice; an
+    // archived one is checked again when it is restored.
+    if (
+      unlink &&
+      !doc.data.archived &&
+      doc.data.kind === "combo" &&
+      !groups.some((g) => g.min >= 1)
+    )
+      throw new DomainError("combo_requires_choice");
     const data: Product = {
       ...doc.data,
       groupIds,

@@ -104,6 +104,8 @@ export default defineArea({
     menuGroupRecompile: "Se actualizarán {n} productos",
     menuGroupArchiveConfirm:
       "Se quitará de {n} productos. Las órdenes anteriores no cambian.",
+    menuGroupArchiveCombos:
+      "No se puede archivar: es el único grupo obligatorio de {names}. Agrega otro grupo obligatorio a esos combos o cámbialos a Producto.",
     menuGroupsEmpty: "Aún no hay grupos de modificadores",
     menuGroupsEmptyHint:
       "Crea grupos como salsa, tortilla o extras y úsalos en varios productos.",
@@ -353,6 +355,8 @@ export default defineArea({
     menuGroupRecompile: "{n} items will be updated",
     menuGroupArchiveConfirm:
       "It will be removed from {n} items. Past orders do not change.",
+    menuGroupArchiveCombos:
+      "This group cannot be archived: it is the only required group of {names}. Add another required group to those combos or change them to Item.",
     menuGroupsEmpty: "No modifier groups yet",
     menuGroupsEmptyHint:
       "Create groups such as salsa, tortilla or extras and reuse them across items.",

@@ -683,6 +683,88 @@ try {
     );
   });
 
+  await test("archiving the only required group of an active combo is refused; a combo that keeps one is unlinked", async () => {
+    const save = (extra: Record<string, unknown>) =>
+      run(manager, (tx) => saveGroup(tx, manager, groupBody(extra)));
+    const only = (await save({ name: { es: "Tacos del combo" } })).group;
+    const extras = (await save({ name: { es: "Extras" }, min: 0, max: 2 }))
+      .group;
+    const drink = (await save({ name: { es: "Bebida" } })).group;
+    const lonely = await newProduct(manager, tacos.id, {
+      kind: "combo",
+      groupIds: [only.id, extras.id],
+    });
+    const archiveOnly = () =>
+      run(manager, (tx) =>
+        archiveGroup(tx, manager, {
+          operationId: op(),
+          id: only.id,
+          expectedVersion: only.version,
+          archived: true,
+        }),
+      );
+    await rejects(archiveOnly(), "combo_requires_choice");
+    const [kept] = await run(
+      manager,
+      (tx) =>
+        tx`select archived_at,version from modifier_groups where id=${only.id}`,
+    );
+    assert.equal(kept.archived_at, null, "the refused archive rolled back");
+    assert.equal(kept.version, only.version);
+    assert.equal(
+      (await run(manager, catalog)).find((p) => p.id === lonely.id)!.version,
+      lonely.version,
+    );
+    // With a second required group the combo stays valid and is unlinked.
+    const fixed = await run(manager, (tx) =>
+      saveMenuProduct(tx, manager, {
+        ...productBody(tacos.id, {
+          kind: "combo",
+          groupIds: [only.id, extras.id, drink.id],
+        }),
+        id: lonely.id,
+        expectedVersion: lonely.version,
+        name: lonely.name,
+      }),
+    );
+    // An archived combo does not block; its restore re-checks the rule.
+    const shelved = await newProduct(manager, tacos.id, {
+      kind: "combo",
+      groupIds: [only.id],
+    });
+    const archivedCombo = await run(manager, (tx) =>
+      archiveProduct(tx, manager, {
+        operationId: op(),
+        id: shelved.id,
+        expectedVersion: shelved.version,
+        archived: true,
+      }),
+    );
+    const result = await archiveOnly();
+    assert.equal(result.unlinked, 2);
+    const docs = await run(
+      manager,
+      (tx) =>
+        tx`select data from catalog where id in (${fixed.id},${shelved.id})`,
+    );
+    const doc = (id: string) =>
+      docs.find((r: { data: Product }) => r.data.id === id)!.data as Product;
+    assert.deepEqual(doc(fixed.id).groupIds, [extras.id, drink.id]);
+    assert.equal(doc(fixed.id).kind, "combo");
+    assert.deepEqual(doc(shelved.id).groupIds, []);
+    await rejects(
+      run(manager, (tx) =>
+        archiveProduct(tx, manager, {
+          operationId: op(),
+          id: shelved.id,
+          expectedVersion: archivedCombo.version + 1,
+          archived: false,
+        }),
+      ),
+      "combo_requires_choice",
+    );
+  });
+
   await test("a category with active products cannot be archived", async () => {
     const category = await newCategory(
       manager,

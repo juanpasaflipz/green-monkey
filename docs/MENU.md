@@ -42,7 +42,10 @@ changed", and 86-ing an item never sends queued offline sales to review.
 Choice ids are unique across the restaurant. Saving a group recompiles every
 linked product (their versions bump and a `recipe_versions` row is written).
 Archiving a group unlinks it from every product; past order lines keep their
-snapshot. Restoring a group does not re-link it.
+snapshot. Archiving is refused with `combo_requires_choice` when the group is the
+only required group of an active combo (the confirmation names those combos);
+an archived combo is checked again when it is restored. Restoring a group does
+not re-link it.
 
 **Availability ("86") is live state.** The switches in the product list, the
 product editor and the group editor save at once, last write wins, bump the menu

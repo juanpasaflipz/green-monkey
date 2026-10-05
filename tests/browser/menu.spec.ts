@@ -146,6 +146,23 @@ test("manager builds a taquería menu with required, optional and repeatable cho
     page.locator(".menu-row").filter({ hasText: `Combo taquero ${id}` }),
   ).toContainText("Combo");
 
+  // The combo's only required group cannot be archived out from under it.
+  await page.getByRole("tab", { name: "Modificadores" }).click();
+  await page
+    .locator(".menu-group-card")
+    .filter({ hasText: `Tacos del combo ${id}` })
+    .getByRole("button", { name: "Archivar", exact: true })
+    .click();
+  dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("alert")).toContainText(
+    `es el único grupo obligatorio de Combo taquero ${id}`,
+  );
+  await expect(
+    dialog.getByRole("button", { name: "Archivar", exact: true }),
+  ).toBeDisabled();
+  await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(dialog).not.toBeVisible();
+
   await sell(page);
   const search = page.getByRole("textbox", { name: "Buscar producto…" });
   await search.fill(id);

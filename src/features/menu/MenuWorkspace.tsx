@@ -31,6 +31,16 @@ function requiredSoldOut(p: Product) {
       g.options.filter((o) => o.available).length < (g.repeat ? 1 : g.min),
   );
 }
+/** Active combos whose only required group is `groupId` (archive would strand them). */
+function strandedCombos(products: Product[], groupId: string) {
+  return products.filter(
+    (p) =>
+      !p.archived &&
+      p.kind === "combo" &&
+      (p.groupIds ?? []).includes(groupId) &&
+      !p.groups.some((g) => g.id !== groupId && g.min >= 1),
+  );
+}
 function swap<T>(list: T[], index: number, delta: number): T[] {
   const next = [...list];
   const [item] = next.splice(index, 1);
@@ -119,6 +129,9 @@ export function MenuWorkspace({
     );
 
   const locked = !online || busy;
+  const stranded = archiveGroup
+    ? strandedCombos(payload.products, archiveGroup.id)
+    : [];
   const categories = payload.categories.filter(
     (c) => showArchived || !c.archived,
   );
@@ -623,10 +636,17 @@ export function MenuWorkspace({
           <p>
             {t("menuGroupArchiveConfirm", { n: archiveGroup.usedBy.length })}
           </p>
+          {stranded.length > 0 && (
+            <p role="alert" className="error">
+              {t("menuGroupArchiveCombos", {
+                names: stranded.map((p) => p.name[locale]).join(", "),
+              })}
+            </p>
+          )}
           <div className="row wrap">
             <Button
               variant="danger"
-              disabled={locked}
+              disabled={locked || stranded.length > 0}
               onClick={async () => {
                 const g = archiveGroup;
                 setArchiveGroup(null);
