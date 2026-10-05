@@ -1204,10 +1204,12 @@ test("OWNER-6: an 86 while a product is in the POS cart flags that line with Qui
     await page.evaluate(() =>
       window.dispatchEvent(new Event("gm-menu-refresh")),
     );
-    const stale = cart.locator(".order-line.line-unavailable");
+    // Since service merged, the POS cart flags the line with its own CartLine
+    // (QR/kiosk keep menu's UnavailableLines, tested below).
+    const stale = cart.locator(".order-line.line-error");
     await expect(stale).toContainText(name);
     await expect(stale.getByRole("alert")).toHaveText(
-      "Ya no está disponible. Quítalo de la orden.",
+      "No disponible. Quítalo para continuar.",
     );
     await expect(
       cart.locator(".order-line").filter({ hasText: "Taco de hongos" }),
@@ -1221,7 +1223,7 @@ test("OWNER-6: an 86 while a product is in the POS cart flags that line with Qui
     await expect(
       page.getByRole("button", { name: "Cobrar", exact: true }),
     ).toBeDisabled();
-    await stale.getByRole("button", { name: `Quitar ${name}` }).click();
+    await stale.getByRole("button", { name: "Quitar", exact: true }).click();
     await expect(stale).toHaveCount(0);
     await expect(cart.locator(".order-line")).toHaveCount(1);
     await expect(send).toBeEnabled();

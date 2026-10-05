@@ -9,8 +9,8 @@ import "./cart-lines.css";
 /**
  * Cart lines that no longer price after a catalog refresh (an 86'd or
  * archived product, a choice that changed), each with "Quitar", so the
- * person sees exactly which line blocks sending. Used by the POS cart until
- * service's CartLine replaces it at merge, and by QR/kiosk ordering.
+ * person sees exactly which line blocks sending. Used by QR/kiosk ordering;
+ * the POS cart flags such lines with service's CartLine.
  */
 export function UnavailableLines({
   lines,
