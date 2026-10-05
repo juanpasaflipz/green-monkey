@@ -113,7 +113,8 @@ reorder point, an optional par level and an optional opening stock (one
 the item has movements or is used in any recipe. An item used by an active recipe
 cannot be archived (`stock_in_use`); archived items leave the recipe pickers and
 Existencias. Creating and editing stock items, and recipe or cost changes, need
-Pro; archiving does not.
+Pro; archiving does not. A unit change takes the menu lock first, so it cannot
+race a menu save that links the item to a recipe written in the old unit.
 
 **History.** Insumos → Movimientos lists each movement with its translated cause
 (Venta, Compra recibida, Merma, Conteo físico, Existencia inicial, Anulación,

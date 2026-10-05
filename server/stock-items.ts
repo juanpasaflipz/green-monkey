@@ -134,6 +134,12 @@ export async function saveStockItem(tx: Tx, s: Session, raw: unknown) {
     await requireSelling(tx, s);
     await requirePro(tx);
     await lockStockSetup(tx);
+    // A unit change decides from recipe usage, so it must not race a menu
+    // save that links this item with quantities in the old unit: take the
+    // menu_state lock first, in the same order as archiveStockItem. Stock-item
+    // saves serialize on lockStockSetup, so the unit peeked here is stable.
+    const current = await loadItem(tx, p.id);
+    if (current && current.unit !== p.unit) await bumpMenuRevision(tx);
     const old = await loadItem(tx, p.id, true);
     if ((old?.settings_version ?? 0) !== p.expectedVersion)
       throw new DomainError("menu_changed", 409);

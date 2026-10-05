@@ -27,6 +27,7 @@ import {
   archiveCategory,
   archiveGroup,
   archiveProduct,
+  bumpMenuRevision,
   menuEditor,
   reorderCategories,
   reorderProducts,
@@ -1777,6 +1778,49 @@ try {
       ),
     );
     assert.deepEqual(await drift(), []);
+  });
+
+  await test("a unit change waits for a menu save that links the item, then refuses with unit_locked", async () => {
+    const stockId = await newStock(manager, "Cebolla", "kg");
+    const [item] = (
+      await run(manager, (tx) => listStockItems(tx, manager))
+    ).items.filter((i) => i.id === stockId);
+    let locked!: () => void;
+    const menuLocked = new Promise<void>((resolve) => (locked = resolve));
+    // A menu save holds the menu_state lock while it links a kg recipe.
+    const link = run(manager, async (tx) => {
+      await bumpMenuRevision(tx);
+      locked();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      return saveMenuProduct(
+        tx,
+        manager,
+        productBody(tacos.id, { recipe: [{ stockId, quantity: "0.05" }] }),
+      );
+    });
+    await menuLocked;
+    const change = run(manager, (tx) =>
+      saveStockItem(tx, manager, {
+        operationId: op(),
+        id: stockId,
+        expectedVersion: item.settingsVersion,
+        name: item.name,
+        unit: "g",
+        kind: "raw",
+        threshold: "0",
+        parLevel: null,
+        openingQuantity: null,
+      }),
+    );
+    const [linked, changed] = await Promise.allSettled([link, change]);
+    assert.equal(linked.status, "fulfilled");
+    assert.equal(changed.status, "rejected");
+    assert.equal((changed as PromiseRejectedResult).reason.code, "unit_locked");
+    const [after] = await run(
+      manager,
+      (tx) => tx`select unit from stock_items where id=${stockId}`,
+    );
+    assert.equal(after.unit, "kg");
   });
 
   await test("a stock item unit is locked after movements or recipe use", async () => {
