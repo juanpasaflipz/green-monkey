@@ -1454,16 +1454,33 @@ export const SYNC_TO_CHARGE_CODES = [
  *   session (E2), so it is named as such: syncing now cannot clear it;
  * - a server order on screen without one of this device's synced rounds: it
  *   is being read again, and its amount was taken from the old total.
+ *
+ * Every online charge path calls it: Selling's Cobrar and the grouped
+ * settlement in Órdenes (OFF-R29).
  */
 export async function assertNoUnsyncedRecords(
   session: Session,
   order: Order | null,
 ): Promise<void> {
   if (!order) return;
-  const rows = liveV3(await deviceRows(session)());
+  const code = chargeBlockFromRows(session, order, await deviceRows(session)());
+  if (code) fail(code);
+}
+
+/**
+ * The guard code that blocks charging `order` online, or null, decided from
+ * this device's rows. Pure, so a liveQuery can show the reason next to each
+ * order before anyone tries to charge it (OFF-R29).
+ */
+export function chargeBlockFromRows(
+  session: Session,
+  order: Order,
+  rowsOfDevice: Pending[],
+): string | null {
+  const rows = liveV3(rowsOfDevice);
   const byId = new Map(rows.map((row) => [row.id, row]));
   const orderId = serverIdOf(order, byId);
-  if (!orderId) return;
+  if (!orderId) return null;
   const forOrder = rows.filter((row) => {
     const body = row.body as OfflineRecordV3;
     return (
@@ -1475,14 +1492,14 @@ export async function assertNoUnsyncedRecords(
   if (
     forOrder.some((row) => kindOf(row) === "payment" && row.status !== "synced")
   )
-    fail("offline_payment_pending_for_order");
+    return "offline_payment_pending_for_order";
   const rounds = forOrder.filter((row) => kindOf(row) === "round");
   if (rounds.some((row) => row.status === "conflict"))
-    fail("offline_round_review_for_order");
+    return "offline_round_review_for_order";
   const unsynced = rounds.filter((row) => row.status !== "synced");
   if (unsynced.some((row) => row.scope === scope(session)))
-    fail("offline_round_pending_for_order");
-  if (unsynced.length) fail("offline_round_other_employee_for_order");
+    return "offline_round_pending_for_order";
+  if (unsynced.length) return "offline_round_other_employee_for_order";
   if (
     isServerOrder(order) &&
     rounds.some((row) => {
@@ -1494,7 +1511,8 @@ export async function assertNoUnsyncedRecords(
       );
     })
   )
-    fail("offline_order_outdated");
+    return "offline_order_outdated";
+  return null;
 }
 
 /**

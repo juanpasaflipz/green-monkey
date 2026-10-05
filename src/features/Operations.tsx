@@ -21,6 +21,10 @@ import { api } from "../api";
 import { db, isResolved } from "../offline";
 import { OfflineKitchenReview } from "./offline/OfflineKitchenReview";
 import { ArchivedDrawerNote } from "./offline/ArchivedDrawerNote";
+import {
+  onlineChargeRefusal,
+  useOnlineChargeBlocks,
+} from "./offline/useOnlineChargeBlocks";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 export function Operations({
   view,
@@ -54,6 +58,13 @@ export function Operations({
   const [station, setStation] = useState("kitchen");
   const [detail, setDetail] = useState<any[] | null>(null);
   const [lastRefresh, setLastRefresh] = useState("");
+  // OFF-R29: orders with this device's unsynced offline records are not
+  // charged online (Cobrar juntas) until those records sync.
+  const chargeBlocks = useOnlineChargeBlocks(
+    session,
+    view === "orders" && Array.isArray(data) ? data : null,
+    () => void load(),
+  );
   async function load() {
     try {
       if (view === "sync") setData(null);
@@ -193,7 +204,7 @@ export function Operations({
                         <input
                           type="checkbox"
                           aria-label={t("selectOrder") + " #" + o.number}
-                          disabled={o.paid >= o.total}
+                          disabled={o.paid >= o.total || !!chargeBlocks[o.id]}
                           checked={selectedOrders.includes(o.id)}
                           onChange={() =>
                             setSelectedOrders((ids) =>
@@ -259,6 +270,11 @@ export function Operations({
                           )}
                         </Badge>{" "}
                         <Badge>{t(o.state as Key)}</Badge>
+                        {chargeBlocks[o.id] && o.paid < o.total && (
+                          <p className="tiny warning-panel" role="status">
+                            {translateError(chargeBlocks[o.id]!, locale)}
+                          </p>
+                        )}
                       </div>
                       <div className="order-summary-actions">
                         <strong>{m(o.total - o.paid)}</strong>
@@ -838,14 +854,26 @@ export function Operations({
                 const operationId = crypto.randomUUID();
                 try {
                   if (modal.kind === "settlement") {
+                    const chosen: Order[] = data.filter((o: Order) =>
+                      selectedOrders.includes(o.id),
+                    );
+                    // OFF-R29: never while this device has unsynced offline
+                    // rounds or payments of one of them.
+                    const refused = await onlineChargeRefusal(
+                      session,
+                      chosen,
+                      locale,
+                    );
+                    if (refused) {
+                      setError(refused);
+                      return;
+                    }
                     await action("/settlements", {
                       operationId,
-                      orders: data
-                        .filter((o: Order) => selectedOrders.includes(o.id))
-                        .map((o: Order) => ({
-                          id: o.id,
-                          amount: o.total - o.paid,
-                        })),
+                      orders: chosen.map((o: Order) => ({
+                        id: o.id,
+                        amount: o.total - o.paid,
+                      })),
                       received: parseAmount(String(f.get("amount"))),
                     });
                     setSelectedOrders([]);

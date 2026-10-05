@@ -128,6 +128,16 @@ connection returns; once their record syncs, selling continues on the server ord
 
 What this does and does not guarantee about charging twice, or too little:
 
+- "Charging that order online" means every path on this device that charges a
+  server order: **Cobrar** in selling, and **Órdenes › Cobrar juntas** (the
+  grouped settlement), which checks every selected order before it sends
+  anything and names the order it refuses ("#142 · …"). In Órdenes, an order
+  with such records cannot be selected and shows the reason until they sync.
+  Merge note: service's settlement dialog (`SettlementDialog.tsx`, which posts
+  `/settlements` directly) must call `guardOnlineCharges(session, orders)` from
+  `src/offline-queue.ts` before it posts; no other charge path exists in this
+  wave. The retry of a payment attempt is not a new charge: it resends the same
+  attempt, and no offline payment can be saved for an order while it exists.
 - On this device, while an offline payment for an order is still unresolved,
   charging that order online is refused ("Esta orden tiene un pago por
   confirmar…"), and selling reads the order again as soon as the payment syncs.

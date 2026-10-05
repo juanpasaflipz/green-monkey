@@ -168,6 +168,25 @@ const getRow = (page: Page, id: string) =>
       }),
     id,
   );
+const deleteRow = (page: Page, id: string) =>
+  page.evaluate(
+    (key) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open("green-monkey-v1");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result,
+            tx = db.transaction("pending", "readwrite");
+          tx.objectStore("pending").delete(key);
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+      }),
+    id,
+  );
 const allRows = (page: Page) =>
   page.evaluate(
     () =>
@@ -1865,6 +1884,136 @@ test.describe("offline table service (Beta) turned on", () => {
     expect(
       (await allRows(page)).filter((row) => row.status === "conflict"),
     ).toHaveLength(0);
+  });
+
+  test("Cobrar juntas waits for this device's offline records of every order it charges", async ({
+    page,
+    context,
+  }) => {
+    // Regression OFF-R29: Órdenes › Cobrar juntas charged the server balance
+    // of an order whose offline round had not synced, so the round's items
+    // were never charged and the round was then refused on the paid check.
+    test.setTimeout(120_000);
+    await page.addInitScript(() => {
+      window.print = () => {};
+    });
+    const settlements: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "POST" &&
+        new URL(request.url()).pathname === "/api/settlements"
+      )
+        settlements.push(request.url());
+    });
+    await login(page);
+    await openDrawer(page);
+    const order = await sendTableOnline(page, "Mesa 01");
+    const other = await page.evaluate(async () => {
+      const s = await (await fetch("/api/session")).json();
+      const catalog = await (await fetch("/api/catalog")).json();
+      const taco = catalog.find((p: any) => p.name.es === "Taco de hongos");
+      const response = await fetch("/api/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-csrf-token": s.csrf,
+        },
+        body: JSON.stringify({
+          operationId: crypto.randomUUID(),
+          lines: [
+            {
+              id: crypto.randomUUID(),
+              productId: taco.id,
+              quantity: 1,
+              options: [],
+              note: "",
+            },
+          ],
+          mode: "takeaway",
+          tableId: null,
+          name: "Settlement " + crypto.randomUUID(),
+          note: "",
+          channel: "pos",
+        }),
+      });
+      return (await response.json()) as { id: string; number: number };
+    });
+    // During the outage a round is added to the first order offline.
+    await goOffline(context, page);
+    await product(page, "Agua de jamaica").click();
+    await page
+      .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+      .click();
+    await expect(page.locator(".existing")).toContainText("Agua de jamaica");
+    // The connection returns, but the round's sync keeps failing (transient).
+    await holdSync(context);
+    await context.setOffline(false);
+    await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    const box = (n: number) =>
+      page.getByRole("checkbox", {
+        name: `Seleccionar orden #${n}`,
+        exact: true,
+      });
+    const card = (n: number) =>
+      page.getByRole("article").filter({ has: box(n) });
+    // The order cannot be selected, and says why.
+    await expect(box(order.number)).toBeDisabled();
+    await expect(card(order.number)).toContainText(
+      "productos guardados sin conexión que aún no se sincronizan",
+    );
+    await expect(box(other.number)).toBeEnabled();
+    // Once the round syncs, the list is read again with its items.
+    await releaseSync(context);
+    await expect(box(order.number)).toBeEnabled({ timeout: 60_000 });
+    const withRound = await serverOrder(page, order.id);
+    expect(withRound.total).toBeGreaterThan(order.total);
+    await box(order.number).check();
+    await box(other.number).check();
+    // A record the list has not seen yet (another employee's offline payment
+    // of the second order, written by another tab or a restored backup): the
+    // charge itself is refused before any request, naming the order.
+    const s = await session(page);
+    const foreign = crypto.randomUUID();
+    await putRow(page, {
+      id: foreign,
+      scope: `${s.tenantId}:${s.deviceId}:${crypto.randomUUID()}`,
+      status: "pending",
+      attempts: 0,
+      nextAt: 0,
+      body: {
+        kind: "payment",
+        operationId: foreign,
+        target: { orderId: other.id },
+        payment: {
+          method: "cash",
+          amount: 100,
+          tip: 0,
+          received: 100,
+          reference: "",
+          externalConfirmed: false,
+        },
+        recordedAt: new Date().toISOString(),
+      },
+    });
+    await page
+      .getByRole("button", { name: "Cobrar juntas (2)", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toContainText(
+      `#${other.number} · Esta orden tiene un pago por confirmar`,
+    );
+    expect(settlements, "nothing is charged").toEqual([]);
+    // Without it, both orders are charged in full, the round's items included.
+    await deleteRow(page, foreign);
+    await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    expect(settlements).toHaveLength(1);
+    const paid = await serverOrder(page, order.id);
+    expect(paid.total).toBe(withRound.total);
+    expect(paid.paid).toBe(withRound.total);
+    expect((await serverOrder(page, other.id)).paid).toBeGreaterThan(0);
   });
 
   test("Open orders refresh on mount and every 120 s while offline table service is on", async ({

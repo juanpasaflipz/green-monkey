@@ -21,13 +21,19 @@ vi.mock("../src/api", async (importOriginal) => ({
 }));
 
 import { api, ApiError } from "../src/api";
-import { guardOnlineCharge, syncPending } from "../src/offline-queue";
+import {
+  guardOnlineCharge,
+  guardOnlineCharges,
+  OnlineChargeRefused,
+  syncPending,
+} from "../src/offline-queue";
 import { resetConnectivityForTests } from "../src/connectivity";
 import { scope } from "../src/offline-keys";
 import {
   OfflineSaveError,
   assertNoUnsyncedRecords,
   cachedServerOpenOrders,
+  chargeBlockFromRows,
   findOpenOrder,
   isLocalOrder,
   linkFromRows,
@@ -950,6 +956,93 @@ describe("online charge guard: rounds saved offline (OFF-R26)", () => {
     );
     await expect(
       assertNoUnsyncedRecords(s, serverOrder(table)),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("grouped online charge: Órdenes › Cobrar juntas (OFF-R29)", () => {
+  it("is refused, naming the order, while one of the orders has an unsynced offline round or payment, and passes once they sync", async () => {
+    const s = session();
+    const withRound = uuid(110),
+      withPayment = uuid(111),
+      clean = uuid(112);
+    await cacheSnapshot(s, [serverCopy(withRound), serverCopy(withPayment)]);
+    const round = roundInput(100);
+    await saveOfflineRound(ctxOf(s), {
+      target: { orderId: withRound },
+      ...round,
+    });
+    const paymentId = crypto.randomUUID();
+    await saveOfflinePayment(ctxOf(s), {
+      target: { orderId: withPayment },
+      payment: cash(50),
+      operationId: paymentId,
+    });
+    // The connection is back but every sync answers 503 (held).
+    mockedApi.mockRejectedValue(
+      new ApiError("server_unavailable", 503, "server"),
+    );
+    async function refused(orders: Order[]) {
+      const error = await guardOnlineCharges(s, orders).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      // The refusal started a sync of this device's records: let it finish.
+      await syncPending(s, { force: true, reason: "manual" });
+      expect(error).toBeInstanceOf(OnlineChargeRefused);
+      const refusal = error as OnlineChargeRefused;
+      return { code: refusal.message, orderId: refusal.order.id };
+    }
+    expect(
+      await refused([
+        serverOrder(clean),
+        serverOrder(withRound),
+        serverOrder(withPayment),
+      ]),
+    ).toEqual({
+      code: "offline_round_pending_for_order",
+      orderId: withRound,
+    });
+    // Each order on screen shows its own reason before anyone selects it.
+    const rows = [...fakeDb.pending.rows.values()];
+    expect(chargeBlockFromRows(s, serverOrder(withRound), rows)).toBe(
+      "offline_round_pending_for_order",
+    );
+    expect(chargeBlockFromRows(s, serverOrder(withPayment), rows)).toBe(
+      "offline_payment_pending_for_order",
+    );
+    expect(chargeBlockFromRows(s, serverOrder(clean), rows)).toBeNull();
+    // The round syncs as round 2: the list read before it is outdated.
+    await markSynced(
+      round.operationId,
+      { orderId: withRound, roundNumber: 2 },
+      Date.now(),
+    );
+    expect(
+      chargeBlockFromRows(s, serverOrder(withRound), [
+        ...fakeDb.pending.rows.values(),
+      ]),
+    ).toBe("offline_order_outdated");
+    expect(
+      await refused([
+        serverOrder(withRound, { rounds: [1, 2] }),
+        serverOrder(withPayment),
+      ]),
+    ).toEqual({
+      code: "offline_payment_pending_for_order",
+      orderId: withPayment,
+    });
+    await markSynced(
+      paymentId,
+      { orderId: withPayment, tenderId: uuid(113) },
+      Date.now(),
+    );
+    await expect(
+      guardOnlineCharges(s, [
+        serverOrder(withRound, { rounds: [1, 2] }),
+        serverOrder(withPayment, { paid: 50, tenders: [uuid(113)] }),
+        serverOrder(clean),
+      ]),
     ).resolves.toBeUndefined();
   });
 });

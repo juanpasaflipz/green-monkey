@@ -106,6 +106,36 @@ export async function guardOnlineCharge(
   }
 }
 
+/** A refused online charge of several orders: names the order it refused. */
+export class OnlineChargeRefused extends OfflineSaveError {
+  constructor(
+    code: string,
+    readonly order: Order,
+  ) {
+    super(code);
+  }
+}
+
+/**
+ * The online charge guard for a charge of several orders at once (Órdenes ›
+ * Cobrar juntas, and service's settlement dialog at merge): every order must
+ * pass guardOnlineCharge, or nothing is charged (OFF-R29). Stops at the first
+ * refusal and names its order.
+ */
+export async function guardOnlineCharges(
+  s: Session,
+  orders: Order[],
+): Promise<void> {
+  for (const order of orders)
+    try {
+      await guardOnlineCharge(s, order);
+    } catch (e) {
+      if (e instanceof OfflineSaveError)
+        throw new OnlineChargeRefused(e.message, order);
+      throw e;
+    }
+}
+
 /**
  * Sends every due record in this session's scope, oldest first. Accepts the
  * legacy boolean `force` argument used by older callers.
