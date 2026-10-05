@@ -2070,6 +2070,193 @@ try {
     ]),
   );
 
+  // 23. The manager review says what will happen to a record and why, in
+  // words a manager can act on (OFFLINE-RECOVERY-03/04, OFF-R30/R31/R32).
+  const reviewOf = (record: unknown) =>
+    run((tx) => reviewOfflineRecord(tx, manager1, record));
+  // RECOVERY-04: another employee's valid sale syncs by itself once that
+  // employee signs in on that device; reconciling it would keep only money.
+  const waiting = await reviewOf(sale(s1));
+  assert.deepEqual(waiting.problems, []);
+  assert.deepEqual(waiting.reasons, []);
+  assert.equal(waiting.reconcilable, true);
+  assert.equal(waiting.reconcileAs, "financial");
+  assert.deepEqual(waiting.autoSyncAs, {
+    employeeName: "cashier",
+    deviceName: "Caja 1",
+    self: false,
+  });
+  // The manager's own record on this device: "Reintentar" sends it.
+  assert.equal((await reviewOf(sale(manager1))).autoSyncAs?.self, true);
+  // Already applied: nothing will sync, and the review says it is recorded.
+  const appliedReview = await reviewOf(first);
+  assert.deepEqual(appliedReview.prior, { kind: "offline_sync" });
+  assert.equal(appliedReview.autoSyncAs, null);
+  assert.equal(appliedReview.reconcilable, false);
+  // A price the server no longer charges is named before anyone waits for it.
+  const repriced = await reviewOf(sale(s1, { total: 90 }));
+  assert(repriced.problems.includes("price_conflict"));
+  assert.equal(repriced.autoSyncAs, null);
+  assert.equal(repriced.reconcileAs, "financial");
+  // RECOVERY-03: which eligibility rule failed, not "connect and sign in".
+  const revokedReview = await reviewOf(sale(revoked));
+  assert(revokedReview.problems.includes("offline_conflict"));
+  assert.deepEqual(revokedReview.reasons, ["offline_why_session_revoked"]);
+  assert.equal(revokedReview.sessionRevoked, true);
+  assert.equal(revokedReview.autoSyncAs, null);
+  const luis = randomUUID();
+  await admin`insert into employees(tenant_id,id,name,login,secret_hash,role) values(${tenantId},${luis},'Luis',${randomUUID()},'fixture','cashier')`;
+  const luisSession = await openSession(luis, ids.device1, "cashier");
+  const luisSale = sale(luisSession);
+  assert.equal((await reviewOf(luisSale)).autoSyncAs?.employeeName, "Luis");
+  await admin`update employees set active=false where tenant_id=${tenantId} and id=${luis}`;
+  const inactive = await reviewOf(luisSale);
+  assert.deepEqual(inactive.reasons, ["offline_why_employee_inactive"]);
+  assert.equal(inactive.reconcilable, true, "its cash can be reconciled");
+  assert.equal(inactive.autoSyncAs, null);
+  // settings_changed explains the record's own way out: money is reconciled,
+  // an order or round (no money) is archived.
+  await admin`update restaurants set config_version=config_version+1 where id=${tenantId}`;
+  try {
+    const settingsSale = await reviewOf(sale(s1));
+    assert.deepEqual(settingsSale.reasons, ["offline_why_settings_changed"]);
+    assert.equal(settingsSale.autoSyncAs, null);
+    const settingsOrder = await reviewOf(orderRecord(s1, [line(ids.plate)]));
+    assert.deepEqual(settingsOrder.reasons, ["offline_why_settings_items"]);
+    assert.equal(settingsOrder.reconcilable, false);
+  } finally {
+    await admin`update restaurants set config_version=config_version-1 where id=${tenantId}`;
+  }
+  // OFF-R30: an order record whose create committed online with the same
+  // draft and price syncs by itself into that order: never "archive it".
+  const sentDraft = lostCreate("Enviada en línea, respuesta perdida");
+  const sentOnline = await run((tx) => createOrder(tx, s1, sentDraft));
+  const sentRecord = { ...orderRecord(s1, sentDraft.lines), order: sentDraft };
+  const sentReview = await reviewOf(sentRecord);
+  assert.equal(sentReview.reusesOnlineOrder, true);
+  assert.equal(sentReview.target?.orderId, sentOnline.id);
+  assert.deepEqual(sentReview.problems, []);
+  assert.equal(sentReview.reconcilable, false);
+  assert.equal(sentReview.autoSyncAs?.employeeName, "cashier");
+  const sentSynced = await run((tx) => syncOfflineRecord(tx, s1, sentRecord));
+  assert.equal(sentSynced.orderId, sentOnline.id);
+  assert.equal(sentSynced.reusedOnlineOrder, true);
+  // At another price it cannot sync: archive is the way, and it says why.
+  const repricedDraft = lostCreate("Enviada en línea, otro precio");
+  await run((tx) => createOrder(tx, s1, repricedDraft));
+  const repricedReview = await reviewOf({
+    ...orderRecord(s1, repricedDraft.lines),
+    order: repricedDraft,
+    expectedTotal: 90,
+  });
+  assert.equal(repricedReview.reusesOnlineOrder, false);
+  assert.equal(repricedReview.autoSyncAs, null);
+  assert.deepEqual(repricedReview.reasons, ["offline_why_price_items"]);
+  // A round with lines an online send already recorded, or on a paid check,
+  // or after its local order was archived (rounds never follow an archived
+  // order to its online create), never syncs: the review says so.
+  const resent = await reviewOf(
+    roundRecord(s1, { orderId: sentOnline.id }, sentDraft.lines),
+  );
+  assert(resent.problems.includes("offline_lines_already_sent"));
+  assert.equal(resent.autoSyncAs, null);
+  const settledTab = await run((tx) =>
+    createOrder(tx, s1, lostCreate("Cuenta pagada")),
+  );
+  await run((tx) =>
+    recordPayment(tx, s1, settledTab.id, {
+      operationId: randomUUID(),
+      amount: settledTab.total,
+      tip: 0,
+      received: settledTab.total,
+      method: "cash",
+    }),
+  );
+  const onPaid = await reviewOf(
+    roundRecord(s1, { orderId: settledTab.id }, [line(ids.plate)]),
+  );
+  assert.deepEqual(onPaid.problems, ["offline_order_closed"]);
+  assert.equal(onPaid.autoSyncAs, null);
+  const afterArchive = await reviewOf(
+    roundRecord(s1, { localOrderOperationId: tabRecord.operationId }, [
+      line(ids.plate),
+    ]),
+  );
+  assert.equal(afterArchive.target, null);
+  assert.deepEqual(afterArchive.problems, ["offline_dependency_archived"]);
+  // OFF-R32: a payment of an archived local order whose draft differs from
+  // the online create under the same id is never moved into that order.
+  const otherDraft = lostCreate("Otro borrador con el mismo id", 2);
+  const otherOnline = await run((tx) => createOrder(tx, s1, otherDraft));
+  const oneTaco = [line(ids.plate)];
+  const mismatched = {
+    ...orderRecord(s1, oneTaco),
+    order: { ...otherDraft, lines: oneTaco },
+  };
+  await run((tx) =>
+    archiveOfflineRecord(tx, manager1, {
+      operationId: randomUUID(),
+      record: mismatched,
+      localError: "offline_order_already_exists",
+      reason: "A different draft exists online under this id",
+      confirmed: true,
+    }),
+  );
+  const strayPayment = paymentRecord(
+    s1,
+    { localOrderOperationId: mismatched.operationId },
+    100,
+  );
+  const strayReview = await reviewOf(strayPayment);
+  assert.equal(strayReview.target, null);
+  assert.equal(strayReview.reconcileAs, "financial");
+  const stray = await reconcileWith(
+    strayPayment,
+    "Cash of an order archived as a different draft",
+  );
+  assert.notEqual(stray.id, otherOnline.id);
+  assert(stray.state.startsWith("recovery"));
+  assert.equal(await count("tenders", "order_id=$2", otherOnline.id), 0);
+  // OFF-R31: a sale whose online order was voided entirely (cancelled) has
+  // nowhere to go but a financial-only recovery; it is never "charge it".
+  const voidDraft = lostCreate("Respuesta perdida, anulada en línea");
+  const voidOnline = await run((tx) => createOrder(tx, s1, voidDraft));
+  await admin`update orders set state='cancelled',total=0 where tenant_id=${tenantId} and id=${voidOnline.id}`;
+  const voidSale = sale(s1, { lines: voidDraft.lines, order: voidDraft });
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, voidSale)),
+    "price_conflict",
+  );
+  const voidReview = await reviewOf(voidSale);
+  assert.equal(voidReview.target?.orderId, voidOnline.id);
+  assert(voidReview.problems.includes("offline_order_closed"));
+  assert.equal(voidReview.reconcilable, true);
+  assert.equal(voidReview.reconcileAs, "financial");
+  const r31Recoveries = await count("offline_recoveries");
+  const voidRecovered = await reconcileWith(
+    voidSale,
+    "Cash for an order voided online afterwards",
+  );
+  assert.notEqual(voidRecovered.id, voidOnline.id);
+  assert(voidRecovered.state.startsWith("recovery"));
+  assert.equal(voidRecovered.paid, voidSale.payment.amount);
+  assert.equal(await count("offline_recoveries"), r31Recoveries + 1);
+  const [voidOperation] =
+    await admin`select result from operations where tenant_id=${tenantId} and id=${voidDraft.operationId}`;
+  assert.equal(voidOperation.result.id, voidOnline.id, "the create stays");
+  // Exactly once per record, and one recovery per draft.
+  assert.equal(
+    (await reconcileWith(voidSale, "Second click on the same reconcile")).id,
+    voidRecovered.id,
+  );
+  const voidAgain = sale(s1, { lines: voidDraft.lines, order: voidDraft });
+  assert.equal((await reviewOf(voidAgain)).reconcilable, false);
+  await expectCode(
+    reconcileWith(voidAgain, "Same draft reconciled a second time"),
+    "offline_order_already_exists",
+  );
+  assert.equal(await count("offline_recoveries"), r31Recoveries + 1);
+
   // 20. Heartbeat: no auth, no-store, single-flight DB check.
   const app = express();
   registerPreAuth({ app, sql });
@@ -2126,7 +2313,7 @@ try {
   }
 
   console.log(
-    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse (only at the server's price; the manager path pays the online order, never a second one), overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, lines already sent online, rounds on paid checks, open-orders snapshot) and the LD-7 setting (off by default, managers only, audited once, gates the snapshot, never sync).",
+    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse (only at the server's price; the manager path pays the online order, never a second one), overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, lines already sent online, rounds on paid checks, open-orders snapshot) and the LD-7 setting (off by default, managers only, audited once, gates the snapshot, never sync), and the manager review (eligibility reasons, auto-sync advice, lost creates that sync by themselves, cancelled online orders, archived drafts that differ).",
   );
 } finally {
   for (const table of [

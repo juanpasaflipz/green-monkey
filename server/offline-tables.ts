@@ -219,6 +219,8 @@ async function paymentTarget(
   tx: Tx,
   target: OrderTarget,
   lock: boolean,
+  /** Rounds never follow an archived order to its online create (I5). */
+  follow = true,
 ): Promise<PaymentTarget> {
   let orderId: string;
   try {
@@ -230,6 +232,7 @@ async function paymentTarget(
     // OFF-R27: a local order archived because its create had already
     // committed online is that online order: its payments belong there.
     const online =
+      follow &&
       e.code === "offline_dependency_archived" &&
       "localOrderOperationId" in target
         ? await archivedOnlineOrder(tx, target.localOrderOperationId)
@@ -244,7 +247,10 @@ async function paymentTarget(
 /**
  * The online order behind an archived local order record whose create had
  * already committed online (its response lost): the archived evidence is a
- * valid order record and the operation of its draft id created that order.
+ * valid order record and the operation of its draft id created that order
+ * from the same draft (a server price may differ). A different draft under
+ * the same id is a conflict, never a merge (OFF-R32, I5): its payments then
+ * take the financial-only path.
  */
 async function archivedOnlineOrder(
   tx: Tx,
@@ -255,12 +261,15 @@ async function archivedOnlineOrder(
   if (!archived) return null;
   const parsed = offlineRecord.safeParse(archived.evidence);
   if (!parsed.success || parsed.data.operationId !== operationId) return null;
-  return (await onlineCreateOf(tx, parsed.data))?.orderId ?? null;
+  const created = await onlineCreateOf(tx, parsed.data);
+  if (!created || created.problem === "offline_order_already_exists")
+    return null;
+  return created.orderId;
 }
 
 reviewTargets.resolve = async (tx, p) => {
   if (!isV3(p) || !("target" in p)) return null;
-  const found = await paymentTarget(tx, p.target, false);
+  const found = await paymentTarget(tx, p.target, false, p.kind === "payment");
   if (found.state === "pending" || found.state === "unresolvable")
     return {
       target: null,
@@ -275,6 +284,17 @@ reviewTargets.resolve = async (tx, p) => {
     number: found.order.number,
     due: dueOf(found.order),
   };
+  // A round never goes onto a closed or fully paid check (I6, §4.4.2).
+  if (p.kind === "round")
+    return {
+      target,
+      reconcile: "none",
+      problems:
+        found.state === "closed" ||
+        (found.order.total > 0 && found.order.paid >= found.order.total)
+          ? ["offline_order_closed"]
+          : [],
+    };
   if (p.kind !== "payment") return { target, reconcile: "none", problems: [] };
   if (found.state === "open" && p.payment.amount <= target.due)
     return { target, reconcile: "order", problems: [] };

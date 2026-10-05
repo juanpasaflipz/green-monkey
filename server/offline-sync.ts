@@ -119,7 +119,13 @@ export async function evaluateEvidence(
   p: OfflineRecord,
   perspective: "sync" | "review" = "sync",
 ): Promise<
-  | { authentic: true; ctx: EvidenceContext; problems: EligibilityProblem[] }
+  | {
+      authentic: true;
+      ctx: EvidenceContext;
+      problems: EligibilityProblem[];
+      /** Why E3-E5 gave offline_conflict, for the manager review (OFFLINE-RECOVERY-03). */
+      causes: string[];
+    }
   | { authentic: false; reason: string; session: Record<string, any> | null }
 > {
   const [session] = await tx`select * from sessions where id=${p.sessionId}`;
@@ -192,13 +198,24 @@ export async function evaluateEvidence(
     (session.employee_id !== s.employeeId || session.device_id !== s.deviceId)
   )
     problems.push("offline_conflict");
-  if (session.revoked) problems.push("offline_conflict"); // E3 (contract D6)
+  // E3-E5 all give offline_conflict (contract D6); `causes` names which one,
+  // most specific first (deactivating an employee also revokes the session).
+  const causes: string[] = [];
   const [identity] =
     await tx`select e.active as employee_active,d.active as device_active
       from employees e cross join devices d where e.id=${session.employee_id} and d.id=${session.device_id}`;
+  if (!identity?.employee_active) causes.push("offline_why_employee_inactive");
+  if (!identity?.device_active) causes.push("offline_why_device_inactive");
+  if (session.revoked) {
+    problems.push("offline_conflict"); // E3 (contract D6)
+    if (!causes.length) causes.push("offline_why_session_revoked");
+  }
   if (!identity?.employee_active || !identity?.device_active)
     problems.push("offline_conflict"); // E4
-  if (!lease.selling_authorized) problems.push("offline_conflict"); // E5
+  if (!lease.selling_authorized) {
+    problems.push("offline_conflict"); // E5
+    causes.push("offline_why_selling_not_authorized");
+  }
   if (time.verdict === "future") problems.push("offline_recorded_in_future"); // E6
   if (time.verdict === "too_early" || time.verdict === "too_late")
     problems.push("offline_outside_lease"); // E7
@@ -233,6 +250,7 @@ export async function evaluateEvidence(
   return {
     authentic: true,
     problems: [...new Set(problems)],
+    causes,
     ctx: { session, lease, cash, soldAt: time.soldAt, businessDate: day },
   };
 }
@@ -254,8 +272,30 @@ export async function verifyLines(
     await tx`select id,data from catalog where id=any(${tx.array(productIds)}::uuid[]) order by id for share`;
   // Staff path: open-price lines are valid evidence (contract D11).
   const priced = quote(lines, await catalog(tx), true);
-  if (sum(priced.map((line) => line.total)) !== expectedTotal)
-    throw new DomainError("price_conflict", 409);
+  const problem = linesProblem(
+    lines,
+    snapshots,
+    expectedTotal,
+    sum(priced.map((line) => line.total)),
+    versions,
+  );
+  if (problem) throw new DomainError(problem, 409);
+  return priced;
+}
+
+/**
+ * Why claimed lines would not apply as recorded (I3): the server prices them
+ * differently, or a product changed revision since the receipt. Pure, so the
+ * manager review can tell without taking the sync's locks.
+ */
+export function linesProblem(
+  lines: LineInput[],
+  snapshots: unknown[] | undefined,
+  expectedTotal: number,
+  serverTotal: number,
+  versions: readonly Record<string, any>[],
+): "price_conflict" | "offline_catalog_changed" | null {
+  if (serverTotal !== expectedTotal) return "price_conflict";
   for (const line of lines) {
     const current = versions.find((product) => product.id === line.productId);
     const snapshot = snapshots?.find(
@@ -279,9 +319,9 @@ export async function verifyLines(
         ? snapshot.productVersion !== current.data.version
         : current.data.version !== 1)
     )
-      throw new DomainError("offline_catalog_changed", 409);
+      return "offline_catalog_changed";
   }
-  return priced;
+  return null;
 }
 
 export const snapshotLines = (p: OfflineRecord) =>
@@ -670,6 +710,12 @@ export type ReviewTarget = {
   target: { orderId: string; number: number; due: number } | null;
   reconcile: "order" | "financial" | "none";
   problems: string[];
+  /**
+   * The order an online create already made for this record's draft (its
+   * response lost): `reused` when sync takes that order as this record's own
+   * (OFF-R30), so the record syncs by itself and is never archived for it.
+   */
+  onlineCreate?: { reused: boolean };
 };
 export const reviewTargets: {
   resolve?: (tx: Tx, p: OfflineRecord) => Promise<ReviewTarget | null>;
@@ -714,11 +760,26 @@ export const moneyRefusal = (amount: number, order: Order) =>
     : "offline_order_closed";
 
 /**
+ * OFF-R31: a POS create of this draft whose order can never hold money
+ * (cancelled, for example every line voided, or gone). Its authentic money can
+ * only be a financial-only recovery. Not for an order a financial-only
+ * recovery made for the same draft (its hash differs): that order already
+ * holds money, and a second recovery would count it twice.
+ */
+export const cancelledOnlineCreate = (
+  created: { orderId: string | null; problem: string | null },
+  found: MoneyTarget,
+) =>
+  found.state === "unresolvable" &&
+  created.problem !== "offline_order_already_exists";
+
+/**
  * OFF-R27: review of a sale or order whose create already committed online.
  * The existing order is named so the manager knows which order took (or
  * should take) the money. A sale's money goes into it when it is open and the
  * amount fits its balance (I2); otherwise nothing is reconcilable, because a
- * financial-only recovery would leave that order open and unpaid.
+ * financial-only recovery would leave that order open and unpaid, except when
+ * that order was cancelled (OFF-R31).
  */
 async function onlineCreateTarget(
   tx: Tx,
@@ -727,30 +788,49 @@ async function onlineCreateTarget(
   const created = await onlineCreateOf(tx, p);
   if (!created) return null;
   const problems = created.problem ? [created.problem] : [];
+  const onlineCreate = { reused: !created.problem && !!created.orderId };
   if (!created.orderId)
     return {
       target: null,
       reconcile: "none",
       problems: problems.length ? problems : ["offline_order_already_exists"],
+      onlineCreate,
     };
   const found = await moneyTarget(tx, created.orderId, false);
   const order =
     found.state === "unresolvable"
-      ? await getOrder(tx, created.orderId)
+      ? await getOrder(tx, created.orderId).catch((e: unknown) => {
+          if (e instanceof DomainError) return null;
+          throw e;
+        })
       : found.order;
-  const target = { orderId: order.id, number: order.number, due: dueOf(order) };
+  const target = order
+    ? { orderId: order.id, number: order.number, due: dueOf(order) }
+    : null;
   const payment = paymentOf(p);
-  if (!payment) return { target, reconcile: "none", problems };
-  if (found.state === "open" && payment.amount <= target.due)
-    return { target, reconcile: "order", problems };
-  const refusal =
-    found.state === "unresolvable"
-      ? found.code
-      : moneyRefusal(payment.amount, order);
+  const withProblem = (code: string) =>
+    problems.includes(code) ? problems : [...problems, code];
+  if (!payment) return { target, reconcile: "none", problems, onlineCreate };
+  if (found.state === "unresolvable") {
+    const [recovered] =
+      await tx`select 1 from offline_recoveries where order_operation_id=${(p as OrderRecord).order.operationId}`;
+    return {
+      target,
+      reconcile:
+        cancelledOnlineCreate(created, found) && !recovered
+          ? "financial"
+          : "none",
+      problems: withProblem(found.code),
+      onlineCreate,
+    };
+  }
+  if (found.state === "open" && payment.amount <= dueOf(found.order))
+    return { target, reconcile: "order", problems, onlineCreate };
   return {
     target,
     reconcile: "none",
-    problems: problems.includes(refusal) ? problems : [...problems, refusal],
+    problems: withProblem(moneyRefusal(payment.amount, found.order)),
+    onlineCreate,
   };
 }
 
@@ -787,6 +867,9 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
   const [employee] = session
     ? await tx`select name from employees where id=${session.employee_id}`
     : [];
+  const [device] = session
+    ? await tx`select name from devices where id=${session.device_id}`
+    : [];
   const drawerId = drawerOf(p);
   const [cash] = drawerId
     ? await tx`select id,closed_at from cash_sessions where id=${drawerId}`
@@ -805,8 +888,69 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
     !!reconcilers[kind] &&
     (targeted ? targeted.reconcile !== "none" : kind !== "payment");
   const problems: string[] = evidence.authentic ? [...evidence.problems] : [];
-  for (const problem of targeted?.problems ?? [])
-    if (!problems.includes(problem)) problems.push(problem);
+  const addProblem = (code: string) => {
+    if (!problems.includes(code)) problems.push(code);
+  };
+  for (const problem of targeted?.problems ?? []) addProblem(problem);
+  // Claimed lines the sync would refuse (I3), read without the sync's locks.
+  // An order an online create already made is reused as it is instead.
+  if (evidence.authentic && lines && !targeted?.onlineCreate && !prior) {
+    const [sent] =
+      await tx`select 1 from order_lines where id=any(${tx.array(lines.map((l) => l.id))}::uuid[]) limit 1`;
+    const versions =
+      currentTotal === null
+        ? []
+        : await tx`select id,data from catalog where id=any(${tx.array([...new Set(lines.map((l) => l.productId))])}::uuid[])`;
+    const linesCode =
+      currentTotal === null
+        ? null
+        : linesProblem(
+            lines,
+            snapshotLines(p),
+            (p as { expectedTotal: number }).expectedTotal,
+            currentTotal,
+            versions,
+          );
+    if (sent) addProblem("offline_lines_already_sent");
+    else if (linesCode) addProblem(linesCode);
+  }
+  // OFFLINE-RECOVERY-04: a record nothing blocks syncs by itself once the
+  // employee who saved it signs in on that device (E2). Reconciling it instead
+  // would keep only its money, without lines, kitchen or stock.
+  const waits = ["offline_dependency_pending", "offline_recorded_in_future"];
+  const autoSyncAs =
+    evidence.authentic &&
+    !prior &&
+    !archived &&
+    problems.every((code) => waits.includes(code)) &&
+    (!targeted?.onlineCreate || targeted.onlineCreate.reused)
+      ? {
+          employeeName: (employee?.name as string | undefined) ?? null,
+          deviceName: (device?.name as string | undefined) ?? null,
+          self:
+            session!.employee_id === s.employeeId &&
+            session!.device_id === s.deviceId,
+        }
+      : null;
+  // OFFLINE-RECOVERY-03: each problem in words a manager can act on, for the
+  // kind of record (an order or round carries no money to reconcile).
+  const reasons: string[] = [];
+  const addReason = (code: string) => {
+    if (!reasons.includes(code)) reasons.push(code);
+  };
+  for (const code of problems) {
+    if (code === "offline_conflict" && evidence.authentic)
+      (evidence.causes.length ? evidence.causes : [code]).forEach(addReason);
+    else if (code === "settings_changed")
+      addReason(
+        payment ? "offline_why_settings_changed" : "offline_why_settings_items",
+      );
+    else if (code === "price_conflict" && !payment)
+      addReason("offline_why_price_items");
+    else if (code === "offline_catalog_changed" && !payment)
+      addReason("offline_why_catalog_items");
+    else addReason(code);
+  }
   return {
     authentic: evidence.authentic,
     problems,
@@ -834,6 +978,16 @@ export async function reviewOfflineRecord(tx: Tx, s: Session, raw: unknown) {
     archived: !!archived,
     target,
     reconcilable,
+    /** Where reconcile puts the money: into `target`, or a recovery order. */
+    reconcileAs: reconcilable
+      ? targeted?.reconcile === "order"
+        ? ("order" as const)
+        : ("financial" as const)
+      : null,
+    /** OFF-R30: sync takes the order an online create made for this draft. */
+    reusesOnlineOrder: !!targeted?.onlineCreate?.reused && !!target,
+    autoSyncAs,
+    reasons,
   };
 }
 export const reviewOffline = reviewOfflineRecord;
@@ -849,6 +1003,12 @@ export async function financialRecovery(
   p: OfflineRecord,
   ctx: EvidenceContext,
   reason: string,
+  /**
+   * OFF-R31: the draft's POS create committed online and its order can never
+   * hold money (cancelled). The money still needs a home; that create stays
+   * the draft's operation.
+   */
+  opts: { cancelledOnlineCreate?: boolean } = {},
 ): Promise<OfflineSyncResult> {
   const payment = paymentOf(p)!;
   const order = "order" in p ? p.order : null;
@@ -856,8 +1016,13 @@ export async function financialRecovery(
     await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + order.operationId},0))`;
     const [existingOrder] =
       await tx`select id from operations where id=${order.operationId}`;
-    if (existingOrder)
+    if (existingOrder && !opts.cancelledOnlineCreate)
       throw new DomainError("offline_order_already_exists", 409);
+    // One recovery per draft (offline_recoveries is unique on it).
+    const [recovered] = opts.cancelledOnlineCreate
+      ? await tx`select 1 from offline_recoveries where order_operation_id=${order.operationId}`
+      : [];
+    if (recovered) throw new DomainError("offline_order_already_exists", 409);
   }
   const lease = ctx.lease;
   const date = ctx.businessDate;
@@ -901,7 +1066,7 @@ export async function financialRecovery(
     stock: "pending",
   });
   const result = await getOrder(tx, orderId);
-  if (order)
+  if (order && !opts.cancelledOnlineCreate)
     await tx`insert into operations(tenant_id,id,kind,hash,result) values(${s.tenantId},${order.operationId},'create_order',${hash(JSON.stringify({ ...order, channel: "offline" }))},${tx.json(result)})`;
   return {
     kind: recordKind(p),
@@ -1013,6 +1178,12 @@ async function reconcileSale(
   if (!created.orderId)
     throw new DomainError("offline_order_already_exists", 409);
   const found = await moneyTarget(tx, created.orderId, true);
+  // OFF-R31: a cancelled POS order holds nothing; the authentic money is a
+  // financial-only recovery instead of a sale with nowhere to go.
+  if (cancelledOnlineCreate(created, found))
+    return financialRecovery(tx, s, p, ctx, reason, {
+      cancelledOnlineCreate: true,
+    });
   if (found.state === "unresolvable") throw new DomainError(found.code, 409);
   if (found.state === "closed")
     throw new DomainError(moneyRefusal(paymentOf(p)!.amount, found.order), 409);
