@@ -66,6 +66,17 @@ import {
   voidLines,
 } from "./voids.js";
 import { requireReadySchema } from "./readiness.js";
+import { makeRoute, trustProxy } from "./http.js";
+import * as opsRoutes from "./routes/ops.js";
+import * as accessRoutes from "./routes/access.js";
+import * as serviceRoutes from "./routes/service.js";
+import * as menuRoutes from "./routes/menu.js";
+import * as offlineRoutes from "./routes/offline.js";
+import * as fiscalRoutes from "./routes/fiscal.js";
+import * as discountsRoutes from "./routes/discounts.js";
+import * as reportsRoutes from "./routes/reports.js";
+import * as cfdiRoutes from "./routes/cfdi.js";
+import * as accountRoutes from "./routes/account.js";
 import { issueOfflineLease } from "./offline-leases.js";
 import {
   paymentRecoveryStatus,
@@ -77,7 +88,6 @@ import {
   money,
   businessDate,
   boundaries,
-  type Session,
 } from "../shared/domain.js";
 if (
   !process.env.DATABASE_URL ||
@@ -90,6 +100,7 @@ await checkRole(sql);
 const billing = await billingRuntime(sql, process.env);
 const app = express();
 app.disable("x-powered-by");
+app.set("trust proxy", trustProxy(process.env));
 app.use(
   helmet({
     contentSecurityPolicy:
@@ -189,23 +200,18 @@ app.post(
 app.use("/api/public", publicOrdering(sql));
 app.use("/api/auth", ownerRoutes(sql));
 app.use("/api/billing", billing.routes);
+opsRoutes.registerPreAuth({ app, sql });
+accessRoutes.registerPreAuth({ app, sql });
+serviceRoutes.registerPreAuth({ app, sql });
+menuRoutes.registerPreAuth({ app, sql });
+offlineRoutes.registerPreAuth({ app, sql });
+fiscalRoutes.registerPreAuth({ app, sql });
+discountsRoutes.registerPreAuth({ app, sql });
+reportsRoutes.registerPreAuth({ app, sql });
+cfdiRoutes.registerPreAuth({ app, sql });
+accountRoutes.registerPreAuth({ app, sql });
 app.use("/api", authentication(sql));
-const route = (
-  method: "get" | "post",
-  path: string,
-  fn: (tx: any, s: Session, req: express.Request) => Promise<unknown>,
-) =>
-  app[method]("/api" + path, async (req, res, next) => {
-    try {
-      res.json(
-        await tenant(sql, (req as AuthRequest).session.tenantId, (tx) =>
-          fn(tx, (req as AuthRequest).session, req),
-        ),
-      );
-    } catch (e) {
-      next(e);
-    }
-  });
+const route = makeRoute(app, sql);
 route("get", "/service/options", (tx, s) => serviceOptions(tx, s));
 route("post", "/orders/:id/service", (tx, s, req) =>
   assignService(tx, s, id.parse(req.params.id), req.body),
@@ -695,6 +701,16 @@ route("get", "/capabilities", async () => ({
   printer: { enabled: false, reason: "device_not_paired" },
   resend: { enabled: false, reason: "sender_and_sandbox_required" },
 }));
+opsRoutes.register({ app, sql, route });
+accessRoutes.register({ app, sql, route });
+serviceRoutes.register({ app, sql, route });
+menuRoutes.register({ app, sql, route });
+offlineRoutes.register({ app, sql, route });
+fiscalRoutes.register({ app, sql, route });
+discountsRoutes.register({ app, sql, route });
+reportsRoutes.register({ app, sql, route });
+cfdiRoutes.register({ app, sql, route });
+accountRoutes.register({ app, sql, route });
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(resolve("dist")));
@@ -703,7 +719,7 @@ if (process.env.NODE_ENV === "production") {
 app.use(
   (
     error: unknown,
-    _req: express.Request,
+    req: express.Request,
     res: express.Response,
     _next: express.NextFunction,
   ) => {
@@ -712,10 +728,25 @@ app.use(
       return res.status(error.status).json({ error: error.code, requestId });
     if (error instanceof ZodError)
       return res.status(400).json({ error: "invalid_input", requestId });
-    console.error({
-      requestId,
-      code: (error as any)?.code ?? "internal_error",
-    });
+    // body-parser marks malformed or oversized bodies with a type and status.
+    const parse = (error as { type?: string; status?: number }) ?? {};
+    if (parse.type === "entity.parse.failed")
+      return res.status(400).json({ error: "invalid_json", requestId });
+    if (parse.type === "entity.too.large")
+      return res.status(413).json({ error: "payload_too_large", requestId });
+    // Log enough to diagnose without request bodies, cookies or secrets.
+    const failure = error instanceof Error ? error : null;
+    console.error(
+      JSON.stringify({
+        level: "error",
+        requestId,
+        method: req.method,
+        route: req.route?.path ?? req.path,
+        code: (error as { code?: unknown })?.code ?? "internal_error",
+        message: failure?.message,
+        stack: failure?.stack,
+      }),
+    );
     return res.status(500).json({ error: "internal_error", requestId });
   },
 );

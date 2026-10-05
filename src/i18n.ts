@@ -1,5 +1,29 @@
 import type { Locale } from "../shared/domain";
-export const strings = {
+import ops from "./i18n/ops";
+import access from "./i18n/access";
+import service from "./i18n/service";
+import menu from "./i18n/menu";
+import offline from "./i18n/offline";
+import fiscal from "./i18n/fiscal";
+import discounts from "./i18n/discounts";
+import reports from "./i18n/reports";
+import cfdi from "./i18n/cfdi";
+import account from "./i18n/account";
+
+/** Area modules, merged after the base strings. */
+export const areas = {
+  ops,
+  access,
+  service,
+  menu,
+  offline,
+  fiscal,
+  discounts,
+  reports,
+  cfdi,
+  account,
+};
+const base = {
   es: {
     thisPayment: "Este pago",
     assignService: "Mesa y mesero",
@@ -518,8 +542,36 @@ export const strings = {
     notReady: "This feature is not enabled yet.",
   },
 } as const;
+export const strings = {
+  es: {
+    ...base.es,
+    ...ops.es,
+    ...access.es,
+    ...service.es,
+    ...menu.es,
+    ...offline.es,
+    ...fiscal.es,
+    ...discounts.es,
+    ...reports.es,
+    ...cfdi.es,
+    ...account.es,
+  },
+  en: {
+    ...base.en,
+    ...ops.en,
+    ...access.en,
+    ...service.en,
+    ...menu.en,
+    ...offline.en,
+    ...fiscal.en,
+    ...discounts.en,
+    ...reports.en,
+    ...cfdi.en,
+    ...account.en,
+  },
+};
 export type Key = keyof typeof strings.es;
-export const errorText: Record<string, [string, string]> = {
+const baseErrors: Record<string, readonly [string, string]> = {
   pro_required: [
     "Esta función necesita Pro vigente. Tus órdenes y recibos siguen disponibles.",
     "This feature requires current Pro access. Your orders and receipts remain available.",
@@ -660,6 +712,19 @@ export const errorText: Record<string, [string, string]> = {
     "Confirma la aprobación e ingresa la referencia.",
     "Confirm approval and enter a reference.",
   ],
+};
+export const errorText: Record<string, readonly [string, string]> = {
+  ...baseErrors,
+  ...ops.errors,
+  ...access.errors,
+  ...service.errors,
+  ...menu.errors,
+  ...offline.errors,
+  ...fiscal.errors,
+  ...discounts.errors,
+  ...reports.errors,
+  ...cfdi.errors,
+  ...account.errors,
 };
 export function translateError(code: string, locale: Locale) {
   return errorText[code]?.[locale === "es" ? 0 : 1] ?? strings[locale].error;
