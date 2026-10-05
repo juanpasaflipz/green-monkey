@@ -560,6 +560,111 @@ try {
     );
   });
 
+  await test("A5: managers unlock only cashiers, servers and kitchen staff, never a hard lock or the failure counter, 3 times a day; the owner unlocks anyone", async () => {
+    const manager = as(managerId, "manager", terminalA.id, {});
+    const ownerOnTerminal = as(ownerId, "owner", terminalA.id, {});
+    const unlock = (by: Session, employeeId: string) =>
+      run((tx) => unlockStaff(tx, by, employeeId, { operationId: randomUUID() }));
+    // Owners and managers: owner only.
+    for (const employeeId of [ownerId, secondOwnerId, managerId])
+      await rejects(unlock(manager, employeeId), "unlock_owner_only");
+    // A fresh server: wrong PINs lock it on this device and count globally.
+    const serverId = randomUUID(),
+      serverPin = "860244";
+    await admin`insert into employees(tenant_id,id,name,login,secret_hash,role,pin_set_at)
+      values(${tenantId},${serverId},'Mesero A5',${"srv-" + serverId.slice(0, 8)},${password(serverPin)},'server',now())`;
+    const scope = deviceScope(terminalA.id);
+    for (let i = 0; i < 5; i++)
+      await run((tx) => checkPin(tx, { employeeId: serverId }, "000000", scope));
+    await unlock(manager, serverId);
+    const [afterManager] = await admin`select e.failed_attempts,e.locked_until,
+        (select count(*)::int from pin_throttles t where t.employee_id=e.id and (t.locked_until is not null or t.failures>0)) as throttled
+      from employees e where e.id=${serverId}`;
+    assert.deepEqual(
+      { ...afterManager },
+      { failed_attempts: 5, locked_until: null, throttled: 0 },
+      "a manager clears the device locks but keeps the consecutive-failure counter",
+    );
+    const [audited] =
+      await admin`select detail->>'by' as by from audit where entity_id=${serverId} and operation='access.employee_unlocked'`;
+    assert.equal(audited.by, "manager");
+    // At most 3 manager unlocks of one employee per rolling day.
+    await unlock(manager, serverId);
+    await unlock(manager, serverId);
+    await rejects(unlock(manager, serverId), "unlock_limit");
+    // The counter keeps running to the hard lock, which a manager cannot clear.
+    await admin`update employees set failed_attempts=99 where id=${serverId}`;
+    assert.equal(
+      (await run((tx) => checkPin(tx, { employeeId: serverId }, "000000", scope)))
+        .outcome,
+      "hard_locked",
+    );
+    await rejects(unlock(manager, serverId), /unlock_owner_only|unlock_limit/);
+    await admin`delete from audit where entity_id=${serverId}`;
+    await rejects(unlock(manager, serverId), "unlock_owner_only");
+    // The owner clears everything, the hard lock included, without a daily limit.
+    await unlock(ownerOnTerminal, serverId);
+    const [afterOwner] =
+      await admin`select failed_attempts,locked_until from employees where id=${serverId}`;
+    assert.deepEqual({ ...afterOwner }, { failed_attempts: 0, locked_until: null });
+    assert.equal(
+      (await run((tx) => checkPin(tx, { employeeId: serverId }, serverPin, scope)))
+        .outcome,
+      "ok",
+    );
+    for (let i = 0; i < 4; i++) await unlock(ownerOnTerminal, serverId);
+    await unlock(ownerOnTerminal, managerId);
+    await unlock(ownerOnTerminal, secondOwnerId);
+  });
+
+  await test("A5: void approvals check the order before any PIN, and one session's rejected approvals are capped per minute", async () => {
+    await clearThrottles(managerId);
+    await clearThrottles(secondOwnerId);
+    const cashier = as(cashierId, "cashier", terminalB.id, {});
+    // A made-up order: refused before the PIN is evaluated or counted.
+    await rejects(
+      verifyApproval(
+        sql,
+        cashier,
+        { employeeId: managerId, secret: "000000" },
+        randomUUID(),
+      ),
+      "not_found",
+    );
+    const [untouched] =
+      await admin`select failed_attempts from employees where id=${managerId}`;
+    assert.equal(untouched.failed_attempts, 0);
+    // Ten rejected approvals in a minute, then the session is refused outright.
+    for (let i = 0; i < 10; i++)
+      await rejects(
+        verifyApproval(sql, cashier, {
+          employeeId: i % 2 ? managerId : secondOwnerId,
+          secret: "000000",
+        }),
+        /approval_denied|pin_locked/,
+      );
+    const counters = async () =>
+      (
+        await admin`select sum(failed_attempts)::int as n from employees where id in (${managerId},${secondOwnerId})`
+      )[0].n;
+    const before = await counters();
+    await rejects(
+      verifyApproval(sql, cashier, { employeeId: managerId, secret: MANAGER_PIN }),
+      "too_many_attempts",
+    );
+    assert.equal(await counters(), before, "a capped request never reaches checkPin");
+    // Another session on the device is not affected by this session's cap.
+    assert.equal(
+      await verifyApproval(sql, as(cashierId, "cashier", terminalA.id, {}), {
+        employeeId: managerId,
+        secret: MANAGER_PIN,
+      }),
+      managerId,
+    );
+    await clearThrottles(managerId);
+    await clearThrottles(secondOwnerId);
+  });
+
   await test("approval attempts spend the approver's attempts on the session's device only", async () => {
     await clearThrottles(managerId);
     const cashier = as(cashierId, "cashier", terminalA.id, {});

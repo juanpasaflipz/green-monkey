@@ -26,7 +26,8 @@ export default defineArea({
     accessNoStaff:
       "Aún no hay empleados con PIN en esta sucursal. El propietario puede agregarlos en Equipo.",
     accessLockedUntil: "Bloqueado en este dispositivo hasta las {time}",
-    accessHardLocked: "Bloqueado. Pide a un responsable que lo desbloquee.",
+    accessHardLocked:
+      "Bloqueado por demasiados intentos. Solo el propietario puede desbloquearlo o cambiar el PIN.",
     accessNotYou:
       "¿Este no es tu restaurante o dispositivo? Pide a un responsable que lo desvincule.",
     accessDemoTitle: "Acceso de demostración",
@@ -76,6 +77,7 @@ export default defineArea({
     accessStaffActive: "Activo",
     accessStaffInactive: "Inactivo",
     accessStaffLocked: "Bloqueado",
+    accessStaffUnlockOwnerOnly: "Solo el propietario puede desbloquear a {name}.",
     accessStaffPin: "PIN",
     accessStaffGoogle: "Google",
     accessStaffGooglePin: "Google y PIN",
@@ -200,7 +202,8 @@ export default defineArea({
     accessNoStaff:
       "There are no employees with a PIN at this location yet. The owner can add them in Team.",
     accessLockedUntil: "Locked on this device until {time}",
-    accessHardLocked: "Locked. Ask a manager to unlock it.",
+    accessHardLocked:
+      "Locked after too many attempts. Only the owner can unlock it or change the PIN.",
     accessNotYou: "Not your restaurant or device? Ask a manager to unpair it.",
     accessDemoTitle: "Demo access",
     accessLockTitle: "Screen locked",
@@ -249,6 +252,7 @@ export default defineArea({
     accessStaffActive: "Active",
     accessStaffInactive: "Inactive",
     accessStaffLocked: "Locked",
+    accessStaffUnlockOwnerOnly: "Only the owner can unlock {name}.",
     accessStaffPin: "PIN",
     accessStaffGoogle: "Google",
     accessStaffGooglePin: "Google and PIN",
@@ -410,8 +414,16 @@ export default defineArea({
       "Too many attempts on this device. Wait or ask a manager to unlock it.",
     ],
     pin_hard_locked: [
-      "Este empleado está bloqueado. Un responsable debe desbloquearlo o cambiar su PIN.",
-      "This employee is locked. A manager must unlock them or change their PIN.",
+      "Este empleado está bloqueado por demasiados intentos. El propietario debe desbloquearlo o cambiar su PIN.",
+      "This employee is locked after too many attempts. The owner must unlock them or change their PIN.",
+    ],
+    unlock_owner_only: [
+      "Solo el propietario puede desbloquear a gerentes, a propietarios o un bloqueo por demasiados intentos.",
+      "Only the owner can unlock managers, owners or a lock after too many attempts.",
+    ],
+    unlock_limit: [
+      "Este empleado ya se desbloqueó 3 veces hoy. Pide al propietario que lo desbloquee o cambie su PIN.",
+      "This employee was already unlocked 3 times today. Ask the owner to unlock them or change their PIN.",
     ],
     pin_invalid_format: [
       "El PIN debe tener de 6 a 8 dígitos.",

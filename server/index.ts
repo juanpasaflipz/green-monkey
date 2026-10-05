@@ -181,7 +181,12 @@ app.post("/api/orders/:id/voids", async (req, res, next) => {
     const s = (req as unknown as AuthRequest).session;
     const orderId = id.parse(req.params.id);
     // Approval is checked in its own transaction so failed PINs are counted.
-    const approverId = await verifyApproval(sql, s, req.body?.approval);
+    const approverId = await verifyApproval(
+      sql,
+      s,
+      req.body?.approval,
+      orderId,
+    );
     res.json(
       await tenant(sql, s.tenantId, (tx) =>
         voidLines(tx, s, orderId, req.body, approverId),

@@ -22,6 +22,13 @@ function shortDate(iso: string, locale: Locale) {
     year: "numeric",
   });
 }
+/**
+ * Managers unlock cashiers, servers and kitchen staff, and never a hard lock;
+ * owners and managers are unlocked by the owner only (A5).
+ */
+function managerUnlockable(row: StaffRow) {
+  return ["cashier", "server", "kitchen"].includes(row.role) && !row.locked.hard;
+}
 function locked(row: StaffRow) {
   return (
     row.locked.hard ||
@@ -33,7 +40,8 @@ function locked(row: StaffRow) {
 /**
  * Team (SEC-3): owners add staff with a PIN, edit name and role, reset PINs
  * (including their own PIN for shared terminals), deactivate and reactivate;
- * owners and managers unlock locked PINs (SEC-2).
+ * owners unlock anyone, managers unlock cashiers, servers and kitchen staff
+ * (SEC-2/A5).
  */
 export function StaffManagement({
   session,
@@ -189,14 +197,22 @@ export function StaffManagement({
                         {t.accessStaffEdit}
                       </Button>
                     ) : (
-                      locked(row) && (
+                      locked(row) &&
+                      (managerUnlockable(row) ? (
                         <Button
                           aria-label={`${t.accessStaffUnlock} ${row.name}`}
                           onClick={() => void unlock(row)}
                         >
                           {t.accessStaffUnlock}
                         </Button>
-                      )
+                      ) : (
+                        <span className="tiny muted">
+                          {t.accessStaffUnlockOwnerOnly.replace(
+                            "{name}",
+                            row.name,
+                          )}
+                        </span>
+                      ))
                     )}
                   </td>
                 </tr>

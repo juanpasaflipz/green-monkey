@@ -291,12 +291,29 @@ export async function setStaffActive(
   );
 }
 
-/** Clears every PIN lock of an employee (all devices plus the global counter). */
+/**
+ * Clears every PIN lock of an employee: all device throttles plus the global
+ * counter and hard lock. Only the owner does this (PIN reset, owner unlock).
+ */
 async function clearLocks(tx: Tx, employeeId: string) {
   await tx`update employees set failed_attempts=0,locked_until=null where id=${employeeId}`;
+  await clearDeviceLocks(tx, employeeId);
+}
+/**
+ * A manager's unlock: the device throttles and a temporary global lock, never
+ * the consecutive-failure counter or the hard lock, so repeated unlocks cannot
+ * extend PIN guessing past the 100-failure hard lock (A5).
+ */
+async function clearDeviceLocks(tx: Tx, employeeId: string) {
   await tx`update pin_throttles set failures=0,lock_level=0,locked_until=null,last_failure_at=null
     where employee_id=${employeeId}`;
+  await tx`update employees set locked_until=null
+    where id=${employeeId} and locked_until is not null and locked_until<>'infinity'`;
 }
+/** Roles a manager may unlock; owners and managers are unlocked by the owner only. */
+const MANAGER_UNLOCKABLE = ["cashier", "server", "kitchen"];
+/** A manager's unlocks of one employee per rolling 24 hours (A5). */
+export const MANAGER_UNLOCKS_PER_DAY = 3;
 
 const pinCommand = z.object({ operationId: id, pin: pinInput }).strict();
 /** Owner sets a new PIN (also their own "PIN for shared terminals"). */
@@ -334,7 +351,13 @@ export async function resetStaffPin(
 }
 
 const unlockInput = z.object({ operationId: id }).strict();
-/** Owners and managers clear a PIN lock (SEC-2). */
+/**
+ * Clears a PIN lock (SEC-2). The owner unlocks anyone and clears everything,
+ * including the hard lock. A manager unlocks only cashiers, servers and
+ * kitchen staff, at most 3 times per employee a day, and never clears the
+ * consecutive-failure counter or a hard lock: otherwise a manager could
+ * alternate wrong approval PINs and unlocks to guess the owner's PIN (A5).
+ */
 export async function unlockStaff(
   tx: Tx,
   s: Session,
@@ -352,9 +375,24 @@ export async function unlockStaff(
     { employeeId, ...p },
     async () => {
       const e = await target(tx, employeeId);
-      await clearLocks(tx, employeeId);
+      const owner = s.role === "owner";
+      if (!owner) {
+        const [state] =
+          await tx`select coalesce(locked_until='infinity',false) as hard from employees where id=${employeeId}`;
+        if (!MANAGER_UNLOCKABLE.includes(e.role) || state.hard)
+          throw new DomainError("unlock_owner_only", 403);
+        const [recent] = await tx`select count(*)::int as n from audit
+          where operation='access.employee_unlocked' and entity_id=${employeeId}
+            and created_at>now()-interval '1 day'
+            and coalesce(detail->>'by','manager')='manager'`;
+        if (recent.n >= MANAGER_UNLOCKS_PER_DAY)
+          throw new DomainError("unlock_limit", 429);
+      }
+      if (owner) await clearLocks(tx, employeeId);
+      else await clearDeviceLocks(tx, employeeId);
       await audit(tx, s, "access.employee_unlocked", employeeId, {
         name: e.name,
+        by: owner ? "owner" : "manager",
       });
       return staffRow(tx, s, employeeId);
     },

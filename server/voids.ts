@@ -46,17 +46,46 @@ export const approvalInput = z.union([
     .strict(),
 ]);
 
+/** Rejected PIN approvals one session may make per minute (A5), per process. */
+export const APPROVAL_FAILURES_PER_MINUTE = 10;
+const approvalFailures = new Map<string, number[]>();
+function recentApprovalFailures(sessionId: string, now: number) {
+  const recent = (approvalFailures.get(sessionId) ?? []).filter(
+    (at) => now - at < 60_000,
+  );
+  if (recent.length) approvalFailures.set(sessionId, recent);
+  else approvalFailures.delete(sessionId);
+  return recent;
+}
+/**
+ * A per-session ceiling on rejected PIN approvals, on top of the per-device
+ * throttle and the 100-failure hard lock, so one session cannot drive a
+ * guessing loop across approvers. Successful approvals never count.
+ */
+function noteApprovalFailure(sessionId: string, now = Date.now()) {
+  approvalFailures.set(sessionId, [
+    ...recentApprovalFailures(sessionId, now),
+    now,
+  ]);
+  if (approvalFailures.size > 5_000)
+    for (const key of [...approvalFailures.keys()])
+      recentApprovalFailures(key, now);
+}
+
 /**
  * Verifies a manager's PIN for one sensitive command, in its own transaction so
  * failed attempts are recorded even though the command is refused. Attempts
  * count against the approver on the session's device only (SEC-2). Without a
- * payload, a manager may approve their own action only on a personal device or
- * with a recent PIN on a shared terminal (SEC-6). Returns the approver's id.
+ * payload, a manager may approve their own action only from a Google-entered
+ * session on a personal device or with a recent PIN (SEC-6/A4). Returns the
+ * approver's id. With orderId, the order must exist before any PIN is checked,
+ * so approvals cannot be tried against made-up orders (A5).
  */
 export async function verifyApproval(
   sql: postgres.Sql,
   s: Session,
   raw: unknown,
+  orderId?: string,
 ): Promise<string> {
   if (raw === undefined || raw === null) {
     if (
@@ -72,7 +101,16 @@ export async function verifyApproval(
     "employeeId" in approval.data
       ? { employeeId: approval.data.employeeId }
       : { login: approval.data.login };
+  if (
+    recentApprovalFailures(s.id, Date.now()).length >=
+    APPROVAL_FAILURES_PER_MINUTE
+  )
+    throw new DomainError("too_many_attempts", 429);
   const result = await tenant(sql, s.tenantId, async (tx) => {
+    if (orderId) {
+      const [order] = await tx`select id from orders where id=${orderId}`;
+      if (!order) throw new DomainError("not_found", 404);
+    }
     const check = await checkPin(
       tx,
       target,
@@ -83,9 +121,14 @@ export async function verifyApproval(
       await tx`update sessions set authenticated_at=now() where id=${s.id}`;
     return check;
   });
-  if (result.outcome !== "ok") throw pinError(result, "approval");
-  if (!managers.includes(result.employee.role))
+  if (result.outcome !== "ok") {
+    noteApprovalFailure(s.id);
+    throw pinError(result, "approval");
+  }
+  if (!managers.includes(result.employee.role)) {
+    noteApprovalFailure(s.id);
     throw new DomainError("approval_denied", 403);
+  }
   return result.employee.id;
 }
 
