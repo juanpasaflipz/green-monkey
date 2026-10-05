@@ -498,6 +498,10 @@ export default defineArea({
       "Demasiadas solicitudes. Espera unos segundos.",
       "Too many requests. Wait a few seconds.",
     ],
+    provisional_number_out_of_range: [
+      "Este dispositivo ya usó los 9,999 números provisionales de hoy. Vuelve a conectarte para seguir vendiendo.",
+      "This device has used all 9,999 provisional numbers for today. Reconnect to keep selling.",
+    ],
     database_unavailable: [
       "El servidor no puede consultar sus datos por ahora. Las ventas se pueden guardar en este dispositivo.",
       "The server cannot reach its data right now. Sales can be saved on this device.",
