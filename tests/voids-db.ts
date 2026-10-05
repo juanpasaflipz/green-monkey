@@ -103,14 +103,17 @@ const product = products.find(
 )!;
 assert(product, "fixture needs a kitchen product with a recipe");
 const stockId = product.recipe![0].stockId;
-const stockBalance = async () =>
-  (
-    await run(
-      owner,
-      (tx) =>
-        tx`select coalesce(sum(quantity),0)::text as q from stock_movements where stock_id=${stockId}`,
-    )
-  )[0].q as string;
+// Reads the ledger sum and checks the cached balance (migration 025) equals it.
+const stockBalance = async () => {
+  const [r] = await run(
+    owner,
+    (tx) =>
+      tx`select coalesce(sum(m.quantity),0)::text as q,(select on_hand::text from stock_items where id=${stockId}) as on_hand
+        from stock_movements m where m.stock_id=${stockId}`,
+  );
+  assert.equal(Number(r.on_hand), Number(r.q), "on_hand equals the ledger");
+  return r.q as string;
+};
 
 async function newOrder(quantity = 3): Promise<Order> {
   return run(owner, (tx) =>
