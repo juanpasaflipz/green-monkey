@@ -134,6 +134,35 @@ async function queuedSales(page: Page) {
       }),
   );
 }
+/** The session id in this browser's offline cache (green-monkey-v1 / cache / "session"). */
+async function cachedSessionId(page: Page) {
+  return page.evaluate(
+    () =>
+      new Promise<string | null>((resolve, reject) => {
+        const open = indexedDB.open("green-monkey-v1");
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const request = open.result
+            .transaction("cache")
+            .objectStore("cache")
+            .get("session");
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            open.result.close();
+            resolve(request.result?.value?.id ?? null);
+          };
+        };
+      }),
+  );
+}
+/** The lock dialog's open state, read from the DOM (it reopens after any close). */
+async function lockOpen(page: Page) {
+  return page.evaluate(
+    () =>
+      document.querySelector<HTMLDialogElement>("dialog.lock-screen")?.open ??
+      false,
+  );
+}
 /** No horizontal overflow at four widths; axe and evidence at 1440 and 390. */
 async function checkLayout(page: Page, evidence: string, include?: string) {
   for (const [width, height] of [
@@ -466,6 +495,191 @@ test("a lock survives reloads, new tabs and offline restores; Continuar como nee
     await expect(lock).toBeHidden();
     const after = await sessionOf(tablet);
     expect(after.id).toBe(s.id);
+    await context.close();
+  } finally {
+    await admin.end();
+  }
+});
+
+test("Escape and a forced close never dismiss a manual or idle lock, the workspace stays unusable, and a manual lock reaches the other tabs (SEC-6)", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  const admin = fixtureAdmin(baseURL);
+  const id = tag();
+  try {
+    await ownerLogin(page);
+    const code = await newCode(page, `Escape ${id}`);
+    const context = await browser.newContext();
+    const tablet = await context.newPage();
+    await tablet.clock.install();
+    await pair(tablet, code);
+    await admin`update devices set idle_lock_seconds=180 where name=${`Escape ${id}`}`;
+    // The owner on the terminal, so the workspace has the Equipo navigation.
+    await signIn(tablet, "Alex Demo", OWNER_PASSWORD, true);
+    await expect(tablet.locator(".scope")).toContainText("Alex Demo");
+    const lock = tablet.getByRole("dialog", { name: "Pantalla bloqueada" });
+    // CSS, not role: behind the lock the workspace is inert.
+    const rail = (name: string) =>
+      tablet.locator("nav.rail button", { hasText: name });
+    /**
+     * A keypad tap, then Escape five times (a repeated close request without
+     * user activation can no longer be cancelled), then a forced close of the
+     * dialog: the lock stays up, everything behind it stays inert, and a click
+     * on the navigation reaches nothing.
+     */
+    const holds = async (blocked: string) => {
+      await expect(lock).toBeVisible();
+      // The keypad never asks for the tablet's own keyboard (ACC-17).
+      await expect(lock.getByLabel("PIN de Alex Demo")).toHaveAttribute(
+        "inputmode",
+        "none",
+      );
+      await lock.getByRole("button", { name: "1", exact: true }).click();
+      for (let i = 0; i < 5; i++) await tablet.keyboard.press("Escape");
+      await expect(lock).toBeVisible();
+      expect(await lockOpen(tablet)).toBe(true);
+      await tablet.evaluate(() =>
+        document.querySelector<HTMLDialogElement>("dialog.lock-screen")!.close(),
+      );
+      await expect.poll(() => lockOpen(tablet)).toBe(true);
+      await expect(lock).toBeVisible();
+      expect(
+        await tablet.evaluate(() => document.getElementById("root")!.inert),
+      ).toBe(true);
+      await rail(blocked).click({ force: true });
+      await expect(lock).toBeVisible();
+    };
+    const unlock = async () => {
+      await lock.getByRole("button", { name: "Usar contraseña" }).click();
+      await expect(lock.getByLabel("Contraseña o PIN")).toHaveAttribute(
+        "inputmode",
+        "text",
+      );
+      await lock.getByLabel("Contraseña o PIN").fill(OWNER_PASSWORD);
+      await lock.getByRole("button", { name: "Entrar", exact: true }).click();
+      await expect(lock).toBeHidden();
+      expect(
+        await tablet.evaluate(() => document.getElementById("root")!.inert),
+      ).toBe(false);
+    };
+
+    // A second tab of the same session locks with the first one (ACC-16).
+    const second = await context.newPage();
+    await second.goto("/app");
+    await expect(second.locator(".scope")).toContainText("Alex Demo");
+    const secondLock = second.getByRole("dialog", { name: "Pantalla bloqueada" });
+    await expect(secondLock).toHaveCount(0);
+    await tablet.getByRole("button", { name: "Bloquear pantalla" }).click();
+    await expect(secondLock).toBeVisible();
+
+    // Manual lock: the blocked click never reached the workspace.
+    await holds("Equipo");
+    await unlock();
+    await expect(rail("Hoy")).toHaveAttribute("aria-current", "page");
+    await expect(rail("Equipo")).not.toHaveAttribute("aria-current", "page");
+    await rail("Equipo").click();
+    await expect(rail("Equipo")).toHaveAttribute("aria-current", "page");
+    await second.close();
+
+    // Idle lock: the same holds.
+    await tablet.clock.fastForward("03:05");
+    await holds("Configuración");
+    await unlock();
+    await expect(rail("Equipo")).toHaveAttribute("aria-current", "page");
+    await expect(rail("Configuración")).not.toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    await context.close();
+  } finally {
+    await admin.end();
+  }
+});
+
+test("a revoked session leaves the offline cache on a cold start, and an ended one comes back offline only behind its lock (FOH-7/SEC-6)", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  test.skip(
+    !process.env.TEST_PRODUCTION,
+    "Offline reload requires the compiled server's service worker",
+  );
+  const admin = fixtureAdmin(baseURL);
+  try {
+    await ownerLogin(page);
+    const { context, page: first } = await pairTerminal(
+      browser,
+      page,
+      `Revocada ${tag()}`,
+    );
+    await signIn(first, CASHIER.name, CASHIER.pin);
+    await expect(first.locator(".scope")).toContainText(CASHIER.name);
+    await first.evaluate(async () => {
+      await navigator.serviceWorker.ready;
+    });
+    const revoked = await sessionOf(first);
+    await expect.poll(() => cachedSessionId(first)).toBe(revoked.id);
+    // Revoked while no page is open (as deactivation or unpairing does).
+    await first.close();
+    await admin`update sessions set revoked=true where id=${revoked.id}`;
+    const tablet = await context.newPage();
+    await tablet.goto("/app");
+    const gate = tablet.getByRole("heading", {
+      name: "¿Quién entra?",
+      exact: true,
+    });
+    await expect(gate).toBeVisible();
+    await expect.poll(() => cachedSessionId(tablet)).toBeNull();
+    // Offline, nothing is left to restore: the gate, never the workspace.
+    await context.setOffline(true);
+    await tablet.reload();
+    await expect(
+      tablet.getByText(
+        "Sin conexión. Para entrar en este dispositivo hace falta conexión",
+      ),
+    ).toBeVisible();
+    await expect(tablet.locator(".scope")).toHaveCount(0);
+    await expect(tablet.locator("dialog.lock-screen")).toHaveCount(0);
+
+    // An ended session stays cached, but only behind its lock with the reason.
+    await context.setOffline(false);
+    await tablet.reload();
+    await signIn(tablet, CASHIER.name, CASHIER.pin);
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    const ended = await sessionOf(tablet);
+    await expect.poll(() => cachedSessionId(tablet)).toBe(ended.id);
+    await tablet.close();
+    await admin`update sessions set ended_at=now(),end_reason='ended_by_manager',
+      expires_at=least(expires_at,now()) where id=${ended.id}`;
+    const again = await context.newPage();
+    await again.goto("/app");
+    await expect(
+      again.getByRole("heading", { name: "¿Quién entra?", exact: true }),
+    ).toBeVisible();
+    expect(await cachedSessionId(again)).toBe(ended.id);
+    await context.setOffline(true);
+    await again.reload();
+    const lock = again.getByRole("dialog", {
+      name: "La sesión se cerró en este dispositivo. Ingresa tu PIN para continuar.",
+    });
+    await expect(lock).toBeVisible();
+    await expect(lock).toContainText(
+      "Sin conexión no se puede verificar el PIN.",
+    );
+    await expect(
+      lock.getByRole("button", { name: `Continuar como ${CASHIER.name}` }),
+    ).toHaveCount(0);
+    expect(
+      await again.evaluate(() => document.getElementById("root")!.inert),
+    ).toBe(true);
+    // Back online, the PIN starts a new session.
+    await context.setOffline(false);
+    await enterSecret(lock, CASHIER.name, CASHIER.pin);
+    await expect(lock).toBeHidden();
+    expect((await sessionOf(again)).id).not.toBe(ended.id);
     await context.close();
   } finally {
     await admin.end();
