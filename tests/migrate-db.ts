@@ -455,8 +455,8 @@ try {
       assert.deepEqual(result.deleted, { oauth_login_attempts: 2, jobs: 2 });
       const [left] = await adminReal`
         select
-          (select array_agg(state_hash order by state_hash) from oauth_login_attempts) as oauth,
-          (select array_agg(id::text order by id) from jobs where tenant_id=${tenantId}) as jobs,
+          (select array_agg(state_hash order by state_hash collate "C") from oauth_login_attempts) as oauth,
+          (select array_agg(id::text order by id::text collate "C") from jobs where tenant_id=${tenantId}) as jobs,
           (select bool_and(relforcerowsecurity) from pg_class
             where oid in (to_regclass('public.jobs'), to_regclass('public.oauth_login_attempts'))) as forced`;
       assert.deepEqual(
