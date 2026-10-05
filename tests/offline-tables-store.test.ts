@@ -16,7 +16,7 @@ vi.mock("../src/api", async (importOriginal) => ({
   api: vi.fn(),
 }));
 
-import { api } from "../src/api";
+import { api, ApiError } from "../src/api";
 import { syncPending } from "../src/offline-queue";
 import { resetConnectivityForTests } from "../src/connectivity";
 import { scope } from "../src/offline-keys";
@@ -829,5 +829,103 @@ describe("sync loop and table records", () => {
     const synced = await fakeDb.pending.get(child.id);
     expect(synced).toMatchObject({ status: "synced", attempts: 0 });
     expect(synced!.waitReason).toBeUndefined();
+  });
+});
+
+describe("sync loop: one order's records stay in order (I10, OFF-R17)", () => {
+  it("a 5xx on the round leaves the payment pending and never sends it; the next pass sends both in order", async () => {
+    const s = session();
+    const table = uuid(160);
+    const roundRow = row(
+      s,
+      {},
+      { kind: "round", sequence: 1, target: { orderId: table } },
+    );
+    const paymentRow = row(
+      s,
+      {},
+      { kind: "payment", sequence: 2, target: { orderId: table } },
+    );
+    const otherSale = row(s, {}, { kind: "sale", sequence: 3 });
+    for (const r of [roundRow, paymentRow, otherSale])
+      await fakeDb.pending.put(r);
+    mockedApi
+      .mockRejectedValueOnce(new ApiError("internal_error", 500, "server"))
+      .mockResolvedValueOnce({ kind: "sale", orderId: uuid(161) });
+    await syncPending(s, { reason: "poll" });
+    // The payment includes the round's amount: sent first it would be refused
+    // as a conflict that only the order of arrival caused.
+    expect(mockedApi.mock.calls.map((call) => call[1])).toEqual([
+      roundRow.body,
+      otherSale.body,
+    ]);
+    expect(await fakeDb.pending.get(roundRow.id)).toMatchObject({
+      status: "pending",
+      attempts: 1,
+      error: "internal_error",
+    });
+    const waiting = await fakeDb.pending.get(paymentRow.id);
+    expect(waiting).toMatchObject({ status: "pending", attempts: 0 });
+    expect(waiting!.error).toBeUndefined();
+    expect(await fakeDb.pending.get(otherSale.id)).toMatchObject({
+      status: "synced",
+    });
+    // Until the round is due again, its order stays held.
+    mockedApi.mockClear();
+    await syncPending(s, { reason: "poll" });
+    expect(mockedApi).not.toHaveBeenCalled();
+    // Next pass: the round, then the payment.
+    mockedApi
+      .mockResolvedValueOnce({ kind: "round", orderId: table, roundNumber: 2 })
+      .mockResolvedValueOnce({
+        kind: "payment",
+        orderId: table,
+        tenderId: uuid(162),
+      });
+    await syncPending(s, { reason: "reconnect" });
+    expect(mockedApi.mock.calls.map((call) => call[1])).toEqual([
+      roundRow.body,
+      paymentRow.body,
+    ]);
+    for (const id of [roundRow.id, paymentRow.id])
+      expect(await fakeDb.pending.get(id)).toMatchObject({ status: "synced" });
+  });
+
+  it("records of a local order hold together, also once the order record synced", async () => {
+    const s = session();
+    const parent = row(
+      s,
+      {
+        status: "synced",
+        result: { orderId: uuid(170) },
+        syncedAt: Date.now(),
+      },
+      { kind: "order", sequence: 1 },
+    );
+    const roundRow = row(
+      s,
+      {},
+      {
+        kind: "round",
+        sequence: 2,
+        target: { localOrderOperationId: parent.id },
+      },
+    );
+    // Saved after the order synced, against the server order directly.
+    const paymentRow = row(
+      s,
+      {},
+      { kind: "payment", sequence: 3, target: { orderId: uuid(170) } },
+    );
+    for (const r of [parent, roundRow, paymentRow]) await fakeDb.pending.put(r);
+    mockedApi.mockRejectedValueOnce(
+      new ApiError("server_unavailable", 503, "server"),
+    );
+    await syncPending(s, { reason: "poll" });
+    expect(mockedApi).toHaveBeenCalledTimes(1);
+    expect(await fakeDb.pending.get(paymentRow.id)).toMatchObject({
+      status: "pending",
+      attempts: 0,
+    });
   });
 });

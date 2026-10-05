@@ -663,6 +663,43 @@ export async function rememberOpenOrder(
   });
 }
 
+/**
+ * After an order, round or payment record syncs, the server order in its
+ * result is the freshest copy there is: it is kept so the order stays
+ * servable offline at its real balance, and so a synced local order is only
+ * ever shown through its server copy (OFF-R12). Sales open no table check.
+ */
+export async function rememberSyncedOrder(
+  session: Session,
+  row: Pending,
+  result: unknown,
+): Promise<void> {
+  if (!isV3(row.body) || row.body.kind === "sale") return;
+  const order = (result as { order?: Order } | null)?.order;
+  if (!order || typeof order !== "object" || typeof order.id !== "string")
+    return;
+  await rememberOpenOrder(session, order);
+}
+
+/**
+ * The result to store on a row a manager reconciled (OFF-R18). The reconcile
+ * route answers with the order; balances need the tender the reconcile made,
+ * which carries the record's operationId as its source.
+ */
+export function reconciledResult(operationId: string, order: Order) {
+  const tender = (order.tenders ?? []).find(
+    (t: { source?: string; source_id?: string | null }) =>
+      t.source === "offline_recovery" && t.source_id === operationId,
+  ) as { id: string } | undefined;
+  return {
+    orderId: order.id,
+    orderNumber: order.number,
+    tenderId: tender?.id ?? null,
+    roundNumber: null,
+    order,
+  };
+}
+
 async function scopedV3Rows(session: Session) {
   return (await db.pending.where("scope").equals(scope(session)).toArray())
     .filter((row) => row.status !== "archived" && isV3(row.body))

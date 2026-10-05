@@ -13,6 +13,7 @@ import { api, ApiError } from "./api";
 import { getConnectivitySnapshot, useConnectivity } from "./connectivity";
 import { db, type Pending } from "./offline";
 import { scope } from "./offline-keys";
+import { rememberSyncedOrder } from "./offline-records";
 import {
   classifySyncError,
   RESOLVED_RETENTION_MS,
@@ -49,6 +50,34 @@ const order = (row: Pending) =>
   Date.parse(row.body.recordedAt);
 
 /**
+ * The orders a record writes to, as keys shared by every record of the same
+ * order: its own local order ("local:"), the local order it targets, and the
+ * server order behind either once known ("server:"). A sale opens a new order
+ * of its own, so it shares nothing.
+ */
+export function orderKeys(
+  row: Pending,
+  rowsById: Map<string, Pending>,
+): string[] {
+  const body = row.body as {
+    kind?: string;
+    operationId: string;
+    target?: { orderId?: string; localOrderOperationId?: string };
+  };
+  if (body.kind === "order") return [`local:${body.operationId}`];
+  const target = body.target;
+  if (!target) return [];
+  if (target.orderId) return [`server:${target.orderId}`];
+  if (!target.localOrderOperationId) return [];
+  const keys = [`local:${target.localOrderOperationId}`];
+  const parent = rowsById.get(target.localOrderOperationId);
+  const orderId = (parent?.result as { orderId?: string } | null | undefined)
+    ?.orderId;
+  if (parent?.status === "synced" && orderId) keys.push(`server:${orderId}`);
+  return keys;
+}
+
+/**
  * Sends every due record in this session's scope, oldest first. Accepts the
  * legacy boolean `force` argument used by older callers.
  */
@@ -81,10 +110,27 @@ async function syncScoped(
       const rows = stored
         .filter((row) => !isResolved(row))
         .sort((a, b) => order(a) - order(b));
+      const byId = new Map(stored.map((row) => [row.id, row]));
+      // I10: orders with an earlier record still waiting on a transient answer.
+      // A later record of the same order (a payment that includes a round's
+      // amount) is never sent ahead of it, or the server would refuse it as a
+      // conflict that only the order of arrival caused.
+      const held = new Set<string>();
+      const hold = (row: Pending) => {
+        for (const key of orderKeys(row, byId)) held.add(key);
+      };
       for (const row of rows) {
         const now = Date.now();
         if (row.status === "conflict" && !force) continue;
-        if (row.nextAt > now && !force && reason !== "reconnect") continue;
+        if (orderKeys(row, byId).some((key) => held.has(key))) {
+          // Waiting behind an earlier record of its order is not an attempt.
+          hold(row);
+          continue;
+        }
+        if (row.nextAt > now && !force && reason !== "reconnect") {
+          hold(row);
+          continue;
+        }
         const dependency = dependencyOf(row.body);
         if (dependency) {
           const parent = await db.pending.get(dependency);
@@ -95,6 +141,7 @@ async function syncScoped(
                 status: "pending",
                 waitReason: "dependency",
               });
+            hold(row);
             continue;
           }
         }
@@ -122,6 +169,7 @@ async function syncScoped(
                 attempts: reachable ? row.attempts + 1 : row.attempts,
                 nextAt: Date.now() + retryDelay(row.attempts),
               });
+              hold(row);
               if (kind === "network" || kind === "timeout")
                 return finish(s, reason);
               break;
@@ -168,6 +216,10 @@ async function syncScoped(
           waitReason: undefined,
           nextAt: 0,
         });
+        byId.set(row.id, { ...row, status: "synced", result });
+        // OFF-R12: the server order a table record produced is the freshest
+        // copy there is; from now on the order is served only through it.
+        await rememberSyncedOrder(s, row, result).catch(() => {});
       }
       await finish(s, reason);
     },
