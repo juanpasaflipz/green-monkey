@@ -1075,6 +1075,34 @@ try {
     await signOut(sql, req({ gm_session: "garbage" }), stubRes() as any);
   });
 
+  await test("ACC-FLOOR-5: a remembered logout names its session and never ends the session signed in since", async () => {
+    const terminal = await device("Salida pendiente");
+    const a = await pin(terminal, cashierId, CASHIER_PIN);
+    // Cashier A left offline; manager B signs in by PIN before it is finished.
+    const b = await pin(terminal, managerId, MANAGER_PIN, a.cookie);
+    assert.equal((await sessionRow(a.sessionId)).end_reason, "switched");
+    const late = stubRes();
+    await signOut(
+      sql,
+      req({ gm_session: b.cookie, gm_device: sign(terminal) }, { sessionId: a.sessionId }),
+      late as any,
+    );
+    const kept = await sessionRow(b.sessionId);
+    assert.equal(kept.ended_at, null);
+    assert.deepEqual(late.cleared, [], "B's cookie stays");
+    // The same request naming the cookie's own session ends it as before.
+    const own = stubRes();
+    await signOut(
+      sql,
+      req({ gm_session: b.cookie, gm_device: sign(terminal) }, { sessionId: b.sessionId }),
+      own as any,
+    );
+    assert.equal((await sessionRow(b.sessionId)).end_reason, "logout");
+    assert.deepEqual(own.cleared, ["gm_session"]);
+    // An unusable body is ignored rather than refused: logout always succeeds.
+    await signOut(sql, req({}, { sessionId: "not-a-uuid" }), stubRes() as any);
+  });
+
   await test("OFF-7: name edit keeps sessions; role change and PIN reset end without revoking; deactivation revokes", async () => {
     const terminal = await device("Ciclo de vida");
     const staff = await run((tx) =>

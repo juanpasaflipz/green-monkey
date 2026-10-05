@@ -669,10 +669,16 @@ export async function legacyLogin(
   return { ok: true };
 }
 
+const signOutBody = z.object({ sessionId: z.uuid().optional() }).strip();
 /**
  * POST /api/access/logout (and /api/logout): always succeeds. Ends the cookie's
  * session normally (queued evidence stays syncable), clears gm_session and the
  * Google account cookie, and keeps the device paired.
+ *
+ * A logout finished later (remembered offline) names the session it was meant
+ * for; when the cookie by then holds another session (a PIN sign-in on this
+ * device already ended or replaced the old one), nothing is ended or cleared,
+ * so it can never sign out the next person (ACC-FLOOR-5).
  */
 export async function signOut(
   sql: postgres.Sql,
@@ -680,6 +686,9 @@ export async function signOut(
   res: express.Response,
 ): Promise<{ ok: true }> {
   const c = readSessionCookie(req.cookies?.gm_session);
+  const intended = signOutBody.safeParse(req.body ?? {});
+  const sessionId = intended.success ? intended.data.sessionId : undefined;
+  if (sessionId && c && c.id !== sessionId) return { ok: true };
   if (c) {
     try {
       await tenant(

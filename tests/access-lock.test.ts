@@ -180,6 +180,33 @@ describe("session 401 and the offline cache (ACC-15)", () => {
   });
 });
 
+describe("remembered logout (ACC-FLOOR-5)", () => {
+  it("a late logout names the session it was meant for; a pending one is finished with it", async () => {
+    const bodies: unknown[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: { body: string }) => {
+        bodies.push(JSON.parse(init.body));
+        return bodies.length === 1
+          ? Promise.reject(new TypeError("Failed to fetch"))
+          : { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }),
+    );
+    vi.resetModules();
+    const { serverSignOut, finishPendingLogout, LOGOUT_PENDING_KEY } =
+      await import("../src/access/session");
+    expect(await serverSignOut(A)).toBe("local");
+    expect(store.get(LOGOUT_PENDING_KEY)).toBe(A);
+    expect(await finishPendingLogout()).toBe(true);
+    expect(bodies).toEqual([{ sessionId: A }, { sessionId: A }]);
+    expect(store.has(LOGOUT_PENDING_KEY)).toBe(false);
+    // Without a known session the request names none.
+    store.set(LOGOUT_PENDING_KEY, "unknown");
+    await finishPendingLogout();
+    expect(bodies.at(-1)).toEqual({});
+  });
+});
+
 describe("lock across tabs (ACC-16)", () => {
   it("another tab's lock applies only to the same session, and every write is new", async () => {
     const { rememberLock, lockedFor, LOCK_KEY } = await load();

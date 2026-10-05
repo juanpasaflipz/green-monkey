@@ -67,12 +67,21 @@ export async function drainBeforeLeaving(
   return unsyncedFor(s);
 }
 
-async function postLogout() {
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * Ends the cookie's session. With a session id the server ends it only if the
+ * cookie still holds that session, so a logout finished late never signs out
+ * whoever signed in on this device since (ACC-FLOOR-5).
+ */
+async function postLogout(sessionId?: string | null) {
   const response = await fetch("/api/access/logout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
-    body: "{}",
+    body: JSON.stringify(
+      sessionId && UUID.test(sessionId) ? { sessionId } : {},
+    ),
   });
   if (!response.ok) throw new ApiError("logout_failed", response.status);
 }
@@ -86,7 +95,7 @@ export async function serverSignOut(
   sessionId: string | null,
 ): Promise<"server" | "local"> {
   try {
-    await postLogout();
+    await postLogout(sessionId);
     write(LOGOUT_PENDING_KEY, null);
     return "server";
   } catch {
@@ -111,7 +120,7 @@ export function clearPendingLogout() {
 export async function finishPendingLogout(): Promise<boolean> {
   if (!logoutPending()) return true;
   try {
-    await postLogout();
+    await postLogout(read(LOGOUT_PENDING_KEY));
     write(LOGOUT_PENDING_KEY, null);
     return true;
   } catch {
