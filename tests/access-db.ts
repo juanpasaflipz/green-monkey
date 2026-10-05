@@ -2228,6 +2228,12 @@ try {
 } finally {
   for (const id of [tenantId, otherTenantId, ...signupTenants]) {
     for (const table of [
+      // offline (026): OFF-3 and OFF-7 sync through offline's record path,
+      // whose evidence rows reference orders, tenders, rounds, devices and
+      // employees (contracts §5.2 rule 3: offline's tables go first).
+      "offline_kitchen_reviews",
+      "offline_sync_records",
+      "offline_archives",
       "signup_billing_intents",
       "pin_throttles",
       "device_pairing_codes",
