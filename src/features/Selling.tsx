@@ -24,6 +24,7 @@ import {
   mergeLine,
   priceCart,
   reconcileLostSend,
+  idSequence,
   type PaymentValues,
 } from "../../shared/service";
 import { strings, translateError, type Key } from "../i18n";
@@ -130,6 +131,13 @@ export function Selling({
   const [noteReprint, setNoteReprint] = useState<Order | null>(null);
   /** SVC-R2: one payment request at a time, from the tap until it settles. */
   const [paying, setPaying] = useState(false);
+  /**
+   * SVC-R7: ids of the cart lines in a send that has not answered yet. They
+   * cannot be edited and a product tap never merges into them (the ref is
+   * read synchronously by add()).
+   */
+  const [sending, setSending] = useState<ReadonlySet<string> | null>(null);
+  const sendingRef = useRef<ReadonlySet<string> | null>(null);
   const payingRef = useRef(false);
   const nameCache = useRef(new Map<string, Label>());
   const draftRef = useRef(draft);
@@ -395,11 +403,22 @@ export function Selling({
     const choice = Array.isArray(selection)
       ? { options: selection }
       : selection;
-    const r = mergeLine(draftRef.current.lines, p, choice);
-    // Keep the ref current so two quick taps before a render both count.
-    draftRef.current = { ...draftRef.current, lines: r.lines };
-    setDraft((d) => ({ ...d, lines: r.lines }));
-    setLastAddedId(r.lineId);
+    // SVC-R7: the lines come from React's latest state inside the updater, so
+    // a tap that lands right after a send emptied the cart can never bring the
+    // sent lines back, and lines still in flight are never merge targets. The
+    // ref only previews the result (same new id) to highlight the line; it
+    // stays current so two quick taps before a render highlight the same line.
+    const opts = {
+      newId: crypto.randomUUID(),
+      locked: sendingRef.current ?? undefined,
+    };
+    const preview = mergeLine(draftRef.current.lines, p, choice, opts);
+    draftRef.current = { ...draftRef.current, lines: preview.lines };
+    setDraft((d) => ({
+      ...d,
+      lines: mergeLine(d.lines, p, choice, opts).lines,
+    }));
+    setLastAddedId(preview.lineId);
     setModifier(null);
   }
   function reset() {
@@ -444,19 +463,30 @@ export function Selling({
     setNotice("");
     setClosedCheck(false);
     setNoteReprint(null);
+    const inFlight = new Set(d.lines.map((l) => l.id));
+    sendingRef.current = inFlight;
+    setSending(inFlight);
     try {
       const o = await api<Order>(
         target ? `/orders/${target.id}/rounds` : "/orders",
         target ? { ...d, expectedVersion: target.version } : d,
       );
+      // SVC-R7: the cart may have changed while the request was in flight.
+      // Compare the latest cart with the order instead of emptying it: lines
+      // that landed leave, anything added meanwhile (another product, another
+      // unit, a note) stays under a new operation id. The order and the cart
+      // change in one render, before any await, so the balance is never
+      // counted twice (SVC-R8).
+      const operationId = crypto.randomUUID();
+      const ids = idSequence();
+      const next = reconcileLostSend(draftRef.current, o, operationId, ids());
+      draftRef.current = next.draft;
+      sendingRef.current = null;
+      setSending(null);
       setCurrent(o);
+      setDraft((x) => reconcileLostSend(x, o, operationId, ids()).draft);
+      if (next.changed) setNotice(t("serviceSendChanged"));
       await db.cache.put({ id: contextId, value: o.id });
-      setDraft((x) => ({
-        ...x,
-        operationId: crypto.randomUUID(),
-        lines: [],
-        note: "",
-      }));
       if (readPrintSettings().kitchenOnSend) printNewRound(o);
       return o;
     } catch (e) {
@@ -495,10 +525,13 @@ export function Selling({
         );
         if (latest) {
           const operationId = crypto.randomUUID();
-          const next = reconcileLostSend(d, latest, operationId);
+          const ids = idSequence();
+          const next = reconcileLostSend(d, latest, operationId, ids());
           setCurrent(latest);
+          setDraft(
+            (x) => reconcileLostSend(x, latest, operationId, ids()).draft,
+          );
           await db.cache.put({ id: contextId, value: latest.id });
-          setDraft((x) => reconcileLostSend(x, latest, operationId).draft);
           if (readPrintSettings().kitchenOnSend)
             printRounds(latest, next.rounds);
           if (next.sent) return latest;
@@ -526,6 +559,8 @@ export function Selling({
       setError(translateError(code, locale));
       throw new HandledError(code);
     } finally {
+      sendingRef.current = null;
+      setSending(null);
       if (!opts.keepBusy) setBusy(false);
     }
   }
@@ -757,6 +792,8 @@ export function Selling({
         value={draft.note}
         maxLength={500}
         placeholder={t(current ? "serviceRoundNote" : "serviceOrderNoteField")}
+        // SVC-R7: the note travels with the send in flight.
+        readOnly={!!sending}
         onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
       />
     </Field>
@@ -888,6 +925,7 @@ export function Selling({
               locale={locale}
               money={money}
               justAdded={lastAddedId === line.input.id}
+              locked={!!sending?.has(line.input.id)}
               onQuantity={(delta) =>
                 setDraft((d) => ({
                   ...d,
@@ -990,7 +1028,7 @@ export function Selling({
         <div className="row between">
           <button
             className="text-button"
-            disabled={!draft.lines.length}
+            disabled={!draft.lines.length || busy}
             onClick={async () => {
               await parkDraft(draft, current);
               reset();
@@ -1026,7 +1064,7 @@ export function Selling({
             )}
           </div>
           <Button
-            disabled={pendingPayment}
+            disabled={pendingPayment || busy}
             onClick={async () => {
               if (draft.lines.length) await parkDraft(draft, current);
               reset();
@@ -1034,7 +1072,9 @@ export function Selling({
           >
             {t("newOrder")}
           </Button>
-          <Button onClick={() => void openDrafts()}>{t("drafts")}</Button>
+          <Button disabled={busy} onClick={() => void openDrafts()}>
+            {t("drafts")}
+          </Button>
         </div>
         <div className="search">
           <Search size={20} />

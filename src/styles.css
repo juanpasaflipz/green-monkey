@@ -1773,6 +1773,10 @@ th {
 .order-line.just-added {
   animation: line-flash 600ms ease-out;
 }
+/* service (SVC-R7): a line whose send has not answered yet. */
+.order-line .line-sending {
+  margin: 4px 0 0;
+}
 .product .in-cart {
   font-size: 13px;
   font-weight: 600;

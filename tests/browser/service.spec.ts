@@ -666,6 +666,144 @@ test("a lost send keeps the extra unit tapped onto a line that already landed", 
   expect(tacos.reduce((n: number, l: any) => n + l.quantity, 0)).toBe(2);
 });
 
+test("cart changes made while a send is in flight stay in the cart and nothing is sent twice", async ({
+  page,
+}) => {
+  // SVC-R7: a slow send must not drop what the waiter adds meanwhile, and a
+  // tap landing right after the response must not bring sent lines back.
+  await login(page);
+  const name = "Vuelo " + tag();
+  const send = page.getByRole("button", {
+    name: "Enviar a cocina",
+    exact: true,
+  });
+  const cart = page.locator(".order-line");
+  const inFlight = cart.filter({ hasText: "Enviando a cocina…" });
+  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const existing = page.locator(".existing");
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+
+  // Each send waits until the test releases it.
+  let release = () => {};
+  let gate = Promise.resolve();
+  const hold = () => {
+    gate = new Promise<void>((resolve) => (release = resolve));
+  };
+  let creates = 0,
+    rounds = 0;
+  await page.route("**/api/orders", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    creates++;
+    await gate;
+    await route.continue();
+  });
+  await page.route("**/api/orders/*/rounds", async (route) => {
+    rounds++;
+    await gate;
+    await route.continue();
+  });
+
+  // New order: 1 taco with an order note, held in flight.
+  await tile("Taco de hongos").click();
+  await page.getByLabel("Nombre para llamar").fill(name);
+  await page.getByLabel("Nota de la orden (cocina)").fill("Sin prisa");
+  hold();
+  await send.click();
+  await expect.poll(() => creates).toBe(1);
+  // The line and the note in flight cannot be edited, nor the cart parked.
+  await expect(inFlight).toHaveCount(1);
+  await expect(
+    inFlight.getByRole("button", { name: "Cantidad + Taco de hongos" }),
+  ).toBeDisabled();
+  await expect(
+    inFlight.getByRole("button", { name: "Nota para Taco de hongos" }),
+  ).toBeDisabled();
+  await expect(page.getByLabel("Nota de la orden (cocina)")).not.toBeEditable();
+  await expect(
+    page.getByRole("button", { name: "Nueva orden", exact: true }),
+  ).toBeDisabled();
+  // The customer adds "y una Coca" and another taco with an allergy note.
+  await tile("Agua de jamaica").click();
+  await tile("Taco de hongos").click();
+  await expect(cart).toHaveCount(3);
+  await expect(inFlight.locator(".quantity span")).toHaveText("1");
+  const newTaco = cart
+    .filter({ hasText: "Taco de hongos" })
+    .filter({ hasNotText: "Enviando a cocina…" });
+  await newTaco
+    .getByRole("button", { name: "Nota para Taco de hongos" })
+    .click();
+  await newTaco
+    .getByRole("textbox", { name: "Nota para cocina", exact: true })
+    .fill("Alergia: nuez");
+  release();
+  await expect(existing).toContainText("1 × Taco de hongos");
+  await expect(inFlight).toHaveCount(0);
+  await expect(cart).toHaveCount(2);
+  await expect(cart.filter({ hasText: "Agua de jamaica" })).toHaveCount(1);
+  await expect(
+    newTaco.getByRole("textbox", { name: "Nota para cocina", exact: true }),
+  ).toHaveValue("Alergia: nuez");
+  await newTaco.getByRole("button", { name: "Listo", exact: true }).click();
+
+  // A round on the check, held; Limonada is tapped every few ms across the
+  // response so some taps land between the reconcile and the next render.
+  await page.getByLabel("Nota para esta ronda").fill("Bebidas primero");
+  hold();
+  await send.click();
+  await expect.poll(() => rounds).toBe(1);
+  await expect(inFlight).toHaveCount(2);
+  await expect(page.getByLabel("Nota para esta ronda")).not.toBeEditable();
+  const tapping = page.evaluate(async () => {
+    const button = [
+      ...document.querySelectorAll<HTMLButtonElement>("button.product"),
+    ].find((b) => b.textContent?.includes("Limonada natural"))!;
+    let taps = 0,
+      after = 0;
+    while (taps < 90 && after < 15) {
+      button.click();
+      taps++;
+      if (!document.querySelector(".order-line.sending")) after++;
+      await new Promise((resolve) => setTimeout(resolve, 4));
+    }
+    return taps;
+  });
+  release();
+  const taps = await tapping;
+  await expect(inFlight).toHaveCount(0);
+  await expect(existing).toContainText("Agua de jamaica");
+  const limonada = cart.filter({ hasText: "Limonada natural" });
+  await expect(cart).toHaveCount(1);
+  await expect(limonada.locator(".quantity span")).toHaveText(String(taps));
+  await expect(page.getByLabel("Nota para esta ronda")).toHaveValue("");
+  await send.click();
+  await expect(existing).toContainText("Limonada natural");
+  await expect(cart).toHaveCount(0);
+  expect(creates).toBe(1);
+  expect(rounds).toBe(2);
+
+  // One order; every unit tapped is on it exactly once, with its notes.
+  const list = await call(
+    page,
+    `/service/orders?q=${encodeURIComponent(name)}`,
+  );
+  expect(list.items).toHaveLength(1);
+  const order = await call(page, "/orders/" + list.items[0].id);
+  const units = (n: string) =>
+    order.lines
+      .filter((l: any) => l.name.es === n)
+      .reduce((a: number, l: any) => a + l.quantity, 0);
+  expect(units("Taco de hongos")).toBe(2);
+  expect(units("Agua de jamaica")).toBe(1);
+  expect(units("Limonada natural")).toBe(taps);
+  expect(order.lines).toHaveLength(4);
+  expect(
+    order.lines.filter((l: any) => l.note === "Alergia: nuez"),
+  ).toHaveLength(1);
+  expect(order.note).toBe("Sin prisa");
+  expect(order.rounds.map((r: any) => r.note)).toContain("Bebidas primero");
+});
+
 test("a second Confirmar cobro tap while the payment is in flight records one tender", async ({
   page,
 }) => {

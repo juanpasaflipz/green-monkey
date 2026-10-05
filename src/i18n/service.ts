@@ -133,6 +133,7 @@ export default defineArea({
     // Selling
     serviceLineNote: "Nota para cocina",
     serviceLineNoteAdd: "Nota para {item}",
+    serviceLineSending: "Enviando a cocina…",
     serviceLineNoteDone: "Listo",
     serviceNoteNoOnion: "Sin cebolla",
     serviceNoteNoChili: "Sin chile",
@@ -380,6 +381,7 @@ export default defineArea({
       "Browser printing does not confirm that paper came out.",
     serviceLineNote: "Kitchen note",
     serviceLineNoteAdd: "Note for {item}",
+    serviceLineSending: "Sending to the kitchen…",
     serviceLineNoteDone: "Done",
     serviceNoteNoOnion: "No onion",
     serviceNoteNoChili: "No chili",

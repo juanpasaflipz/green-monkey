@@ -7,6 +7,7 @@ import {
   decodeCursor,
   encodeCursor,
   holdsTable,
+  idSequence,
   kitchenStatus,
   mergeLine,
   parseMoneyInput,
@@ -260,6 +261,55 @@ describe("cart pricing and merging", () => {
     const o2 = mergeLine(o1.lines, open, { options: [], openAmount: 5000 });
     expect(o2.lines).toHaveLength(2);
   });
+
+  it("mergeLine never merges into lines in flight and names a new line with newId (SVC-R7)", () => {
+    const p = product();
+    const sending = line(p);
+    // The same product tapped while its line is being sent starts a new line.
+    const opts = { newId: "tap-1", locked: new Set([sending.id]) };
+    const tap = mergeLine([sending], p, { options: [] }, opts);
+    expect(tap.lineId).toBe("tap-1");
+    expect(tap.lines).toEqual([
+      sending,
+      { ...line(p), id: "tap-1", productId: p.id },
+    ]);
+    // Same inputs, same result: safe inside a React state updater.
+    expect(mergeLine([sending], p, { options: [] }, opts)).toEqual(tap);
+    // A second tap merges into the new, unlocked line.
+    const again = mergeLine(
+      tap.lines,
+      p,
+      { options: [] },
+      {
+        newId: "tap-2",
+        locked: opts.locked,
+      },
+    );
+    expect(again.lineId).toBe("tap-1");
+    expect(again.lines.map((l) => [l.id, l.quantity])).toEqual([
+      [sending.id, 1],
+      ["tap-1", 2],
+    ]);
+    // Without a lock the D16 behaviour is unchanged.
+    expect(mergeLine([sending], p, { options: [] }).lines).toEqual([
+      { ...sending, quantity: 2 },
+    ]);
+  });
+
+  it("idSequence gives every counter the same fresh ids in the same order", () => {
+    let n = 0;
+    const seq = idSequence(() => "id-" + ++n);
+    const a = seq(),
+      b = seq();
+    expect([a(), a()]).toEqual(["id-1", "id-2"]);
+    expect([b(), b(), b()]).toEqual(["id-1", "id-2", "id-3"]);
+    expect(seq()()).toBe("id-1");
+    const real = idSequence();
+    const x = real(),
+      y = real();
+    expect(x()).toBe(y());
+    expect(x()).not.toBe(real()());
+  });
 });
 
 describe("service lifecycle rules", () => {
@@ -483,6 +533,72 @@ describe("notes and lost sends", () => {
       { ...options, id: "new-2" },
       { ...open, id: "new-3" },
     ]);
+  });
+
+  it("after a successful send keeps what changed while it was in flight (SVC-R7)", () => {
+    // Sent: 1 taco with round note "Sin prisa". While the request was pending
+    // the waiter added a Coca, tapped Taco again (a new line, the sent one is
+    // locked), noted an allergy on it and typed the next round's note.
+    const taco = line();
+    const coca = line();
+    const tacoAgain = line(randomUUID(), {
+      productId: taco.productId,
+      note: "Alergia: nuez",
+    });
+    const latest = {
+      operationId: "sent-op",
+      lines: [taco, coca, tacoAgain],
+      note: "Que sea rápido",
+    };
+    const order = {
+      note: "",
+      lines: [stored(line(), 1), stored(taco, 2)],
+      rounds: [{ note: "Sin prisa" }],
+    };
+    const next = reconcileLostSend(latest, order, "fresh", ids());
+    expect(next).toEqual({
+      draft: {
+        operationId: "fresh",
+        lines: [coca, tacoAgain],
+        note: "Que sea rápido",
+      },
+      sent: false,
+      changed: false,
+      rounds: [2],
+    });
+    // An updater applied again to its own result (or to a cart already
+    // reconciled) cannot bring the sent taco back or change anything else.
+    expect(reconcileLostSend(next.draft, order, "fresh", ids()).draft).toEqual(
+      next.draft,
+    );
+    // A cart that did not change empties exactly as before, note included.
+    expect(
+      reconcileLostSend(
+        { operationId: "sent-op", lines: [taco], note: "Sin prisa" },
+        order,
+        "fresh",
+      ),
+    ).toEqual({
+      draft: { operationId: "fresh", lines: [], note: "" },
+      sent: true,
+      changed: false,
+      rounds: [2],
+    });
+  });
+
+  it("gives identical results to the preview and the state updater with one idSequence", () => {
+    const grown = line(randomUUID(), { quantity: 2 });
+    const cart = { operationId: "k", lines: [grown], note: "" };
+    const order = {
+      note: "",
+      lines: [stored(grown, 1, { quantity: 1 })],
+      rounds: [],
+    };
+    const seq = idSequence();
+    const preview = reconcileLostSend(cart, order, "n", seq());
+    const updater = reconcileLostSend(cart, order, "n", seq());
+    expect(updater).toEqual(preview);
+    expect(preview.draft.lines[0].id).not.toBe(grown.id);
   });
 
   it("keeps a note that never reached the order", () => {

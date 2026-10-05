@@ -332,15 +332,22 @@ const sameOptions = (a: readonly string[] = [], b: readonly string[] = []) =>
  * Adds one unit of a product. A line with the same product, the same sorted
  * option multiset, an empty note, no open amount and fewer than 99 units is
  * incremented; anything else (including every open-amount line) is appended.
+ *
+ * Optional (the D16 call form is unchanged): `newId` names an appended line,
+ * so a React state updater stays pure and a preview computed outside it
+ * agrees; lines in `locked` are never merge targets (SVC-R7: lines of a send
+ * that has not answered yet keep the quantity that was sent).
  */
 export function mergeLine(
   lines: LineInput[],
   product: Product,
   selection: { options: string[]; openAmount?: number },
+  opts: { newId?: string; locked?: ReadonlySet<string> } = {},
 ): { lines: LineInput[]; lineId: string } {
   if (selection.openAmount === undefined && !product.openAmount) {
     const match = lines.find(
       (l) =>
+        !opts.locked?.has(l.id) &&
         l.productId === product.id &&
         l.openAmount === undefined &&
         !(l.note ?? "").trim() &&
@@ -356,7 +363,7 @@ export function mergeLine(
       };
   }
   const line: LineInput = {
-    id: crypto.randomUUID(),
+    id: opts.newId ?? crypto.randomUUID(),
     productId: product.id,
     quantity: 1,
     options: selection.options,
@@ -433,6 +440,25 @@ export function roundNotes(order: {
     .map(([round, note]) => ({ round, note }));
 }
 
+/**
+ * A shared pool of fresh ids. Every counter taken from it hands out the same
+ * ids in the same order, so a helper that needs new ids (reconcileLostSend)
+ * gives identical results in a React state updater, in a second StrictMode
+ * call of that updater and in a preview computed outside it.
+ */
+export function idSequence(
+  fresh: () => string = () => crypto.randomUUID(),
+): () => () => string {
+  const ids: string[] = [];
+  return () => {
+    let i = 0;
+    return () => {
+      if (i === ids.length) ids.push(fresh());
+      return ids[i++];
+    };
+  };
+}
+
 /** The fields of a cart or order line that decide what the kitchen makes. */
 type LostSendLine = {
   id: string;
@@ -456,6 +482,10 @@ type LostSendLine = {
  * when a line that had already landed was edited afterwards, so Selling must
  * ask the cashier to review before sending; `rounds` lists the rounds where
  * draft lines landed.
+ *
+ * SVC-R7: Selling also applies it to the latest cart after every successful
+ * send, so whatever was added or typed while the request was in flight stays
+ * and nothing the order already holds can be sent again.
  */
 export function reconcileLostSend<
   L extends LostSendLine,

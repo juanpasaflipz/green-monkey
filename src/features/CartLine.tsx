@@ -20,7 +20,11 @@ export function appendPreset(note: string, preset: string) {
   return (base ? `${base}, ${preset}` : preset).slice(0, NOTE_MAX);
 }
 
-/** One draft line: modifiers, kitchen note editor, quantity, or an inline error. */
+/**
+ * One draft line: modifiers, kitchen note editor, quantity, or an inline error.
+ * A `locked` line belongs to a send that has not answered yet (SVC-R7): it
+ * shows "Enviando a cocina…" and cannot be edited until the send settles.
+ */
 export function CartLine({
   line,
   product,
@@ -28,6 +32,7 @@ export function CartLine({
   locale,
   money,
   justAdded,
+  locked = false,
   onQuantity,
   onRemove,
   onNote,
@@ -38,6 +43,7 @@ export function CartLine({
   locale: Locale;
   money: (n: number) => string;
   justAdded: boolean;
+  locked?: boolean;
   onQuantity: (delta: 1 | -1) => void;
   onRemove: () => void;
   onNote: (note: string) => void;
@@ -70,16 +76,23 @@ export function CartLine({
               : t("serviceLineUnavailable")}
           </p>
         </div>
-        <Button onClick={onRemove}>{t("remove")}</Button>
+        <Button disabled={locked} onClick={onRemove}>
+          {t("remove")}
+        </Button>
       </div>
     );
   const priced = line.priced!;
   const note = line.input.note ?? "";
   return (
     <div
-      className={"order-line" + (justAdded ? " just-added" : "")}
+      className={
+        "order-line" +
+        (justAdded ? " just-added" : "") +
+        (locked ? " sending" : "")
+      }
       ref={ref}
       data-line-id={line.input.id}
+      aria-busy={locked || undefined}
     >
       <div className="order-line-main">
         <strong>{name}</strong>
@@ -88,12 +101,16 @@ export function CartLine({
             + {o[locale]}
           </p>
         ))}
-        {note && !editing && <p className="line-note">{note}</p>}
+        {note && (!editing || locked) && <p className="line-note">{note}</p>}
+        {locked && (
+          <p className="line-sending muted tiny">{t("serviceLineSending")}</p>
+        )}
         <div className="line-controls">
           <div className="quantity">
             <button
               type="button"
               aria-label={`${t("quantity")} − ${name}`}
+              disabled={locked}
               onClick={() => onQuantity(-1)}
             >
               <Minus size={14} />
@@ -102,6 +119,7 @@ export function CartLine({
             <button
               type="button"
               aria-label={`${t("quantity")} + ${name}`}
+              disabled={locked}
               onClick={() => onQuantity(1)}
             >
               <Plus size={14} />
@@ -111,14 +129,15 @@ export function CartLine({
             type="button"
             className={"line-note-toggle" + (note ? " has-note" : "")}
             aria-label={t("serviceLineNoteAdd").replace("{item}", name)}
-            aria-expanded={editing}
+            aria-expanded={editing && !locked}
             aria-controls={noteId}
+            disabled={locked}
             onClick={() => setEditing((v) => !v)}
           >
             <MessageSquareText size={18} />
           </button>
         </div>
-        {editing && (
+        {editing && !locked && (
           <div className="line-note-editor" id={noteId}>
             <label className="field">
               <span>{t("serviceLineNote")}</span>
