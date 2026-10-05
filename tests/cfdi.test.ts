@@ -250,6 +250,328 @@ describe("amount strategy", () => {
       ).code,
     ).toBe("fiscal_total_mismatch");
   });
+
+  it("netGroups refuses an over-refund, a refund of a category the ticket lacks and IVA left on a zero net instead of dropping them (CFDI-ADV-1)", () => {
+    const mismatchOf = (
+      groups: Parameters<typeof netGroups>[0],
+      netted: Parameters<typeof netGroups>[1],
+    ) => domainError(() => netGroups(groups, netted)).code;
+    const ticket = [
+      { category: "iva16" as const, gross: 1000, tax: 138 },
+      { category: "iva0" as const, gross: 500, tax: 0 },
+    ];
+    // (a) iva16 refunded beyond the sale: never an invoice for the iva0 part only.
+    expect(
+      mismatchOf(ticket, [
+        {
+          refundId: "r1",
+          groups: [{ category: "iva16", gross: 1200, tax: 166 }],
+        },
+      ]),
+    ).toBe("fiscal_total_mismatch");
+    // (b) a refund in a category the ticket never sold: never the full ticket with r1 "netted".
+    expect(
+      mismatchOf(
+        [{ category: "iva16", gross: 1000, tax: 138 }],
+        [
+          {
+            refundId: "r1",
+            groups: [{ category: "iva0", gross: 100, tax: 0 }],
+          },
+        ],
+      ),
+    ).toBe("fiscal_total_mismatch");
+    // (c) the gross nets to zero but one centavo of IVA is left.
+    expect(
+      mismatchOf(
+        [{ category: "iva16", gross: 1000, tax: 138 }],
+        [
+          {
+            refundId: "r1",
+            groups: [{ category: "iva16", gross: 1000, tax: 137 }],
+          },
+        ],
+      ),
+    ).toBe("fiscal_total_mismatch");
+    // The reverse: more IVA refunded than charged on a zero net.
+    expect(
+      mismatchOf(
+        [{ category: "iva16", gross: 1000, tax: 138 }],
+        [
+          {
+            refundId: "r1",
+            groups: [{ category: "iva16", gross: 1000, tax: 139 }],
+          },
+        ],
+      ),
+    ).toBe("fiscal_total_mismatch");
+    // Net IVA above the net gross, and IVA on a 0 % or exempt adjustment.
+    expect(
+      mismatchOf(ticket, [
+        { refundId: "r1", groups: [{ category: "iva16", gross: 990, tax: 0 }] },
+      ]),
+    ).toBe("fiscal_total_mismatch");
+    expect(
+      mismatchOf(ticket, [
+        { refundId: "r1", groups: [{ category: "iva0", gross: 100, tax: 1 }] },
+      ]),
+    ).toBe("fiscal_total_mismatch");
+    // An exact full refund of a category is still dropped (0 / 0), the rest is invoiced.
+    expect(
+      netGroups(ticket, [
+        {
+          refundId: "r1",
+          groups: [{ category: "iva16", gross: 1000, tax: 138 }],
+        },
+      ]),
+    ).toEqual([{ category: "iva0", gross: 500, tax: 0 }]);
+    // A fully discounted category on the ticket (0 / 0) is not an error and not a concept.
+    expect(
+      netGroups(
+        [
+          { category: "iva16", gross: 0, tax: 0 },
+          { category: "iva0", gross: 500, tax: 0 },
+        ],
+        [],
+      ),
+    ).toEqual([{ category: "iva0", gross: 500, tax: 0 }]);
+
+    // The builders refuse the same data, so no request is ever built from it.
+    const payload = invoiceInputFor().payload; // iva16 116.00, iva0 50.00, exempt 20.00
+    const refund = (
+      groups: { category: TaxCategory; gross: number; tax: number }[],
+    ): RefundTaxView => ({
+      refundId: fakeId(),
+      createdAt: "2026-10-05T20:00:00.000Z",
+      businessDate: "2026-10-05",
+      groups: groups.map((g) => ({
+        ...g,
+        rateBps: TAX_RULES[g.category].rateBps,
+        base: g.gross - g.tax,
+      })),
+    });
+    for (const refunds of [
+      [refund([{ category: "iva16", gross: 12000, tax: 1655 }])],
+      [refund([{ category: "iva8", gross: 1080, tax: 80 }])],
+      [refund([{ category: "iva16", gross: 11600, tax: 1599 }])],
+    ])
+      expect(
+        domainError(() =>
+          buildInvoiceRequest(
+            invoiceInputFor({ payload: { ...payload, refunds } }),
+          ),
+        ).code,
+      ).toBe("fiscal_total_mismatch");
+    // A ticket whose groups do not add up to its own totals is refused too.
+    for (const ticket of [
+      { ...payload.ticket, gross: payload.ticket.gross + 1 },
+      { ...payload.ticket, tax: payload.ticket.tax - 1 },
+    ])
+      expect(
+        domainError(() =>
+          buildInvoiceRequest(
+            invoiceInputFor({ payload: { ...payload, ticket } }),
+          ),
+        ).code,
+      ).toBe("fiscal_total_mismatch");
+    // Globals and credit notes apply the same per-figure rules.
+    expect(
+      domainError(() =>
+        buildGlobalRequests({
+          docIds: () => fakeId(),
+          tickets: [
+            {
+              id: fakeId(),
+              folio: "A-000001",
+              groups: [{ category: "iva0", gross: 500, tax: 1 }],
+              payments: [{ method: "cash", amount: 500 }],
+            },
+          ],
+          period: { periodicity: "day", months: "10", year: 2026 },
+          issuerPostalCode: ISSUER_POSTAL_CODE,
+          cardForm: "04",
+        }),
+      ).code,
+    ).toBe("fiscal_total_mismatch");
+    expect(
+      domainError(() =>
+        buildGlobalRequests({
+          docIds: () => fakeId(),
+          tickets: [
+            {
+              id: fakeId(),
+              folio: "A-000001",
+              groups: [
+                { category: "iva16", gross: 1160, tax: 160 },
+                { category: "iva16", gross: 1160, tax: 160 },
+              ],
+              payments: [{ method: "cash", amount: 2320 }],
+            },
+          ],
+          period: { periodicity: "day", months: "10", year: 2026 },
+          issuerPostalCode: ISSUER_POSTAL_CODE,
+          cardForm: "04",
+        }),
+      ).code,
+    ).toBe("fiscal_total_mismatch");
+    expect(
+      domainError(() =>
+        buildEgresoRequest({
+          docId: DOC,
+          folio: "A-000123",
+          parent: {
+            kind: "global",
+            uuid: SUBSTITUTED,
+            receptor: null,
+            paymentForm: "01",
+          },
+          refund: {
+            method: "cash",
+            groups: [{ category: "exempt", gross: 100, tax: 1 }],
+          },
+          issuerPostalCode: ISSUER_POSTAL_CODE,
+          cardForm: "04",
+        }),
+      ).code,
+    ).toBe("fiscal_total_mismatch");
+  });
+
+  it("netGroups property (seeded, 2,000 cases): Σ net gross = ticket gross − netted refund gross and Σ net IVA = ticket IVA − refund IVA, or it refuses; fiscal's own refund splits are never refused", () => {
+    const random = rng(2027);
+    const sumOf = (rows: readonly { gross: number; tax: number }[]) =>
+      rows.reduce(
+        (s, r) => ({ gross: s.gross + r.gross, tax: s.tax + r.tax }),
+        {
+          gross: 0,
+          tax: 0,
+        },
+      );
+    type Refund = Parameters<typeof netGroups>[1][number];
+    const holds = (
+      groups: Parameters<typeof netGroups>[0],
+      netted: readonly Refund[],
+      net: ReturnType<typeof netGroups>,
+    ) => {
+      const ticket = sumOf(groups);
+      const refunded = sumOf(netted.flatMap((r) => r.groups));
+      expect(sumOf(net)).toEqual({
+        gross: ticket.gross - refunded.gross,
+        tax: ticket.tax - refunded.tax,
+      });
+      for (const g of net) {
+        expect(groups.some((t) => t.category === g.category)).toBe(true);
+        expect(g.gross).toBeGreaterThan(0);
+        expect(g.tax).toBeGreaterThanOrEqual(0);
+        expect(g.tax).toBeLessThanOrEqual(g.gross);
+        if (!TAX_RULES[g.category].rateBps) expect(g.tax).toBe(0);
+      }
+    };
+    let refused = 0;
+    for (let n = 0; n < 2000; n++) {
+      const categories = TAX_CATEGORIES.filter(() => random.next() < 0.6);
+      if (!categories.length) categories.push(random.pick(TAX_CATEGORIES));
+      const groups = categories.map((category) => {
+        const rateBps = TAX_RULES[category].rateBps;
+        const gross = random.int(1, 500_000);
+        return {
+          category,
+          rateBps,
+          gross,
+          tax: extractTax(gross, rateBps).tax,
+        };
+      });
+      // Refunds as fiscal records them (refundTaxSplit never refunds more than was sold).
+      const valid: Refund[] = [];
+      let remaining = sumOf(groups).gross;
+      for (let k = random.int(0, 3); k > 0 && remaining > 0; k--) {
+        const amount = random.int(1, remaining);
+        valid.push({
+          refundId: `r${valid.length}`,
+          groups: refundTaxSplit({
+            refundGross: amount,
+            saleGroups: groups,
+            previous: valid.flatMap((v) => v.groups),
+          }),
+        });
+        remaining -= amount;
+      }
+      const net = netGroups(groups, valid);
+      holds(groups, valid, net);
+      // The cumulative split keeps every net group within 1 centavo of the canonical IVA.
+      for (const g of net)
+        expect(
+          Math.abs(
+            g.tax - extractTax(g.gross, TAX_RULES[g.category].rateBps).tax,
+          ),
+        ).toBeLessThanOrEqual(1);
+
+      // The same data, corrupted: it must be refused, or still add up.
+      const left = new Map(
+        groups.map((g) => [g.category, { gross: g.gross, tax: g.tax }]),
+      );
+      for (const a of valid.flatMap((v) => v.groups)) {
+        const l = left.get(a.category)!;
+        left.set(a.category, { gross: l.gross - a.gross, tax: l.tax - a.tax });
+      }
+      const target = random.pick(categories);
+      const rate = TAX_RULES[target].rateBps;
+      const foreign = TAX_CATEGORIES.filter((c) => !categories.includes(c));
+      let extra: Refund["groups"][number];
+      let mustRefuse = true;
+      switch (random.int(0, 3)) {
+        case 0: {
+          // Over-refund of a sold category.
+          const gross = left.get(target)!.gross + random.int(1, 1000);
+          extra = { category: target, gross, tax: extractTax(gross, rate).tax };
+          break;
+        }
+        case 1: {
+          // A category the ticket never sold (or an over-refund when it sold all four).
+          const category = foreign.length ? random.pick(foreign) : target;
+          const gross = foreign.length
+            ? random.int(1, 1000)
+            : left.get(target)!.gross + 1;
+          extra = {
+            category,
+            gross,
+            tax: extractTax(gross, TAX_RULES[category].rateBps).tax,
+          };
+          break;
+        }
+        case 2: {
+          // The exact gross left, with IVA one centavo off.
+          const l = left.get(target)!;
+          extra = {
+            category: target,
+            gross: l.gross,
+            tax: Math.max(0, l.tax + random.pick([-1, 1])),
+          };
+          mustRefuse = extra.tax !== l.tax;
+          break;
+        }
+        default: {
+          // Any partial amount with an arbitrary IVA: may or may not be consistent.
+          const gross = random.int(0, Math.max(0, left.get(target)!.gross));
+          extra = { category: target, gross, tax: random.int(0, gross) };
+          mustRefuse = false;
+        }
+      }
+      const corrupt = [...valid, { refundId: "x", groups: [extra] }];
+      let result: ReturnType<typeof netGroups> | null = null;
+      try {
+        result = netGroups(groups, corrupt);
+      } catch (e) {
+        expect(e).toBeInstanceOf(DomainError);
+        expect((e as DomainError).code).toBe("fiscal_total_mismatch");
+        refused++;
+      }
+      if (result) {
+        expect(mustRefuse, JSON.stringify({ groups, corrupt })).toBe(false);
+        holds(groups, corrupt, result);
+      }
+    }
+    expect(refused).toBeGreaterThan(1000);
+  });
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -149,12 +149,32 @@ export function canonicalTax(body: Pick<FInvoiceInput, "items">): number {
   return tax;
 }
 
+/** One category figure from fiscal: a known category, integer centavos, IVA ≤ gross, no IVA at 0 % or exempt. */
+function checkFigure(category: unknown, gross: unknown, tax: unknown) {
+  if (!isCategory(category)) throw new RangeError("invalid_tax_category");
+  if (!isAmount(gross) || !isAmount(tax) || tax > gross) throw mismatch();
+  const rate = TAX_RULES[category].rateBps;
+  if ((rate === null || rate === 0) && tax !== 0) throw mismatch();
+  return category;
+}
+
 /**
  * Fiscal's figures, never recomputed (lead resolution): per category
  *   gross = ticketGroup.gross − Σ adj.gross,  tax = ticketGroup.tax − Σ adj.tax
- * (adj = fiscal_adjustments of the netted refunds). Categories with gross ≤ 0 are dropped. With
- * fiscal's complement refund extraction the result equals extractTax(gross).tax exactly for every
- * refund recorded after the ticket; only pre-ticket item refunds may differ by ≤ 1 centavo.
+ * (adj = fiscal_adjustments of the netted refunds).
+ *
+ * Inconsistent data is refused (fiscal_total_mismatch), never dropped: a refund in a category the
+ * ticket does not have, a category netted below zero (gross or IVA), IVA above the net gross, or IVA
+ * left on a category whose gross netted to zero. Only a category netted to exactly 0 / 0 is left
+ * out. So when this returns, Σ gross = ticket gross − Σ netted refund gross and Σ tax = ticket tax −
+ * Σ netted refund tax: every listed refund really reduced the invoice.
+ *
+ * IVA: fiscal's refundTaxSplit (shared/fiscal.ts) is CUMULATIVE on this branch:
+ *   adj.tax = extract(before + amount).tax − extract(before).tax  (before = earlier refunds of the
+ *   category), so a netted group's tax is ticketGroup.tax − extract(Σ refunds).tax, which can differ
+ *   from extractTax(net gross).tax (= canonicalTax of the concept, what Facturapi stamps) by up to
+ *   1 centavo per category, for refunds recorded before or after the ticket alike. The deliver step's
+ *   amount check must not read that difference as provider rounding (docs/CFDI.md, open items).
  */
 export function netGroups(
   groups: readonly { category: TaxCategory; gross: number; tax: number }[],
@@ -165,37 +185,42 @@ export function netGroups(
 ): NetGroup[] {
   const sums = new Map<TaxCategory, { gross: number; tax: number }>();
   const add = (
-    category: unknown,
-    gross: unknown,
-    tax: unknown,
+    category: TaxCategory,
+    gross: number,
+    tax: number,
     sign: 1 | -1,
   ) => {
-    if (!isCategory(category)) throw new RangeError("invalid_tax_category");
-    if (!isAmount(gross) || !isAmount(tax) || tax > gross) throw mismatch();
     const s = sums.get(category) ?? { gross: 0, tax: 0 };
     sums.set(category, {
       gross: s.gross + sign * gross,
       tax: s.tax + sign * tax,
     });
   };
-  for (const g of groups) add(g.category, g.gross, g.tax, 1);
+  const ticketCategories = new Set<TaxCategory>();
+  for (const g of groups) {
+    const category = checkFigure(g.category, g.gross, g.tax);
+    ticketCategories.add(category);
+    add(category, g.gross, g.tax, 1);
+  }
   const seen = new Set<string>();
   for (const refund of netted) {
     if (seen.has(refund.refundId))
       throw new DomainError("cfdi_refund_netted_twice", 409);
     seen.add(refund.refundId);
-    for (const a of refund.groups) add(a.category, a.gross, a.tax, -1);
+    for (const a of refund.groups) {
+      const category = checkFigure(a.category, a.gross, a.tax);
+      // A refund of a category the ticket never sold cannot reduce this invoice.
+      if (!ticketCategories.has(category)) throw mismatch();
+      add(category, a.gross, a.tax, -1);
+    }
   }
   return TAX_CATEGORIES.flatMap((category) => {
     const s = sums.get(category);
-    if (!s || s.gross <= 0) return [];
-    const taxed = TAX_RULES[category].rateBps;
-    if (
-      s.tax < 0 ||
-      s.tax > s.gross ||
-      ((taxed === null || taxed === 0) && s.tax !== 0)
-    )
-      throw mismatch();
+    if (!s) return [];
+    if (s.gross < 0 || s.tax < 0 || s.tax > s.gross) throw mismatch();
+    // checkFigure's rule on the net: no IVA left at 0 % or exempt, nor on a zero gross.
+    checkFigure(category, s.gross, s.tax);
+    if (s.gross === 0) return [];
     return [{ category, gross: s.gross, tax: s.tax }];
   });
 }
@@ -391,6 +416,23 @@ export function buildInvoiceRequest(i: InvoiceBuildInput): InvoiceBuild {
     payload.ticket.groups,
     refunds.map((r) => ({ refundId: r.refundId, groups: r.groups })),
   );
+  // The invoice is exactly the ticket minus the netted refunds, in fiscal's figures: a ticket whose
+  // groups do not add up to its totals, or a listed refund that reduced nothing, is refused.
+  const total = (rows: readonly { gross: number; tax: number }[]) =>
+    rows.reduce((s, r) => ({ gross: s.gross + r.gross, tax: s.tax + r.tax }), {
+      gross: 0,
+      tax: 0,
+    });
+  const ticket = total(payload.ticket.groups);
+  const refunded = total(refunds.flatMap((r) => r.groups));
+  const net = total(groups);
+  if (
+    ticket.gross !== payload.ticket.gross ||
+    ticket.tax !== payload.ticket.tax ||
+    net.gross !== ticket.gross - refunded.gross ||
+    net.tax !== ticket.tax - refunded.tax
+  )
+    throw mismatch();
   if (!groups.length) throw nothingToInvoice();
   const folio = payload.ticket.folio;
   const description =
@@ -449,8 +491,8 @@ export function buildInvoiceRequest(i: InvoiceBuildInput): InvoiceBuild {
   });
   return {
     body,
-    expectedTotal: groups.reduce((s, g) => s + g.gross, 0),
-    expectedTax: groups.reduce((s, g) => s + g.tax, 0),
+    expectedTotal: net.gross,
+    expectedTax: net.tax,
     conceptCount: body.items.length,
     nettedRefundIds: refunds.map((r) => r.refundId),
     conceptMode,
@@ -512,12 +554,15 @@ export function buildGlobalRequests(i: {
     if (ids.has(t.id)) throw new DomainError("cfdi_duplicate_ticket", 409);
     ids.add(t.id);
   }
-  for (const t of i.tickets)
+  for (const t of i.tickets) {
+    const categories = new Set<TaxCategory>();
     for (const g of t.groups) {
-      if (!isCategory(g.category)) throw new RangeError("invalid_tax_category");
-      if (!isAmount(g.gross) || !isAmount(g.tax) || g.tax > g.gross)
-        throw mismatch();
+      // netGroups output: one row per category, fiscal's rules on each figure.
+      const category = checkFigure(g.category, g.gross, g.tax);
+      if (categories.has(category)) throw mismatch();
+      categories.add(category);
     }
+  }
   const tickets = [...i.tickets]
     .map((t) => ({ ...t, groups: t.groups.filter((g) => g.gross > 0) }))
     .filter((t) => t.groups.length > 0)
@@ -615,7 +660,11 @@ export type EgresoBuild = {
   expectedTotal: number;
   /** Canonical: Σ extractTax(adj.gross) per category, what Facturapi stamps. */
   expectedTax: number;
-  /** Σ adj.tax (fiscal's complement extraction); may differ by ≤ 1 centavo per category. */
+  /**
+   * Σ adj.tax as fiscal recorded it. fiscal's refundTaxSplit is cumulative
+   * (extract(before + amount) − extract(before)), so this may differ from expectedTax by ≤ 1
+   * centavo per category; the difference is expected, recorded, never alerted.
+   */
   fiscalTax: number;
   conceptCount: number;
 };
@@ -636,11 +685,9 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
     throw new DomainError("cfdi_parent_receptor_missing", 409);
   const sums = new Map<TaxCategory, { gross: number; tax: number }>();
   for (const a of refund.groups) {
-    if (!isCategory(a.category)) throw new RangeError("invalid_tax_category");
-    if (!isAmount(a.gross) || !isAmount(a.tax) || a.tax > a.gross)
-      throw mismatch();
-    const s = sums.get(a.category) ?? { gross: 0, tax: 0 };
-    sums.set(a.category, { gross: s.gross + a.gross, tax: s.tax + a.tax });
+    const category = checkFigure(a.category, a.gross, a.tax);
+    const s = sums.get(category) ?? { gross: 0, tax: 0 };
+    sums.set(category, { gross: s.gross + a.gross, tax: s.tax + a.tax });
   }
   const groups = TAX_CATEGORIES.flatMap((category) => {
     const s = sums.get(category);
