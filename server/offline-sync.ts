@@ -288,8 +288,48 @@ export type OrderRecord = OfflineRecord & {
 };
 
 /**
+ * Line ids are the order_lines primary key. Lines an online send already
+ * recorded (its response was lost, so the draft kept them) can never be
+ * inserted again; that is a domain conflict for a manager, not a server error
+ * retried forever.
+ */
+export async function assertLinesNotRecorded(tx: Tx, lines: LineInput[]) {
+  const ids = lines.map((l) => l.id);
+  const [found] =
+    await tx`select 1 from order_lines where id=any(${tx.array(ids)}::uuid[]) limit 1`;
+  if (found) throw new DomainError("offline_lines_already_sent", 409);
+}
+
+/**
+ * I3 on reuse: the online create priced the draft with the server catalog and
+ * the device priced it with its own. A different total is a price conflict
+ * for a manager, never silently a partial payment. A sale pays the whole
+ * order, so it also never reuses an order that changed or already took money.
+ */
+async function assertReusable(
+  tx: Tx,
+  p: OrderRecord,
+  orderId: string,
+  created: { total?: unknown } | null,
+) {
+  if (Number(created?.total) !== p.expectedTotal)
+    throw new DomainError("price_conflict", 409);
+  if (recordKind(p) !== "sale") return;
+  const [order] = await tx`select o.total,
+      (select coalesce(sum(t.amount),0)::int from tenders t
+        where t.tenant_id=o.tenant_id and t.order_id=o.id) as paid
+    from orders o where o.id=${orderId}`;
+  if (!order) throw new DomainError("offline_order_closed", 409);
+  if (order.paid > 0)
+    throw new DomainError("offline_payment_exceeds_due", 409);
+  if (order.total !== p.expectedTotal)
+    throw new DomainError("price_conflict", 409);
+}
+
+/**
  * The order a sale opens. An online create that committed but whose response
- * was lost is reused (the kitchen already saw it) instead of duplicated.
+ * was lost is reused (the kitchen already saw it) instead of duplicated, only
+ * when the device priced it exactly as the server did.
  */
 export async function resolveOrCreateOrder(
   tx: Tx,
@@ -303,11 +343,14 @@ export async function resolveOrCreateOrder(
     const online = hash(
       JSON.stringify(orderInput.parse({ ...p.order, channel: "pos" })),
     );
-    if (prior.kind === "create_order" && prior.hash === online)
+    if (prior.kind === "create_order" && prior.hash === online) {
+      await assertReusable(tx, p, prior.result.id, prior.result);
       return { orderId: prior.result.id, reused: true };
+    }
     throw new DomainError("offline_order_already_exists", 409);
   }
   await verifyLines(tx, p.order.lines, snapshotLines(p), p.expectedTotal);
+  await assertLinesNotRecorded(tx, p.order.lines);
   // Business date from the validated sale time, never the sync time (I12).
   const order = await createOrder(
     tx,

@@ -713,6 +713,47 @@ try {
     "offline_payment_exceeds_due",
   );
   assert.equal(await count("tenders", "order_id=$2", online.id), 1);
+  // OFF-R20 (I3 on reuse): the device priced the same draft below the server
+  // (a stale catalog). Reusing the online order would record the device's
+  // amount as a partial payment and leave an unexplained balance: it is a
+  // price conflict for a manager, and no tender is recorded.
+  const cheaperDraft = {
+    ...onlineDraft,
+    operationId: randomUUID(),
+    lines: [line(ids.plate)],
+    name: "Lost response, stale price",
+  };
+  const pricedOnline = await run((tx) => createOrder(tx, s1, cheaperDraft));
+  assert.equal(pricedOnline.total, 100);
+  const stalePrice = sale(s1, {
+    lines: cheaperDraft.lines,
+    order: cheaperDraft,
+    total: 90,
+  });
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, stalePrice)),
+    "price_conflict",
+  );
+  assert.equal(await count("tenders", "order_id=$2", pricedOnline.id), 0);
+  assert.equal(
+    await count(
+      "offline_sync_records",
+      "operation_id=$2",
+      stalePrice.operationId,
+    ),
+    0,
+  );
+  // The same evidence at the server's price reuses the order and pays it once.
+  const fair = await run((tx) =>
+    syncOfflineRecord(
+      tx,
+      s1,
+      sale(s1, { lines: cheaperDraft.lines, order: cheaperDraft }),
+    ),
+  );
+  assert.equal(fair.orderId, pricedOnline.id);
+  assert.equal(fair.reusedOnlineOrder, true);
+  assert.equal(fair.order.paid, 100);
 
   // 10. A sale that physically happened may take stock negative.
   await expectCode(
@@ -1453,6 +1494,51 @@ try {
       ),
     ),
     "offline_order_closed",
+  );
+  // OFF-R21: an online round send committed but its response was lost, so the
+  // draft kept its line ids and the offline round carries the same ones. They
+  // can never be inserted again (order_lines primary key): the record reaches
+  // a manager as a domain conflict, never a 500 retried forever.
+  const twinOrder = await run((tx) =>
+    createOrder(tx, s1, {
+      operationId: randomUUID(),
+      lines: [line(ids.plate)],
+      mode: "dine_in",
+      tableId: null,
+      name: "Ronda con respuesta perdida",
+      note: "",
+      channel: "pos",
+    }),
+  );
+  const sentLines = [line(ids.drink)];
+  await run((tx) =>
+    addRoundOnline(tx, s1, twinOrder.id, {
+      operationId: randomUUID(),
+      lines: sentLines,
+      mode: "dine_in",
+      tableId: null,
+      name: "Ronda con respuesta perdida",
+      note: "",
+      channel: "pos",
+      expectedVersion: twinOrder.version,
+    }),
+  );
+  const twin = roundRecord(s1, { orderId: twinOrder.id }, sentLines);
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, twin)),
+    "offline_lines_already_sent",
+  );
+  assert.equal(
+    await count("order_lines", "order_id=$2", twinOrder.id),
+    2,
+    "nothing appended twice",
+  );
+  const twinReview = await run((tx) => reviewOfflineRecord(tx, manager1, twin));
+  assert.equal(twinReview.authentic, true, "review explains, never throws");
+  // An order record whose lines were already recorded is refused the same way.
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, orderRecord(s1, sentLines))),
+    "offline_lines_already_sent",
   );
 
   // A payment past the onlineOrder balance is refused and cannot be reconciled (I2).

@@ -32,6 +32,7 @@ import {
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
 import {
   appliers,
+  assertLinesNotRecorded,
   CLOSED_STATES,
   financialRecovery,
   isV3,
@@ -112,6 +113,9 @@ appliers.order = async (tx, s, p, ctx) => {
 appliers.round = async (tx, s, p, ctx) => {
   const record = p as OfflineRoundV3;
   const orderId = await resolveTarget(tx, record.target);
+  // An online send of these same lines may have committed with its response
+  // lost: a manager decides (archive if the order already has them).
+  await assertLinesNotRecorded(tx, record.lines);
   // Re-price first (I3), then take the order lock for the append.
   const lines = await verifyLines(
     tx,
