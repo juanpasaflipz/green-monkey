@@ -34,6 +34,15 @@ Dockerfile is built with a stamped commit and the container must pass
 `security`: `npm audit --omit=dev --audit-level=high` and gitleaks over the
 full history (`.gitleaks.toml` allowlists only synthetic local/CI values).
 
+Every third-party action in `.github/` is pinned by full commit SHA with the
+release in a trailing comment (`actions/checkout@<sha> # v4.4.0`); the deploy,
+backup and uptime jobs hold production secrets, so a moved tag must not change
+what runs. `tests/workflows.test.ts` refuses a tag or branch reference. To
+update one, read the new tag's commit with
+`git ls-remote https://github.com/actions/<name> refs/tags/<tag>` (an
+annotated tag lists a second `^{}` line: use that commit), review the
+release, and replace every occurrence.
+
 ## Continuous delivery (`.github/workflows/deploy.yml`)
 
 - **Staging:** after Qualification succeeds for a push to `main`, the composite

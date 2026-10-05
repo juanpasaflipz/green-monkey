@@ -51,7 +51,7 @@ jobs:
     env:
       SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.SHA }}
       - uses: ./.github/actions/deploy
@@ -118,7 +118,7 @@ jobs:
           echo "Railway IaC sync: $sync (sha is main head: $([ "$SHA" = "$head" ] && echo yes || echo no))"
           echo "sync_config=$sync" >> "$GITHUB_OUTPUT"
           # <<< iac-sync-decision
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ env.SHA }}
           fetch-depth: 0

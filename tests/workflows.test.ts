@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -206,5 +212,43 @@ describe("alerting and schedules before provisioning (OPS-R9)", () => {
     expect(read("scripts/ops/github-protect.sh")).toMatch(
       /run gh label create ops-alert --repo "\$repo"[^\n]*\\\n[^\n]*--force/,
     );
+  });
+});
+
+describe("third-party actions are pinned by full commit SHA (OPS-R8 regression)", () => {
+  const files = [
+    ...readdirSync(".github/workflows").map((f) => `.github/workflows/${f}`),
+    ".github/actions/deploy/action.yml",
+  ];
+
+  it("every uses: is a local action or owner/repo@<40-hex sha> # vX.Y.Z", () => {
+    let pinned = 0;
+    for (const file of files)
+      for (const line of read(file).split("\n")) {
+        const uses = line.match(/^\s*(?:- )?uses:\s*(\S+)(.*)$/);
+        if (!uses) continue;
+        if (uses[1].startsWith("./")) continue;
+        expect(uses[1], `${file}: ${line.trim()}`).toMatch(
+          /^[\w.-]+\/[\w.-]+(\/[\w./-]+)?@[0-9a-f]{40}$/,
+        );
+        expect(uses[2], `${file}: version comment`).toMatch(
+          /^ # v\d+\.\d+\.\d+$/,
+        );
+        pinned++;
+      }
+    expect(pinned).toBeGreaterThanOrEqual(9);
+  });
+
+  it("one action at one release resolves to one commit everywhere", () => {
+    const seen = new Map<string, string>();
+    for (const file of files)
+      for (const [, name, sha, version] of read(file).matchAll(
+        /uses:\s*([\w.-]+\/[\w.-]+)@([0-9a-f]{40}) # (v[\d.]+)/g,
+      )) {
+        const key = `${name}@${version}`;
+        expect(seen.get(key) ?? sha, key).toBe(sha);
+        seen.set(key, sha);
+      }
+    expect(seen.size).toBeGreaterThanOrEqual(3);
   });
 });
