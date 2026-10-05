@@ -1,0 +1,13 @@
+# gitleaks finding fingerprints to ignore (commit:file:rule:line). Read by gitleaks from the
+# scanned source directory (.github/workflows/qualification.yml, "Secret scan (full history)").
+# Every entry must name an exact commit and line holding a value that is NOT a secret.
+# Do not quote the ignored values in comments here: this file is scanned too.
+
+# cfdi core tests, fixed in the current tree but still present in the branch history:
+# - two property reads of the fake keys exported by tests/fixtures/cfdi.ts, not key material
+#   (generic-api-key entropy heuristic);
+4deb907690d18ad8482e6bd5dd86f62cfb6403cf:tests/cfdi-facturapi-contract.test.ts:generic-api-key:1049
+4deb907690d18ad8482e6bd5dd86f62cfb6403cf:tests/cfdi-facturapi-contract.test.ts:generic-api-key:1050
+# - a made-up test key for the in-memory Facturapi fake (tests/fakes/facturapi-fake.ts) that
+#   never existed at Facturapi or Stripe (stripe-access-token pattern).
+df8d424ef57f91567374d5b00784167c32e6e695:tests/cfdi-facturapi-fake.test.ts:stripe-access-token:677

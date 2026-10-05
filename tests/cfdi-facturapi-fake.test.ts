@@ -674,7 +674,7 @@ describe("Facturapi fake: invoices", () => {
     const s = setup();
     const shared: FacturapiKey = {
       kind: "test",
-      secret: "sk_test_sharedsandbox",
+      secret: "sk_test_shared_box",
     };
     const me = await s.client.me(shared);
     expect(me.legal).toMatchObject({

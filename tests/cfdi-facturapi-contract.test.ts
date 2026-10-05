@@ -1046,8 +1046,8 @@ describe("Facturapi client contract", () => {
     // A user key on invoices, a live secret declared as test, a test secret declared as live.
     for (const key of [
       USER_KEY,
-      { kind: "test", secret: LIVE_KEY.secret },
-      { kind: "live", secret: TEST_KEY.secret },
+      { ...LIVE_KEY, kind: "test" },
+      { ...TEST_KEY, kind: "live" },
       { kind: "test", secret: "sk_test_has spaces" },
       { kind: "test", secret: "pk_test_fixture" },
     ] as FacturapiKey[]) {
