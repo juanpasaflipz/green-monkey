@@ -69,6 +69,22 @@ phrase `deploy <sha7> to production` and, during service hours,
 staging (the `deploy/staging` commit status). Production release tags
 (`prod-YYYYMMDD-HHMM-<sha7>`) list every SHA that was live.
 
+A rollback deploys the older **code** and keeps the live Railway **service
+configuration**. With the default `railway_config: auto`, the workflow
+applies `.railway/railway.ts` only when the SHA is the head of `main`; for any
+older SHA it skips `railway config apply` and says so in the run summary. The
+reason: an older file omits variables added since, Railway plans an omitted
+variable as a deletion, and `config apply --yes` refuses destructive plans,
+so syncing would fail the rollback (or, forced, delete the variables). Use
+`railway_config: apply` only when the older configuration itself is wanted
+and its plan has been reviewed; to undo a configuration change, revert it in
+`.railway/railway.ts` on `main` and deploy forward instead. A forward deploy
+of a SHA that is no longer the head of `main` (main moved on after staging)
+also skips the sync under `auto`: if that SHA adds variables, review
+`railway config plan` locally and dispatch with `railway_config: apply`.
+`skip` never syncs, even for the head. (Every SHA that can be live in
+production carries this behaviour: it predates the first production deploy.)
+
 One-way points (a rollback past them needs extra steps):
 
 | Point | Rolling back past it |

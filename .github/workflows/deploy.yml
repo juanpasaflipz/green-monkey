@@ -21,6 +21,13 @@ on:
         description: Allow 12:00-23:59 America/Mexico_City (restaurant service hours)
         type: boolean
         default: false
+      railway_config:
+        description: >-
+          Railway IaC sync. auto = apply only when the SHA is the head of main
+          (a rollback keeps the current configuration); apply = always; skip = never
+        type: choice
+        options: [auto, apply, skip]
+        default: auto
 permissions:
   contents: read
 concurrency:
@@ -76,10 +83,12 @@ jobs:
       SHA: ${{ inputs.sha }}
     steps:
       - name: Guard
+        id: guard
         env:
           GH_TOKEN: ${{ github.token }}
           CONFIRM: ${{ inputs.confirm }}
           ALLOW_SERVICE_HOURS: ${{ inputs.allow_service_hours }}
+          RAILWAY_CONFIG: ${{ inputs.railway_config }}
         run: |
           [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "sha must be a full lowercase commit"; exit 1; }
           [ "$CONFIRM" = "deploy ${SHA:0:7} to production" ] || { echo "confirmation phrase mismatch"; exit 1; }
@@ -95,6 +104,20 @@ jobs:
           if [ "$hour" -ge 12 ] && [ "$ALLOW_SERVICE_HOURS" != "true" ]; then
             echo "refused during service hours (12:00-23:59 America/Mexico_City)"; exit 1
           fi
+          # A rollback (any SHA behind main's head) keeps the live Railway
+          # configuration: an older railway.ts omits newer variables, which
+          # Railway would plan as deletions and apply --yes refuses (OPS-R4).
+          # >>> iac-sync-decision (executed by tests/workflows.test.ts)
+          head=$(git rev-parse origin/main)
+          case "${RAILWAY_CONFIG:-auto}" in
+            auto) if [ "$SHA" = "$head" ]; then sync=true; else sync=false; fi ;;
+            apply) sync=true ;;
+            skip) sync=false ;;
+            *) echo "railway_config must be auto, apply or skip"; exit 1 ;;
+          esac
+          echo "Railway IaC sync: $sync (sha is main head: $([ "$SHA" = "$head" ] && echo yes || echo no))"
+          echo "sync_config=$sync" >> "$GITHUB_OUTPUT"
+          # <<< iac-sync-decision
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SHA }}
@@ -102,6 +125,7 @@ jobs:
       - uses: ./.github/actions/deploy
         with:
           sha: ${{ env.SHA }}
+          sync-config: ${{ steps.guard.outputs.sync_config }}
           railway-token: ${{ secrets.RAILWAY_TOKEN }}
           railway-cli-version: ${{ vars.RAILWAY_CLI_VERSION }}
           railway-iac-version: ${{ vars.RAILWAY_IAC_VERSION }}

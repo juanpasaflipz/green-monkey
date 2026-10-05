@@ -46,8 +46,11 @@ full history (`.gitleaks.toml` allowlists only synthetic local/CI values).
 - **Production:** only by Actions → Deploy → Run workflow with the full SHA and
   the typed phrase `deploy <sha7> to production`. The SHA must be on `main` and
   carry `deploy/staging` = success. Between 12:00 and 23:59
-  America/Mexico_City it also needs `allow_service_hours`. After the smoke the
-  workflow tags `prod-YYYYMMDD-HHMM-<sha7>` and creates a GitHub release.
+  America/Mexico_City it also needs `allow_service_hours`. The IaC sync runs
+  only when the SHA is the head of `main` (`railway_config: auto`); a
+  rollback to an older SHA keeps the live service configuration
+  ([RUNBOOK.md](RUNBOOK.md), Rollback). After the smoke the workflow tags
+  `prod-YYYYMMDD-HHMM-<sha7>` and creates a GitHub release.
 - Required reviewers on environments are not available for private
   repositories on the Free/Pro/Team plans, so the production gate is the
   manual dispatch plus the typed confirmation and the staging proof.

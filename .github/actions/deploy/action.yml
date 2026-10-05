@@ -1,12 +1,21 @@
 name: Deploy to Railway
 description: >-
-  Applies the Railway IaC (non-destructive changes only), stamps the build,
-  uploads the worker (its preDeploy runs migrate, then grants, then retention)
-  and the web service, and runs the HTTP smoke against the expected commit.
+  Applies the Railway IaC (non-destructive changes only, and only when asked),
+  stamps the build, uploads the worker (its preDeploy runs migrate, then
+  grants, then retention) and the web service, and runs the HTTP smoke against
+  the expected commit.
 inputs:
   sha:
     description: Full commit SHA being deployed (already checked out).
     required: true
+  sync-config:
+    description: >-
+      "true" applies this checkout's .railway/railway.ts. A rollback passes
+      "false": an older file omits variables added since, Railway treats an
+      omission as a deletion, and apply --yes refuses destructive plans, so a
+      rollback keeps the current service configuration (RUNBOOK.md, Rollback).
+    required: false
+    default: "true"
   railway-token:
     description: Railway project token scoped to the target environment.
     required: true
@@ -30,13 +39,19 @@ runs:
       shell: bash
       run: npm ci && npm run build
     - name: Install the IaC authoring package (not a project dependency)
+      if: inputs.sync-config == 'true'
       shell: bash
       env:
         RAILWAY_IAC_VERSION: ${{ inputs.railway-iac-version }}
       run: |
         [[ "$RAILWAY_IAC_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pin RAILWAY_IAC_VERSION"; exit 1; }
         npm install --no-save --ignore-scripts "railway@$RAILWAY_IAC_VERSION"
+    - name: Keep the current Railway configuration (rollback or older SHA)
+      if: inputs.sync-config != 'true'
+      shell: bash
+      run: echo "::notice::Railway IaC sync skipped; the services keep their current configuration (RUNBOOK.md, Rollback)."
     - name: Sync Railway service configuration (non-destructive only)
+      if: inputs.sync-config == 'true'
       shell: bash
       env:
         RAILWAY_TOKEN: ${{ inputs.railway-token }}
