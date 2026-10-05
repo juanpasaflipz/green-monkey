@@ -4,7 +4,7 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 
 | Scenario | Status | Evidence / missing work |
 | --- | --- | --- |
-| UX-01 | partial | Modifier validation and persistent cart tested; exact three-item task measurement pending. |
+| UX-01 | partial | Modifier validation and persistent cart tested. One picker for required, optional and repeatable choices with blocked invalid combinations, live price and the cart visible; taquería build-and-sell flow browser-tested (`tests/browser/menu.spec.ts`, local, October 5, 2026). Exact three-item task measurement pending. |
 | UX-02 | partial | Cash checkout and receipt tested; primary activation budget not measured. |
 | UX-03 | partial | Additional rounds, table/server reassignment and creator/round preservation tested; full table-service lifecycle pending. |
 | UX-04 | partial | KDS acknowledgement/ready and independent payment tested; complete service scenario pending. |
@@ -41,9 +41,9 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 | OPS-02 | partial | Persisted KDS rounds and polling. Void deltas persist until the kitchen acknowledges them; fully voided tickets close after acknowledgement. Disconnect scenario pending. |
 | OPS-03 | pending | Durable jobs outbox locally verified: one job per (tenant, kind, dedupe key), two runners never lease the same job, bounded retries then dead with an alert (`tests/jobs-db.ts`, 2026-10-05). Report/email handler not implemented. |
 | INV-01 | partial | Receiving/preparation/sale/count/waste ledger implemented; complete chained cost reconciliation pending. |
-| INV-02 | verified | Two concurrent last-portion deductions serialize; only one succeeds. |
+| INV-02 | verified | Negative stock is configured per restaurant. Under `block`, two concurrent last-portion sales serialize and only one succeeds; under the default `allow`, the sale proceeds and the item is flagged; offline cash already collected is always recorded (`npm run test:db:core`, `npm run test:db:menu`, local, October 5, 2026). |
 | INV-03 | partial | Causal movement deduplication and recipe versions tested; substitutes/refund restoration pending. |
-| INV-04 | partial | Append-only ledger-derived count and optimistic version checks; full scenario coverage pending. |
+| INV-04 | partial | Append-only ledger with a trigger-maintained cached balance; counts use that balance with the stock-version cutoff, and the Negativo flag states it does not indicate a shortage by itself (`npm run test:db:menu`, local). Saved count scenario pending. |
 | FIN-01 | pending | Historical summaries and settlement import not implemented. |
 | FIN-02 | partial | Basic order/tender/refund/tip source totals; full tax/fee/commission definitions pending. |
 | FIN-03 | partial | Pure forecast identity tested; editable historical scenarios not implemented. |

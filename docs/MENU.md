@@ -182,10 +182,9 @@ Archived tables disappear from `/tables` and the service options and are rejecte
 for new dine-in orders, reassignment and QR orders bound to them
 (`invalid_table`). A table with an open check cannot be archived
 (`table_in_use`). The open-check rule lives in one function,
-`tablesWithOpenChecks()` in `server/floor.ts`. Until the service lifecycle
-merges, it is state based (not cancelled or in recovery, and either not completed
-or completed with a balance due). At menu's merge it becomes
-`o.check_state <> 'closed'` (contract D10).
+`tablesWithOpenChecks()` in `server/floor.ts`: `o.check_state <> 'closed'`
+(contract D10, swapped in at menu's merge), so a paid dine-in check holds its
+table until **Liberar mesa**.
 
 ## Ingredients and the stock engine
 

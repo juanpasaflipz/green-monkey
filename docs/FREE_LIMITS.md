@@ -26,7 +26,11 @@ allowed when issued.
 
 New recipes/cost changes, receiving, suppliers, preparation, counts/waste and shift
 starts require Pro, checked after replay. Basic menu edits/manual receipts and
-historical read access remain available; shifts can finish after downgrade.
+historical read access remain available; shifts can finish after downgrade. In the
+menu editors (MENU.md "Permissions and plans"), categories, products, choice
+groups, availability, areas and tables, stock item archive and the negative-stock
+policy stay available on Free; recipe or cost changes and creating or editing stock
+items answer `pro_required`.
 Reporting currently exposes source records and basic historical cost totals; full
 advanced reporting remains an unimplemented feature in the delivery matrix.
 
