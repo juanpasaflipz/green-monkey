@@ -125,7 +125,8 @@ CREATE TABLE offline_archives (
 );
 CREATE INDEX offline_archives_drawer ON offline_archives(tenant_id, claimed_drawer_id)
   WHERE claimed_drawer_id IS NOT NULL;
-CREATE INDEX offline_archives_created ON offline_archives(tenant_id, created_at DESC, id DESC);
+-- No created_at index (contract §3.15 index list): archives are rare manager
+-- actions, so the paginated list sorts this small table directly.
 
 -- Paginated recoveries list (offline_recoveries is small).
 CREATE INDEX offline_recoveries_recognized
