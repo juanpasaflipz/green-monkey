@@ -24,7 +24,7 @@ Runs on every pull request and on pushes to `main`.
 Provisions the global roles, migrates both databases as the non-superuser
 `gm_migrator` with `APP_ENV=staging` (migrate, then grants, then retention),
 seeds fixtures, then: typecheck, lint, unit tests (including the migrations
-lint), every DB suite (`npm run test:db:qualification`, which ends with
+lint), every DB suite (`npm run test:db:qualification`, which includes
 `test:db:ops`), build, restart test, drain test, the compiled browser suite
 with web and worker running, a 60 s load smoke, and an image smoke: the
 Dockerfile is built with a stamped commit and the container must pass
