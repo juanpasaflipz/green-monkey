@@ -766,6 +766,10 @@ try {
   assert.equal(fair.order.paid, 100);
 
   // 10. A sale that physically happened may take stock negative.
+  // menu (025) made refusing negative stock a per-restaurant policy whose
+  // default is "allow"; under "block" online orders are still refused, while
+  // offline cash already collected is always recorded (INV-02, D8).
+  await admin`update restaurants set negative_stock_policy='block' where id=${tenantId}`;
   await expectCode(
     run((tx) =>
       createOrder(tx, s1, {
@@ -1170,7 +1174,11 @@ try {
   );
 
   // 19. A payment past the balance never auto-applies, even under recordPayment.
-  await assert.rejects(
+  // Since service (024) a fully paid takeaway check is closed, so the synced
+  // sale refuses any further payment as a closed check before the balance is
+  // read; an open check refuses a payment past its balance (created and
+  // refused in one transaction, so nothing of it remains).
+  await expectCode(
     run((tx) =>
       recordPayment(tx, s1, synced.orderId, {
         operationId: randomUUID(),
@@ -1180,6 +1188,27 @@ try {
         method: "cash",
       }),
     ),
+    "check_closed",
+  );
+  await assert.rejects(
+    run(async (tx) => {
+      const open = await createOrder(tx, s1, {
+        operationId: randomUUID(),
+        lines: [line(ids.plate)],
+        mode: "takeaway",
+        tableId: null,
+        name: "Saldo abierto",
+        note: "",
+        channel: "pos",
+      });
+      return recordPayment(tx, s1, open.id, {
+        operationId: randomUUID(),
+        amount: open.total + 1,
+        tip: 0,
+        received: open.total + 1,
+        method: "cash",
+      });
+    }),
     /overpayment/,
   );
 
@@ -1484,7 +1513,10 @@ try {
       channel: "pos",
     }),
   );
-  await admin`update orders set state='cancelled' where tenant_id=${tenantId} and id=${cancelled.id}`;
+  // A cancelled order is one whose every unit was voided; service's lifecycle
+  // (024) closes its check as "voided" at the same time.
+  await admin`update orders set state='cancelled',check_state='closed',closed_at=now(),
+    closed_by=${ids.cashier},close_reason='voided' where tenant_id=${tenantId} and id=${cancelled.id}`;
   await expectCode(
     run((tx) =>
       syncOfflineRecord(
@@ -1691,12 +1723,16 @@ try {
   await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at) values(${tenantId},${drawer3},${device3},${ids.cashier},0,now()-interval '1 hour')`;
   const s4 = await openSession(ids.cashier, device3, "cashier");
   const manager4 = await openSession(ids.manager, device3, "manager");
+  // A table's check: since service (024) a paid check that holds a table
+  // stays open for rounds until "Liberar mesa" (a tableless one closes).
+  const lateTable = randomUUID();
+  await admin`insert into dining_tables(tenant_id,id,name) values(${tenantId},${lateTable},'Mesa del cajón cerrado')`;
   const tab = await run((tx) =>
     createOrder(tx, s4, {
       operationId: randomUUID(),
       lines: [line(ids.plate)],
       mode: "dine_in",
-      tableId: null,
+      tableId: lateTable,
       name: "Mesa del cajón cerrado",
       note: "",
       channel: "pos",
@@ -1746,7 +1782,7 @@ try {
       operationId: randomUUID(),
       lines: [line(ids.drink)],
       mode: "dine_in",
-      tableId: null,
+      tableId: lateTable,
       name: "Mesa del cajón cerrado",
       note: "",
       channel: "pos",
@@ -2051,7 +2087,9 @@ try {
   const snapshot = await run((tx) => openOrdersSnapshot(tx, s1));
   const listed = new Set(snapshot.orders.map((o) => o.id));
   assert(listed.has(delivered.id), "completed but unpaid");
-  assert(listed.has(opened.orderId), "active offline table order");
+  // D19 (service 024): the snapshot lists open checks (check_state <>
+  // 'closed'). An offline check holds no table, so paid in full it closed.
+  assert(!listed.has(opened.orderId), "paid offline table order is closed");
   assert(!listed.has(cancelled.id), "cancelled");
   assert(!listed.has(orphanCash.id), "recovery");
   assert(listed.has(onlineOrder.id), "completed with a balance left");
@@ -2062,18 +2100,38 @@ try {
   assert.deepEqual(deliveredView.offlineOperationIds, []);
   assert(snapshot.orders.length <= 200);
   // OFF-R3: each copy lists exactly the tenders and offline records it already
-  // contains, so a device never counts its own synced rows twice.
-  const tableView = snapshot.orders.find((o) => o.id === opened.orderId)!;
-  assert.equal(tableView.tenderIds.length, 2);
-  assert.deepEqual(
-    new Set(tableView.offlineOperationIds),
-    new Set([
-      table.operationId,
-      tableRound.operationId,
-      partial.operationId,
-      rest.operationId,
-    ]),
-  );
+  // contains, so a device never counts its own synced rows twice. An active
+  // offline table order (order, round and a partial payment) is synced,
+  // checked and rolled back in one transaction, so nothing of it remains.
+  const activeTable = orderRecord(s1, [line(ids.plate, 2)]);
+  const activeTarget = { localOrderOperationId: activeTable.operationId };
+  const activeRound = roundRecord(s1, activeTarget, [line(ids.drink)]);
+  const activePartial = paymentRecord(s1, activeTarget, 120);
+  const rollback = new Error("roll back the active table fixture");
+  try {
+    await run(async (tx) => {
+      const created = await syncOfflineRecord(tx, s1, activeTable);
+      await syncOfflineRecord(tx, s1, activeRound);
+      await syncOfflineRecord(tx, s1, activePartial);
+      const active = (await openOrdersSnapshot(tx, s1)).orders.find(
+        (o) => o.id === created.orderId,
+      );
+      assert(active, "active offline table order");
+      assert.equal(active.total - active.paid, 130);
+      assert.equal(active.tenderIds.length, 1);
+      assert.deepEqual(
+        new Set(active.offlineOperationIds),
+        new Set([
+          activeTable.operationId,
+          activeRound.operationId,
+          activePartial.operationId,
+        ]),
+      );
+      throw rollback;
+    });
+  } catch (e) {
+    if (e !== rollback) throw e;
+  }
 
   // 23. The manager review says what will happen to a record and why, in
   // words a manager can act on (OFFLINE-RECOVERY-03/04, OFF-R30/R31/R32).
@@ -2497,39 +2555,58 @@ try {
     "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse (only at the server's price; the manager path pays the online order, never a second one), overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, lines already sent online, rounds on paid checks, open-orders snapshot) and the LD-7 setting (off by default, managers only, audited once, gates the snapshot, never sync), and the manager review (eligibility reasons, auto-sync advice, lost creates that sync by themselves, cancelled online orders, archived drafts that differ) and parked payment attempts recorded or discarded exactly once.",
   );
 } finally {
-  for (const table of [
-    "offline_kitchen_reviews",
-    "offline_sync_records",
-    "offline_archives",
-    "line_voids",
-    "refunds",
-    "tender_allocations",
-    "offline_recovery_tasks",
-    "offline_recoveries",
-    "tenders",
-    "rounds",
-    "order_lines",
-    "jobs",
-    "operations",
-    "audit",
-    "orders",
-    "order_numbers",
-    "cash_movements",
-    "cash_sessions",
-    "stock_movements",
-    "stock_items",
-    "recipe_versions",
-    "catalog",
-    "offline_leases",
-    "sessions",
-    "devices",
-    "employees",
-    "restaurant_entitlements",
-  ])
-    for (const id of [tenantId, otherTenant])
-      await admin.unsafe(`delete from ${table} where tenant_id=$1`, [id]);
-  await admin`delete from restaurants where id in (${tenantId},${otherTenant})`;
-  await admin`delete from organizations where id in (${organizationId},${otherOrganization})`;
+  // menu (025): stock_movements is append-only and its trigger refuses DELETE
+  // even for the owner, so this cleanup switches it off as the owner
+  // (contracts §5.2 rule 3) in the same transaction that deletes the
+  // fixture tenants: no other session ever sees it disabled, and a failed
+  // cleanup rolls the switch back with the deletes.
+  await admin.begin(async (tx) => {
+    await tx`alter table stock_movements disable trigger stock_movements_immutable`;
+    for (const table of [
+      "offline_kitchen_reviews",
+      "offline_sync_records",
+      "offline_archives",
+      "line_voids",
+      "refunds",
+      "tender_allocations",
+      "offline_recovery_tasks",
+      "offline_recoveries",
+      "tenders",
+      "rounds",
+      "order_lines",
+      "jobs",
+      "operations",
+      "audit",
+      "orders",
+      "order_numbers",
+      "cash_movements",
+      "cash_sessions",
+      "stock_movements",
+      "stock_items",
+      "recipe_versions",
+      // menu (025): catalog writes file products under menu rows.
+      "menu_state",
+      "menu_categories",
+      "modifier_groups",
+      "catalog",
+      // access (023): renewal windows of the fixture sessions.
+      "offline_lease_renewals",
+      "offline_leases",
+      "sessions",
+      "devices",
+      "employees",
+      "restaurant_entitlements",
+      // service (024) and menu (025): the kitchen feed counter and the floor.
+      "kitchen_feed_versions",
+      "dining_tables",
+      "dining_areas",
+    ])
+      for (const id of [tenantId, otherTenant])
+        await tx.unsafe(`delete from ${table} where tenant_id=$1`, [id]);
+    await tx`delete from restaurants where id in (${tenantId},${otherTenant})`;
+    await tx`delete from organizations where id in (${organizationId},${otherOrganization})`;
+    await tx`alter table stock_movements enable trigger stock_movements_immutable`;
+  });
   await sql.end();
   await admin.end();
 }
