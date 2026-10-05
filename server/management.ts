@@ -5,8 +5,13 @@ import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
 import type { Tx } from "./db.js";
 import { id, money, DomainError, type Session } from "../shared/domain.js";
-import { permit, managers, hash } from "./auth.js";
-import { endEmployeeSessions, hashSecret } from "./access.js";
+import { permit, managers } from "./auth.js";
+import {
+  endEmployeeSessions,
+  hashSecret,
+  requireRecentAuth,
+} from "./access.js";
+import { pinFingerprint } from "./access-staff.js";
 import { once, audit, stock } from "./orders.js";
 const label = z
   .object({ es: z.string().min(1).max(120), en: z.string().min(1).max(120) })
@@ -73,6 +78,9 @@ export async function saveProduct(tx: Tx, s: Session, raw: unknown) {
 }
 export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
   permit(s, ["owner"]);
+  // Same rule as the Equipo commands: staff mutations on a shared terminal
+  // need a PIN entered recently (SEC-6), so this legacy route is no bypass.
+  requireRecentAuth(s);
   const p = z
     .object({
       operationId: id,
@@ -91,7 +99,7 @@ export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
     s,
     p.operationId,
     "employee.save",
-    { ...p, secret: hash(p.secret) },
+    { ...p, secret: pinFingerprint(p.secret) },
     async () => {
       await requireSelling(tx, s);
       const [old] =

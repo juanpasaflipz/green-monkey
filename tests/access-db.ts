@@ -28,6 +28,7 @@ import {
 import { revokeDevice } from "../server/access-devices.js";
 import {
   createStaff,
+  pinFingerprint,
   resetStaffPin,
   setStaffActive,
   unlockStaff,
@@ -36,7 +37,7 @@ import {
 import { leaseCovers, renewOfflineLease } from "../server/offline-leases.js";
 import { synchronizeOffline } from "../server/offline-sync.js";
 import { verifyApproval } from "../server/voids.js";
-import { saveProduct } from "../server/management.js";
+import { saveEmployee, saveProduct } from "../server/management.js";
 import {
   enterOwnerRestaurant,
   ownerBrowserCookie,
@@ -1300,6 +1301,54 @@ try {
     assert.equal(renewed.reused, false);
     assert.equal((await sessionRow(other.sessionId)).end_reason, "replaced");
     assert.equal(parseSigned(renewed.cookie).id, renewed.sessionId);
+  });
+
+  await test("SEC-6: the legacy team save needs a recent PIN on terminals and keys its PIN fingerprint", async () => {
+    const employeeId = randomUUID();
+    const secret = "975310";
+    const body = (operationId: string, active = true) => ({
+      operationId,
+      id: employeeId,
+      name: "Legacy fixture",
+      login: `legacy-${employeeId.slice(0, 8)}`,
+      role: "cashier",
+      secret,
+      active,
+    });
+    const hourAgo = new Date(Date.now() - 3600_000).toISOString();
+    const stale = as(ownerId, "owner", terminalA.id, { authenticatedAt: hourAgo });
+    await rejects(
+      run((tx) => saveEmployee(tx, stale, body(randomUUID()))),
+      "step_up_required",
+    );
+    const [absent] =
+      await admin`select count(*)::int as n from employees where id=${employeeId}`;
+    assert.equal(absent.n, 0);
+    const op = randomUUID();
+    await run((tx) => saveEmployee(tx, as(ownerId, "owner", terminalA.id, {}), body(op)));
+    const [created] =
+      await admin`select pin_set_at is not null as pin from employees where id=${employeeId}`;
+    assert.equal(created.pin, true);
+    // operations.hash must not be a plain SHA-256 chain over a 6-digit PIN.
+    const [row] = await admin`select hash,result::text as result from operations where id=${op}`;
+    assert.notEqual(row.hash, hash(JSON.stringify({ ...body(op), secret: hash(secret) })));
+    assert.equal(row.hash, hash(JSON.stringify({ ...body(op), secret: pinFingerprint(secret) })));
+    assert.equal(row.result.includes(secret), false);
+    // Personal devices are exempt from step-up, as for the Equipo commands.
+    const phone = await device("Owner browser", { kind: "personal" });
+    await run((tx) =>
+      saveEmployee(
+        tx,
+        as(ownerId, "owner", phone.id, {
+          deviceKind: "personal",
+          authenticatedAt: hourAgo,
+        }),
+        body(randomUUID(), false),
+      ),
+    );
+    const [inactive] =
+      await admin`select active from employees where id=${employeeId}`;
+    assert.equal(inactive.active, false);
   });
 
   console.log(`${checks} access checks passed`);
