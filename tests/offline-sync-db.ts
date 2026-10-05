@@ -2105,7 +2105,12 @@ try {
   // checked and rolled back in one transaction, so nothing of it remains.
   const activeTable = orderRecord(s1, [line(ids.plate, 2)]);
   const activeTarget = { localOrderOperationId: activeTable.operationId };
-  const activeRound = roundRecord(s1, activeTarget, [line(ids.drink)]);
+  // LD-1 (OFF-INT-3): the cart's round note syncs into the round and the
+  // snapshot lists it, so a local receipt prints it during the next outage.
+  const activeRound = {
+    ...roundRecord(s1, activeTarget, [line(ids.drink)]),
+    note: "Sin hielo",
+  };
   const activePartial = paymentRecord(s1, activeTarget, 120);
   const rollback = new Error("roll back the active table fixture");
   try {
@@ -2119,6 +2124,7 @@ try {
       assert(active, "active offline table order");
       assert.equal(active.total - active.paid, 130);
       assert.equal(active.tenderIds.length, 1);
+      assert.deepEqual(active.roundNotes, [{ number: 2, note: "Sin hielo" }]);
       assert.deepEqual(
         new Set(active.offlineOperationIds),
         new Set([

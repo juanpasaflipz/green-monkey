@@ -234,8 +234,13 @@ review lane shows.
   "local", LD-10 B4): lines with options and notes, the order and round notes
   (LD-1), the payment method, the external-terminal reference, cash received and
   change, and what was collected, with the balance after a partial payment
-  (Beta table service). Printing uses the browser/OS print dialog; the browser cannot confirm
-  that paper came out.
+  (Beta table service). Only that payment prints as "Cobrado · pendiente de
+  sincronizar"; what the check had already been paid before it (tenders recorded
+  online, earlier payments) prints as "Cobrado". A round added offline keeps the
+  cart's round note in its record, so the note prints on its comanda and on the
+  local receipt and reaches the round when it syncs; the open-orders cache keeps
+  each server order's round notes for the same reason. Printing uses the
+  browser/OS print dialog; the browser cannot confirm that paper came out.
 - **Device list**: "Comandas sin conexión" (banner button) lists the last 24 hours
   with local Pendiente/Lista/Entregada chips and **Reimprimir**. The list stays on
   the device; the kitchen does not see it.

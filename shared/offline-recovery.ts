@@ -246,6 +246,12 @@ export const offlineRoundV3 = z
     cashSessionId: id.nullable(),
     target: orderTarget,
     lines: z.array(lineInput).min(1).max(100),
+    /**
+     * The round note typed in the cart, as an online round keeps it (LD-1).
+     * Optional: records saved before it was kept have none, and their
+     * fingerprint (once()) must not change.
+     */
+    note: z.string().max(500).optional(),
     expectedTotal: money,
     receiptSnapshot: offlineReceiptSnapshot,
   })

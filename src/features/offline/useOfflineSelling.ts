@@ -213,6 +213,8 @@ export function useOfflineSelling({
             lines: draft.lines,
             priced: cart.priced,
             total: cart.total,
+            // The cart's round note, as an online round keeps it (LD-1).
+            note: draft.note,
             operationId,
             autoPrint,
           })

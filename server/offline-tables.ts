@@ -140,6 +140,8 @@ appliers.round = async (tx, s, p, ctx) => {
     // Additive: an offline round needs no version check, it only appends.
     roundNumber = await applyRound(tx, s, order as never, lines, {
       stockPolicy: "allow",
+      // The cart's round note, as an online round keeps it (LD-1).
+      note: record.note ?? "",
       detail: { channel: "offline", operationId: p.operationId },
     });
   } catch (e) {
@@ -367,7 +369,14 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
           'station',l.data->>'station',
           'voidedQuantity',coalesce((select sum(cardinality(v.units)) from line_voids v
              where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) order by l.round,l.id),'[]'::jsonb)
-        from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id) as lines
+        from order_lines l where l.tenant_id=o.tenant_id and l.order_id=o.id) as lines,
+      -- Round notes, so a local receipt prints them (LD-1); every station's
+      -- row of a round holds the same note.
+      (select coalesce(jsonb_agg(jsonb_build_object('number',n.number,'note',n.note)
+          order by n.number),'[]'::jsonb)
+        from (select distinct on (r.number) r.number,r.note from rounds r
+          where r.tenant_id=o.tenant_id and r.order_id=o.id and r.note<>''
+          order by r.number,r.station) n) as round_notes
     from (select o.*,(select coalesce(sum(x.amount),0)::int from tenders x
             where x.tenant_id=o.tenant_id and x.order_id=o.id) as paid,
           (select coalesce(jsonb_agg(x.id order by x.created_at,x.id),'[]'::jsonb) from tenders x
@@ -399,6 +408,7 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
       createdAt: o.created_at.toISOString(),
       serviceVersion: o.service_version,
       lines: o.lines,
+      roundNotes: o.round_notes as { number: number; note: string }[],
       // Exactly what this copy already contains, so a device never counts one
       // of its own synced rounds or payments twice, whatever its clock says.
       tenderIds: o.tender_ids as string[],

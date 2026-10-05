@@ -46,15 +46,19 @@ export function noteEditableOf(order: Order) {
 }
 
 /**
- * What this device collected for a local (offline) receipt. Offline's records
- * carry their payment, which may be partial with offline table service
- * (LD-7); a local receipt without one was collected in full before it was
- * saved, so it never prints as unpaid (SERVICE-MONEY-5).
+ * What a local (offline) receipt prints as collected. Offline's records carry
+ * their payment, which may be partial with offline table service (LD-7):
+ * only that payment waits to sync (`pending`); what the order had already
+ * been paid before it (tenders recorded online, earlier payments) prints as
+ * paid (`earlier`, OFF-INT-3). A local receipt without a payment was collected
+ * in full before it was saved, so it never prints as unpaid (SERVICE-MONEY-5).
  */
 function localCollected(order: Order) {
-  return (order as Partial<LocalReceipt>).offline?.method
-    ? order.paid
-    : order.total;
+  const offline = (order as Partial<LocalReceipt>).offline;
+  if (!offline?.method)
+    return { earlier: 0, pending: order.total, paid: order.total };
+  const pending = Math.min(offline.amount ?? order.paid, order.paid);
+  return { earlier: order.paid - pending, pending, paid: order.paid };
 }
 
 export type ReceiptKind = "receipt" | "check" | "local";
@@ -123,6 +127,7 @@ export function ReceiptDocument({
     kind === "local" && !order.tenders.length
       ? ((order as Partial<LocalReceipt>).offline ?? null)
       : null;
+  const collected = localCollected(order);
   const paidTone =
     kind === "local"
       ? "neutral"
@@ -314,14 +319,20 @@ export function ReceiptDocument({
                 )}
             </div>
           )}
+          {collected.earlier > 0 && (
+            <div className="row between">
+              <span>{t.paid}</span>
+              <strong>{money(collected.earlier)}</strong>
+            </div>
+          )}
           <div className="row between">
             <span>{t.serviceReceiptLocalPaid}</span>
-            <strong>{money(localCollected(order))}</strong>
+            <strong>{money(collected.pending)}</strong>
           </div>
-          {localCollected(order) < order.total && (
+          {collected.paid < order.total && (
             <div className="row between">
               <span>{t.remaining}</span>
-              <strong>{money(order.total - localCollected(order))}</strong>
+              <strong>{money(order.total - collected.paid)}</strong>
             </div>
           )}
         </>
@@ -403,7 +414,7 @@ export function ReceiptModal({
   // A local receipt with a balance (a partial offline payment, LD-7) goes
   // back to its order, like an open check; paid in full, on to the next sale.
   const state = local
-    ? localCollected(order) >= order.total
+    ? localCollected(order).paid >= order.total
       ? "closed"
       : "open"
     : checkStateOf(order);

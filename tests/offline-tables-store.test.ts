@@ -1131,6 +1131,49 @@ describe("kitchen ticket round labels (OFF-R28)", () => {
       [round.operationId]: `${number} · Ronda 2`,
     });
   });
+
+  it("a round's note is kept in its record, on its comanda and in the order on screen (LD-1, OFF-INT-3)", async () => {
+    const s = session();
+    const open = await localOrder(s);
+    const noted = roundInput(40);
+    const view = await saveOfflineRound(ctxOf(s), {
+      target: { localOrderOperationId: open.id },
+      ...noted,
+      note: "Sin hielo",
+    });
+    expect((await fakeDb.pending.get(noted.operationId))?.body).toMatchObject({
+      kind: "round",
+      note: "Sin hielo",
+    });
+    expect(view.rounds).toEqual([{ number: 2, note: "Sin hielo" }]);
+    const tickets = await localKitchenTickets(s, 0, copy);
+    expect(
+      tickets.find((item) => item.operationId === noted.operationId)?.ticket
+        .roundNote,
+    ).toBe("Sin hielo");
+    // A round without a note keeps the record's earlier shape (fingerprint).
+    const bare = roundInput(30);
+    await saveOfflineRound(ctxOf(s), {
+      target: { localOrderOperationId: open.id },
+      ...bare,
+      note: "",
+    });
+    expect(
+      (await fakeDb.pending.get(bare.operationId))?.body,
+    ).not.toHaveProperty("note");
+    // A server order Selling remembers keeps its round notes for an outage.
+    const table = uuid(92);
+    await rememberOpenOrder(s, {
+      ...serverOrder(table, { rounds: [1, 2] }),
+      rounds: [
+        { number: 2, station: "kitchen", note: "Postres al final" },
+        { number: 2, station: "bar", note: "Postres al final" },
+      ],
+    });
+    expect((await findOpenOrder(s, { orderId: table }))?.rounds).toEqual([
+      { number: 2, note: "Postres al final" },
+    ]);
+  });
 });
 
 /** A queued row as the builders store it (only the fields the loop reads). */

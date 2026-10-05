@@ -62,6 +62,8 @@ export function ticketsFromLines(i: {
   callName: string;
   time: string;
   orderNote: string;
+  /** An offline round's own note (LD-1). */
+  roundNote?: string;
   lines: PricedLine[];
 }): KitchenTicketModel[] {
   const stations = [...new Set(i.lines.map((l) => l.station))];
@@ -76,6 +78,7 @@ export function ticketsFromLines(i: {
     callName: i.callName,
     time: i.time,
     orderNote: i.orderNote,
+    ...(i.roundNote ? { roundNote: i.roundNote } : {}),
     lines: i.lines
       .filter((l) => l.station === station)
       .map((l) => ({

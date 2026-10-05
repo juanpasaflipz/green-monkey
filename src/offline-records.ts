@@ -406,6 +406,8 @@ export type TicketHeading = {
   tableName: string | null;
   callName: string;
   orderNote: string;
+  /** An offline round's own note (LD-1). */
+  roundNote?: string;
 };
 type HeadingResolver = (
   row: Pending,
@@ -486,6 +488,22 @@ export type LocalOrderView = Order & {
   };
 };
 
+/**
+ * A round note as an order's `rounds` carry it, enough for roundNotes() on
+ * the receipt (LD-1) and reconcileLostSend's note check (SVC-R7).
+ */
+type RoundNote = { number: number; note: string };
+/** One note per round number, leaving out rounds without one. */
+function noteList(
+  rounds:
+    readonly { number: number; note?: string | null }[] | null | undefined,
+): RoundNote[] {
+  const notes = new Map<number, string>();
+  for (const r of rounds ?? [])
+    if (r.note && !notes.has(r.number)) notes.set(r.number, r.note);
+  return [...notes].map(([number, note]) => ({ number, note }));
+}
+
 /** A server open order as this device keeps it for an outage. */
 type CachedOrder = {
   id: string;
@@ -513,6 +531,8 @@ type CachedOrder = {
     station: string;
     voidedQuantity: number;
   }[];
+  /** Round notes, for the local receipt (LD-1); absent in older copies. */
+  roundNotes?: RoundNote[];
   /** Tenders this copy already contains. */
   tenderIds: string[];
   /** Offline records the server had applied to the order in this copy. */
@@ -664,6 +684,7 @@ function cachedFrom(order: Order, receivedAt: number): CachedOrder {
       station: line.station,
       voidedQuantity: line.voidedUnits?.length ?? 0,
     })),
+    roundNotes: noteList(order.rounds),
     tenderIds: (order.tenders ?? []).map((tender: { id: string }) => tender.id),
     // A manager-reconciled offline payment is a tender whose source is the
     // record itself (OFF-R18): the copy already contains that record.
@@ -836,12 +857,14 @@ async function localOrders(session: Session): Promise<LocalOrderView[]> {
     let total = body.expectedTotal,
       paid = 0,
       round = 1;
+    const rounds: RoundNote[] = [];
     for (const child of rows) {
       const c = child.body as OfflineRecordV3;
       if (!targetsLocal(c, body.operationId)) continue;
       if (c.kind === "round") {
         round++;
         lines.push(...pricedFrom(child).map((line) => ({ ...line, round })));
+        rounds.push(...noteList([{ number: round, note: c.note }]));
         total += c.expectedTotal;
       } else if (c.kind === "payment") paid += c.payment.amount;
     }
@@ -860,7 +883,8 @@ async function localOrders(session: Session): Promise<LocalOrderView[]> {
       refunded: 0,
       state: "local_open",
       createdAt: body.recordedAt,
-      rounds: [],
+      // LD-1: the notes of rounds added on this device print on its receipt.
+      rounds,
       tenders: [],
       restaurantSnapshot: row.receipt?.restaurant ?? null,
       offline: {
@@ -929,6 +953,7 @@ export async function cachedServerOpenOrders(
     let total = order.total,
       paid = order.paid,
       round = Math.max(0, ...order.lines.map((line) => line.round));
+    const rounds = noteList(order.roundNotes);
     for (const row of rows) {
       const body = row.body as OfflineRecordV3;
       if (body.kind !== "round" && body.kind !== "payment") continue;
@@ -937,6 +962,7 @@ export async function cachedServerOpenOrders(
       if (body.kind === "round") {
         round++;
         lines.push(...pricedFrom(row).map((line) => ({ ...line, round })));
+        rounds.push(...noteList([{ number: round, note: body.note }]));
         total += body.expectedTotal;
       } else paid += body.payment.amount;
     }
@@ -956,7 +982,8 @@ export async function cachedServerOpenOrders(
       state: order.state,
       createdAt: order.createdAt,
       serviceVersion: order.serviceVersion,
-      rounds: [],
+      // LD-1: the copy's round notes and those of rounds added here.
+      rounds,
       tenders: [],
       offline: {
         provisionalNumber: provisional.get(order.id) ?? null,
@@ -1079,6 +1106,8 @@ type RoundInput = {
   lines: LineInput[];
   priced: PricedLine[];
   total: number;
+  /** The cart's round note (LD-1), kept like an online round's. */
+  note?: string;
   operationId: string;
   autoPrint: boolean;
 };
@@ -1105,6 +1134,8 @@ async function roundBody(
     cashSessionId: ctx.cashSession?.id ?? null,
     target,
     lines: input.lines,
+    // Only when there is one, so a round without a note keeps its old shape.
+    ...(input.note?.trim() ? { note: input.note } : {}),
     expectedTotal: input.total,
     receiptSnapshot: snapshot,
   });
@@ -1410,6 +1441,7 @@ export async function saveOfflineCheckout(
             lines: cart.draft.lines,
             priced: cart.priced,
             total: cart.total,
+            note: cart.draft.note,
             operationId: roundId,
             autoPrint: cart.autoPrint,
           }
@@ -1662,6 +1694,7 @@ ticketHeadings.round = (row, rows, tableName) => {
       tableName: tableName(parent?.order.tableId ?? null),
       callName: parent?.order.name ?? "",
       orderNote: "",
+      roundNote: body.note ?? "",
     };
   }
   return {
@@ -1671,5 +1704,6 @@ ticketHeadings.round = (row, rows, tableName) => {
     tableName: row.context?.tableName ?? null,
     callName: row.context?.name ?? "",
     orderNote: "",
+    roundNote: body.note ?? "",
   };
 };
