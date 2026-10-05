@@ -126,6 +126,8 @@ export default defineArea({
     accessDevicesExpiresIn: "Vence en {time}",
     accessDevicesCodeExpired: "El código venció. Genera otro.",
     accessDevicesPaired: "Vinculado: {name}",
+    accessDevicesPairedFree:
+      "En Free solo un dispositivo inicia ventas. Si este será tu caja, selecciónalo en «Registro y equipo Free».",
     accessDevicesOpenCodes: "Códigos activos",
     accessDevicesCancelCode: "Cancelar código",
     accessDevicesThis: "Este dispositivo",
@@ -297,6 +299,8 @@ export default defineArea({
     accessDevicesExpiresIn: "Expires in {time}",
     accessDevicesCodeExpired: "The code expired. Create another one.",
     accessDevicesPaired: "Paired: {name}",
+    accessDevicesPairedFree:
+      "On Free only one device starts sales. If this one will be your register, select it in \"Free register and team\".",
     accessDevicesOpenCodes: "Active codes",
     accessDevicesCancelCode: "Cancel code",
     accessDevicesThis: "This device",

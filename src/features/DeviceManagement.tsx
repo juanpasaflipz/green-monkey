@@ -293,6 +293,14 @@ function PairingDialog({
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [free, setFree] = useState(false);
+  useEffect(() => {
+    // On Free the first device to sign in (often the owner's phone) holds the
+    // selling slot, so a new terminal may need to be selected explicitly.
+    void api<{ plan: string }>("/plan")
+      .then((p) => setFree(p.plan === "free"))
+      .catch(() => {});
+  }, []);
   useEffect(() => {
     if (!code || state !== "open") return;
     const tick = setInterval(() => setNow(Date.now()), 1000);
@@ -359,9 +367,12 @@ function PairingDialog({
           </Button>
         </form>
       ) : state === "consumed" ? (
-        <p role="status" className="pairing-done">
-          {t.accessDevicesPaired.replace("{name}", code.deviceName)}
-        </p>
+        <>
+          <p role="status" className="pairing-done">
+            {t.accessDevicesPaired.replace("{name}", code.deviceName)}
+          </p>
+          {free && <p className="muted">{t.accessDevicesPairedFree}</p>}
+        </>
       ) : expired || state === "cancelled" ? (
         <>
           <p role="status">{t.accessDevicesCodeExpired}</p>
