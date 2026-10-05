@@ -6,7 +6,12 @@ import { previewImport } from "../shared/import.js";
 import { hash, permit, managers } from "./auth.js";
 import { audit } from "./orders.js";
 import { requireSelling } from "./free-limits.js";
-import { bumpMenuRevision, findOrCreateCategory } from "./menu.js";
+import {
+  activeProducts,
+  bumpMenuRevision,
+  findOrCreateCategory,
+} from "./menu.js";
+import { MENU_LIMITS } from "../shared/menu.js";
 export async function commitImport(tx: Tx, s: Session, raw: unknown) {
   permit(s, managers);
   const [restaurant] =
@@ -29,11 +34,18 @@ export async function commitImport(tx: Tx, s: Session, raw: unknown) {
   const batchId = randomUUID();
   await tx`insert into import_batches(tenant_id,id,source,file_hash,report) values(${s.tenantId},${batchId},${report.source},${fingerprint},${tx.json(report)})`;
   await bumpMenuRevision(tx);
+  // Same ceiling as the editor (D12), checked under the menu lock.
+  if (
+    (await activeProducts(tx)) + report.accepted.length >
+    MENU_LIMITS.products
+  )
+    throw new DomainError("menu_limit", 409);
   for (const r of report.accepted) {
     const [mapping] =
       await tx`select target_id from source_mappings where source_system=${report.source} and source_tenant_id=${report.sourceTenantId} and entity_type='catalog' and legacy_id=${r.legacyId}`;
     if (mapping) throw new DomainError("import_existing_mapping", 409);
     const productId = randomUUID();
+    const name = r.name.trim().slice(0, 80).trimEnd() || r.name.slice(0, 80);
     const category = await findOrCreateCategory(tx, s, {
       es: r.category.slice(0, 200),
       en: r.category.slice(0, 200),
@@ -42,7 +54,9 @@ export async function commitImport(tx: Tx, s: Session, raw: unknown) {
       await tx`select coalesce(max((data->>'position')::int),0)+1 as n from catalog where data->>'categoryId'=${category.id}`;
     const data = {
       id: productId,
-      name: { es: r.name, en: r.name },
+      // The editor allows 80 characters; a longer legacy name is cut so the
+      // product can be edited and saved without retyping it.
+      name: { es: name, en: name },
       categoryId: category.id,
       category: category.name,
       categoryPosition: category.position,

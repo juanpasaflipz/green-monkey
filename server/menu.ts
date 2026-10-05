@@ -121,7 +121,7 @@ async function activeCount(
       : await tx`select count(*)::int as n from modifier_groups where archived_at is null`;
   return r.n;
 }
-async function activeProducts(tx: Tx): Promise<number> {
+export async function activeProducts(tx: Tx): Promise<number> {
   const [r] =
     await tx`select count(*)::int as n from catalog where not coalesce((data->>'archived')::boolean,false)`;
   return r.n;

@@ -1090,6 +1090,46 @@ try {
     }
   });
 
+  await test("catalog import respects the product limit and the editor's 80-character names", async () => {
+    const big = await makeTenant("Import limit");
+    // 1,999 active products (plus archived ones, which do not count).
+    await asAdmin(
+      big.tenantId,
+      (tx) => tx`insert into catalog(tenant_id,id,data)
+        select ${big.tenantId}::uuid, g.id, jsonb_build_object('id', g.id::text,
+          'name', jsonb_build_object('es', 'Lleno', 'en', 'Lleno'), 'archived', g.n > 1999)
+        from (select gen_random_uuid() as id, n from generate_series(1, 2005) n) g`,
+    );
+    const rows = (names: string[]) => ({
+      source: "luma",
+      sourceTenantId: "limit-" + randomUUID(),
+      targetTenantId: big.tenantId,
+      currency: "MXN",
+      rows: names.map((name, i) => ({
+        id: `l-${i}`,
+        name,
+        price: "10.00",
+        category: "Importados",
+      })),
+    });
+    await rejects(
+      run(big.manager, (tx) =>
+        commitImport(tx, big.manager, rows(["Uno", "Dos"])),
+      ),
+      "menu_limit",
+    );
+    const long = "Taco ".repeat(25).trim();
+    assert(long.length > 80);
+    await run(big.manager, (tx) =>
+      commitImport(tx, big.manager, rows([`  ${long}  `])),
+    );
+    const [imported] = (await run(big.manager, catalog)).filter((p) =>
+      p.name.es.startsWith("Taco Taco"),
+    );
+    assert.equal(imported.name.es, long.slice(0, 80).trimEnd());
+    assert(imported.name.es.length <= 80);
+  });
+
   let varios: Product;
   await test("public catalog hides open-price and archived products, recipes and costs", async () => {
     varios = await newProduct(manager, tacos.id, {
