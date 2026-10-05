@@ -132,6 +132,14 @@ Stripe trial, hosted Checkout payment and cancellation checks pass. See
 requirements, evidence and remaining staging qualification. It is disabled by
 default and cannot use live keys.
 
+With `BILLING_SANDBOX_ENABLED=true`, the web server only records billing
+requests; the Stripe provider loop runs in the worker. Locally, run
+`npm run worker` (or `npm run start:worker` after a build) alongside
+`npm run dev`, `npm start` or `scripts/compiled-local.sh`, or owner trial,
+checkout, portal and location requests stay pending. The worker's health port
+defaults to 3002, the same port `compiled-local.sh` uses, so set `WORKER_PORT`
+to a free port when running both.
+
 ## Approved launch pricing
 
 Free remains free. Pro is MXN 799 monthly or MXN 7,990 annually, paid upfront,
