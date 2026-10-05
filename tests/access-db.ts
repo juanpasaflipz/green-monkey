@@ -1,6 +1,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { checkRole, connect, tenant, type Tx } from "../server/db.js";
@@ -1493,6 +1494,92 @@ try {
     const ended = await sessionRow(first.sessionId);
     assert.equal(ended.end_reason, "ended_by_manager");
     assert.ok(ended.expires_at.getTime() <= Date.now());
+  });
+
+  await test("migration 023 backfills legacy devices when applied by an owner without BYPASSRLS, and keeps FORCE RLS (OPS-R2/ACC-19)", async () => {
+    // A scratch database owned by a role like a Neon owner: no superuser, no
+    // BYPASSRLS. FORCE RLS applies to it, so an unwrapped backfill would
+    // update no rows and leave legacy devices with no credential expiry.
+    const suffix = randomBytes(4).toString("hex");
+    const role = `gm_access_owner_${suffix}`,
+      secret = randomBytes(16).toString("hex"),
+      database = `green_monkey_access_mig_${suffix}_test`;
+    const scratch = (asOwner: boolean) => {
+      const u = new URL(migration);
+      u.pathname = "/" + database;
+      if (asOwner) {
+        u.username = role;
+        u.password = secret;
+      }
+      return u.href;
+    };
+    await admin.unsafe(
+      `create role "${role}" login password '${secret}' nosuperuser nocreatedb nocreaterole nobypassrls`,
+    );
+    await admin.unsafe(`create database "${database}" owner "${role}"`);
+    const owner = postgres(scratch(true), { max: 1, onnotice: () => {} }),
+      inspector = postgres(scratch(false), { max: 1, onnotice: () => {} });
+    try {
+      const apply = (file: string) =>
+        owner.begin((tx) => tx.unsafe(readFileSync(`migrations/${file}`, "utf8")));
+      const files = readdirSync("migrations")
+        .filter((n) => n.endsWith(".sql"))
+        .sort();
+      assert.ok(files.includes("023_access.sql"));
+      for (const file of files.filter((n) => n < "023_access.sql"))
+        await apply(file);
+      const [who] = await owner`select rolsuper, rolbypassrls from pg_roles where rolname = current_user`;
+      assert.deepEqual(
+        { ...who },
+        { rolsuper: false, rolbypassrls: false },
+      );
+      // Revision 022 rows in two tenants (the superuser inspector is exempt from RLS).
+      const org = randomUUID(),
+        tenants = [randomUUID(), randomUUID()];
+      await inspector`insert into organizations(id,name) values(${org},'Backfill fixture')`;
+      for (const [i, id] of tenants.entries())
+        await inspector`insert into restaurants(id,organization_id,name) values(${id},${org},${"Backfill " + i})`;
+      for (const [tenant, name, active] of [
+        [tenants[0], "Owner browser", true],
+        [tenants[0], "Caja 1", true],
+        [tenants[1], "Caja 2", true],
+        [tenants[1], "Caja vieja", false],
+      ] as const)
+        await inspector`insert into devices(tenant_id,id,name,token_hash,active)
+          values(${tenant},${randomUUID()},${name},${"legacy-" + randomUUID()},${active})`;
+      const [visible] = await owner`select count(*)::int as n from devices`;
+      assert.equal(visible.n, 0, "FORCE RLS hides every device from the owner");
+      await apply("023_access.sql");
+      const rows = await inspector`
+        select name, kind, token_expires_at from devices order by name`;
+      assert.deepEqual(
+        rows.map((r) => [r.name, r.kind, r.token_expires_at !== null]),
+        [
+          ["Caja 1", "terminal", true],
+          ["Caja 2", "terminal", true],
+          ["Caja vieja", "terminal", false],
+          ["Owner browser", "personal", true],
+        ],
+      );
+      for (const r of rows.filter((r) => r.token_expires_at))
+        assert.ok(
+          Math.abs(r.token_expires_at.getTime() - Date.now() - 30 * 86_400_000) <
+            3_600_000,
+          "active legacy devices get the 30-day credential expiry",
+        );
+      const [forced] = await inspector`
+        select relrowsecurity, relforcerowsecurity from pg_class where oid = 'public.devices'::regclass`;
+      assert.deepEqual(
+        { ...forced },
+        { relrowsecurity: true, relforcerowsecurity: true },
+        "FORCE RLS is restored in the same migration",
+      );
+    } finally {
+      await owner.end();
+      await inspector.end();
+      await admin.unsafe(`drop database if exists "${database}" with (force)`);
+      await admin.unsafe(`drop role if exists "${role}"`);
+    }
   });
 
   console.log(`${checks} access checks passed`);

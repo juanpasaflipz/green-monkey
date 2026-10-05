@@ -26,9 +26,14 @@ ALTER TABLE devices ADD CONSTRAINT device_revocation_complete
 ALTER TABLE devices VALIDATE CONSTRAINT device_paired_by;
 ALTER TABLE devices VALIDATE CONSTRAINT device_revoked_by;
 ALTER TABLE devices VALIDATE CONSTRAINT device_revocation_complete;
--- devices is small (one row per paired browser).
+-- devices is small (one row per paired browser). The backfill runs as the
+-- table owner, which may lack BYPASSRLS (a Neon owner role does): lift FORCE
+-- for this transaction only so the owner is exempt from tenant_scope, then
+-- restore it (OPS-R2; same pattern as 025_menu.sql).
+ALTER TABLE devices NO FORCE ROW LEVEL SECURITY;
 UPDATE devices SET kind = CASE WHEN name = 'Owner browser' THEN 'personal' ELSE 'terminal' END;
 UPDATE devices SET token_expires_at = now() + interval '30 days' WHERE active;
+ALTER TABLE devices FORCE ROW LEVEL SECURITY;
 
 -- Employees ---------------------------------------------------------------
 ALTER TABLE employees
