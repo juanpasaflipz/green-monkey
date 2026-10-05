@@ -365,9 +365,9 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
             where r.tenant_id=o.tenant_id and r.order_id=o.id) as offline_operation_ids
           from orders o
           where o.business_date >= ${today}::date - 1
-            and o.state not in ('cancelled','recovery_pending','recovery_reviewed')) o
+            -- D19: the service lifecycle's open-check rule, written literally.
+            and o.check_state <> 'closed') o
     left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id
-    where o.state <> 'completed' or o.total > o.paid
     order by o.created_at desc
     limit 200`;
   return {
