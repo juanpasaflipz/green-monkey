@@ -56,6 +56,7 @@ import {
   drawer,
 } from "./orders.js";
 import { saveProduct, saveEmployee, receive } from "./management.js";
+import { activeTables } from "./floor.js";
 import { previewImport } from "../shared/import.js";
 import { commitImport } from "./imports.js";
 import { cashHistory, cashSummary, closeCash, refund } from "./operations.js";
@@ -260,11 +261,7 @@ route("post", "/imports/commit", async (tx, s, req) =>
   commitImport(tx, s, req.body),
 );
 route("get", "/catalog", async (tx) => catalog(tx));
-route(
-  "get",
-  "/tables",
-  async (tx) => tx`select * from dining_tables order by name`,
-);
+route("get", "/tables", async (tx) => activeTables(tx));
 route("get", "/orders", async (tx) => {
   const rows =
     await tx`select id from orders order by created_at desc limit 100`;
@@ -425,11 +422,11 @@ route("post", "/cash/paid-out", async (tx, s, req) => {
 });
 route("get", "/inventory", async (tx, s) => {
   permit(s, managers);
-  return tx`select i.*,coalesce(sum(m.quantity),0)::text as quantity from stock_items i left join stock_movements m on m.tenant_id=i.tenant_id and m.stock_id=i.id group by i.tenant_id,i.id order by i.name`;
+  return tx`select i.*,i.on_hand::text as quantity from stock_items i where i.archived_at is null order by i.name`;
 });
 route("get", "/inventory/:id", async (tx, s, req) => {
   permit(s, managers);
-  return tx`select * from stock_movements where stock_id=${id.parse(req.params.id)} order by created_at desc`;
+  return tx`select * from stock_movements where stock_id=${id.parse(req.params.id)} order by created_at desc,id desc limit 500`;
 });
 route("post", "/inventory/movement", async (tx, s, req) => {
   permit(s, managers);
@@ -452,11 +449,10 @@ route("post", "/inventory/movement", async (tx, s, req) => {
     if (!i) throw new DomainError("not_found", 404);
     if (p.kind === "count_adjust" && i.version !== p.expectedVersion)
       throw new DomainError("count_changed", 409);
-    const [b] =
-      await tx`select coalesce(sum(quantity),0)::text as qty from stock_movements where stock_id=${p.stockId}`;
+    // DB-4: the cached balance on the locked row; no SUM over the ledger.
     const qty =
       p.kind === "count_adjust"
-        ? new Decimal(p.quantity).minus(b.qty)
+        ? new Decimal(p.quantity).minus(i.on_hand)
         : new Decimal(p.quantity).mul(p.kind === "waste" ? -1 : 1);
     await stock(
       tx,

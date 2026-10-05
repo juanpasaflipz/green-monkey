@@ -11,7 +11,8 @@ import { once, audit, getOrder } from "./orders.js";
 export async function serviceOptions(tx: Tx, s: Session) {
   permit(s, operators);
   return {
-    tables: await tx`select id,name from dining_tables order by name`,
+    tables:
+      await tx`select id,name,area_id from dining_tables where archived_at is null order by position,name`,
     employees:
       await tx`select id,name from employees where active and role in ('owner','manager','server','cashier') order by name`,
   };
@@ -56,7 +57,7 @@ export async function assignService(
       if (!employee) throw new DomainError("invalid_assignee", 400);
       if (p.tableId) {
         const [table] =
-          await tx`select id from dining_tables where id=${p.tableId}`;
+          await tx`select id from dining_tables where id=${p.tableId} and archived_at is null`;
         if (!table || p.mode !== "dine_in")
           throw new DomainError("invalid_table", 400);
       }

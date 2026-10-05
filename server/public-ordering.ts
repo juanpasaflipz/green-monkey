@@ -4,7 +4,8 @@ import rateLimit from "express-rate-limit";
 import type postgres from "postgres";
 import { tenant } from "./db.js";
 import { verify, sign } from "./auth.js";
-import { catalog, createOrder, getOrder } from "./orders.js";
+import { createOrder, getOrder } from "./orders.js";
+import { publicCatalog } from "./menu-read.js";
 import { DomainError, orderInput, type Session } from "../shared/domain.js";
 function publicOrder(o: any) {
   return {
@@ -80,9 +81,7 @@ export function publicOrdering(sql: postgres.Sql) {
           await requirePro(tx);
           return {
             restaurant: s.restaurant,
-            catalog: (await catalog(tx)).map(
-              ({ recipe: _recipe, cost: _cost, ...p }) => p,
-            ),
+            catalog: await publicCatalog(tx),
           };
         }),
       );
