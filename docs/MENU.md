@@ -1,0 +1,214 @@
+# Menu, tables and ingredients
+
+Area doc for migration 025 (`migrations/025_menu.sql`). It covers how a restaurant
+builds and runs its own menu, its floor plan and its ingredient stock, and how the
+stock engine behaves under concurrent sales. Status: implemented on `track/menu`
+and verified locally (`npm test`, `npm run test:db:menu`, the existing DB suites
+and `tests/browser/menu.spec.ts`). Nothing here has been verified on staging.
+
+## Where it lives
+
+| Layer | Files |
+| --- | --- |
+| Pure rules | `shared/menu.ts` (picker rules, `selectionIssue`, recipe merge, limits, response types), `shared/menu-schema.ts` (strict inputs) |
+| Pricing | `quote()` in `shared/domain.ts`, the only pricing function, used by the POS, QR/kiosk, the server and offline sync |
+| Server | `server/menu-read.ts` (catalog reads), `server/menu.ts` (categories, products, groups, availability), `server/floor.ts`, `server/stock-items.ts`, `server/stock.ts` (ledger writes), `server/routes/menu.ts` |
+| Client | `src/components/ModifierPicker.tsx`, `src/features/menu/*`, `src/i18n/menu.ts` |
+
+## Model
+
+**Product document (`catalog.data`).** Selling, the offline cache and QR/kiosk
+read only this compiled, self-contained document:
+
+- name (Spanish required, English defaults to Spanish), `categoryId` plus the
+  denormalized `category` label, `categoryPosition` and `position`;
+- `kind` (`item` or `combo`), `price` (final consumer price including IVA),
+  `openAmount` and `openMax`;
+- `available` and `archived`, `station`;
+- `groupIds` (ordered links) and the compiled `groups` (each with its `version`,
+  rules and choices; choices may carry `cost` and `recipe`);
+- `recipe`, `cost` and `version`;
+- `fiscal`, reserved for the fiscal wave: menu writes preserve it and never set it.
+
+**Version semantics.** `version` increments when priced or structural content
+changes: name, price, open price or ceiling, kind, station, category, linked
+groups or their compiled content, recipe, cost, or archive. It does **not** change
+for availability, positions or a category rename. Offline sync and order lines
+(`productVersion`) therefore treat a version change as "the priced content
+changed", and 86-ing an item never sends queued offline sales to review.
+
+**Reusable modifier groups (`modifier_groups`).** A group has a bilingual name,
+`min` (0–30), `max` (1–30), `repeat`, and 1–50 choices with non-negative prices.
+Choice ids are unique across the restaurant. Saving a group recompiles every
+linked product (their versions bump and a `recipe_versions` row is written).
+Archiving a group unlinks it from every product; past order lines keep their
+snapshot. Restoring a group does not re-link it.
+
+**Availability ("86") is live state.** The switches in the product list, the
+product editor and the group editor save at once, last write wins, bump the menu
+revision and never bump product versions. A product whose required group has no
+available choice shows "Agotado" in the POS and cannot be added.
+
+**Menu revision.** Every menu write bumps `menu_state.revision`, and its row lock
+serializes all menu writes of a restaurant. The POS polls `GET /menu/revision`
+every 60 seconds while selling, and again on focus, and refetches the catalog
+when the revision changes. Any feature can force a refetch with
+`window.dispatchEvent(new Event("gm-menu-refresh"))`.
+
+## Selling with choices, combos and open price
+
+- The picker opens for **any** product with groups or an open price, in the POS
+  and in QR/kiosk, so optional extras are always offered (FIT-4).
+- Controls follow the rule: a required single choice is a radio group; an
+  optional single choice is an exclusive checkbox (it can be undone); several
+  choices use checkboxes that lock when the group is full; repeatable groups use
+  steppers.
+- The line price is the product price (or the open amount) plus each chosen
+  choice price times its count. The shown price is computed by the same
+  `quote()` the server runs.
+- `optionNames` carry the count ("2× Asada"), so kitchen tickets and receipts
+  need no change.
+- The line recipe is the product recipe plus each chosen choice recipe times its
+  count, merged into one line per stock item; plain lines keep the product
+  recipe byte for byte. The line cost adds choice costs only when the product
+  has a cost.
+- **Combos** are products of kind `combo` with at least one required group
+  (`combo_requires_choice` otherwise). The whole combo goes to the product's
+  station; the ticket lists every choice.
+- **Open price** ("Varios"): any selling role may ring an amount above zero and
+  up to the product's `openMax` (D2). The amount is stored on the line.
+  QR/kiosk catalogs never include open-price products, and the server rejects
+  `openAmount` on those channels.
+
+## Tables and areas
+
+Areas and tables live under Menú e inventario → Mesas: bulk creation ("Mesa 1 …
+12", at most 50, all or nothing on a duplicate name), ordering, seats and archive.
+Archived tables disappear from `/tables` and the service options and are rejected
+for new dine-in orders, reassignment and QR orders bound to them
+(`invalid_table`). A table with an open check cannot be archived
+(`table_in_use`). The open-check rule lives in one function,
+`tablesWithOpenChecks()` in `server/floor.ts`. Until the service lifecycle
+merges, it is state based (not cancelled or in recovery, and either not completed
+or completed with a balance due). At menu's merge it becomes
+`o.check_state <> 'closed'` (contract D10).
+
+## Ingredients and the stock engine
+
+**Stock items** have a unit (g, kg, ml, l, piezas), a kind (raw or prepared), a
+reorder point, an optional par level and an optional opening stock (one
+`opening` movement, "Existencia inicial"). The unit locks (`unit_locked`) once
+the item has movements or is used in any recipe. An item used by an active recipe
+cannot be archived (`stock_in_use`); archived items leave the recipe pickers and
+Existencias. Creating and editing stock items, and recipe or cost changes, need
+Pro; archiving does not.
+
+**Cached balance (DB-4).** `stock_items.on_hand` is maintained by the
+`stock_movements_ledger` BEFORE INSERT trigger (SECURITY DEFINER, pinned
+`search_path`, EXECUTE revoked from PUBLIC):
+
+1. It rejects a movement for a tenant other than the current `app.tenant_id`.
+2. It locks the stock row, so movements on one item serialize.
+3. It skips a movement that repeats an existing `(stock, cause, cause_id)` or
+   id. BEFORE triggers fire before `ON CONFLICT` arbitration, so applying the
+   delta first would drift the balance on a skipped insert.
+4. It adds the quantity to `on_hand`, sets or clears `negative_since`, and
+   stores `balance_after` on the movement (null for movements before 025).
+
+The runtime role has no UPDATE on `on_hand` or `negative_since`, and
+`stock_movements` rejects UPDATE and DELETE even for the table owner. Sales read
+the balance from the row they already lock; nothing sums the ledger at sale time.
+`stock_items.version` still changes with every movement, so a count started before
+a sale is refused (`count_changed`).
+
+**Negative-stock policy (per restaurant, owner or manager).**
+
+| Policy | Behaviour |
+| --- | --- |
+| `allow` (default for every restaurant) | The sale goes through. The ingredient shows **Negativo** with the date, and the copy says it does not indicate a shortage by itself (INV-04). |
+| `block` (opt-in) | Sales, waste and prep that would take an ingredient below zero are refused with `insufficient_stock`. Offline cash already collected is always recorded (`AppendOptions.stockPolicy = "allow"`). |
+
+Receipts, openings, counts, prep outputs and void returns are never blocked.
+
+**Lock order and retry (DB-5).** Every command takes the stock rows it touches in
+one `SELECT … ORDER BY id FOR UPDATE` (`lockStockItems`) before any movement:
+all lines of an order or round (product and choice recipes merged) and all lines
+of a void with stock return. Lock classes follow the wave's global order (order
+locks first, stock rows after, menu and floor serialization only on configuration
+paths). `tenant()` retries a transaction once on `40P01`/`40001`; a second failure
+returns `concurrent_update` (409). Code inside `tenant()` must therefore have no
+side effects outside the transaction.
+
+## Permissions and plans
+
+| Capability | Owner | Manager | Cashier/Server | Kitchen | Free | Pro |
+| --- | --- | --- | --- | --- | --- | --- |
+| Menu, floor and ingredient editors | ✓ | ✓ | – | – | ✓ | ✓ |
+| Categories, products, groups, availability, tables, areas | ✓ | ✓ | – | – | ✓ (Free selection required, as for every management mutation) | ✓ |
+| Recipe or cost changes, stock item create/edit | ✓ | ✓ | – | – | `pro_required` | ✓ |
+| Stock item archive, negative-stock policy | ✓ | ✓ | – | – | ✓ | ✓ |
+| Ring an open-price item within its ceiling | ✓ | ✓ | ✓ | – | ✓ | ✓ |
+| `GET /menu/revision` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+Every mutation is idempotent through `once()` and runs `requireSelling()` after
+the replay check, except the policy route, which is configuration recovery.
+Limits (`menu_limit`): 100 categories, 2,000 products, 300 groups, 50 choices per
+group, 12 groups and 30 choices per product, 30 areas, 300 tables (50 per batch),
+2,000 stock items and 30 recipe lines.
+
+## Operator runbook
+
+**Deploy order.** Run migrations as the table owner (025 toggles
+`NO FORCE`/`FORCE ROW LEVEL SECURITY` for its backfill and fails loudly
+otherwise), then `scripts/grants.sql`, then serve the new revision. Without the
+grants, `GET /tables` and every menu route fail; selling keeps working.
+
+**Ledger drift check** (run as the owner; it must return no rows):
+
+```sql
+select i.tenant_id, i.id, i.on_hand, coalesce(m.total, 0) as ledger
+  from stock_items i
+  left join (select tenant_id, stock_id, sum(quantity) as total
+               from stock_movements group by 1, 2) m
+    on m.tenant_id = i.tenant_id and m.stock_id = i.id
+ where i.on_hand <> coalesce(m.total, 0);
+```
+
+**After a deploy overlap.** The previous revision may have written products in
+the legacy format (no `categoryId` or `groupIds`). Adopt them as the owner; the
+function is idempotent and returns how many products it adopted:
+
+```sql
+select menu_adopt_legacy_catalog();
+```
+
+**Switching the policy.** Use Menú e inventario → Insumos → "Cuando un insumo
+llega a cero" (owner or manager). The change is audited as
+`stock.policy.changed`.
+
+**Never write `on_hand` by hand.** The balance is defined by the ledger. Correct
+stock with a count or a receipt in Existencias so the movement, its reason and its
+actor are recorded. A manual UPDATE would be refused for the runtime role and
+would make the drift check fail.
+
+## Known deferrals
+
+- Routing combo choices to different stations (a line belongs to one station).
+- Kitchen or cashier "86" (the switch is owner/manager only).
+- Product photos (no storage provider configured).
+- Time-scheduled menus and price reductions on choices (discounts area).
+- Substitutions, yields, lots and purchase orders.
+- The "Impuestos" section of the product editor: `ProductEditor` exposes a
+  `renderFiscal` slot that the fiscal wave fills; no tax logic exists here.
+
+## Integration notes (menu's merge)
+
+- Swap `tablesWithOpenChecks()` to `o.check_state <> 'closed'` and apply
+  `archived_at is null` with area and position ordering in service's
+  `tableOccupancy` (contract D10).
+- Wire `onEditTables={() => navigate("floor")}` into service's `Tables`.
+- Resolve `add()` and the product card in Selling to the golden forms, and add
+  `labels.ts` entries for the `menu.*`, `floor.*` and `stock.*` audit operations
+  (keys `menuOp*` in `src/i18n/menu.ts`).
+- Offline sync quotes with `canOpen = true` in offline's rewrite (D11); until
+  then, open-price lines recorded offline are not accepted by `/sync`.

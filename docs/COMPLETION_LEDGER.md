@@ -16,7 +16,7 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | M3 staging candidate | deployed; core flows passed | Finish remaining exact-candidate sandbox billing cases; see STAGING.md |
 | M4 selling/pricing/cash/kitchen | partial | Item voids with manager approval and kitchen deltas done locally (Sept 26); next: discounts/courtesies with approval, item-level refunds, saved drawer close, combos/open amounts, promotions |
 | M5 jobs/printing/merchant payments | incomplete | Durable delivery infrastructure; device/provider selection is absent |
-| M6 inventory/procurement | partial | Purchase orders, substitutions, lots, yields, saved counts |
+| M6 inventory/procurement | partial | Stock item setup, recipe links on products and choices, cached balance and per-restaurant negative-stock policy done locally on `track/menu` (not staged); next: purchase orders, substitutions, lots, yields, saved counts |
 | M7 finance/imports/reports | partial | Complete metric contract, recurring expenses, settlement imports, PDF/schedules |
 | M8 accounts/configured modules | partial | Linking/recovery/onboarding, team policies and explicitly configured providers |
 | M9 migration/readiness | blocked in part | Approved source exports; isolated restore/rollback and operational evidence |
@@ -34,8 +34,8 @@ unverified unless a dated checkpoint explicitly records it.
 | --- | --- | --- | --- |
 | Owner login, employee PIN, permissions | 1–2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Owner/password and employee PIN endpoints; signed device cookies; server roles. Google owner identity, explicit membership, Free restaurant signup/entry and logout implemented and tested locally with synthetic identity. Google staging login, invitations and organization switching verified in prior staging releases; deliberate account linking remains pending. |
 | Restaurants/organizations, branding | 1, 4–5, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Owner settings, currency lock, receipt snapshots, approved branding, organization locations/invitations/switching implemented; dynamic asset upload remains pending. |
-| Catalog/categories/search/photos | 2, required; R2 when images enabled | See DELIVERY_STATUS.md and corresponding M1–M9 section | Search, categories, bilingual product names, availability, menu editor; image assets not implemented. |
-| Modifiers, combos, open amount | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Required modifier groups and authoritative prices. Combo slots and open-amount UI pending. |
+| Catalog/categories/search/photos | 2, required; R2 when images enabled | See DELIVERY_STATUS.md and corresponding M1–M9 section | Categories (create, rename, reorder, archive), products with search, duplicate, reorder, archive/restore and live availability, bilingual names (English optional), POS category chips in category order, and menu-revision polling so 86'd items leave the POS within 60 s. Locally verified on `track/menu` (`npm run test:db:menu`, `tests/browser/menu.spec.ts`); not staged. Product photos pending (no storage provider configured). |
+| Modifiers, combos, open amount | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Reusable modifier groups (required, optional or repeatable; min/max; priced choices; choice recipes and costs; live choice availability), combos as products with required choice groups, and open-price items with a manager-set ceiling (staff only; excluded from QR/kiosk). One choice picker for POS and QR/kiosk, priced by the shared quote. Locally verified on `track/menu` (`tests/menu.test.ts`, `npm run test:db:menu`, `tests/browser/menu.spec.ts`); not staged. Per-choice station routing for combos, kitchen/cashier 86 and cart-line editing pending. |
 | Promotions, scheduled offers, discounts/courtesies | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Tables, waiter attribution, service rounds | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Table selection, additional rounds, table moves and server reassignment with separate service version/audit. Verified creator/payment/round preservation and cross-tenant rejection. |
 | Parked carts/templates, call names, fulfillment | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | IndexedDB drafts and call names. Templates and richer line edits pending. |
@@ -48,10 +48,10 @@ unverified unless a dated checkpoint explicitly records it.
 | Offline cash, menu cache, refresh recovery | 3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Dexie queue, session scope, service worker, cross-tab lock, same-key retries and atomic sync. Versioned leases, manager reconciliation, backup validation, uncertain-payment checks, historical drawer corrections and concurrency recovery implemented. See OFFLINE_RECOVERY.md for remaining gates. |
 | QR customer ordering and kiosk | 3, required web flows | See DELIVERY_STATUS.md and corresponding M1–M9 section | Signed scoped ordering links; QR/kiosk frontend shares service; unpaid kitchen dispatch and public receipt. Idle reset implemented. Provider checkout and held-order policy pending. Kiosk is required Pro; local server entitlement gates are implemented and tested for tenant isolation, expiry and accepted-order retries. Stripe reconciliation and live entitlement provisioning remain pending. |
 | Native iOS/Android wrappers | Optional follow-on | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
-| Ingredients, recipe links, substitutions, costs | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Stable stock IDs, append-only recipe versions, historical line cost snapshots; multi-ingredient editor implemented; substitutes and automatic costing pending. |
+| Ingredients, recipe links, substitutions, costs | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Stock item setup (g, kg, ml, l, pieces; raw or prepared; reorder point, par level, opening stock, unit lock, archive), product and choice recipes with g↔kg and ml↔l entry, line cost including choice costs, append-only recipe versions and historical line cost snapshots. Locally verified on `track/menu` (`npm run test:db:menu`, browser); not staged. Substitutes and automatic costing pending. |
 | Suppliers, purchase orders, receiving | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Supplier creation and merchandise receipt/expiry metadata. Purchase orders and lot depletion pending. |
-| Raw-to-prepared inventory, portions, availability | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Prep input/output ledger and prepared-component consumption; yield/cost allocation policies pending. |
-| Counts, waste, expiry, suggested variances | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Stock-version count adjustment, movement evidence, explicit waste. Saved count drafts and expiry alerts pending. |
+| Raw-to-prepared inventory, portions, availability | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Prep input/output ledger and prepared-component consumption (stock rows locked in one global order); live product and choice availability with required-choice sold-out detection in POS and QR. Yield/cost allocation policies pending. |
+| Counts, waste, expiry, suggested variances | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Cached theoretical balance kept by a ledger trigger (no history sums at sale time), per-restaurant negative-stock policy (allow and flag by default, block opt-in; offline cash always recorded), dated Negativo flag that is never labelled a shortage, stock-version count adjustment against the cached balance, explicit waste and a suggested order from the par level. Locally verified on `track/menu` (`npm run test:db:menu`, `npm run test:db:core`, browser); not staged. Saved count drafts and expiry alerts pending. |
 | Fixed/variable/recurring expenses | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Fixed/variable expense entry. Recurrence and full report treatment pending. |
 | Sales/margins/commission reporting | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Today source-record drill-down, order totals, tender/refund/tip totals, estimated COGS. Full net/tax/fee/commission reporting pending. |
 | Forecasts/break-even/owner alerts | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Pure forecast arithmetic and insufficient-history state. Historical aggregation, editable scenarios and actionable alerts pending. |
@@ -79,7 +79,7 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 
 | Scenario | Status | Evidence / outstanding work |
 | --- | --- | --- |
-| UX-01 | partial | Modifier validation and persistent cart tested; exact three-item task measurement pending. |
+| UX-01 | partial | One picker for required, optional and repeatable choices with blocked invalid combinations, live price and the cart visible; taquería build-and-sell flow browser-tested (`tests/browser/menu.spec.ts`, local). Exact three-item task measurement pending. |
 | UX-02 | partial | Cash checkout and receipt tested; primary activation budget not measured. |
 | UX-03 | partial | Additional rounds, table/server reassignment and creator/round preservation tested; full table-service lifecycle pending. |
 | UX-04 | partial | KDS acknowledgement/ready and independent payment tested; complete service scenario pending. |
@@ -87,13 +87,13 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | UX-06 | verified | Browser grouped cash settlement retains separate order IDs, tenders and rounds. |
 | UX-07 | partial | Draft persistence implemented; complete parked-ticket restart scenario pending. |
 | UX-08 | partial | Cash discrepancy links and inventory evidence implemented; full alert correction scenario pending. |
-| UX-09 | partial | Count adjustment and concurrent stock version validation implemented; saved count workflow pending. |
+| UX-09 | partial | Count adjustment computed against the cached balance of the locked row, with the stock version refusing a count started before a concurrent sale (`npm run test:db:menu`, local). Saved count workflow and reviewed adjustment pending. |
 | UX-10 | partial | Drawer close and refund tested; tip/paid-out combined scenario and saved close draft pending. |
 | UX-11 | partial | Selling/cart and item-payment screenshots at all four sizes; fixed payment footer and mobile confirmation checked. All-workspace review pending. |
 | UX-12 | partial | Keyboard search, modal dismissal/focus and one-state axe check; full screen-reader review pending. |
 | UX-13 | pending | Restaurant settings persist with English labels, timezone/cutoff/opening days. Organization switching and complete locale acceptance pending. |
 | UX-14 | partial | Catalog import and cash sale independently verified; complete onboarding flow pending. |
-| CORE-01 | partial | Canonical quote shared by POS/QR/kiosk/sync; promotions and tax configuration pending. |
+| CORE-01 | partial | Canonical quote shared by POS/QR/kiosk/sync, now including choice counts, open amounts with a ceiling (staff channels only) and merged choice recipes; `selectionIssue` agreement test (`tests/menu.test.ts`). Offline sync still quotes without open price until the offline track merges; promotions and tax configuration pending. |
 | CORE-02 | verified | Eight parallel same-ID creates produce one order/stock effect; altered payload conflicts. |
 | CORE-03 | pending | Integrated provider events/reconciliation not implemented. |
 | CORE-04 | pending | Committed cash response loss and original-operation recovery tested; integrated provider crash/restart recovery not implemented. |
@@ -115,10 +115,10 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | OPS-01 | pending | Printer jobs explicitly blocked; printer worker/hardware recovery pending. |
 | OPS-02 | partial | Persisted KDS rounds and polling; disconnect/cancellation scenario pending. |
 | OPS-03 | pending | Durable report/email worker not implemented. |
-| INV-01 | partial | Receiving/preparation/sale/count/waste ledger implemented; complete chained cost reconciliation pending. |
-| INV-02 | verified | Two concurrent last-portion deductions serialize; only one succeeds. |
-| INV-03 | partial | Causal movement deduplication and recipe versions tested; substitutes/refund restoration pending. |
-| INV-04 | partial | Append-only ledger-derived count and optimistic version checks; full scenario coverage pending. |
+| INV-01 | partial | Receiving/preparation/sale/void return/count/waste ledger with a trigger-maintained cached balance that equals the ledger after every cause (`npm run test:db:menu`, local). Complete chained cost reconciliation pending. |
+| INV-02 | verified | Configured per restaurant. Under `block`, concurrent last-portion sales serialize and exactly one succeeds; under the default `allow`, the sale proceeds and the item is flagged; offline cash already collected is always recorded (`npm run test:db:core`, `npm run test:db:menu`, browser; local, not staged). |
+| INV-03 | partial | Causal movement deduplication (also enforced by the ledger trigger for repeated inserts), recipe versions per group edit and DB-5 global lock order tested. Substitutes and refund restoration pending. |
+| INV-04 | partial | Counts use the cached balance, which includes receipts, prep input/output, sales, waste and earlier adjustments, with the stock-version cutoff; the Negativo flag states it does not indicate a shortage by itself. Saved count scenario pending. |
 | FIN-01 | pending | Historical summaries and settlement import not implemented. |
 | FIN-02 | partial | Basic order/tender/refund/tip source totals; full tax/fee/commission definitions pending. |
 | FIN-03 | partial | Pure forecast identity tested; editable historical scenarios not implemented. |
