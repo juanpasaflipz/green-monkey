@@ -25,9 +25,8 @@
         "customer": {
           "legal_name": "UNIVERSIDAD ROBOTICA ESPAÑOLA",
           "tax_id": "URE180429TM6",
-          "tax_system": "601",
           "address": {
-            "zip": "86991"
+            "country": "MEX"
           }
         },
         "total": 116.0,

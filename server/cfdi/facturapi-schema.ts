@@ -50,7 +50,9 @@ export const productInput = z
     tax_included: z.literal(true),
     taxability: z.literal("02"),
     taxes: z.array(taxInput).length(1),
-    sku: z.string().min(1).max(100),
+    // NoIdentificacion. ProductProperties (ingreso) documents `sku`; ProductEgresoProperties does
+    // not, so credit notes never send it (enforced on the invoice body below).
+    sku: z.string().min(1).max(100).optional(),
   })
   .strict();
 
@@ -106,6 +108,18 @@ export const invoiceInput = z
   })
   .strict()
   .superRefine((body, ctx) => {
+    body.items.forEach((item, i) => {
+      // Ingreso concepts carry the ticket folio as NoIdentificacion; egreso products have no sku.
+      if ((body.type === "I") !== (item.product.sku !== undefined))
+        ctx.addIssue({
+          code: "custom",
+          path: ["items", i, "product", "sku"],
+          message:
+            body.type === "I"
+              ? "ingreso concepts need sku"
+              : "egreso products have no sku",
+        });
+    });
     // InvoiceIngresoInput has `global`; InvoiceEgresoInput does not (OpenAPI subset).
     if (body.type === "E" && body.global)
       ctx.addIssue({

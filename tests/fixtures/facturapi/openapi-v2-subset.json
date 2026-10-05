@@ -1409,8 +1409,36 @@
         ]
       },
       "CustomerInfo": {
-        "x-pruned": true,
-        "description": "Not vendored: outside what cfdi sends or reads."
+        "type": "object",
+        "description": "Object with partial information of the customer receiving the document. To obtain the complete `Customer` object, you must consult it with the [Retrieve Customer]('#/operation/getCustomer') method.\n",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "ID of the `customer` object related to the invoice, in case it has not been deleted.",
+            "example": "58e93bd8e86eb318b0197456"
+          },
+          "legal_name": {
+            "type": "string",
+            "description": "Legal name or business name of the customer. *without* the corporate regime (e.g.: S.A. de C.V.).\n",
+            "example": "Dunder Mifflin"
+          },
+          "tax_id": {
+            "type": "string",
+            "description": "In Mexican clients, it contains the customer's RFC. For foreigners, it is optional and represents the tax identification number, that is, the equivalent to the RFC in the customer's country.\n",
+            "example": "ABC101010111"
+          },
+          "address": {
+            "type": "object",
+            "properties": {
+              "country": {
+                "type": "string",
+                "format": "ISO 3166-1 alpha-3",
+                "description": "Country code according to the standard [ISO 3166-1 alpha-3](https://en.wikipedia.org/wiki/ISO_3166-1_alpha-3).",
+                "example": "MEX"
+              }
+            }
+          }
+        }
       },
       "DateRange": {
         "type": "object",
@@ -2260,8 +2288,27 @@
         "description": "Not vendored: outside what cfdi sends or reads."
       },
       "LineItem": {
-        "x-pruned": true,
-        "description": "Not vendored: outside what cfdi sends or reads."
+        "type": "object",
+        "properties": {
+          "quantity": {
+            "type": "number",
+            "description": "Quantity of units included in the same concept.",
+            "example": 1
+          },
+          "discount": {
+            "type": "number",
+            "description": "Total discount amount applied to this concept.",
+            "example": 0
+          },
+          "product": {
+            "$ref": "#/components/schemas/LineItemProduct",
+            "description": "Object with information about the product or service invoiced.\n"
+          },
+          "parts": {
+            "$ref": "#/components/schemas/Parts",
+            "description": "Object with information about the parts conforming this item or product."
+          }
+        }
       },
       "LineItemEgresoInput": {
         "title": "LineItem",
@@ -2432,6 +2479,23 @@
             ]
           }
         }
+      },
+      "LineItemProduct": {
+        "allOf": [
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "ID of the base product. Only present if a previously saved `Product` object was used as a base.",
+                "example": "58e93bd8e86eb318b0197454"
+              }
+            }
+          },
+          {
+            "$ref": "#/components/schemas/ProductProperties"
+          }
+        ]
       },
       "LineItemProductEgresoInput": {
         "title": "Product",
@@ -2930,6 +2994,10 @@
         ]
       },
       "PartInput": {
+        "x-pruned": true,
+        "description": "Not vendored: outside what cfdi sends or reads."
+      },
+      "Parts": {
         "x-pruned": true,
         "description": "Not vendored: outside what cfdi sends or reads."
       },

@@ -431,12 +431,18 @@ export function createFacturapiClient(
   let userAgent = o.userAgent;
   const agent = () => (userAgent ??= `green-monkey/${buildInfo().version}`);
 
-  type Sent = {
-    response: Response;
-    failed: (error: unknown) => FacturapiError;
-  };
-
-  async function send(c: Call): Promise<Sent> {
+  /**
+   * Sends one request and reads its body inside a single deadline (15 s, or 30 s for stamping,
+   * cancellation and CSD upload), combined with the caller's signal (job shutdown or lease loss).
+   * Equivalent to AbortSignal.any([signal, AbortSignal.timeout(ms)]) but driven by a plain timer
+   * and an owned AbortController: AbortSignal.timeout holds its signal weakly, so a request the
+   * runtime no longer references could lose its deadline; this timer always fires and is always
+   * cleared when the exchange ends.
+   */
+  async function exchange<T>(
+    c: Call,
+    read: (response: Response) => Promise<T>,
+  ): Promise<T> {
     const url = new URL(baseUrl + c.path);
     for (const [name, value] of Object.entries(c.query ?? {}))
       if (value !== undefined) url.searchParams.set(name, value);
@@ -448,15 +454,23 @@ export function createFacturapiClient(
     };
     // fetch sets the multipart boundary itself; JSON bodies declare their type.
     if (c.json !== undefined) headers["Content-Type"] = "application/json";
-    const timeout = AbortSignal.timeout(
+
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(
+      () => {
+        timedOut = true;
+        controller.abort(new DOMException("Facturapi timeout", "TimeoutError"));
+      },
       c.long ? timeouts.longMs : timeouts.standardMs,
     );
-    const signal = c.signal ? AbortSignal.any([c.signal, timeout]) : timeout;
-    // The same signal also bounds reading the body, so aborts mid-body classify the same way.
+    const forward = () => controller.abort(c.signal?.reason);
+    if (c.signal?.aborted) forward();
+    else c.signal?.addEventListener("abort", forward, { once: true });
     const failed = (error: unknown): FacturapiError =>
       error instanceof FacturapiError
         ? error
-        : timeout.aborted
+        : timedOut
           ? new FacturapiError(
               "timeout",
               0,
@@ -476,24 +490,31 @@ export function createFacturapiClient(
                 "cfdi_provider_network",
                 "network error reaching Facturapi",
               );
-    let response: Response;
     try {
-      response = await request(url.href, {
-        method: c.method,
-        headers,
-        redirect: "error",
-        signal,
-        ...(c.json !== undefined ? { body: JSON.stringify(c.json) } : {}),
-        ...(c.form ? { body: c.form } : {}),
-      });
-    } catch (error) {
-      throw failed(error);
+      let response: Response;
+      try {
+        response = await request(url.href, {
+          method: c.method,
+          headers,
+          redirect: "error",
+          signal: controller.signal,
+          ...(c.json !== undefined ? { body: JSON.stringify(c.json) } : {}),
+          ...(c.form ? { body: c.form } : {}),
+        });
+      } catch (error) {
+        throw failed(error);
+      }
+      if (!response.ok) throw await httpError(response).catch(failed);
+      try {
+        // The body is read under the same deadline: an abort mid-body classifies the same way.
+        return await read(response);
+      } catch (error) {
+        throw failed(error);
+      }
+    } finally {
+      clearTimeout(timer);
+      c.signal?.removeEventListener("abort", forward);
     }
-    if (!response.ok) {
-      const error = await httpError(response).catch(failed);
-      throw error;
-    }
-    return { response, failed };
   }
 
   function schemaError(
@@ -513,48 +534,44 @@ export function createFacturapiClient(
     );
   }
 
-  async function json<T>(
+  function json<T>(
     c: Call,
     schema: z.ZodType<T>,
   ): Promise<{ status: number; data: T }> {
-    const { response, failed } = await send(c);
-    let value: unknown;
-    try {
-      value = JSON.parse(
-        new TextDecoder().decode(await readLimited(response, MAX_JSON_BYTES)),
+    return exchange(c, async (response) => {
+      const text = new TextDecoder().decode(
+        await readLimited(response, MAX_JSON_BYTES),
       );
-    } catch (error) {
-      if (error instanceof SyntaxError)
+      let value: unknown;
+      try {
+        value = JSON.parse(text);
+      } catch {
         throw new FacturapiError(
           "schema",
           response.status,
           "cfdi_provider_schema",
           "Facturapi response is not JSON",
         );
-      throw failed(error);
-    }
-    const parsed = schema.safeParse(value);
-    if (!parsed.success)
-      throw schemaError(response.status, parsed.error.issues);
-    return { status: response.status, data: parsed.data };
+      }
+      const parsed = schema.safeParse(value);
+      if (!parsed.success)
+        throw schemaError(response.status, parsed.error.issues);
+      return { status: response.status, data: parsed.data };
+    });
   }
 
-  async function bytes(c: Call): Promise<Uint8Array> {
-    const { response, failed } = await send({ ...c, binary: true });
-    let body: Uint8Array;
-    try {
-      body = await readLimited(response, MAX_FILE_BYTES);
-    } catch (error) {
-      throw failed(error);
-    }
-    if (!body.byteLength)
-      throw new FacturapiError(
-        "schema",
-        response.status,
-        "cfdi_provider_schema",
-        "empty file",
-      );
-    return body;
+  function bytes(c: Call): Promise<Uint8Array> {
+    return exchange({ ...c, binary: true }, async (response) => {
+      const body = await readLimited(response, MAX_FILE_BYTES);
+      if (!body.byteLength)
+        throw new FacturapiError(
+          "schema",
+          response.status,
+          "cfdi_provider_schema",
+          "empty file",
+        );
+      return body;
+    });
   }
 
   /** Invoice responses are checked against the key's environment (strict separation). */
