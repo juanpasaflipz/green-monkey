@@ -1,5 +1,4 @@
 import { requirePro } from "./entitlements.js";
-import { createHash } from "node:crypto";
 import express from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type postgres from "postgres";
@@ -30,8 +29,14 @@ function publicOrder(o: any) {
     })),
   };
 }
-/** Catalog loads and order submissions per client IP per minute (shared). */
+/** Catalog loads and receipt reads per client IP per minute (shared). */
 export const PUBLIC_REQUESTS_PER_MINUTE = 30;
+/**
+ * Order submissions per client IP per minute. They have their own budget
+ * (MENU-R6): the catalog refetches every open page makes after a menu change
+ * can never use up what a diner needs to send an order.
+ */
+export const PUBLIC_ORDERS_PER_MINUTE = 30;
 /**
  * Freshness polls per link per client IP per minute. A page polls about once
  * a minute plus throttled focus checks, so this leaves room for a few diners
@@ -39,45 +44,91 @@ export const PUBLIC_REQUESTS_PER_MINUTE = 30;
  * on the next tick.
  */
 export const REVISION_POLLS_PER_MINUTE = 20;
+/**
+ * Freshness polls per client IP per minute across every link and every token
+ * (MENU-R3). This ceiling, not the per-link budget, bounds the database work
+ * one client can cause: a served poll is one short transaction on the pool
+ * the POS sells from. A page polls at most four times a minute (once a minute
+ * plus focus checks at least 15 s apart) and usually once, so one guest Wi-Fi
+ * IP still carries 60 or more open pages.
+ */
+export const REVISION_POLLS_PER_IP_PER_MINUTE = 240;
 const isRevisionPoll = (req: express.Request) =>
   req.method === "GET" && /^\/[^/]+\/revision$/.test(req.path);
-export function publicOrdering(sql: postgres.Sql) {
-  const router = express.Router();
-  // MENU-R1: every open QR/kiosk page polls /:token/revision, and diners on
-  // one Wi-Fi share an IP. The poll therefore has its own budget, so it can
-  // never use up the one that catalog loads and order submissions share.
-  router.use(
-    rateLimit({
-      windowMs: 60_000,
-      limit: PUBLIC_REQUESTS_PER_MINUTE,
-      standardHeaders: true,
-      legacyHeaders: false,
-      message: { error: "rate_limited" },
-      skip: isRevisionPoll,
-    }),
-  );
-  const revisionLimit = rateLimit({
+const isOrderSubmission = (req: express.Request) =>
+  req.method === "POST" && /^\/[^/]+\/orders$/.test(req.path);
+/**
+ * The claims of a token spelled exactly as sign() writes it, or null.
+ * verify() decodes leniently: it ignores anything after a second ".", and the
+ * base64url decoder skips "=", "!", whitespace and the unused low bits of the
+ * last character. One signed link would otherwise have endless spellings,
+ * each a fresh rate-limit key (MENU-R3).
+ */
+export function signedClaims(token: string): Record<string, any> | null {
+  const [body, signature, ...extra] = token.split(".");
+  if (
+    extra.length ||
+    !body ||
+    !signature ||
+    Buffer.from(signature, "base64url").toString("base64url") !== signature
+  )
+    return null;
+  try {
+    return verify(token);
+  } catch {
+    return null;
+  }
+}
+const limiter = (
+  limit: number,
+  options: {
+    skip?: (req: express.Request) => boolean;
+    keyGenerator?: (req: express.Request) => string;
+  } = {},
+) =>
+  rateLimit({
     windowMs: 60_000,
-    limit: REVISION_POLLS_PER_MINUTE,
+    limit,
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "rate_limited" },
+    ...options,
+  });
+export function publicOrdering(sql: postgres.Sql) {
+  const router = express.Router();
+  // MENU-R1/R6: every open QR/kiosk page polls /:token/revision and refetches
+  // the catalog after a menu change, and diners on one Wi-Fi share an IP. The
+  // poll and order submissions therefore have their own budgets; everything
+  // else on this router (catalog loads, receipts) shares this one.
+  router.use(
+    limiter(PUBLIC_REQUESTS_PER_MINUTE, {
+      skip: (req) => isRevisionPoll(req) || isOrderSubmission(req),
+    }),
+  );
+  const orderLimit = limiter(PUBLIC_ORDERS_PER_MINUTE);
+  // MENU-R3: the per-IP ceiling comes first and counts every poll, whatever
+  // its token, so no spelling or number of links lifts the bound.
+  const revisionIpLimit = limiter(REVISION_POLLS_PER_IP_PER_MINUTE);
+  const revisionLinkLimit = limiter(REVISION_POLLS_PER_MINUTE, {
     // Per link and client (IPv6 grouped by /56, the library default): one
-    // busy table cannot slow another table's or the kiosk's freshness.
-    keyGenerator: (req) =>
-      ipKeyGenerator(req.ip ?? "") +
-      ":" +
-      createHash("sha256")
-        .update(String(req.params.token))
-        .digest("base64url")
-        .slice(0, 22),
+    // busy table cannot slow another table's or the kiosk's freshness. The
+    // key is the server-signed link id, so a client cannot mint new keys;
+    // any other token shares one key per IP and is refused before the
+    // database.
+    keyGenerator: (req) => {
+      const c = signedClaims(String(req.params.token));
+      const link =
+        c?.purpose === "ordering" && typeof c.id === "string" ? c.id : "-";
+      return ipKeyGenerator(req.ip ?? "") + ":" + link;
+    },
   });
   async function context(
     token: string,
     fn: (tx: any, s: Session, c: any) => Promise<unknown>,
   ) {
-    const c = verify(token);
+    const c = signedClaims(token);
     if (
+      !c ||
       c.purpose !== "ordering" ||
       !["qr", "kiosk"].includes(c.channel) ||
       c.expiresAt < Date.now()
@@ -127,23 +178,29 @@ export function publicOrdering(sql: postgres.Sql) {
     }
   });
   // QR/kiosk freshness (OWNER-2): a small poll; the catalog is refetched only
-  // when the revision moves. Throttled by revisionLimit, not the shared limit.
-  router.get("/:token/revision", revisionLimit, async (req, res, next) => {
+  // when the revision moves. Throttled by the per-IP ceiling and the per-link
+  // budget, not the shared limit.
+  router.get(
+    "/:token/revision",
+    revisionIpLimit,
+    revisionLinkLimit,
+    async (req, res, next) => {
+      try {
+        res.json(
+          await context(String(req.params.token), async (tx) => {
+            await requirePro(tx);
+            return menuRevision(tx);
+          }),
+        );
+      } catch (e) {
+        next(e);
+      }
+    },
+  );
+  router.post("/:token/orders", orderLimit, async (req, res, next) => {
     try {
       res.json(
-        await context(String(req.params.token), async (tx) => {
-          await requirePro(tx);
-          return menuRevision(tx);
-        }),
-      );
-    } catch (e) {
-      next(e);
-    }
-  });
-  router.post("/:token/orders", async (req, res, next) => {
-    try {
-      res.json(
-        await context(req.params.token, async (tx, s, c) => {
+        await context(String(req.params.token), async (tx, s, c) => {
           const p = orderInput.parse(req.body);
           const order = await createOrder(tx, s, {
             ...p,
@@ -168,8 +225,8 @@ export function publicOrdering(sql: postgres.Sql) {
   });
   router.get("/receipt/:token", async (req, res, next) => {
     try {
-      const c = verify(req.params.token);
-      if (c.purpose !== "public_receipt" || c.expiresAt < Date.now())
+      const c = signedClaims(req.params.token);
+      if (!c || c.purpose !== "public_receipt" || c.expiresAt < Date.now())
         throw new DomainError("unauthorized", 401);
       res.json(
         await tenant(sql, c.tenantId, async (tx) =>

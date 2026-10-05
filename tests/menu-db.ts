@@ -17,7 +17,9 @@ import {
 } from "../server/orders.js";
 import { receive, saveProduct } from "../server/management.js";
 import {
+  PUBLIC_ORDERS_PER_MINUTE,
   PUBLIC_REQUESTS_PER_MINUTE,
+  REVISION_POLLS_PER_IP_PER_MINUTE,
   REVISION_POLLS_PER_MINUTE,
   publicOrdering,
 } from "../server/public-ordering.js";
@@ -2357,11 +2359,12 @@ try {
   });
 
   // --------------------------------------------------------- public ordering
-  await test("MENU-R1: QR/kiosk revision polls have their own budget and never get a diner's order refused", async () => {
-    const product = await newProduct(manager, tacos.id);
+  /** The real public router on a loopback port; every request comes from one
+   * client IP, like diners on a restaurant's guest Wi-Fi. */
+  async function servePublic(db: postgres.Sql) {
     const app = express();
     app.use(express.json());
-    app.use("/api/public", publicOrdering(sql));
+    app.use("/api/public", publicOrdering(db));
     app.use(
       (
         error: unknown,
@@ -2376,34 +2379,52 @@ try {
     const server = app.listen(0, "127.0.0.1");
     await new Promise<void>((resolve) => server.once("listening", resolve));
     const origin =
-      "http://127.0.0.1:" + (server.address() as { port: number }).port;
-    // Links as POST /ordering-links signs them; every request below comes
-    // from one client IP, like diners on a restaurant's guest Wi-Fi.
-    const link = (channel: "qr" | "kiosk") =>
-      sign({
-        purpose: "ordering",
-        id: randomUUID(),
-        tenantId: a.tenantId,
-        employeeId: manager.employeeId,
-        deviceId: manager.deviceId,
-        tableId: null,
-        channel,
-        expiresAt: Date.now() + 3600_000,
-      });
-    const qr = link("qr"),
-      kiosk = link("kiosk");
-    const get = async (path: string) => {
-      const r = await fetch(origin + "/api/public/" + path);
-      return {
-        status: r.status,
-        limit: r.headers.get("ratelimit-limit"),
-        body: await r.json(),
-      };
+      "http://127.0.0.1:" +
+      (server.address() as { port: number }).port +
+      "/api/public/";
+    const reply = async (r: Response) => ({
+      status: r.status,
+      limit: r.headers.get("ratelimit-limit"),
+      body: await r.json(),
+    });
+    return {
+      get: async (path: string) => reply(await fetch(origin + path)),
+      post: async (path: string, body: unknown) =>
+        reply(
+          await fetch(origin + path, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          }),
+        ),
+      close: () =>
+        new Promise<void>((resolve) => server.close(() => resolve())),
     };
+  }
+  /** A link as POST /ordering-links signs it. */
+  const orderingLink = (channel: "qr" | "kiosk") =>
+    sign({
+      purpose: "ordering",
+      id: randomUUID(),
+      tenantId: a.tenantId,
+      employeeId: manager.employeeId,
+      deviceId: manager.deviceId,
+      tableId: null,
+      channel,
+      expiresAt: Date.now() + 3600_000,
+    });
+  const qrOrder = (productId: string) =>
+    orderBody([{ productId }], { channel: "qr" });
+
+  await test("MENU-R1/R6: QR/kiosk revision polls, catalog loads and orders have separate budgets, so a diner's order is never refused for them", async () => {
+    const product = await newProduct(manager, tacos.id);
+    const pub = await servePublic(sql);
+    const qr = orderingLink("qr"),
+      kiosk = orderingLink("kiosk");
     try {
       const polls = [];
       for (let i = 0; i < PUBLIC_REQUESTS_PER_MINUTE + 5; i++)
-        polls.push(await get(qr + "/revision"));
+        polls.push(await pub.get(qr + "/revision"));
       const served = polls.filter((p) => p.status === 200);
       assert.equal(served.length, REVISION_POLLS_PER_MINUTE);
       assert(served.every((p) => typeof p.body.revision === "number"));
@@ -2415,32 +2436,160 @@ try {
       );
       assert.deepEqual(refused[0].body, { error: "rate_limited" });
       // Another link from the same IP (the kiosk, another table) polls on.
-      assert.equal((await get(kiosk + "/revision")).status, 200);
+      assert.equal((await pub.get(kiosk + "/revision")).status, 200);
       // After more polls than the shared limit, the diner's order goes through.
-      const sent = await fetch(origin + "/api/public/" + qr + "/orders", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(
-          orderBody([{ productId: product.id }], { channel: "qr" }),
-        ),
-      });
-      const body = await sent.json();
-      assert.equal(sent.status, 200, JSON.stringify(body));
-      assert.equal(body.order.total, product.price);
-      assert.equal(
-        sent.headers.get("ratelimit-limit"),
-        String(PUBLIC_REQUESTS_PER_MINUTE),
-      );
-      // Catalog loads and orders keep sharing their unchanged per-IP limit.
-      for (let i = 1; i < PUBLIC_REQUESTS_PER_MINUTE; i++)
-        assert.equal((await get(qr + "/catalog")).status, 200);
-      const over = await get(qr + "/catalog");
+      const sent = await pub.post(qr + "/orders", qrOrder(product.id));
+      assert.equal(sent.status, 200, JSON.stringify(sent.body));
+      assert.equal(sent.body.order.total, product.price);
+      assert.equal(sent.limit, String(PUBLIC_ORDERS_PER_MINUTE));
+      // MENU-R6 (deliberate change): catalog loads keep their unchanged
+      // per-IP limit, but orders no longer count towards it.
+      for (let i = 0; i < PUBLIC_REQUESTS_PER_MINUTE; i++) {
+        const loaded = await pub.get(qr + "/catalog");
+        assert.equal(loaded.status, 200);
+        assert.equal(loaded.limit, String(PUBLIC_REQUESTS_PER_MINUTE));
+      }
+      const over = await pub.get(qr + "/catalog");
       assert.equal(over.status, 429);
       assert.deepEqual(over.body, { error: "rate_limited" });
+      // Every open page refetching after a menu change cannot refuse an order.
+      const after = await pub.post(qr + "/orders", qrOrder(product.id));
+      assert.equal(after.status, 200, JSON.stringify(after.body));
       // An exhausted shared budget does not stop another link's polls.
-      assert.equal((await get(kiosk + "/revision")).status, 200);
+      assert.equal((await pub.get(kiosk + "/revision")).status, 200);
+      // Orders keep their own per-IP limit.
+      for (let i = 2; i < PUBLIC_ORDERS_PER_MINUTE; i++)
+        assert.equal(
+          (await pub.post(qr + "/orders", qrOrder(product.id))).status,
+          200,
+        );
+      const flood = await pub.post(qr + "/orders", qrOrder(product.id));
+      assert.equal(flood.status, 429);
+      assert.deepEqual(flood.body, { error: "rate_limited" });
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await pub.close();
+    }
+  });
+
+  await test("MENU-R3: one client IP cannot lift the revision-poll bound with token spellings or many links, and its order still goes through", async () => {
+    const product = await newProduct(manager, tacos.id);
+    // Count database transactions the public router opens.
+    let transactions = 0;
+    const counted = new Proxy(sql, {
+      get(target, key, receiver) {
+        const value = Reflect.get(target, key, receiver);
+        if (key !== "begin") return value;
+        return (...args: unknown[]) => {
+          transactions++;
+          return (value as (...a: unknown[]) => unknown).apply(target, args);
+        };
+      },
+    }) as postgres.Sql;
+    const qr = orderingLink("qr");
+    const [, signature] = qr.split(".");
+    const alphabet =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    const sameBytes = [...alphabet].find(
+      (c) =>
+        c !== signature.slice(-1) &&
+        Buffer.from(signature.slice(0, -1) + c, "base64url").equals(
+          Buffer.from(signature, "base64url"),
+        ),
+    )!;
+    assert(sameBytes, "the last character has unused bits");
+    // Spellings verify() accepts for the same signed link.
+    const spellings = [
+      qr + ".1",
+      qr + "=",
+      qr + "!",
+      qr.slice(0, -1) + sameBytes,
+    ];
+
+    let pub = await servePublic(counted);
+    try {
+      for (const token of spellings) {
+        for (const r of [
+          await pub.get(token + "/revision"),
+          await pub.get(token + "/catalog"),
+          await pub.post(token + "/orders", qrOrder(product.id)),
+        ]) {
+          assert.equal(r.status, 401, token);
+          assert.deepEqual(r.body, { error: "unauthorized" });
+        }
+      }
+      assert.equal(transactions, 0, "refused before the database");
+      assert.equal((await pub.get(qr + "/revision")).status, 200);
+      assert.equal(transactions, 1);
+    } finally {
+      await pub.close();
+    }
+
+    // The reviewer's flood: `${token}.${i}` from one IP, past the ceiling.
+    pub = await servePublic(counted);
+    transactions = 0;
+    try {
+      const flood = [];
+      for (let i = 0; i < REVISION_POLLS_PER_IP_PER_MINUTE + 10; i++)
+        flood.push(await pub.get(`${qr}.${i}/revision`));
+      assert.equal(flood.filter((r) => r.status === 200).length, 0);
+      assert.equal(
+        flood.filter((r) => r.status === 401).length,
+        REVISION_POLLS_PER_MINUTE,
+      );
+      assert.equal(
+        flood.filter((r) => r.status === 429).length,
+        REVISION_POLLS_PER_IP_PER_MINUTE + 10 - REVISION_POLLS_PER_MINUTE,
+      );
+      const last = flood.at(-1)!;
+      assert.equal(last.limit, String(REVISION_POLLS_PER_IP_PER_MINUTE));
+      assert.deepEqual(last.body, { error: "rate_limited" });
+      assert.equal(transactions, 0);
+      // The ceiling is per client IP, whatever the token.
+      assert.equal((await pub.get(qr + "/revision")).status, 429);
+      assert.equal(transactions, 0);
+      // The diner's order and catalog have their own budgets.
+      const sent = await pub.post(qr + "/orders", qrOrder(product.id));
+      assert.equal(sent.status, 200, JSON.stringify(sent.body));
+      assert.equal((await pub.get(qr + "/catalog")).status, 200);
+      assert.equal(transactions, 2);
+    } finally {
+      await pub.close();
+    }
+
+    // Many valid links (several tables' QR codes) from one IP: each keeps its
+    // per-link budget, and together they stop at the per-IP ceiling.
+    pub = await servePublic(counted);
+    transactions = 0;
+    try {
+      const links = Array.from(
+        {
+          length:
+            Math.ceil(
+              REVISION_POLLS_PER_IP_PER_MINUTE / REVISION_POLLS_PER_MINUTE,
+            ) + 1,
+        },
+        () => orderingLink("qr"),
+      );
+      let served = 0,
+        refused = 0;
+      for (const link of links)
+        for (let i = 0; i < REVISION_POLLS_PER_MINUTE; i++) {
+          const r = await pub.get(link + "/revision");
+          if (r.status === 200) served++;
+          else if (r.status === 429) refused++;
+          else assert.fail(`unexpected ${r.status}`);
+        }
+      assert.equal(served, REVISION_POLLS_PER_IP_PER_MINUTE);
+      assert.equal(
+        refused,
+        links.length * REVISION_POLLS_PER_MINUTE -
+          REVISION_POLLS_PER_IP_PER_MINUTE,
+      );
+      assert.equal(transactions, REVISION_POLLS_PER_IP_PER_MINUTE);
+      const sent = await pub.post(links[0] + "/orders", qrOrder(product.id));
+      assert.equal(sent.status, 200, JSON.stringify(sent.body));
+    } finally {
+      await pub.close();
     }
   });
 
