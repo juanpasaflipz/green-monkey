@@ -938,6 +938,21 @@ try {
     assert.equal(old.voids![0].kitchenPending, false);
     const fresh = await read(today.id);
     assert.ok(fresh.rounds.every((r) => r.state === "active"));
+    // Retired tickets still hold an item and were completed just now, yet they
+    // never return: not in "Entregados recientes" and not recallable.
+    const retired = kitchenRound(old);
+    assert.ok(retired.completed_at);
+    const after = await full(kitchen);
+    assert.equal(
+      after.recent.some((x) => x.id === retired.id),
+      false,
+    );
+    await rejects(
+      run(kitchen, (tx) =>
+        recallRound(tx, kitchen, retired.id, { operationId: randomUUID() }),
+      ),
+      "round_not_recallable",
+    );
     const [audit] = await run(
       owner,
       (tx) =>

@@ -91,12 +91,20 @@ export async function kitchenFeed(
     where r.state <> 'completed' and r.state <> 'offline_review' ${station}
     order by r.created_at, r.id
     limit ${KITCHEN_FEED_LIMIT + 1}`;
+  const currentBusinessDate = businessDate(
+    serverTime,
+    s.restaurant.timezone,
+    s.restaurant.cutoff,
+  );
   // rounds_recent_completed serves this; only rounds with items left recall.
+  // Previous business days stay out, so tickets a manager retired with
+  // clear-stale never come back.
   const recent =
     await tx`select r.id,r.number,r.station,r.completed_at,o.number as order_number,o.name as call_name,t.name as table_name
     from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id
     left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id
     where r.completed_at is not null and r.completed_at > now() - interval '120 minutes'
+      and o.business_date >= ${currentBusinessDate}::date
       ${station}
       and exists (select 1 from order_lines l where l.tenant_id=r.tenant_id and l.order_id=r.order_id
         and l.round=r.number and l.data->>'station'=r.station
@@ -107,11 +115,7 @@ export async function kitchenFeed(
     version,
     unchanged: false,
     serverTime,
-    currentBusinessDate: businessDate(
-      serverTime,
-      s.restaurant.timezone,
-      s.restaurant.cutoff,
-    ),
+    currentBusinessDate,
     truncated: rounds.length > KITCHEN_FEED_LIMIT,
     rounds: rounds.slice(0, KITCHEN_FEED_LIMIT).map((r): KitchenRound => ({
       id: r.id,
@@ -170,7 +174,15 @@ export async function recallRound(
         await tx`select order_id from rounds where id=${roundId}`;
       if (!pointer) throw new DomainError("not_found", 404);
       // Lock the parent before the round, matching every other order command.
-      await tx`select id from orders where id=${pointer.order_id} for update`;
+      const [order] =
+        await tx`select business_date::text as business_date from orders where id=${pointer.order_id} for update`;
+      // Rounds of previous business days (including those retired with
+      // clear-stale) never return to the screen.
+      const today = businessDate(
+        new Date().toISOString(),
+        s.restaurant.timezone,
+        s.restaurant.cutoff,
+      );
       const [r] = await tx`select r.*,
         coalesce(r.completed_at > now() - interval '120 minutes',false) as in_window,
         exists (select 1 from order_lines l where l.tenant_id=r.tenant_id and l.order_id=r.order_id
@@ -178,7 +190,12 @@ export async function recallRound(
           and (l.data->>'quantity')::int > coalesce((select sum(cardinality(v.units)) from line_voids v
                where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) as has_items
       from rounds r where r.id=${roundId} for update of r`;
-      if (!r.completed_at || !r.in_window || !r.has_items)
+      if (
+        !r.completed_at ||
+        !r.in_window ||
+        !r.has_items ||
+        order.business_date < today
+      )
         throw new DomainError("round_not_recallable", 409);
       const next = recallPreparation(r.state);
       await tx`update rounds set state=${next} where id=${roundId}`;
