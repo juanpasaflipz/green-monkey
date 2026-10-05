@@ -229,3 +229,26 @@ export const FISCAL_LATE_MS = 20 * 3600_000;
 export const CLOCK_WARNING_MS = 120_000;
 /** Resolved rows (synced or archived) stay on the device this long. */
 export const RESOLVED_RETENTION_MS = 7 * 86_400_000;
+
+/** KDS review-lane cadence (GAP-4): 10 s while it shows items, 30 s while empty. */
+export const LANE_POLL_BUSY_MS = 10_000;
+export const LANE_POLL_IDLE_MS = 30_000;
+export function lanePollDelay(itemCount: number): number {
+  return itemCount > 0 ? LANE_POLL_BUSY_MS : LANE_POLL_IDLE_MS;
+}
+
+/**
+ * Offline rounds only go on a check that still has a balance (§2.3). A zero
+ * balance is a paid or closed check (and after fiscal, one with a numbered
+ * ticket): a round on it would fail at sync as offline_order_closed, so the
+ * device refuses it with offline_check_paid and offers a new order instead.
+ */
+export function acceptsOfflineRound(view: {
+  total: number;
+  paid: number;
+}): boolean {
+  return view.total - view.paid > 0;
+}
+
+/** A device clock this far behind its last known time has been moved back. */
+export const CLOCK_ROLLBACK_TOLERANCE_MS = 120_000;

@@ -22,6 +22,7 @@ import {
   isLocalOrder,
   localOpenOrders,
   offlineBlockReason,
+  orderTicketIds,
   refreshOpenOrders,
   saveOfflineCheckout,
   saveOfflineOrder,
@@ -33,6 +34,10 @@ import {
   type OfflinePaymentValues,
   type SaveContext,
 } from "../../offline-records";
+import {
+  refreshOfflineSettings,
+  useOfflineTableService,
+} from "../../offline-settings";
 import { translateError } from "../../i18n";
 import {
   KitchenTicketDocument,
@@ -100,9 +105,23 @@ export function useOfflineSelling({
       )
       .catch(() => {});
   }, [net.canUseServer, active, session.id]);
-  // Open orders cached for an outage: on mount and every 120 s while visible.
+  // LD-7: the restaurant's offline table service setting, read when selling
+  // opens and when the connection returns (never polled), kept for outages.
+  const tableService = useOfflineTableService(session);
   useEffect(() => {
     if (!net.canUseServer || !active || session.role === "kitchen") return;
+    void refreshOfflineSettings(session).catch(() => {});
+  }, [net.canUseServer, active, session.id]);
+  // Open orders cached for an outage: on mount and every 120 s while visible,
+  // only while offline table service is on (GAP-4, LD-7).
+  useEffect(() => {
+    if (
+      !net.canUseServer ||
+      !active ||
+      session.role === "kitchen" ||
+      !tableService
+    )
+      return;
     const refresh = () => {
       if (document.visibilityState === "visible")
         void refreshOpenOrders(session).catch(() => {});
@@ -110,13 +129,16 @@ export function useOfflineSelling({
     refresh();
     const timer = setInterval(refresh, 120_000);
     return () => clearInterval(timer);
-  }, [net.canUseServer, active, session.id]);
+  }, [net.canUseServer, active, session.id, tableService]);
   const ctx: SaveContext = useMemo(
     () => ({ session, catalog, cashSession }),
     [session, catalog, cashSession],
   );
   const blockReason = offlineBlockReason(session, cashSession, false);
   const paymentBlockReason = offlineBlockReason(session, cashSession, true);
+  /** Enviar without the server needs table service (it opens a local check). */
+  const sendBlockReason =
+    blockReason ?? (tableService ? null : "offline_table_service_off");
   const autoPrint = printSetting !== "ask";
   /** Prints the kitchen tickets of these records, and a receipt when given. */
   async function print(operationIds: string[], receipt: LocalReceipt | null) {
@@ -139,6 +161,9 @@ export function useOfflineSelling({
     canUseServer: net.canUseServer,
     blockReason,
     paymentBlockReason,
+    sendBlockReason,
+    /** LD-7: open checks, rounds and partial payments offline (Beta, off by default). */
+    tableService,
     printSetting,
     autoPrint,
     /** Service's PaymentDialog `offline` slot (§3.8). */
@@ -240,6 +265,10 @@ export function useOfflineSelling({
         : null;
     },
     printKitchen: (operationIds: string[]) => print(operationIds, null),
+    /** Every kitchen ticket this device saved for the order on screen. */
+    async printOrder(order: Order) {
+      await print(await orderTicketIds(session, order), null);
+    },
     /** Auto-print right after a save, inside the click's user activation. */
     afterSave(operationIds: string[], receipt: LocalReceipt | null = null) {
       if (printSetting !== "ask")

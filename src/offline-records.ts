@@ -37,10 +37,15 @@ import {
   scope,
 } from "./offline-keys";
 import {
+  acceptsOfflineRound,
   fallbackPrefix,
   formatProvisional,
   offlineWindow,
 } from "./offline-policy";
+import {
+  hydrateOfflineSettings,
+  offlineTableServiceOn,
+} from "./offline-settings";
 import {
   ticketsFromLines,
   type KitchenTicketModel,
@@ -169,6 +174,17 @@ export function offlineBlockReason(
 export function check(ctx: SaveContext, needsDrawer: boolean) {
   const reason = offlineBlockReason(ctx.session, ctx.cashSession, needsDrawer);
   if (reason) fail(reason);
+}
+
+/**
+ * LD-7: open checks, rounds and partial payments offline are a per-restaurant
+ * beta, off by default. With it off only new orders paid in full are saved.
+ * The device's last known answer is loaded first, so an outage that started
+ * before this page read it still honours it; an unknown value is off.
+ */
+export async function checkTableService(session: Session) {
+  await hydrateOfflineSettings(session).catch(() => {});
+  if (!offlineTableServiceOn(session)) fail("offline_table_service_off");
 }
 
 export function checkLines(lines: LineInput[]) {
@@ -633,7 +649,14 @@ function cachedFrom(order: Order, receivedAt: number): CachedOrder {
       voidedQuantity: line.voidedUnits?.length ?? 0,
     })),
     tenderIds: (order.tenders ?? []).map((tender: { id: string }) => tender.id),
-    offlineOperationIds: [],
+    // A manager-reconciled offline payment is a tender whose source is the
+    // record itself (OFF-R18): the copy already contains that record.
+    offlineOperationIds: (order.tenders ?? [])
+      .filter(
+        (tender: { source?: string; source_id?: string | null }) =>
+          tender.source === "offline_recovery" && !!tender.source_id,
+      )
+      .map((tender: { source_id: string }) => tender.source_id),
     receivedAt,
   };
 }
@@ -642,13 +665,16 @@ function cachedFrom(order: Order, receivedAt: number): CachedOrder {
  * Remembers a server order Selling just received (send, round, payment,
  * resume), so the order on screen when an outage starts can still be served
  * offline with its current balance (OFF-R2). Kept even when it closed, so an
- * older snapshot arriving later cannot reopen it.
+ * older snapshot arriving later cannot reopen it. Only while the restaurant
+ * has offline table service on (LD-7): otherwise nothing uses the copy.
  */
 export async function rememberOpenOrder(
   session: Session,
   order: Order,
 ): Promise<void> {
   if (!isServerOrder(order)) return;
+  await hydrateOfflineSettings(session).catch(() => {});
+  if (!offlineTableServiceOn(session)) return;
   const incoming = cachedFrom(order, Date.now());
   await db.transaction("rw", db.cache, async () => {
     const cache = await cachedSnapshot(session);
@@ -762,21 +788,34 @@ function reflected(order: CachedOrder, row: Pending): boolean {
   return false;
 }
 
-/** Orders created on this device (Enviar or partial payment), with their local rounds and payments. */
+/** Table names cached while online, for offline views and tickets. */
+export async function cachedTableName(
+  session: Session,
+): Promise<(id: string | null) => string | null> {
+  const tables =
+    ((await db.cache.get(tablesKey(session)))?.value as
+      { id: string; name: string }[] | undefined) ?? [];
+  return (id) => (id && tables.find((table) => table.id === id)?.name) || null;
+}
+
+/**
+ * Orders created on this device (Enviar or partial payment) that the server
+ * does not have yet, with their local rounds and payments.
+ *
+ * Once an order record has synced, the server owns the order (OFF-R12): it is
+ * only ever served through a cached server copy, never rebuilt from local
+ * records. A copy that was paid or closed online drops out of the open-orders
+ * cache, so the order can no longer take an offline round or payment.
+ */
 async function localOrders(session: Session): Promise<LocalOrderView[]> {
   const rows = await scopedV3Rows(session);
-  const cachedIds = new Set(
-    (await cachedSnapshot(session)).orders.map((order) => order.id),
-  );
+  const tableName = await cachedTableName(session);
   const views: LocalOrderView[] = [];
   for (const row of rows) {
     const body = row.body as OfflineRecordV3;
-    if (body.kind !== "order") continue;
+    if (body.kind !== "order" || row.status === "synced") continue;
     const result = resultOf(row);
     const serverId = result?.orderId ?? null;
-    // Once a server copy of the order is cached, it lives there, with these
-    // rounds and payments added until the copy contains them.
-    if (serverId && cachedIds.has(serverId)) continue;
     const lines = pricedFrom(row).map((line) => ({ ...line, round: 1 }));
     let total = body.expectedTotal,
       paid = 0,
@@ -796,6 +835,7 @@ async function localOrders(session: Session): Promise<LocalOrderView[]> {
       version: round,
       mode: body.order.mode,
       tableId: body.order.tableId,
+      tableName: tableName(body.order.tableId),
       name: body.order.name,
       note: body.order.note,
       lines,
@@ -840,6 +880,15 @@ export async function cachedServerOpenOrders(
   const snapshot = await cachedSnapshot(session);
   const rows = await deviceV3Rows(session);
   const byId = new Map(rows.map((row) => [row.id, row]));
+  // A server order that began as a local order here keeps its provisional
+  // number next to the server one ("B-07 → #142", §2.4).
+  const provisional = new Map<string, string>();
+  for (const row of rows) {
+    const body = row.body as OfflineRecordV3;
+    const orderId = row.status === "synced" ? resultOf(row)?.orderId : null;
+    if (body.kind === "order" && orderId && body.provisionalNumber)
+      provisional.set(orderId, body.provisionalNumber);
+  }
   const orders = snapshot.orders.filter(stillOpen).map((order) => {
     const lines: PricedLine[] = order.lines.map((line) => ({
       id: line.id,
@@ -894,7 +943,7 @@ export async function cachedServerOpenOrders(
       rounds: [],
       tenders: [],
       offline: {
-        provisionalNumber: null,
+        provisionalNumber: provisional.get(order.id) ?? null,
         soldAt: order.createdAt,
         localOperationId: null,
         cachedAt: snapshot.refreshedAt,
@@ -931,8 +980,9 @@ export async function findOpenOrder(
         order.offline.localOperationId === target.localOrderOperationId,
     );
     if (local) return local;
-    // Its order record synced and a server copy is cached: the record keeps
-    // its local target (I5); the balance comes from the server copy.
+    // Its order record synced: the server owns the order (OFF-R12). It is
+    // served only through a cached server copy (the record keeps its local
+    // target, I5); without one it is not servable offline.
     const parent = await db.pending.get(target.localOrderOperationId);
     orderId =
       parent?.status === "synced" ? (resultOf(parent)?.orderId ?? null) : null;
@@ -975,6 +1025,7 @@ export async function saveOfflineOrder(
   },
 ): Promise<LocalOrderView> {
   check(ctx, false);
+  await checkTableService(ctx.session);
   checkLines(input.draft.lines);
   const prefix = await devicePrefix(ctx.session);
   const snapshot = {
@@ -1050,9 +1101,13 @@ export async function saveOfflineRound(
   input: RoundInput & { target: OrderTarget },
 ): Promise<LocalOrderView> {
   check(ctx, false);
+  await checkTableService(ctx.session);
   checkLines(input.lines);
   const target = await findOpenOrder(ctx.session, input.target);
-  if (!target) fail("offline_order_not_cached");
+  if (!target) return fail("offline_order_not_cached");
+  // §2.3: a check with no balance left is paid (or closed, or ticketed after
+  // fiscal); its round would fail at sync. The items go on a new order.
+  if (!acceptsOfflineRound(target)) fail("offline_check_paid");
   const number = await targetNumber(input.target);
   await write(async () => {
     const { body, snapshot } = await roundBody(
@@ -1103,10 +1158,13 @@ export async function saveOfflinePayment(
   },
 ): Promise<LocalReceipt> {
   check(ctx, true);
+  await checkTableService(ctx.session);
   if (input.round) checkLines(input.round.lines);
   const found = await findOpenOrder(ctx.session, input.target);
   if (!found) return fail("offline_order_not_cached");
   const current = found;
+  // The round written in the same checkout follows the round rule (§2.3).
+  if (input.round && !acceptsOfflineRound(current)) fail("offline_check_paid");
   const serverId =
     "orderId" in input.target
       ? input.target.orderId
@@ -1172,6 +1230,7 @@ export async function saveOfflinePartial(
   },
 ): Promise<LocalReceipt> {
   check(ctx, true);
+  await checkTableService(ctx.session);
   checkLines(input.draft.lines);
   if (input.payment.amount >= input.total) fail("offline_amount_invalid");
   checkPayment(input.payment, input.total);
@@ -1416,6 +1475,39 @@ export function linkFromRows(
     );
   });
   return { orderId, stale };
+}
+
+/**
+ * The records of this device whose kitchen tickets belong to an order on
+ * screen (§2.5, "Imprimir comanda" on an order view): a local order's own
+ * record and its rounds, or the rounds saved here for a cached server order.
+ */
+export async function orderTicketIds(
+  session: Session,
+  order: Order,
+): Promise<string[]> {
+  const rows = liveV3(await deviceRows(session)());
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const view = order as LocalOrderView;
+  const local = view.offline?.localOperationId ?? null;
+  const serverId = isServerOrder(order)
+    ? order.id
+    : (view.offline?.serverOrderId ?? null);
+  return rows
+    .filter((row) => {
+      const body = row.body as OfflineRecordV3;
+      if (body.kind === "order")
+        return (
+          body.operationId === local ||
+          (!!serverId &&
+            row.status === "synced" &&
+            resultOf(row)?.orderId === serverId)
+        );
+      if (body.kind !== "round") return false;
+      if (local && targetsLocal(body, local)) return true;
+      return !!serverId && serverTargetOf(body, byId) === serverId;
+    })
+    .map((row) => row.id);
 }
 
 /** linkFromRows over the rows stored now. */

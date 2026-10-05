@@ -3,6 +3,10 @@
  * preconditions of every builder (I8, I9, I14), local orders paid while online
  * (I13), atomic checkouts, and the display projections that decide what staff
  * still collect (OFF-R2, OFF-R3, OFF-R5).
+ *
+ * LD-7 ships table service off by default. These invariants must hold with it
+ * on, so every test turns it on for the fixture restaurant, except the "off"
+ * describe, which checks the default.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Order, Session } from "../shared/domain";
@@ -26,7 +30,10 @@ import {
   cachedServerOpenOrders,
   findOpenOrder,
   isLocalOrder,
+  linkFromRows,
   localOpenOrders,
+  orderTicketIds,
+  reconciledResult,
   refreshOpenOrders,
   rememberOpenOrder,
   saveOfflineCheckout,
@@ -35,9 +42,15 @@ import {
   saveOfflinePayment,
   saveOfflineRound,
   serverLink,
+  tablesKey,
   type LocalOrderView,
   type SaveContext,
 } from "../src/offline-records";
+import {
+  offlineTableServiceOn,
+  refreshOfflineSettings,
+  setOfflineTableServiceForTests,
+} from "../src/offline-settings";
 
 const mockedApi = vi.mocked(api);
 const uuid = (n: number) =>
@@ -205,12 +218,20 @@ async function cacheSnapshot(
 /** A server Order as GET /orders/:id returns it. */
 function serverOrder(
   id: string,
-  over: { paid?: number; tenders?: string[]; rounds?: number[] } = {},
+  over: {
+    paid?: number;
+    tenders?: string[];
+    rounds?: number[];
+    total?: number;
+    state?: string;
+  } = {},
 ): Order {
   const copy = serverCopy(id, {
     paid: over.paid,
     tenderIds: over.tenders,
     rounds: over.rounds,
+    total: over.total,
+    state: over.state,
   });
   return {
     ...copy,
@@ -237,10 +258,12 @@ beforeEach(() => {
   fakeDb.reset();
   mockedApi.mockReset();
   resetConnectivityForTests();
+  setOfflineTableServiceForTests(session().tenantId, true);
 });
 afterEach(() => {
   vi.useRealTimers();
   resetConnectivityForTests();
+  setOfflineTableServiceForTests(session().tenantId, null);
 });
 
 describe("table-service preconditions", () => {
@@ -829,6 +852,382 @@ describe("sync loop and table records", () => {
     const synced = await fakeDb.pending.get(child.id);
     expect(synced).toMatchObject({ status: "synced", attempts: 0 });
     expect(synced!.waitReason).toBeUndefined();
+  });
+});
+
+describe("LD-7: offline table service is off by default", () => {
+  it("with it off (or never read) only a new order paid in full is saved; nothing else writes a row", async () => {
+    const s = session();
+    // Prepared while it was on: a local order and a cached server order.
+    const open = await localOrder(s);
+    const cached = uuid(110);
+    await cacheSnapshot(s, [serverCopy(cached)]);
+    const before = fakeDb.pending.rows.size;
+    for (const value of [false, null]) {
+      setOfflineTableServiceForTests(s.tenantId, value);
+      expect(offlineTableServiceOn(s)).toBe(false);
+      const l = line();
+      const refusals = [
+        // Enviar (a local open order)
+        saveOfflineOrder(ctxOf(s), {
+          draft: draft([l]),
+          priced: [priced(l, 100)],
+          total: 100,
+          operationId: crypto.randomUUID(),
+          autoPrint: false,
+        }),
+        // A round on a local or a cached server order
+        saveOfflineRound(ctxOf(s), {
+          target: { localOrderOperationId: open.id },
+          ...roundInput(100),
+        }),
+        saveOfflineRound(ctxOf(s), {
+          target: { orderId: cached },
+          ...roundInput(100),
+        }),
+        // Paying an existing check, in full or in part
+        saveOfflinePayment(ctxOf(s), {
+          target: { orderId: cached },
+          payment: cash(250),
+          operationId: crypto.randomUUID(),
+        }),
+        saveOfflineCheckout(ctxOf(s), values(100), {
+          draft: draft([]),
+          priced: [],
+          total: 0,
+          current: open,
+          operationId: crypto.randomUUID(),
+          orderOperationId: crypto.randomUUID(),
+          autoPrint: false,
+        }),
+        // A new order paid in part
+        saveOfflineCheckout(ctxOf(s), values(40), {
+          draft: draft([l]),
+          priced: [priced(l, 100)],
+          total: 100,
+          current: null,
+          operationId: crypto.randomUUID(),
+          orderOperationId: crypto.randomUUID(),
+          autoPrint: false,
+        }),
+      ];
+      for (const save of refusals)
+        expect(await refusal(save), `setting ${value}`).toBe(
+          "offline_table_service_off",
+        );
+      expect(fakeDb.pending.rows.size).toBe(before);
+    }
+    // The core offline sale (new order, full payment) never needs it.
+    const l = line();
+    const sale = await saveOfflineCheckout(ctxOf(s), values(100), {
+      draft: draft([l]),
+      priced: [priced(l, 100)],
+      total: 100,
+      current: null,
+      operationId: crypto.randomUUID(),
+      orderOperationId: crypto.randomUUID(),
+      autoPrint: false,
+    });
+    expect(sale.receipt).toMatchObject({ state: "local", paid: 100 });
+    expect(fakeDb.pending.rows.size).toBe(before + 1);
+  });
+
+  it("the device keeps the restaurant's last answer for an outage, and stops caching open orders when off", async () => {
+    const s = session();
+    setOfflineTableServiceForTests(s.tenantId, null);
+    mockedApi.mockResolvedValueOnce({ tableService: true });
+    await refreshOfflineSettings(s);
+    // A reload during the outage: memory is empty, the stored answer applies.
+    setOfflineTableServiceForTests(s.tenantId, null);
+    await expect(localOrder(s)).resolves.toMatchObject({
+      state: "local_open",
+    });
+    mockedApi.mockResolvedValueOnce({ tableService: false });
+    await refreshOfflineSettings(s);
+    setOfflineTableServiceForTests(s.tenantId, null);
+    expect(await refusal(localOrder(s))).toBe("offline_table_service_off");
+    // Nothing reads the open-orders cache while it is off, so nothing writes it.
+    await rememberOpenOrder(s, serverOrder(uuid(111)));
+    expect(await fakeDb.cache.get(`${scope(s)}:open-orders`)).toBeUndefined();
+  });
+
+  it("a record saved while it was on still syncs after it is turned off", async () => {
+    const s = session();
+    const open = await localOrder(s);
+    setOfflineTableServiceForTests(s.tenantId, false);
+    mockedApi.mockResolvedValueOnce({ kind: "order", orderId: uuid(112) });
+    await syncPending(s, { reason: "poll" });
+    expect(mockedApi).toHaveBeenCalledTimes(1);
+    expect(await fakeDb.pending.get(open.id)).toMatchObject({
+      status: "synced",
+    });
+  });
+});
+
+describe("rounds on a paid check (§2.3, offline_check_paid)", () => {
+  it("a round on a cached server order with zero projected balance is refused with offline_check_paid and writes nothing", async () => {
+    const s = session();
+    const paidCheck = uuid(120);
+    // Dine-in "Pagada · por liberar": still open, nothing left to pay.
+    await cacheSnapshot(s, [
+      serverCopy(paidCheck, { total: 250, paid: 250, tenderIds: [uuid(121)] }),
+    ]);
+    expect(
+      await refusal(
+        saveOfflineRound(ctxOf(s), {
+          target: { orderId: paidCheck },
+          ...roundInput(80),
+        }),
+      ),
+    ).toBe("offline_check_paid");
+    expect(fakeDb.pending.rows.size).toBe(0);
+  });
+
+  it("a round on a local order paid in full on this device is refused with offline_check_paid", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    await saveOfflinePayment(ctxOf(s), {
+      target: { localOrderOperationId: open.id },
+      payment: cash(250),
+      operationId: crypto.randomUUID(),
+    });
+    const rows = fakeDb.pending.rows.size;
+    expect(
+      await refusal(
+        saveOfflineRound(ctxOf(s), {
+          target: { localOrderOperationId: open.id },
+          ...roundInput(80),
+        }),
+      ),
+    ).toBe("offline_check_paid");
+    expect(fakeDb.pending.rows.size).toBe(rows);
+    // A local order paid in full is no longer offered as an open order.
+    expect(await localOpenOrders(s)).toEqual([]);
+  });
+
+  it("a payment with an inline round on a zero-balance order is refused with offline_check_paid; the checkout writes neither row", async () => {
+    const s = session();
+    const paidCheck = uuid(122);
+    await cacheSnapshot(s, [
+      serverCopy(paidCheck, { total: 250, paid: 250, tenderIds: [uuid(123)] }),
+    ]);
+    const [view] = (await cachedServerOpenOrders(s)).orders;
+    const l = line();
+    expect(
+      await refusal(
+        saveOfflineCheckout(ctxOf(s), values(80), {
+          draft: draft([l]),
+          priced: [priced(l, 80)],
+          total: 80,
+          current: view!,
+          operationId: crypto.randomUUID(),
+          orderOperationId: crypto.randomUUID(),
+          autoPrint: false,
+        }),
+      ),
+    ).toBe("offline_check_paid");
+    expect(fakeDb.pending.rows.size).toBe(0);
+  });
+
+  it("a round on a cached order with a positive balance is still saved", async () => {
+    const s = session();
+    const table = uuid(124);
+    await cacheSnapshot(s, [serverCopy(table, { total: 250, paid: 100 })]);
+    const view = await saveOfflineRound(ctxOf(s), {
+      target: { orderId: table },
+      ...roundInput(80),
+    });
+    expect(view).toMatchObject({ id: table, total: 330, paid: 100 });
+    expect(fakeDb.pending.rows.size).toBe(1);
+  });
+});
+
+describe("synced local orders (OFF-R12)", () => {
+  it("a synced local order paid online and then dropped from the snapshot never comes back as an unpaid local order", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-05T20:00:00.000Z"));
+    const s = session({
+      offlineUntil: new Date("2026-10-05T23:00:00.000Z").toISOString(),
+    });
+    // Enviar offline: B-01, $250.
+    const open = await localOrder(s, 250);
+    // It syncs as #142: the queue keeps the server copy from the result.
+    const serverId = uuid(130);
+    mockedApi.mockResolvedValueOnce({
+      kind: "order",
+      orderId: serverId,
+      orderNumber: 142,
+      roundNumber: 1,
+      tenderId: null,
+      order: serverOrder(serverId),
+    });
+    await syncPending(s, { reason: "poll" });
+    expect(await localOpenOrders(s)).toEqual([]);
+    const served = await findOpenOrder(s, { localOrderOperationId: open.id });
+    expect(served).toMatchObject({ id: serverId, total: 250, paid: 0 });
+    expect(served!.offline.provisionalNumber).toBe(open.offline.provisionalNumber);
+    // Paid online in full; Selling caches the paid copy.
+    vi.setSystemTime(new Date("2026-10-05T20:05:00.000Z"));
+    await rememberOpenOrder(
+      s,
+      serverOrder(serverId, {
+        paid: 250,
+        tenders: [uuid(131)],
+        state: "completed",
+      }),
+    );
+    // The next refresh no longer lists it (paid and closed).
+    vi.setSystemTime(new Date("2026-10-05T20:07:00.000Z"));
+    await cacheSnapshot(s, []);
+    expect(await localOpenOrders(s)).toEqual([]);
+    expect((await cachedServerOpenOrders(s)).orders).toEqual([]);
+    expect(
+      await findOpenOrder(s, { localOrderOperationId: open.id }),
+    ).toBeNull();
+    const rows = fakeDb.pending.rows.size;
+    // During the next outage nothing can be added to it or charged on it.
+    expect(
+      await refusal(
+        saveOfflineRound(ctxOf(s), {
+          target: { localOrderOperationId: open.id },
+          ...roundInput(80),
+        }),
+      ),
+    ).toBe("offline_order_not_cached");
+    expect(
+      await refusal(
+        saveOfflinePayment(ctxOf(s), {
+          target: { localOrderOperationId: open.id },
+          payment: cash(330),
+          operationId: crypto.randomUUID(),
+          round: roundInput(80),
+        }),
+      ),
+    ).toBe("offline_order_not_cached");
+    expect(fakeDb.pending.rows.size).toBe(rows);
+  });
+
+  it("an order record that synced without a result is the server's: never a local projection", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    await fakeDb.pending.update(open.id, {
+      status: "synced",
+      result: null,
+      syncedAt: Date.now(),
+    });
+    expect(await localOpenOrders(s)).toEqual([]);
+    expect(
+      await refusal(
+        saveOfflinePayment(ctxOf(s), {
+          target: { localOrderOperationId: open.id },
+          payment: cash(100),
+          operationId: crypto.randomUUID(),
+        }),
+      ),
+    ).toBe("offline_order_not_cached");
+  });
+});
+
+describe("manager-reconciled payments (OFF-R18)", () => {
+  it("count once against a copy that already has the reconciled tender", async () => {
+    const s = session();
+    const table = uuid(140);
+    await cacheSnapshot(s, [serverCopy(table, { total: 500 })]);
+    const paymentId = crypto.randomUUID();
+    await saveOfflinePayment(ctxOf(s), {
+      target: { orderId: table },
+      payment: cash(200),
+      operationId: paymentId,
+    });
+    // The manager reconciles it into the order; the route answers the order.
+    const tenderId = uuid(141);
+    const reconciled: Order = {
+      ...serverOrder(table, { total: 500, paid: 200 }),
+      tenders: [
+        { id: tenderId, source: "offline_recovery", source_id: paymentId },
+      ],
+    };
+    const result = reconciledResult(paymentId, reconciled);
+    expect(result).toMatchObject({ orderId: table, tenderId });
+    // Selling shows the order online and caches it with that tender.
+    await rememberOpenOrder(s, reconciled);
+    for (const stored of [result, reconciled]) {
+      // Both the new result shape and a row stored by an older revision (the
+      // bare order) are recognised in the copy.
+      await fakeDb.pending.update(paymentId, {
+        status: "synced",
+        result: stored,
+        syncedAt: Date.now(),
+      });
+      expect((await cachedServerOpenOrders(s)).orders[0]).toMatchObject({
+        total: 500,
+        paid: 200,
+      });
+      const rows = [...fakeDb.pending.rows.values()];
+      expect(linkFromRows(reconciled, rows)).toEqual({
+        orderId: table,
+        stale: false,
+      });
+    }
+  });
+});
+
+describe("table names (OFF-R25)", () => {
+  it("local orders show their table from the cached tables list", async () => {
+    const s = session();
+    const tableId = uuid(150);
+    await fakeDb.cache.put({
+      id: tablesKey(s),
+      value: [{ id: tableId, name: "Mesa 07" }],
+    });
+    const l = line();
+    await saveOfflineOrder(ctxOf(s), {
+      draft: { ...draft([l]), tableId },
+      priced: [priced(l, 100)],
+      total: 100,
+      operationId: crypto.randomUUID(),
+      autoPrint: false,
+    });
+    const [view] = await localOpenOrders(s);
+    expect(view).toMatchObject({ tableId, tableName: "Mesa 07" });
+  });
+});
+
+describe("kitchen tickets of an order on screen (OFF-R19)", () => {
+  it("lists a local order's own record and its rounds, and only the rounds saved here for a cached order", async () => {
+    const s = session();
+    const open = await localOrder(s);
+    const round = roundInput(80);
+    await saveOfflineRound(ctxOf(s), {
+      target: { localOrderOperationId: open.id },
+      ...round,
+    });
+    const other = await localOrder(s);
+    expect(await orderTicketIds(s, open)).toEqual([open.id, round.operationId]);
+    expect(await orderTicketIds(s, other)).toEqual([other.id]);
+    const table = uuid(151);
+    await cacheSnapshot(s, [serverCopy(table)]);
+    const cachedRound = roundInput(50);
+    const view = await saveOfflineRound(ctxOf(s), {
+      target: { orderId: table },
+      ...cachedRound,
+    });
+    expect(await orderTicketIds(s, view)).toEqual([cachedRound.operationId]);
+    // A payment's checkout prints only the round it added (never round 1).
+    const paid = await saveOfflineCheckout(ctxOf(s), values(330), {
+      draft: draft([round.lines[0]!]),
+      priced: round.priced,
+      total: 80,
+      current: open,
+      operationId: crypto.randomUUID(),
+      orderOperationId: crypto.randomUUID(),
+      autoPrint: false,
+    });
+    expect(paid.operationIds).toHaveLength(1);
+    expect(paid.operationIds[0]).not.toBe(open.id);
+    expect((await fakeDb.pending.get(paid.operationIds[0]!))!.body).toMatchObject(
+      { kind: "round" },
+    );
   });
 });
 

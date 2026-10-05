@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  acceptsOfflineRound,
   classifySyncError,
   deriveConnectivity,
   fallbackPrefix,
   formatProvisional,
   initialConnectivity,
+  LANE_POLL_BUSY_MS,
+  LANE_POLL_IDLE_MS,
+  lanePollDelay,
   medianOffset,
   nextProbeDelay,
   offlineWindow,
@@ -215,5 +219,24 @@ describe("initial state", () => {
     const s: ConnectivityState = initialConnectivity(true, true);
     expect(s.mode).toBe("offline");
     expect(s.manual).toBe(true);
+  });
+});
+
+describe("Revision 2 rules", () => {
+  it("lanePollDelay is 10 s with items and 30 s when the lane is empty", () => {
+    // Regression GAP-4: every KDS polled the empty lane every 10 s.
+    expect(LANE_POLL_BUSY_MS).toBe(10_000);
+    expect(LANE_POLL_IDLE_MS).toBe(30_000);
+    expect(lanePollDelay(0)).toBe(30_000);
+    expect(lanePollDelay(1)).toBe(10_000);
+    expect(lanePollDelay(12)).toBe(10_000);
+  });
+
+  it("acceptsOfflineRound refuses a zero or negative balance and accepts a positive one", () => {
+    expect(acceptsOfflineRound({ total: 250, paid: 250 })).toBe(false);
+    expect(acceptsOfflineRound({ total: 250, paid: 300 })).toBe(false);
+    expect(acceptsOfflineRound({ total: 0, paid: 0 })).toBe(false);
+    expect(acceptsOfflineRound({ total: 250, paid: 249 })).toBe(true);
+    expect(acceptsOfflineRound({ total: 250, paid: 0 })).toBe(true);
   });
 });

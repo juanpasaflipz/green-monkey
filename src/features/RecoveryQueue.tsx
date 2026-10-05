@@ -30,6 +30,8 @@ import { api } from "../api";
 import { Button, Field } from "../components/ui";
 import { translateError } from "../i18n";
 import { ArchiveRecordForm } from "./offline/ArchiveRecordForm";
+import { OfflineTableServiceSetting } from "./offline/OfflineTableServiceSetting";
+import { reconciledResult } from "../offline-records";
 import { clockTime, translator } from "./offline/format";
 import "./offline/offline.css";
 
@@ -386,6 +388,7 @@ export function RecoveryQueue({
             <option value="kitchen_receipt">{t("offlinePrintAutoBoth")}</option>
           </select>
         </Field>
+        <OfflineTableServiceSetting session={session} locale={locale} />
         {!serviceWorkerSupported() && (
           <p className="warning-panel">{t("offlineNoServiceWorker")}</p>
         )}
@@ -732,14 +735,16 @@ export function RecoveryQueue({
                   navigator.locks.request(
                     "green-monkey-sync:" + review.row.scope,
                     async () => {
-                      const result = await api(
+                      const order = await api(
                         "/offline/reconcile",
                         { record: review.row.body, reason, confirmed },
                         { idempotent: true },
                       );
+                      // OFF-R18: store the tender the reconcile made, so
+                      // offline balances never count this payment twice.
                       await db.pending.update(review.row.id, {
                         status: "synced",
-                        result,
+                        result: reconciledResult(review.row.id, order),
                         syncedAt: Date.now(),
                         error: undefined,
                         waitReason: undefined,

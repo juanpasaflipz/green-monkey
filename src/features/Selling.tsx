@@ -35,8 +35,8 @@ import {
 import { useOfflineSelling } from "./offline/useOfflineSelling";
 import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
-import { fmt } from "./offline/format";
-import type { LocalOrderView } from "../offline-records";
+import { fmt, orderLabel, provisionalOnly } from "./offline/format";
+import { isServerOrder, type LocalOrderView } from "../offline-records";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 const fresh = (): OrderInput => ({
   operationId: crypto.randomUUID(),
@@ -110,6 +110,12 @@ export function Selling({
   });
   const [notice, setNotice] = useState("");
   const [openOrders, setOpenOrders] = useState(false);
+  /** Records behind the local receipt on screen, for "Imprimir comanda" (§2.5). */
+  const [receiptOps, setReceiptOps] = useState<string[]>([]);
+  /** The record just sent to the kitchen offline, while printing is "Preguntar". */
+  const [sentOffline, setSentOffline] = useState<string[]>([]);
+  /** offline_check_paid: the items can go on a new order for the same table. */
+  const [closedCheck, setClosedCheck] = useState(false);
   /** Order record id for a new order paid in part offline, one per dialog. */
   const orderOperationKey = useRef(crypto.randomUUID());
   // I13, OFF-R2, OFF-R5: the order on screen follows this device's records.
@@ -280,15 +286,19 @@ export function Selling({
     setReceipt(null);
     setCartOpen(false);
     setError("");
+    setSentOffline([]);
+    setClosedCheck(false);
   }
-  async function send() {
+  async function send(target: Order | null = current) {
     setBusy(true);
     setError("");
+    setClosedCheck(false);
+    setSentOffline([]);
     try {
       // I13: a local order only ever changes through offline records.
-      if (!online || offline.isLocalOrder(current)) {
+      if (!online || offline.isLocalOrder(target)) {
         const { operationId, view } = await offline.sendOffline(
-          current,
+          target,
           draft,
           { priced, total: draftTotal },
         );
@@ -299,6 +309,7 @@ export function Selling({
           lines: [],
         }));
         offline.afterSave([operationId]);
+        if (offline.printSetting === "ask") setSentOffline([operationId]);
         return view as Order;
       }
       const o = await api<Order>(
@@ -311,11 +322,19 @@ export function Selling({
       setDraft((d) => ({ ...d, operationId: crypto.randomUUID(), lines: [] }));
       return o;
     } catch (e) {
+      // §2.3: a paid check takes no offline round; offer a new order instead.
+      if ((e as Error).message === "offline_check_paid") setClosedCheck(true);
       setError(translateError((e as Error).message, locale));
       throw e;
     } finally {
       setBusy(false);
     }
+  }
+  /** "Enviar como orden nueva": the same items, table and name on a new order. */
+  function sendAsNew() {
+    void db.cache.delete(contextId);
+    setCurrent(null);
+    void send(null).catch(() => {});
   }
   function openPay() {
     setSplitItems(false);
@@ -446,6 +465,7 @@ export function Selling({
           splitItems ? selectedItems : undefined,
         );
         setReceipt(saved.receipt);
+        setReceiptOps(saved.operationIds);
         setCurrent(saved.view);
         setPayment(false);
         setDraft(fresh());
@@ -509,9 +529,7 @@ export function Selling({
       <div className="cart-heading">
         <div>
           <span className="eyebrow">
-            {current
-              ? (current.offline?.provisionalNumber ?? "#" + current.number)
-              : t("newOrder")}
+            {current ? orderLabel(current) : t("newOrder")}
           </span>
           <h2>{t("order")}</h2>
         </div>
@@ -566,7 +584,7 @@ export function Selling({
         {current && (
           <div className="existing">
             <strong>
-              #{current.number} · {t("sent")}
+              {orderLabel(current)} · {t("sent")}
             </strong>
             <p>
               {current.lines
@@ -577,6 +595,20 @@ export function Selling({
             <span>
               {money(current.total)} · {t("paid")}: {money(current.paid)}
             </span>
+            {!isServerOrder(current) && (
+              <Button
+                variant="ghost"
+                onClick={() => void offline.printOrder(current)}
+              >
+                {t("offlinePrintKitchen")}
+              </Button>
+            )}
+            {(!online || offline.isLocalOrder(current)) &&
+              !offline.tableService && (
+                <p className="warning-panel" role="status">
+                  {t("offlineAvailableOnReconnect")}
+                </p>
+              )}
           </div>
         )}
         {!draft.lines.length && !current ? (
@@ -645,11 +677,27 @@ export function Selling({
             {error}
           </p>
         )}
+        {closedCheck && (
+          <Button disabled={busy} onClick={sendAsNew}>
+            {t("offlineSendAsNew")}
+          </Button>
+        )}
         {notice && <p role="status">{notice}</p>}
+        {sentOffline.length > 0 && (
+          <div className="warning-panel" role="status">
+            <p>{t("offlineSentToDevice")}</p>
+            <Button onClick={() => void offline.printKitchen(sentOffline)}>
+              {t("offlinePrintKitchen")}
+            </Button>
+          </div>
+        )}
         <div className="row">
           <Button
             disabled={
-              !draft.lines.length || busy || (!online && !!offline.blockReason)
+              !draft.lines.length ||
+              busy ||
+              ((!online || offline.isLocalOrder(current)) &&
+                !!offline.sendBlockReason)
             }
             onClick={() => void send().catch(() => {})}
           >
@@ -658,13 +706,23 @@ export function Selling({
           </Button>
           <Button
             variant="primary"
-            disabled={due <= 0 || busy}
+            disabled={
+              due <= 0 ||
+              busy ||
+              // LD-7: an existing check is paid offline only with table service.
+              ((!online || offline.isLocalOrder(current)) &&
+                !!current &&
+                !offline.tableService)
+            }
             onClick={openPay}
           >
             {t("pay")}
             <ArrowUpRight size={18} />
           </Button>
         </div>
+        {!online && !current && !offline.tableService && (
+          <p className="muted tiny">{t("offlineTableServiceOffHint")}</p>
+        )}
         <div className="row between">
           <button
             className="text-button"
@@ -736,7 +794,7 @@ export function Selling({
           >
             {t("drafts")}
           </Button>
-          {!online && (
+          {!online && offline.tableService && (
             <Button onClick={() => setOpenOrders(true)}>
               {t("offlineOpenOrders")}
             </Button>
@@ -1115,11 +1173,11 @@ export function Selling({
                   ? t("paid")
                   : t("partial")}
             </Badge>
-            {receipt.offline?.provisionalNumber && (
+            {provisionalOnly(receipt) && (
               <p>
                 <strong>
                   {fmt(t("offlineProvisional"), {
-                    n: receipt.offline.provisionalNumber,
+                    n: receipt.offline!.provisionalNumber!,
                   })}
                 </strong>
                 <br />
@@ -1129,9 +1187,7 @@ export function Selling({
               </p>
             )}
             <p>
-              {receipt.offline?.provisionalNumber ??
-                "#" + (receipt.number || receipt.id.slice(0, 8))}{" "}
-              ·{" "}
+              {orderLabel(receipt)} ·{" "}
               {new Date(receipt.createdAt).toLocaleString(locale, {
                 timeZone:
                   receipt.restaurantSnapshot?.timezone ??
@@ -1174,8 +1230,8 @@ export function Selling({
           <p className="muted tiny">{t("receiptPrintHint")}</p>
           <div className="row">
             <Button onClick={() => window.print()}>{t("print")}</Button>
-            {receipt.state === "local" && (
-              <Button onClick={() => void offline.printKitchen([receipt.id])}>
+            {receipt.state === "local" && receiptOps.length > 0 && (
+              <Button onClick={() => void offline.printKitchen(receiptOps)}>
                 {t("offlinePrintKitchen")}
               </Button>
             )}

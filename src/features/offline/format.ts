@@ -28,6 +28,28 @@ export function clockTime(
   });
 }
 
+/**
+ * How an order is named on screen and on receipts (§2.4): "B-07" while only
+ * the device knows it, "B-07 → #142" once the server numbered an order that
+ * began offline, and "#142" otherwise.
+ */
+export function orderLabel(order: {
+  number: number;
+  id: string;
+  offline?: { provisionalNumber?: string | null } | null;
+}): string {
+  const provisional = order.offline?.provisionalNumber ?? null;
+  if (provisional && order.number) return `${provisional} → #${order.number}`;
+  if (provisional) return provisional;
+  return "#" + (order.number || order.id.slice(0, 8));
+}
+
+/** True while only this device knows the order's number (the hint applies). */
+export const provisionalOnly = (order: {
+  number: number;
+  offline?: { provisionalNumber?: string | null } | null;
+}) => !!order.offline?.provisionalNumber && !order.number;
+
 export function moneyFormatter(
   locale: Locale,
   currency: string,
