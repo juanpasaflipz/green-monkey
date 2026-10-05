@@ -1,6 +1,14 @@
 /* Choice picker (POS and QR/kiosk). Uses the global tokens in styles.css. */
+/* The live price stays in view while a long list of choices scrolls under
+   it (OWNER-10); the body above is the dialog's scroll container. */
 .picker-price {
-  margin: 0 0 8px;
+  position: sticky;
+  top: -8px;
+  z-index: 3;
+  margin: -8px -24px 8px;
+  padding: 8px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
 }
 .picker-amount {
   margin-bottom: 8px;

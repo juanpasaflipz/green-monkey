@@ -1325,3 +1325,33 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
     await setAvailable(page, second.id, true);
   }
 });
+
+test("OWNER-10: the picker keeps the live price in view while its choices scroll", async ({
+  page,
+}) => {
+  await login(page);
+  await page.setViewportSize({ width: 1024, height: 480 });
+  await sell(page);
+  await page
+    .locator(".product")
+    .filter({ hasText: "Combo del bosque" })
+    .click();
+  const picker = page.getByRole("dialog");
+  const price = picker.locator(".picker-price");
+  await expect(price).toHaveText("$110.00");
+  const body = picker.locator(".modal-body");
+  // Scroll to the last choice and pick it: the new price is still on screen.
+  const scrolled = await body.evaluate((el) => {
+    el.scrollTop = el.scrollHeight;
+    return el.scrollTop;
+  });
+  expect(scrolled).toBeGreaterThan(0);
+  await picker
+    .getByRole("button", { name: "Agregar Taco de asada", exact: true })
+    .click();
+  await expect(price).toHaveText("$115.00");
+  const [p, b] = await Promise.all([price.boundingBox(), body.boundingBox()]);
+  expect(p!.y).toBeGreaterThanOrEqual(b!.y - 1);
+  expect(p!.y + p!.height).toBeLessThanOrEqual(b!.y + b!.height);
+  expect(await body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+});
