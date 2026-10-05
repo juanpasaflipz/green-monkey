@@ -14,6 +14,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { peakRate, profiles, thresholds } from "./profile.js";
 
 interface Credentials {
+  employeeId: string;
   login: string;
   secret: string;
 }
@@ -23,6 +24,8 @@ interface TenantFixture {
   owner: Credentials;
   cashier: Credentials;
   kitchen: Credentials[];
+  /** Single-use: the register's, then one per KDS screen (load:seed). */
+  pairingCodes: string[];
   products: { id: string; price: number; groups: { options: string[] }[] }[];
   tables: string[];
 }
@@ -44,6 +47,12 @@ if (tenants.length < profile.tenants)
   throw Error(
     `fixture has ${tenants.length} tenants; run load:seed for ${profile.name}`,
   );
+if (
+  tenants.some(
+    (t) => (t.pairingCodes?.length ?? 0) < 1 + profile.kdsScreensPerTenant,
+  )
+)
+  throw Error("fixture lacks pairing codes; re-run load:seed");
 
 // ---- measurement ----
 const samples = new Map<string, number[]>();
@@ -67,6 +76,8 @@ const pct = (values: number[], p: number) => {
     ],
   );
 };
+
+let pairing: Promise<unknown> = Promise.resolve();
 
 /** One simulated browser: its own keep-alive pool (≤ 6 sockets) and cookies. */
 class Device {
@@ -151,14 +162,29 @@ class Device {
     return { status: result.status, data };
   }
 
-  async login(tenantId: string, c: Credentials) {
-    const r = await this.call("POST", "/login", "/login", {
-      tenantId,
-      login: c.login,
+  /** Pairs this browser as a terminal with a single-use code (POST /api/access/pair). */
+  async pair(code: string) {
+    // The pair route allows 10 requests per IP per minute and counts each one
+    // while in flight, so browsers pair one at a time across all restaurants.
+    const turn = pairing.then(() =>
+      this.call("POST", "/access/pair", "/access/pair", { code }),
+    );
+    pairing = turn.catch(() => undefined);
+    const r = await turn;
+    if (r.status !== 200)
+      throw Error(`pairing failed: ${r.status} ${r.data?.error ?? ""}`);
+  }
+
+  /** Signs a staff member in on this paired browser (POST /api/access/pin). */
+  async signIn(c: Credentials) {
+    const r = await this.call("POST", "/access/pin", "/access/pin", {
+      employeeId: c.employeeId,
       secret: c.secret,
     });
     if (r.status !== 200)
-      throw Error(`login failed for ${c.login}: ${r.status}`);
+      throw Error(
+        `sign-in failed for ${c.login}: ${r.status} ${r.data?.error ?? ""}`,
+      );
     const session = await this.call("GET", "/session", "/session");
     this.csrf = session.data.csrf;
   }
@@ -316,12 +342,12 @@ async function tenant(t: TenantFixture) {
     () => new Device(),
   );
   try {
-    // Pair each browser with the owner, then sign in the staff member.
-    await register.login(t.tenantId, t.owner);
-    await register.login(t.tenantId, t.cashier);
+    // Pair each browser with its code, then sign in the staff member by PIN.
+    await register.pair(t.pairingCodes[0]);
+    await register.signIn(t.cashier);
     for (const [i, screen] of screens.entries()) {
-      await screen.login(t.tenantId, t.owner);
-      await screen.login(t.tenantId, t.kitchen[i % t.kitchen.length]);
+      await screen.pair(t.pairingCodes[1 + i]);
+      await screen.signIn(t.kitchen[i % t.kitchen.length]);
     }
     await register.call("POST", "/cash/open", "/cash/open", {
       operationId: randomUUID(),
@@ -355,8 +381,9 @@ const routes = [...samples]
 const reads = [...samples]
   .filter(([k]) => k.startsWith("GET ") && k !== "GET /session")
   .flatMap(([, v]) => v);
+const setup = new Set(["POST /access/pair", "POST /access/pin"]);
 const writes = [...samples]
-  .filter(([k]) => k.startsWith("POST ") && k !== "POST /login")
+  .filter(([k]) => k.startsWith("POST ") && !setup.has(k))
   .flatMap(([, v]) => v);
 const summary = {
   profile: profile.name,

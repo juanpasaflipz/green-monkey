@@ -16,14 +16,23 @@ Poisson process: 1–4 lines with valid modifiers, 40% extra round, payment cash
 or card with reference, 10% split in two), two KDS screens polling `/kitchen`
 and advancing rounds seen → ready → completed, and a tables view polling
 `/orders` every 10 s. Each simulated browser has its own cookies and a
-keep-alive pool of at most 6 sockets. `KDS_POLL_MS` overrides the poll
-interval to compare kitchen-feed designs.
+keep-alive pool of at most 6 sockets. It pairs as a terminal with its own
+single-use pairing code (`POST /api/access/pair`), then signs its staff member
+in by PIN (`POST /api/access/pin`), like a real register or KDS; owner-password
+pairing is reserved for the demo tenant (docs/ACCESS.md). Browsers pair one at
+a time, because the pair route allows 10 requests per IP per minute and counts
+each while it is in flight. Pairing and PIN sign-in are setup, so they are
+left out of the mutation p95. `KDS_POLL_MS` overrides the poll interval to
+compare kitchen-feed designs.
 
 ## Running
 
 ```sh
 # Seed LOAD-NN restaurants (refuses databases not named *_test, *_load or
-# *_staging and APP_ENV=production; credentials go to work/load/fixture.json).
+# *_staging and APP_ENV=production; credentials and one pairing code per
+# simulated browser go to work/load/fixture.json). JWT_SECRET must be the
+# target server's (codes are HMACs under it). Codes expire after 10 minutes:
+# start load:run within that, or seed again (re-seeding cancels unused codes).
 LOAD_MIGRATION_DATABASE_URL=… LOAD_TARGET_ALLOWLIST=<host:port/db> LOAD_PROFILE=target npm run load:seed
 # Drive the API (exact origin allowlist).
 LOAD_BASE_URL=https://<staging> LOAD_ORIGIN_ALLOWLIST=https://<staging> LOAD_PROFILE=target npm run load:run
