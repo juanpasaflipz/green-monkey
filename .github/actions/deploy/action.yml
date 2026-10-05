@@ -1,0 +1,69 @@
+name: Deploy to Railway
+description: >-
+  Applies the Railway IaC (non-destructive changes only), stamps the build,
+  uploads the worker (its preDeploy runs migrate, then grants, then retention)
+  and the web service, and runs the HTTP smoke against the expected commit.
+inputs:
+  sha:
+    description: Full commit SHA being deployed (already checked out).
+    required: true
+  railway-token:
+    description: Railway project token scoped to the target environment.
+    required: true
+  railway-cli-version:
+    description: Exact @railway/cli version with `railway config apply`.
+    required: true
+  railway-iac-version:
+    description: Exact `railway` npm package version that provides railway/iac.
+    required: true
+  app-url:
+    description: Public origin of the environment.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version-file: .nvmrc
+        cache: npm
+    - name: Install and build
+      shell: bash
+      run: npm ci && npm run build
+    - name: Install the IaC authoring package (not a project dependency)
+      shell: bash
+      env:
+        RAILWAY_IAC_VERSION: ${{ inputs.railway-iac-version }}
+      run: |
+        [[ "$RAILWAY_IAC_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pin RAILWAY_IAC_VERSION"; exit 1; }
+        npm install --no-save --ignore-scripts "railway@$RAILWAY_IAC_VERSION"
+    - name: Sync Railway service configuration (non-destructive only)
+      shell: bash
+      env:
+        RAILWAY_TOKEN: ${{ inputs.railway-token }}
+        RAILWAY_CLI_VERSION: ${{ inputs.railway-cli-version }}
+      run: |
+        [[ "$RAILWAY_CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pin RAILWAY_CLI_VERSION"; exit 1; }
+        npx -y "@railway/cli@$RAILWAY_CLI_VERSION" config plan
+        # --yes without --confirm-destructive: a plan that would delete a
+        # service or variable stops here for a human review.
+        npx -y "@railway/cli@$RAILWAY_CLI_VERSION" config apply --yes
+    - name: Stamp the build
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+      run: node scripts/ops/stamp-build.mjs "$SHA"
+    - name: Deploy worker (preDeploy migrates) then web
+      shell: bash
+      env:
+        RAILWAY_TOKEN: ${{ inputs.railway-token }}
+        RAILWAY_CLI_VERSION: ${{ inputs.railway-cli-version }}
+        SHA: ${{ inputs.sha }}
+      run: |
+        npx -y "@railway/cli@$RAILWAY_CLI_VERSION" up --ci --service worker --message "$SHA"
+        npx -y "@railway/cli@$RAILWAY_CLI_VERSION" up --ci --service web --message "$SHA"
+    - name: Wait for the live revision and smoke
+      shell: bash
+      env:
+        APP_URL: ${{ inputs.app-url }}
+        SHA: ${{ inputs.sha }}
+      run: node scripts/ops/smoke.mjs --base-url "$APP_URL" --expect-commit "$SHA" --timeout 900
