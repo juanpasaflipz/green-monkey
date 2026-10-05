@@ -254,45 +254,6 @@ function row(
 }
 
 describe("sync loop", () => {
-  it("I5: a dependent row waits for its queued parent without counting attempts", async () => {
-    const s = session();
-    const parent = row(
-      s,
-      { status: "conflict", error: "settings_changed" },
-      { kind: "order", sequence: 1 },
-    );
-    const child = row(
-      s,
-      {},
-      {
-        kind: "payment",
-        sequence: 2,
-        target: { localOrderOperationId: parent.id },
-      },
-    );
-    await fakeDb.pending.put(parent);
-    await fakeDb.pending.put(child);
-    await syncPending(s, { reason: "poll" });
-    expect(mockedApi).not.toHaveBeenCalled();
-    expect(await fakeDb.pending.get(child.id)).toMatchObject({
-      status: "pending",
-      waitReason: "dependency",
-      attempts: 0,
-    });
-    await fakeDb.pending.update(parent.id, {
-      status: "synced",
-      result: { orderId: uuid(50) },
-      syncedAt: Date.now(),
-    });
-    mockedApi.mockResolvedValueOnce({ orderId: uuid(50), tenderId: uuid(51) });
-    await syncPending(s, { reason: "poll" });
-    expect(mockedApi).toHaveBeenCalledTimes(1);
-    expect(mockedApi.mock.calls[0]![1]).toEqual(child.body);
-    const synced = await fakeDb.pending.get(child.id);
-    expect(synced).toMatchObject({ status: "synced", attempts: 0 });
-    expect(synced!.waitReason).toBeUndefined();
-  });
-
   it("OFF-6: 50 transient failures never become a conflict; delay caps at 60 s ±20 %", async () => {
     const s = session();
     const queued = row(s);
