@@ -228,10 +228,13 @@ consent; record each in [STAGING.md](STAGING.md)). Pin the CLI with
      under its `# service: worker` header, without printing them (for example
      `railway variable list --service web --kv | grep -E '^(STRIPE_SECRET_KEY|STRIPE_EXPECTED_ACCOUNT_ID|STRIPE_PRICE_PRO_MONTHLY|STRIPE_PRICE_PRO_ANNUAL|STRIPE_PORTAL_CONFIG_ID)=' >> <private file>`);
      they cannot be read back after the apply.
-   - **Still needed:** a variable another area reads on staging (for example
-     access's `DEMO_TENANT_ID`, `ACCESS_STEP_UP_SECONDS` and
-     `ACCESS_IDLE_LOCK_DEFAULT_SECONDS`, if set there) or a deliberate
-     override such as `TRUST_PROXY`. Add `NAME: preserve()` to that service in
+   - **Still needed:** a variable another area reads on staging or a
+     deliberate override such as `TRUST_PROXY`. Access's
+     `ACCESS_STEP_UP_SECONDS` and `ACCESS_IDLE_LOCK_DEFAULT_SECONDS` are
+     already declared on `web`, and `DEMO_TENANT_ID` on staging's `web` only
+     (production never declares it, so a value there is planned as a deletion;
+     the server refuses to start with it in production). For any other
+     still-needed name, add `NAME: preserve()` to that service in
      `.railway/railway.ts` and merge it before step 5 (until step 8 adds the
      `RAILWAY_TOKEN` environment secret, the deploy run that merge triggers
      fails before it touches Railway).

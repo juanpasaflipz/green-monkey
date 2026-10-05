@@ -53,6 +53,14 @@ export default defineRailway((ctx) => {
       GOOGLE_REDIRECT_URI: preserve(),
       STRIPE_WEBHOOK_SECRET: preserve(),
       // Areas append their web variables here with preserve().
+      // access (docs/ACCESS.md "Configuration"): step-up window and default
+      // terminal auto-lock, both optional (defaults 120 s and 180 s).
+      ACCESS_STEP_UP_SECONDS: preserve(),
+      ACCESS_IDLE_LOCK_DEFAULT_SECONDS: preserve(),
+      // The fictional demo tenant exists only on staging: production never
+      // declares it, so a value set there is planned as a deletion and the
+      // server refuses to start with it (contracts D22).
+      ...(production ? {} : { DEMO_TENANT_ID: preserve() }),
     },
   });
 
