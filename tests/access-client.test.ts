@@ -245,12 +245,14 @@ describe("api() session policy", () => {
     // The lock screen's own calls and queued offline evidence are not held.
     await api("/access/terminal");
     await api("/sync", {});
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // Offline sync posts to /offline/sync since offline (026) merged.
+    await api("/offline/sync", {});
+    expect(fetchMock).toHaveBeenCalledTimes(4);
     expect(checks).toBe(2);
     // Unregistered once the lock is back: calls go out again.
     registerSoftUnlockCheck(null);
     await api("/orders");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
   it("while a soft unlock is in effect and the server answers again, authenticated /access/ reads are refused unsent; only the lock screen's own calls go (ACC-R6-3)", async () => {

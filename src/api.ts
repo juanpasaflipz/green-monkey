@@ -248,15 +248,17 @@ export function holdRequests(maxMs = 15_000): () => void {
 let softUnlockCheck: null | (() => Promise<boolean>) = null;
 /**
  * The only calls a soft unlock never holds back: the lock screen's own roster,
- * PIN sign-in, step-up and sign-out, and offline evidence (/sync), which also
- * syncs behind any lock. Authenticated /access/* reads such as the staff or
- * device lists are checked like every other call (ACC-R6-3).
+ * PIN sign-in, step-up and sign-out, and offline evidence (/offline/sync, and
+ * the legacy /sync alias), which also syncs behind any lock. Authenticated
+ * /access/* reads such as the staff or device lists are checked like every
+ * other call (ACC-R6-3).
  */
 const SOFT_UNLOCK_EXEMPT = new Set([
   "/access/terminal",
   "/access/pin",
   "/access/step-up",
   "/access/logout",
+  "/offline/sync",
   "/sync",
 ]);
 /**
