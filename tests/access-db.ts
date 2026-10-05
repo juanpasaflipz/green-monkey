@@ -15,7 +15,10 @@ import {
   legacyLogin,
   loadDevice,
   pinSignIn,
+  requireRecentAuth,
   signOut,
+  stepUp,
+  terminalState,
   touchSession,
 } from "../server/access.js";
 import {
@@ -39,6 +42,7 @@ import { synchronizeOffline } from "../server/offline-sync.js";
 import { verifyApproval } from "../server/voids.js";
 import { saveEmployee, saveProduct } from "../server/management.js";
 import {
+  createOwnerRestaurant,
   enterOwnerRestaurant,
   ownerBrowserCookie,
   signInGoogleOwner,
@@ -72,6 +76,8 @@ const restaurant = {
   configVersion: 1,
 };
 const accountIds: string[] = [];
+/** Restaurants created through the Google signup path (cleaned up with the fixture). */
+const signupTenants: string[] = [];
 
 type Cookie = { id: string; tenantId: string; token: string };
 /** A paired device; expiresInHours null = legacy row without a server-side expiry. */
@@ -1351,6 +1357,91 @@ try {
     assert.equal(inactive.active, false);
   });
 
+  await test("decision 11: a Google-signup owner sets their own PIN on their phone, then appears on the terminal roster, signs in and steps up with it", async () => {
+    const cookie = await signInGoogleOwner(sql, {
+      issuer: "https://accounts.google.com",
+      subject: randomUUID(),
+      email: "signup-owner@example.com",
+      name: "Signup owner fixture",
+    });
+    const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
+    accountIds.push(account.id);
+    const signup = await withOwner(sql, cookie, account.csrf, (tx, a) =>
+      createOwnerRestaurant(tx, a, {
+        restaurantName: "Signup access fixture",
+        currency: "MXN",
+        timezone: "America/Mexico_City",
+        cutoff: 240,
+        openingDays: [1, 2, 3, 4, 5, 6, 7],
+      }),
+    );
+    signupTenants.push(signup.tenantId);
+    // The owner enters from their own phone (personal device, Google session).
+    const entered = await withOwner(sql, cookie, undefined, (tx, a) =>
+      enterOwnerRestaurant(tx, a.id, signup.tenantId, a.sessionId, ownerBrowserCookie()),
+    );
+    const phoneCookies = {
+      gm_device: sign(entered.device),
+      gm_session: sign(entered.session),
+    };
+    const phone = (await authenticate(phoneCookies)).session;
+    assert.equal(phone.role, "owner");
+    assert.equal(phone.access?.deviceKind, "personal");
+    assert.equal(phone.access?.ownerAccount, true);
+    const ownerEmployee = phone.employeeId;
+    const [login] =
+      await admin`select login,pin_set_at from employees where id=${ownerEmployee}`;
+    assert.equal(login.login, `account-${account.id}`);
+    assert.equal(login.pin_set_at, null);
+    // A terminal paired with a code made on the phone.
+    const code = await tenant(sql, signup.tenantId, (tx) =>
+      createPairingCode(tx, phone, { deviceName: "Caja signup" }),
+    );
+    const terminal = (await redeemPairingCode(sql, { code: code.code }, null)).device;
+    const roster = async () =>
+      (
+        await terminalState(sql, req({ gm_device: sign(terminal) }), stubRes() as any)
+      ).staff ?? [];
+    // 1. Without a PIN the Google owner is not on the terminal roster.
+    assert.equal((await roster()).some((e) => e.id === ownerEmployee), false);
+    // 2. "Mi PIN para terminales compartidas" from the phone keeps the phone session.
+    const ownPin = "864213";
+    const saved = await tenant(sql, signup.tenantId, (tx) =>
+      resetStaffPin(tx, phone, ownerEmployee, {
+        operationId: randomUUID(),
+        pin: ownPin,
+      }),
+    );
+    assert.equal(saved.access, "google_and_pin");
+    const kept = await sessionRow(entered.session.id);
+    assert.equal(kept.ended_at, null);
+    assert.equal(kept.end_reason, null);
+    assert.equal(kept.revoked, false);
+    assert.equal((await authenticate(phoneCookies)).session.id, entered.session.id);
+    // 3. The owner now appears on the roster and signs in by PIN on the terminal.
+    assert.equal((await roster()).some((e) => e.id === ownerEmployee), true);
+    const signedIn = await pin(terminal, ownerEmployee, ownPin);
+    assert.equal(signedIn.reused, false);
+    const terminalCookies = {
+      gm_device: sign(terminal),
+      gm_session: signedIn.cookie,
+    };
+    const onTerminal = (await authenticate(terminalCookies)).session;
+    assert.equal(onTerminal.role, "owner");
+    assert.equal(onTerminal.access?.deviceKind, "terminal");
+    assert.equal(onTerminal.access?.ownerAccount, false);
+    // The terminal sign-in does not end the phone session.
+    assert.equal((await sessionRow(entered.session.id)).ended_at, null);
+    // 4. Step-up on the terminal works with the same PIN.
+    await admin`update sessions set authenticated_at=now()-interval '1 hour' where id=${onTerminal.id}`;
+    const stale = (await authenticate(terminalCookies)).session;
+    assert.throws(() => requireRecentAuth(stale), /step_up_required/);
+    await rejects(stepUp(sql, stale, { secret: "000000" }), "invalid_pin");
+    await stepUp(sql, stale, { secret: ownPin });
+    const fresh = (await authenticate(terminalCookies)).session;
+    requireRecentAuth(fresh);
+  });
+
   await test("an ended session is never revived: touch and PIN reuse re-check ended_at under the row lock", async () => {
     const terminal = await device("Carrera");
     // touchSession with a row read before a concurrent end.
@@ -1406,8 +1497,9 @@ try {
 
   console.log(`${checks} access checks passed`);
 } finally {
-  for (const id of [tenantId, otherTenantId]) {
+  for (const id of [tenantId, otherTenantId, ...signupTenants]) {
     for (const table of [
+      "signup_billing_intents",
       "pin_throttles",
       "device_pairing_codes",
       "offline_lease_renewals",
@@ -1437,6 +1529,7 @@ try {
   }
   await admin`delete from organizations where id=${organizationId}`;
   for (const accountId of accountIds) {
+    await admin`delete from organizations where created_by_account=${accountId}`;
     await admin`delete from owner_sessions where account_id=${accountId}`;
     await admin`delete from owner_accounts where id=${accountId}`;
   }
