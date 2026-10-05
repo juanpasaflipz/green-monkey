@@ -23,7 +23,7 @@ export default defineArea({
     offlineWindowExpired:
       "El periodo sin conexión terminó a las {time}. No se pueden guardar ventas nuevas hasta reconectar e iniciar sesión. Usa papel y captúralas después.",
     offlineFiscalLate:
-      "Hay ventas sin sincronizar de hace más de 20 horas. Pueden quedar fuera de la factura global; conéctate o pide a un gerente que las revise.",
+      "Hay ventas sin sincronizar de hace más de 20 horas. Si no se sincronizan pronto, su factura global se emitirá fuera de plazo; conéctate o pide a un gerente que las revise.",
     offlineClockSkew:
       "La hora de este dispositivo difiere {min} min de la del servidor. Activa la hora automática.",
     offlineLastContact: "Último contacto con el servidor: {time}",
@@ -141,8 +141,26 @@ export default defineArea({
     offlineOpKitchenDecision: "Decisión de cocina sobre venta sin conexión",
     offlineOpArchived: "Registro local archivado",
     offlineOpPaymentReconciled: "Cobro sin conexión conciliado",
+    offlineOpSettingsChanged: "Servicio de mesa sin conexión cambiado",
     offlinePayCachedWarning:
       "Esta orden se guardó antes de perder la conexión. Si pudo cobrarse en otro dispositivo, no la cobres hasta confirmarlo.",
+    offlineSendAsNew: "Enviar como orden nueva",
+    offlineSentToDevice:
+      "Comanda guardada en este dispositivo. Cocina no la recibe por la red: imprímela o cántala.",
+    offlineAvailableOnReconnect:
+      "Disponible al volver la conexión. Sin conexión, esta cuenta no acepta productos ni cobros en este restaurante.",
+    offlineTableServiceOffHint:
+      "Sin conexión solo se cobran órdenes nuevas completas. Enviar a cocina sin cobrar estará disponible al volver la conexión.",
+    offlineTableServiceTitle: "Servicio de mesa sin conexión",
+    offlineTableServiceBeta: "Beta",
+    offlineTableServiceHint:
+      "Permite, sin conexión, enviar a cocina sin cobrar, agregar rondas y cobrar cuentas abiertas (completas o en partes). Está en prueba y viene apagado. Apagado, sin conexión solo se cobran órdenes nuevas completas, en efectivo o con terminal externa.",
+    offlineTableServiceOn: "Activar servicio de mesa sin conexión",
+    offlineTableServiceUnknown:
+      "Conéctate para consultar o cambiar este ajuste.",
+    offlineKitchenOtherStation: "{n} por revisar en {station}.",
+    offlineLoginManual:
+      "Este dispositivo está en modo sin conexión. Puedes iniciar sesión; las ventas se guardarán aquí hasta que vuelvas a conectarte.",
   },
   en: {
     offlineStatusOnline: "Connected",
@@ -166,7 +184,7 @@ export default defineArea({
     offlineWindowExpired:
       "The offline period ended at {time}. New sales cannot be saved until you reconnect and sign in. Use paper and enter them later.",
     offlineFiscalLate:
-      "Some sales have been unsynced for more than 20 hours. They may miss the global invoice; reconnect or ask a manager to review them.",
+      "Some sales have been unsynced for more than 20 hours. If they do not sync soon, their global invoice will be issued late; reconnect or ask a manager to review them.",
     offlineClockSkew:
       "This device's clock differs from the server by {min} min. Turn on automatic time.",
     offlineLastContact: "Last server contact: {time}",
@@ -281,8 +299,25 @@ export default defineArea({
     offlineOpKitchenDecision: "Kitchen decision on an offline sale",
     offlineOpArchived: "Local record archived",
     offlineOpPaymentReconciled: "Offline payment reconciled",
+    offlineOpSettingsChanged: "Offline table service changed",
     offlinePayCachedWarning:
       "This order was saved before the connection dropped. If it may have been paid on another device, do not charge it until you confirm.",
+    offlineSendAsNew: "Send as a new order",
+    offlineSentToDevice:
+      "Kitchen ticket saved on this device. The kitchen does not receive it over the network: print it or call it out.",
+    offlineAvailableOnReconnect:
+      "Available when the connection returns. Offline, this check takes no items or payments in this restaurant.",
+    offlineTableServiceOffHint:
+      "Offline, only new orders paid in full can be saved. Sending to the kitchen without paying is available when the connection returns.",
+    offlineTableServiceTitle: "Offline table service",
+    offlineTableServiceBeta: "Beta",
+    offlineTableServiceHint:
+      "Lets staff, while offline, send to the kitchen without paying, add rounds and charge open checks (in full or in part). It is in testing and off by default. When off, offline selling is limited to new orders paid in full, in cash or by an external terminal.",
+    offlineTableServiceOn: "Turn on offline table service",
+    offlineTableServiceUnknown: "Connect to read or change this setting.",
+    offlineKitchenOtherStation: "{n} to review at {station}.",
+    offlineLoginManual:
+      "This device is in offline mode. You can sign in; sales are saved here until you go back online.",
   },
   errors: {
     network_unavailable: [
@@ -334,8 +369,24 @@ export default defineArea({
       "The original order was archived. A manager must review this record.",
     ],
     offline_order_closed: [
-      "La orden ya está cancelada o en conciliación. Un gerente debe revisar este registro.",
-      "The order is cancelled or under reconciliation. A manager must review this record.",
+      "La orden ya no acepta cambios: está cerrada, cancelada o en conciliación, o ya tiene ticket con folio. Un gerente debe revisar este registro.",
+      "The order no longer accepts changes: it is closed, cancelled or under reconciliation, or it already has a numbered ticket. A manager must review this record.",
+    ],
+    offline_check_paid: [
+      "Esta cuenta ya está pagada. Envía lo nuevo como orden nueva para la misma mesa.",
+      "This check is already paid. Send the new items as a new order for the same table.",
+    ],
+    offline_lines_already_sent: [
+      "Estos productos ya se enviaron en línea a esta orden (la respuesta se perdió). Un gerente debe revisar el registro; si la orden ya los tiene, archívalo.",
+      "These items were already sent online to this order (the response was lost). A manager must review the record; if the order already has them, archive it.",
+    ],
+    offline_table_service_off: [
+      "Sin conexión solo se guardan órdenes nuevas cobradas completas. Enviar a cocina sin cobrar, agregar a una cuenta abierta y los pagos parciales están disponibles al volver la conexión.",
+      "Offline, only new orders paid in full can be saved. Sending to the kitchen without paying, adding to an open check and partial payments are available when the connection returns.",
+    ],
+    offline_clock_moved_back: [
+      "La hora de este dispositivo se atrasó desde la última conexión. Conéctate para verificar la hora antes de guardar ventas sin conexión.",
+      "This device's clock moved back since it last connected. Connect to check the time before saving offline sales.",
     ],
     offline_payment_exceeds_due: [
       "El cobro supera el saldo actual de la orden (quizá ya se cobró). Un gerente debe revisarlo; no cobres otra vez.",
