@@ -3,6 +3,7 @@ import { api } from "../api";
 import { Button, Field, Modal } from "../components/ui";
 import { strings, translateError, type Key } from "../i18n";
 import type { Locale, Order, Session } from "../../shared/domain";
+import { stepUpExempt } from "../../shared/access";
 import {
   ManagerApproval,
   type ApprovalValue,
@@ -31,7 +32,8 @@ export function VoidDialog({
 }) {
   const t = (key: Key) => strings[locale][key];
   const manager = ["owner", "manager"].includes(session.role);
-  const needsApproval = !manager || session.access?.deviceKind === "terminal";
+  // Only a Google-entered session on a personal device self-approves (A4).
+  const needsApproval = !manager || !stepUpExempt(session.access);
   const [approval, setApproval] = useState<ApprovalValue>({
     employeeId: "",
     secret: "",

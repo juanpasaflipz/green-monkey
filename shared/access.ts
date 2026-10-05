@@ -133,33 +133,52 @@ export function failPinState(
 }
 
 /**
- * Device setting wins; otherwise terminals lock after the default (3 min, or
- * ACCESS_IDLE_LOCK_DEFAULT_SECONDS on the server, 0 = never), kitchen and
- * personal devices never.
+ * A session entered through a Google owner account on that person's own
+ * personal device. Only these skip step-up and the default auto-lock: the
+ * exemption follows how the session was entered, never the device kind alone,
+ * because legacy "Owner browser" devices can be shared tablets where staff
+ * sign in with a PIN (A4).
+ */
+export function stepUpExempt(access: SessionAccess | undefined): boolean {
+  return !access || (access.deviceKind === "personal" && access.ownerAccount);
+}
+
+/**
+ * Device setting wins; otherwise PIN sessions lock after the default (3 min,
+ * or ACCESS_IDLE_LOCK_DEFAULT_SECONDS on the server, 0 = never) on any device;
+ * kitchen sessions and Google-entered sessions on a personal device never.
  */
 export function effectiveIdleLock(
   setting: number | null,
   role: string,
   kind: DeviceKind,
   defaultSeconds: number = ACCESS.defaultIdleLockSeconds,
+  ownerAccount = false,
 ): number | null {
   if (setting === 0) return null;
   if (setting !== null && setting > 0) return setting;
-  if (kind === "personal" || role === "kitchen" || defaultSeconds <= 0)
+  if (
+    (kind === "personal" && ownerAccount) ||
+    role === "kitchen" ||
+    defaultSeconds <= 0
+  )
     return null;
   return defaultSeconds;
 }
 
 /**
- * Step-up rule. Internal callers (no access details) and personal devices pass;
- * a shared terminal needs a PIN or Google verification within the window.
+ * Step-up rule. Internal callers (no access details) and Google-entered
+ * sessions on a personal device pass; every PIN session, on a terminal or on a
+ * legacy "Owner browser" device, needs a PIN or Google verification within the
+ * window (A4).
  */
 export function isRecentAuth(
   access: SessionAccess | undefined,
   nowMs: number,
   maxAgeSeconds: number,
 ): boolean {
-  if (!access || access.deviceKind === "personal") return true;
+  if (stepUpExempt(access)) return true;
+  if (!access) return true;
   if (!access.authenticatedAt) return false;
   return nowMs - new Date(access.authenticatedAt).getTime() <= maxAgeSeconds * 1000;
 }

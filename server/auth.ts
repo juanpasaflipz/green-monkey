@@ -127,6 +127,7 @@ export function authentication(sql: postgres.Sql) {
                 s.role,
                 s.device_kind,
                 idleLockDefault(),
+                Boolean(s.owner_account_id),
               ),
               ownerAccount: Boolean(s.owner_account_id),
             },

@@ -8,6 +8,7 @@ import {
   formatPairingCode,
   isPinLocked,
   isRecentAuth,
+  stepUpExempt,
   normalizePairingCode,
   pinInput,
   type PinState,
@@ -101,11 +102,15 @@ describe("PIN throttle", () => {
 });
 
 describe("shared-terminal rules", () => {
-  it("effective idle lock: default 180 s on terminals, never for kitchen and personal, explicit 0 means never", () => {
+  it("effective idle lock: default 180 s for PIN sessions, never for kitchen and Google-entered personal sessions, explicit 0 means never", () => {
     expect(effectiveIdleLock(null, "cashier", "terminal")).toBe(180);
     expect(effectiveIdleLock(null, "owner", "terminal")).toBe(180);
     expect(effectiveIdleLock(null, "kitchen", "terminal")).toBeNull();
-    expect(effectiveIdleLock(null, "owner", "personal")).toBeNull();
+    expect(effectiveIdleLock(null, "owner", "personal", 180, true)).toBeNull();
+    // A4: a PIN session on a personal (legacy "Owner browser") device locks.
+    expect(effectiveIdleLock(null, "manager", "personal")).toBe(180);
+    expect(effectiveIdleLock(null, "owner", "personal", 180, false)).toBe(180);
+    expect(effectiveIdleLock(null, "owner", "terminal", 180, true)).toBe(180);
     expect(effectiveIdleLock(0, "cashier", "terminal")).toBeNull();
     expect(effectiveIdleLock(600, "kitchen", "terminal")).toBe(600);
     expect(effectiveIdleLock(60, "owner", "personal")).toBe(60);
@@ -133,10 +138,36 @@ describe("shared-terminal rules", () => {
     ).toBe(false);
     expect(
       isRecentAuth(
-        { ...terminal, deviceKind: "personal", authenticatedAt: null },
+        {
+          ...terminal,
+          deviceKind: "personal",
+          ownerAccount: true,
+          authenticatedAt: null,
+        },
         now,
         120,
       ),
     ).toBe(true);
+    // A4: the exemption follows how the session was entered, not the device.
+    expect(
+      isRecentAuth(
+        { ...terminal, deviceKind: "personal", authenticatedAt: null },
+        now,
+        120,
+      ),
+    ).toBe(false);
+    expect(
+      isRecentAuth(
+        { ...terminal, deviceKind: "personal", authenticatedAt: new Date(now - 600_000).toISOString() },
+        now,
+        120,
+      ),
+    ).toBe(false);
+    expect(
+      isRecentAuth({ ...terminal, ownerAccount: true, authenticatedAt: null }, now, 120),
+    ).toBe(false);
+    expect(stepUpExempt(undefined)).toBe(true);
+    expect(stepUpExempt({ ...terminal, deviceKind: "personal", ownerAccount: true })).toBe(true);
+    expect(stepUpExempt({ ...terminal, deviceKind: "personal" })).toBe(false);
   });
 });

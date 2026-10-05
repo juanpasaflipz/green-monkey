@@ -598,7 +598,7 @@ try {
     await clearThrottles(managerId);
   });
 
-  await test("manager self-approval on a terminal requires a recent PIN; a personal device does not (SEC-6)", async () => {
+  await test("manager self-approval on a terminal requires a recent PIN; a Google-entered session on a personal device does not (SEC-6/A4)", async () => {
     const stale = new Date(Date.now() - 3600_000).toISOString();
     const terminal = as(managerId, "manager", terminalA.id, {
       authenticatedAt: stale,
@@ -608,9 +608,22 @@ try {
     assert.equal(await verifyApproval(sql, fresh, undefined), managerId);
     const personal = as(managerId, "manager", terminalA.id, {
       deviceKind: "personal",
+      ownerAccount: true,
       authenticatedAt: stale,
     });
     assert.equal(await verifyApproval(sql, personal, undefined), managerId);
+    // A PIN session on a legacy "Owner browser" device (023 made every one of
+    // them personal, shared tablets included) gets no exemption (A4).
+    const pinOnPersonal = as(managerId, "manager", terminalA.id, {
+      deviceKind: "personal",
+      ownerAccount: false,
+      authenticatedAt: stale,
+    });
+    await rejects(
+      verifyApproval(sql, pinOnPersonal, undefined),
+      "approval_required",
+    );
+    assert.throws(() => requireRecentAuth(pinOnPersonal), /step_up_required/);
     const internal = as(managerId, "manager", terminalA.id);
     assert.equal(await verifyApproval(sql, internal, undefined), managerId);
     // Confirming with one's own PIN refreshes the session's authentication time.
@@ -1351,13 +1364,29 @@ try {
     assert.notEqual(row.hash, hash(JSON.stringify({ ...body(op), secret: hash(secret) })));
     assert.equal(row.hash, hash(JSON.stringify({ ...body(op), secret: pinFingerprint(secret) })));
     assert.equal(row.result.includes(secret), false);
-    // Personal devices are exempt from step-up, as for the Equipo commands.
+    // Google-entered sessions on a personal device are exempt from step-up,
+    // as for the Equipo commands; a PIN session on that device is not (A4).
     const phone = await device("Owner browser", { kind: "personal" });
+    await rejects(
+      run((tx) =>
+        saveEmployee(
+          tx,
+          as(ownerId, "owner", phone.id, {
+            deviceKind: "personal",
+            ownerAccount: false,
+            authenticatedAt: hourAgo,
+          }),
+          body(randomUUID(), false),
+        ),
+      ),
+      "step_up_required",
+    );
     await run((tx) =>
       saveEmployee(
         tx,
         as(ownerId, "owner", phone.id, {
           deviceKind: "personal",
+          ownerAccount: true,
           authenticatedAt: hourAgo,
         }),
         body(randomUUID(), false),
@@ -1451,6 +1480,33 @@ try {
     await stepUp(sql, stale, { secret: ownPin });
     const fresh = (await authenticate(terminalCookies)).session;
     requireRecentAuth(fresh);
+    // 5. A4: the step-up and auto-lock exemption follows how the session was
+    // entered. On the same personal device, the Google session never locks
+    // and needs no step-up; a PIN session there gets both.
+    const idleDefault = process.env.ACCESS_IDLE_LOCK_DEFAULT_SECONDS;
+    process.env.ACCESS_IDLE_LOCK_DEFAULT_SECONDS = "180";
+    try {
+      await admin`update sessions set authenticated_at=now()-interval '1 hour' where id=${entered.session.id}`;
+      const google = (await authenticate(phoneCookies)).session;
+      assert.equal(google.access?.idleLockSeconds, null);
+      requireRecentAuth(google);
+      const pinOnPhone = await pin(entered.device, ownerEmployee, ownPin);
+      const phonePinCookies = {
+        gm_device: sign(entered.device),
+        gm_session: pinOnPhone.cookie,
+      };
+      const pinSession = (await authenticate(phonePinCookies)).session;
+      assert.equal(pinSession.access?.deviceKind, "personal");
+      assert.equal(pinSession.access?.ownerAccount, false);
+      assert.equal(pinSession.access?.idleLockSeconds, 180);
+      await admin`update sessions set authenticated_at=now()-interval '1 hour' where id=${pinSession.id}`;
+      const agedPin = (await authenticate(phonePinCookies)).session;
+      assert.throws(() => requireRecentAuth(agedPin), /step_up_required/);
+    } finally {
+      if (idleDefault === undefined)
+        delete process.env.ACCESS_IDLE_LOCK_DEFAULT_SECONDS;
+      else process.env.ACCESS_IDLE_LOCK_DEFAULT_SECONDS = idleDefault;
+    }
   });
 
   await test("an ended session is never revived: touch and PIN reuse re-check ended_at under the row lock", async () => {
