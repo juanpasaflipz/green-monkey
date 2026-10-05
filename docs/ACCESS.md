@@ -16,13 +16,27 @@ this document has been verified on staging, production or physical tablets.
 - `terminal`: a shared register, kitchen or bar tablet, paired with a code (or,
   on the fictional demo tenant only, by the owner's password).
 - `personal`: the owner's or an invited member's own browser, created by Google
-  "Entrar".
+  "Entrar". Being personal is not by itself an exemption from anything: only
+  a session entered through Google on it (`sessions.owner_account_id`) skips
+  step-up and the default auto-lock. A PIN session on a personal device (for
+  example a legacy "Owner browser" that is really a shared register) is
+  treated like one on a terminal (`stepUpExempt()` in `shared/access.ts`).
 - Rows written before migration 023 have `kind` NULL and are read as `personal`
   when named `Owner browser`, otherwise `terminal`. Migration 023 backfills
   `kind` on existing rows and gives active ones `token_expires_at = now + 30
   days`. The backfill lifts `FORCE ROW LEVEL SECURITY` on `devices` for its own
   transaction only (OPS-R2), so it also works for a migration owner without
   BYPASSRLS, such as a Neon owner role.
+
+**Terminal guard (GAP-2)**: on a terminal, `GET /api/auth/google/start`
+redirects to `/app?auth_error=terminal` and every non-GET request under
+`/api/auth/account` and `/api/auth/account-center` answers
+`device_is_terminal`. The refusal is attached with the router's own matching
+(route middleware and a prefix mount in `server/owner-routes.ts`), so case
+variants, a trailing slash and HEAD reach it exactly as they reach the
+handlers. A failed device lookup refuses (fails closed). Account's wave-2
+`/account-center` router, mounted after this one, is covered without a new
+predicate.
 
 A device credential (`gm_device`, signed, HttpOnly, SameSite=Strict) is valid
 while the device is active and `token_expires_at` has not passed. It expires
@@ -50,24 +64,29 @@ a stolen device.
 every staff, device and pairing-code command (including the legacy
 `POST /api/team/save`) need a PIN entered within
 `ACCESS_STEP_UP_SECONDS` (default 120). The client asks "Confirma con tu PIN"
-and retries the identical request (same `operationId`). Personal devices are
-exempt. A pending prompt belongs to the session whose command asked for it:
+and retries the identical request (same `operationId`). Google-entered sessions
+on a personal device are exempt; PIN sessions are not, on any device. A pending
+prompt belongs to the session whose command asked for it:
 - it never shows over the lock;
 - a switch, a sign-out or a new sign-in cancels it (`step_up_cancelled`), so
   the next employee is never asked to confirm the previous one's command;
 - if the session changed while the request or the prompt was out, `api()`
   sends no retry (`session_changed`), because the retry would carry the new
-  employee's cookie and CSRF token.
+  employee's cookie and CSRF token;
+- if the session itself ends while the prompt is open (`/access/step-up`
+  answers a session 401), the prompt closes, the session's lock appears and the
+  waiting command fails with that error.
 
-**Idle lock**: terminals lock after 3 minutes without input (device setting
-overrides; kitchen role and personal devices never lock by default). The lock
+**Idle lock**: PIN sessions lock after 3 minutes without input (device setting
+overrides; the kitchen role and Google-entered sessions on a personal device
+never lock by default). The lock
 keeps the workspace mounted: the same employee's PIN resumes with the cart and
 open dialogs intact; another employee's PIN starts their own session and a
 fresh workspace. The lock is remembered per session in the browser
 (`localStorage["gm-lock"]`) until a PIN unlock, a new sign-in or a sign-out, so
 a reload, a new tab or an offline restore of the cached session opens locked.
-A manual, renew or server lock in one tab also locks the other open tabs of the
-same session (storage event). An idle lock does not travel between tabs. Each
+A manual or server lock in one tab also locks the other open tabs of the same
+session (storage event). An idle lock does not travel between tabs. Each
 tab locks on its own timer, and a tab whose timer comes due waits while another
 tab of the session had input within the auto-lock window
 (`localStorage["gm-activity"]` names the writing tab). A background tab
@@ -76,7 +95,11 @@ so a background tab may lock itself up to 5 s early. A restore after a pause
 longer than the device's auto-lock (last input in `gm-activity`) also opens
 locked.
 
-Only an unlock, a switch or "Salir" ends the lock. Browsers stop honouring a
+Only an unlock, a switch or "Salir" ends the lock. The exception is the renewal
+prompt ("Renovar ahora" on the expiry banner): the session is still valid, so it
+offers "Ahora no", is not remembered by a reload or other tabs, and becomes an
+idle lock when the auto-lock comes due while it is on screen. Browsers stop
+honouring a
 modal dialog's cancelled `cancel` when close requests repeat without user
 activation (Escape, Android back), so the lock (`src/features/LockScreen.tsx`)
 does not rely on it:
@@ -84,18 +107,28 @@ does not rely on it:
 - it cancels the Escape keydown before it becomes a close request;
 - it reopens itself on any `close`;
 - it makes every other top-level element inert while it is up: the workspace
-  and any dialog that was open when it locked.
+  and any dialog that was open when it locked;
+- a dialog that opens on its own afterwards (a receipt after a slow payment, a
+  background prompt) is made inert and the lock is raised above it again
+  (`keepLockOnTop` in `src/access/lock.ts`). Only the lock's own "Salir"
+  warnings show above it.
 
-A dialog the lock itself opens (the "Salir" warnings) or one that opens on its
-own afterwards (a receipt after a slow payment) still shows above it. The PIN
-pad asks for no on-screen keyboard (`inputmode="none"`) while the keypad is
-shown.
+While it is shown and the server is reachable, the lock re-reads the roster
+every 20 s, when the tab becomes visible and when a PIN lock it shows runs out,
+and offers "Comprobar de nuevo", so an unlock made by a manager on another
+device re-enables the keypad by itself. The PIN pad asks for no on-screen
+keyboard (`inputmode="none"`) while the keypad is shown.
 
 Offline, the PIN cannot be verified, so the locked employee may "Continuar como
-{name}" (idle or manual lock only) while the cached offline window is still
-valid. That soft unlock is not a PIN unlock: the lock stays remembered, a reload
-asks again, and the screen locks again as soon as the connection returns or the
-offline window ends, so the PIN is required before any online work. Switching
+{name}" (idle, manual or renewal lock only, never while a session 401 blocks
+calls) while the cached offline window is still valid. A PIN request that gets
+no answer while the device reports a connection (router up, internet down) is
+treated the same way: the lock shows the offline notice instead of a generic
+error, and App probes `/api/health` every 10 s. At merge, offline's probe-based
+`canUseServer` replaces this local reachability flag. That soft unlock is not a
+PIN unlock: the lock stays remembered, a reload asks again, and the same lock
+comes back as soon as the server answers again or the offline window ends, so
+the PIN is required before any online work. Switching
 user needs a connection. A server session code also applies to the offline
 cache, including on a cold start before any session is shown:
 - a revoked session or device (`session_revoked`, `device_revoked`,
@@ -108,7 +141,9 @@ cache, including on a cold start before any session is shown:
 - nothing replaces a server code's lock except a PIN unlock, a switch or a
   sign-out. No idle, manual or renew lock is applied over it, and the offline
   "Salir" warning offers no "Bloquear pantalla" while the screen is locked, so
-  the lock never becomes one that offers "Continuar como".
+  the lock never becomes one that offers "Continuar como";
+- while calls are blocked after a session 401, App's 10 s poll puts that lock
+  back if none is showing.
 
 ## Pairing a terminal
 
@@ -131,6 +166,9 @@ Code security:
   and used codes all return `pairing_code_invalid`.
 - `POST /api/access/pair` allows 10 failed attempts per minute per IP
   (`too_many_attempts`); `req.ip` is the real client behind Railway (`trust proxy`).
+- A code dies with its creator's access: deactivating the creator, or a role
+  change away from owner/manager, cancels their open codes, and redemption
+  requires an active owner or manager creator.
 - Re-pairing a browser that already holds this restaurant's terminal cookie
   retires the old device (`revoked_reason = 'replaced'`).
 
@@ -157,11 +195,23 @@ lock staff out (SEC-2).
 - 12 hours without failures (and no active lock) resets the device counter.
 - A correct PIN resets the device counter and the global consecutive counter.
 - After 100 consecutive failures across devices the employee is hard-locked
-  (`pin_hard_locked`) until a manager unlocks them or the owner resets the PIN.
-- Owners and managers can **Desbloquear** from Equipo; a PIN reset also clears
-  every lock.
+  (`pin_hard_locked`) until the owner unlocks them or resets the PIN.
+- **Desbloquear** (Equipo): the owner unlocks anyone and clears everything,
+  the hard lock and the consecutive counter included. A manager unlocks only
+  cashiers, servers and kitchen staff, at most 3 times per employee per rolling
+  day (`unlock_limit`), never a hard lock or an owner/manager
+  (`unlock_owner_only`), and never resets the consecutive counter, so
+  alternating wrong approval PINs with unlocks cannot go past the hard lock. A
+  PIN reset clears every lock.
 - Manager approvals count against the approving manager on the session's device
-  only.
+  only. A void approval checks that the order exists before any PIN, and one
+  session's rejected approvals are capped at 10 per minute
+  (`too_many_attempts`, in-process).
+- Rate limits: `POST /api/access/pin` (30/min), `GET /api/access/terminal`
+  (120/min) and logout (60/min) count per verified `gm_device`. Requests
+  without a valid device cookie share a separate per-IP budget, so guest Wi-Fi
+  on the restaurant's public IP cannot use up a terminal's budget; device
+  requests also keep a per-IP backstop at 20 times the device limit.
 
 This follows the OWASP Authentication Cheat Sheet guidance on exponential,
 time-bounded lockout that avoids becoming a denial of service
@@ -194,9 +244,19 @@ Logout always succeeds: the server endpoint never fails on an invalid session,
 and a logout that cannot reach the server is remembered
 (`localStorage["gm-logout-pending"]`), blocks restoring the cached session, and
 completes on the next load or reconnect. A PIN sign-in on the device clears it
-(that sign-in already ended or deliberately resumed the old session), so a late
-logout never ends the new session. The sign-in screen says when the device is
-offline and fills in by itself when the connection returns.
+(that sign-in already ended or deliberately resumed the old session), and the
+remembered logout names its session (`{ sessionId }`): the server ends nothing
+when the cookie holds another session by then, so a late logout never ends the
+new session. The sign-in screen says when the device is offline or the server
+cannot be reached (saved sales are kept) and fills in by itself when the
+connection returns.
+
+A card or cash payment whose answer was lost stays as a payment attempt on the
+device. It is retried by the same session, or by a later session of the same
+employee on the same device once the original has ended normally or expired
+(renewal, PIN after `session_ended`, logout and return), never by another
+employee or after a revocation. A payment that a session 401 refused never ran,
+so its attempt is cleared at once.
 
 ## Staff and devices
 
@@ -210,8 +270,11 @@ offline and fills in by itself when the connection returns.
 - **Dispositivos** (owner and manager; personal devices are owner-only): kind,
   status, last activity, live session, Free selling slot and a warning when a
   personal device is used by several employees. Rename, auto-lock, end the live
-  session, unpair (an open drawer needs an explicit acknowledgement and stays
-  open for reconciliation in Caja).
+  session, unpair. Unpairing a device with an open drawer needs an explicit
+  acknowledgement, also when the drawer was opened after the list loaded. The
+  drawer then stays open and no device can close it until the reports area's
+  remote close ships (see the runbook below). Unpairing a personal device also
+  ends the Google sign-ins (`owner_sessions`) that entered it.
 - **Free selling slot**: the first device that signs in takes the Free selling
   slot, and in a new restaurant that is usually the owner's phone (Google
   entry). A terminal paired afterwards shows "Free: … no está seleccionado"
@@ -234,14 +297,33 @@ its sessions are revoked and its queued sales go to reconciliation in
 Sincronización. Pair a replacement with a new code. If PINs may have been
 observed, reset the PINs of everyone who used it (Equipo → Editar → PIN).
 
+If its drawer was open: close it on the tablet first if the tablet still works
+(Caja → Cerrar caja). Otherwise count the drawer's cash now, keep the count,
+then unpair. No device can close that drawer afterwards until the reports
+area's remote close ("Cerrar caja desde aquí", wave 2) ships. Until then support
+closes it with the manager's count, through the migration role in one
+transaction with `app.tenant_id` set:
+`update cash_sessions set counted=<count>, expected=<expected>, reason='Cierre por soporte: dispositivo desvinculado', closed_at=clock_timestamp() where id=<drawer> and closed_at is null`,
+where `<expected>` is computed as `cashSummary` does (opening + cash tenders
+and tips − refunds + cash movements of that drawer), and records it in the
+support log.
+
+**Lost or stolen phone or laptop (owner or invited member).** The owner opens
+Dispositivos from another device and **Desvincular**s it. Its POS sessions are
+revoked and the Google sign-ins that entered it end at once. A Google sign-in
+from before the unpairing can no longer pair that browser again
+(`owner_reauth_required`); only a new Google sign-in can. Change the Google
+account's password if the device itself may still be signed in to Google.
+
 **Fired employee.** Equipo → Editar → **Desactivar empleado**. Every session on
 every device is revoked; an invited Google member also loses Google entry to the
 location. Unsent sales on a device wait for manager reconciliation.
 
-**Locked manager.** Another manager or the owner opens Equipo → Editar →
-**Desbloquear**. Without another manager, wait for the stage lock to expire (at
-most 60 minutes), or the owner resets the PIN. A hard lock (100 consecutive
-failures) needs an unlock or PIN reset.
+**Locked manager or owner.** The owner opens Equipo → Editar →
+**Desbloquear** (managers cannot unlock managers or owners). Otherwise wait for
+the stage lock to expire (at most 60 minutes), or the owner resets the PIN. A
+hard lock (100 consecutive failures) needs the owner's unlock or a PIN reset.
+A Google owner without a usable PIN on a terminal unlocks from their phone.
 
 **Re-pairing a tablet used with Google before this release.** Devices created by
 Google "Entrar" are `personal`: they still offer Google and show "Lo usan varios
@@ -267,7 +349,17 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
 - Insider PIN guessing on a paired terminal is bounded (about 50 attempts per
   12 h per device) but not impossible against legacy 4-digit secrets.
 - Revoking a device with an open drawer leaves that drawer open with no device
-  to close it; the acknowledgement is audited and the drawer must be reconciled.
+  to close it until the reports area's remote close ships; the acknowledgement
+  is audited, the dialog says so, and the runbook gives the support step.
+- Offline sales cite a session's lease windows, which are not capped at the
+  session's end (`leaseCovers`), so evidence may be dated after a logout within
+  the window. Accepted for v1 (review A12): a cap would refuse genuine sales
+  recorded by tablets whose clocks run ahead.
+- The demo path (`DEMO_TENANT_ID`, fictional tenant only, refused in
+  production) shares one throttle scope and counts toward the demo owner's
+  hard lock, and a correct non-owner secret answers `pair_device` (review A13).
+- The 16-hour cap also applies to kitchen sessions; a KDS shows the expiry
+  banner 30 minutes ahead and then its lock (review ACC-FLOOR-13).
 - A lost pairing response leaves an unused device (last activity "—"); revoke it
   and create a new code.
 - During a rolling deploy the previous revision still auto-pairs owner password
@@ -287,14 +379,16 @@ This keeps the personal data proportional to the purpose (LFPDPPP 2025,
 
 ## Verification (local)
 
-- `npm run test:db:access` (30 checks, one of which applies migration 023 as an
+- `npm run test:db:access` (35 checks, one of which applies migration 023 as an
   owner role without BYPASSRLS in a scratch database), plus the updated voids,
   owner and offline-recovery suites in `npm run test:db:qualification`.
-- `npm run build && npm run test:access-http` (9 checks against the compiled
-  server, with and without `DEMO_TENANT_ID`).
-- `tests/browser/access.spec.ts` (18 flows, axe at 1440 and 390, no horizontal
+- `npm run build && npm run test:access-http` (11 checks against the compiled
+  server, with and without `DEMO_TENANT_ID`, including the terminal guard's case,
+  trailing-slash, HEAD and account-center variants and the device-keyed limits).
+- `tests/browser/access.spec.ts` (24 flows, axe at 1440 and 390, no horizontal
   overflow at 1440/1024/768/390); evidence in `docs/evidence/access-*.png`.
-- `tests/access.test.ts` and `tests/access-client.test.ts` (unit).
+- `tests/access.test.ts`, `tests/access-client.test.ts` and
+  `tests/access-lock.test.ts` (unit).
 
 Not verified: staging (`scripts/staging-smoke.mjs` gained a pairing and step-up
 step but was not run), production, and real tablets or kiosks.
