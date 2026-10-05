@@ -20,6 +20,7 @@ import {
 } from "../offline-kitchen.js";
 import { offlineDevicePrefix } from "../offline-device.js";
 import { openOrdersSnapshot } from "../offline-tables.js";
+import { resolvePaymentAttempt } from "../offline-attempts.js";
 import {
   readOfflineSettings,
   saveOfflineSettings,
@@ -109,6 +110,10 @@ export function register({ route }: RouteContext) {
   );
   route("post", "/offline/archive", (tx, s, req) =>
     archiveOfflineRecord(tx, s, req.body),
+  );
+  // OFFLINE-RECOVERY-05: a manager records or discards a parked payment attempt.
+  route("post", "/offline/attempts/resolve", (tx, s, req) =>
+    resolvePaymentAttempt(tx, s, req.body),
   );
   route("get", "/offline/recoveries", (tx, s, req) =>
     listOfflineRecoveriesPage(tx, s, page(req.query)),

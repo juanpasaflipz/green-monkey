@@ -32,6 +32,11 @@ import {
   recordPayment,
 } from "../server/orders.js";
 import { openOrdersSnapshot } from "../server/offline-tables.js";
+import { resolvePaymentAttempt } from "../server/offline-attempts.js";
+import {
+  paymentRecoveryStatus,
+  retryPaymentRecovery,
+} from "../server/payment-recovery.js";
 import {
   readOfflineSettings,
   saveOfflineSettings,
@@ -2257,6 +2262,159 @@ try {
   );
   assert.equal(await count("offline_recoveries"), r31Recoveries + 1);
 
+  // 24. OFFLINE-RECOVERY-05: a parked payment attempt (the server never
+  // recorded it and the device may not resend it) is recorded or discarded by
+  // a manager, exactly once; the original request can never also apply.
+  const attemptOrder = await run((tx) =>
+    createOrder(tx, s1, lostCreate("Pago sin respuesta")),
+  );
+  const attemptOf = (amount: number) => ({
+    formatVersion: 1 as const,
+    tenantId,
+    employeeId: ids.cashier,
+    deviceId: ids.device1,
+    sessionId: s1.id,
+    cashSessionId: ids.drawer1,
+    orderId: attemptOrder.id,
+    createdAt: new Date().toISOString(),
+    payload: {
+      operationId: randomUUID(),
+      amount,
+      tip: 0,
+      received: amount,
+      method: "cash" as const,
+      externalConfirmed: false,
+      reference: "",
+    },
+  });
+  const resolveAttempt = (
+    s: Session,
+    attempt: unknown,
+    outcome: "recorded" | "discarded",
+    operationId = randomUUID(),
+  ) =>
+    run((tx) =>
+      resolvePaymentAttempt(tx, s, {
+        operationId,
+        attempt,
+        outcome,
+        reason: "Verified against the drawer and the guest",
+        confirmed: true,
+      }),
+    );
+  const parked = attemptOf(60);
+  assert.deepEqual(
+    await run((tx) => paymentRecoveryStatus(tx, manager1, parked)),
+    { state: "missing", retryAllowed: false, reviewRequired: true },
+    "another session: the device may not resend it",
+  );
+  await expectCode(resolveAttempt(s1, parked, "recorded"), "forbidden");
+  await expectCode(
+    resolveAttempt(manager1, { ...parked, tenantId: otherTenant }, "recorded"),
+    "forbidden",
+  );
+  const recordCommand = randomUUID();
+  const recorded = await resolveAttempt(
+    manager1,
+    parked,
+    "recorded",
+    recordCommand,
+  );
+  assert.equal(recorded.state, "recorded");
+  assert.equal(recorded.state === "recorded" && recorded.order.paid, 60);
+  const [attemptTender] =
+    await admin`select session_id,source,source_id,amount from tenders where tenant_id=${tenantId} and order_id=${attemptOrder.id}`;
+  assert.deepEqual(
+    { ...attemptTender },
+    {
+      session_id: ids.drawer1,
+      source: "offline_recovery",
+      source_id: parked.payload.operationId,
+      amount: 60,
+    },
+  );
+  // The device's own status check now says committed, and its retry (or a
+  // late original request) returns that payment instead of a second one.
+  assert.equal(
+    (await run((tx) => paymentRecoveryStatus(tx, s1, parked))).state,
+    "committed",
+  );
+  assert.equal(
+    (await run((tx) => retryPaymentRecovery(tx, s1, parked))).paid,
+    60,
+  );
+  assert.equal(
+    (
+      await run((tx) =>
+        recordPayment(tx, s1, attemptOrder.id, parked.payload, null),
+      )
+    ).paid,
+    60,
+  );
+  assert.equal(await count("tenders", "order_id=$2", attemptOrder.id), 1);
+  // A replayed command answers the same. Recording or discarding it again
+  // (another tablet holding the same attempt) only learns it is recorded.
+  assert.equal(
+    (await resolveAttempt(manager1, parked, "recorded", recordCommand)).state,
+    "recorded",
+  );
+  assert.equal(
+    (await resolveAttempt(manager1, parked, "recorded")).state,
+    "committed",
+  );
+  assert.equal(
+    (await resolveAttempt(manager1, parked, "discarded")).state,
+    "committed",
+  );
+  await expectCode(
+    resolveAttempt(manager1, { ...parked, orderId: randomUUID() }, "recorded"),
+    "operation_conflict",
+  );
+  // Never past the balance (I2): 40 is due.
+  const pastDue = attemptOf(50);
+  await expectCode(
+    resolveAttempt(manager1, pastDue, "recorded"),
+    "offline_payment_exceeds_due",
+  );
+  assert.equal(await count("tenders", "order_id=$2", attemptOrder.id), 1);
+  // Discarded: the guest was not charged. The original can never apply.
+  const notCharged = attemptOf(40);
+  assert.equal(
+    (await resolveAttempt(manager1, notCharged, "discarded")).state,
+    "discarded",
+  );
+  assert.deepEqual(
+    await run((tx) => paymentRecoveryStatus(tx, s1, notCharged)),
+    { state: "discarded", retryAllowed: false },
+  );
+  await expectCode(
+    run((tx) => retryPaymentRecovery(tx, s1, notCharged)),
+    "payment_review_required",
+  );
+  await expectCode(
+    run((tx) =>
+      recordPayment(tx, s1, attemptOrder.id, notCharged.payload, null),
+    ),
+    "operation_conflict",
+  );
+  assert.equal(
+    (await resolveAttempt(manager1, notCharged, "discarded")).state,
+    "discarded",
+  );
+  await expectCode(
+    resolveAttempt(manager1, notCharged, "recorded"),
+    "operation_conflict",
+  );
+  assert.equal(await count("tenders", "order_id=$2", attemptOrder.id), 1);
+  assert.equal(
+    await count(
+      "audit",
+      "operation in ('offline.payment_attempt_recorded','offline.payment_attempt_discarded') and entity_id=$2",
+      attemptOrder.id,
+    ),
+    2,
+  );
+
   // 20. Heartbeat: no auth, no-store, single-flight DB check.
   const app = express();
   registerPreAuth({ app, sql });
@@ -2313,7 +2471,7 @@ try {
   }
 
   console.log(
-    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse (only at the server's price; the manager path pays the online order, never a second one), overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, lines already sent online, rounds on paid checks, open-orders snapshot) and the LD-7 setting (off by default, managers only, audited once, gates the snapshot, never sync), and the manager review (eligibility reasons, auto-sync advice, lost creates that sync by themselves, cancelled online orders, archived drafts that differ).",
+    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse (only at the server's price; the manager path pays the online order, never a second one), overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, lines already sent online, rounds on paid checks, open-orders snapshot) and the LD-7 setting (off by default, managers only, audited once, gates the snapshot, never sync), and the manager review (eligibility reasons, auto-sync advice, lost creates that sync by themselves, cancelled online orders, archived drafts that differ) and parked payment attempts recorded or discarded exactly once.",
   );
 } finally {
   for (const table of [
