@@ -52,8 +52,12 @@ available choice shows "Agotado" in the POS and cannot be added.
 **Menu revision.** Every menu write bumps `menu_state.revision`, and its row lock
 serializes all menu writes of a restaurant. The POS polls `GET /menu/revision`
 every 60 seconds while selling, and again on focus, and refetches the catalog
-when the revision changes. Any feature can force a refetch with
-`window.dispatchEvent(new Event("gm-menu-refresh"))`.
+when the revision changes (`src/features/menu/freshness.ts`). The first check
+after sign-in refetches once, because the catalog shown may predate that first
+revision read. Any feature can force a refetch with
+`window.dispatchEvent(new Event("gm-menu-refresh"))`. A refetch writes only the
+offline catalog cache entry, never the cached session, which belongs to sign-in
+and access's heartbeat (contract D15).
 
 **Typing amounts and quantities.** Editors accept "1200", "1,200" and
 "1,200.50": a comma is read only as a thousands separator in a well-formed

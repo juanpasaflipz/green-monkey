@@ -24,6 +24,7 @@ import { db, cacheSession, scope, syncPending } from "./offline";
 import { Button, Field } from "./components/ui";
 import { Selling } from "./features/Selling";
 import { MenuArea, SetupNav, setupViews } from "./features/menu/MenuArea";
+import { menuBaseline, watchMenuRevision } from "./features/menu/freshness";
 import { Operations } from "./features/Operations";
 import { OwnerAccess } from "./features/OwnerAccess";
 export default function App() {
@@ -101,44 +102,23 @@ export default function App() {
   useEffect(() => {
     // Catalog freshness (FOH-8): poll the menu revision while selling so
     // 86'd items leave the grid without a view change; refetch on focus and
-    // whenever another feature dispatches "gm-menu-refresh".
+    // whenever another feature dispatches "gm-menu-refresh". Only the catalog
+    // cache entry is written: the "session" entry belongs to load() and
+    // access's heartbeat (D15), and this effect's copy may be stale.
     if (view !== "sell" || !session || !online) return;
-    const s = session;
-    let live = true;
-    let revision: number | null = null;
-    const refetch = async () => {
-      const c = await api<Product[]>("/catalog");
-      if (!live) return;
-      setCatalog(c);
-      await cacheSession(s, c);
-    };
-    const check = async () => {
-      try {
-        const r = await api<{ revision: number }>("/menu/revision");
-        if (!live) return;
-        const changed = revision !== null && r.revision !== revision;
-        revision = r.revision;
-        if (changed) await refetch();
-      } catch {
-        /* The next tick or focus retries. */
-      }
-    };
-    const refresh = () => void refetch().catch(() => {});
-    const visible = () => {
-      if (document.visibilityState === "visible") void check();
-    };
-    void check();
-    const timer = setInterval(() => void check(), 60_000);
-    window.addEventListener("focus", visible);
-    document.addEventListener("visibilitychange", visible);
-    window.addEventListener("gm-menu-refresh", refresh);
-    return () => {
-      live = false;
-      clearInterval(timer);
-      window.removeEventListener("focus", visible);
-      document.removeEventListener("visibilitychange", visible);
-      window.removeEventListener("gm-menu-refresh", refresh);
-    };
+    const key = scope(session);
+    return watchMenuRevision({
+      revision: async () =>
+        (await api<{ revision: number }>("/menu/revision")).revision,
+      catalog: () => api<Product[]>("/catalog"),
+      apply: async (c) => {
+        setCatalog(c);
+        await db.cache.put({ id: key + ":catalog", value: c });
+      },
+      baseline: menuBaseline(key),
+      win: window,
+      doc: document,
+    });
   }, [view, session?.id, online]);
   useEffect(() => {
     let current = true;

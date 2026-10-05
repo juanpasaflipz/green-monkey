@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import {
   DomainError,
@@ -26,6 +26,12 @@ import {
   tablesBulkInput,
 } from "../shared/menu-schema";
 import { decimalInput, moneyInput } from "../src/features/menu/format";
+import {
+  MENU_POLL_MS,
+  MENU_REFRESH_EVENT,
+  menuBaseline,
+  watchMenuRevision,
+} from "../src/features/menu/freshness";
 
 const tortilla = "00000000-0000-4000-8000-0000000000a1";
 const queso = "00000000-0000-4000-8000-0000000000a2";
@@ -557,5 +563,142 @@ describe("menu number entry (es-MX thousands separator)", () => {
     expect(
       stockItemInput.safeParse({ ...stock, openingQuantity: "1,5" }).success,
     ).toBe(false);
+  });
+});
+
+describe("FOH-8: POS catalog freshness", () => {
+  afterEach(() => vi.useRealTimers());
+  class FakeDocument extends EventTarget {
+    visibilityState: DocumentVisibilityState = "visible";
+  }
+  function harness(start: number | null = 7) {
+    vi.useFakeTimers();
+    const server = {
+      revision: 7,
+      catalog: [{ id: "v1" }] as unknown as Product[],
+    };
+    const calls = { revision: 0, catalog: 0 };
+    const applied: Product[][] = [];
+    let known = start;
+    const win = new EventTarget(),
+      doc = new FakeDocument();
+    const stop = watchMenuRevision({
+      revision: async () => (calls.revision++, server.revision),
+      catalog: async () => (calls.catalog++, server.catalog),
+      apply: (c) => void applied.push(c),
+      baseline: { get: () => known, set: (r) => void (known = r) },
+      win,
+      doc,
+    });
+    return { server, calls, applied, win, doc, stop, known: () => known };
+  }
+  const settle = () => vi.advanceTimersByTimeAsync(0);
+
+  it("an unchanged revision does not refetch; a changed one refetches and applies the catalog", async () => {
+    const h = harness();
+    await settle();
+    expect(h.calls).toEqual({ revision: 1, catalog: 0 });
+    h.server.revision = 8;
+    h.server.catalog = [{ id: "v2" }] as unknown as Product[];
+    await vi.advanceTimersByTimeAsync(MENU_POLL_MS - 1);
+    expect(h.calls.revision).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(h.calls).toEqual({ revision: 2, catalog: 1 });
+    expect(h.applied).toEqual([h.server.catalog]);
+    expect(h.known()).toBe(8);
+    await vi.advanceTimersByTimeAsync(MENU_POLL_MS);
+    expect(h.calls).toEqual({ revision: 3, catalog: 1 });
+    h.stop();
+  });
+
+  it("MENU-12: the first check of a scope refetches once, so a change between the catalog load and the first poll is not missed", async () => {
+    const h = harness(null);
+    await settle();
+    expect(h.calls).toEqual({ revision: 1, catalog: 1 });
+    expect(h.known()).toBe(7);
+    await vi.advanceTimersByTimeAsync(MENU_POLL_MS);
+    expect(h.calls.catalog).toBe(1);
+    h.stop();
+  });
+
+  it("focus and visibilitychange check at once only while visible; gm-menu-refresh refetches without asking", async () => {
+    const h = harness();
+    await settle();
+    h.server.revision = 9;
+    h.doc.visibilityState = "hidden";
+    h.doc.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(h.calls).toEqual({ revision: 1, catalog: 0 });
+    h.doc.visibilityState = "visible";
+    h.doc.dispatchEvent(new Event("visibilitychange"));
+    await settle();
+    expect(h.calls).toEqual({ revision: 2, catalog: 1 });
+    h.server.revision = 10;
+    h.win.dispatchEvent(new Event("focus"));
+    await settle();
+    expect(h.calls).toEqual({ revision: 3, catalog: 2 });
+    h.win.dispatchEvent(new Event(MENU_REFRESH_EVENT));
+    await settle();
+    expect(h.calls).toEqual({ revision: 3, catalog: 3 });
+    expect(h.applied).toHaveLength(3);
+    h.stop();
+  });
+
+  it("a failed refetch keeps the old baseline so the next tick retries; errors never escape", async () => {
+    vi.useFakeTimers();
+    let known: number | null = 1;
+    let fail = true;
+    const applied: unknown[] = [];
+    const stop = watchMenuRevision({
+      revision: async () => 2,
+      catalog: async () => {
+        if (fail) throw new Error("network");
+        return [];
+      },
+      apply: (c) => void applied.push(c),
+      baseline: { get: () => known, set: (r) => void (known = r) },
+      win: new EventTarget(),
+      doc: new FakeDocument(),
+    });
+    await settle();
+    expect(known).toBe(1);
+    fail = false;
+    await vi.advanceTimersByTimeAsync(MENU_POLL_MS);
+    expect(known).toBe(2);
+    expect(applied).toHaveLength(1);
+    stop();
+  });
+
+  it("after cleanup nothing is polled, listened to or applied, even a response already in flight", async () => {
+    vi.useFakeTimers();
+    let release!: (n: number) => void;
+    const applied: unknown[] = [];
+    let revisions = 0;
+    const win = new EventTarget(),
+      doc = new FakeDocument();
+    const stop = watchMenuRevision({
+      revision: () => (revisions++, new Promise<number>((r) => (release = r))),
+      catalog: async () => [],
+      apply: (c) => void applied.push(c),
+      baseline: { get: () => 1, set: () => {} },
+      win,
+      doc,
+    });
+    stop();
+    release(2);
+    await settle();
+    win.dispatchEvent(new Event("focus"));
+    win.dispatchEvent(new Event(MENU_REFRESH_EVENT));
+    await vi.advanceTimersByTimeAsync(MENU_POLL_MS * 3);
+    expect(revisions).toBe(1);
+    expect(applied).toEqual([]);
+  });
+
+  it("baselines are kept per session scope", () => {
+    const a = menuBaseline("tenant-a:device:employee"),
+      b = menuBaseline("tenant-b:device:employee");
+    a.set(4);
+    expect(menuBaseline("tenant-a:device:employee").get()).toBe(4);
+    expect(b.get()).toBeNull();
   });
 });

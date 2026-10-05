@@ -579,6 +579,132 @@ test("MON-3: a management dialog keeps one operation id, so a retry after a lost
   expect(expenses.filter((e) => e.reason === reason)).toHaveLength(1);
 });
 
+/** Reads (or rewrites) the offline cache that App keeps in IndexedDB. */
+async function offlineCache(page: Page, offlineUntil?: string) {
+  return page.evaluate(
+    (offlineUntil) =>
+      new Promise<{ offlineUntil: string; catalog: any[] | null }>(
+        (resolve, reject) => {
+          const open = indexedDB.open("green-monkey-v1");
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const db = open.result;
+            const tx = db.transaction(
+              "cache",
+              offlineUntil ? "readwrite" : "readonly",
+            );
+            const store = tx.objectStore("cache");
+            const result = { offlineUntil: "", catalog: null as any[] | null };
+            const session = store.get("session");
+            session.onsuccess = () => {
+              const entry = session.result;
+              if (offlineUntil)
+                store.put({
+                  ...entry,
+                  value: { ...entry.value, offlineUntil },
+                });
+              result.offlineUntil = offlineUntil ?? entry.value.offlineUntil;
+            };
+            const all = store.getAll();
+            all.onsuccess = () => {
+              const catalog = all.result.find((e: any) =>
+                String(e.id).endsWith(":catalog"),
+              );
+              result.catalog = catalog?.value ?? null;
+            };
+            tx.oncomplete = () => {
+              db.close();
+              resolve(result);
+            };
+            tx.onerror = () => reject(tx.error);
+          };
+        },
+      ),
+    offlineUntil,
+  );
+}
+
+test("FOH-8: an 86 reaches an open Vender screen through the minute poll, focus and gm-menu-refresh, and only the catalog cache is rewritten", async ({
+  page,
+}) => {
+  // Fake timers (time still flows) so the 60 s poll can be fast-forwarded.
+  await page.clock.install();
+  await login(page);
+  const menu = (await call(page, "/menu")).data as {
+    products: { id: string; name: { es: string } }[];
+  };
+  const brownie = menu.products.find((p) => p.name.es === "Brownie de cacao")!;
+  const toggle = async (available: boolean) =>
+    expect(
+      (
+        await call(page, "/menu/products/availability", {
+          operationId: crypto.randomUUID(),
+          id: brownie.id,
+          available,
+        })
+      ).status,
+    ).toBe(200);
+  let catalogs = 0;
+  page.on("response", (r) => {
+    if (new URL(r.url()).pathname === "/api/catalog") catalogs++;
+  });
+  try {
+    await sell(page);
+    const card = page
+      .locator(".product")
+      .filter({ hasText: "Brownie de cacao" });
+    await expect(card).toBeEnabled();
+    // Entering Vender: the view's catalog fetch, then the first revision check
+    // refetches once (a change may land between the two; MENU-12).
+    await expect.poll(() => catalogs).toBe(2);
+    // Simulate access's heartbeat renewing the offline window in the cache;
+    // a catalog refresh must never put the login-time session back (MENU-2).
+    const renewed = "2999-01-01T00:00:00.000Z";
+    await expect
+      .poll(async () => {
+        await offlineCache(page, renewed);
+        await page.waitForTimeout(150);
+        return (await offlineCache(page)).offlineUntil;
+      })
+      .toBe(renewed);
+
+    // 1. The 60 s revision poll, with no view change.
+    await toggle(false);
+    await expect(card).toBeEnabled();
+    expect(catalogs).toBe(2);
+    await page.clock.fastForward(60_000);
+    await expect(card).toBeDisabled();
+    await expect(card).toContainText("Agotado");
+    expect(catalogs).toBe(3);
+
+    // 2. Focus (the terminal comes back to the foreground).
+    await toggle(true);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(card).toBeEnabled();
+    await expect(card).not.toContainText("Agotado");
+
+    // 3. gm-menu-refresh (dispatched by Selling after catalog send errors).
+    await toggle(false);
+    await expect(card).toBeEnabled();
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("gm-menu-refresh")),
+    );
+    await expect(card).toBeDisabled();
+
+    // Still on Vender: no view change was involved.
+    await expect(
+      page.getByRole("button", { name: "Vender", exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    const cache = await offlineCache(page);
+    expect(cache.offlineUntil).toBe(renewed);
+    expect(
+      cache.catalog?.find((p: any) => p.id === brownie.id)?.available,
+    ).toBe(false);
+  } finally {
+    await toggle(true);
+  }
+});
+
 test('money and quantity entry: "1,200" is $1,200.00 and an ambiguous "25,50" is refused, never read as a decimal', async ({
   page,
 }) => {
