@@ -686,6 +686,285 @@ test("a revoked session leaves the offline cache on a cold start, and an ended o
   }
 });
 
+/**
+ * "Salir" offline over a lock the server imposed: the warning offers no manual
+ * lock (which would replace the server's reason), and after "Quedarme" the lock
+ * keeps its reason with no "Continuar como" and the workspace stays inert (ACC-18).
+ */
+async function serverLockHoldsOffline(tablet: Page, lock: ReturnType<Page["getByRole"]>) {
+  await expect(lock).toContainText("Sin conexión no se puede verificar el PIN.");
+  const continueAs = lock.getByRole("button", {
+    name: `Continuar como ${CASHIER.name}`,
+  });
+  await expect(continueAs).toHaveCount(0);
+  await lock.getByRole("button", { name: "Salir", exact: true }).click();
+  const leaving = tablet.getByRole("dialog", { name: "Sin conexión", exact: true });
+  await expect(leaving).toBeVisible();
+  await expect(leaving.getByRole("button", { name: "Quedarme" })).toBeVisible();
+  await expect(
+    leaving.getByRole("button", { name: "Bloquear pantalla" }),
+  ).toHaveCount(0);
+  await leaving.getByRole("button", { name: "Quedarme" }).click();
+  await expect(leaving).toBeHidden();
+  await expect(lock).toBeVisible();
+  await expect(continueAs).toHaveCount(0);
+  expect(await lockOpen(tablet)).toBe(true);
+  expect(
+    await tablet.evaluate(() => document.getElementById("root")!.inert),
+  ).toBe(true);
+  const tables = tablet.locator("nav.rail button", { hasText: "Mesas" });
+  await tables.click({ force: true });
+  await expect(lock).toBeVisible();
+  await expect(tables).not.toHaveAttribute("aria-current", "page");
+  // Signing out still works offline and leaves nothing to restore.
+  await lock.getByRole("button", { name: "Salir", exact: true }).click();
+  await leaving.getByRole("button", { name: "Salir de todos modos" }).click();
+  await expect(tablet.locator(".scope")).toHaveCount(0);
+  await expect(tablet.locator("dialog.lock-screen")).toHaveCount(0);
+}
+
+test("a session the server revoked stays locked offline: Salir offers no manual lock and no Continuar como appears (ACC-18)", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  const admin = fixtureAdmin(baseURL);
+  try {
+    await ownerLogin(page);
+    const { context, page: tablet } = await pairTerminal(
+      browser,
+      page,
+      `Revocada sin red ${tag()}`,
+    );
+    await signIn(tablet, CASHIER.name, CASHIER.pin);
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    const s = await sessionOf(tablet);
+    expect(new Date(s.offlineUntil).getTime()).toBeGreaterThan(Date.now());
+    // Revoked the way deactivation does it, then the next call meets the 401.
+    await admin`update sessions set revoked=true, ended_at=now(),
+      end_reason='employee_deactivated', expires_at=least(expires_at,now())
+      where id=${s.id}`;
+    await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
+    const lock = tablet.getByRole("dialog", {
+      name: "Un responsable cerró esta sesión o desactivó al empleado.",
+    });
+    await expect(lock).toBeVisible();
+    // The tablet goes offline (airplane mode) with its offline window valid.
+    await context.setOffline(true);
+    await serverLockHoldsOffline(tablet, lock);
+    const [row] = await admin`select revoked from sessions where id=${s.id}`;
+    expect(row.revoked).toBe(true);
+    await context.close();
+  } finally {
+    await admin.end();
+  }
+});
+
+test("an ended session restored offline from the cache keeps its lock through Salir (ACC-18)", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  test.skip(
+    !process.env.TEST_PRODUCTION,
+    "Offline reload requires the compiled server's service worker",
+  );
+  const admin = fixtureAdmin(baseURL);
+  try {
+    await ownerLogin(page);
+    const { context, page: first } = await pairTerminal(
+      browser,
+      page,
+      `Terminada sin red ${tag()}`,
+    );
+    await signIn(first, CASHIER.name, CASHIER.pin);
+    await expect(first.locator(".scope")).toContainText(CASHIER.name);
+    await first.evaluate(async () => {
+      await navigator.serviceWorker.ready;
+    });
+    const ended = await sessionOf(first);
+    await expect.poll(() => cachedSessionId(first)).toBe(ended.id);
+    await first.close();
+    await admin`update sessions set ended_at=now(),end_reason='ended_by_manager',
+      expires_at=least(expires_at,now()) where id=${ended.id}`;
+    const tablet = await context.newPage();
+    await tablet.goto("/app");
+    await expect(
+      tablet.getByRole("heading", { name: "¿Quién entra?", exact: true }),
+    ).toBeVisible();
+    await context.setOffline(true);
+    await tablet.reload();
+    const lock = tablet.getByRole("dialog", {
+      name: "La sesión se cerró en este dispositivo. Ingresa tu PIN para continuar.",
+    });
+    await expect(lock).toBeVisible();
+    await serverLockHoldsOffline(tablet, lock);
+    await context.close();
+  } finally {
+    await admin.end();
+  }
+});
+
+test("a pending PIN confirmation never passes to the next employee after an idle lock and a switch, or a sign-out (ACC-20)", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  const admin = fixtureAdmin(baseURL);
+  const id = tag();
+  const manager = { name: `Gerente ${id}`, pin: "975310" };
+  const owner = "Alex Demo";
+  try {
+    await ownerLogin(page);
+    const created = await call(page, "/access/staff", {
+      operationId: crypto.randomUUID(),
+      name: manager.name,
+      role: "manager",
+      pin: manager.pin,
+    });
+    expect(created.status).toBe(200);
+    const code = await newCode(page, `Paso cambio ${id}`);
+    const context = await browser.newContext();
+    const tablet = await context.newPage();
+    await tablet.clock.install();
+    await pair(tablet, code);
+    await admin`update devices set idle_lock_seconds=180 where name=${`Paso cambio ${id}`}`;
+    await signIn(tablet, owner, OWNER_PASSWORD, true);
+    await expect(tablet.locator(".scope")).toContainText(owner);
+
+    // A paid cash order on this terminal, refundable by either manager.
+    const drawer = await call(tablet, "/cash");
+    if (!drawer.body || drawer.body.closed_at)
+      expect(
+        (await call(tablet, "/cash/open", {
+          operationId: crypto.randomUUID(),
+          opening: 0,
+        })).status,
+      ).toBe(200);
+    const catalog = (await call<any[]>(tablet, "/catalog")).body;
+    const product = catalog.find((p) => p.name.es === "Taco de hongos");
+    const name = `Cambio ${id}`;
+    const order = await call(tablet, "/orders", {
+      operationId: crypto.randomUUID(),
+      lines: [
+        { id: crypto.randomUUID(), productId: product.id, quantity: 1, options: [], note: "" },
+      ],
+      mode: "takeaway",
+      tableId: null,
+      name,
+      note: "",
+      channel: "pos",
+    });
+    expect(order.status).toBe(200);
+    const paid = await call(tablet, `/orders/${order.body.id}/payments`, {
+      operationId: crypto.randomUUID(),
+      amount: order.body.total,
+      tip: 0,
+      received: order.body.total,
+      method: "cash",
+    });
+    expect(paid.status).toBe(200);
+    const refunds = async () => {
+      const [r] = await admin`select count(*)::int as n from refunds r
+        join tenders t on t.tenant_id=r.tenant_id and t.id=r.tender_id
+        where t.order_id=${order.body.id}`;
+      return r.n as number;
+    };
+    const stepUp = tablet.getByRole("dialog", { name: "Confirma con tu PIN" });
+    const lock = tablet.getByRole("dialog", { name: "Pantalla bloqueada" });
+    /** Starts a refund that needs the PIN, then walks away until the idle lock. */
+    const refundThenWalkAway = async (who: string) => {
+      const s = await sessionOf(tablet);
+      await admin`update sessions set authenticated_at=now()-interval '1 hour' where id=${s.id}`;
+      await tablet.getByRole("button", { name: "Operación", exact: true }).click();
+      await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
+      const card = tablet.locator(".order-summary").filter({ hasText: name }).first();
+      await card.getByRole("button", { name: "Reembolsar", exact: true }).click();
+      const refund = tablet.getByRole("dialog").first();
+      await refund.getByLabel("Importe", { exact: true }).fill("10");
+      await refund.getByLabel("Explicación").fill("Devolución sin confirmar");
+      await refund.getByRole("button", { name: "Guardar", exact: true }).click();
+      await expect(stepUp).toContainText(
+        `Esta acción necesita que confirmes que eres ${who}.`,
+      );
+      await tablet.clock.fastForward("03:05");
+      await expect(lock).toBeVisible();
+      // Never over the lock.
+      await expect(stepUp).toHaveCount(0);
+    };
+
+    // 1. The owner's refund waits for the PIN; the manager switches in from the idle lock.
+    await refundThenWalkAway(owner);
+    await lock.getByRole("button", { name: "Cambiar de usuario" }).click();
+    await signIn(lock, manager.name, manager.pin);
+    await expect(lock).toBeHidden();
+    await expect(tablet.locator(".scope")).toContainText(manager.name);
+    await expect(stepUp).toHaveCount(0);
+    await tablet.getByRole("button", { name: "Operación", exact: true }).click();
+    await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await expect(stepUp).toHaveCount(0);
+    expect(await refunds()).toBe(0);
+
+    // 2. The manager's refund waits for the PIN; Salir from the idle lock, the owner signs in.
+    await refundThenWalkAway(manager.name);
+    await lock.getByRole("button", { name: "Salir", exact: true }).click();
+    await expect(
+      tablet.getByRole("heading", { name: "¿Quién entra?", exact: true }),
+    ).toBeVisible();
+    await signIn(tablet, owner, OWNER_PASSWORD, true);
+    await expect(tablet.locator(".scope")).toContainText(owner);
+    await expect(stepUp).toHaveCount(0);
+    expect(await refunds()).toBe(0);
+    await context.close();
+  } finally {
+    await admin.end();
+  }
+});
+
+test("an idle background tab never locks the tab in use; with every tab idle, each one locks (ACC-21)", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  const admin = fixtureAdmin(baseURL);
+  const id = tag();
+  try {
+    await ownerLogin(page);
+    const code = await newCode(page, `Pestañas ${id}`);
+    const context = await browser.newContext();
+    const tablet = await context.newPage();
+    await tablet.clock.install();
+    await pair(tablet, code);
+    await admin`update devices set idle_lock_seconds=180 where name=${`Pestañas ${id}`}`;
+    await signIn(tablet, CASHIER.name, CASHIER.pin);
+    await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
+    // A second tab of the same session, left alone in the background.
+    const background = await context.newPage();
+    await background.goto("/app");
+    await expect(background.locator(".scope")).toContainText(CASHIER.name);
+    const lockOf = (p: Page) =>
+      p.getByRole("dialog", { name: "Pantalla bloqueada" });
+    // The cashier keeps selling in the first tab for 4 minutes: the background
+    // tab's own 3-minute timer comes due, but neither tab locks.
+    const product = tablet.locator("button.product", { hasText: "Taco de hongos" });
+    for (let minute = 0; minute < 4; minute++) {
+      await tablet.clock.fastForward("01:00");
+      await product.click();
+    }
+    await expect(tablet.locator(".cart")).toContainText("Taco de hongos");
+    await expect(lockOf(tablet)).toHaveCount(0);
+    await expect(lockOf(background)).toHaveCount(0);
+    // Idle everywhere: each tab locks by its own timer.
+    await tablet.clock.fastForward("03:10");
+    await expect(lockOf(tablet)).toBeVisible();
+    await tablet.clock.fastForward("00:30");
+    await expect(lockOf(background)).toBeVisible();
+    await context.close();
+  } finally {
+    await admin.end();
+  }
+});
+
 test("an expired session shows the PIN lock with its reason, not a generic error, and Salir works (FOH-7)", async ({
   page,
   browser,
