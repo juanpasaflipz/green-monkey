@@ -60,6 +60,33 @@ backup download of every unsynced record without a session.
 Open-price lines are allowed offline (wave contract D11): the server re-prices them
 with the same staff rule at sync.
 
+### Table service offline
+
+Shipped as the separate `feat(offline-tables)` commit series (wave contract §8.1),
+so the core fixes can ship without it.
+
+| Action | Offline |
+|---|---|
+| **Enviar (sin conexión)**: send a new order to the kitchen without paying | yes, it becomes a local open order with a provisional number |
+| Add items to a local open order or to a server order cached before the outage | yes, as a new round (additive; no version check) |
+| **Cobrar** a local or cached order, in full or in part, by cash or external terminal | yes, revalidated against the balance at sync |
+| New order paid in part | yes (order and payment saved together) |
+
+**Órdenes abiertas** (next to Borradores while offline) lists the server open orders
+cached before the outage, "Órdenes guardadas antes de perder la conexión (HH:mm)"
+(refreshed every 120 s while selling is visible; current and previous business
+day, at most 200), and the orders created on this device. Paying a cached server
+order warns that it may have been paid on another device. A round or payment for a
+local order waits until that order has synced (it is never sent to another order);
+an archived local order makes its dependents go to a manager, who can still
+reconcile their money as a financial-only recovery. A payment that would exceed the
+server balance at sync (for example because the table was paid on another device)
+is refused and shown for review; it is never partially applied. A manager can
+reconcile an offline payment to its order, recording it in the original drawer even
+if that drawer is closed, and the order stays a normal order. Local orders are only
+changed through offline records, even after the connection returns; once their
+record syncs, selling continues on the server order.
+
 Before any offline save the device checks: the session may sell (Free selection),
 the offline window is still open by the server-corrected clock, a drawer was open
 and cached before the outage, the order has no unresolved online payment, and the
