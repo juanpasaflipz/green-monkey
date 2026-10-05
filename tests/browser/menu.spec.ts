@@ -833,9 +833,10 @@ test("modifier groups: a blank group starts optional, a forced paid extra is fla
   const price = dialog.getByLabel("Precio extra 1");
   await expect(price).toHaveAttribute("aria-invalid", "true");
   // Invalid fields are visibly marked (red border), not only for screen readers.
-  expect(
-    await price.evaluate((el) => getComputedStyle(el).borderTopColor),
-  ).toBe("rgb(192, 39, 28)");
+  // (Polled: the border color has a 0.12 s transition.)
+  await expect
+    .poll(() => price.evaluate((el) => getComputedStyle(el).borderTopColor))
+    .toBe("rgb(192, 39, 28)");
 
   await price.fill("15");
   await dialog.getByLabel("Opción 2", { exact: true }).fill("Doble queso");
