@@ -4,7 +4,7 @@
 // Its Railway preDeploy runs `migrate.js --grants --retention`, keeping the
 // migration owner credential out of the internet-facing web service; the
 // same credential runs retention here every 15 minutes inside the off-hours
-// window 04:00-10:00 America/Mexico_City (OPS-R6, OPS-R10).
+// window 04:00-07:00 America/Mexico_City (OPS-R6, OPS-R10).
 import "./config.js";
 import http from "node:http";
 import { hostname } from "node:os";

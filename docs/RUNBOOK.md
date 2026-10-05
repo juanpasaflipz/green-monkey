@@ -125,19 +125,21 @@ Retention deletes only expired OAuth login attempts and done/dead jobs older
 than 30 days (`server/ops/retention.ts`; every other table, blocked receipt
 jobs included, is kept). It runs as `gm_migrator` once per deploy (the
 worker's preDeploy) and from the worker every 15 minutes **only between
-04:00 and 10:00 America/Mexico_City**, after the 03:30 backup and outside
-service hours; `lastRetentionAt` in the worker's `/healthz` shows the last
-pass. Each batch briefly turns off FORCE row-level security, which takes an
-ACCESS EXCLUSIVE lock on the table until it commits, and every order and
-payment inserts into `jobs`. So each batch waits at most 200 ms for that
-lock (a lock-timeout skip is logged, not alerted) and runs each statement
-at most 1.5 s; a deploy during service can therefore stall order and
-payment inserts by at most about 1.7 s per batch, and the off-hours passes
-not at all. When `retention_failed` reports `reason:"statement_timeout"`,
-the jobs scan has outgrown that bound (no index serves the predicate):
-nothing was deleted and sales were not affected, but the table now keeps
-growing until the follow-up below ships. Do not raise the bounds in
-service hours.
+04:00 and 07:00 America/Mexico_City** (12 passes a night), after the 03:30
+backup starts and before most restaurants open, breakfast service included;
+`lastRetentionAt` in the worker's `/healthz` shows the last pass. Each batch
+briefly turns off FORCE row-level security, which takes an ACCESS EXCLUSIVE
+lock on the table until it commits, and every order and payment inserts
+into `jobs`. So each batch waits at most 200 ms for that lock (a
+lock-timeout skip is logged, not alerted) and runs each statement at most
+1.5 s. Every batch, from a deploy or a scheduled pass, can therefore stall
+order and payment inserts for up to about 1.7 s; that matters during
+service (a deploy) and for a restaurant that already sells before 07:00.
+When `retention_failed` reports `reason:"statement_timeout"`, the jobs scan
+has outgrown that bound (no index serves the predicate): nothing was
+deleted, each such pass stalled inserts for up to that 1.7 s once per tick,
+and the table keeps growing until the follow-up below ships. Do not raise
+the bounds in service hours.
 
 To purge by hand (for example after a failed night), run one pass and
 nothing else, with `MIGRATION_DATABASE_URL` (`gm_migrator`, direct
@@ -279,7 +281,7 @@ Known gaps this release leaves open, with their owner:
 | --- | --- | --- |
 | DB-1, billing credential in `web` | While billing is enabled, `web` holds `BILLING_DATABASE_URL` for owner billing commands and the webhook. That login is a member of `gm_billing_worker`, whose policies read restaurants, organizations, entitlements and billing tables across tenants. Production launches with `BILLING_SANDBOX_ENABLED=false`, and production `web` refuses to start with `BILLING_DATABASE_URL` set while billing is disabled (`server/config-rules.ts`), so the internet-facing process never holds it there. | Account area (migration 031): a `billing_requests` inbox written with the runtime role and drained by the worker, after which only `worker` holds the billing login. |
 | DB-6, grants hash in readiness | Grants are applied in the newest migration's transaction, so a new revision cannot pass `/api/health` before its tables are granted; readiness itself checks only `schema_migrations` (`server/readiness.ts` is frozen this wave). | Ops, next wave: a `schema_grants` registry and a readiness check of the manifest hash. |
-| OPS-R10, retention needs DDL | Each retention batch turns off FORCE row-level security (ACCESS EXCLUSIVE until commit) and scans `jobs` without an index, because only the owner may delete and FORCE applies to it. The worker therefore runs it only 04:00–10:00 Mexico City, with a 200 ms lock wait and a 1.5 s statement bound per batch; at a few million `jobs` rows (blocked receipt jobs are never deleted) the scan exceeds the bound and `retention_failed` reports `statement_timeout` every night. | Ops, next wave (a new migration; 022 is limited to the hot-path indexes): a partial index `jobs(created_at) WHERE state IN ('done','dead')` so each batch finds its rows in milliseconds, and a `gm_maintenance` login with DELETE on the two tables under policies limited to the retention predicates, so retention needs no DDL and no ACCESS EXCLUSIVE lock and can run at any hour. |
+| OPS-R10, retention needs DDL | Each retention batch turns off FORCE row-level security (ACCESS EXCLUSIVE until commit) and scans `jobs` without an index, because only the owner may delete and FORCE applies to it. The worker therefore runs it only 04:00–07:00 Mexico City, with a 200 ms lock wait and a 1.5 s statement bound per batch; at a few million `jobs` rows (blocked receipt jobs are never deleted) the scan exceeds the bound and `retention_failed` reports `statement_timeout` every night. | Ops, next wave (a new migration; 022 is limited to the hot-path indexes): a partial index `jobs(created_at) WHERE state IN ('done','dead')` so each batch finds its rows in milliseconds, and a `gm_maintenance` login with DELETE on the two tables under policies limited to the retention predicates, so retention needs no DDL and no ACCESS EXCLUSIVE lock and can run at any hour. |
 | OPS-10, signing keyring; F2 in-transaction authentication | Tokens are still signed with `JWT_SECRET`; deferred while the access area rewrites `server/auth.ts`. | Ops, after the access merge. |
 
 ## Incident log template

@@ -142,17 +142,19 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
     );
   });
 
-  it("the window is 04:00-10:00 in Mexico City, outside service hours", () => {
+  it("the window is 04:00-07:00 in Mexico City, before breakfast service (OPS-R15)", () => {
     expect(RETENTION_WINDOW).toEqual({
       timeZone: "America/Mexico_City",
       startHour: 4,
-      endHour: 10,
+      endHour: 7,
     });
     const at = (iso: string) => inRetentionWindow(Date.parse(iso));
     // Mexico City is UTC-6 all year.
     expect(at("2026-10-05T09:59:00Z")).toBe(false); // 03:59, backup time
     expect(at("2026-10-05T10:00:00Z")).toBe(true); // 04:00
-    expect(at("2026-10-05T15:59:00Z")).toBe(true); // 09:59
+    expect(at("2026-10-05T12:59:00Z")).toBe(true); // 06:59
+    expect(at("2026-10-05T13:00:00Z")).toBe(false); // 07:00, breakfast
+    expect(at("2026-10-05T15:59:00Z")).toBe(false); // 09:59, breakfast
     expect(at("2026-10-05T16:00:00Z")).toBe(false); // 10:00
     expect(at("2026-10-05T18:30:00Z")).toBe(false); // 12:30, service
     expect(at("2026-10-06T05:00:00Z")).toBe(false); // 23:00, service

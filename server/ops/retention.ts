@@ -8,7 +8,7 @@
  * Both tables force row-level security and the runtime role has no DELETE,
  * so the pass runs as the schema owner: once per deploy (`migrate.js
  * --retention`) and from the worker every 15 minutes inside an off-hours
- * window, 04:00-10:00 America/Mexico_City (MIGRATION_DATABASE_URL, which its
+ * window, 04:00-07:00 America/Mexico_City (MIGRATION_DATABASE_URL, which its
  * preDeploy already holds). Each batch uses the owner pattern migrations use
  * for backfills: in one transaction, NO FORCE ROW LEVEL SECURITY, a bounded
  * DELETE, FORCE ROW LEVEL SECURITY, so nobody ever observes the table without
@@ -45,15 +45,17 @@ export interface RetentionWindow {
 }
 
 /**
- * The worker's periodic retention runs only between 04:00 and 10:00 in
- * Mexico City (UTC-6 all year): after the nightly backup starts (03:30),
- * well before service hours (12:00-23:59, RUNBOOK) and outside the hours
- * restaurants sell (OPS-R10).
+ * The worker's periodic retention runs only between 04:00 and 07:00 in
+ * Mexico City (UTC-6 all year; 12 ticks a night): after the nightly backup
+ * starts (03:30) and before most restaurants open, breakfast service
+ * included (OPS-R10, OPS-R15). A restaurant already selling then can still
+ * see order and payment inserts pause for up to about 1.7 s per batch (the
+ * lock wait plus the statement bound).
  */
 export const RETENTION_WINDOW: RetentionWindow = {
   timeZone: "America/Mexico_City",
   startHour: 4,
-  endHour: 10,
+  endHour: 7,
 };
 
 /** Whether `at` falls inside the window, in the window's time zone. */

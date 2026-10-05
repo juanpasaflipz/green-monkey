@@ -31,7 +31,7 @@ configuration before any application module (`server/config.ts`).
 | Service | Start | Health | Notes |
 | --- | --- | --- | --- |
 | `web` | `build/server/index.js` | `/api/health` (300 s) | Runtime role only (plus the billing login when billing is enabled). `replicas: 1` because rate limits are in memory. `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=20`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=10`. |
-| `worker` | `build/server/worker.js` | `/healthz` (300 s) | No public domain. `preDeploy: node build/scripts/migrate.js --grants --retention` runs as the non-superuser `gm_migrator`, so the owner credential never reaches `web`. The same credential runs retention every 15 minutes between 04:00 and 10:00 America/Mexico_City only (first tick 60 s after boot; each batch waits at most 200 ms for its lock and runs each statement at most 1.5 s; `retention_failed` alert on failure; [RUNBOOK.md](RUNBOOK.md) "Retention"). Draining 30 s. Holds the Stripe secret key. |
+| `worker` | `build/server/worker.js` | `/healthz` (300 s) | No public domain. `preDeploy: node build/scripts/migrate.js --grants --retention` runs as the non-superuser `gm_migrator`, so the owner credential never reaches `web`. The same credential runs retention every 15 minutes between 04:00 and 07:00 America/Mexico_City only (first tick 60 s after boot; each batch waits at most 200 ms for its lock and runs each statement at most 1.5 s; `retention_failed` alert on failure; [RUNBOOK.md](RUNBOOK.md) "Retention"). Draining 30 s. Holds the Stripe secret key. |
 
 Every variable that holds a secret is `preserve()`d: IaC never writes secret
 values; `scripts/ops/railway-vars.sh` sets them from a private file via stdin.
@@ -66,7 +66,7 @@ Each role has one job ([PROVISIONING.md](PROVISIONING.md) creates them):
 | --- | --- | --- | --- |
 | `gm_<env>_app` (`DATABASE_URL`) | pooled (`-pooler`) | web | `statement_timeout` 10 s, `lock_timeout` 8 s, `idle_in_transaction_session_timeout` 15 s |
 | `gm_<env>_billing` (`BILLING_DATABASE_URL`) | pooled | web (owner billing commands, webhook; only while billing is enabled, refused by production web otherwise: open DB-1 follow-up in [RUNBOOK.md](RUNBOOK.md)), worker (provider loop); member of `gm_billing_worker` | 30 s / 8 s / 60 s |
-| `gm_migrator` (`MIGRATION_DATABASE_URL`) | direct | worker only: preDeploy (migrate, grants, retention) and the off-hours retention schedule (every 15 minutes, 04:00–10:00 Mexico City; one connection, closed when idle); owns the schema; no superuser, BYPASSRLS or CREATEROLE, so FORCE RLS applies to it (backfills use the owner pattern, [RELEASE.md](RELEASE.md)) | `lock_timeout` 5 s, `statement_timeout` 10 min |
+| `gm_migrator` (`MIGRATION_DATABASE_URL`) | direct | worker only: preDeploy (migrate, grants, retention) and the off-hours retention schedule (every 15 minutes, 04:00–07:00 Mexico City; one connection, closed when idle); owns the schema; no superuser, BYPASSRLS or CREATEROLE, so FORCE RLS applies to it (backfills use the owner pattern, [RELEASE.md](RELEASE.md)) | `lock_timeout` 5 s, `statement_timeout` 10 min |
 | `gm_<env>_backup` (`BACKUP_DATABASE_URL`) | direct | GitHub backup workflow; member of `gm_backup_reader` (reads through `ops_backup_read` policies) | no timeouts |
 | `neondb_owner` | direct | provisioning and rotation scripts only; password kept offline | — |
 
