@@ -13,6 +13,7 @@ import {
   paymentStatus,
   priceCart,
   recallPreparation,
+  reconcileLostSend,
   roundNotes,
   tipFromPercent,
   validatePayment,
@@ -358,5 +359,78 @@ describe("notes and lost sends", () => {
       { round: 3, note: "Postres al final" },
     ]);
     expect(roundNotes({ note: "", rounds: undefined })).toEqual([]);
+  });
+
+  const line = (id = randomUUID()) => ({
+    id,
+    productId: randomUUID(),
+    quantity: 1,
+    options: [],
+    note: "",
+  });
+
+  it("drops lines the order already holds and replaces the operation id", () => {
+    const sentLine = line(),
+      added = line();
+    const draft = {
+      operationId: "consumed",
+      lines: [sentLine, added],
+      note: "Sin prisa",
+      name: "Ana",
+    };
+    const order = {
+      note: "Sin prisa",
+      lines: [
+        { id: sentLine.id, round: 2 },
+        { id: randomUUID(), round: 1 },
+      ],
+      rounds: [],
+    };
+    const next = reconcileLostSend(draft, order, "fresh");
+    expect(next.sent).toBe(false);
+    expect(next.rounds).toEqual([2]);
+    expect(next.draft).toEqual({
+      operationId: "fresh",
+      lines: [added],
+      note: "",
+      name: "Ana",
+    });
+    expect(draft.lines).toHaveLength(2);
+  });
+
+  it("treats the send as done when every line landed", () => {
+    const a = line(),
+      b = line();
+    const next = reconcileLostSend(
+      { operationId: "k", lines: [a, b], note: "Postres al final" },
+      {
+        note: "",
+        lines: [
+          { id: a.id, round: 3 },
+          { id: b.id, round: 3 },
+        ],
+        rounds: [{ note: "Postres al final" }],
+      },
+      "n",
+    );
+    expect(next).toEqual({
+      draft: { operationId: "n", lines: [], note: "" },
+      sent: true,
+      rounds: [3],
+    });
+  });
+
+  it("keeps a note that never reached the order", () => {
+    const a = line();
+    const next = reconcileLostSend(
+      { operationId: "k", lines: [a], note: "Nota nueva" },
+      { note: "Otra", lines: [], rounds: [{ note: "Vieja" }] },
+      "n",
+    );
+    expect(next.sent).toBe(false);
+    expect(next.rounds).toEqual([]);
+    expect(next.draft.note).toBe("Nota nueva");
+    expect(next.draft.lines).toEqual([a]);
+    expect(next.draft.operationId).toBe("n");
   });
 });

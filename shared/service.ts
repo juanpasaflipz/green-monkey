@@ -433,3 +433,43 @@ export function roundNotes(order: {
     .map(([round, note]) => ({ round, note }));
 }
 
+/**
+ * FOH-11: an earlier send with the draft's operation id committed, but its
+ * response was lost and the cart changed since. Lines the order already holds
+ * leave the draft, the operation id is replaced (the old one is consumed), and
+ * the note is dropped when it already reached the order. `sent` is true when
+ * nothing is left to send. `rounds` lists the rounds where draft lines landed.
+ */
+export function reconcileLostSend<
+  L extends { id: string },
+  D extends { operationId: string; lines: L[]; note: string },
+>(
+  draft: D,
+  order: {
+    note?: string | null;
+    lines: readonly { id: string; round?: number }[];
+    rounds?: readonly { note?: string | null }[] | null;
+  },
+  operationId: string,
+): { draft: D; sent: boolean; rounds: number[] } {
+  const onOrder = new Map(order.lines.map((l) => [l.id, l.round ?? 0]));
+  const landed = draft.lines.filter((l) => onOrder.has(l.id));
+  const lines = draft.lines.filter((l) => !onOrder.has(l.id));
+  const note = draft.note.trim();
+  const noteDelivered =
+    !note ||
+    note === (order.note ?? "").trim() ||
+    (order.rounds ?? []).some((r) => (r.note ?? "").trim() === note);
+  return {
+    draft: {
+      ...draft,
+      operationId,
+      lines,
+      note: noteDelivered ? "" : draft.note,
+    },
+    sent: lines.length === 0,
+    rounds: [...new Set(landed.map((l) => onOrder.get(l.id)!))].sort(
+      (a, b) => a - b,
+    ),
+  };
+}

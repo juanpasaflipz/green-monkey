@@ -3,6 +3,7 @@ import { id } from "../../shared/domain.js";
 import {
   closeCheck,
   listOrders,
+  orderForOperation,
   recordPrint,
   tableOccupancy,
   updateOrderNote,
@@ -14,7 +15,7 @@ export function registerPreAuth(_ctx: PreAuthContext) {}
 
 /**
  * Front-of-house service: orders and tables lists, check close, note edits,
- * print audit and the kitchen display feed. New paths use the /service prefix
+ * print audit, lost-send recovery and the kitchen display feed. New paths use the /service prefix
  * so the single-segment /orders/:id and /kitchen/:id routes never capture them.
  */
 export function register({ route }: RouteContext) {
@@ -28,6 +29,9 @@ export function register({ route }: RouteContext) {
   );
   route("post", "/service/orders/:id/print", (tx, s, req) =>
     recordPrint(tx, s, id.parse(req.params.id), req.body),
+  );
+  route("get", "/service/operations/:id/order", (tx, s, req) =>
+    orderForOperation(tx, s, id.parse(req.params.id)),
   );
   route("get", "/service/kitchen", (tx, s, req) =>
     kitchenFeed(tx, s, req.query),

@@ -16,6 +16,7 @@ import { verifyApproval, voidLines } from "../server/voids.js";
 import {
   closeCheck,
   listOrders,
+  orderForOperation,
   tableOccupancy,
   updateOrderNote,
   recordPrint,
@@ -33,7 +34,11 @@ import {
   synchronizeOffline,
 } from "../server/offline-sync.js";
 import type { Order, Session } from "../shared/domain.js";
-import type { KitchenFeed, OrderListResponse } from "../shared/service.js";
+import {
+  reconcileLostSend,
+  type KitchenFeed,
+  type OrderListResponse,
+} from "../shared/service.js";
 import { isolatedTarget } from "./isolated-target.js";
 
 // Every run creates its own fictional organization and two restaurants, so
@@ -1078,6 +1083,108 @@ try {
     assert.deepEqual(
       printed.map((p) => p.operation),
       ["check.printed"],
+    );
+  });
+
+  await test("a lost send is found by its operation id and only unsent lines go out again", async () => {
+    // A new order whose response was lost: the cart then gained a line, so
+    // the same operation id now conflicts.
+    const first = line(),
+      second = line({ productId: drink });
+    const created = randomUUID();
+    const input = {
+      operationId: created,
+      lines: [first],
+      mode: "takeaway" as const,
+      tableId: null,
+      name: "Respuesta perdida",
+      note: "Sin prisa",
+      channel: "pos",
+    };
+    const o = await run(cashier, (tx) => createOrder(tx, cashier, input));
+    await rejects(
+      run(cashier, (tx) =>
+        createOrder(tx, cashier, { ...input, lines: [first, second] }),
+      ),
+      "operation_conflict",
+    );
+    const found = await run(cashier, (tx) =>
+      orderForOperation(tx, cashier, created),
+    );
+    assert.equal(found.id, o.id);
+    const draft = { ...input, lines: [first, second] };
+    const next = reconcileLostSend(draft, found, randomUUID());
+    assert.equal(next.sent, false);
+    assert.deepEqual(
+      next.draft.lines.map((l) => l.id),
+      [second.id],
+    );
+    assert.equal(next.draft.note, "");
+    assert.notEqual(next.draft.operationId, created);
+    assert.deepEqual(next.rounds, [1]);
+    const sent = await run(cashier, (tx) =>
+      addRound(tx, cashier, found.id, {
+        ...next.draft,
+        expectedVersion: found.version,
+      }),
+    );
+    assert.deepEqual(
+      sent.lines.map((l) => l.id).sort(),
+      [first.id, second.id].sort(),
+    );
+
+    // A round whose response was lost resolves to the same order, now current.
+    const roundOp = randomUUID();
+    const third = line();
+    const roundInput = {
+      operationId: roundOp,
+      expectedVersion: sent.version,
+      lines: [third],
+      mode: sent.mode,
+      note: "",
+    };
+    await run(server, (tx) => addRound(tx, server, sent.id, roundInput));
+    const later = await run(server, (tx) =>
+      orderForOperation(tx, server, roundOp),
+    );
+    assert.equal(later.id, sent.id);
+    assert.ok(later.lines.some((l) => l.id === third.id));
+    const done = reconcileLostSend(
+      { ...roundInput, lines: [third] },
+      later,
+      randomUUID(),
+    );
+    assert.equal(done.sent, true);
+    assert.deepEqual(done.rounds, [
+      later.lines.find((l) => l.id === third.id)!.round,
+    ]);
+
+    // Other operations, unknown ids, other tenants and the kitchen role see nothing.
+    const payment = randomUUID();
+    await run(owner, (tx) =>
+      recordPayment(tx, owner, sent.id, {
+        operationId: payment,
+        amount: 100,
+        tip: 0,
+        received: 100,
+        method: "cash",
+      }),
+    );
+    await rejects(
+      run(cashier, (tx) => orderForOperation(tx, cashier, payment)),
+      "not_found",
+    );
+    await rejects(
+      run(cashier, (tx) => orderForOperation(tx, cashier, randomUUID())),
+      "not_found",
+    );
+    await rejects(
+      run(foreign, (tx) => orderForOperation(tx, foreign, created)),
+      "not_found",
+    );
+    await rejects(
+      run(kitchen, (tx) => orderForOperation(tx, kitchen, created)),
+      "forbidden",
     );
   });
 

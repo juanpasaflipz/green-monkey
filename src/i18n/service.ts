@@ -151,6 +151,10 @@ export default defineArea({
     serviceCheckClosedKeep:
       "Esta cuenta ya se cerró. Tus productos sin enviar siguen aquí.",
     serviceSendAsNew: "Enviar como orden nueva",
+    serviceSendRecovered:
+      "Parte de esta orden ya había llegado a cocina. Quitamos del carrito lo que ya estaba enviado; revisa y envía el resto.",
+    serviceSendUnconfirmed:
+      "No pudimos confirmar si esta orden ya llegó a cocina. Revísala en Órdenes antes de enviarla como orden nueva.",
     serviceDraftParked:
       "Guardamos la orden que estabas capturando en Borradores.",
     serviceResumeClosed: "La orden #{n} ya se cerró. Empieza una nueva.",
@@ -384,6 +388,10 @@ export default defineArea({
     serviceCheckClosedKeep:
       "This check is already closed. Your unsent items are still here.",
     serviceSendAsNew: "Send as a new order",
+    serviceSendRecovered:
+      "Part of this order had already reached the kitchen. What was already sent was removed from the cart; review and send the rest.",
+    serviceSendUnconfirmed:
+      "We could not confirm whether this order already reached the kitchen. Check Orders before sending it as a new order.",
     serviceDraftParked: "The order you were entering was saved in Drafts.",
     serviceResumeClosed: "Order #{n} is already closed. Start a new one.",
     serviceDetailsButton: "Details",

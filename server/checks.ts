@@ -218,6 +218,25 @@ export async function updateOrderNote(
   );
 }
 
+/**
+ * FOH-11: the order that a Selling send (new order or round) with this
+ * operation id produced, as it is now. Selling asks after operation_conflict,
+ * when an earlier send committed but its response was lost. Only order sends
+ * are visible here; other operations stay manager-only (/operations/:id).
+ */
+export async function orderForOperation(
+  tx: Tx,
+  s: Session,
+  operationId: string,
+): Promise<Order> {
+  permit(s, operators);
+  const [op] =
+    await tx`select result->>'id' as order_id from operations where id=${operationId} and kind in ('create_order','round')`;
+  const orderId = id.safeParse(op?.order_id);
+  if (!orderId.success) throw new DomainError("not_found", 404);
+  return getOrder(tx, orderId.data);
+}
+
 const printInput = z
   .object({
     operationId: id,

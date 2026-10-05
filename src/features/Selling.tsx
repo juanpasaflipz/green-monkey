@@ -20,7 +20,12 @@ import {
   type Order,
   type Label,
 } from "../../shared/domain";
-import { mergeLine, priceCart, type PaymentValues } from "../../shared/service";
+import {
+  mergeLine,
+  priceCart,
+  reconcileLostSend,
+  type PaymentValues,
+} from "../../shared/service";
 import { strings, translateError, type Key } from "../i18n";
 import { api, ApiError } from "../api";
 import { clearPaymentAttempt, db, scope, type Draft } from "../offline";
@@ -95,6 +100,7 @@ export function Selling({
   const [tables, setTables] = useState<any[]>([]);
   const [cashSession, setCashSession] = useState<any>(null);
   const [notice, setNotice] = useState("");
+  /** Offers "Enviar como orden nueva" (closed check or unconfirmed send). */
   const [closedCheck, setClosedCheck] = useState(false);
   const [lastAddedId, setLastAddedId] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -312,8 +318,10 @@ export function Selling({
     setClosedCheck(false);
   }
   function printNewRound(o: Order) {
-    const round = Math.max(0, ...o.lines.map((l) => l.round ?? 0));
-    const tickets = ticketsFromOrderRound(o, round);
+    printRounds(o, [Math.max(0, ...o.lines.map((l) => l.round ?? 0))]);
+  }
+  function printRounds(o: Order, rounds: number[]) {
+    const tickets = rounds.flatMap((round) => ticketsFromOrderRound(o, round));
     if (!tickets.length) return;
     void printDocument(
       tickets.map((ticket, i) => (
@@ -367,23 +375,37 @@ export function Selling({
         setError(t("serviceCheckClosedKeep"));
         throw new HandledError(code);
       }
-      if (code === "operation_conflict" && target) {
-        // The round may have landed with a lost response: if every unsent
-        // line is already on the order, treat it as sent.
-        try {
-          const latest = await api<Order>("/orders/" + target.id);
+      if (code === "operation_conflict") {
+        // FOH-11: an earlier send with this operation id committed but its
+        // response was lost, and the cart changed since. Load the order it
+        // produced, drop the lines it already holds and give the rest a new
+        // operation id (the old one is consumed), so nothing is sent twice.
+        const latest = await api<Order>(
+          `/service/operations/${d.operationId}/order`,
+        ).catch(() =>
+          target ? api<Order>("/orders/" + target.id).catch(() => null) : null,
+        );
+        if (latest) {
+          const operationId = crypto.randomUUID();
+          const next = reconcileLostSend(d, latest, operationId);
           setCurrent(latest);
-          if (d.lines.every((l) => latest.lines.some((x) => x.id === l.id))) {
-            setDraft((x) => ({
-              ...x,
-              operationId: crypto.randomUUID(),
-              lines: [],
-              note: "",
-            }));
-            return latest;
-          }
-        } catch {
-          /* fall through to the translated conflict */
+          await db.cache.put({ id: contextId, value: latest.id });
+          setDraft((x) => reconcileLostSend(x, latest, operationId).draft);
+          if (readPrintSettings().kitchenOnSend)
+            printRounds(latest, next.rounds);
+          if (next.sent) return latest;
+          if (checkStateOf(latest) === "closed") {
+            setClosedCheck(true);
+            setError(t("serviceCheckClosedKeep"));
+          } else setNotice(t("serviceSendRecovered"));
+          throw new HandledError(code);
+        }
+        if (!target) {
+          // The outcome is unknown: the cashier checks Órdenes first, and only
+          // "Enviar como orden nueva" gives the cart a new operation id.
+          setClosedCheck(true);
+          setError(t("serviceSendUnconfirmed"));
+          throw new HandledError(code);
         }
       }
       if (CATALOG_CODES.includes(code))
