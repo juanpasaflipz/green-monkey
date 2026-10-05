@@ -5,7 +5,14 @@ import { groupInput } from "../../../shared/menu-schema";
 import { api } from "../../api";
 import { translateError } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
-import { amountText, groupRuleText, moneyInput, translator } from "./format";
+import {
+  amountText,
+  groupRuleText,
+  moneyFormatter,
+  moneyInput,
+  translator,
+} from "./format";
+import { SavesAsAmount } from "./SavesAs";
 import {
   draftOption,
   groupTemplates,
@@ -58,6 +65,7 @@ export function GroupEditor({
 }) {
   const t = translator(locale);
   const exponent = currencyExponent(currency);
+  const format = moneyFormatter(locale, currency);
   const pro = payload.plan === "pro";
   const [operationId] = useState(() => crypto.randomUUID());
   const [groupId] = useState(() => group?.id ?? crypto.randomUUID());
@@ -344,6 +352,22 @@ export function GroupEditor({
                     </Field>
                   )}
                 </div>
+                <SavesAsAmount
+                  text={o.price}
+                  exponent={exponent}
+                  format={format}
+                  t={t}
+                  onlyGrouped
+                />
+                {pro && (
+                  <SavesAsAmount
+                    text={o.cost}
+                    exponent={exponent}
+                    format={format}
+                    t={t}
+                    onlyGrouped
+                  />
+                )}
                 {pro ? (
                   <details className="menu-option-recipe">
                     <summary>

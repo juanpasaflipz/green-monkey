@@ -6,6 +6,8 @@ import { api } from "../../api";
 import { translateError } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
 import { decimalInput, translator, trimDecimal } from "./format";
+import { unitLabel } from "./RecipeEditor";
+import { SavesAsQuantity } from "./SavesAs";
 
 const unitKeys = {
   g: "menuUnitG",
@@ -167,6 +169,8 @@ export function StockItemDialog({
             />
           </Field>
         </div>
+        <SavesAsQuantity text={threshold} unit={unitLabel(unit, t)} t={t} />
+        <SavesAsQuantity text={parLevel} unit={unitLabel(unit, t)} t={t} />
         {hint("threshold") ?? hint("parLevel")}
         {!item && (
           <>
@@ -178,6 +182,7 @@ export function StockItemDialog({
                 onChange={(e) => setOpening(e.target.value)}
               />
             </Field>
+            <SavesAsQuantity text={opening} unit={unitLabel(unit, t)} t={t} />
             {hint("openingQuantity")}
           </>
         )}

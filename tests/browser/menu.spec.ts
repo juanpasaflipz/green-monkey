@@ -764,6 +764,8 @@ test('money and quantity entry: "1,200" is $1,200.00 and an ambiguous "25,50" is
     .getByRole("combobox", { name: "Categoría *", exact: true })
     .selectOption({ label: "Postres" });
   await dialog.getByLabel("Precio al cliente (con IVA)").fill("1,200");
+  // The editor shows how the typed text will be saved before saving.
+  await expect(dialog.getByText("Se guardará: $1,200.00")).toBeVisible();
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(dialog).not.toBeVisible();
   const saved = ((await call(page, "/catalog")).data as any[]).find(
@@ -775,14 +777,17 @@ test('money and quantity entry: "1,200" is $1,200.00 and an ambiguous "25,50" is
     .getByRole("button", { name: `Editar ${name}`, exact: true })
     .click();
   dialog = page.getByRole("dialog");
-  await dialog.getByLabel("Precio al cliente (con IVA)").fill("25,50");
-  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
-  await expect(dialog.getByRole("alert")).toContainText(
-    "Escribe un importe válido.",
-  );
-  await expect(
-    dialog.getByLabel("Precio al cliente (con IVA)"),
-  ).toHaveAttribute("aria-invalid", "true");
+  for (const typed of ["25,50", "12.505"]) {
+    await dialog.getByLabel("Precio al cliente (con IVA)").fill(typed);
+    await expect(dialog.getByText(/^Se guardará/)).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "Escribe un importe válido, por ejemplo 1250.50 o 1,250.50.",
+    );
+    await expect(
+      dialog.getByLabel("Precio al cliente (con IVA)"),
+    ).toHaveAttribute("aria-invalid", "true");
+  }
   await dialog.getByRole("button", { name: "Cerrar" }).click();
   const unchanged = ((await call(page, "/catalog")).data as any[]).find(
     (p) => p.name.es === name,

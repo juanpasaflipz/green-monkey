@@ -25,7 +25,12 @@ import {
   stockItemInput,
   tablesBulkInput,
 } from "../shared/menu-schema";
-import { decimalInput, moneyInput } from "../src/features/menu/format";
+import {
+  decimalInput,
+  moneyFormatter,
+  moneyInput,
+  savedAmount,
+} from "../src/features/menu/format";
 import {
   MENU_POLL_MS,
   MENU_REFRESH_EVENT,
@@ -524,11 +529,37 @@ describe("menu number entry (es-MX thousands separator)", () => {
     expect(moneyInput("25.50", 2)).toBe(2550);
     expect(moneyInput("1200", 2)).toBe(120000);
     expect(moneyInput("1,200", 0)).toBe(1200);
+    // The review's cases: a Parrillada at "1,250" and "1,250.50".
+    expect(moneyInput("1,250", 2)).toBe(125000);
+    expect(moneyInput("1,250.50", 2)).toBe(125050);
+    expect(moneyInput("1,250.5", 2)).toBe(125050);
+  });
+
+  it("more decimals than the currency has are rejected, not rounded", () => {
+    // "1.250" is how a dot-thousands habit would type $1,250: never $1.25.
+    for (const text of ["12.505", "1.250", "1,250.505", "0.001"])
+      expect(() => moneyInput(text, 2), text).toThrow(DomainError);
+    expect(() => moneyInput("1.5", 0)).toThrow(DomainError);
+    expect(moneyInput("12.50", 2)).toBe(1250);
+    expect(moneyInput("12.5", 2)).toBe(1250);
+    expect(moneyInput("15", 0)).toBe(15);
+  });
+
+  it("the editors show how a typed amount will be saved", () => {
+    const format = moneyFormatter("es", "MXN");
+    expect(savedAmount("1,250", 2, format)).toBe(format(125000));
+    expect(savedAmount("1,250", 2, format)).toMatch(/1,250\.00/);
+    expect(savedAmount("12,5", 2, format)).toBeNull();
+    expect(savedAmount("45,50", 2, format)).toBeNull();
+    expect(savedAmount("12.505", 2, format)).toBeNull();
+    expect(savedAmount("  ", 2, format)).toBeNull();
   });
 
   it("an ambiguous comma is rejected instead of guessed", () => {
     for (const text of [
       "25,50",
+      "45,50",
+      "12,5",
       "1,20",
       "1,2000",
       ",500",

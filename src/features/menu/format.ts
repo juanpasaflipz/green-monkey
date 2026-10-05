@@ -47,11 +47,33 @@ export function decimalInput(text: string): string | null {
   return /^\d+(\.\d+)?$/.test(value) ? value : null;
 }
 
-/** Typed amount in currency units → integer minor units; throws invalid_amount. */
+/**
+ * Typed amount in currency units → integer minor units; throws invalid_amount.
+ * More decimals than the currency has ("12.505", or "1.250" typed with a
+ * point as the thousands separator) are rejected, never rounded.
+ */
 export function moneyInput(text: string, exponent: number): number {
   const value = decimalInput(text);
-  if (value === null) throw new DomainError("invalid_amount");
+  if (value === null || (value.split(".")[1]?.length ?? 0) > exponent)
+    throw new DomainError("invalid_amount");
   return minor(value, exponent);
+}
+
+/**
+ * "Se guardará: $1,250.00" text for a typed amount, so the person sees how
+ * the field was read before saving; null while the field is blank or invalid.
+ */
+export function savedAmount(
+  text: string,
+  exponent: number,
+  format: (minor: number) => string,
+): string | null {
+  if (!text.trim()) return null;
+  try {
+    return format(moneyInput(text, exponent));
+  } catch {
+    return null;
+  }
 }
 
 /** Minor units → plain decimal text for an input ("25.5" → "25.50"). */

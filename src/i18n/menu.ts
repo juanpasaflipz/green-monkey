@@ -251,6 +251,9 @@ export default defineArea({
     menuOpStockItemSaved: "Insumo guardado",
     menuOpStockItemArchived: "Insumo archivado o restaurado",
     menuOpStockPolicyChanged: "Política de existencias cambiada",
+    menuSavesAs: "Se guardará: {value}",
+    menuAmountInvalid:
+      "Escribe un importe válido, por ejemplo 1250.50 o 1,250.50. Usa punto para los centavos.",
   },
   en: {
     menuNavLabel: "Menu & inventory",
@@ -501,6 +504,9 @@ export default defineArea({
     menuOpStockItemSaved: "Ingredient saved",
     menuOpStockItemArchived: "Ingredient archived or restored",
     menuOpStockPolicyChanged: "Stock policy changed",
+    menuSavesAs: "Will be saved as: {value}",
+    menuAmountInvalid:
+      "Enter a valid amount, for example 1250.50 or 1,250.50. Use a point for cents.",
   },
   errors: {
     menu_changed: [

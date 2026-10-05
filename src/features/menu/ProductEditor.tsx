@@ -19,7 +19,14 @@ import { Button, Field, Modal } from "../../components/ui";
 import { CategoryDialog } from "./CategoryDialog";
 import { GroupEditor } from "./GroupEditor";
 import { RecipeEditor } from "./RecipeEditor";
-import { amountText, groupRuleText, moneyInput, translator } from "./format";
+import {
+  amountText,
+  groupRuleText,
+  moneyFormatter,
+  moneyInput,
+  translator,
+} from "./format";
+import { SavesAsAmount } from "./SavesAs";
 
 const NEW = "__new";
 
@@ -64,6 +71,7 @@ export function ProductEditor({
   const t = translator(locale);
   const currency = session.restaurant.currency;
   const exponent = currencyExponent(currency);
+  const format = moneyFormatter(locale, currency);
   const pro = payload.plan === "pro";
   const source = product ?? duplicateOf;
   const [operationId] = useState(() => crypto.randomUUID());
@@ -235,7 +243,7 @@ export function ProductEditor({
   const fieldError = (key: string, code?: string) =>
     errors.has(key) ? (
       <p role="alert" className="error tiny">
-        {code ? translateError(code, locale) : t("menuPickerAmountInvalid")}
+        {code ? translateError(code, locale) : t("menuAmountInvalid")}
       </p>
     ) : null;
   const title = t(product ? "menuEditProduct" : "menuNewProduct");
@@ -414,6 +422,14 @@ export function ProductEditor({
               {t("menuPriceHint")}
             </p>
           )}
+          {!openAmount && (
+            <SavesAsAmount
+              text={price}
+              exponent={exponent}
+              format={format}
+              t={t}
+            />
+          )}
           {fieldError("price")}
           <label className="option">
             <input
@@ -436,6 +452,14 @@ export function ProductEditor({
                 onChange={(e) => setOpenMax(e.target.value)}
               />
             </Field>
+          )}
+          {openAmount && (
+            <SavesAsAmount
+              text={openMax}
+              exponent={exponent}
+              format={format}
+              t={t}
+            />
           )}
           {fieldError("openMax")}
           {!product && (
@@ -537,6 +561,12 @@ export function ProductEditor({
                     onChange={(e) => setCost(e.target.value)}
                   />
                 </Field>
+                <SavesAsAmount
+                  text={cost}
+                  exponent={exponent}
+                  format={format}
+                  t={t}
+                />
                 {fieldError("cost")}
               </>
             ) : (

@@ -68,6 +68,10 @@ and access's heartbeat (contract D15).
 "1,200.50": a comma is read only as a thousands separator in a well-formed
 grouping. Any other comma ("25,50") is rejected with a field error; it is never
 taken as a decimal point (`decimalInput()` in `src/features/menu/format.ts`).
+Amounts with more decimals than the currency has ("12.505", or "1.250" typed
+with a point for thousands) are rejected, never rounded. Price, maximum and cost
+fields show how the text will be saved ("Se guardará: $1,250.00"); choice prices
+and stock quantities show it when the text has a thousands comma.
 
 ## Selling with choices, combos and open price
 
