@@ -104,16 +104,13 @@ export function RecoveryQueue({
     [manager, session.tenantId, session.deviceId, session.employeeId],
   );
   // Local rows and attempts update through liveQuery: no storage polling
-  // (OFF-12). Only this tenant's key ranges are read, and of the cache only
-  // the attempt keys' values, never every catalog and snapshot (OUTAGE-011).
+  // (OFF-12). The pending store is read whole so that any change to any row
+  // re-runs it (it holds a week of rows at most); of the cache, only this
+  // tenant's keys are listed and only attempt values are read, never every
+  // catalog and open-orders snapshot (OUTAGE-011).
   useEffect(() => {
     const subscription = liveQuery(async () => ({
-      rows: (
-        await db.pending
-          .where("scope")
-          .startsWith(session.tenantId + ":")
-          .toArray()
-      ).filter(visible),
+      rows: await db.pending.filter(visible).toArray(),
       attempts: (
         await db.cache.bulkGet(
           (
