@@ -18,7 +18,11 @@ this document has been verified on staging, production or physical tablets.
 - `personal`: the owner's or an invited member's own browser, created by Google
   "Entrar".
 - Rows written before migration 023 have `kind` NULL and are read as `personal`
-  when named `Owner browser`, otherwise `terminal`.
+  when named `Owner browser`, otherwise `terminal`. Migration 023 backfills
+  `kind` on existing rows and gives active ones `token_expires_at = now + 30
+  days`. The backfill lifts `FORCE ROW LEVEL SECURITY` on `devices` for its own
+  transaction only (OPS-R2), so it also works for a migration owner without
+  BYPASSRLS, such as a Neon owner role.
 
 A device credential (`gm_device`, signed, HttpOnly, SameSite=Strict) is valid
 while the device is active and `token_expires_at` has not passed. It expires
@@ -47,7 +51,13 @@ every staff, device and pairing-code command (including the legacy
 `POST /api/team/save`) need a PIN entered within
 `ACCESS_STEP_UP_SECONDS` (default 120). The client asks "Confirma con tu PIN"
 and retries the identical request (same `operationId`). Personal devices are
-exempt.
+exempt. A pending prompt belongs to the session whose command asked for it:
+- it never shows over the lock;
+- a switch, a sign-out or a new sign-in cancels it (`step_up_cancelled`), so
+  the next employee is never asked to confirm the previous one's command;
+- if the session changed while the request or the prompt was out, `api()`
+  sends no retry (`session_changed`), because the retry would carry the new
+  employee's cookie and CSRF token.
 
 **Idle lock**: terminals lock after 3 minutes without input (device setting
 overrides; kitchen role and personal devices never lock by default). The lock
@@ -56,9 +66,15 @@ open dialogs intact; another employee's PIN starts their own session and a
 fresh workspace. The lock is remembered per session in the browser
 (`localStorage["gm-lock"]`) until a PIN unlock, a new sign-in or a sign-out, so
 a reload, a new tab or an offline restore of the cached session opens locked.
-A lock in one tab also locks the other open tabs of the same session (storage
-event). A restore after a pause longer than the device's auto-lock (last input
-in `localStorage["gm-activity"]`) also opens locked.
+A manual, renew or server lock in one tab also locks the other open tabs of the
+same session (storage event). An idle lock does not travel between tabs. Each
+tab locks on its own timer, and a tab whose timer comes due waits while another
+tab of the session had input within the auto-lock window
+(`localStorage["gm-activity"]` names the writing tab). A background tab
+therefore never locks the tab in use. The marker is written at most every 5 s,
+so a background tab may lock itself up to 5 s early. A restore after a pause
+longer than the device's auto-lock (last input in `gm-activity`) also opens
+locked.
 
 Only an unlock, a switch or "Salir" ends the lock. Browsers stop honouring a
 modal dialog's cancelled `cancel` when close requests repeat without user
@@ -88,7 +104,11 @@ cache, including on a cold start before any session is shown:
 - an ended, expired or unknown session (`session_ended`, `session_expired`,
   `unauthorized`) stays cached but is remembered as locked with that reason, so
   it comes back offline only behind the lock and without a soft unlock;
-- a server code replaces an idle, manual or renew lock that is already up.
+- a server code replaces an idle, manual or renew lock that is already up;
+- nothing replaces a server code's lock except a PIN unlock, a switch or a
+  sign-out. No idle, manual or renew lock is applied over it, and the offline
+  "Salir" warning offers no "Bloquear pantalla" while the screen is locked, so
+  the lock never becomes one that offers "Continuar como".
 
 ## Pairing a terminal
 
@@ -267,11 +287,12 @@ This keeps the personal data proportional to the purpose (LFPDPPP 2025,
 
 ## Verification (local)
 
-- `npm run test:db:access` (29 checks), plus the updated voids, owner and
-  offline-recovery suites in `npm run test:db:qualification`.
+- `npm run test:db:access` (30 checks, one of which applies migration 023 as an
+  owner role without BYPASSRLS in a scratch database), plus the updated voids,
+  owner and offline-recovery suites in `npm run test:db:qualification`.
 - `npm run build && npm run test:access-http` (9 checks against the compiled
   server, with and without `DEMO_TENANT_ID`).
-- `tests/browser/access.spec.ts` (14 flows, axe at 1440 and 390, no horizontal
+- `tests/browser/access.spec.ts` (18 flows, axe at 1440 and 390, no horizontal
   overflow at 1440/1024/768/390); evidence in `docs/evidence/access-*.png`.
 - `tests/access.test.ts` and `tests/access-client.test.ts` (unit).
 
