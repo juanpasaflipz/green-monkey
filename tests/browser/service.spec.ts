@@ -804,6 +804,54 @@ test("cart changes made while a send is in flight stay in the cart and nothing i
   expect(order.rounds.map((r: any) => r.note)).toContain("Bebidas primero");
 });
 
+test("Cobrar with unsent items does not announce a balance change it made itself", async ({
+  page,
+}) => {
+  // SVC-R8: sending the cart inside Cobrar moves lines from the cart to the
+  // check; the balance is the same, so a failed payment shows no change.
+  await login(page);
+  await openDrawer(page);
+  const name = "Propio " + tag();
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page.getByLabel("Nombre para llamar").fill(name);
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
+  await expect(page.locator(".existing")).toContainText("Taco de hongos");
+  await page.getByRole("button", { name: /Flan de vainilla/ }).click();
+  let payments = 0;
+  await page.route("**/api/orders/*/payments", async (route) => {
+    payments++;
+    await route.fulfill({
+      status: 400,
+      contentType: "application/json",
+      body: JSON.stringify({ error: "invalid_input" }),
+    });
+  });
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const amount = dialog.getByRole("textbox", { name: "Importe", exact: true });
+  const shown = await amount.inputValue();
+  await dialog
+    .getByRole("button", { name: "Confirmar cobro", exact: true })
+    .click();
+  await expect.poll(() => payments).toBe(1);
+  await expect(page.locator(".existing")).toContainText("Flan de vainilla");
+  await expect(
+    dialog.getByRole("button", { name: "Confirmar cobro", exact: true }),
+  ).toBeEnabled();
+  await expect(dialog.getByText(/^El saldo pendiente cambió a/)).toHaveCount(0);
+  await expect(amount).toHaveValue(shown);
+  const list = await call(
+    page,
+    `/service/orders?q=${encodeURIComponent(name)}`,
+  );
+  const order = await call(page, "/orders/" + list.items[0].id);
+  expect(((order.total - order.paid) / 100).toFixed(2)).toBe(shown);
+  expect(order.tenders).toHaveLength(0);
+});
+
 test("a second Confirmar cobro tap while the payment is in flight records one tender", async ({
   page,
 }) => {

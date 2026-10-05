@@ -91,10 +91,12 @@ export function PaymentDialog({
   const [selected, setSelected] = useState<string[]>([]);
   const [splitOrder, setSplitOrder] = useState<Order | null>(null);
   const [localError, setLocalError] = useState("");
-  if (due !== shownDue) {
+  if (!busy && due !== shownDue) {
     // SVC-R4: the balance changed under the open dialog (a round from another
     // device, a recovered send). A prefilled Importe moves to the new balance
     // and the change is announced; a typed amount stays as the cashier set it.
+    // SVC-R8: compared only once the collect settles, so a step inside it
+    // (Cobrar sending the cart first) never announces a change by itself.
     setShownDue(due);
     setDueChanged(true);
     if (amountFollows && !splitItems) setAmountText(text(due));
