@@ -30,6 +30,7 @@ import {
   progressPreparation,
 } from "../server/service.js";
 import { voidLines } from "../server/voids.js";
+import { closeCheck } from "../server/checks.js";
 import { catalog, menuRevision, publicCatalog } from "../server/menu-read.js";
 import {
   archiveCategory,
@@ -1334,7 +1335,7 @@ try {
   });
 
   let table: any;
-  await test("a table with an unpaid order cannot be archived; a paid completed one can", async () => {
+  await test("a table with an unpaid order cannot be archived; a paid one holds it until Liberar mesa, then it can", async () => {
     table = await run(manager, (tx) =>
       saveTable(tx, manager, {
         operationId: op(),
@@ -1383,10 +1384,30 @@ try {
           state,
         }),
       );
-    assert.equal(
-      (await run(owner, (tx) => getOrder(tx, sold.id))).state,
-      "completed",
+    const served = await run(owner, (tx) => getOrder(tx, sold.id));
+    assert.equal(served.state, "completed");
+    // D10 (service lifecycle): a paid dine-in check still holds its table
+    // until Liberar mesa closes it, so the table cannot be archived yet.
+    assert.equal(served.checkState, "paid");
+    const held = await run(manager, (tx) => floorPayload(tx, manager));
+    assert.equal(held.tables.find((t) => t.id === table.id)!.open, true);
+    await rejects(
+      run(manager, (tx) =>
+        archiveTable(tx, manager, {
+          operationId: op(),
+          id: table.id,
+          expectedVersion: table.version,
+          archived: true,
+        }),
+      ),
+      "table_in_use",
     );
+    const released = await run(cashier, (tx) =>
+      closeCheck(tx, cashier, sold.id, { operationId: op() }),
+    );
+    assert.equal(released.checkState, "closed");
+    const free = await run(manager, (tx) => floorPayload(tx, manager));
+    assert.equal(free.tables.find((t) => t.id === table.id)!.open, false);
     const archived = await run(manager, (tx) =>
       archiveTable(tx, manager, {
         operationId: op(),
