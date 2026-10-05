@@ -31,7 +31,8 @@ export type OfflinePaymentSlot = {
  * The payment form. It mounts fresh for every payment, so method, reference
  * and confirmation never carry over between sales (FOH-3). Change is computed
  * from this payment's own amount (FOH-12), and every rule is checked before
- * anything is sent to the kitchen (MON-8).
+ * anything is sent to the kitchen (MON-8). `busy` stays true for the whole
+ * payment request, so Confirm can never submit twice (SVC-R2).
  */
 export function PaymentDialog({
   due,
@@ -44,6 +45,7 @@ export function PaymentDialog({
   pendingPayment,
   drawerOpen,
   error,
+  notice = "",
   onConfirm,
   onSplitItems,
   onClose,
@@ -60,6 +62,8 @@ export function PaymentDialog({
   pendingPayment: boolean;
   drawerOpen: boolean;
   error: string;
+  /** Selling's notice (stale order, recovered send), shown inside the dialog. */
+  notice?: string;
   /** Values are null only when a pending earlier payment is being recovered. */
   onConfirm: (v: PaymentValues | null, items?: string[]) => void;
   onSplitItems: () => Promise<Order | null>;
@@ -75,6 +79,10 @@ export function PaymentDialog({
   const ids = useId();
   const [method, setMethod] = useState<"cash" | "external">("cash");
   const [amountText, setAmountText] = useState(() => text(due));
+  /** Importe follows the balance due until the cashier types an amount. */
+  const [amountFollows, setAmountFollows] = useState(true);
+  const [shownDue, setShownDue] = useState(due);
+  const [dueChanged, setDueChanged] = useState(false);
   const [tipText, setTipText] = useState("");
   const [receivedInput, setReceivedInput] = useState<string | null>(null);
   const [reference, setReference] = useState("");
@@ -83,6 +91,14 @@ export function PaymentDialog({
   const [selected, setSelected] = useState<string[]>([]);
   const [splitOrder, setSplitOrder] = useState<Order | null>(null);
   const [localError, setLocalError] = useState("");
+  if (due !== shownDue) {
+    // SVC-R4: the balance changed under the open dialog (a round from another
+    // device, a recovered send). A prefilled Importe moves to the new balance
+    // and the change is announced; a typed amount stays as the cashier set it.
+    setShownDue(due);
+    setDueChanged(true);
+    if (amountFollows && !splitItems) setAmountText(text(due));
+  }
   const parse = (s: string, emptyAsZero = false) => {
     try {
       return parseMoneyInput(s, exponent, { emptyAsZero });
@@ -172,7 +188,17 @@ export function PaymentDialog({
       <div className="large-money">{money(due)}</div>
       {hasDraftLines && <p className="muted">{t("serviceSendsOnPay")}</p>}
       <p>{t("paymentHint")}</p>
-      {pendingPayment && (
+      {notice && (
+        <p className="notice" role="alert">
+          {notice}
+        </p>
+      )}
+      {dueChanged && (
+        <p className="warning-panel" role="alert">
+          {t("servicePayDueChanged").replace("{due}", money(due))}
+        </p>
+      )}
+      {pendingPayment && !busy && (
         <p className="warning-panel" role="status">
           {t("pendingPaymentRecovery")}
         </p>
@@ -223,13 +249,16 @@ export function PaymentDialog({
             setSplitItems(false);
             setSelected([]);
             setAmountText(text(due));
+            setAmountFollows(true);
             setReceivedInput(null);
           }}
         >
           {t("splitAmount")}
         </Button>
         <Button
-          disabled={busy || !online || pendingPayment}
+          // SVC-R8: "Enviar y dividir" sends to the kitchen, so it needs the
+          // same open drawer as Confirmar cobro.
+          disabled={busy || !online || pendingPayment || !drawerOpen}
           onClick={async () => {
             setLocalError("");
             try {
@@ -243,6 +272,7 @@ export function PaymentDialog({
               setSplitItems(true);
               setSelected([]);
               setAmountText(text(0));
+              setAmountFollows(false);
               setReceivedInput(null);
             } catch (e) {
               setLocalError(translateError((e as Error).message, locale));
@@ -295,7 +325,10 @@ export function PaymentDialog({
           readOnly={splitItems}
           aria-invalid={problem?.field === "amount" || undefined}
           aria-describedby={errorId("amount")}
-          onChange={(e) => setAmountText(e.target.value)}
+          onChange={(e) => {
+            setAmountText(e.target.value);
+            setAmountFollows(false);
+          }}
         />
       </Field>
       {inline("amount")}

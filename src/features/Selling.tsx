@@ -40,7 +40,12 @@ import { CartLine } from "./CartLine";
 import { PaymentDialog } from "./PaymentDialog";
 import { ReceiptModal, checkStateOf } from "./Receipt";
 import { NoteDialog } from "./OrderDetail";
-import { KitchenTicketDocument, ticketsFromOrderRound } from "./KitchenTicket";
+import {
+  KitchenTicketDocument,
+  ticketsForOpenRounds,
+  ticketsFromOrderRound,
+  type KitchenTicketModel,
+} from "./KitchenTicket";
 const fresh = (): OrderInput => ({
   operationId: crypto.randomUUID(),
   lines: [],
@@ -57,8 +62,23 @@ const CATALOG_CODES = [
   "required_modifier",
   "open_amount_exceeds",
 ];
-/** An error whose message Selling already showed in its own words. */
-class HandledError extends Error {}
+/**
+ * An error whose message Selling already showed in its own words. `offerNew`
+ * marks the cases where the cart offers "Enviar como orden nueva".
+ */
+class HandledError extends Error {
+  constructor(
+    code: string,
+    public offerNew = false,
+  ) {
+    super(code);
+  }
+}
+/** A parked cart, and the check it was a round for (null for a new order). */
+type ParkedDraft = {
+  draft: Draft;
+  order: { id: string; number: number } | null;
+};
 export function Selling({
   session,
   catalog,
@@ -96,7 +116,7 @@ export function Selling({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [pendingPayment, setPendingPayment] = useState(false);
-  const [parked, setParked] = useState<Draft[] | null>(null);
+  const [parked, setParked] = useState<ParkedDraft[] | null>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [cashSession, setCashSession] = useState<any>(null);
   const [notice, setNotice] = useState("");
@@ -106,9 +126,16 @@ export function Selling({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [noteDialogOpen, setNoteDialogOpen] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
+  /** The order whose open comandas can be reprinted after a note edit. */
+  const [noteReprint, setNoteReprint] = useState<Order | null>(null);
+  /** SVC-R2: one payment request at a time, from the tap until it settles. */
+  const [paying, setPaying] = useState(false);
+  const payingRef = useRef(false);
   const nameCache = useRef(new Map<string, Label>());
   const draftRef = useRef(draft);
   draftRef.current = draft;
+  const currentRef = useRef(current);
+  currentRef.current = current;
   const releaseKey = useRef(crypto.randomUUID());
   const compact = useMediaQuery("(max-height: 820px) and (min-width: 801px)");
   const paymentKey = useRef(crypto.randomUUID());
@@ -116,6 +143,9 @@ export function Selling({
   const activeId = scope(session) + ":active";
   const contextId = scope(session) + ":order";
   const attemptId = scope(session) + ":payment";
+  /** Service-owned record of the check a parked round belongs to. */
+  const parkedOrderId = (operationId: string) =>
+    scope(session) + ":parked-order:" + operationId;
   async function recoverPayment(value: unknown): Promise<Order> {
     const attempt = normalizePaymentAttempt(value, attemptId);
     if (!attempt) throw Error("payment_review_required");
@@ -128,17 +158,83 @@ export function Selling({
     if (!status.retryAllowed) throw Error("payment_review_required");
     return api<Order>("/payments/recovery/retry", attempt);
   }
-  /** Keeps unsent lines in Borradores before another order replaces the cart. */
-  async function parkCurrentCart() {
-    const d = draftRef.current;
-    if (!d.lines.length) return false;
+  /**
+   * Stores a cart in Borradores. A cart of rounds for an existing check keeps
+   * that check, so restoring it sends a round instead of a new order.
+   */
+  async function parkDraft(d: OrderInput, order: Order | null) {
     await db.drafts.put({
       id: d.operationId,
       scope: scope(session),
       order: d,
       updatedAt: Date.now(),
     });
+    if (order)
+      await db.cache.put({
+        id: parkedOrderId(d.operationId),
+        value: { id: order.id, number: order.number },
+      });
+    else await db.cache.delete(parkedOrderId(d.operationId));
+  }
+  /** Keeps unsent lines in Borradores before another order replaces the cart. */
+  async function parkCurrentCart() {
+    const d = draftRef.current;
+    if (!d.lines.length) return false;
+    await parkDraft(d, currentRef.current);
     return true;
+  }
+  async function openDrafts() {
+    const drafts = (
+      await db.drafts.where("scope").equals(scope(session)).toArray()
+    ).filter((d) => d.id !== activeId);
+    setParked(
+      await Promise.all(
+        drafts.map(async (draft) => {
+          const value = (await db.cache.get(parkedOrderId(draft.id)))?.value;
+          return {
+            draft,
+            order:
+              value && typeof value.id === "string"
+                ? { id: value.id as string, number: Number(value.number) }
+                : null,
+          };
+        }),
+      ),
+    );
+  }
+  /** SVC-R5: a parked round goes back onto its check while it is not closed. */
+  async function restoreDraft({ draft: d, order: parkedOrder }: ParkedDraft) {
+    let target: Order | null = null;
+    if (parkedOrder) {
+      try {
+        target = await api<Order>("/orders/" + parkedOrder.id);
+      } catch (e) {
+        // Without the check the round cannot be placed; it stays parked.
+        setParked(null);
+        setError(translateError((e as Error).message, locale));
+        return;
+      }
+    }
+    const parkedCart = await parkCurrentCart();
+    setDraft(d.order);
+    await db.drafts.delete(d.id);
+    await db.cache.delete(parkedOrderId(d.id));
+    setParked(null);
+    setError("");
+    setClosedCheck(false);
+    setNoteReprint(null);
+    setNotice(parkedCart ? t("serviceDraftParked") : "");
+    if (target && checkStateOf(target) !== "closed") {
+      setCurrent(target);
+      await db.cache.put({ id: contextId, value: target.id });
+      return;
+    }
+    setCurrent(null);
+    await db.cache.delete(contextId);
+    if (target) {
+      setClosedCheck(true);
+      setError(t("serviceCheckClosedKeep"));
+    }
   }
   useEffect(() => {
     let live = true;
@@ -316,12 +412,15 @@ export function Selling({
     setError("");
     setNotice("");
     setClosedCheck(false);
+    setNoteReprint(null);
   }
   function printNewRound(o: Order) {
     printRounds(o, [Math.max(0, ...o.lines.map((l) => l.round ?? 0))]);
   }
   function printRounds(o: Order, rounds: number[]) {
-    const tickets = rounds.flatMap((round) => ticketsFromOrderRound(o, round));
+    printTickets(rounds.flatMap((round) => ticketsFromOrderRound(o, round)));
+  }
+  function printTickets(tickets: KitchenTicketModel[]) {
     if (!tickets.length) return;
     void printDocument(
       tickets.map((ticket, i) => (
@@ -334,11 +433,17 @@ export function Selling({
       )),
     );
   }
-  async function sendWith(target: Order | null, d: OrderInput): Promise<Order> {
+  async function sendWith(
+    target: Order | null,
+    d: OrderInput,
+    /** Set by Cobrar, which keeps the screen busy until the payment settles. */
+    opts: { keepBusy?: boolean } = {},
+  ): Promise<Order> {
     setBusy(true);
     setError("");
     setNotice("");
     setClosedCheck(false);
+    setNoteReprint(null);
     try {
       const o = await api<Order>(
         target ? `/orders/${target.id}/rounds` : "/orders",
@@ -364,8 +469,11 @@ export function Selling({
           if (checkStateOf(latest) === "closed") {
             setClosedCheck(true);
             setError(t("serviceCheckClosedKeep"));
-          } else setNotice(t("serviceStaleRefreshed"));
+            throw new HandledError(code, true);
+          }
+          setNotice(t("serviceStaleRefreshed"));
         } catch (refresh) {
+          if (refresh instanceof HandledError) throw refresh;
           setError(translateError((refresh as Error).message, locale));
         }
         throw new HandledError(code);
@@ -373,7 +481,7 @@ export function Selling({
       if (code === "check_closed") {
         setClosedCheck(true);
         setError(t("serviceCheckClosedKeep"));
-        throw new HandledError(code);
+        throw new HandledError(code, true);
       }
       if (code === "operation_conflict") {
         // FOH-11: an earlier send with this operation id committed but its
@@ -397,7 +505,12 @@ export function Selling({
           if (checkStateOf(latest) === "closed") {
             setClosedCheck(true);
             setError(t("serviceCheckClosedKeep"));
-          } else setNotice(t("serviceSendRecovered"));
+            throw new HandledError(code, true);
+          }
+          // SVC-R3: a landed line edited afterwards is never dropped silently.
+          setNotice(
+            t(next.changed ? "serviceSendChanged" : "serviceSendRecovered"),
+          );
           throw new HandledError(code);
         }
         if (!target) {
@@ -405,7 +518,7 @@ export function Selling({
           // "Enviar como orden nueva" gives the cart a new operation id.
           setClosedCheck(true);
           setError(t("serviceSendUnconfirmed"));
-          throw new HandledError(code);
+          throw new HandledError(code, true);
         }
       }
       if (CATALOG_CODES.includes(code))
@@ -413,7 +526,7 @@ export function Selling({
       setError(translateError(code, locale));
       throw new HandledError(code);
     } finally {
-      setBusy(false);
+      if (!opts.keepBusy) setBusy(false);
     }
   }
   const send = () => sendWith(current, draft);
@@ -425,6 +538,8 @@ export function Selling({
     return sendWith(null, d);
   }
   function openPay() {
+    // One key per opened dialog (MON-3): a duplicate submit replays the stored
+    // result instead of recording a second tender.
     paymentKey.current = crypto.randomUUID();
     if (online)
       void api("/cash")
@@ -432,6 +547,23 @@ export function Selling({
         .catch(() => {});
     setPayment(true);
     setError("");
+    setNotice("");
+  }
+  /**
+   * SVC-R2: the in-flight flag is set synchronously on the tap and cleared
+   * only when the whole collect (send, payment, recovery) settles, so a second
+   * tap can never queue another payment behind the lock.
+   */
+  function startCollect(values: PaymentValues | null, items?: string[]) {
+    if (payingRef.current) return;
+    payingRef.current = true;
+    setPaying(true);
+    void collect(values, items)
+      .catch((e) => setError(translateError((e as Error).message, locale)))
+      .finally(() => {
+        payingRef.current = false;
+        setPaying(false);
+      });
   }
   async function collect(
     values: PaymentValues | null = null,
@@ -459,7 +591,6 @@ export function Selling({
         setPendingPayment(false);
         setPayment(false);
         setReceipt(result);
-        paymentKey.current = crypto.randomUUID();
         return;
       }
       if (!values) throw new Error("invalid_input");
@@ -535,7 +666,8 @@ export function Selling({
       // MON-8: nothing reaches the kitchen unless this device has an open drawer.
       if (!drawerOpen) throw new Error("drawer_required");
       let o = current;
-      if (draft.lines.length) o = await send();
+      if (draft.lines.length)
+        o = await sendWith(current, draft, { keepBusy: true });
       if (!o) throw new Error("invalid_input");
       const payload = {
         operationId: paymentKey.current,
@@ -568,7 +700,6 @@ export function Selling({
       setPendingPayment(false);
       setPayment(false);
       setReceipt(result);
-      paymentKey.current = crypto.randomUUID();
     } catch (e) {
       if (
         submittedAttempt &&
@@ -580,6 +711,8 @@ export function Selling({
       setPendingPayment(!!(await db.cache.get(attemptId)));
       if (!(e instanceof HandledError))
         setError(translateError((e as Error).message, locale));
+      // "Enviar como orden nueva" lives in the cart: close the dialog for it.
+      else if (e.offerNew) setPayment(false);
     } finally {
       setBusy(false);
     }
@@ -815,6 +948,15 @@ export function Selling({
             {notice}
           </p>
         )}
+        {noteReprint && (
+          <Button
+            className="small"
+            onClick={() => printTickets(ticketsForOpenRounds(noteReprint))}
+          >
+            <Printer size={16} />
+            {t("serviceReprintKitchen")}
+          </Button>
+        )}
         {error && (
           <div className="error" role="alert">
             <p>{error}</p>
@@ -838,7 +980,7 @@ export function Selling({
           </Button>
           <Button
             variant="primary"
-            disabled={due <= 0 || busy || cart.blocked}
+            disabled={due <= 0 || busy || paying || cart.blocked}
             onClick={openPay}
           >
             {t("pay")}
@@ -850,12 +992,7 @@ export function Selling({
             className="text-button"
             disabled={!draft.lines.length}
             onClick={async () => {
-              await db.drafts.put({
-                id: draft.operationId,
-                scope: scope(session),
-                order: draft,
-                updatedAt: Date.now(),
-              });
+              await parkDraft(draft, current);
               reset();
             }}
           >
@@ -880,8 +1017,8 @@ export function Selling({
               <div className="warning-panel" role="status">
                 <p>{t("pendingPaymentRecovery")}</p>
                 <Button
-                  disabled={!online || busy}
-                  onClick={() => void collect()}
+                  disabled={!online || busy || paying}
+                  onClick={() => startCollect(null)}
                 >
                   {t("retryPayment")}
                 </Button>
@@ -891,32 +1028,13 @@ export function Selling({
           <Button
             disabled={pendingPayment}
             onClick={async () => {
-              if (draft.lines.length)
-                await db.drafts.put({
-                  id: draft.operationId,
-                  scope: scope(session),
-                  order: draft,
-                  updatedAt: Date.now(),
-                });
+              if (draft.lines.length) await parkDraft(draft, current);
               reset();
             }}
           >
             {t("newOrder")}
           </Button>
-          <Button
-            onClick={async () =>
-              setParked(
-                (
-                  await db.drafts
-                    .where("scope")
-                    .equals(scope(session))
-                    .toArray()
-                ).filter((d) => d.id !== activeId),
-              )
-            }
-          >
-            {t("drafts")}
-          </Button>
+          <Button onClick={() => void openDrafts()}>{t("drafts")}</Button>
         </div>
         <div className="search">
           <Search size={20} />
@@ -1080,18 +1198,28 @@ export function Selling({
           session={session}
           locale={locale}
           online={online}
-          busy={busy}
+          busy={busy || paying}
           pendingPayment={pendingPayment}
           drawerOpen={drawerOpen}
           error={error}
-          onConfirm={(values, items) => void collect(values, items)}
+          notice={notice}
+          onConfirm={(values, items) => startCollect(values, items)}
           onSplitItems={async () => {
             if (!draft.lines.length && !current) return null;
-            const order = draft.lines.length
-              ? await send()
-              : await api<Order>("/orders/" + current!.id);
-            setCurrent(order);
-            return order;
+            // SVC-R8: nothing reaches the kitchen without an open drawer.
+            if (online && !drawerOpen) throw new Error("drawer_required");
+            try {
+              const order = draft.lines.length
+                ? await send()
+                : await api<Order>("/orders/" + current!.id);
+              setCurrent(order);
+              return order;
+            } catch (e) {
+              if (!(e instanceof HandledError)) throw e;
+              // Selling's notice or error already says what happened.
+              if (e.offerNew) setPayment(false);
+              return null;
+            }
           }}
           onClose={() => setPayment(false)}
           onGoToCash={() => {
@@ -1123,22 +1251,19 @@ export function Selling({
           {!parked.length ? (
             <Empty title={t("noData")} />
           ) : (
-            parked.map((d) => (
+            parked.map((p) => (
               <Button
                 className="full"
-                key={d.id}
-                onClick={async () => {
-                  const parkedCart = await parkCurrentCart();
-                  setDraft(d.order);
-                  setCurrent(null);
-                  void db.cache.delete(contextId);
-                  await db.drafts.delete(d.id);
-                  setParked(null);
-                  setNotice(parkedCart ? t("serviceDraftParked") : "");
-                }}
+                key={p.draft.id}
+                onClick={() => void restoreDraft(p)}
               >
-                {d.order.name || t("order")} · {d.order.lines.length}{" "}
-                {t("items")}
+                {p.order &&
+                  t("serviceDraftRound").replace(
+                    "{n}",
+                    String(p.order.number),
+                  ) + " · "}
+                {p.draft.order.name || t("order")} ·{" "}
+                {p.draft.order.lines.length} {t("items")}
               </Button>
             ))
           )}
@@ -1173,6 +1298,8 @@ export function Selling({
           saved={(o) => {
             setCurrent(o);
             setNotice(t("serviceDetailNoteSaved"));
+            // Paper comandas printed at send time keep the old note.
+            if (readPrintSettings().kitchenOnSend) setNoteReprint(o);
           }}
         />
       )}
