@@ -39,7 +39,7 @@ const rejects = async (promise: Promise<unknown>, pattern: RegExp) =>
     assert.match(`${e?.code ?? ""} ${e?.message ?? ""}`, pattern);
     return true;
   });
-let backupDrop: (() => Promise<void>) | null = null;
+const cleanup: { drop?: () => Promise<void> } = {};
 
 try {
   await check(
@@ -203,7 +203,7 @@ try {
       const { logins, drop } = await disposableLogins(admin, runtime, {
         backup: ["gm_backup_reader"],
       });
-      backupDrop = drop;
+      cleanup.drop = drop;
       const [expected] = await admin`
         select count(*)::int as n, count(distinct tenant_id)::int as tenants from employees`;
       assert.ok(expected.tenants >= 2, "fixture has two tenants");
@@ -246,7 +246,7 @@ try {
     `Ops DB checks passed: ${passed()} checks against ${new URL(runtime).pathname.slice(1)}.`,
   );
 } finally {
-  await backupDrop?.();
+  await cleanup.drop?.();
   await traced.end();
   await app.end();
   await admin.end();
