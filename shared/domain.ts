@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { Decimal } from "decimal.js";
 import { Temporal } from "@js-temporal/polyfill";
+import {
+  chosenOptions,
+  mergeRecipes,
+  optionLabel,
+  selectionIssue,
+} from "./menu.js";
 export type Locale = "es" | "en";
 export type Label = { es: string; en: string };
 export class DomainError extends Error {
@@ -41,6 +47,8 @@ export type Option = {
   name: Label;
   price: number;
   available: boolean;
+  cost?: number | null;
+  recipe?: { stockId: string; quantity: string }[];
 };
 export type Group = {
   id: string;
@@ -48,6 +56,8 @@ export type Group = {
   min: number;
   max: number;
   options: Option[];
+  repeat?: boolean;
+  version?: number;
 };
 export type Product = {
   id: string;
@@ -61,16 +71,30 @@ export type Product = {
   recipe?: { stockId: string; quantity: string }[];
   cost: number | null;
   version: number;
+  categoryId?: string;
+  categoryPosition?: number;
+  position?: number;
+  kind?: "item" | "combo";
+  openMax?: number | null;
+  archived?: boolean;
+  groupIds?: string[];
+  /** RESERVED for fiscal (027): menu preserves it, never writes it. */
+  fiscal?: unknown;
 };
 export type PricedLine = LineInput & {
   name: Label;
+  /** Count-prefixed for repeated choices ("2× Asada"). */
   optionNames: Label[];
   unitPrice: number;
   total: number;
   cost: number | null;
   station: string;
+  /** Product recipe merged with chosen option recipes, one line per stock item. */
   recipe: NonNullable<Product["recipe"]>;
   productVersion: number;
+  category?: Label;
+  categoryId?: string | null;
+  kind?: "item" | "combo";
   /** Present on persisted lines: the service round the line was sent in. */
   round?: number;
   /** Present on persisted lines: payable unit indexes removed by voids. */
@@ -135,36 +159,31 @@ export function quote(
   return lines.map((raw) => {
     const l = lineInput.parse(raw);
     const p = catalog.find((p) => p.id === l.productId);
-    if (!p || !p.available) throw new DomainError("unavailable");
-    if (l.openAmount !== undefined && (!p.openAmount || !canOpen))
-      throw new DomainError("forbidden", 403);
-    if (p.openAmount && l.openAmount === undefined)
-      throw new DomainError("invalid_amount");
-    if (new Set(l.options).size !== l.options.length)
-      throw new DomainError("invalid_modifier");
-    const opts = p.groups.flatMap((g) => g.options);
-    if (l.options.some((o) => !opts.some((x) => x.id === o && x.available)))
-      throw new DomainError("invalid_modifier");
-    for (const g of p.groups) {
-      const n = g.options.filter((o) => l.options.includes(o.id)).length;
-      if (n < g.min || n > g.max) throw new DomainError("required_modifier");
-    }
+    if (!p || !p.available || p.archived) throw new DomainError("unavailable");
+    const issue = selectionIssue(p, l.options, l.openAmount, canOpen);
+    if (issue) throw new DomainError(issue, issue === "forbidden" ? 403 : 400);
+    const chosen = chosenOptions(p, l.options);
     const unitPrice = sum([
       l.openAmount ?? p.price,
-      ...opts.filter((o) => l.options.includes(o.id)).map((o) => o.price),
+      ...chosen.map((c) => c.option.price * c.count),
     ]);
     return {
       ...l,
       name: p.name,
-      optionNames: opts
-        .filter((o) => l.options.includes(o.id))
-        .map((o) => o.name),
+      optionNames: chosen.map((c) => optionLabel(c.option.name, c.count)),
       unitPrice,
       total: money.parse(unitPrice * l.quantity),
-      cost: p.cost,
+      cost:
+        p.cost == null
+          ? null
+          : sum([p.cost, ...chosen.map((c) => (c.option.cost ?? 0) * c.count)]),
       station: p.station,
-      recipe: p.recipe ?? [],
+      recipe: mergeRecipes(p.recipe, chosen),
       productVersion: p.version,
+      category: p.category,
+      categoryId: p.categoryId ?? null,
+      kind: p.kind ?? "item",
+      // fiscal (027): append line tax snapshot here
     };
   });
 }
