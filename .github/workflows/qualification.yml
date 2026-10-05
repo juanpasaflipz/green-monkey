@@ -48,6 +48,15 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
+      - name: PostgreSQL 18 client tools (backup/restore suite)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-18
+          /usr/lib/postgresql/18/bin/pg_dump --version
       - name: Provision disposable databases and least-privilege roles
         run: |
           psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/provision-local.sql

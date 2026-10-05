@@ -1,0 +1,7 @@
+# Public age recipients for scripts/ops/backup.ts (one per line, "age1...").
+# Generate the key pair offline and keep the private half out of GitHub and
+# Railway (password manager plus a printed copy):
+#   age-keygen -o <offline path>/green-monkey-backup.key
+#   age-keygen -y <offline path>/green-monkey-backup.key   # prints the age1... line
+# Commit only the age1... public line below. The backup workflow refuses to
+# run until one is present. Add a second recipient for a recovery holder.

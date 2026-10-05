@@ -1,0 +1,69 @@
+name: Backup
+# Encrypted off-platform logical backups (DB-2/OPS-5): production daily at
+# 03:30 America/Mexico_City (09:30 UTC), staging weekly. Daily objects expire
+# after 35 days and monthly ones after 1,900 days (R2 lifecycle rules,
+# scripts/ops/provision-r2.sh). The private age key never enters GitHub.
+on:
+  schedule:
+    - cron: "30 9 * * *"
+    - cron: "0 10 * * 0"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to back up
+        type: choice
+        options: [production, staging]
+        default: staging
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: backup-${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
+  cancel-in-progress: false
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
+    env:
+      BACKUP_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Tools (age, pg_dump 18 image)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq age
+          docker pull -q postgres:18
+          aws --version
+      - name: Dump, encrypt, upload and verify
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          AGE_RECIPIENTS_FILE: ops/backup/age-recipients.txt
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          grep -q '^age1' ops/backup/age-recipients.txt || { echo "no age recipient committed"; exit 1; }
+          npm run -s ops:backup
+      - name: Alert on failure
+        if: failure()
+        env:
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          message="backup_failed env=$BACKUP_ENV run=$RUN_URL"
+          if [ -n "$ALERT_WEBHOOK_URL" ]; then
+            curl -fsS --max-time 10 -H "Title: Green Monkey $BACKUP_ENV: backup failed" \
+              -H "Priority: high" -H "Tags: warning" -d "$message" "$ALERT_WEBHOOK_URL" || true
+          fi
+          title="ops-alert: $BACKUP_ENV"
+          number=$(gh issue list --state open --label ops-alert --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$number" ]; then gh issue comment "$number" --body "$message"
+          else gh issue create --title "$title" --label ops-alert --body "$message"; fi

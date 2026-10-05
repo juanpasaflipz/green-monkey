@@ -20,7 +20,7 @@
     "test:db:identity": "tsx tests/google-attempts-db.ts && tsx tests/owner-accounts-db.ts",
     "test:db:owner": "tsx tests/owner-management-db.ts",
     "test:db:entitlements": "tsx tests/entitlements-db.ts",
-    "test:db:ops": "tsx tests/ops-db.ts && tsx tests/migrate-db.ts && tsx tests/jobs-db.ts",
+    "test:db:ops": "tsx tests/ops-db.ts && tsx tests/migrate-db.ts && tsx tests/jobs-db.ts && tsx tests/backup-db.ts && tsx tests/provision-db.ts",
     "test:drain": "tsx tests/drain-http.ts",
     "worker": "tsx server/worker.ts",
     "start:worker": "node --import ./build/server/instrument.js build/server/worker.js",
