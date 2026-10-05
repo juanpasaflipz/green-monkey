@@ -76,3 +76,19 @@ export function restoredLock(s: Session, now = Date.now()): string | null {
     return "idle";
   return null;
 }
+
+/**
+ * Makes every other top-level element inert while the lock is up, so nothing
+ * behind it (the workspace, or a dialog opened before the lock) can be used
+ * even if the lock dialog were closed. Returns the undo.
+ */
+export function inertOutside(keep: Element): () => void {
+  const changed = [...document.body.children].filter(
+    (el): el is HTMLElement =>
+      el !== keep && el instanceof HTMLElement && !el.inert,
+  );
+  for (const el of changed) el.inert = true;
+  return () => {
+    for (const el of changed) el.inert = false;
+  };
+}

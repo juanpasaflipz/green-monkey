@@ -94,3 +94,32 @@ describe("lock markers (SEC-6, ACC-1/ACC-2)", () => {
     expect(restoredLock(session(A))).toBeNull();
   });
 });
+
+describe("lock dialog guard (ACC-14)", () => {
+  it("inertOutside makes every other top-level element inert and undoes only its own change", async () => {
+    const { inertOutside } = await load();
+    class Element {
+      inert = false;
+    }
+    vi.stubGlobal("HTMLElement", Element);
+    const keep = new Element(),
+      app = new Element(),
+      modal = new Element(),
+      already = Object.assign(new Element(), { inert: true });
+    vi.stubGlobal("document", { body: { children: [app, keep, modal, already] } });
+    const release = inertOutside(keep as never);
+    expect([app.inert, keep.inert, modal.inert, already.inert]).toEqual([
+      true,
+      false,
+      true,
+      true,
+    ]);
+    release();
+    expect([app.inert, keep.inert, modal.inert, already.inert]).toEqual([
+      false,
+      false,
+      false,
+      true,
+    ]);
+  });
+});

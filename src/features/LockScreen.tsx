@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Lock } from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import type { TerminalState, TerminalStaff } from "../../shared/access";
@@ -10,6 +11,7 @@ import {
   fetchCurrentSession,
   finishPendingLogout,
 } from "../access/session";
+import { inertOutside } from "../access/lock";
 import { PinPad } from "./PinPad";
 import "../access/access.css";
 
@@ -20,6 +22,12 @@ export type LockReason = "idle" | "manual" | "renew" | string;
  * The same employee's PIN resumes with every unsaved state; another employee's
  * PIN starts their own session. Offline, the PIN cannot be verified, so the
  * current employee may continue with an explicit notice.
+ *
+ * Only an unlock, a switch or "Salir" ends it. A modal dialog's cancel can be
+ * forced through by repeated close requests (Escape, Android back), so the
+ * lock does not rely on it: closedby="none" ignores close requests where
+ * supported, the Escape keydown is cancelled before it becomes one, any close
+ * reopens the dialog at once, and everything outside it stays inert.
  */
 export function LockScreen({
   session,
@@ -50,8 +58,24 @@ export function LockScreen({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
-    ref.current?.showModal();
-    return () => ref.current?.close();
+    const dialog = ref.current;
+    if (!dialog) return;
+    const blockEscape = (e: KeyboardEvent) => {
+      if (e.key === "Escape") e.preventDefault();
+    };
+    const reopen = () => {
+      if (dialog.isConnected && !dialog.open) dialog.showModal();
+    };
+    const release = inertOutside(dialog);
+    window.addEventListener("keydown", blockEscape, true);
+    dialog.addEventListener("close", reopen);
+    dialog.showModal();
+    return () => {
+      dialog.removeEventListener("close", reopen);
+      window.removeEventListener("keydown", blockEscape, true);
+      release();
+      dialog.close();
+    };
   }, []);
   useEffect(() => {
     if (online)
@@ -92,11 +116,13 @@ export function LockScreen({
       : reason === "renew"
         ? t.accessRenewTitle.replace("{name}", session.name)
         : translateError(reason, locale);
-  return (
+  // A direct child of <body>, so making everything else inert leaves it usable.
+  return createPortal(
     <dialog
       ref={ref}
       className="lock-screen"
       aria-labelledby={titleId}
+      closedby="none"
       onCancel={(e) => e.preventDefault()}
     >
       <div className="lock-body">
@@ -236,6 +262,7 @@ export function LockScreen({
           {t.logout}
         </Button>
       </div>
-    </dialog>
+    </dialog>,
+    document.body,
   );
 }
