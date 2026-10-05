@@ -27,7 +27,7 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 | CORE-07 | partial | Recipe/price edits retain historical snapshots; new orders retain restaurant configuration. Tax/offline conflict acceptance pending. |
 | CORE-08 | partial | Device PIN, CSRF and cashier management denial tested. Manager approval is verified server-side for the exact void request, never stored, and failed approvals count toward a per-employee lockout (tests/voids-db.ts). Membership lifecycle and replayed-approval checks for other sensitive actions pending. |
 | CORE-09 | partial | Two-tenant RLS/FK and public QR tamper checks; invoice/webhook/print/upload/org routes pending. |
-| CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; Neon pooled/direct pending. |
+| CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; tenant transactions set `statement_timeout` with the tenant in one statement, role defaults via `ALTER ROLE` and verified TLS off-host (`tests/ops-db.ts`, `tests/provision-db.ts`, 2026-10-05); Neon pooled/direct pending. |
 | CORE-11 | partial | Cash refund reason, original tender immutability and no automatic stock return. Item voids keep the original line snapshot, record reason/actor/approver, refuse paid units and return stock only before the kitchen sees the ticket (tests/voids-db.ts). Item-level refund and provider cases pending. |
 | OFF-01 | partial | Compiled offline refresh/reconnect and duplicate replay pass; complete browser close/reopen matrix remains. |
 | OFF-02 | partial | Lost committed cash response, exact payment fingerprint/status and interrupted tab recovery pass; full process-restart HTTP matrix remains. |
@@ -37,9 +37,9 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 | OFF-06 | partial | Tenant-bound atomic backups, wrong-tenant rejection, old-session payment retention and revoked-session manager DB recovery pass; full replacement-root/logout matrix pending. |
 | OFF-07 | partial | Unsupported offline actions disabled; no provider offline capability claimed. |
 | OFF-08 | partial | Waiting revision keeps unresolved work; complete hashed shell graph is precached and API responses are excluded. Exact staging update proof pending. |
-| OPS-01 | pending | Printer jobs explicitly blocked; printer worker/hardware recovery pending. |
+| OPS-01 | pending | Printer jobs explicitly blocked; the jobs runner never touches blocked jobs and provides lease fencing, retries and restart resume for a future printer handler (`tests/jobs-db.ts`, 2026-10-05). Printer worker/hardware recovery pending. |
 | OPS-02 | partial | Persisted KDS rounds and polling. Void deltas persist until the kitchen acknowledges them; fully voided tickets close after acknowledgement. Disconnect scenario pending. |
-| OPS-03 | pending | Durable report/email worker not implemented. |
+| OPS-03 | pending | Durable jobs outbox locally verified: one job per (tenant, kind, dedupe key), two runners never lease the same job, bounded retries then dead with an alert (`tests/jobs-db.ts`, 2026-10-05). Report/email handler not implemented. |
 | INV-01 | partial | Receiving/preparation/sale/count/waste ledger implemented; complete chained cost reconciliation pending. |
 | INV-02 | verified | Two concurrent last-portion deductions serialize; only one succeeds. |
 | INV-03 | partial | Causal movement deduplication and recipe versions tested; substitutes/refund restoration pending. |

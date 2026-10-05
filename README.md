@@ -1,12 +1,12 @@
 # Green Monkey
 
-Spanish-first restaurant POS built with React/TypeScript/Vite, Express/TypeScript and PostgreSQL. Neon is the target application database; Railway serves the compiled web app and API from one service.
+Spanish-first restaurant POS built with React/TypeScript/Vite, Express/TypeScript and PostgreSQL. Neon is the target application database. Railway runs two services from one Docker image, declared in `.railway/railway.ts`: `web` (the compiled app, API and jobs runner) and `worker` (billing provider loop, watchdog alerts and the deploy-time migrations); see [infrastructure](docs/INFRASTRUCTURE.md).
 
-**Status: working local development application; required scope is still incomplete. Not production-ready.** See [delivery status](docs/DELIVERY_STATUS.md) for every source capability, [verification](docs/RELEASE_REPORT.md), [acceptance coverage](docs/ACCEPTANCE_STATUS.md), and [operator guide](docs/OPERATIONS.md). The pinned source applications were inspected, not run or modified.
+**Status: working local development application; required scope is still incomplete. Not production-ready.** See [delivery status](docs/DELIVERY_STATUS.md) for every source capability, [verification](docs/RELEASE_REPORT.md), [acceptance coverage](docs/ACCEPTANCE_STATUS.md), and [operator guide](docs/OPERATIONS.md). Release and operations: [release process](docs/RELEASE.md) (CI, CD and migrations), [runbook](docs/RUNBOOK.md), [provisioning](docs/PROVISIONING.md), [backups and restore](docs/BACKUP_RESTORE.md) and [load test](docs/LOAD_TEST.md). These are written and locally rehearsed; none has run against staging or production yet. The pinned source applications were inspected, not run or modified.
 
 ## Local setup
 
-Use Node 24 LTS and PostgreSQL 16+. Dependencies are pinned in `package-lock.json`.
+Use Node 24.21.0 (pinned in `.nvmrc` and the Dockerfile) and PostgreSQL 16+ (CI qualifies on PostgreSQL 18). Dependencies are pinned in `package-lock.json`.
 
 ```sh
 nvm use
@@ -19,7 +19,7 @@ Create a **new isolated database** and separate migration/runtime roles. The run
 npm run db:migrate
 ```
 
-Apply reviewed runtime grants after migrations. `scripts/grants.sql` is the reviewed privilege manifest; `scripts/grant-runtime.ts` safely applies it to an explicit runtime role for Neon. Migrations use a checksum registry and advisory transaction lock.
+Apply reviewed runtime grants after migrations. `scripts/grants.sql` is the reviewed privilege manifest; `scripts/grant-runtime.ts` safely applies it to an explicit runtime role for Neon. Migrations use a checksum registry and an advisory lock, and run one transaction per file with a 5 s `lock_timeout` and retries; `npm run db:migrate -- --grants` commits the grants in the newest migration's transaction (deployed environments always do this). Rules and flags: [release process](docs/RELEASE.md#migrations).
 
 For a reproducible disposable local Mac fixture, run `npm run setup:local` after `npm ci`. It initializes/migrates/seeds both isolated databases, applies grants, and creates `.env` only if absent. An existing `.env` is preserved.
 
@@ -50,12 +50,15 @@ npm run test:db
 npm run test:db:qualification
 npm run build
 npm run test:restart # isolated local dev fixture; starts its own server on 3003
+npm run test:drain # compiled web and worker exit cleanly on SIGTERM; same fixture and port
 NODE_ENV=production npm start
+npm run start:worker # compiled worker; `npm run worker` runs it from source
 ```
 
 `test:db` runs the 17 core operational scenarios. `test:db:qualification`
-also runs the identity, owner management, entitlement, billing, Free-limit and
-offline-recovery suites in a fixed order. `npm run test:db:recovery` runs the
+also runs the identity, owner management, entitlement, billing, Free-limit,
+offline-recovery, item-void and ops (roles, migrations, jobs, backups,
+provisioning) suites in a fixed order. `npm run test:db:recovery` runs the
 recovery database slice directly. All database runners require both
 `TEST_DATABASE_URL` and `TEST_MIGRATION_DATABASE_URL`; the runtime target must end
 in `_test`, and both local or Neon endpoints must satisfy the exact allowlists
@@ -162,6 +165,7 @@ Subscription flows and webhook verification passed in the dedicated sandbox. See
 - `server/`: authentication, explicit tenant transactions, canonical order/payment/stock commands, cash/refunds, management and public ordering.
 - `src/`: reusable UI, selling, operational/management workspaces, bilingual copy, IndexedDB recovery.
 - `migrations/`: complete baseline and subsequent versioned migrations.
+- `scripts/ops/`, `scripts/load/`, `.github/`, `.railway/`: provisioning, rotation, backups and restore rehearsal, load test, CI/CD workflows and Railway infrastructure as code.
 - `tests/`: domain, isolated DB, and Playwright scenarios.
 - `work/reference-sources/`: ignored hash-verified source snapshots, never part of the deploy image.
 

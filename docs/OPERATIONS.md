@@ -27,9 +27,11 @@ A pending local sale is not a kitchen acknowledgement. The four-hour eligibility
 
 The local `scripts/grants.sql` uses `gm_app`. For an isolated Neon target, provision the selected role explicitly and adapt grants to its identifier. Do not copy local passwords. The migration role must own the schema; the runtime role must not.
 
+Every tenant transaction sets the restaurant and a `statement_timeout` (`DB_STATEMENT_TIMEOUT_MS`, default 10 s) in its first statement. Off-host connections verify TLS (`verify-full`), and the pool size comes from `DB_POOL_MAX` (default 20). At startup the server waits for the database with capped backoff instead of crash-looping. On SIGTERM it answers `/api/health` with 503 `server_draining`, finishes in-flight requests and jobs, then closes the pools. Roles, logins and their session defaults: [provisioning](PROVISIONING.md) §2 and [infrastructure](INFRASTRUCTURE.md).
+
 ## Staging and release
 
-Docker and Railway config are prepared. Docker execution is unverified on this machine (no Docker CLI). No Railway or Neon staging target has been selected, so no staging deployment has occurred.
+Release and operations live in their own documents: [release process](RELEASE.md) (CI on PostgreSQL 18, CD from `main` to staging, gated production dispatch, migration rules), [runbook](RUNBOOK.md) (signals and alerts, "POS is down" playbook, rollback, retention, credential rotation, staging cutover), [provisioning](PROVISIONING.md), [backups and restore](BACKUP_RESTORE.md) and [load test](LOAD_TEST.md). Railway configuration is `.railway/railway.ts` (`railway.json` is gone). CI builds and smoke-tests the Docker image, because this machine has no Docker CLI. These workflows and scripts are written and locally rehearsed, but none has run against staging yet. The staging service that exists today predates them ([STAGING.md](STAGING.md)).
 
 Before deploying a separate staging service:
 - Provision new Neon development/test targets and a least-privileged runtime role.
@@ -40,6 +42,8 @@ Before deploying a separate staging service:
 - Pair printer/payment hardware only after provider contracts and sandbox results are verified.
 
 ## Backup, restore and rollback rehearsal
+
+Deployed environments use [backups and restore](BACKUP_RESTORE.md): encrypted off-platform dumps, nightly for production and weekly for staging (`npm run ops:backup`, `.github/workflows/backup.yml`), restore verification, and the Neon restore rehearsal (`npm run ops:rehearse-restore`). `tests/backup-db.ts` exercises them locally. No staging or production rehearsal has run yet.
 
 A local disposable test backup/restore rehearsal passed with matching record counts and control totals. Run `bash scripts/rehearse-restore.sh` only with this checkout’s local fixture cluster; it refuses any other data directory. The following staging/application rollback steps remain unverified:
 1. Record the source target, latest order/tender timestamps, migration versions, and source mappings.

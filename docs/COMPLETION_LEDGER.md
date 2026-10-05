@@ -15,11 +15,11 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | M2 recovery | local/Neon and deployed recovery HTTP passed | Deployed backup restore/download also passed; combined billing cases remain |
 | M3 staging candidate | deployed; core flows passed | Finish remaining exact-candidate sandbox billing cases; see STAGING.md |
 | M4 selling/pricing/cash/kitchen | partial | Item voids with manager approval and kitchen deltas done locally (Sept 26); next: discounts/courtesies with approval, item-level refunds, saved drawer close, combos/open amounts, promotions |
-| M5 jobs/printing/merchant payments | incomplete | Durable delivery infrastructure; device/provider selection is absent |
+| M5 jobs/printing/merchant payments | incomplete | Jobs outbox runner done locally (Oct 5: dedupe, lease fencing, backoff, dead-job alerts, restart resume; `tests/jobs-db.ts`); next: printer, report/email and payment handlers once devices/providers are selected |
 | M6 inventory/procurement | partial | Purchase orders, substitutions, lots, yields, saved counts |
 | M7 finance/imports/reports | partial | Complete metric contract, recurring expenses, settlement imports, PDF/schedules |
 | M8 accounts/configured modules | partial | Linking/recovery/onboarding, team policies and explicitly configured providers |
-| M9 migration/readiness | blocked in part | Approved source exports; isolated restore/rollback and operational evidence |
+| M9 migration/readiness | blocked in part | Approved source exports. Per-file migrations, schema readiness, encrypted backups and restore verification locally verified (Oct 5; `tests/migrate-db.ts`, `tests/ops-http.test.ts`, `tests/backup-db.ts`); CI/CD and the Neon restore rehearsal are written but have not run; staging restore/rollback and operational evidence pending |
 | M10 final qualification | pending | Full exact-revision security/load/UX/recovery matrix |
 | M11 production launch | not authorized by GitHub publishing | Named live target, enabled modules and cutover window after qualification |
 
@@ -112,9 +112,9 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | OFF-06 | partial | Tenant-bound atomic backups, wrong-tenant rejection, old-session payment retention and revoked-session manager DB recovery pass; full replacement-root/logout matrix pending. |
 | OFF-07 | partial | Unsupported offline actions disabled; no provider offline capability claimed. |
 | OFF-08 | partial | Waiting revision keeps unresolved work; complete hashed shell graph is precached and API responses are excluded. Exact staging update proof pending. |
-| OPS-01 | pending | Printer jobs explicitly blocked; printer worker/hardware recovery pending. |
+| OPS-01 | pending | Printer jobs explicitly blocked; the jobs runner never touches blocked jobs and provides lease fencing, retries and restart resume for a future printer handler (`tests/jobs-db.ts`, 2026-10-05). Printer worker/hardware recovery pending. |
 | OPS-02 | partial | Persisted KDS rounds and polling; disconnect/cancellation scenario pending. |
-| OPS-03 | pending | Durable report/email worker not implemented. |
+| OPS-03 | pending | Durable jobs outbox locally verified: one job per (tenant, kind, dedupe key), two runners never lease the same job, bounded retries then dead with an alert (`tests/jobs-db.ts`, 2026-10-05). Report/email handler not implemented. |
 | INV-01 | partial | Receiving/preparation/sale/count/waste ledger implemented; complete chained cost reconciliation pending. |
 | INV-02 | verified | Two concurrent last-portion deductions serialize; only one succeeds. |
 | INV-03 | partial | Causal movement deduplication and recipe versions tested; substitutes/refund restoration pending. |
