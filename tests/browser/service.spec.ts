@@ -1134,9 +1134,9 @@ test("a send that fails while a table switch waits keeps its error and cart unti
   );
   expect(nothing.items).toHaveLength(0);
   const kitchen = await call(page, "/service/kitchen?station=all");
-  expect(
-    kitchen.rounds.filter((r: any) => r.callName === name),
-  ).toHaveLength(0);
+  expect(kitchen.rounds.filter((r: any) => r.callName === name)).toHaveLength(
+    0,
+  );
 
   // Choosing the table again switches: the unsent cart goes to Borradores.
   await newCheck(second);
@@ -1619,6 +1619,12 @@ test("Cobrar juntas keeps the balances it opened with and shows the change", asy
     `#${first.number} · ${money(first.total)}`,
   );
   await expect(dialog).toContainText(money(total));
+  // SVC-REV-3: the cashier is told the first check now owes more.
+  await expect(
+    dialog.getByText(
+      `La orden #${first.number} ahora debe ${money(first.total + water.price)}, pero este cobro conjunto cubre ${money(first.total)}. Lo que falte quedará pendiente en la orden.`,
+    ),
+  ).toBeVisible();
   // SERVICE-MONEY-4: short cash is refused before anything is sent.
   await dialog.getByLabel("Efectivo recibido").fill(String(total / 100 - 1));
   await expect(dialog.getByRole("alert")).toHaveText(
@@ -1633,6 +1639,32 @@ test("Cobrar juntas keeps the balances it opened with and shows the change", asy
     "$20.00",
   );
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  // SVC-REV-3: the dialog shows what each check still owes and prints the
+  // receipts of the grouped payment.
+  await expect(
+    dialog.getByText("Cobro conjunto registrado. Cambio: $20.00."),
+  ).toBeVisible();
+  await expect(dialog).toContainText(
+    `#${first.number} · Cobrado ${money(first.total)} · Saldo ${money(water.price)}`,
+  );
+  await expect(dialog).toContainText(
+    `La orden #${first.number} todavía debe ${money(water.price)}. Cóbralo desde la orden.`,
+  );
+  await expect(dialog).toContainText(
+    `#${second.number} · Cobrado ${money(second.total)} · Saldo $0.00`,
+  );
+  await expect(dialog).not.toContainText(
+    `La orden #${second.number} todavía debe`,
+  );
+  await stubPrint(page);
+  await dialog
+    .getByRole("button", { name: "Imprimir recibos (2)", exact: true })
+    .click();
+  await expect.poll(async () => (await printed(page)).length).toBe(1);
+  const [paper] = await printed(page);
+  expect(paper).toContain(`#${first.number}`);
+  expect(paper).toContain(`#${second.number}`);
+  await dialog.getByRole("button", { name: "Listo", exact: true }).click();
   await expect(dialog).toBeHidden();
   const a = await call(page, "/orders/" + first.id);
   const b = await call(page, "/orders/" + second.id);

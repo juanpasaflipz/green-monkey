@@ -177,6 +177,14 @@ export default defineArea({
       "La orden #{n} llegó a cocina mientras cambiabas de cuenta.",
     servicePaidAfterSwitch:
       "El cobro pendiente de la orden #{n} quedó registrado. Su recibo está en Órdenes.",
+    serviceSettleDone: "Cobro conjunto registrado. Cambio: {change}.",
+    serviceSettleLine: "#{n} · Cobrado {paid} · Saldo {balance}",
+    serviceSettleStillOwes:
+      "La orden #{n} todavía debe {balance}. Cóbralo desde la orden.",
+    serviceSettleBalanceChanged:
+      "La orden #{n} ahora debe {now}, pero este cobro conjunto cubre {fixed}. Lo que falte quedará pendiente en la orden.",
+    serviceSettlePrint: "Imprimir recibos ({n})",
+    serviceSettleClose: "Listo",
     serviceSwitchCancelled:
       "No abrimos la cuenta que elegiste porque el envío o cobro en curso no se completó. Revisa el aviso y vuelve a elegirla.",
     serviceSendFailedAfterSwitch:
@@ -438,6 +446,14 @@ export default defineArea({
       "Order #{n} reached the kitchen while you switched checks.",
     servicePaidAfterSwitch:
       "The pending payment on order #{n} was recorded. Its receipt is in Orders.",
+    serviceSettleDone: "Grouped payment recorded. Change: {change}.",
+    serviceSettleLine: "#{n} · Paid {paid} · Balance {balance}",
+    serviceSettleStillOwes:
+      "Order #{n} still owes {balance}. Collect it from the order.",
+    serviceSettleBalanceChanged:
+      "Order #{n} now owes {now}, but this grouped payment covers {fixed}. The difference stays due on the order.",
+    serviceSettlePrint: "Print receipts ({n})",
+    serviceSettleClose: "Done",
     serviceSwitchCancelled:
       "The check you chose did not open because the send or payment in progress did not finish. Read the message and choose it again.",
     serviceSendFailedAfterSwitch:

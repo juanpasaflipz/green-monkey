@@ -291,7 +291,14 @@ the drawer is open.
   the dialog closes so the button is reachable.
 - **Cobrar juntas** fixes the checks and balances when it opens, so a retry
   after a lost response sends the same amounts under the same `operationId`
-  even if the list behind it refreshed, and shows the change.
+  even if the list behind it refreshed, and shows the change. Short cash is
+  refused before anything is sent. When the refreshed list shows a chosen
+  check with another balance, the dialog says "La orden #N ahora debe …, pero
+  este cobro conjunto cubre …". After the payment the dialog stays open with
+  each check's paid amount and remaining balance ("La orden #N todavía debe
+  …" when something is left), the change, and **Imprimir recibos (N)**, which
+  prints every check's receipt in one job and records each print; **Listo**
+  closes it.
 
 ## Printing (browser/OS)
 

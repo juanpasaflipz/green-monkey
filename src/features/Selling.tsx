@@ -376,8 +376,7 @@ export function Selling({
               const o = await api<Order>("/orders/" + c.value);
               // A cached context that points at a closed check is dropped.
               if (!live || moved()) return;
-              if (checkStateOf(o) === "closed")
-                void db.cache.delete(contextId);
+              if (checkStateOf(o) === "closed") void db.cache.delete(contextId);
               else setCurrent(o);
             }
           }
