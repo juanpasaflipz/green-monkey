@@ -1133,6 +1133,39 @@ test("The KDS review lane polls every 10 s with items and every 30 s while empty
   expect(polls).toBeLessThanOrEqual(3);
 });
 
+test("Offline saving stops when the session's offline window ends during the outage (I14)", async ({
+  page,
+  context,
+}) => {
+  // OFFLINE-MONEY-10: no browser test checked that saving offline is refused
+  // once session.offlineUntil (4 h after sign-in) passes by the device's
+  // corrected clock.
+  await page.clock.install();
+  await login(page);
+  await openDrawer(page);
+  await goOffline(context, page);
+  await product(page, "Taco de hongos").click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Cobrar" });
+  const save = dialog.getByRole("button", {
+    name: "Guardar cobro en este dispositivo",
+    exact: true,
+  });
+  await expect(save).toBeEnabled();
+  await page.keyboard.press("Escape");
+  // Still offline four hours later: the window has closed.
+  await page.clock.fastForward("04:01:00");
+  await expect(
+    page.getByText(/El periodo sin conexión terminó a las/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await expect(save).toBeDisabled();
+  await expect(dialog.getByRole("alert")).toContainText(
+    "El periodo sin conexión de esta sesión terminó",
+  );
+  expect(await allRows(page)).toHaveLength(0);
+});
+
 test("Device clock 3 minutes fast still syncs", async ({ page, context }) => {
   // Regression OFF-8: a fast device clock made every sale "in the future".
   await page.clock.install({ time: Date.now() + 180_000 });
