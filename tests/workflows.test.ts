@@ -252,3 +252,76 @@ describe("third-party actions are pinned by full commit SHA (OPS-R8 regression)"
     expect(seen.size).toBeGreaterThanOrEqual(3);
   });
 });
+
+describe("the Neon CLI is pinned to an exact version (OPS-R13)", () => {
+  // No API key reaches neonctl here: every case stops at the version check
+  // or runs the dry run, which never calls neonctl or the Neon API.
+  const base = {
+    PATH: process.env.PATH ?? "",
+    HOME: process.env.HOME ?? "",
+    // The rehearsal imports dotenv/config; never load a local .env here.
+    DOTENV_CONFIG_PATH: "/dev/null",
+  };
+  const run = (
+    command: string,
+    args: string[],
+    env: Record<string, string>,
+  ) => {
+    try {
+      const stdout = execFileSync(command, args, {
+        env: { ...base, ...env },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { status: 0, out: stdout };
+    } catch (error) {
+      const e = error as { status: number; stdout: string; stderr: string };
+      return { status: e.status, out: `${e.stdout}${e.stderr}` };
+    }
+  };
+  const neonEnv = "t" + Date.now().toString(36);
+  const fake = { NEON_API_KEY: "not-a-key", NEON_ORG_ID: "org-not-real" };
+
+  it("provision-neon.sh refuses a missing or floating version", () => {
+    for (const version of [undefined, "latest", "2", "2.1", "^2.1.0"]) {
+      const result = run(
+        "bash",
+        ["scripts/ops/provision-neon.sh", neonEnv, "--dry-run"],
+        version === undefined ? fake : { ...fake, NEONCTL_VERSION: version },
+      );
+      expect(result.status).toBe(2);
+      expect(result.out).toContain("pin NEONCTL_VERSION");
+    }
+  });
+
+  it("provision-neon.sh dry run proceeds with an exact version", () => {
+    const result = run(
+      "bash",
+      ["scripts/ops/provision-neon.sh", neonEnv, "--dry-run"],
+      { ...fake, NEONCTL_VERSION: "1.2.3" },
+    );
+    expect(result.status).toBe(0);
+    expect(result.out).toContain("DRY-RUN: neon projects create");
+    expect(result.out).not.toContain("not-a-key");
+  });
+
+  it("the restore rehearsal refuses to start without an exact version", () => {
+    for (const version of [undefined, "latest"]) {
+      const result = run(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          "scripts/ops/rehearse-neon-restore.ts",
+          "--dry-run",
+        ],
+        {
+          REHEARSAL_SOURCE_ENV: "staging",
+          ...(version === undefined ? {} : { NEONCTL_VERSION: version }),
+        },
+      );
+      expect(result.status).not.toBe(0);
+      expect(result.out).toContain("NEONCTL_VERSION must be an exact version");
+    }
+  });
+});

@@ -62,9 +62,12 @@ Losing every copy of the private key makes the dumps unreadable.
 ## Restore rehearsal (quarterly, and before launch)
 
 ```sh
-REHEARSAL_SOURCE_ENV=staging … npx tsx scripts/ops/rehearse-neon-restore.ts --dry-run
-REHEARSAL_SOURCE_ENV=staging … npx tsx scripts/ops/rehearse-neon-restore.ts
+NEONCTL_VERSION=<x.y.z> REHEARSAL_SOURCE_ENV=staging … npx tsx scripts/ops/rehearse-neon-restore.ts --dry-run
+NEONCTL_VERSION=<x.y.z> REHEARSAL_SOURCE_ENV=staging … npx tsx scripts/ops/rehearse-neon-restore.ts
 ```
+
+`NEONCTL_VERSION` is the exact Neon CLI version chosen in
+[PROVISIONING.md](PROVISIONING.md) §1; the script refuses to start without one.
 
 1. **PITR drill:** branch the source project from one hour ago (expires in a
    day) and read the control totals through the backup login.

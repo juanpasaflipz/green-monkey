@@ -26,9 +26,15 @@ Cloudflare or Google yet.
 ## 1. Neon project
 
 ```sh
-NEON_API_KEY=… NEON_ORG_ID=… scripts/ops/provision-neon.sh production --dry-run
-NEON_API_KEY=… NEON_ORG_ID=… scripts/ops/provision-neon.sh production
+NEONCTL_VERSION=<x.y.z> NEON_API_KEY=… NEON_ORG_ID=… scripts/ops/provision-neon.sh production --dry-run
+NEONCTL_VERSION=<x.y.z> NEON_API_KEY=… NEON_ORG_ID=… scripts/ops/provision-neon.sh production
 ```
+
+`NEONCTL_VERSION` is required and must be an exact version
+(`MAJOR.MINOR.PATCH`): the Neon CLI runs with the API key and writes the owner
+connection string, so it is pinned like the Railway CLI and never resolves
+`latest`. Pick a release from the neonctl changelog, review it, and use the
+same value for `scripts/ops/rehearse-neon-restore.ts`.
 
 Creates `green-monkey-production` and database `green_monkey_production`, sets
 the history window, daily and weekly snapshots kept 35 days, protects the

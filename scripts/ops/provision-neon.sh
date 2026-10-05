@@ -6,7 +6,10 @@
 # .env.neon-owner-<env> (0600, never overwritten) as PROVISION_DATABASE_URL
 # for scripts/ops/provision-roles.ts. Prints ids and names only.
 #   NEON_API_KEY=... NEON_ORG_ID=... scripts/ops/provision-neon.sh <env> [--dry-run]
-# Optional: NEON_REGION (default aws-us-east-1), NEON_PLAN=scale, NEONCTL_VERSION.
+# Required: NEONCTL_VERSION, the exact neonctl version you reviewed
+# (MAJOR.MINOR.PATCH). The CLI runs with the API key, so it is pinned like the
+# Railway CLI, never `latest` (OPS-R13).
+# Optional: NEON_REGION (default aws-us-east-1), NEON_PLAN=scale.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 env_name=${1:-}
@@ -14,12 +17,13 @@ env_name=${1:-}
 dry_run=false
 [ "${2:-}" = "--dry-run" ] && dry_run=true
 : "${NEON_API_KEY:?NEON_API_KEY required}" "${NEON_ORG_ID:?NEON_ORG_ID required}"
+[[ "${NEONCTL_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pin NEONCTL_VERSION to an exact version (MAJOR.MINOR.PATCH, the version you reviewed)" >&2; exit 2; }
 region=${NEON_REGION:-aws-us-east-1}
 history=604800
 [ "${NEON_PLAN:-launch}" = "scale" ] && history=2592000
 out=".env.neon-owner-$env_name"
 [ -e "$out" ] && { echo "$out exists; refusing to overwrite" >&2; exit 1; }
-neon() { npx -y "neonctl@${NEONCTL_VERSION:-latest}" "$@"; }
+neon() { npx -y "neonctl@$NEONCTL_VERSION" "$@"; }
 api() {
   if $dry_run; then printf 'DRY-RUN: %s %s %s\n' "$1" "$2" "${3:-}"; return; fi
   curl -fsS -X "$1" "https://console.neon.tech/api/v2$2" \

@@ -1,6 +1,7 @@
 // User-run restore rehearsal on Neon (DB-2/OPS-5): staging first, then
 // production before launch, then quarterly. Never run from CI.
-//   NEON_API_KEY, NEON_PROJECT_ID (source), NEON_ORG_ID, NEON_REGION
+//   NEON_API_KEY, NEON_PROJECT_ID (source), NEON_ORG_ID, NEON_REGION,
+//   NEONCTL_VERSION (exact MAJOR.MINOR.PATCH; required, also for --dry-run)
 //   REHEARSAL_SOURCE_ENV (staging|production), SOURCE_DATABASE,
 //   SOURCE_BACKUP_URL (direct backup login on the source, for the PITR totals)
 //   AGE_IDENTITY (path to the offline private key)
@@ -35,11 +36,13 @@ const dryRun = args.includes("--dry-run");
 const started = Date.now();
 const date = new Date().toISOString().slice(0, 10);
 const env = process.env.REHEARSAL_SOURCE_ENV ?? "";
-const neonctl = [
-  "npx",
-  "-y",
-  `neonctl@${process.env.NEONCTL_VERSION ?? "latest"}`,
-];
+// The Neon CLI runs with NEON_API_KEY and the owner connection string, so it
+// is pinned to an exact version, as the deploy action pins the Railway CLI
+// (OPS-R13); never `latest`.
+const neonctlVersion = process.env.NEONCTL_VERSION ?? "";
+if (!/^\d+\.\d+\.\d+$/.test(neonctlVersion))
+  throw Error("NEONCTL_VERSION must be an exact version (MAJOR.MINOR.PATCH)");
+const neonctl = ["npx", "-y", `neonctl@${neonctlVersion}`];
 const timings: Record<string, number> = {};
 const evidence: Record<string, unknown> = {
   date,
