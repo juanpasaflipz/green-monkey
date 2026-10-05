@@ -65,8 +65,13 @@ export default function App() {
       setCatalog((await db.cache.get(scope(cached) + ":catalog"))?.value ?? []);
     }
   }
-  async function load(resetView = true) {
-    if (getConnectivitySnapshot().manual) {
+  /**
+   * `signedIn`: right after an explicit sign-in (login form or owner access),
+   * the server session is always read, even in manual offline mode; manual
+   * mode only skips the startup check (OFF-R16).
+   */
+  async function load(resetView = true, signedIn = false) {
+    if (getConnectivitySnapshot().manual && !signedIn) {
       await restoreCached();
       setLoading(false);
       return;
@@ -93,7 +98,10 @@ export default function App() {
       setCatalog([]);
       // OFF-1: any transient failure (network, timeout, 5xx), not only a
       // browser that reports itself offline, falls back to the cached session.
-      if ((e instanceof ApiError && e.transient) || !navigator.onLine)
+      // Never right after a sign-in: the cached session may be another
+      // employee's, and sales would be recorded under that person (OFF-R16).
+      if (signedIn) setError(translateError((e as Error).message, locale));
+      else if ((e instanceof ApiError && e.transient) || !navigator.onLine)
         await restoreCached();
     } finally {
       setLoading(false);
@@ -194,7 +202,7 @@ export default function App() {
               setLoading(true);
               setShowAccount(false);
               history.replaceState(null, "", "/app");
-              await load();
+              await load(true, true);
             }}
             onAccount={setOwnerAccess}
           />
@@ -206,7 +214,7 @@ export default function App() {
               const f = new FormData(e.currentTarget);
               try {
                 await api("/login", Object.fromEntries(f));
-                await load();
+                await load(true, true);
               } catch (err) {
                 setError(translateError((err as Error).message, locale));
               }
