@@ -95,6 +95,8 @@ export default defineArea({
     offlineArchivedBy: "Archivado por {name}",
     offlineArchivedDrawerNote:
       "Este dispositivo archivó {amount} de ventas locales de esta caja. Ese efectivo puede aparecer como sobrante.",
+    offlineArchivedDrawerTerminal:
+      "También archivó {amount} de cobros con terminal de esta caja; no afectan el efectivo.",
     offlineAttemptParked:
       "Un pago anterior requiere revisión de un gerente en Sincronización; no cobres otra vez esa orden. Puedes seguir con otras órdenes.",
     offlineAttemptResolvedOther:
@@ -331,6 +333,8 @@ export default defineArea({
     offlineArchivedBy: "Archived by {name}",
     offlineArchivedDrawerNote:
       "This device archived {amount} of local sales from this drawer. That cash may show as an overage.",
+    offlineArchivedDrawerTerminal:
+      "It also archived {amount} of terminal payments from this drawer; they do not affect the cash.",
     offlineAttemptParked:
       "An earlier payment needs manager review in Sync; do not charge that order again. You can continue with other orders.",
     offlineAttemptResolvedOther:

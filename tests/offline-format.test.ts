@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  archivedDrawerAmounts,
   orderLabel,
   provisionalOnly,
   rowErrorCode,
@@ -74,5 +75,39 @@ describe("sync row explanations (OFFLINE-RECOVERY-03)", () => {
       expect(errorText[code], code).toBeDefined();
       expect(errorText[code]![0]).not.toMatch(/Conecta|Actualiza antes/);
     }
+  });
+});
+
+describe("archived records at drawer close (OFFLINE-RECOVERY-08)", () => {
+  it("only archived cash may show up as an overage; terminal payments are apart", () => {
+    const prefix = "t:d:";
+    const drawer = "drawer-1";
+    const v3 = (method: "cash" | "external", amount: number, tip = 0) => ({
+      kind: "sale",
+      cashSessionId: drawer,
+      payment: { method, amount, tip },
+    });
+    const rows = [
+      { scope: "t:d:e1", status: "archived", body: v3("external", 120_000) },
+      { scope: "t:d:e1", status: "archived", body: v3("cash", 15_000, 500) },
+      // A legacy v1 cash sale (no kind): expectedTotal and tip.
+      {
+        scope: "t:d:e2",
+        status: "archived",
+        body: { expectedTotal: 2_000, tip: 0, cashSessionId: drawer },
+      },
+      // Not archived, another drawer, another device: never counted.
+      { scope: "t:d:e1", status: "conflict", body: v3("cash", 9_999) },
+      {
+        scope: "t:d:e1",
+        status: "archived",
+        body: { ...v3("cash", 9_999), cashSessionId: "drawer-2" },
+      },
+      { scope: "t:x:e1", status: "archived", body: v3("cash", 9_999) },
+    ];
+    expect(archivedDrawerAmounts(rows, prefix, drawer)).toEqual({
+      cash: 17_500,
+      terminal: 120_000,
+    });
   });
 });

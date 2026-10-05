@@ -1,5 +1,9 @@
 import type { Locale } from "../../../shared/domain";
-import type { OfflineRecordKind } from "../../../shared/offline-recovery";
+import {
+  recordAmounts,
+  type OfflineRecord,
+  type OfflineRecordKind,
+} from "../../../shared/offline-recovery";
 import { strings, type Key } from "../../i18n";
 
 /** Replaces {name} placeholders in a translated string. */
@@ -84,4 +88,33 @@ export function rowErrorCode(code: string, kind: OfflineRecordKind): string {
   if (code === "offline_catalog_changed" && !money)
     return "offline_why_catalog_items";
   return code;
+}
+
+/**
+ * What this device archived for one drawer (§2.8), split by method: only cash
+ * can show up as an overage when the drawer is counted; a terminal payment
+ * never put cash in it (OFFLINE-RECOVERY-08). v1/v2 sales are cash.
+ */
+export function archivedDrawerAmounts(
+  rows: readonly { scope: string; status: string; body: unknown }[],
+  devicePrefix: string,
+  drawerId: string,
+): { cash: number; terminal: number } {
+  const totals = { cash: 0, terminal: 0 };
+  for (const row of rows) {
+    const body = row.body as OfflineRecord & {
+      cashSessionId?: string | null;
+      payment?: { method?: string };
+    };
+    if (
+      row.status !== "archived" ||
+      !row.scope.startsWith(devicePrefix) ||
+      body.cashSessionId !== drawerId
+    )
+      continue;
+    const { amount, tip } = recordAmounts(body);
+    if (body.payment?.method === "external") totals.terminal += amount + tip;
+    else totals.cash += amount + tip;
+  }
+  return totals;
 }

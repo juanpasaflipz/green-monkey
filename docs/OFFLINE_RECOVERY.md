@@ -423,7 +423,9 @@ On the Sync screen a manager can:
   required, the evidence is kept verbatim on the server with its hash and the
   manager's name, and nothing is added to sales or the drawer. Drawer close then
   counts the row as resolved and notes "Este dispositivo archivó $X de ventas
-  locales de esta caja. Ese efectivo puede aparecer como sobrante."
+  locales de esta caja. Ese efectivo puede aparecer como sobrante." Only archived
+  cash counts there; archived terminal payments are named apart ("…no afectan el
+  efectivo"), because they never put cash in the drawer.
 
 ## Uncertain online payments
 
