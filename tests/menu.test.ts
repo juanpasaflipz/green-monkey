@@ -37,6 +37,7 @@ import {
   menuBaseline,
   watchMenuRevision,
 } from "../src/features/menu/freshness";
+import { CATALOG_ERRORS, priceCart } from "../src/features/menu/cart";
 
 const tortilla = "00000000-0000-4000-8000-0000000000a1";
 const queso = "00000000-0000-4000-8000-0000000000a2";
@@ -731,5 +732,76 @@ describe("FOH-8: POS catalog freshness", () => {
     a.set(4);
     expect(menuBaseline("tenant-a:device:employee").get()).toBe(4);
     expect(b.get()).toBeNull();
+  });
+});
+
+describe("OWNER-6/OWNER-2: per-line cart pricing after a catalog refresh", () => {
+  const brownie: Product = {
+    ...taco,
+    id: randomUUID(),
+    name: { es: "Brownie", en: "Brownie" },
+    price: 4500,
+    groups: [],
+    recipe: [],
+    cost: null,
+  };
+  const withSalsa = line(taco, [salsa.options[0].id]);
+  const plain = line(brownie);
+
+  it("a product 86'd or archived while in the cart flags only its line; the rest still prices", () => {
+    const fine = priceCart([withSalsa, plain], [taco, brownie], true);
+    expect(fine.blocked).toBe(false);
+    expect(fine.lines.map((l) => l.error)).toEqual([null, null]);
+    expect(fine.total).toBe(2500 + 4500);
+    // The same lines priced together and one by one agree.
+    expect(fine.lines.map((l) => l.priced)).toEqual(
+      quote([withSalsa, plain], [taco, brownie], true),
+    );
+
+    const soldOut = { ...brownie, available: false };
+    const after86 = priceCart([withSalsa, plain], [taco, soldOut], true);
+    expect(after86.blocked).toBe(true);
+    expect(after86.lines[0].priced?.total).toBe(2500);
+    expect(after86.lines[1]).toEqual({
+      input: plain,
+      priced: null,
+      error: "unavailable",
+    });
+    expect(after86.total).toBe(2500);
+    // The old all-or-nothing quote threw, which blanked the whole cart.
+    expect(code(() => quote([withSalsa, plain], [taco, soldOut], true))).toBe(
+      "unavailable",
+    );
+
+    const archived = priceCart([withSalsa, plain], [taco], true);
+    expect(archived.lines.map((l) => l.error)).toEqual([null, "unavailable"]);
+  });
+
+  it("a chosen option that sold out flags its line as invalid_modifier, a catalog error", () => {
+    const verde = salsa.options[0];
+    const soldOutSalsa: Group = {
+      ...salsa,
+      options: salsa.options.map((o) =>
+        o.id === verde.id ? { ...o, available: false } : o,
+      ),
+    };
+    const cart = priceCart(
+      [withSalsa, plain],
+      [{ ...taco, groups: [soldOutSalsa, extras] }, brownie],
+      true,
+    );
+    expect(cart.lines.map((l) => l.error)).toEqual(["invalid_modifier", null]);
+    expect(cart.total).toBe(4500);
+    for (const e of ["unavailable", "invalid_modifier", "required_modifier"])
+      expect(CATALOG_ERRORS.has(e)).toBe(true);
+    expect(CATALOG_ERRORS.has("insufficient_stock")).toBe(false);
+  });
+
+  it("an empty cart is not blocked and costs nothing", () => {
+    expect(priceCart([], [taco], true)).toEqual({
+      lines: [],
+      total: 0,
+      blocked: false,
+    });
   });
 });

@@ -13,7 +13,6 @@ import {
   Pause,
 } from "lucide-react";
 import {
-  quote,
   minor,
   type Session,
   type Product,
@@ -28,6 +27,8 @@ import { clearPaymentAttempt, db, scope, type Draft } from "../offline";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 import { ModifierPicker } from "../components/ModifierPicker";
 import { pickerNeeded, orderable } from "../../shared/menu";
+import { priceCart } from "./menu/cart";
+import { UnavailableLines } from "./menu/UnavailableLines";
 const fresh = (): OrderInput => ({
   operationId: crypto.randomUUID(),
   lines: [],
@@ -201,13 +202,11 @@ export function Selling({
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [active]);
-  let priced: ReturnType<typeof quote> = [];
-  try {
-    priced = quote(draft.lines, catalog, true);
-  } catch {
-    /* Catalog conflicts are surfaced when sending. */
-  }
-  const draftTotal = priced.reduce((a, l) => a + l.total, 0);
+  // Per line, so a catalog refresh that 86es one product never blanks the
+  // cart (service's priceCart replaces this at merge, wave contract 4.8).
+  const pricing = priceCart(draft.lines, catalog, true);
+  const priced = pricing.lines.flatMap((l) => (l.priced ? [l.priced] : []));
+  const draftTotal = pricing.total;
   const due = (current ? current.total - current.paid : 0) + draftTotal;
   const categories = [...new Set(catalog.map((p) => p.category[locale]))];
   const filtered = catalog.filter(
@@ -533,6 +532,17 @@ export function Selling({
             </div>
           ))
         )}
+        <UnavailableLines
+          lines={pricing.lines}
+          catalog={catalog}
+          locale={locale}
+          onRemove={(id) =>
+            setDraft((d) => ({
+              ...d,
+              lines: d.lines.filter((l) => l.id !== id),
+            }))
+          }
+        />
       </div>
       <div className="cart-bottom">
         <Field label={t("note")}>
@@ -553,7 +563,7 @@ export function Selling({
         )}
         <div className="row">
           <Button
-            disabled={!draft.lines.length || busy || !online}
+            disabled={!draft.lines.length || busy || !online || pricing.blocked}
             onClick={() => void send().catch(() => {})}
           >
             <Send size={16} />
@@ -561,7 +571,7 @@ export function Selling({
           </Button>
           <Button
             variant="primary"
-            disabled={due <= 0 || busy}
+            disabled={due <= 0 || busy || pricing.blocked}
             onClick={openPay}
           >
             {t("pay")}

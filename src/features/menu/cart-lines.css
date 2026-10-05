@@ -1,0 +1,13 @@
+/* A cart line that no longer prices (POS and QR/kiosk). */
+.order-line.line-unavailable {
+  align-items: center;
+}
+.order-line.line-unavailable > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.order-line.line-unavailable p.error {
+  margin: 4px 0 0;
+  padding: 8px 12px;
+  color: var(--negative);
+}

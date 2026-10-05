@@ -848,3 +848,88 @@ test("modifier groups: a blank group starts optional, a forced paid extra is fla
     page.locator(".menu-group-card").filter({ hasText: name }),
   ).toContainText("Opcional · hasta 1");
 });
+
+/** Creates a product through the menu API in a demo category. */
+async function createProduct(
+  page: Page,
+  name: string,
+  price: number,
+  category: string,
+  groupIds: string[] = [],
+) {
+  const menu = (await call(page, "/menu")).data as {
+    categories: { id: string; name: { es: string } }[];
+  };
+  const saved = await call(page, "/menu/products/save", {
+    operationId: crypto.randomUUID(),
+    id: crypto.randomUUID(),
+    expectedVersion: 0,
+    name: { es: name, en: "" },
+    categoryId: menu.categories.find((c) => c.name.es === category)!.id,
+    kind: "item",
+    price,
+    station: "kitchen",
+    groupIds,
+  });
+  expect(saved.status).toBe(200);
+  return saved.data as { id: string; version: number };
+}
+async function setAvailable(page: Page, id: string, available: boolean) {
+  const r = await call(page, "/menu/products/availability", {
+    operationId: crypto.randomUUID(),
+    id,
+    available,
+  });
+  expect(r.status).toBe(200);
+}
+
+test("OWNER-6: an 86 while a product is in the POS cart flags that line with Quitar; the cart never goes blank", async ({
+  page,
+}) => {
+  const name = `Agua de horchata ${suffix()}`;
+  await login(page);
+  const product = await createProduct(page, name, 3000, "Bebidas");
+  try {
+    await sell(page);
+    const search = page.getByRole("textbox", { name: "Buscar producto…" });
+    await search.fill(name);
+    await page.locator(".product").filter({ hasText: name }).click();
+    await search.fill("Taco de hongos");
+    await page
+      .locator(".product")
+      .filter({ hasText: "Taco de hongos" })
+      .click();
+    const cart = page.locator(".cart");
+    await expect(cart.locator(".order-line")).toHaveCount(2);
+    await expect(cart.locator(".total strong")).toHaveText("$75.00");
+
+    // Another terminal 86es it; the next catalog refresh reaches this one.
+    await setAvailable(page, product.id, false);
+    await page.evaluate(() =>
+      window.dispatchEvent(new Event("gm-menu-refresh")),
+    );
+    const stale = cart.locator(".order-line.line-unavailable");
+    await expect(stale).toContainText(name);
+    await expect(stale.getByRole("alert")).toHaveText(
+      "Ya no está disponible. Quítalo de la orden.",
+    );
+    await expect(
+      cart.locator(".order-line").filter({ hasText: "Taco de hongos" }),
+    ).toContainText("$45.00");
+    await expect(cart.locator(".total strong")).toHaveText("$45.00");
+    const send = page.getByRole("button", {
+      name: "Enviar a cocina",
+      exact: true,
+    });
+    await expect(send).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Cobrar", exact: true }),
+    ).toBeDisabled();
+    await stale.getByRole("button", { name: `Quitar ${name}` }).click();
+    await expect(stale).toHaveCount(0);
+    await expect(cart.locator(".order-line")).toHaveCount(1);
+    await expect(send).toBeEnabled();
+  } finally {
+    await setAvailable(page, product.id, true);
+  }
+});

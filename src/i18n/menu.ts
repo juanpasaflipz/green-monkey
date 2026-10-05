@@ -266,6 +266,9 @@ export default defineArea({
     menuOptionPriceInvalid:
       "Escribe un precio válido, por ejemplo 15.00 (sin signo de pesos).",
     menuOptionCostInvalid: "Escribe un costo válido, por ejemplo 4.50.",
+    menuLineUnavailable: "Ya no está disponible. Quítalo de la orden.",
+    menuLineChoicesChanged:
+      "Sus opciones cambiaron. Quítalo y vuelve a agregarlo.",
   },
   en: {
     menuNavLabel: "Menu & inventory",
@@ -530,6 +533,8 @@ export default defineArea({
     menuOptionPriceInvalid:
       "Enter a valid price, for example 15.00 (no currency sign).",
     menuOptionCostInvalid: "Enter a valid cost, for example 4.50.",
+    menuLineUnavailable: "No longer available. Remove it from the order.",
+    menuLineChoicesChanged: "Its choices changed. Remove it and add it again.",
   },
   errors: {
     menu_changed: [
