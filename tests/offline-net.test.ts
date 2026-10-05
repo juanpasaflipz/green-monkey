@@ -173,6 +173,25 @@ describe("api transport", () => {
     expect(gated).toHaveLength(1);
   });
 
+  it("an idempotent POST retried into a 401 reports the first, unknown outcome (integration)", async () => {
+    vi.useFakeTimers();
+    const calls = mockFetch(
+      () => Promise.reject(new TypeError("offline")),
+      json(401, { error: "session_expired" }),
+    );
+    const paid = failure(
+      api("/orders/o/payments", { operationId: "op" }, { idempotent: true }),
+    );
+    await vi.advanceTimersByTimeAsync(800);
+    const e = await paid;
+    expect([e.message, e.kind, e.transient]).toEqual([
+      "network_unavailable",
+      "network",
+      true,
+    ]);
+    expect(calls).toHaveLength(2);
+  });
+
   it("transport observer receives ok/kind/latency", async () => {
     const outcomes: TransportOutcome[] = [];
     setTransportObserver((o) => outcomes.push(o));
