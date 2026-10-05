@@ -3,9 +3,12 @@
 //
 //   node build/scripts/migrate.js [--grants] [--retention] [--grants-only] [--check] [--dry-run]
 //     default       apply pending migrations, then reconcile backup policies
-//     --grants      then apply the runtime grants manifest (the Railway
-//                   preDeploy always passes this: migrate, then grants)
-//     --retention   then run the retention pass (oauth attempts, done/dead jobs)
+//     --grants      also apply the runtime grants manifest (the Railway
+//                   preDeploy always passes this: migrate, then grants). When
+//                   migrations are pending the grants commit in the newest
+//                   migration's transaction, before its registry row.
+//     --retention   then run the retention pass (oauth attempts, done/dead
+//                   jobs); a failure alerts retention_failed, never fails
 //     --grants-only only apply grants and reconcile policies
 //     --check       exit 3 if migrations are pending; performs no writes
 //     --dry-run     print pending migration names; performs no writes
@@ -16,9 +19,15 @@ import { pathToFileURL } from "node:url";
 import { databaseTls, withoutParams } from "../server/db-support.js";
 import { log } from "../server/logging.js";
 import type { AppEnv } from "../server/config-rules.js";
-import { runRetention } from "../server/ops/retention.js";
+import { retentionPass } from "../server/ops/retention.js";
+import {
+  alertTargetFromEnv,
+  configureAlerts,
+  sendAlert,
+} from "../server/ops/alerts.js";
 import {
   applyGrants,
+  applyGrantsTx,
   applyMigrations,
   assertMigrationRole,
   MigrationError,
@@ -133,18 +142,31 @@ export async function main(
     }
     await assertMigrationRole(sql, appEnv);
     const database = decodeURIComponent(target.pathname.slice(1));
+    let granted = false;
     if (!flags.has("--grants-only")) {
-      const applied = await applyMigrations(sql, files);
-      log.info("migrations_complete", { applied: applied.length });
+      // With --grants, the newest migration and the grants commit together:
+      // readiness (newest migration recorded) never passes before the new
+      // tables are granted to the runtime role (OPS-R11).
+      const applied = await applyMigrations(sql, files, {
+        beforeLastRecord: flags.has("--grants")
+          ? async (tx) => {
+              await applyGrantsTx(tx, { role, database });
+              granted = true;
+            }
+          : undefined,
+      });
+      log.info("migrations_complete", { applied: applied.length, granted });
+      if (granted)
+        log.info("grants_applied", { role, withMigration: applied.at(-1) });
     }
-    if (flags.has("--grants") || flags.has("--grants-only"))
+    if (!granted && (flags.has("--grants") || flags.has("--grants-only")))
       await applyGrants(sql, { role, database });
     await reconcilePolicies(sql);
     if (flags.has("--retention")) {
-      // Retention never fails a deploy; failures are logged for the alerts.
-      const result = await runRetention(sql);
-      if (result.failed.length)
-        log.error("retention_failed", { tables: result.failed });
+      // Retention never fails a deploy; a failure alerts (retention_failed)
+      // and the worker's 15-minute schedule retries it.
+      configureAlerts(alertTargetFromEnv(env), appEnv);
+      await retentionPass(sql, sendAlert);
     }
     return 0;
   } catch (error) {

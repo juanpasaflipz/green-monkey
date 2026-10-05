@@ -134,11 +134,15 @@ async function ensureRegistry(sql: postgres.Sql, lockTimeout: string) {
   });
 }
 
+/** Runs in the newest migration's transaction, before its registry row. */
+export type BeforeRecord = (tx: Tx) => Promise<unknown>;
+
 async function applyTransactional(
   sql: postgres.Sql,
   file: MigrationFile,
   lockTimeout: string,
   statementTimeout: string,
+  beforeRecord?: BeforeRecord,
 ) {
   return sql.begin(async (raw) => {
     const tx = raw as Tx;
@@ -154,6 +158,7 @@ async function applyTransactional(
       return false;
     }
     await tx.unsafe(file.body);
+    if (beforeRecord) await beforeRecord(tx);
     await tx`insert into schema_migrations(name,hash) values(${file.name},${file.hash})`;
     return true;
   }) as Promise<boolean>;
@@ -164,6 +169,7 @@ async function applyNonTransactional(
   file: MigrationFile,
   lockTimeout: string,
   statementTimeout: string,
+  beforeRecord?: BeforeRecord,
 ) {
   const reserved = await sql.reserve();
   let locked = false;
@@ -190,6 +196,8 @@ async function applyNonTransactional(
     // before CREATE INDEX CONCURRENTLY) because a failure leaves earlier ones.
     for (const statement of splitStatements(file.body))
       await reserved.unsafe(statement);
+    if (beforeRecord)
+      await reserved.begin((raw) => beforeRecord(raw as unknown as Tx));
     await reserved`insert into schema_migrations(name,hash) values(${file.name},${file.hash})`;
     return true;
   } finally {
@@ -208,6 +216,13 @@ async function applyNonTransactional(
  * `-- gm:no-transaction` files, statement by statement on one reserved
  * connection). Lock timeouts retry with 2/4/8/16 s backoff; anything else
  * aborts the run with migration_failed.
+ *
+ * `beforeLastRecord` runs for the newest pending file just before its
+ * registry row is written: in the same transaction for a transactional
+ * file, in its own transaction for a no-transaction file. Readiness keys on
+ * that row, so the runner passes the grants manifest here and a new
+ * revision never passes /api/health before its tables are granted (OPS-R11).
+ * A failure rolls the newest migration back with it.
  */
 export async function applyMigrations(
   sql: postgres.Sql,
@@ -217,6 +232,7 @@ export async function applyMigrations(
     statementTimeout?: string;
     retries?: number;
     sleep?: (ms: number) => Promise<void>;
+    beforeLastRecord?: BeforeRecord;
   } = {},
 ): Promise<string[]> {
   const lockTimeout = o.lockTimeout ?? "5s";
@@ -233,15 +249,23 @@ export async function applyMigrations(
   for (const file of pending) {
     if (file.number < highest)
       log.warn("migration_out_of_order", { file: file.name, highest });
+    const hook = file === pending.at(-1) ? o.beforeLastRecord : undefined;
     for (let attempt = 0; ; attempt++) {
       try {
         const ran = file.transactional
-          ? await applyTransactional(sql, file, lockTimeout, statementTimeout)
+          ? await applyTransactional(
+              sql,
+              file,
+              lockTimeout,
+              statementTimeout,
+              hook,
+            )
           : await applyNonTransactional(
               sql,
               file,
               lockTimeout,
               statementTimeout,
+              hook,
             );
         if (ran) {
           applied.push(file.name);
@@ -297,14 +321,21 @@ export async function assertRuntimeRole(tx: Tx, role: string) {
     throw new MigrationError("runtime_role_privileged", { role });
 }
 
+export interface GrantsTarget {
+  role: string;
+  database: string;
+  manifestPath?: string;
+}
+
 /**
- * Applies the reviewed runtime grants manifest to one role in one
- * transaction. CD/preDeploy runs it after every migrate so tables added by
- * any area are granted before the new revision serves traffic (DB-6).
+ * Applies the reviewed runtime grants manifest to one role inside the
+ * caller's transaction (the runner's last migration, a credential rotation).
+ * Runs as the connected user, which must own the tables or be a member of
+ * their owner (gm_migrator).
  */
-export async function applyGrants(
-  sql: postgres.Sql,
-  o: { role: string; database: string; manifestPath?: string },
+export async function applyGrantsTx(
+  tx: Tx,
+  o: GrantsTarget,
 ): Promise<{ hash: string }> {
   if (!ROLE_NAME.test(o.role))
     throw new MigrationError("runtime_role_invalid", { role: o.role });
@@ -316,24 +347,40 @@ export async function applyGrants(
     .toString("utf8")
     .replaceAll(/\bgm_app\b/g, quoteIdent(o.role))
     .replaceAll(/\bgreen_monkey_dev\b/g, quoteIdent(o.database));
-  await sql.begin(async (raw) => {
+  await assertRuntimeRole(tx, o.role);
+  await tx.unsafe(manifest);
+  const [schema] = await tx`
+    select n.nspowner = (select oid from pg_roles where rolname=current_user)
+        or pg_has_role(current_user, n.nspowner, 'member') as can_revoke
+    from pg_namespace n where n.nspname='public'`;
+  if (schema?.can_revoke) await tx`revoke create on schema public from public`;
+  else
+    log.info("grants_schema_revoke_skipped", {
+      reason: "public schema CREATE is revoked by provisioning",
+    });
+  return { hash };
+}
+
+/**
+ * Applies the reviewed runtime grants manifest to one role in its own
+ * transaction. The runner also applies it inside the newest migration's
+ * transaction (applyMigrations `beforeLastRecord`), so a revision whose
+ * migration readiness can see always has its grants (DB-6).
+ */
+export async function applyGrants(
+  sql: postgres.Sql,
+  o: GrantsTarget,
+): Promise<{ hash: string }> {
+  const result = (await sql.begin(async (raw) => {
     const tx = raw as Tx;
     await tx`select set_config('lock_timeout','5s',true)`;
-    await assertRuntimeRole(tx, o.role);
-    await tx.unsafe(manifest);
-    const [schema] = await tx`
-      select n.nspowner = (select oid from pg_roles where rolname=current_user)
-          or pg_has_role(current_user, n.nspowner, 'member') as can_revoke
-      from pg_namespace n where n.nspname='public'`;
-    if (schema?.can_revoke)
-      await tx`revoke create on schema public from public`;
-    else
-      log.info("grants_schema_revoke_skipped", {
-        reason: "public schema CREATE is revoked by provisioning",
-      });
+    return applyGrantsTx(tx, o);
+  })) as { hash: string };
+  log.info("grants_applied", {
+    role: o.role,
+    hashPrefix: result.hash.slice(0, 12),
   });
-  log.info("grants_applied", { role: o.role, hashPrefix: hash.slice(0, 12) });
-  return { hash };
+  return result;
 }
 
 /** Runs the reviewed reconciler (backup-reader policies on every RLS table). */

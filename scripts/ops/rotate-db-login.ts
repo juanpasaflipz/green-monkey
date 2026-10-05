@@ -4,9 +4,12 @@
 //   rotate:   tsx scripts/ops/rotate-db-login.ts --env staging --kind runtime|billing|backup [--old <name>] [--new-name <name>]
 //             Creates a new login with the old one's memberships and role
 //             settings and a fresh password, writes its URL to
-//             .env.rotated-<env>-<kind>-<new> (0600). Point the services at
-//             it (scripts/ops/railway-vars.sh), redeploy (the worker's
-//             preDeploy re-applies the runtime grants for PG_APP_USER), then:
+//             .env.rotated-<env>-<kind>-<new> (0600). A runtime login also
+//             receives the runtime grants manifest (scripts/grants.sql) in
+//             the same transaction, and the rotation aborts unless it holds
+//             every table and column privilege of the old login, so it can
+//             serve traffic before any deploy (OPS-R3). Point the services at
+//             it (scripts/ops/railway-vars.sh), redeploy in any order, then:
 //   finalize: tsx scripts/ops/rotate-db-login.ts --env staging --finalize --old <name>
 //             Refuses while the old login has sessions, then drops it.
 //   migrator: tsx scripts/ops/rotate-db-login.ts --env staging --kind migrator
@@ -20,6 +23,7 @@ import { realpathSync, writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import type { Tx } from "../../server/db.js";
 import { databaseTls, withoutParams } from "../../server/db-support.js";
+import { applyGrantsTx } from "../../server/ops/schema.js";
 import { pooledHost } from "./provision-roles.js";
 
 const ROLE = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -141,11 +145,57 @@ export async function rotateLogin(o: {
         );
         actions.push(`${newName}: connect ${datname}`);
       }
+      if (o.kind === "runtime") {
+        // The runtime login holds direct grants (scripts/grants.sql), not a
+        // membership: grant them now so the new login can serve traffic
+        // before any deploy re-applies the manifest (OPS-R3).
+        const [{ can, database }] = await tx`
+          select coalesce(bool_and(pg_has_role(current_user, tableowner, 'usage')), true) as can,
+                 current_database() as database
+          from pg_tables where schemaname = 'public'`;
+        if (!can)
+          throw Error(
+            "the owner login cannot grant on the public tables; it must be a member of gm_migrator (scripts/ops/provision-roles.ts)",
+          );
+        await applyGrantsTx(tx, { role: newName, database });
+        actions.push(`${newName}: runtime grants applied`);
+      }
+      const missing = await missingPrivileges(tx, source.oid, newName);
+      if (missing.length)
+        throw Error(
+          `${newName} would lack ${missing.length} privileges of ${old} (for example ${missing
+            .slice(0, 3)
+            .map((m) => `${m.privilege_type} on ${m.object}`)
+            .join(", ")}); rotation rolled back`,
+        );
+      actions.push(`${newName}: holds every table privilege of ${old}`);
     });
   } finally {
     await sql.end({ timeout: 5 });
   }
   return { old, newName, url, file, actions };
+}
+
+/** Table and column privileges in schema public that `oldOid` has and `newName` lacks. */
+async function missingPrivileges(tx: Tx, oldOid: number, newName: string) {
+  return tx<{ object: string; privilege_type: string }[]>`
+    with acl as (
+      select c.relname::text as object, a.grantee, a.privilege_type
+      from pg_class c join pg_namespace n on n.oid = c.relnamespace,
+           aclexplode(c.relacl) a
+      where n.nspname = 'public'
+      union all
+      select c.relname || '.' || att.attname, a.grantee, a.privilege_type
+      from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      join pg_attribute att on att.attrelid = c.oid and att.attnum > 0 and not att.attisdropped,
+           aclexplode(att.attacl) a
+      where n.nspname = 'public'
+    )
+    select object, privilege_type from acl where grantee = ${oldOid}
+    except
+    select object, privilege_type from acl
+    where grantee = (select oid from pg_roles where rolname = ${newName})
+    order by 1, 2`;
 }
 
 /** Drops the old login once nothing is connected with it. */
@@ -247,7 +297,7 @@ if (invokedDirectly()) {
         actions: r.actions,
         next:
           kind === "runtime"
-            ? "set DATABASE_URL and PG_APP_USER on web and PG_APP_USER on worker, deploy the worker (grants) then web, then --finalize"
+            ? "the new login already holds the runtime grants; set DATABASE_URL and PG_APP_USER on web and PG_APP_USER on worker, redeploy both in any order (merge no migration mid-rotation), then --finalize"
             : kind === "billing"
               ? "set BILLING_DATABASE_URL on web and worker, redeploy both, then --finalize"
               : "update the BACKUP_DATABASE_URL GitHub environment secret, then --finalize",

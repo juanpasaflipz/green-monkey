@@ -70,21 +70,40 @@ Migrations live in `migrations/NNN_name.sql` and are applied by
   `CREATE INDEX CONCURRENTLY`; each statement must be idempotent;
 - refuses a pooled (`-pooler`) host and, in staging/production, a superuser,
   BYPASSRLS, CREATEROLE or `neon_superuser` login;
-- after migrating: the reviewed grants manifest `scripts/grants.sql` for
-  `PG_APP_USER`, the backup-reader policy reconciler
-  (`scripts/db/post-migrate.sql`) and, with `--retention`, the retention pass;
+- with `--grants`, the reviewed grants manifest `scripts/grants.sql` for
+  `PG_APP_USER` commits in the **same transaction as the newest pending
+  migration**, before its `schema_migrations` row. Readiness keys on that row,
+  so a new revision never passes `/api/health` before its tables are granted,
+  and a failing manifest rolls the newest migration back with it. With nothing
+  pending, the manifest runs in its own transaction;
+- then the backup-reader policy reconciler (`scripts/db/post-migrate.sql`) and,
+  with `--retention`, the retention pass (a failure alerts `retention_failed`
+  and never fails the deploy; the worker repeats it every 15 minutes);
 - `--check` exits 3 while migrations are pending; `--dry-run` lists them.
 
-Rules enforced by `tests/migrations-lint.test.ts` for files numbered 022 and
+Rules enforced by `tests/migrations-lint.test.ts` (the rules live in
+`scripts/ops/migrations-lint.ts`; lint any directory with
+`npx tsx scripts/ops/migrations-lint.ts <dir>`) for files numbered 022 and
 later:
 
 - the first statement is `SET LOCAL lock_timeout = '…'`;
 - no `CONCURRENTLY`, `BEGIN` or `COMMIT` in transactional files;
-- new tables enable and force row-level security (allowlist: `schema_migrations`);
-- data backfills wrap the DML in `ALTER TABLE … NO FORCE ROW LEVEL SECURITY` /
-  `FORCE ROW LEVEL SECURITY` on that table: the deployed migration role owns the
-  tables but is not a superuser, so without it an `UPDATE` silently touches
-  zero rows;
+- new tables enable and force row-level security, either as literal
+  `ALTER TABLE` statements or in the standard `DO` loop
+  (`FOREACH t IN ARRAY ARRAY[…]` / `EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t)`);
+  allowlist: `schema_migrations`, `schema_grants`;
+- **backfills use the owner pattern.** Deployed migrations run as
+  `gm_migrator`, which owns the tables but is neither a superuser nor
+  BYPASSRLS, so `FORCE ROW LEVEL SECURITY` applies to it and, with no tenant
+  set, every `tenant_scope` policy hides every row: an `UPDATE`, `DELETE` or
+  `INSERT … SELECT` silently changes nothing, and tables it reads look empty.
+  Every forced table that a top-level or `DO`-block statement writes **or
+  reads** (`FROM`, `JOIN`, `USING`) needs `ALTER TABLE t NO FORCE ROW LEVEL
+SECURITY;` before the statement and `ALTER TABLE t FORCE ROW LEVEL SECURITY;`
+  after it, in the same file (reference: `025_menu.sql` section 8). Local
+  development migrates as a superuser and CI migrates empty databases, so only
+  the lint and `tests/migrate-db.ts` (a backfill applied as a non-superuser
+  owner to a database with rows) catch this;
 - expand-only: `DROP TABLE/COLUMN`, `RENAME` and column type changes need a
   `-- gm:contract-approved` line agreed with the tech lead; replacing a
   constraint, index, policy or trigger in the same file is allowed.

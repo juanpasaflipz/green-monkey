@@ -33,6 +33,7 @@ acknowledged a critical alert within 15 minutes during service hours
 | `web_recovered` (info) | ntfy | the probe passes again |
 | `jobs_dead_<kind>` (warning) | ntfy, from the web jobs runner | a job exhausted 8 attempts; see `GET /api/jobs` as a manager |
 | `billing_review` / `billing_retrying` (warning) | ntfy, from the worker | billing operations need a person / keep failing |
+| `retention_failed` (warning) | ntfy, from the worker's 15-minute retention or the deploy's preDeploy pass | deleting expired OAuth attempts or old done/dead jobs failed (`tables=` names which); lock-timeout skips do not alert. Check `@message:retention_table_failed` in the worker logs; the next run retries |
 | Uptime workflow failure | ntfy + GitHub issue `ops-alert: production` | `/api/ops/status` not ok or degraded, or the last backup is older than 26 h |
 | Backup workflow failure | ntfy + GitHub issue `ops-alert: <env>` | the nightly dump failed |
 | Railway deploy failed/crashed | ntfy (Railway webhook, manual setup below) | a deploy or a running instance failed |
@@ -114,11 +115,19 @@ Database logins (`scripts/ops/rotate-db-login.ts`, owner credential from the
 offline vault, direct endpoint):
 
 1. `PROVISION_DATABASE_URL=… npx tsx scripts/ops/rotate-db-login.ts --env <env> --kind runtime`
-   creates `gm_<env>_app_r<date>` with the same memberships and timeouts and
-   writes its URL to a 0600 file.
+   creates `gm_<env>_app_r<date>` with the same memberships and timeouts,
+   applies the runtime grants manifest (`scripts/grants.sql`) to it **in the
+   same transaction**, and rolls everything back unless the new login holds
+   every table and column privilege of the old one. It writes the URL to a
+   0600 file. The new login can serve traffic before any deploy, so the
+   order in which services restart does not matter (Railway does not order
+   `web` and `worker`, and a dashboard redeploy of `web` skips the worker).
+   A rollback message naming missing privileges means the old login carries
+   a manual grant the manifest lacks: add it to `scripts/grants.sql` through
+   a PR or revoke it, then retry.
 2. Set `DATABASE_URL` and `PG_APP_USER` on `web` and `PG_APP_USER` on `worker`
-   (`scripts/ops/railway-vars.sh`), deploy (the worker's preDeploy grants the
-   new role before `web` restarts with it).
+   (`scripts/ops/railway-vars.sh`), redeploy both. Do not merge a migration
+   between this step and step 3: the preDeploy grants only the new login.
 3. When the old login has no sessions:
    `… rotate-db-login.ts --env <env> --finalize --old gm_<env>_app`.
 4. Same for `--kind billing` (both services) and `--kind backup` (GitHub

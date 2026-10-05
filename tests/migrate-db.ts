@@ -9,14 +9,20 @@ import { isolatedTarget } from "./isolated-target.js";
 import { check, passed } from "./ops-roles.js";
 import {
   applyGrants,
+  applyGrantsTx,
   applyMigrations,
   assertMigrationRole,
   pendingMigrations,
   readMigrations,
 } from "../server/ops/schema.js";
+import type { Tx } from "../server/db.js";
 import { main } from "../scripts/migrate.js";
 import { requireReadySchema } from "../server/readiness.js";
-import { runRetention } from "../server/ops/retention.js";
+import {
+  createRetentionSchedule,
+  runRetention,
+} from "../server/ops/retention.js";
+import type { Alert } from "../server/ops/alerts.js";
 import { setLogSink } from "../server/logging.js";
 import { lintMigrations } from "../scripts/ops/migrations-lint.js";
 
@@ -217,6 +223,71 @@ try {
     assert.ok(lines.some((l) => l.includes('"migration_out_of_order"')));
   });
 
+  await check(
+    "grants commit in the newest migration's transaction: a grants failure rolls that migration back, success grants before its registry row (OPS-R11)",
+    async () => {
+      const manifests = mkdtempSync(join(tmpdir(), "gm-grants-"));
+      try {
+        write(
+          "006_g1.sql",
+          "SET LOCAL lock_timeout = '5s';\nCREATE TABLE g1(id int);\n",
+        );
+        write(
+          "007_g2.sql",
+          "SET LOCAL lock_timeout = '5s';\nCREATE TABLE g2(id int);\n",
+        );
+        const bad = join(manifests, "bad.sql"),
+          good = join(manifests, "good.sql");
+        writeFileSync(
+          bad,
+          "GRANT SELECT ON g1, g2, missing_table TO gm_app;\n",
+        );
+        writeFileSync(good, "GRANT SELECT ON g1, g2 TO gm_app;\n");
+        const grantsFrom = (manifestPath: string) => (tx: Tx) =>
+          applyGrantsTx(tx, {
+            role: "gm_app",
+            database: synthetic,
+            manifestPath,
+          });
+        await assert.rejects(
+          applyMigrations(sql, readMigrations(dir), {
+            sleep: noSleep,
+            beforeLastRecord: grantsFrom(bad),
+          }),
+          (e: any) =>
+            e.code === "migration_failed" && e.detail.file === "007_g2.sql",
+        );
+        const recorded = await sql`
+          select name from schema_migrations where name in ('006_g1.sql','007_g2.sql') order by name`;
+        assert.deepEqual(
+          recorded.map((r) => r.name),
+          ["006_g1.sql"],
+          "the earlier file committed on its own",
+        );
+        const [g2] =
+          await sql`select to_regclass('public.g2') is null as absent`;
+        assert.equal(
+          g2.absent,
+          true,
+          "the newest migration rolled back with its failed grants",
+        );
+        assert.deepEqual(
+          await applyMigrations(sql, readMigrations(dir), {
+            sleep: noSleep,
+            beforeLastRecord: grantsFrom(good),
+          }),
+          ["007_g2.sql"],
+        );
+        const [granted] = await sql`
+          select has_table_privilege('gm_app', 'g1', 'SELECT') as g1,
+                 has_table_privilege('gm_app', 'g2', 'SELECT') as g2`;
+        assert.deepEqual({ ...granted }, { g1: true, g2: true });
+      } finally {
+        rmSync(manifests, { recursive: true, force: true });
+      }
+    },
+  );
+
   const migratorUrl = urlFor(real, {
     name: migrator,
     password: migratorPassword,
@@ -231,7 +302,16 @@ try {
   await check(
     "a non-superuser migration owner applies every bundled migration with APP_ENV=staging (DB-1 parity)",
     async () => {
-      assert.equal(await main([], env()), 0);
+      lines.length = 0;
+      assert.equal(await main(["--grants"], env()), 0);
+      // The runtime grants rode in the newest migration's transaction.
+      assert.ok(
+        lines.some(
+          (l) =>
+            l.includes('"grants_applied"') &&
+            l.includes(`"withMigration":"${readMigrations().at(-1)!.name}"`),
+        ),
+      );
       const checkOwner = pool(urlFor(real));
       const [o] = await checkOwner`
         select array_agg(distinct tableowner) as owners from pg_tables where schemaname='public'`;
@@ -391,6 +471,49 @@ try {
         await tx`delete from restaurants where id=${tenantId}`;
         await tx`delete from organizations where id=${org}`;
       });
+    },
+  );
+
+  await check(
+    "the worker's retention schedule runs as the owner, never overlaps, and alerts retention_failed when it cannot run (OPS-R6)",
+    async () => {
+      const alerts: Alert[] = [];
+      const alert = async (a: Alert) => void alerts.push(a);
+      const schedule = createRetentionSchedule({ url: migratorUrl, alert });
+      try {
+        const [first, overlapping] = await Promise.all([
+          schedule.runNow(),
+          schedule.runNow(),
+        ]);
+        assert.deepEqual(first?.failed, []);
+        assert.equal(
+          overlapping,
+          null,
+          "a second run while one is active is skipped",
+        );
+        assert.ok(schedule.lastRunAt());
+        assert.deepEqual(alerts, []);
+      } finally {
+        await schedule.stop();
+      }
+      const wrong = new URL(migratorUrl);
+      wrong.password = "not-the-password";
+      const broken = createRetentionSchedule({ url: wrong.href, alert });
+      try {
+        assert.equal((await broken.runNow())?.failed.length, 2);
+        assert.deepEqual(
+          alerts.map((a) => [a.key, a.severity, a.body]),
+          [
+            [
+              "retention_failed",
+              "warning",
+              "retention_failed tables=oauth_login_attempts,jobs",
+            ],
+          ],
+        );
+      } finally {
+        await broken.stop();
+      }
     },
   );
 

@@ -6,16 +6,61 @@
  * void or offline evidence rows (tests assert the allow-list).
  *
  * Both tables force row-level security and the runtime role has no DELETE,
- * so the pass runs as the schema owner from the deploy step
- * (`migrate.js --retention`). Each batch uses the owner pattern migrations
- * use for backfills: in one short transaction, NO FORCE ROW LEVEL SECURITY,
- * a bounded DELETE, FORCE ROW LEVEL SECURITY. The ACCESS EXCLUSIVE lock is
- * held for milliseconds, lock_timeout keeps it from queueing behind traffic,
- * and nobody ever observes the table without FORCE.
+ * so the pass runs as the schema owner: every 15 minutes from the worker
+ * (MIGRATION_DATABASE_URL, which its preDeploy already holds) and once per
+ * deploy (`migrate.js --retention`). Each batch uses the owner pattern
+ * migrations use for backfills: in one short transaction, NO FORCE ROW LEVEL
+ * SECURITY, a bounded DELETE, FORCE ROW LEVEL SECURITY. The ACCESS EXCLUSIVE
+ * lock is held for milliseconds, lock_timeout keeps it from queueing behind
+ * traffic, and nobody ever observes the table without FORCE.
  */
-import type postgres from "postgres";
+import postgres from "postgres";
 import type { Tx } from "../db.js";
+import { databaseTls, withoutParams } from "../db-support.js";
 import { log } from "../logging.js";
+import type { Alert } from "./alerts.js";
+
+/** How often the worker runs retention (spec §4.15); first run 60 s after boot. */
+export const RETENTION_INTERVAL_MS = 15 * 60_000;
+export const RETENTION_FIRST_RUN_MS = 60_000;
+
+export type RetentionResult = {
+  deleted: Record<string, number>;
+  skipped: string[];
+  failed: string[];
+};
+
+/**
+ * One retention run that never throws: a failed table, or a run that could
+ * not start (database down, credential rejected), raises `retention_failed`.
+ * Lock-timeout skips are routine and only logged. Returns null when the run
+ * itself failed.
+ */
+export async function retentionPass(
+  sql: postgres.Sql,
+  alert: (a: Alert) => Promise<void>,
+  o: Parameters<typeof runRetention>[1] = {},
+): Promise<RetentionResult | null> {
+  let result: RetentionResult | null = null;
+  let failed: string[];
+  try {
+    result = await runRetention(sql, o);
+    failed = result.failed;
+  } catch (error) {
+    log.error("retention_run_failed", {}, error);
+    failed = ["run"];
+  }
+  if (failed.length) {
+    log.error("retention_failed", { tables: failed });
+    await alert({
+      key: "retention_failed",
+      severity: "warning",
+      title: "retention failed",
+      body: `retention_failed tables=${failed.join(",")}`,
+    });
+  }
+  return result;
+}
 
 export const retentionRules: readonly { table: string; predicate: string }[] = [
   {
@@ -97,4 +142,77 @@ export async function runRetention(
   }
   log.info("retention_run", { deleted, skipped, failed, ms: now() - started });
   return { deleted, skipped, failed };
+}
+
+export interface RetentionSchedule {
+  start(): void;
+  /** Runs one pass now unless one is already running (then returns null). */
+  runNow(): Promise<RetentionResult | null>;
+  /** Time of the last finished pass, for the worker's /healthz body. */
+  lastRunAt(): number | null;
+  stop(): Promise<void>;
+}
+
+/**
+ * The worker's periodic retention (OPS-R6): every 15 minutes, first run 60 s
+ * after boot, on its own one-connection pool for the owner credential that
+ * closes when idle. Runs never overlap, and each failure alerts through
+ * retentionPass.
+ */
+export function createRetentionSchedule(o: {
+  url: string;
+  alert: (a: Alert) => Promise<void>;
+  intervalMs?: number;
+  firstRunMs?: number;
+  run?: (
+    sql: postgres.Sql,
+    alert: (a: Alert) => Promise<void>,
+  ) => Promise<RetentionResult | null>;
+}): RetentionSchedule {
+  const url = new URL(o.url);
+  let sql: postgres.Sql | null = null;
+  let running: Promise<RetentionResult | null> | null = null;
+  let last: number | null = null;
+  const timers: NodeJS.Timeout[] = [];
+  const pool = () =>
+    (sql ??= postgres(withoutParams(url).href, {
+      max: 1,
+      ssl: databaseTls(url),
+      connect_timeout: 10,
+      idle_timeout: 30,
+      connection: { application_name: "gm-retention" },
+      onnotice: () => {},
+    }));
+  const runNow = async () => {
+    if (running) return null;
+    running = (o.run ?? retentionPass)(pool(), o.alert).finally(() => {
+      running = null;
+      last = Date.now();
+    });
+    return running;
+  };
+  return {
+    start() {
+      const first = setTimeout(
+        () => void runNow(),
+        o.firstRunMs ?? RETENTION_FIRST_RUN_MS,
+      );
+      const every = setInterval(
+        () => void runNow(),
+        o.intervalMs ?? RETENTION_INTERVAL_MS,
+      );
+      first.unref();
+      every.unref();
+      timers.push(first, every);
+    },
+    runNow,
+    lastRunAt: () => last,
+    async stop() {
+      for (const timer of timers) clearTimeout(timer);
+      timers.length = 0;
+      await running?.catch(() => undefined);
+      await sql?.end({ timeout: 5 });
+      sql = null;
+    },
+  };
 }

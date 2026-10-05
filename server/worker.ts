@@ -2,7 +2,8 @@
 //   node --import ./build/server/instrument.js build/server/worker.js
 // so configuration (dotenv + validation) loads before anything else.
 // Its Railway preDeploy runs `migrate.js --grants --retention`, keeping the
-// migration owner credential out of the internet-facing web service.
+// migration owner credential out of the internet-facing web service; the
+// same credential runs retention every 15 minutes here (OPS-R6).
 import "./config.js";
 import http from "node:http";
 import { hostname } from "node:os";
@@ -13,6 +14,10 @@ import { buildInfo } from "./build-info.js";
 import { billingWorker } from "./billing-runtime.js";
 import { configureAlerts, sendAlert } from "./ops/alerts.js";
 import { createWatchdog } from "./ops/watchdog.js";
+import {
+  createRetentionSchedule,
+  type RetentionSchedule,
+} from "./ops/retention.js";
 
 const LOOP_STALE_MS = 120_000;
 const info = buildInfo();
@@ -24,6 +29,11 @@ const state = { ready: false, draining: false };
 const loops = new Map<string, number>();
 const timers: NodeJS.Timeout[] = [];
 const tickNow = (name: string) => loops.set(name, Date.now());
+let retention: RetentionSchedule | null = null;
+const lastRetention = () => {
+  const at = retention?.lastRunAt();
+  return at ? new Date(at).toISOString() : null;
+};
 
 configureAlerts(config.alertWebhook, config.appEnv);
 
@@ -41,6 +51,7 @@ function health() {
       commit: info.commit,
       lastTickAt: last ? new Date(last).toISOString() : null,
       stale: stale.map(([name]) => name),
+      lastRetentionAt: lastRetention(),
     },
   };
 }
@@ -92,10 +103,20 @@ const runWatchdog = async () => {
 void runWatchdog();
 timers.push(setInterval(() => void runWatchdog(), 60_000));
 for (const timer of timers) timer.unref();
+
+// Retention needs the schema owner (both tables force RLS); without the
+// credential (local `npm run worker`) only the deploy-time pass runs.
+const migrationUrl = process.env.MIGRATION_DATABASE_URL?.trim();
+retention = migrationUrl
+  ? createRetentionSchedule({ url: migrationUrl, alert: sendAlert })
+  : null;
+retention?.start();
+
 state.ready = true;
 log.info("worker_ready", {
   billing: Boolean(billing),
   alerts: Boolean(config.alertWebhook),
+  retention: Boolean(retention),
   version: info.version,
   commit: info.commit,
 });
@@ -105,6 +126,7 @@ drainOnSignal(
   state,
   async () => {
     for (const timer of timers) clearInterval(timer);
+    await retention?.stop();
     await billing?.close();
   },
   { drainSeconds: config.drainSeconds },

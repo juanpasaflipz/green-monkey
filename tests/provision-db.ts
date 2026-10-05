@@ -6,7 +6,7 @@
 // creates (gm_migrator keeps its existing password).
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +20,7 @@ import {
   rotateLogin,
 } from "../scripts/ops/rotate-db-login.js";
 import { main as migrate } from "../scripts/migrate.js";
-import { checkRole } from "../server/db.js";
+import { checkRole, tenant } from "../server/db.js";
 import { setLogSink } from "../server/logging.js";
 
 setLogSink(() => {});
@@ -36,10 +36,20 @@ const ownerUrl = (() => {
   return u.href;
 })();
 const pools: postgres.Sql[] = [];
+const poolUsers = new Map<postgres.Sql, string>();
 const as = (url: string) => {
   const sql = postgres(url, { max: 1, onnotice: () => {} });
   pools.push(sql);
+  poolUsers.set(sql, decodeURIComponent(new URL(url).username));
   return sql;
+};
+/** Ends every pool of one login, as a redeploy would. */
+const disconnect = async (user: string) => {
+  for (const sql of [...pools])
+    if (poolUsers.get(sql) === user) {
+      await sql.end({ timeout: 5 });
+      pools.splice(pools.indexOf(sql), 1);
+    }
 };
 const created: string[] = [];
 try {
@@ -203,6 +213,89 @@ try {
         }),
         /migrator/,
       );
+    },
+  );
+
+  await check(
+    "runtime rotation grants the new login in the same transaction, so tenant reads and writes work before any deploy (OPS-R3)",
+    async () => {
+      const saved = parse(readFileSync(file, "utf8"));
+      const owner = as(ownerUrl);
+      const org = randomUUID(),
+        tenantId = randomUUID();
+      await owner.begin(async (tx) => {
+        await tx`insert into organizations(id,name) values(${org},'Rotation fixture')`;
+        await tx`insert into restaurants(id,organization_id,name) values(${tenantId},${org},'Rotation fixture')`;
+      });
+      const rotated = await rotateLogin({
+        ownerUrl,
+        env,
+        kind: "runtime",
+        newName: `gm_${env}_app_next`,
+        file: join(dir, "rotated-runtime"),
+      });
+      created.push(rotated.newName);
+      assert.ok(
+        rotated.actions.includes(`${rotated.newName}: runtime grants applied`),
+      );
+      assert.ok(
+        rotated.actions.includes(
+          `${rotated.newName}: holds every table privilege of ${saved.PG_APP_USER}`,
+        ),
+      );
+      // The new login serves a tenant request before any deploy re-applies
+      // the manifest: read, insert and column-level update all work.
+      const next = as(rotated.url);
+      await checkRole(next);
+      const tableId = randomUUID();
+      await tenant(next, tenantId, async (tx) => {
+        await tx`insert into dining_tables(tenant_id,id,name) values(${tenantId},${tableId},'Mesa R')`;
+        const [row] = await tx`select count(*)::int as n from dining_tables`;
+        assert.equal(row.n, 1, "the new login sees its tenant's rows");
+        await tx`select count(*) from orders`;
+        await tx`update restaurants set name = 'Rotation fixture 2' where id = ${tenantId}`;
+      });
+      const [n] = await next`
+        select current_setting('statement_timeout') as statement,
+               has_table_privilege(current_user, 'orders', 'DELETE') as can_delete`;
+      assert.deepEqual(
+        { ...n },
+        { statement: "10s", can_delete: false },
+        "role defaults copied; still no DELETE",
+      );
+      // Redeploy (old pools end), finalize, and the new login keeps working.
+      await disconnect(saved.PG_APP_USER);
+      await finalizeRotation({ ownerUrl, old: saved.PG_APP_USER });
+      const [gone] =
+        await admin`select count(*)::int as n from pg_roles where rolname=${saved.PG_APP_USER}`;
+      assert.equal(gone.n, 0);
+      await tenant(next, tenantId, (tx) => tx`select 1 from dining_tables`);
+    },
+  );
+
+  await check(
+    "a rotation that would drop a privilege of the old login is rolled back",
+    async () => {
+      // A manual grant the manifest does not carry (drift) must block the
+      // rotation instead of producing a login that fails at runtime.
+      const owner = as(ownerUrl);
+      const old = `gm_${env}_app_next`;
+      await owner.unsafe(`grant delete on dining_tables to "${old}"`);
+      await assert.rejects(
+        rotateLogin({
+          ownerUrl,
+          env,
+          kind: "runtime",
+          old,
+          newName: `gm_${env}_app_drift`,
+          file: null,
+        }),
+        /would lack 1 privileges of .*DELETE on dining_tables/,
+      );
+      const [none] =
+        await admin`select count(*)::int as n from pg_roles where rolname=${`gm_${env}_app_drift`}`;
+      assert.equal(none.n, 0, "nothing was created");
+      await owner.unsafe(`revoke delete on dining_tables from "${old}"`);
     },
   );
 
