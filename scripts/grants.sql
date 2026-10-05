@@ -24,3 +24,7 @@ GRANT SELECT,INSERT ON offline_leases,offline_recoveries,offline_recovery_tasks 
 GRANT UPDATE(state,resolved_by,resolution,resolved_at) ON offline_recovery_tasks TO gm_app;
 GRANT SELECT,INSERT ON line_voids TO gm_app;
 GRANT UPDATE(kitchen_acknowledged_at,kitchen_acknowledged_by) ON line_voids TO gm_app;
+-- 026 offline
+GRANT SELECT,INSERT ON offline_sync_records,offline_archives,offline_kitchen_reviews TO gm_app;
+GRANT UPDATE(state,decided_by,decided_at) ON offline_kitchen_reviews TO gm_app;
+GRANT UPDATE(offline_prefix) ON devices TO gm_app;
