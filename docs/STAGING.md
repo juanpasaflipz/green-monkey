@@ -126,8 +126,15 @@ consent: [RUNBOOK.md](RUNBOOK.md) "Staging cutover"). After the cutover:
   not.
 
 Until the cutover, the existing one-service setup described in the checkpoints
-above remains what is deployed; its `railway.json` stops being read on
-2026-12-01, so the cutover must happen before then.
+above remains what is deployed. Do not redeploy it from this tree before the
+cutover: `railway.json`, which carried the preDeploy migrate command, is gone
+from it, and the Stripe provider loop now runs only in `worker`. A
+`railway up` of this tree to the single existing service would therefore apply
+no migrations, keep `/api/health` at 503 `schema_not_ready` (failing the
+deploy's health check) and run without billing. Until the cutover, redeploy
+that service only from a checkout from before the ops merge (`ca36236` or
+earlier). Railway stops reading its `railway.json` on 2026-12-01, so the
+cutover must happen before then.
 
 ## Credential rotation log
 
