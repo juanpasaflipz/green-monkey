@@ -29,11 +29,12 @@ beforeEach(() => {
   events = [];
   fetchMock = vi.fn(async () => {
     const r = replies.shift() ?? { status: 200, body: { ok: true } };
-    return {
-      ok: r.status < 400,
+    // A real JSON response: offline's request() (026) reads text() and checks
+    // the content type, so a captive-portal page is never taken for data.
+    return new Response(JSON.stringify(r.body), {
       status: r.status,
-      json: async () => r.body,
-    };
+      headers: { "content-type": "application/json" },
+    });
   });
   vi.stubGlobal("fetch", fetchMock);
   const target = new EventTarget();
@@ -327,11 +328,10 @@ describe("api() session policy", () => {
     const answered = new Promise<void>((resolve) => (answer = resolve));
     fetchMock.mockImplementationOnce(async () => {
       await answered;
-      return {
-        ok: false,
+      return new Response(JSON.stringify({ error: "step_up_required" }), {
         status: 403,
-        json: async () => ({ error: "step_up_required" }),
-      };
+        headers: { "content-type": "application/json" },
+      });
     });
     const paidOut = api("/cash/paid-out", { operationId: "op-p", amount: 1 });
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
