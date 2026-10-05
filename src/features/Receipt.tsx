@@ -276,15 +276,14 @@ export function ReceiptDocument({
                   <strong>{money(localPayment.amount)}</strong>
                 )}
               </div>
-              {localPayment.method === "external" &&
-                localPayment.reference && (
-                  <div className="muted">
-                    {t.serviceReceiptReference.replace(
-                      "{ref}",
-                      localPayment.reference,
-                    )}
-                  </div>
-                )}
+              {localPayment.method === "external" && localPayment.reference && (
+                <div className="muted">
+                  {t.serviceReceiptReference.replace(
+                    "{ref}",
+                    localPayment.reference,
+                  )}
+                </div>
+              )}
               {!!localPayment.tip && (
                 <div className="row between muted">
                   <span>{t.serviceReceiptTip}</span>

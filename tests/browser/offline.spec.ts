@@ -1060,8 +1060,7 @@ test("KDS shows offline sales in the review lane with provisional and server num
   // Service's KDS (024) polls its versioned feed for the station on screen.
   const kitchenPolled = () =>
     page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/api/service/kitchen",
+      (response) => new URL(response.url()).pathname === "/api/service/kitchen",
     );
   const polled = kitchenPolled();
   await page.goto("/app");
