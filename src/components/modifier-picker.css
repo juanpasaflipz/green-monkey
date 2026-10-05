@@ -1,0 +1,86 @@
+/* Choice picker (POS and QR/kiosk). Uses the global tokens in styles.css. */
+.picker-price {
+  margin: 0 0 8px;
+}
+.picker-amount {
+  margin-bottom: 8px;
+}
+.picker-amount .tiny {
+  margin: -4px 0 8px;
+}
+.picker-group {
+  position: relative;
+}
+.picker-group legend {
+  padding-right: 96px;
+}
+.picker-progress {
+  position: absolute;
+  top: 14px;
+  right: 0;
+}
+.option.unavailable {
+  color: var(--text-3);
+  cursor: not-allowed;
+}
+.picker-stepper {
+  cursor: default;
+}
+.picker-stepper.chosen {
+  border-color: var(--ink);
+}
+.picker-option-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.picker-option-name small {
+  display: block;
+  margin-top: 2px;
+  font-size: 14px;
+  color: var(--text-2);
+}
+.picker-step.button {
+  min-width: 44px;
+  width: 44px;
+  min-height: 44px;
+  height: 44px;
+  padding: 0;
+  background: var(--fill);
+}
+.picker-count {
+  min-width: 24px;
+  text-align: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.picker-footer {
+  display: grid;
+  gap: 8px;
+}
+.picker-issue {
+  margin: 0;
+  color: var(--negative);
+  font-size: 14px;
+}
+@media (max-width: 420px) {
+  .picker-group legend {
+    padding-right: 0;
+  }
+  .picker-progress {
+    position: static;
+    display: block;
+    margin: 2px 0 4px;
+  }
+}
+/* POS grid: combo tag next to the price (the grid itself lives in styles.css). */
+.product .product-tag {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--fill);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}

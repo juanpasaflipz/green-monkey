@@ -1,9 +1,11 @@
 import { BrandLogo } from "../components/BrandLogo";
-import { currencyExponent } from "../../shared/domain";
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { strings, translateError, type Key } from "../i18n";
-import { Button, Field, Modal, Badge } from "../components/ui";
+import { Button, Field, Badge } from "../components/ui";
+import { ModifierPicker } from "../components/ModifierPicker";
+import { orderable, pickerNeeded } from "../../shared/menu";
+import { moneyFormatter } from "./menu/format";
 import {
   quote,
   type Product,
@@ -24,8 +26,7 @@ export function PublicOrdering() {
     note: "",
     channel: channel as "qr" | "kiosk",
   });
-  const [product, setProduct] = useState<Product | null>(null);
-  const [selected, setSelected] = useState<string[]>([]);
+  const [picker, setPicker] = useState<Product | null>(null);
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -48,7 +49,7 @@ export function PublicOrdering() {
           note: "",
         }));
         setResult(null);
-        setProduct(null);
+        setPicker(null);
       }, 90000);
     };
     reset();
@@ -60,14 +61,11 @@ export function PublicOrdering() {
       window.removeEventListener("keydown", reset);
     };
   }, [channel]);
-  const m = (n: number) =>
-    new Intl.NumberFormat(locale, {
-      style: "currency",
-      currency: data?.restaurant.currency ?? "MXN",
-    }).format(n / 10 ** currencyExponent(data?.restaurant.currency ?? "MXN"));
+  // Same es-MX / en-US currency format as the POS and the picker.
+  const m = moneyFormatter(locale, data?.restaurant.currency ?? "MXN");
   const lines = data ? quote(draft.lines, data.catalog) : [];
   const total = lines.reduce((a, l) => a + l.total, 0);
-  function add(p: Product, options: string[]) {
+  function add(p: Product, selection: { options: string[] } = { options: [] }) {
     setDraft((d) => ({
       ...d,
       lines: [
@@ -76,12 +74,12 @@ export function PublicOrdering() {
           id: crypto.randomUUID(),
           productId: p.id,
           quantity: 1,
-          options,
+          options: selection.options,
           note: "",
         },
       ],
     }));
-    setProduct(null);
+    setPicker(null);
   }
   return (
     <div className="public-ordering">
@@ -129,15 +127,12 @@ export function PublicOrdering() {
             {data?.catalog.map((p: Product) => (
               <Button
                 key={p.id}
-                disabled={!p.available}
-                onClick={() => {
-                  if (p.groups.some((g) => g.min > 0)) {
-                    setProduct(p);
-                    setSelected([]);
-                  } else add(p, []);
-                }}
+                disabled={!orderable(p)}
+                onClick={() => (pickerNeeded(p) ? setPicker(p) : add(p))}
               >
-                {p.name[locale]} · {m(p.price)}
+                {p.name[locale]} ·{" "}
+                {p.openAmount ? t("menuOpenPriceBadge") : m(p.price)}
+                {!orderable(p) && ` · ${t("menuSoldOut")}`}
               </Button>
             ))}
           </div>
@@ -189,57 +184,15 @@ export function PublicOrdering() {
           </section>
         </>
       )}
-      {product && (
-        <Modal
-          title={product.name[locale]}
-          close={() => setProduct(null)}
-          closeLabel={t("close")}
-        >
-          {product.groups.map((g) => (
-            <fieldset key={g.id}>
-              <legend>
-                {g.name[locale]} · {g.min}–{g.max}
-              </legend>
-              {g.options.map((o) => (
-                <label className="option" key={o.id}>
-                  <input
-                    type={g.max === 1 ? "radio" : "checkbox"}
-                    name={g.id}
-                    disabled={!o.available}
-                    checked={selected.includes(o.id)}
-                    onChange={() =>
-                      setSelected((old) =>
-                        g.max === 1
-                          ? [
-                              ...old.filter(
-                                (id) => !g.options.some((o) => o.id === id),
-                              ),
-                              o.id,
-                            ]
-                          : old.includes(o.id)
-                            ? old.filter((id) => id !== o.id)
-                            : [...old, o.id],
-                      )
-                    }
-                  />
-                  {o.name[locale]} {m(o.price)}
-                </label>
-              ))}
-            </fieldset>
-          ))}
-          <Button
-            variant="primary"
-            disabled={product.groups.some((g) => {
-              const n = selected.filter((id) =>
-                g.options.some((o) => o.id === id),
-              ).length;
-              return n < g.min || n > g.max;
-            })}
-            onClick={() => add(product, selected)}
-          >
-            {t("add")}
-          </Button>
-        </Modal>
+      {picker && (
+        <ModifierPicker
+          product={picker}
+          locale={locale}
+          currency={data?.restaurant.currency ?? "MXN"}
+          canOpen={false}
+          onConfirm={(selection) => add(picker, selection)}
+          onClose={() => setPicker(null)}
+        />
       )}
     </div>
   );
