@@ -3,12 +3,15 @@ import { Decimal } from "decimal.js";
 import type postgres from "postgres";
 import { z } from "zod";
 import { tenant, type Tx } from "./db.js";
-import { managers, matches, operators, permit } from "./auth.js";
+import { managers, operators, permit } from "./auth.js";
+import { checkPin, deviceScope, pinError, stepUpSeconds } from "./access.js";
+import { ACCESS, isRecentAuth } from "../shared/access.js";
 import { audit, getOrder, once, stock } from "./orders.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
 
-export const MAX_FAILED_ATTEMPTS = 5;
-export const LOCK_MINUTES = 5;
+/** First-stage throttle values (see shared/access.ts ACCESS.pin). */
+export const MAX_FAILED_ATTEMPTS = ACCESS.pin.firstStage;
+export const LOCK_MINUTES = ACCESS.pin.baseLockMinutes;
 
 type SecretCheck =
   | { outcome: "ok"; employee: { id: string; role: string; name: string } }
@@ -16,57 +19,72 @@ type SecretCheck =
   | { outcome: "locked" };
 
 /**
- * Checks an employee login and secret, maintaining the per-employee lockout.
- * Never throws for a wrong secret: callers must let the transaction commit so the
- * failed-attempt counter persists, then reject outside the transaction.
+ * Compatibility wrapper over checkPin (server/access.ts): throttling is per
+ * employee and device scope. Never throws for a wrong secret: callers must let
+ * the transaction commit so the counters persist, then reject outside.
  */
 export async function checkEmployeeSecret(
   tx: Tx,
   login: string,
   secret: string,
+  scope = "unpaired",
 ): Promise<SecretCheck> {
-  const [e] =
-    await tx`select id,role,name,secret_hash,coalesce(locked_until>now(),false) as locked
-      from employees where login=${login} and active for update`;
-  if (!e) return { outcome: "invalid" };
-  if (e.locked) return { outcome: "locked" };
-  if (!matches(secret, e.secret_hash)) {
-    await tx`update employees set
-        failed_attempts=failed_attempts+1,
-        locked_until=case when failed_attempts+1>=${MAX_FAILED_ATTEMPTS}
-          then now()+make_interval(mins=>${LOCK_MINUTES}) else locked_until end
-      where id=${e.id}`;
-    return { outcome: "invalid" };
-  }
-  await tx`update employees set failed_attempts=0,locked_until=null where id=${e.id} and (failed_attempts>0 or locked_until is not null)`;
-  return { outcome: "ok", employee: { id: e.id, role: e.role, name: e.name } };
+  const check = await checkPin(tx, { login }, secret, scope);
+  if (check.outcome === "ok") return check;
+  if (check.outcome === "locked" || check.outcome === "hard_locked")
+    return { outcome: "locked" };
+  return { outcome: "invalid" };
 }
 
-export const approvalInput = z
-  .object({
-    login: z.string().min(1).max(100),
-    secret: z.string().min(4).max(200),
-  })
-  .strict();
+export const approvalInput = z.union([
+  z.object({ employeeId: id, secret: z.string().min(4).max(200) }).strict(),
+  z
+    .object({
+      login: z.string().min(1).max(100),
+      secret: z.string().min(4).max(200),
+    })
+    .strict(),
+]);
 
 /**
- * Verifies a manager's credentials for one sensitive command, in its own
- * transaction so failed attempts are recorded even though the command is refused.
- * Returns the approver's employee id. The approval is not stored or reusable.
+ * Verifies a manager's PIN for one sensitive command, in its own transaction so
+ * failed attempts are recorded even though the command is refused. Attempts
+ * count against the approver on the session's device only (SEC-2). Without a
+ * payload, a manager may approve their own action only on a personal device or
+ * with a recent PIN on a shared terminal (SEC-6). Returns the approver's id.
  */
 export async function verifyApproval(
   sql: postgres.Sql,
   s: Session,
   raw: unknown,
 ): Promise<string> {
-  if (managers.includes(s.role)) return s.employeeId;
+  if (raw === undefined || raw === null) {
+    if (
+      managers.includes(s.role) &&
+      isRecentAuth(s.access, Date.now(), stepUpSeconds())
+    )
+      return s.employeeId;
+    throw new DomainError("approval_required", 403);
+  }
   const approval = approvalInput.safeParse(raw);
   if (!approval.success) throw new DomainError("approval_required", 403);
-  const result = await tenant(sql, s.tenantId, (tx) =>
-    checkEmployeeSecret(tx, approval.data.login, approval.data.secret),
-  );
-  if (result.outcome === "locked") throw new DomainError("pin_locked", 423);
-  if (result.outcome === "invalid" || !managers.includes(result.employee.role))
+  const target =
+    "employeeId" in approval.data
+      ? { employeeId: approval.data.employeeId }
+      : { login: approval.data.login };
+  const result = await tenant(sql, s.tenantId, async (tx) => {
+    const check = await checkPin(
+      tx,
+      target,
+      approval.data.secret,
+      deviceScope(s.deviceId),
+    );
+    if (check.outcome === "ok" && check.employee.id === s.employeeId)
+      await tx`update sessions set authenticated_at=now() where id=${s.id}`;
+    return check;
+  });
+  if (result.outcome !== "ok") throw pinError(result, "approval");
+  if (!managers.includes(result.employee.role))
     throw new DomainError("approval_denied", 403);
   return result.employee.id;
 }
@@ -148,8 +166,17 @@ export async function voidLines(
   permit(s, operators);
   const input = voidInput.parse(raw);
   const { approval, ...rest } = input;
-  // The fingerprint names the approver but never includes the secret.
-  const fingerprint = { orderId, ...rest, approver: approval?.login ?? null };
+  // The fingerprint names the approver but never includes the secret; legacy
+  // login fingerprints stay stable.
+  const fingerprint = {
+    orderId,
+    ...rest,
+    approver: approval
+      ? "employeeId" in approval
+        ? approval.employeeId
+        : approval.login
+      : null,
+  };
   return once(tx, s, input.operationId, "void", fingerprint, async () => {
     const [locked] =
       await tx`select state,version from orders where id=${orderId} for update`;

@@ -9,6 +9,7 @@ import {
   type Session,
 } from "../shared/domain.js";
 import { offlineSale } from "../shared/offline-recovery.js";
+import { leaseCovers } from "./offline-leases.js";
 import { hash, permit, managers, operators } from "./auth.js";
 import {
   once,
@@ -36,7 +37,7 @@ async function originalContext(tx: Tx, p: z.infer<typeof offlineInput>) {
     new Date(p.recordedAt) < cash.opened_at ||
     (cash.closed_at && new Date(p.recordedAt) > cash.closed_at) ||
     new Date(p.recordedAt) < lease.issued_at ||
-    new Date(p.recordedAt) > lease.valid_until
+    !(await leaseCovers(tx, p.sessionId, p.recordedAt))
   )
     throw new DomainError("offline_context_invalid", 409);
   if (
@@ -66,8 +67,7 @@ export async function synchronizeOffline(tx: Tx, s: Session, raw: unknown) {
       session.revoked ||
       !identity?.employee_active ||
       !identity?.device_active ||
-      !lease.selling_authorized ||
-      new Date(p.recordedAt) > lease.valid_until
+      !lease.selling_authorized
     )
       throw new DomainError("offline_conflict", 409);
     const d = await drawer(tx, s);

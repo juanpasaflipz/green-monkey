@@ -2,6 +2,8 @@ import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import type postgres from "postgres";
 import { cookieOptions, sign } from "./auth.js";
+import { isTerminalRequest } from "./access.js";
+import { DomainError } from "../shared/domain.js";
 import { googleConfig, googleIdentityService } from "./google-identity.js";
 import { googleAttemptStore } from "./google-attempt-store.js";
 import {
@@ -59,13 +61,35 @@ export function ownerRoutes(sql: postgres.Sql) {
         !["/providers", "/account", "/account/invitations"].includes(req.path),
     }),
   );
-  router.get("/providers", (_req, res) =>
-    res.json({
-      google: Boolean(google),
-      apple: false,
-      billingSandbox: process.env.BILLING_SANDBOX_ENABLED === "true",
-    }),
-  );
+  // GAP-2: a shared terminal never starts Google sign-in or owner account
+  // commands, even if its UI is bypassed (covers future /account/* routes too).
+  router.use(async (req, res, next) => {
+    const guarded =
+      (req.method === "GET" && req.path === "/google/start") ||
+      (req.method === "POST" && req.path.startsWith("/account/"));
+    if (!guarded) return next();
+    try {
+      if (!(await isTerminalRequest(sql, req.cookies ?? {}))) return next();
+      if (req.path === "/google/start")
+        return res.redirect(303, "/app?auth_error=terminal");
+      next(new DomainError("device_is_terminal", 403));
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.get("/providers", async (req, res, next) => {
+    try {
+      const terminal = await isTerminalRequest(sql, req.cookies ?? {});
+      res.json({
+        google: Boolean(google) && !terminal,
+        terminal,
+        apple: false,
+        billingSandbox: process.env.BILLING_SANDBOX_ENABLED === "true",
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
   router.get("/google/start", async (_req, res, next) => {
     if (!google) return res.status(503).json({ error: "google_unavailable" });
     try {
@@ -139,20 +163,32 @@ export function ownerRoutes(sql: postgres.Sql) {
   });
   router.post("/account/enter", async (req, res, next) => {
     try {
-      const browser = ownerBrowserCookie(req.cookies.gm_owner_browser);
-      const result = await withOwner(
-        sql,
-        req.cookies.gm_account ?? "",
-        req.get("x-csrf-token") ?? "",
-        (tx, account) =>
-          enterOwnerRestaurant(
-            tx,
-            account.id,
-            req.body.tenantId,
-            account.sessionId,
-            browser,
-          ),
-      );
+      let browser = ownerBrowserCookie(req.cookies.gm_owner_browser);
+      const enter = () =>
+        withOwner(
+          sql,
+          req.cookies.gm_account ?? "",
+          req.get("x-csrf-token") ?? "",
+          (tx, account) =>
+            enterOwnerRestaurant(
+              tx,
+              account.id,
+              req.body.tenantId,
+              account.sessionId,
+              browser,
+            ),
+        );
+      let result;
+      try {
+        result = await enter();
+      } catch (error) {
+        // The browser's personal device was revoked or expired: Google identity
+        // is re-verified by gm_account, so issue a fresh browser identity once.
+        if (!(error instanceof DomainError && error.code === "owner_browser_reset"))
+          throw error;
+        browser = ownerBrowserCookie(undefined);
+        result = await enter();
+      }
       res.cookie("gm_owner_browser", sign(browser), {
         ...cookieOptions,
         maxAge: 30 * 86400_000,
@@ -163,7 +199,7 @@ export function ownerRoutes(sql: postgres.Sql) {
       });
       res.cookie("gm_session", sign(result.session), {
         ...cookieOptions,
-        maxAge: 12 * 3600_000,
+        maxAge: Math.max(0, result.absoluteExpiresAt.getTime() - Date.now()),
       });
       res.json({ ok: true });
     } catch (error) {

@@ -1,5 +1,4 @@
-import { selectFirstDevice, sellingAllowed } from "./free-limits.js";
-import { issueOfflineLease } from "./offline-leases.js";
+import { createSession } from "./access.js";
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import type postgres from "postgres";
 import { z } from "zod";
@@ -186,24 +185,37 @@ export async function enterOwnerRestaurant(
       if (prior.browser_token_hash !== hash(browser.token))
         throw new DomainError("forbidden", 403);
       const [valid] =
-        await tx`select id from devices where id=${prior.device_id} and token_hash=${hash(device.token)} and active`;
-      if (!valid) throw new DomainError("pair_device", 403);
+        await tx`select id from devices where id=${prior.device_id} and token_hash=${hash(device.token)}
+          and active and coalesce(token_expires_at,'infinity')>now()`;
+      // A revoked or expired personal device is never revived: the route
+      // retries once with a fresh browser identity, creating a new device.
+      if (!valid) throw new DomainError("owner_browser_reset", 409);
       device.id = prior.device_id;
       existingDevice = true;
+      await tx`update devices set token_expires_at=now()+interval '30 days',last_seen_at=now() where id=${device.id}`;
     }
   }
-  const session = { id: randomUUID(), tenantId, token: opaque() };
   if (!existingDevice) {
-    await tx`insert into devices(tenant_id,id,name,token_hash) values(${tenantId},${device.id},'Owner browser',${hash(device.token)})`;
+    await tx`insert into devices(tenant_id,id,name,token_hash,kind,paired_at,paired_by,token_expires_at)
+      values(${tenantId},${device.id},'Owner browser',${hash(device.token)},'personal',now(),${employee.id},now()+interval '30 days')`;
     if (browser)
       await tx`insert into owner_browser_devices(account_id,browser_id,tenant_id,device_id,browser_token_hash) values(${accountId},${browser.id},${tenantId},${device.id},${hash(browser.token)})`;
   }
-  await selectFirstDevice(tx, device.id);
-  const selling = await sellingAllowed(tx, employee.id, device.id);
-  await tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,offline_until,owner_account_id,owner_session_id,selling_authorized)
-    values(${tenantId},${session.id},${employee.id},${device.id},${hash(session.token)},${opaque()},now()+interval '12 hours',now()+interval '4 hours',${accountId},${ownerSessionId},${selling})`;
-  await issueOfflineLease(tx, session.id);
-  return { device, session };
+  // Google-entered sessions end with the owner session that authorized them.
+  const [owner] =
+    await tx`select expires_at from owner_sessions where id=${ownerSessionId}`;
+  const created = await createSession(tx, {
+    employeeId: employee.id,
+    deviceId: device.id,
+    ownerAccountId: accountId,
+    ownerSessionId,
+    absoluteExpiresAt: owner?.expires_at,
+  });
+  return {
+    device,
+    session: { id: created.id, tenantId, token: created.token },
+    absoluteExpiresAt: created.absoluteExpiresAt,
+  };
 }
 
 export function ownerBrowserCookie(value?: string) {
