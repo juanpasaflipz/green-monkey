@@ -192,6 +192,45 @@ describe("api transport", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("an idempotent POST retried into session_changed or missing_tenant reports the first, unknown outcome (OFF-INT-1)", async () => {
+    // Authentication answers both before any handler runs: the retry was not
+    // processed, which says nothing about the first attempt. Selling clears a
+    // payment attempt on a 409, so a 409 here would lose "Recuperar pago".
+    vi.useFakeTimers();
+    for (const [status, code] of [
+      [409, "session_changed"],
+      [403, "missing_tenant"],
+    ] as const) {
+      const calls = mockFetch(
+        () => Promise.reject(new TypeError("offline")),
+        json(status, { error: code }),
+      );
+      const paid = failure(
+        api("/orders/o/payments", { operationId: "op" }, { idempotent: true }),
+      );
+      await vi.advanceTimersByTimeAsync(800);
+      const e = await paid;
+      expect([e.message, e.status, e.kind, e.transient]).toEqual([
+        "network_unavailable",
+        0,
+        "network",
+        true,
+      ]);
+      expect(calls).toHaveLength(2);
+    }
+    // A domain refusal on the retry is still the answer: the handler ran.
+    const refused = mockFetch(
+      () => Promise.reject(new TypeError("offline")),
+      json(409, { error: "check_closed" }),
+    );
+    const closed = failure(
+      api("/orders/o/payments", { operationId: "op" }, { idempotent: true }),
+    );
+    await vi.advanceTimersByTimeAsync(800);
+    expect((await closed).message).toBe("check_closed");
+    expect(refused).toHaveLength(2);
+  });
+
   it("transport observer receives ok/kind/latency", async () => {
     const outcomes: TransportOutcome[] = [];
     setTransportObserver((o) => outcomes.push(o));

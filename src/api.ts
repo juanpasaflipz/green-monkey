@@ -70,6 +70,19 @@ function abortError() {
 }
 
 /**
+ * Answers authentication gives before any handler runs (contract §3.9: the
+ * same set offline's sync classifier treats as auth): the request was not
+ * processed.
+ */
+function answeredBeforeHandler(failure: ApiError) {
+  return (
+    failure.status === 401 ||
+    failure.message === "session_changed" ||
+    failure.message === "missing_tenant"
+  );
+}
+
+/**
  * One API call with a timeout (GET 8 s, POST 15 s), typed failure kinds and a
  * bounded retry: GETs once on network/502/503/504, POSTs only when the caller
  * marks them idempotent (they carry an operationId). Timeouts are never
@@ -168,11 +181,13 @@ async function request<T>(
       latencyMs: Date.now() - started,
       path,
     });
-    // A retried POST answered with a 401: the first attempt may have committed
-    // before its response was lost, so its outcome stays unknown. Report the
-    // first (transient) failure, never a session 401 that callers read as "not
-    // processed" (Selling clears a payment attempt on one, ACC-FLOOR-1).
-    if (firstFailure && method === "POST" && failure.status === 401)
+    // A retried POST answered by authentication before any handler ran (a 401,
+    // 409 session_changed or missing_tenant): the first attempt may have
+    // committed before its response was lost, so its outcome stays unknown.
+    // Report the first (transient) failure, never an answer that callers read
+    // as "not processed" (Selling clears a payment attempt on a session 401,
+    // ACC-FLOOR-1, and on any 409 but operation_conflict; OFF-INT-1).
+    if (firstFailure && method === "POST" && answeredBeforeHandler(failure))
       throw firstFailure;
     firstFailure ??= failure;
     const retryable =
