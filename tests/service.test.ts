@@ -361,13 +361,24 @@ describe("notes and lost sends", () => {
     expect(roundNotes({ note: "", rounds: undefined })).toEqual([]);
   });
 
-  const line = (id = randomUUID()) => ({
+  const line = (id = randomUUID(), extra: object = {}) => ({
     id,
     productId: randomUUID(),
     quantity: 1,
-    options: [],
+    options: [] as string[],
     note: "",
+    ...extra,
   });
+  /** The stored order line for a draft line, as the server returns it. */
+  const stored = (l: ReturnType<typeof line>, round: number, extra = {}) => ({
+    ...l,
+    round,
+    ...extra,
+  });
+  const ids = () => {
+    let n = 0;
+    return () => "new-" + ++n;
+  };
 
   it("drops lines the order already holds and replaces the operation id", () => {
     const sentLine = line(),
@@ -380,14 +391,12 @@ describe("notes and lost sends", () => {
     };
     const order = {
       note: "Sin prisa",
-      lines: [
-        { id: sentLine.id, round: 2 },
-        { id: randomUUID(), round: 1 },
-      ],
+      lines: [stored(sentLine, 2), stored(line(), 1)],
       rounds: [],
     };
     const next = reconcileLostSend(draft, order, "fresh");
     expect(next.sent).toBe(false);
+    expect(next.changed).toBe(false);
     expect(next.rounds).toEqual([2]);
     expect(next.draft).toEqual({
       operationId: "fresh",
@@ -398,17 +407,14 @@ describe("notes and lost sends", () => {
     expect(draft.lines).toHaveLength(2);
   });
 
-  it("treats the send as done when every line landed", () => {
+  it("treats the send as done when every line landed unchanged", () => {
     const a = line(),
-      b = line();
+      b = line(randomUUID(), { options: ["o2", "o1"], note: "Sin cebolla" });
     const next = reconcileLostSend(
       { operationId: "k", lines: [a, b], note: "Postres al final" },
       {
         note: "",
-        lines: [
-          { id: a.id, round: 3 },
-          { id: b.id, round: 3 },
-        ],
+        lines: [stored(a, 3), stored(b, 3, { options: ["o1", "o2"] })],
         rounds: [{ note: "Postres al final" }],
       },
       "n",
@@ -416,8 +422,67 @@ describe("notes and lost sends", () => {
     expect(next).toEqual({
       draft: { operationId: "n", lines: [], note: "" },
       sent: true,
+      changed: false,
       rounds: [3],
     });
+  });
+
+  it("keeps the extra units when a landed line only grew (SVC-R3 scenario A)", () => {
+    // 1 taco landed; the cashier tapped Taco again, so the same line became 2.
+    const taco = line(randomUUID(), { quantity: 2 });
+    const next = reconcileLostSend(
+      { operationId: "k", lines: [taco], note: "" },
+      { note: "", lines: [stored(taco, 1, { quantity: 1 })], rounds: [] },
+      "n",
+      ids(),
+    );
+    expect(next.sent).toBe(false);
+    expect(next.changed).toBe(true);
+    expect(next.rounds).toEqual([1]);
+    expect(next.draft.lines).toEqual([{ ...taco, id: "new-1", quantity: 1 }]);
+  });
+
+  it("keeps a reviewable copy when a landed line's note changed (SVC-R3 scenario B)", () => {
+    const taco = line(randomUUID(), { note: "Alergia: nuez" });
+    const next = reconcileLostSend(
+      { operationId: "k", lines: [taco], note: "" },
+      { note: "", lines: [stored(taco, 1, { note: "" })], rounds: [] },
+      "n",
+      ids(),
+    );
+    expect(next.sent).toBe(false);
+    expect(next.changed).toBe(true);
+    expect(next.draft.lines).toEqual([{ ...taco, id: "new-1" }]);
+  });
+
+  it("keeps a reviewable copy for fewer units, other options or another open amount", () => {
+    const fewer = line(randomUUID(), { quantity: 1 }),
+      options = line(randomUUID(), { options: ["o1"] }),
+      open = line(randomUUID(), { openAmount: 2500 }),
+      same = line();
+    const next = reconcileLostSend(
+      { operationId: "k", lines: [fewer, options, open, same], note: "" },
+      {
+        note: "",
+        lines: [
+          stored(fewer, 1, { quantity: 3 }),
+          stored(options, 1, { options: ["o2"] }),
+          stored(open, 2, { openAmount: 2000 }),
+          stored(same, 2),
+        ],
+        rounds: [],
+      },
+      "n",
+      ids(),
+    );
+    expect(next.sent).toBe(false);
+    expect(next.changed).toBe(true);
+    expect(next.rounds).toEqual([1, 2]);
+    expect(next.draft.lines).toEqual([
+      { ...fewer, id: "new-1" },
+      { ...options, id: "new-2" },
+      { ...open, id: "new-3" },
+    ]);
   });
 
   it("keeps a note that never reached the order", () => {
@@ -428,6 +493,7 @@ describe("notes and lost sends", () => {
       "n",
     );
     expect(next.sent).toBe(false);
+    expect(next.changed).toBe(false);
     expect(next.rounds).toEqual([]);
     expect(next.draft.note).toBe("Nota nueva");
     expect(next.draft.lines).toEqual([a]);

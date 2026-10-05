@@ -326,7 +326,7 @@ export function priceCart(
   };
 }
 
-const sameOptions = (a: string[], b: string[]) =>
+const sameOptions = (a: readonly string[] = [], b: readonly string[] = []) =>
   a.length === b.length && [...a].sort().join() === [...b].sort().join();
 /**
  * Adds one unit of a product. A line with the same product, the same sorted
@@ -433,28 +433,60 @@ export function roundNotes(order: {
     .map(([round, note]) => ({ round, note }));
 }
 
+/** The fields of a cart or order line that decide what the kitchen makes. */
+type LostSendLine = {
+  id: string;
+  quantity: number;
+  options?: readonly string[];
+  note?: string;
+  openAmount?: number;
+};
 /**
  * FOH-11: an earlier send with the draft's operation id committed, but its
- * response was lost and the cart changed since. Lines the order already holds
- * leave the draft, the operation id is replaced (the old one is consumed), and
- * the note is dropped when it already reached the order. `sent` is true when
- * nothing is left to send. `rounds` lists the rounds where draft lines landed.
+ * response was lost and the cart changed since. Each draft line the order
+ * already holds is compared with the stored line:
+ * - identical (quantity, option set, note, open amount): it leaves the draft;
+ * - only the quantity grew: the extra units stay, as a new line (new id) with
+ *   the same product, options and note;
+ * - anything else changed (note, options, open amount, or fewer units): a copy
+ *   with a new id stays in the cart for the cashier to review.
+ * Lines the order does not hold stay as they are. The operation id is replaced
+ * (the old one is consumed) and the note is dropped when it already reached
+ * the order. `sent` is true when nothing is left to send; `changed` is true
+ * when a line that had already landed was edited afterwards, so Selling must
+ * ask the cashier to review before sending; `rounds` lists the rounds where
+ * draft lines landed.
  */
 export function reconcileLostSend<
-  L extends { id: string },
+  L extends LostSendLine,
   D extends { operationId: string; lines: L[]; note: string },
 >(
   draft: D,
   order: {
     note?: string | null;
-    lines: readonly { id: string; round?: number }[];
+    lines: readonly (LostSendLine & { round?: number })[];
     rounds?: readonly { note?: string | null }[] | null;
   },
   operationId: string,
-): { draft: D; sent: boolean; rounds: number[] } {
-  const onOrder = new Map(order.lines.map((l) => [l.id, l.round ?? 0]));
-  const landed = draft.lines.filter((l) => onOrder.has(l.id));
-  const lines = draft.lines.filter((l) => !onOrder.has(l.id));
+  newId: () => string = () => crypto.randomUUID(),
+): { draft: D; sent: boolean; changed: boolean; rounds: number[] } {
+  const onOrder = new Map(order.lines.map((l) => [l.id, l]));
+  const rounds = new Set<number>();
+  let changed = false;
+  const lines = draft.lines.flatMap((l): L[] => {
+    const stored = onOrder.get(l.id);
+    if (!stored) return [l];
+    rounds.add(stored.round ?? 0);
+    const sameKind =
+      sameOptions(l.options, stored.options) &&
+      (l.note ?? "") === (stored.note ?? "") &&
+      (l.openAmount ?? null) === (stored.openAmount ?? null);
+    if (sameKind && l.quantity === stored.quantity) return [];
+    changed = true;
+    if (sameKind && l.quantity > stored.quantity)
+      return [{ ...l, id: newId(), quantity: l.quantity - stored.quantity }];
+    return [{ ...l, id: newId() }];
+  });
   const note = draft.note.trim();
   const noteDelivered =
     !note ||
@@ -468,8 +500,7 @@ export function reconcileLostSend<
       note: noteDelivered ? "" : draft.note,
     },
     sent: lines.length === 0,
-    rounds: [...new Set(landed.map((l) => onOrder.get(l.id)!))].sort(
-      (a, b) => a - b,
-    ),
+    changed,
+    rounds: [...rounds].sort((a, b) => a - b),
   };
 }
