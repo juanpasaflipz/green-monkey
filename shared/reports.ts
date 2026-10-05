@@ -486,6 +486,27 @@ function sumBy<T>(rows: readonly T[], pick: (row: T) => number): number {
   return total;
 }
 
+const DECIMAL_INTEGER = /^-?\d{1,16}$/;
+/**
+ * One SQL aggregate as a safe integer. postgres.js returns `int8` and `numeric` columns as
+ * strings (and as `bigint` when the BigInt type is registered), and the S1–S5 sums are `::int8`,
+ * so the server maps every aggregate through this before calling the core. Anything that is not
+ * an integer within ±(2^53 − 1) is RangeError("invalid_amount"): never a silent rounding.
+ */
+export function aggregateInt(value: unknown): number {
+  const n =
+    typeof value === "number"
+      ? value
+      : typeof value === "bigint"
+        ? Number(value)
+        : typeof value === "string" && DECIMAL_INTEGER.test(value)
+          ? Number(value)
+          : Number.NaN;
+  // A string or bigint beyond ±(2^53 − 1) converts to a number of magnitude ≥ 2^53, never safe.
+  if (!Number.isSafeInteger(n)) throw new RangeError("invalid_amount");
+  return n === 0 ? 0 : n; // never −0
+}
+
 // ---------------------------------------------------------------------------------------------
 // Wire types (JSON; every amount is an integer in minor units)
 // ---------------------------------------------------------------------------------------------
@@ -739,10 +760,17 @@ export type ExceptionRow = {
   deviceName: string | null;
   detail: Record<string, unknown>;
 };
+/**
+ * One Excepciones tile. For the difference kinds (`drawer_difference`, `terminal_difference`)
+ * `amount` is Σ|amount|, so a shortage and an overage never cancel out, and `shortages` /
+ * `overages` carry the positive sum of each sign; the other kinds have neither field.
+ */
 export type ExceptionTotals = {
   kind: ExceptionKind;
   count: number;
   amount: number;
+  shortages?: number;
+  overages?: number;
 };
 export type ExceptionSummary = {
   byKind: ExceptionTotals[];
@@ -777,6 +805,12 @@ export type ExceptionPage = Page<ExceptionRow> & {
 
 export type DrawerReview = { reviewerName: string; note: string; at: string };
 export type CountMode = "blind" | "visible";
+/**
+ * One Cortes table row. Its sales, tips and payment figures cover every tender of the drawer,
+ * late ones included (the day's collections reconcile against them); lateCash / lateTerminal
+ * disclose the part recorded after the close, which the corte Z leaves out. `expected`,
+ * `counted` and `terminalDifference` of a closed drawer are the stored figures as of close.
+ */
 export type DrawerRow = {
   id: string;
   businessDate: string;
@@ -805,7 +839,10 @@ export type DrawerRow = {
   terminalReported: number | null;
   terminalDifference: number | null;
   payments: number;
+  /** Cash amount + tips recorded after the close (included in cashSales and cashTips). */
   lateCash: number;
+  /** External amount + tips recorded after the close (included in the terminal figures). */
+  lateTerminal: number;
   review: DrawerReview | null;
   needsReview: boolean;
   zPrints: number;
@@ -871,10 +908,17 @@ export type CorteDocument = {
     reported: number | null;
     difference: number | null;
   };
+  /** Cobros registrados; a corte Z counts only the tenders recorded by the close. */
   payments: number;
   controls: CorteControls | null;
   folios: FolioRange[];
+  /** Cash amount + tips recorded after the close (corte Z, full variant only). */
   lateCash: number;
+  /**
+   * External amount + tips recorded after the close (corte Z only; also in the blind variant,
+   * since every operator sees terminal figures). The terminal section excludes it.
+   */
+  lateTerminal: number;
   review: DrawerReview | null;
 };
 export type DayCorteDocument = {
@@ -1018,8 +1062,12 @@ export type SalesDayAggregate = {
   recoveryTotal: number;
   /** Σ(total + discount) of ticketed recovery orders: part of the coverage denominator. */
   ticketedRecoveryGross: number;
-  /** Σ(total + discount): after voids, before discounts. */
-  gross: number;
+  /**
+   * Σ orders.discount and Σ orders.total. Ventas brutas is not an input: composeSalesSummary
+   * derives it as `total + discounts` (§2.2 `grossSales = Σ(total + discount)`), per day and for
+   * the range, so `grossSales − discounts = salesTotal` holds by construction. The S1 `gross`
+   * column is therefore not read.
+   */
   discounts: number;
   total: number;
   /** Σ tenders.amount of these orders, any collection date. */
@@ -1125,14 +1173,16 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
     assertInRange(range, rows);
 
   const salesTotal = sumBy(s, (x) => x.total);
+  const discounts = sumBy(s, (x) => x.discounts);
   const orders = sumBy(s, (x) => x.orders);
   const paidOnSales = sumBy(s, (x) => x.paid);
   const sales: SalesMetrics = {
     orders,
     cancelledOrders: sumBy(s, (x) => x.cancelled),
     cancelledAmount: sumBy(l, (x) => x.cancelledAmount),
-    grossSales: sumBy(s, (x) => x.gross),
-    discounts: sumBy(s, (x) => x.discounts),
+    // §2.2: Ventas brutas − Descuentos = Ventas totales, by construction.
+    grossSales: add(salesTotal, discounts),
+    discounts,
     courtesies: sumBy(l, (x) => x.courtesies),
     salesTotal,
     averageTicket: averageTicket(salesTotal, orders),
@@ -1229,12 +1279,14 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
       : rangeDates(range).map((date) => {
           const day = on(s, date);
           const collected = on(c, date);
+          const dayTotal = sumBy(day, (x) => x.total);
+          const dayDiscounts = sumBy(day, (x) => x.discounts);
           return {
             date,
             orders: sumBy(day, (x) => x.orders),
-            grossSales: sumBy(day, (x) => x.gross),
-            discounts: sumBy(day, (x) => x.discounts),
-            salesTotal: sumBy(day, (x) => x.total),
+            grossSales: add(dayTotal, dayDiscounts),
+            discounts: dayDiscounts,
+            salesTotal: dayTotal,
             refunds: sumBy(on(r, date), (x) => x.amount),
             cash: sumBy(
               collected.filter((x) => x.method === "cash"),
@@ -1326,23 +1378,52 @@ export function hourRows(
   return out;
 }
 
+/** The signed difference kinds: their amounts are summed by magnitude (see ExceptionTotals). */
+export const DIFFERENCE_KINDS: readonly ExceptionKind[] = [
+  "drawer_difference",
+  "terminal_difference",
+];
+const isDifferenceKind = (kind: ExceptionKind) =>
+  DIFFERENCE_KINDS.includes(kind);
+/** What one row adds to a total of its kind: its magnitude for a difference kind. */
+const exceptionMagnitude = (row: Pick<ExceptionRow, "kind" | "amount">) =>
+  isDifferenceKind(row.kind) ? Math.abs(row.amount) : row.amount;
+
 /** Totals per exception kind, only kinds with rows, in EXCEPTION_KINDS order. */
 export function exceptionTotals(
   rows: readonly Pick<ExceptionRow, "kind" | "amount">[],
 ): ExceptionTotals[] {
-  return EXCEPTION_KINDS.flatMap((kind) => {
+  return EXCEPTION_KINDS.flatMap((kind): ExceptionTotals[] => {
     const of = rows.filter((r) => r.kind === kind);
-    return of.length
-      ? [{ kind, count: of.length, amount: sumBy(of, (r) => r.amount) }]
-      : [];
+    if (!of.length) return [];
+    const total = {
+      kind,
+      count: of.length,
+      amount: sumBy(of, exceptionMagnitude),
+    };
+    if (!isDifferenceKind(kind)) return [total];
+    return [
+      {
+        ...total,
+        shortages: sumBy(
+          of.filter((r) => r.amount < 0),
+          (r) => -r.amount,
+        ),
+        overages: sumBy(
+          of.filter((r) => r.amount > 0),
+          (r) => r.amount,
+        ),
+      },
+    ];
   });
 }
 
 /**
  * The Excepciones summary. `acted` groups by the actor, or, for open-price lines (no per-line
- * actor), by the check's server; drawer differences also split into shortage and overage amounts.
- * `approved` groups by the approver (a drawer difference's approver is its reviewer) and sums
- * absolute amounts, so a reviewed shortage and overage never cancel out.
+ * actor), by the check's server; its amounts follow exceptionTotals (difference kinds by
+ * magnitude), and drawer differences also split into shortage and overage amounts. `approved`
+ * groups by the approver (a drawer difference's approver is its reviewer) and sums absolute
+ * amounts, so a reviewed shortage and overage never cancel out.
  */
 export function exceptionSummary(
   rows: readonly ExceptionRow[],
@@ -1374,7 +1455,7 @@ export function exceptionSummary(
       const acted = e.acted[row.kind] ?? { count: 0, amount: 0 };
       e.acted[row.kind] = {
         count: acted.count + 1,
-        amount: add(acted.amount, row.amount),
+        amount: add(acted.amount, exceptionMagnitude(row)),
       };
       if (row.kind === "drawer_difference") {
         if (row.amount < 0) e.shortages = add(e.shortages, -row.amount);
@@ -1430,16 +1511,31 @@ export type DrawerFacts = {
   closedAt: string | null;
   closedByName: string | null;
   opening: number;
+  /**
+   * Sums over every tender of the drawer; the `late*` parts are the tenders with
+   * `created_at > closed_at` (always 0 while open), which a corte Z leaves out of its "as of
+   * close" figures and discloses as "Registrado después del cierre".
+   */
   cash: {
     count: number;
     amount: number;
     tips: number;
     refunds: number;
     /** Cash tenders recorded after the close (offline late recovery). */
+    lateCount: number;
     lateAmount: number;
     lateTips: number;
   };
-  external: { count: number; amount: number; tips: number; refunds: number };
+  external: {
+    count: number;
+    amount: number;
+    tips: number;
+    refunds: number;
+    /** External tenders recorded after the close (offline terminal sales synced late, LD-7). */
+    lateCount: number;
+    lateAmount: number;
+    lateTips: number;
+  };
   /** −Σ negative cash_movements (positive amount). */
   paidOuts: CountAmount;
   /** Σ positive cash_movements (no command records one today). */
@@ -1468,11 +1564,21 @@ export function liveExpectedCash(f: DrawerFacts): number {
 function terminalNet(f: DrawerFacts): number {
   return add(f.external.amount, f.external.tips) - f.external.refunds;
 }
+/** External amount + tips recorded after the close; 0 while the drawer is open. */
+function lateTerminal(f: DrawerFacts): number {
+  return f.closedAt === null
+    ? 0
+    : add(f.external.lateAmount, f.external.lateTips);
+}
+/** The terminal net as of close (the whole net while the drawer is open). */
+function terminalNetAsOfClose(f: DrawerFacts): number {
+  return terminalNet(f) - lateTerminal(f);
+}
 function terminalDifference(f: DrawerFacts): number | null {
   const reported = f.stored.externalReported;
   return f.closedAt === null || reported === null
     ? null
-    : reported - (f.stored.externalExpected ?? terminalNet(f));
+    : reported - (f.stored.externalExpected ?? terminalNetAsOfClose(f));
 }
 function storedDifference(f: DrawerFacts): number | null {
   return f.closedAt === null ||
@@ -1523,6 +1629,7 @@ export function drawerRow(
     terminalDifference: terminalDifference(f),
     payments: f.cash.count + f.external.count,
     lateCash: closed ? add(f.cash.lateAmount, f.cash.lateTips) : 0,
+    lateTerminal: lateTerminal(f),
     review: f.review,
     needsReview: difference !== null && difference !== 0 && !f.review,
     zPrints: f.zPrints,
@@ -1616,11 +1723,13 @@ export function folioRanges(
 }
 
 /**
- * The corte X (open drawer) or Z (closed drawer) document. A corte Z states cash "as of close":
- * cash tenders recorded after the close are excluded from sales and tips and shown as lateCash,
- * and expected is the stored figure. The blind variant (count slip) carries no expected cash,
- * cash sales, refunds, paid-outs, difference, controls, folios, late cash or review: the server
- * never sends them. A blind corte X does not exist (corteAccess answers reports_corte_hidden).
+ * The corte X (open drawer) or Z (closed drawer) document. A corte Z states every figure "as of
+ * close": cash and external tenders recorded after the close are excluded from sales, tips, the
+ * terminal net and the payment count, and shown as lateCash / lateTerminal; expected cash is the
+ * stored figure and the terminal difference uses the stored external expected. The blind variant
+ * (count slip) carries no expected cash, cash sales, refunds, paid-outs, difference, controls,
+ * folios, late cash or review: the server never sends them. A blind corte X does not exist
+ * (corteAccess answers reports_corte_hidden).
  */
 export function buildCorteDocument(
   f: DrawerFacts,
@@ -1642,7 +1751,7 @@ export function buildCorteDocument(
   const closed = f.closedAt !== null;
   const blind = ctx.visibility === "blind";
   if (!closed && blind) throw new RangeError("blind_corte_x");
-  const net = terminalNet(f);
+  const lateCount = closed ? add(f.cash.lateCount, f.external.lateCount) : 0;
   const cash: CorteDocument["cash"] = blind
     ? null
     : closed
@@ -1691,18 +1800,19 @@ export function buildCorteDocument(
     cash,
     counted: closed ? f.stored.counted : null,
     terminal: {
-      sales: f.external.amount,
-      count: f.external.count,
-      tips: f.external.tips,
+      sales: f.external.amount - (closed ? f.external.lateAmount : 0),
+      count: f.external.count - (closed ? f.external.lateCount : 0),
+      tips: f.external.tips - (closed ? f.external.lateTips : 0),
       refunds: f.external.refunds,
-      net,
+      net: terminalNetAsOfClose(f),
       reported: closed ? f.stored.externalReported : null,
       difference: terminalDifference(f),
     },
-    payments: f.cash.count + f.external.count,
+    payments: add(f.cash.count, f.external.count) - lateCount,
     controls: blind ? null : ctx.controls,
     folios: blind ? [] : folioRanges(ctx.folios),
     lateCash: blind || !closed ? 0 : add(f.cash.lateAmount, f.cash.lateTips),
+    lateTerminal: lateTerminal(f),
     review: blind ? null : f.review,
   };
 }

@@ -43,8 +43,14 @@ const quote = (text: string) => '"' + text.replace(/"/g, '""') + '"';
  * prefixed with an apostrophe and quoted; a field with a comma, quote, CR or LF is quoted with
  * its quotes doubled. Numeric and date cells are written as they are, never prefixed, but only
  * when they really have their type's shape: anything else falls back to guarded text.
+ *
+ * A raw number in a money (`m`) or percent (`p`) column is a TypeError("csv_unformatted"): it is
+ * minor units or basis points, and writing it as is would put 2000 for MXN 20.00 in the file.
+ * Format it first with moneyCsv / percentCsv, or let toCsv do it.
  */
 export function csvCell(value: CsvValue, type: CsvType): string {
+  if (typeof value === "number" && (type === "m" || type === "p"))
+    throw new TypeError("csv_unformatted");
   if (value === null || value === undefined) return "";
   const text = String(value);
   if (text === "") return "";

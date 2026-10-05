@@ -3,6 +3,7 @@ import { Temporal } from "@js-temporal/polyfill";
 import { boundaries, businessDate, DomainError } from "../shared/domain";
 import {
   addDays,
+  aggregateInt,
   AUDIT_GROUP_KEYS,
   AUDIT_GROUPS,
   auditGroupPrefixes,
@@ -18,6 +19,7 @@ import {
   currentBusinessDate,
   DATE_BOUNDS,
   decodeReportCursor,
+  DIFFERENCE_KINDS,
   differenceKind,
   drawerRow,
   drawerSummary,
@@ -54,6 +56,7 @@ import {
   type ExceptionRow,
   type QuickRange,
   type ReconciliationInput,
+  type SalesDayAggregate,
   type SummaryInput,
 } from "../shared/reports";
 import {
@@ -69,6 +72,8 @@ import {
 import { fakeId, rng } from "./fixtures/fiscal";
 import {
   aggregateWorld,
+  lineDiscount,
+  lineGross,
   orderPaid,
   orderTotal,
   randomWorld,
@@ -462,6 +467,102 @@ describe("arithmetic helpers", () => {
   });
 });
 
+describe("aggregateInt (postgres.js int8 → number)", () => {
+  it("accepts int8 text, bigint and safe numbers, and refuses anything that is not an exact safe integer", () => {
+    expect(aggregateInt("2540000")).toBe(2_540_000);
+    expect(aggregateInt("-2000")).toBe(-2_000);
+    expect(aggregateInt("0")).toBe(0);
+    expect(Object.is(aggregateInt(-0), 0)).toBe(true);
+    expect(aggregateInt(12n)).toBe(12);
+    expect(aggregateInt(77)).toBe(77);
+    expect(aggregateInt(String(Number.MAX_SAFE_INTEGER))).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+    expect(aggregateInt(String(-Number.MAX_SAFE_INTEGER))).toBe(
+      -Number.MAX_SAFE_INTEGER,
+    );
+    expect(aggregateInt(BigInt(Number.MAX_SAFE_INTEGER))).toBe(
+      Number.MAX_SAFE_INTEGER,
+    );
+    for (const bad of [
+      "9007199254740992",
+      "-9007199254740992",
+      "99999999999999999",
+      9007199254740992n,
+      -9007199254740993n,
+      "1.5",
+      "1e3",
+      " 12",
+      "12 ",
+      "",
+      "0x10",
+      "-",
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      null,
+      undefined,
+      true,
+      {},
+    ])
+      expect(() => aggregateInt(bad), String(bad)).toThrow("invalid_amount");
+  });
+
+  it("maps an int8-as-text S1 row so the core accepts it, where the raw strings are refused", () => {
+    const date = "2026-10-05";
+    // S1's ::int8 sums as postgres.js returns them.
+    const raw = { total: "9500", discounts: "500" };
+    const input = (total: number | string, discounts: number | string) => ({
+      range: { from: date, to: date },
+      currency: "MXN",
+      generatedAt: "2026-10-06T00:00:00Z",
+      currentBusinessDate: "2026-10-06",
+      sales: [
+        {
+          date,
+          orders: 1,
+          cancelled: 0,
+          recoveryCount: 0,
+          recoveryTotal: 0,
+          ticketedRecoveryGross: 0,
+          discounts,
+          total,
+          paid: total,
+          tips: 0,
+          openChecks: 0,
+          overpaid: 0,
+          ticketed: 0,
+          ticketedGross: 0,
+          ticketedOrderTotal: 0,
+          unticketedOpen: 0,
+          unticketedPaid: total,
+          offlineCount: 0,
+          offlineTotal: 0,
+          offlineTips: 0,
+        } as SalesDayAggregate,
+      ],
+      lines: [],
+      collections: [],
+      refunds: [],
+      restocks: [],
+      paidOuts: [],
+      drawers: [],
+      fiscal: null,
+    });
+    expect(() => composeSalesSummary(input(raw.total, raw.discounts))).toThrow(
+      "invalid_amount",
+    );
+    const s = composeSalesSummary(
+      input(aggregateInt(raw.total), aggregateInt(raw.discounts)),
+    );
+    expect(s.sales).toMatchObject({
+      grossSales: 10_000,
+      discounts: 500,
+      salesTotal: 9_500,
+    });
+  });
+});
+
 describe("audit groups and exception kinds (GAP-3)", () => {
   /** A minimal LIKE matcher (default escape `\`), to prove the patterns behave in SQL terms. */
   function like(pattern: string, text: string): boolean {
@@ -790,7 +891,6 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
           recoveryCount: 0,
           recoveryTotal: 0,
           ticketedRecoveryGross: 0,
-          gross: 2_540_000,
           discounts: 62_000,
           total: 2_478_000,
           paid: 2_454_000,
@@ -936,8 +1036,18 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
       const sum = <T>(rows: T[], f: (r: T) => number) =>
         rows.reduce((a, r) => a + f(r), 0);
 
-      // Sales lens against the records.
+      // Sales lens against the records. Ventas brutas is the line gross after voids (the 028 DB
+      // identity total + discount = Σ lines − Σ voids) plus the recovery totals, and Descuentos
+      // the active allocations; Ventas brutas − Descuentos = Ventas totales.
+      const recovery = (o: World["orders"][number]) =>
+        o.state === "recovery_pending";
+      const grossOf = (o: World["orders"][number]) =>
+        recovery(o) ? o.recoveryTotal : sum(o.lines, lineGross);
       expect(s.sales.salesTotal).toBe(sum(orders, orderTotal));
+      expect(s.sales.grossSales).toBe(sum(orders, grossOf));
+      expect(s.sales.discounts).toBe(
+        sum(orders, (o) => sum(o.lines, lineDiscount)),
+      );
       expect(s.sales.grossSales - s.sales.discounts).toBe(s.sales.salesTotal);
       expect(s.sales.orders).toBe(
         orders.filter((o) => orderTotal(o) > 0).length,
@@ -1013,8 +1123,12 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
       if (range.from === range.to) expect(s.days).toEqual([]);
       else {
         expect(s.days.map((d) => d.date)).toEqual(rangeDates(range));
-        for (const d of s.days)
+        for (const d of s.days) {
+          const own = orders.filter((o) => o.date === d.date);
+          expect(d.grossSales).toBe(sum(own, grossOf));
+          expect(d.salesTotal).toBe(sum(own, orderTotal));
           expect(d.grossSales - d.discounts).toBe(d.salesTotal);
+        }
         expect(sum(s.days, (d) => d.orders)).toBe(s.sales.orders);
         expect(sum(s.days, (d) => d.grossSales)).toBe(s.sales.grossSales);
         expect(sum(s.days, (d) => d.discounts)).toBe(s.sales.discounts);
@@ -1036,9 +1150,10 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
     }
   });
 
-  it("property: a one-centavo drift in any aggregate fails exactly its own check", () => {
+  it("property: a one-centavo drift in a guarded aggregate fails exactly its own check, and Ventas brutas − Descuentos = Ventas totales holds under any drift", () => {
     const random = rng(7);
     let tried = 0;
+    let withRefunds = 0;
     for (let n = 0; n < 200; n++) {
       const range = { from: "2026-10-05", to: "2026-10-07" };
       const world = randomWorld(random, range, { fiscal: true });
@@ -1055,33 +1170,88 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
         drawers: [],
         fiscal: worldFiscalTotals(world, range),
       };
+      const summary = (patch: Partial<SummaryInput>) =>
+        composeSalesSummary({ ...base, ...patch });
       const fails = (patch: Partial<SummaryInput>) =>
-        failedCheckCodes(composeSalesSummary({ ...base, ...patch }).checks);
+        failedCheckCodes(summary(patch).checks);
       const bump = <T extends object>(rows: readonly T[], key: keyof T) =>
         rows.map((r, i) =>
           i === 0 ? { ...r, [key]: (r[key] as number) + 1 } : r,
         );
+      const identityHolds = (patch: Partial<SummaryInput>) => {
+        const s = summary(patch);
+        expect(s.sales.grossSales - s.sales.discounts).toBe(s.sales.salesTotal);
+        for (const d of s.days)
+          expect(d.grossSales - d.discounts).toBe(d.salesTotal);
+      };
       expect(fails({})).toEqual([]);
-      expect(fails({ lines: bump(agg.lines, "lineNet") })).toEqual([
-        "lines_vs_orders",
-      ]);
-      expect(fails({ lines: bump(agg.lines, "lineDiscounts") })).toEqual([
-        "discounts_vs_allocations",
-      ]);
-      expect(fails({ sales: bump(agg.sales, "ticketedGross") })).toEqual([
-        "tickets_vs_orders",
-      ]);
-      expect(fails({ sales: bump(agg.sales, "overpaid") })).toEqual([
-        "paid_identity",
-      ]);
-      expect(
-        fails({
-          fiscal: {
-            ...base.fiscal!,
-            refundGross: base.fiscal!.refundGross + 1,
+
+      // The guarded aggregates: each drift fails its own check and no other.
+      const guarded: [Partial<SummaryInput>, string][] = [
+        [{ sales: bump(agg.sales, "total") }, "lines_vs_orders"],
+        [{ sales: bump(agg.sales, "recoveryTotal") }, "lines_vs_orders"],
+        [{ lines: bump(agg.lines, "lineNet") }, "lines_vs_orders"],
+        [{ sales: bump(agg.sales, "discounts") }, "discounts_vs_allocations"],
+        [
+          { lines: bump(agg.lines, "lineDiscounts") },
+          "discounts_vs_allocations",
+        ],
+        [{ sales: bump(agg.sales, "ticketedGross") }, "tickets_vs_orders"],
+        [{ sales: bump(agg.sales, "ticketedOrderTotal") }, "tickets_vs_orders"],
+        [
+          { fiscal: { ...base.fiscal!, gross: base.fiscal!.gross + 1 } },
+          "tickets_vs_orders",
+        ],
+        [{ sales: bump(agg.sales, "overpaid") }, "paid_identity"],
+        [
+          {
+            fiscal: {
+              ...base.fiscal!,
+              refundGross: base.fiscal!.refundGross + 1,
+            },
           },
-        }),
-      ).toEqual(["refunds_vs_fiscal"]);
+          "refunds_vs_fiscal",
+        ],
+      ];
+      if (agg.refunds.length) {
+        withRefunds++;
+        guarded.push([
+          { refunds: bump(agg.refunds, "fiscalAmount") },
+          "refunds_vs_fiscal",
+        ]);
+      }
+      for (const [patch, check] of guarded) {
+        expect(fails(patch), check).toEqual([check]);
+        identityHolds(patch);
+      }
+
+      // Not guarded by the checks (the DB suite of the next wave compares them with the records):
+      // a drift leaves every check green, and the gross identity still holds.
+      const unguarded: Partial<SummaryInput>[] = [
+        { sales: bump(agg.sales, "tips") },
+        { sales: bump(agg.sales, "orders") },
+        { lines: bump(agg.lines, "cogs") },
+        { collections: bump(agg.collections, "amount") },
+        { collections: bump(agg.collections, "tips") },
+        {
+          paidOuts: [
+            ...agg.paidOuts,
+            { date: range.from, count: 1, amount: 1 },
+          ],
+        },
+      ];
+      if (agg.refunds.length)
+        unguarded.push({ refunds: bump(agg.refunds, "amount") });
+      for (const patch of unguarded) {
+        expect(fails(patch)).toEqual([]);
+        identityHolds(patch);
+      }
+      // A non-fiscal refund drift is not seen either: without fiscal data there is no refund check.
+      if (agg.refunds.length)
+        expect(
+          fails({ fiscal: null, refunds: bump(agg.refunds, "fiscalAmount") }),
+        ).toEqual([]);
+
       // Moving a tender between methods keeps every check green: the split is not double counted.
       const moved = agg.collections.map((c) => ({
         ...c,
@@ -1090,6 +1260,87 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
       expect(fails({ collections: moved })).toEqual([]);
     }
     expect(tried).toBeGreaterThan(50);
+    expect(withRefunds).toBeGreaterThan(10);
+  });
+
+  it("Ventas brutas cannot disagree with Ventas totales + Descuentos: a stale S1 gross column is ignored", () => {
+    const date = "2026-10-05";
+    const day = (p: Partial<SalesDayAggregate>): SalesDayAggregate => ({
+      date,
+      orders: 2,
+      cancelled: 0,
+      recoveryCount: 0,
+      recoveryTotal: 0,
+      ticketedRecoveryGross: 0,
+      discounts: 1_000,
+      total: 19_000,
+      paid: 19_000,
+      tips: 0,
+      openChecks: 0,
+      overpaid: 0,
+      ticketed: 0,
+      ticketedGross: 0,
+      ticketedOrderTotal: 0,
+      unticketedOpen: 0,
+      unticketedPaid: 19_000,
+      offlineCount: 0,
+      offlineTotal: 0,
+      offlineTips: 0,
+      ...p,
+    });
+    const lines = (d: string, lineNet: number, lineDiscounts: number) => ({
+      date: d,
+      lineNet,
+      voided: 0,
+      voidedUnits: 0,
+      cancelledAmount: 0,
+      lineDiscounts,
+      courtesies: 0,
+      cogs: 0,
+      cogsAll: 0,
+      coveredGross: 0,
+      ticketedLineGross: 0,
+      wasteCost: 0,
+    });
+    // The integration wave may spread a whole S1 row, `gross` included: a wrong one changes nothing.
+    const stale = { ...day({}), gross: 20_001 } as SalesDayAggregate;
+    const next = addDays(date, 1);
+    const range = { from: date, to: next };
+    const s = composeSalesSummary({
+      range,
+      currency: "MXN",
+      generatedAt: "2026-10-07T00:00:00Z",
+      currentBusinessDate: "2026-10-07",
+      sales: [
+        stale,
+        day({
+          date: next,
+          discounts: 0,
+          total: 5,
+          paid: 5,
+          unticketedPaid: 5,
+        }),
+      ],
+      lines: [lines(date, 19_000, 1_000), lines(next, 5, 0)],
+      collections: [],
+      refunds: [],
+      restocks: [],
+      paidOuts: [],
+      drawers: [],
+      fiscal: null,
+    });
+    expect(s.sales).toMatchObject({
+      grossSales: 20_005,
+      discounts: 1_000,
+      salesTotal: 19_005,
+    });
+    expect(
+      s.days.map((d) => [d.grossSales, d.discounts, d.salesTotal]),
+    ).toEqual([
+      [20_000, 1_000, 19_000],
+      [5, 0, 5],
+    ]);
+    expect(failedCheckCodes(s.checks)).toEqual([]);
   });
 
   it("a check paid the next day is a Monday sale and a Tuesday collection; a later refund leaves the sale day unchanged", () => {
@@ -1389,7 +1640,14 @@ describe("exceptionSummary (GAP-3)", () => {
       { kind: "void", count: 1, amount: 8_000 },
       { kind: "discount", count: 1, amount: 1_200 },
       { kind: "refund", count: 2, amount: 9_300 },
-      { kind: "drawer_difference", count: 2, amount: -1_500 },
+      // A $20.00 shortage and a $5.00 overage do not net to $15.00: the tile shows $25.00.
+      {
+        kind: "drawer_difference",
+        count: 2,
+        amount: 2_500,
+        shortages: 2_000,
+        overages: 500,
+      },
       { kind: "reprint", count: 1, amount: 0 },
       { kind: "open_price", count: 1, amount: 4_500 },
     ]);
@@ -1400,7 +1658,7 @@ describe("exceptionSummary (GAP-3)", () => {
         acted: {
           void: { count: 1, amount: 8_000 },
           discount: { count: 1, amount: 1_200 },
-          drawer_difference: { count: 1, amount: -2_000 },
+          drawer_difference: { count: 1, amount: 2_000 },
           reprint: { count: 1, amount: 0 },
         },
         shortages: 2_000,
@@ -1479,9 +1737,39 @@ describe("exceptionSummary (GAP-3)", () => {
         diffs.filter((r) => r.amount > 0).reduce((a, r) => a + r.amount, 0),
       );
       expect(s.byKind.reduce((a, x) => a + x.count, 0)).toBe(list.length);
+      const magnitude = (r: ExceptionRow) =>
+        DIFFERENCE_KINDS.includes(r.kind) ? Math.abs(r.amount) : r.amount;
       expect(s.byKind.reduce((a, x) => a + x.amount, 0)).toBe(
-        list.reduce((a, r) => a + r.amount, 0),
+        list.reduce((a, r) => a + magnitude(r), 0),
       );
+      for (const t of s.byKind) {
+        const of = list.filter((r) => r.kind === t.kind);
+        if (DIFFERENCE_KINDS.includes(t.kind)) {
+          // Shortages and overages never cancel out.
+          expect(t.shortages).toBe(
+            of.filter((r) => r.amount < 0).reduce((a, r) => a - r.amount, 0),
+          );
+          expect(t.overages).toBe(
+            of.filter((r) => r.amount > 0).reduce((a, r) => a + r.amount, 0),
+          );
+          expect(t.amount).toBe(t.shortages! + t.overages!);
+        } else {
+          expect(t).not.toHaveProperty("shortages");
+          expect(t).not.toHaveProperty("overages");
+        }
+      }
+      for (const e of s.byEmployee)
+        for (const [kind, acted] of Object.entries(e.acted))
+          expect(acted!.amount).toBe(
+            acting
+              .filter(
+                (r) =>
+                  r.kind === kind &&
+                  (r.kind === "open_price" ? r.accountId : r.actorId) ===
+                    e.employeeId,
+              )
+              .reduce((a, r) => a + magnitude(r), 0),
+          );
       expect(exceptionTotals(list)).toEqual(s.byKind);
     }
   });
@@ -1515,10 +1803,19 @@ function facts(p: Partial<DrawerFacts> = {}): DrawerFacts {
       amount: 425_000,
       tips: 31_000,
       refunds: 9_000,
+      lateCount: 0,
       lateAmount: 0,
       lateTips: 0,
     },
-    external: { count: 23, amount: 612_000, tips: 64_000, refunds: 0 },
+    external: {
+      count: 23,
+      amount: 612_000,
+      tips: 64_000,
+      refunds: 0,
+      lateCount: 0,
+      lateAmount: 0,
+      lateTips: 0,
+    },
     paidOuts: { count: 1, amount: 50_000 },
     payIns: 0,
     stored: {
@@ -1543,8 +1840,19 @@ const closedFacts = (p: Partial<DrawerFacts> = {}) =>
       amount: 430_000,
       tips: 31_500,
       refunds: 9_000,
+      lateCount: 1,
       lateAmount: 5_000,
       lateTips: 500,
+    },
+    // An offline terminal sale synced after the close (LD-7): $60.00 + $3.00 tip.
+    external: {
+      count: 24,
+      amount: 618_000,
+      tips: 64_300,
+      refunds: 0,
+      lateCount: 1,
+      lateAmount: 6_000,
+      lateTips: 300,
     },
     stored: {
       expected: 497_000,
@@ -1607,9 +1915,10 @@ describe("corte documents (FIT-10)", () => {
     expect(doc.controls).toEqual(print.controls);
     expect(doc.counted).toBeNull();
     expect(doc.lateCash).toBe(0);
+    expect(doc.lateTerminal).toBe(0);
   });
 
-  it("builds a corte Z as of close: late cash excluded from sales and tips, stored expected, signed difference and terminal batch difference", () => {
+  it("builds a corte Z as of close: late cash and late terminal sales excluded from sales, tips, net and payments, stored expected, signed difference and terminal batch difference", () => {
     const doc = buildCorteDocument(
       closedFacts({
         review: {
@@ -1641,11 +1950,35 @@ describe("corte documents (FIT-10)", () => {
     expect(differenceKind(doc.cash!.difference!)).toBe("short");
     expect(doc.counted).toBe(495_000);
     expect(doc.lateCash).toBe(5_500);
-    expect(doc.terminal).toMatchObject({
+    // The terminal section is as of close too: the late $63.00 is disclosed, not added, so the
+    // printed net, the reported batch total and the difference agree on one document.
+    expect(doc.terminal).toEqual({
+      sales: 612_000,
+      count: 23,
+      tips: 64_000,
+      refunds: 0,
       net: 676_000,
       reported: 676_500,
       difference: 500,
     });
+    expect(doc.terminal.reported! - doc.terminal.net).toBe(
+      doc.terminal.difference,
+    );
+    expect(doc.lateTerminal).toBe(6_300);
+    expect(doc.payments).toBe(18 + 23);
+    // Without a stored external expected (legacy close), the difference uses the as-of-close net.
+    const legacy = closedFacts();
+    legacy.stored = { ...legacy.stored, externalExpected: null };
+    expect(
+      buildCorteDocument(legacy, { ...print, visibility: "full" }).terminal
+        .difference,
+    ).toBe(500);
+    expect(
+      drawerRow(legacy, {
+        canSeeExpected: true,
+        currentBusinessDate: "2026-10-06",
+      }).terminalDifference,
+    ).toBe(500);
     expect(doc.drawer).toMatchObject({
       closedByName: "Luis",
       countMode: "blind",
@@ -1678,7 +2011,8 @@ describe("corte documents (FIT-10)", () => {
       lateCash: 0,
       review: null,
       counted: 495_000,
-      payments: 42,
+      payments: 41,
+      lateTerminal: 6_300,
     });
     const text = JSON.stringify(doc);
     for (const hidden of [
@@ -1709,26 +2043,45 @@ describe("corte documents (FIT-10)", () => {
       const tips = random.int(0, 50_000);
       const lateTips = lateAmount ? random.int(0, tips) : 0;
       const closed = random.next() < 0.5;
+      const cashCount = random.int(0, 80);
+      const lateCashCount = closed && lateAmount ? random.int(1, 3) : 0;
+      const extAmount = random.int(0, 900_000);
+      const extTips = random.int(0, 50_000);
+      const extLate =
+        closed && random.next() < 0.3 ? random.int(0, extAmount) : 0;
+      const extLateTips = extLate ? random.int(0, extTips) : 0;
+      const extCount = random.int(0, 80);
+      const extLateCount = extLate ? random.int(1, 3) : 0;
       const f = facts({
         opening: random.int(0, 300_000),
         cash: {
-          count: random.int(0, 80),
+          count: cashCount + lateCashCount,
           amount,
           tips,
           refunds: random.int(0, amount),
+          lateCount: lateCashCount,
           lateAmount: closed ? lateAmount : 0,
           lateTips: closed ? lateTips : 0,
         },
         external: {
-          count: random.int(0, 80),
-          amount: random.int(0, 900_000),
-          tips: random.int(0, 50_000),
+          count: extCount + extLateCount,
+          amount: extAmount,
+          tips: extTips,
           refunds: random.int(0, 50_000),
+          lateCount: extLateCount,
+          lateAmount: extLate,
+          lateTips: extLateTips,
         },
         paidOuts: { count: 1, amount: random.int(0, 100_000) },
       });
       const live = liveExpectedCash(f);
       const asOfClose = live - lateAmount - lateTips;
+      const extNetAsOfClose =
+        f.external.amount +
+        f.external.tips -
+        f.external.refunds -
+        extLate -
+        extLateTips;
       const counted = random.int(0, 1_000_000);
       const g: DrawerFacts = closed
         ? {
@@ -1740,8 +2093,7 @@ describe("corte documents (FIT-10)", () => {
               counted,
               reason: "",
               countMode: random.pick(["blind", "visible"] as const),
-              externalExpected:
-                f.external.amount + f.external.tips - f.external.refunds,
+              externalExpected: random.next() < 0.8 ? extNetAsOfClose : null,
               externalReported:
                 random.next() < 0.5 ? random.int(0, 1_000_000) : null,
             },
@@ -1761,19 +2113,33 @@ describe("corte documents (FIT-10)", () => {
       expect(row.difference).toBe(closed ? counted - asOfClose : null);
       expect(c.difference).toBe(row.difference);
       expect(c.reason).toBeNull();
-      expect(doc.terminal.net).toBe(row.terminalNet);
+      // The terminal section is as of close; the row discloses the late part separately.
+      expect(doc.terminal.net).toBe(row.terminalNet - row.lateTerminal);
+      expect(doc.terminal.net).toBe(closed ? extNetAsOfClose : row.terminalNet);
       expect(doc.terminal.net).toBe(
         doc.terminal.sales + doc.terminal.tips - doc.terminal.refunds,
       );
+      expect(doc.terminal.count).toBe(extCount);
       expect(doc.terminal.difference).toBe(row.terminalDifference);
+      const reported = g.stored.externalReported;
+      expect(doc.terminal.difference).toBe(
+        closed && reported !== null ? reported - extNetAsOfClose : null,
+      );
       expect(doc.lateCash).toBe(row.lateCash);
-      expect(doc.payments).toBe(row.payments);
+      expect(doc.lateTerminal).toBe(row.lateTerminal);
+      expect(row.lateTerminal).toBe(closed ? extLate + extLateTips : 0);
+      expect(doc.payments).toBe(cashCount + extCount);
+      expect(row.payments).toBe(
+        cashCount + lateCashCount + extCount + extLateCount,
+      );
       expect(row.cashSales - (closed ? lateAmount : 0)).toBe(c.sales);
       if (closed) {
         const blind = buildCorteDocument(g, { ...print, visibility: "blind" });
         expect(blind.counted).toBe(counted);
         expect(blind.cash).toBeNull();
         expect(blind.terminal).toEqual(doc.terminal);
+        expect(blind.lateTerminal).toBe(doc.lateTerminal);
+        expect(blind.payments).toBe(doc.payments);
       }
     }
   });
@@ -1788,6 +2154,7 @@ describe("corte documents (FIT-10)", () => {
       openSinceEarlierDay: false,
       zNumber: null,
       lateCash: 0,
+      lateTerminal: 0,
     });
     expect(
       drawerRow(facts(), { ...today, canSeeExpected: false }).expected,
@@ -1813,6 +2180,10 @@ describe("corte documents (FIT-10)", () => {
       orphan: false,
       zNumber: 128,
       lateCash: 5_500,
+      lateTerminal: 6_300,
+      terminalSales: 618_000,
+      terminalNet: 682_300,
+      payments: 43,
       terminalDifference: 500,
     });
     expect(
@@ -2172,6 +2543,15 @@ describe("CSV export (FIT-7, D10)", () => {
     expect(csvCell(null, "t")).toBe("");
     expect(csvCell(undefined, "m")).toBe("");
     expect(csvCell("", "t")).toBe("");
+    // A raw number in a money or percent column is minor units or basis points: csvCell refuses it
+    // rather than write 2000 for MXN 20.00 (toCsv formats numbers first).
+    expect(() => csvCell(2_000, "m")).toThrow("csv_unformatted");
+    expect(() => csvCell(-2_000, "m")).toThrow(TypeError);
+    expect(() => csvCell(1_235, "p")).toThrow("csv_unformatted");
+    expect(() => csvCell(0, "m")).toThrow("csv_unformatted");
+    expect(csvCell(moneyCsv(2_000, "MXN"), "m")).toBe("20.00");
+    expect(csvCell(percentCsv(1_235), "p")).toBe("12.4");
+    expect(csvCell(41, "i")).toBe("41");
     // Through toCsv a negative amount is a number, a negative-looking name is guarded text.
     expect(
       toCsv(

@@ -231,7 +231,6 @@ export function aggregateWorld(world: World, range: DateRange) {
         rows.filter((o) => recovery(o) && o.ticketed),
         (o) => orderTotal(o) + orderDiscount(o),
       ),
-      gross: sum(rows, (o) => orderTotal(o) + orderDiscount(o)),
       discounts: sum(rows, orderDiscount),
       total: sum(rows, orderTotal),
       paid: sum(rows, orderPaid),
