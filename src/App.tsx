@@ -420,8 +420,10 @@ export default function App() {
     );
   }, [session?.id, sessionChanged]);
   useEffect(() => {
-    if (online) void finishPendingLogout();
-  }, [online]);
+    // A logout the server has not confirmed yet ends as soon as it answers,
+    // also in manual offline mode (the server is reachable there).
+    if (reachable) void finishPendingLogout();
+  }, [reachable]);
   useEffect(() => {
     document.documentElement.lang = locale;
     localStorage.setItem("gm-locale", locale);
@@ -468,7 +470,10 @@ export default function App() {
     const s = session;
     if (!s) return;
     if (!force) {
-      if (!online) {
+      // "Sin conexión" means the server does not answer, not the "Trabajar
+      // sin conexión" preference: in manual mode the next employee can sign
+      // in and queued sales still sync (OFF-R16).
+      if (!reachable) {
         setLeaving({ kind: "offline" });
         return;
       }
@@ -476,7 +481,7 @@ export default function App() {
       const left =
         lock && !["idle", "manual", "renew"].includes(lock.reason)
           ? await unsyncedFor(s)
-          : await drainBeforeLeaving(s, online);
+          : await drainBeforeLeaving(s, reachable);
       if (left.sales > 0 || left.payment) {
         setLeaving({ kind: "pending", ...left });
         return;
@@ -551,7 +556,8 @@ export default function App() {
             <AccessGate
               locale={locale}
               setLocale={setLocale}
-              online={online}
+              // Sign-in needs the server, not the selling preference (OFF-R16).
+              online={reachable}
               reason={gateReason}
               signupFirst={new URLSearchParams(location.search).has("signup")}
               onSignedIn={async () => {

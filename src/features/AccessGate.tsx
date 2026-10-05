@@ -58,7 +58,8 @@ export function AccessGate({
       );
     } catch (e) {
       setFailed(true);
-      setUnreachable(!(e instanceof ApiError));
+      // offline's request() (026) reports no answer as a transient ApiError.
+      setUnreachable(!(e instanceof ApiError) || e.transient);
     }
   }
   useEffect(() => {
