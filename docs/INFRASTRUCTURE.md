@@ -60,7 +60,7 @@ Each role has one job ([PROVISIONING.md](PROVISIONING.md) creates them):
 | Login | Endpoint | Used by | Defaults (`ALTER ROLE … SET`) |
 | --- | --- | --- | --- |
 | `gm_<env>_app` (`DATABASE_URL`) | pooled (`-pooler`) | web | `statement_timeout` 10 s, `lock_timeout` 8 s, `idle_in_transaction_session_timeout` 15 s |
-| `gm_<env>_billing` (`BILLING_DATABASE_URL`) | pooled | web (owner billing commands, webhook), worker (provider loop); member of `gm_billing_worker` | 30 s / 8 s / 60 s |
+| `gm_<env>_billing` (`BILLING_DATABASE_URL`) | pooled | web (owner billing commands, webhook; only while billing is enabled, refused by production web otherwise: open DB-1 follow-up in [RUNBOOK.md](RUNBOOK.md)), worker (provider loop); member of `gm_billing_worker` | 30 s / 8 s / 60 s |
 | `gm_migrator` (`MIGRATION_DATABASE_URL`) | direct | worker only: preDeploy (migrate, grants, retention) and the 15-minute retention schedule (one connection, closed when idle); owns the schema; no superuser, BYPASSRLS or CREATEROLE, so FORCE RLS applies to it (backfills use the owner pattern, [RELEASE.md](RELEASE.md)) | `lock_timeout` 5 s, `statement_timeout` 10 min |
 | `gm_<env>_backup` (`BACKUP_DATABASE_URL`) | direct | GitHub backup workflow; member of `gm_backup_reader` (reads through `ops_backup_read` policies) | no timeouts |
 | `neondb_owner` | direct | provisioning and rotation scripts only; password kept offline | — |

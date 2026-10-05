@@ -22,6 +22,8 @@ export default defineRailway((ctx) => {
     ALERT_WEBHOOK_URL: preserve(),
     ALERT_WEBHOOK_KIND: preserve(),
     BILLING_SANDBOX_ENABLED: preserve(),
+    // Cross-tenant billing login: production web refuses it while billing is
+    // disabled (open DB-1 follow-up, RUNBOOK.md "Open follow-ups").
     BILLING_DATABASE_URL: preserve(),
   };
 

@@ -66,7 +66,9 @@ Neon console and keep it offline.
    enabled; worker: `MIGRATION_DATABASE_URL`, `PG_APP_USER`, `APP_URL`,
    `ALERT_WEBHOOK_URL`, Stripe keys only if billing is enabled.
    Production launches with `BILLING_SANDBOX_ENABLED=false` unless live-mode
-   billing has been qualified (account area).
+   billing has been qualified (account area); production `web` refuses to
+   start with `BILLING_DATABASE_URL` set while billing is disabled (DB-1
+   follow-up, [RUNBOOK.md](RUNBOOK.md) "Open follow-ups").
 5. Manual settings from [RUNBOOK.md](RUNBOOK.md): restart policy, region,
    serverless sleep off, deploy webhook to ntfy.
 

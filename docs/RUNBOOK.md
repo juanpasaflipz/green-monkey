@@ -191,10 +191,22 @@ consent; record each in [STAGING.md](STAGING.md)):
 9. Rotate `gm_staging_app` (dual role), deploy, finalize.
 10. Rotate the billing login (replaces the exposed `gm_staging_billing`).
 11. Rotate the `neondb_owner` password; keep it offline.
-12. First staging backup, then the restore rehearsal
-    ([BACKUP_RESTORE.md](BACKUP_RESTORE.md)).
+12. First staging backup (Actions → Backup → staging, by hand), then the
+    restore rehearsal ([BACKUP_RESTORE.md](BACKUP_RESTORE.md)); then turn on
+    the weekly schedule with `gh variable set OPS_LIVE_ENVIRONMENTS --body staging`
+    ([PROVISIONING.md](PROVISIONING.md) §7).
 13. Load test `target` and `stress`; record the pool decision
     ([LOAD_TEST.md](LOAD_TEST.md)).
+
+## Open follow-ups
+
+Known gaps this release leaves open, with their owner:
+
+| Item | Today | Follow-up |
+| --- | --- | --- |
+| DB-1, billing credential in `web` | While billing is enabled, `web` holds `BILLING_DATABASE_URL` for owner billing commands and the webhook. That login is a member of `gm_billing_worker`, whose policies read restaurants, organizations, entitlements and billing tables across tenants. Production launches with `BILLING_SANDBOX_ENABLED=false`, and production `web` refuses to start with `BILLING_DATABASE_URL` set while billing is disabled (`server/config-rules.ts`), so the internet-facing process never holds it there. | Account area (migration 031): a `billing_requests` inbox written with the runtime role and drained by the worker, after which only `worker` holds the billing login. |
+| DB-6, grants hash in readiness | Grants are applied in the newest migration's transaction, so a new revision cannot pass `/api/health` before its tables are granted; readiness itself checks only `schema_migrations` (`server/readiness.ts` is frozen this wave). | Ops, next wave: a `schema_grants` registry and a readiness check of the manifest hash. |
+| OPS-10, signing keyring; F2 in-transaction authentication | Tokens are still signed with `JWT_SECRET`; deferred while the access area rewrites `server/auth.ts`. | Ops, after the access merge. |
 
 ## Incident log template
 

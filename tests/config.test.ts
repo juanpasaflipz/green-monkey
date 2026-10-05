@@ -85,6 +85,47 @@ describe("process configuration", () => {
       ).toThrow(`forbidden_credential_in_process: ${name}`);
   });
 
+  it("production web holds the cross-tenant billing login only while billing is enabled (DB-1 follow-up)", () => {
+    const production = {
+      ...deployedWeb,
+      APP_ENV: "production",
+      APP_URL: "https://app.example.com",
+      BILLING_DATABASE_URL: billingWorker.BILLING_DATABASE_URL,
+    };
+    for (const disabled of [undefined, "false", ""])
+      expect(
+        () =>
+          loadConfig(
+            { ...production, BILLING_SANDBOX_ENABLED: disabled },
+            "web",
+          ),
+        String(disabled),
+      ).toThrow("forbidden_credential_in_process: BILLING_DATABASE_URL");
+    expect(
+      loadConfig(
+        {
+          ...production,
+          BILLING_SANDBOX_ENABLED: "true",
+          STRIPE_WEBHOOK_SECRET: "whsec_x",
+        },
+        "web",
+      ).billingDatabaseUrl,
+    ).toContain("gm_production_billing");
+    // Staging keeps tolerating an unused login (billing toggled off there).
+    expect(
+      loadConfig(
+        {
+          ...deployedWeb,
+          BILLING_DATABASE_URL: billingWorker.BILLING_DATABASE_URL,
+        },
+        "web",
+      ).billingDatabaseUrl,
+    ).toBeNull();
+    // The worker is not internet-facing.
+    const { BILLING_SANDBOX_ENABLED: _on, ...idleWorker } = billingWorker;
+    expect(loadConfig(idleWorker, "worker").billingDatabaseUrl).toBeNull();
+  });
+
   it("development tolerates them", () => {
     const c = loadConfig(
       {

@@ -153,6 +153,20 @@ export function loadConfig(
     for (const name of forbiddenCredentials[kind])
       if (env[name])
         throw new ConfigError(`forbidden_credential_in_process: ${name}`);
+  // DB-1 is still open for billing: the billing login reads billing tables
+  // across tenants (gm_billing_worker policies), and web uses it only for
+  // owner billing commands while billing is enabled. Production web never
+  // holds it otherwise; the billing_requests inbox that removes it from web
+  // altogether is the account area's follow-up (RUNBOOK.md, Open follow-ups).
+  if (
+    appEnv === "production" &&
+    kind === "web" &&
+    env.BILLING_DATABASE_URL &&
+    env.BILLING_SANDBOX_ENABLED !== "true"
+  )
+    throw new ConfigError(
+      "forbidden_credential_in_process: BILLING_DATABASE_URL",
+    );
 
   const logLevel = (
     env.LOG_LEVEL ?? "info"
