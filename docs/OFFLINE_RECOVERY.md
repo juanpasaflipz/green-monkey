@@ -254,9 +254,12 @@ the screen opens, when the page becomes visible, when the connection returns and
 after each decision, then every 10 s while it has something to review and every
 30 s while it is empty (visible pages only).
 
-Wave note: excluding `offline_review` rounds from the live KDS columns is service's
-change (contract D13). Until service merges, those rounds also appear in the live
-columns, where no progress action is accepted for them.
+The KDS screen never shows a round in `offline_review` as a live ticket: it waits
+only in the lane until someone decides, and "Preparar ahora" moves it to the live
+columns of its station. Merge prerequisite: excluding `offline_review` on the server
+(`kitchenFeed`, `clearStaleRounds` and `GET /api/kitchen`) is service's change
+(contract D13) and must land with or before offline; until then the legacy
+`GET /api/kitchen` still returns those rounds and only the screen filters them out.
 
 ## Sync, retries and exactly-once
 

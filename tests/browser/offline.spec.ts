@@ -848,6 +848,11 @@ test("KDS shows offline sales in the review lane with provisional and server num
     { tenantId },
   );
   expect(status).toBe(200);
+  const kitchenPolled = () =>
+    page.waitForResponse(
+      (response) => new URL(response.url()).pathname === "/api/kitchen",
+    );
+  const polled = kitchenPolled();
   await page.goto("/app");
   const lane = page.locator(".offline-review-lane");
   await expect(lane).toContainText("Ventas sin conexión por revisar");
@@ -855,6 +860,14 @@ test("KDS shows offline sales in the review lane with provisional and server num
   // Kitchen station (the default): only the kitchen round, and a count of
   // what waits at the bar.
   await expect(cards).toHaveCount(1);
+  // OUTAGE-005 (I7): a round waiting in review is never a live ticket.
+  const server = label.split("→ ")[1]!;
+  const live = page
+    .locator(".kitchen-grid .kitchen-ticket")
+    .filter({ hasText: new RegExp(`${server}(?!\\d)`) });
+  await polled;
+  await kitchenPolled();
+  await expect(live).toHaveCount(0);
   await expect(cards).toContainText("Cocina");
   await expect(lane).toContainText(/\d+ por revisar en Barra\./);
   await expect(cards.first()).toContainText("Vendida");
@@ -878,10 +891,13 @@ test("KDS shows offline sales in the review lane with provisional and server num
     .click();
   await expect(cards).toHaveCount(1);
   await expect(cards).toContainText("Barra");
+  await expect(live).toHaveCount(0);
   await cards
     .getByRole("button", { name: "Preparar ahora", exact: true })
     .click();
   await expect(cards).toHaveCount(0);
+  // "Preparar ahora" sends it to the live KDS of its station.
+  await expect(live).toHaveCount(1);
 });
 
 test("The KDS review lane polls every 10 s with items and every 30 s while empty", async ({

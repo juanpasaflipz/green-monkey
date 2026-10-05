@@ -393,7 +393,13 @@ export function Operations({
               />
               <div className="kitchen-grid">
                 {data
-                  ?.filter((r: any) => r.station === station)
+                  ?.filter(
+                    // I7: rounds synced from offline sales wait in the review
+                    // lane above, never as live tickets (service's D13 also
+                    // excludes them on the server at merge).
+                    (r: any) =>
+                      r.station === station && r.state !== "offline_review",
+                  )
                   .map((r: any) => (
                     <article className="kitchen-ticket" key={r.id}>
                       <header>
@@ -501,9 +507,10 @@ export function Operations({
                     </article>
                   ))}
               </div>
-              {!data?.some((r: any) => r.station === station) && (
-                <Empty title={t("noOrders")} />
-              )}
+              {!data?.some(
+                (r: any) =>
+                  r.station === station && r.state !== "offline_review",
+              ) && <Empty title={t("noOrders")} />}
             </>
           )}
           {view === "cash" && manager && <CashHistory locale={locale} />}
