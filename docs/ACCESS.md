@@ -56,17 +56,39 @@ open dialogs intact; another employee's PIN starts their own session and a
 fresh workspace. The lock is remembered per session in the browser
 (`localStorage["gm-lock"]`) until a PIN unlock, a new sign-in or a sign-out, so
 a reload, a new tab or an offline restore of the cached session opens locked.
-A restore after a pause longer than the device's auto-lock (last input in
-`localStorage["gm-activity"]`) also opens locked.
+A lock in one tab also locks the other open tabs of the same session (storage
+event). A restore after a pause longer than the device's auto-lock (last input
+in `localStorage["gm-activity"]`) also opens locked.
+
+Only an unlock, a switch or "Salir" ends the lock. Browsers stop honouring a
+modal dialog's cancelled `cancel` when close requests repeat without user
+activation (Escape, Android back), so the lock (`src/features/LockScreen.tsx`)
+does not rely on it:
+- it uses `closedby="none"` where the browser supports it;
+- it cancels the Escape keydown before it becomes a close request;
+- it reopens itself on any `close`;
+- it makes every other top-level element inert while it is up: the workspace
+  and any dialog that was open when it locked.
+
+A dialog the lock itself opens (the "Salir" warnings) or one that opens on its
+own afterwards (a receipt after a slow payment) still shows above it. The PIN
+pad asks for no on-screen keyboard (`inputmode="none"`) while the keypad is
+shown.
 
 Offline, the PIN cannot be verified, so the locked employee may "Continuar como
 {name}" (idle or manual lock only) while the cached offline window is still
 valid. That soft unlock is not a PIN unlock: the lock stays remembered, a reload
 asks again, and the screen locks again as soon as the connection returns or the
 offline window ends, so the PIN is required before any online work. Switching
-user needs a connection. After a server session code (ended, expired, revoked)
-there is no soft unlock, and a revoked session is also removed from the offline
-cache.
+user needs a connection. A server session code also applies to the offline
+cache, including on a cold start before any session is shown:
+- a revoked session or device (`session_revoked`, `device_revoked`,
+  `device_not_paired`) is removed from the cache, so an offline reload shows
+  the gate;
+- an ended, expired or unknown session (`session_ended`, `session_expired`,
+  `unauthorized`) stays cached but is remembered as locked with that reason, so
+  it comes back offline only behind the lock and without a soft unlock;
+- a server code replaces an idle, manual or renew lock that is already up.
 
 ## Pairing a terminal
 
@@ -217,6 +239,11 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
   lasts only while the device is offline and its offline window is valid, and
   re-locks on reconnect, so it never reaches online commands. Clearing the
   browser's site data removes the remembered lock, but also unpairs the device.
+- The lock's resistance to Escape and forced closes is tested in Chromium (the
+  browser suite) and checked with a dialog probe in WebKit 26.6. The Android
+  back gesture was not tried on a device. Where `closedby="none"` is supported,
+  the dialog ignores the gesture, which may then navigate back. In either case
+  the remembered lock applies again when the page comes back.
 - Insider PIN guessing on a paired terminal is bounded (about 50 attempts per
   12 h per device) but not impossible against legacy 4-digit secrets.
 - Revoking a device with an open drawer leaves that drawer open with no device
@@ -244,7 +271,7 @@ This keeps the personal data proportional to the purpose (LFPDPPP 2025,
   offline-recovery suites in `npm run test:db:qualification`.
 - `npm run build && npm run test:access-http` (9 checks against the compiled
   server, with and without `DEMO_TENANT_ID`).
-- `tests/browser/access.spec.ts` (12 flows, axe at 1440 and 390, no horizontal
+- `tests/browser/access.spec.ts` (14 flows, axe at 1440 and 390, no horizontal
   overflow at 1440/1024/768/390); evidence in `docs/evidence/access-*.png`.
 - `tests/access.test.ts` and `tests/access-client.test.ts` (unit).
 
