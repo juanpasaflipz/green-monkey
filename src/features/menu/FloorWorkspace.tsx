@@ -14,6 +14,7 @@ import { api } from "../../api";
 import { translateError } from "../../i18n";
 import { Badge, Button, Empty, Field, Modal } from "../../components/ui";
 import { translator } from "./format";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 type Floor = { areas: DiningArea[]; tables: DiningTable[] };
 type Dialog =
@@ -45,6 +46,7 @@ export function FloorWorkspace({
   const [busy, setBusy] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [dialog, setDialog] = useState<(Dialog & { key: string }) | null>(null);
+  const [archiveTable, setArchiveTable] = useState<DiningTable | null>(null);
 
   async function load() {
     try {
@@ -289,11 +291,13 @@ export function FloorWorkspace({
                             }
                             aria-label={`${t(tb.archived ? "menuRestore" : "menuArchive")} ${tb.name}`}
                             onClick={() =>
-                              void run("/floor/tables/archive", {
-                                id: tb.id,
-                                expectedVersion: tb.version,
-                                archived: !tb.archived,
-                              })
+                              tb.archived
+                                ? void run("/floor/tables/archive", {
+                                    id: tb.id,
+                                    expectedVersion: tb.version,
+                                    archived: false,
+                                  })
+                                : setArchiveTable(tb)
                             }
                           >
                             {t(tb.archived ? "menuRestore" : "menuArchive")}
@@ -313,6 +317,26 @@ export function FloorWorkspace({
           })
       ) : (
         <Empty title={t("menuFloorEmpty")} />
+      )}
+      {archiveTable && (
+        <ConfirmDialog
+          title={t("menuArchiveTitle", { name: archiveTable.name })}
+          message={t("menuTableArchiveConfirm")}
+          confirmLabel={t("menuArchive")}
+          cancelLabel={t("menuCancel")}
+          danger
+          t={t}
+          onCancel={() => setArchiveTable(null)}
+          onConfirm={() => {
+            const tb = archiveTable;
+            setArchiveTable(null);
+            void run("/floor/tables/archive", {
+              id: tb.id,
+              expectedVersion: tb.version,
+              archived: true,
+            });
+          }}
+        />
       )}
       {dialog?.kind === "area" && (
         <AreaDialog

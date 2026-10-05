@@ -459,3 +459,11 @@
   border-color: var(--negative);
   background: var(--negative-bg);
 }
+
+/* Archivar sits apart from Guardar and Duplicar (OWNER-7). */
+.menu-footer-archive {
+  margin-left: auto;
+}
+.menu-confirm-actions {
+  margin-top: 16px;
+}

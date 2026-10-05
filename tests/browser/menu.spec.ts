@@ -342,6 +342,9 @@ test("manager sets up areas and tables; archived tables leave Mesas; an open che
     .filter({ hasText: `P${id} 3` })
     .getByRole("button", { name: `Archivar P${id} 3` })
     .click();
+  // Archiving a table asks first (OWNER-7).
+  dialog = page.getByRole("dialog", { name: `Archivar P${id} 3` });
+  await dialog.getByRole("button", { name: "Archivar", exact: true }).click();
   await expect(page.getByRole("status")).toHaveText("Cambios guardados");
 
   const tables = (await call(page, "/tables")).data as any[];
@@ -788,7 +791,13 @@ test('money and quantity entry: "1,200" is $1,200.00 and an ambiguous "25,50" is
       dialog.getByLabel("Precio al cliente (con IVA)"),
     ).toHaveAttribute("aria-invalid", "true");
   }
+  // Closing a changed form asks first (OWNER-5); discarding saves nothing.
   await dialog.getByRole("button", { name: "Cerrar" }).click();
+  await page
+    .getByRole("dialog", { name: "¿Descartar los cambios?" })
+    .getByRole("button", { name: "Descartar cambios", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
   const unchanged = ((await call(page, "/catalog")).data as any[]).find(
     (p) => p.name.es === name,
   );
@@ -882,6 +891,181 @@ async function setAvailable(page: Page, id: string, available: boolean) {
   });
   expect(r.status).toBe(200);
 }
+
+test("OWNER-5/OWNER-7: editors ask before dropping unsaved edits, and archiving a product or a table asks first", async ({
+  page,
+}) => {
+  const id = suffix();
+  const name = `Gringa ${id}`;
+  await login(page);
+  await openMenu(page);
+  const discard = page.getByRole("dialog", { name: "¿Descartar los cambios?" });
+
+  // A new product: Escape on a changed form asks; "Seguir editando" keeps it.
+  await page
+    .getByRole("button", { name: "Nuevo producto", exact: true })
+    .click();
+  const created = page.getByRole("dialog", { name: "Nuevo producto" });
+  await created.getByLabel("Nombre en español").fill(name);
+  await created
+    .getByRole("combobox", { name: "Categoría *", exact: true })
+    .selectOption({ label: "Tacos" });
+  await created.getByLabel("Precio al cliente (con IVA)").fill("45");
+  await page.keyboard.press("Escape");
+  await expect(discard).toContainText("Hay cambios sin guardar");
+  await discard
+    .getByRole("button", { name: "Seguir editando", exact: true })
+    .click();
+  await expect(discard).toHaveCount(0);
+  await expect(created.getByLabel("Precio al cliente (con IVA)")).toHaveValue(
+    "45",
+  );
+  // Escape pressed again and again with no click in between: the browser may
+  // stop letting the page keep the editor open, but "Seguir editando" always
+  // brings the form back with what was typed.
+  await page.keyboard.press("Escape");
+  await expect(discard).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(discard).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await discard
+    .getByRole("button", { name: "Seguir editando", exact: true })
+    .click();
+  await expect(created).toBeVisible();
+  await expect(created.getByLabel("Precio al cliente (con IVA)")).toHaveValue(
+    "45",
+  );
+  await created.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(created).toHaveCount(0);
+
+  // An unchanged editor closes at once; a changed one asks on X and on
+  // Duplicar, and discarding leaves the saved product as it was.
+  const edit = page.getByRole("dialog", { name: "Editar producto" });
+  const open = () =>
+    page.getByRole("button", { name: `Editar ${name}`, exact: true }).click();
+  await open();
+  await edit.getByRole("button", { name: "Cerrar" }).click();
+  await expect(edit).toHaveCount(0);
+  await open();
+  await edit.getByLabel("Precio al cliente (con IVA)").fill("48");
+  await edit.getByRole("button", { name: "Duplicar", exact: true }).click();
+  await expect(discard).toContainText("no pasan a la copia");
+  await discard
+    .getByRole("button", { name: "Seguir editando", exact: true })
+    .click();
+  await expect(edit.getByLabel("Precio al cliente (con IVA)")).toHaveValue(
+    "48",
+  );
+  await edit.getByRole("button", { name: "Cerrar" }).click();
+  await discard
+    .getByRole("button", { name: "Descartar cambios", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const product = ((await call(page, "/catalog")).data as any[]).find(
+    (p) => p.name.es === name,
+  );
+  expect(product.price).toBe(4500);
+
+  // Archivar asks before hiding the product from the POS and QR menu.
+  await open();
+  await edit.getByRole("button", { name: "Archivar", exact: true }).click();
+  const archive = page.getByRole("dialog", { name: `Archivar ${name}` });
+  await expect(archive).toContainText(
+    "Se ocultará del punto de venta y del menú QR",
+  );
+  await archive.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(archive).toHaveCount(0);
+  await expect(edit).toBeVisible();
+  await edit.getByRole("button", { name: "Archivar", exact: true }).click();
+  await archive.getByRole("button", { name: "Archivar", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("status")).toHaveText("Cambios guardados");
+  expect(
+    ((await call(page, "/catalog")).data as any[]).some(
+      (p) => p.name.es === name,
+    ),
+  ).toBe(false);
+
+  // Group editor: a template never silently replaces typed choices, and X
+  // asks once something was typed.
+  await page.getByRole("tab", { name: "Modificadores" }).click();
+  const newGroup = () =>
+    page
+      .getByRole("button", {
+        name: "Nuevo grupo de modificadores",
+        exact: true,
+      })
+      .click();
+  const group = page.getByRole("dialog", {
+    name: "Nuevo grupo de modificadores",
+  });
+  const templates = group.getByRole("combobox", { name: "Plantillas" });
+  await newGroup();
+  // Nothing typed yet: templates apply at once, one after another.
+  await templates.selectOption({ label: "Tortilla (maíz / harina)" });
+  await templates.selectOption({ label: "Salsa (verde / roja / sin salsa)" });
+  await expect(discard).toHaveCount(0);
+  await expect(group.getByLabel("Opción 3", { exact: true })).toBeVisible();
+  await group.getByRole("button", { name: "Cerrar" }).click();
+  await expect(group).toHaveCount(0);
+  await newGroup();
+  await group
+    .getByLabel("Nombre del grupo", { exact: true })
+    .fill(`Guisados ${id}`);
+  await group.getByLabel("Opción 1", { exact: true }).fill("Chicharrón");
+  await templates.selectOption({ label: "Salsa (verde / roja / sin salsa)" });
+  await expect(discard).toContainText("La plantilla reemplazará");
+  await discard
+    .getByRole("button", { name: "Seguir editando", exact: true })
+    .click();
+  await expect(group.getByLabel("Opción 1", { exact: true })).toHaveValue(
+    "Chicharrón",
+  );
+  await expect(templates).toHaveValue("");
+  await group.getByRole("button", { name: "Cerrar" }).click();
+  await discard
+    .getByRole("button", { name: "Descartar cambios", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  // Ingredient dialog: Escape on a typed name asks too.
+  await page.getByRole("button", { name: "Insumos", exact: true }).click();
+  await page.getByRole("button", { name: "Nuevo insumo", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Nuevo insumo" })
+    .getByLabel("Nombre del insumo")
+    .fill(`Nopal ${id}`);
+  await page.keyboard.press("Escape");
+  await discard
+    .getByRole("button", { name: "Descartar cambios", exact: true })
+    .click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  // A table is archived only after confirming.
+  const table = `Barra ${id}`;
+  const saved = await call(page, "/floor/tables/save", {
+    operationId: crypto.randomUUID(),
+    id: crypto.randomUUID(),
+    expectedVersion: 0,
+    name: table,
+    areaId: null,
+    seats: null,
+  });
+  expect(saved.status).toBe(200);
+  await page.getByRole("button", { name: "Mesas", exact: true }).click();
+  const row = page.locator(".menu-row").filter({ hasText: table });
+  await row.getByRole("button", { name: `Archivar ${table}` }).click();
+  const confirm = page.getByRole("dialog", { name: `Archivar ${table}` });
+  await expect(confirm).toContainText(
+    "Ya no se podrá elegir para nuevas órdenes",
+  );
+  await confirm.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(row).toHaveCount(1);
+  await row.getByRole("button", { name: `Archivar ${table}` }).click();
+  await confirm.getByRole("button", { name: "Archivar", exact: true }).click();
+  await expect(page.getByRole("status")).toHaveText("Cambios guardados");
+  await expect(row).toHaveCount(0);
+});
 
 test("OWNER-6: an 86 while a product is in the POS cart flags that line with Quitar; the cart never goes blank", async ({
   page,

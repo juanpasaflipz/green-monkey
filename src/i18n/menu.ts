@@ -266,6 +266,22 @@ export default defineArea({
     menuOptionPriceInvalid:
       "Escribe un precio válido, por ejemplo 15.00 (sin signo de pesos).",
     menuOptionCostInvalid: "Escribe un costo válido, por ejemplo 4.50.",
+    menuDiscardTitle: "¿Descartar los cambios?",
+    menuDiscardMessage:
+      "Hay cambios sin guardar. Si cierras ahora, se perderán.",
+    menuDiscard: "Descartar cambios",
+    menuKeepEditing: "Seguir editando",
+    menuDiscardBeforeDuplicate:
+      "Los cambios sin guardar no pasan a la copia y se perderán. Guárdalos primero si los quieres conservar.",
+    menuDiscardAndDuplicate: "Descartar y duplicar",
+    menuDiscardBeforeTemplate:
+      "La plantilla reemplazará el nombre, las reglas y las opciones que ya escribiste.",
+    menuUseTemplate: "Usar plantilla",
+    menuProductArchiveConfirm:
+      "Se ocultará del punto de venta y del menú QR. Puedes restaurarlo en Mostrar archivados.",
+    menuArchiveDropsEdits: "Los cambios sin guardar se descartarán.",
+    menuTableArchiveConfirm:
+      "Ya no se podrá elegir para nuevas órdenes. Puedes restaurarla en Mostrar archivados.",
     menuLineUnavailable: "Ya no está disponible. Quítalo de la orden.",
     menuLineChoicesChanged:
       "Sus opciones cambiaron. Quítalo y vuelve a agregarlo.",
@@ -533,6 +549,22 @@ export default defineArea({
     menuOptionPriceInvalid:
       "Enter a valid price, for example 15.00 (no currency sign).",
     menuOptionCostInvalid: "Enter a valid cost, for example 4.50.",
+    menuDiscardTitle: "Discard changes?",
+    menuDiscardMessage:
+      "There are unsaved changes. If you close now, they will be lost.",
+    menuDiscard: "Discard changes",
+    menuKeepEditing: "Keep editing",
+    menuDiscardBeforeDuplicate:
+      "Unsaved changes do not carry into the copy and will be lost. Save them first if you want to keep them.",
+    menuDiscardAndDuplicate: "Discard and duplicate",
+    menuDiscardBeforeTemplate:
+      "The template will replace the name, rules and choices you already entered.",
+    menuUseTemplate: "Use template",
+    menuProductArchiveConfirm:
+      "It will be hidden from the POS and the QR menu. You can restore it under Show archived.",
+    menuArchiveDropsEdits: "Unsaved changes will be discarded.",
+    menuTableArchiveConfirm:
+      "It can no longer be chosen for new orders. You can restore it under Show archived.",
     menuLineUnavailable: "No longer available. Remove it from the order.",
     menuLineChoicesChanged: "Its choices changed. Remove it and add it again.",
   },

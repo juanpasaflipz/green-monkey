@@ -17,6 +17,7 @@ import { api } from "../../api";
 import { strings, translateError } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
 import { CategoryDialog } from "./CategoryDialog";
+import { ConfirmDialog, useDiscardGuard } from "./ConfirmDialog";
 import { GroupEditor } from "./GroupEditor";
 import { RecipeEditor } from "./RecipeEditor";
 import {
@@ -125,6 +126,27 @@ export function ProductEditor({
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dialog, setDialog] = useState<"category" | "group" | null>(null);
+  const [confirmArchive, setConfirmArchive] = useState(false);
+  // Unsaved edits: the form differs from how it opened. Live availability of
+  // an existing product is saved at once, so it never counts.
+  const snapshot = JSON.stringify([
+    es,
+    en,
+    categoryId,
+    kind,
+    openAmount,
+    price,
+    openMax,
+    station,
+    product ? null : available,
+    groupIds,
+    recipe,
+    recipeValid,
+    cost,
+  ]);
+  const [opened] = useState(snapshot);
+  const dirty = snapshot !== opened;
+  const discard = useDiscardGuard(dirty, t);
 
   const linked = groupIds
     .map((id) => groups.find((g) => g.id === id))
@@ -252,7 +274,7 @@ export function ProductEditor({
       <Modal
         wide
         title={title}
-        close={onClose}
+        close={() => discard.guard(onClose)}
         closeLabel={t("close")}
         footer={
           <div className="menu-editor-footer">
@@ -275,15 +297,29 @@ export function ProductEditor({
                 {t("menuSave")}
               </Button>
               {product && (
-                <Button disabled={busy} onClick={() => onDuplicate(product)}>
+                <Button
+                  disabled={busy}
+                  onClick={() =>
+                    discard.guard(
+                      () => onDuplicate(product),
+                      t("menuDiscardBeforeDuplicate"),
+                      t("menuDiscardAndDuplicate"),
+                    )
+                  }
+                >
                   {t("menuDuplicate")}
                 </Button>
               )}
               {product && (
                 <Button
                   variant={product.archived ? "secondary" : "ghost"}
+                  className="menu-footer-archive"
                   disabled={busy || !online}
-                  onClick={() => void archive(!product.archived)}
+                  onClick={() =>
+                    product.archived
+                      ? void archive(false)
+                      : setConfirmArchive(true)
+                  }
                 >
                   {t(product.archived ? "menuRestore" : "menuArchive")}
                 </Button>
@@ -300,6 +336,7 @@ export function ProductEditor({
             if (saved) onSaved(saved);
           }}
         >
+          {discard.anchor}
           {product && !product.archived && (
             <label className="menu-switch menu-header-switch">
               <input
@@ -585,6 +622,25 @@ export function ProductEditor({
           )}
         </form>
       </Modal>
+      {discard.dialog}
+      {confirmArchive && product && (
+        <ConfirmDialog
+          title={t("menuArchiveTitle", { name: product.name[locale] })}
+          message={
+            t("menuProductArchiveConfirm") +
+            (dirty ? ` ${t("menuArchiveDropsEdits")}` : "")
+          }
+          confirmLabel={t("menuArchive")}
+          cancelLabel={t("menuCancel")}
+          danger
+          t={t}
+          onCancel={() => setConfirmArchive(false)}
+          onConfirm={() => {
+            setConfirmArchive(false);
+            void archive(true);
+          }}
+        />
+      )}
       {dialog === "category" && (
         <CategoryDialog
           locale={locale}

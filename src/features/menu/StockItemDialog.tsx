@@ -8,6 +8,7 @@ import { Button, Field, Modal } from "../../components/ui";
 import { decimalInput, translator, trimDecimal } from "./format";
 import { unitLabel } from "./RecipeEditor";
 import { SavesAsQuantity } from "./SavesAs";
+import { useDiscardGuard } from "./ConfirmDialog";
 
 const unitKeys = {
   g: "menuUnitG",
@@ -50,6 +51,17 @@ export function StockItemDialog({
   const [error, setError] = useState("");
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Unsaved edits: the form differs from how it opened.
+  const snapshot = JSON.stringify([
+    name,
+    unit,
+    kind,
+    threshold,
+    parLevel,
+    opening,
+  ]);
+  const [opened] = useState(snapshot);
+  const discard = useDiscardGuard(snapshot !== opened, t);
   const unitLocked =
     !!item &&
     (item.hasMovements ||
@@ -104,104 +116,108 @@ export function StockItemDialog({
       </p>
     ) : null;
   return (
-    <Modal
-      title={t(item ? "menuStockEdit" : "menuStockNew")}
-      close={onClose}
-      closeLabel={t("close")}
-    >
-      <form
-        className="menu-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void save();
-        }}
+    <>
+      <Modal
+        title={t(item ? "menuStockEdit" : "menuStockNew")}
+        close={() => discard.guard(onClose)}
+        closeLabel={t("close")}
       >
-        <Field label={`${t("menuStockName")} *`}>
-          <input
-            value={name}
-            maxLength={80}
-            required
-            aria-invalid={bad("name")}
-            onChange={(e) => setName(e.target.value)}
-          />
-        </Field>
-        {hint("name")}
-        <Field label={t("menuStockUnit")}>
-          <select
-            value={unit}
-            disabled={unitLocked}
-            aria-describedby={unitLocked ? "stock-unit-locked" : undefined}
-            onChange={(e) => setUnit(e.target.value)}
-          >
-            {stockUnits.map((u) => (
-              <option key={u} value={u}>
-                {t(unitKeys[u])}
-              </option>
-            ))}
-          </select>
-        </Field>
-        {unitLocked && (
-          <p id="stock-unit-locked" className="tiny muted">
-            {t("menuStockUnitLockedHint")}
-          </p>
-        )}
-        <Field label={t("menuStockKind")}>
-          <select value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="raw">{t("menuStockRaw")}</option>
-            <option value="prepared">{t("menuStockPrepared")}</option>
-          </select>
-        </Field>
-        <div className="form-grid">
-          <Field label={t("menuStockReorder")}>
+        <form
+          className="menu-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+        >
+          {discard.anchor}
+          <Field label={`${t("menuStockName")} *`}>
             <input
-              inputMode="decimal"
-              value={threshold}
-              aria-invalid={bad("threshold")}
-              onChange={(e) => setThreshold(e.target.value)}
+              value={name}
+              maxLength={80}
+              required
+              aria-invalid={bad("name")}
+              onChange={(e) => setName(e.target.value)}
             />
           </Field>
-          <Field label={t("menuStockPar")}>
-            <input
-              inputMode="decimal"
-              value={parLevel}
-              aria-invalid={bad("parLevel")}
-              onChange={(e) => setParLevel(e.target.value)}
-            />
+          {hint("name")}
+          <Field label={t("menuStockUnit")}>
+            <select
+              value={unit}
+              disabled={unitLocked}
+              aria-describedby={unitLocked ? "stock-unit-locked" : undefined}
+              onChange={(e) => setUnit(e.target.value)}
+            >
+              {stockUnits.map((u) => (
+                <option key={u} value={u}>
+                  {t(unitKeys[u])}
+                </option>
+              ))}
+            </select>
           </Field>
-        </div>
-        <SavesAsQuantity text={threshold} unit={unitLabel(unit, t)} t={t} />
-        <SavesAsQuantity text={parLevel} unit={unitLabel(unit, t)} t={t} />
-        {hint("threshold") ?? hint("parLevel")}
-        {!item && (
-          <>
-            <Field label={t("menuStockOpening")}>
+          {unitLocked && (
+            <p id="stock-unit-locked" className="tiny muted">
+              {t("menuStockUnitLockedHint")}
+            </p>
+          )}
+          <Field label={t("menuStockKind")}>
+            <select value={kind} onChange={(e) => setKind(e.target.value)}>
+              <option value="raw">{t("menuStockRaw")}</option>
+              <option value="prepared">{t("menuStockPrepared")}</option>
+            </select>
+          </Field>
+          <div className="form-grid">
+            <Field label={t("menuStockReorder")}>
               <input
                 inputMode="decimal"
-                value={opening}
-                aria-invalid={bad("openingQuantity")}
-                onChange={(e) => setOpening(e.target.value)}
+                value={threshold}
+                aria-invalid={bad("threshold")}
+                onChange={(e) => setThreshold(e.target.value)}
               />
             </Field>
-            <SavesAsQuantity text={opening} unit={unitLabel(unit, t)} t={t} />
-            {hint("openingQuantity")}
-          </>
-        )}
-        {error && (
-          <div role="alert" className="error menu-alert">
-            <span>{error}</span>
-            {stale && <Button onClick={onReload}>{t("menuReload")}</Button>}
+            <Field label={t("menuStockPar")}>
+              <input
+                inputMode="decimal"
+                value={parLevel}
+                aria-invalid={bad("parLevel")}
+                onChange={(e) => setParLevel(e.target.value)}
+              />
+            </Field>
           </div>
-        )}
-        {!online && <p className="muted">{t("menuOfflineHint")}</p>}
-        <Button
-          type="submit"
-          variant="primary"
-          className="full"
-          disabled={busy || !online}
-        >
-          {t("menuSave")}
-        </Button>
-      </form>
-    </Modal>
+          <SavesAsQuantity text={threshold} unit={unitLabel(unit, t)} t={t} />
+          <SavesAsQuantity text={parLevel} unit={unitLabel(unit, t)} t={t} />
+          {hint("threshold") ?? hint("parLevel")}
+          {!item && (
+            <>
+              <Field label={t("menuStockOpening")}>
+                <input
+                  inputMode="decimal"
+                  value={opening}
+                  aria-invalid={bad("openingQuantity")}
+                  onChange={(e) => setOpening(e.target.value)}
+                />
+              </Field>
+              <SavesAsQuantity text={opening} unit={unitLabel(unit, t)} t={t} />
+              {hint("openingQuantity")}
+            </>
+          )}
+          {error && (
+            <div role="alert" className="error menu-alert">
+              <span>{error}</span>
+              {stale && <Button onClick={onReload}>{t("menuReload")}</Button>}
+            </div>
+          )}
+          {!online && <p className="muted">{t("menuOfflineHint")}</p>}
+          <Button
+            type="submit"
+            variant="primary"
+            className="full"
+            disabled={busy || !online}
+          >
+            {t("menuSave")}
+          </Button>
+        </form>
+      </Modal>
+      {discard.dialog}
+    </>
   );
 }

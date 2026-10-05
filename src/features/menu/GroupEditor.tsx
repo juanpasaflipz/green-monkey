@@ -20,8 +20,32 @@ import {
   type GroupDraftOption,
 } from "./groupTemplates";
 import { RecipeEditor } from "./RecipeEditor";
+import { useDiscardGuard } from "./ConfirmDialog";
 
 type Saved = { group: MenuGroup; recompiled: number };
+
+/**
+ * What the person typed, for the unsaved-changes check. Choice availability
+ * is saved at once, so it never counts; a recipe row still being typed does.
+ */
+function draftSnapshot(
+  draft: GroupDraft,
+  minText: string,
+  maxText: string,
+  recipeValid: Record<string, boolean>,
+) {
+  return JSON.stringify([
+    draft.es,
+    draft.en,
+    draft.repeat,
+    draft.options.map((o) => [o.id, o.es, o.en, o.price, o.cost, o.recipe]),
+    minText,
+    maxText,
+    Object.keys(recipeValid)
+      .filter((id) => !recipeValid[id])
+      .sort(),
+  ]);
+}
 
 function fromGroup(g: MenuGroup, currency: string): GroupDraft {
   return {
@@ -91,6 +115,24 @@ export function GroupEditor({
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState(false);
   const [templateKey, setTemplateKey] = useState("");
+  // Unsaved edits are measured from how the form opened, or from the last
+  // template applied (a template alone is nothing the person typed).
+  const snapshot = draftSnapshot(draft, minText, maxText, recipeValid);
+  const [baseline, setBaseline] = useState(snapshot);
+  const dirty = snapshot !== baseline;
+  const discard = useDiscardGuard(dirty, t);
+  function applyTemplate(key: string) {
+    const template = groupTemplates.find((x) => x.key === key);
+    if (!template) return;
+    setTemplateKey(key);
+    const next = template.build();
+    setDraft(next);
+    setMinText(String(next.min));
+    setMaxText(String(next.max));
+    setRecipeValid({});
+    setErrors(new Set());
+    setBaseline(draftSnapshot(next, String(next.min), String(next.max), {}));
+  }
 
   const setOption = (id: string, patch: Partial<GroupDraftOption>) =>
     setDraft((d) => ({
@@ -206,300 +248,312 @@ export function GroupEditor({
 
   const bad = (key: string) => (errors.has(key) ? true : undefined);
   return (
-    <Modal
-      wide
-      title={t(group ? "menuEditGroup" : "menuNewGroup")}
-      close={onClose}
-      closeLabel={t("close")}
-      footer={
-        <div className="menu-editor-footer">
-          {error && (
-            <div role="alert" className="error menu-alert">
-              <span>{error}</span>
-              {stale && <Button onClick={onReload}>{t("menuReload")}</Button>}
-            </div>
-          )}
-          {group && group.usedBy.length > 0 && (
-            <p className="tiny muted">
-              {t("menuGroupRecompile", { n: group.usedBy.length })}
-            </p>
-          )}
-          {!online && <p className="tiny muted">{t("menuOfflineHint")}</p>}
-          <Button
-            variant="primary"
-            disabled={busy || !online}
-            onClick={() => void save()}
-          >
-            {t("menuSave")}
-          </Button>
-        </div>
-      }
-    >
-      <form
-        className="menu-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          void save();
-        }}
-      >
-        {!group && (
-          <Field label={t("menuTemplates")}>
-            <select
-              value={templateKey}
-              onChange={(e) => {
-                setTemplateKey(e.target.value);
-                const template = groupTemplates.find(
-                  (x) => x.key === e.target.value,
-                );
-                if (!template) return;
-                const next = template.build();
-                setDraft(next);
-                setMinText(String(next.min));
-                setMaxText(String(next.max));
-                setErrors(new Set());
-              }}
+    <>
+      <Modal
+        wide
+        title={t(group ? "menuEditGroup" : "menuNewGroup")}
+        close={() => discard.guard(onClose)}
+        closeLabel={t("close")}
+        footer={
+          <div className="menu-editor-footer">
+            {error && (
+              <div role="alert" className="error menu-alert">
+                <span>{error}</span>
+                {stale && <Button onClick={onReload}>{t("menuReload")}</Button>}
+              </div>
+            )}
+            {group && group.usedBy.length > 0 && (
+              <p className="tiny muted">
+                {t("menuGroupRecompile", { n: group.usedBy.length })}
+              </p>
+            )}
+            {!online && <p className="tiny muted">{t("menuOfflineHint")}</p>}
+            <Button
+              variant="primary"
+              disabled={busy || !online}
+              onClick={() => void save()}
             >
-              <option value="">{t("menuTemplateNone")}</option>
-              {groupTemplates.map((x) => (
-                <option key={x.key} value={x.key}>
-                  {t(x.label)}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
-        <div className="form-grid">
-          <Field label={t("menuGroupName")}>
+              {t("menuSave")}
+            </Button>
+          </div>
+        }
+      >
+        <form
+          className="menu-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void save();
+          }}
+        >
+          {discard.anchor}
+          {!group && (
+            <Field label={t("menuTemplates")}>
+              <select
+                value={templateKey}
+                onChange={(e) => {
+                  const key = e.target.value;
+                  if (!key) return setTemplateKey("");
+                  // A template replaces the whole form: ask before dropping
+                  // what the person already typed.
+                  discard.guard(
+                    () => applyTemplate(key),
+                    t("menuDiscardBeforeTemplate"),
+                    t("menuUseTemplate"),
+                  );
+                }}
+              >
+                <option value="">{t("menuTemplateNone")}</option>
+                {groupTemplates.map((x) => (
+                  <option key={x.key} value={x.key}>
+                    {t(x.label)}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+          <div className="form-grid">
+            <Field label={t("menuGroupName")}>
+              <input
+                value={draft.es}
+                maxLength={80}
+                required
+                aria-invalid={bad("name")}
+                onChange={(e) => setDraft({ ...draft, es: e.target.value })}
+              />
+            </Field>
+            {errors.has("name") && (
+              <p role="alert" className="error tiny menu-grid-full">
+                {t("menuNameInvalid")}
+              </p>
+            )}
+            <Field label={t("menuGroupNameEn")}>
+              <input
+                value={draft.en}
+                maxLength={80}
+                onChange={(e) => setDraft({ ...draft, en: e.target.value })}
+              />
+            </Field>
+            <Field label={t("menuGroupMin")}>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={30}
+                value={minText}
+                aria-invalid={bad("range")}
+                onChange={(e) => setMinText(e.target.value)}
+              />
+            </Field>
+            <Field label={t("menuGroupMax")}>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={30}
+                value={maxText}
+                aria-invalid={
+                  errors.has("range") || errors.has("maxOptions")
+                    ? true
+                    : undefined
+                }
+                onChange={(e) => setMaxText(e.target.value)}
+              />
+            </Field>
+          </div>
+          <label className="option">
             <input
-              value={draft.es}
-              maxLength={80}
-              required
-              aria-invalid={bad("name")}
-              onChange={(e) => setDraft({ ...draft, es: e.target.value })}
+              type="checkbox"
+              checked={draft.repeat}
+              onChange={(e) => setDraft({ ...draft, repeat: e.target.checked })}
             />
-          </Field>
-          {errors.has("name") && (
-            <p role="alert" className="error tiny menu-grid-full">
-              {t("menuNameInvalid")}
+            <span>{t("menuGroupRepeat")}</span>
+          </label>
+          <p className="muted" aria-live="polite">
+            {rule ? t("menuRule", { rule }) : ""}
+          </p>
+          {errors.has("range") && (
+            <p role="alert" className="error tiny">
+              {t("menuGroupRangeInvalid")}
             </p>
           )}
-          <Field label={t("menuGroupNameEn")}>
-            <input
-              value={draft.en}
-              maxLength={80}
-              onChange={(e) => setDraft({ ...draft, en: e.target.value })}
-            />
-          </Field>
-          <Field label={t("menuGroupMin")}>
-            <input
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={30}
-              value={minText}
-              aria-invalid={bad("range")}
-              onChange={(e) => setMinText(e.target.value)}
-            />
-          </Field>
-          <Field label={t("menuGroupMax")}>
-            <input
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={30}
-              value={maxText}
-              aria-invalid={
-                errors.has("range") || errors.has("maxOptions")
-                  ? true
-                  : undefined
-              }
-              onChange={(e) => setMaxText(e.target.value)}
-            />
-          </Field>
-        </div>
-        <label className="option">
-          <input
-            type="checkbox"
-            checked={draft.repeat}
-            onChange={(e) => setDraft({ ...draft, repeat: e.target.checked })}
-          />
-          <span>{t("menuGroupRepeat")}</span>
-        </label>
-        <p className="muted" aria-live="polite">
-          {rule ? t("menuRule", { rule }) : ""}
-        </p>
-        {errors.has("range") && (
-          <p role="alert" className="error tiny">
-            {t("menuGroupRangeInvalid")}
-          </p>
-        )}
-        {errors.has("maxOptions") && (
-          <p role="alert" className="error tiny">
-            {t("menuGroupMaxAboveOptions", { n: draft.options.length })}
-          </p>
-        )}
-        {forcedExtra && (
-          <p className="warning-panel tiny">{t("menuGroupForcedExtra")}</p>
-        )}
-        <fieldset className="menu-options">
-          <legend>{t("menuOptions")}</legend>
-          {draft.options.map((o, index) => {
-            const n = index + 1;
-            const optionErrors = (
-              [
-                ["name", t("menuOptionNameInvalid")],
-                ["duplicate", t("menuOptionNameDuplicate")],
-                ["price", t("menuOptionPriceInvalid")],
-                ["cost", t("menuOptionCostInvalid")],
-                ["recipe", translateError("invalid_recipe", locale)],
-              ] as const
-            ).filter(([k]) => errors.has(`${k}:${o.id}`));
-            return (
-              <div className="menu-option-row" key={o.id}>
-                <div className="form-grid">
-                  <Field label={t("menuOptionName", { n })}>
-                    <input
-                      value={o.es}
-                      maxLength={80}
-                      required
-                      aria-invalid={
-                        errors.has(`name:${o.id}`) ||
-                        errors.has(`duplicate:${o.id}`)
-                          ? true
-                          : undefined
-                      }
-                      onChange={(e) => setOption(o.id, { es: e.target.value })}
-                    />
-                  </Field>
-                  <Field label={t("menuOptionNameEn", { n })}>
-                    <input
-                      value={o.en}
-                      maxLength={80}
-                      onChange={(e) => setOption(o.id, { en: e.target.value })}
-                    />
-                  </Field>
-                  <Field label={t("menuOptionPrice", { n })}>
-                    <input
-                      inputMode="decimal"
-                      value={o.price}
-                      aria-invalid={bad(`price:${o.id}`)}
-                      onChange={(e) =>
-                        setOption(o.id, { price: e.target.value })
-                      }
-                    />
-                  </Field>
-                  {pro && (
-                    <Field label={t("menuOptionCost", { n })}>
+          {errors.has("maxOptions") && (
+            <p role="alert" className="error tiny">
+              {t("menuGroupMaxAboveOptions", { n: draft.options.length })}
+            </p>
+          )}
+          {forcedExtra && (
+            <p className="warning-panel tiny">{t("menuGroupForcedExtra")}</p>
+          )}
+          <fieldset className="menu-options">
+            <legend>{t("menuOptions")}</legend>
+            {draft.options.map((o, index) => {
+              const n = index + 1;
+              const optionErrors = (
+                [
+                  ["name", t("menuOptionNameInvalid")],
+                  ["duplicate", t("menuOptionNameDuplicate")],
+                  ["price", t("menuOptionPriceInvalid")],
+                  ["cost", t("menuOptionCostInvalid")],
+                  ["recipe", translateError("invalid_recipe", locale)],
+                ] as const
+              ).filter(([k]) => errors.has(`${k}:${o.id}`));
+              return (
+                <div className="menu-option-row" key={o.id}>
+                  <div className="form-grid">
+                    <Field label={t("menuOptionName", { n })}>
                       <input
-                        inputMode="decimal"
-                        value={o.cost}
-                        aria-invalid={bad(`cost:${o.id}`)}
+                        value={o.es}
+                        maxLength={80}
+                        required
+                        aria-invalid={
+                          errors.has(`name:${o.id}`) ||
+                          errors.has(`duplicate:${o.id}`)
+                            ? true
+                            : undefined
+                        }
                         onChange={(e) =>
-                          setOption(o.id, { cost: e.target.value })
+                          setOption(o.id, { es: e.target.value })
                         }
                       />
                     </Field>
-                  )}
-                </div>
-                <SavesAsAmount
-                  text={o.price}
-                  exponent={exponent}
-                  format={format}
-                  t={t}
-                  onlyGrouped
-                />
-                {pro && (
+                    <Field label={t("menuOptionNameEn", { n })}>
+                      <input
+                        value={o.en}
+                        maxLength={80}
+                        onChange={(e) =>
+                          setOption(o.id, { en: e.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field label={t("menuOptionPrice", { n })}>
+                      <input
+                        inputMode="decimal"
+                        value={o.price}
+                        aria-invalid={bad(`price:${o.id}`)}
+                        onChange={(e) =>
+                          setOption(o.id, { price: e.target.value })
+                        }
+                      />
+                    </Field>
+                    {pro && (
+                      <Field label={t("menuOptionCost", { n })}>
+                        <input
+                          inputMode="decimal"
+                          value={o.cost}
+                          aria-invalid={bad(`cost:${o.id}`)}
+                          onChange={(e) =>
+                            setOption(o.id, { cost: e.target.value })
+                          }
+                        />
+                      </Field>
+                    )}
+                  </div>
                   <SavesAsAmount
-                    text={o.cost}
+                    text={o.price}
                     exponent={exponent}
                     format={format}
                     t={t}
                     onlyGrouped
                   />
-                )}
-                {pro ? (
-                  <details className="menu-option-recipe">
-                    <summary>
-                      {t("menuOptionRecipe")}
-                      {o.recipe.length ? ` · ${o.recipe.length}` : ""}
-                    </summary>
-                    <RecipeEditor
-                      value={o.recipe}
-                      stockItems={payload.stockItems}
-                      locale={locale}
-                      onChange={(recipe, valid) => {
-                        setOption(o.id, { recipe });
-                        setRecipeValid((v) => ({ ...v, [o.id]: valid }));
-                      }}
+                  {pro && (
+                    <SavesAsAmount
+                      text={o.cost}
+                      exponent={exponent}
+                      format={format}
+                      t={t}
+                      onlyGrouped
                     />
-                  </details>
-                ) : (
-                  <p className="tiny muted">
-                    {t("menuOptionRecipe")} · {t("menuProRequired")}
-                  </p>
-                )}
-                {optionErrors.map(([key, message]) => (
-                  <p role="alert" className="error tiny" key={key}>
-                    {message}
-                  </p>
-                ))}
-                <div className="row wrap menu-row-actions">
-                  {o.saved && group && (
-                    <label className="menu-switch">
-                      <input
-                        type="checkbox"
-                        role="switch"
-                        checked={o.available}
-                        disabled={!online}
-                        aria-label={t("menuAvailableSwitch", { name: o.es })}
-                        onChange={(e) => void toggleOption(o, e.target.checked)}
-                      />
-                      <span aria-hidden="true">{t("menuAvailable")}</span>
-                    </label>
                   )}
-                  <Button
-                    variant="ghost"
-                    disabled={index === 0}
-                    aria-label={t("menuMoveOptionUp", { n })}
-                    onClick={() => move(index, -1)}
-                  >
-                    ↑
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={index === draft.options.length - 1}
-                    aria-label={t("menuMoveOptionDown", { n })}
-                    onClick={() => move(index, 1)}
-                  >
-                    ↓
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={draft.options.length <= 1}
-                    aria-label={t("menuRemoveOption", { n })}
-                    onClick={() =>
-                      setDraft({
-                        ...draft,
-                        options: draft.options.filter((x) => x.id !== o.id),
-                      })
-                    }
-                  >
-                    ×
-                  </Button>
+                  {pro ? (
+                    <details className="menu-option-recipe">
+                      <summary>
+                        {t("menuOptionRecipe")}
+                        {o.recipe.length ? ` · ${o.recipe.length}` : ""}
+                      </summary>
+                      <RecipeEditor
+                        value={o.recipe}
+                        stockItems={payload.stockItems}
+                        locale={locale}
+                        onChange={(recipe, valid) => {
+                          setOption(o.id, { recipe });
+                          setRecipeValid((v) => ({ ...v, [o.id]: valid }));
+                        }}
+                      />
+                    </details>
+                  ) : (
+                    <p className="tiny muted">
+                      {t("menuOptionRecipe")} · {t("menuProRequired")}
+                    </p>
+                  )}
+                  {optionErrors.map(([key, message]) => (
+                    <p role="alert" className="error tiny" key={key}>
+                      {message}
+                    </p>
+                  ))}
+                  <div className="row wrap menu-row-actions">
+                    {o.saved && group && (
+                      <label className="menu-switch">
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          checked={o.available}
+                          disabled={!online}
+                          aria-label={t("menuAvailableSwitch", { name: o.es })}
+                          onChange={(e) =>
+                            void toggleOption(o, e.target.checked)
+                          }
+                        />
+                        <span aria-hidden="true">{t("menuAvailable")}</span>
+                      </label>
+                    )}
+                    <Button
+                      variant="ghost"
+                      disabled={index === 0}
+                      aria-label={t("menuMoveOptionUp", { n })}
+                      onClick={() => move(index, -1)}
+                    >
+                      ↑
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={index === draft.options.length - 1}
+                      aria-label={t("menuMoveOptionDown", { n })}
+                      onClick={() => move(index, 1)}
+                    >
+                      ↓
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={draft.options.length <= 1}
+                      aria-label={t("menuRemoveOption", { n })}
+                      onClick={() =>
+                        setDraft({
+                          ...draft,
+                          options: draft.options.filter((x) => x.id !== o.id),
+                        })
+                      }
+                    >
+                      ×
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
-          <Button
-            disabled={draft.options.length >= 50}
-            onClick={() =>
-              setDraft({ ...draft, options: [...draft.options, draftOption()] })
-            }
-          >
-            {t("menuAddOption")}
-          </Button>
-        </fieldset>
-      </form>
-    </Modal>
+              );
+            })}
+            <Button
+              disabled={draft.options.length >= 50}
+              onClick={() =>
+                setDraft({
+                  ...draft,
+                  options: [...draft.options, draftOption()],
+                })
+              }
+            >
+              {t("menuAddOption")}
+            </Button>
+          </fieldset>
+        </form>
+      </Modal>
+      {discard.dialog}
+    </>
   );
 }
