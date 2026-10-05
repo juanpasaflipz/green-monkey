@@ -109,6 +109,11 @@ export function Operations({
     }
   }
   const manager = ["owner", "manager"].includes(session.role);
+  // Same stock quantity format as menu's Insumos history (up to 6 decimals).
+  const stockQuantity = new Intl.NumberFormat(
+    locale === "es" ? "es-MX" : "en-US",
+    { maximumFractionDigits: 6 },
+  );
   return (
     <>
       <div className="section-title">
@@ -502,7 +507,19 @@ export function Operations({
                       : operationLabel(r.operation, locale)}
                     {r.reason && <small>{r.reason}</small>}
                   </span>
-                  <strong>{r.quantity ?? ""}</strong>
+                  <strong>
+                    {r.quantity ?? ""}
+                    {r.cause !== undefined && (
+                      // menu (025) §2.10: the ledger trigger's balance after
+                      // this movement; null for movements recorded before 025.
+                      <small>
+                        {t("menuStockBalance")}:{" "}
+                        {r.balance_after == null
+                          ? "—"
+                          : stockQuantity.format(Number(r.balance_after))}
+                      </small>
+                    )}
+                  </strong>
                   <time>
                     {new Date(r.created_at).toLocaleString(locale, {
                       timeZone: session.restaurant.timezone,

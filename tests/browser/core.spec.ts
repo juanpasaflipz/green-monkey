@@ -220,6 +220,17 @@ test("inventory receipt, count conflict-safe adjustment and owner drilldown", as
     .getByRole("button", { name: "Guardar", exact: true })
     .click();
   await expect(stock.locator(".large-money")).toHaveText("900");
+  // menu (025) §2.10: the movement history shows the ledger balance after
+  // each movement; the newest movement is the count that set it to 900.
+  await stock
+    .getByRole("button", { name: "Ver movimientos", exact: true })
+    .click();
+  const movements = page.getByRole("dialog");
+  await expect(movements.locator(".report-row").first()).toContainText(
+    "Saldo: 900",
+  );
+  await movements.getByRole("button", { name: "Cerrar", exact: true }).click();
+  await expect(movements).not.toBeVisible();
   await page.getByRole("button", { name: "Hoy", exact: true }).click();
   await expect(page.locator(".metric-grid")).toBeVisible();
   await page.screenshot({ path: "docs/evidence/today-1440.png" });
