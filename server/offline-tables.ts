@@ -83,6 +83,21 @@ async function writableOrder(tx: Tx, orderId: string) {
   return row;
 }
 
+/**
+ * A check its tenders already cover takes no offline round (§2.3, §4.4.2): the
+ * device refuses it as offline_check_paid, and a round made against a stale
+ * copy goes to a manager instead of silently reopening a paid check. Service's
+ * check_closed (and fiscal's fiscal_ticket_issued) give the same result at
+ * merge; this keeps the in-wave behaviour identical.
+ */
+async function assertTakesRounds(tx: Tx, order: Record<string, unknown>) {
+  const [row] =
+    await tx`select coalesce(sum(amount),0)::int as paid from tenders where order_id=${order.id as string}`;
+  const total = Number(order.total);
+  if (total > 0 && row!.paid >= total)
+    throw new DomainError("offline_order_closed", 409);
+}
+
 appliers.order = async (tx, s, p, ctx) => {
   const record = p as OfflineOrderV3;
   const { orderId, reused } = await resolveOrCreateOrder(tx, s, record, ctx);
@@ -124,6 +139,7 @@ appliers.round = async (tx, s, p, ctx) => {
     record.expectedTotal,
   );
   const order = await writableOrder(tx, orderId);
+  await assertTakesRounds(tx, order);
   let roundNumber: number;
   try {
     // Additive: an offline round needs no version check, it only appends.

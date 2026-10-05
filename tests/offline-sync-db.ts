@@ -1621,6 +1621,24 @@ try {
     "offline_payment_exceeds_due",
   );
   assert.equal(await count("tenders", "order_id=$2", paidTab.id), 1);
+  // §2.3 / §4.4.2: a round made against a stale copy of a check that is now
+  // paid never reopens it; it goes to a manager.
+  const paidTabTotal = paidTab.total;
+  await expectCode(
+    run((tx) =>
+      syncOfflineRecord(
+        tx,
+        s1,
+        roundRecord(s1, { orderId: paidTab.id }, [line(ids.drink)]),
+      ),
+    ),
+    "offline_order_closed",
+  );
+  assert.equal(
+    (await run((tx) => getOrder(tx, paidTab.id))).total,
+    paidTabTotal,
+    "the paid check keeps its total",
+  );
   // A cancelled order can never hold the money: financial-only recovery.
   const cancelledCash = paymentRecord(s1, { orderId: cancelled.id }, 50);
   const cancelledReview = await run((tx) =>
