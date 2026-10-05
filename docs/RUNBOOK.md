@@ -34,7 +34,7 @@ acknowledged a critical alert within 15 minutes during service hours
 | `jobs_dead_<kind>` (warning) | ntfy, from the web jobs runner | a job exhausted 8 attempts; see `GET /api/jobs` as a manager |
 | `billing_review` / `billing_retrying` (warning) | ntfy, from the worker | billing operations need a person / keep failing |
 | `retention_failed` (warning) | ntfy, from the worker's 15-minute retention or the deploy's preDeploy pass | deleting expired OAuth attempts or old done/dead jobs failed (`tables=` names which); lock-timeout skips do not alert. Check `@message:retention_table_failed` in the worker logs; the next run retries |
-| Uptime workflow failure | ntfy + GitHub issue `ops-alert: production` | `/api/ops/status` not ok or degraded, or the last backup is older than 26 h |
+| Uptime workflow failure | ntfy + GitHub issue `ops-alert: production` | `/api/ops/status` not ok or degraded, or the last successful production backup run is older than 26 h |
 | Backup workflow failure | ntfy + GitHub issue `ops-alert: <env>` | the nightly dump failed |
 | Railway deploy failed/crashed | ntfy (Railway webhook, manual setup below) | a deploy or a running instance failed |
 

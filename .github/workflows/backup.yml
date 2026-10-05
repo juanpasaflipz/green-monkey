@@ -1,4 +1,7 @@
 name: Backup
+# The run name carries the environment, so the uptime workflow can tell a
+# production backup from a staging one (OPS-R7).
+run-name: Backup ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
 # Encrypted off-platform logical backups (DB-2/OPS-5): production daily at
 # 03:30 America/Mexico_City (09:30 UTC), staging weekly. Daily objects expire
 # after 35 days and monthly ones after 1,900 days (R2 lifecycle rules,
@@ -22,6 +25,13 @@ concurrency:
   cancel-in-progress: false
 jobs:
   backup:
+    # Schedules stay off until provisioning lists the environment in the
+    # repository variable OPS_LIVE_ENVIRONMENTS (environment-level variables
+    # are not visible to a job-level condition); a manual dispatch always runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.schedule == '30 9 * * *' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'production')) ||
+      (github.event.schedule == '0 10 * * 0' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'staging'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
@@ -72,6 +82,8 @@ jobs:
               -H "Priority: high" -H "Tags: warning" -d "$message" "$ALERT_WEBHOOK_URL" || true
           fi
           title="ops-alert: $BACKUP_ENV"
-          number=$(gh issue list --state open --label ops-alert --search "in:title \"$title\"" --json number --jq '.[0].number')
-          if [ -n "$number" ]; then gh issue comment "$number" --body "$message"
-          else gh issue create --title "$title" --label ops-alert --body "$message"; fi
+          gh label create ops-alert -R "$GITHUB_REPOSITORY" --color B60205 \
+            --description "Automated operations alert" --force >/dev/null 2>&1 || true
+          number=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --label ops-alert --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$number" ]; then gh issue comment -R "$GITHUB_REPOSITORY" "$number" --body "$message"
+          else gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --label ops-alert --body "$message"; fi

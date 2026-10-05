@@ -12,6 +12,16 @@ import { join } from "node:path";
 const read = (path: string) => readFileSync(path, "utf8");
 const deploy = read(".github/workflows/deploy.yml");
 const action = read(".github/actions/deploy/action.yml");
+const backup = read(".github/workflows/backup.yml");
+const uptime = read(".github/workflows/uptime.yml");
+const hasJq = (() => {
+  try {
+    execFileSync("jq", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 /** The `- name:` / `- uses:` step blocks of a workflow or composite action. */
 function steps(text: string) {
@@ -118,5 +128,83 @@ describe("deploy: a rollback never re-applies an older Railway IaC (OPS-R4 regre
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("backup freshness counts production runs only (OPS-R7 regression)", () => {
+  const envExpression =
+    "github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging')";
+
+  it("backup runs are named after their environment, like their job environment", () => {
+    expect(backup).toContain(`run-name: Backup \${{ ${envExpression} }}`);
+    expect(backup).toContain(`environment: \${{ ${envExpression} }}`);
+    expect(uptime).toContain('.displayTitle == "Backup production"');
+  });
+
+  it.skipIf(!hasJq)(
+    "the uptime filter skips newer staging runs and finds the production one",
+    () => {
+      const filter = uptime.match(/--jq '([^']+)'/)![1];
+      const runs = [
+        {
+          createdAt: "2026-10-05T10:00:00Z",
+          event: "schedule",
+          displayTitle: "Backup staging",
+        },
+        {
+          createdAt: "2026-10-05T09:45:00Z",
+          event: "workflow_dispatch",
+          displayTitle: "Backup staging",
+        },
+        {
+          createdAt: "2026-10-04T09:30:00Z",
+          event: "push",
+          displayTitle: "Backup production",
+        },
+        {
+          createdAt: "2026-10-03T09:30:00Z",
+          event: "schedule",
+          displayTitle: "Backup production",
+        },
+      ];
+      const jq = (input: unknown) =>
+        execFileSync("jq", ["-r", filter], {
+          input: JSON.stringify(input),
+          encoding: "utf8",
+        }).trim();
+      expect(jq(runs)).toBe("2026-10-03T09:30:00Z");
+      expect(jq(runs.slice(0, 2))).toBe("null");
+    },
+  );
+});
+
+describe("alerting and schedules before provisioning (OPS-R9)", () => {
+  it("scheduled jobs run only for environments listed in OPS_LIVE_ENVIRONMENTS", () => {
+    expect(uptime).toMatch(
+      /\n {4}if: github\.event_name == 'workflow_dispatch' \|\| contains\(vars\.OPS_LIVE_ENVIRONMENTS, 'production'\)\n/,
+    );
+    expect(backup).toContain(
+      "(github.event.schedule == '30 9 * * *' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'production'))",
+    );
+    expect(backup).toContain(
+      "(github.event.schedule == '0 10 * * 0' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'staging'))",
+    );
+    // Environment-level variables are invisible to job-level conditions.
+    for (const text of [uptime, backup])
+      expect(text).not.toMatch(/\n {4}if:[^\n]*vars\.APP_URL/);
+  });
+
+  it("every alert step creates the ops-alert label before filing an issue", () => {
+    for (const text of [uptime, backup]) {
+      const alert = steps(text).find((s) => s.includes("gh issue create"))!;
+      expect(alert).toMatch(/\n\s*if: failure\(\)\n/);
+      const label = alert.indexOf("gh label create ops-alert");
+      expect(label).toBeGreaterThan(-1);
+      expect(label).toBeLessThan(alert.indexOf("gh issue list"));
+      expect(alert).toContain("--force");
+    }
+    expect(read("scripts/ops/github-protect.sh")).toMatch(
+      /run gh label create ops-alert --repo "\$repo"[^\n]*\\\n[^\n]*--force/,
+    );
   });
 });

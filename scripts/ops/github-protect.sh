@@ -21,6 +21,9 @@ if [ -n "$existing" ]; then
 else
   run gh api -X POST "repos/$repo/rulesets" --input ops/github/main-ruleset.json
 fi
+# The alert steps of backup.yml and uptime.yml file issues with this label.
+run gh label create ops-alert --repo "$repo" --color B60205 \
+  --description "Automated operations alert" --force
 for environment in staging production; do
   run gh api -X PUT "repos/$repo/environments/$environment" \
     -F "deployment_branch_policy[protected_branches]=true" \
@@ -40,4 +43,8 @@ them at the prompt, never on the command line):
 Repository variables (exact versions, verified with `npx @railway/cli@X config --help`):
   gh variable set RAILWAY_CLI_VERSION
   gh variable set RAILWAY_IAC_VERSION
+Once an environment's secrets are set and one manual backup has passed, turn
+on its scheduled backup (and, for production, the hourly uptime check):
+  gh variable set OPS_LIVE_ENVIRONMENTS --body "staging"
+  gh variable set OPS_LIVE_ENVIRONMENTS --body "staging production"
 NEXT

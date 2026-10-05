@@ -103,7 +103,19 @@ scripts/ops/github-protect.sh
 
 Then the environment secrets and variables it prints (`RAILWAY_TOKEN`,
 `BACKUP_DATABASE_URL`, `R2_*`, `ALERT_WEBHOOK_URL`, `APP_URL`) and the
-repository variables `RAILWAY_CLI_VERSION` and `RAILWAY_IAC_VERSION`.
+repository variables `RAILWAY_CLI_VERSION` and `RAILWAY_IAC_VERSION`. The
+script also creates the `ops-alert` label the alert steps file issues with
+(they create it too if it is missing).
+
+Scheduled backups and the hourly uptime check stay off until the repository
+variable `OPS_LIVE_ENVIRONMENTS` lists the environment, so an unprovisioned
+environment does not fail every hour. For each environment, after its
+secrets are set: run Actions → Backup → Run workflow for it once by hand,
+then add it (`gh variable set OPS_LIVE_ENVIRONMENTS --body "staging"`, later
+`"staging production"`). Listing `production` also turns on the uptime
+check, whose backup-freshness step counts only runs named
+`Backup production`. It is a repository variable because a job-level
+condition cannot see environment-level variables.
 
 ## 8. Monitoring
 
