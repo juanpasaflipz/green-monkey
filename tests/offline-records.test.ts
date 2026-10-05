@@ -5,7 +5,9 @@ import {
   offlineRecord,
   offlineRecordV3,
   offlineSale,
+  orderTarget,
   provisionalNumber,
+  recordAmounts,
   recordKind,
   recoveryBackup,
   recoveryBackupV3,
@@ -151,6 +153,67 @@ describe("offline record v3 contracts", () => {
         payment: { ...cash, tip: 10, received: 210 },
       }).success,
     ).toBe(true);
+  });
+
+  it("order/round/payment kinds discriminate", () => {
+    const orderRecord = {
+      ...base,
+      kind: "order" as const,
+      cashSessionId: null,
+      order,
+      expectedTotal: 200,
+      receiptSnapshot: snapshot,
+    };
+    const round = {
+      ...base,
+      provisionalNumber: null,
+      kind: "round" as const,
+      cashSessionId: null,
+      target: { orderId: id(20) },
+      lines: order.lines,
+      expectedTotal: 200,
+      receiptSnapshot: snapshot,
+    };
+    const payment = {
+      ...base,
+      kind: "payment" as const,
+      cashSessionId: id(6),
+      target: { localOrderOperationId: id(11) },
+      expectedDue: 200,
+      payment: cash,
+    };
+    expect(offlineRecord.parse(orderRecord)).toMatchObject({ kind: "order" });
+    expect(offlineRecord.parse(round)).toMatchObject({ kind: "round" });
+    expect(offlineRecord.parse(payment)).toMatchObject({ kind: "payment" });
+    expect(recordAmounts(offlineRecord.parse(payment))).toEqual({
+      amount: 200,
+      tip: 0,
+    });
+    expect(recordAmounts(offlineRecord.parse(round))).toEqual({
+      amount: 0,
+      tip: 0,
+    });
+    // A round must not carry an order body, and an order must carry a number.
+    expect(offlineRecord.safeParse({ ...round, order }).success).toBe(false);
+    expect(
+      offlineRecord.safeParse({ ...orderRecord, provisionalNumber: null })
+        .success,
+    ).toBe(false);
+    expect(
+      offlineRecord.safeParse({ ...payment, cashSessionId: null }).success,
+    ).toBe(false);
+  });
+
+  it("orderTarget accepts exactly one of orderId/localOrderOperationId", () => {
+    expect(orderTarget.safeParse({ orderId: id(1) }).success).toBe(true);
+    expect(orderTarget.safeParse({ localOrderOperationId: id(1) }).success).toBe(
+      true,
+    );
+    expect(
+      orderTarget.safeParse({ orderId: id(1), localOrderOperationId: id(2) })
+        .success,
+    ).toBe(false);
+    expect(orderTarget.safeParse({}).success).toBe(false);
   });
 
   it("provisional regex rejects lowercase and long prefixes", () => {

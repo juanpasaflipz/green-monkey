@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { id, money, orderInput } from "./domain.js";
+import { id, lineInput, money, orderInput } from "./domain.js";
 
 export const offlineSaleV1 = z
   .object({
@@ -215,7 +215,62 @@ export const offlineSaleV3 = z
   );
 export type OfflineSaleV3 = z.infer<typeof offlineSaleV3>;
 
-export const offlineRecordV3 = z.discriminatedUnion("kind", [offlineSaleV3]);
+/** A server order cached before the outage, or an order created on this device. */
+export const orderTarget = z.union([
+  z.object({ orderId: id }).strict(),
+  z.object({ localOrderOperationId: id }).strict(),
+]);
+export type OrderTarget = z.infer<typeof orderTarget>;
+
+/** "Enviar" offline: a new open order sent to the kitchen without payment. */
+export const offlineOrderV3 = z
+  .object({
+    ...v3Base,
+    kind: z.literal("order"),
+    cashSessionId: id.nullable(),
+    order: orderInput,
+    expectedTotal: money,
+    receiptSnapshot: offlineReceiptSnapshot,
+  })
+  .strict()
+  .refine((p) => p.provisionalNumber !== null, {
+    message: "order_number_required",
+  });
+export type OfflineOrderV3 = z.infer<typeof offlineOrderV3>;
+
+/** Items added to a local or cached server order (additive, no version check). */
+export const offlineRoundV3 = z
+  .object({
+    ...v3Base,
+    kind: z.literal("round"),
+    cashSessionId: id.nullable(),
+    target: orderTarget,
+    lines: z.array(lineInput).min(1).max(100),
+    expectedTotal: money,
+    receiptSnapshot: offlineReceiptSnapshot,
+  })
+  .strict();
+export type OfflineRoundV3 = z.infer<typeof offlineRoundV3>;
+
+/** A full or partial payment of a local or cached server order. */
+export const offlinePaymentV3 = z
+  .object({
+    ...v3Base,
+    kind: z.literal("payment"),
+    cashSessionId: id,
+    target: orderTarget,
+    expectedDue: money,
+    payment: offlinePayment,
+  })
+  .strict();
+export type OfflinePaymentV3 = z.infer<typeof offlinePaymentV3>;
+
+export const offlineRecordV3 = z.discriminatedUnion("kind", [
+  offlineSaleV3,
+  offlineOrderV3,
+  offlineRoundV3,
+  offlinePaymentV3,
+]);
 export type OfflineRecordV3 = z.infer<typeof offlineRecordV3>;
 
 /** Every record format a device may hold. v1/v2 are legacy cash sales. */

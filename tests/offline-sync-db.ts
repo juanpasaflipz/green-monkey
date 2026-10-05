@@ -25,7 +25,13 @@ import {
 import { offlineDevicePrefix } from "../server/offline-device.js";
 import { registerPreAuth } from "../server/routes/offline.js";
 import { refreshOrderState } from "../server/voids.js";
-import { createOrder, getOrder, recordPayment } from "../server/orders.js";
+import {
+  addRound as addRoundOnline,
+  createOrder,
+  getOrder,
+  recordPayment,
+} from "../server/orders.js";
+import { openOrdersSnapshot } from "../server/offline-tables.js";
 import {
   businessDate,
   currencyExponent,
@@ -114,7 +120,11 @@ async function openSession(
   };
 }
 
-const line = (productId: string, quantity = 1, extra: Partial<LineInput> = {}) => ({
+const line = (
+  productId: string,
+  quantity = 1,
+  extra: Partial<LineInput> = {},
+) => ({
   id: randomUUID(),
   productId,
   quantity,
@@ -195,7 +205,10 @@ function sale(
       externalConfirmed: external,
     },
     receiptSnapshot: {
-      lines: lines.map((l) => ({ ...l, productVersion: opts.productVersion ?? 1 })),
+      lines: lines.map((l) => ({
+        ...l,
+        productVersion: opts.productVersion ?? 1,
+      })),
       restaurant,
     },
   };
@@ -235,19 +248,21 @@ try {
     extra: Record<string, unknown> = {},
   ) => {
     prices[productId] = price;
-    return admin`insert into catalog(tenant_id,id,data) values(${tenantId},${productId},${admin.json({
-      id: productId,
-      name: { es: name, en: name },
-      category: { es: "Pruebas", en: "Tests" },
-      price,
-      available: true,
-      station,
-      groups: [],
-      cost: null,
-      recipe: [],
-      version: 1,
-      ...extra,
-    })})`;
+    return admin`insert into catalog(tenant_id,id,data) values(${tenantId},${productId},${admin.json(
+      {
+        id: productId,
+        name: { es: name, en: name },
+        category: { es: "Pruebas", en: "Tests" },
+        price,
+        available: true,
+        station,
+        groups: [],
+        cost: null,
+        recipe: [],
+        version: 1,
+        ...extra,
+      },
+    )})`;
   };
   await product(ids.plate, "Taco", 100, "kitchen");
   await product(ids.drink, "Agua", 50, "bar");
@@ -267,7 +282,11 @@ try {
   const synced = await run((tx) => syncOfflineRecord(tx, s1, first));
   const replay = await run((tx) => syncOfflineRecord(tx, s1, first));
   assert.equal(replay.orderId, synced.orderId, "replay returns the same order");
-  assert.equal(replay.tenderId, synced.tenderId, "replay returns the same tender");
+  assert.equal(
+    replay.tenderId,
+    synced.tenderId,
+    "replay returns the same tender",
+  );
   assert.equal(await count("orders"), ordersBefore + 1, "exactly one order");
   assert.equal(await count("tenders", "order_id=$2", synced.orderId), 1);
   assert.equal(synced.kind, "sale");
@@ -367,7 +386,10 @@ try {
       sale(s1, { recordedAt: new Date(Date.now() + 90_000).toISOString() }),
     ),
   );
-  assert(Date.parse(ahead.soldAt) <= Date.now() + 1000, "clamped to server now");
+  assert(
+    Date.parse(ahead.soldAt) <= Date.now() + 1000,
+    "clamped to server now",
+  );
   const future = sale(s1, {
     recordedAt: new Date(Date.now() + 300_000).toISOString(),
   });
@@ -376,7 +398,11 @@ try {
     run((tx) => syncOfflineRecord(tx, s1, future)),
     "offline_recorded_in_future",
   );
-  assert.equal(await count("orders"), beforeFuture, "nothing partially applied");
+  assert.equal(
+    await count("orders"),
+    beforeFuture,
+    "nothing partially applied",
+  );
   const [drawer2] =
     await admin`select opened_at from cash_sessions where tenant_id=${tenantId} and id=${ids.drawer2}`;
   const early = await run((tx) =>
@@ -385,7 +411,9 @@ try {
       s2,
       sale(s2, {
         drawer: ids.drawer2,
-        recordedAt: new Date(drawer2.opened_at.getTime() - 240_000).toISOString(),
+        recordedAt: new Date(
+          drawer2.opened_at.getTime() - 240_000,
+        ).toISOString(),
       }),
     ),
   );
@@ -433,9 +461,7 @@ try {
   assert.equal(recoveryTender.session_id, ids.drawer1, "original drawer");
   assert.equal(recoveryTender.source, "offline_recovery");
   // Reconcile and sync share one identity: a later sync replays the result.
-  const afterReconcile = await run((tx) =>
-    syncOfflineRecord(tx, s1, changed),
-  );
+  const afterReconcile = await run((tx) => syncOfflineRecord(tx, s1, changed));
   assert.equal(afterReconcile.orderId, reconciled.id);
   await admin`update restaurants set config_version=config_version-1 where id=${tenantId}`;
 
@@ -545,7 +571,12 @@ try {
   const garbage = await run((tx) =>
     archiveOfflineRecord(tx, manager1, {
       operationId: randomUUID(),
-      record: { operationId: randomUUID(), expectedTotal: 990, tip: -5, kind: "sale" },
+      record: {
+        operationId: randomUUID(),
+        expectedTotal: 990,
+        tip: -5,
+        kind: "sale",
+      },
       localError: "invalid_input",
       reason: "Corrupted local record from an old tablet",
       confirmed: true,
@@ -609,7 +640,11 @@ try {
       reasons.join(","),
     );
     assert.equal(
-      (await count("offline_sync_records", "operation_id=$2", raced.operationId)) +
+      (await count(
+        "offline_sync_records",
+        "operation_id=$2",
+        raced.operationId,
+      )) +
         (await count("offline_archives", "operation_id=$2", raced.operationId)),
       1,
     );
@@ -639,7 +674,14 @@ try {
   assert.equal(reused.orderId, online.id);
   assert.equal(reused.reusedOnlineOrder, true);
   assert.equal(reused.kitchenReview, false);
-  assert.equal(await count("offline_kitchen_reviews", "operation_id=$2", reuse.operationId), 0);
+  assert.equal(
+    await count(
+      "offline_kitchen_reviews",
+      "operation_id=$2",
+      reuse.operationId,
+    ),
+    0,
+  );
   const [onlineRound] =
     await admin`select state from rounds where tenant_id=${tenantId} and order_id=${online.id}`;
   assert.equal(onlineRound.state, "active");
@@ -823,7 +865,10 @@ try {
   assert.equal(prepared.orderState, "active");
   const [review] =
     await admin`select state,decided_by from offline_kitchen_reviews where tenant_id=${tenantId} and round_id=${drinkRound.roundId}`;
-  assert.deepEqual({ ...review }, { state: "prepare", decided_by: ids.kitchen });
+  assert.deepEqual(
+    { ...review },
+    { state: "prepare", decided_by: ids.kitchen },
+  );
   assert(
     !(await run((tx) => listOfflineKitchen(tx, kitchen))).items.some(
       (item) => item.orderId === synced.orderId,
@@ -832,7 +877,11 @@ try {
   );
   // refreshOrderState: a round in review keeps the order active, never "ready".
   const reviewOrder = await run((tx) =>
-    syncOfflineRecord(tx, s1, sale(s1, { lines: [line(ids.plate), line(ids.drink)] })),
+    syncOfflineRecord(
+      tx,
+      s1,
+      sale(s1, { lines: [line(ids.plate), line(ids.drink)] }),
+    ),
   );
   const [reviewRound] =
     await admin`select id from rounds where tenant_id=${tenantId} and order_id=${reviewOrder.orderId} and station='bar'`;
@@ -852,10 +901,7 @@ try {
   assert.equal(prefixes[0].prefix, prefixes[2].prefix);
   assert.equal(prefixes[1].prefix, prefixes[3].prefix);
   assert.notEqual(prefixes[0].prefix, prefixes[1].prefix);
-  assert.deepEqual(
-    new Set(prefixes.map((p) => p.prefix)),
-    new Set(["A", "B"]),
-  );
+  assert.deepEqual(new Set(prefixes.map((p) => p.prefix)), new Set(["A", "B"]));
   await assert.rejects(
     admin`update devices set offline_prefix='C' where tenant_id=${tenantId} and id=${ids.device1}`,
     /offline_prefix_immutable/,
@@ -969,7 +1015,11 @@ try {
   // 17. RLS and grants on the new tables.
   const crossTenant = await tenant(sql, otherTenant, (tx) =>
     Promise.all(
-      ["offline_sync_records", "offline_archives", "offline_kitchen_reviews"].map(
+      [
+        "offline_sync_records",
+        "offline_archives",
+        "offline_kitchen_reviews",
+      ].map(
         async (table) =>
           (await tx.unsafe(`select count(*)::int as n from ${table}`))[0]!.n,
       ),
@@ -1082,17 +1132,395 @@ try {
     /overpayment/,
   );
 
+  // 21. Offline table service (feat(offline-tables)): orders, rounds and
+  // payments that depend on each other (I5), additive rounds, closed targets
+  // (I6), balance revalidation (I2) and totals (I11).
+  const priced = (lines: ReturnType<typeof line>[]) =>
+    lines.reduce(
+      (a, l) => a + (l.openAmount ?? prices[l.productId]!) * l.quantity,
+      0,
+    );
+  const v3 = (s: Session, kind: string, fields: Record<string, unknown>) => {
+    const at = new Date().toISOString();
+    return {
+      formatVersion: 3 as const,
+      operationId: randomUUID(),
+      tenantId,
+      employeeId: s.employeeId,
+      deviceId: s.deviceId,
+      sessionId: s.id,
+      lease: {
+        contractVersion: 1,
+        configurationVersion: s.offlineLeaseConfigVersion ?? null,
+      },
+      currency: "MXN",
+      currencyExponent: 2,
+      recordedAt: at,
+      recordedAtDevice: at,
+      clockOffsetMs: 0,
+      sequence: ++sequence,
+      provisionalNumber: null as string | null,
+      kitchenDelivery: "device_list" as const,
+      kind,
+      ...fields,
+    };
+  };
+  const snapshotOf = (lines: ReturnType<typeof line>[]) => ({
+    lines: lines.map((l) => ({ ...l, productVersion: 1 })),
+    restaurant,
+  });
+  const orderRecord = (s: Session, lines: ReturnType<typeof line>[]) =>
+    v3(s, "order", {
+      provisionalNumber: "C-01",
+      cashSessionId: null,
+      order: {
+        operationId: randomUUID(),
+        lines,
+        mode: "dine_in",
+        tableId: null,
+        name: "Mesa sin conexión",
+        note: "",
+        channel: "pos",
+      },
+      expectedTotal: priced(lines),
+      receiptSnapshot: snapshotOf(lines),
+    });
+  const roundRecord = (
+    s: Session,
+    target: Record<string, string>,
+    lines: ReturnType<typeof line>[],
+  ) =>
+    v3(s, "round", {
+      cashSessionId: null,
+      target,
+      lines,
+      expectedTotal: priced(lines),
+      receiptSnapshot: snapshotOf(lines),
+    });
+  const paymentRecord = (
+    s: Session,
+    target: Record<string, string>,
+    amount: number,
+    drawer = ids.drawer1,
+  ) =>
+    v3(s, "payment", {
+      kitchenDelivery: "not_applicable",
+      cashSessionId: drawer,
+      target,
+      expectedDue: amount,
+      payment: {
+        method: "cash",
+        amount,
+        tip: 0,
+        received: amount,
+        reference: "",
+        externalConfirmed: false,
+      },
+    });
+  const table = orderRecord(s1, [line(ids.plate, 2)]);
+  const localTarget = { localOrderOperationId: table.operationId };
+  const tableRound = roundRecord(s1, localTarget, [line(ids.drink)]);
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, tableRound)),
+    "offline_dependency_pending",
+    "a round never applies before its order",
+  );
+  const opened = await run((tx) => syncOfflineRecord(tx, s1, table));
+  assert.equal(opened.kind, "order");
+  assert.equal(opened.tenderId, null);
+  assert.equal(opened.kitchenReview, true);
+  const added = await run((tx) => syncOfflineRecord(tx, s1, tableRound));
+  assert.equal(added.orderId, opened.orderId, "never re-targeted");
+  assert.equal(added.roundNumber, 2);
+  assert.equal(added.kitchenReview, true);
+  const partial = paymentRecord(s1, localTarget, 120);
+  const rest = paymentRecord(s1, localTarget, 130);
+  await run((tx) => syncOfflineRecord(tx, s1, partial));
+  await run((tx) => syncOfflineRecord(tx, s1, partial));
+  const settled = await run((tx) => syncOfflineRecord(tx, s1, rest));
+  assert.equal(settled.order.total, 250);
+  assert.equal(settled.order.paid, 250);
+  assert.equal(await count("tenders", "order_id=$2", opened.orderId), 2);
+  assert.equal(
+    await count(
+      "offline_kitchen_reviews k",
+      "exists(select 1 from rounds r where r.tenant_id=k.tenant_id and r.id=k.round_id and r.order_id=$2)",
+      opened.orderId,
+    ),
+    2,
+    "both offline rounds wait in the review lane",
+  );
+  // I11: total equals line totals; tenders never exceed it.
+  assert.equal(
+    settled.order.total,
+    settled.order.lines.reduce((a, l) => a + l.total, 0),
+  );
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, paymentRecord(s1, localTarget, 1))),
+    "offline_payment_exceeds_due",
+    "a paid order never takes another offline payment",
+  );
+
+  // An archived parent: dependents never apply; the money is still reconcilable.
+  const lost = orderRecord(s1, [line(ids.plate)]);
+  await run((tx) =>
+    archiveOfflineRecord(tx, manager1, {
+      operationId: randomUUID(),
+      record: lost,
+      localError: null,
+      reason: "Order entered again on paper before the outage ended",
+      confirmed: true,
+    }),
+  );
+  const orphan = paymentRecord(
+    s1,
+    { localOrderOperationId: lost.operationId },
+    100,
+  );
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, orphan)),
+    "offline_dependency_archived",
+  );
+  const orphanReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, orphan),
+  );
+  assert.equal(orphanReview.target, null);
+  assert.equal(orphanReview.reconcilable, true);
+  const orphanCash = await run((tx) =>
+    reconcileOfflineRecord(tx, manager1, {
+      record: orphan,
+      reason: "Cash for an archived order counted in the drawer",
+      confirmed: true,
+    }),
+  );
+  assert.equal(orphanCash.state, "recovery_pending");
+  assert.equal(orphanCash.paid, 100);
+
+  // Rounds on a onlineOrder order are additive; a cancelled order is closed (I6).
+  const onlineOrder = await run((tx) =>
+    createOrder(tx, s1, {
+      operationId: randomUUID(),
+      lines: [line(ids.plate)],
+      mode: "dine_in",
+      tableId: null,
+      name: "Mesa en línea",
+      note: "",
+      channel: "pos",
+    }),
+  );
+  const cachedRound = roundRecord(s1, { orderId: onlineOrder.id }, [
+    line(ids.drink),
+  ]);
+  await run((tx) =>
+    addRoundOnline(tx, s1, onlineOrder.id, {
+      operationId: randomUUID(),
+      lines: [line(ids.plate)],
+      mode: "dine_in",
+      tableId: null,
+      name: "Mesa en línea",
+      note: "",
+      channel: "pos",
+      expectedVersion: onlineOrder.version,
+    }),
+  );
+  const extended = await run((tx) => syncOfflineRecord(tx, s1, cachedRound));
+  assert.equal(extended.roundNumber, 3, "applied after the online round");
+  assert.equal(extended.order.total, 250);
+  const cancelled = await run((tx) =>
+    createOrder(tx, s1, {
+      operationId: randomUUID(),
+      lines: [line(ids.plate)],
+      mode: "takeaway",
+      tableId: null,
+      name: "Cancelada",
+      note: "",
+      channel: "pos",
+    }),
+  );
+  await admin`update orders set state='cancelled' where tenant_id=${tenantId} and id=${cancelled.id}`;
+  await expectCode(
+    run((tx) =>
+      syncOfflineRecord(
+        tx,
+        s1,
+        roundRecord(s1, { orderId: cancelled.id }, [line(ids.drink)]),
+      ),
+    ),
+    "offline_order_closed",
+  );
+  await expectCode(
+    run((tx) =>
+      syncOfflineRecord(
+        tx,
+        s1,
+        paymentRecord(s1, { orderId: cancelled.id }, 50),
+      ),
+    ),
+    "offline_order_closed",
+  );
+
+  // A payment past the onlineOrder balance is refused and cannot be reconciled (I2).
+  await run((tx) =>
+    recordPayment(tx, s1, onlineOrder.id, {
+      operationId: randomUUID(),
+      amount: 200,
+      tip: 0,
+      received: 200,
+      method: "cash",
+    }),
+  );
+  const tooMuch = paymentRecord(s1, { orderId: onlineOrder.id }, 100);
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s1, tooMuch)),
+    "offline_payment_exceeds_due",
+  );
+  const tooMuchReview = await run((tx) =>
+    reviewOfflineRecord(tx, manager1, tooMuch),
+  );
+  assert.equal(tooMuchReview.target?.due, 50);
+  assert.equal(tooMuchReview.reconcilable, false);
+  await expectCode(
+    run((tx) =>
+      reconcileOfflineRecord(tx, manager1, {
+        record: tooMuch,
+        reason: "Trying to reconcile more than the balance",
+        confirmed: true,
+      }),
+    ),
+    "offline_payment_exceeds_due",
+  );
+  await expectCode(
+    run((tx) =>
+      reconcileOfflineRecord(tx, manager1, {
+        record: roundRecord(s1, { orderId: cancelled.id }, [line(ids.drink)]),
+        reason: "Rounds carry no money to reconcile",
+        confirmed: true,
+      }),
+    ),
+    "offline_reconcile_unsupported",
+  );
+  // Reconciling a record that already synced replays its result (I1).
+  assert.equal(
+    (
+      await run((tx) =>
+        reconcileOfflineRecord(tx, manager1, {
+          record: rest,
+          reason: "Second attempt on an already synced payment",
+          confirmed: true,
+        }),
+      )
+    ).id,
+    opened.orderId,
+  );
+  assert.equal(await count("tenders", "order_id=$2", opened.orderId), 2);
+
+  // Manager reconcile of a payment records it in the original, closed drawer;
+  // the order stays a normal, serviceable order (no recovery record).
+  const device3 = randomUUID(),
+    drawer3 = randomUUID(),
+    drawer4 = randomUUID();
+  await admin`insert into devices(tenant_id,id,name,token_hash) values(${tenantId},${device3},'Caja 3','fixture')`;
+  await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at) values(${tenantId},${drawer3},${device3},${ids.cashier},0,now()-interval '1 hour')`;
+  const s4 = await openSession(ids.cashier, device3, "cashier");
+  const manager4 = await openSession(ids.manager, device3, "manager");
+  const tab = await run((tx) =>
+    createOrder(tx, s4, {
+      operationId: randomUUID(),
+      lines: [line(ids.plate)],
+      mode: "dine_in",
+      tableId: null,
+      name: "Mesa del cajón cerrado",
+      note: "",
+      channel: "pos",
+    }),
+  );
+  const latePayment = paymentRecord(s4, { orderId: tab.id }, 100, drawer3);
+  await admin`update cash_sessions set closed_at=now(),counted=0,expected=0 where tenant_id=${tenantId} and id=${drawer3}`;
+  await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at) values(${tenantId},${drawer4},${device3},${ids.cashier},0,now())`;
+  await expectCode(
+    run((tx) => syncOfflineRecord(tx, s4, latePayment)),
+    "offline_drawer_conflict",
+  );
+  const paidLate = await run((tx) =>
+    reconcileOfflineRecord(tx, manager4, {
+      record: latePayment,
+      reason: "Cash for the table counted in the closed drawer",
+      confirmed: true,
+    }),
+  );
+  assert.equal(paidLate.id, tab.id, "same order");
+  assert.equal(paidLate.paid, 100);
+  assert(!paidLate.state.startsWith("recovery"));
+  const [lateTender2] =
+    await admin`select session_id,source,source_id from tenders where tenant_id=${tenantId} and order_id=${tab.id}`;
+  assert.deepEqual(
+    { ...lateTender2 },
+    {
+      session_id: drawer3,
+      source: "offline_recovery",
+      source_id: latePayment.operationId,
+    },
+  );
+  const [managerLedger] =
+    await admin`select path,reason,actor_id from offline_sync_records where tenant_id=${tenantId} and operation_id=${latePayment.operationId}`;
+  assert.equal(managerLedger.path, "manager");
+  assert.equal(managerLedger.actor_id, ids.manager);
+  assert.equal(
+    await count(
+      "offline_recoveries",
+      "operation_id=$2",
+      latePayment.operationId,
+    ),
+    0,
+  );
+  const stillServiceable = await run((tx) =>
+    addRoundOnline(tx, s4, tab.id, {
+      operationId: randomUUID(),
+      lines: [line(ids.drink)],
+      mode: "dine_in",
+      tableId: null,
+      name: "Mesa del cajón cerrado",
+      note: "",
+      channel: "pos",
+      expectedVersion: paidLate.version,
+    }),
+  );
+  assert.equal(stillServiceable.total, 150);
+
+  // Open-orders snapshot: excludes cancelled and recovery orders, includes
+  // completed-but-unpaid ones and excludes completed-and-paid ones.
+  const delivered = await run((tx) =>
+    createOrder(tx, s1, {
+      operationId: randomUUID(),
+      lines: [line(ids.plate)],
+      mode: "dine_in",
+      tableId: null,
+      name: "Entregada sin pagar",
+      note: "",
+      channel: "pos",
+    }),
+  );
+  await admin`update orders set state='completed' where tenant_id=${tenantId} and id in (${delivered.id},${onlineOrder.id})`;
+  const snapshot = await run((tx) => openOrdersSnapshot(tx, s1));
+  const listed = new Set(snapshot.orders.map((o) => o.id));
+  assert(listed.has(delivered.id), "completed but unpaid");
+  assert(listed.has(opened.orderId), "active offline table order");
+  assert(!listed.has(cancelled.id), "cancelled");
+  assert(!listed.has(orphanCash.id), "recovery");
+  assert(listed.has(onlineOrder.id), "completed with a balance left");
+  const deliveredView = snapshot.orders.find((o) => o.id === delivered.id)!;
+  assert.equal(deliveredView.lines.length, 1);
+  assert.equal(deliveredView.total - deliveredView.paid, 100);
+  assert(snapshot.orders.length <= 200);
+
   // 20. Heartbeat: no auth, no-store, single-flight DB check.
   const app = express();
   registerPreAuth({ app, sql });
   let selects = 0;
-  const slow = Object.assign(
-    () => {
-      selects++;
-      return new Promise((resolve) => setTimeout(() => resolve([]), 150));
-    },
-    {},
-  ) as unknown as postgres.Sql;
+  const slow = Object.assign(() => {
+    selects++;
+    return new Promise((resolve) => setTimeout(() => resolve([]), 150));
+  }, {}) as unknown as postgres.Sql;
   const slowApp = express();
   registerPreAuth({ app: slowApp, sql: slow });
   const down = postgres("postgres://nobody:nothing@127.0.0.1:1/none", {
@@ -1141,7 +1569,7 @@ try {
   }
 
   console.log(
-    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse, overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination and the heartbeat.",
+    "Offline sync DB passed: exactly-once v3 sale (cash and external), business date from sale time, clock tolerance and clamping, lease-cited config, authenticity vs eligibility, archive semantics and races, lost-response reuse, overpayment refusal, negative stock, server repricing, drawer guard and late reconcile, kitchen review lane and decisions, device prefixes, revoked vs ended sessions, legacy compatibility, RLS, grants, immutability, pagination, the heartbeat and offline table service (dependencies, additive rounds, closed targets, balance revalidation, payment reconcile, open-orders snapshot).",
   );
 } finally {
   for (const table of [
