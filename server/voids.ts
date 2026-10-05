@@ -3,7 +3,7 @@ import { Decimal } from "decimal.js";
 import type postgres from "postgres";
 import { z } from "zod";
 import { tenant, type Tx } from "./db.js";
-import { managers, operators, permit } from "./auth.js";
+import { hash, managers, operators, permit } from "./auth.js";
 import { checkPin, deviceScope, pinError, stepUpSeconds } from "./access.js";
 import { ACCESS, isRecentAuth } from "../shared/access.js";
 import { audit, getOrder, once, stock } from "./orders.js";
@@ -81,13 +81,18 @@ function noteApprovalFailure(sessionId: string, now = Date.now()) {
  * approver's id. With orderId, the order must exist, be open and still have an
  * unpaid unit before any PIN is checked, so approvals cannot be tried against
  * made-up, closed or fully paid orders (A5/ACC-R-5). The read takes no lock:
- * voidLines re-checks all of it under the order's FOR UPDATE.
+ * voidLines re-checks all of it under the order's FOR UPDATE. voidRequest is
+ * the void's full body: when that exact void is already recorded (a retry
+ * after a lost response), the order check is skipped so voidLines' once()
+ * returns the stored result instead of refusing the order the first attempt
+ * cancelled or fully voided (ACC-R6-1). The PIN is still checked.
  */
 export async function verifyApproval(
   sql: postgres.Sql,
   s: Session,
   raw: unknown,
   orderId?: string,
+  voidRequest?: unknown,
 ): Promise<string> {
   if (raw === undefined || raw === null) {
     if (
@@ -109,7 +114,13 @@ export async function verifyApproval(
   )
     throw new DomainError("too_many_attempts", 429);
   const result = await tenant(sql, s.tenantId, async (tx) => {
-    if (orderId) {
+    if (
+      orderId &&
+      !(
+        voidRequest !== undefined &&
+        (await recordedVoid(tx, orderId, voidRequest))
+      )
+    ) {
       const [order] = await tx`select state from orders where id=${orderId}`;
       if (!order) throw new DomainError("not_found", 404);
       if (closedStates.includes(order.state))
@@ -166,6 +177,41 @@ const closedStates = [
   "recovery_reviewed",
 ];
 
+/**
+ * What once() fingerprints for a void. It names the approver but never
+ * includes the secret; legacy login fingerprints stay stable.
+ */
+function voidFingerprint(orderId: string, input: z.infer<typeof voidInput>) {
+  const { approval, ...rest } = input;
+  return {
+    orderId,
+    ...rest,
+    approver: approval
+      ? "employeeId" in approval
+        ? approval.employeeId
+        : approval.login
+      : null,
+  };
+}
+
+/**
+ * True when this exact void (same operationId, kind and fingerprint, so the
+ * same order, lines, version and approver) is already recorded. Only an exact
+ * match counts: any other reuse of an operationId still gets the order check
+ * before the PIN, then once()'s operation_conflict.
+ */
+async function recordedVoid(tx: Tx, orderId: string, raw: unknown) {
+  const input = voidInput.safeParse(raw);
+  if (!input.success) return false;
+  const [prior] =
+    await tx`select kind,hash from operations where id=${input.data.operationId}`;
+  return (
+    !!prior &&
+    prior.kind === "void" &&
+    prior.hash === hash(JSON.stringify(voidFingerprint(orderId, input.data)))
+  );
+}
+
 /** Recomputes an order's preparation state from its rounds and voids. */
 export async function refreshOrderState(tx: Tx, orderId: string) {
   const [counts] = await tx`select
@@ -217,18 +263,7 @@ export async function voidLines(
 ) {
   permit(s, operators);
   const input = voidInput.parse(raw);
-  const { approval, ...rest } = input;
-  // The fingerprint names the approver but never includes the secret; legacy
-  // login fingerprints stay stable.
-  const fingerprint = {
-    orderId,
-    ...rest,
-    approver: approval
-      ? "employeeId" in approval
-        ? approval.employeeId
-        : approval.login
-      : null,
-  };
+  const fingerprint = voidFingerprint(orderId, input);
   return once(tx, s, input.operationId, "void", fingerprint, async () => {
     const [locked] =
       await tx`select state,version from orders where id=${orderId} for update`;

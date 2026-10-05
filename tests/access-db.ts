@@ -40,7 +40,7 @@ import {
 } from "../server/access-staff.js";
 import { leaseCovers, renewOfflineLease } from "../server/offline-leases.js";
 import { synchronizeOffline } from "../server/offline-sync.js";
-import { verifyApproval } from "../server/voids.js";
+import { verifyApproval, voidLines } from "../server/voids.js";
 import { createOrder, recordPayment } from "../server/orders.js";
 import {
   paymentRecoveryStatus,
@@ -1155,6 +1155,88 @@ try {
     await clearThrottles(managerId);
   });
 
+  await test("ACC-R6-1: a lost-response retry of a void that cancelled the order or voided its last unpaid unit returns the stored result, once", async () => {
+    await clearThrottles(managerId);
+    const terminal = await device("Reintento de anulación");
+    const signedIn = await pin(terminal, cashierId, CASHIER_PIN);
+    const { session } = await authenticate({
+      gm_device: sign(terminal),
+      gm_session: signedIn.cookie,
+    });
+    await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at)
+      values(${tenantId},${randomUUID()},${terminal.id},${cashierId},0,now())`;
+    const newOrder = (quantity: number) =>
+      run((tx) =>
+        createOrder(tx, session, {
+          operationId: randomUUID(),
+          lines: [
+            { id: randomUUID(), productId, quantity, options: [], note: "" },
+          ],
+          mode: "takeaway",
+          tableId: null,
+          name: "Reintento",
+          note: "",
+          channel: "pos",
+        }),
+      );
+    const approval = { employeeId: managerId, secret: MANAGER_PIN };
+    const body = (o: { id: string; version: number; lines: { id: string }[] }, quantity: number) => ({
+      operationId: randomUUID(),
+      expectedVersion: o.version,
+      lines: [{ lineId: o.lines[0].id, quantity }],
+      reason: "Cliente se fue",
+      stockDisposition: "no_return",
+      approval,
+    });
+    // Exactly what POST /api/orders/:id/voids does with one request body.
+    const send = async (orderId: string, b: ReturnType<typeof body>) => {
+      const approverId = await verifyApproval(sql, session, b.approval, orderId, b);
+      return run((tx) => voidLines(tx, session, orderId, b, approverId));
+    };
+    const voidRows = async (orderId: string) =>
+      (await admin`select count(*)::int as n from line_voids where order_id=${orderId}`)[0].n;
+
+    // Every unit of a one-line order: the void cancels the order.
+    const whole = await newOrder(1);
+    const cancel = body(whole, 1);
+    const first = await send(whole.id, cancel);
+    assert.equal(first.state, "cancelled");
+    // The replay is once()'s stored result, read back from jsonb.
+    const stored = <T>(v: T): T => JSON.parse(JSON.stringify(v));
+    const replay = await send(whole.id, cancel);
+    assert.deepEqual(replay, stored(first));
+    assert.equal(await voidRows(whole.id), 1);
+    // Only that exact void replays: a new void, or the same operationId with
+    // another body, is still refused by the order check before the PIN.
+    await rejects(send(whole.id, body(whole, 1)), "stale_order");
+    await rejects(send(whole.id, { ...cancel, reason: "Otro motivo" }), "stale_order");
+
+    // The last unpaid unit while the other unit is paid.
+    const split = await newOrder(2);
+    const paid = await run((tx) =>
+      recordPayment(tx, session, split.id, {
+        operationId: randomUUID(),
+        amount: 100,
+        tip: 0,
+        received: 100,
+        method: "cash",
+        externalConfirmed: false,
+        reference: "",
+      }),
+    );
+    const last = body(paid, 1);
+    const voided = await send(split.id, last);
+    assert.equal(voided.total, voided.paid);
+    assert.equal(
+      voided.paymentUnits!.some((u) => u.paid === 0),
+      false,
+    );
+    assert.deepEqual(await send(split.id, last), stored(voided));
+    assert.equal(await voidRows(split.id), 1);
+    await rejects(send(split.id, body(voided, 1)), "void_exceeds_unpaid");
+    await clearThrottles(managerId);
+  });
+
   await test("OFF-7 regression: logout ends without revoking and the same employee's new session on the same device syncs the queued sale", async () => {
     const terminal = await device("Cambio de turno");
     const first = await pin(terminal, cashierId, CASHIER_PIN);
@@ -2007,6 +2089,7 @@ try {
       "pin_throttles",
       "device_pairing_codes",
       "offline_lease_renewals",
+      "line_voids",
       "tender_allocations",
       "tenders",
       "rounds",
