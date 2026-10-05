@@ -76,17 +76,39 @@ so the core fixes can ship without it.
 **Órdenes abiertas** (next to Borradores while offline) lists the server open orders
 cached before the outage, "Órdenes guardadas antes de perder la conexión (HH:mm)"
 (refreshed every 120 s while selling is visible; current and previous business
-day, at most 200), and the orders created on this device. Paying a cached server
-order warns that it may have been paid on another device. A round or payment for a
-local order waits until that order has synced (it is never sent to another order);
-an archived local order makes its dependents go to a manager, who can still
-reconcile their money as a financial-only recovery. A payment that would exceed the
-server balance at sync (for example because the table was paid on another device)
-is refused and shown for review; it is never partially applied. A manager can
-reconcile an offline payment to its order, recording it in the original drawer even
-if that drawer is closed, and the order stays a normal order. Local orders are only
-changed through offline records, even after the connection returns; once their
-record syncs, selling continues on the server order.
+day, at most 200), and the orders created on this device. Every server order
+selling handles online (send, round, payment, resume) is also stored in that cache
+at once, so the order on screen when the connection drops can be paid offline at
+its current balance; an older copy never replaces a newer one. Offline, the order
+on screen shows the cached copy plus this device's rounds and payments that copy
+does not contain yet. The server lists, with each cached order, the tenders and
+offline records it already contains, so a record is never counted twice and never
+dropped, whatever the device clock says. Money another employee collected on this
+device (before a shift change) counts too. Paying a cached server order warns that
+it may have been paid on another device.
+
+A round or payment for a local order waits until that order has synced (it is
+never sent to another order). A payment that would exceed the server balance at
+sync (for example because the table was paid on another device) is refused and
+shown for review; it is never partially applied. Local orders are only changed
+through offline records, even after the connection returns; once their record
+syncs, selling continues on the server order. While an offline payment for an
+order is still unresolved on this device, charging that order online is refused
+("Esta orden tiene un pago por confirmar…"), and selling reads the order again as
+soon as the payment syncs, so the guest is never charged twice.
+
+A manager reconciles an offline payment (see Review below):
+
+- into its order when it fits the balance, recording it in the original drawer
+  even if that drawer is closed; the order stays a normal order;
+- never while its original local order is still queued (on this or another
+  device): the review says "Esperando a que se sincronice la orden original" and
+  offers only archive. Recording the money first would leave the real order to
+  sync unpaid later, counting the revenue twice;
+- as a financial-only recovery only when its order was archived, cancelled, is in
+  recovery or does not exist;
+- never into a paid or closed check (`offline_payment_exceeds_due`); the manager
+  archives it instead.
 
 Before any offline save the device checks: the session may sell (Free selection),
 the offline window is still open by the server-corrected clock, a drawer was open
