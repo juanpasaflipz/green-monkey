@@ -6,6 +6,7 @@ import type {
   PaymentAttempt,
 } from "../shared/offline-recovery";
 import { attachClockStore, getConnectivitySnapshot } from "./connectivity";
+import { activeAttemptKey, isAttemptKey, scope } from "./offline-keys";
 import {
   evidenceKey,
   normalizePaymentAttempt,
@@ -56,18 +57,14 @@ db.version(1).stores({
   cache: "id",
 });
 attachClockStore(db.cache);
-export const scope = (s: Session) =>
-  `${s.tenantId}:${s.deviceId}:${s.employeeId}`;
 export { db };
+export {
+  scope,
+  activeAttemptKey,
+  parkedAttemptKey,
+  isAttemptKey,
+} from "./offline-keys";
 export { syncPending, isResolved, unsyncedCount } from "./offline-queue";
-
-/** The single in-flight online payment attempt of this scope. */
-export const activeAttemptKey = (s: Session) => `${scope(s)}:payment`;
-/** An unresolved attempt moved aside so it never blocks other orders (OFF-2). */
-export const parkedAttemptKey = (s: Session, operationId: string) =>
-  `${scope(s)}:payment:${operationId}`;
-export const isAttemptKey = (key: string) =>
-  /:payment(:[0-9a-f-]{36})?$/i.test(key);
 
 export async function clearPaymentAttempt(key: string, evidence: unknown) {
   await db.transaction("rw", db.cache, async () => {

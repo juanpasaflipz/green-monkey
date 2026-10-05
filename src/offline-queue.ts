@@ -11,7 +11,8 @@ import { useEffect, useState } from "react";
 import type { Session } from "../shared/domain";
 import { api, ApiError } from "./api";
 import { getConnectivitySnapshot, useConnectivity } from "./connectivity";
-import { db, scope, type Pending } from "./offline";
+import { db, type Pending } from "./offline";
+import { scope } from "./offline-keys";
 import {
   classifySyncError,
   RESOLVED_RETENTION_MS,

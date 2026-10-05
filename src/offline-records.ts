@@ -30,7 +30,8 @@ import {
 import { api } from "./api";
 import { clockOffset, correctedIso, deviceIso, serverNow } from "./clock";
 import { getConnectivitySnapshot } from "./connectivity";
-import { db, scope, type Pending } from "./offline";
+import { db, type Pending } from "./offline";
+import { scope } from "./offline-keys";
 import {
   fallbackPrefix,
   formatProvisional,
