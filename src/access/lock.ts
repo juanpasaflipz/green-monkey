@@ -56,15 +56,39 @@ export function noteActivity(sessionId: string, force = false, now = Date.now())
   write(ACTIVITY_KEY, JSON.stringify({ sessionId, at: now }));
 }
 
+/** The reason a lock marker (for example from another tab) holds for this session. */
+export function lockedFor(raw: string | null, sessionId: string): string | null {
+  const lock = parse(raw);
+  return lock?.sessionId === sessionId && typeof lock.reason === "string"
+    ? lock.reason
+    : null;
+}
+
+/** A revoked session or device: the cached session is removed. */
+const FORGET_CODES = new Set([
+  "session_revoked",
+  "device_revoked",
+  "device_not_paired",
+]);
+/** Ended elsewhere, expired or unknown: the cached session stays, locked. */
+const LOCK_CODES = new Set(["unauthorized", "session_expired", "session_ended"]);
+/**
+ * What a session 401 does to the offline cache (FOH-7/SEC-6): "forget" deletes
+ * the cached session, "lock" remembers a lock with that code, so an offline
+ * restore opens behind the lock with no soft unlock; anything else is ignored.
+ */
+export function cacheRuleFor(code: string): "forget" | "lock" | null {
+  return FORGET_CODES.has(code) ? "forget" : LOCK_CODES.has(code) ? "lock" : null;
+}
+
 /**
  * The lock a restored session starts with: the remembered lock of this session,
  * or "idle" when its last recorded input is older than its auto-lock. Null
  * means the session may open unlocked.
  */
 export function restoredLock(s: Session, now = Date.now()): string | null {
-  const lock = parse(read(LOCK_KEY));
-  if (lock?.sessionId === s.id && typeof lock.reason === "string")
-    return lock.reason;
+  const remembered = lockedFor(read(LOCK_KEY), s.id);
+  if (remembered) return remembered;
   const idle = s.access?.idleLockSeconds;
   const activity = parse(read(ACTIVITY_KEY));
   if (

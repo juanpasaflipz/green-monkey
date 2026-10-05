@@ -36,6 +36,7 @@ import {
   drainBeforeLeaving,
   finishPendingLogout,
   serverSignOut,
+  settleRejectedSession,
   startHeartbeat,
   unsyncedFor,
 } from "./access/session";
@@ -106,9 +107,12 @@ export default function App() {
               ? "today"
               : "sell",
         );
-    } catch {
+    } catch (e) {
       setActiveSession(null);
       setCatalog([]);
+      // A session the server rejected never comes back unlocked from the cache.
+      if (e instanceof ApiError && e.status === 401)
+        await settleRejectedSession(e.message);
       if (!navigator.onLine) {
         const cached = await db.cache.get("session");
         if (cached && new Date(cached.value.offlineUntil) > new Date()) {
@@ -162,7 +166,8 @@ export default function App() {
         .then((c) => {
           if (!current) return;
           setCatalog(c);
-          void cacheSession(session, c);
+          // A session 401 meanwhile must not put that session back in the cache.
+          if (!requestsBlocked()) void cacheSession(session, c);
         })
         .catch(() => {});
     return () => {
@@ -177,19 +182,24 @@ export default function App() {
     // A session 401 locks the screen with its reason; a device 401 unpairs (FOH-7).
     const unauthorized = (event: Event) => {
       const code = (event as CustomEvent<string>).detail;
+      // Also on a cold start: a revoked session leaves the offline cache, and
+      // a deactivated employee cannot keep selling offline from it.
+      void settleRejectedSession(code);
       if (!sessionRef.current) return;
       if (code === "device_revoked" || code === "device_not_paired") {
-        void db.cache.delete("session");
         clearSessionScope();
         setLock(null);
         setActiveSession(null);
         setCatalog([]);
         setGateReason(code);
-        forgetLock();
       } else {
-        // A deactivated employee must not keep selling offline from the cache.
-        if (code === "session_revoked") void db.cache.delete("session");
-        setLock((current) => current ?? { reason: code });
+        // The server's reason replaces an idle, manual or renew lock, so no
+        // offline "Continuar como" remains for a session it rejected.
+        setLock((current) =>
+          current && !["idle", "manual", "renew"].includes(current.reason)
+            ? current
+            : { reason: code },
+        );
       }
     };
     window.addEventListener("gm-unauthorized", unauthorized);
@@ -235,6 +245,9 @@ export default function App() {
     // only the "session" cache entry is written (D15).
     return startHeartbeat(
       (s) => {
+        // A reply sent before a session 401 seen meanwhile neither unblocks
+        // requests nor puts the rejected session back in the cache.
+        if (requestsBlocked()) return;
         setSession(s);
         void db.cache.put({ id: "session", value: s });
         setActiveSession((current) =>

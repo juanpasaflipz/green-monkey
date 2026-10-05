@@ -1,6 +1,7 @@
 import type { Session } from "../../shared/domain";
 import { ApiError, api, requestsBlocked } from "../api";
 import { db, scope, syncPending } from "../offline";
+import { cacheRuleFor, forgetLock, rememberLock } from "./lock";
 
 /** Set when a logout could not reach the server; finished before anything else. */
 export const LOGOUT_PENDING_KEY = "gm-logout-pending";
@@ -115,6 +116,24 @@ export async function finishPendingLogout(): Promise<boolean> {
     return true;
   } catch {
     return false;
+  }
+}
+
+/**
+ * Applies a session 401 to the offline cache, also on a cold start before any
+ * session is shown (FOH-7/SEC-6): a revoked session or device is deleted from
+ * the cache; a session ended, expired or unknown to the server stays cached
+ * but remembered as locked with that code, so an offline restore never opens
+ * it unlocked and offers no "Continuar como".
+ */
+export async function settleRejectedSession(code: string): Promise<void> {
+  const rule = cacheRuleFor(code);
+  if (rule === "forget") {
+    forgetLock();
+    await db.cache.delete("session");
+  } else if (rule === "lock") {
+    const cached = await db.cache.get("session");
+    if (cached) rememberLock((cached.value as Session).id, code);
   }
 }
 

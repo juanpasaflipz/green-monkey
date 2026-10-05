@@ -1,6 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../shared/domain";
 
+// settleRejectedSession works on the IndexedDB cache; an in-memory stand-in.
+const cache = new Map<string, { id: string; value: unknown }>();
+vi.mock("../src/offline", () => ({
+  db: {
+    cache: {
+      get: async (id: string) => cache.get(id),
+      delete: async (id: string) => void cache.delete(id),
+    },
+  },
+  scope: () => "scope",
+  syncPending: async () => {},
+}));
+
 const session = (id: string, idleLockSeconds: number | null = 180) =>
   ({
     id,
@@ -121,5 +134,46 @@ describe("lock dialog guard (ACC-14)", () => {
       false,
       true,
     ]);
+  });
+});
+
+describe("session 401 and the offline cache (ACC-15)", () => {
+  it("a revoked session or device leaves the cache; other session codes lock it", async () => {
+    const { cacheRuleFor } = await load();
+    for (const code of ["session_revoked", "device_revoked", "device_not_paired"])
+      expect(cacheRuleFor(code)).toBe("forget");
+    for (const code of ["unauthorized", "session_expired", "session_ended"])
+      expect(cacheRuleFor(code)).toBe("lock");
+    for (const code of ["session_changed", "step_up_required", "forbidden"])
+      expect(cacheRuleFor(code)).toBeNull();
+  });
+
+  it("settleRejectedSession deletes a revoked cached session and its lock (cold start)", async () => {
+    const { rememberLock, restoredLock } = await load();
+    const { settleRejectedSession } = await import("../src/access/session");
+    cache.set("session", { id: "session", value: session(A) });
+    rememberLock(A, "manual");
+    await settleRejectedSession("session_revoked");
+    expect(cache.has("session")).toBe(false);
+    expect(restoredLock(session(A))).toBeNull();
+    cache.set("session", { id: "session", value: session(A) });
+    await settleRejectedSession("device_revoked");
+    expect(cache.has("session")).toBe(false);
+  });
+
+  it("settleRejectedSession locks an ended cached session with its code, replacing a soft lock", async () => {
+    const { rememberLock, restoredLock } = await load();
+    const { settleRejectedSession } = await import("../src/access/session");
+    cache.set("session", { id: "session", value: session(A) });
+    rememberLock(A, "manual");
+    await settleRejectedSession("session_ended");
+    expect(cache.has("session")).toBe(true);
+    expect(restoredLock(session(A))).toBe("session_ended");
+    // Codes that say nothing about the session change nothing.
+    await settleRejectedSession("session_changed");
+    expect(restoredLock(session(A))).toBe("session_ended");
+    cache.clear();
+    await settleRejectedSession("session_expired");
+    expect(restoredLock(session(B))).toBeNull();
   });
 });
