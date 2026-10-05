@@ -151,9 +151,8 @@ async function lockProductsUsingGroup(tx: Tx, groupId: string) {
     where data->'groupIds' @> jsonb_build_array(${groupId}::text) order by id for update`;
 }
 
-/** Recipe lines must name distinct, active stock items with quantity > 0. */
-export async function validateRecipe(tx: Tx, recipe: RecipeLine[]) {
-  if (!recipe.length) return;
+/** One recipe: at most 30 lines, each stock item once, quantity > 0. */
+function checkRecipeShape(recipe: RecipeLine[]) {
   const ids = recipe.map((r) => r.stockId);
   if (
     recipe.length > MENU_LIMITS.recipeLines ||
@@ -161,9 +160,39 @@ export async function validateRecipe(tx: Tx, recipe: RecipeLine[]) {
     recipe.some((r) => !new Decimal(r.quantity).gt(0))
   )
     throw new DomainError("invalid_recipe");
+}
+/** Every listed stock item exists and is not archived (one query). */
+async function requireActiveStock(tx: Tx, stockIds: string[]) {
+  const ids = [...new Set(stockIds)];
+  if (!ids.length) return;
   const found =
     await tx`select id from stock_items where id=any(${tx.array(ids)}::uuid[]) and archived_at is null`;
   if (found.length !== ids.length) throw new DomainError("invalid_recipe");
+}
+/** Recipe lines must name distinct, active stock items with quantity > 0. */
+export async function validateRecipe(tx: Tx, recipe: RecipeLine[]) {
+  if (!recipe.length) return;
+  checkRecipeShape(recipe);
+  await requireActiveStock(
+    tx,
+    recipe.map((r) => r.stockId),
+  );
+}
+/**
+ * Every choice recipe must be valid and name only active stock items, so a
+ * group that is saved, restored or linked can never make a sale deduct an
+ * archived ingredient (archived items leave Existencias and recipe pickers).
+ */
+async function validateOptionRecipes(
+  tx: Tx,
+  options: { recipe?: RecipeLine[] }[],
+) {
+  const recipes = options.map((o) => o.recipe ?? []).filter((r) => r.length);
+  for (const recipe of recipes) checkRecipeShape(recipe);
+  await requireActiveStock(
+    tx,
+    recipes.flat().map((r) => r.stockId),
+  );
 }
 
 /** Loads active groups in the order given; a missing one is invalid_group. */
@@ -429,6 +458,10 @@ async function writeProduct(
   );
   checkProductGroups(p.kind, compiled);
   await validateRecipe(tx, p.recipe);
+  await validateOptionRecipes(
+    tx,
+    compiled.flatMap((g) => g.options),
+  );
   if (
     json(old?.data.recipe ?? []) !== json(p.recipe) ||
     (old?.data.cost ?? null) !== p.cost
@@ -701,7 +734,7 @@ export async function saveGroup(tx: Tx, s: Session, raw: unknown) {
       await tx`select 1 from modifier_groups g, jsonb_array_elements(g.data->'options') o
         where g.id<>${p.id} and o->>'id'=any(${tx.array(optionIds)}::text[]) limit 1`;
     if (collision) throw new DomainError("invalid_group");
-    for (const o of p.options) await validateRecipe(tx, o.recipe);
+    await validateOptionRecipes(tx, p.options);
     const before = old?.data.options ?? [];
     if (
       p.options.some((o) => {
@@ -774,6 +807,10 @@ export async function archiveGroup(tx: Tx, s: Session, raw: unknown) {
         (await activeCount(tx, "modifier_groups")) >= MENU_LIMITS.groups
       )
         throw new DomainError("menu_limit", 409);
+      // An ingredient may have been archived while this group was archived
+      // (archived groups do not block that); restoring must not bring back a
+      // choice that deducts it. Restore the ingredient first.
+      if (old.archived_at) await validateOptionRecipes(tx, old.data.options);
       await tx`update modifier_groups set archived_at=null,version=version+1 where id=${p.id}`;
     }
     const [row] = await tx<

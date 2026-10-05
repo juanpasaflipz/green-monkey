@@ -2051,6 +2051,97 @@ try {
     );
   });
 
+  await test("a group whose choice recipe uses an archived ingredient cannot be restored or linked", async () => {
+    const queso = await newStock(manager, "Queso Oaxaca", "kg", "1");
+    const extras = (
+      await run(manager, (tx) =>
+        saveGroup(
+          tx,
+          manager,
+          groupBody({
+            name: { es: "Extras" },
+            min: 0,
+            max: 1,
+            options: [
+              {
+                id: randomUUID(),
+                name: { es: "Queso" },
+                price: 1500,
+                recipe: [{ stockId: queso, quantity: "0.03" }],
+              },
+            ],
+          }),
+        ),
+      )
+    ).group;
+    const shelved = await run(manager, (tx) =>
+      archiveGroup(tx, manager, {
+        operationId: op(),
+        id: extras.id,
+        expectedVersion: extras.version,
+        archived: true,
+      }),
+    );
+    // An archived group does not keep the ingredient in use.
+    const item = (
+      await run(manager, (tx) => listStockItems(tx, manager))
+    ).items.find((i) => i.id === queso)!;
+    const archivedItem = await run(manager, (tx) =>
+      archiveStockItem(tx, manager, {
+        operationId: op(),
+        id: queso,
+        expectedVersion: item.settingsVersion,
+        archived: true,
+      }),
+    );
+    const restore = () =>
+      run(manager, (tx) =>
+        archiveGroup(tx, manager, {
+          operationId: op(),
+          id: extras.id,
+          expectedVersion: shelved.group.version,
+          archived: false,
+        }),
+      );
+    await rejects(restore(), "invalid_recipe");
+    const [still] = await run(
+      manager,
+      (tx) =>
+        tx`select archived_at from modifier_groups where id=${extras.id}`,
+    );
+    assert.notEqual(still.archived_at, null, "the refused restore rolled back");
+    // With the ingredient back, the group restores.
+    await run(manager, (tx) =>
+      archiveStockItem(tx, manager, {
+        operationId: op(),
+        id: queso,
+        expectedVersion: archivedItem.settingsVersion,
+        archived: false,
+      }),
+    );
+    const restored = await restore();
+    assert.equal(restored.group.archived, false);
+    // Defence in depth: linking a group never brings in an archived item,
+    // even if one were archived behind the menu's back.
+    await asAdmin(
+      a.tenantId,
+      (tx) =>
+        tx`update stock_items set archived_at=now() where id=${queso}`,
+    );
+    await rejects(
+      newProduct(manager, tacos.id, { groupIds: [extras.id] }),
+      "invalid_recipe",
+    );
+    await asAdmin(
+      a.tenantId,
+      (tx) => tx`update stock_items set archived_at=null where id=${queso}`,
+    );
+    const linked = await newProduct(manager, tacos.id, {
+      groupIds: [extras.id],
+    });
+    assert.deepEqual(linked.groupIds, [extras.id]);
+  });
+
   await test("an opening quantity writes exactly one opening movement", async () => {
     const stockId = await newStock(manager, "Apertura", "l", "7.25");
     const moves = await run(

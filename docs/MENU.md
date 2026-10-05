@@ -45,7 +45,9 @@ Archiving a group unlinks it from every product; past order lines keep their
 snapshot. Archiving is refused with `combo_requires_choice` when the group is the
 only required group of an active combo (the confirmation names those combos);
 an archived combo is checked again when it is restored. Restoring a group does
-not re-link it.
+not re-link it, and is refused with `invalid_recipe` when a choice recipe names
+an ingredient archived meanwhile (restore the ingredient first). Saving a product
+also checks the choice recipes of every group it links.
 
 **Availability ("86") is live state.** The switches in the product list, the
 product editor and the group editor save at once, last write wins, bump the menu
