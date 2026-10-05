@@ -679,14 +679,26 @@ test("FOH-8: an 86 reaches an open Vender screen through the minute poll, focus 
     if (new URL(r.url()).pathname === "/api/catalog") catalogs++;
   });
   try {
+    // Entering Vender always starts with a revision check. Whether it also
+    // refetches depends on whether the brief "sell" render during sign-in
+    // already recorded a baseline (MENU-12), so wait for the check and then
+    // for the catalog fetches to go quiet instead of counting them.
+    const firstCheck = page.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/menu/revision",
+    );
     await sell(page);
+    await firstCheck;
     const card = page
       .locator(".product")
       .filter({ hasText: "Brownie de cacao" });
     await expect(card).toBeEnabled();
-    // Entering Vender: the view's catalog fetch, then the first revision check
-    // refetches once (a change may land between the two; MENU-12).
-    await expect.poll(() => catalogs).toBe(2);
+    await expect
+      .poll(async () => {
+        const seen = catalogs;
+        await page.waitForTimeout(400);
+        return catalogs === seen;
+      })
+      .toBe(true);
     // Simulate access's heartbeat renewing the offline window in the cache;
     // a catalog refresh must never put the login-time session back (MENU-2).
     const renewed = "2999-01-01T00:00:00.000Z";
@@ -698,14 +710,16 @@ test("FOH-8: an 86 reaches an open Vender screen through the minute poll, focus 
       })
       .toBe(renewed);
 
-    // 1. The 60 s revision poll, with no view change.
+    // 1. The 60 s revision poll, with no view change. Nothing refetches
+    // until the poll fires.
+    const quiet = catalogs;
     await toggle(false);
     await expect(card).toBeEnabled();
-    expect(catalogs).toBe(2);
+    expect(catalogs).toBe(quiet);
     await page.clock.fastForward(60_000);
     await expect(card).toBeDisabled();
     await expect(card).toContainText("Agotado");
-    expect(catalogs).toBe(3);
+    expect(catalogs).toBe(quiet + 1);
 
     // 2. Focus (the terminal comes back to the foreground).
     await toggle(true);
