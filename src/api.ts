@@ -294,9 +294,10 @@ async function guarded<T>(
         blocked = true;
         blockedBy = e.message;
       }
-      window.dispatchEvent(
-        new CustomEvent("gm-unauthorized", { detail: e.message }),
-      );
+      if (typeof window !== "undefined")
+        window.dispatchEvent(
+          new CustomEvent("gm-unauthorized", { detail: e.message }),
+        );
     }
     throw e;
   }
