@@ -1116,15 +1116,20 @@ try {
     });
     await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at)
       values(${tenantId},${randomUUID()},${terminal.id},${cashierId},0,now())`;
-    const newOrder = () =>
+    // Dine-in at a table: at balance zero the check stays "paid" (service 024),
+    // so the fully paid order still reaches the unpaid-units rule instead of
+    // check_closed (a paid takeaway check closes).
+    const tableId = randomUUID();
+    await admin`insert into dining_tables(tenant_id,id,name) values(${tenantId},${tableId},'Mesa anulación')`;
+    const newOrder = (table: string | null = null) =>
       run((tx) =>
         createOrder(tx, session, {
           operationId: randomUUID(),
           lines: [
             { id: randomUUID(), productId, quantity: 1, options: [], note: "" },
           ],
-          mode: "takeaway",
-          tableId: null,
+          mode: table ? "dine_in" : "takeaway",
+          tableId: table,
           name: "Anulación",
           note: "",
           channel: "pos",
@@ -1135,7 +1140,7 @@ try {
       (await admin`select failed_attempts from employees where id=${managerId}`)[0]
         .failed_attempts;
     // An open order with an unpaid unit: the PIN is checked and a wrong one counts.
-    const open = await newOrder();
+    const open = await newOrder(tableId);
     await rejects(verifyApproval(sql, session, wrong, open.id), "approval_denied");
     assert.equal(await failures(), 1);
     // Fully paid: refused before the PIN, which is neither checked nor counted.
@@ -1155,10 +1160,11 @@ try {
       verifyApproval(sql, session, { employeeId: managerId, secret: MANAGER_PIN }, open.id),
       "void_exceeds_unpaid",
     );
-    // Closed (here cancelled): refused before the PIN as well.
+    // Closed (here cancelled): refused before the PIN as well, with the code
+    // voidLines gives it (assertCheckWritable: check_closed since service 024).
     const closed = await newOrder();
     await admin`update orders set state='cancelled' where id=${closed.id}`;
-    await rejects(verifyApproval(sql, session, wrong, closed.id), "stale_order");
+    await rejects(verifyApproval(sql, session, wrong, closed.id), "check_closed");
     assert.equal(await failures(), 1);
     // The right PIN on an order that can still be voided approves.
     const voidable = await newOrder();
@@ -1179,15 +1185,19 @@ try {
     });
     await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at)
       values(${tenantId},${randomUUID()},${terminal.id},${cashierId},0,now())`;
-    const newOrder = (quantity: number) =>
+    // The split case is dine-in at a table so its check stays "paid" at
+    // balance zero and a further void reaches the unpaid-units rule (service 024).
+    const tableId = randomUUID();
+    await admin`insert into dining_tables(tenant_id,id,name) values(${tenantId},${tableId},'Mesa reintento')`;
+    const newOrder = (quantity: number, table: string | null = null) =>
       run((tx) =>
         createOrder(tx, session, {
           operationId: randomUUID(),
           lines: [
             { id: randomUUID(), productId, quantity, options: [], note: "" },
           ],
-          mode: "takeaway",
-          tableId: null,
+          mode: table ? "dine_in" : "takeaway",
+          tableId: table,
           name: "Reintento",
           note: "",
           channel: "pos",
@@ -1221,12 +1231,13 @@ try {
     assert.deepEqual(replay, stored(first));
     assert.equal(await voidRows(whole.id), 1);
     // Only that exact void replays: a new void, or the same operationId with
-    // another body, is still refused by the order check before the PIN.
-    await rejects(send(whole.id, body(whole, 1)), "stale_order");
-    await rejects(send(whole.id, { ...cancel, reason: "Otro motivo" }), "stale_order");
+    // another body, is still refused by the order check before the PIN
+    // (the fully voided check is closed: check_closed since service 024).
+    await rejects(send(whole.id, body(whole, 1)), "check_closed");
+    await rejects(send(whole.id, { ...cancel, reason: "Otro motivo" }), "check_closed");
 
     // The last unpaid unit while the other unit is paid.
-    const split = await newOrder(2);
+    const split = await newOrder(2, tableId);
     const paid = await run((tx) =>
       recordPayment(tx, session, split.id, {
         operationId: randomUUID(),
@@ -2242,6 +2253,8 @@ try {
       "owner_memberships",
       "employees",
       "restaurant_entitlements",
+      "kitchen_feed_versions",
+      "dining_tables",
     ])
       await admin.unsafe(`delete from ${table} where tenant_id=$1`, [id]);
     await admin`delete from restaurants where id=${id}`;
