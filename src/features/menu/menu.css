@@ -460,6 +460,29 @@
   background: var(--negative-bg);
 }
 
+/* Category heading with its own "add a product here" button (OWNER-13). */
+.menu-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.menu-section-head .menu-section-title {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.menu-section-add.button.ghost {
+  flex-shrink: 0;
+  min-width: 44px;
+  width: 44px;
+  min-height: 44px;
+  height: 44px;
+  padding: 0;
+  background: var(--fill);
+}
+
 /* Group cards: sold-out choices and one-tap choice availability (OWNER-4). */
 .menu-option-preview .badge {
   vertical-align: middle;

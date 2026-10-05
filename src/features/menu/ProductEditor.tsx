@@ -32,6 +32,18 @@ import { SavesAsAmount } from "./SavesAs";
 const NEW = "__new";
 
 /**
+ * Starting values for a new product: the category of the section it was
+ * added from, or the category, groups, station and type of the product just
+ * saved with "Guardar y agregar otro" (OWNER-13).
+ */
+export type ProductPreset = {
+  categoryId?: string;
+  groupIds?: string[];
+  station?: "kitchen" | "bar";
+  kind?: "item" | "combo";
+};
+
+/**
  * Wide product editor. One operationId per open dialog, reused for retries, so
  * a save whose response was lost replays instead of saving twice.
  */
@@ -39,10 +51,12 @@ export function ProductEditor({
   payload,
   product,
   duplicateOf,
+  preset,
   locale,
   session,
   online,
   onSaved,
+  onSaveAndNew,
   onDuplicate,
   onClose,
   onReload,
@@ -52,10 +66,13 @@ export function ProductEditor({
   payload: MenuEditorPayload;
   product?: Product;
   duplicateOf?: Product;
+  preset?: ProductPreset;
   locale: Locale;
   session: Session;
   online: boolean;
   onSaved: (product: Product) => void;
+  /** New products only: saved; open another one with the same setup. */
+  onSaveAndNew?: (product: Product) => void;
   onDuplicate: (product: Product) => void;
   onClose: () => void;
   onReload: () => void;
@@ -98,23 +115,29 @@ export function ProductEditor({
   });
   const [categoryId, setCategoryId] = useState(
     () =>
-      activeCategories.find((c) => c.id === source?.categoryId)?.id ??
-      (product ? "" : (activeCategories[0]?.id ?? "")),
+      activeCategories.find(
+        (c) => c.id === (source ? source.categoryId : preset?.categoryId),
+      )?.id ?? (product ? "" : (activeCategories[0]?.id ?? "")),
   );
-  const [kind, setKind] = useState<"item" | "combo">(source?.kind ?? "item");
+  const [kind, setKind] = useState<"item" | "combo">(
+    source?.kind ?? preset?.kind ?? "item",
+  );
   const [openAmount, setOpenAmount] = useState(!!source?.openAmount);
   const [price, setPrice] = useState(
     source && !source.openAmount ? amountText(source.price, currency) : "",
   );
   const [openMax, setOpenMax] = useState(amountText(source?.openMax, currency));
   const [station, setStation] = useState<"kitchen" | "bar">(
-    source?.station ?? "kitchen",
+    source?.station ?? preset?.station ?? "kitchen",
   );
   const [available, setAvailable] = useState(product?.available ?? true);
   const [groupIds, setGroupIds] = useState<string[]>(
-    (source?.groupIds ?? source?.groups.map((g) => g.id) ?? []).filter((id) =>
-      groups.some((g) => g.id === id && !g.archived),
-    ),
+    (
+      source?.groupIds ??
+      source?.groups.map((g) => g.id) ??
+      preset?.groupIds ??
+      []
+    ).filter((id) => groups.some((g) => g.id === id && !g.archived)),
   );
   const keepPro = pro || !duplicateOf;
   const [recipe, setRecipe] = useState<RecipeLine[]>(
@@ -302,6 +325,17 @@ export function ProductEditor({
               >
                 {t("menuSave")}
               </Button>
+              {!product && onSaveAndNew && (
+                <Button
+                  disabled={busy || !online}
+                  onClick={async () => {
+                    const saved = await save();
+                    if (saved) onSaveAndNew(saved);
+                  }}
+                >
+                  {t("menuSaveAndNew")}
+                </Button>
+              )}
               {product && (
                 <Button
                   disabled={busy}

@@ -287,6 +287,8 @@ export default defineArea({
       "Sus opciones cambiaron. Quítalo y vuelve a agregarlo.",
     menuOptionsAvailability: "Disponibilidad de opciones",
     menuOptionsSoldOut: "{n} agotadas",
+    menuAddProductTo: "Agregar producto a {name}",
+    menuSaveAndNew: "Guardar y agregar otro",
   },
   en: {
     menuNavLabel: "Menu & inventory",
@@ -571,6 +573,8 @@ export default defineArea({
     menuLineChoicesChanged: "Its choices changed. Remove it and add it again.",
     menuOptionsAvailability: "Choice availability",
     menuOptionsSoldOut: "{n} sold out",
+    menuAddProductTo: "Add item to {name}",
+    menuSaveAndNew: "Save and add another",
   },
   errors: {
     menu_changed: [

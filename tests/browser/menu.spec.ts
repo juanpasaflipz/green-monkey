@@ -1355,3 +1355,49 @@ test("OWNER-10: the picker keeps the live price in view while its choices scroll
   expect(p!.y + p!.height).toBeLessThanOrEqual(b!.y + b!.height);
   expect(await body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
 });
+
+test("OWNER-13: adding from a category heading preselects it; Guardar y agregar otro keeps the category and groups", async ({
+  page,
+}) => {
+  const id = suffix();
+  await login(page);
+  await openMenu(page);
+  await page
+    .getByRole("button", { name: "Agregar producto a Postres", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Nuevo producto" });
+  const category = dialog.getByRole("combobox", {
+    name: "Categoría *",
+    exact: true,
+  });
+  await expect(category.locator("option:checked")).toHaveText("Postres");
+  await dialog.getByLabel("Nombre en español").fill(`Flan ${id}`);
+  await dialog.getByLabel("Precio al cliente (con IVA)").fill("40");
+  await dialog
+    .getByRole("combobox", { name: "Agregar grupo", exact: true })
+    .selectOption({ label: "Extras · Opcional · hasta 2" });
+  await dialog
+    .getByRole("button", { name: "Guardar y agregar otro", exact: true })
+    .click();
+  await expect(page.getByRole("status")).toHaveText("Cambios guardados");
+  // A fresh form in the same category with the same group linked.
+  await expect(dialog.getByLabel("Nombre en español")).toHaveValue("");
+  await expect(category.locator("option:checked")).toHaveText("Postres");
+  await expect(dialog.locator(".menu-linked-group")).toHaveText(/^Extras/);
+  await dialog.getByLabel("Nombre en español").fill(`Arroz con leche ${id}`);
+  await dialog.getByLabel("Precio al cliente (con IVA)").fill("35");
+  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  const catalog = (await call(page, "/catalog")).data as any[];
+  const saved = catalog.filter((p) => p.name.es.endsWith(id));
+  expect(saved.map((p) => p.category.es)).toEqual(["Postres", "Postres"]);
+  for (const p of saved)
+    expect(p.groups.map((g: any) => g.name.es)).toEqual(["Extras"]);
+  // "Nuevo producto" now starts in the category last saved to.
+  await page
+    .getByRole("button", { name: "Nuevo producto", exact: true })
+    .click();
+  await expect(category.locator("option:checked")).toHaveText("Postres");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});

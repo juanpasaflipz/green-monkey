@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Plus } from "lucide-react";
 import type { Locale, Product, Session } from "../../../shared/domain";
 import type {
   MenuCategory,
@@ -10,7 +11,7 @@ import { translateError } from "../../i18n";
 import { Badge, Button, Empty, Modal } from "../../components/ui";
 import { CategoryDialog } from "./CategoryDialog";
 import { GroupEditor } from "./GroupEditor";
-import { ProductEditor } from "./ProductEditor";
+import { ProductEditor, type ProductPreset } from "./ProductEditor";
 import { withOptionAvailable, withProductAvailable } from "./availability";
 import { groupRuleText, moneyFormatter, translator } from "./format";
 
@@ -74,7 +75,10 @@ export function MenuWorkspace({
     key: string;
     product?: Product;
     duplicateOf?: Product;
+    preset?: ProductPreset;
   } | null>(null);
+  // "Nuevo producto" starts in the category last saved to (OWNER-13).
+  const [lastCategory, setLastCategory] = useState<string | null>(null);
   const [categoryDialog, setCategoryDialog] = useState<{
     category?: MenuCategory;
   } | null>(null);
@@ -128,6 +132,8 @@ export function MenuWorkspace({
     }
   }
 
+  const newProduct = (preset?: ProductPreset) =>
+    setEditor({ key: crypto.randomUUID(), preset });
   /** Shown at once; the reload (or a failure's reload) then confirms it. */
   async function setProductAvailable(p: Product, available: boolean) {
     patch((cur) => withProductAvailable(cur, p.id, available));
@@ -350,7 +356,11 @@ export function MenuWorkspace({
             <Button
               variant={tab === "products" ? "primary" : "secondary"}
               disabled={!online}
-              onClick={() => setEditor({ key: crypto.randomUUID() })}
+              onClick={() =>
+                newProduct(
+                  lastCategory ? { categoryId: lastCategory } : undefined,
+                )
+              }
             >
               {t("menuNewProduct")}
             </Button>
@@ -397,10 +407,7 @@ export function MenuWorkspace({
                   </button>
                 </li>
                 <li>
-                  <button
-                    className="text-button"
-                    onClick={() => setEditor({ key: crypto.randomUUID() })}
-                  >
+                  <button className="text-button" onClick={() => newProduct()}>
                     {t("menuStepProducts")}
                   </button>
                 </li>
@@ -434,12 +441,30 @@ export function MenuWorkspace({
             sections.map((section) => {
               return (
                 <section className="menu-section-list" key={section.key}>
-                  <h2 className="menu-section-title">
-                    {section.title}
-                    <small>
-                      {t("menuProductCount", { n: section.products.length })}
-                    </small>
-                  </h2>
+                  <div className="menu-section-head">
+                    <h2 className="menu-section-title">
+                      {section.title}
+                      <small>
+                        {t("menuProductCount", { n: section.products.length })}
+                      </small>
+                    </h2>
+                    {section.category && !section.category.archived && (
+                      <Button
+                        variant="ghost"
+                        className="menu-section-add"
+                        disabled={!online}
+                        aria-label={t("menuAddProductTo", {
+                          name: section.title,
+                        })}
+                        title={t("menuAddProductTo", { name: section.title })}
+                        onClick={() =>
+                          newProduct({ categoryId: section.category!.id })
+                        }
+                      >
+                        <Plus size={20} aria-hidden="true" />
+                      </Button>
+                    )}
+                  </div>
                   {!section.category && (
                     <p className="tiny muted">{t("menuNoCategoryHint")}</p>
                   )}
@@ -649,6 +674,7 @@ export function MenuWorkspace({
           payload={payload}
           product={editor.product}
           duplicateOf={editor.duplicateOf}
+          preset={editor.preset}
           locale={locale}
           session={session}
           online={online}
@@ -660,9 +686,25 @@ export function MenuWorkspace({
           onDuplicate={(p) =>
             setEditor({ key: crypto.randomUUID(), duplicateOf: p })
           }
-          onSaved={() => {
+          onSaved={(p) => {
+            if (p.categoryId) setLastCategory(p.categoryId);
             setEditor(null);
             saved();
+          }}
+          onSaveAndNew={async (p) => {
+            if (p.categoryId) setLastCategory(p.categoryId);
+            setEditor(null);
+            setStatus(t("menuSaved"));
+            setError("");
+            // The next editor starts from a payload that has the saved
+            // product and any category or group created along the way.
+            await load();
+            newProduct({
+              categoryId: p.categoryId,
+              groupIds: p.groupIds ?? p.groups.map((g) => g.id),
+              station: p.station,
+              kind: p.kind,
+            });
           }}
           onAvailability={(id, available) => {
             patch((cur) => withProductAvailable(cur, id, available));
