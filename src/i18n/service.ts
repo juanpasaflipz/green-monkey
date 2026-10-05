@@ -533,6 +533,12 @@ export default defineArea({
       "Ese ticket ya no se puede regresar a la pantalla.",
       "That ticket can no longer be recalled.",
     ],
+    // Selling's own outcome when a send answers after the cart switched to
+    // another check (SVC-R10); Selling shows its notice instead of this text.
+    context_changed: [
+      "La cuenta en pantalla cambió mientras se enviaba la orden. Revisa Órdenes.",
+      "The check on screen changed while the order was being sent. Check Orders.",
+    ],
     void_ack_required: [
       "Cocina debe confirmar la cancelación antes de marcar el ticket como entregado.",
       "The kitchen must acknowledge the cancellation before the ticket is marked delivered.",
