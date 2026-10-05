@@ -474,7 +474,7 @@ This keeps the personal data proportional to the purpose (LFPDPPP 2025,
 
 ## Verification (local)
 
-- `npm run test:db:access` (36 checks, one of which applies migration 023 as an
+- `npm run test:db:access` (39 checks, one of which applies migration 023 as an
   owner role without BYPASSRLS in a scratch database), plus the updated voids,
   owner and offline-recovery suites in `npm run test:db:qualification`.
 - `npm run build && npm run test:access-http` (13 checks against the compiled
