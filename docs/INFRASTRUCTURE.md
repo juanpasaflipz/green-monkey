@@ -35,6 +35,11 @@ configuration before any application module (`server/config.ts`).
 
 Every variable that holds a secret is `preserve()`d: IaC never writes secret
 values; `scripts/ops/railway-vars.sh` sets them from a private file via stdin.
+Railway plans any variable the file does not declare for a service as a
+deletion, so every area declares each Railway variable its code reads (a
+literal or `preserve()`) in `.railway/railway.ts` in the same change; the
+staging cutover inventories the live variables before the first apply
+([RUNBOOK.md](RUNBOOK.md) "Staging cutover").
 CD (`.github/workflows/deploy.yml`) runs `railway config apply --yes` without
 `--confirm-destructive`, so a plan that would delete a service or variable
 stops for review. Domains are deliberately not in IaC. Settings IaC cannot

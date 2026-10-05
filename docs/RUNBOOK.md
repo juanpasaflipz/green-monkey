@@ -90,7 +90,7 @@ One-way points (a rollback past them needs extra steps):
 | Point | Rolling back past it |
 | --- | --- |
 | A migration that a later revision depends on | Not a blocker: older revisions keep working on the newer schema (expand-only). Never revert a migration by hand. |
-| This ops release (worker service, preDeploy migrations) | The previous revision expects migrations from Railway's old preDeploy on `web`; keep the worker service, it is harmless to older web revisions. |
+| This ops release (worker service, preDeploy migrations) | **Not supported without manual steps (staging only; production has no pre-ops revision).** A rollback keeps the live service configuration (above), which starts `web` with `node --import ./build/server/instrument.js build/server/index.js` and the worker with `build/server/worker.js` and runs the worker preDeploy `migrate.js --grants --retention`; none of these exist in pre-ops builds, so both services would crash-loop. To go back that far, first restore the old start command on `web` and remove the worker's preDeploy and start command (or delete the worker service) in the dashboard, or dispatch with `railway_config: apply` after reviewing `config plan` for that older SHA; the previous revision expects migrations from Railway's old preDeploy on `web`. Prefer deploying a fix forward. |
 | `BILLING_SANDBOX_ENABLED=true` with a pre-ops revision | Older revisions run the Stripe provider loop in `web` and need `STRIPE_SECRET_KEY` there; set `BILLING_SANDBOX_ENABLED=false` while rolled back. |
 
 ## Restart
@@ -187,36 +187,75 @@ Other secrets:
 ## Staging cutover
 
 Ordered steps to move staging onto this setup (operator, with the owner's
-consent; record each in [STAGING.md](STAGING.md)):
+consent; record each in [STAGING.md](STAGING.md)). Pin the CLI with
+`RAILWAY_CLI_VERSION` (`npx @railway/cli@$RAILWAY_CLI_VERSION`, written
+`railway` below) and use `--environment staging` on every command.
 
 1. Neon: take a branch snapshot of the staging database (restore point).
 2. `PROVISION_DATABASE_URL=<neondb_owner direct> npx tsx scripts/ops/provision-roles.ts --env staging --dry-run`,
    review, then run it for real: capability roles, `gm_migrator` login,
-   role defaults, ownership transfer to `gm_migrator`.
+   role defaults, ownership transfer to `gm_migrator`. It runs as
+   `neondb_owner`, which is not a superuser.
 3. Rename the existing Railway service to `web` if needed (keeps its id and
-   domain). `npx @railway/cli@<ver> config plan` → no destructive changes and no
-   domain removal → `config apply` creates `worker` and the variables.
-4. Set variables with `scripts/ops/railway-vars.sh staging <private file>`:
+   domain).
+4. **Inventory the live variables, names only** (never print values):
+   `railway variable list --service web --json | jq -r 'keys[]' | sort`.
+   Railway IaC plans every variable that `.railway/railway.ts` does not
+   declare for a service as a **deletion**, so classify every name that is
+   neither declared there (the service's `env` or `common`) nor a
+   Railway-provided `RAILWAY_*` name:
+   - **Retired from `web`, deleted by this cutover:** `MIGRATION_DATABASE_URL`,
+     `RAILWAY_GIT_COMMIT_SHA`, `STRIPE_SECRET_KEY`, `STRIPE_EXPECTED_ACCOUNT_ID`,
+     `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_ANNUAL`,
+     `STRIPE_PORTAL_CONFIG_ID` (the web refuses the secret key when deployed).
+     First copy the values the worker needs into the private file for step 7,
+     under its `# service: worker` header, without printing them (for example
+     `railway variable list --service web --kv | grep -E '^(STRIPE_SECRET_KEY|STRIPE_EXPECTED_ACCOUNT_ID|STRIPE_PRICE_PRO_MONTHLY|STRIPE_PRICE_PRO_ANNUAL|STRIPE_PORTAL_CONFIG_ID)=' >> <private file>`);
+     they cannot be read back after the apply.
+   - **Still needed:** a variable another area reads on staging (for example
+     access's `DEMO_TENANT_ID`, `ACCESS_STEP_UP_SECONDS` and
+     `ACCESS_IDLE_LOCK_DEFAULT_SECONDS`, if set there) or a deliberate
+     override such as `TRUST_PROXY`. Add `NAME: preserve()` to that service in
+     `.railway/railway.ts` and merge it before step 5 (until step 8 adds the
+     `RAILWAY_TOKEN` environment secret, the deploy run that merge triggers
+     fails before it touches Railway).
+   - **Leftovers nothing reads** (for example `RESTAURANT_TZ`, which the
+     server ignores): write them down; they are deleted in step 6.
+5. `railway config plan`. Proceed only if it creates `worker`, changes `web`'s
+   start command, health check and declared variables, removes no domain,
+   and its deletions are **exactly** the retired and leftover names written
+   down in step 4. Any other deletion: stop, add `preserve()` for it (step 4)
+   and plan again.
+6. `railway config apply --yes --confirm-destructive`, by the operator, once,
+   for that reviewed plan. A second `railway config plan` must then show no
+   changes. CD applies with `--yes` only (never `--confirm-destructive`), so
+   from here on any undeclared variable stops the automatic staging deploy at
+   the sync step until it is declared or deleted on purpose.
+7. Set variables with `scripts/ops/railway-vars.sh staging <private file>`:
    `web` (`APP_ENV=staging`, `WORKER_URL`), `worker` (`MIGRATION_DATABASE_URL`
    as `gm_migrator`, `PG_APP_USER`, `BILLING_DATABASE_URL`, Stripe sandbox
    keys, `ALERT_WEBHOOK_URL`).
-5. Delete from `web`: `MIGRATION_DATABASE_URL`, `RAILWAY_GIT_COMMIT_SHA`,
-   `STRIPE_SECRET_KEY`, `STRIPE_EXPECTED_ACCOUNT_ID`, `STRIPE_PRICE_PRO_*`,
-   `STRIPE_PORTAL_CONFIG_ID` (the web refuses the secret key when deployed).
-6. GitHub: `scripts/ops/github-protect.sh` (after the first PR has run the
+8. GitHub: `scripts/ops/github-protect.sh` (after the first PR has run the
    checks), environment secrets and variables.
-7. Merge to `main`; CD deploys; the smoke must pass, including the client IP
+9. Merge to `main`; CD deploys; the smoke must pass, including the client IP
    check.
-8. Railway deploy webhook → ntfy; check the manual settings above.
-9. Rotate `gm_staging_app` (dual role), deploy, finalize.
-10. Rotate the billing login (replaces the exposed `gm_staging_billing`).
-11. Rotate the `neondb_owner` password; keep it offline.
-12. First staging backup (Actions → Backup → staging, by hand), then the
+10. Railway deploy webhook → ntfy; check the manual settings above.
+11. Rotate `gm_staging_app` (dual role), deploy, finalize.
+12. Rotate the billing login (replaces the exposed `gm_staging_billing`).
+13. Rotate the `neondb_owner` password; keep it offline.
+14. First staging backup (Actions → Backup → staging, by hand), then the
     restore rehearsal ([BACKUP_RESTORE.md](BACKUP_RESTORE.md)); then turn on
     the weekly schedule with `gh variable set OPS_LIVE_ENVIRONMENTS --body staging`
     ([PROVISIONING.md](PROVISIONING.md) §7).
-13. Load test `target` and `stress`; record the pool decision
+15. Load test `target` and `stress`; record the pool decision
     ([LOAD_TEST.md](LOAD_TEST.md)).
+
+**For every area (integration note):** a Railway variable that a service
+must keep has to be declared in `.railway/railway.ts` (a literal, or
+`preserve()` for a value set out of band), in the same change that starts
+reading it. An undeclared variable is planned as a deletion, and CD's
+non-destructive `config apply --yes` then stops every automatic staging
+deploy at the sync step.
 
 ## Open follow-ups
 
@@ -226,6 +265,7 @@ Known gaps this release leaves open, with their owner:
 | --- | --- | --- |
 | DB-1, billing credential in `web` | While billing is enabled, `web` holds `BILLING_DATABASE_URL` for owner billing commands and the webhook. That login is a member of `gm_billing_worker`, whose policies read restaurants, organizations, entitlements and billing tables across tenants. Production launches with `BILLING_SANDBOX_ENABLED=false`, and production `web` refuses to start with `BILLING_DATABASE_URL` set while billing is disabled (`server/config-rules.ts`), so the internet-facing process never holds it there. | Account area (migration 031): a `billing_requests` inbox written with the runtime role and drained by the worker, after which only `worker` holds the billing login. |
 | DB-6, grants hash in readiness | Grants are applied in the newest migration's transaction, so a new revision cannot pass `/api/health` before its tables are granted; readiness itself checks only `schema_migrations` (`server/readiness.ts` is frozen this wave). | Ops, next wave: a `schema_grants` registry and a readiness check of the manifest hash. |
+| OPS-R10, retention needs DDL | Each retention batch turns off FORCE row-level security (ACCESS EXCLUSIVE until commit) and scans `jobs` without an index, because only the owner may delete and FORCE applies to it. The worker therefore runs it only 04:00–10:00 Mexico City, with a 200 ms lock wait and a 1.5 s statement bound per batch; at a few million `jobs` rows (blocked receipt jobs are never deleted) the scan exceeds the bound and `retention_failed` reports `statement_timeout` every night. | Ops, next wave (a new migration; 022 is limited to the hot-path indexes): a partial index `jobs(created_at) WHERE state IN ('done','dead')` so each batch finds its rows in milliseconds, and a `gm_maintenance` login with DELETE on the two tables under policies limited to the retention predicates, so retention needs no DDL and no ACCESS EXCLUSIVE lock and can run at any hour. |
 | OPS-10, signing keyring; F2 in-transaction authentication | Tokens are still signed with `JWT_SECRET`; deferred while the access area rewrites `server/auth.ts`. | Ops, after the access merge. |
 
 ## Incident log template
@@ -239,4 +279,3 @@ Root cause:
 Data impact: (none / reconciled how)
 Follow-ups: (owner, due date)
 ```
-| OPS-R10, retention needs DDL | Each retention batch turns off FORCE row-level security (ACCESS EXCLUSIVE until commit) and scans `jobs` without an index, because only the owner may delete and FORCE applies to it. The worker therefore runs it only 04:00–10:00 Mexico City, with a 200 ms lock wait and a 1.5 s statement bound per batch; at a few million `jobs` rows (blocked receipt jobs are never deleted) the scan exceeds the bound and `retention_failed` reports `statement_timeout` every night. | Ops, next wave (a new migration; 022 is limited to the hot-path indexes): a partial index `jobs(created_at) WHERE state IN ('done','dead')` so each batch finds its rows in milliseconds, and a `gm_maintenance` login with DELETE on the two tables under policies limited to the retention predicates, so retention needs no DDL and no ACCESS EXCLUSIVE lock and can run at any hour. |
