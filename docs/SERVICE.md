@@ -78,8 +78,9 @@ kitchen state.
 | POST `/api/service/orders/:id/close` | operators | `{operationId}`; `balance_due` while money is owed |
 | POST `/api/service/orders/:id/note` | operators | `{operationId, note ≤ 500}`; bumps the kitchen feed |
 | POST `/api/service/orders/:id/print` | operators | `{operationId, document: receipt\|check, reprint}`; audit only |
+| GET `/api/service/operations/:id/order` | operators | the order a send (`create_order` or `round` operation) produced, as it is now; `not_found` for any other operation |
 | GET `/api/service/kitchen` | owner, manager, kitchen, server, cashier | `station`, `version`; unchanged polls are one row |
-| POST `/api/service/kitchen/rounds/:id/recall` | owner, manager, kitchen, server | rounds served in the last 2 hours |
+| POST `/api/service/kitchen/rounds/:id/recall` | owner, manager, kitchen, server | rounds served in the last 2 hours, of the current business day |
 | POST `/api/service/kitchen/clear-stale` | owner, manager | completes previous-day rounds and acknowledges their voids |
 
 Existing routes changed behaviour: rounds, payments, voids and table moves
@@ -122,9 +123,10 @@ cached before the deploy keep working. A later contract change removes them.
 - New tickets get a highlight, an aria-live announcement and, after a tap on
   **Activar sonido**, a beep (browsers block audio until a tap after each
   reload; a banner says so). Pending cancellations announce with a lower tone.
-- **Entregados recientes** recalls tickets served in the last 2 hours.
-  Managers can retire tickets left open from previous business days; the action
-  is audited and acknowledges their pending cancellations.
+- **Entregados recientes** recalls tickets served in the last 2 hours of the
+  current business day. Managers can retire tickets left open from previous
+  business days; the action is audited and acknowledges their pending
+  cancellations, and retired tickets are never listed or recallable.
 - The selected station, sound preference and auto-print setting are per device.
   The screen requests a wake lock when the browser supports it; dedicated KDS
   devices should also disable screen sleep.
@@ -133,9 +135,24 @@ cached before the deploy keep working. A later contract change removes them.
 
 | Note | Where it is stored | Where it appears |
 | --- | --- | --- |
-| Order note ("Nota de la orden (cocina)") | `orders.note` | every kitchen ticket of the order, order detail, Orders list; editable after sending with **Editar nota** |
-| Round note ("Nota para esta ronda") | `rounds.note` | that round's tickets and the order detail |
-| Line note (presets: Sin cebolla, Sin chile, Sin cilantro, Salsa aparte, Alergia:) | line snapshot `note` (≤ 300) | kitchen tickets, receipts, order detail |
+| Order note ("Nota de la orden (cocina)") | `orders.note` | every kitchen ticket of the order, receipts and pre-bills ("Nota de la orden"), order detail, Orders list; editable after sending with **Editar nota** |
+| Round note ("Nota para esta ronda") | `rounds.note` | that round's tickets, receipts and pre-bills ("Nota de la ronda N", left out when identical to the order note), order detail |
+| Line note (presets: Sin cebolla, Sin chile, Sin cilantro, Salsa aparte, Alergia:) | line snapshot `note` (≤ 300) | kitchen tickets, receipts and pre-bills, order detail |
+
+Allergy notes (matching "alerg") are labelled **Alergia** on tickets and
+receipts alike.
+
+## Lost responses while sending
+
+Every send carries the cart's `operationId`. If the response is lost and the
+cashier sends the same cart again, the server replays the stored result. If the
+cart changed in between, the server answers `operation_conflict`; Selling then
+asks `GET /api/service/operations/:id/order` for the order that the first send
+produced, makes it the current order, removes from the cart every line the
+order already holds, and gives the rest a new `operationId` ("Parte de esta
+orden ya había llegado a cocina…"). Nothing reaches the kitchen twice. If the
+order cannot be found, Selling says so and only **Enviar como orden nueva**
+gives the cart a new operation id.
 
 ## Payment dialog
 
@@ -159,7 +176,9 @@ drawer is open.
   OS driver.
 - Documents: receipt (after payment, or a reprint marked "REIMPRESIÓN"),
   pre-bill "Cuenta · no es comprobante de pago", and kitchen ticket (comanda).
-  Fiscal fields are added later through the receipt `header`/`footer` slots.
+  Receipts and pre-bills carry the order note, round notes, modifiers and
+  line notes. Fiscal fields are added later through the receipt
+  `header`/`footer` slots (see integration points).
 - Per-device settings (localStorage `gm-print-settings`): paper width, print a
   kitchen ticket on send (off by default) and auto-print new KDS tickets (off).
 - **Silent printing** requires Chromium launched with `--kiosk-printing` and the
@@ -193,5 +212,37 @@ drawer is open.
   methods, channels, integrations) into operator labels; new views must use it.
 - Printing: `printDocument`, `readPrintSettings`, `ReceiptDocument` (with
   `header`/`footer`) and `KitchenTicketDocument`/`ticketsFromLines`.
+- Receipt content from fiscal (027) and CFDI (030): call
+  `setReceiptSlots({ header, footer })` from `src/features/Receipt.tsx` once at
+  startup. Each slot is a function of `{ order, kind, reprint, locale }`, and
+  every receipt render uses it: the receipt modal and its print, and the
+  pre-bill and reprint printed from order detail. React context cannot do this,
+  because `printDocument` renders into its own root. `ReceiptModal` also
+  forwards explicit `header`/`footer` props.
+- `tenderMethodLabel` labels only `cash` and `external`; any other method shows
+  "Otro método de pago" until its area adds a label.
 - Component slots: `Kitchen.beforeTickets`, `Tables.onEditTables`,
-  `PaymentDialog.offline`, `ReceiptModal.label`/`labelHint`/`extraActions`.
+  `PaymentDialog.offline`, `ReceiptModal.label`/`labelHint`/`extraActions`/
+  `header`/`footer`.
+
+## Merge notes (wave 1)
+
+Edits outside the regions wave contracts 4.1 assign to service, for the
+integrator:
+
+- `server/index.ts` `/settlements` (base lines 308-351): the route body moved to
+  `recordSettlement` in `server/checks.ts`; the route is now three lines. It
+  sits directly above offline's deletion of the `/sync` routes (base lines
+  352-360), so expect a textual conflict at offline's merge: keep service's
+  three-line route and apply offline's deletion. **Behaviour change:** grouped
+  settlement now locks every order row (sorted by id) before the drawer, where
+  it previously locked the drawer between orders. This removes a deadlock with
+  concurrent rounds and payments (DB test "kitchen feed and progress do not
+  deadlock with concurrent payments and rounds").
+- `tests/voids-db.ts` "paid units cannot be voided…" (base lines ~215-260, next
+  to menu's stock-assertion region 188-216): the order is now dine-in, because a
+  fully paid takeaway check closes and would answer `check_closed` instead of
+  the paid-units error under test (allowed by contracts 5.2.1). Keep the
+  dine-in fixture when resolving menu's edits there. In the same file, the
+  fully voided order's rejected round now expects `check_closed` (it was
+  `stale_order` before the lifecycle split).
