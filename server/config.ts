@@ -26,8 +26,7 @@ function load(): Config {
         message: "config_invalid",
         service: kind,
         env: process.env.APP_ENV || "development",
-        code:
-          error instanceof ConfigError ? error.code : "config_load_failed",
+        code: error instanceof ConfigError ? error.code : "config_load_failed",
       }) + "\n",
     );
     process.exit(1);

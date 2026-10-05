@@ -28,16 +28,26 @@ const deployedWorker = {
   NODE_ENV: "production",
   APP_URL: "https://app.example.com",
   PROCESS_KIND: "worker",
-  WORKER_DATABASE_URL:
-    "postgresql://gm_production_worker:pw@ep-x-pooler.us-east-1.aws.neon.tech/green_monkey_production",
+  // The Railway preDeploy (migrate, then grants) runs in the worker service.
+  MIGRATION_DATABASE_URL:
+    "postgresql://gm_migrator:pw@ep-x.us-east-1.aws.neon.tech/green_monkey_production",
+};
+const billingWorker = {
+  ...deployedWorker,
+  BILLING_SANDBOX_ENABLED: "true",
+  BILLING_DATABASE_URL:
+    "postgresql://gm_production_billing:pw@ep-x-pooler.us-east-1.aws.neon.tech/green_monkey_production",
+  STRIPE_SECRET_KEY: "sk_test_x",
+  STRIPE_EXPECTED_ACCOUNT_ID: "acct_x",
+  STRIPE_PRICE_PRO_MONTHLY: "price_m",
+  STRIPE_PRICE_PRO_ANNUAL: "price_y",
+  STRIPE_PORTAL_CONFIG_ID: "bpc_x",
 };
 
 describe("process configuration", () => {
-  it("deployed web refuses MIGRATION/BILLING/WORKER/BACKUP/PROVISION URLs and STRIPE_SECRET_KEY (SEC/DB-1 regression)", () => {
+  it("deployed web refuses migration, backup and provisioning URLs and STRIPE_SECRET_KEY (DB-1/OPS-8 regression)", () => {
     expect(forbiddenCredentials.web).toEqual([
       "MIGRATION_DATABASE_URL",
-      "BILLING_DATABASE_URL",
-      "WORKER_DATABASE_URL",
       "BACKUP_DATABASE_URL",
       "PROVISION_DATABASE_URL",
       "STRIPE_SECRET_KEY",
@@ -45,21 +55,32 @@ describe("process configuration", () => {
     expect(loadConfig(deployedWeb, "web").deployed).toBe(true);
     for (const name of forbiddenCredentials.web)
       expect(
-        () => loadConfig({ ...deployedWeb, [name]: "postgresql://x@y/z" }, "web"),
+        () =>
+          loadConfig({ ...deployedWeb, [name]: "postgresql://x@y/z" }, "web"),
         name,
       ).toThrow(`forbidden_credential_in_process: ${name}`);
   });
 
-  it("deployed worker refuses DATABASE_URL and migration credentials", () => {
-    expect(loadConfig(deployedWorker, "worker").kind).toBe("worker");
+  it("deployed worker refuses the runtime, backup and provisioning URLs", () => {
+    expect(loadConfig(deployedWorker, "worker")).toMatchObject({
+      kind: "worker",
+      databaseUrl: null,
+      billingDatabaseUrl: null,
+    });
+    expect(loadConfig(billingWorker, "worker").billingDatabaseUrl).toContain(
+      "gm_production_billing",
+    );
     for (const name of [
       "DATABASE_URL",
-      "MIGRATION_DATABASE_URL",
       "BACKUP_DATABASE_URL",
       "PROVISION_DATABASE_URL",
     ])
       expect(
-        () => loadConfig({ ...deployedWorker, [name]: "postgresql://x@y/z" }, "worker"),
+        () =>
+          loadConfig(
+            { ...deployedWorker, [name]: "postgresql://x@y/z" },
+            "worker",
+          ),
         name,
       ).toThrow(`forbidden_credential_in_process: ${name}`);
   });
@@ -73,49 +94,75 @@ describe("process configuration", () => {
       },
       "web",
     );
-    expect(c).toMatchObject({ appEnv: "development", deployed: false, port: 3001 });
+    expect(c).toMatchObject({
+      appEnv: "development",
+      deployed: false,
+      port: 3001,
+    });
   });
 
   it("requires APP_URL over https and NODE_ENV=production when deployed", () => {
     const { APP_URL: _drop, ...noUrl } = deployedWeb;
     expect(() => loadConfig(noUrl, "web")).toThrow("missing_app_url");
     expect(() =>
-      loadConfig({ ...deployedWeb, APP_URL: "http://staging.example.com" }, "web"),
+      loadConfig(
+        { ...deployedWeb, APP_URL: "http://staging.example.com" },
+        "web",
+      ),
     ).toThrow("app_url_https_required");
     expect(() =>
       loadConfig({ ...deployedWeb, NODE_ENV: "development" }, "web"),
     ).toThrow("node_env_production_required");
-    expect(() => loadConfig({ ...deployedWeb, JWT_SECRET: "short" }, "web")).toThrow(
-      "missing_jwt_secret",
-    );
+    expect(() =>
+      loadConfig({ ...deployedWeb, JWT_SECRET: "short" }, "web"),
+    ).toThrow("missing_jwt_secret");
   });
 
-  it("requires the webhook secret with billing in web and provider keys in the worker", () => {
+  it("requires the billing login and webhook secret in web and provider keys in the worker", () => {
     expect(() =>
       loadConfig({ ...deployedWeb, BILLING_SANDBOX_ENABLED: "true" }, "web"),
-    ).toThrow("missing_stripe_webhook_secret");
+    ).toThrow("missing_billing_database_url");
     expect(() =>
-      loadConfig({ ...deployedWorker, BILLING_SANDBOX_ENABLED: "true" }, "worker"),
-    ).toThrow("missing_stripe_secret_key");
+      loadConfig(
+        {
+          ...deployedWeb,
+          BILLING_SANDBOX_ENABLED: "true",
+          BILLING_DATABASE_URL: billingWorker.BILLING_DATABASE_URL,
+        },
+        "web",
+      ),
+    ).toThrow("missing_stripe_webhook_secret");
+    const { STRIPE_SECRET_KEY: _key, ...noKey } = billingWorker;
+    expect(() => loadConfig(noKey, "worker")).toThrow(
+      "missing_stripe_secret_key",
+    );
   });
 
   it("rejects sslmode=disable for non-loopback hosts (OPS-14)", () => {
     expect(() =>
       loadConfig(
-        { ...web, DATABASE_URL: "postgresql://u:p@db.example.com/x?sslmode=disable" },
+        {
+          ...web,
+          DATABASE_URL: "postgresql://u:p@db.example.com/x?sslmode=disable",
+        },
         "web",
       ),
     ).toThrow("database_tls_required");
     expect(
       loadConfig(
-        { ...web, DATABASE_URL: "postgresql://u:p@127.0.0.1/x?sslmode=disable" },
+        {
+          ...web,
+          DATABASE_URL: "postgresql://u:p@127.0.0.1/x?sslmode=disable",
+        },
         "web",
       ).databaseUrl,
     ).toContain("127.0.0.1");
   });
 
   it("treats empty strings as unset and validates enumerations", () => {
-    expect(loadConfig({ ...web, APP_ENV: "" }, "web").appEnv).toBe("development");
+    expect(loadConfig({ ...web, APP_ENV: "" }, "web").appEnv).toBe(
+      "development",
+    );
     expect(() => loadConfig({ ...web, APP_ENV: "prod" }, "web")).toThrow(
       "invalid_app_env",
     );
@@ -130,13 +177,20 @@ describe("process configuration", () => {
   it("detects the worker by PROCESS_KIND or entry file and keeps worker ports apart", () => {
     expect(detectKind({}, "/app/build/server/index.js")).toBe("web");
     expect(detectKind({}, "/app/build/server/worker.js")).toBe("worker");
-    expect(detectKind({ PROCESS_KIND: "worker" }, "/x/index.js")).toBe("worker");
-    const local = loadConfig(
-      { WORKER_DATABASE_URL: web.DATABASE_URL, PORT: "3001" },
+    expect(detectKind({ PROCESS_KIND: "worker" }, "/x/index.js")).toBe(
       "worker",
     );
-    expect(local).toMatchObject({ port: 3002, dbPoolMax: 6, drainSeconds: 30 });
-    expect(loadConfig({ ...deployedWorker, PORT: "3005" }, "worker").port).toBe(3005);
+    const local = loadConfig({ PORT: "3001" }, "worker");
+    expect(local).toMatchObject({ port: 3002, dbPoolMax: 4, drainSeconds: 30 });
+    expect(
+      loadConfig(
+        { ...deployedWeb, WORKER_URL: "http://worker.railway.internal:3002" },
+        "web",
+      ).workerUrl,
+    ).toBe("http://worker.railway.internal:3002");
+    expect(loadConfig({ ...deployedWorker, PORT: "3005" }, "worker").port).toBe(
+      3005,
+    );
     expect(
       loadConfig(
         { ...deployedWorker, ALERT_WEBHOOK_URL: "https://ntfy.sh/topic" },
@@ -147,7 +201,10 @@ describe("process configuration", () => {
 
   it("errors name variables, never their values", () => {
     try {
-      loadConfig({ ...deployedWeb, STRIPE_SECRET_KEY: "sk_live_supersecret" }, "web");
+      loadConfig(
+        { ...deployedWeb, STRIPE_SECRET_KEY: "sk_live_supersecret" },
+        "web",
+      );
     } catch (error) {
       expect(String(error)).not.toContain("supersecret");
     }

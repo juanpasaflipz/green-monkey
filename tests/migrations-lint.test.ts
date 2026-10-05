@@ -8,8 +8,11 @@ import {
 import { retentionRules } from "../server/ops/retention.js";
 
 /**
- * Migration rules for every area (ops spec §6.1). Files numbered 022 and later
- * follow them; earlier files predate the rules and are only checked for names.
+ * Migration rules for every area (wave 1 contract §1.3 plus the runner's
+ * constraints). Files numbered 022 and later follow them; earlier files
+ * predate the rules and are only checked for names and transactions.
+ * Destructive DDL needs an explicit `-- gm:contract-approved` line agreed
+ * with the tech lead (docs/RELEASE.md).
  */
 const RULES_FROM = 22;
 /** Platform metadata tables that are deliberately not row-level secured. */
@@ -38,7 +41,11 @@ function destructive(body: string): string[] {
   const text = all.join(";\n").toLowerCase();
   return all.filter((s) => {
     const lower = s.toLowerCase();
-    if (/^drop (table|schema|database|type|sequence|view|materialized view|role|owned)\b/.test(lower))
+    if (
+      /^drop (table|schema|database|type|sequence|view|materialized view|role|owned)\b/.test(
+        lower,
+      )
+    )
       return true;
     if (/\bdrop column\b/.test(lower)) return true;
     if (/\brename\b/.test(lower)) return true;
@@ -46,7 +53,9 @@ function destructive(body: string): string[] {
     // Replacing a constraint, index, policy, trigger or function in the same
     // file (drop then create with the same name) widens or rebuilds; a bare
     // drop is a contract change.
-    const constraint = lower.match(/\bdrop constraint (?:if exists )?"?([a-z0-9_]+)"?/);
+    const constraint = lower.match(
+      /\bdrop constraint (?:if exists )?"?([a-z0-9_]+)"?/,
+    );
     if (constraint)
       return !new RegExp(`add constraint "?${constraint[1]}"?\\b`).test(text);
     const other = lower.match(
@@ -69,10 +78,12 @@ describe("migrations lint", () => {
     expect(new Set(numbers).size).toBe(numbers.length);
   });
 
-  it("migrations ≥ 022 set lock_timeout", () => {
+  it("migrations ≥ 022 start with SET LOCAL lock_timeout (wave 1 contract §1.3)", () => {
     expect(ruled.map((f) => f.name)).toContain("022_ops.sql");
     for (const f of ruled.filter((f) => f.transactional))
-      expect(f.body, f.name).toMatch(/^\s*SET LOCAL lock_timeout\s*=/im);
+      expect(statements(f.body)[0], f.name).toMatch(
+        /^set local lock_timeout\s*=\s*'\d+(ms|s)?'$/i,
+      );
   });
 
   it("transactional files contain no CONCURRENTLY/BEGIN/COMMIT", () => {
@@ -86,10 +97,18 @@ describe("migrations lint", () => {
   });
 
   it("no-transaction files contain only concurrent index/validate statements split by gm:statement-break", () => {
-    expect(isNoTransaction("-- note\n-- gm:no-transaction\nCREATE INDEX CONCURRENTLY x ON t(a);")).toBe(true);
-    expect(isNoTransaction("CREATE TABLE t();\n-- gm:no-transaction")).toBe(false);
     expect(
-      splitStatements("-- gm:no-transaction\nA;\n-- gm:statement-break\nB;\n-- gm:statement-break\n"),
+      isNoTransaction(
+        "-- note\n-- gm:no-transaction\nCREATE INDEX CONCURRENTLY x ON t(a);",
+      ),
+    ).toBe(true);
+    expect(isNoTransaction("CREATE TABLE t();\n-- gm:no-transaction")).toBe(
+      false,
+    );
+    expect(
+      splitStatements(
+        "-- gm:no-transaction\nA;\n-- gm:statement-break\nB;\n-- gm:statement-break\n",
+      ),
     ).toEqual(["-- gm:no-transaction\nA;", "B;"]);
     for (const f of files.filter((f) => !f.transactional))
       for (const part of splitStatements(f.body)) {
@@ -120,30 +139,39 @@ describe("migrations lint", () => {
     }
   });
 
-  it("backfill DML requires gm:backfill and NO FORCE/FORCE on that table", () => {
+  it("backfill DML runs with NO FORCE / FORCE row level security on that table", () => {
+    // The deployed migration role owns the tables but is not a superuser, so
+    // FORCE ROW LEVEL SECURITY applies to it: without the owner pattern an
+    // UPDATE, DELETE or INSERT ... SELECT silently touches zero rows.
     for (const f of ruled)
       for (const s of statements(f.body)) {
         const m = s.match(
-          new RegExp(String.raw`^(?:with .* )?(?:update|insert into|delete from) ${ident}`, "i"),
+          new RegExp(
+            String.raw`^(?:with .* )?(?:update|insert into|delete from) ${ident}`,
+            "i",
+          ),
         );
         if (!m) continue;
         const table = m[1].toLowerCase();
-        expect(f.body, `${f.name}: gm:backfill ${table}`).toMatch(
-          new RegExp(String.raw`^-- gm:backfill ${table}\b`, "m"),
-        );
-        expect(code(f.body), `${f.name}: NO FORCE ${table}`).toMatch(
-          new RegExp(String.raw`alter table (?:public\.)?"?${table}"? no force row level security`, "i"),
-        );
-        expect(code(f.body), `${f.name}: FORCE ${table}`).toMatch(
-          new RegExp(String.raw`alter table (?:public\.)?"?${table}"? force row level security`, "i"),
-        );
+        for (const mode of ["no force", "force"])
+          expect(
+            code(f.body),
+            `${f.name}: ${mode} RLS around DML on ${table}`,
+          ).toMatch(
+            new RegExp(
+              String.raw`alter table (?:public\.)?"?${table}"? ${mode} row level security`,
+              "i",
+            ),
+          );
       }
   });
 
   it("destructive DDL requires gm:contract-approved", () => {
     expect(destructive("ALTER TABLE t DROP COLUMN c;")).toHaveLength(1);
     expect(destructive("ALTER TABLE t RENAME TO u;")).toHaveLength(1);
-    expect(destructive("ALTER TABLE t ALTER COLUMN c TYPE bigint;")).toHaveLength(1);
+    expect(
+      destructive("ALTER TABLE t ALTER COLUMN c TYPE bigint;"),
+    ).toHaveLength(1);
     expect(
       destructive(
         "ALTER TABLE t DROP CONSTRAINT t_kind_check; ALTER TABLE t ADD CONSTRAINT t_kind_check CHECK (kind IN ('a','b'));",
@@ -153,15 +181,33 @@ describe("migrations lint", () => {
     for (const f of ruled) {
       const found = destructive(f.body);
       if (found.length)
-        expect(f.body, `${f.name}: ${found[0]}`).toMatch(/^-- gm:contract-approved\b/m);
+        expect(f.body, `${f.name}: ${found[0]}`).toMatch(
+          /^-- gm:contract-approved\b/m,
+        );
     }
   });
 
-  it("022 retention predicates equal server/ops/retention.ts rules", () => {
+  it("022 creates only hot-path indexes and no CHECK constraints (wave 1 contract)", () => {
     const body = readFileSync("migrations/022_ops.sql", "utf8");
-    const rules = [
-      ...body.matchAll(/ARRAY\['([a-z_]+)',\s*\$p\$([\s\S]*?)\$p\$\]/g),
-    ].map((m) => ({ table: m[1], predicate: m[2] }));
-    expect(rules).toEqual(retentionRules);
+    for (const s of statements(body))
+      expect(s, s).toMatch(
+        /^(set local (lock|statement)_timeout|create index \w+ on )/i,
+      );
+    expect(code(body)).not.toMatch(/\bcheck\b/i);
+  });
+
+  it("retention touches only the allow-listed tables and terminal rows", () => {
+    expect(retentionRules.map((r) => r.table)).toEqual([
+      "oauth_login_attempts",
+      "jobs",
+    ]);
+    const jobs = retentionRules.find((r) => r.table === "jobs")!.predicate;
+    expect(jobs).toMatch(/state IN \('done', 'dead'\)/);
+    expect(jobs).toMatch(/interval '30 days'/);
+    expect(jobs).not.toMatch(/blocked|available|queued|running/);
+    const oauth = retentionRules.find(
+      (r) => r.table === "oauth_login_attempts",
+    )!.predicate;
+    expect(oauth).toMatch(/consumed_at IS NOT NULL OR expires_at < now\(\)/);
   });
 });

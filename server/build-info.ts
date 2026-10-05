@@ -11,12 +11,17 @@ let cached: BuildInfo | null = null;
 
 /** Parses build-info.json; anything malformed reads as an unstamped local build. */
 export function parseBuildInfo(text: string | null): BuildInfo {
-  const fallback: BuildInfo = { version: "0.0.0", commit: "local", builtAt: null };
+  const fallback: BuildInfo = {
+    version: "0.0.0",
+    commit: "local",
+    builtAt: null,
+  };
   if (!text) return fallback;
   try {
     const data = JSON.parse(text) as Record<string, unknown>;
     const version =
-      typeof data.version === "string" && /^[0-9A-Za-z.+-]{1,40}$/.test(data.version)
+      typeof data.version === "string" &&
+      /^[0-9A-Za-z.+-]{1,40}$/.test(data.version)
         ? data.version
         : fallback.version;
     const commit =
@@ -25,7 +30,8 @@ export function parseBuildInfo(text: string | null): BuildInfo {
         ? data.commit
         : fallback.commit;
     const builtAt =
-      typeof data.builtAt === "string" && !Number.isNaN(Date.parse(data.builtAt))
+      typeof data.builtAt === "string" &&
+      !Number.isNaN(Date.parse(data.builtAt))
         ? new Date(data.builtAt).toISOString()
         : null;
     return { version, commit, builtAt };

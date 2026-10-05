@@ -1,26 +1,26 @@
 // Migration runner (DB-6). Compiled to build/scripts/migrate.js and run by the
-// CD deploy job as the non-superuser gm_migrator role.
+// worker service's Railway preDeploy as the non-superuser gm_migrator role.
 //
-//   node build/scripts/migrate.js [--grants] [--grants-only] [--check] [--dry-run]
-//     default       apply pending migrations, then reconcile policies
-//     --grants      also apply the runtime grants manifest (CD always passes this)
+//   node build/scripts/migrate.js [--grants] [--retention] [--grants-only] [--check] [--dry-run]
+//     default       apply pending migrations, then reconcile backup policies
+//     --grants      then apply the runtime grants manifest (the Railway
+//                   preDeploy always passes this: migrate, then grants)
+//     --retention   then run the retention pass (oauth attempts, done/dead jobs)
 //     --grants-only only apply grants and reconcile policies
-//     --check       exit 3 if migrations are pending or the grants hash is not
-//                   recorded for the runtime role; performs no writes
+//     --check       exit 3 if migrations are pending; performs no writes
 //     --dry-run     print pending migration names; performs no writes
 import "dotenv/config";
 import postgres from "postgres";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { databaseTls, withoutParams } from "../server/db-tls.js";
-import { log } from "../server/log.js";
+import { databaseTls, withoutParams } from "../server/db-support.js";
+import { log } from "../server/logging.js";
 import type { AppEnv } from "../server/config-rules.js";
+import { runRetention } from "../server/ops/retention.js";
 import {
   applyGrants,
   applyMigrations,
   assertMigrationRole,
-  grantsRecorded,
-  manifestHash,
   MigrationError,
   pendingMigrations,
   readMigrations,
@@ -28,7 +28,13 @@ import {
   ROLE_NAME,
 } from "../server/ops/schema.js";
 
-const FLAGS = ["--grants", "--grants-only", "--check", "--dry-run"] as const;
+const FLAGS = [
+  "--grants",
+  "--retention",
+  "--grants-only",
+  "--check",
+  "--dry-run",
+] as const;
 type Flag = (typeof FLAGS)[number];
 
 export class UsageError extends Error {
@@ -94,8 +100,7 @@ export async function main(
     });
     return 2;
   }
-  const needsRole =
-    flags.has("--grants") || flags.has("--grants-only") || flags.has("--check");
+  const needsRole = flags.has("--grants") || flags.has("--grants-only");
   let role = "";
   if (needsRole)
     try {
@@ -118,19 +123,13 @@ export async function main(
     const files = readMigrations();
     if (flags.has("--dry-run") || flags.has("--check")) {
       const pending = (await pendingMigrations(sql, files)).map((f) => f.name);
-      if (flags.has("--dry-run")) {
-        log.info("migrations_pending", { pending });
-        return 0;
-      }
-      const hash = manifestHash();
-      const recorded = await grantsRecorded(sql, role, hash);
-      log.info("migrate_check", {
-        pending,
-        role,
-        grantsHashPrefix: hash.slice(0, 12),
-        grantsRecorded: recorded,
-      });
-      return pending.length || !recorded ? 3 : 0;
+      log.info(
+        flags.has("--dry-run") ? "migrations_pending" : "migrate_check",
+        {
+          pending,
+        },
+      );
+      return flags.has("--check") && pending.length ? 3 : 0;
     }
     await assertMigrationRole(sql, appEnv);
     const database = decodeURIComponent(target.pathname.slice(1));
@@ -141,6 +140,12 @@ export async function main(
     if (flags.has("--grants") || flags.has("--grants-only"))
       await applyGrants(sql, { role, database });
     await reconcilePolicies(sql);
+    if (flags.has("--retention")) {
+      // Retention never fails a deploy; failures are logged for the alerts.
+      const result = await runRetention(sql);
+      if (result.failed.length)
+        log.error("retention_failed", { tables: result.failed });
+    }
     return 0;
   } catch (error) {
     if (error instanceof MigrationError)

@@ -1,6 +1,16 @@
 /**
- * Pure process-configuration rules. server/config.ts applies them at startup;
- * tests call loadConfig() directly with a synthetic environment.
+ * Pure process-configuration rules. server/config.ts applies them at startup
+ * (preloaded through server/instrument.ts); tests call loadConfig() directly.
+ *
+ * Process model (wave 1):
+ *   web     serves the API with the runtime role (DATABASE_URL) and, when
+ *           billing is enabled, the billing capability login for owner
+ *           billing commands (BILLING_DATABASE_URL) plus the webhook secret.
+ *           It never holds the migration owner, backup or provisioning
+ *           credentials, nor the Stripe secret key.
+ *   worker  runs the billing provider loop (Stripe secret key) and the
+ *           watchdog. Its Railway preDeploy runs migrate + grants, so the
+ *           migration credential lives in the worker service, not in web.
  */
 export type ProcessKind = "web" | "worker";
 export type AppEnv = "development" | "test" | "staging" | "production";
@@ -14,13 +24,16 @@ export interface Config {
   port: number;
   appUrl: string | null;
   logLevel: "debug" | "info" | "warn" | "error";
-  /** web: DATABASE_URL; worker: WORKER_DATABASE_URL */
-  databaseUrl: string;
+  /** web: DATABASE_URL (runtime role); worker: null */
+  databaseUrl: string | null;
+  /** BILLING_DATABASE_URL when billing is enabled */
+  billingDatabaseUrl: string | null;
   dbPoolMax: number;
   drainSeconds: number;
   sentryDsn: string | null;
-  /** Worker only. */
   alertWebhook: { url: string; kind: AlertKind } | null;
+  /** web only: private URL of the worker's /healthz for /api/ops/status */
+  workerUrl: string | null;
   billingEnabled: boolean;
 }
 
@@ -31,23 +44,15 @@ export class ConfigError extends Error {
   }
 }
 
-/** Credentials that must never be present in a deployed process of each kind. */
+/** Credentials that must never be present in a deployed process of each kind (DB-1, OPS-8). */
 export const forbiddenCredentials: Record<ProcessKind, readonly string[]> = {
   web: [
     "MIGRATION_DATABASE_URL",
-    "BILLING_DATABASE_URL",
-    "WORKER_DATABASE_URL",
     "BACKUP_DATABASE_URL",
     "PROVISION_DATABASE_URL",
     "STRIPE_SECRET_KEY",
   ],
-  worker: [
-    "DATABASE_URL",
-    "MIGRATION_DATABASE_URL",
-    "BILLING_DATABASE_URL",
-    "BACKUP_DATABASE_URL",
-    "PROVISION_DATABASE_URL",
-  ],
+  worker: ["DATABASE_URL", "BACKUP_DATABASE_URL", "PROVISION_DATABASE_URL"],
 };
 
 const appEnvs: readonly AppEnv[] = [
@@ -57,7 +62,12 @@ const appEnvs: readonly AppEnv[] = [
   "production",
 ];
 const logLevels = ["debug", "info", "warn", "error"] as const;
-const alertKinds: readonly AlertKind[] = ["ntfy", "slack", "discord", "generic"];
+const alertKinds: readonly AlertKind[] = [
+  "ntfy",
+  "slack",
+  "discord",
+  "generic",
+];
 const loopbackHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 
 /** Detects the process kind without depending on module evaluation order. */
@@ -81,7 +91,11 @@ export function isLoopbackHost(hostname: string) {
   );
 }
 
-function positiveInt(value: string | undefined, fallback: number, code: string) {
+function positiveInt(
+  value: string | undefined,
+  fallback: number,
+  code: string,
+) {
   if (value === undefined) return fallback;
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) throw new ConfigError(code);
@@ -106,6 +120,19 @@ function databaseUrl(value: string | undefined, name: string) {
   return value;
 }
 
+function httpUrl(value: string, code: string, requireHttps: boolean) {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ConfigError(code);
+  }
+  if (!/^https?:$/.test(parsed.protocol)) throw new ConfigError(code);
+  if (requireHttps && parsed.protocol !== "https:")
+    throw new ConfigError(code.replace(/^invalid_/, "") + "_https_required");
+  return parsed;
+}
+
 /**
  * Validates the environment for one process kind. Empty strings count as
  * unset. Errors name variables only, never their values.
@@ -127,21 +154,15 @@ export function loadConfig(
       if (env[name])
         throw new ConfigError(`forbidden_credential_in_process: ${name}`);
 
-  const logLevel = (env.LOG_LEVEL ?? "info").toLowerCase() as Config["logLevel"];
+  const logLevel = (
+    env.LOG_LEVEL ?? "info"
+  ).toLowerCase() as Config["logLevel"];
   if (!logLevels.includes(logLevel)) throw new ConfigError("invalid_log_level");
 
-  let appUrl: string | null = null;
-  if (env.APP_URL) {
-    let parsed: URL;
-    try {
-      parsed = new URL(env.APP_URL);
-    } catch {
-      throw new ConfigError("invalid_app_url");
-    }
-    if (deployed && parsed.protocol !== "https:")
-      throw new ConfigError("app_url_https_required");
-    appUrl = parsed.origin;
-  } else if (deployed) throw new ConfigError("missing_app_url");
+  const appUrl = env.APP_URL
+    ? httpUrl(env.APP_URL, "invalid_app_url", deployed).origin
+    : null;
+  if (deployed && !appUrl) throw new ConfigError("missing_app_url");
 
   // Cookie Secure and CSP follow NODE_ENV; a deployed process must not serve
   // development cookies (SEC-9).
@@ -149,7 +170,34 @@ export function loadConfig(
     throw new ConfigError("node_env_production_required");
 
   const billingEnabled = env.BILLING_SANDBOX_ENABLED === "true";
-  const sentryDsn = env.SENTRY_DSN ?? null;
+  const billingDatabaseUrl = billingEnabled
+    ? databaseUrl(env.BILLING_DATABASE_URL, "BILLING_DATABASE_URL")
+    : null;
+  let alertWebhook: Config["alertWebhook"] = null;
+  if (env.ALERT_WEBHOOK_URL) {
+    const parsed = httpUrl(
+      env.ALERT_WEBHOOK_URL,
+      "invalid_alert_webhook_url",
+      false,
+    );
+    if (parsed.protocol !== "https:" && !isLoopbackHost(parsed.hostname))
+      throw new ConfigError("alert_webhook_https_required");
+    const alertKind = (env.ALERT_WEBHOOK_KIND ?? "ntfy") as AlertKind;
+    if (!alertKinds.includes(alertKind))
+      throw new ConfigError("invalid_alert_webhook_kind");
+    alertWebhook = { url: parsed.href, kind: alertKind };
+  }
+  const common = {
+    kind,
+    appEnv,
+    deployed,
+    appUrl,
+    logLevel,
+    billingDatabaseUrl,
+    sentryDsn: env.SENTRY_DSN ?? null,
+    alertWebhook,
+    billingEnabled,
+  };
 
   if (kind === "web") {
     const url = databaseUrl(env.DATABASE_URL, "DATABASE_URL");
@@ -157,15 +205,11 @@ export function loadConfig(
     // JWT_SECRET until the keyring (OPS-10) lands.
     if (!env.JWT_SECRET || env.JWT_SECRET.length < 32)
       throw new ConfigError("missing_jwt_secret");
-    if (deployed && billingEnabled && !env.STRIPE_WEBHOOK_SECRET)
+    if (billingEnabled && !env.STRIPE_WEBHOOK_SECRET)
       throw new ConfigError("missing_stripe_webhook_secret");
     return Object.freeze({
-      kind,
-      appEnv,
-      deployed,
+      ...common,
       port: positiveInt(env.PORT, 3001, "invalid_port"),
-      appUrl,
-      logLevel,
       databaseUrl: url,
       dbPoolMax: positiveInt(env.DB_POOL_MAX, 20, "invalid_db_pool_max"),
       drainSeconds: positiveInt(
@@ -173,13 +217,12 @@ export function loadConfig(
         20,
         "invalid_draining_seconds",
       ),
-      sentryDsn,
-      alertWebhook: null,
-      billingEnabled,
+      workerUrl: env.WORKER_URL
+        ? httpUrl(env.WORKER_URL, "invalid_worker_url", false).origin
+        : null,
     });
   }
 
-  const url = databaseUrl(env.WORKER_DATABASE_URL, "WORKER_DATABASE_URL");
   if (billingEnabled)
     for (const name of [
       "STRIPE_SECRET_KEY",
@@ -190,42 +233,21 @@ export function loadConfig(
     ])
       if (!env[name]) throw new ConfigError(`missing_${name.toLowerCase()}`);
   if (billingEnabled && !appUrl) throw new ConfigError("missing_app_url");
-  let alertWebhook: Config["alertWebhook"] = null;
-  if (env.ALERT_WEBHOOK_URL) {
-    let parsed: URL;
-    try {
-      parsed = new URL(env.ALERT_WEBHOOK_URL);
-    } catch {
-      throw new ConfigError("invalid_alert_webhook_url");
-    }
-    if (parsed.protocol !== "https:" && !isLoopbackHost(parsed.hostname))
-      throw new ConfigError("alert_webhook_https_required");
-    const alertKind = (env.ALERT_WEBHOOK_KIND ?? "ntfy") as AlertKind;
-    if (!alertKinds.includes(alertKind))
-      throw new ConfigError("invalid_alert_webhook_kind");
-    alertWebhook = { url: parsed.href, kind: alertKind };
-  }
   // PROCESS_KIND=worker (Railway, containers) means PORT belongs to this
   // process. A local `npm run worker` shares .env with the web server, so it
   // uses WORKER_PORT or 3002 instead of the web PORT.
   const port =
     env.WORKER_PORT ?? (env.PROCESS_KIND === "worker" ? env.PORT : undefined);
   return Object.freeze({
-    kind,
-    appEnv,
-    deployed,
+    ...common,
     port: positiveInt(port, 3002, "invalid_port"),
-    appUrl,
-    logLevel,
-    databaseUrl: url,
-    dbPoolMax: positiveInt(env.DB_POOL_MAX, 6, "invalid_db_pool_max"),
+    databaseUrl: null,
+    dbPoolMax: positiveInt(env.DB_POOL_MAX, 4, "invalid_db_pool_max"),
     drainSeconds: positiveInt(
       env.RAILWAY_DEPLOYMENT_DRAINING_SECONDS,
       30,
       "invalid_draining_seconds",
     ),
-    sentryDsn,
-    alertWebhook,
-    billingEnabled,
+    workerUrl: null,
   });
 }

@@ -1,4 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash, randomUUID } from "node:crypto";
+import { isIP } from "node:net";
+import type express from "express";
 
 /**
  * Structured JSON logger. One line per call on stdout in the shape Railway
@@ -20,7 +23,12 @@ export interface RequestContext {
 
 export const requestContext = new AsyncLocalStorage<RequestContext>();
 
-const levels: Record<Level, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+const levels: Record<Level, number> = {
+  debug: 10,
+  info: 20,
+  warn: 30,
+  error: 40,
+};
 const SECRET_KEY =
   /pass(word)?|secret|token|cookie|authorization|csrf|pin|dsn|signature|api[-_]?key/i;
 const DATABASE_URL = /postgres(ql)?:\/\/[^@\s]+@/gi;
@@ -180,12 +188,132 @@ export function reportError(
   const { event, ...rest } = attrs;
   log.error(event ?? "unhandled_error", rest, error);
   const reporter = (globalThis as Record<symbol, unknown>)[REPORTER] as
-    | Reporter
-    | undefined;
+    Reporter | undefined;
   if (!reporter) return;
   try {
     reporter(error, redact(rest) as Attrs);
   } catch {
     /* The tracker is optional; its failure must not mask the original error. */
   }
+}
+
+// ---- HTTP request context, access log and error logging -------------------
+
+const REQUEST_ID = /^[A-Za-z0-9_-]{8,128}$/;
+const QUIET_PATHS = new Set(["/health", "/api/health", "/api/ops/status"]);
+
+type RequestWithContext = express.Request & {
+  requestId?: string;
+  session?: { tenantId?: string; employeeId?: string; role?: string };
+};
+
+/** The request's id: Railway's X-Railway-Request-Id when well formed, else a UUID. */
+export function requestIdOf(req: express.Request): string {
+  const r = req as RequestWithContext;
+  if (r.requestId) return r.requestId;
+  const header = req.get("x-railway-request-id");
+  r.requestId = header && REQUEST_ID.test(header) ? header : randomUUID();
+  return r.requestId;
+}
+
+/**
+ * Route template for logs, never the raw path: public ordering URLs carry
+ * capability tokens (/api/public/:token/...) that must not reach log storage.
+ */
+export function routeLabel(req: express.Request): string {
+  const path = (req.route as { path?: unknown } | undefined)?.path;
+  return typeof path === "string" ? `${req.baseUrl}${path}` : "unmatched";
+}
+
+/**
+ * The client address. With trust proxy, req.ip is the nearest untrusted
+ * X-Forwarded-For hop. When the peer is itself a trusted proxy that sent no
+ * usable hop, X-Real-IP (set by Railway's edge) is used; a client-supplied
+ * X-Real-IP from an untrusted peer is ignored.
+ */
+export function clientIp(req: express.Request): string {
+  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+  const trust = req.app?.get("trust proxy fn") as
+    ((addr: string, i: number) => boolean) | undefined;
+  const peer = req.socket.remoteAddress ?? "";
+  const realIp = req.get("x-real-ip")?.trim() ?? "";
+  if (trust && peer && trust(peer, 0) && ip === peer && isIP(realIp))
+    return realIp;
+  return ip;
+}
+
+/** Short, non-reversible label for an address in logs. */
+export const ipHash = (ip: string) =>
+  createHash("sha256").update(ip).digest("hex").slice(0, 12);
+
+/**
+ * Request id + access log (OPS-4). Sets X-Request-Id, runs the rest of the
+ * request inside the async logging context, and logs one http_request line on
+ * finish: method, route template, status, latency, tenant and role, never
+ * URLs, query strings, bodies or cookies. Successful reads log at debug so
+ * KDS polling does not flood the logs; every write and every error is logged.
+ * onTenantWrite receives the tenant of each successful authenticated write.
+ */
+export function requestLog(
+  onTenantWrite?: (tenantId: string) => void,
+): express.RequestHandler {
+  return (req, res, next) => {
+    const requestId = requestIdOf(req);
+    res.setHeader("X-Request-Id", requestId);
+    const started = process.hrtime.bigint();
+    res.on("finish", () => {
+      const r = req as RequestWithContext;
+      const status = res.statusCode;
+      const read = req.method === "GET" || req.method === "HEAD";
+      const attrs = {
+        requestId,
+        method: req.method,
+        route: routeLabel(req),
+        status,
+        durationMs: Number((process.hrtime.bigint() - started) / 1000n) / 1000,
+        tenantId: r.session?.tenantId,
+        role: r.session?.role,
+        edge: req.get("x-railway-edge") ?? undefined,
+      };
+      if (status >= 500) log.error("http_request", attrs);
+      else if (status < 400 && (read || QUIET_PATHS.has(req.path)))
+        log.debug("http_request", attrs);
+      else log.info("http_request", attrs);
+      if (!read && status < 400 && r.session?.tenantId)
+        try {
+          onTenantWrite?.(r.session.tenantId);
+        } catch {
+          /* observers never affect the response */
+        }
+    });
+    requestContext.run({ requestId }, () => next());
+  };
+}
+
+/**
+ * Logs an error the API answered (SEC-8): 5xx with name, message, stack,
+ * route template and SQLSTATE through reportError; DomainError 5xx at warn;
+ * malformed or oversized bodies at info; other 4xx at debug.
+ */
+export function logRequestError(
+  error: unknown,
+  req: express.Request,
+  response: { status: number; code: string },
+) {
+  const attrs = {
+    requestId: requestIdOf(req),
+    method: req.method,
+    route: routeLabel(req),
+    status: response.status,
+    code: response.code,
+  };
+  if (response.code === "internal_error")
+    reportError(error, { event: "request_failed", ...attrs });
+  else if (response.status >= 500) log.warn("domain_error_5xx", attrs);
+  else if (
+    response.code === "invalid_json" ||
+    response.code === "payload_too_large"
+  )
+    log.info("request_rejected", attrs);
+  else log.debug("request_rejected", attrs);
 }

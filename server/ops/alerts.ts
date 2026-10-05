@@ -1,5 +1,5 @@
 import type { AlertKind } from "../config-rules.js";
-import { log } from "../log.js";
+import { log } from "../logging.js";
 
 export type Severity = "critical" | "warning" | "info";
 export interface Alert {
@@ -53,7 +53,10 @@ export function alertRequest(
     body: JSON.stringify(payload),
   });
   if (target.kind === "slack")
-    return { url: target.url, init: json({ text: `*${title}*\n${alert.body}` }) };
+    return {
+      url: target.url,
+      init: json({ text: `*${title}*\n${alert.body}` }),
+    };
   if (target.kind === "discord")
     return {
       url: target.url,
@@ -124,6 +127,21 @@ export function createAlerter(
       }
     },
   };
+}
+
+/** ALERT_WEBHOOK_URL / ALERT_WEBHOOK_KIND (default ntfy); null when unset or invalid. */
+export function alertTargetFromEnv(env: NodeJS.ProcessEnv): AlertTarget | null {
+  const raw = env.ALERT_WEBHOOK_URL?.trim();
+  if (!raw) return null;
+  try {
+    const url = new URL(raw);
+    if (!/^https?:$/.test(url.protocol)) return null;
+    const kind = (env.ALERT_WEBHOOK_KIND?.trim() || "ntfy") as AlertKind;
+    if (!["ntfy", "slack", "discord", "generic"].includes(kind)) return null;
+    return { url: url.href, kind };
+  } catch {
+    return null;
+  }
 }
 
 let current: Alerter = createAlerter(null, { appEnv: "development" });

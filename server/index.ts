@@ -32,7 +32,7 @@ import { randomUUID, randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { z, ZodError } from "zod";
 import { Decimal } from "decimal.js";
-import { connect, tenant, checkRole } from "./db.js";
+import { connect, tenant, waitForDatabase } from "./db.js";
 import {
   authentication,
   type AuthRequest,
@@ -67,6 +67,15 @@ import {
 } from "./voids.js";
 import { requireReadySchema } from "./readiness.js";
 import { makeRoute, trustProxy } from "./http.js";
+import { log, logRequestError, requestIdOf, requestLog } from "./logging.js";
+import { createJobRunner } from "./jobs/runner.js";
+import { opsState } from "./ops/status.js";
+import {
+  alertTargetFromEnv,
+  configureAlerts,
+  sendAlert,
+} from "./ops/alerts.js";
+import { drainOnSignal, drainSecondsFrom } from "./boot.js";
 import * as opsRoutes from "./routes/ops.js";
 import * as accessRoutes from "./routes/access.js";
 import * as serviceRoutes from "./routes/service.js";
@@ -96,8 +105,21 @@ if (
 )
   throw Error("DATABASE_URL and JWT_SECRET (32+ characters) required");
 const sql = connect(process.env.DATABASE_URL);
-await checkRole(sql);
+await waitForDatabase(sql);
 const billing = await billingRuntime(sql, process.env);
+configureAlerts(
+  alertTargetFromEnv(process.env),
+  process.env.APP_ENV || "development",
+);
+const jobs = createJobRunner(sql, {
+  onDead: (job, code) =>
+    void sendAlert({
+      key: `jobs_dead_${job.kind}`,
+      severity: "warning",
+      title: "dead job",
+      body: `jobs_dead kind=${job.kind} code=${code}`,
+    }),
+});
 const app = express();
 app.disable("x-powered-by");
 app.set("trust proxy", trustProxy(process.env));
@@ -110,9 +132,12 @@ app.use(
 app.use("/api/billing/webhook", billing.webhook);
 app.use(express.json({ limit: "256kb" }));
 app.use(cookieParser());
+app.use(requestLog((tenantId) => jobs.noteTenant(tenantId)));
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.get("/api/health", async (_req, res, next) => {
   try {
+    // Draining instances report unhealthy so traffic moves to the new one.
+    if (opsState.draining) throw new DomainError("server_draining", 503);
     await requireReadySchema(sql);
     res.json({ ok: true });
   } catch (e) {
@@ -723,42 +748,41 @@ app.use(
     res: express.Response,
     _next: express.NextFunction,
   ) => {
-    const requestId = randomUUID();
-    if (error instanceof DomainError)
-      return res.status(error.status).json({ error: error.code, requestId });
-    if (error instanceof ZodError)
-      return res.status(400).json({ error: "invalid_input", requestId });
+    // The id from the request log (X-Railway-Request-Id when present), so the
+    // client's support reference matches the log line.
+    const requestId = requestIdOf(req);
+    if (!res.headersSent) res.setHeader("X-Request-Id", requestId);
+    const reply = (status: number, code: string) => {
+      logRequestError(error, req, { status, code });
+      return res.status(status).json({ error: code, requestId });
+    };
+    if (error instanceof DomainError) return reply(error.status, error.code);
+    if (error instanceof ZodError) return reply(400, "invalid_input");
     // body-parser marks malformed or oversized bodies with a type and status.
     const parse = (error as { type?: string; status?: number }) ?? {};
-    if (parse.type === "entity.parse.failed")
-      return res.status(400).json({ error: "invalid_json", requestId });
+    if (parse.type === "entity.parse.failed") return reply(400, "invalid_json");
     if (parse.type === "entity.too.large")
-      return res.status(413).json({ error: "payload_too_large", requestId });
-    // Log enough to diagnose without request bodies, cookies or secrets.
-    const failure = error instanceof Error ? error : null;
-    console.error(
-      JSON.stringify({
-        level: "error",
-        requestId,
-        method: req.method,
-        route: req.route?.path ?? req.path,
-        code: (error as { code?: unknown })?.code ?? "internal_error",
-        message: failure?.message,
-        stack: failure?.stack,
-      }),
-    );
-    return res.status(500).json({ error: "internal_error", requestId });
+      return reply(413, "payload_too_large");
+    // Logged with name, message, stack, route template and SQLSTATE; never
+    // request bodies, cookies or the raw path (SEC-8).
+    return reply(500, "internal_error");
   },
 );
-const server = app.listen(Number(process.env.PORT ?? 3001), "0.0.0.0", () =>
-  console.log("Green Monkey API ready"),
-);
-process.on("SIGTERM", () => {
-  server.close(() => {
-    void billing
-      .close()
-      .then(() => sql.end())
-      .then(() => process.exit(0));
-  });
-  setTimeout(() => process.exit(1), 10000).unref();
+const port = Number(process.env.PORT ?? 3001);
+const server = app.listen(port, "0.0.0.0", () => {
+  opsState.ready = true;
+  log.info("api_ready", { port });
 });
+jobs.start();
+// Railway sends SIGTERM and waits RAILWAY_DEPLOYMENT_DRAINING_SECONDS before
+// SIGKILL (OPS-6): finish in-flight requests and jobs, then close the pools.
+drainOnSignal(
+  server,
+  opsState,
+  async () => {
+    await jobs.stop(5000);
+    await billing.close();
+    await sql.end({ timeout: 5 });
+  },
+  { drainSeconds: drainSecondsFrom(process.env) },
+);

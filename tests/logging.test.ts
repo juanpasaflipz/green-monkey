@@ -7,7 +7,7 @@ import {
   requestContext,
   setErrorReporter,
   setLogSink,
-} from "../server/log.js";
+} from "../server/logging.js";
 
 function capture() {
   const lines: string[] = [];
@@ -52,7 +52,9 @@ describe("structured logger", () => {
     expect(out.nested.url).toBe(
       "postgresql://[redacted]@db.example.neon.tech/green_monkey",
     );
-    expect(out.nested.text).toBe("key [redacted] and [redacted] and [redacted] here");
+    expect(out.nested.text).toBe(
+      "key [redacted] and [redacted] and [redacted] here",
+    );
     expect(out.nested.safe).toContain("10000000-0000-4000-8000-000000000001");
   });
 
@@ -103,7 +105,10 @@ describe("structured logger", () => {
     );
     log.warn("outside");
     const [inside, outside] = lines.map((l) => JSON.parse(l));
-    expect(inside).toMatchObject({ requestId: "req-12345678", tenantId: "t-1" });
+    expect(inside).toMatchObject({
+      requestId: "req-12345678",
+      tenantId: "t-1",
+    });
     expect(outside.requestId).toBeUndefined();
   });
 

@@ -4,10 +4,11 @@ import { resolveOutcome } from "../server/jobs/runner.js";
 import {
   clearJobHandlers,
   handlers,
+  MAX_ATTEMPTS,
   registerJobHandler,
-} from "../server/jobs/registry.js";
+} from "../server/jobs.js";
 import { alertRequest, createAlerter } from "../server/ops/alerts.js";
-import { setLogSink } from "../server/log.js";
+import { setLogSink } from "../server/logging.js";
 
 beforeAll(() => setLogSink(() => {}));
 afterAll(() => setLogSink(null));
@@ -24,20 +25,25 @@ describe("jobs framework", () => {
     expect(backoffMs(30, () => 1)).toBe(4_320_000);
   });
 
-  it("outcome mapping: throw→retry, attempts≥max→dead, blocked, completed", () => {
+  it("outcome mapping: throw→retry, attempts≥max→dead, blocked, done", () => {
     expect(resolveOutcome({ ok: true, outcome: undefined })).toEqual({
       action: "complete",
     });
-    expect(
-      resolveOutcome({ ok: true, outcome: { status: "completed" } }),
-    ).toEqual({ action: "complete" });
-    expect(
-      resolveOutcome({ ok: false, error: Object.assign(new Error("x"), { code: "provider_timeout" }) }),
-    ).toEqual({ action: "fail", code: "provider_timeout" });
-    expect(resolveOutcome({ ok: false, error: new TypeError("boom") })).toEqual({
-      action: "fail",
-      code: "handler_error",
+    expect(resolveOutcome({ ok: true, outcome: { status: "done" } })).toEqual({
+      action: "complete",
     });
+    expect(
+      resolveOutcome({
+        ok: false,
+        error: Object.assign(new Error("x"), { code: "provider_timeout" }),
+      }),
+    ).toEqual({ action: "fail", code: "provider_timeout" });
+    expect(resolveOutcome({ ok: false, error: new TypeError("boom") })).toEqual(
+      {
+        action: "fail",
+        code: "handler_error",
+      },
+    );
     expect(
       resolveOutcome({
         ok: true,
@@ -45,17 +51,22 @@ describe("jobs framework", () => {
       }),
     ).toEqual({ action: "fail", code: "rate_limited", retryAfterMs: 5000 });
     expect(
-      resolveOutcome({ ok: true, outcome: { status: "blocked", code: "printer_not_paired" } }),
+      resolveOutcome({
+        ok: true,
+        outcome: { status: "blocked", code: "printer_not_paired" },
+      }),
     ).toMatchObject({ blocked: true });
     expect(
-      resolveOutcome({ ok: true, outcome: { status: "dead", code: "invalid_payload" } }),
+      resolveOutcome({
+        ok: true,
+        outcome: { status: "dead", code: "invalid_payload" },
+      }),
     ).toMatchObject({ dead: true });
-    expect(failureState({ attempts: 1, maxAttempts: 8 }, {})).toBe("retry");
-    expect(failureState({ attempts: 8, maxAttempts: 8 }, {})).toBe("dead");
-    expect(failureState({ attempts: 1, maxAttempts: 8 }, { dead: true })).toBe("dead");
-    expect(failureState({ attempts: 8, maxAttempts: 8 }, { blocked: true })).toBe(
-      "blocked",
-    );
+    expect(MAX_ATTEMPTS).toBe(8);
+    expect(failureState(1, {})).toBe("retry");
+    expect(failureState(MAX_ATTEMPTS, {})).toBe("dead");
+    expect(failureState(1, { dead: true })).toBe("dead");
+    expect(failureState(MAX_ATTEMPTS, { blocked: true })).toBe("blocked");
   });
 
   it("stores only machine-readable error codes", () => {
@@ -65,6 +76,7 @@ describe("jobs framework", () => {
   });
 
   it("registers each kind once with sane defaults", () => {
+    const kitchen = handlers().get("kitchen_dispatch");
     clearJobHandlers();
     const noop = async () => {};
     registerJobHandler("sample_kind", noop);
@@ -75,6 +87,7 @@ describe("jobs framework", () => {
     expect(() => registerJobHandler("sample_kind", noop)).toThrow();
     expect(() => registerJobHandler("Bad Kind", noop)).toThrow();
     clearJobHandlers();
+    if (kitchen) registerJobHandler("kitchen_dispatch", kitchen.handler);
   });
 });
 
@@ -88,7 +101,12 @@ describe("alerts", () => {
 
   it("formats ntfy, slack, discord and generic webhooks", () => {
     const at = new Date("2026-10-05T10:00:00Z");
-    const ntfy = alertRequest({ url: "https://ntfy.sh/t", kind: "ntfy" }, "production", alert, at);
+    const ntfy = alertRequest(
+      { url: "https://ntfy.sh/t", kind: "ntfy" },
+      "production",
+      alert,
+      at,
+    );
     expect(ntfy.init.headers).toMatchObject({
       Title: "Green Monkey production: dead jobs",
       Priority: "high",
@@ -97,20 +115,30 @@ describe("alerts", () => {
     expect(ntfy.init.body).toBe("jobs_dead receipt=2");
     expect(
       JSON.parse(
-        alertRequest({ url: "https://x", kind: "slack" }, "staging", alert, at).init
-          .body as string,
+        alertRequest({ url: "https://x", kind: "slack" }, "staging", alert, at)
+          .init.body as string,
       ),
-    ).toEqual({ text: "*Green Monkey staging: dead jobs*\njobs_dead receipt=2" });
+    ).toEqual({
+      text: "*Green Monkey staging: dead jobs*\njobs_dead receipt=2",
+    });
     expect(
       JSON.parse(
-        alertRequest({ url: "https://x", kind: "discord" }, "staging", alert, at).init
-          .body as string,
+        alertRequest(
+          { url: "https://x", kind: "discord" },
+          "staging",
+          alert,
+          at,
+        ).init.body as string,
       ).content,
     ).toContain("dead jobs");
     expect(
       JSON.parse(
-        alertRequest({ url: "https://x", kind: "generic" }, "staging", alert, at).init
-          .body as string,
+        alertRequest(
+          { url: "https://x", kind: "generic" },
+          "staging",
+          alert,
+          at,
+        ).init.body as string,
       ),
     ).toEqual({
       env: "staging",
@@ -129,7 +157,11 @@ describe("alerts", () => {
     });
     const alerter = createAlerter(
       { url: "https://ntfy.sh/t", kind: "ntfy" },
-      { appEnv: "staging", fetch: fetch as unknown as typeof globalThis.fetch, now: () => now },
+      {
+        appEnv: "staging",
+        fetch: fetch as unknown as typeof globalThis.fetch,
+        now: () => now,
+      },
     );
     await alerter.send(alert);
     await alerter.send(alert);

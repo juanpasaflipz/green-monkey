@@ -1,19 +1,30 @@
+/**
+ * In-process jobs runner for the web service (wave 1 contract §1.2).
+ *
+ * The runtime role can only see one tenant's jobs at a time (RLS), so the
+ * runner works per tenant: every successful authenticated write marks its
+ * tenant active (server/logging.ts requestLog), which schedules a drain for
+ * that tenant, and a periodic sweep revisits recently active tenants for
+ * retries whose backoff has elapsed. Jobs are only created by tenant writes,
+ * so an active tenant always gets its jobs claimed.
+ */
 import type postgres from "postgres";
 import { tenant } from "../db.js";
-import { log as rootLog, type Logger } from "../log.js";
+import { log as rootLog, type Logger } from "../logging.js";
+import {
+  handlers as registeredHandlers,
+  type JobOutcome,
+  type RegisteredHandler,
+  type ClaimedJob,
+} from "../jobs.js";
 import {
   claimJobs,
   completeJob,
   extendLease,
   failJob,
   jobErrorCode,
-  type ClaimedJob,
 } from "./queue.js";
-import {
-  handlers as registeredHandlers,
-  type JobOutcome,
-  type RegisteredHandler,
-} from "./registry.js";
+import "./handlers/index.js";
 
 export type JobAction =
   | { action: "complete" }
@@ -35,7 +46,7 @@ export function resolveOutcome(
       code: jobErrorCode((result.error as { code?: unknown })?.code),
     };
   const outcome = result.outcome;
-  if (!outcome || outcome.status === "completed") return { action: "complete" };
+  if (!outcome || outcome.status === "done") return { action: "complete" };
   if (outcome.status === "retry")
     return {
       action: "fail",
@@ -48,50 +59,62 @@ export function resolveOutcome(
 }
 
 export interface JobRunner {
+  /** Starts the periodic sweep. */
   start(): void;
+  /** Marks a tenant active and schedules a drain for it. */
+  noteTenant(tenantId: string): void;
+  /** Claims and runs the tenant's runnable jobs; resolves with the number claimed. */
+  drainTenant(tenantId: string): Promise<number>;
   /** Stops claiming, waits for running handlers, then aborts the rest. */
-  drain(timeoutMs: number): Promise<void>;
-  /** One claim/dispatch pass; resolves with the number of jobs claimed. */
-  tick(): Promise<number>;
-  lastTickAt(): number | null;
+  stop(timeoutMs: number): Promise<void>;
   running(): number;
 }
 
-export function createRunner(
+export function createJobRunner(
   sql: postgres.Sql,
   o: {
     concurrency?: number;
-    busyMs?: number;
-    idleMs?: number;
+    sweepMs?: number;
+    debounceMs?: number;
+    activeForMs?: number;
+    maxTenants?: number;
     handlers?: () => ReadonlyMap<string, RegisteredHandler>;
+    onDead?: (job: ClaimedJob, code: string) => void;
     log?: Logger;
   } = {},
 ): JobRunner {
-  const limit = o.concurrency ?? 4;
-  const busyMs = o.busyMs ?? 1000;
-  const idleMs = o.idleMs ?? 5000;
+  const limit = o.concurrency ?? 2;
+  const sweepMs = o.sweepMs ?? 30_000;
+  const debounceMs = o.debounceMs ?? 250;
+  const activeForMs = o.activeForMs ?? 24 * 3600_000;
+  const maxTenants = o.maxTenants ?? 5000;
   const getHandlers = o.handlers ?? registeredHandlers;
   const log = o.log ?? rootLog.child({ loop: "jobs" });
   const active = new Map<
     string,
     { kind: string; promise: Promise<void>; abort: AbortController }
   >();
+  const seen = new Map<string, number>();
+  const scheduled = new Map<string, NodeJS.Timeout>();
+  const draining = new Map<string, Promise<number>>();
   let stopping = false;
-  let timer: NodeJS.Timeout | null = null;
-  let lastTick: number | null = null;
-  let ticking: Promise<number> | null = null;
+  let sweepTimer: NodeJS.Timeout | null = null;
 
   const perKind = (kind: string) =>
     [...active.values()].filter((a) => a.kind === kind).length;
 
-  async function execute(job: ClaimedJob, entry: RegisteredHandler) {
+  function execute(job: ClaimedJob, entry: RegisteredHandler) {
     const abort = new AbortController();
-    const jobLog = log.child({ jobId: job.id, kind: job.kind, tenantId: job.tenantId });
+    const jobLog = log.child({
+      jobId: job.id,
+      kind: job.kind,
+      tenantId: job.tenantId,
+    });
     let leaseTimer: NodeJS.Timeout | null = null;
     const armLease = (seconds: number) => {
       if (leaseTimer) clearTimeout(leaseTimer);
-      // Abort a little before the lease expires; the fenced writes below
-      // would be rejected anyway once another claimer owns the job.
+      // Abort a little before the lease expires; fenced writes would be
+      // rejected anyway once another runner reclaims the job.
       leaseTimer = setTimeout(
         () => abort.abort(new Error("job_lease_expired")),
         Math.max(1000, seconds * 1000 - 2000),
@@ -101,8 +124,7 @@ export function createRunner(
     armLease(entry.leaseSeconds);
     const promise = (async () => {
       let result:
-        | { ok: true; outcome: JobOutcome }
-        | { ok: false; error: unknown };
+        { ok: true; outcome: JobOutcome } | { ok: false; error: unknown };
       try {
         result = {
           ok: true,
@@ -112,12 +134,14 @@ export function createRunner(
             log: jobLog,
             tenant: (fn) => tenant(sql, job.tenantId, fn),
             extendLease: async (seconds) => {
-              if (!(await extendLease(sql, job, seconds))) {
+              const lease = await extendLease(sql, job, seconds);
+              if (!lease) {
                 abort.abort(new Error("job_lease_lost"));
                 throw Object.assign(new Error("job_lease_lost"), {
                   code: "job_lease_lost",
                 });
               }
+              job.lease = lease;
               armLease(seconds);
             },
           }),
@@ -132,86 +156,131 @@ export function createRunner(
         if (action.action === "complete") {
           if (!(await completeJob(sql, job)))
             jobLog.warn("job_lease_lost", { stage: "complete" });
-          else jobLog.debug("job_completed", { attempts: job.attempts });
-        } else {
-          const state = await failJob(sql, job, action);
-          const attrs = { code: action.code, attempts: job.attempts, state };
-          if (state === "lost") jobLog.warn("job_lease_lost", { stage: "fail" });
-          else if (state === "dead") jobLog.warn("job_dead", attrs);
-          else jobLog.info("job_failed", attrs);
-          if (!result.ok && state !== "lost")
-            jobLog.warn("job_handler_error", { code: action.code }, result.error);
+          else jobLog.debug("job_done", { attempts: job.attempts });
+          return;
         }
+        const state = await failJob(sql, job, action);
+        const attrs = { code: action.code, attempts: job.attempts, state };
+        if (state === "lost") jobLog.warn("job_lease_lost", { stage: "fail" });
+        else if (state === "dead") {
+          jobLog.error("job_dead", attrs);
+          o.onDead?.(job, action.code);
+        } else jobLog.info("job_failed", attrs);
+        if (!result.ok && state !== "lost")
+          jobLog.warn("job_handler_error", { code: action.code }, result.error);
       } catch (error) {
-        // The lease expires and the job is reclaimed; nothing is lost.
+        // The lease expires and the job is reclaimed on a later drain.
         jobLog.error("job_state_write_failed", {}, error);
       }
     })();
     active.set(job.id, { kind: job.kind, promise, abort });
-    promise.finally(() => active.delete(job.id));
+    void promise.finally(() => active.delete(job.id));
   }
 
-  async function pass(): Promise<number> {
-    lastTick = Date.now();
-    let claimed = 0;
+  async function drainOnce(
+    tenantId: string,
+  ): Promise<{ claimed: number; saturated: boolean }> {
+    let claimed = 0,
+      saturated = false;
     for (const [kind, entry] of getHandlers()) {
       if (stopping) break;
-      const free = Math.min(limit - active.size, entry.concurrency - perKind(kind));
-      if (free <= 0) continue;
-      const jobs = await claimJobs(sql, [kind], free, entry.leaseSeconds);
-      claimed += jobs.length;
-      for (const job of jobs) await execute(job, entry);
-    }
-    return claimed;
-  }
-
-  async function tick(): Promise<number> {
-    if (ticking) return ticking;
-    ticking = pass().finally(() => {
-      ticking = null;
-    });
-    return ticking;
-  }
-
-  function schedule(ms: number) {
-    if (stopping) return;
-    timer = setTimeout(async () => {
-      let claimed = 0;
-      try {
-        claimed = await tick();
-      } catch (error) {
-        log.warn("jobs_claim_failed", {}, error);
+      const free = Math.min(
+        limit - active.size,
+        entry.concurrency - perKind(kind),
+      );
+      if (free <= 0) {
+        saturated = true;
+        continue;
       }
-      // Keep draining a backlog quickly; poll every busyMs while handlers run
-      // and every idleMs when there is nothing to do.
-      schedule(claimed > 0 ? Math.min(100, busyMs) : active.size > 0 ? busyMs : idleMs);
+      const jobs = await tenant(sql, tenantId, (tx) =>
+        claimJobs(tx, [kind], free, entry.leaseSeconds),
+      );
+      claimed += jobs.length;
+      if (jobs.length === free) saturated = true;
+      for (const job of jobs) execute(job, entry);
+    }
+    return { claimed, saturated };
+  }
+
+  function drainTenant(tenantId: string): Promise<number> {
+    const current = draining.get(tenantId);
+    if (current) return current;
+    const run = (async () => {
+      let total = 0;
+      // Keep going while slots were the limit (a backlog after a restart);
+      // stop as soon as a pass finds nothing more to claim.
+      for (let i = 0; i < 100 && !stopping; i++) {
+        const { claimed, saturated } = await drainOnce(tenantId);
+        total += claimed;
+        if (!saturated) break;
+        if (active.size > 0)
+          await Promise.race([...active.values()].map((a) => a.promise));
+      }
+      return total;
+    })().finally(() => draining.delete(tenantId));
+    draining.set(tenantId, run);
+    return run;
+  }
+
+  function schedule(tenantId: string, ms: number) {
+    if (stopping || scheduled.has(tenantId)) return;
+    const timer = setTimeout(() => {
+      scheduled.delete(tenantId);
+      drainTenant(tenantId).catch((error) =>
+        log.warn("jobs_drain_failed", { tenantId }, error),
+      );
     }, ms);
     timer.unref();
+    scheduled.set(tenantId, timer);
+  }
+
+  function sweep() {
+    const cutoff = Date.now() - activeForMs;
+    for (const [tenantId, at] of seen) {
+      if (at < cutoff) seen.delete(tenantId);
+      else schedule(tenantId, 0);
+    }
   }
 
   return {
     start() {
       stopping = false;
-      schedule(0);
+      sweepTimer = setInterval(sweep, sweepMs);
+      sweepTimer.unref();
     },
-    async drain(timeoutMs) {
+    noteTenant(tenantId) {
+      if (stopping || getHandlers().size === 0) return;
+      seen.delete(tenantId);
+      seen.set(tenantId, Date.now());
+      // Bound memory: forget the least recently active tenant.
+      if (seen.size > maxTenants) seen.delete(seen.keys().next().value!);
+      schedule(tenantId, debounceMs);
+    },
+    drainTenant,
+    async stop(timeoutMs) {
       stopping = true;
-      if (timer) clearTimeout(timer);
-      await ticking?.catch(() => undefined);
-      const settled = Promise.allSettled([...active.values()].map((a) => a.promise));
+      if (sweepTimer) clearInterval(sweepTimer);
+      for (const timer of scheduled.values()) clearTimeout(timer);
+      scheduled.clear();
+      await Promise.allSettled([...draining.values()]);
+      const settled = Promise.allSettled(
+        [...active.values()].map((a) => a.promise),
+      );
       const timedOut = await Promise.race([
         settled.then(() => false),
-        new Promise<boolean>((r) => setTimeout(() => r(true), Math.max(0, timeoutMs)).unref()),
+        new Promise<boolean>((r) =>
+          setTimeout(() => r(true), Math.max(0, timeoutMs)).unref(),
+        ),
       ]);
       if (timedOut) {
-        log.warn("jobs_drain_aborting", { running: active.size });
-        for (const a of active.values()) a.abort.abort(new Error("worker_shutdown"));
-        // Leases expire and the jobs are reclaimed by the next worker.
-        await Promise.race([settled, new Promise((r) => setTimeout(r, 1000).unref())]);
+        log.warn("jobs_stop_aborting", { running: active.size });
+        for (const a of active.values()) a.abort.abort(new Error("shutdown"));
+        await Promise.race([
+          settled,
+          new Promise((r) => setTimeout(r, 1000).unref()),
+        ]);
       }
     },
-    tick,
-    lastTickAt: () => lastTick,
     running: () => active.size,
   };
 }

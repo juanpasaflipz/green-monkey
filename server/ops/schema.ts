@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type postgres from "postgres";
 import type { AppEnv } from "../config-rules.js";
 import type { Tx } from "../db.js";
-import { log } from "../log.js";
+import { log } from "../logging.js";
 
 export interface MigrationFile {
   name: string;
@@ -228,9 +228,7 @@ export async function applyMigrations(
   const pending = await pendingMigrations(sql, files);
   const highest = Math.max(
     0,
-    ...files
-      .filter((f) => !pending.includes(f))
-      .map((f) => f.number),
+    ...files.filter((f) => !pending.includes(f)).map((f) => f.number),
   );
   for (const file of pending) {
     if (file.number < highest)
@@ -266,11 +264,7 @@ export async function applyMigrations(
           await sleep(waitMs);
           continue;
         }
-        log.error(
-          "migration_failed",
-          { file: file.name, pgCode: code },
-          error,
-        );
+        log.error("migration_failed", { file: file.name, pgCode: code }, error);
         throw new MigrationError("migration_failed", {
           file: file.name,
           pgCode: code,
@@ -286,11 +280,6 @@ export function quoteIdent(value: string) {
 }
 
 export const ROLE_NAME = /^[a-z_][a-z0-9_]{0,62}$/i;
-
-/** sha256 of the manifest file bytes; readiness requires the same value. */
-export function manifestHash(path = resolve("scripts/grants.sql")) {
-  return sha256(readFileSync(path));
-}
 
 /** Rejects a runtime role that could bypass row-level security or own the schema. */
 export async function assertRuntimeRole(tx: Tx, role: string) {
@@ -309,13 +298,14 @@ export async function assertRuntimeRole(tx: Tx, role: string) {
 }
 
 /**
- * Applies the reviewed runtime grants manifest to one role in one transaction
- * and records its hash in schema_grants, which /api/health requires.
+ * Applies the reviewed runtime grants manifest to one role in one
+ * transaction. CD/preDeploy runs it after every migrate so tables added by
+ * any area are granted before the new revision serves traffic (DB-6).
  */
 export async function applyGrants(
   sql: postgres.Sql,
   o: { role: string; database: string; manifestPath?: string },
-): Promise<{ hash: string; recorded: boolean }> {
+): Promise<{ hash: string }> {
   if (!ROLE_NAME.test(o.role))
     throw new MigrationError("runtime_role_invalid", { role: o.role });
   const path = o.manifestPath ?? resolve("scripts/grants.sql");
@@ -326,38 +316,24 @@ export async function applyGrants(
     .toString("utf8")
     .replaceAll(/\bgm_app\b/g, quoteIdent(o.role))
     .replaceAll(/\bgreen_monkey_dev\b/g, quoteIdent(o.database));
-  const recorded = await sql.begin(async (raw) => {
+  await sql.begin(async (raw) => {
     const tx = raw as Tx;
     await tx`select set_config('lock_timeout','5s',true)`;
     await assertRuntimeRole(tx, o.role);
     await tx.unsafe(manifest);
     const [schema] = await tx`
       select n.nspowner = (select oid from pg_roles where rolname=current_user)
-          or has_schema_privilege(current_user, 'public', 'CREATE WITH GRANT OPTION')
-          or (select rolsuper from pg_roles where rolname=current_user) as can_revoke
+          or pg_has_role(current_user, n.nspowner, 'member') as can_revoke
       from pg_namespace n where n.nspname='public'`;
-    if (schema?.can_revoke) await tx`revoke create on schema public from public`;
+    if (schema?.can_revoke)
+      await tx`revoke create on schema public from public`;
     else
       log.info("grants_schema_revoke_skipped", {
         reason: "public schema CREATE is revoked by provisioning",
       });
-    const [registry] =
-      await tx`select to_regclass('public.schema_grants') is not null as present`;
-    if (!registry.present) {
-      log.warn("grants_registry_missing", {
-        hint: "apply migration 022 before grants",
-      });
-      return false;
-    }
-    await tx`insert into schema_grants(role_name, manifest_hash) values(${o.role}, ${hash}) on conflict do nothing`;
-    return true;
   });
-  log.info("grants_applied", {
-    role: o.role,
-    hashPrefix: hash.slice(0, 12),
-    recorded,
-  });
-  return { hash, recorded };
+  log.info("grants_applied", { role: o.role, hashPrefix: hash.slice(0, 12) });
+  return { hash };
 }
 
 /** Runs the reviewed reconciler (backup-reader policies on every RLS table). */
@@ -372,20 +348,6 @@ export async function reconcilePolicies(
     await tx.unsafe(body);
   });
   log.info("policies_reconciled", {});
-}
-
-/** Whether the grants manifest hash is recorded for the role (no writes). */
-export async function grantsRecorded(
-  sql: postgres.Sql,
-  role: string,
-  hash: string,
-) {
-  const [registry] =
-    await sql`select to_regclass('public.schema_grants') is not null as present`;
-  if (!registry.present) return false;
-  const [row] =
-    await sql`select exists(select 1 from schema_grants where role_name=${role} and manifest_hash=${hash}) as ok`;
-  return Boolean(row.ok);
 }
 
 /**
