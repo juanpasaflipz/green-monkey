@@ -3,7 +3,7 @@ import type { Tx } from "./db.js";
 import { permit } from "./auth.js";
 import { audit, once } from "./orders.js";
 import { refreshOrderState } from "./voids.js";
-import { bumpKitchenFeed } from "./compat/offline-service.js";
+import { bumpKitchenFeed } from "./kitchen.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
 
 /** Round state for rounds created by offline sync until the kitchen decides (OFF-4). */

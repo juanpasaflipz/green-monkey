@@ -17,8 +17,8 @@ import {
   type OfflineRoundV3,
   type OrderTarget,
 } from "../shared/offline-recovery.js";
-import { getOrder } from "./orders.js";
-import { applyRound, assertCheckWritable } from "./compat/offline-service.js";
+import { applyRound, getOrder } from "./orders.js";
+import { assertCheckWritable } from "./checks.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
 import { requireTableService } from "./offline-settings.js";
 import {
@@ -69,7 +69,7 @@ async function writableOrder(tx: Tx, orderId: string) {
   if (!row || CLOSED_STATES.includes(row.state))
     throw new DomainError("offline_order_closed", 409);
   try {
-    assertCheckWritable(row as { check_state?: string; state: string });
+    assertCheckWritable(row as { check_state: string; state: string });
   } catch (e) {
     if (e instanceof DomainError)
       throw new DomainError("offline_order_closed", 409);

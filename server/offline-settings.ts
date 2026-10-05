@@ -14,7 +14,7 @@ import type { Tx } from "./db.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
 import { permit, managers, operators } from "./auth.js";
 import { audit } from "./orders.js";
-import { requireRecentAuth } from "./compat/offline-access.js";
+import { requireRecentAuth } from "./access.js";
 
 export type OfflineSettings = { tableService: boolean };
 

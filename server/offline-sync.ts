@@ -37,14 +37,11 @@ import {
 } from "./orders.js";
 import {
   leaseForEvidence,
-  requireRecentAuth,
   type LeaseWindow,
   type OfflineLeaseRow,
-} from "./compat/offline-access.js";
-import {
-  assertCheckWritable,
-  refreshCheckState,
-} from "./compat/offline-service.js";
+} from "./offline-leases.js";
+import { requireRecentAuth } from "./access.js";
+import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { allocatePayment } from "../shared/settlement.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
 
@@ -764,7 +761,7 @@ export async function moneyTarget(
     return { state: "unresolvable", code: "offline_order_closed" };
   const order = await getOrder(tx, orderId);
   try {
-    assertCheckWritable(row as { check_state?: string; state: string });
+    assertCheckWritable(row as { check_state: string; state: string });
   } catch (e) {
     if (e instanceof DomainError) return { state: "closed", order };
     throw e;
