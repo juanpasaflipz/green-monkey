@@ -65,6 +65,7 @@ import { lockStockItems } from "../server/stock.js";
 import { Decimal } from "decimal.js";
 import {
   DomainError,
+  businessDate,
   type Order,
   type Product,
   type Session,
@@ -255,8 +256,24 @@ function orderBody(
     ...extra,
   };
 }
+// D8 (offline 026): an offline-collected sale passes its business date.
 const order = (s: Session, body: unknown, offline = false) =>
-  run(s, (tx) => createOrder(tx, s, body, offline)) as Promise<Order>;
+  run(s, (tx) =>
+    createOrder(
+      tx,
+      s,
+      body,
+      offline
+        ? {
+            businessDate: businessDate(
+              new Date().toISOString(),
+              s.restaurant.timezone,
+              s.restaurant.cutoff,
+            ),
+          }
+        : undefined,
+    ),
+  ) as Promise<Order>;
 async function openDrawer(s: Session) {
   await run(s, async (tx) => {
     const [d] =
