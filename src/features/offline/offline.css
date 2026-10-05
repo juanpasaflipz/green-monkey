@@ -167,3 +167,20 @@
     justify-content: flex-start;
   }
 }
+/* With a banner above it, the selling grid shares the viewport height instead
+   of pushing the page to scroll under the fixed top bar. */
+@media (min-width: 651px) {
+  .selling-main:has(> .connection-banner, > .update-bar) {
+    display: flex;
+    flex-direction: column;
+    height: calc(100dvh - var(--topbar));
+  }
+  .selling-main:has(> .connection-banner, > .update-bar)
+    > div:not([hidden]):has(> .sell-layout) {
+    flex: 1;
+    min-height: 0;
+  }
+  .selling-main:has(> .connection-banner, > .update-bar) .sell-layout {
+    height: 100%;
+  }
+}
