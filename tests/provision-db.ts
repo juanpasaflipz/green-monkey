@@ -52,10 +52,60 @@ const disconnect = async (user: string) => {
     }
 };
 const created: string[] = [];
+// The same public local-only value tests/migrate-db.ts and CI give
+// gm_migrator; never a real credential.
+const MIGRATOR_PASSWORD = "local-only-migrator";
+const migratorUrl = (db: string) => {
+  const u = new URL(migration);
+  u.pathname = "/" + db;
+  u.username = "gm_migrator";
+  u.password = MIGRATOR_PASSWORD;
+  return u.href;
+};
+/** Grants on `db` (database CONNECT, schema public) that `grantor` gave `role`. */
+const grantsBy = async (db: string, role: string, grantor: string) => {
+  const u = new URL(migration);
+  u.pathname = "/" + db;
+  const sql = postgres(u.href, { max: 1, onnotice: () => {} });
+  const [row] = await sql`
+    select
+      (select array_agg(a.privilege_type order by 1) from pg_database d, aclexplode(d.datacl) a
+       where d.datname = ${db} and a.grantee = to_regrole(${role}) and a.grantor = to_regrole(${grantor})) as database,
+      (select array_agg(a.privilege_type order by 1) from pg_namespace n, aclexplode(n.nspacl) a
+       where n.nspname = 'public' and a.grantee = to_regrole(${role}) and a.grantor = to_regrole(${grantor})) as schema`.finally(
+    () => sql.end({ timeout: 5 }),
+  );
+  return { database: row.database ?? [], schema: row.schema ?? [] };
+};
+/**
+ * What every deploy's preDeploy runs (.railway/railway.ts): migrate --grants
+ * --retention as gm_migrator, which re-grants CONNECT and schema USAGE to the
+ * runtime login with gm_migrator as the grantor (OPS-R14).
+ */
+const deployGrants = async (db: string, role: string) => {
+  await admin.unsafe(
+    `alter role gm_migrator login password '${MIGRATOR_PASSWORD}'`,
+  );
+  assert.equal(
+    await migrate(["--grants", "--retention"], {
+      MIGRATION_DATABASE_URL: migratorUrl(db),
+      PG_APP_USER: role,
+      APP_ENV: "staging",
+    }),
+    0,
+    "the deploy applies the manifest as gm_migrator",
+  );
+  assert.deepEqual(
+    await grantsBy(db, role, "gm_migrator"),
+    { database: ["CONNECT"], schema: ["USAGE"] },
+    "the runtime login now holds grants whose grantor is gm_migrator",
+  );
+};
 const neonEnv = "n" + randomBytes(3).toString("hex");
 const neonDatabase = `green_monkey_provision_${neonEnv}_test`;
 const neonOwner = `gm_test_neon_owner_${neonEnv}`;
 const neonOwnerPassword = randomBytes(24).toString("hex");
+const neonGrantor = `gm_test_grantor_${neonEnv}`;
 try {
   await admin.unsafe(`create database "${database}"`);
   assert.equal(
@@ -231,6 +281,9 @@ try {
         await tx`insert into organizations(id,name) values(${org},'Rotation fixture')`;
         await tx`insert into restaurants(id,organization_id,name) values(${tenantId},${org},'Rotation fixture')`;
       });
+      // A deploy has run since provisioning, as it always has before a
+      // rotation in staging and production.
+      await deployGrants(database, saved.PG_APP_USER);
       const rotated = await rotateLogin({
         ownerUrl,
         env,
@@ -268,8 +321,23 @@ try {
         "role defaults copied; still no DELETE",
       );
       // Redeploy (old pools end), finalize, and the new login keeps working.
+      // The superuser owner revokes gm_migrator's database and schema grants
+      // too, which DROP OWNED leaves behind (OPS-R14).
       await disconnect(saved.PG_APP_USER);
-      await finalizeRotation({ ownerUrl, old: saved.PG_APP_USER });
+      const finalized = await finalizeRotation({
+        ownerUrl,
+        old: saved.PG_APP_USER,
+      });
+      assert.ok(
+        finalized.actions.includes(
+          `revoked CONNECT on database ${database} granted by gm_migrator`,
+        ),
+      );
+      assert.ok(
+        finalized.actions.includes(
+          "revoked USAGE on schema public granted by gm_migrator",
+        ),
+      );
       const [gone] =
         await admin`select count(*)::int as n from pg_roles where rolname=${saved.PG_APP_USER}`;
       assert.equal(gone.n, 0);
@@ -375,8 +443,9 @@ try {
         "a re-run as the non-superuser owner is idempotent",
       );
 
-      // The deploy applies the runtime grants; then a runtime and a billing
-      // rotation and both finalizations run through the same owner.
+      // The owner applies the runtime grants once (cutover), then a deploy
+      // re-applies them as gm_migrator; then a runtime and a billing rotation
+      // and both finalizations run through the same owner.
       const saved = parse(readFileSync(neonFile, "utf8"));
       assert.equal(
         await migrate(["--grants-only"], {
@@ -386,6 +455,7 @@ try {
         }),
         0,
       );
+      await deployGrants(neonDatabase, saved.PG_APP_USER);
       const org = randomUUID(),
         tenantId = randomUUID();
       await as(neonOwnerUrl).begin(async (tx) => {
@@ -421,13 +491,74 @@ try {
         ),
       );
       await disconnect(saved.PG_APP_USER);
+
+      // A grant from a role the owner cannot act as is named, and the
+      // finalization rolls back with the old login intact.
+      await admin.unsafe(`create role "${neonGrantor}" nologin`);
+      await admin.unsafe(
+        `grant connect on database "${neonDatabase}" to "${neonGrantor}" with grant option`,
+      );
+      await admin.begin(async (tx) => {
+        await tx.unsafe(`set local role "${neonGrantor}"`);
+        await tx.unsafe(
+          `grant connect on database "${neonDatabase}" to "${saved.PG_APP_USER}"`,
+        );
+      });
+      await assert.rejects(
+        finalizeRotation({ ownerUrl: neonOwnerUrl, old: saved.PG_APP_USER }),
+        new RegExp(
+          `CONNECT on database ${neonDatabase} granted by ${neonGrantor}, a role this login cannot SET ROLE to`,
+        ),
+      );
+      const [kept] =
+        await admin`select count(*)::int as n from pg_roles where rolname=${saved.PG_APP_USER}`;
+      assert.equal(kept.n, 1, "the failed finalization dropped nothing");
+      assert.deepEqual(
+        await grantsBy(neonDatabase, saved.PG_APP_USER, "gm_migrator"),
+        { database: ["CONNECT"], schema: ["USAGE"] },
+        "and revoked nothing",
+      );
+      await admin.begin(async (tx) => {
+        await tx.unsafe(`set local role "${neonGrantor}"`);
+        await tx.unsafe(
+          `revoke connect on database "${neonDatabase}" from "${saved.PG_APP_USER}"`,
+        );
+      });
+
+      const finalized = [];
       for (const old of [saved.PG_APP_USER, `gm_${neonEnv}_billing`])
-        await finalizeRotation({ ownerUrl: neonOwnerUrl, old });
+        finalized.push(await finalizeRotation({ ownerUrl: neonOwnerUrl, old }));
+      assert.ok(
+        finalized[0].actions.includes(
+          `revoked CONNECT on database ${neonDatabase} granted by gm_migrator`,
+        ),
+        "the deploy's CONNECT grant is revoked as gm_migrator (OPS-R14)",
+      );
       const [gone] = await admin`
         select count(*)::int as n from pg_roles
         where rolname = any(${[saved.PG_APP_USER, `gm_${neonEnv}_billing`]})`;
       assert.equal(gone.n, 0, "the owner drops the logins it rotated out");
       await tenant(next, tenantId, (tx) => tx`select 1 from dining_tables`);
+
+      // The next rotation finalizes the login that replaced it, after a
+      // deploy granted it as gm_migrator as well.
+      await deployGrants(neonDatabase, runtimeNext.newName);
+      const runtimeThird = await rotateLogin({
+        ownerUrl: neonOwnerUrl,
+        env: neonEnv,
+        kind: "runtime",
+        old: runtimeNext.newName,
+        newName: `gm_${neonEnv}_app_third`,
+        file: null,
+      });
+      created.push(runtimeThird.newName);
+      await disconnect(runtimeNext.newName);
+      await finalizeRotation({
+        ownerUrl: neonOwnerUrl,
+        old: runtimeNext.newName,
+      });
+      const third = as(runtimeThird.url);
+      await tenant(third, tenantId, (tx) => tx`select 1 from dining_tables`);
     },
   );
 
@@ -439,7 +570,7 @@ try {
     await admin
       .unsafe(`drop database if exists "${db}" with (force)`)
       .catch((e) => console.error(e.message));
-  for (const role of [...created, neonOwner])
+  for (const role of [...created, neonGrantor, neonOwner])
     await admin
       .unsafe(`drop role if exists "${role}"`)
       .catch((e) => console.error(e.message));

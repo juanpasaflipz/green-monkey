@@ -59,8 +59,16 @@ only `gm_migrator` owns tables. `neondb_owner` is not a superuser on Neon
 (it has CREATEROLE, CREATEDB and BYPASSRLS through `neon_superuser`), so the
 script changes only role attributes such an owner may change and grants it
 INHERIT and SET on `gm_migrator` for the ownership transfer and later
-rotations; `tests/provision-db.ts` ("Neon parity") runs provisioning,
-rotation and finalization through such an owner. Then rotate the
+rotations. Every deploy re-applies the runtime grants as `gm_migrator`, so
+the runtime login also holds `CONNECT` and schema `USAGE` granted by
+`gm_migrator`, which `DROP OWNED` run by the owner leaves behind;
+finalizing a rotation revokes each remaining grant as its grantor (`SET
+ROLE gm_migrator`) before `DROP ROLE`, and names any grantor it cannot act
+as instead of dropping anything. `tests/provision-db.ts` applies the grants
+as `gm_migrator`, the way the deploy does, before each runtime rotation it
+finalizes: once with a superuser owner, and twice in a row with a
+Neon-like owner ("Neon parity"), which also provisions the database. Then
+rotate the
 `neondb_owner` password in the Neon console and keep it offline.
 
 ## 3. Railway

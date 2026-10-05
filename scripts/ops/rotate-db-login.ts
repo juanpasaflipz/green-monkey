@@ -11,7 +11,9 @@
 //             serve traffic before any deploy (OPS-R3). Point the services at
 //             it (scripts/ops/railway-vars.sh), redeploy in any order, then:
 //   finalize: tsx scripts/ops/rotate-db-login.ts --env staging --finalize --old <name>
-//             Refuses while the old login has sessions, then drops it.
+//             Refuses while the old login has sessions, then drops it,
+//             revoking as their grantor the database and schema grants that
+//             DROP OWNED leaves (each deploy grants as gm_migrator, OPS-R14).
 //   migrator: tsx scripts/ops/rotate-db-login.ts --env staging --kind migrator
 //             Sets a new gm_migrator password and writes the new URL; update
 //             MIGRATION_DATABASE_URL on the worker service.
@@ -198,11 +200,52 @@ async function missingPrivileges(tx: Tx, oldOid: number, newName: string) {
     order by 1, 2`;
 }
 
+const PRIVILEGE = /^(CONNECT|CREATE|TEMPORARY|USAGE)$/;
+
+/**
+ * Database (any in the cluster) and schema (this database) privileges `old`
+ * still holds, one row per object and grantor, with whether the current
+ * login may SET ROLE to the grantor.
+ */
+async function remainingGrants(tx: Tx, old: string) {
+  const [{ version }] =
+    await tx`select current_setting('server_version_num')::int as version`;
+  // PostgreSQL 16 separates SET from membership; 15 and older allow SET ROLE
+  // to any role the login is a member of.
+  const mode = version >= 160000 ? "SET" : "MEMBER";
+  return tx<
+    {
+      kind: "database" | "schema";
+      name: string;
+      grantor: string;
+      privileges: string[];
+      can_set: boolean;
+    }[]
+  >`
+    with target as (select oid from pg_roles where rolname = ${old}),
+    acl as (
+      select 'database' as kind, d.datname::text as name, a.grantor, a.privilege_type
+      from pg_database d cross join lateral aclexplode(d.datacl) a
+      where a.grantee = (select oid from target)
+      union all
+      select 'schema', n.nspname::text, a.grantor, a.privilege_type
+      from pg_namespace n cross join lateral aclexplode(n.nspacl) a
+      where a.grantee = (select oid from target)
+    )
+    select acl.kind, acl.name, g.rolname as grantor,
+           array_agg(distinct acl.privilege_type order by acl.privilege_type) as privileges,
+           pg_has_role(current_user, g.oid, ${mode}) as can_set
+    from acl join pg_roles g on g.oid = acl.grantor
+    group by acl.kind, acl.name, g.rolname, g.oid
+    order by 1, 2, 3`;
+}
+
 /** Drops the old login once nothing is connected with it. */
 export async function finalizeRotation(o: { ownerUrl: string; old: string }) {
   if (!ROLE.test(o.old) || o.old === "gm_migrator")
     throw Error("invalid old login");
   const sql = connect(o.ownerUrl);
+  const actions: string[] = [];
   try {
     const [active] =
       await sql`select count(*)::int as n from pg_stat_activity where usename=${o.old}`;
@@ -217,12 +260,46 @@ export async function finalizeRotation(o: { ownerUrl: string; old: string }) {
       // old login first; the membership disappears with the role (OPS-R9).
       await ensurePrivilegesOf(tx, o.old);
       await tx.unsafe(`drop owned by ${ident(o.old)}`);
+      actions.push(`dropped objects and privileges owned by ${o.old}`);
+      // DROP OWNED revokes a privilege only when this login's best grantor
+      // for that object made the grant. Every deploy re-applies
+      // scripts/grants.sql as gm_migrator, so CONNECT on the database and
+      // USAGE on schema public are also held from gm_migrator (and, for a
+      // superuser or a login that inherits gm_migrator, the owner's grant can
+      // be the one left). Revoke each remaining grant as its grantor, since
+      // REVOKE ... GRANTED BY accepts only the current user (OPS-R14).
+      const remaining = await remainingGrants(tx, o.old);
+      const blocked = remaining.filter((g) => !g.can_set);
+      if (blocked.length)
+        throw Error(
+          `${o.old} still holds ${blocked
+            .map(
+              (g) =>
+                `${g.privileges.join(", ")} on ${g.kind} ${g.name} granted by ${g.grantor}`,
+            )
+            .join(
+              "; ",
+            )}, a role this login cannot SET ROLE to; revoke it as that role and retry (nothing was dropped)`,
+        );
+      for (const g of remaining) {
+        if (!g.privileges.every((p) => PRIVILEGE.test(p)))
+          throw Error(`unexpected privilege on ${g.kind} ${g.name}`);
+        await tx.unsafe(`set local role ${ident(g.grantor)}`);
+        await tx.unsafe(
+          `revoke ${g.privileges.join(", ")} on ${g.kind} ${ident(g.name)} from ${ident(o.old)}`,
+        );
+        await tx.unsafe(`reset role`);
+        actions.push(
+          `revoked ${g.privileges.join(", ")} on ${g.kind} ${g.name} granted by ${g.grantor}`,
+        );
+      }
       await tx.unsafe(`drop role ${ident(o.old)}`);
+      actions.push(`dropped ${o.old}`);
     });
   } finally {
     await sql.end({ timeout: 5 });
   }
-  return { dropped: o.old };
+  return { dropped: o.old, actions };
 }
 
 /** New password for gm_migrator (used only by the worker's preDeploy). */

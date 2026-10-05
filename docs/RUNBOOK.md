@@ -166,6 +166,11 @@ offline vault, direct endpoint):
    between this step and step 3: the preDeploy grants only the new login.
 3. When the old login has no sessions:
    `… rotate-db-login.ts --env <env> --finalize --old gm_<env>_app`.
+   It drops what the old login owns, revokes the database `CONNECT` and
+   schema `USAGE` that deploys granted it as `gm_migrator` (acting as that
+   role, since only the grantor can revoke them), and drops the login, in
+   one transaction. A refusal naming a grantor the owner cannot `SET ROLE`
+   to changed nothing: revoke that grant as its grantor, then retry.
 4. Same for `--kind billing` (both services) and `--kind backup` (GitHub
    environment secret). `--kind migrator` sets a new `gm_migrator` password;
    update `MIGRATION_DATABASE_URL` on `worker`.
