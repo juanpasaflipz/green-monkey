@@ -116,12 +116,24 @@ export function holdRequests(maxMs = 15_000): () => void {
 }
 let softUnlockCheck: null | (() => Promise<boolean>) = null;
 /**
+ * The only calls a soft unlock never holds back: the lock screen's own roster,
+ * PIN sign-in, step-up and sign-out, and offline evidence (/sync), which also
+ * syncs behind any lock. Authenticated /access/* reads such as the staff or
+ * device lists are checked like every other call (ACC-R6-3).
+ */
+const SOFT_UNLOCK_EXEMPT = new Set([
+  "/access/terminal",
+  "/access/pin",
+  "/access/step-up",
+  "/access/logout",
+  "/sync",
+]);
+/**
  * While the offline "Continuar como" is in effect, App checks before each
- * non-access call whether the server answers again (ACC-R-2). When it does,
- * App re-locks and the call is refused unsent (session_locked), so a locked
- * session never works online, even in the seconds before the background
- * health probe notices. Offline evidence (/sync) is not held back: it also
- * syncs behind any lock.
+ * call whether the server answers again (ACC-R-2). When it does, App re-locks
+ * and the call is refused unsent (session_locked), so a locked session never
+ * works online, even in the seconds before the background health probe
+ * notices. SOFT_UNLOCK_EXEMPT lists the calls that are not checked.
  */
 export function registerSoftUnlockCheck(fn: (() => Promise<boolean>) | null) {
   softUnlockCheck = fn;
@@ -185,8 +197,7 @@ export async function api<T = any>(
   if (blocked && !access) throw new ApiError("session_expired", 401);
   if (
     softUnlockCheck &&
-    !access &&
-    path !== "/sync" &&
+    !SOFT_UNLOCK_EXEMPT.has(path) &&
     (await softUnlockCheck())
   )
     throw new ApiError("session_locked", 401);

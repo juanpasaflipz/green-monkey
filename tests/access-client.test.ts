@@ -238,6 +238,38 @@ describe("api() session policy", () => {
     expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 
+  it("while a soft unlock is in effect and the server answers again, authenticated /access/ reads are refused unsent; only the lock screen's own calls go (ACC-R6-3)", async () => {
+    const { api, setSession, registerSoftUnlockCheck } = await load();
+    setSession(session);
+    let checks = 0;
+    registerSoftUnlockCheck(async () => {
+      checks++;
+      return true;
+    });
+    for (const path of [
+      "/access/staff",
+      "/access/devices",
+      "/access/pairing-codes",
+      "/access/approvers",
+    ])
+      await expect(api(path)).rejects.toMatchObject({
+        message: "session_locked",
+        status: 401,
+      });
+    await expect(
+      api("/access/staff/x/active", { operationId: "x", active: false }),
+    ).rejects.toMatchObject({ message: "session_locked" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(checks).toBe(5);
+    // The lock screen's roster, PIN sign-in and step-up still reach the server.
+    await api("/access/terminal");
+    await api("/access/pin", { employeeId: "x", secret: "123456" });
+    await api("/access/step-up", { secret: "123456" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(checks).toBe(5);
+    registerSoftUnlockCheck(null);
+  });
+
   it("requestsBlocked reports a session 401 until a new session is set (ACC-6)", async () => {
     const { api, setSession, requestsBlocked } = await load();
     setSession(session);

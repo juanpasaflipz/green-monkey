@@ -379,7 +379,9 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
   lasts only while the device is offline (or the server unreachable) and its
   offline window is valid, and re-locks on reconnect; every online call made
   during it first checks that the server is still unreachable, so it never
-  reaches online commands. Clearing the
+  reaches online commands or reads. Only the lock screen's own calls
+  (`/access/terminal`, `/access/pin`, `/access/step-up`, `/access/logout`) and
+  the offline sync (`/sync`) skip that check. Clearing the
   browser's site data removes the remembered lock, but also unpairs the device.
 - The lock's resistance to Escape and forced closes is tested in Chromium (the
   browser suite) and checked with a dialog probe in WebKit 26.6. The Android
@@ -435,7 +437,9 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
 - **Soft-unlock check (offline merge).** App's `registerSoftUnlockCheck` probes
   `/api/health` itself; at merge it should use offline's `probeNow()` /
   `canUseServer` instead, keep refusing the call unsent with `session_locked`,
-  and keep `/sync` and `/access/*` exempt.
+  and keep exactly `/sync` and the lock screen's calls (`/access/terminal`,
+  `/access/pin`, `/access/step-up`, `/access/logout`) exempt; authenticated
+  `/access/*` reads such as the staff and device lists are checked.
 - **Limiter key (ops merge, LD-9).** Every access limiter keys on `ipKey(req)`
   in `server/routes/access.ts`; switch that one function to `clientIp(req)` from
   `server/logging.ts`.
