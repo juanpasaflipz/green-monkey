@@ -22,6 +22,8 @@ export function ServiceAssignment({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState(order.mode);
+  // One id per dialog: a retried submit after a lost response replays safely.
+  const [operationId] = useState(() => crypto.randomUUID());
   useEffect(() => {
     void api("/service/options")
       .then(setOptions)
@@ -48,7 +50,7 @@ export function ServiceAssignment({
             const f = new FormData(e.currentTarget);
             try {
               await api(`/orders/${order.id}/service`, {
-                operationId: crypto.randomUUID(),
+                operationId,
                 expectedVersion: order.serviceVersion ?? 0,
                 tableId: mode === "dine_in" ? f.get("tableId") || null : null,
                 employeeId: f.get("employeeId"),

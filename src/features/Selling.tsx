@@ -5,27 +5,37 @@ import { useEffect, useRef, useState } from "react";
 import {
   Search,
   Plus,
-  Minus,
   ArrowUpRight,
   ShoppingBag,
-  Check,
   Send,
   Pause,
+  Printer,
+  SlidersHorizontal,
 } from "lucide-react";
 import {
-  quote,
-  minor,
   type Session,
   type Product,
   type Locale,
   type OrderInput,
   type Order,
-  type LineInput,
+  type Label,
 } from "../../shared/domain";
+import {
+  mergeLine,
+  priceCart,
+  type PaymentValues,
+} from "../../shared/service";
 import { strings, translateError, type Key } from "../i18n";
 import { api, ApiError } from "../api";
 import { clearPaymentAttempt, db, scope, type Draft } from "../offline";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
+import { useMediaQuery } from "../serviceHooks";
+import { PrintSettingsDialog, printDocument, readPrintSettings } from "../print";
+import { CartLine } from "./CartLine";
+import { PaymentDialog } from "./PaymentDialog";
+import { ReceiptModal, checkStateOf } from "./Receipt";
+import { NoteDialog } from "./OrderDetail";
+import { KitchenTicketDocument, ticketsFromOrderRound } from "./KitchenTicket";
 const fresh = (): OrderInput => ({
   operationId: crypto.randomUUID(),
   lines: [],
@@ -35,13 +45,22 @@ const fresh = (): OrderInput => ({
   note: "",
   channel: "pos",
 });
+/** Codes after which the catalog is refetched (menu owns the listener, D2). */
+const CATALOG_CODES = [
+  "unavailable",
+  "invalid_modifier",
+  "required_modifier",
+  "open_amount_exceeds",
+];
+/** An error whose message Selling already showed in its own words. */
+class HandledError extends Error {}
 export function Selling({
   session,
   catalog,
   locale,
   online,
   active,
-  navigate: _navigate,
+  navigate,
 }: {
   session: Session;
   catalog: Product[];
@@ -53,7 +72,6 @@ export function Selling({
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
   const scale = 10 ** exponent;
-  const parseAmount = (s: string) => minor(s, exponent);
   const money = (n: number) =>
     new Intl.NumberFormat(locale === "es" ? "es-MX" : "en-US", {
       style: "currency",
@@ -76,14 +94,17 @@ export function Selling({
   const [parked, setParked] = useState<Draft[] | null>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [cashSession, setCashSession] = useState<any>(null);
-  const [amount, setAmount] = useState("");
-  const [splitItems, setSplitItems] = useState(false);
-  const [selectedItems, setSelectedItems] = useState<string[]>([]);
-  const [received, setReceived] = useState("");
-  const [tip, setTip] = useState("0");
-  const [method, setMethod] = useState("cash");
-  const [reference, setReference] = useState("");
-  const [confirmed, setConfirmed] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [closedCheck, setClosedCheck] = useState(false);
+  const [lastAddedId, setLastAddedId] = useState<string | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [noteDialogOpen, setNoteDialogOpen] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
+  const nameCache = useRef(new Map<string, Label>());
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  const releaseKey = useRef(crypto.randomUUID());
+  const compact = useMediaQuery("(max-height: 820px) and (min-width: 801px)");
   const paymentKey = useRef(crypto.randomUUID());
   const search = useRef<HTMLInputElement>(null);
   const activeId = scope(session) + ":active";
@@ -100,6 +121,18 @@ export function Selling({
     if (status.state === "committed" && status.result) return status.result;
     if (!status.retryAllowed) throw Error("payment_review_required");
     return api<Order>("/payments/recovery/retry", attempt);
+  }
+  /** Keeps unsent lines in Borradores before another order replaces the cart. */
+  async function parkCurrentCart() {
+    const d = draftRef.current;
+    if (!d.lines.length) return false;
+    await db.drafts.put({
+      id: d.operationId,
+      scope: scope(session),
+      order: d,
+      updatedAt: Date.now(),
+    });
+    return true;
   }
   useEffect(() => {
     let live = true;
@@ -130,7 +163,10 @@ export function Selling({
             const c = await db.cache.get(contextId);
             if (c) {
               const o = await api<Order>("/orders/" + c.value);
-              if (live) setCurrent(o);
+              // A cached context that points at a closed check is dropped.
+              if (live && checkStateOf(o) === "closed")
+                void db.cache.delete(contextId);
+              else if (live) setCurrent(o);
             }
           }
         } catch (e) {
@@ -171,21 +207,45 @@ export function Selling({
     const resume = localStorage.getItem("gm-resume");
     if (resume) {
       localStorage.removeItem("gm-resume");
-      void api<Order>("/orders/" + resume).then((o) => {
-        setCurrent(o);
-        void db.cache.put({ id: contextId, value: o.id });
-        setDraft({
-          ...fresh(),
-          mode: o.mode as OrderInput["mode"],
-          tableId: o.tableId,
-          name: o.name,
-        });
-      });
+      void api<Order>("/orders/" + resume)
+        .then(async (o) => {
+          const parkedCart = await parkCurrentCart();
+          const notes = parkedCart ? [t("serviceDraftParked")] : [];
+          if (checkStateOf(o) === "closed") {
+            // A closed check cannot take rounds: start a new order instead.
+            setNotice(
+              [
+                ...notes,
+                t("serviceResumeClosed").replace("{n}", String(o.number)),
+              ].join(" "),
+            );
+            setCurrent(null);
+            void db.cache.delete(contextId);
+            setDraft(fresh());
+            return;
+          }
+          setNotice(notes.join(" "));
+          setCurrent(o);
+          void db.cache.put({ id: contextId, value: o.id });
+          setDraft({
+            ...fresh(),
+            mode: o.mode as OrderInput["mode"],
+            tableId: o.tableId,
+            name: o.name,
+          });
+        })
+        .catch((e) => setError(translateError((e as Error).message, locale)));
     }
     const table = localStorage.getItem("gm-table");
     if (table) {
+      // A new check for a table never adds rounds to the order on screen.
       localStorage.removeItem("gm-table");
-      setDraft((d) => ({ ...d, mode: "dine_in", tableId: table }));
+      void parkCurrentCart().then((parkedCart) => {
+        setNotice(parkedCart ? t("serviceDraftParked") : "");
+        setCurrent(null);
+        void db.cache.delete(contextId);
+        setDraft({ ...fresh(), mode: "dine_in", tableId: table });
+      });
     }
     const key = (e: KeyboardEvent) => {
       if (
@@ -200,33 +260,42 @@ export function Selling({
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [active]);
-  let priced: ReturnType<typeof quote> = [];
-  try {
-    priced = quote(
-      draft.lines,
-      catalog,
-      ["owner", "manager"].includes(session.role),
-    );
-  } catch {
-    /* Catalog conflicts are surfaced when sending. */
-  }
-  const draftTotal = priced.reduce((a, l) => a + l.total, 0);
+  useEffect(() => {
+    // One key per opened receipt, kept across retries of "Liberar mesa".
+    releaseKey.current = crypto.randomUUID();
+  }, [receipt?.id]);
+  useEffect(() => {
+    if (!lastAddedId) return;
+    const timer = setTimeout(() => setLastAddedId(null), 600);
+    return () => clearTimeout(timer);
+  }, [lastAddedId]);
+  const cart = priceCart(draft.lines, catalog, true);
+  const priced = cart.lines.flatMap((l) => (l.priced ? [l.priced] : []));
+  const draftTotal = cart.total;
+  for (const l of priced) nameCache.current.set(l.id, l.name);
   const due = (current ? current.total - current.paid : 0) + draftTotal;
+  const drawerOpen = !!cashSession && !cashSession.closed_at;
   const categories = [...new Set(catalog.map((p) => p.category[locale]))];
   const filtered = catalog.filter(
     (p) =>
       (!category || p.category[locale] === category) &&
       p.name[locale].toLowerCase().includes(query.toLowerCase()),
   );
-  function add(p: Product, opts: string[] = []) {
-    const line: LineInput = {
-      id: crypto.randomUUID(),
-      productId: p.id,
-      quantity: 1,
-      options: opts,
-      note: "",
-    };
-    setDraft((d) => ({ ...d, lines: [...d.lines, line] }));
+  const inCart = new Map<string, number>();
+  for (const l of draft.lines)
+    inCart.set(l.productId, (inCart.get(l.productId) ?? 0) + l.quantity);
+  function add(
+    p: Product,
+    selection: string[] | { options: string[]; openAmount?: number } = {
+      options: [],
+    },
+  ) {
+    const choice = Array.isArray(selection) ? { options: selection } : selection;
+    const r = mergeLine(draftRef.current.lines, p, choice);
+    // Keep the ref current so two quick taps before a render both count.
+    draftRef.current = { ...draftRef.current, lines: r.lines };
+    setDraft((d) => ({ ...d, lines: r.lines }));
+    setLastAddedId(r.lineId);
     setModifier(null);
   }
   function reset() {
@@ -237,48 +306,120 @@ export function Selling({
     setReceipt(null);
     setCartOpen(false);
     setError("");
+    setNotice("");
+    setClosedCheck(false);
   }
-  async function send() {
+  function printNewRound(o: Order) {
+    const round = Math.max(0, ...o.lines.map((l) => l.round ?? 0));
+    const tickets = ticketsFromOrderRound(o, round);
+    if (!tickets.length) return;
+    void printDocument(
+      tickets.map((ticket, i) => (
+        <KitchenTicketDocument
+          key={i}
+          ticket={ticket}
+          locale={locale}
+          timezone={session.restaurant.timezone}
+        />
+      )),
+    );
+  }
+  async function sendWith(target: Order | null, d: OrderInput): Promise<Order> {
     setBusy(true);
     setError("");
+    setNotice("");
+    setClosedCheck(false);
     try {
       const o = await api<Order>(
-        current ? `/orders/${current.id}/rounds` : "/orders",
-        current ? { ...draft, expectedVersion: current.version } : draft,
+        target ? `/orders/${target.id}/rounds` : "/orders",
+        target ? { ...d, expectedVersion: target.version } : d,
       );
       setCurrent(o);
       await db.cache.put({ id: contextId, value: o.id });
-      setDraft((d) => ({ ...d, operationId: crypto.randomUUID(), lines: [] }));
+      setDraft((x) => ({
+        ...x,
+        operationId: crypto.randomUUID(),
+        lines: [],
+        note: "",
+      }));
+      if (readPrintSettings().kitchenOnSend) printNewRound(o);
       return o;
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
-      throw e;
+      const code = (e as Error).message;
+      if (code === "stale_order" && target) {
+        // Refresh in place; the unsent lines and their operation id stay.
+        try {
+          const latest = await api<Order>("/orders/" + target.id);
+          setCurrent(latest);
+          if (checkStateOf(latest) === "closed") {
+            setClosedCheck(true);
+            setError(t("serviceCheckClosedKeep"));
+          } else setNotice(t("serviceStaleRefreshed"));
+        } catch (refresh) {
+          setError(translateError((refresh as Error).message, locale));
+        }
+        throw new HandledError(code);
+      }
+      if (code === "check_closed") {
+        setClosedCheck(true);
+        setError(t("serviceCheckClosedKeep"));
+        throw new HandledError(code);
+      }
+      if (code === "operation_conflict" && target) {
+        // The round may have landed with a lost response: if every unsent
+        // line is already on the order, treat it as sent.
+        try {
+          const latest = await api<Order>("/orders/" + target.id);
+          setCurrent(latest);
+          if (d.lines.every((l) => latest.lines.some((x) => x.id === l.id))) {
+            setDraft((x) => ({
+              ...x,
+              operationId: crypto.randomUUID(),
+              lines: [],
+              note: "",
+            }));
+            return latest;
+          }
+        } catch {
+          /* fall through to the translated conflict */
+        }
+      }
+      if (CATALOG_CODES.includes(code))
+        window.dispatchEvent(new Event("gm-menu-refresh"));
+      setError(translateError(code, locale));
+      throw new HandledError(code);
     } finally {
       setBusy(false);
     }
   }
+  const send = () => sendWith(current, draft);
+  async function sendAsNew() {
+    const d = { ...draft, operationId: crypto.randomUUID() };
+    await db.cache.delete(contextId);
+    setCurrent(null);
+    setDraft(d);
+    return sendWith(null, d);
+  }
   function openPay() {
-    setSplitItems(false);
-    setSelectedItems([]);
-    setAmount((due / scale).toFixed(exponent));
-    setReceived((due / scale).toFixed(exponent));
-    setTip("0");
     paymentKey.current = crypto.randomUUID();
+    if (online)
+      void api("/cash")
+        .then(setCashSession)
+        .catch(() => {});
     setPayment(true);
     setError("");
   }
-  async function collect() {
+  async function collect(values: PaymentValues | null = null, items?: string[]) {
     return navigator.locks.request(
       "green-monkey-session-transition",
       { mode: "shared" },
       () =>
-        navigator.locks.request(
-          "green-monkey-payment:" + scope(session),
-          collectLocked,
+        navigator.locks.request("green-monkey-payment:" + scope(session), () =>
+          collectLocked(values, items),
         ),
     );
   }
-  async function collectLocked() {
+  async function collectLocked(values: PaymentValues | null, items?: string[]) {
     let submittedAttempt: unknown;
     setBusy(true);
     setError("");
@@ -294,15 +435,16 @@ export function Selling({
         paymentKey.current = crypto.randomUUID();
         return;
       }
-      const n = parseAmount(amount),
-        cash = parseAmount(received),
-        tips = parseAmount(tip);
+      if (!values) throw new Error("invalid_input");
+      const n = values.amount,
+        cash = values.received,
+        tips = values.tip;
       if (!online) {
         if (
           current ||
           !cashSession ||
           cashSession.closed_at ||
-          method !== "cash" ||
+          values.method !== "cash" ||
           session.sellingAllowed === false ||
           new Date(session.offlineUntil) < new Date() ||
           n !== draftTotal ||
@@ -363,18 +505,22 @@ export function Selling({
         setDraft(fresh());
         return;
       }
+      // MON-8: nothing reaches the kitchen unless this device has an open drawer.
+      if (!drawerOpen) throw new Error("drawer_required");
       let o = current;
       if (draft.lines.length) o = await send();
       if (!o) throw new Error("invalid_input");
       const payload = {
         operationId: paymentKey.current,
-        amount: n,
-        tip: tips,
-        received: cash,
-        method,
-        externalConfirmed: confirmed,
-        reference,
-        ...(splitItems ? { items: selectedItems } : {}),
+        amount: values.amount,
+        tip: values.tip,
+        received: values.received,
+        method: values.method,
+        // Always present: the stored attempt (paymentAttemptV1) requires both,
+        // and cash sends the server defaults, so the fingerprint is unchanged.
+        externalConfirmed: values.method === "external" && values.confirmed,
+        reference: values.method === "external" ? values.reference.trim() : "",
+        ...(items ? { items } : {}),
       };
       submittedAttempt = {
         formatVersion: 1,
@@ -405,12 +551,57 @@ export function Selling({
       )
         await clearPaymentAttempt(attemptId, submittedAttempt);
       setPendingPayment(!!(await db.cache.get(attemptId)));
-      setError(translateError((e as Error).message, locale));
+      if (!(e instanceof HandledError))
+        setError(translateError((e as Error).message, locale));
     } finally {
       setBusy(false);
     }
   }
-  const cart = (
+  async function release(order: Order) {
+    await api(`/service/orders/${order.id}/close`, {
+      operationId: releaseKey.current,
+    });
+    reset();
+  }
+  const checkState = current ? checkStateOf(current) : null;
+  const tableName = tables.find((tb) => tb.id === draft.tableId)?.name;
+  const nameField = (
+    <Field label={t("name")}>
+      <input
+        value={draft.name}
+        onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+        placeholder={t("name")}
+      />
+    </Field>
+  );
+  const tableField = draft.mode === "dine_in" && (
+    <Field label={t("selectTable")}>
+      <select
+        value={draft.tableId ?? ""}
+        onChange={(e) =>
+          setDraft((d) => ({ ...d, tableId: e.target.value || null }))
+        }
+      >
+        <option value="">—</option>
+        {tables.map((tb) => (
+          <option key={tb.id} value={tb.id}>
+            {tb.name}
+          </option>
+        ))}
+      </select>
+    </Field>
+  );
+  const noteField = (
+    <Field label={t(current ? "serviceRoundNote" : "serviceOrderNoteField")}>
+      <input
+        value={draft.note}
+        maxLength={500}
+        placeholder={t(current ? "serviceRoundNote" : "serviceOrderNoteField")}
+        onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
+      />
+    </Field>
+  );
+  const cartPanel = (
     <>
       <div className="cart-heading">
         <div>
@@ -419,15 +610,46 @@ export function Selling({
           </span>
           <h2>{t("order")}</h2>
         </div>
-        <Badge tone={online ? "green" : "amber"}>
-          {online
-            ? current
-              ? t("sent")
-              : saved
-                ? t("saved")
-                : t("loading")
-            : t("offline")}
-        </Badge>
+        <div className="row cart-badges">
+          {checkState && (
+            <Badge
+              tone={
+                checkState === "closed"
+                  ? "neutral"
+                  : checkState === "paid"
+                    ? "green"
+                    : "amber"
+              }
+            >
+              <span className="check-badge">
+                {t(
+                  checkState === "closed"
+                    ? "serviceCheckClosed"
+                    : checkState === "paid"
+                      ? "serviceCheckPaid"
+                      : "serviceCheckOpen",
+                )}
+              </span>
+            </Badge>
+          )}
+          <Badge tone={online ? "green" : "amber"}>
+            {online
+              ? current
+                ? t("sent")
+                : saved
+                  ? t("saved")
+                  : t("loading")
+              : t("offline")}
+          </Badge>
+          <Button
+            variant="ghost"
+            className="round"
+            aria-label={t("servicePrintSettings")}
+            onClick={() => setPrintOpen(true)}
+          >
+            <Printer size={18} />
+          </Button>
+        </div>
       </div>
       <div className="service-tabs">
         {(["takeaway", "dine_in", "delivery"] as const).map((mode) => (
@@ -440,32 +662,29 @@ export function Selling({
           </button>
         ))}
       </div>
-      <div className="cart-fields">
-        <Field label={t("name")}>
-          <input
-            value={draft.name}
-            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
-            placeholder={t("name")}
-          />
-        </Field>
-        {draft.mode === "dine_in" && (
-          <Field label={t("selectTable")}>
-            <select
-              value={draft.tableId ?? ""}
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, tableId: e.target.value || null }))
-              }
-            >
-              <option value="">—</option>
-              {tables.map((tb) => (
-                <option key={tb.id} value={tb.id}>
-                  {tb.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-        )}
-      </div>
+      {compact ? (
+        <button
+          type="button"
+          className="cart-details-summary"
+          onClick={() => setDetailsOpen(true)}
+        >
+          <SlidersHorizontal size={16} />
+          <strong>{t("serviceDetailsButton")}</strong>
+          <span>
+            {[
+              t(draft.mode),
+              draft.name || t("serviceUnnamed"),
+              ...(draft.mode === "dine_in" ? [tableName ?? t("noTable")] : []),
+              ...(draft.note ? [draft.note] : []),
+            ].join(" · ")}
+          </span>
+        </button>
+      ) : (
+        <div className="cart-fields">
+          {nameField}
+          {tableField}
+        </div>
+      )}
       <div className="cart-lines">
         {current && (
           <div className="existing">
@@ -481,77 +700,108 @@ export function Selling({
             <span>
               {money(current.total)} · {t("paid")}: {money(current.paid)}
             </span>
+            {current.note && (
+              <p className="line-note">
+                {t("serviceOrderNoteLabel").replace("{note}", current.note)}
+              </p>
+            )}
+            {checkState !== "closed" && (
+              <Button
+                variant="ghost"
+                className="small"
+                onClick={() => setNoteDialogOpen(true)}
+              >
+                {t("serviceDetailEditNote")}
+              </Button>
+            )}
           </div>
         )}
         {!draft.lines.length && !current ? (
           <Empty title={t("emptyCart")} detail={t("emptyHint")} />
         ) : (
-          priced.map((line) => (
-            <div className="order-line" key={line.id}>
-              <div>
-                <strong>{line.name[locale]}</strong>
-                <p>{line.optionNames.map((o) => o[locale]).join(" · ")}</p>
-                <div className="quantity">
-                  <button
-                    aria-label={`${t("quantity")} − ${line.name[locale]}`}
-                    onClick={() =>
-                      setDraft((d) => ({
-                        ...d,
-                        lines: d.lines.flatMap((l) =>
-                          l.id === line.id
-                            ? l.quantity === 1
-                              ? []
-                              : [{ ...l, quantity: l.quantity - 1 }]
-                            : [l],
-                        ),
-                      }))
-                    }
-                  >
-                    <Minus size={14} />
-                  </button>
-                  <span>{line.quantity}</span>
-                  <button
-                    aria-label={`${t("quantity")} + ${line.name[locale]}`}
-                    onClick={() =>
-                      setDraft((d) => ({
-                        ...d,
-                        lines: d.lines.map((l) =>
-                          l.id === line.id
-                            ? { ...l, quantity: Math.min(99, l.quantity + 1) }
-                            : l,
-                        ),
-                      }))
-                    }
-                  >
-                    <Plus size={14} />
-                  </button>
-                </div>
-              </div>
-              <strong>{money(line.total)}</strong>
-            </div>
+          cart.lines.map((line) => (
+            <CartLine
+              key={line.input.id}
+              line={line}
+              product={catalog.find((p) => p.id === line.input.productId)}
+              fallbackName={nameCache.current.get(line.input.id)}
+              locale={locale}
+              money={money}
+              justAdded={lastAddedId === line.input.id}
+              onQuantity={(delta) =>
+                setDraft((d) => ({
+                  ...d,
+                  lines: d.lines.flatMap((l) =>
+                    l.id === line.input.id
+                      ? l.quantity + delta < 1
+                        ? []
+                        : [
+                            {
+                              ...l,
+                              quantity: Math.min(99, l.quantity + delta),
+                            },
+                          ]
+                      : [l],
+                  ),
+                }))
+              }
+              onRemove={() =>
+                setDraft((d) => ({
+                  ...d,
+                  lines: d.lines.filter((l) => l.id !== line.input.id),
+                }))
+              }
+              onNote={(note) =>
+                setDraft((d) => ({
+                  ...d,
+                  lines: d.lines.map((l) =>
+                    l.id === line.input.id ? { ...l, note } : l,
+                  ),
+                }))
+              }
+            />
           ))
         )}
       </div>
       <div className="cart-bottom">
-        <Field label={t("note")}>
-          <input
-            value={draft.note}
-            placeholder={t("note")}
-            onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
-          />
-        </Field>
+        {!compact && (
+          <>
+            {noteField}
+            {!current && (
+              <p className="muted tiny note-hint">{t("serviceOrderNoteHint")}</p>
+            )}
+          </>
+        )}
         <div className="total">
           <span>{t("amountDue")}</span>
           <strong>{money(due)}</strong>
         </div>
-        {error && (
-          <p className="error" role="alert">
-            {error}
+        {cart.blocked && (
+          <p className="warning-panel" role="status">
+            {t("serviceCartBlocked")}
           </p>
+        )}
+        {notice && (
+          <p className="notice" role="status">
+            {notice}
+          </p>
+        )}
+        {error && (
+          <div className="error" role="alert">
+            <p>{error}</p>
+            {closedCheck && (
+              <Button
+                disabled={busy || !online}
+                onClick={() => void sendAsNew().catch(() => {})}
+              >
+                {t("serviceSendAsNew")}
+              </Button>
+            )}
+          </div>
         )}
         <div className="row">
           <Button
-            disabled={!draft.lines.length || busy || !online}
+            disabled={!draft.lines.length || busy || !online || cart.blocked}
             onClick={() => void send().catch(() => {})}
           >
             <Send size={16} />
@@ -559,7 +809,7 @@ export function Selling({
           </Button>
           <Button
             variant="primary"
-            disabled={due <= 0 || busy}
+            disabled={due <= 0 || busy || cart.blocked}
             onClick={openPay}
           >
             {t("pay")}
@@ -702,6 +952,11 @@ export function Selling({
               <strong>{p.name[locale]}</strong>
               <span className="product-price">{money(p.price)}</span>
               {!p.available && <span>{t("soldOut")}</span>}
+              {(inCart.get(p.id) ?? 0) > 0 && (
+                <span className="in-cart">
+                  · {t("serviceInCart").replace("{n}", String(inCart.get(p.id)))}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -714,14 +969,14 @@ export function Selling({
           <strong>{money(due)}</strong>
         </button>
       </section>
-      <aside className="cart">{cart}</aside>
+      <aside className="cart">{cartPanel}</aside>
       {cartOpen && (
         <Modal
           title={t("order")}
           close={() => setCartOpen(false)}
           closeLabel={t("close")}
         >
-          {cart}
+          {cartPanel}
         </Modal>
       )}
       {modifier && (
@@ -788,266 +1043,46 @@ export function Selling({
         </Modal>
       )}
       {payment && (
-        <Modal
-          title={t("pay")}
-          close={() => !busy && setPayment(false)}
-          closeLabel={t("close")}
-          footer={
-            <>
-              <div className="row between">
-                <span>{t("thisPayment")}</span>
-                <strong>
-                  {(() => {
-                    try {
-                      return money(parseAmount(amount));
-                    } catch {
-                      return "—";
-                    }
-                  })()}
-                </strong>
-              </div>{" "}
-              <Button
-                variant="primary"
-                className="full"
-                disabled={busy || (splitItems && !selectedItems.length)}
-                onClick={() => void collect()}
-              >
-                {busy ? t("loading") : t(online ? "confirmPay" : "saveOffline")}
-                <Check size={20} />
-              </Button>
-            </>
-          }
-        >
-          <span className="muted">{t("remaining")}</span>
-          <div className="large-money">{money(due)}</div>
-          <p>{t("paymentHint")}</p>
-          {pendingPayment && (
-            <p className="warning-panel" role="status">
-              {t("pendingPaymentRecovery")}
-            </p>
-          )}
-          {!online && <p className="warning-panel">{t("offlineHint")}</p>}
-          <div className="service-tabs">
-            <button
-              className={method === "cash" ? "selected" : ""}
-              onClick={() => setMethod("cash")}
-            >
-              {t("cashMethod")}
-            </button>
-            <button
-              disabled={!online}
-              className={method === "external" ? "selected" : ""}
-              onClick={() => setMethod("external")}
-            >
-              {t("external")}
-            </button>
-          </div>
-          <div className="row wrap">
-            <Button
-              disabled={busy}
-              onClick={() => {
-                setSplitItems(false);
-                setSelectedItems([]);
-                setAmount((due / scale).toFixed(exponent));
-                setReceived((due / scale).toFixed(exponent));
-              }}
-            >
-              {t("splitAmount")}
-            </Button>
-            <Button
-              disabled={busy || !online || pendingPayment}
-              onClick={async () => {
-                try {
-                  const order = draft.lines.length
-                    ? await send()
-                    : await api<Order>("/orders/" + current!.id);
-                  setCurrent(order);
-                  if (!order.itemSplitAvailable) {
-                    setError(t("unallocatedHistory"));
-                    return;
-                  }
-                  setSplitItems(true);
-                  setSelectedItems([]);
-                  setAmount("0");
-                  setReceived("0");
-                } catch (e) {
-                  setError(translateError((e as Error).message, locale));
-                }
-              }}
-            >
-              {t(draft.lines.length ? "sendAndSplit" : "splitItems")}
-            </Button>
-          </div>
-          {splitItems && (
-            <fieldset>
-              <legend>{t("selectItems")}</legend>
-              <p className="muted">{t("itemSplitHint")}</p>
-              {current?.paymentUnits?.map((unit) => (
-                <label className="option" key={unit.key}>
-                  <input
-                    type="checkbox"
-                    disabled={busy || unit.due === 0}
-                    checked={selectedItems.includes(unit.key)}
-                    onChange={() => {
-                      const selection = selectedItems.includes(unit.key)
-                        ? selectedItems.filter((key) => key !== unit.key)
-                        : [...selectedItems, unit.key];
-                      setSelectedItems(selection);
-                      const total = current
-                        .paymentUnits!.filter((u) => selection.includes(u.key))
-                        .reduce((n, u) => n + u.due, 0);
-                      setAmount((total / scale).toFixed(exponent));
-                      setReceived((total / scale).toFixed(exponent));
-                    }}
-                  />
-                  <span>
-                    {unit.name[locale]} · {unit.unit + 1}
-                    <small>
-                      {unit.paid ? `${t("paid")}: ${money(unit.paid)}` : ""}
-                    </small>
-                  </span>
-                  <strong>{unit.due ? money(unit.due) : t("paid")}</strong>
-                </label>
-              ))}
-            </fieldset>
-          )}
-          <Field label={t("amount")}>
-            <input
-              inputMode="decimal"
-              value={amount}
-              readOnly={splitItems}
-              onChange={(e) => setAmount(e.target.value)}
-            />
-          </Field>
-          <Field label={t("tip")}>
-            <input
-              inputMode="decimal"
-              value={tip}
-              onChange={(e) => setTip(e.target.value)}
-            />
-          </Field>
-          <Field label={t("received")}>
-            <input
-              inputMode="decimal"
-              value={received}
-              onChange={(e) => setReceived(e.target.value)}
-            />
-          </Field>
-          {method === "external" && (
-            <>
-              <p className="warning-panel">{t("externalHint")}</p>
-              <Field label={t("reference")}>
-                <input
-                  value={reference}
-                  onChange={(e) => setReference(e.target.value)}
-                />
-              </Field>
-              <label className="option">
-                <input
-                  type="checkbox"
-                  checked={confirmed}
-                  onChange={(e) => setConfirmed(e.target.checked)}
-                />
-                {t("confirmExternal")}
-              </label>
-            </>
-          )}
-          <div className="row between">
-            <span>{t("change")}</span>
-            <strong>
-              {money(
-                Math.max(
-                  0,
-                  Math.round(
-                    (Number(received) - Number(amount) - Number(tip)) * scale,
-                  ) || 0,
-                ),
-              )}
-            </strong>
-          </div>
-          {error && (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          )}
-        </Modal>
+        <PaymentDialog
+          due={due}
+          current={current}
+          hasDraftLines={draft.lines.length > 0}
+          session={session}
+          locale={locale}
+          online={online}
+          busy={busy}
+          pendingPayment={pendingPayment}
+          drawerOpen={drawerOpen}
+          error={error}
+          onConfirm={(values, items) => void collect(values, items)}
+          onSplitItems={async () => {
+            if (!draft.lines.length && !current) return null;
+            const order = draft.lines.length
+              ? await send()
+              : await api<Order>("/orders/" + current!.id);
+            setCurrent(order);
+            return order;
+          }}
+          onClose={() => setPayment(false)}
+          onGoToCash={() => {
+            setPayment(false);
+            navigate("cash");
+          }}
+        />
       )}
       {receipt && (
-        <Modal
-          title={receipt.state === "local" ? t("localReceipt") : t("receipt")}
-          close={() => setReceipt(null)}
-          closeLabel={t("close")}
-        >
-          <div className="receipt">
-            <h2>Green Monkey</h2>
-            <p>{receipt.restaurantSnapshot?.name ?? session.restaurant.name}</p>
-            <Badge tone="green">
-              {receipt.state === "local"
-                ? t("pending")
-                : receipt.paid >= receipt.total
-                  ? t("paid")
-                  : t("partial")}
-            </Badge>
-            <p>
-              #{receipt.number || receipt.id.slice(0, 8)} ·{" "}
-              {new Date(receipt.createdAt).toLocaleString(locale, {
-                timeZone:
-                  receipt.restaurantSnapshot?.timezone ??
-                  session.restaurant.timezone,
-              })}
-            </p>
-            {receipt.recovery && (
-              <p>
-                {locale === "es"
-                  ? "Efectivo conciliado. Cocina e inventario requieren revisión manual."
-                  : "Cash reconciled. Kitchen and inventory require manual review."}
-                <br />
-                {receipt.recovery.reason}
-              </p>
-            )}
-            {receipt.lines
-              .filter((l) => lineRemaining(l).quantity > 0)
-              .map((l) => (
-                <div className="row between" key={l.id}>
-                  <span>
-                    {lineRemaining(l).quantity} × {l.name[locale]}
-                  </span>
-                  <strong>{money(lineRemaining(l).total)}</strong>
-                </div>
-              ))}
-            <hr />
-            <div className="row between">
-              <span>{t("total")}</span>
-              <strong>{money(receipt.total)}</strong>
-            </div>
-            <div className="row between">
-              <span>{t("paid")}</span>
-              <strong>{money(receipt.paid)}</strong>
-            </div>
-            <div className="row between">
-              <span>{t("remaining")}</span>
-              <strong>{money(receipt.total - receipt.paid)}</strong>
-            </div>
-          </div>
-          <p className="muted tiny">{t("receiptPrintHint")}</p>
-          <div className="row">
-            <Button onClick={() => window.print()}>{t("print")}</Button>
-            <Button
-              variant="primary"
-              onClick={() =>
-                receipt.paid >= receipt.total || receipt.state === "local"
-                  ? reset()
-                  : setReceipt(null)
-              }
-            >
-              {t(
-                receipt.paid >= receipt.total || receipt.state === "local"
-                  ? "nextSale"
-                  : "back",
-              )}
-            </Button>
-          </div>
-        </Modal>
+        <ReceiptModal
+          order={receipt}
+          session={session}
+          locale={locale}
+          onNext={reset}
+          onBack={() => setReceipt(null)}
+          onRelease={
+            receipt.state !== "local" && checkStateOf(receipt) === "paid"
+              ? () => release(receipt)
+              : undefined
+          }
+        />
       )}
       {parked && (
         <Modal
@@ -1063,10 +1098,13 @@ export function Selling({
                 className="full"
                 key={d.id}
                 onClick={async () => {
+                  const parkedCart = await parkCurrentCart();
                   setDraft(d.order);
                   setCurrent(null);
+                  void db.cache.delete(contextId);
                   await db.drafts.delete(d.id);
                   setParked(null);
+                  setNotice(parkedCart ? t("serviceDraftParked") : "");
                 }}
               >
                 {d.order.name || t("order")} · {d.order.lines.length}{" "}
@@ -1075,6 +1113,45 @@ export function Selling({
             ))
           )}
         </Modal>
+      )}
+      {detailsOpen && (
+        <Modal
+          title={t("serviceDetailsTitle")}
+          close={() => setDetailsOpen(false)}
+          closeLabel={t("close")}
+        >
+          {nameField}
+          {tableField}
+          {noteField}
+          {!current && (
+            <p className="muted tiny">{t("serviceOrderNoteHint")}</p>
+          )}
+          <Button
+            variant="primary"
+            className="full"
+            onClick={() => setDetailsOpen(false)}
+          >
+            {t("serviceLineNoteDone")}
+          </Button>
+        </Modal>
+      )}
+      {noteDialogOpen && current && (
+        <NoteDialog
+          order={current}
+          locale={locale}
+          close={() => setNoteDialogOpen(false)}
+          saved={(o) => {
+            setCurrent(o);
+            setNotice(t("serviceDetailNoteSaved"));
+          }}
+        />
+      )}
+      {printOpen && (
+        <PrintSettingsDialog
+          locale={locale}
+          scope="selling"
+          close={() => setPrintOpen(false)}
+        />
       )}
     </div>
   );
