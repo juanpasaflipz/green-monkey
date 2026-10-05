@@ -460,6 +460,24 @@
   background: var(--negative-bg);
 }
 
+/* Group cards: sold-out choices and one-tap choice availability (OWNER-4). */
+.menu-option-preview .badge {
+  vertical-align: middle;
+}
+.menu-option-switches {
+  margin: 4px 0 8px;
+}
+.menu-option-switches summary {
+  padding: 10px 0;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.menu-option-switches .menu-switch {
+  display: flex;
+  overflow-wrap: anywhere;
+}
+
 /* Archivar sits apart from Guardar and Duplicar (OWNER-7). */
 .menu-footer-archive {
   margin-left: auto;

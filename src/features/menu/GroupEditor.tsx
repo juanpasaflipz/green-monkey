@@ -77,6 +77,7 @@ export function GroupEditor({
   onSaved,
   onClose,
   onReload,
+  onAvailability,
 }: {
   payload: MenuEditorPayload;
   group?: MenuGroup;
@@ -86,6 +87,8 @@ export function GroupEditor({
   onSaved: (result: Saved) => void;
   onClose: () => void;
   onReload: () => void;
+  /** A choice was switched on or off (saved at once); the list must follow. */
+  onAvailability?: (optionId: string, available: boolean) => void;
 }) {
   const t = translator(locale);
   const exponent = currencyExponent(currency);
@@ -231,8 +234,10 @@ export function GroupEditor({
     }
   }
 
+  /** Live "86": the switch moves at once and goes back if the save fails. */
   async function toggleOption(o: GroupDraftOption, available: boolean) {
     setError("");
+    setOption(o.id, { available });
     try {
       await api("/menu/groups/option-availability", {
         operationId: crypto.randomUUID(),
@@ -240,8 +245,9 @@ export function GroupEditor({
         optionId: o.id,
         available,
       });
-      setOption(o.id, { available });
+      onAvailability?.(o.id, available);
     } catch (e) {
+      setOption(o.id, { available: !available });
       setError(translateError((e as Error).message, locale));
     }
   }

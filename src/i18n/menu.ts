@@ -285,6 +285,8 @@ export default defineArea({
     menuLineUnavailable: "Ya no está disponible. Quítalo de la orden.",
     menuLineChoicesChanged:
       "Sus opciones cambiaron. Quítalo y vuelve a agregarlo.",
+    menuOptionsAvailability: "Disponibilidad de opciones",
+    menuOptionsSoldOut: "{n} agotadas",
   },
   en: {
     menuNavLabel: "Menu & inventory",
@@ -567,6 +569,8 @@ export default defineArea({
       "It can no longer be chosen for new orders. You can restore it under Show archived.",
     menuLineUnavailable: "No longer available. Remove it from the order.",
     menuLineChoicesChanged: "Its choices changed. Remove it and add it again.",
+    menuOptionsAvailability: "Choice availability",
+    menuOptionsSoldOut: "{n} sold out",
   },
   errors: {
     menu_changed: [

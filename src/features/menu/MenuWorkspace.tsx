@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Locale, Product, Session } from "../../../shared/domain";
 import type {
   MenuCategory,
@@ -11,6 +11,7 @@ import { Badge, Button, Empty, Modal } from "../../components/ui";
 import { CategoryDialog } from "./CategoryDialog";
 import { GroupEditor } from "./GroupEditor";
 import { ProductEditor } from "./ProductEditor";
+import { withOptionAvailable, withProductAvailable } from "./availability";
 import { groupRuleText, moneyFormatter, translator } from "./format";
 
 type Tab = "products" | "categories" | "modifiers";
@@ -83,12 +84,23 @@ export function MenuWorkspace({
   const [archiveGroup, setArchiveGroup] = useState<MenuGroup | null>(null);
   const [names, setNames] = useState<Record<string, string>>({});
 
+  // A reload applies only if nothing newer happened while it was in flight:
+  // an older response must not undo a switch flipped (optimistically) since.
+  const generation = useRef(0);
   async function load() {
+    const mine = ++generation.current;
     try {
-      setPayload(await api<MenuEditorPayload>("/menu"));
+      const next = await api<MenuEditorPayload>("/menu");
+      if (mine === generation.current) setPayload(next);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      if (mine === generation.current)
+        setError(translateError((e as Error).message, locale));
     }
+  }
+  /** Optimistic local change; supersedes any reload already in flight. */
+  function patch(update: (p: MenuEditorPayload) => MenuEditorPayload) {
+    generation.current++;
+    setPayload((cur) => cur && update(cur));
   }
   useEffect(() => {
     void load();
@@ -114,6 +126,24 @@ export function MenuWorkspace({
     } finally {
       setBusy(false);
     }
+  }
+
+  /** Shown at once; the reload (or a failure's reload) then confirms it. */
+  async function setProductAvailable(p: Product, available: boolean) {
+    patch((cur) => withProductAvailable(cur, p.id, available));
+    await run("/menu/products/availability", { id: p.id, available });
+  }
+  async function setOptionAvailable(
+    g: MenuGroup,
+    optionId: string,
+    available: boolean,
+  ) {
+    patch((cur) => withOptionAvailable(cur, g.id, optionId, available));
+    await run("/menu/groups/option-availability", {
+      groupId: g.id,
+      optionId,
+      available,
+    });
   }
 
   if (!payload)
@@ -173,12 +203,12 @@ export function MenuWorkspace({
     const next = swap(active, index, delta);
     // Optimistic: reflect the new order before the server confirms it.
     const queue = [...next];
-    setPayload({
-      ...payload!,
-      products: payload!.products.map((p) =>
+    patch((cur) => ({
+      ...cur,
+      products: cur.products.map((p) =>
         p.categoryId === categoryId && !p.archived ? queue.shift()! : p,
       ),
-    });
+    }));
     await run("/menu/products/reorder", {
       scopeId: categoryId,
       ids: next.map((p) => p.id),
@@ -187,10 +217,10 @@ export function MenuWorkspace({
   async function reorderCategories(index: number, delta: number) {
     const active = payload!.categories.filter((c) => !c.archived);
     const next = swap(active, index, delta);
-    setPayload({
-      ...payload!,
-      categories: [...next, ...payload!.categories.filter((c) => c.archived)],
-    });
+    patch((cur) => ({
+      ...cur,
+      categories: [...next, ...cur.categories.filter((c) => c.archived)],
+    }));
     await run("/menu/categories/reorder", { ids: next.map((c) => c.id) });
   }
 
@@ -234,12 +264,7 @@ export function MenuWorkspace({
                 checked={p.available}
                 disabled={locked}
                 aria-label={t("menuAvailableSwitch", { name })}
-                onChange={(e) =>
-                  void run("/menu/products/availability", {
-                    id: p.id,
-                    available: e.target.checked,
-                  })
-                }
+                onChange={(e) => void setProductAvailable(p, e.target.checked)}
               />
               <span aria-hidden="true">{t("menuAvailable")}</span>
             </label>
@@ -535,9 +560,53 @@ export function MenuWorkspace({
                       {g.archived && <Badge>{t("menuArchivedBadge")}</Badge>}
                     </div>
                     <p className="menu-rule">{groupRuleText(g, t)}</p>
-                    <p className="muted tiny">
-                      {g.options.map((o) => o.name[locale]).join(" · ")}
+                    <p className="muted tiny menu-option-preview">
+                      {g.options.map((o, index) => (
+                        <span key={o.id}>
+                          {index > 0 && " · "}
+                          {o.name[locale]}
+                          {!o.available && (
+                            <>
+                              {" "}
+                              <Badge tone="red">{t("menuSoldOut")}</Badge>
+                            </>
+                          )}
+                        </span>
+                      ))}
                     </p>
+                    {!g.archived && (
+                      // One tap to 86 a choice, like a product in the list.
+                      <details className="menu-option-switches">
+                        <summary>
+                          {t("menuOptionsAvailability")}
+                          {g.options.some((o) => !o.available) &&
+                            ` · ${t("menuOptionsSoldOut", {
+                              n: g.options.filter((o) => !o.available).length,
+                            })}`}
+                        </summary>
+                        {g.options.map((o) => (
+                          <label className="menu-switch" key={o.id}>
+                            <input
+                              type="checkbox"
+                              role="switch"
+                              checked={o.available}
+                              disabled={locked}
+                              aria-label={t("menuAvailableSwitch", {
+                                name: o.name[locale],
+                              })}
+                              onChange={(e) =>
+                                void setOptionAvailable(
+                                  g,
+                                  o.id,
+                                  e.target.checked,
+                                )
+                              }
+                            />
+                            <span aria-hidden="true">{o.name[locale]}</span>
+                          </label>
+                        ))}
+                      </details>
+                    )}
                     <p className="muted tiny">
                       {t("menuGroupUsedBy", { n: g.usedBy.length })}
                     </p>
@@ -595,6 +664,10 @@ export function MenuWorkspace({
             setEditor(null);
             saved();
           }}
+          onAvailability={(id, available) => {
+            patch((cur) => withProductAvailable(cur, id, available));
+            void load();
+          }}
         />
       )}
       {categoryDialog && (
@@ -624,6 +697,14 @@ export function MenuWorkspace({
           onSaved={() => {
             setGroupDialog(null);
             saved();
+          }}
+          onAvailability={(optionId, available) => {
+            const g = groupDialog.group;
+            if (g)
+              patch((cur) =>
+                withOptionAvailable(cur, g.id, optionId, available),
+              );
+            void load();
           }}
         />
       )}

@@ -46,6 +46,7 @@ export function ProductEditor({
   onDuplicate,
   onClose,
   onReload,
+  onAvailability,
   renderFiscal,
 }: {
   payload: MenuEditorPayload;
@@ -58,6 +59,8 @@ export function ProductEditor({
   onDuplicate: (product: Product) => void;
   onClose: () => void;
   onReload: () => void;
+  /** The live switch in the header was saved; the list must follow. */
+  onAvailability?: (productId: string, available: boolean) => void;
   /**
    * Extension slot for fiscal (027): renders the "Impuestos" section. While
    * it is undefined (this wave) no section is shown and no `fiscal` is sent;
@@ -246,17 +249,20 @@ export function ProductEditor({
     }
   }
 
+  /** Live "86": the switch moves at once and goes back if the save fails. */
   async function toggleAvailable(next: boolean) {
     if (!product) return;
     setError("");
+    setAvailable(next);
     try {
       await api("/menu/products/availability", {
         operationId: crypto.randomUUID(),
         id: product.id,
         available: next,
       });
-      setAvailable(next);
+      onAvailability?.(product.id, next);
     } catch (e) {
+      setAvailable(!next);
       setError(translateError((e as Error).message, locale));
     }
   }

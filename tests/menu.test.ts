@@ -38,6 +38,11 @@ import {
   watchMenuRevision,
 } from "../src/features/menu/freshness";
 import { CATALOG_ERRORS, priceCart } from "../src/features/menu/cart";
+import {
+  withOptionAvailable,
+  withProductAvailable,
+} from "../src/features/menu/availability";
+import type { MenuEditorPayload, MenuGroup } from "../shared/menu";
 
 const tortilla = "00000000-0000-4000-8000-0000000000a1";
 const queso = "00000000-0000-4000-8000-0000000000a2";
@@ -803,6 +808,55 @@ describe("OWNER-6/OWNER-2: per-line cart pricing after a catalog refresh", () =>
       total: 0,
       blocked: false,
     });
+  });
+});
+
+describe("OWNER-4: availability shows in the menu list at once", () => {
+  const groupOf = (g: Group): MenuGroup => ({
+    ...g,
+    version: 1,
+    archived: false,
+    usedBy: [taco.id],
+  });
+  const payload = (): MenuEditorPayload => ({
+    categories: [],
+    products: [taco, varios],
+    groups: [groupOf(salsa), groupOf(extras)],
+    stockItems: [],
+    policy: "allow",
+    plan: "pro",
+    revision: 1,
+  });
+
+  it("a product switch patches that product only", () => {
+    const before = payload();
+    const after = withProductAvailable(before, taco.id, false);
+    expect(after.products.find((p) => p.id === taco.id)?.available).toBe(false);
+    expect(after.products[1]).toBe(before.products[1]);
+    expect(before.products[0].available).toBe(true);
+  });
+
+  it("a choice switch patches the group card and every product compiled with it", () => {
+    const aguacate = extras.options[1];
+    const before = payload();
+    const after = withOptionAvailable(before, extras.id, aguacate.id, false);
+    const card = after.groups.find((g) => g.id === extras.id)!;
+    expect(card.options.map((o) => o.available)).toEqual([true, false]);
+    expect(card.usedBy).toEqual([taco.id]);
+    const compiled = after.products
+      .find((p) => p.id === taco.id)!
+      .groups.find((g) => g.id === extras.id)!;
+    expect(compiled.options.find((o) => o.id === aguacate.id)?.available).toBe(
+      false,
+    );
+    // Untouched: the other group, products without the group, the input.
+    expect(after.groups.find((g) => g.id === salsa.id)).toBe(
+      before.groups.find((g) => g.id === salsa.id),
+    );
+    expect(after.products.find((p) => p.id === varios.id)).toBe(
+      before.products.find((p) => p.id === varios.id),
+    );
+    expect(extras.options[1].available).toBe(true);
   });
 });
 

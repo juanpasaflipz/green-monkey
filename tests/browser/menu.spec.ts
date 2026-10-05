@@ -1067,6 +1067,118 @@ test("OWNER-5/OWNER-7: editors ask before dropping unsaved edits, and archiving 
   await expect(row).toHaveCount(0);
 });
 
+test("OWNER-4: an 86 made inside an editor shows in the list at once; sold-out choices are marked and switched on the group card", async ({
+  page,
+}) => {
+  const id = suffix();
+  await login(page);
+  const groupId = crypto.randomUUID();
+  const group = `Toppings ${id}`;
+  const aguacate = `Aguacate ${id}`;
+  const savedGroup = await call(page, "/menu/groups/save", {
+    operationId: crypto.randomUUID(),
+    id: groupId,
+    expectedVersion: 0,
+    name: { es: group, en: "" },
+    min: 0,
+    max: 2,
+    repeat: false,
+    options: [
+      { id: crypto.randomUUID(), name: { es: aguacate, en: "" }, price: 2000 },
+      {
+        id: crypto.randomUUID(),
+        name: { es: `Queso ${id}`, en: "" },
+        price: 1500,
+      },
+    ],
+  });
+  expect(savedGroup.status).toBe(200);
+  const name = `Sope ${id}`;
+  const product = await createProduct(page, name, 3500, "Antojitos", [groupId]);
+  await openMenu(page);
+  const row = page.locator(".menu-row").filter({ hasText: name });
+  const listSwitch = row.getByRole("switch", { name: `Disponible: ${name}` });
+  await expect(listSwitch).toBeChecked();
+
+  // 1. The switch in the editor header: the list follows without a reload.
+  await page
+    .getByRole("button", { name: `Editar ${name}`, exact: true })
+    .click();
+  const editor = page.getByRole("dialog", { name: "Editar producto" });
+  await editor.getByRole("switch", { name: `Disponible: ${name}` }).uncheck();
+  await editor.getByRole("button", { name: "Cerrar" }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(listSwitch).not.toBeChecked();
+
+  // 2. The list switch moves at once, before the server has answered.
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  await page.route("**/api/menu/products/availability", async (route) => {
+    await held;
+    await route.continue();
+  });
+  const answered = page.waitForResponse((r) =>
+    r.url().endsWith("/api/menu/products/availability"),
+  );
+  await listSwitch.check();
+  await expect(listSwitch).toBeChecked();
+  release();
+  await answered;
+  await page.unroute("**/api/menu/products/availability");
+  await expect(page.getByRole("status")).toHaveText("Cambios guardados");
+  await expect(listSwitch).toBeChecked();
+
+  // 3. A choice 86'd in the group editor is marked on its card, and the
+  // editor reopens with the current state.
+  await page.getByRole("tab", { name: "Modificadores" }).click();
+  const card = page.locator(".menu-group-card").filter({ hasText: group });
+  const groupEditor = page.getByRole("dialog", { name: "Editar grupo" });
+  await card
+    .getByRole("button", { name: `Editar ${group}`, exact: true })
+    .click();
+  await groupEditor
+    .getByRole("switch", { name: `Disponible: ${aguacate}` })
+    .uncheck();
+  await groupEditor.getByRole("button", { name: "Cerrar" }).click();
+  await expect(groupEditor).toHaveCount(0);
+  await expect(card.locator(".menu-option-preview")).toContainText(
+    `${aguacate} Agotado`,
+  );
+  await expect(card.locator("summary")).toHaveText(
+    "Disponibilidad de opciones · 1 agotadas",
+  );
+  await card
+    .getByRole("button", { name: `Editar ${group}`, exact: true })
+    .click();
+  await expect(
+    groupEditor.getByRole("switch", { name: `Disponible: ${aguacate}` }),
+  ).not.toBeChecked();
+  await groupEditor.getByRole("button", { name: "Cerrar" }).click();
+  await expect(groupEditor).toHaveCount(0);
+
+  // 4. One tap on the card brings it back, like a product in the list.
+  await card.locator("summary").click();
+  const restored = page.waitForResponse((r) =>
+    r.url().endsWith("/api/menu/groups/option-availability"),
+  );
+  await card.getByRole("switch", { name: `Disponible: ${aguacate}` }).check();
+  await expect(card.locator(".menu-option-preview")).not.toContainText(
+    "Agotado",
+  );
+  expect((await restored).status()).toBe(200);
+  const menu = (await call(page, "/menu")).data as any;
+  expect(
+    menu.groups
+      .find((g: any) => g.id === groupId)
+      .options.every((o: any) => o.available),
+  ).toBe(true);
+  expect(
+    menu.products
+      .find((p: any) => p.id === product.id)
+      .groups[0].options.every((o: any) => o.available),
+  ).toBe(true);
+});
+
 test("OWNER-6: an 86 while a product is in the POS cart flags that line with Quitar; the cart never goes blank", async ({
   page,
 }) => {
