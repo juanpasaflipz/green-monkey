@@ -4,6 +4,7 @@ import { api } from "../../api";
 import { useConnectivity } from "../../connectivity";
 import { Button, Modal } from "../../components/ui";
 import { translateError } from "../../i18n";
+import { lanePollDelay } from "../../offline-policy";
 import { clockTime, translator } from "./format";
 import "./offline.css";
 
@@ -33,46 +34,83 @@ type ReviewItem = {
 
 /**
  * KDS lane for rounds created by offline sync (OFF-4). They stay out of the live
- * columns until someone says whether the kitchen already prepared them.
+ * columns until someone says whether the kitchen already prepared them. The
+ * lane shows the KDS's selected station only, so clearing one station never
+ * marks another station's rounds as served (OFF-R23).
+ *
+ * Refresh (GAP-4): on mount, when the page becomes visible, when the device
+ * can use the server again and after each decision; then every 10 s while
+ * there is something to review and every 30 s while there is nothing, only
+ * while the page is visible.
  */
 export function OfflineKitchenReview({
   session,
   locale,
+  station,
   onDecided,
 }: {
   session: Session;
   locale: Locale;
+  /** The KDS's selected station ("kitchen" or "bar"). */
+  station: string;
   onDecided?: () => void;
 }) {
   const t = translator(locale);
   const net = useConnectivity();
-  const [items, setItems] = useState<ReviewItem[]>([]);
+  const [all, setAll] = useState<ReviewItem[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmAll, setConfirmAll] = useState(false);
   const inflight = useRef(false);
   const canPrepare = ["owner", "manager", "kitchen"].includes(session.role);
   const canServe = canPrepare || session.role === "server";
-  const load = useCallback(async () => {
-    if (inflight.current) return;
+  /** Loads the lane; resolves with the number of items still to review. */
+  const load = useCallback(async (): Promise<number | null> => {
+    if (inflight.current) return null;
     inflight.current = true;
     try {
       const result = await api<{ items: ReviewItem[] }>("/offline/kitchen");
-      setItems(result.items);
+      setAll(result.items);
+      return result.items.length;
     } catch {
       /* The next poll retries; the live KDS keeps working. */
+      return null;
     } finally {
       inflight.current = false;
     }
   }, []);
+  /** Items at the last successful load: the next delay depends on it. */
+  const count = useRef(0);
   useEffect(() => {
     if (!net.canUseServer) return;
-    void load();
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void load();
-    }, 10_000);
-    return () => clearInterval(timer);
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // One timeout chain, re-armed after each load with the adaptive delay.
+    const arm = () => {
+      clearTimeout(timer);
+      if (!live) return;
+      timer = setTimeout(() => void tick(), lanePollDelay(count.current));
+    };
+    const tick = async () => {
+      if (document.visibilityState === "visible") {
+        const loaded = await load();
+        if (loaded !== null) count.current = loaded;
+      }
+      arm();
+    };
+    const visible = () => {
+      if (document.visibilityState === "visible") void tick();
+    };
+    document.addEventListener("visibilitychange", visible);
+    void tick();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", visible);
+    };
   }, [net.canUseServer, load]);
+  const items = all.filter((item) => item.station === station);
+  const others = all.length - items.length;
   async function decide(
     roundId: string,
     decision: "prepare" | "already_served",
@@ -93,13 +131,15 @@ export function OfflineKitchenReview({
       setError(translateError((e as Error).message, locale));
     } finally {
       setBusy(false);
-      await load();
+      const loaded = await load();
+      if (loaded !== null) count.current = loaded;
       onDecided?.();
     }
   }
-  if (!items.length) return null;
+  if (!all.length) return null;
   const time = (iso: string) =>
     clockTime(iso, session.restaurant.timezone, locale);
+  const otherStation = t(station === "bar" ? "kitchen" : "bar");
   return (
     <section
       className="offline-review-lane"
@@ -111,8 +151,16 @@ export function OfflineKitchenReview({
             {t("offlineKitchenReviewTitle", { n: items.length })}
           </h2>
           <p>{t("offlineKitchenReviewHint")}</p>
+          {others > 0 && (
+            <p className="muted">
+              {t("offlineKitchenOtherStation", {
+                n: others,
+                station: otherStation,
+              })}
+            </p>
+          )}
         </div>
-        {canServe && (
+        {canServe && items.length > 0 && (
           <Button disabled={busy} onClick={() => setConfirmAll(true)}>
             {t("offlineKitchenAllServed")}
           </Button>

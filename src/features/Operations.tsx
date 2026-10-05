@@ -372,6 +372,7 @@ export function Operations({
               <OfflineKitchenReview
                 session={session}
                 locale={locale}
+                station={station}
                 onDecided={() => void load()}
               />
               <div className="kitchen-grid">
