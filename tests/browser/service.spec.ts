@@ -44,6 +44,15 @@ async function product(page: Page, name: string) {
   const catalog = await call<any[]>(page, "/catalog");
   return catalog.find((p) => p.name.es === name);
 }
+/**
+ * The Vender tile of one catalog product, matched by its exact name. Other
+ * specs add products to the same demo tenant, so a substring or regex match
+ * on "Agua de jamaica" could also hit a product such as "Agua de jamaica 2sbzf".
+ */
+const productTile = (page: Page, name: string) =>
+  page
+    .locator("button.product")
+    .filter({ has: page.getByText(name, { exact: true }) });
 async function apiOrder(
   page: Page,
   name: string,
@@ -132,7 +141,7 @@ test("dine-in table accepts dessert after delivery, stays occupied until paid an
   const card = page.getByRole("article", { name: free.name, exact: true });
   await expect(card).toContainText("Disponible");
   await card.getByRole("button", { name: "Nueva cuenta", exact: true }).click();
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nombre para llamar").fill(name);
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
@@ -155,7 +164,7 @@ test("dine-in table accepts dessert after delivery, stays occupied until paid an
     .getByRole("button", { name: new RegExp(`${name} · .* por cobrar`) })
     .click();
   await expect(page.locator(".existing")).toContainText("Taco de hongos");
-  await page.getByRole("button", { name: /Flan de vainilla/ }).click();
+  await productTile(page, "Flan de vainilla").click();
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
     .click();
@@ -182,7 +191,7 @@ test("kitchen sees order, line and round notes with modifiers; receipt shows mod
   await openDrawer(page);
   const name = "Notas " + tag();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: /Taco de asada/ }).click();
+  await productTile(page, "Taco de asada").click();
   await page
     .getByRole("dialog")
     .getByRole("radio", { name: /Salsa verde/ })
@@ -215,7 +224,7 @@ test("kitchen sees order, line and round notes with modifiers; receipt shows mod
   await expect(first.locator(".ticket-note.allergy")).toContainText("Alergia");
 
   await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: /Flan de vainilla/ }).click();
+  await productTile(page, "Flan de vainilla").click();
   await page.getByLabel("Nota para esta ronda").fill("Postres al final");
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
@@ -280,7 +289,7 @@ test("terminal fields reset between sales and change follows a partial cash amou
   await login(page);
   await openDrawer(page);
   await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog
@@ -299,7 +308,7 @@ test("terminal fields reset between sales and change follows a partial cash amou
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();
 
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const cash = dialog.getByRole("button", { name: "Efectivo", exact: true });
   await expect(cash).toHaveAttribute("aria-pressed", "true");
@@ -323,7 +332,7 @@ test("terminal fields reset between sales and change follows a partial cash amou
   await expect(change).toContainText("$20.00");
   await page.keyboard.press("Escape");
 
-  const bowl = page.locator("button.product", { hasText: "Bowl de la casa" });
+  const bowl = productTile(page, "Bowl de la casa");
   for (let i = 0; i < 8; i++) await bowl.click();
   await expect(
     page.locator(".order-line").filter({ hasText: "Bowl de la casa" }),
@@ -352,7 +361,7 @@ test("pay is blocked until a drawer is open and nothing reaches the kitchen", as
   await login(page);
   const name = "Sin caja " + tag();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nombre para llamar").fill(name);
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog");
@@ -384,8 +393,8 @@ test("sold-out item is flagged in the cart and removable", async ({ page }) => {
   let changed = false;
   try {
     await page.getByRole("button", { name: "Vender", exact: true }).click();
-    await page.getByRole("button", { name: /Guacamole/ }).click();
-    await page.getByRole("button", { name: /Limonada natural/ }).click();
+    await productTile(page, "Guacamole").click();
+    await productTile(page, "Limonada natural").click();
     const save = (available: boolean, expectedVersion: number) =>
       call(page, "/catalog/save", {
         operationId: uuid(),
@@ -450,7 +459,7 @@ test("stale order refreshes in place and keeps unsent items", async ({
   await login(page);
   const name = "Ronda " + tag();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nombre para llamar").fill(name);
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
@@ -470,7 +479,7 @@ test("stale order refreshes in place and keeps unsent items", async ({
     ],
     mode: order.mode,
   });
-  await page.getByRole("button", { name: /Limonada natural/ }).click();
+  await productTile(page, "Limonada natural").click();
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
     .click();
@@ -493,12 +502,12 @@ test("stale order refreshes in place and keeps unsent items", async ({
   const draftB = "Borrador B " + tag();
   const draftA = "Borrador A " + tag();
   await page.getByRole("button", { name: "Nueva orden", exact: true }).click();
-  await page.getByRole("button", { name: /Café de olla/ }).click();
+  await productTile(page, "Café de olla").click();
   await page.getByLabel("Nombre para llamar").fill(draftB);
   await page
     .getByRole("button", { name: "Guardar borrador", exact: true })
     .click();
-  await page.getByRole("button", { name: /Ensalada verde/ }).click();
+  await productTile(page, "Ensalada verde").click();
   await page.getByLabel("Nombre para llamar").fill(draftA);
   await page.getByRole("button", { name: "Borradores", exact: true }).click();
   await page
@@ -523,7 +532,7 @@ test("stale order refreshes in place and keeps unsent items", async ({
     .getByRole("button", { name: "Abrir orden", exact: true })
     .click();
   await expect(page.locator(".existing")).toContainText(`#${order.number}`);
-  await page.getByRole("button", { name: /Café de olla/ }).click();
+  await productTile(page, "Café de olla").click();
   await page.getByLabel("Nota para esta ronda").fill("Bien caliente");
   await page
     .getByRole("button", { name: "Guardar borrador", exact: true })
@@ -588,12 +597,12 @@ test("a send whose response was lost recovers after the cart changes", async ({
       await route.abort("failed");
     } else await route.continue();
   });
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nombre para llamar").fill(name);
   await send.click();
   // The transport error text belongs to offline (wave contracts D1).
   await expect(failure).toBeVisible();
-  await page.getByRole("button", { name: /Agua de jamaica/ }).click();
+  await productTile(page, "Agua de jamaica").click();
   await send.click();
   await expect(recovered).toBeVisible();
   await expect(page.locator(".existing")).toContainText("Taco de hongos");
@@ -613,10 +622,10 @@ test("a send whose response was lost recovers after the cart changes", async ({
       await route.abort("failed");
     } else await route.continue();
   });
-  await page.getByRole("button", { name: /Limonada natural/ }).click();
+  await productTile(page, "Limonada natural").click();
   await send.click();
   await expect(failure).toBeVisible();
-  await page.getByRole("button", { name: /Flan de vainilla/ }).click();
+  await productTile(page, "Flan de vainilla").click();
   await send.click();
   await expect(recovered).toBeVisible();
   await expect(page.locator(".existing")).toContainText("Limonada natural");
@@ -665,12 +674,12 @@ test("a lost send keeps the extra unit tapped onto a line that already landed", 
       await route.abort("failed");
     } else await route.continue();
   });
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nombre para llamar").fill(name);
   await send.click();
   await expect(page.locator(".cart-bottom [role=alert]")).toBeVisible();
   // The customer wants two: the same cart line becomes 2 (SVC-R3 scenario A).
-  await page.locator("button.product", { hasText: "Taco de hongos" }).click();
+  await productTile(page, "Taco de hongos").click();
   await expect(cart).toHaveCount(1);
   await expect(cart.locator(".quantity span")).toHaveText("2");
   await send.click();
@@ -708,7 +717,7 @@ test("cart changes made while a send is in flight stay in the cart and nothing i
   });
   const cart = page.locator(".order-line");
   const inFlight = cart.filter({ hasText: "Enviando a cocina…" });
-  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const tile = (n: string) => productTile(page, n);
   const existing = page.locator(".existing");
   await page.getByRole("button", { name: "Vender", exact: true }).click();
 
@@ -786,7 +795,9 @@ test("cart changes made while a send is in flight stay in the cart and nothing i
   const tapping = page.evaluate(async () => {
     const button = [
       ...document.querySelectorAll<HTMLButtonElement>("button.product"),
-    ].find((b) => b.textContent?.includes("Limonada natural"))!;
+    ].find(
+      (b) => b.querySelector("strong")?.textContent === "Limonada natural",
+    )!;
     let taps = 0,
       after = 0;
     while (taps < 90 && after < 15) {
@@ -852,7 +863,7 @@ test("a table chosen in Mesas while a send is in flight opens only after the sen
   });
   const cart = page.locator(".order-line");
   const existing = page.locator(".existing");
-  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const tile = (n: string) => productTile(page, n);
   const tableSelect = page.getByLabel("Seleccionar mesa");
   const card = (t: { name: string }) =>
     page.getByRole("article", { name: t.name, exact: true });
@@ -939,7 +950,7 @@ test("Abrir orden on another check while a round is in flight keeps the round on
   });
   const cart = page.locator(".order-line");
   const existing = page.locator(".existing");
-  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const tile = (n: string) => productTile(page, n);
   let release = () => {};
   let gate = Promise.resolve();
   const roundsTo: string[] = [];
@@ -998,7 +1009,7 @@ test("a round that answers after its cart moved to another check never comes bac
   });
   const cart = page.locator(".order-line");
   const existing = page.locator(".existing");
-  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const tile = (n: string) => productTile(page, n);
   let release = () => {};
   let gate = Promise.resolve();
   let releaseLoad = () => {};
@@ -1080,7 +1091,7 @@ test("a send that fails while a table switch waits keeps its error and cart unti
   const cart = page.locator(".order-line");
   const existing = page.locator(".existing");
   const failure = page.locator(".cart-bottom [role=alert]");
-  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const tile = (n: string) => productTile(page, n);
   const tableSelect = page.getByLabel("Seleccionar mesa");
   const card = (t: { name: string }) =>
     page.getByRole("article", { name: t.name, exact: true });
@@ -1188,7 +1199,7 @@ test("a round refused while the waiter is in Órdenes keeps its error when anoth
   const cart = page.locator(".order-line");
   const existing = page.locator(".existing");
   const failure = page.locator(".cart-bottom [role=alert]");
-  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const tile = (n: string) => productTile(page, n);
   let release = () => {};
   let gate = Promise.resolve();
   let rounds = 0;
@@ -1271,7 +1282,7 @@ test("a round that fails after its cart moved to another check says so and stays
   const cart = page.locator(".order-line");
   const existing = page.locator(".existing");
   const failure = page.locator(".cart-bottom [role=alert]");
-  const tile = (n: string) => page.locator("button.product", { hasText: n });
+  const tile = (n: string) => productTile(page, n);
   let release = () => {};
   let gate = Promise.resolve();
   let releaseLoad = () => {};
@@ -1380,7 +1391,7 @@ test("a recovered payment for a check the cart already left is announced, not sh
     .getByRole("button", { name: "Nueva cuenta", exact: true })
     .click();
   await expect(tableSelect).toHaveValue(table.id);
-  await page.locator("button.product", { hasText: "Agua de jamaica" }).click();
+  await productTile(page, "Agua de jamaica").click();
   await expect(cart).toHaveCount(1);
   await recover.click();
   await expect(
@@ -1408,13 +1419,13 @@ test("Cobrar with unsent items does not announce a balance change it made itself
   await openDrawer(page);
   const name = "Propio " + tag();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nombre para llamar").fill(name);
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
     .click();
   await expect(page.locator(".existing")).toContainText("Taco de hongos");
-  await page.getByRole("button", { name: /Flan de vainilla/ }).click();
+  await productTile(page, "Flan de vainilla").click();
   let payments = 0;
   await page.route("**/api/orders/*/payments", async (route) => {
     payments++;
@@ -1454,14 +1465,14 @@ test("a second Confirmar cobro tap while the payment is in flight records one te
   await openDrawer(page);
   const name = "Doble " + tag();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nombre para llamar").fill(name);
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
     .click();
   await expect(page.locator(".existing")).toContainText("Taco de hongos");
   // Dessert stays unsent: Cobrar sends it first, then pays part of the check.
-  await page.getByRole("button", { name: /Flan de vainilla/ }).click();
+  await productTile(page, "Flan de vainilla").click();
   let release!: () => void;
   const gate = new Promise<void>((resolve) => (release = resolve));
   let payments = 0;
@@ -1523,13 +1534,13 @@ test("Cobrar shows a stale order inside the payment dialog and moves Importe to 
   await openDrawer(page);
   const name = "Saldo " + tag();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nombre para llamar").fill(name);
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
     .click();
   await expect(page.locator(".existing")).toContainText("Taco de hongos");
-  await page.getByRole("button", { name: /Flan de vainilla/ }).click();
+  await productTile(page, "Flan de vainilla").click();
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   const dialog = page.getByRole("dialog");
   const amount = dialog.getByRole("textbox", { name: "Importe", exact: true });
@@ -1879,18 +1890,20 @@ test("10-inch landscape cart keeps three dine-in lines visible", async ({
     "Mesa 01",
   );
   for (const name of ["Taco de hongos", "Agua de jamaica", "Guacamole"])
-    await page.getByRole("button", { name: new RegExp(name) }).click();
+    await productTile(page, name).click();
   const lines = page.locator(".order-line");
   await expect(lines).toHaveCount(3);
   for (let i = 0; i < 3; i++)
     await expect(lines.nth(i)).toBeInViewport({ ratio: 0.95 });
-  await page.locator("button.product", { hasText: "Agua de jamaica" }).click();
+  await productTile(page, "Agua de jamaica").click();
   const water = lines.filter({ hasText: "Agua de jamaica" });
   await expect(water).toHaveCount(1);
   await expect(water.locator(".quantity span")).toHaveText("2");
-  await expect(
-    page.getByRole("button", { name: /Agua de jamaica.*2 en la orden/ }),
-  ).toBeVisible();
+  const waterTile = productTile(page, "Agua de jamaica");
+  await expect(waterTile).toBeVisible();
+  await expect(waterTile).toHaveAccessibleName(
+    /Agua de jamaica.*2 en la orden/,
+  );
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -1962,7 +1975,7 @@ test("cart note edits reach the kitchen, comandas print on send and a closed che
     .check();
   await page.keyboard.press("Escape");
   await stubPrint(page);
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nota de la orden (cocina)").fill("Sin prisa");
   await page.getByLabel("Nombre para llamar").fill(name);
   await page
@@ -2011,7 +2024,7 @@ test("cart note edits reach the kitchen, comandas print on send and a closed che
     received: first.total,
     method: "cash",
   });
-  await page.getByRole("button", { name: /Agua de jamaica/ }).click();
+  await productTile(page, "Agua de jamaica").click();
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
     .click();
@@ -2111,7 +2124,7 @@ test("a counter check closed at payment still takes a note edit while its ticket
   await openDrawer(page);
   const name = "Mostrador " + tag();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await productTile(page, "Taco de hongos").click();
   await page.getByLabel("Nombre para llamar").fill(name);
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   await page
@@ -2204,7 +2217,7 @@ test("a paid table check takes one more round from Mesas on the same bill", asyn
   await expect(page.locator(".cart .check-badge")).toHaveText(
     "Pagada · por liberar",
   );
-  await page.getByRole("button", { name: /Agua de jamaica/ }).click();
+  await productTile(page, "Agua de jamaica").click();
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
     .click();

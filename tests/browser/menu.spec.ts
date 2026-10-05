@@ -43,6 +43,10 @@ async function axe(page: Page) {
     .analyze();
   expect(results.violations).toEqual([]);
 }
+// Every spec shares the demo tenant, and later specs pick seeded products and
+// groups by name ("Agua de jamaica", "Varios", "Extras"…). A product or
+// modifier group made here never contains a seeded name: it gets its own name
+// (or a "Prueba …" prefix) plus this suffix.
 const suffix = () => Math.random().toString(36).slice(2, 7);
 
 test("manager builds a taquería menu with required, optional and repeatable choices, a combo and an open-price item, then sells it", async ({
@@ -82,10 +86,10 @@ test("manager builds a taquería menu with required, optional and repeatable cho
   await expect(dialog.getByText("Regla: Obligatorio · elige 1")).toBeVisible();
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(dialog).not.toBeVisible();
-  await newGroup("Extras (queso, aguacate)", `Extras ${id}`);
+  await newGroup("Extras (queso, aguacate)", `Complementos ${id}`);
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(dialog).not.toBeVisible();
-  await newGroup(null, `Tacos del combo ${id}`);
+  await newGroup(null, `Taquiza ${id}`);
   await dialog.getByLabel("Mínimo a elegir").fill("3");
   await dialog.getByLabel("Máximo a elegir").fill("3");
   await dialog.getByLabel("Permitir repetir una opción").check();
@@ -98,7 +102,7 @@ test("manager builds a taquería menu with required, optional and repeatable cho
   await dialog.getByLabel("Precio extra 2").fill("5");
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(dialog).not.toBeVisible();
-  await expect(page.getByText(`Tacos del combo ${id}`)).toBeVisible();
+  await expect(page.getByText(`Taquiza ${id}`)).toBeVisible();
 
   await page.getByRole("tab", { name: "Productos" }).click();
   const newProduct = async (name: string) => {
@@ -118,7 +122,7 @@ test("manager builds a taquería menu with required, optional and repeatable cho
   await newProduct(`Taco al pastor ${id}`);
   await dialog.getByLabel("Precio al cliente (con IVA)").fill("25");
   await addGroup(`Tortilla ${id} · Obligatorio · elige 1`);
-  await addGroup(`Extras ${id} · Opcional · hasta 2`);
+  await addGroup(`Complementos ${id} · Opcional · hasta 2`);
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(dialog).not.toBeVisible();
 
@@ -129,18 +133,18 @@ test("manager builds a taquería menu with required, optional and repeatable cho
   await expect(dialog.getByRole("alert").first()).toContainText(
     "Un combo necesita al menos un grupo obligatorio.",
   );
-  await addGroup(
-    `Tacos del combo ${id} · Obligatorio · elige 3 · puedes repetir`,
-  );
+  await addGroup(`Taquiza ${id} · Obligatorio · elige 3 · puedes repetir`);
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(dialog).not.toBeVisible();
 
-  await newProduct(`Varios ${id}`);
+  await newProduct(`Prueba importe libre ${id}`);
   await dialog.getByRole("checkbox", { name: /Precio abierto/ }).check();
   await dialog.getByLabel("Importe máximo permitido").fill("500");
   await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
   await expect(dialog).not.toBeVisible();
-  const list = page.locator(".menu-row").filter({ hasText: `Varios ${id}` });
+  const list = page
+    .locator(".menu-row")
+    .filter({ hasText: `Prueba importe libre ${id}` });
   await expect(list).toContainText("Precio abierto · máx. $500.00");
   await expect(
     page.locator(".menu-row").filter({ hasText: `Combo taquero ${id}` }),
@@ -150,7 +154,7 @@ test("manager builds a taquería menu with required, optional and repeatable cho
   await page.getByRole("tab", { name: "Modificadores" }).click();
   await page
     .locator(".menu-group-card")
-    .filter({ hasText: `Tacos del combo ${id}` })
+    .filter({ hasText: `Taquiza ${id}` })
     .getByRole("button", { name: "Archivar", exact: true })
     .click();
   dialog = page.getByRole("dialog");
@@ -198,7 +202,7 @@ test("manager builds a taquería menu with required, optional and repeatable cho
 
   await page
     .locator(".product")
-    .filter({ hasText: `Varios ${id}` })
+    .filter({ hasText: `Prueba importe libre ${id}` })
     .click();
   picker = page.getByRole("dialog");
   await expect(picker).toContainText("Máximo $500.00");
@@ -209,13 +213,33 @@ test("manager builds a taquería menu with required, optional and repeatable cho
   await picker.getByLabel("Importe").fill("120");
   await picker.getByRole("button", { name: "Agregar a la orden" }).click();
 
+  // The POS cart is service's CartLine (LD-10 B3): the product name, one
+  // "+ choice" row per chosen option (a repeated combo choice reads "2× …"),
+  // and the line total last.
   const cart = page.locator(".cart");
-  await expect(cart.locator(".order-line").nth(0)).toContainText(
-    "Harina · Queso",
+  const lines = cart.locator(".order-line");
+  await expect(lines).toHaveCount(3);
+  const cartLine = async (
+    n: number,
+    name: string,
+    options: string[],
+    total: string,
+  ) => {
+    const line = lines.nth(n);
+    await expect(line.locator(".order-line-main > strong")).toHaveText(name);
+    const chosen = line.locator(".line-option");
+    if (options.length) await expect(chosen).toHaveText(options);
+    else await expect(chosen).toHaveCount(0);
+    await expect(line.locator("strong").last()).toHaveText(total);
+  };
+  await cartLine(0, `Taco al pastor ${id}`, ["+ Harina", "+ Queso"], "$40.00");
+  await cartLine(
+    1,
+    `Combo taquero ${id}`,
+    ["+ 2× Pastor", "+ Suadero"],
+    "$104.00",
   );
-  await expect(cart.locator(".order-line").nth(1)).toContainText(
-    "2× Pastor · Suadero",
-  );
+  await cartLine(2, `Prueba importe libre ${id}`, [], "$120.00");
   await expect(cart.locator(".total strong")).toHaveText("$264.00");
   await page.getByLabel("Nombre para llamar").fill(`Menú ${id}`);
   await page
@@ -226,12 +250,19 @@ test("manager builds a taquería menu with required, optional and repeatable cho
     .getByRole("button", { name: "Cocina", exact: true })
     .first()
     .click();
-  const ticket = page
-    .locator(".kitchen-ticket")
-    .filter({ hasText: `Menú ${id}` })
-    .first();
-  await expect(ticket).toContainText("Harina · Queso");
-  await expect(ticket).toContainText("2× Pastor · Suadero");
+  // Service's KDS lists the same choices under each line of the order.
+  const ticketLine = (name: string) =>
+    page
+      .locator(".kitchen-ticket")
+      .filter({ hasText: `Menú ${id}` })
+      .locator(".ticket-lines > div")
+      .filter({ hasText: name });
+  await expect(
+    ticketLine(`Taco al pastor ${id}`).locator(".ticket-option"),
+  ).toHaveText(["+ Harina", "+ Queso"]);
+  await expect(
+    ticketLine(`Combo taquero ${id}`).locator(".ticket-option"),
+  ).toHaveText(["+ 2× Pastor", "+ Suadero"]);
 });
 
 test("FIT-4: optional extras are offered in POS and QR ordering", async ({
@@ -1196,7 +1227,9 @@ test("OWNER-6: an 86 while a product is in the POS cart flags that line with Qui
       .filter({ hasText: "Taco de hongos" })
       .click();
     const cart = page.locator(".cart");
-    await expect(cart.locator(".order-line")).toHaveCount(2);
+    const lines = cart.locator(".order-line");
+    await expect(lines).toHaveCount(2);
+    await expect(lines.nth(0)).toContainText(name);
     await expect(cart.locator(".total strong")).toHaveText("$75.00");
 
     // Another terminal 86es it; the next catalog refresh reaches this one.
@@ -1204,29 +1237,44 @@ test("OWNER-6: an 86 while a product is in the POS cart flags that line with Qui
     await page.evaluate(() =>
       window.dispatchEvent(new Event("gm-menu-refresh")),
     );
-    // Since service merged, the POS cart flags the line with its own CartLine
-    // (QR/kiosk keep menu's UnavailableLines, tested below).
+    // Since service merged, the POS cart flags the line in place with its own
+    // CartLine (LD-10 B3): same position, shown once, and no separate list of
+    // unavailable items (QR/kiosk keep menu's UnavailableLines, tested below).
     const stale = cart.locator(".order-line.line-error");
-    await expect(stale).toContainText(name);
+    await expect(stale).toHaveCount(1);
+    await expect(lines).toHaveCount(2);
+    await expect(lines.nth(0)).toHaveClass(/\bline-error\b/);
+    await expect(lines.nth(0)).toContainText(name);
+    await expect(cart.locator(".line-unavailable")).toHaveCount(0);
     await expect(stale.getByRole("alert")).toHaveText(
       "No disponible. Quítalo para continuar.",
     );
-    await expect(
-      cart.locator(".order-line").filter({ hasText: "Taco de hongos" }),
-    ).toContainText("$45.00");
+    await expect(lines.nth(1)).toContainText("Taco de hongos");
+    await expect(lines.nth(1)).toContainText("$45.00");
     await expect(cart.locator(".total strong")).toHaveText("$45.00");
     const send = page.getByRole("button", {
       name: "Enviar a cocina",
       exact: true,
     });
+    const pay = page.getByRole("button", { name: "Cobrar", exact: true });
     await expect(send).toBeDisabled();
-    await expect(
-      page.getByRole("button", { name: "Cobrar", exact: true }),
-    ).toBeDisabled();
+    await expect(pay).toBeDisabled();
+    // While the flagged line remains, editing the rest of the cart does not
+    // re-enable Enviar or Cobrar.
+    await lines
+      .nth(1)
+      .getByRole("button", { name: "Cantidad + Taco de hongos", exact: true })
+      .click();
+    await expect(lines.nth(1).locator(".quantity span")).toHaveText("2");
+    await expect(cart.locator(".total strong")).toHaveText("$90.00");
+    await expect(stale).toHaveCount(1);
+    await expect(send).toBeDisabled();
+    await expect(pay).toBeDisabled();
     await stale.getByRole("button", { name: "Quitar", exact: true }).click();
     await expect(stale).toHaveCount(0);
-    await expect(cart.locator(".order-line")).toHaveCount(1);
+    await expect(lines).toHaveCount(1);
     await expect(send).toBeEnabled();
+    await expect(pay).toBeEnabled();
   } finally {
     await setAvailable(page, product.id, true);
   }
@@ -1240,10 +1288,10 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
   await page.clock.install();
   const id = suffix();
   const tostada = `Tostada ${id}`;
-  const agua = `Agua de jamaica ${id}`;
+  const tepache = `Prueba tepache ${id}`;
   await login(page);
   const first = await createProduct(page, tostada, 4000, "Antojitos");
-  const second = await createProduct(page, agua, 2500, "Bebidas");
+  const second = await createProduct(page, tepache, 2500, "Bebidas");
   try {
     const qr = await call(page, "/ordering-links", {
       channel: "qr",
@@ -1327,7 +1375,7 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
     await kiosk.goto(kioskLink.data.path);
     await kiosk
       .locator(".product-grid")
-      .getByRole("button", { name: new RegExp(agua) })
+      .getByRole("button", { name: new RegExp(tepache) })
       .click();
     await setAvailable(page, second.id, false);
     await kiosk
@@ -1337,7 +1385,7 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
     await expect(message).toHaveText(
       "Un producto ya no está disponible. Quítalo de la orden.",
     );
-    await expect(kiosk.locator(".line-unavailable")).toContainText(agua);
+    await expect(kiosk.locator(".line-unavailable")).toContainText(tepache);
     await page.clock.fastForward(90_000);
     await expect(message).toHaveCount(0);
     await expect(kiosk.locator(".line-unavailable")).toHaveCount(0);
