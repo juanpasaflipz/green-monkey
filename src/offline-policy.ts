@@ -117,8 +117,13 @@ export function deriveConnectivity(s: ConnectivityState): {
   };
 }
 
+/** A failed probe while still online is confirmed this soon (OUTAGE-006). */
+export const CONFIRM_PROBE_MS = 3_000;
+
 /**
- * Next heartbeat delay. Online: every 30 s (120 s while the page is hidden).
+ * Next heartbeat delay. Online: every 30 s (120 s while the page is hidden),
+ * but 3 s after a failed probe or request, so an outage that a request has not
+ * noticed yet is confirmed in seconds, not after another full cycle.
  * Offline or manually offline while unreachable: 2 s, 4 s, 8 s, capped at 15 s.
  */
 export function nextProbeDelay(
@@ -126,7 +131,10 @@ export function nextProbeDelay(
   hidden: boolean,
   offlineProbeCount: number,
 ): number {
-  if (deriveConnectivity(s).serverReachable) return hidden ? 120_000 : 30_000;
+  if (deriveConnectivity(s).serverReachable) {
+    if (s.failures > 0) return CONFIRM_PROBE_MS;
+    return hidden ? 120_000 : 30_000;
+  }
   return Math.min(15_000, 2_000 * 2 ** Math.max(0, offlineProbeCount - 1));
 }
 

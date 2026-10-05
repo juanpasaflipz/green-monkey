@@ -10,6 +10,7 @@ import {
   LANE_POLL_IDLE_MS,
   lanePollDelay,
   medianOffset,
+  CONFIRM_PROBE_MS,
   nextProbeDelay,
   offlineWindow,
   offsetFromSample,
@@ -111,6 +112,32 @@ describe("connectivity state machine", () => {
     ).toEqual([2_000, 4_000, 8_000, 15_000, 15_000, 15_000]);
     const manualOnline = run([{ type: "manual", value: true }]);
     expect(nextProbeDelay(manualOnline, false, 0)).toBe(30_000);
+  });
+
+  it("a failed heartbeat while still online is confirmed in 3 s, not after another 30 s cycle", () => {
+    // Regression OUTAGE-006: an idle tablet needed two full 30 s cycles (up
+    // to about 68 s) to go offline when the ISP dropped, so a charge started
+    // meanwhile hung for 15 s and was then refused offline.
+    const once = run([ok(), fail(2)]);
+    expect(once.mode).toBe("online");
+    expect(nextProbeDelay(once, false, 0)).toBe(CONFIRM_PROBE_MS);
+    expect(nextProbeDelay(once, true, 0)).toBe(CONFIRM_PROBE_MS);
+    expect(CONFIRM_PROBE_MS).toBeLessThanOrEqual(4_000);
+    // The confirmation fails too: offline, then the offline backoff.
+    const twice = reduceConnectivity(once, fail(3));
+    expect(twice.mode).toBe("offline");
+    expect(nextProbeDelay(twice, false, 1)).toBe(2_000);
+    // A failed request counts the same way (the device also probes 1 s later).
+    const request = reduceConnectivity(run([ok()]), {
+      type: "request_fail",
+      at: 2,
+      code: "request_timeout",
+    });
+    expect(nextProbeDelay(request, false, 0)).toBe(CONFIRM_PROBE_MS);
+    // A success clears it: back to the normal cycle.
+    expect(nextProbeDelay(reduceConnectivity(once, ok(4)), false, 0)).toBe(
+      30_000,
+    );
   });
 });
 

@@ -13,7 +13,9 @@ The POS decides it is offline from what actually happens, not from
 `navigator.onLine`:
 
 - A heartbeat calls `GET /api/offline/ping` (every 30 s while online, every 2–15 s
-  while offline, 120 s while the page is hidden).
+  while offline, 120 s while the page is hidden). After one failed ping or request
+  while still online, the next ping comes 3 s later instead of 30 s, so an idle
+  device notices an outage within about 40 s, not after two full cycles.
 - Every API request reports its outcome. Two consecutive failures (network error,
   timeout, 5xx, a non-JSON or HTML proxy page) switch the device to offline; two
   consecutive successes switch it back. A browser that reports itself offline is
@@ -348,7 +350,7 @@ before launch:
 
 | Who | Request | Rate (visible page) | Notes |
 |---|---|---|---|
-| Every device | `GET /api/offline/ping` | every 30 s (120 s hidden) | pre-auth, no tenant data; one shared `select 1` at most every 2 s per process |
+| Every device | `GET /api/offline/ping` | every 30 s (120 s hidden); one extra ping 3 s after a failure | pre-auth, no tenant data; one shared `select 1` at most every 2 s per process |
 | Every KDS screen | `GET /api/offline/kitchen` | every 30 s while the lane is empty, 10 s while it has items | one indexed query |
 | Selling devices, only with table service on | `GET /api/offline/open-orders` | on opening selling and every 120 s | one bounded query (2 business days, 200 rows) |
 | Selling devices | `GET /api/offline/settings` | when selling opens and when the connection returns; never polled | one row |
