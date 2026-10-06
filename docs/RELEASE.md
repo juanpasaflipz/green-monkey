@@ -66,12 +66,18 @@ Before production accepts its first restaurant (see also
    startup log has no `legal_documents_unpublished`.
 4. `LEGAL_UNPUBLISHED_SIGNUP` is unset (startup logs
    `legal_unpublished_signup_ignored` otherwise).
-5. Public ordering (032/033): the "DB-9 validation" check
+5. Public ordering (032/033/034): the "DB-9 validation" check
    ([RUNBOOK.md](RUNBOOK.md)), run as the Neon owner role and never as
    `gm_migrator` (FORCE RLS hides every row from it), returns no rows on
-   production before the first deploy that carries 032 and 033. That deploy
-   runs before 07:00 Mexico City once production has traffic (RUNBOOK "Deploy
-   window"), and the LD-5 delta review of B1-B4 is done.
+   staging before the change that brings 032 and 033 to `main` merges
+   (staging deploys on its own once Qualification passes there) and on
+   production before that SHA is dispatched (PUBLIC-OPS-8). That deploy runs
+   before 07:00 Mexico City once production has traffic (RUNBOOK "Deploy
+   window"), and the LD-5 delta reviews of B1-B4 are done (LD-23, LD-41).
+   The GAP-4 `target` capacity run on staging includes public ordering's
+   polls (inbox summary and inbox on operator devices, diner revision,
+   submit and status) before `DB_POOL_MAX` is chosen (LOAD_TEST.md,
+   PUBLIC-OPS-7).
    `PUBLIC_ORDERING_ENABLED` stays unset or `false` in production
    (`/api/account-config` reports `publicOrdering.enabled: false`) until the
    flag-flip commit (public B4) is deployed; `false` is the kill switch

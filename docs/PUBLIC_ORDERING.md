@@ -4,13 +4,13 @@ Migrations 032, 033 and 034. Audit findings SEC-7, FIT-11, FOH-13 and the
 DB-9 remainder; 034 is the LD-41 redaction (PUBLIC-SECURITY-3,
 PUBLIC-CONCURRENCY-3).
 
-**Status: Phase A and steps B1, B2 and B3, built on `track/public`.** Phase A
-depends only on wave 1 and platform 2.0; B1 absorbed fiscal 027
-(`integration/v1` at `70860d6`), B2 absorbed discounts 028, reports 029 and
-cfdi 030 (`integration/v1` at `407154e`), and B3 absorbed account 031
-(`integration/v1` at `e267ef5`). The track merges into `integration/v1` once,
-after B3 and the flag flip (B4), described in
-[Phase B](#phase-b-what-is-still-to-do).
+**Status: Phase A and B1-B4, built on `track/public`; LD-5 rounds 1 and 2
+(LD-23, LD-41) applied.** Phase A depends only on wave 1 and platform 2.0;
+B1 absorbed fiscal 027 (`integration/v1` at `70860d6`), B2 absorbed
+discounts 028, reports 029 and cfdi 030 (`integration/v1` at `407154e`), B3
+absorbed account 031 (`integration/v1` at `e267ef5`), and B4 flipped the
+flag as the track's last commit. The track merges into `integration/v1`
+once ([Phase B (done)](#phase-b-done)).
 
 - No compat shim is left: fiscal's (S2) went at B1, cfdi's (S3) at B2 and
   account's (S1 server, S4 client) at B3. None reached `integration/v1`, and
@@ -848,7 +848,7 @@ DB test 21 runs this block exactly as written, as `gm_migrator`:
   - `tests/public-ordering-http.test.ts`: limiter keys on the real client
     address, with a database stub.
 - **DB and HTTP** (`npm run test:db:public`, in `test:db:qualification`):
-  `tests/public-ordering-db.ts`, 48 checks on fresh fictional restaurants. It
+  `tests/public-ordering-db.ts`, 51 checks on fresh fictional restaurants. It
   never deletes: accepted holds write append-only ledgers (stock movements,
   fiscal tickets). Since B1 the fiscal legs run unconditionally: no ticket for
   a hold or an unpaid accept, one in a pay-first accept's transaction at its
@@ -862,7 +862,11 @@ DB test 21 runs this block exactly as written, as `gm_migrator`:
   target paid between the unlocked read and `addRound`, the expiry grace, and
   churn. Since B3, test 28 runs account's real gate on every diner route, test
   30 shows account's restaurant privacy URL on the diner menu, and test 31
-  checks account's export.
+  checks account's export. The LD-41 round adds the payer-only self-invoice
+  code (22 (030), 26), the paid-accept grace (41), the kill switch on Mesas
+  and archiving (28, 14), control characters in the name and note (46),
+  034's redaction exception (47, 21, 25) and the 30-day retention
+  redaction (48).
 - **Account's QR tests** (rewritten at B3 under rule 5.2.1, intent kept):
   `tests/account-http.ts` checks 2-3 (the header routes with the flag off; a
   revocable counter code's menu carries the restaurant's privacy URL) and the
@@ -890,7 +894,7 @@ DB test 21 runs this block exactly as written, as `gm_migrator`:
     instead of the clipboard (WebKit has no clipboard permission to grant).
   - Evidence: `docs/evidence/public-*.png`, from the Chromium run only.
 
-## Phase B: what is still to do
+## Phase B (done)
 
 | Step | When | Work |
 |---|---|---|
@@ -906,13 +910,23 @@ imports it. The tree does not typecheck at `4019641`, `27289f3` and `fcdac07`
 until `69a23d6` adds the wiring. A bisect over `integration/v1` that lands on
 one of them should `git bisect skip 4019641 27289f3 fcdac07`.
 
-**Which commit is B4.** The flag flip first landed as `50cf336`. Review fixes
-came after it and edited RELEASE's go-live item in the lines it changed, so
-`50cf336` was reverted and its change re-applied as the track's last commit
-(PUB-B4-1). Roll back with `git revert` of that re-applied commit, the newest
-one whose subject starts with `feat(public): B4`
-(`git log -1 --format=%h --grep='^feat(public): B4'`); reverting `50cf336`
-itself conflicts.
+**Rolling back QR and kiosk ordering (PUBLIC-OPS-2).** In production the
+rollback is the kill switch, not a revert: set `PUBLIC_ORDERING_ENABLED=false`
+on `web` and redeploy (RUNBOOK "Online ordering abuse", step 6). It needs no
+deploy window and no new build, and turning it back on is the same change in
+reverse. Reverting the flag flip itself (B4) only restores the interim
+default (off in production when unset) and is for a branch where that commit
+exists: on `track/public`, `integration/v1` and `release/v1` it is the
+newest commit whose subject starts with `feat(public): B4`
+(`git log -1 --format=%h --grep='^feat(public): B4'`), re-applied as the
+track's last commit after each review round so that the revert applies
+cleanly (PUB-B4-1; reverting an earlier copy conflicts). `main` takes
+squashed or rebased merges (`ops/github/main-ruleset.json`), so the commit may
+not exist there: on `main`, make the forward change instead, in
+`server/account-settings.ts` `publicOrderingEnabled`
+(`if (!v) return env.APP_ENV !== "production";`) with the inverse of B4's
+hunk in `tests/public-ordering-flag.test.ts`, and ship it through staging as
+any change.
 
 ## Field checks before printing at scale
 

@@ -222,7 +222,7 @@ Built on `track/account` and qualified locally on databases migrated as
 - the restaurant privacy URL, 031 RLS and grants: `tests/account-db.ts` (30–32),
   `tests/support-db.ts`.
 
-## Public ordering 032/033 evidence (2026-10-06, local with CI parity)
+## Public ordering 032/033/034 evidence (2026-10-06, local with CI parity)
 
 Built on `track/public` (Phase A plus B1-B4 on fiscal 027, discounts 028,
 reports 029, cfdi 030 and account 031) and qualified locally on databases
@@ -251,7 +251,16 @@ reaching the kitchen), FOH-13 (tables not bound) and the DB-9 remainder:
   nothing else);
 - account integration (B3): DB 28 (account's gate before any limiter), 30
   (account's privacy URL on the diner menu), 31 (the export drops the three
-  hash columns), `tests/account-http.ts` checks 2-3, `account.spec` QR legs.
+  hash columns), `tests/account-http.ts` checks 2-3, `account.spec` QR legs;
+- LD-5 round 2 (LD-41, 034): DB 22 (030) and 26 (the self-invoice code only
+  for the payer), 41 (the paid-accept grace), 14 and 28 (the kill switch on
+  Mesas and archiving), 46 (control characters), 21, 25 and 47 (034's
+  redaction exception, ARCO without a table lock), 48 (the 30-day retention
+  redaction), `tests/migrate-db.ts` (the no-transaction grants hook),
+  `tests/lock-order.test.ts` (the public LO-3/LO-4 objects), browser legs
+  for the kill switch's recovery, the refused terminal charge, the privacy
+  notice warning, and the table-QR and pay-first kiosk tests on
+  `webkit-ipad`.
 
 ## External prerequisites
 

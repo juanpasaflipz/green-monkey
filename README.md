@@ -275,7 +275,10 @@ No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe and other c
 
 The public root `/` serves a Spanish-first, English-switchable landing page.
 `/app` opens the existing application; Google callbacks now return to `/app`,
-while old root callback links remain compatible. QR and kiosk routes are unchanged.
+while old root callback links remain compatible. QR and kiosk ordering (`/qr#…`,
+`/kiosk#…`, Pro) uses revocable codes and **held** orders that reach the kitchen
+only when staff accept them (or charge them first); there is no online card
+payment ([public ordering](docs/PUBLIC_ORDERING.md)).
 The landing page includes illustrative (fictional) product previews, Free/Pro
 pricing from the shared approved policy, a monthly/annual toggle, availability
 explanations and keyboard-operable FAQs. Pro billing is labeled upcoming.
