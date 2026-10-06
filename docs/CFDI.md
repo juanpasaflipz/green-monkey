@@ -78,7 +78,8 @@ Registration in `.railway/railway.ts` and `.env.example` is Wave 2.0's.
 
 1. **Platform account.** Create the platform's Facturapi account and its User key. Generate the
    credential key with `node scripts/cfdi-generate-credential-key.mjs` (prints one
-   `YYYY-MM:<base64url>` entry; paste it only into the worker's environment).
+   `YYYY-MM-DD-<6 hex>:<base64url>` entry, a kid never reused with another secret; paste it only
+   into the worker's environment).
 2. **Worker env.** Set `FACTURAPI_API_KEY`, `CREDENTIAL_ENCRYPTION_KEY` and (already there)
    `WORKER_DATABASE_URL` on the `worker` service. On boot the worker lists organizations with the
    User key, computes the CSD upload key pair and publishes `cfdi_platform`. A refused key
@@ -242,6 +243,53 @@ Recovery (`server/cfdi/recovery.ts`):
   global's document key, as the builder numbers its parts; `cfdi_documents_period` is unique per
   (mode, period, part) (CFDI-R2-5).
 
+## Corrections, deadlines and recovery (second-opinion hardening, LD-33)
+
+- **Tickets freed by a cancellation always return to a CFDI** (MONEY-2, SAT-1). `onCanceled`
+  enqueues a forced build (`cfdi_global {periodKey, force}`) of each built or empty period of the
+  released tickets, whatever its age (the tick's late sweep looks back only 62 days); a ticket of
+  a period still open waits for its normal build, and a motive-03 cancellation waits a day so the
+  refund recorded with it nets the ticket first (SAT-5). A closed period with a ticket in no CFDI
+  (on or after the mode's start, with a net amount) shows **overdue** with **Emitir ahora**,
+  counts in Hoy's overdue globals and alerts once. A ticket from before CFDI started belongs to no
+  period: its invoice's cancel dialog says so (`preStart`).
+- **CFF art. 29-A** (SAT-3). A CFDI can be canceled only until the month the annual return of its
+  year is due: March (persona moral, 12-character RFC) or April (persona física) of the next
+  year, in the restaurant's timezone (`cancellationDeadline`). Past it, cancel, substitute and
+  "request again" answer `cfdi_cancel_deadline_passed` and the register states the deadline. A
+  ticket in a global past its deadline is invoiced by **route III** of the Guía de llenado del
+  CFDI global (Apéndice 2): a credit note to the global for the ticket's net amount (related 01,
+  S01, the ticket's FormaPago; `credit_ticket_id`), then the waiting nominative invoice, which
+  takes the ticket from the global once the note is valid ("Nota de crédito a la global y
+  facturar"). A failed note fails the invoice (`cfdi_global_credit_failed`); a refund decided
+  meanwhile waits (`cfdi_parent_credit_open`).
+- **Credit notes are corrected, never just canceled** (MONEY-1, SAT-2). Staff cannot cancel an
+  egreso with 02/03 (`cfdi_not_cancellable`). **Sustituir…** on a credit note (managers,
+  step-up) issues a new one for the same refund and parent with the chosen FormaPago, related 01
+  to the parent and 04 to the old note, which is then canceled with motive 01; a provider refusal
+  leaves both valid and counts as a rejected substitution. A canceled credit note no longer
+  credits its refund, and a refund whose ticket a substitute takes is decided again against it
+  (R4-2).
+- **Substitutes and their cancellations** (R4-1). A document named by an open motive-01
+  cancellation cannot itself be canceled or substituted (`cfdi_substitution_in_progress`); a
+  motive-01 cancellation whose substitute failed or was canceled fails (`cfdi_substitute_failed`)
+  instead of waiting, recovery fails one left queued, and a ticket is handed only to a substitute
+  that is still valid with no cancellation of its own.
+- **Retries read the provider first** (WORKER-1, WORKER-2). `cfdi_cancel` and `cfdi_reissue` read
+  the invoice before sending DELETE again after an attempt that may have reached SAT (a retry, a
+  lost lease, a `cancel_unknown` event) and check a permanent refusal against the invoice's real
+  state; a stamp commits `stamp_sent` before POST, and a later attempt adopts by external_id
+  before the legal sync or any other precondition, never failing a document that may already be
+  a valid CFDI. A cancellation completes under its document key, the key `cfdi_refund` decides
+  under.
+- **CSD boxes are always wiped** (SECRETS-1, WORKER-3). Uploads wait for the organization to
+  exist at Facturapi (`cfdi_not_ready`); the job's last attempt rejects instead of going dead; the
+  tick rejects any upload left queued or processing 30 minutes with no live job
+  (`cfdi_csd_abandoned`), paused restaurants included.
+- **RESICO** (SAT-4, UX-1). A restaurant that becomes 626 moves to monthly globals from the first
+  of next month (the tick stores the pending change) and a save is coerced to monthly, never
+  refused.
+
 ## Global periods
 
 Membership is the ticket's fiscal `business_date` (decision D5, binding). A period is built at
@@ -301,7 +349,13 @@ builds; docs/RUNBOOK.md).
 `{origin}/f/{CODE}` (the printed QR) and `{origin}/factura` render the lazy
 `SelfInvoicePortal` outside the staff app, without the service worker. Lookup, submission, access
 and status are limited per IP (30, 6, 10 and 60 per minute; key `clientIp`, IPv6 /56) and to 5
-submissions per ticket per 24 h. Downloads need the RFC used, through 15-minute download tokens;
+submissions per ticket per 24 h (failures that are the restaurant's, such as its certificate or
+the provider, do not count). A failed request offers **Corregir mis datos** only when the
+customer can fix the data (`receptorFixable`); otherwise it says the restaurant could not issue
+it, with its contact. A customer who comes back sees why their last request failed, and the
+restaurant counts such failures in its attention badge and Hoy. An expired certificate (or a
+missing one in live mode) closes self-invoicing. Downloads appear once the PDF and XML are stored
+(`filesReady`), and each download asks for a fresh token. Downloads need the RFC used, through 15-minute download tokens;
 request links last `CFDI_INVOICE_LINK_EXPIRY_HOURS`. Account 031 fills the privacy-notice anchor
 in `server/cfdi/portal.ts`.
 
@@ -325,10 +379,13 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_acuse_unavailable` | El acuse de cancelación aún no está disponible. |
 | `cfdi_attempts_exhausted` | Se agotaron los reintentos automáticos. Usa Reintentar en Facturas emitidas. |
 | `cfdi_base_url_not_allowed` | Configuración inválida: la dirección de Facturapi no está permitida. |
+| `cfdi_cancel_deadline_passed` | El SAT ya no permite cancelar este CFDI: el plazo del artículo 29-A del CFF (hasta el mes de la declaración anual del ejercicio en que se emitió) venció. |
 | `cfdi_cancel_in_progress` | Ya hay una cancelación en proceso para esta factura. |
 | `cfdi_cancel_rejected_provider` | Facturapi o el SAT rechazaron la cancelación. Revisa el detalle. |
 | `cfdi_cancellation_in_progress` | Ya hay una cancelación en proceso para esta factura. |
 | `cfdi_card_form_required` | Indica si el pago con tarjeta fue de crédito o débito. |
+| `cfdi_credit_note_parent_not_valid` | La factura a la que corresponde esta nota de crédito ya no está vigente o se está cancelando; no se puede sustituir. |
+| `cfdi_csd_abandoned` | El certificado no se llegó a procesar y se borró. Súbelo de nuevo. |
 | `cfdi_csd_expired` | El certificado está vencido. Tramita un nuevo CSD en el portal del SAT. |
 | `cfdi_csd_invalid` | El certificado o la clave no son válidos o están dañados. |
 | `cfdi_csd_is_fiel` | Este archivo es tu e.firma (FIEL), no un CSD. |
@@ -349,9 +406,10 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_file_not_ready` | El archivo aún no está disponible. Intenta en unos segundos. |
 | `cfdi_fiscal_profile_incomplete` | Completa los datos fiscales del restaurante antes de activar la facturación. |
 | `cfdi_generic_rfc` | Para público en general no se emite factura individual: el ticket se incluye en la factura global. |
+| `cfdi_global_credit_failed` | No se pudo emitir la nota de crédito a la factura global; la factura del cliente no se emitió. Intenta de nuevo. |
 | `cfdi_global_error` | No se pudo preparar la factura global. Lo reintentaremos automáticamente. |
-| `cfdi_global_in_progress` | La factura global de este periodo se está emitiendo. Intenta en unos minutos. |
 | `cfdi_global_has_credit_notes` | La factura global de este ticket tiene notas de crédito vigentes; cancélalas antes de sustituirla. |
+| `cfdi_global_in_progress` | La factura global de este periodo se está emitiendo. Intenta en unos minutos. |
 | `cfdi_has_credit_notes` | Cancela primero las notas de crédito relacionadas. |
 | `cfdi_invalid_email` | Escribe un correo electrónico válido. |
 | `cfdi_invalid_legal_name` | Escribe el nombre o razón social (hasta 254 caracteres). |
@@ -370,6 +428,7 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_live_not_enabled` | El modo real no está habilitado en la plataforma. |
 | `cfdi_live_requirements` | Aún faltan requisitos para el modo real. Revisa la lista. |
 | `cfdi_mode_mismatch` | La respuesta de Facturapi no corresponde al modo (prueba/real). No se registró. |
+| `cfdi_not_cancellable` | Una nota de crédito no se cancela sola: corrígela con Sustituir (se emite otra y esta se cancela con el motivo 01). |
 | `cfdi_not_ready` | La organización emisora aún no está lista. Revisa Ajustes → Facturación electrónica. |
 | `cfdi_not_retryable` | Este documento no se puede reintentar. |
 | `cfdi_not_substitutable` | Solo las facturas a clientes se pueden sustituir. |
@@ -381,6 +440,7 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_parent_cancel_open` | La factura original tiene una cancelación en curso; la nota de crédito espera el resultado. |
 | `cfdi_parent_canceling` | La factura original está en cancelación; la nota de crédito espera el resultado. |
 | `cfdi_parent_changed` | El ticket pasó a otra factura; la nota de crédito se decide de nuevo en unos minutos. |
+| `cfdi_parent_credit_open` | La factura global tiene en curso una nota de crédito por este ticket; el reembolso se decide después. |
 | `cfdi_parent_not_valid` | La factura original aún se está timbrando; la nota de crédito se emitirá después. |
 | `cfdi_parent_receptor_missing` | La factura original no tiene receptor; no se puede emitir la nota de crédito. |
 | `cfdi_period_not_closed` | Ese periodo aún no cierra. |
@@ -422,6 +482,7 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_substitute_invalid` | Facturapi no aceptó la factura sustituta. La original sigue vigente. |
 | `cfdi_substitute_missing` | Esta factura no tiene una sustituta vigente; cancélala con el motivo 02 o 03. |
 | `cfdi_substitute_pending` | La factura sustituta aún se está timbrando. |
+| `cfdi_substitution_in_progress` | Esta factura sustituye a otra cuya cancelación sigue en proceso; espera a que termine antes de cancelarla. |
 | `cfdi_substitution_pending` | Esta factura ya tiene una sustituta que espera su cancelación: vuelve a solicitar la cancelación o cancela la sustituta (motivo 02) antes de sustituirla otra vez. |
 | `cfdi_ticket_already_invoiced` | Este ticket ya tiene factura. |
 | `cfdi_ticket_before_start` | Este ticket es anterior al inicio de la facturación. Confirma que no está en otra factura global. |
@@ -447,7 +508,7 @@ redeclared.
 | Command | Covers |
 | --- | --- |
 | `npm test` | `tests/cfdi.test.ts` (builders, rounding proof, XML parser, error classifier), `tests/cfdi-facturapi-contract.test.ts` (documented API), `tests/cfdi-facturapi-fake.test.ts`, `tests/cfdi-shared.test.ts` (receptor rules, periods, deadlines, payment forms, settings), `tests/cfdi-resico.test.ts`, `tests/cfdi-secrets.test.ts` (vault, upload box, CSD inspection, config, redaction), `tests/cfdi-jobs.test.ts` (kinds, limits, retry, dedupe keys), `tests/cfdi-portal-http.test.ts` (portal limiters over HTTP), `tests/cfdi-client.test.ts` (receptor form, printed block, alerts, ticket status, order actions), `tests/import-graph.test.ts` (process boundary), `tests/cfdi-merge-gate.test.ts` (no compat shim returns; the refund hook and `refunds.method`), `tests/cfdi-locks.test.ts` (advisory key classes and their order inside LO-3) |
-| `npm run test:db:cfdi` | checks through the worker login and the in-process fake, against the real 027/028 tables: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos (including fiscal's `recordRefundTax` hook and the card/cash FormaPago from `refunds.method`), substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, and the EXPLAINs of the running-lease index |
+| `npm run test:db:cfdi` | checks through the worker login and the in-process fake, against the real 027/028 tables: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos (including fiscal's `recordRefundTax` hook and the card/cash FormaPago from `refunds.method`), substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, the EXPLAINs of the running-lease index, and the second-opinion checks (lost cancel/reissue/stamp answers read back, CSD boxes always wiped, motive-01 cancellations whose substitute ended, a cancellation completing under its document key, credit-note corrections, refunds re-decided on hand-over, re-globalization after old cancellations and overdue periods, the CFF 29-A deadline and route III, RESICO coercion, portal failures and file readiness, and the cheap lows) |
 | `npx playwright test tests/browser/cfdi.spec.ts` | the panel before activation and the portal (always); activation + CSD, staff invoice + cancel, portal self-invoice (they need the worker with the fake; CI starts both, a local run without the worker skips only these three) |
 | `npm run test:facturapi:sandbox` | opt-in, `FACTURAPI_TEST_KEY` only, official URL, test mode; `RECORD=1` rewrites fixtures as `recorded@<date>` (not run: no key) |
 
@@ -514,13 +575,23 @@ supplies the test key. The accountant confirms D4, D5, D11 and the RESICO retent
   SAT's Apéndice 2 egreso examples have none), the undocumented `idempotency_key_in_use` status
   and the receptor test identity.
 - **Live qualification** with a real CSD and production approval.
+- **Second-opinion items not done** (lows unless noted; LD-33 "lows when cheap"): a failure
+  email to the portal customer (UX-3's last part: no transactional email channel exists for a
+  document that never stamped); a durable per-ticket cap on portal access attempts (SECRETS-3,
+  the masked RFC is no longer shown before the check); rotating a restaurant's own Facturapi
+  keys (SECRETS-4); redacting receptor data of never-stamped requests (SECRETS-7, account's
+  ARCO tooling); relating a supplementary part to a canceled global with 04 (SAT-6); the
+  self-invoicing deadline at the end of the business day rather than the calendar day (SAT-7);
+  credit-note decisions deferred, not dropped, while CFDI is paused (WORKER-5); refreshing the
+  status store when settings change on another device (UX-7); the RESICO note in the dialogs
+  (UX-17); test-mode QR on real receipts (UX-13, a lead decision).
 
 ## Sources
 
 - Facturapi OpenAPI v2 and guides: FacturAPI/facturapi-docs commit
   `1c2e617776da4600ce3bac02a6aab6b0b3fcc88a` (2026-09-19); Node SDK types (Context7
   `/facturapi/facturapi-node`).
-- SAT Anexo 20 (CFDI 4.0), "Guía de llenado del CFDI global", cancellation FAQ 2026; RMF
-  2.7.1.21; LISR art. 113-J.
+- SAT Anexo 20 (CFDI 4.0), "Guía de llenado del CFDI global" (Apéndice 2, routes I and III),
+  cancellation FAQ 2026; RMF 2.7.1.21; CFF art. 29-A (cancellation deadline); LISR art. 113-J.
 - zod 4.3.6 (Context7 `/colinhacks/zod`), jose 6 (JWE/ECDH-ES), express-rate-limit 8
   (`ipKeyGenerator`), qrcode.react 4.2.0 (Context7 `/zpao/qrcode.react`).
