@@ -84,10 +84,15 @@ needs `DEMO_TENANT_ID=10000000-0000-4000-8000-000000000001`,
 suites sign in through the demo form and fast-forward the clock past the
 default auto-lock); `scripts/compiled-local.sh` sets them:
 
-The legal and account browser suites expect published legal documents: start
-the server with the fictional CI set of `tests/fixtures/legal-ci.ts` (the
-`LEGAL_*` and `SUPPORT_*` values, as `qualification.yml` does on its browser
-step). Never use those values outside tests.
+The legal, account, landing and owner browser suites expect published legal
+documents: start the server with the fictional CI set, as `qualification.yml`
+does on its browser step. `scripts/compiled-local.sh` sources
+`tests/fixtures/legal-ci.sh` (the `LEGAL_*` and `SUPPORT_*` literals of
+`tests/fixtures/legal-ci.ts` plus `LEGAL_UNPUBLISHED_SIGNUP=allow`); for any
+other compiled server, run `. tests/fixtures/legal-ci.sh` in the shell that
+starts it. `.env.example` lists the same values as commented, test-only lines.
+The DB suites pass their own legal configuration, so the set in `.env` cannot
+change them. Never use those values outside tests.
 
 ```sh
 npx playwright install chromium

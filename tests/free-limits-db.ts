@@ -130,12 +130,17 @@ try {
     /owner_role_reserved/,
   );
   const invite = await withOwner(sql, cookie, undefined, (tx, a) =>
-    createInvitation(tx, a.id, {
-      operationId: randomUUID(),
-      tenantId,
-      email: "free-invite@example.com",
-      role: "cashier",
-    }),
+    createInvitation(
+      tx,
+      a.id,
+      {
+        operationId: randomUUID(),
+        tenantId,
+        email: "free-invite@example.com",
+        role: "cashier",
+      },
+      legal,
+    ),
   );
   const guest = await signInGoogleOwner(sql, {
     issuer: "https://accounts.google.com",
@@ -144,7 +149,12 @@ try {
   });
   await assert.rejects(
     withOwner(sql, guest, undefined, (tx, a) =>
-      acceptInvitation(tx, a, { token: invite.path.split("#invite=")[1] }),
+      acceptInvitation(
+        tx,
+        a,
+        { token: invite.path.split("#invite=")[1] },
+        legal,
+      ),
     ),
     /free_team_limit/,
   );
@@ -199,11 +209,16 @@ try {
     ),
   );
   const location = await withOwner(sql, cookie, undefined, (tx, a) =>
-    createAdditionalLocation(tx, a, {
-      ...input,
-      sourceTenantId: tenantId,
-      operationId: randomUUID(),
-    }),
+    createAdditionalLocation(
+      tx,
+      a,
+      {
+        ...input,
+        sourceTenantId: tenantId,
+        operationId: randomUUID(),
+      },
+      legal,
+    ),
   );
   await admin`update restaurants set activation_pending=false where id=${location.tenantId}`;
   await admin`update restaurant_entitlements set access_until=now()-interval '1 second' where tenant_id=${tenantId}`;
@@ -306,7 +321,7 @@ try {
     /invalid_selection/,
   );
   await withOwner(sql, cookie, undefined, (tx, a) =>
-    selectFreeLocation(tx, a.id, location.tenantId),
+    selectFreeLocation(tx, a.id, location.tenantId, legal),
   );
   // account (031, GAP-1): the drawer opened above on otherDevice keeps that
   // register selling (drawer continuation) until it closes; without an open

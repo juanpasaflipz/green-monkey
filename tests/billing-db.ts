@@ -169,15 +169,20 @@ try {
   assert.equal(event.n, 1);
   assert.equal(event.processed, true);
   const location = await withOwner(app, cookies[0], undefined, (tx, account) =>
-    createAdditionalLocation(tx, account, {
-      operationId: randomUUID(),
-      sourceTenantId: tenants[0],
-      restaurantName: "Additional billing fixture",
-      currency: "MXN",
-      timezone: "America/Mexico_City",
-      cutoff: 240,
-      openingDays: [1, 2, 3, 4, 5, 6, 7],
-    }),
+    createAdditionalLocation(
+      tx,
+      account,
+      {
+        operationId: randomUUID(),
+        sourceTenantId: tenants[0],
+        restaurantName: "Additional billing fixture",
+        currency: "MXN",
+        timezone: "America/Mexico_City",
+        cutoff: 240,
+        openingDays: [1, 2, 3, 4, 5, 6, 7],
+      },
+      legal,
+    ),
   );
   tenants.push(location.tenantId);
   await assert.rejects(

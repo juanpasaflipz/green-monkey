@@ -113,7 +113,12 @@ sign in; the POS is never affected.
 account-http steps of `qualification.yml`; the job sets
 `LEGAL_UNPUBLISHED_SIGNUP=allow` for everything else. These values are never
 copied to Railway. For local browser runs, start the compiled server with the
-same set.
+same set: `scripts/compiled-local.sh` sources `tests/fixtures/legal-ci.sh`, and
+any other start runs `. tests/fixtures/legal-ci.sh` first (`.env.example` lists
+the values as commented, test-only lines). `tests/legal-fixtures.test.ts` keeps
+the four copies equal and fails if a DB, HTTP or browser fixture calls a
+legal-gated function without an explicit legal configuration, so a published
+set in a local `.env` never changes a DB suite.
 
 ## Owners, co-owners and transfers
 
@@ -170,7 +175,15 @@ the organization until the new owner changes them; the console tells them to
 review linked devices, the Free selection and the billing email. Every step is
 an `account_events` row (owners see "Actividad de la cuenta"); a transfer
 started by support or by a recovery code is a critical banner for the current
-primary in the console and in the POS shell.
+primary in the console and in the POS shell. The primary's own pending transfer
+appears only in the console ("Transferencia pendiente a …"); the shell never
+shows it as a warning. The shell's owner block also reaches the primary's owner
+seat entered with its PIN on a shared terminal (resolved through the seat's
+active `owner_memberships` row, not only a Google entry), so the warning is seen
+wherever the primary works during the 24 h or 72 h hold; there the banner says
+to cancel from their own phone or computer, because terminals never open the
+account console (decision recorded for review finding ACC-5; spec §4.8 step 1
+only read `sessions.owner_account_id`).
 
 ## Recovery
 
@@ -307,6 +320,27 @@ account-center commands included). The console is never rendered on a
 terminal. Without an owner Google session the console answers
 `401 unauthorized`. Reads of the console overview share the owner routes'
 120/minute read budget; commands have their own 30/minute limit.
+
+## Merge notes (integration)
+
+- **Browser qualification needs the legal set.** From this merge the signup,
+  legal, account, landing and access-owned `owner.spec` browser tests need
+  published legal documents: under `NODE_ENV=production` an unpublished set
+  pauses signup. CI already sets it (`qualification.yml`: job-level
+  `LEGAL_UNPUBLISHED_SIGNUP=allow`, the fictional set on the browser and
+  account-http steps). Any other harness that starts the compiled server for
+  the browser suite (the integration qualification script, a track's browser
+  command) must start it after `. tests/fixtures/legal-ci.sh`, for example
+  `(. tests/fixtures/legal-ci.sh && PORT=… APP_URL=… NODE_ENV=production node build/server/index.js &)`.
+  Without it those 11 tests fail on the closed signup, not on a product bug.
+  The DB, HTTP and drain suites do not need it (account-http starts its own
+  servers with and without the set).
+- **Load smoke (LD-15 Q8).** The zero-`concurrent_update` assertion for
+  `/cash/open` under load belongs in `scripts/load/run-load.ts`, an ops file
+  account may not edit (LD-15 Q1): today the runner opens one drawer per tenant
+  before its load phase and its report lists every error by route and code.
+  Lead follow-up: open drawers during the load phase and fail the smoke on any
+  409 `concurrent_update` (ARCHITECTURE E5).
 
 ## Merge notes (cfdi 030)
 

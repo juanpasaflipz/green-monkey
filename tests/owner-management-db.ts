@@ -60,7 +60,7 @@ try {
   };
   await assert.rejects(
     withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-      createAdditionalLocation(tx, a, additional),
+      createAdditionalLocation(tx, a, additional, legal),
     ),
     /pro_required/,
   );
@@ -68,7 +68,7 @@ try {
   const locations = await Promise.all(
     Array.from({ length: 4 }, () =>
       withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-        createAdditionalLocation(tx, a, additional),
+        createAdditionalLocation(tx, a, additional, legal),
       ),
     ),
   );
@@ -76,19 +76,29 @@ try {
   tenants.push(locations[0].tenantId);
   await assert.rejects(
     withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-      createAdditionalLocation(tx, a, {
-        ...additional,
-        restaurantName: "Changed",
-      }),
+      createAdditionalLocation(
+        tx,
+        a,
+        {
+          ...additional,
+          restaurantName: "Changed",
+        },
+        legal,
+      ),
     ),
     /operation_conflict/,
   );
   await assert.rejects(
     withOwner(sql, cookies[2], undefined, (tx, a) =>
-      createAdditionalLocation(tx, a, {
-        ...additional,
-        operationId: randomUUID(),
-      }),
+      createAdditionalLocation(
+        tx,
+        a,
+        {
+          ...additional,
+          operationId: randomUUID(),
+        },
+        legal,
+      ),
     ),
     /forbidden/,
   );
@@ -152,13 +162,13 @@ try {
     role: "manager",
   };
   const invitation = await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-    createInvitation(tx, a.id, inviteBody),
+    createInvitation(tx, a.id, inviteBody, legal),
   );
   const token = invitation.path.split("#invite=")[1];
   assert.equal(
     (
       await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-        createInvitation(tx, a.id, inviteBody),
+        createInvitation(tx, a.id, inviteBody, legal),
       )
     ).path,
     invitation.path,
@@ -166,7 +176,7 @@ try {
   );
   await assert.rejects(
     withOwner(sql, cookies[2], undefined, (tx, a) =>
-      acceptInvitation(tx, a, { token }),
+      acceptInvitation(tx, a, { token }, legal),
     ),
     /invitation_unavailable/,
   );
@@ -184,7 +194,7 @@ try {
   });
   await assert.rejects(
     withOwner(sql, changed, undefined, (tx, a) =>
-      acceptInvitation(tx, a, { token }),
+      acceptInvitation(tx, a, { token }, legal),
     ),
     /invitation_unavailable/,
     "stored account email is not fresh provider proof",
@@ -192,7 +202,7 @@ try {
   const accepts = await Promise.all(
     Array.from({ length: 4 }, () =>
       withOwner(sql, cookies[1], undefined, (tx, a) =>
-        acceptInvitation(tx, a, { token }),
+        acceptInvitation(tx, a, { token }, legal),
       ),
     ),
   );
@@ -220,14 +230,24 @@ try {
     "invited account can create its own original restaurant",
   );
   const revoked = await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-    createInvitation(tx, a.id, { ...inviteBody, operationId: randomUUID() }),
+    createInvitation(
+      tx,
+      a.id,
+      { ...inviteBody, operationId: randomUUID() },
+      legal,
+    ),
   );
   await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
     revokeInvitation(tx, a.id, revoked.id),
   );
   await assert.rejects(
     withOwner(sql, cookies[1], undefined, (tx, a) =>
-      acceptInvitation(tx, a, { token: revoked.path.split("#invite=")[1] }),
+      acceptInvitation(
+        tx,
+        a,
+        { token: revoked.path.split("#invite=")[1] },
+        legal,
+      ),
     ),
     /invitation_unavailable/,
   );
