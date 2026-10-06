@@ -87,9 +87,10 @@ and `.env.example`).
 | `SAAS_TAX_MODE`, `SAAS_COLLECT_TAX_ID`, `SAAS_TAX_PROFILE_ENABLED` | no | web; `STRIPE_TAX_RATE_ID` is worker-only (see BILLING_IMPLEMENTATION) |
 
 `legalConfig()` (`server/legal.ts`) refuses empty or malformed values,
-brackets/braces, placeholder words (`replace`, `placeholder`, `example`,
-`changeme`, `tbd`, `todo`, `lorem`, `xxx`, `sample`, `dummy`, `acme`), example
-domains and reserved TLDs, and under `NODE_ENV=production` also
+brackets/braces, placeholder markers (anywhere: `replace`, `placeholder`,
+`changeme`, `lorem`, `xxx`; as whole words: `example`, `tbd`, `sample`,
+`dummy`, `acme`, and `TODO` in capitals only, so "Todos Santos" or "Comida para
+Todos" publish), example domains and reserved TLDs, and under `NODE_ENV=production` also
 test/demo words (`test`, `prueba`, `demo`, `fixture`, `ficticio`,
 `ficticia`). The documents are `published` only when every required value is
 valid; otherwise **no** entity value reaches a client. Startup logs

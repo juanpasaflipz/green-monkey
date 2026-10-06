@@ -44,9 +44,20 @@ export type LegalConfig = {
 const sha256 = (value: string) =>
   createHash("sha256").update(value).digest("hex");
 
-/** Placeholder words refused in every environment (LD-3). */
-const PLACEHOLDER =
-  /replace|placeholder|example|changeme|tbd|todo|lorem|xxx|sample|dummy|acme/i;
+/**
+ * Placeholder markers refused in every environment (LD-3). Tokens that never
+ * occur in a real name or address match anywhere; dictionary words match only
+ * as whole words, so "Todos Santos, B.C.S." or "Comida para Todos S.A. de C.V."
+ * publish (ACC-11). TODO is refused only in capitals: "todo" is Spanish.
+ */
+const PLACEHOLDER_TOKENS = /replace|placeholder|changeme|lorem|xxx/i;
+const PLACEHOLDER_WORDS =
+  /(?<![\p{L}\p{N}])(?:example|tbd|sample|dummy|acme)(?![\p{L}\p{N}])/iu;
+const PLACEHOLDER_MARKER = /(?<![\p{L}\p{N}])TODO(?![\p{L}\p{N}])/u;
+const placeholder = (value: string) =>
+  PLACEHOLDER_TOKENS.test(value) ||
+  PLACEHOLDER_WORDS.test(value) ||
+  PLACEHOLDER_MARKER.test(value);
 /** Fixture words refused in compiled/deployed processes (NODE_ENV=production). */
 const FIXTURE_WORDS = /\b(test|prueba|demo|fixture|ficticio|ficticia)\b/i;
 const EXAMPLE_DOMAIN = /@(?:[^@]+\.)?example\.(?:com|org|net)$/i;
@@ -92,7 +103,7 @@ export function legalConfig(env: NodeJS.ProcessEnv): LegalConfig {
     if (
       !check(raw) ||
       /[<>[\]{}]/.test(raw) ||
-      PLACEHOLDER.test(raw) ||
+      placeholder(raw) ||
       (strict && FIXTURE_WORDS.test(raw))
     ) {
       invalid.push(name);

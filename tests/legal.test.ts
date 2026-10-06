@@ -61,6 +61,37 @@ describe("legal configuration (FIT-12, LD-3)", () => {
     }
   });
 
+  it("refuses placeholder markers as whole words but publishes real Spanish names that contain them (ACC-11)", () => {
+    for (const [name, value] of [
+      ["LEGAL_ENTITY_NAME", "TODO"],
+      ["LEGAL_ENTITY_NAME", "TODO_RAZON_SOCIAL"],
+      ["LEGAL_ENTITY_NAME", "Nombre (TODO)"],
+      ["LEGAL_JURISDICTION", "tbd"],
+      ["LEGAL_ENTITY_ADDRESS", "Sample Street 1, Ciudad de México"],
+      ["LEGAL_ENTITY_NAME", "Dummy Foods S.A. de C.V."],
+      ["LEGAL_ENTITY_NAME", "XXXXX S.A. de C.V."],
+      ["LEGAL_ENTITY_NAME", "Restaurantes CHANGEME S.A."],
+    ] as const) {
+      const c = legalConfig({ ...valid, ...production, [name]: value });
+      expect(c.status, value).toBe("unpublished");
+      expect(c.invalid, value).toContain(name);
+    }
+    for (const [name, value] of [
+      [
+        "LEGAL_ENTITY_ADDRESS",
+        "Calle Hidalgo 5, Centro, 23305 Todos Santos, B.C.S.",
+      ],
+      ["LEGAL_ENTITY_NAME", "Comida para Todos S.A. de C.V."],
+      ["LEGAL_ENTITY_NAME", "Todo Fresco S.A. de C.V."],
+      ["LEGAL_ENTITY_NAME", "Sacmex Alimentos S.A. de C.V."],
+      ["LEGAL_JURISDICTION", "Todos Santos, Baja California Sur"],
+    ] as const) {
+      const c = legalConfig({ ...valid, ...production, [name]: value });
+      expect(c.invalid, value).toEqual([]);
+      expect(c.status, value).toBe("published");
+    }
+  });
+
   it("refuses test/demo words only in production", () => {
     const demo = { ...valid, LEGAL_ENTITY_NAME: "Demo Foods S.A. de C.V." };
     expect(legalConfig(demo).status).toBe("published");
