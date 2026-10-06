@@ -595,6 +595,11 @@ invitation normally.
      in both processor lists in both languages, and checks that the
      official endpoint is Facturapi's domain; a new provider is a material
      DPA change (15 days' notice, "How to publish a new version").
+  6. **Second absorb (4ef8941, LD-39):** integration's `armNextTick` is kept
+     for the CFDI tick chain (this track hit the same R3/INT-7 failure in the
+     hour before a six-hour UTC boundary and dropped its own identical fix).
+     cfdi-db 7b now counts advisory waiters in its own database only: locally
+     every worktree shares one server, and `pg_locks` spans all of it.
 - **Lock scanner units.** The account-center routes pass their handlers
   inline (`router.post(path, limiter, (req, res, next) => answer(…))`), so the
   scanner checks each request as its own unit; the earlier
