@@ -60,3 +60,12 @@ END $$;
 GRANT USAGE ON SCHEMA public TO gm_jobs_worker;
 GRANT SELECT,INSERT ON jobs TO gm_jobs_worker;
 GRANT UPDATE(state,attempts,next_at,lease_until,error_code) ON jobs TO gm_jobs_worker;
+-- 032 public-ordering
+-- No DELETE on any of the four tables. A hold's diner request and a link's
+-- identity stay immutable (column grants plus the 032 transition triggers).
+-- Nothing for the worker, support or backup roles.
+GRANT SELECT,INSERT ON public_ordering_settings,public_links,public_hold_numbers,public_order_holds TO gm_app;
+GRANT UPDATE(paused,table_policy,counter_policy,hold_minutes,max_order_total,version,updated_at,updated_by) ON public_ordering_settings TO gm_app;
+GRANT UPDATE(label,revoked_at,revoked_by,revoke_reason) ON public_links TO gm_app;
+GRANT UPDATE(value) ON public_hold_numbers TO gm_app;
+GRANT UPDATE(state,decided_at,decided_by,reject_reason,order_id,order_round,excluded_line_ids,paid_at_accept,policy_override) ON public_order_holds TO gm_app;

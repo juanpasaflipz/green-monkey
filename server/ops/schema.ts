@@ -190,9 +190,23 @@ async function applyNonTransactional(
     // before CREATE INDEX CONCURRENTLY) because a failure leaves earlier ones.
     for (const statement of splitStatements(file.body))
       await reserved.unsafe(statement);
-    if (beforeRecord)
-      await reserved.begin((raw) => beforeRecord(raw as unknown as Tx));
-    await reserved`insert into schema_migrations(name,hash) values(${file.name},${file.hash})`;
+    if (!beforeRecord) {
+      await reserved`insert into schema_migrations(name,hash) values(${file.name},${file.hash})`;
+      return true;
+    }
+    // A reserved postgres.js connection has no begin() (postgres 3.4.8), so
+    // the hook and the registry row share one explicit transaction on this
+    // connection: a failing hook records nothing and the file is re-run
+    // (every no-transaction statement is idempotent).
+    await reserved`begin`;
+    try {
+      await beforeRecord(reserved as unknown as Tx);
+      await reserved`insert into schema_migrations(name,hash) values(${file.name},${file.hash})`;
+      await reserved`commit`;
+    } catch (error) {
+      await reserved`rollback`.catch(() => {});
+      throw error;
+    }
     return true;
   } finally {
     try {
