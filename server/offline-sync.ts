@@ -1069,7 +1069,7 @@ export async function financialRecovery(
   // Financial recovery is deliberately not a reconstructed fulfillment order.
   // Keep the claimed source lines in audit; do not invent historical unit prices,
   // repeat kitchen dispatch, or deduct current recipes from stock.
-  await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,state,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${lease.employee_id},null,${order?.mode ?? "takeaway"},${order?.name ?? ""},${"Offline cash reconciliation: " + reason},'offline',${payment.amount},'recovery_pending',${tx.json(lease.restaurant_snapshot)})`;
+  await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,state,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${lease.employee_id},null,${order?.mode ?? "takeaway"},${order?.name ?? ""},${"Conciliación de efectivo sin conexión: " + reason},'offline',${payment.amount},'recovery_pending',${tx.json(lease.restaurant_snapshot)})`;
   // Global lock order (contract §3.14): the drawer after order_numbers and the
   // order, so a concurrent drawer close waits for this tender.
   const [cash] =

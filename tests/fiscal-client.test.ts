@@ -16,6 +16,7 @@ import type { Order, Session } from "../shared/domain";
 import {
   extractTax,
   orderTaxSummary,
+  RECOVERY_LINE_NAME,
   type FiscalContextView,
   type FiscalTicketView,
   type TicketRow,
@@ -78,6 +79,7 @@ const issuer = {
 const context: FiscalContextView = {
   version: 1,
   complete: true,
+  multipleBranches: false,
   currencySupported: true,
   issuer,
   tradeName: restaurant.name,
@@ -201,6 +203,10 @@ describe("the fiscal blocks of the printed ticket", () => {
     expect(fiscalDateTime(ticket.issuedAt, restaurant.timezone, "es")).toBe(
       "04/10/2026 14:32",
     );
+    // FISCAL-UI-10: the English screen copy names the month (never dd/MM next to US dates).
+    expect(fiscalDateTime(ticket.issuedAt, restaurant.timezone, "en")).toBe(
+      "Oct 4, 2026 14:32",
+    );
   });
 
   it("the razón social prints only when it differs from the trade name (accents and case ignored)", () => {
@@ -284,6 +290,80 @@ describe("the fiscal blocks of the printed ticket", () => {
     expect(check).toContain(`IVA 16% ${money(extractTax(9000, 1600).tax)}`);
     expect(check).not.toContain("RFC:");
     expect(check).not.toContain("Folio");
+  });
+
+  it("FISCAL-OFFLINE-4: a partial local payment (offline table service) says the folio comes when the check is settled, not at sync", () => {
+    const partial = render(
+      { state: "local", paid: 10000, fiscal: undefined },
+      { kind: "local", label: "Número provisional A-01" },
+    );
+    expect(partial).toContain(
+      "Comprobante de pago parcial. El ticket con folio se emite al liquidar la cuenta.",
+    );
+    expect(partial).not.toContain("Folio fiscal pendiente");
+  });
+
+  it("FISCAL-OFFLINE-1: a synced offline sale's ticket names its provisional number and sale time; the local receipt does not repeat it", () => {
+    const offline = {
+      provisionalNumber: "B-07",
+      soldAt: "2026-10-04T20:02:00.000Z",
+    };
+    const reprint = render({ offline }, { reprint: true });
+    expect(reprint).toContain(
+      `Venta sin conexión B-07 · ${fiscalDateTime(offline.soldAt, restaurant.timezone, "es")}`,
+    );
+    expect(reprint).toContain("Folio: A-000123");
+    expect(
+      render({ offline, state: "local", fiscal: undefined }, { kind: "local" }),
+    ).not.toContain("Venta sin conexión B-07");
+  });
+
+  it("FISCAL-OFFLINE-2: a recovery ticket whose order has no lines prints the ticket's frozen line (quantity and description)", () => {
+    const recovery: FiscalTicketView = {
+      ...ticket,
+      source: "recovery",
+      basis: "recovery_default",
+      gross: 25000,
+      grossBeforeDiscount: 25000,
+      tip: 0,
+      lines: [
+        {
+          lineId: null,
+          productId: null,
+          quantity: 1,
+          name: RECOVERY_LINE_NAME,
+          optionNames: [],
+          category: "iva16",
+          rateBps: 1600,
+          satProductKey: "90101501",
+          satUnitKey: "E48",
+          grossBeforeDiscount: 25000,
+          discount: 0,
+          gross: 25000,
+          baseBeforeDiscount: extractTax(25000, 1600).base,
+          discountBase: 0,
+          base: extractTax(25000, 1600).base,
+          tax: extractTax(25000, 1600).tax,
+        },
+      ],
+    };
+    const text = render({
+      lines: [],
+      total: 25000,
+      paid: 25000,
+      fiscal: { ticket: recovery, provisional: null, refunds: [] },
+    });
+    expect(text).toContain(`1 × ${RECOVERY_LINE_NAME.es} ${money(25000)}`);
+    // An order with its own lines prints them once, never the frozen copy as well.
+    expect(
+      render({
+        fiscal: {
+          ticket: { ...ticket, lines: recovery.lines },
+          provisional: null,
+          refunds: [],
+        },
+      }),
+    ).not.toContain(RECOVERY_LINE_NAME.es);
   });
 
   it("an incomplete profile prints 'Ticket sin datos fiscales del emisor.' in place of the issuer", () => {

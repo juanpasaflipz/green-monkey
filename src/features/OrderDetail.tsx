@@ -172,6 +172,19 @@ export function OrderDetail({
                 )}
               </>
             )}
+            {order.offline?.provisionalNumber && (
+              <>
+                <br />
+                {t("fiscalOfflineSale")
+                  .replace("{number}", order.offline.provisionalNumber)
+                  .replace(
+                    "{date}",
+                    new Date(order.offline.soldAt).toLocaleString(locale, {
+                      timeZone: zone,
+                    }),
+                  )}
+              </>
+            )}
           </p>
           <div className="row wrap">
             <Badge

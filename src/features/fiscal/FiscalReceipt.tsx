@@ -6,6 +6,7 @@
 import type { ReactNode } from "react";
 import type { Order } from "../../../shared/domain";
 import type { TaxGroup } from "../../../shared/fiscal";
+import { lineRemaining } from "../../../shared/settlement";
 import { strings, type Key } from "../../i18n";
 import { moneyFormatter, setReceiptSlots, type ReceiptSlot } from "../Receipt";
 import { fiscalRestaurant, useFiscalContext } from "./context";
@@ -36,7 +37,13 @@ function Amount({ label, amount }: { label: string; amount: string }) {
   );
 }
 
-/** Issuer, folio and date of issue, or why the receipt has no folio. Nothing on a pre-bill. */
+/**
+ * Issuer, folio and date of issue, or why the receipt has no folio. Nothing on a pre-bill. A
+ * synced offline sale names its provisional number and sale time, the only things on the
+ * customer's local receipt (FISCAL-OFFLINE-1). A ticket whose order has no lines left (a
+ * financial-only recovery) prints the ticket's frozen lines, so the comprobante always states
+ * quantity and description (FISCAL-OFFLINE-2).
+ */
 export function FiscalReceiptHeader({
   order,
   kind,
@@ -55,7 +62,10 @@ export function FiscalReceiptHeader({
   const status = ticket
     ? null
     : kind === "local"
-      ? t.fiscalReceiptPending
+      ? // A partial local payment (offline table service) issues no folio at sync.
+        order.paid < order.total
+        ? t.fiscalReceiptPartial
+        : t.fiscalReceiptPending
       : order.total > 0 && order.paid >= order.total
         ? t.fiscalReceiptNoFolio
         : order.paid > 0
@@ -71,7 +81,25 @@ export function FiscalReceiptHeader({
         .filter((part) => part.trim())
         .join(", ")
     : "";
-  if (!issuer && !known && !status) return null;
+  const offline =
+    kind !== "local" && order.offline?.provisionalNumber
+      ? fill(t.fiscalOfflineSale, {
+          number: order.offline.provisionalNumber,
+          date: fiscalDateTime(
+            order.offline.soldAt,
+            restaurant.timezone,
+            locale,
+          ),
+        })
+      : null;
+  const frozenLines =
+    ticket &&
+    ticket.lines.length > 0 &&
+    !order.lines.some((l) => lineRemaining(l).quantity > 0)
+      ? ticket.lines
+      : [];
+  const money = moneyFormatter(restaurant.currency, locale);
+  if (!issuer && !known && !status && !offline) return null;
   return (
     <div className="fiscal-header">
       {issuer ? (
@@ -108,7 +136,19 @@ export function FiscalReceiptHeader({
           </p>
         </>
       )}
+      {offline && <p className="fiscal-offline-sale">{offline}</p>}
       {status && <p className="fiscal-status">{status}</p>}
+      {frozenLines.length > 0 && (
+        <div className="fiscal-lines">
+          {frozenLines.map((l, i) => (
+            <Amount
+              key={l.lineId ?? i}
+              label={`${l.quantity} × ${l.name[locale]}`}
+              amount={money(l.gross)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

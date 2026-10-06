@@ -17,7 +17,7 @@ import {
   getOrders,
   recordPayment,
 } from "../server/orders.js";
-import { closeCheck, recordSettlement } from "../server/checks.js";
+import { closeCheck, listOrders, recordSettlement } from "../server/checks.js";
 import { voidLines } from "../server/voids.js";
 import { assignService } from "../server/service.js";
 import { refund } from "../server/operations.js";
@@ -38,6 +38,7 @@ import {
   listTickets,
   missingTicketCount,
   recordRefundTax,
+  REPAIR_BATCH,
   repairMissingTickets,
   saveFiscalProfile,
   ticketForCfdi,
@@ -250,6 +251,7 @@ async function offlineSession(
   f: Fixture,
   role: "owner" | "manager" | "cashier",
   device = 0,
+  leaseAge = "30 minutes",
 ): Promise<Session> {
   const id = randomUUID();
   await admin`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,offline_until,selling_authorized)
@@ -257,7 +259,7 @@ async function offlineSession(
   const [r] =
     await admin`select config_version from restaurants where id=${f.id}`;
   await admin`insert into offline_leases(tenant_id,session_id,employee_id,device_id,contract_version,issued_at,valid_until,selling_authorized,plan,configuration_version,restaurant_snapshot)
-    values(${f.id},${id},${f[role]},${f.devices[device]},1,now()-interval '30 minutes',now()+interval '4 hours',true,'pro',${r.config_version},${admin.json(restaurantOf(f))})`;
+    values(${f.id},${id},${f[role]},${f.devices[device]},1,now()-${leaseAge}::interval,now()+interval '4 hours',true,'pro',${r.config_version},${admin.json(restaurantOf(f))})`;
   return {
     ...session(f, role, device),
     id,
@@ -483,6 +485,19 @@ async function setupFixtures() {
     );
 }
 
+/** B's issuer: a fictional SAT test RFC at a real northern-border postal code (Tijuana). */
+const tijuana = {
+  rfc: "EKU9003173C9",
+  legalName: "ALIMENTOS FRONTERIZOS DE PRUEBA",
+  regime: "601",
+  postalCode: "22000",
+  address: {
+    street: "Av. Revolución 1234",
+    neighborhood: "Zona Centro",
+    municipality: "Tijuana",
+    state: "Baja California",
+  },
+};
 const profileBody = (
   version: number,
   over: Partial<{
@@ -491,6 +506,7 @@ const profileBody = (
     taxRegion: string;
     defaultTaxCategory: string;
     borderConfirmed: boolean;
+    multipleBranches: boolean;
   }> = {},
 ) => ({
   operationId: randomUUID(),
@@ -516,13 +532,14 @@ const profileBody = (
 
 try {
   await setupFixtures();
-  // B is a border restaurant whose products default to IVA 8%.
+  // B is a border restaurant whose products default to IVA 8%: the incentive needs its full
+  // identity at a border postal code (SAT-1, LD-25).
   await run(ownerB, (tx) =>
     saveFiscalProfile(
       tx,
       ownerB,
       profileBody(0, {
-        identity: null,
+        identity: tijuana,
         taxRegion: "border_north",
         defaultTaxCategory: "iva8",
         borderConfirmed: true,
@@ -952,10 +969,13 @@ try {
   await test("offline sync issues the ticket with the sale's business date; synced orders and rounds snapshot tax with the server context (border tenant, iva8 product)", async () => {
     offlineB = await offlineSession(B, "cashier");
     const before = await counter(B.id);
-    const record = offlineSale(B, offlineB, [
-      { product: P.frontera8 },
-      { product: P.fronteraDefault, quantity: 2 },
-    ]);
+    const record = {
+      ...offlineSale(B, offlineB, [
+        { product: P.frontera8 },
+        { product: P.fronteraDefault, quantity: 2 },
+      ]),
+      provisionalNumber: "Z9-731",
+    };
     const synced = await run(offlineB, (tx) =>
       syncOfflineRecord(tx, offlineB, record),
     );
@@ -984,6 +1004,18 @@ try {
       businessDate(synced.soldAt, timezone, cutoff),
       "the sale's business date",
     );
+    // FISCAL-OFFLINE-1: staff find the sale by the provisional number on the customer's
+    // local receipt, and the order carries it (and the sale time) for its reprints.
+    const found = await run(cashierB, (tx) =>
+      listOrders(tx, cashierB, { status: "all", date: order.d, q: "z9-731" }),
+    );
+    assert.deepEqual(
+      found.items.map((i) => i.id),
+      [synced.orderId],
+    );
+    const view = await read(cashierB, synced.orderId);
+    assert.equal(view.offline!.provisionalNumber, "Z9-731");
+    assert.equal(view.offline!.soldAt, synced.soldAt);
     const lines =
       await admin`select data from order_lines where tenant_id=${B.id} and order_id=${synced.orderId}`;
     assert.deepEqual(
@@ -1038,6 +1070,52 @@ try {
     await admin`update restaurants set offline_table_service=false where id=${B.id}`;
   });
 
+  await test("OFFLINE-6: an offline sale synced two days after it was sold gets its ticket on the sale's business date: in that day's summary, not in today's", async () => {
+    // The lease and the drawer were open when the sale happened.
+    const s = await offlineSession(A, "cashier", 1, "3 days");
+    await admin`update cash_sessions set opened_at=now()-interval '3 days' where id=${A.drawers[1]}`;
+    const soldAt = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    const record = {
+      ...offlineSale(A, s, [{ product: P.agua }], 1),
+      recordedAt: soldAt,
+      recordedAtDevice: soldAt,
+      provisionalNumber: "Y7-12",
+    };
+    const synced = await run(s, (tx) => syncOfflineRecord(tx, s, record));
+    const saleDay = businessDate(synced.soldAt, timezone, cutoff);
+    assert.notEqual(saleDay, today());
+    const [t] =
+      await admin`select number,series,business_date::text as d,issued_at from fiscal_tickets
+        where tenant_id=${A.id} and order_id=${synced.orderId}`;
+    assert.equal(t.d, saleDay, "the sale's business date");
+    assert.equal(
+      businessDate((t.issued_at as Date).toISOString(), timezone, cutoff),
+      today(),
+      "issued today",
+    );
+    const inRuns = (summary: Awaited<ReturnType<typeof fiscalSummary>>) =>
+      summary.tickets.series.some(
+        (r) =>
+          r.series === t.series &&
+          r.first <= Number(t.number) &&
+          Number(t.number) <= r.last,
+      );
+    assert.ok(
+      inRuns(
+        await run(managerA, (tx) =>
+          fiscalSummary(tx, managerA, { from: saleDay, to: saleDay }),
+        ),
+      ),
+    );
+    assert.ok(
+      !inRuns(
+        await run(managerA, (tx) =>
+          fiscalSummary(tx, managerA, { from: today(), to: today() }),
+        ),
+      ),
+    );
+  });
+
   await test("offline financial recovery issues a recovery_default ticket at the restaurant default category", async () => {
     const record = offlineSale(B, offlineB, [{ product: P.fronteraDefault }]);
     const recovered = await run(ownerB, (tx) =>
@@ -1048,6 +1126,11 @@ try {
       }),
     );
     assert.equal(recovered.state, "recovery_pending");
+    // FISCAL-OFFLINE-2: the order note prints on the Spanish comprobante.
+    assert.equal(
+      recovered.note,
+      "Conciliación de efectivo sin conexión: Efectivo contado en la caja original",
+    );
     const t = await ticketOf(B.id, recovered.id);
     assert.equal(t.source, "recovery");
     assert.equal(t.tax_basis, "recovery_default");
@@ -1357,7 +1440,7 @@ try {
     assert.equal(firstTickets[A.id], 1);
     assert.equal(firstTickets[B.id], 1);
     const bView = await run(ownerB, (tx) => getFiscalProfile(tx, ownerB));
-    assert.equal(bView.issuer, null);
+    assert.equal(bView.issuer!.postalCode, "22000");
     assert.equal(bView.taxRegion, "border_north");
   });
 
@@ -1390,7 +1473,51 @@ try {
       ],
       [{ ticketSeries: "A-1" }, "fiscal_invalid_series"],
       [{ defaultTaxCategory: "iva8" }, "fiscal_border_rate_not_allowed"],
-      [{ taxRegion: "border_south" }, "fiscal_border_confirmation_required"],
+      [
+        {
+          taxRegion: "border_south",
+          identity: { ...identity, postalCode: "30700" },
+        },
+        "fiscal_border_confirmation_required",
+      ],
+      // SAT-1 (LD-25): the incentive needs the issuer's identity and a postal code in a state
+      // of the chosen border region.
+      [
+        {
+          identity: null,
+          taxRegion: "border_north",
+          defaultTaxCategory: "iva8",
+          borderConfirmed: true,
+        },
+        "fiscal_border_identity_required",
+      ],
+      [
+        {
+          taxRegion: "border_north",
+          defaultTaxCategory: "iva8",
+          borderConfirmed: true,
+        },
+        "fiscal_border_postal_code",
+      ],
+      [
+        {
+          identity: { ...identity, postalCode: "22000" },
+          taxRegion: "border_south",
+          borderConfirmed: true,
+        },
+        "fiscal_border_postal_code",
+      ],
+      // SAT-2: several premises make the branch street, municipality and state mandatory.
+      [
+        {
+          multipleBranches: true,
+          identity: {
+            ...identity,
+            address: { ...identity.address, municipality: " " },
+          },
+        },
+        "fiscal_address_required",
+      ],
     ];
     for (const [over, code] of cases)
       await rejects(save(ownerA, profileBody(v, over as any)), code);
@@ -1415,7 +1542,7 @@ try {
     const kept = await save(
       ownerB,
       profileBody(bProfile.version, {
-        identity: null,
+        identity: tijuana,
         taxRegion: "border_north",
         defaultTaxCategory: "iva8",
         borderConfirmed: true,
@@ -1443,6 +1570,40 @@ try {
     assert.equal(auditRow.detail.after.identity.rfc, "EKU9003173C9");
   });
 
+  await test("SAT-2: a multi-branch RFC saves with its branch address, stays complete and prints it; the table refuses a border region without an RFC and a multi-branch profile without the address (SAT-1/SAT-2 backstop)", async () => {
+    const v = (await run(ownerA, (tx) => getFiscalProfile(tx, ownerA))).version;
+    const multi = await run(ownerA, (tx) =>
+      saveFiscalProfile(tx, ownerA, profileBody(v, { multipleBranches: true })),
+    );
+    assert.equal(multi.multipleBranches, true);
+    assert.equal(multi.complete, true);
+    const ctx = await run(cashierA, (tx) => fiscalContextView(tx, cashierA));
+    assert.equal(ctx.multipleBranches, true);
+    assert.equal(ctx.issuer!.address.municipality, "Cuauhtémoc");
+    // Rows written around the app.
+    await rejects(
+      asAdmin(
+        A.id,
+        (tx) =>
+          tx`update restaurant_fiscal_profiles set address=jsonb_set(address,'{state}','""') where tenant_id=${A.id}`,
+      ),
+      /check constraint/,
+    );
+    await rejects(
+      asAdmin(
+        B.id,
+        (tx) =>
+          tx`update restaurant_fiscal_profiles set rfc=null,legal_name=null,regime=null,postal_code=null
+            where tenant_id=${B.id}`,
+      ),
+      /check constraint/,
+    );
+    const single = await run(ownerA, (tx) =>
+      saveFiscalProfile(tx, ownerA, profileBody(multi.version)),
+    );
+    assert.equal(single.multipleBranches, false);
+  });
+
   await test("profile save does not change restaurants.config_version (offline leases stay valid)", async () => {
     const [before] =
       await admin`select config_version from restaurants where id=${A.id}`;
@@ -1461,12 +1622,15 @@ try {
     );
     assert.equal(view.ticketSeries, "B");
     assert.equal(view.lastFolio, null);
+    // FISCAL-UI-9: the panel still names the last folio, of the series used before.
+    assert.equal(view.previousFolio, String(old).padStart(6, "0"));
     const o = await newOrder(cashierA, [{ product: P.agua }]);
     const paid = await pay(cashierA, o);
     assert.equal(paid.fiscal!.ticket!.folio, "B-000001");
     assert.equal(await counter(A.id), old, "the old series is untouched");
     view = await run(ownerA, (tx) => getFiscalProfile(tx, ownerA));
     assert.equal(view.lastFolio, "B-000001");
+    assert.equal(view.previousFolio, null);
     v = view.version;
     await run(ownerA, (tx) =>
       saveFiscalProfile(tx, ownerA, profileBody(v, { ticketSeries: "" })),
@@ -1521,6 +1685,8 @@ try {
         tx,
         ownerA,
         profileBody(v, {
+          // SAT-1: a border region needs a border postal code.
+          identity: tijuana,
           taxRegion: "border_north",
           defaultTaxCategory: "iva8",
           borderConfirmed: true,
@@ -1612,6 +1778,111 @@ try {
     assert.equal(auditRow.detail.count, repaired.issued);
   });
 
+  /** Paid sales of A without a ticket (the kill switch is on while they are paid). */
+  async function unticketed(n: number) {
+    const made: Order[] = [];
+    for (let i = 0; i < n; i++)
+      made.push(await newOrder(cashierA, [{ product: P.agua }]));
+    process.env.FISCAL_TICKETS_ENABLED = "false";
+    try {
+      for (const o of made) await pay(cashierA, o);
+    } finally {
+      delete process.env.FISCAL_TICKETS_ENABLED;
+    }
+    return made;
+  }
+  /** Polls until some backend of this database waits on a row lock. */
+  async function lockWaiter() {
+    for (let i = 0; i < 500; i++) {
+      const [{ n }] =
+        await admin`select count(*)::int as n from pg_stat_activity
+          where datname=current_database() and wait_event_type='Lock'`;
+      if (n > 0) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error("no backend waited on a lock");
+  }
+
+  await test("CONCURRENCY-1: the repair holds the folio counter (LO-12) for two statements per ticket plus one insert each for the category and audit rows; a payment concurrent with a full batch commits with no retry", async () => {
+    await unticketed(REPAIR_BATCH);
+    // Every statement the repair transaction runs from its first counter upsert to commit.
+    let counting = false;
+    let underCounter = 0;
+    const counted = postgres(runtime, {
+      max: 1,
+      debug: (_c, query) => {
+        if (/insert into fiscal_folio_counters/i.test(query)) counting = true;
+        if (counting && !/^\s*(commit|rollback)\b/i.test(query)) underCounter++;
+      },
+    });
+    try {
+      const repaired = await tenant(counted, A.id, (tx) =>
+        repairMissingTickets(tx, managerA, { operationId: randomUUID() }),
+      );
+      assert.equal(repaired.issued, REPAIR_BATCH);
+      // Counter + ticket per ticket, then the category rows, the issued audits, the repair
+      // audit and once()'s operations row.
+      assert.ok(
+        underCounter <= 2 * repaired.issued + 4,
+        `${underCounter} statements under LO-12 for ${repaired.issued} tickets`,
+      );
+      // The remaining count is read before the counter and still exact.
+      assert.equal(
+        repaired.remaining,
+        await run(ownerA, (tx) => missingTicketCount(tx)),
+      );
+    } finally {
+      await counted.end();
+    }
+    // A full batch and a settling payment on another device, concurrently.
+    await unticketed(REPAIR_BATCH);
+    const before = await counter(A.id);
+    const sale = await newOrder(cashierA2, [{ product: P.agua }]);
+    const [repaired, paid] = await noRetries("repair vs payment", () =>
+      Promise.all([
+        run(managerA, (tx) =>
+          repairMissingTickets(tx, managerA, { operationId: randomUUID() }),
+        ),
+        pay(cashierA2, sale),
+      ]),
+    );
+    assert.equal(repaired.issued, REPAIR_BATCH);
+    assert.ok(paid.fiscal!.ticket);
+    assert.equal(await counter(A.id), before + REPAIR_BATCH + 1);
+  });
+
+  await test("SAT-6: an order ticketed by another command while the repair waits for its lock is neither issued again nor reported as repaired", async () => {
+    const [o] = await unticketed(1);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let holding!: () => void;
+    const held = new Promise<void>((r) => (holding = r));
+    // A command that holds the order (as closeCheck or a payment would) and issues its ticket.
+    const issuing = run(cashierA, async (tx) => {
+      await tx`select id from orders where id=${o.id} for update`;
+      holding();
+      await gate;
+      return issueDueTicket(tx, cashierA, o.id);
+    });
+    await held;
+    const repairing = run(managerA, (tx) =>
+      repairMissingTickets(tx, managerA, { operationId: randomUUID() }),
+    );
+    await lockWaiter();
+    release();
+    const [ticket, repaired] = await noRetries("repair vs issuance", () =>
+      Promise.all([issuing, repairing]),
+    );
+    assert.equal((await ticketOf(A.id, o.id)).source, "sale");
+    assert.ok(
+      !repaired.folios.includes(ticket!.folio),
+      "not counted as repaired",
+    );
+    const [auditRow] =
+      await admin`select detail from audit where tenant_id=${A.id} and operation='fiscal.tickets.repaired' order by created_at desc limit 1`;
+    assert.ok(!auditRow.detail.folios.includes(ticket!.folio));
+  });
+
   await test("MON-6/FIT-7 (fiscal part): fiscalSummary for a date range equals Σ ticket taxes − Σ refund adjustments per category, by business date", async () => {
     const day = today();
     const summary = await run(managerA, (tx) =>
@@ -1638,9 +1909,17 @@ try {
     const [count] =
       await admin`select count(*)::int as n from fiscal_tickets where tenant_id=${A.id} and business_date=${day}`;
     assert.equal(summary.tickets.count, count.n);
+    // Contiguous runs per series (FISCAL-SAT-3): FIT-6's ticket dated 2099-01-02 splits
+    // today's run of the default series.
     assert.deepEqual(
-      summary.tickets.series.map((x) => x.series),
+      [...new Set(summary.tickets.series.map((x) => x.series))],
       ["", "B"],
+    );
+    for (const r of summary.tickets.series)
+      assert.equal(r.last - r.first + 1, r.count, JSON.stringify(r));
+    assert.equal(
+      summary.tickets.series.reduce((a, r) => a + r.count, 0),
+      count.n,
     );
     assert.equal(summary.missingTickets, 0);
     await rejects(
@@ -1661,6 +1940,55 @@ try {
       ),
       "forbidden",
     );
+  });
+
+  await test("SAT-3/SAT-4: the IVA summary lists contiguous folio runs, so a later folio dated an earlier day is its own run; a range's register sums only refunds recorded up to its last day", async () => {
+    const day = new Date(Date.parse(today() + "T00:00:00Z") - 10 * 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    // A sale of `day` paid now: its ticket takes today's next folio (as a late offline sync).
+    const earlier = async () => {
+      const o = await newOrder(cashierA, [{ product: P.agua }]);
+      await asAdmin(
+        A.id,
+        (tx) => tx`update orders set business_date=${day} where id=${o.id}`,
+      );
+      return pay(cashierA, o);
+    };
+    const first = await earlier();
+    const between = await pay(
+      cashierA,
+      await newOrder(cashierA, [{ product: P.agua }]),
+    );
+    const late = await earlier();
+    const t = (o: Order) => o.fiscal!.ticket!;
+    assert.equal(t(between).number, t(first).number + 1);
+    assert.equal(t(late).number, t(between).number + 1);
+    assert.equal(t(first).businessDate, day);
+    const summary = await run(managerA, (tx) =>
+      fiscalSummary(tx, managerA, { from: day, to: day }),
+    );
+    const series = t(first).series;
+    assert.deepEqual(summary.tickets.series, [
+      { series, first: t(first).number, last: t(first).number, count: 1 },
+      { series, first: t(late).number, last: t(late).number, count: 1 },
+    ]);
+    assert.equal(summary.tickets.count, 2);
+    // A refund recorded today on that day's ticket.
+    await legacyRefund(managerA, first.tenders[0].id, 1000);
+    const row = async (range: Record<string, string>) =>
+      (await run(managerA, (tx) => listTickets(tx, managerA, range))).rows.find(
+        (r) => r.orderId === first.id,
+      )!;
+    assert.equal((await row({ from: day, to: day })).refundGross, 0);
+    const untilToday = await row({ from: day, to: today() });
+    assert.equal(untilToday.refundGross, 1000);
+    assert.equal(
+      untilToday.refundTax,
+      extractTax(3500, 1600).tax - extractTax(2500, 1600).tax,
+    );
+    // One folio shows every refund of its ticket.
+    assert.equal((await row({ folio: t(first).folio })).refundGross, 1000);
   });
 
   await test("ticket register pages by issue time, finds one folio and reports refunds per ticket", async () => {
@@ -1795,6 +2123,29 @@ try {
     assert.equal(paid.fiscal!.ticket, null);
     assert.equal(await ticketOf(A.id, o.id), undefined);
     assert.equal(await run(ownerA, (tx) => missingTicketCount(tx)), before + 1);
+    // SAT-5: while the switch is still off the repair is refused before it locks any order,
+    // and the panel says issuance is paused.
+    process.env.FISCAL_TICKETS_ENABLED = "false";
+    try {
+      await rejects(
+        run(managerA, (tx) =>
+          repairMissingTickets(tx, managerA, { operationId: randomUUID() }),
+        ),
+        "fiscal_tickets_disabled",
+      );
+      assert.equal(
+        (await run(managerA, (tx) => getFiscalProfile(tx, managerA)))
+          .ticketsEnabled,
+        false,
+      );
+    } finally {
+      delete process.env.FISCAL_TICKETS_ENABLED;
+    }
+    assert.equal(
+      (await run(managerA, (tx) => getFiscalProfile(tx, managerA)))
+        .ticketsEnabled,
+      true,
+    );
     await run(managerA, (tx) =>
       repairMissingTickets(tx, managerA, { operationId: randomUUID() }),
     );
@@ -1813,11 +2164,15 @@ try {
     const [{ n }] =
       await admin`select count(*)::int as n from fiscal_adjustments where tenant_id=${C.id}`;
     assert.equal(n, 0);
-    assert.equal(
-      await run(ownerC, (tx) => missingTicketCount(tx)),
-      1,
-      "the missing-ticket count is currency-blind; the panel explains MXN",
+    // SAT-5: a non-MXN restaurant never issues tickets, so none is missing and the repair
+    // finds nothing to lock.
+    assert.equal(await run(ownerC, (tx) => missingTicketCount(tx)), 0);
+    const ownerCFresh = session(C, "owner");
+    const view = await run(ownerCFresh, (tx) =>
+      getFiscalProfile(tx, ownerCFresh),
     );
+    assert.equal(view.missingTickets, 0);
+    assert.equal(view.currencySupported, false);
   });
 
   await test("getOrders exposes order.fiscal for 1 and 10 ids with one extra statement", async () => {
@@ -2022,6 +2377,59 @@ try {
     assert.equal(await counter(A.id), value2);
   });
 
+  await test("CONCURRENCY-3: an IVA 8% product save and a switch back to the general region serialize on menu_state; the switch waits for the product and is refused", async () => {
+    let v = (await run(ownerA, (tx) => getFiscalProfile(tx, ownerA))).version;
+    const border = await run(ownerA, (tx) =>
+      saveFiscalProfile(
+        tx,
+        ownerA,
+        profileBody(v, {
+          identity: tijuana,
+          taxRegion: "border_north",
+          borderConfirmed: true,
+        }),
+      ),
+    );
+    try {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let holding!: () => void;
+      const held = new Promise<void>((r) => (holding = r));
+      // saveMenuProduct's order: menu_state, the region check, then the product row.
+      const productSave = run(managerA, async (tx) => {
+        await tx`insert into menu_state(tenant_id,revision) values(${A.id},1)
+          on conflict(tenant_id) do update set revision=menu_state.revision+1`;
+        await tx`update catalog set data=jsonb_set(data,'{fiscal}','{"taxCategory":"iva8"}'::jsonb) where id=${P.agua}`;
+        holding();
+        await gate;
+      });
+      await held;
+      const switching = run(ownerA, (tx) =>
+        saveFiscalProfile(tx, ownerA, profileBody(border.version)),
+      );
+      await lockWaiter();
+      release();
+      const [saved, refused] = await noRetries(
+        "product save vs region switch",
+        () => Promise.allSettled([productSave, switching]),
+      );
+      assert.equal(saved.status, "fulfilled");
+      assert.equal(refused.status, "rejected");
+      assert.equal(
+        (refused as PromiseRejectedResult).reason.code,
+        "fiscal_border_products_exist",
+      );
+    } finally {
+      await asAdmin(
+        A.id,
+        (tx) =>
+          tx`update catalog set data=jsonb_set(data,'{fiscal}','{"taxCategory":"iva16"}'::jsonb) where id=${P.agua}`,
+      );
+      v = (await run(ownerA, (tx) => getFiscalProfile(tx, ownerA))).version;
+      await run(ownerA, (tx) => saveFiscalProfile(tx, ownerA, profileBody(v)));
+    }
+  });
+
   await test("product save rejects iva8 outside a border region (fiscal_border_rate_not_allowed); a save without fiscal and the legacy catalog save keep the stored value; the version bumps on a tax change", async () => {
     const [doc] =
       await admin`select data from catalog where tenant_id=${A.id} and id=${P.cafe}`;
@@ -2203,49 +2611,52 @@ try {
     assert.deepEqual(again.groups, view.groups);
   });
 
-  await test("an item refund recorded before the ticket on a check that later grows leaves the ticket's net IVA within 1 centavo of extractTax(net) (P5)", async () => {
-    for (let i = 0; i < 5; i++) {
-      const o = await newOrder(
-        managerA,
-        [{ product: P.platillo, quantity: 2 }],
-        { mode: "dine_in", tableId: tablesA[5] },
-      );
-      const line = o.lines[0];
-      const part = await pay(managerA, o, 12345, { items: [`${line.id}:0`] });
-      const refunded = 1000 + 111 * i;
-      await run(managerA, async (tx) => {
+  await test("MONEY-1 (LD-25): no refund by amount or by item on an unticketed order with a balance due; voiding the unpaid units settles it, and the ticket and a later refund net to gross 0 and IVA 0", async () => {
+    // The second opinion's shape: 3 × Agua de jamaica, one unit paid and refunded before the
+    // ticket, the other two voided. Refunded against the provisional $105.00 the adjustment
+    // would carry IVA 482 while the $35.00 ticket carries 483: 1 centavo of IVA on gross 0.
+    const o = await newOrder(managerA, [{ product: P.agua, quantity: 3 }]);
+    const line = o.lines[0];
+    const part = await pay(managerA, o, 3500, { items: [`${line.id}:0`] });
+    const tender = part.tenders[0];
+    assert.equal(await ticketOf(A.id, o.id), undefined);
+    await rejects(
+      legacyRefund(managerA, tender.id, 3500),
+      "refund_balance_due",
+    );
+    // An item refund (discounts 028 records it through recordRefundTax) is refused the same way.
+    await rejects(
+      run(managerA, async (tx) => {
         const id = randomUUID();
         await tx`insert into refunds(tenant_id,id,tender_id,session_id,amount,reason,disposition,actor_id)
-          values(${A.id},${id},${part.tenders[0].id},${A.drawers[0]},${refunded},'Antes del ticket','discard',${A.manager})`;
-        await recordRefundTax(tx, managerA, id, [
-          { lineId: line.id, units: [0], gross: refunded },
+          values(${A.id},${id},${tender.id},${A.drawers[0]},3500,'Antes del ticket','discard',${A.manager})`;
+        return recordRefundTax(tx, managerA, id, [
+          { lineId: line.id, units: [0], gross: 3500 },
         ]);
-      });
-      const grown = await run(managerA, (tx) =>
-        addRound(tx, managerA, o.id, {
-          operationId: randomUUID(),
-          lines: [lineInput({ product: P.agua })],
-          mode: "dine_in",
-          tableId: tablesA[5],
-          name: "",
-          note: "",
-          channel: "pos",
-          expectedVersion: part.version,
-        }),
-      );
-      await pay(managerA, grown);
-      for (const g of await netOf(A.id, o.id))
-        assert.ok(
-          Math.abs(g.tax - extractTax(g.gross, rate(g.category)).tax) <= 1,
-          `P5 bound: ${JSON.stringify(g)}`,
-        );
-      await run(managerA, (tx) =>
-        closeCheck(tx, managerA, o.id, { operationId: randomUUID() }),
-      );
-    }
+      }),
+      "refund_balance_due",
+    );
+    const [money] =
+      await admin`select count(*)::int as n from refunds where tenant_id=${A.id} and tender_id=${tender.id}`;
+    assert.equal(money.n, 0, "no refund row");
+    const [adjusted] =
+      await admin`select count(*)::int as n from fiscal_adjustments where tenant_id=${A.id} and order_id=${o.id}`;
+    assert.equal(
+      adjusted.n,
+      0,
+      "no IVA adjustment against a provisional gross",
+    );
+    // Staff void the unpaid units instead: the check settles and gets its ticket.
+    const settled = await voidAs(ownerA, part, line.id, 2);
+    assert.equal(settled.fiscal!.ticket!.gross, 3500);
+    // Now the refund is against the ticket: gross 0 nets IVA 0 exactly.
+    await legacyRefund(managerA, tender.id, 3500);
+    assert.deepEqual(await netOf(A.id, o.id), [
+      { category: "iva16", gross: 0, tax: 0 },
+    ]);
   });
 
-  await test("refund business date: a batchless refund near the cutoff is dated businessDate(now)", async () => {
+  await test("refund business date: a batchless refund near the cutoff is dated by the refund row's created_at (MONEY-3)", async () => {
     // Move A's cutoff to one minute from now (restaurant time), so "now" is the
     // last minute of a business day; the session carries the same cutoff.
     const local = new Date(
@@ -2261,16 +2672,41 @@ try {
     try {
       const o = await newOrder(cashierNear, [{ product: P.agua }]);
       const paid = await pay(cashierNear, o);
-      const expected = businessDate(new Date().toISOString(), timezone, near);
       const after = await legacyRefund(s, paid.tenders[0].id, 500);
       const [row] =
-        await admin`select business_date::text as d from fiscal_adjustments where tenant_id=${A.id} and order_id=${o.id}`;
-      const now = businessDate(new Date().toISOString(), timezone, near);
-      assert.ok([expected, now].includes(row.d), `${row.d} vs ${expected}`);
+        await admin`select a.business_date::text as d,r.created_at from fiscal_adjustments a
+          join refunds r on r.tenant_id=a.tenant_id and r.id=a.refund_id
+          where a.tenant_id=${A.id} and a.order_id=${o.id}`;
+      assert.equal(
+        row.d,
+        businessDate((row.created_at as Date).toISOString(), timezone, near),
+        "the refund row's business date, not the clock when the tax was written",
+      );
       assert.equal(after.fiscal!.refunds[0].businessDate, row.d);
     } finally {
       await admin`update restaurants set cutoff=${cutoff} where id=${A.id}`;
     }
+  });
+
+  await test("MONEY-3: recordRefundTax dates the adjustment by its refund row's created_at, not by the clock when it runs", async () => {
+    const o = await newOrder(cashierA, [{ product: P.agua }]);
+    const paid = await pay(cashierA, o);
+    const view = await run(managerA, async (tx) => {
+      const id = randomUUID();
+      await tx`insert into refunds(tenant_id,id,tender_id,session_id,amount,reason,disposition,actor_id,created_at)
+        values(${A.id},${id},${paid.tenders[0].id},${A.drawers[0]},500,'Devolución tardía','discard',${A.manager},
+          now()-interval '2 days')`;
+      return recordRefundTax(tx, managerA, id);
+    });
+    const [row] =
+      await admin`select created_at from refunds where tenant_id=${A.id} and id=${view.refundId}`;
+    const expected = businessDate(
+      (row.created_at as Date).toISOString(),
+      timezone,
+      cutoff,
+    );
+    assert.notEqual(expected, today());
+    assert.equal(view.businessDate, expected);
   });
 
   console.log(`${checks} fiscal checks passed`);

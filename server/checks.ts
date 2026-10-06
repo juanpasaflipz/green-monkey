@@ -389,7 +389,9 @@ export async function listOrders(
       ${
         term
           ? tx`and (o.name ilike ${term} escape '\\' or t.name ilike ${term} escape '\\'
-                    or e.name ilike ${term} escape '\\' ${num !== null ? tx`or o.number = ${num}` : tx``})`
+                    or e.name ilike ${term} escape '\\' ${num !== null ? tx`or o.number = ${num}` : tx``}
+                    or exists (select 1 from offline_sync_records r where r.tenant_id=o.tenant_id
+                               and r.order_id=o.id and r.provisional_number ilike ${term} escape '\\'))`
           : tx``
       }
       ${cursor ? tx`and (o.created_at, o.id) < (${cursor.t}::text::timestamptz, ${cursor.i}::uuid)` : tx``}

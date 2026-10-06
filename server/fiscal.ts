@@ -42,9 +42,12 @@ import {
   type FiscalProfileView,
   type FiscalSummary,
   type FiscalTicketView,
+  type IssuerSnapshot,
   type RefundTaxScope,
   type RefundTaxView,
   type TaxCategory,
+  type TaxSummary,
+  type TicketLineSnapshot,
   type TicketRow,
 } from "../shared/fiscal.js";
 import {
@@ -80,6 +83,7 @@ function contextView(r: ProfileJoin): FiscalContextView {
   return {
     version: r.version ?? 0,
     complete: !!issuer,
+    multipleBranches: !!r.multiple_branches,
     currencySupported: r.currency === "MXN",
     issuer: issuer
       ? {
@@ -107,7 +111,7 @@ export async function fiscalContextView(
   permit(s, operators);
   const [r] =
     await tx`select r.name as trade_name,r.currency,p.rfc,p.legal_name,p.regime,p.postal_code,
-      p.address,p.ticket_series,p.tax_region,p.default_tax_category,p.version
+      p.address,p.ticket_series,p.tax_region,p.default_tax_category,p.multiple_branches,p.version
     from restaurants r left join restaurant_fiscal_profiles p on p.tenant_id=r.id
     where r.id=${s.tenantId}`;
   if (!r) throw new DomainError("not_found", 404);
@@ -122,10 +126,14 @@ export async function getFiscalProfile(
   permit(s, managers);
   const [r] =
     await tx`select r.name as trade_name,r.currency,p.rfc,p.legal_name,p.regime,p.postal_code,
-      p.address,p.ticket_series,p.tax_region,p.default_tax_category,p.version,
+      p.address,p.ticket_series,p.tax_region,p.default_tax_category,p.multiple_branches,p.version,
       p.border_confirmed_at,p.updated_at,e.name as updated_by_name,
       (select c.last_value from fiscal_folio_counters c
         where c.tenant_id=r.id and c.series=coalesce(p.ticket_series,'')) as last_value,
+      (select jsonb_build_object('series',c.series,'number',c.last_value) from fiscal_folio_counters c
+        join fiscal_tickets t on t.tenant_id=c.tenant_id and t.series=c.series and t.number=c.last_value
+        where c.tenant_id=r.id and c.series<>coalesce(p.ticket_series,'')
+        order by t.issued_at desc limit 1) as previous_folio,
       (select count(*)::int from catalog k where k.data->'fiscal'->>'taxCategory'='iva8'
         and not coalesce((k.data->>'archived')::boolean,false)) as iva8_products
     from restaurants r left join restaurant_fiscal_profiles p on p.tenant_id=r.id
@@ -135,11 +143,13 @@ export async function getFiscalProfile(
   const row = r as unknown as ProfileJoin & {
     updated_by_name: string | null;
     last_value: string | number | null;
+    previous_folio: { series: string; number: string | number } | null;
     iva8_products: number;
   };
   return {
     ...contextView(row),
     canEdit: s.role === "owner",
+    ticketsEnabled: enabled(),
     borderConfirmedAt: row.border_confirmed_at
       ? row.border_confirmed_at.toISOString()
       : null,
@@ -149,6 +159,14 @@ export async function getFiscalProfile(
       row.last_value === null
         ? null
         : formatFolio(row.ticket_series ?? "", Number(row.last_value)),
+    // FISCAL-UI-9: a new series has no folio yet; the last one of the series used before.
+    previousFolio:
+      row.last_value === null && row.previous_folio
+        ? formatFolio(
+            row.previous_folio.series,
+            Number(row.previous_folio.number),
+          )
+        : null,
     missingTickets: await missingTicketCount(tx),
     iva8Products: row.iva8_products,
   };
@@ -174,11 +192,17 @@ export async function saveFiscalProfile(
     await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + ":fiscal-profile"},922))`;
     const [row] =
       await tx`select rfc,legal_name,regime,postal_code,address,ticket_series,tax_region,
-        default_tax_category,border_confirmed_at,border_confirmed_by,version
+        default_tax_category,multiple_branches,border_confirmed_at,border_confirmed_by,version
       from restaurant_fiscal_profiles for update`;
     if ((row?.version ?? 0) !== p.expectedVersion)
       throw new DomainError("fiscal_profile_changed", 409);
     if (p.taxRegion === "general") {
+      // LO-3, after the profile row: product saves take menu_state before they read the
+      // region, so a concurrent IVA 8% product save is either counted here or sees the
+      // general region (FISCAL-CONCURRENCY-3). The no-op upsert locks the row even if no
+      // menu save created it yet.
+      await tx`insert into menu_state(tenant_id,revision) values(${s.tenantId},0)
+        on conflict(tenant_id) do update set revision=menu_state.revision`;
       const [products] =
         await tx`select count(*)::int as n from catalog where data->'fiscal'->>'taxCategory'='iva8'
           and not coalesce((data->>'archived')::boolean,false)`;
@@ -213,15 +237,17 @@ export async function saveFiscalProfile(
       default_tax_category: p.defaultTaxCategory,
     };
     await tx`insert into restaurant_fiscal_profiles(tenant_id,rfc,legal_name,regime,postal_code,address,
-        ticket_series,tax_region,default_tax_category,border_confirmed_at,border_confirmed_by,version,updated_by,updated_at)
+        ticket_series,tax_region,default_tax_category,border_confirmed_at,border_confirmed_by,multiple_branches,
+        version,updated_by,updated_at)
       values(${s.tenantId},${values.rfc},${values.legal_name},${values.regime},${values.postal_code},
         ${tx.json(values.address)},${values.ticket_series},${values.tax_region},${values.default_tax_category},
-        ${borderAt},${borderBy},1,${s.employeeId},now())
+        ${borderAt},${borderBy},${p.multipleBranches},1,${s.employeeId},now())
       on conflict (tenant_id) do update set rfc=excluded.rfc,legal_name=excluded.legal_name,
         regime=excluded.regime,postal_code=excluded.postal_code,address=excluded.address,
         ticket_series=excluded.ticket_series,tax_region=excluded.tax_region,
         default_tax_category=excluded.default_tax_category,
         border_confirmed_at=excluded.border_confirmed_at,border_confirmed_by=excluded.border_confirmed_by,
+        multiple_branches=excluded.multiple_branches,
         version=restaurant_fiscal_profiles.version+1,updated_by=excluded.updated_by,updated_at=now()`;
     const { operationId: _operationId, ...after } = p;
     await audit(tx, s, "fiscal.profile.saved", s.tenantId, {
@@ -235,6 +261,7 @@ export async function saveFiscalProfile(
             ticketSeries: row.ticket_series,
             taxRegion: row.tax_region,
             defaultTaxCategory: row.default_tax_category,
+            multipleBranches: row.multiple_branches,
             version: row.version,
           }
         : null,
@@ -274,7 +301,7 @@ export function newSelfInvoiceCode(bytes: Uint8Array = randomBytes(12)) {
 export async function issuerSnapshot(tx: Tx, s: Session) {
   const [r] =
     await tx`select r.name as trade_name,p.rfc,p.legal_name,p.regime,p.postal_code,p.address,
-      p.ticket_series,p.tax_region,p.default_tax_category
+      p.ticket_series,p.tax_region,p.default_tax_category,p.multiple_branches
     from restaurants r left join restaurant_fiscal_profiles p on p.tenant_id=r.id
     where r.id=${s.tenantId}`;
   return r ? issuerOf(r as unknown as ProfileRecord, r.trade_name) : null;
@@ -301,30 +328,40 @@ async function orderLines(tx: Tx, orderId: string): Promise<PricedLine[]> {
   );
 }
 
+/** Everything a ticket freezes, computed before the folio counter is taken. */
+type DueTicket = {
+  orderId: string;
+  source: FiscalTicketView["source"];
+  businessDate: string;
+  summary: TaxSummary;
+  payments: FiscalTicketView["payments"];
+  tip: number;
+  issuer: IssuerSnapshot | null;
+  series: string;
+  ticketLines: TicketLineSnapshot[];
+};
+
 /**
- * Issues the order's ticket when its balance first reaches zero with a positive total, in the
- * caller's transaction (the caller holds FOR UPDATE on the order). Idempotent: an existing
- * ticket is returned without touching the counter. Null for a zero total, an unpaid balance, a
- * non-MXN restaurant or the kill switch (FISCAL_TICKETS_ENABLED=false; repair issues later).
- * The folio counter (LO-12) is the last lock: nothing after it locks below.
+ * Reads and computes the order's ticket without taking the folio counter (no lock): its stored
+ * ticket, the ticket that is due, or null for a zero total, an unpaid balance or a non-MXN
+ * restaurant. The caller holds FOR UPDATE on the order.
  */
-export async function issueDueTicket(
+async function prepareTicket(
   tx: Tx,
-  s: Session,
   orderId: string,
-  source: "sale" | "recovery" | "repair" = "sale",
-): Promise<FiscalTicketView | null> {
-  if (!enabled()) return null;
+  source: DueTicket["source"],
+): Promise<{ ticket: FiscalTicketView | null } | { due: DueTicket } | null> {
   const [o] =
     await tx`select o.total,o.business_date::text as business_date,r.currency,r.name as trade_name,
       coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)::int as paid,
       (select f.id from fiscal_tickets f where f.tenant_id=o.tenant_id and f.order_id=o.id) as ticket_id,
-      p.rfc,p.legal_name,p.regime,p.postal_code,p.address,p.ticket_series,p.tax_region,p.default_tax_category
+      p.rfc,p.legal_name,p.regime,p.postal_code,p.address,p.ticket_series,p.tax_region,p.default_tax_category,
+      p.multiple_branches
     from orders o join restaurants r on r.id=o.tenant_id
     left join restaurant_fiscal_profiles p on p.tenant_id=o.tenant_id
     where o.id=${orderId}`;
   if (!o) throw new DomainError("not_found", 404);
-  if (o.ticket_id) return readTicket(tx, o.ticket_id);
+  if (o.ticket_id) return { ticket: await readTicket(tx, o.ticket_id) };
   if (o.total <= 0 || o.paid < o.total || o.currency !== "MXN") return null;
   const profile = o.tax_region ? (o as unknown as ProfileRecord) : null;
   const lines = await orderLines(tx, orderId);
@@ -337,7 +374,6 @@ export async function issueDueTicket(
     total: o.total,
     ctx,
   });
-  const summary = breakdown.summary;
   const tenders =
     await tx`select method,amount,tip,external_reference,created_at from tenders
       where order_id=${orderId} order by created_at,id`;
@@ -348,13 +384,33 @@ export async function issueDueTicket(
     reference: (t.external_reference as string | null) ?? null,
     at: (t.created_at as Date).toISOString(),
   }));
-  const tip = payments.reduce((a, p) => a + p.tip, 0);
-  const issuer = issuerOf(profile, o.trade_name);
-  const series = profile?.ticket_series ?? "";
-  const ticketLines = ticketLineSnapshots(lines, breakdown);
-  // LO-12, always last: a row lock and update (not a sequence), so a rollback restores it.
+  return {
+    due: {
+      orderId,
+      source,
+      businessDate: o.business_date,
+      summary: breakdown.summary,
+      payments,
+      tip: payments.reduce((a, p) => a + p.tip, 0),
+      issuer: issuerOf(profile, o.trade_name),
+      series: profile?.ticket_series ?? "",
+      ticketLines: ticketLineSnapshots(lines, breakdown),
+    },
+  };
+}
+
+/**
+ * LO-12: takes the series' next folio and inserts the ticket row, two statements (a row lock
+ * and update, not a sequence, so a rollback restores it). Nothing after it locks below LO-12.
+ */
+async function insertDueTicket(
+  tx: Tx,
+  s: Session,
+  due: DueTicket,
+): Promise<TicketRecord> {
+  const { summary } = due;
   const [counter] =
-    await tx`insert into fiscal_folio_counters(tenant_id,series,last_value) values(${s.tenantId},${series},1)
+    await tx`insert into fiscal_folio_counters(tenant_id,series,last_value) values(${s.tenantId},${due.series},1)
       on conflict (tenant_id,series) do update set last_value=fiscal_folio_counters.last_value+1
       returning last_value`;
   const number = Number(counter.last_value);
@@ -366,27 +422,71 @@ export async function issueDueTicket(
       (await tx`insert into fiscal_tickets(tenant_id,id,order_id,series,number,self_invoice_code,
         business_date,issued_by,device_id,source,currency,gross_before_discount,discount,unallocated_discount,
         gross,base,tax,tip,tax_basis,issuer,lines,payments)
-      values(${s.tenantId},${ticketId},${orderId},${series},${number},${code},${o.business_date},${s.employeeId},
-        (select d.id from devices d where d.id=${s.deviceId}),${source},'MXN',${summary.grossBeforeDiscount},
-        ${summary.discount},${summary.unallocatedDiscount},${summary.gross},${summary.base},${summary.tax},${tip},
-        ${summary.basis},${issuer ? tx.json(issuer) : null},${tx.json(ticketLines)},${tx.json(payments)})
+      values(${s.tenantId},${ticketId},${due.orderId},${due.series},${number},${code},${due.businessDate},${s.employeeId},
+        (select d.id from devices d where d.id=${s.deviceId}),${due.source},'MXN',${summary.grossBeforeDiscount},
+        ${summary.discount},${summary.unallocatedDiscount},${summary.gross},${summary.base},${summary.tax},${due.tip},
+        ${summary.basis},${due.issuer ? tx.json(due.issuer) : null},${tx.json(due.ticketLines)},${tx.json(due.payments)})
       on conflict (self_invoice_code) do nothing
       returning issued_at,self_invoice_code`) as unknown as (typeof inserted)[];
   }
   if (!inserted) throw new Error("self_invoice_code_exhausted");
-  const taxes: TicketTaxRecord[] = summary.groups.map((g) => ({
-    category: g.category,
-    rate_bps: g.rateBps,
-    gross_before_discount: g.grossBeforeDiscount,
-    discount: g.discount,
-    gross: g.gross,
-    base_before_discount: g.baseBeforeDiscount,
-    discount_base: g.discountBase,
-    base: g.base,
-    tax: g.tax,
-  }));
+  return {
+    id: ticketId,
+    order_id: due.orderId,
+    series: due.series,
+    number,
+    self_invoice_code: inserted.self_invoice_code,
+    issued_at: inserted.issued_at,
+    business_date: due.businessDate,
+    source: due.source,
+    currency: "MXN",
+    gross_before_discount: summary.grossBeforeDiscount,
+    discount: summary.discount,
+    unallocated_discount: summary.unallocatedDiscount,
+    gross: summary.gross,
+    base: summary.base,
+    tax: summary.tax,
+    tip: due.tip,
+    tax_basis: summary.basis,
+    issuer: due.issuer,
+    lines: due.ticketLines,
+    payments: due.payments,
+  };
+}
+
+/**
+ * The inserted tickets' category rows and their audit rows (fiscal.ticket.issued and, for an
+ * unallocated discount, fiscal.ticket.unallocated_discount): one statement each however many
+ * tickets, all inserts (LO-R8).
+ */
+async function finishTickets(
+  tx: Tx,
+  s: Session,
+  issued: { due: DueTicket; record: TicketRecord }[],
+): Promise<FiscalTicketView[]> {
+  if (!issued.length) return [];
+  const rows = issued.map(({ due, record }) => {
+    const taxes: TicketTaxRecord[] = due.summary.groups.map((g) => ({
+      category: g.category,
+      rate_bps: g.rateBps,
+      gross_before_discount: g.grossBeforeDiscount,
+      discount: g.discount,
+      gross: g.gross,
+      base_before_discount: g.baseBeforeDiscount,
+      discount_base: g.discountBase,
+      base: g.base,
+      tax: g.tax,
+    }));
+    return { due, record, taxes, view: ticketView(record, taxes) };
+  });
   await tx`insert into fiscal_ticket_taxes ${helper(tx)(
-    taxes.map((t) => ({ tenant_id: s.tenantId, ticket_id: ticketId, ...t })),
+    rows.flatMap(({ record, taxes }) =>
+      taxes.map((t) => ({
+        tenant_id: s.tenantId,
+        ticket_id: record.id,
+        ...t,
+      })),
+    ),
     "tenant_id",
     "ticket_id",
     "category",
@@ -399,45 +499,80 @@ export async function issueDueTicket(
     "base",
     "tax",
   )}`;
-  const view = ticketView(
+  const audits = rows.flatMap(({ due, record, view }) => [
     {
-      id: ticketId,
-      order_id: orderId,
-      series,
-      number,
-      self_invoice_code: inserted.self_invoice_code,
-      issued_at: inserted.issued_at,
-      business_date: o.business_date,
-      source,
-      currency: "MXN",
-      gross_before_discount: summary.grossBeforeDiscount,
-      discount: summary.discount,
-      unallocated_discount: summary.unallocatedDiscount,
-      gross: summary.gross,
-      base: summary.base,
-      tax: summary.tax,
-      tip,
-      tax_basis: summary.basis,
-      issuer,
-      lines: ticketLines,
-      payments,
-    } satisfies TicketRecord,
-    taxes,
-  );
-  await audit(tx, s, "fiscal.ticket.issued", orderId, {
-    ticketId,
-    folio: view.folio,
-    gross: view.gross,
-    tax: view.tax,
-    source,
-  });
-  if (summary.unallocatedDiscount > 0)
-    await audit(tx, s, "fiscal.ticket.unallocated_discount", orderId, {
-      ticketId,
-      folio: view.folio,
-      unallocatedDiscount: summary.unallocatedDiscount,
-    });
+      id: randomUUID(),
+      operation: "fiscal.ticket.issued",
+      entity: due.orderId,
+      detail: {
+        ticketId: record.id,
+        folio: view.folio,
+        gross: view.gross,
+        tax: view.tax,
+        source: due.source,
+      },
+    },
+    ...(due.summary.unallocatedDiscount > 0
+      ? [
+          {
+            id: randomUUID(),
+            operation: "fiscal.ticket.unallocated_discount",
+            entity: due.orderId,
+            detail: {
+              ticketId: record.id,
+              folio: view.folio,
+              unallocatedDiscount: due.summary.unallocatedDiscount,
+            },
+          },
+        ]
+      : []),
+  ]);
+  await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail)
+    select ${s.tenantId},a.id,${s.employeeId},a.operation,a.entity,a.detail
+    from jsonb_to_recordset(${tx.json(audits)}) as a(id uuid,operation text,entity text,detail jsonb)`;
+  return rows.map((r) => r.view);
+}
+
+/**
+ * Issues the order's ticket when its balance first reaches zero with a positive total, in the
+ * caller's transaction (the caller holds FOR UPDATE on the order). Idempotent: an existing
+ * ticket is returned without touching the counter. Null for a zero total, an unpaid balance, a
+ * non-MXN restaurant or the kill switch (FISCAL_TICKETS_ENABLED=false; repair issues later).
+ * The folio counter (LO-12) is the last lock: nothing after it locks below, and only the
+ * ticket, its category rows and the audit rows are written under it.
+ */
+export async function issueDueTicket(
+  tx: Tx,
+  s: Session,
+  orderId: string,
+  source: "sale" | "recovery" | "repair" = "sale",
+): Promise<FiscalTicketView | null> {
+  if (!enabled()) return null;
+  const prepared = await prepareTicket(tx, orderId, source);
+  if (!prepared) return null;
+  if ("ticket" in prepared) return prepared.ticket;
+  const record = await insertDueTicket(tx, s, prepared.due);
+  const [view] = await finishTickets(tx, s, [{ due: prepared.due, record }]);
   return view;
+}
+
+/**
+ * MONEY-1 (LD-25): no refund, by amount or by item, on an order that has no fiscal ticket and
+ * still has a balance due (refund_balance_due). Before payment staff void lines instead, so no
+ * IVA adjustment is ever recorded against a provisional gross that can still change. The
+ * caller holds FOR UPDATE on the order.
+ */
+export async function assertRefundAllowed(
+  tx: Tx,
+  orderId: string,
+): Promise<void> {
+  const [o] = await tx`select o.total,
+      coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)::int as paid,
+      exists(select 1 from fiscal_tickets f where f.tenant_id=o.tenant_id and f.order_id=o.id) as ticketed
+    from orders o where o.id=${orderId}`;
+  if (!o) throw new DomainError("not_found", 404);
+  if (!o.ticketed && o.total > o.paid)
+    throw new DomainError("refund_balance_due", 409);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -447,9 +582,11 @@ export async function issueDueTicket(
 /**
  * Writes the refund's fiscal_adjustments (one row per category) after its money row is
  * inserted, by complement extraction against the ticket's categories (or the provisional
- * summary when the order has no ticket). Idempotent per refund. Item refunds pass their scope
- * with each entry's exact `gross` (discounts 028). No audit of its own: the refund command
- * audits refund.recorded.
+ * summary when the order has no ticket but is fully paid: a refund on an unticketed order with
+ * a balance due is refused, refund_balance_due, MONEY-1). Idempotent per refund. Item refunds
+ * pass their scope with each entry's exact `gross` (discounts 028), categorized as the ticket
+ * froze each line (MONEY-4). Dated by the refund row's own creation time (MONEY-3). No audit
+ * of its own: the refund command audits refund.recorded.
  */
 export async function recordRefundTax(
   tx: Tx,
@@ -464,10 +601,12 @@ export async function recordRefundTax(
       where r.id=${refundId}`;
   if (!refund) throw new DomainError("not_found", 404);
   const batchDate: string | null = null;
+  // The refund row's business date (its created_at, the transaction's start), not the app
+  // clock when this runs: reports date batchless refunds the same way (MONEY-3).
   const date =
     batchDate ??
     businessDate(
-      new Date().toISOString(),
+      (refund.created_at as Date).toISOString(),
       s.restaurant.timezone,
       s.restaurant.cutoff,
     );
@@ -485,11 +624,16 @@ export async function recordRefundTax(
     from fiscal_adjustments where order_id=${orderId} order by created_at,category`) as unknown as AdjustmentRecord[];
   const mine = adjustments.filter((a) => a.refund_id === refundId);
   if (mine.length) return refundViews(mine)[0];
-  const [ticket] =
-    await tx`select t.id,o.total,(select jsonb_agg(jsonb_build_object('category',c.category,'rateBps',c.rate_bps,'gross',c.gross))
+  const [ticket] = await tx`select t.id,o.total,t.lines,
+      coalesce((select sum(n.amount) from tenders n where n.tenant_id=o.tenant_id and n.order_id=o.id),0)::int as paid,
+      (select jsonb_agg(jsonb_build_object('category',c.category,'rateBps',c.rate_bps,'gross',c.gross))
         from fiscal_ticket_taxes c where c.tenant_id=t.tenant_id and c.ticket_id=t.id) as groups
       from orders o left join fiscal_tickets t on t.tenant_id=o.tenant_id and t.order_id=o.id
       where o.id=${orderId}`;
+  // MONEY-1 backstop for every refund path (the legacy refund checks first): never split a
+  // refund against the provisional gross of a check that can still shrink.
+  if (ticket && !ticket.id && ticket.total > ticket.paid)
+    throw new DomainError("refund_balance_due", 409);
   const ctx = await fiscalContext(tx);
   // discounts (028): lineDiscounts = await discountsByLine(tx, orderId)
   const lineDiscounts: Record<string, number> = {};
@@ -516,7 +660,20 @@ export async function recordRefundTax(
       tax: a.tax,
     })),
     scope: scope
-      ? refundScopeCategories({ lines, scope, lineDiscounts, ctx })
+      ? refundScopeCategories({
+          lines,
+          scope,
+          lineDiscounts,
+          ctx,
+          // MONEY-4: the category each line was frozen under on the ticket.
+          categories: ticket?.id
+            ? Object.fromEntries(
+                ((ticket.lines as TicketLineSnapshot[] | null) ?? [])
+                  .filter((l) => l.lineId)
+                  .map((l) => [l.lineId!, l.category]),
+              )
+            : undefined,
+        })
       : undefined,
   });
   if (!split.length)
@@ -565,12 +722,16 @@ export async function recordRefundTax(
 
 /** Days back (business dates) the repair looks for paid sales without a ticket. */
 export const REPAIR_WINDOW_DAYS = 40;
-/** Orders issued per repair call. */
-export const REPAIR_BATCH = 100;
+/**
+ * Orders issued per repair call. Small, because every ticket of the batch is inserted while the
+ * tenant's folio counter is held (FISCAL-CONCURRENCY-1); the panel says to repeat.
+ */
+export const REPAIR_BATCH = 20;
 
 /**
- * Paid sales (Σ tenders ≥ total > 0) created after fiscal_epoch() without a ticket, by order
- * business date: in `range`, or by default in the last 40 business days up to today.
+ * Paid sales (Σ tenders ≥ total > 0) of an MXN restaurant created after fiscal_epoch() without a
+ * ticket, by order business date: in `range`, or by default in the last 40 business days up to
+ * today. A non-MXN restaurant never issues tickets, so it has none missing (FISCAL-SAT-5).
  */
 export async function missingTicketCount(
   tx: Tx,
@@ -585,16 +746,23 @@ export async function missingTicketCount(
       and o.created_at >= fiscal_epoch()
       and o.total > 0
       and o.total <= coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)
-      and not exists (select 1 from fiscal_tickets f where f.tenant_id=o.tenant_id and f.order_id=o.id)`;
+      and not exists (select 1 from fiscal_tickets f where f.tenant_id=o.tenant_id and f.order_id=o.id)
+      and exists (select 1 from restaurants r where r.id=o.tenant_id and r.currency='MXN')`;
   return row.n as number;
 }
 
 const repairInput = z.object({ operationId: id }).strict();
 
 /**
- * Emitir tickets faltantes: issues up to 100 missing tickets of the last 40 business days
- * (source 'repair'), orders locked sorted by id (LO-5), tickets in created_at order (LO-12).
- * Managers, with a fresh PIN (LD-15 fiscal Q5): it writes immutable records and assigns folios.
+ * Emitir tickets faltantes: issues up to REPAIR_BATCH missing tickets of the last 40 business
+ * days (source 'repair'). Managers, with a fresh PIN (LD-15 fiscal Q5): it writes immutable
+ * records and assigns folios. Refused while the kill switch is on (fiscal_tickets_disabled).
+ *
+ * Lock order: the candidates (LO-5, one statement sorted by id), then the missing-ticket
+ * predicate again for the locked rows (an order ticketed meanwhile by a payment or a release
+ * is left out, FISCAL-SAT-6), every ticket computed and the remaining count read, and only then
+ * the folio counter (LO-12): two statements per ticket and one insert each for the category
+ * and audit rows while it is held (FISCAL-CONCURRENCY-1).
  */
 export async function repairMissingTickets(
   tx: Tx,
@@ -605,6 +773,7 @@ export async function repairMissingTickets(
   requireRecentAuth(s);
   const p = repairInput.parse(raw);
   return once(tx, s, p.operationId, "fiscal.repair", p, async () => {
+    if (!enabled()) throw new DomainError("fiscal_tickets_disabled", 409);
     const today = businessDate(
       new Date().toISOString(),
       s.restaurant.timezone,
@@ -615,33 +784,41 @@ export async function repairMissingTickets(
     )
       .toISOString()
       .slice(0, 10);
-    const candidates = await tx`select o.id from orders o
-      where o.business_date between ${from}::date and ${today}::date
-        and o.created_at >= fiscal_epoch()
-        and o.total > 0
-        and o.total <= coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)
-        and not exists (select 1 from fiscal_tickets f where f.tenant_id=o.tenant_id and f.order_id=o.id)
-      order by o.business_date,o.created_at,o.id limit ${REPAIR_BATCH}`;
-    const ids = candidates.map((c) => c.id as string);
-    const locked = ids.length
-      ? await tx`select id,created_at from orders where id=any(${tx.array(ids)}::uuid[]) order by id for update`
-      : [];
-    const folios: string[] = [];
+    const missing = (ids?: string[]) =>
+      tx`select o.id,o.created_at from orders o
+        where ${ids ? tx`o.id=any(${tx.array(ids)}::uuid[])` : tx`o.business_date between ${from}::date and ${today}::date`}
+          and o.created_at >= fiscal_epoch()
+          and o.total > 0
+          and o.total <= coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)
+          and not exists (select 1 from fiscal_tickets f where f.tenant_id=o.tenant_id and f.order_id=o.id)
+          and exists (select 1 from restaurants r where r.id=o.tenant_id and r.currency='MXN')
+        order by o.business_date,o.created_at,o.id limit ${REPAIR_BATCH}`;
+    const ids = (await missing()).map((c) => c.id as string);
+    if (ids.length)
+      await tx`select id from orders where id=any(${tx.array(ids)}::uuid[]) order by id for update`;
+    // A new statement sees what committed while this one waited for the order locks.
+    const locked = ids.length ? await missing(ids) : [];
+    const due: DueTicket[] = [];
     for (const o of [...locked].sort(
       (a, b) =>
         (a.created_at as Date).getTime() - (b.created_at as Date).getTime() ||
         String(a.id).localeCompare(String(b.id)),
     )) {
-      const ticket = await issueDueTicket(tx, s, o.id as string, "repair");
-      if (ticket) folios.push(ticket.folio);
+      const prepared = await prepareTicket(tx, o.id as string, "repair");
+      if (prepared && "due" in prepared) due.push(prepared.due);
     }
+    const before = await missingTicketCount(tx);
+    const issued: { due: DueTicket; record: TicketRecord }[] = [];
+    for (const d of due)
+      issued.push({ due: d, record: await insertDueTicket(tx, s, d) });
+    const folios = (await finishTickets(tx, s, issued)).map((v) => v.folio);
     await audit(tx, s, "fiscal.tickets.repaired", s.tenantId, {
       count: folios.length,
       folios,
     });
     return {
       issued: folios.length,
-      remaining: await missingTicketCount(tx),
+      remaining: Math.max(0, before - folios.length),
       folios,
     };
   });
@@ -708,14 +885,22 @@ export async function listTickets(
     after = { at, id: afterId };
   }
   await tx`select set_config('statement_timeout','30s',true)`;
+  // A range lists the refunds recorded up to its last day, so a period's export does not change
+  // when a later refund arrives (LIVA art. 7 deducts a return in its own month; FISCAL-SAT-4).
+  // One folio shows every refund of its ticket.
+  const refundsUpTo = range
+    ? tx`and a.business_date <= ${range.to}::date`
+    : tx``;
   const rows =
     await tx`select t.id,t.order_id,o.number as order_number,t.series,t.number,
       t.issued_at,t.issued_at::text as cursor_at,t.business_date::text as business_date,
       t.gross,t.base,t.tax,t.discount,t.tip,t.self_invoice_code,t.source,t.payments,
       (select jsonb_agg(jsonb_build_object('category',c.category,'rateBps',c.rate_bps,'gross',c.gross,'base',c.base,'tax',c.tax))
          from fiscal_ticket_taxes c where c.tenant_id=t.tenant_id and c.ticket_id=t.id) as groups,
-      coalesce((select sum(a.gross) from fiscal_adjustments a where a.tenant_id=t.tenant_id and a.order_id=t.order_id),0)::int as refund_gross,
-      coalesce((select sum(a.tax) from fiscal_adjustments a where a.tenant_id=t.tenant_id and a.order_id=t.order_id),0)::int as refund_tax
+      coalesce((select sum(a.gross) from fiscal_adjustments a where a.tenant_id=t.tenant_id and a.order_id=t.order_id
+        ${refundsUpTo}),0)::int as refund_gross,
+      coalesce((select sum(a.tax) from fiscal_adjustments a where a.tenant_id=t.tenant_id and a.order_id=t.order_id
+        ${refundsUpTo}),0)::int as refund_tax
     from fiscal_tickets t join orders o on o.tenant_id=t.tenant_id and o.id=t.order_id
     where ${
       folio
@@ -801,11 +986,17 @@ export async function fiscalSummary(
     await tx`select category,sum(gross)::int8 as gross,sum(base)::int8 as base,
       sum(tax)::int8 as tax
     from fiscal_adjustments where business_date between ${from}::date and ${to}::date group by category`;
+  // Contiguous folio runs per series: tickets belong to their sale's business date but take
+  // folios when issued, so a late offline sync, a repair or a cross-day settlement puts a later
+  // folio into an earlier day. A min..max range would read as gaps in a gapless series
+  // (FISCAL-SAT-3, FISCAL-OFFLINE-5).
   const series =
     await tx`select series,min(number)::int8 as first,max(number)::int8 as last,
       count(*)::int8 as count,sum(tip)::int8 as tips
-    from fiscal_tickets where business_date between ${from}::date and ${to}::date
-    group by series order by series`;
+    from (select series,number,tip,
+            number - row_number() over (partition by series order by number) as run
+          from fiscal_tickets where business_date between ${from}::date and ${to}::date) r
+    group by series,run order by series,first`;
   const missingTickets = await missingTicketCount(tx, { from, to });
   const n = (v: unknown) => Number(v ?? 0);
   const salesBy = new Map(

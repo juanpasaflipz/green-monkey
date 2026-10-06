@@ -41,15 +41,19 @@ export function fiscalMoney(currency: string, locale: Locale) {
   return (n: number) => format.format(n / scale);
 }
 
-/** dd/MM/yyyy HH:mm (24 h) in the restaurant's timezone, for any locale. */
+/**
+ * Date and time (24 h) in the restaurant's timezone: dd/MM/yyyy HH:mm in Spanish (every
+ * printed comprobante), and an unambiguous "Oct 5, 2026 21:48" in the English UI, which shows
+ * other dates in US order (FISCAL-UI-10).
+ */
 export function fiscalDateTime(
   iso: string,
   timezone: string,
   locale: Locale,
 ): string {
-  const parts = new Intl.DateTimeFormat(locale === "es" ? "es-MX" : "en-GB", {
-    day: "2-digit",
-    month: "2-digit",
+  const parts = new Intl.DateTimeFormat(locale === "es" ? "es-MX" : "en-US", {
+    day: locale === "es" ? "2-digit" : "numeric",
+    month: locale === "es" ? "2-digit" : "short",
     year: "numeric",
     hour: "2-digit",
     minute: "2-digit",
@@ -58,7 +62,10 @@ export function fiscalDateTime(
   }).formatToParts(new Date(iso));
   const part = (type: Intl.DateTimeFormatPartTypes) =>
     parts.find((p) => p.type === type)?.value ?? "";
-  return `${part("day")}/${part("month")}/${part("year")} ${part("hour")}:${part("minute")}`;
+  const time = `${part("hour")}:${part("minute")}`;
+  return locale === "es"
+    ? `${part("day")}/${part("month")}/${part("year")} ${time}`
+    : `${part("month")} ${part("day")}, ${part("year")} ${time}`;
 }
 
 /** dd/MM/yyyy of a business date (yyyy-MM-dd). */

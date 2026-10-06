@@ -260,7 +260,14 @@ function SummaryTable({
   return (
     <section className="fiscal-summary" aria-label={t.fiscalSummaryTitle}>
       <h3>{t.fiscalSummaryTitle}</h3>
-      <div className="fiscal-table-wrap">
+      {/* A scroll region at 390 px with no focusable cell: keyboard users focus it to scroll
+          (FISCAL-UI-11). */}
+      <div
+        className="fiscal-table-wrap"
+        tabIndex={0}
+        role="region"
+        aria-label={t.fiscalSummaryTable}
+      >
         <table className="fiscal-table">
           <thead>
             <tr>
@@ -320,7 +327,7 @@ function SummaryTable({
         </table>
       </div>
       {summary.tickets.series.map((s) => (
-        <p key={s.series}>
+        <p key={`${s.series}-${s.first}`}>
           {fill(t.fiscalSummaryRange, {
             first: formatFolio(s.series, s.first),
             last: formatFolio(s.series, s.last),

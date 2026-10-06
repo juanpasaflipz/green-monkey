@@ -518,8 +518,11 @@ export async function saveMenuProduct(tx: Tx, s: Session, raw: unknown) {
   const p = productInput.parse(raw);
   return once(tx, s, p.operationId, "menu.product.save", p, async () => {
     await requireSelling(tx, s);
-    if (p.fiscal !== undefined) await assertProductFiscalAllowed(tx, p.fiscal);
+    // The menu_state row first: a fiscal profile save that leaves the border region takes it
+    // before counting IVA 8% products, so the two checks cannot pass each other
+    // (FISCAL-CONCURRENCY-3).
     await bumpMenuRevision(tx);
+    if (p.fiscal !== undefined) await assertProductFiscalAllowed(tx, p.fiscal);
     return writeProduct(tx, s, p, true);
   });
 }

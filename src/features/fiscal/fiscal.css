@@ -38,6 +38,10 @@
 .fiscal-amount {
   white-space: nowrap;
 }
+.fiscal-lines {
+  text-align: left;
+  margin-top: 4px;
+}
 @media print {
   .fiscal-header,
   .fiscal-footer,

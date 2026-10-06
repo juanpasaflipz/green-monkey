@@ -107,7 +107,11 @@ async function ensureProfile(page: Page) {
   if (
     profile.complete &&
     profile.taxRegion === "general" &&
-    !profile.ticketSeries
+    !profile.ticketSeries &&
+    !profile.multipleBranches &&
+    profile.issuer.rfc === RFC &&
+    profile.issuer.address.neighborhood === "Roma Norte" &&
+    profile.issuer.address.street === "Av. Ficticia 123"
   )
     return profile;
   return call(page, "/fiscal/profile", {
@@ -227,6 +231,109 @@ test("owner completes the fiscal profile: invalid RFC and regime mismatch show i
     .analyze();
   expect(narrow.violations).toEqual([]);
   await panel.screenshot({ path: "docs/evidence/fiscal-settings-390.png" });
+});
+
+test("FISCAL-UI-1: an RFC whose check digit does not match shows the warning before saving, stops the first save, and «Guardar de todos modos» keeps it; the warning stays until the RFC changes", async ({
+  page,
+}) => {
+  await login(page);
+  await ensureProfile(page);
+  const panel = await settings(page);
+  const rfc = panel.getByLabel("RFC", { exact: true });
+  const save = panel.getByRole("button", {
+    name: "Guardar datos fiscales",
+    exact: true,
+  });
+  const warning = panel.getByText(
+    "El dígito verificador no coincide. Revisa el RFC; si es correcto, puedes guardarlo.",
+  );
+  try {
+    await rfc.fill("EKU9003173C8");
+    // Shown while typing, before any save.
+    await expect(warning).toBeVisible();
+    await save.click();
+    await expect(
+      panel.getByText(
+        "Revisa el RFC: el dígito verificador no coincide. Si es correcto, toca «Guardar de todos modos».",
+      ),
+    ).toBeVisible();
+    await expect(warning).toBeVisible();
+    expect((await call(page, "/fiscal/profile")).issuer.rfc).toBe(RFC);
+    await panel
+      .getByRole("button", { name: "Guardar de todos modos", exact: true })
+      .click();
+    await expect(
+      page.getByText("Datos fiscales guardados", { exact: true }),
+    ).toBeVisible();
+    await expect(warning).toBeVisible();
+    expect((await call(page, "/fiscal/profile")).issuer.rfc).toBe(
+      "EKU9003173C8",
+    );
+    // The correct RFC saves at the first tap and clears the warning.
+    await rfc.fill(RFC);
+    await expect(warning).toHaveCount(0);
+    await expect(save).toBeVisible();
+    await save.click();
+    await expect
+      .poll(async () => (await call(page, "/fiscal/profile")).issuer.rfc)
+      .toBe(RFC);
+  } finally {
+    await ensureProfile(page);
+  }
+});
+
+test("FISCAL-UI-2: a save that meets another device's change shows the current data instead of the stale form, and the next save never writes the old values back", async ({
+  page,
+}) => {
+  await login(page);
+  await ensureProfile(page);
+  const panel = await settings(page);
+  const save = panel.getByRole("button", {
+    name: "Guardar datos fiscales",
+    exact: true,
+  });
+  try {
+    // This screen edits the street…
+    await panel.getByLabel("Calle y número").fill("Calle Local 1");
+    // …while another device changes the neighborhood.
+    const current = await call(page, "/fiscal/profile");
+    await call(page, "/fiscal/profile", {
+      operationId: uuid(),
+      expectedVersion: current.version,
+      identity: {
+        rfc: current.issuer.rfc,
+        legalName: current.issuer.legalName,
+        regime: current.issuer.regime,
+        postalCode: current.issuer.postalCode,
+        address: { ...current.issuer.address, neighborhood: "Colonia Remota" },
+      },
+      ticketSeries: current.ticketSeries,
+      taxRegion: current.taxRegion,
+      defaultTaxCategory: current.defaultTaxCategory,
+      borderConfirmed: false,
+    });
+    await save.click();
+    await expect(
+      panel.getByText(
+        "Los datos fiscales cambiaron en otro dispositivo. Ya ves los datos actuales; vuelve a hacer tus cambios y guarda.",
+      ),
+    ).toBeVisible();
+    await expect(panel.getByLabel("Colonia")).toHaveValue("Colonia Remota");
+    await expect(panel.getByLabel("Calle y número")).toHaveValue(
+      "Av. Ficticia 123",
+    );
+    // The next save carries the other device's change.
+    await panel.getByLabel("Calle y número").fill("Calle Local 2");
+    await save.click();
+    await expect(
+      page.getByText("Datos fiscales guardados", { exact: true }),
+    ).toBeVisible();
+    const saved = await call(page, "/fiscal/profile");
+    expect(saved.issuer.address.neighborhood).toBe("Colonia Remota");
+    expect(saved.issuer.address.street).toBe("Calle Local 2");
+  } finally {
+    await ensureProfile(page);
+  }
 });
 
 test("MON-1/FIT-6, MON-7/FOH-17: a cash sale with a modifier and a tip prints the restaurant-headed ticket with folio, RFC, régimen, lugar de expedición, the IVA 16% breakdown, the payment, received and change", async ({
@@ -403,6 +510,23 @@ test("FIT-7 (fiscal part): the ticket register lists the folio, finds it by foli
     "folio,serie,numero,fecha_expedicion,dia_negocio,orden,total,base_iva16,iva16,base_iva8,iva8,venta_tasa0,venta_exenta,descuentos,propinas,reembolsos,iva_reembolsado,formas_pago,codigo_facturacion",
   );
   expect(text).toContain(`${folio},,${Number(folio)},`);
+  // FISCAL-UI-11: with both tables shown, 390 px is axe-clean (the summary's scroll region is
+  // focusable) and the page does not scroll sideways.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await panel.getByRole("button", { name: "Mostrar", exact: true }).click();
+  await expect(
+    panel.getByRole("region", { name: "IVA por tipo de impuesto" }),
+  ).toBeVisible();
+  const narrow = await new AxeBuilder({ page })
+    .include(".fiscal-settings")
+    .withTags(AXE_TAGS)
+    .analyze();
+  expect(narrow.violations).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
 });
 
 test("58 mm print layout: the fiscal blocks do not overflow 48 mm", async ({
@@ -605,6 +729,92 @@ test("offline local receipt shows Folio fiscal pendiente with the cached issuer;
   } finally {
     await context.unroute("**/api/**");
   }
+});
+
+test("FISCAL-OFFLINE-1: a synced offline sale is found in Órdenes by the provisional number on the customer's paper; the sync list, the detail and the reprint name it with the folio", async ({
+  page,
+  context,
+}) => {
+  test.setTimeout(120_000);
+  await login(page);
+  await ensureProfile(page);
+  await page.reload();
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  const open = page.getByRole("button", { name: "Abrir caja", exact: true });
+  await expect(
+    open.or(page.getByText("Caja abierta", { exact: true })),
+  ).toBeVisible();
+  if (await open.isVisible()) {
+    await open.click();
+    await page
+      .getByRole("dialog")
+      .getByRole("button", { name: "Guardar", exact: true })
+      .click();
+    await expect(page.getByText("Caja abierta", { exact: true })).toBeVisible();
+  }
+  const cached = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/cash",
+  );
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await cached;
+  await productTile(page, "Taco de hongos").click();
+  await context.route("**/api/**", (route) =>
+    route.abort("internetdisconnected"),
+  );
+  let number: string;
+  try {
+    await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await page
+      .getByRole("button", {
+        name: "Guardar cobro en este dispositivo",
+        exact: true,
+      })
+      .click();
+    const receipt = page.locator(".receipt");
+    await expect(receipt).toContainText("Número provisional");
+    number = ((await receipt.textContent()) ?? "").match(
+      /[A-Z][A-Z0-9]{0,2}-\d{2,4}/,
+    )![0];
+  } finally {
+    await context.unroute("**/api/**");
+  }
+  // The queue syncs on its own once the probes reach the server again.
+  const pill = (name: RegExp) =>
+    page.locator(".top-actions").getByRole("button", { name });
+  await expect(pill(/^Conectado/)).toBeVisible({ timeout: 40_000 });
+  await pill(/^Conectado/).click();
+  await expect(page.locator(".workspace")).toContainText(
+    new RegExp(`${number} → #\\d+ · Folio \\d{6,}`),
+    { timeout: 45_000 },
+  );
+  const found = await call(
+    page,
+    `/service/orders?status=all&q=${encodeURIComponent(number)}`,
+  );
+  expect(found.items).toHaveLength(1);
+  const synced = await call(page, `/orders/${found.items[0].id}`);
+  const folio = synced.fiscal.ticket.folio;
+  // Staff type the number printed on the customer's local receipt.
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+  await page.getByLabel("Buscar por número, nombre o mesa").fill(number);
+  await expect(page.locator(".order-summary")).toHaveCount(1);
+  await page
+    .locator(".order-summary")
+    .getByRole("button", { name: "Detalle", exact: true })
+    .click();
+  const detail = page.getByRole("dialog", { name: /^Orden #\d+$/ });
+  await expect(detail).toContainText(`Folio: ${folio}`);
+  await expect(detail).toContainText(`Venta sin conexión ${number}`);
+  await stubPrint(page);
+  await detail.getByRole("button", { name: "Reimprimir recibo" }).click();
+  const paper = await lastPrint(page);
+  expect(paper).toContain(`Folio: ${folio}`);
+  expect(paper).toContain(`Venta sin conexión ${number}`);
 });
 
 test("print language: with the UI in English, the printed receipt, pre-bill and grouped receipts are in Spanish while the on-screen receipt is in English", async ({

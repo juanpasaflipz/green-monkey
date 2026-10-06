@@ -25,13 +25,17 @@ export default defineArea({
     fiscalPostalCodeHint:
       "El código postal de esta sucursal. Se imprime como lugar de expedición.",
     fiscalAddress: "Domicilio de la sucursal (opcional)",
+    fiscalAddressRequired: "Domicilio de la sucursal",
+    fiscalMultipleBranches: "Este RFC tiene más de una sucursal",
+    fiscalMultipleBranchesHint:
+      "Si el mismo RFC tiene varios locales, cada ticket debe llevar el domicilio del local que lo expide (calle, municipio y estado; CFF art. 29-A fr. I).",
     fiscalStreet: "Calle y número",
     fiscalNeighborhood: "Colonia",
     fiscalMunicipality: "Municipio o alcaldía",
     fiscalState: "Estado",
     fiscalSeries: "Serie de tickets (opcional)",
     fiscalSeriesHint:
-      "Hasta 10 letras o números. Si tienes varias sucursales con el mismo RFC, usa una serie distinta en cada una. Al cambiarla, la numeración de la nueva serie empieza en 1.",
+      "Hasta 10 letras o números. Si tienes varias sucursales con el mismo RFC, usa una serie distinta en cada una y marca «Este RFC tiene más de una sucursal». Al cambiarla, la numeración de la nueva serie empieza en 1.",
     fiscalTaxes: "Impuestos",
     fiscalRegion: "Zona",
     fiscalRegionGeneral: "Resto del país (IVA 16%)",
@@ -52,6 +56,16 @@ export default defineArea({
     fiscalPricesInclusive:
       "Los precios del menú son finales e incluyen IVA. El IVA se calcula a partir del precio.",
     fiscalSave: "Guardar datos fiscales",
+    fiscalSaveAnyway: "Guardar de todos modos",
+    fiscalRfcConfirm:
+      "Revisa el RFC: el dígito verificador no coincide. Si es correcto, toca «Guardar de todos modos».",
+    fiscalFixFields: "Revisa los campos marcados.",
+    fiscalChangedReloaded:
+      "Los datos fiscales cambiaron en otro dispositivo. Ya ves los datos actuales; vuelve a hacer tus cambios y guarda.",
+    fiscalBorderDefaultHint:
+      "Los productos con «Predeterminado» seguirán con {category} hasta que cambies este valor.",
+    fiscalTicketsPaused:
+      "La emisión de tickets está pausada. Los tickets faltantes se podrán emitir cuando se reanude.",
     fiscalSaved: "Datos fiscales guardados",
     fiscalLoading: "Cargando datos fiscales…",
     fiscalReload: "Recargar datos fiscales",
@@ -59,6 +73,8 @@ export default defineArea({
       "Los tickets fiscales de México requieren que el restaurante use MXN.",
     fiscalLastFolio: "Último folio emitido: {folio}",
     fiscalNoTickets: "Aún no se han emitido tickets.",
+    fiscalPreviousSeries:
+      "Último folio emitido: {folio} (serie anterior). La serie actual empieza en {first}.",
     fiscalUpdatedBy: "Actualizado por {name} el {date}.",
     fiscalMissingTickets:
       "{n} ventas cobradas no tienen ticket (por ejemplo, durante una actualización).",
@@ -86,6 +102,7 @@ export default defineArea({
     fiscalColCategory: "Impuesto",
     fiscalRegisterEmpty: "No hay tickets en estas fechas.",
     fiscalSummaryTitle: "Resumen de IVA",
+    fiscalSummaryTable: "IVA por tipo de impuesto",
     fiscalSummarySales: "Ventas",
     fiscalSummaryRefunds: "Reembolsos",
     fiscalSummaryNet: "Neto",
@@ -110,10 +127,13 @@ export default defineArea({
     fiscalReceiptRefundTax: "IVA reembolsado",
     fiscalReceiptIncluded: "Precios con IVA incluido",
     fiscalReceiptCheckTax: "IVA incluido en la cuenta",
-    fiscalReceiptTip: "Propina voluntaria; no forma parte del total de la venta.",
+    fiscalReceiptTip:
+      "Propina voluntaria; no forma parte del total de la venta.",
     fiscalReceiptNotCfdi: "Este ticket no es una factura (CFDI).",
-    fiscalReceiptInvoiceHint: "¿Necesitas factura? Pídela con el folio {folio}.",
+    fiscalReceiptInvoiceHint:
+      "¿Necesitas factura? Pídela con el folio {folio}.",
     fiscalRecoveryLine: "Venta sin conexión conciliada",
+    fiscalOfflineSale: "Venta sin conexión {number} · {date}",
     fiscalProductTax: "Impuesto",
     fiscalProductTaxHint: "El precio ya incluye este impuesto.",
     fiscalProductIva8Disabled: "Solo disponible en región fronteriza.",
@@ -150,13 +170,17 @@ export default defineArea({
     fiscalPostalCodeHint:
       "This location's postal code. Printed as the place of issue.",
     fiscalAddress: "Location address (optional)",
+    fiscalAddressRequired: "Location address",
+    fiscalMultipleBranches: "This RFC has more than one location",
+    fiscalMultipleBranchesHint:
+      "When one RFC has several premises, every ticket must carry the address of the location that issues it (street, municipality and state; CFF art. 29-A fr. I).",
     fiscalStreet: "Street and number",
     fiscalNeighborhood: "Neighborhood",
     fiscalMunicipality: "Municipality",
     fiscalState: "State",
     fiscalSeries: "Ticket series (optional)",
     fiscalSeriesHint:
-      "Up to 10 letters or digits. If several locations share an RFC, use a different series in each. When you change it, the new series starts at 1.",
+      "Up to 10 letters or digits. If several locations share an RFC, use a different series in each and tick “This RFC has more than one location”. When you change it, the new series starts at 1.",
     fiscalTaxes: "Taxes",
     fiscalRegion: "Region",
     fiscalRegionGeneral: "Rest of the country (16% VAT)",
@@ -177,6 +201,16 @@ export default defineArea({
     fiscalPricesInclusive:
       "Menu prices are final and include VAT. VAT is extracted from the price.",
     fiscalSave: "Save tax details",
+    fiscalSaveAnyway: "Save anyway",
+    fiscalRfcConfirm:
+      "Review the RFC: the check digit does not match. If it is correct, tap “Save anyway”.",
+    fiscalFixFields: "Review the highlighted fields.",
+    fiscalChangedReloaded:
+      "Tax details changed on another device. You now see the current details; make your changes again and save.",
+    fiscalBorderDefaultHint:
+      "Products on “Default” keep {category} until you change this value.",
+    fiscalTicketsPaused:
+      "Ticket issuance is paused. Missing tickets can be issued once it resumes.",
     fiscalSaved: "Tax details saved",
     fiscalLoading: "Loading tax details…",
     fiscalReload: "Reload tax details",
@@ -184,6 +218,8 @@ export default defineArea({
       "Mexican tax tickets require the restaurant to use MXN.",
     fiscalLastFolio: "Last ticket number issued: {folio}",
     fiscalNoTickets: "No tickets have been issued yet.",
+    fiscalPreviousSeries:
+      "Last ticket number issued: {folio} (previous series). The current series starts at {first}.",
     fiscalUpdatedBy: "Updated by {name} on {date}.",
     fiscalMissingTickets:
       "{n} paid sales have no ticket (for example, during an update).",
@@ -211,6 +247,7 @@ export default defineArea({
     fiscalColCategory: "Tax",
     fiscalRegisterEmpty: "No tickets in this date range.",
     fiscalSummaryTitle: "VAT summary",
+    fiscalSummaryTable: "VAT by tax type",
     fiscalSummarySales: "Sales",
     fiscalSummaryRefunds: "Refunds",
     fiscalSummaryNet: "Net",
@@ -240,6 +277,7 @@ export default defineArea({
     fiscalReceiptInvoiceHint:
       "Need an invoice? Ask for it with ticket no. {folio}.",
     fiscalRecoveryLine: "Reconciled offline sale",
+    fiscalOfflineSale: "Offline sale {number} · {date}",
     fiscalProductTax: "Tax",
     fiscalProductTaxHint: "The price already includes this tax.",
     fiscalProductIva8Disabled: "Only available in a border region.",
@@ -315,6 +353,26 @@ export default defineArea({
     fiscal_profile_changed: [
       "Los datos fiscales cambiaron en otro dispositivo. Recarga e intenta de nuevo.",
       "Tax details changed on another device. Reload and try again.",
+    ],
+    fiscal_border_identity_required: [
+      "Para usar la región fronteriza (IVA 8%) completa el RFC y el código postal del emisor.",
+      "To use a border region (8% VAT), fill in the issuer's RFC and postal code.",
+    ],
+    fiscal_border_postal_code: [
+      "Ese código postal no es de un estado de la región fronteriza elegida.",
+      "That postal code is not in a state of the chosen border region.",
+    ],
+    fiscal_address_required: [
+      "Con más de una sucursal, escribe calle y número, municipio y estado del local.",
+      "With more than one location, enter this location's street, municipality and state.",
+    ],
+    fiscal_tickets_disabled: [
+      "La emisión de tickets fiscales está pausada; no se emitió ningún ticket.",
+      "Tax ticket issuance is paused; no ticket was issued.",
+    ],
+    refund_balance_due: [
+      "Esta cuenta tiene saldo pendiente y aún no tiene ticket: cobra el saldo o anula las líneas en lugar de reembolsar.",
+      "This check has a balance due and no ticket yet: collect the balance or void the lines instead of refunding.",
     ],
     fiscal_range_invalid: [
       "Elige un rango de fechas válido de hasta 31 días.",

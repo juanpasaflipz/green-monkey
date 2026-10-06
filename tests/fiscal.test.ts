@@ -1562,6 +1562,24 @@ describe("complement refund extraction", () => {
 });
 
 describe("refundScopeCategories", () => {
+  it("MONEY-4: a line the ticket froze under the issuance default is refunded in that category after the default changed", () => {
+    // Priced before 027 (no snapshot), ticketed under IVA 16%; the default is now IVA 8%.
+    const l = line({ total: 3000, quantity: 3, legacy: true });
+    const scope = [{ lineId: l.id, units: [0], gross: 1000 }];
+    expect(
+      refundScopeCategories({
+        lines: [l],
+        scope,
+        ctx: border,
+        categories: { [l.id]: "iva16" },
+      }),
+    ).toEqual([{ category: "iva16", gross: 1000 }]);
+    // Without a ticket (provisional) the current default still applies.
+    expect(refundScopeCategories({ lines: [l], scope, ctx: border })).toEqual([
+      { category: "iva8", gross: 1000 },
+    ]);
+  });
+
   it("scope gross is used verbatim", () => {
     // 3 units of 1000 at IVA 16%; discounts 028 discounted units 0 and 1 by 150 each, and
     // unit 0 was paid half by cash (425) and half by card (425). One scope call per refund row.
@@ -2130,18 +2148,110 @@ describe("fiscal profile", () => {
       ["defaultTaxCategory:fiscal_border_rate_not_allowed"],
     ],
     [
-      "a border region without the attestation",
-      { taxRegion: "border_south" },
+      "a border region without the attestation (Tapachula, Chiapas)",
+      {
+        taxRegion: "border_south",
+        identity: identity({ postalCode: "30700" }),
+      },
       ["borderConfirmed:fiscal_border_confirmation_required"],
     ],
     [
-      "a confirmed border region with IVA 8% as the default",
+      "a confirmed border region with IVA 8% as the default (Tijuana)",
+      {
+        taxRegion: "border_north",
+        identity: identity({ postalCode: "22000" }),
+        defaultTaxCategory: "iva8",
+        borderConfirmed: true,
+      },
+      [],
+    ],
+    [
+      "SAT-1: a confirmed border region without any issuer identity",
+      {
+        taxRegion: "border_north",
+        identity: null,
+        defaultTaxCategory: "iva8",
+        borderConfirmed: true,
+      },
+      [
+        "rfc:fiscal_border_identity_required",
+        "postalCode:fiscal_border_identity_required",
+      ],
+    ],
+    [
+      "SAT-1: the northern border region with a CDMX postal code",
       {
         taxRegion: "border_north",
         defaultTaxCategory: "iva8",
         borderConfirmed: true,
       },
+      ["postalCode:fiscal_border_postal_code"],
+    ],
+    [
+      "SAT-1: the southern border region with a Tijuana postal code (a northern state)",
+      {
+        taxRegion: "border_south",
+        identity: identity({ postalCode: "22000" }),
+        borderConfirmed: true,
+      },
+      ["postalCode:fiscal_border_postal_code"],
+    ],
+    [
+      "SAT-1: an incomplete identity in a border region reports the identity, not the region",
+      {
+        taxRegion: "border_north",
+        identity: identity({ rfc: "", postalCode: "22000" }),
+        borderConfirmed: true,
+      },
+      ["rfc:fiscal_identity_incomplete"],
+    ],
+    [
+      "SAT-2: more than one branch without the branch address",
+      { multipleBranches: true },
+      [
+        "street:fiscal_address_required",
+        "municipality:fiscal_address_required",
+        "state:fiscal_address_required",
+      ],
+    ],
+    [
+      "SAT-2: more than one branch with only the street",
+      {
+        multipleBranches: true,
+        identity: identity({
+          address: {
+            street: "Av. Revolución 1234",
+            neighborhood: "",
+            municipality: " ",
+            state: "",
+          },
+        }),
+      },
+      ["municipality:fiscal_address_required", "state:fiscal_address_required"],
+    ],
+    [
+      "SAT-2: more than one branch with street, municipality and state",
+      {
+        multipleBranches: true,
+        identity: identity({
+          address: {
+            street: "Av. Revolución 1234",
+            neighborhood: "",
+            municipality: "Tijuana",
+            state: "Baja California",
+          },
+        }),
+      },
       [],
+    ],
+    [
+      "SAT-2: more than one branch and no identity at all",
+      { multipleBranches: true, identity: null },
+      [
+        "street:fiscal_address_required",
+        "municipality:fiscal_address_required",
+        "state:fiscal_address_required",
+      ],
     ],
   ] as [string, Partial<FiscalProfileInput>, string[]][])(
     "fiscalProfileIssues: %s",
@@ -2179,13 +2289,55 @@ describe("fiscal profile", () => {
       fiscalProfileIssues(
         base({
           taxRegion: "border_north",
-          identity: identity({ rfc: "EKU9003173C8" }),
+          identity: identity({ rfc: "EKU9003173C8", postalCode: "22000" }),
         }),
       ).find((i) => !i.warning),
     ).toEqual({
       field: "borderConfirmed",
       code: "fiscal_border_confirmation_required",
     });
+  });
+
+  it("SAT-1: border postal codes by state prefix (SAT Catálogo de códigos postales)", () => {
+    const { BORDER_POSTAL_PREFIXES, borderPostalCodeAllowed } = fiscalModule;
+    for (const cp of [
+      "22000", // Tijuana, Baja California
+      "21100", // Mexicali, Baja California
+      "83000", // Hermosillo, Sonora
+      "84000", // Nogales, Sonora
+      "32000", // Ciudad Juárez, Chihuahua
+      "26000", // Piedras Negras, Coahuila
+      "64000", // Monterrey, Nuevo León
+      "88500", // Reynosa, Tamaulipas
+    ])
+      expect(borderPostalCodeAllowed("border_north", cp), cp).toBe(true);
+    for (const cp of [
+      "24000", // Campeche
+      "30700", // Tapachula, Chiapas
+      "77000", // Chetumal, Quintana Roo
+      "86900", // Tenosique, Tabasco
+    ])
+      expect(borderPostalCodeAllowed("border_south", cp), cp).toBe(true);
+    for (const [region, cp] of [
+      ["border_north", "06700"], // CDMX
+      ["border_north", "23000"], // La Paz, Baja California Sur
+      ["border_north", "34000"], // Durango
+      ["border_north", "77000"], // a southern state
+      ["border_south", "22000"], // a northern state
+      ["border_south", "97000"], // Mérida, Yucatán
+      ["border_north", "2200"],
+      ["border_north", "22OOO"],
+      ["border_south", ""],
+    ] as const)
+      expect(borderPostalCodeAllowed(region, cp), `${region} ${cp}`).toBe(
+        false,
+      );
+    // Ten states, no prefix in both regions.
+    const north = new Set(BORDER_POSTAL_PREFIXES.border_north);
+    expect(north.size).toBe(18);
+    expect(
+      BORDER_POSTAL_PREFIXES.border_south.filter((p) => north.has(p)),
+    ).toEqual([]);
   });
 
   it("validates raw client form state the same way as the parsed input", () => {

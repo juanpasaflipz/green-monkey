@@ -81,6 +81,8 @@ export type ProfileRecord = {
   ticket_series: string;
   tax_region: FiscalContext["region"];
   default_tax_category: TaxCategory;
+  /** CFF art. 29-A fr. I: several premises make the branch address part of the identity. */
+  multiple_branches?: boolean | null;
 };
 
 const iso = (v: string | Date) => new Date(v).toISOString();
@@ -105,7 +107,10 @@ export function contextOf(
   return { region: row.tax_region, defaultCategory: row.default_tax_category };
 }
 
-/** The issuer data a ticket freezes, or null while the profile has no RFC (incomplete). */
+/**
+ * The issuer data a ticket freezes, or null while the profile is incomplete: no RFC, or an RFC
+ * with several premises and no branch street, municipality and state (CFF art. 29-A fr. I).
+ */
 export function issuerOf(
   row: ProfileRecord | null,
   tradeName: string,
@@ -113,6 +118,13 @@ export function issuerOf(
   if (!row?.rfc || !row.legal_name || !row.regime || !row.postal_code)
     return null;
   const address = row.address ?? {};
+  if (
+    row.multiple_branches &&
+    !(["street", "municipality", "state"] as const).every((k) =>
+      address[k]?.trim(),
+    )
+  )
+    return null;
   return {
     tradeName,
     rfc: row.rfc,

@@ -11,6 +11,10 @@ import { db } from "../../offline";
 let value: FiscalContextView | null = null;
 let restaurant: Session["restaurant"] | null = null;
 let lastSession: Session | null = null;
+let fetchedAt = 0;
+let watching = false;
+/** A context older than this is fetched again when the window regains focus (FISCAL-UI-8). */
+const STALE_MS = 60_000;
 const listeners = new Set<() => void>();
 const emit = () => {
   for (const listener of listeners) listener();
@@ -32,7 +36,28 @@ export function clearFiscalContext() {
   value = null;
   restaurant = null;
   lastSession = null;
+  fetchedAt = 0;
   emit();
+}
+
+/**
+ * Another device may have changed the profile (the RFC, the region): when this window comes
+ * back to the foreground with a context older than a minute, fetch it again, so receipts and
+ * the product editor do not keep the issuer of sign-in time (FISCAL-UI-8).
+ */
+function watchFocus() {
+  if (watching || typeof window === "undefined") return;
+  watching = true;
+  const refresh = () => {
+    if (
+      lastSession &&
+      document.visibilityState === "visible" &&
+      Date.now() - fetchedAt > STALE_MS
+    )
+      void prefetchFiscalContext(lastSession);
+  };
+  window.addEventListener("focus", refresh);
+  document.addEventListener("visibilitychange", refresh);
 }
 
 /** The restaurant of the session last prefetched, for receipt fallbacks (timezone, currency). */
@@ -51,6 +76,8 @@ export async function prefetchFiscalContext(
 ): Promise<FiscalContextView | null> {
   restaurant = session.restaurant;
   lastSession = session;
+  fetchedAt = Date.now();
+  watchFocus();
   try {
     const fresh = await api<FiscalContextView>("/fiscal/context");
     if (lastSession !== session) return value;

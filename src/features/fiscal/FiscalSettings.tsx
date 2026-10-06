@@ -5,15 +5,21 @@
 import {
   useEffect,
   useId,
+  useRef,
   useState,
   type InputHTMLAttributes,
   type ReactNode,
 } from "react";
-import type { Locale, Session } from "../../../shared/domain";
+import {
+  businessDate,
+  type Locale,
+  type Session,
+} from "../../../shared/domain";
 import {
   BORDER_STIMULUS_VALID_UNTIL,
   fiscalProfileInput,
   fiscalProfileIssues,
+  formatFolio,
   ISSUER_REGIMES,
   regimeAllowedFor,
   REGIMEN_FISCAL,
@@ -42,13 +48,18 @@ type Form = {
   neighborhood: string;
   municipality: string;
   state: string;
+  multipleBranches: boolean;
   ticketSeries: string;
   taxRegion: TaxRegion;
   defaultTaxCategory: TaxCategory;
   borderConfirmed: boolean;
 };
+type TextField = Exclude<
+  keyof Form,
+  "multipleBranches" | "taxRegion" | "defaultTaxCategory" | "borderConfirmed"
+>;
 
-function formOf(v: FiscalProfileView): Form {
+export function formOf(v: FiscalProfileView): Form {
   return {
     rfc: v.issuer?.rfc ?? "",
     legalName: v.issuer?.legalName ?? "",
@@ -58,6 +69,7 @@ function formOf(v: FiscalProfileView): Form {
     neighborhood: v.issuer?.address.neighborhood ?? "",
     municipality: v.issuer?.address.municipality ?? "",
     state: v.issuer?.address.state ?? "",
+    multipleBranches: v.multipleBranches,
     ticketSeries: v.ticketSeries,
     taxRegion: v.taxRegion,
     defaultTaxCategory: v.defaultTaxCategory,
@@ -65,8 +77,8 @@ function formOf(v: FiscalProfileView): Form {
   };
 }
 
-/** The POST body; identity is null when every identity field is blank. */
-function bodyOf(f: Form, expectedVersion: number, operationId: string) {
+/** The POST body without its operation id; identity is null when every identity field is blank. */
+export function bodyOf(f: Form, expectedVersion: number) {
   const identity = {
     rfc: f.rfc,
     legalName: f.legalName,
@@ -90,14 +102,29 @@ function bodyOf(f: Form, expectedVersion: number, operationId: string) {
     f.state,
   ].every((v) => !v.trim());
   return {
-    operationId,
     expectedVersion,
     identity: blank ? null : identity,
     ticketSeries: f.ticketSeries,
     taxRegion: f.taxRegion,
     defaultTaxCategory: f.defaultTaxCategory,
     borderConfirmed: f.taxRegion !== "general" && f.borderConfirmed,
+    multipleBranches: f.multipleBranches,
   };
+}
+
+/**
+ * Whether a save must stop for the RFC check-digit warning (FISCAL-UI-1): the RFC matches the
+ * SAT pattern but its check digit does not, and the owner has neither saved this RFC before nor
+ * confirmed it with a first tap.
+ */
+export function needsRfcConfirmation(
+  rfc: string,
+  savedRfc: string | null,
+  confirmedRfc: string | null,
+): boolean {
+  const r = validateRfc(rfc);
+  if (!r.ok || r.checkDigit || !r.rfc) return false;
+  return r.rfc !== savedRfc && r.rfc !== confirmedRfc;
 }
 
 const regionKeys: Record<TaxRegion, Key> = {
@@ -115,24 +142,38 @@ export function FiscalSettings({
 }) {
   const t = strings[locale];
   const id = useId();
+  const formRef = useRef<HTMLFormElement>(null);
   const [data, setData] = useState<FiscalProfileView | null>(null);
   const [form, setForm] = useState<Form | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // A short message next to the save button: why the save stopped (FISCAL-UI-3).
+  const [blocked, setBlocked] = useState("");
   const [saved, setSaved] = useState(false);
-  // One operation id per form until a save succeeds (a retry reuses it, MON-3).
-  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  // The RFC the owner chose to keep despite the check-digit warning (FISCAL-UI-1).
+  const [confirmedRfc, setConfirmedRfc] = useState<string | null>(null);
+  // One operation id per body until a save succeeds: a retry of the same body reuses it
+  // (MON-3), and a body changed after a failed attempt gets a new one (FISCAL-CONCURRENCY-4).
+  const [attempt, setAttempt] = useState(() => ({
+    operationId: crypto.randomUUID(),
+    body: null as string | null,
+  }));
   const [repairId, setRepairId] = useState(() => crypto.randomUUID());
   const [repaired, setRepaired] = useState<number | null>(null);
 
+  /** Shows the server's current profile in the panel and in the form. */
+  function show(view: FiscalProfileView) {
+    setData(view);
+    setForm(formOf(view));
+    setSubmitted(false);
+    setBlocked("");
+    setAttempt({ operationId: crypto.randomUUID(), body: null });
+  }
+
   async function load() {
     try {
-      const view = await api<FiscalProfileView>("/fiscal/profile");
-      setData(view);
-      setForm(formOf(view));
-      setSubmitted(false);
-      setOperationId(crypto.randomUUID());
+      show(await api<FiscalProfileView>("/fiscal/profile"));
     } catch (e) {
       setError(translateError((e as Error).message, locale));
     }
@@ -156,57 +197,106 @@ export function FiscalSettings({
     );
 
   const editable = data.canEdit;
-  const body = bodyOf(form, data.version, operationId);
-  const parsed = fiscalProfileInput.safeParse(body);
-  const issues: FiscalIssue[] =
-    submitted && parsed.success ? fiscalProfileIssues(parsed.data) : [];
+  const savedRfc = data.issuer?.rfc ?? null;
+  const formRfc = form.rfc;
+  const body = bodyOf(form, data.version);
+  const parsed = fiscalProfileInput.safeParse({
+    operationId: attempt.operationId,
+    ...body,
+  });
+  // Warnings (the RFC check digit) show as soon as the RFC is complete; errors after a save.
+  const issues: FiscalIssue[] = parsed.success
+    ? fiscalProfileIssues(parsed.data).filter((i) => submitted || i.warning)
+    : [];
   const issue = (field: FiscalIssue["field"]) =>
+    issues.find((i) => i.field === field && !i.warning) ??
     issues.find((i) => i.field === field);
   const set = <K extends keyof Form>(key: K, value: Form[K]) => {
     setForm({ ...form, [key]: value });
     setSaved(false);
+    setBlocked("");
   };
   const rfc = validateRfc(form.rfc);
   const regimes = ISSUER_REGIMES.filter(
     (code) => !rfc.kind || regimeAllowedFor(code, rfc.kind),
   );
   const border = form.taxRegion !== "general";
-  const today = new Date().toISOString().slice(0, 10);
+  // The restaurant's own date, not UTC (FISCAL-UI-12).
+  const today = businessDate(
+    new Date().toISOString(),
+    session.restaurant.timezone,
+    0,
+  );
   const expired = today > BORDER_STIMULUS_VALID_UNTIL;
   const validUntil = fiscalDate(BORDER_STIMULUS_VALID_UNTIL);
+  const confirming =
+    !!rfc.rfc &&
+    rfc.ok &&
+    !rfc.checkDigit &&
+    rfc.rfc === confirmedRfc &&
+    rfc.rfc !== savedRfc;
+
+  /** Moves focus to the first control marked invalid once React has rendered it. */
+  function focusFirstInvalid() {
+    requestAnimationFrame(() =>
+      formRef.current
+        ?.querySelector<HTMLElement>('[aria-invalid="true"]')
+        ?.focus(),
+    );
+  }
 
   async function save() {
     setSubmitted(true);
     setError("");
     setSaved(false);
+    setBlocked("");
     if (!parsed.success) {
       setError(translateError("invalid_input", locale));
       return;
     }
-    if (fiscalProfileIssues(parsed.data).some((i) => !i.warning)) return;
+    if (fiscalProfileIssues(parsed.data).some((i) => !i.warning)) {
+      setBlocked(t.fiscalFixFields);
+      focusFirstInvalid();
+      return;
+    }
+    if (needsRfcConfirmation(formRfc, savedRfc, confirmedRfc)) {
+      // First tap with a new check-digit warning: stop, keep it visible, ask to confirm.
+      setConfirmedRfc(rfc.rfc);
+      setBlocked(t.fiscalRfcConfirm);
+      return;
+    }
+    const fingerprint = JSON.stringify(body);
+    const operationId =
+      attempt.body === null || attempt.body === fingerprint
+        ? attempt.operationId
+        : crypto.randomUUID();
+    setAttempt({ operationId, body: fingerprint });
     setBusy(true);
     try {
-      const view = await api<FiscalProfileView>("/fiscal/profile", body, {
-        idempotent: true,
-      });
-      setData(view);
-      setForm(formOf(view));
-      setSubmitted(false);
-      setOperationId(crypto.randomUUID());
+      const view = await api<FiscalProfileView>(
+        "/fiscal/profile",
+        { operationId, ...body },
+        { idempotent: true },
+      );
+      show(view);
       setSaved(true);
       void prefetchFiscalContext(session);
     } catch (e) {
       const code = (e as Error).message;
-      setError(translateError(code, locale));
-      if (code === "fiscal_profile_changed") {
+      if (code === "fiscal_profile_changed" || code === "operation_conflict") {
+        // Another device saved (or this body met an earlier one under the same id): show the
+        // current data instead of keeping the stale form, so the next tap cannot overwrite the
+        // other change with old values (FISCAL-UI-2, FISCAL-CONCURRENCY-4).
         const view = await api<FiscalProfileView>("/fiscal/profile").catch(
           () => null,
         );
         if (view) {
-          setData(view);
-          setOperationId(crypto.randomUUID());
+          show(view);
+          setError(t.fiscalChangedReloaded);
+          return;
         }
       }
+      setError(translateError(code, locale));
     } finally {
       setBusy(false);
     }
@@ -231,18 +321,38 @@ export function FiscalSettings({
     }
   }
 
+  /** The id of a field's inline error (or warning) when it has one. */
+  const errorId = (field: FiscalIssue["field"]) =>
+    issue(field) ? `${id}-${field}-error` : "";
+  const message = (field: FiscalIssue["field"]) => {
+    const found = issue(field);
+    if (!found) return null;
+    return (
+      <p
+        id={`${id}-${field}-error`}
+        role="alert"
+        className={found.warning ? "fiscal-warning tiny" : "error tiny"}
+      >
+        {found.warning
+          ? t.fiscalRfcCheckDigit
+          : translateError(found.code, locale)}
+      </p>
+    );
+  };
+  const invalid = (field: FiscalIssue["field"]) => {
+    const found = issue(field);
+    return found && !found.warning ? true : undefined;
+  };
+
   /** A text input with its label, hint and inline error or warning. */
   const text = (
-    field: keyof Form & FiscalIssue["field"],
+    field: TextField,
     label: string,
     input: InputHTMLAttributes<HTMLInputElement>,
     hint?: ReactNode,
   ) => {
-    const found = issue(field);
-    const describedBy = [
-      hint ? `${id}-${field}-hint` : "",
-      found ? `${id}-${field}-error` : "",
-    ]
+    const issueField = field as FiscalIssue["field"];
+    const describedBy = [hint ? `${id}-${field}-hint` : "", errorId(issueField)]
       .filter(Boolean)
       .join(" ");
     return (
@@ -251,15 +361,15 @@ export function FiscalSettings({
           <span>{label}</span>
           <input
             {...input}
-            value={form[field] as string}
-            aria-invalid={found && !found.warning ? true : undefined}
+            value={form[field]}
+            aria-invalid={invalid(issueField)}
             aria-describedby={describedBy || undefined}
             onChange={(e) =>
               set(
                 field,
-                (input.autoCapitalize === "characters"
+                input.autoCapitalize === "characters"
                   ? e.target.value.toUpperCase()
-                  : e.target.value) as never,
+                  : e.target.value,
               )
             }
           />
@@ -272,34 +382,10 @@ export function FiscalSettings({
             {hint}
           </p>
         )}
-        {found && (
-          <p
-            id={`${id}-${field}-error`}
-            role="alert"
-            className={found.warning ? "fiscal-warning tiny" : "error tiny"}
-          >
-            {found.warning
-              ? t.fiscalRfcCheckDigit
-              : translateError(found.code, locale)}
-          </p>
-        )}
+        {message(issueField)}
       </div>
     );
   };
-  const address = (
-    key: "street" | "neighborhood" | "municipality" | "state",
-    label: string,
-    max: number,
-  ) => (
-    <label className="field">
-      <span>{label}</span>
-      <input
-        value={form[key]}
-        maxLength={max}
-        onChange={(e) => set(key, e.target.value)}
-      />
-    </label>
-  );
   const regimeIssue = issue("regime");
 
   return (
@@ -316,6 +402,7 @@ export function FiscalSettings({
       )}
       {!editable && <p className="muted">{t.fiscalOwnerOnly}</p>}
       <form
+        ref={formRef}
         noValidate
         onSubmit={(e) => {
           e.preventDefault();
@@ -348,9 +435,7 @@ export function FiscalSettings({
                 <select
                   value={form.regime}
                   aria-invalid={regimeIssue ? true : undefined}
-                  aria-describedby={
-                    regimeIssue ? `${id}-regime-error` : undefined
-                  }
+                  aria-describedby={errorId("regime") || undefined}
                   onChange={(e) => set("regime", e.target.value)}
                 >
                   <option value="">{t.fiscalRegimeChoose}</option>
@@ -366,15 +451,7 @@ export function FiscalSettings({
                   ))}
                 </select>
               </label>
-              {regimeIssue && (
-                <p
-                  id={`${id}-regime-error`}
-                  role="alert"
-                  className="error tiny"
-                >
-                  {translateError(regimeIssue.code, locale)}
-                </p>
-              )}
+              {message("regime")}
             </div>
             {text(
               "postalCode",
@@ -388,12 +465,31 @@ export function FiscalSettings({
             )}
           </div>
           <fieldset>
-            <legend>{t.fiscalAddress}</legend>
+            <legend>
+              {form.multipleBranches
+                ? t.fiscalAddressRequired
+                : t.fiscalAddress}
+            </legend>
+            <label className="option">
+              <input
+                type="checkbox"
+                checked={form.multipleBranches}
+                aria-describedby={`${id}-branches-hint`}
+                onChange={(e) => set("multipleBranches", e.target.checked)}
+              />
+              <span>{t.fiscalMultipleBranches}</span>
+            </label>
+            <p
+              id={`${id}-branches-hint`}
+              className="muted tiny fiscal-field-hint"
+            >
+              {t.fiscalMultipleBranchesHint}
+            </p>
             <div className="form-grid">
-              {address("street", t.fiscalStreet, 120)}
-              {address("neighborhood", t.fiscalNeighborhood, 80)}
-              {address("municipality", t.fiscalMunicipality, 80)}
-              {address("state", t.fiscalState, 60)}
+              {text("street", t.fiscalStreet, { maxLength: 120 })}
+              {text("neighborhood", t.fiscalNeighborhood, { maxLength: 80 })}
+              {text("municipality", t.fiscalMunicipality, { maxLength: 80 })}
+              {text("state", t.fiscalState, { maxLength: 60 })}
             </div>
           </fieldset>
           {text(
@@ -416,7 +512,7 @@ export function FiscalSettings({
                     type="radio"
                     name={`${id}-region`}
                     checked={form.taxRegion === region}
-                    onChange={() =>
+                    onChange={() => {
                       setForm({
                         ...form,
                         taxRegion: region,
@@ -429,8 +525,10 @@ export function FiscalSettings({
                           form.defaultTaxCategory === "iva8"
                             ? "iva16"
                             : form.defaultTaxCategory,
-                      })
-                    }
+                      });
+                      setSaved(false);
+                      setBlocked("");
+                    }}
                   />
                   <span>{t[regionKeys[region]]}</span>
                 </label>
@@ -449,7 +547,13 @@ export function FiscalSettings({
                   <input
                     type="checkbox"
                     checked={form.borderConfirmed}
-                    aria-describedby={`${id}-border-hint`}
+                    aria-invalid={invalid("borderConfirmed")}
+                    aria-describedby={[
+                      `${id}-border-hint`,
+                      errorId("borderConfirmed"),
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
                     onChange={(e) => set("borderConfirmed", e.target.checked)}
                   />
                   <span>{t.fiscalBorderConfirm}</span>
@@ -462,17 +566,24 @@ export function FiscalSettings({
                     date: validUntil,
                   })}
                 </p>
-                {issue("borderConfirmed") && (
-                  <p role="alert" className="error tiny">
-                    {translateError(issue("borderConfirmed")!.code, locale)}
-                  </p>
-                )}
+                {message("borderConfirmed")}
               </div>
             )}
             <label className="field">
               <span>{t.fiscalDefaultCategory}</span>
               <select
                 value={form.defaultTaxCategory}
+                aria-invalid={invalid("defaultTaxCategory")}
+                aria-describedby={
+                  [
+                    border && form.defaultTaxCategory !== "iva8"
+                      ? `${id}-default-hint`
+                      : "",
+                    errorId("defaultTaxCategory"),
+                  ]
+                    .filter(Boolean)
+                    .join(" ") || undefined
+                }
                 onChange={(e) =>
                   set("defaultTaxCategory", e.target.value as TaxCategory)
                 }
@@ -486,17 +597,28 @@ export function FiscalSettings({
                 )}
               </select>
             </label>
-            {issue("defaultTaxCategory") && (
-              <p role="alert" className="error tiny">
-                {translateError(issue("defaultTaxCategory")!.code, locale)}
+            {border && form.defaultTaxCategory !== "iva8" && (
+              // FISCAL-UI-4: the region alone does not change the default product tax.
+              <p id={`${id}-default-hint`} className="fiscal-warning tiny">
+                {fill(t.fiscalBorderDefaultHint, {
+                  category: categoryLabel(form.defaultTaxCategory, locale),
+                })}
               </p>
             )}
+            {message("defaultTaxCategory")}
             <p className="muted">{t.fiscalPricesInclusive}</p>
           </fieldset>
           {editable && (
-            <Button variant="primary" type="submit">
-              {t.fiscalSave}
-            </Button>
+            <div className="row wrap">
+              <Button variant="primary" type="submit">
+                {confirming ? t.fiscalSaveAnyway : t.fiscalSave}
+              </Button>
+              {blocked && (
+                <p role="alert" className="error tiny">
+                  {blocked}
+                </p>
+              )}
+            </div>
           )}
         </fieldset>
       </form>
@@ -509,7 +631,12 @@ export function FiscalSettings({
       <p>
         {data.lastFolio
           ? fill(t.fiscalLastFolio, { folio: data.lastFolio })
-          : t.fiscalNoTickets}
+          : data.previousFolio
+            ? fill(t.fiscalPreviousSeries, {
+                folio: data.previousFolio,
+                first: formatFolio(data.ticketSeries, 1),
+              })
+            : t.fiscalNoTickets}
       </p>
       {data.updatedAt && data.updatedByName && (
         <p className="muted tiny">
@@ -523,12 +650,17 @@ export function FiscalSettings({
           })}
         </p>
       )}
-      {data.missingTickets > 0 && (
+      {data.currencySupported && data.missingTickets > 0 && (
         <div className="warning-panel">
           <p>{fill(t.fiscalMissingTickets, { n: data.missingTickets })}</p>
-          <Button disabled={busy} onClick={() => void repair()}>
-            {t.fiscalIssueMissing}
-          </Button>
+          {data.ticketsEnabled ? (
+            <Button disabled={busy} onClick={() => void repair()}>
+              {t.fiscalIssueMissing}
+            </Button>
+          ) : (
+            // FISCAL-UI-5: the kill switch is on; a repair would issue nothing.
+            <p>{t.fiscalTicketsPaused}</p>
+          )}
         </div>
       )}
       {repaired !== null && (

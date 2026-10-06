@@ -557,7 +557,17 @@ export function refundScopeCategories(input: {
   scope: (Omit<RefundTaxScope, "gross"> & { gross?: number })[];
   lineDiscounts?: Readonly<Record<string, number>>;
   ctx: FiscalContext;
+  /**
+   * lineId → the category the ticket froze for that line (ticket.lines). It wins over the
+   * line's snapshot and the current default, so a line priced without a snapshot is refunded
+   * in the category it was sold under even after the default changed (MONEY-4).
+   */
+  categories?: Readonly<Record<string, TaxCategory>>;
 }): { category: TaxCategory; gross: number }[] {
+  const categoryOf = (line: TaxedLine) =>
+    own(input.categories, line.id) ??
+    lineSnapshot(line)?.category ??
+    input.ctx.defaultCategory;
   const byId = new Map(input.lines.map((l) => [l.id, l]));
   const seen = new Set<string>();
   const sums = new Map<TaxCategory, number>();
@@ -584,7 +594,7 @@ export function refundScopeCategories(input: {
       const unitGross = allocate(line.total, Array(line.quantity).fill(1));
       if (entry.gross > total(entry.units.map((u) => unitGross[u])))
         throw refundExceeds();
-      category = lineSnapshot(line)?.category ?? input.ctx.defaultCategory;
+      category = categoryOf(line);
       gross = entry.gross;
     } else {
       if ((own(input.lineDiscounts, line.id) ?? 0) > 0)
@@ -594,7 +604,7 @@ export function refundScopeCategories(input: {
         scope: [{ lineId: line.id, units: entry.units }],
         ctx: input.ctx,
       });
-      category = lineSnapshot(line)?.category ?? input.ctx.defaultCategory;
+      category = categoryOf(line);
       gross = total(rows.map((r) => r.gross));
     }
     sums.set(category, add(sums.get(category) ?? 0, gross));
@@ -794,6 +804,66 @@ export const fiscalAddressInput = z
   .strict();
 export type FiscalAddress = z.infer<typeof fiscalAddressInput>;
 
+/**
+ * Two-digit postal-code prefixes of the states of each border region, the only places where the
+ * IVA 8% incentive applies (Decreto de estímulos fiscales región fronteriza norte, DOF
+ * 31/12/2018: municipalities of Baja California, Sonora, Chihuahua, Coahuila, Nuevo León and
+ * Tamaulipas; región fronteriza sur, DOF 30/12/2020: municipalities of Campeche, Chiapas,
+ * Quintana Roo and Tabasco; both in force until 31/12/2026 by the decree of DOF 31/12/2025).
+ *
+ * Source of the prefixes: SAT, "Catálogo de códigos postales" (Código Postal → Clave Entidad
+ * Federativa, the INEGI state key),
+ * http://omawww.sat.gob.mx/terceros_autorizados/receptor_doctos_electronicos/Documents/catalogos/Cat_Codigos_Postales.pdf,
+ * checked 2026-10-06: each of its 31,637 codes' two-digit prefix belongs to exactly one state
+ * (Correos de México assigns the first two digits per entidad federativa, DOF 20/04/1981). Baja
+ * California (02) 21-22; Sonora (26) 83-85; Chihuahua (08) 31-33; Coahuila (05) 25-27; Nuevo
+ * León (19) 64-67; Tamaulipas (28) 87-89; Campeche (04) 24; Chiapas (07) 29-30; Quintana Roo
+ * (23) 77; Tabasco (27) 86.
+ *
+ * This is a state-level guard against an obvious mistake (a CDMX restaurant choosing the border
+ * region), not the incentive's test: the PAC validates the exact c_CodigoPostal "Estímulo Franja
+ * Fronteriza" mark of the place of issue and the issuer RFC's registration in the LCO, and the
+ * owner's accountant confirms both before a border pilot (docs/FISCAL.md).
+ */
+// prettier-ignore
+export const BORDER_POSTAL_PREFIXES = {
+  border_north: [
+    "21", "22", // Baja California
+    "83", "84", "85", // Sonora
+    "31", "32", "33", // Chihuahua
+    "25", "26", "27", // Coahuila
+    "64", "65", "66", "67", // Nuevo León
+    "87", "88", "89", // Tamaulipas
+  ],
+  border_south: [
+    "24", // Campeche
+    "29", "30", // Chiapas
+    "77", // Quintana Roo
+    "86", // Tabasco
+  ],
+} as const satisfies Record<Exclude<TaxRegion, "general">, readonly string[]>;
+
+/** Whether a 5-digit postal code lies in a state of the given border region. */
+export function borderPostalCodeAllowed(
+  region: Exclude<TaxRegion, "general">,
+  postalCode: string,
+): boolean {
+  const code = postalCode.trim();
+  return (
+    /^\d{5}$/.test(code) &&
+    (BORDER_POSTAL_PREFIXES[region] as readonly string[]).includes(
+      code.slice(0, 2),
+    )
+  );
+}
+
+/** The branch-address parts CFF art. 29-A fr. I requires when the RFC has several premises. */
+export const BRANCH_ADDRESS_FIELDS = [
+  "street",
+  "municipality",
+  "state",
+] as const;
+
 export const fiscalProfileInput = z
   .object({
     operationId: id,
@@ -817,6 +887,9 @@ export const fiscalProfileInput = z
     taxRegion: z.enum(TAX_REGIONS),
     defaultTaxCategory: z.enum(TAX_CATEGORIES),
     borderConfirmed: z.boolean().default(false),
+    // "Este RFC tiene más de una sucursal": the branch address becomes mandatory (CFF art.
+    // 29-A fr. I).
+    multipleBranches: z.boolean().default(false),
   })
   .strict();
 export type FiscalProfileInput = z.infer<typeof fiscalProfileInput>;
@@ -827,6 +900,7 @@ export type FiscalIssue = {
     | "legalName"
     | "regime"
     | "postalCode"
+    | (typeof BRANCH_ADDRESS_FIELDS)[number]
     | "ticketSeries"
     | "taxRegion"
     | "defaultTaxCategory"
@@ -884,6 +958,29 @@ export function fiscalProfileIssues(p: FiscalProfileInput): FiscalIssue[] {
     else if (!/^\d{5}$/.test(postalCode))
       issues.push({ field: "postalCode", code: "fiscal_invalid_postal_code" });
   }
+  // The IVA 8% incentive needs an identified issuer at a place of issue in the region (SAT-1).
+  // An incomplete identity already has its own issues above.
+  if (p.taxRegion !== "general") {
+    if (!identity) {
+      issues.push({ field: "rfc", code: "fiscal_border_identity_required" });
+      issues.push({
+        field: "postalCode",
+        code: "fiscal_border_identity_required",
+      });
+    } else {
+      const postalCode = identity.postalCode.trim();
+      if (
+        /^\d{5}$/.test(postalCode) &&
+        !borderPostalCodeAllowed(p.taxRegion, postalCode)
+      )
+        issues.push({ field: "postalCode", code: "fiscal_border_postal_code" });
+    }
+  }
+  // CFF art. 29-A fr. I: with more than one premises, the issuing branch's address (SAT-2).
+  if (p.multipleBranches)
+    for (const field of BRANCH_ADDRESS_FIELDS)
+      if (!p.identity?.address[field]?.trim())
+        issues.push({ field, code: "fiscal_address_required" });
   if (!TICKET_SERIES_PATTERN.test(p.ticketSeries.trim().toUpperCase()))
     issues.push({ field: "ticketSeries", code: "fiscal_invalid_series" });
   if (p.defaultTaxCategory === "iva8" && p.taxRegion === "general")
@@ -957,6 +1054,8 @@ export type OrderFiscal = {
 export type FiscalContextView = {
   version: number;
   complete: boolean;
+  /** The RFC has more than one premises: the branch address prints and is required. */
+  multipleBranches: boolean;
   currencySupported: boolean;
   issuer: Omit<IssuerSnapshot, "tradeName" | "taxRegion"> | null;
   tradeName: string;
@@ -967,10 +1066,14 @@ export type FiscalContextView = {
 };
 export type FiscalProfileView = FiscalContextView & {
   canEdit: boolean;
+  /** FISCAL_TICKETS_ENABLED is not "false": issuance and the repair run. */
+  ticketsEnabled: boolean;
   borderConfirmedAt: string | null;
   updatedAt: string | null;
   updatedByName: string | null;
   lastFolio: string | null;
+  /** While the current series has no ticket: the last folio of the series used before it. */
+  previousFolio: string | null;
   missingTickets: number;
   iva8Products: number;
 };
@@ -988,6 +1091,10 @@ export type FiscalSummary = {
   to: string;
   tickets: {
     count: number;
+    /**
+     * Contiguous folio runs (last − first + 1 = count), ordered by series then first folio: a
+     * series has several runs when later folios belong to other business dates.
+     */
     series: { series: string; first: number; last: number; count: number }[];
   };
   sales: CategoryTotals[];

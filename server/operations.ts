@@ -6,7 +6,7 @@ import { once, audit, drawer, getOrder } from "./orders.js";
 import { permit, managers } from "./auth.js";
 import { requireRecentAuth } from "./access.js";
 import { requireSelling } from "./free-limits.js";
-import { recordRefundTax } from "./fiscal.js";
+import { assertRefundAllowed, recordRefundTax } from "./fiscal.js";
 export async function cashSummary(tx: Tx, s: Session, drawerId?: string) {
   if (drawerId) permit(s, managers);
   const [d] = drawerId
@@ -72,6 +72,8 @@ export async function refund(tx: Tx, s: Session, raw: unknown) {
       await tx`select order_id from tenders where id=${p.tenderId}`;
     if (!owner) throw new DomainError("not_found", 404);
     await tx`select id from orders where id=${owner.order_id} for update`;
+    // MONEY-1 (LD-25): no refund on an unticketed order with a balance due.
+    await assertRefundAllowed(tx, owner.order_id);
     await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + p.tenderId},0))`;
     const [t] = await tx`select * from tenders where id=${p.tenderId}`;
     if (!t) throw new DomainError("not_found", 404);

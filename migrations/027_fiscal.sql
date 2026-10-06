@@ -26,6 +26,8 @@ CREATE TABLE restaurant_fiscal_profiles(
   default_tax_category text NOT NULL DEFAULT 'iva16' CHECK (default_tax_category IN ('iva16','iva8','iva0','exempt')),
   border_confirmed_at timestamptz,
   border_confirmed_by uuid,
+  -- The RFC has more than one premises: the issuing branch's address is required (CFF art. 29-A fr. I).
+  multiple_branches boolean NOT NULL DEFAULT false,
   version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
   updated_by uuid NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -33,6 +35,13 @@ CREATE TABLE restaurant_fiscal_profiles(
          AND (rfc IS NULL) = (postal_code IS NULL)),
   CHECK (default_tax_category <> 'iva8' OR tax_region <> 'general'),
   CHECK (tax_region = 'general' OR border_confirmed_at IS NOT NULL),
+  -- The IVA 8% incentive needs an identified issuer and place of issue (the app also checks the
+  -- postal code's state, shared/fiscal.ts BORDER_POSTAL_PREFIXES).
+  CHECK (tax_region = 'general' OR rfc IS NOT NULL),
+  CHECK (NOT multiple_branches OR (rfc IS NOT NULL
+         AND coalesce(btrim(address->>'street'),'') <> ''
+         AND coalesce(btrim(address->>'municipality'),'') <> ''
+         AND coalesce(btrim(address->>'state'),'') <> '')),
   CHECK ((border_confirmed_at IS NULL) = (border_confirmed_by IS NULL)),
   FOREIGN KEY (tenant_id, updated_by) REFERENCES employees(tenant_id, id),
   FOREIGN KEY (tenant_id, border_confirmed_by) REFERENCES employees(tenant_id, id)
