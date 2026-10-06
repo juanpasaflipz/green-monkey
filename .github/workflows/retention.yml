@@ -13,8 +13,8 @@ run-name: Retention ${{ github.event_name == 'workflow_dispatch' && inputs.envir
 # The code that runs is the environment's LIVE release, never main's head
 # (PLATFORM-ROLES-1): production checks out the newest prod-* release tag
 # (deploy.yml tags every production deploy, rollbacks included) and staging the
-# newest main commit with a successful deploy/staging status; either must be on
-# main. Nothing that holds the secret runs dev dependencies (PLATFORM-CI-4): the
+# main commit (of the latest 30) whose successful deploy/staging status is the
+# most recent; either must be on main. Nothing that holds the secret runs dev dependencies (PLATFORM-CI-4): the
 # release is installed and compiled first, then only build/scripts/migrate.js
 # runs with MIGRATION_DATABASE_URL. A scheduled run never starts a pass outside
 # RETENTION_WINDOW (a delayed cron does nothing) and stops retrying once it
@@ -78,6 +78,11 @@ jobs:
           staged() {
             [ "$(gh api "repos/$repo/commits/$1/statuses" --jq '[.[] | select(.context == "deploy/staging")][0].state')" = success ]
           }
+          # When the commit's latest deploy/staging status is a success, its created_at
+          # (ISO 8601 UTC, so it compares as text); nothing otherwise.
+          staged_at() {
+            gh api "repos/$repo/commits/$1/statuses" --jq '[.[] | select(.context == "deploy/staging")][0] | select(.state == "success") | .created_at'
+          }
           sha=""
           if [ "$RETENTION_ENV" = production ]; then
             tag=$(gh api --paginate "repos/$repo/git/matching-refs/tags/prod-" --jq '.[].ref' \
@@ -87,8 +92,16 @@ jobs:
             [ "${sha:0:7}" = "${tag##*-}" ] || { echo "::error::release tag $tag does not point at its commit"; exit 1; }
             staged "$sha" || { echo "::error::$tag was never live on staging"; exit 1; }
           else
+            # The most recently DEPLOYED commit, not the newest one: a re-run that
+            # deploys an older commit to staging gives it the newest status
+            # (PLAT-HR-8). Ties keep the newer commit.
+            newest=""
             for candidate in $(gh api "repos/$repo/commits?sha=main&per_page=30" --jq '.[].sha'); do
-              if staged "$candidate"; then sha=$candidate; break; fi
+              at=$(staged_at "$candidate")
+              if [ -n "$at" ] && { [ -z "$newest" ] || [[ "$at" > "$newest" ]]; }; then
+                newest=$at
+                sha=$candidate
+              fi
             done
             [ -n "$sha" ] || { echo "::error::none of main's latest 30 commits carries a successful deploy/staging status"; exit 1; }
           fi
@@ -119,10 +132,21 @@ jobs:
           ALERT_WEBHOOK_KIND: ${{ vars.ALERT_WEBHOOK_KIND || 'ntfy' }}
         run: |
           [ -n "$MIGRATION_DATABASE_URL" ] || { echo "::error::environment secret MIGRATION_DATABASE_URL is not set"; exit 1; }
-          # RETENTION_WINDOW from the release's own code (server/ops/retention.ts).
+          # >>> retention-window-probe (executed by tests/workflows.test.ts)
+          # RETENTION_WINDOW from the release's own code (server/ops/retention.ts). The
+          # probe exits 0 inside the window and 3 outside it; any other exit (a failed
+          # import, a renamed export, a crash) fails the run instead of reading as
+          # "outside the window", which would skip every scheduled pass in green.
           in_window() {
-            node --input-type=module -e 'const { inRetentionWindow } = await import(process.cwd() + "/build/server/ops/retention.js"); process.exit(inRetentionWindow(Date.now()) ? 0 : 1)'
+            local probe=0
+            node --input-type=module -e 'const { inRetentionWindow } = await import(process.cwd() + "/build/server/ops/retention.js"); process.exit(inRetentionWindow(Date.now()) ? 0 : 3)' || probe=$?
+            case "$probe" in
+              0) return 0 ;;
+              3) return 1 ;;
+              *) echo "::error::retention_window_check_failed: build/server/ops/retention.js did not answer (exit $probe)"; exit 1 ;;
+            esac
           }
+          # <<< retention-window-probe
           if [ "$EVENT" = schedule ] && ! in_window; then
             echo "::notice::retention_outside_window: the scheduled run started after 07:00 America/Mexico_City; the next one runs tomorrow"
             exit 0

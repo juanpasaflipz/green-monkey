@@ -322,15 +322,16 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     const dir = mkdtempSync(join(tmpdir(), "gm-retention-yml-"));
     try {
       // Stubs: node runs either the window probe (answers from $WINDOWS, one line
-      // per call) or migrate.js (exits with the next scripted code); sleep records
-      // its argument.
+      // per call: in = exit 0, out = exit 3, error = exit 1 like a failed import) or
+      // migrate.js (exits with the next scripted code); sleep records its argument.
       writeFileSync(
         join(dir, "node"),
         [
           "#!/usr/bin/env bash",
           'if [[ "$*" == *inRetentionWindow* ]]; then',
           '  echo w >> "$WINDOW_CALLS"; n=$(wc -l < "$WINDOW_CALLS")',
-          '  answer=$(sed -n "${n}p" "$WINDOWS"); [ "${answer:-in}" = in ]; exit $?',
+          '  answer=$(sed -n "${n}p" "$WINDOWS")',
+          '  case "${answer:-in}" in in) exit 0 ;; out) exit 3 ;; *) exit 1 ;; esac',
           "fi",
           'echo "node $*" >> "$CALLS"',
           'n=$(wc -l < "$CALLS")',
@@ -428,6 +429,17 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
       expect(closed.status).toBe(75);
       expect(closed.calls).toHaveLength(1);
       expect(closed.out).toContain("RETENTION_WINDOW has closed");
+      // A probe that cannot answer (import error) is red, never "outside" (PLAT-HR-3).
+      const broken = run([0], { event: "schedule", windows: ["error"] });
+      expect(broken).toMatchObject({ status: 1, calls: [] });
+      expect(broken.out).toContain("::error::retention_window_check_failed");
+      expect(broken.out).not.toContain("retention_outside_window");
+      const brokenLater = run([75, 0], {
+        event: "schedule",
+        windows: ["in", "error"],
+      });
+      expect(brokenLater).toMatchObject({ status: 1 });
+      expect(brokenLater.calls).toHaveLength(1);
       // A missing secret fails before any attempt.
       const env = { PATH: `${dir}:${process.env.PATH ?? ""}` };
       let missing = "";
@@ -443,6 +455,52 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
       expect(missing).toContain(
         "::error::environment secret MIGRATION_DATABASE_URL is not set",
       );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("retention.yml's window probe runs the release's compiled inRetentionWindow: exit 0 inside, 3 outside, and a failed import or a missing export fails the run (PLAT-HR-3)", () => {
+    const block = marked(retention, "retention-window-probe");
+    const dir = mkdtempSync(join(tmpdir(), "gm-retention-probe-"));
+    try {
+      const probe = (module: string | null) => {
+        const cwd = join(dir, String(Math.random()).slice(2));
+        execFileSync("mkdir", ["-p", join(cwd, "build/server/ops")]);
+        if (module !== null)
+          writeFileSync(join(cwd, "build/server/ops/retention.js"), module);
+        try {
+          const out = execFileSync(
+            "bash",
+            [
+              "-e",
+              "-c",
+              `${block}\nif in_window; then echo inside; else echo outside; fi`,
+            ],
+            { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+          );
+          return { status: 0, out };
+        } catch (error) {
+          const e = error as { status: number; stdout: string };
+          return { status: e.status, out: e.stdout };
+        }
+      };
+      expect(
+        probe("export const inRetentionWindow = () => true;"),
+      ).toMatchObject({ status: 0, out: "inside\n" });
+      expect(
+        probe("export const inRetentionWindow = () => false;"),
+      ).toMatchObject({ status: 0, out: "outside\n" });
+      for (const broken of [
+        null, // build/server/ops/retention.js missing
+        "export const retentionWindow = () => true;", // renamed export
+        "throw new Error('config');", // a module that fails to load
+      ]) {
+        const result = probe(broken);
+        expect(result.status, String(broken)).toBe(1);
+        expect(result.out).toContain("::error::retention_window_check_failed");
+        expect(result.out).not.toContain("outside");
+      }
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -487,7 +545,7 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
   });
 
   it.skipIf(!hasJq)(
-    "retention's live release: production = the newest prod-* tag (staged, on main), staging = the newest main commit with deploy/staging success; it fails closed otherwise, and a production dispatch respects service hours (PLATFORM-ROLES-1, CI-6)",
+    "retention's live release: production = the newest prod-* tag (staged, on main), staging = the main commit with the most recent successful deploy/staging status; it fails closed otherwise, and a production dispatch respects service hours (PLATFORM-ROLES-1, CI-6)",
     () => {
       const block = marked(retention, "retention-live-release");
       const dir = mkdtempSync(join(tmpdir(), "gm-retention-live-"));
@@ -516,9 +574,12 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
           { mode: 0o755 },
         );
         const repo = "repos/owner/repo";
-        const staged = (state = "success") => [
+        const staged = (
+          state = "success",
+          createdAt = "2026-10-04T10:00:00Z",
+        ) => [
           { context: "ci/other", state: "failure" },
-          { context: "deploy/staging", state },
+          { context: "deploy/staging", state, created_at: createdAt },
         ];
         const base: Record<string, unknown> = {
           [`${repo}/git/matching-refs/tags/prod-`]: [
@@ -588,6 +649,48 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
           status: 0,
           output: `sha=${sha("d")}`,
         });
+        // PLAT-HR-8: the most recently deployed commit wins, not the newest one. An
+        // older commit re-deployed after a newer one is the live release; a commit
+        // whose latest deploy/staging status failed is not live, whatever came before.
+        expect(
+          resolve("staging", {
+            responses: {
+              [`${repo}/commits/${sha("f")}/statuses`]: staged(
+                "success",
+                "2026-10-04T12:00:00Z",
+              ),
+              [`${repo}/commits/${sha("d")}/statuses`]: staged(
+                "success",
+                "2026-10-05T09:00:00Z",
+              ),
+            },
+          }),
+        ).toMatchObject({ status: 0, output: `sha=${sha("d")}` });
+        expect(
+          resolve("staging", {
+            responses: {
+              [`${repo}/commits/${sha("f")}/statuses`]: staged(
+                "success",
+                "2026-10-05T09:00:00Z",
+              ),
+              [`${repo}/compare/${sha("f")}...main`]: { status: "identical" },
+            },
+          }),
+        ).toMatchObject({ status: 0, output: `sha=${sha("f")}` });
+        expect(
+          resolve("staging", {
+            responses: {
+              [`${repo}/commits/${sha("d")}/statuses`]: [
+                {
+                  context: "deploy/staging",
+                  state: "failure",
+                  created_at: "2026-10-05T09:00:00Z",
+                },
+                ...staged("success", "2026-10-03T09:00:00Z"),
+              ],
+            },
+          }),
+        ).toMatchObject({ status: 1 });
         // Fail closed: no tag, a tag that never reached staging, a commit off main,
         // a tag whose name does not match its commit, nothing staged.
         const failures: [string, Record<string, unknown>, string][] = [

@@ -108,7 +108,7 @@ One-way points (a rollback past them needs extra steps):
 | A migration that a later revision depends on | Not a blocker: older revisions keep working on the newer schema (expand-only). Never revert a migration by hand. |
 | A release that added column grants (`GRANT UPDATE(<col>) …` in `scripts/grants.sql`) | The rollback's migrate step applies the **older** `scripts/grants.sql`, whose table-level `REVOKE`s also drop the newer column grants, before the older web is uploaded: until it is live (or for good, if its build fails) the newer web gets `42501` on those columns (PLATFORM-OPS-9). Prefer a forward fix; if a rollback is needed, re-dispatch the newer SHA's grants afterwards only by deploying forward again. |
 | This ops release (worker service, migrations outside `web`) | **Not supported without manual steps (staging only; production has no pre-ops revision).** A rollback keeps the live service configuration (above), which starts `web` with `node --import ./build/server/instrument.js build/server/index.js` and the worker with `build/server/worker.js`; neither exists in pre-ops builds, so both services would crash-loop. To go back that far, first restore the old start command on `web` and remove the worker's preDeploy and start command (or delete the worker service) in the dashboard, or dispatch with `railway_config: apply` after reviewing `config plan` for that older SHA; the previous revision expects migrations from Railway's old preDeploy on `web`. Prefer deploying a fix forward. |
-| Wave 2.0 (keyring, migrations in GitHub Actions) | **Staging only** (production is provisioned after 2.0, so it has no pre-2.0 revision). Under `railway_config: auto` the IaC sync is skipped for an older SHA, so the services keep 2.0's configuration: no worker `preDeploy`, no `MIGRATION_DATABASE_URL` on any service. `uses: ./.github/actions/deploy` resolves the action from the older checkout, which has no migrate step (GitHub warns about the unexpected `migration-database-url`, `pg-app-user`, `app-env` and alert inputs); nothing migrates, and the older schema needs nothing. The older worker finds no `MIGRATION_DATABASE_URL` and runs no retention schedule (the daily workflow keeps running from `main`). The older web cannot read `v2.` cookies or links: every staff member signs in again with their PIN, every terminal pairs again, owners sign in with Google again. Prefer a forward fix. |
+| Wave 2.0 (keyring, migrations in GitHub Actions) | **Staging only** (production is provisioned after 2.0, so it has no pre-2.0 revision). Under `railway_config: auto` the IaC sync is skipped for an older SHA, so the services keep 2.0's configuration: no worker `preDeploy`, no `MIGRATION_DATABASE_URL` on any service. `uses: ./.github/actions/deploy` resolves the action from the older checkout, which has no migrate step (GitHub warns about the unexpected `migration-database-url`, `pg-app-user`, `app-env` and alert inputs); nothing migrates, and the older schema needs nothing. The older worker finds no `MIGRATION_DATABASE_URL` and runs no retention schedule; the daily Retention workflow runs the live staging release's own code (the commit whose `deploy/staging` status is the most recent), not `main`'s; if that older code cannot run the pass, the run is red until staging deploys forward. The older web cannot read `v2.` cookies or links: every staff member signs in again with their PIN, every terminal pairs again, owners sign in with Google again. Prefer a forward fix. |
 | `BILLING_SANDBOX_ENABLED=true` with a pre-ops revision | Older revisions run the Stripe provider loop in `web` and need `STRIPE_SECRET_KEY` there; set `BILLING_SANDBOX_ENABLED=false` while rolled back. |
 
 ## Restart
@@ -163,14 +163,17 @@ environment secret `MIGRATION_DATABASE_URL`), never from a Railway service:
   Retention → environment) always runs, except production during service
   hours (12:00–23:59) without `allow_service_hours`.
   The workflow runs the environment's **live** release, never `main`'s
-  head: production the newest `prod-*` release tag, staging the newest
-  `main` commit with a successful `deploy/staging` status (either must be on
-  `main`, or the run fails). It installs and compiles that release without
+  head: production the newest `prod-*` release tag, staging the `main`
+  commit (of the latest 30) whose successful `deploy/staging` status is the
+  most recent, so a re-run that deployed an older commit is honoured (either
+  must be on `main`, or the run fails). It installs and compiles that release without
   the secret, then runs only `node build/scripts/migrate.js
   --retention-only` with `MIGRATION_DATABASE_URL`.
   GitHub may delay or drop a scheduled run: a run that starts after 07:00
   does nothing (`retention_outside_window`, green), and a dropped day is
-  caught up the next day; every deploy also runs a pass.
+  caught up the next day; every deploy also runs a pass. A window check that
+  cannot answer (the release's `build/server/ops/retention.js` fails to load)
+  makes the run red (`retention_window_check_failed`), never "outside".
 - **Skips and failures:** when a backup's `pg_dump` or another long
   transaction holds a lock on `jobs`, the pass is skipped (exit 75, logged,
   not alerted); the workflow retries twice, 5 minutes apart, and a third skip
