@@ -23,6 +23,21 @@ import {
 } from "../server/reports/breakdowns.js";
 import { auditLog } from "../server/reports/audit-log.js";
 import { reportFilters } from "../server/reports/filters.js";
+import { salesSummary } from "../server/reports/summary.js";
+import { breakdown } from "../server/reports/breakdowns.js";
+import { orderRows } from "../server/reports/lists.js";
+import { exceptionRows } from "../server/reports/exceptions.js";
+import { drawerList } from "../server/reports/drawers.js";
+import {
+  closeDrawerRemotely,
+  dayCorte,
+  drawerCorte,
+  printDayCorte,
+  printDrawerCorte,
+} from "../server/reports/cortes.js";
+import { todaySummary } from "../server/reports/today.js";
+import { legacyDailyReport } from "../server/reports/legacy.js";
+import type { ReportsPorts } from "../server/reports/ports.js";
 import { restaurantOf } from "../server/reports/restaurant.js";
 import { windowOf } from "../server/reports/days.js";
 import { businessDate, type Session } from "../shared/domain.js";
@@ -1042,6 +1057,125 @@ try {
       auditLog(tx, ownerB, { from: today, to: today, limit: "500" }),
     );
     assert.ok(auditB.rows.every((r) => r.actorId === ids.ownerB));
+  });
+
+  await test("32b. the manager endpoints that read fiscal (027) and discounts (028) refuse cashier, server and kitchen before any port or 027/028 statement; kitchen gets no corte; the remote close needs a recent PIN on a shared device", async () => {
+    // Ports that fail loudly: a refused call must never reach fiscal or discounts.
+    const port = (name: string) => () => {
+      throw new Error("port_called:" + name);
+    };
+    const refusing: ReportsPorts = {
+      fiscalSummary: port("fiscalSummary"),
+      missingTicketCount: port("missingTicketCount"),
+      moneyControls: port("moneyControls"),
+      canSeeExpected: port("canSeeExpected"),
+      closeDrawerRow: port("closeDrawerRow"),
+    };
+    const refused = (label: string, p: Promise<unknown>, code: string) =>
+      assert.rejects(p, (e: any) => {
+        assert.equal(e.code ?? e.message, code, `${label}: ${e.message}`);
+        return true;
+      });
+    const day = { from: today, to: today };
+    const reads: [string, (tx: Tx, s: Session) => Promise<unknown>][] = [
+      ["salesSummary", (tx, s) => salesSummary(tx, s, day, "req", refusing)],
+      ["breakdown", (tx, s) => breakdown(tx, s, { ...day, by: "product" })],
+      ["orderRows", (tx, s) => orderRows(tx, s, day)],
+      ["exceptionRows", (tx, s) => exceptionRows(tx, s, day)],
+      ["drawerList", (tx, s) => drawerList(tx, s, day, refusing)],
+      ["todaySummary", (tx, s) => todaySummary(tx, s, "req", refusing)],
+      ["dayCorte", (tx, s) => dayCorte(tx, s, today, "req", refusing)],
+      [
+        "legacyDailyReport",
+        (tx, s) => legacyDailyReport(tx, s, { date: today }),
+      ],
+    ];
+    const commands: [string, (tx: Tx, s: Session) => Promise<unknown>][] = [
+      [
+        "printDayCorte",
+        (tx, s) =>
+          printDayCorte(tx, s, today, { operationId: randomUUID() }, refusing),
+      ],
+      [
+        "closeDrawerRemotely",
+        (tx, s) =>
+          closeDrawerRemotely(
+            tx,
+            s,
+            ids.drawer2,
+            { operationId: randomUUID(), counted: 0, reason: "Prueba" },
+            refusing,
+          ),
+      ],
+    ];
+    for (const s of [cashier, server, kitchen]) {
+      for (const [label, fn] of reads)
+        await refused(
+          `${s.role} ${label}`,
+          read(s, (tx) => fn(tx, s)),
+          "forbidden",
+        );
+      for (const [label, fn] of commands)
+        await refused(
+          `${s.role} ${label}`,
+          write(s, (tx) => fn(tx, s)),
+          "forbidden",
+        );
+    }
+    await refused(
+      "kitchen drawerCorte",
+      read(kitchen, (tx) => drawerCorte(tx, kitchen, ids.drawer2, refusing)),
+      "forbidden",
+    );
+    await refused(
+      "kitchen printDrawerCorte",
+      write(kitchen, (tx) =>
+        printDrawerCorte(
+          tx,
+          kitchen,
+          ids.drawer2,
+          { operationId: randomUUID(), kind: "x" },
+          refusing,
+        ),
+      ),
+      "forbidden",
+    );
+    // A manager on a shared terminal (SEC-6): no PIN yet, or one entered a day ago, is refused
+    // before the drawer is read; a fresh PIN passes the step-up, so the next refusal is the
+    // drawer's own (an unknown drawer: not_found).
+    const onTerminal = (authenticatedAt: string | null): Session => ({
+      ...manager,
+      id: randomUUID(),
+      access: {
+        absoluteExpiresAt: null,
+        authenticatedAt,
+        deviceName: "Caja mostrador",
+        deviceKind: "terminal",
+        idleLockSeconds: null,
+        ownerAccount: false,
+      },
+    });
+    const remote = (s: Session) =>
+      write(s, (tx) =>
+        closeDrawerRemotely(
+          tx,
+          s,
+          randomUUID(),
+          { operationId: randomUUID(), counted: 0, reason: "Prueba" },
+          refusing,
+        ),
+      );
+    await refused("no PIN", remote(onTerminal(null)), "step_up_required");
+    await refused(
+      "stale PIN",
+      remote(onTerminal(new Date(Date.now() - 86_400_000).toISOString())),
+      "step_up_required",
+    );
+    await refused(
+      "fresh PIN",
+      remote(onTerminal(new Date().toISOString())),
+      "not_found",
+    );
   });
 
   console.log(`Reports DB passed (${checks} checks)`);

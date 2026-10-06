@@ -163,6 +163,9 @@ export async function printDrawerCorte(
   ports: Pick<ReportsPorts, "moneyControls" | "canSeeExpected">,
 ): Promise<CorteDocument> {
   await heavyStatementTimeout(tx);
+  // Before once(): a replayed operation id never returns a document to a role that may not
+  // print one (drawerCorte applies the per-drawer access rules inside).
+  permit(s, operators);
   const p = cortePrintInput.parse(raw);
   const kind = p.kind === "x" ? "corte_x" : "corte_z";
   return once(
@@ -249,6 +252,7 @@ export async function printDayCorte(
   ports: ReportsPorts,
 ): Promise<DayCorteDocument> {
   await heavyStatementTimeout(tx);
+  permit(s, managers); // before once(), as in printDrawerCorte
   const p = dayCortePrintInput.parse(raw);
   return once(tx, s, p.operationId, "reports.day_corte", { date }, async () => {
     await tx`select pg_advisory_xact_lock(hashtextextended(${reportPrintKey(s.tenantId, "day_corte", date)}, 0))`;
