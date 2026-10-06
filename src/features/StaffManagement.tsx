@@ -502,40 +502,40 @@ function EditStaff({
       {ownerRow && !row.isSelf ? (
         <p className="muted">{t.accessStaffOwnerPinSelf}</p>
       ) : (
-      <form
-        aria-labelledby={`pin-${row.id}`}
-        onSubmit={async (e) => {
-          e.preventDefault();
-          setError("");
-          if (pin !== confirm) return setError(t.accessStaffPinMismatch);
-          if (
-            await run(
-              `/access/staff/${row.id}/pin`,
-              { operationId: pinOperation, pin },
-              renewPin,
-              t.accessStaffPinSaved.replace("{name}", row.name),
-            )
-          ) {
-            setPin("");
-            setConfirm("");
-          }
-        }}
-      >
-        <h3 id={`pin-${row.id}`}>
-          {row.isSelf ? t.accessStaffMyPin : t.accessStaffPin}
-        </h3>
-        {row.isSelf && <p className="muted">{t.accessStaffMyPinHint}</p>}
-        <PinFields
-          locale={locale}
-          pin={pin}
-          confirm={confirm}
-          setPin={setPin}
-          setConfirm={setConfirm}
-        />
-        <Button type="submit" disabled={busy}>
-          {t.accessStaffSetPin}
-        </Button>
-      </form>
+        <form
+          aria-labelledby={`pin-${row.id}`}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            setError("");
+            if (pin !== confirm) return setError(t.accessStaffPinMismatch);
+            if (
+              await run(
+                `/access/staff/${row.id}/pin`,
+                { operationId: pinOperation, pin },
+                renewPin,
+                t.accessStaffPinSaved.replace("{name}", row.name),
+              )
+            ) {
+              setPin("");
+              setConfirm("");
+            }
+          }}
+        >
+          <h3 id={`pin-${row.id}`}>
+            {row.isSelf ? t.accessStaffMyPin : t.accessStaffPin}
+          </h3>
+          {row.isSelf && <p className="muted">{t.accessStaffMyPinHint}</p>}
+          <PinFields
+            locale={locale}
+            pin={pin}
+            confirm={confirm}
+            setPin={setPin}
+            setConfirm={setConfirm}
+          />
+          <Button type="submit" disabled={busy}>
+            {t.accessStaffSetPin}
+          </Button>
+        </form>
       )}
       {locked(row) && (
         <>

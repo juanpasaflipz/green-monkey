@@ -168,7 +168,8 @@ export function ownerRoutes(sql: postgres.Sql) {
           email: account.email,
           csrf: account.csrf,
           // account (031): co-owned organizations carry role 'co_owner'.
-          organizations: await tx`select o.id,o.name,'primary'::text as role from organizations o
+          organizations:
+            await tx`select o.id,o.name,'primary'::text as role from organizations o
               where o.created_by_account=${account.id}
             union all
             select o.id,o.name,'co_owner'::text as role from organization_co_owners c
