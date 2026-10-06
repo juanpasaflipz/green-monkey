@@ -105,8 +105,11 @@ describe("process boundaries", () => {
     const worker = reachable("server/worker.ts");
     expect(worker.has("server/cfdi/worker/register.ts")).toBe(true);
     expect(worker.has("server/cfdi/worker/boot.ts")).toBe(true);
+    // LD-16 L4 (amended LD-15 cfdi Q1): never tokens.ts, orders.ts, fiscal.ts, index.ts, any
+    // route module, or cfdi's web service and portal (CFDI-R2-6).
     for (const forbidden of [
       "server/tokens.ts",
+      "server/index.ts",
       "server/routes/cfdi.ts",
       "server/cfdi/service.ts",
       "server/cfdi/portal.ts",
@@ -116,6 +119,9 @@ describe("process boundaries", () => {
       "server/fiscal.ts",
     ])
       expect(worker.has(forbidden), forbidden).toBe(false);
+    expect([...worker].filter((f) => f.startsWith("server/routes/"))).toEqual(
+      [],
+    );
   });
 
   it("the instrument preload loads configuration before anything else", () => {
