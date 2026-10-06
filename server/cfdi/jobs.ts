@@ -54,10 +54,26 @@ export const dedupe = {
   email: (operationId: string) => `email:${operationId}`,
   acuse: (documentId: string) => `acuse:${documentId}`,
   cancel: (cancellationId: string) => `cancel:${cancellationId}`,
-  reconcile: (documentId: string, purpose: "stamp" | "cancel", n: number) =>
-    `reconcile:${documentId}:${purpose}:${n}`,
+  /** A substitution's cancellation, enqueued when the substitute reaches valid. */
+  cancelAfterSubstitute: (cancellationId: string) =>
+    `cancel:${cancellationId}:substitute`,
+  /** Poll n of a reconcile chain; a chain restarted by Reintentar or the sweep carries a tag. */
+  reconcile: (
+    documentId: string,
+    purpose: "stamp" | "cancel",
+    n: number,
+    chain?: string,
+  ) =>
+    chain
+      ? `reconcile:${documentId}:${purpose}:${chain}:${n}`
+      : `reconcile:${documentId}:${purpose}:${n}`,
+  /** A job re-enqueued for a stranded document (Reintentar "r…", the tick's sweep "s…"). */
+  recovery: (id: string, tag: string) => `recover:${id}:${tag}`,
   tick: (at: Date) => `tick:${at.toISOString()}`,
   tickEnsure: (at: Date) => `tick:ensure:${tenMinuteBucket(at)}`,
+  /** A chain restarted because no tick was live (ensureTick): at sign-in or at the worker boot. */
+  tickRestart: (reason: "status" | "boot", at: Date) =>
+    `tick:${reason}:${tenMinuteBucket(at)}`,
   tickActivate: () => "tick:activate",
   tickLive: () => "tick:live",
   tickAfterCancel: (documentId: string) => `tick:after-cancel:${documentId}`,
@@ -98,6 +114,51 @@ export async function cfdiEnqueue(
       runAt: job.runAt,
     },
   );
+}
+
+/**
+ * Whether a job of `kind` whose payload contains `match` is still queued, available or running, in
+ * the transaction's tenant. The explicit tenant predicate is required, not defensive: in the
+ * worker, 030's jobs_worker_discover policy makes every tenant's cfdi jobs visible even inside a
+ * tenant transaction (SELECT policies are OR'ed), as claimJobs notes.
+ */
+export async function liveJob(
+  tx: Tx,
+  kind: CfdiJobKind,
+  match: Record<string, string>,
+  o: { exceptId?: string; notRunning?: boolean } = {},
+): Promise<boolean> {
+  const [r] = await tx`
+    select 1 as one from jobs
+    where tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
+      and kind = ${kind}
+      and state = any(${o.notRunning ? ["queued", "available"] : ["queued", "available", "running"]}::text[])
+      and payload @> ${tx.json(match as never)}
+      ${o.exceptId ? tx`and id <> ${o.exceptId}` : tx``}
+    limit 1`;
+  return !!r;
+}
+
+/**
+ * Keeps a restaurant's global tick chain alive (review CFDI-R3): enqueues a tick when no
+ * cfdi_global job is queued, available or running. The chain normally continues itself; this
+ * restarts it after a dead tick. Called by GET /cfdi/status (every operator sign-in) and the
+ * worker boot, each with its own key per 10-minute bucket (one insert per bucket at most, and
+ * never a no-op against the settings panel's tick:ensure key).
+ */
+export async function ensureTick(
+  tx: Tx,
+  tenantId: string,
+  reason: "status" | "boot",
+  now = new Date(),
+): Promise<boolean> {
+  if (await liveJob(tx, "cfdi_global", {})) return false;
+  await cfdiEnqueue(tx, tenantId, {
+    kind: "cfdi_global",
+    dedupeKey: dedupe.tickRestart(reason, now),
+    payload: {},
+  });
+  return true;
 }
 
 /** Enqueues the stamping of a document with its per-document retry limit. */

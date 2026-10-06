@@ -18,7 +18,7 @@ export async function refundJob(ctx: JobContext): Promise<JobOutcome> {
   const p = (ctx.job.payload ?? {}) as Payload;
   const refundId = p.refundId;
   if (!refundId) return { status: "dead", code: "cfdi_invalid_payload" };
-  const { rt, outcome } = runtimeOr(ctx);
+  const { rt, outcome } = await runtimeOr(ctx);
   if (!rt) return outcome;
   const tenantId = ctx.job.tenantId;
 
@@ -46,9 +46,11 @@ export async function refundJob(ctx: JobContext): Promise<JobOutcome> {
     if (parent.status !== "valid") return { kind: "done" as const };
     if (parent.nettedRefundIds.includes(refundId))
       return { kind: "done" as const };
+    // A failed credit note is re-issued only by Reintentar (force): a provider that keeps
+    // refusing it is not asked again every day by the tick's refund sweep (CFDI-R7).
     const [existing] = await tx`
       select id from cfdi_documents where kind = 'egreso' and refund_id = ${refundId}
-        and mode = ${settings.mode} and status <> 'failed' limit 1`;
+        and mode = ${settings.mode} ${p.force ? tx`and status <> 'failed'` : tx``} limit 1`;
     if (existing) return { kind: "done" as const };
     const id = randomUUID();
     // The partial unique index (refund, mode) of non-failed credit notes settles a race with the

@@ -45,7 +45,7 @@ export async function stampJob(ctx: JobContext): Promise<JobOutcome> {
   const documentId = (ctx.job.payload as { documentId?: string } | null)
     ?.documentId;
   if (!documentId) return { status: "dead", code: "cfdi_invalid_payload" };
-  const { rt, outcome } = runtimeOr(ctx);
+  const { rt, outcome } = await runtimeOr(ctx);
   if (!rt) return outcome;
   const tenantId = ctx.job.tenantId;
 
@@ -180,7 +180,19 @@ export async function stampJob(ctx: JobContext): Promise<JobOutcome> {
     const failure = classify(e);
     if (AUTH_CODES.has(failure.code)) {
       await markKeyInvalid(rt!, c, "cfdi_org_key_invalid");
-      // A refused key stamped nothing (401 before any work).
+      // A refused key stamped nothing now (401 before any work). But an earlier attempt with an
+      // unknown outcome may have created the invoice: such a document is never failed (its
+      // claims stay), it stays `stamping` and Reintentar adopts it once the key is fixed
+      // (review CFDI-R6).
+      if (prep.unknown || d.attempts > 1) {
+        await c.tenant((tx) =>
+          event(tx, c, d.id, "stamp_retry", {
+            code: "cfdi_org_key_invalid",
+            providerCode: failure.providerCode ?? null,
+          }),
+        );
+        return DONE;
+      }
       await failDocument(rt!, c, d.id, { code: "cfdi_org_key_invalid" });
       return DONE;
     }

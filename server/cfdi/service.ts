@@ -44,10 +44,12 @@ import {
   cfdiEnqueue,
   dedupe,
   enqueueStamp,
+  ensureTick,
   GLOBAL_MAX_ATTEMPTS,
   INVOICE_MAX_ATTEMPTS,
 } from "./jobs.js";
 import { createInvoiceRequest, lockDocument } from "./requests.js";
+import { enqueueRecovery, recoveryAction } from "./recovery.js";
 import {
   attention,
   attentionOf,
@@ -104,9 +106,16 @@ function daysBetween(from: string, to: string): number {
 // Status and settings
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * GET /cfdi/status (every operator at sign-in): also restarts the restaurant's global tick chain
+ * when no tick is queued or running (ensureTick, review CFDI-R3), so a dead chain never stops the
+ * globals and their overdue alerts for longer than the next sign-in.
+ */
 export async function getStatus(tx: Tx, s: Session) {
   permit(s, operators);
-  return statusView(tx, s.role);
+  const view = await statusView(tx, s.role);
+  if (view.enabled) await ensureTick(tx, s.tenantId, "status");
+  return view;
 }
 
 async function settingsView(
@@ -291,9 +300,12 @@ export async function activate(tx: Tx, s: Session, raw: unknown) {
       throw new DomainError("cfdi_currency_unsupported", 409);
     if ((facts.legalName ?? "").length > 100)
       throw new DomainError("cfdi_legal_name_too_long", 409);
-    await tx`
+    // A concurrent activation (another operationId) may have won: answer a conflict, not a 500.
+    const created = await tx`
       insert into cfdi_settings(tenant_id, test_from, updated_by)
-      values (${s.tenantId}, ${today(s)}::date, ${s.employeeId})`;
+      values (${s.tenantId}, ${today(s)}::date, ${s.employeeId})
+      on conflict (tenant_id) do nothing returning tenant_id`;
+    if (!created.length) throw new DomainError("cfdi_settings_changed", 409);
     await tx`
       insert into cfdi_organizations(tenant_id, source)
       values (${s.tenantId}, ${state.platform!.provider === "sandbox_shared" ? "shared_sandbox" : "own"})`;
@@ -609,12 +621,27 @@ export async function requestInvoice(tx: Tx, s: Session, raw: unknown) {
     });
     return { documentId: created.documentId };
   });
-  return documentView(tx, r.documentId, viewerOf(s));
+  return staffView(tx, r.documentId, s);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Documents
 // ---------------------------------------------------------------------------------------------
+
+/**
+ * documentView for staff, plus Reintentar for a manager when the document's job is gone (a
+ * pending stamp or a cancellation no poll follows, a cancellation never sent, missing files;
+ * review CFDI-R2).
+ */
+async function staffView(tx: Tx, documentId: string, s: Session) {
+  const view = await documentView(tx, documentId, viewerOf(s));
+  if (view.canRetry || !managers.includes(s.role)) return view;
+  const doc = await loadDocument(tx, documentId);
+  const action = doc ? await recoveryAction(tx, doc) : null;
+  return action && action.kind !== "release"
+    ? { ...view, canRetry: true }
+    : view;
+}
 
 /** Managers, or the cashier who created the document in the last 24 hours. */
 async function visibleDocument(
@@ -651,7 +678,7 @@ export async function listDocumentsRoute(
 
 export async function getDocument(tx: Tx, s: Session, req: express.Request) {
   const doc = await visibleDocument(tx, s, String(req.params.id));
-  return documentView(tx, doc.id, viewerOf(s));
+  return staffView(tx, doc.id, s);
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -733,7 +760,7 @@ export async function emailDocument(
       return { ok: true };
     },
   );
-  return documentView(tx, doc.id, viewerOf(s));
+  return staffView(tx, doc.id, s);
 }
 
 /** Common cancel/substitute checks under the document's advisory key (LO-3). */
@@ -798,7 +825,7 @@ export async function cancelDocument(
       return { ok: true };
     },
   );
-  return documentView(tx, doc.id, viewerOf(s));
+  return staffView(tx, doc.id, s);
 }
 
 export async function substituteDocument(
@@ -875,7 +902,7 @@ export async function substituteDocument(
       return { documentId: substitute };
     },
   );
-  return documentView(tx, r.documentId, viewerOf(s));
+  return staffView(tx, r.documentId, s);
 }
 
 export async function retryDocument(
@@ -920,7 +947,24 @@ export async function retryDocument(
           dedupeKey: dedupe.refundForce(current.refundId, p.operationId),
           payload: { refundId: current.refundId, force: true },
         });
-      else throw new DomainError("cfdi_not_retryable", 409);
+      else {
+        // A state whose job is gone (CFDI-R2): poll the provider again, resend the
+        // cancellation or the reissue step, or fetch the files. A cancellation, reissue or
+        // delivery that is still queued is left alone; a poll always runs now.
+        const action = await recoveryAction(tx, current);
+        if (!action || action.kind === "release")
+          throw new DomainError("cfdi_not_retryable", 409);
+        await enqueueRecovery(tx, s.tenantId, current, action, {
+          tag:
+            "r" +
+            p.operationId
+              .replace(/[^0-9a-f]/gi, "")
+              .toLowerCase()
+              .slice(0, 12),
+          unlessLive: action.kind !== "reconcile",
+          worker: false,
+        });
+      }
       await insertEvent(
         tx,
         s.tenantId,
@@ -935,7 +979,7 @@ export async function retryDocument(
       return { ok: true };
     },
   );
-  return documentView(tx, doc.id, viewerOf(s));
+  return staffView(tx, doc.id, s);
 }
 
 // ---------------------------------------------------------------------------------------------

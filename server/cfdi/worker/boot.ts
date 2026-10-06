@@ -8,9 +8,14 @@
  * `disabled` with a critical alert (handlers then fail fast and retry in 15 minutes); a network
  * failure publishes the decided provider (the shared sandbox keeps its last known organization)
  * and re-verifies in the background. Logs are info/warn only (acceptance G4).
+ *
+ * It then restarts, in the background, the global tick chain of every restaurant with CFDI enabled
+ * that has no live tick (seedGlobalTicks, review CFDI-R3): a chain that went dead while the worker
+ * was down or failing resumes at the next deploy, not at the next manager visit.
  */
 import type postgres from "postgres";
 import { buildInfo } from "../../build-info.js";
+import { tenant } from "../../db.js";
 import { log } from "../../logging.js";
 import { sendAlert } from "../../ops/alerts.js";
 import {
@@ -20,6 +25,8 @@ import {
 } from "../config.js";
 import { classifyFacturapiError } from "../errors.js";
 import { createFacturapiClient, type FacturapiClient } from "../facturapi.js";
+import { ensureTick } from "../jobs.js";
+import { loadSettings } from "../store.js";
 import { uploadKeyPair } from "../vault.js";
 import { setCfdiRuntime, type CfdiRuntime } from "./runtime.js";
 
@@ -134,11 +141,37 @@ export async function verifyAndPublish(
   }
 }
 
+/**
+ * Restarts the global tick chain of every restaurant with CFDI enabled and no live tick. The
+ * restaurants come from their cfdi_global jobs, which the worker sees across tenants through the
+ * jobs_worker_discover policy (030; no new privilege): a chain that ticks every 6 hours at most
+ * leaves jobs for retention's 30 days. Each restaurant is then checked in its own tenant
+ * transaction. Returns the number of chains restarted.
+ */
+export async function seedGlobalTicks(
+  sql: postgres.Sql,
+  now = new Date(),
+): Promise<number> {
+  const rows = await sql<{ tenant_id: string }[]>`
+    select distinct tenant_id from jobs where kind = 'cfdi_global' limit 5000`;
+  let seeded = 0;
+  for (const { tenant_id: tenantId } of rows)
+    if (
+      await tenant(sql, tenantId, async (tx) =>
+        (await loadSettings(tx))?.enabled
+          ? ensureTick(tx, tenantId, "boot", now)
+          : false,
+      )
+    )
+      seeded++;
+  return seeded;
+}
+
 /** Boots cfdi in this worker; a no-op without WORKER_DATABASE_URL or Facturapi keys. */
 export async function cfdiWorkerBoot(
   workerSql: postgres.Sql | null,
   env: NodeJS.ProcessEnv,
-  o: { client?: FacturapiClient; retry?: boolean } = {},
+  o: { client?: FacturapiClient; retry?: boolean; seed?: boolean } = {},
 ): Promise<CfdiRuntime | null> {
   if (!workerSql) {
     log.info("cfdi_worker_disabled", { reason: "no_worker_database" });
@@ -190,5 +223,9 @@ export async function cfdiWorkerBoot(
     };
     again();
   }
+  if (o.seed !== false)
+    void seedGlobalTicks(workerSql)
+      .then((seeded) => log.info("cfdi_ticks_seeded", { seeded }))
+      .catch((error) => log.warn("cfdi_ticks_seed_failed", {}, error));
   return runtime;
 }

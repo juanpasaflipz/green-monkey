@@ -10,9 +10,15 @@
  *   5. late sweep: tickets of recent built/empty periods still unclaimed (offline syncs, repairs,
  *      tickets freed by a cancellation) go into a SUPPLEMENTARY part of THEIR OWN period (decision
  *      D5, binding), flagged and alerted when created after the period's due time;
- *   5b. refund sweep: re-enqueues credit-note decisions a dead cfdi_refund job left behind;
+ *   5b. refund sweep: re-enqueues credit-note decisions a dead cfdi_refund job left behind (never
+ *       for a refund that already has a credit note, failed ones included: those wait for
+ *       Reintentar);
+ *   5c. recovery sweep: re-enqueues the job of a document whose job is gone (server/cfdi/recovery.ts);
  *   6. overdue alert (once per period); 7. CSD expiry notice;
  *   8. the next tick at the next close + grace or within 6 h (bucketed so concurrent chains merge).
+ * The chain never ends on errors (review CFDI-R3): the last failing attempt schedules a fresh tick
+ * at the next hour before it goes dead (jobs_dead_cfdi_global still alerts), and the worker boot
+ * and GET /cfdi/status restart a chain that has no live tick (ensureTick).
  */
 import { randomUUID } from "node:crypto";
 import type { JobContext, JobOutcome } from "../../jobs.js";
@@ -32,10 +38,17 @@ import {
   dedupe,
   enqueueStamp,
   GLOBAL_MAX_ATTEMPTS,
+  lastAttempt,
   retryOrExhaust,
 } from "../jobs.js";
 import {
+  enqueueRecovery,
+  recoveryAction,
+  recoveryCandidates,
+} from "../recovery.js";
+import {
   fiscalFacts,
+  loadDocument,
   loadOrganization,
   loadSettings,
   modeFrom,
@@ -250,10 +263,48 @@ async function buildPeriod(
     });
 }
 
+/** The top of the next UTC hour: a failing chain's fresh tick (merges with any tick keyed there). */
+export function nextHour(now: Date): Date {
+  return new Date((Math.floor(now.getTime() / HOUR) + 1) * HOUR);
+}
+
 export async function globalJob(ctx: JobContext): Promise<JobOutcome> {
-  const p = (ctx.job.payload ?? {}) as Payload;
-  const { rt, outcome } = runtimeOr(ctx);
+  const { rt, outcome } = await runtimeOr(ctx);
   if (!rt) return outcome;
+  try {
+    return await runTick(rt, ctx);
+  } catch (e) {
+    const code = (e as { code?: unknown })?.code;
+    const failure = {
+      code:
+        typeof code === "string" && /^[a-z][a-z0-9_]{1,63}$/.test(code)
+          ? code
+          : "cfdi_global_error",
+      afterMs: 5 * MINUTE,
+    };
+    if (lastAttempt(ctx.job)) {
+      // The chain must outlive a persistent error: its next tick is scheduled before this job
+      // goes dead (jobs_dead_cfdi_global alerts the operator).
+      const runAt = nextHour(new Date());
+      await ctx
+        .tenant((tx) =>
+          cfdiEnqueue(tx, ctx.job.tenantId, {
+            kind: "cfdi_global",
+            dedupeKey: dedupe.tick(runAt),
+            payload: {},
+            runAt,
+          }),
+        )
+        .catch((error) =>
+          ctx.log.warn("cfdi_global_handover_failed", {}, error),
+        );
+    }
+    return retryOrExhaust(ctx.job, failure);
+  }
+}
+
+async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
+  const p = (ctx.job.payload ?? {}) as Payload;
   const tenantId = ctx.job.tenantId;
   const grace = rt.config.graceMinutes * MINUTE;
   const now = new Date();
@@ -325,7 +376,7 @@ export async function globalJob(ctx: JobContext): Promise<JobOutcome> {
   });
   if (!plan) return { status: "done" };
 
-  try {
+  {
     // 4-5. Due periods and late sweeps (oldest first), plus a forced period ("Emitir ahora").
     const keys = [...plan.keys];
     if (p.force && p.periodKey && !keys.includes(p.periodKey))
@@ -337,7 +388,29 @@ export async function globalJob(ctx: JobContext): Promise<JobOutcome> {
       await ctx.extendLease(300).catch(() => undefined);
     }
 
-    // 5b-8. Refund sweep, alerts and the next tick.
+    // 5c. Recovery sweep (CFDI-R2): documents whose job is gone, at most once a day each.
+    await ctx.tenant(async (tx) => {
+      const tag = "s" + plan.today.replaceAll("-", "");
+      for (const id of await recoveryCandidates(tx)) {
+        const doc = await loadDocument(tx, id);
+        const action = doc ? await recoveryAction(tx, doc) : null;
+        if (!doc || !action) continue;
+        if (
+          await enqueueRecovery(tx, tenantId, doc, action, {
+            tag,
+            unlessLive: true,
+            worker: true,
+          })
+        )
+          await event(tx, ctx, doc.id, "recovery_queued", {
+            action: action.kind,
+            by: "sweep",
+          });
+      }
+    });
+
+    // 5b-8. Refund sweep, alerts and the next tick. A refund whose credit note failed is not
+    // re-created every day (CFDI-R7): only Reintentar (force) issues a new one.
     const alerts = await ctx.tenant(async (tx) => {
       const refunds = await tx`
         select distinct a.refund_id from fiscal_adjustments a
@@ -348,7 +421,7 @@ export async function globalJob(ctx: JobContext): Promise<JobOutcome> {
         where a.business_date >= (${plan.today}::date - 62)
           and not (a.refund_id = any(d.netted_refund_ids))
           and not exists (select 1 from cfdi_documents e where e.tenant_id = a.tenant_id and e.kind = 'egreso'
-            and e.refund_id = a.refund_id and e.mode = ${plan.mode} and e.status <> 'failed')
+            and e.refund_id = a.refund_id and e.mode = ${plan.mode})
         limit 200`;
       for (const r of refunds)
         await cfdiEnqueue(tx, tenantId, {
@@ -407,14 +480,5 @@ export async function globalJob(ctx: JobContext): Promise<JobOutcome> {
         body: `tenant ${tenantTag(tenantId)} days<30`,
       });
     return { status: "done" };
-  } catch (e) {
-    const code = (e as { code?: unknown })?.code;
-    return retryOrExhaust(ctx.job, {
-      code:
-        typeof code === "string" && /^[a-z][a-z0-9_]{1,63}$/.test(code)
-          ? code
-          : "cfdi_global_error",
-      afterMs: 5 * MINUTE,
-    });
   }
 }

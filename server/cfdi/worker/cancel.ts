@@ -131,7 +131,7 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
   const cancellationId = (ctx.job.payload as { cancellationId?: string } | null)
     ?.cancellationId;
   if (!cancellationId) return { status: "dead", code: "cfdi_invalid_payload" };
-  const { rt, outcome } = runtimeOr(ctx);
+  const { rt, outcome } = await runtimeOr(ctx);
   if (!rt) return outcome;
   const tenantId = ctx.job.tenantId;
 
@@ -162,11 +162,10 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
     };
   });
   if (!loaded) return { status: "done" };
-  if ("wait" in loaded)
-    return retryOrExhaust(ctx.job, {
-      code: "cfdi_substitute_pending",
-      afterMs: 30_000,
-    });
+  // The substitute is not stamped yet: recordStamped enqueues this cancellation again (its own
+  // dedupe key) once it is valid, and failDocumentTx fails it if the substitute fails. Retrying
+  // here would only use up attempts while the substitute is pending (CFDI-R2).
+  if ("wait" in loaded) return { status: "done" };
   const { c, doc } = loaded;
   try {
     const inv = await rt.client.cancelInvoice(

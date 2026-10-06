@@ -79,7 +79,7 @@ export async function deliverJob(ctx: JobContext): Promise<JobOutcome> {
   const p = (ctx.job.payload ?? {}) as Payload;
   const documentId = p.documentId;
   if (!documentId) return { status: "dead", code: "cfdi_invalid_payload" };
-  const { rt, outcome } = runtimeOr(ctx);
+  const { rt, outcome } = await runtimeOr(ctx);
   if (!rt) return outcome;
   const tenantId = ctx.job.tenantId;
 

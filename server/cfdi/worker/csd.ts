@@ -54,7 +54,7 @@ async function terminal(
 export async function csdJob(ctx: JobContext): Promise<JobOutcome> {
   const uploadId = (ctx.job.payload as { uploadId?: string } | null)?.uploadId;
   if (!uploadId) return { status: "dead", code: "cfdi_invalid_payload" };
-  const { rt, outcome } = runtimeOr(ctx);
+  const { rt, outcome } = await runtimeOr(ctx);
   if (!rt) return outcome;
   const loaded = await ctx.tenant(async (tx) => {
     const [u] = await tx`

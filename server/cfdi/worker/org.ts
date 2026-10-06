@@ -259,7 +259,7 @@ async function goLive(
 }
 
 export async function orgJob(ctx: JobContext): Promise<JobOutcome> {
-  const { rt, outcome } = runtimeOr(ctx);
+  const { rt, outcome } = await runtimeOr(ctx);
   if (!rt) return outcome;
   const action = (ctx.job.payload as { action?: Action } | null)?.action;
   const loaded = await ctx.tenant(async (tx) => ({

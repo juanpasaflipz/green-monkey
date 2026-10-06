@@ -42,7 +42,7 @@ export async function recordStamped(
       if (c)
         await cfdiEnqueue(tx, ctx.job.tenantId, {
           kind: "cfdi_cancel",
-          dedupeKey: dedupe.cancel(c.id),
+          dedupeKey: dedupe.cancelAfterSubstitute(c.id),
           payload: { cancellationId: c.id },
         });
     }
