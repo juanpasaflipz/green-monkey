@@ -178,3 +178,76 @@ export async function provisionStripeSandboxCatalog(
     annualPriceId: result.year!,
   };
 }
+
+/**
+ * Explicit sandbox provisioning of the SaaS IVA rate (account 031, GAP-6):
+ * reuses the active rate tagged metadata[green_monkey_tax]=iva16, else creates
+ * it once (fixed idempotency key), and returns it only after validation.
+ */
+export async function provisionStripeSandboxTaxRate(
+  secret: string,
+  expectedAccountId: string,
+  request: typeof fetch = fetch,
+): Promise<{ accountId: string; taxRateId: string }> {
+  if (!/^(sk|rk)_test_[A-Za-z0-9]+$/.test(secret))
+    throw Error("stripe_sandbox_key_required");
+  if (!/^acct_[A-Za-z0-9]+$/.test(expectedAccountId))
+    throw Error("stripe_expected_account_required");
+  async function call(path: string, body?: URLSearchParams): Promise<unknown> {
+    let response: Response;
+    try {
+      response = await request("https://api.stripe.com/v1" + path, {
+        method: body ? "POST" : "GET",
+        redirect: "error",
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          Authorization: `Bearer ${secret}`,
+          ...(body
+            ? {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Idempotency-Key": "gm-tax-rate-v1",
+              }
+            : {}),
+        },
+        ...(body ? { body } : {}),
+      });
+    } catch {
+      throw Error("stripe_catalog_request_uncertain_rerun_to_reconcile");
+    }
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data)
+      throw Error(`stripe_catalog_request_failed_${response.status}`);
+    return data;
+  }
+  const account = z.object({ id: z.string() }).parse(await call("/account"));
+  if (account.id !== expectedAccountId) throw Error("stripe_account_mismatch");
+  const list = z
+    .object({
+      data: z.array(
+        z
+          .object({ metadata: z.record(z.string(), z.string()).optional() })
+          .passthrough(),
+      ),
+    })
+    .safeParse(await call("/tax_rates?active=true&limit=100"));
+  if (!list.success) throw Error("stripe_catalog_tax_rate_mismatch");
+  const tagged = list.data.data.filter(
+    (r) => r.metadata?.green_monkey_tax === "iva16",
+  );
+  if (tagged.length > 1) throw Error("stripe_catalog_lookup_ambiguous");
+  const rate =
+    tagged[0] ??
+    (await call(
+      "/tax_rates",
+      new URLSearchParams({
+        display_name: "IVA",
+        percentage: "16",
+        inclusive: "false",
+        country: "MX",
+        jurisdiction: "MX",
+        description: "IVA 16% Green Monkey SaaS",
+        "metadata[green_monkey_tax]": "iva16",
+      }),
+    ));
+  return { accountId: account.id, taxRateId: validateSandboxTaxRate(rate).id };
+}
