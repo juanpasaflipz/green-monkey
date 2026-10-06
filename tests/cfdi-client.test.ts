@@ -81,6 +81,7 @@ import {
   portalMessage,
 } from "../src/features/cfdi/SelfInvoicePortal";
 import { awaitingFiles } from "../src/features/cfdi/InvoiceDialog";
+import { FiscalReceiptFooter } from "../src/features/fiscal/FiscalReceipt";
 import { receptorFixable } from "../shared/cfdi";
 
 const apiMock = vi.mocked(api);
@@ -266,6 +267,29 @@ describe("cfdi client: printed block (23, 2.12)", () => {
     expect(cfdiReceiptExtra(p("receipt", order(undefined)))).toBeNull();
     expect(cfdiReceiptExtra(p("receipt"))).not.toBeNull();
     expect(cfdiReceiptExtra(p("local", order(undefined)))).not.toBeNull();
+  });
+  it("CFDI-UX-6: fiscal's footer prints cfdi's line on a local (offline) receipt, which has no ticket, and on no other ticketless receipt", () => {
+    setCfdiStatus(status());
+    const local = order(undefined, { state: "local" } as Partial<Order>);
+    const footer = (kind: "local" | "receipt") =>
+      html(
+        createElement(FiscalReceiptFooter, {
+          order: local,
+          kind,
+          reprint: false,
+          locale: "es",
+          extra: cfdiReceiptExtra({
+            order: local,
+            kind,
+            reprint: false,
+            locale: "es",
+          }),
+        }),
+      );
+    expect(footer("local")).toContain(
+      "pide tu ticket con folio cuando se sincronice",
+    );
+    expect(footer("receipt")).not.toContain("cuando se sincronice");
   });
 });
 
