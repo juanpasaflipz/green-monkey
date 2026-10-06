@@ -321,7 +321,7 @@ export async function acceptHold(
       }
       await tx`update public_order_holds set state='accepted',decided_at=clock_timestamp(),
           decided_by=${s.employeeId},order_id=${order.id},order_round=${round},
-          excluded_line_ids=${tx.array(p.excludeLineIds)}::uuid[],
+          excluded_line_ids=${tx.array([...excluded])}::uuid[],
           paid_at_accept=${!!p.payment},policy_override=${override}
         where id=${holdId}`;
       const label = holdLabel(h.channel, h.number);
@@ -332,7 +332,7 @@ export async function acceptHold(
         round,
         paid: !!p.payment,
         override,
-        excluded: p.excludeLineIds.length,
+        excluded: excluded.size,
         priceChanged: current !== quoted,
       });
       return {
