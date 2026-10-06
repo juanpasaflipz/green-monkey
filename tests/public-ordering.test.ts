@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "../shared/domain";
 import {
+  acceptInput,
   canonicalRequest,
   dinerRejectReason,
   effectiveHoldState,
@@ -30,6 +31,8 @@ import {
 import { parseDinerLocation } from "../src/features/public/dinerRoute";
 import { HoldCard } from "../src/features/public/HoldCard";
 import { PublicInboxBanner } from "../src/features/public/PublicInboxBanner";
+import { KioskDone } from "../src/features/public/KioskDone";
+import { DinerStatus } from "../src/features/public/DinerStatus";
 import { moneyFormatter as menuMoney } from "../src/features/menu/format";
 
 // Receipt.tsx (service's staff money formatter) imports the offline store.
@@ -317,6 +320,7 @@ describe("public ordering tokens and schemas (032)", () => {
       tableId: id(),
       tableName: "Mesa 4",
       linkLabel: "",
+      linkRevoked: null,
       name: "",
       note: "",
       policy,
@@ -379,6 +383,128 @@ describe("public ordering tokens and schemas (032)", () => {
       expect(markup).toContain("<select");
       expect(markup).toContain("Cuenta #142");
     }
+  });
+
+  it("17. the accept carries the total staff saw and an abuse acknowledgement; the yes/no price flag is gone (MONEY-1, ABUSE-1)", () => {
+    const base = { operationId: id(), target: { kind: "new" } };
+    const parsed = acceptInput.parse(base);
+    expect([parsed.acknowledgedTotal, parsed.abuseAcknowledged]).toEqual([
+      null,
+      false,
+    ]);
+    expect(
+      acceptInput.parse({ ...base, acknowledgedTotal: 6500 }).acknowledgedTotal,
+    ).toBe(6500);
+    for (const bad of [
+      { ...base, priceChangeAcknowledged: true },
+      { ...base, acknowledgedTotal: -1 },
+      { ...base, acknowledgedTotal: 45.5 },
+    ])
+      expect(acceptInput.safeParse(bad).success).toBe(false);
+  });
+
+  it("18. a hold from a code deactivated as abuse is flagged and cannot be accepted unticked (ABUSE-1)", () => {
+    const hold: InboxHold = {
+      id: id(),
+      label: "Q-8",
+      kind: "counter",
+      channel: "qr",
+      tableId: null,
+      tableName: null,
+      linkLabel: "Ventanilla",
+      linkRevoked: "abuse",
+      name: "",
+      note: "",
+      policy: "accept",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+      lines: [
+        {
+          id: id(),
+          quantity: 1,
+          name: { es: "Taco", en: "Taco" },
+          optionNames: [],
+          unitPrice: 4500,
+          total: 4500,
+          issue: null,
+          currentTotal: 4500,
+        },
+      ],
+      quotedTotal: 4500,
+      currentTotal: 4500,
+      openChecks: [],
+    };
+    const markup = renderToStaticMarkup(
+      createElement(HoldCard, {
+        hold,
+        session: {
+          role: "cashier",
+          restaurant: { currency: "MXN" },
+        } as Session,
+        locale: "es",
+        online: true,
+        busy: false,
+        error: "",
+        nowMs: Date.now(),
+        forceNew: false,
+        onAccept: () => {},
+        onPay: () => {},
+        onReject: () => {},
+      }),
+    );
+    expect(markup).toContain(
+      "Código desactivado por abuso: verifica con el cliente antes de aceptar.",
+    );
+    expect(markup).toContain(
+      "Lo verifiqué con el cliente; aceptar de todos modos.",
+    );
+    expect(markup).toMatch(
+      /<button[^>]*disabled=""[^>]*>Aceptar y enviar a cocina<\/button>/,
+    );
+    expect(markup).toContain("hace un momento");
+  });
+
+  it("19. the kiosk code is a plain heading and the status keeps one live region from loading on (UX-6)", () => {
+    const done = renderToStaticMarkup(
+      createElement(KioskDone, {
+        hold: {
+          restaurant: { name: "R", currency: "MXN", timezone: "UTC" },
+          label: "K-6",
+          state: "pending",
+          kind: "kiosk",
+          policy: "pay_first",
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date().toISOString(),
+          lines: [],
+          total: 5500,
+          priceChanged: false,
+          rejectReason: null,
+          order: null,
+        },
+        locale: "es",
+        currency: "MXN",
+        onReset: () => {},
+      }),
+    );
+    expect(done).toContain('<h2 class="kiosk-code">K-6</h2>');
+    expect(done).not.toContain('role="status"');
+    const loading = renderToStaticMarkup(
+      createElement(DinerStatus, {
+        token: token(),
+        locale: "es",
+        menu: null,
+        statusKey: token(),
+        holds: [],
+        onSelect: () => {},
+        onForget: () => {},
+        onNewOrder: () => {},
+        onRestore: () => {},
+      }),
+    );
+    expect(loading).toContain(
+      '<div class="diner-status-head" role="status"><p>Cargando',
+    );
+    expect(loading).toContain('tabindex="-1"');
   });
 
   it("16. the shell banner's live region is mounted while empty (LD-P8)", () => {
