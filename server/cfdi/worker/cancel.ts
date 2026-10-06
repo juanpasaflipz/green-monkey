@@ -9,8 +9,10 @@ import type { JobContext, JobOutcome } from "../../jobs.js";
 import type { Tx } from "../../db.js";
 import { cfdiEnqueue, dedupe, retryOrExhaust } from "../jobs.js";
 import type { FInvoice } from "../facturapi.js";
+import { lockDocument } from "../locks.js";
 import {
   activatePendingClaims,
+  hasCreditNotes,
   loadDocument,
   releaseClaims,
   waitingSubstitute,
@@ -162,8 +164,14 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
   const tenantId = ctx.job.tenantId;
 
   const loaded = await ctx.tenant(async (tx) => {
+    const first = await loadCancellation(tx, { id: cancellationId });
+    if (!first || first.status !== "queued" || first.source === "reissue")
+      return null;
+    // The document's key (LO-3, class 927): the key cfdi_refund holds while it decides on a
+    // credit note, so the credit-note check below and a new credit note never interleave.
+    await lockDocument(tx, tenantId, first.documentId);
     const c = await loadCancellation(tx, { id: cancellationId });
-    if (!c || c.status !== "queued" || c.source === "reissue") return null;
+    if (!c || c.status !== "queued") return null;
     const doc = await loadDocument(tx, c.documentId);
     if (!doc || doc.status !== "valid" || !doc.providerInvoiceId) return null;
     let substituteUuid: string | null = null;
@@ -180,6 +188,20 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
       if (sub.status !== "valid" || !sub.uuid) return { wait: true as const };
       substituteUuid = sub.uuid;
     }
+    // SAT refuses to cancel a CFDI that a valid credit note relates to. The request checked it,
+    // but a credit note created before cfdi_refund took this key (or by an older release) may
+    // exist: refuse here instead of calling the provider (CFDI-R3-2). A substitution refused
+    // this way leaves its substitute waiting, which the register's attention counts.
+    if (await hasCreditNotes(tx, doc.id)) {
+      await tx`
+        update cfdi_cancellations set status = 'failed', error_code = 'cfdi_has_credit_notes', processed_at = now()
+        where id = ${c.id} and status = 'queued'`;
+      await event(tx, ctx, doc.id, "cancel_failed", {
+        code: "cfdi_has_credit_notes",
+        providerCode: null,
+      });
+      return { refused: doc.id };
+    }
     return {
       c,
       doc,
@@ -188,6 +210,15 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
     };
   });
   if (!loaded) return { status: "done" };
+  if ("refused" in loaded) {
+    raise(rt, {
+      key: `cfdi_cancel_failed:${tenantTag(tenantId)}:${loaded.refused}`,
+      severity: "warning",
+      title: "CFDI cancellation refused",
+      body: `tenant ${tenantTag(tenantId)} document ${loaded.refused} code cfdi_has_credit_notes`,
+    });
+    return { status: "done" };
+  }
   // The substitute is not stamped yet: recordStamped enqueues this cancellation again (its own
   // dedupe key) once it is valid, and failDocumentTx fails it if the substitute fails. Retrying
   // here would only use up attempts while the substitute is pending (CFDI-R2).

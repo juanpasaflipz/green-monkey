@@ -459,6 +459,37 @@ export async function releaseClaims(
 }
 
 /**
+ * Egreso statuses that relate a credit note to its parent at SAT, now or once it stamps. SAT
+ * refuses to cancel a CFDI while a valid CFDI relates to it (spec §2.8 cfdi_has_credit_notes).
+ */
+const LIVE_CREDIT_NOTES = [
+  "queued",
+  "stamping",
+  "pending",
+  "valid",
+  "canceling",
+];
+
+/**
+ * Whether credit notes block the cancellation of a document. Every path that starts a
+ * cancellation reads it under the document's key (the staff request, the late invoice's
+ * reissue request, cfdi_cancel and cfdi_reissue before they call the provider), and cfdi_refund
+ * creates a credit note only under that key with no cancellation open, so a cancellation and a
+ * credit note of the same document never both start (CFDI-R3-2).
+ */
+export async function hasCreditNotes(
+  tx: Tx,
+  documentId: string,
+): Promise<boolean> {
+  const [r] = await tx`
+    select 1 as one from cfdi_documents
+    where parent_document_id = ${documentId} and kind = 'egreso'
+      and status = any(${LIVE_CREDIT_NOTES}::text[])
+    limit 1`;
+  return !!r;
+}
+
+/**
  * The newest substitute of `documentId` that still waits for its ticket (pending claims), among
  * the given statuses. `valid` alone: the substitute a cancellation of the original hands the
  * ticket to (onCanceled, the motive-01 re-request). Every unfinished status: the substitute that
@@ -772,7 +803,7 @@ export async function documentView(
       coalesce((select jsonb_agg(c.id order by c.created_at) from cfdi_documents c
         where c.parent_document_id = ${id} and c.kind = 'egreso'), '[]') as credit_notes,
       coalesce((select jsonb_agg(c.id) from cfdi_documents c
-        where c.parent_document_id = ${id} and c.kind = 'egreso' and c.status in ('queued','stamping','pending','valid')), '[]') as active_credit_notes,
+        where c.parent_document_id = ${id} and c.kind = 'egreso' and c.status in ('queued','stamping','pending','valid','canceling')), '[]') as active_credit_notes,
       (select s.id from cfdi_documents s where s.replaces_document_id = ${id} and s.status = 'valid'
         and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
           and c.document_id = s.id and c.state = 'pending')

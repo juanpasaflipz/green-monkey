@@ -1520,6 +1520,203 @@ try {
     assert.equal(v.canSubstitute, true);
   });
 
+  await test("R3-2. a refund while a staff cancellation is still queued (provider outage) waits: no credit note against the invoice being canceled, and the ticket ends net in its global", async () => {
+    const R = await makeTenant("refund during a cancellation");
+    await activate(R, { testFrom: daysAgo(40), periodicity: "day" });
+    const day = daysAgo(3);
+    const tk = await makeTicket(R, { businessDate: day });
+    const d = await invoice(R, tk);
+    await settle(R.tenantId);
+    assert.equal((await docRow(d.id)).status, "valid");
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "unavailable",
+      match: { type: "I", global: false },
+    });
+    await web(R, (tx) =>
+      service.cancelDocument(
+        tx,
+        R.manager,
+        { operationId: op(), motive: "03", reason: "No se concretó" },
+        { params: { id: d.id } } as never,
+      ),
+    );
+    await settle(R.tenantId);
+    const [queued] =
+      await admin`select status from cfdi_cancellations where document_id = ${d.id}`;
+    assert.equal(
+      queued.status,
+      "queued",
+      "the provider outage keeps it queued",
+    );
+    assert.equal((await docRow(d.id)).status, "valid");
+
+    const refundId = await refund(R, tk, { iva16: 5800 });
+    await settle(R.tenantId);
+    const egresos = () =>
+      admin`select id from cfdi_documents where refund_id = ${refundId}`;
+    assert.equal((await egresos()).length, 0, "no credit note while canceling");
+    const [job] =
+      await admin`select state, error_code from jobs where tenant_id = ${R.tenantId} and dedupe_key = ${"refund:" + refundId}`;
+    assert.deepEqual(
+      { ...job },
+      { state: "available", error_code: "cfdi_parent_cancel_open" },
+    );
+
+    // The outage ends: the cancellation is accepted, the ticket goes to a supplementary part of
+    // its day at its net amount, and the refund needs no credit note.
+    for (let i = 0; i < 4; i++) {
+      await due(R.tenantId);
+      await settle(R.tenantId);
+    }
+    assert.equal((await docRow(d.id)).status, "canceled");
+    const active = (await claims(tk.id)).filter((r) => r.state === "active");
+    assert.equal(active.length, 1);
+    const g = await docRow(active[0].document_id);
+    assert.equal(g.kind, "global");
+    assert.equal(g.period_key, "D" + day);
+    assert.equal(g.status, "valid");
+    assert.deepEqual(g.netted_refund_ids, [refundId]);
+    assert.equal(g.expected_total, 11600 - 5800);
+    assert.equal((await egresos()).length, 0);
+    const [finished] =
+      await admin`select state from jobs where tenant_id = ${R.tenantId} and dedupe_key = ${"refund:" + refundId}`;
+    assert.equal(finished.state, "done");
+  });
+
+  await test("R3-2b. credit notes block every cancellation: the staff request (cfdi_has_credit_notes), the late invoice's reissue request (cfdi_global_has_credit_notes), and cfdi_cancel and cfdi_reissue re-check under the document key without calling the provider", async () => {
+    const N = await makeTenant("credit notes block cancellations");
+    await activate(N, { testFrom: daysAgo(40), periodicity: "day" });
+    const tk = await makeTicket(N);
+    const d = await invoice(N, tk);
+    await settle(N.tenantId);
+    await refund(N, tk, { iva16: 5800 });
+    await settle(N.tenantId);
+    const [egreso] =
+      await admin`select status from cfdi_documents where parent_document_id = ${d.id} and kind = 'egreso'`;
+    assert.equal(egreso.status, "valid");
+    await rejects(cancelAs(N, N.manager, d.id), "cfdi_has_credit_notes");
+    await rejects(
+      web(N, (tx) =>
+        service.substituteDocument(
+          tx,
+          N.manager,
+          {
+            operationId: op(),
+            receptor: MORAL,
+            cardForm: null,
+            reason: "Nombre",
+          },
+          { params: { id: d.id } } as never,
+        ),
+      ),
+      "cfdi_has_credit_notes",
+    );
+
+    // A cancellation that slipped past the request's check (a credit note created before
+    // cfdi_refund took the document key): the worker refuses it before calling the provider.
+    const sendCancel = async (documentId: string, motive: "02" | "04") => {
+      const cancellationId = randomUUID();
+      await web(N, async (tx) => {
+        await tx`
+          insert into cfdi_cancellations(tenant_id, id, document_id, motive, source, reason)
+          values (${N.tenantId}, ${cancellationId}, ${documentId}, ${motive},
+            ${motive === "04" ? "reissue" : "staff"}, 'race')`;
+        await cfdiEnqueue(
+          tx,
+          N.tenantId,
+          motive === "04"
+            ? {
+                kind: "cfdi_reissue",
+                dedupeKey: "reissue:test:" + cancellationId,
+                payload: { globalDocumentId: documentId },
+              }
+            : {
+                kind: "cfdi_cancel",
+                dedupeKey: "cancel:" + cancellationId,
+                payload: { cancellationId },
+              },
+        );
+      });
+      return cancellationId;
+    };
+    const deletes = () =>
+      fake.requests.filter((r) => r.method === "DELETE").length;
+    let before = deletes();
+    alerts.length = 0;
+    const raced = await sendCancel(d.id, "02");
+    await settle(N.tenantId);
+    const [refused] =
+      await admin`select status, error_code from cfdi_cancellations where id = ${raced}`;
+    assert.deepEqual(
+      { ...refused },
+      { status: "failed", error_code: "cfdi_has_credit_notes" },
+    );
+    assert.equal((await docRow(d.id)).status, "valid");
+    assert.equal(deletes(), before, "the provider is never asked");
+    assert.ok(alerts.some((a) => a.key.startsWith("cfdi_cancel_failed:")));
+
+    // A global with a credit note: a late invoice cannot replace it.
+    const day = daysAgo(2);
+    const t1 = await makeTicket(N, { businessDate: day });
+    const t2 = await makeTicket(N, { businessDate: day });
+    await tick(N);
+    const [g] =
+      await admin`select id from cfdi_documents where tenant_id = ${N.tenantId} and kind = 'global'
+        and period_key = ${"D" + day} and status = 'valid'`;
+    await refund(N, t1, { iva16: 2320 });
+    await settle(N.tenantId);
+    const [note] =
+      await admin`select status from cfdi_documents where parent_document_id = ${g.id} and kind = 'egreso'`;
+    assert.equal(note.status, "valid");
+    await rejects(
+      invoice(N, t2, { s: N.manager, reissueGlobal: true }),
+      "cfdi_global_has_credit_notes",
+    );
+    assert.equal(
+      (
+        await admin`select 1 from cfdi_cancellations where document_id = ${g.id}`
+      ).length,
+      0,
+    );
+
+    // The same race on the reissue: refused under G's key, waiting invoices fail, no provider call.
+    const waiter = randomUUID();
+    await web(N, async (tx) => {
+      await tx`
+        insert into cfdi_documents(tenant_id, id, kind, source, mode, status, depends_on, receptor,
+          receptor_rfc, created_by)
+        values (${N.tenantId}, ${waiter}, 'invoice', 'staff', 'test', 'waiting', ${g.id},
+          ${tx.json(MORAL as never)}, ${MORAL.rfc}, ${N.manager.employeeId})`;
+      await tx`
+        insert into cfdi_document_tickets(tenant_id, document_id, ticket_id, mode, state)
+        values (${N.tenantId}, ${waiter}, ${t2.id}, 'test', 'pending')`;
+    });
+    before = deletes();
+    alerts.length = 0;
+    const reissue = await sendCancel(g.id, "04");
+    await settle(N.tenantId);
+    const [r4] =
+      await admin`select status, error_code from cfdi_cancellations where id = ${reissue}`;
+    assert.deepEqual(
+      { ...r4 },
+      { status: "failed", error_code: "cfdi_has_credit_notes" },
+    );
+    assert.equal((await docRow(g.id)).status, "valid");
+    const w = await docRow(waiter);
+    assert.equal(w.status, "failed");
+    assert.equal(w.error_code, "cfdi_global_has_credit_notes");
+    assert.deepEqual(
+      (await claims(t2.id)).map((r) => [r.document_id, r.state]),
+      [
+        [g.id, "active"],
+        [waiter, "released"],
+      ],
+    );
+    assert.equal(deletes(), before, "the provider is never asked");
+    assert.ok(alerts.some((a) => a.key.startsWith("cfdi_reissue_failed:")));
+  });
+
   await test("11. a stamping timeout retries with the same idempotency key, adopts the invoice by external_id and never creates two provider invoices", async () => {
     const tk = await makeTicket(A);
     const d = await invoice(A, tk, {
@@ -2451,10 +2648,20 @@ try {
     const [g] =
       await admin`select id from cfdi_documents where tenant_id = ${A.tenantId} and kind = 'global'
         and period_key = ${"D" + day} and status = 'valid'`;
+    // The motive-04 request is sent first (cfdi_reissue checks G's credit notes under G's key
+    // before it sends, CFDI-R3-2): the fake answers pending, so G is canceling and the worker
+    // completes the cancellation at its next poll.
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_pending",
+      match: { global: true },
+    });
     const first = await invoice(A, t1, { s: A.manager, reissueGlobal: true });
     assert.equal(first.status, "waiting");
-    // Hold G's document key: the worker cancels G at the provider, then waits for the key at its
-    // step 3; the late request reads G (valid, holding t2) and waits behind the worker.
+    await settle(A.tenantId);
+    assert.equal((await docRow(g.id)).status, "canceling");
+    // Hold G's document key: the worker reads G canceled at the provider, then waits for the key
+    // at its step 3; the late request reads G (canceling, holding t2) and waits behind the worker.
     let release!: () => void;
     const released = new Promise<void>((r) => (release = r));
     let holding!: () => void;
@@ -2465,6 +2672,7 @@ try {
       await released;
     });
     await held;
+    await due(A.tenantId, "cfdi_reissue");
     const workerRun = settle(A.tenantId);
     await waitFor(async () => (await advisoryWaiters()) >= 1);
     const late = invoice(A, t2, { s: A.manager, reissueGlobal: true }).then(

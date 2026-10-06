@@ -18,6 +18,7 @@ import {
 } from "../jobs.js";
 import {
   activatePendingClaims,
+  hasCreditNotes,
   loadDocument,
   releaseClaims,
 } from "../store.js";
@@ -62,6 +63,40 @@ export async function reissueJob(ctx: JobContext): Promise<JobOutcome> {
   let canceled = g.status === "canceled";
   if (!canceled) {
     if (!c || c.motive !== "04") return { status: "done" };
+    // Not sent yet: SAT refuses to cancel a global that a valid credit note relates to. The
+    // request checked it under G's key, and cfdi_refund waits while this cancellation is open, but
+    // a credit note created before either took the key may exist: refuse without calling the
+    // provider, under G's key, failing the waiting invoices (CFDI-R3-2).
+    if (g.status === "valid" && c.status === "queued") {
+      const refused = await ctx.tenant(async (tx) => {
+        await lockDocument(tx, tenantId, globalId);
+        const open = await loadCancellation(tx, {
+          documentId: globalId,
+          open: true,
+        });
+        if (open?.id !== c.id || open.status !== "queued") return false;
+        if (!(await hasCreditNotes(tx, globalId))) return false;
+        await tx`
+          update cfdi_cancellations set status = 'failed', error_code = 'cfdi_has_credit_notes',
+            processed_at = now()
+          where id = ${c.id} and status = 'queued'`;
+        await event(tx, ctx, globalId, "cancel_failed", {
+          motive: "04",
+          code: "cfdi_has_credit_notes",
+        });
+        await failWaiters(tx, "cfdi_global_has_credit_notes");
+        return true;
+      });
+      if (refused) {
+        raise(rt, {
+          key: `cfdi_reissue_failed:${tenantTag(tenantId)}:${globalId}`,
+          severity: "warning",
+          title: "CFDI global reissue refused",
+          body: `tenant ${tenantTag(tenantId)} document ${globalId} code cfdi_has_credit_notes`,
+        });
+        return { status: "done" };
+      }
+    }
     try {
       const inv =
         g.status === "canceling"

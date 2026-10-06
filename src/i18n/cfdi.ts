@@ -1054,6 +1054,10 @@ export default defineArea({
       "Cancela primero las notas de crédito relacionadas.",
       "Cancel the related credit notes first.",
     ],
+    cfdi_global_has_credit_notes: [
+      "La factura global de este ticket tiene notas de crédito vigentes; cancélalas antes de sustituirla.",
+      "This ticket's global invoice has valid credit notes; cancel them before replacing it.",
+    ],
     cfdi_substitution_pending: [
       "Esta factura ya tiene una sustituta que espera su cancelación: vuelve a solicitar la cancelación o cancela la sustituta (motivo 02) antes de sustituirla otra vez.",
       "This invoice already has a replacement waiting for its cancellation: request the cancellation again or cancel the replacement (reason 02) before replacing it again.",
@@ -1161,6 +1165,14 @@ export default defineArea({
     cfdi_parent_canceling: [
       "La factura original está en cancelación; la nota de crédito espera el resultado.",
       "The original invoice is being cancelled; the credit note waits for the result.",
+    ],
+    cfdi_parent_cancel_open: [
+      "La factura original tiene una cancelación en curso; la nota de crédito espera el resultado.",
+      "The original invoice has a cancellation in progress; the credit note waits for the result.",
+    ],
+    cfdi_parent_changed: [
+      "El ticket pasó a otra factura; la nota de crédito se decide de nuevo en unos minutos.",
+      "The ticket moved to another invoice; the credit note is decided again in a few minutes.",
     ],
     cfdi_vault_binding: [
       "Una credencial guardada no corresponde a este restaurante. Avisa a soporte.",

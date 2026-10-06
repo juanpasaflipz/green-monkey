@@ -26,6 +26,7 @@ import { lockDocument, lockTicket } from "./locks.js";
 import {
   cfdiState,
   fiscalFacts,
+  hasCreditNotes,
   insertEvent,
   modeFrom,
   requireCfdi,
@@ -160,6 +161,14 @@ export async function createInvoiceRequest(
     throw new DomainError("cfdi_global_in_progress", 409);
   if (!open && current.status !== "valid")
     throw new DomainError("cfdi_global_in_progress", 409);
+  // SAT refuses to cancel a global that a valid credit note relates to; cfdi_refund creates one
+  // only under this same key with no cancellation open (CFDI-R3-2). The portal tells the
+  // customer to ask the restaurant, as it does for a global it may not replace.
+  if (!open && (await hasCreditNotes(tx, global.documentId)))
+    throw new DomainError(
+      portal ? "cfdi_ticket_in_global" : "cfdi_global_has_credit_notes",
+      409,
+    );
   const cancellationId: string = open?.id ?? randomUUID();
   if (!open)
     await tx`

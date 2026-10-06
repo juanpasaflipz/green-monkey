@@ -59,6 +59,7 @@ import {
   documentView,
   fiscalComplete,
   fiscalFacts,
+  hasCreditNotes,
   insertEvent,
   isStuck,
   listDocuments,
@@ -772,7 +773,10 @@ export async function emailDocument(
   return staffView(tx, doc.id, s);
 }
 
-/** Common cancel/substitute checks under the document's advisory key (LO-3). */
+/**
+ * Common cancel/substitute checks under the document's advisory key (LO-3), the key cfdi_refund
+ * takes before it creates a credit note (CFDI-R3-2).
+ */
 async function cancellable(tx: Tx, s: Session, doc: DocumentRow) {
   await lockDocument(tx, s.tenantId, doc.id);
   const current = (await loadDocument(tx, doc.id))!;
@@ -781,10 +785,8 @@ async function cancellable(tx: Tx, s: Session, doc: DocumentRow) {
     select 1 as one from cfdi_cancellations
     where document_id = ${doc.id} and status in ('queued','requested')`;
   if (open) throw new DomainError("cfdi_cancel_in_progress", 409);
-  const [notes] = await tx`
-    select 1 as one from cfdi_documents where parent_document_id = ${doc.id} and kind = 'egreso'
-      and status in ('valid','stamping','queued','pending')`;
-  if (notes) throw new DomainError("cfdi_has_credit_notes", 409);
+  if (await hasCreditNotes(tx, doc.id))
+    throw new DomainError("cfdi_has_credit_notes", 409);
   return current;
 }
 
