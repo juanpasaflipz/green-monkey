@@ -661,6 +661,147 @@ describe("alerting and schedules before provisioning (OPS-R9)", () => {
   });
 });
 
+describe("GitHub environments deploy only from main (PLATFORM-CI-2)", () => {
+  /** Runs github-protect.sh against tests/fakes/gh-environments.mjs as `gh`. */
+  function protect(initial: Record<string, unknown>, dryRun = false) {
+    const dir = mkdtempSync(join(tmpdir(), "gm-protect-"));
+    try {
+      const stateFile = join(dir, "state.json");
+      writeFileSync(stateFile, JSON.stringify({ nextId: 100, ...initial }));
+      writeFileSync(
+        join(dir, "gh"),
+        `#!/usr/bin/env bash\nexec "${process.execPath}" "${join(process.cwd(), "tests/fakes/gh-environments.mjs")}" "$@"\n`,
+        { mode: 0o755 },
+      );
+      let status = 0;
+      let out = "";
+      try {
+        out = execFileSync(
+          "bash",
+          ["scripts/ops/github-protect.sh", ...(dryRun ? ["--dry-run"] : [])],
+          {
+            env: {
+              PATH: `${dir}:${process.env.PATH ?? ""}`,
+              GITHUB_REPOSITORY: "owner/repo",
+              GH_FAKE_STATE: stateFile,
+            },
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+      } catch (error) {
+        const e = error as { status: number; stdout: string; stderr: string };
+        status = e.status;
+        out = `${e.stdout}${e.stderr}`;
+      }
+      return {
+        status,
+        out,
+        state: JSON.parse(read(stateFile)) as {
+          envs: Record<
+            string,
+            {
+              policy: Record<string, boolean> | null;
+              policies: { type: string; name: string }[];
+            }
+          >;
+          calls: string[];
+        },
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  it.skipIf(!hasJq)(
+    "each environment ends with a custom policy allowing exactly the branch main; stray policies are removed; the protected-branches mode is never used",
+    () => {
+      const result = protect({
+        envs: {
+          staging: {
+            policy: { protected_branches: true, custom_branch_policies: false },
+            policies: [
+              { id: 1, type: "branch", name: "release/*" },
+              { id: 2, type: "tag", name: "v*" },
+            ],
+          },
+        },
+      });
+      expect(result.out).toContain(
+        "environment staging: deployments only from branch main",
+      );
+      expect(result.status).toBe(0);
+      for (const name of ["staging", "production"]) {
+        expect(result.state.envs[name].policy, name).toEqual({
+          protected_branches: false,
+          custom_branch_policies: true,
+        });
+        expect(
+          result.state.envs[name].policies.map((p) => `${p.type}:${p.name}`),
+          name,
+        ).toEqual(["branch:main"]);
+      }
+      expect(
+        result.state.calls.filter((c) => c.startsWith("api -X DELETE")),
+      ).toEqual([
+        "api -X DELETE repos/owner/repo/environments/staging/deployment-branch-policies/1",
+        "api -X DELETE repos/owner/repo/environments/staging/deployment-branch-policies/2",
+      ]);
+      expect(result.state.calls.join("\n")).not.toContain(
+        "protected_branches]=true",
+      );
+      // A second run is idempotent: nothing deleted, main not added twice.
+      const again = protect({ envs: result.state.envs });
+      expect(again.status).toBe(0);
+      expect(
+        again.state.calls.some((c) =>
+          /-X (DELETE|POST) .*deployment-branch-policies/.test(c),
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it.skipIf(!hasJq)(
+    "the read-back fails the script when GitHub keeps another mode (a plan without branch policies)",
+    () => {
+      const result = protect({
+        ignorePut: true,
+        envs: {
+          staging: {
+            policy: { protected_branches: true, custom_branch_policies: false },
+            policies: [],
+          },
+        },
+      });
+      expect(result.status).toBe(1);
+      expect(result.out).toContain(
+        "environment staging: deployment branch policy is 'protected=true custom=false'",
+      );
+    },
+  );
+
+  it("the dry run shows the custom policy and the main rule; the checklist names every 2.0 secret and variable", () => {
+    const result = protect({ envs: {} }, true);
+    expect(result.status).toBe(0);
+    for (const name of ["staging", "production"]) {
+      expect(result.out).toContain(
+        `DRY-RUN: gh api -X PUT repos/owner/repo/environments/${name} -F deployment_branch_policy[protected_branches]=false -F deployment_branch_policy[custom_branch_policies]=true`,
+      );
+      expect(result.out).toContain(
+        `DRY-RUN: gh api -X POST repos/owner/repo/environments/${name}/deployment-branch-policies -f name=main -f type=branch`,
+      );
+    }
+    expect(result.state.calls ?? []).toEqual([]);
+    for (const line of [
+      "gh secret set MIGRATION_DATABASE_URL --env",
+      "gh variable set PG_APP_USER --env",
+      "gh variable set ALERT_WEBHOOK_KIND --env",
+      "gh secret set RAILWAY_TOKEN --env",
+    ])
+      expect(result.out).toContain(line);
+  });
+});
+
 describe("third-party actions are pinned by full commit SHA (OPS-R8 regression)", () => {
   const files = [
     ...readdirSync(".github/workflows").map((f) => `.github/workflows/${f}`),
