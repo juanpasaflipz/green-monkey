@@ -53,10 +53,17 @@ DB-9, the closer attribution of GAP-3, the receipt rows of MON-7).
 
 ## Discounts and courtesies
 
-Entry points (disabled offline with "Los descuentos requieren conexión."):
-Vender's **Descuento** button next to **Guardar borrador** (it first offers
-"Enviar productos primero" when the cart has unsent lines), the Órdenes row
-action, and Detalle de orden (whole check, or **Descuento** under a line).
+Entry points (disabled offline with the visible hint "Los descuentos requieren
+conexión.", linked to the button with `aria-describedby`): Vender's
+**Descuento** button next to **Guardar borrador** (it first offers "Enviar
+productos primero" when the cart has unsent lines; a send error shows in that
+confirmation), the Órdenes row action, and Detalle de orden (whole check, or
+**Descuento** under a line; offline the per-line links hide and the action stays
+visible, disabled). A cart blocked by an unavailable item disables Vender's
+button too, with Selling's own warning as the reason. Lines are named with their
+option names ("Taco de asada (Salsa verde, Queso)") wherever a discount or a
+refund names them: the dialogs, Detalle de orden, Vender's check block, the
+receipt rows and the refund slip.
 
 The dialog chooses **Toda la cuenta** or **Un producto** (and how many units),
 the type (Porcentaje with 5/10/15/20/50 % chips or up to two decimals, Importe
@@ -88,9 +95,12 @@ Rules (server-enforced; `shared/discounts.ts`):
 **Removing a discount** ("Quitar descuento", Detalle de orden and the Vender
 check block): allowed while the check is open (or "paid" at a table), with no
 fiscal ticket, no payment on any of its units and no later active discount on
-them (last in, first out); otherwise `discount_not_reversible`. A reason (3–300
-characters) is required. The reversal restores the active amount and is the
-discount's single, immutable reversal.
+them (last in, first out; an overlap on a unit voided since does not count, on
+the server and in the client's `discountRemovable` alike); otherwise
+`discount_not_reversible`. A reason (3–300 characters) is required. The reversal
+restores the active amount and is the discount's single, immutable reversal. On
+`stale_order` the dialog reloads the check, hands it to the screen behind it,
+keeps the reason and its operation id, and asks to confirm again.
 
 **Voids of discounted units** pick undiscounted units first, then the highest
 index. The balance drops by the unit's net and its discount is released
@@ -173,6 +183,11 @@ the terminal first, then types its reference and confirms ("Confirmo que la
 terminal aprobó el reembolso de …"). Missing → `refund_external_confirmation`.
 Card money never touches drawer cash. **Cash portions** leave this device's
 open drawer (`drawer_required` otherwise; a terminal-only refund needs none).
+The entry points are disabled offline with the visible hint "Los reembolsos
+requieren conexión.". The result view ("Reembolso registrado: …", **Imprimir
+comprobante**, **Listo**) refreshes the screen behind it however it is left
+(Listo, the close button or Escape), so Órdenes and Detalle de orden never keep
+showing the pre-refund check after money moved.
 
 Server rules: the client sends the previewed `expectedAmount` (`refund_changed`
 when another device changed the order); caps per tender (Σ refunds ≤ tender
@@ -275,7 +290,9 @@ deleted.
 | "Pueden cerrar caja (además de gerentes)": Cajero, Mesero | none |
 
 The owner edits (step-up on terminals); managers read; other roles never see the
-panel. Saving checks the loaded version (`money_controls_changed`), is audited
+panel. "0", "0.0" and "0.00" all mean 0 %. Saving checks the loaded version
+(`money_controls_changed`: the form reloads the current values and says so, and
+the next save works), is audited
 `discount.controls.saved {before, after}` and does not change
 `restaurants.config_version`.
 
