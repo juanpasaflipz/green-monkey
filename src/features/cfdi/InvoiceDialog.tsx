@@ -20,6 +20,7 @@ import { api } from "../../api";
 import { strings, translateError } from "../../i18n";
 import { Button, Modal } from "../../components/ui";
 import { emptyReceptor, ReceptorFields } from "./ReceptorFields";
+import { DocumentDetail } from "./CfdiDocuments";
 import { fileUrl } from "./download";
 import {
   dateLabel,
@@ -66,6 +67,8 @@ export function InvoiceDialog({
   const [timedOut, setTimedOut] = useState(false);
   const [emailNotice, setEmailNotice] = useState("");
   const [serverIssue, setServerIssue] = useState<ReceptorIssue | null>(null);
+  /** A manager opens the covering invoice's detail to substitute it (§2.5 "Already invoiced"). */
+  const [detail, setDetail] = useState<string | null>(null);
   const alive = useRef(true);
   const manager = ["owner", "manager"].includes(session.role);
 
@@ -243,6 +246,11 @@ export function InvoiceDialog({
               >
                 {t.cfdiDownloadXml}
               </a>
+              {manager && ticket.covering.kind === "invoice" && (
+                <Button onClick={() => setDetail(ticket.covering!.documentId)}>
+                  {t.cfdiSubstitute}
+                </Button>
+              )}
             </div>
           </div>
         )}
@@ -407,6 +415,16 @@ export function InvoiceDialog({
           </p>
         )}
       </div>
+      {detail && (
+        <DocumentDetail
+          documentId={detail}
+          session={session}
+          locale={locale}
+          close={() => setDetail(null)}
+          open={setDetail}
+          changed={() => {}}
+        />
+      )}
     </Modal>
   );
 }
