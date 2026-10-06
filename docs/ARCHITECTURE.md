@@ -202,7 +202,7 @@ Every command that locks rows takes its locks **in this order**, skipping the le
 | 25 | discounts `applyDiscount` / `reverseDiscount` | 1 → 2 → 5 → 5a → 8 → [refresh → 12] / 1 → 2 → 5 → 5a → 8 | As specified in discounts' spec. |
 | 26 | discounts `recordRefund`: items / amount | 1 → 2 → 5 → 5a → 6 → 7 → 9 → 10 (kitchen cancel) → 11 / 1 → 2 → 5 → 6 → 11 | As specified; never calls `refresh`. |
 | 27 | discounts `saveMoneyControls`; `closeCash`/`closeDrawerRow`/`reviewDrawer` | 1 → 2 → 3 / 1 → 2 → 11 | As specified. |
-| 28 | reports `printDrawerCorte`, `printDayCorte`; remote drawer close (`server/reports/cortes.ts`) | 1 → 2 → 3 (report-print key) / 1 → 2 → 11 | Implemented; passes the ratchet without an allowlist entry. Routes registered at reports' phase B wiring. |
+| 28 | reports `printDrawerCorte`, `printDayCorte`; remote drawer close (`server/reports/cortes.ts`) | 1 → 2 → 3 (report-print key, advisory class 926) / 1 → 2 → 11 | Implemented. The report-print key's non-zero class makes it an LO-3 area key, and every report route is its own scanner unit (`server/routes/reports.ts`), so the level-monotonic scanner (`tests/lock-scan.ts`, 605cac7) finds no reports violation and needs no allowlist entry. Routes registered at reports' phase B wiring. |
 | 29 | cfdi `POST /cfdi/invoices`, settings; `cfdi_global` builder (worker) | 1 → 2 → 3 (per-ticket keys sorted, then document keys) → `cfdi_*` rows / 3 (per-period key) → `cfdi_*` rows | As specified; cfdi never locks orders, the drawer or the folio. |
 | 30 | account support CLI unlock, owner seat changes | Own transactions on `employees` and `pin_throttles` (LO-R7) | As specified. |
 

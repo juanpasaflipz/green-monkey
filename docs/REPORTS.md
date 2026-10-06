@@ -140,8 +140,9 @@ offline.
   of the same drawer are different documents, so the manager's first Z is print 1, and only
   reprints of the full Z are audited as `reports.corte_z.reprinted` and listed as
   `corte_reprint` exceptions (slips are audited as `reports.count_slip.printed`). Prints of
-  one document serialize on the advisory key `tenant:report-print:kind:subject` (lock level
-  LO-3) before numbering, so two prints at once get 1 and 2. The subject is the lowercase
+  one document serialize on the advisory key `tenant:report-print:kind:subject`, class 926
+  (an LO-3 area key; class 0 would be an LO-1 operation key after once()'s LO-2) before
+  numbering, so two prints at once get 1 and 2. The subject is the lowercase
   drawer id, whatever case the URL used.
 - **Access** (spec §4.7, §2.12): owners and managers print any corte Z in full and a corte X
   when they may see expected cash. Cashiers and servers print only their own device's
@@ -273,6 +274,16 @@ setting. Reports and prints work on Free and while selling is blocked.
     with its reason) and 14 (390 and 768 px without page-wide scroll, axe on Hoy and the
     corte preview). Add the phase B GETs to the HTTP check (no-store, cashier forbidden)
     and check that a print or remote-close POST without the CSRF token is refused.
+14. Lock order (RPT-R17): at the absorb step, `tests/lock-order.test.ts` runs the
+    level-monotonic `tests/lock-scan.ts`. Reports adds no allowlist entry: the report-print
+    key is advisory class 926 (an LO-3 area key, after public's 924 and 925; the lead
+    confirms the number), and `registerReports` registers through local `get`/`post`
+    helpers, so the scanner makes every route its own unit. Integration's scanner (605cac7)
+    run over this branch from a scratch copy reports no `server/reports` or
+    `server/routes/reports.ts` violation; re-run it after absorbing integration and after
+    wiring the ports. The scanner does not follow `ports.closeDrawerRow` (a call through an
+    object property), so the remote close's LO-11 sequence inside discounts' function stays
+    covered by the phase B DB suite.
 
 `tests/reports-phaseb-db.ts` (part of `test:db:reports`) skips until 027 and 028 are migrated
 and then runs against the real modules. Before the merge it ran twice outside the repository:

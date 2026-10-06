@@ -47,6 +47,24 @@ export function reportPrintKey(
 }
 
 /**
+ * The report-print key's hashtextextended class. A non-zero class makes it an LO-3 area key
+ * (docs/ARCHITECTURE.md "Global lock order"; tests/lock-scan.ts reads class 0 as an LO-1
+ * operation key), taken after once()'s LO-2 restaurants FOR SHARE. 926 follows public's 924
+ * and 925 (LD-24); the SQL below repeats it as a literal, which the lock scanner reads.
+ */
+export const REPORT_PRINT_CLASS = 926;
+
+/** Takes the report-print key of one document (LO-3) for the rest of the transaction. */
+export async function lockReportPrint(
+  tx: Tx,
+  tenantId: string,
+  kind: ReportPrintKind,
+  subject: string,
+) {
+  await tx`select pg_advisory_xact_lock(hashtextextended(${reportPrintKey(tenantId, kind, subject)}, 926))`;
+}
+
+/**
  * A drawer id as Postgres prints a uuid (lowercase): the print subject, its advisory key and
  * the audit entity match `cash_sessions.id::text` whatever case the request used (029's
  * subject CHECK accepts lowercase only).
@@ -160,14 +178,30 @@ export async function drawerCorte(
 }
 
 /**
+ * once()'s body for a drawer corte print: the document and the viewer it was built for. once()
+ * fingerprints the body, so a replay by another employee, role or device is operation_conflict.
+ */
+export function corteOperationBody(
+  s: Pick<Session, "employeeId" | "role" | "deviceId">,
+  drawerId: string,
+  kind: "x" | "z",
+) {
+  return {
+    drawerId,
+    kind,
+    viewer: { employeeId: s.employeeId, role: s.role, deviceId: s.deviceId },
+  };
+}
+
+/**
  * POST /api/reports/drawers/:id/corte: records a corte X, corte Z or count slip print and returns
  * the authoritative document with its print number (> 1 is a reprint). Each document has its own
  * sequence (cortePrintKind): a blind role's count slip and the full corte Z of the same drawer
  * are numbered apart, so the manager's first Z is print 1 and only full Z reprints are audited
  * as reports.corte_z.reprinted (the corte_reprint exception). Two prints of one document with
  * different operation ids are serialized on that document's report-print key before numbering,
- * so they get consecutive numbers (DB test 34); a replayed operation id returns the same
- * document.
+ * so they get consecutive numbers (DB test 34); the same viewer replaying an operation id gets
+ * the same document, any other viewer gets operation_conflict (corteOperationBody).
  */
 export async function printDrawerCorte(
   tx: Tx,
@@ -177,8 +211,11 @@ export async function printDrawerCorte(
   ports: Pick<ReportsPorts, "moneyControls" | "canSeeExpected">,
 ): Promise<CorteDocument> {
   await heavyStatementTimeout(tx);
-  // Before once(): a replayed operation id never returns a document to a role that may not
-  // print one (drawerCorte applies the per-drawer access rules inside).
+  // Before once(): kitchen never reaches a stored document. The per-drawer access rules run in
+  // drawerCorte, inside once(), so they run on the first print only; a replay returns the stored
+  // document without them. The operation body therefore names the viewer (employee, role,
+  // device: everything corteAccess reads from the session), so another viewer presenting the
+  // same operation id gets operation_conflict instead of a document built for someone else.
   permit(s, operators);
   const p = cortePrintInput.parse(raw);
   const subject = canonicalId(drawerId);
@@ -187,7 +224,7 @@ export async function printDrawerCorte(
     s,
     p.operationId,
     "reports.corte",
-    { drawerId: subject, kind: p.kind },
+    corteOperationBody(s, subject, p.kind),
     async () => {
       // The document (and so which sequence it numbers in) depends on the viewer's access;
       // drawerCorte only reads, so the report-print key (LO-3) is still taken before numbering.
@@ -195,7 +232,7 @@ export async function printDrawerCorte(
       if (doc.kind !== p.kind)
         throw new DomainError("reports_corte_state", 409);
       const kind = cortePrintKind(doc);
-      await tx`select pg_advisory_xact_lock(hashtextextended(${reportPrintKey(s.tenantId, kind, subject)}, 0))`;
+      await lockReportPrint(tx, s.tenantId, kind, subject);
       const printNumber = await recordPrint(tx, s, kind, subject);
       const detail = { printNumber, zNumber: doc.zNumber };
       if (kind === "corte_x")
@@ -274,7 +311,7 @@ export async function printDayCorte(
   permit(s, managers); // before once(), as in printDrawerCorte
   const p = dayCortePrintInput.parse(raw);
   return once(tx, s, p.operationId, "reports.day_corte", { date }, async () => {
-    await tx`select pg_advisory_xact_lock(hashtextextended(${reportPrintKey(s.tenantId, "day_corte", date)}, 0))`;
+    await lockReportPrint(tx, s.tenantId, "day_corte", date);
     const doc = await dayCorte(tx, s, date, "", ports);
     const printNumber = await recordPrint(tx, s, "day_corte", date);
     await audit(tx, s, "reports.day_corte.printed", date, { printNumber });

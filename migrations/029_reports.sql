@@ -98,8 +98,9 @@ CREATE TABLE report_prints(
 CREATE INDEX report_prints_created ON report_prints(tenant_id, created_at);
 
 -- Guard only: the print commands serialize on the advisory key
--- hashtextextended(tenant||':report-print:'||kind||':'||subject,0) (lock level LO-3)
--- before they compute max+1, so concurrent prints never reach this exception.
+-- hashtextextended(tenant||':report-print:'||kind||':'||subject,926) (lock level LO-3,
+-- area key class 926) before they compute max+1, so concurrent prints never reach this
+-- exception.
 CREATE FUNCTION report_prints_consecutive() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN

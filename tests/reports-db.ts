@@ -30,11 +30,16 @@ import { exceptionRows } from "../server/reports/exceptions.js";
 import { drawerList } from "../server/reports/drawers.js";
 import {
   closeDrawerRemotely,
+  corteOperationBody,
   dayCorte,
   drawerCorte,
+  lockReportPrint,
   printDayCorte,
   printDrawerCorte,
+  REPORT_PRINT_CLASS,
+  reportPrintKey,
 } from "../server/reports/cortes.js";
+import { hash } from "../server/auth.js";
 import { todaySummary } from "../server/reports/today.js";
 import { legacyDailyReport } from "../server/reports/legacy.js";
 import type { ReportsPorts } from "../server/reports/ports.js";
@@ -428,6 +433,89 @@ try {
       ),
       "42501",
     );
+  });
+
+  await test("RPT-R17: the report-print key is advisory class 926, an LO-3 area key: a print waits on that class's key and never on the class-0 (LO-1 operation key) hash of the same text", async () => {
+    assert.equal(REPORT_PRINT_CLASS, 926);
+    const subject = ids.drawer1;
+    const key = reportPrintKey(A, "corte_z", subject);
+    const holder = postgres(migration, { max: 1 });
+    try {
+      // A class-0 holder of the same text does not block the print's lock.
+      await holder`select pg_advisory_lock(hashtextextended(${key}, 0))`;
+      await write(manager, async (tx) => {
+        await tx`select set_config('lock_timeout', '2s', true)`;
+        await lockReportPrint(tx, A, "corte_z", subject);
+      });
+      await holder`select pg_advisory_unlock(hashtextextended(${key}, 0))`;
+      // A class-926 holder does, until it lets go.
+      await holder`select pg_advisory_lock(hashtextextended(${key}, ${REPORT_PRINT_CLASS}))`;
+      let done = false;
+      const print = write(manager, (tx) =>
+        lockReportPrint(tx, A, "corte_z", subject),
+      ).then(() => {
+        done = true;
+      });
+      let waiting = 0;
+      for (let i = 0; i < 100 && waiting === 0; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        const [w] = await holder`select count(*)::int as n from pg_locks
+          where locktype = 'advisory' and not granted
+            and database = (select oid from pg_database where datname = current_database())`;
+        waiting = w.n;
+      }
+      assert.ok(waiting > 0, "the print waits on the class-926 key");
+      assert.equal(done, false);
+      await holder`select pg_advisory_unlock(hashtextextended(${key}, ${REPORT_PRINT_CLASS}))`;
+      await print;
+      assert.equal(done, true);
+    } finally {
+      await holder.end();
+    }
+  });
+
+  await test("RPT-R21: a drawer corte print replayed by the viewer it was built for returns the stored document; another employee, role or device presenting the same operation id gets operation_conflict", async () => {
+    // The stored operation stands in for a manager's earlier corte Z print: the replay path
+    // runs no 027/028 statement, and the ports must never be called.
+    const port = (name: string) => () => {
+      throw new Error("port_called:" + name);
+    };
+    const ports = {
+      moneyControls: port("moneyControls"),
+      canSeeExpected: port("canSeeExpected"),
+    };
+    const subject = ids.drawer1;
+    const op = randomUUID();
+    const stored = {
+      kind: "z",
+      visibility: "full",
+      printNumber: 1,
+      cash: { expected: 123_400 },
+    };
+    await write(
+      manager,
+      (tx) => tx`insert into operations(tenant_id, id, kind, hash, result)
+        values (${A}, ${op}, 'reports.corte',
+                ${hash(JSON.stringify(corteOperationBody(manager, subject, "z")))}, ${tx.json(stored)})`,
+    );
+    const replay = (s: Session, drawer = subject) =>
+      write(s, (tx) =>
+        printDrawerCorte(tx, s, drawer, { operationId: op, kind: "z" }, ports),
+      );
+    assert.deepEqual(await replay(manager), stored);
+    assert.deepEqual(await replay(manager, subject.toUpperCase()), stored);
+    // Same device, another employee (a cashier must never receive the stored expected cash).
+    await rejects(replay(cashier), "operation_conflict");
+    // Same employee on another device, and the same employee with another role.
+    await rejects(
+      replay({ ...manager, id: randomUUID(), deviceId: ids.device2 }),
+      "operation_conflict",
+    );
+    await rejects(
+      replay({ ...manager, id: randomUUID(), role: "owner" }),
+      "operation_conflict",
+    );
+    await rejects(replay(owner), "operation_conflict");
   });
 
   await test("5. snapshotTenant sets app.tenant_id, statement_timeout 30s, lock_timeout 8s and idle 15s in its first statement, runs read only, isolates tenants, and refuses writes with 25006", async () => {

@@ -889,6 +889,20 @@ try {
     [p1.printNumber, replay.printNumber, p2.printNumber],
     [1, 1, 2],
   );
+  // RPT-R21: the manager's operation id presented by the cashier on the same device is
+  // operation_conflict, never the stored full corte Z with its expected cash.
+  await assert.rejects(
+    tenant(sql, T, (tx: Tx) =>
+      C.printDrawerCorte(
+        tx,
+        cashier,
+        DR.closedY,
+        { operationId: op, kind: "z" },
+        ports,
+      ),
+    ),
+    (e: any) => e.code === "operation_conflict",
+  );
   await assert.rejects(
     tenant(sql, T, (tx: Tx) =>
       C.printDrawerCorte(
@@ -907,13 +921,14 @@ try {
   )) as any;
   assert.deepEqual({ ...audits }, { printed: 1, reprinted: 1 });
   ok(
-    "cortes: X equals drawerTotals with controls and folios; access rules; Z prints 1 then 2 (reprint audited); replay; state mismatch",
+    "cortes: X equals drawerTotals with controls and folios; access rules; Z prints 1 then 2 (reprint audited); replay by the same viewer only (RPT-R21); state mismatch",
   );
 
   // ---- concurrent prints (DB test 34): two prints of the same Z with different operation ids.
-  const key = T + ":report-print:corte_z:" + DR.legacyY;
+  // The holder takes the commands' own key: reportPrintKey in advisory class 926 (LO-3, RPT-R17).
+  const key = C.reportPrintKey(T, "corte_z", DR.legacyY);
   const holder = postgres(base, { max: 1 });
-  await holder`select pg_advisory_lock(hashtextextended(${key}, 0))`;
+  await holder`select pg_advisory_lock(hashtextextended(${key}, ${C.REPORT_PRINT_CLASS}))`;
   const a = tenant(sql, T, (tx: Tx) =>
     C.printDrawerCorte(
       tx,
@@ -932,14 +947,21 @@ try {
       ports,
     ),
   );
+  let waiters = 0;
   for (let i = 0; i < 100; i++) {
     const [w] =
       await holder`select count(*)::int as n from pg_locks where locktype='advisory' and not granted
       and database = (select oid from pg_database where datname = current_database())`;
-    if (w.n >= 2) break;
+    waiters = w.n;
+    if (waiters >= 2) break;
     await new Promise((r) => setTimeout(r, 50));
   }
-  await holder`select pg_advisory_unlock(hashtextextended(${key}, 0))`;
+  // Both prints wait on the held key, so the code takes exactly this key and class.
+  assert.ok(
+    waiters >= 2,
+    `two prints wait on the report-print key (${waiters})`,
+  );
+  await holder`select pg_advisory_unlock(hashtextextended(${key}, ${C.REPORT_PRINT_CLASS}))`;
   const numbers = (await Promise.all([a, b]))
     .map((d: any) => d.printNumber)
     .sort();

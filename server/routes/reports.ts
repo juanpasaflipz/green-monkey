@@ -49,8 +49,11 @@ export function registerReports(
   { app, sql }: RouteContext,
   ports: ReportsPorts | null,
 ) {
+  // The helpers are named get and post, the verbs they register, so tests/lock-scan.ts splits
+  // every registration below into its own unit (one request, one transaction) instead of
+  // chaining all the routes of this function as one transaction.
   /** A report read: one read-only snapshot, never cached (platform C-8). */
-  const read = (path: string, fn: Handler) =>
+  const get = (path: string, fn: Handler) =>
     app.get("/api" + path, async (req, res, next) => {
       try {
         const s = (req as AuthRequest).session;
@@ -67,7 +70,7 @@ export function registerReports(
    * A report command (print, remote close): one tenant() transaction whose handler raises the
    * statement timeout first; a timeout answers reports_timeout (422) like the reads.
    */
-  const write = (path: string, fn: Handler) =>
+  const post = (path: string, fn: Handler) =>
     app.post("/api" + path, async (req, res, next) => {
       try {
         const s = (req as AuthRequest).session;
@@ -81,12 +84,12 @@ export function registerReports(
   const dateParam = (req: express.Request) =>
     parseRange({ from: req.params.date, to: req.params.date }, 1).from;
 
-  read("/reports/audit", (tx, s, req) => auditLog(tx, s, req.query));
-  read("/reports/filters", (tx, s) => reportFilters(tx, s));
-  read("/reports/tenders", (tx, s, req) => tenderRows(tx, s, req.query));
+  get("/reports/audit", (tx, s, req) => auditLog(tx, s, req.query));
+  get("/reports/filters", (tx, s) => reportFilters(tx, s));
+  get("/reports/tenders", (tx, s, req) => tenderRows(tx, s, req.query));
   if (!ports) return;
   const p = ports;
-  read("/reports/summary", (tx, s, req) =>
+  get("/reports/summary", (tx, s, req) =>
     salesSummary(
       tx,
       s,
@@ -95,10 +98,10 @@ export function registerReports(
       p,
     ),
   );
-  read("/reports/breakdown", (tx, s, req) => breakdown(tx, s, req.query));
-  read("/reports/orders", (tx, s, req) => orderRows(tx, s, req.query));
-  read("/reports/exceptions", (tx, s, req) => exceptionRows(tx, s, req.query));
-  read("/reports/drawers", (tx, s, req) =>
+  get("/reports/breakdown", (tx, s, req) => breakdown(tx, s, req.query));
+  get("/reports/orders", (tx, s, req) => orderRows(tx, s, req.query));
+  get("/reports/exceptions", (tx, s, req) => exceptionRows(tx, s, req.query));
+  get("/reports/drawers", (tx, s, req) =>
     drawerList(
       tx,
       s,
@@ -106,24 +109,24 @@ export function registerReports(
       p,
     ),
   );
-  read("/reports/drawers/:id/corte", (tx, s, req) =>
+  get("/reports/drawers/:id/corte", (tx, s, req) =>
     drawerCorte(tx, s, id.parse(req.params.id), p),
   );
-  read("/reports/days/:date/corte", (tx, s, req) =>
+  get("/reports/days/:date/corte", (tx, s, req) =>
     dayCorte(tx, s, dateParam(req), requestIdOf(req), p),
   );
-  read("/reports/today", (tx, s, req) =>
+  get("/reports/today", (tx, s, req) =>
     todaySummary(tx, s, requestIdOf(req), p),
   );
   // Moved from server/index.ts: the old daily report shape for PWA bundles (spec §4.5 legacy).
-  read("/report", (tx, s, req) => legacyDailyReport(tx, s, req.query));
-  write("/reports/drawers/:id/corte", (tx, s, req) =>
+  get("/report", (tx, s, req) => legacyDailyReport(tx, s, req.query));
+  post("/reports/drawers/:id/corte", (tx, s, req) =>
     printDrawerCorte(tx, s, id.parse(req.params.id), req.body, p),
   );
-  write("/reports/drawers/:id/close", (tx, s, req) =>
+  post("/reports/drawers/:id/close", (tx, s, req) =>
     closeDrawerRemotely(tx, s, id.parse(req.params.id), req.body, p),
   );
-  write("/reports/days/:date/corte", (tx, s, req) =>
+  post("/reports/days/:date/corte", (tx, s, req) =>
     printDayCorte(tx, s, dateParam(req), req.body, p),
   );
 }
