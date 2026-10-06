@@ -247,6 +247,70 @@ try {
         "version",
         "worker",
       ]);
+      assert.deepEqual(status.worker, {
+        status: "unknown",
+        lastBeatAt: null,
+        commit: null,
+        jobs: null,
+      });
+    },
+  );
+
+  await check(
+    "ops status passes the worker's commit and jobs flag through; a deployed worker without jobs is degraded (PLATFORM-OPS-2, OPS-4)",
+    async () => {
+      const sha = "0123456789abcdef0123456789abcdef01234567";
+      const healthz =
+        (body: unknown, status = 200): typeof fetch =>
+        async () =>
+          new Response(JSON.stringify(body), { status });
+      const beat = new Date().toISOString();
+      const healthy = { ok: true, commit: sha, jobs: true, lastTickAt: beat };
+      const live = await computeStatus(app, {
+        workerUrl: "http://worker.invalid",
+        fetch: healthz(healthy),
+        requireJobs: true,
+      });
+      assert.deepEqual(live.worker, {
+        status: "ok",
+        lastBeatAt: beat,
+        commit: sha,
+        jobs: true,
+      });
+      assert.equal(live.degraded, false);
+      const noJobs = await computeStatus(app, {
+        workerUrl: "http://worker.invalid",
+        fetch: healthz({ ...healthy, jobs: false }),
+        requireJobs: true,
+      });
+      assert.equal(noJobs.worker.status, "ok");
+      assert.equal(noJobs.worker.jobs, false);
+      assert.equal(noJobs.degraded, true, "deployed: jobs off is degraded");
+      assert.equal(
+        (
+          await computeStatus(app, {
+            workerUrl: "http://worker.invalid",
+            fetch: healthz({ ...healthy, jobs: false }),
+            requireJobs: false,
+          })
+        ).degraded,
+        false,
+        "development: a worker without jobs is fine",
+      );
+      // Anything but a commit-shaped string or a boolean is dropped, never echoed.
+      const odd = await computeStatus(app, {
+        workerUrl: "http://worker.invalid",
+        fetch: healthz({ ...healthy, commit: "<script>", jobs: "yes" }),
+        requireJobs: true,
+      });
+      assert.deepEqual([odd.worker.commit, odd.worker.jobs], [null, null]);
+      assert.equal(odd.degraded, true);
+      const down = await computeStatus(app, {
+        workerUrl: "http://worker.invalid",
+        fetch: healthz({ ok: false, commit: sha, jobs: true }, 503),
+      });
+      assert.equal(down.worker.status, "stale");
+      assert.equal(down.degraded, true);
     },
   );
 
