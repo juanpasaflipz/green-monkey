@@ -5,7 +5,8 @@ remainder.
 
 **Status: Phase A and step B1, built on `track/public`.** Phase A depends
 only on wave 1 and platform 2.0; B1 absorbed fiscal 027 (`integration/v1` at
-`70860d6`). The track merges into `integration/v1` once, after account (031)
+`70860d6`), and the track has since absorbed `integration/v1` at `804f6c6`
+(the browser suite's business-day rollover guard, LD-29). The track merges into `integration/v1` once, after account (031)
 and the remaining Phase B steps described in
 [Phase B](#phase-b-what-is-still-to-do). Until then:
 
@@ -685,6 +686,12 @@ when B1 merged fiscal 027 (`70860d6`), so it still ships on `track/public`.
 | **B2** | cfdi 030 merged; merge and reset | 1. Delete `server/compat/public-cfdi.ts` and import `selfInvoiceOffered` from `./cfdi/store.js`.<br>2. One render chain in `src/main.tsx` (`/legal` → `/(f\|factura)` → `/(qr\|kiosk)`), with the shared `publicPage` line kept byte for byte.<br>3. DB 22 invoice leg; DB 26 `holdStatus` ≤ 5. |
 | **B3** | account 031 merged (mandatory); merge and reset | 1. Delete `server/compat/public-account.ts` and import `publicOrderingEnabled`, `publicOrderingGate` and `restaurantPrivacyUrl` from `./account-settings.js`. Remove the `public_ordering_disabled` row from `ownedElsewhere`.<br>2. Delete `src/compat/public-account.ts` and use `strings[locale].accountGuest*`.<br>3. Resolve account's hunks in favour of public's versions (`server/public-ordering.ts`, `server/index.ts` `/ordering-links`, `PublicOrdering.tsx`, `ManagementTools.tsx`).<br>4. Settings golden order: `… AccountPrivacy → PublicOrderingSettings → FreeSelection …`.<br>5. Rewrite account's QR tests (HTTP checks 2-3, `account.spec` QR legs) and export test 31.<br>6. Re-grep the DB-9 writers, including raw test fixtures. Keep the `-- 032` grants block last.<br>7. Shared docs in one commit: ARCHITECTURE (LO-2b text and §6 rows), OPERATIONS, RUNBOOK (§11 and §7 validation), MENU (`:88-136`), SERVICE, the ACCESS step-up list, RELEASE, ACCOUNT_AND_LEGAL, DELIVERY_STATUS and the ledgers.<br>8. LD-5 round 2 and full qualification. |
 | **B4** | after B3, a separate revertible commit | Account's flag: unset means on everywhere. Update `tests/public-ordering-flag.test.ts`, the `.railway/railway.ts` and `.env.example` comments, and the RELEASE and ACCOUNT_AND_LEGAL lines. Then a staging browser run, and production per RELEASE. |
+
+**Commits that do not build (for `git bisect`).** B1's first commit `4019641`
+carries only the deletion of the S2 shim, while `server/public-diner.ts` still
+imports it. The tree does not typecheck at `4019641`, `27289f3` and `fcdac07`
+until `69a23d6` adds the wiring. A bisect over `integration/v1` that lands on
+one of them should `git bisect skip 4019641 27289f3 fcdac07`.
 
 ## Field checks before printing at scale
 
