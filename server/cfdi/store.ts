@@ -412,6 +412,8 @@ export type CoverageClaim = {
   series: string | null;
   folioNumber: number | null;
   periodKey: string | null;
+  createdBy: string | null;
+  createdAt: string;
 };
 
 /** The ticket's open claims in a mode, with their documents' kind and status (one statement). */
@@ -421,7 +423,8 @@ export async function ticketCoverage(
   mode: CfdiMode,
 ): Promise<CoverageClaim[]> {
   const rows = await tx`
-    select c.document_id, c.state, d.kind, d.status, d.series, d.folio_number, d.period_key
+    select c.document_id, c.state, d.kind, d.status, d.series, d.folio_number, d.period_key,
+      d.created_by, d.created_at
     from cfdi_document_tickets c
     join cfdi_documents d on d.tenant_id = c.tenant_id and d.id = c.document_id
     where c.ticket_id = ${ticketId} and c.mode = ${mode} and c.state <> 'released'
@@ -434,6 +437,8 @@ export async function ticketCoverage(
     series: r.series,
     folioNumber: r.folio_number,
     periodKey: r.period_key,
+    createdBy: r.created_by,
+    createdAt: iso(r.created_at)!,
   }));
 }
 
@@ -615,6 +620,7 @@ async function summaryRows(
     : tx`null as first_series, null as first_number, null as last_series, null as last_number,`;
   return tx`
     select d.*, ${folios}
+      to_char(d.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as created_cursor,
       (select count(*) from cfdi_document_tickets c
         where c.tenant_id = d.tenant_id and c.document_id = coalesce(d.parent_document_id, d.id)) as claim_count,
       (select p.receptor->>'legalName' from cfdi_documents p where p.tenant_id = d.tenant_id and p.id = d.parent_document_id) as parent_receptor_name,
@@ -698,11 +704,16 @@ export async function listDocuments(
       ${search} ${cursor}`,
     tx`order by d.created_at desc, d.id desc limit ${q.limit + 1}`,
   );
-  const page = rows.slice(0, q.limit).map(summaryOf);
+  const page = rows.slice(0, q.limit);
   const last = page[page.length - 1];
+  // The cursor keeps created_at's microseconds: a millisecond ISO string would skip rows created
+  // within the same millisecond as the page's last row.
   return {
-    rows: page,
-    next: rows.length > q.limit && last ? `${last.createdAt}|${last.id}` : null,
+    rows: page.map(summaryOf),
+    next:
+      rows.length > q.limit && last
+        ? `${last.created_cursor}|${last.id}`
+        : null,
   };
 }
 
@@ -957,6 +968,14 @@ export async function ticketView(
     t.coverage.find((c) => c.kind === "invoice") ??
     t.coverage.find((c) => c.kind === "global" && c.state === "active") ??
     null;
+  // Spec §2.13: managers see every document of the ticket; a cashier only the documents they
+  // created in the last 24 hours (the same rule as GET /cfdi/documents/:id), so no receptor name
+  // or RFC reaches a cashier through the ticket (CFDI-R9).
+  const manager = !!o.viewer && ["owner", "manager"].includes(o.viewer.role);
+  const recentOwn = (createdBy: string | null, createdAt: string) =>
+    !!o.viewer &&
+    createdBy === o.viewer.employeeId &&
+    Date.parse(createdAt) > now.getTime() - 24 * 3600_000;
   const documents = o.portal
     ? []
     : await documentSummaries(
@@ -964,8 +983,14 @@ export async function ticketView(
         (
           await tx`
             select distinct d.id from cfdi_documents d
-            where d.id in (select c.document_id from cfdi_document_tickets c where c.ticket_id = ${t.payload.ticket.id})
-               or d.parent_document_id in (select c.document_id from cfdi_document_tickets c where c.ticket_id = ${t.payload.ticket.id})`
+            where (d.id in (select c.document_id from cfdi_document_tickets c where c.ticket_id = ${t.payload.ticket.id})
+               or d.parent_document_id in (select c.document_id from cfdi_document_tickets c where c.ticket_id = ${t.payload.ticket.id}))
+              ${
+                manager
+                  ? tx``
+                  : tx`and d.created_by = ${o.viewer?.employeeId ?? null}
+                       and d.created_at > ${new Date(now.getTime() - 24 * 3600_000)}`
+              }`
         ).map((r) => r.id as string),
       );
   const issuer = t.payload.ticket.issuer;
@@ -992,6 +1017,7 @@ export async function ticketView(
     eligibility: status,
     deadline,
     needsCardForm: needsCardForm(t.payload.payments),
+    cardPaymentForm: settings?.cardPaymentForm ?? "04",
     defaultUse: settings?.defaultUse ?? "G03",
     covering: covering
       ? {
@@ -1003,6 +1029,9 @@ export async function ticketView(
               ? (covering.periodKey ?? "")
               : (docLabel(covering.series, covering.folioNumber) ?? ""),
           periodKey: covering.periodKey,
+          canOpen:
+            !o.portal &&
+            (manager || recentOwn(covering.createdBy, covering.createdAt)),
         }
       : null,
     reissueAllowed: o.portal

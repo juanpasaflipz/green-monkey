@@ -86,6 +86,8 @@ export function InvoiceDialog({
         if (!alive.current) return;
         setTicket(v);
         setReceptor((r) => ({ ...r, use: v.defaultUse }));
+        // The card question defaults to the restaurant's setting (spec §2.5, CFDI-R4).
+        setCardForm(v.cardPaymentForm);
       })
       .catch((e) => {
         if (alive.current)
@@ -232,20 +234,24 @@ export function InvoiceDialog({
               })}
             </p>
             <div className="row wrap">
-              <a
-                className="button secondary"
-                href={fileUrl(ticket.covering.documentId, "pdf")}
-                download
-              >
-                {t.cfdiDownloadPdf}
-              </a>
-              <a
-                className="button secondary"
-                href={fileUrl(ticket.covering.documentId, "xml")}
-                download
-              >
-                {t.cfdiDownloadXml}
-              </a>
+              {ticket.covering.canOpen && (
+                <>
+                  <a
+                    className="button secondary"
+                    href={fileUrl(ticket.covering.documentId, "pdf")}
+                    download
+                  >
+                    {t.cfdiDownloadPdf}
+                  </a>
+                  <a
+                    className="button secondary"
+                    href={fileUrl(ticket.covering.documentId, "xml")}
+                    download
+                  >
+                    {t.cfdiDownloadXml}
+                  </a>
+                </>
+              )}
               {manager && ticket.covering.kind === "invoice" && (
                 <Button onClick={() => setDetail(ticket.covering!.documentId)}>
                   {t.cfdiSubstitute}

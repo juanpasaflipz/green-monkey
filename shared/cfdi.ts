@@ -480,7 +480,14 @@ export const documentsQuery = z
     kind: z.enum(["invoice", "global", "egreso"]).optional(),
     status: z.enum(DOCUMENT_STATUS_FILTERS).optional(),
     q: z.string().trim().max(60).optional(),
-    after: z.string().max(120).optional(),
+    /** Keyset cursor "<created_at ISO, microseconds>|<id>" from the previous page's `next`. */
+    after: z
+      .string()
+      .max(120)
+      .regex(
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z\|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      )
+      .optional(),
     limit: z.coerce.number().int().min(1).max(200).default(100),
   })
   .strict();
@@ -687,6 +694,8 @@ export type CfdiTicketView = {
   eligibility: TicketEligibility;
   deadline: string | null;
   needsCardForm: boolean;
+  /** The restaurant's card payment form (settings): the card question's initial answer (§2.5). */
+  cardPaymentForm: CardForm;
   defaultUse: CfdiUse;
   covering: {
     documentId: string;
@@ -694,10 +703,12 @@ export type CfdiTicketView = {
     status: string;
     label: string;
     periodKey: string | null;
+    /** The viewer may open and download it (managers; a cashier: own documents of the last 24 h). */
+    canOpen: boolean;
   } | null;
   /** Staff: manager/owner; portal: settings.portalReissueGlobal. */
   reissueAllowed: boolean;
-  /** Staff view only; [] in the portal. */
+  /** Staff view only (a cashier: own documents of the last 24 h, spec §2.13); [] in the portal. */
   documents: CfdiDocumentSummary[];
 };
 export type GlobalPeriodStatus =
