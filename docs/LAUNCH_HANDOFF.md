@@ -21,10 +21,11 @@ Nothing below has run against production, and the staging cutover has not happen
 | **027 / 028 / 029 / 030 / 031** | Wave 2 areas in merge order: fiscal, discounts, reports, cfdi, account. Not merged. |
 | **Wave 3** | Acceptance suite and staging qualification after the last Wave 2 merge. Not started. |
 
-**Registered and proposed names.** Wave 2.0 registered every Wave 2 variable on
+**Registered and proposed names.** Wave 2.0 registered every Wave 2 Railway variable on
 `integration/v1`: each is declared per service in `.railway/railway.ts` and has a
 placeholder in `.env.example:144-189`, including those that fiscal (027), cfdi (030)
-and account (031) will read. Areas do not edit `.railway/railway.ts`; a missing name
+and account (031) will read. `SUPPORT_DATABASE_URL` (031's operator login) and
+`FACTURAPI_BASE_URL` are deliberately never Railway variables (`.env.example:191-193`). Areas do not edit `.railway/railway.ts`; a missing name
 goes to the lead (contract C-10). The process boundary is already enforced
 (`server/config-rules.ts:62-84`), but what 030 and 031 do with their variables
 (required values, further refusals, log codes) arrives only with their merge.
@@ -128,8 +129,11 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
     `gm_billing_worker`, `gm_backup_reader`, `gm_jobs_worker` and `gm_support`,
     `globals.sql:16-25`) and `scripts/ops/sql/database-grants.sql` (`CONNECT` and
     schema `USAGE`/`CREATE` with grant option for `gm_migrator`, `CONNECT` and `USAGE`
-    for the capability roles, `CREATE` on the schema revoked from `PUBLIC`), creates
-    the logins and writes `.env.provisioned-production` (0600).
+    for `gm_billing_worker`, `gm_backup_reader` and `gm_jobs_worker` (`gm_support`'s
+    come with 031), `CREATE` on the schema revoked from `PUBLIC`) and creates the
+    logins. Before that transaction opens it writes `.env.provisioned-production`
+    (0600), so a failed run does not roll the file back; a re-run only appends missing
+    keys (`scripts/ops/provision-roles.ts:186-209`).
   - That includes the worker's jobs login `gm_production_worker`, a member of
     `gm_jobs_worker` only, with 30 s/8 s/60 s defaults
     (`scripts/ops/provision-roles.ts:56-60`, `:285`), whose URL is written as
@@ -193,7 +197,8 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   - Beyond what `github-protect.sh` prints (`scripts/ops/github-protect.sh:32-50`), the
     production environment needs the secret `MIGRATION_DATABASE_URL` (`gm_migrator`,
     direct endpoint, from `.env.provisioned-production` on stdin), the variable
-    `PG_APP_USER` (`gm_production_app`) and the variable `ALERT_WEBHOOK_KIND` (`ntfy`)
+    `PG_APP_USER` (`gm_production_app`) and optionally the variable `ALERT_WEBHOOK_KIND`
+    (defaults to `ntfy`: `.github/workflows/deploy.yml:145`, `retention.yml:55`)
     ([§7](PROVISIONING.md#7-github)). The production deploy job passes them to the
     deploy action's migrate step (`.github/workflows/deploy.yml:141-145`,
     `.github/actions/deploy/action.yml:61-73`), and the retention workflow reads the
@@ -268,8 +273,8 @@ line), and keep where noted.
 
 - `JWT_SECRET` on `web`: at least 32 characters or the web refuses to start
   (`server/config-rules.ts:246-247`); [PROVISIONING.md §3](PROVISIONING.md#3-railway)
-  asks for 64+ random characters. It still keys the pairing-code, PIN-fingerprint,
-  invitation and transfer digests, so rotate it only together with an emergency
+  asks for 64+ random characters. It still keys the pairing-code, PIN-fingerprint and
+  invitation digests (and 031's transfer digests once it merges), so rotate it only together with an emergency
   signing-key rotation ([RUNBOOK.md, "Signing keys"](RUNBOOK.md#signing-keys) step 3).
   A deployed worker refuses it (`server/config-rules.ts:82`). **Now.**
 - `SIGNING_KEYS` on `web` (`.railway/railway.ts:63-64`; `.env.example:148-151`): one
@@ -280,8 +285,8 @@ line), and keep where noted.
   (`invalid_signing_keys`), and a deployed worker refuses it
   (`server/config-rules.ts:81`). Rotation is routine, in two steps, or emergency
   ([RUNBOOK.md, "Signing keys"](RUNBOOK.md#signing-keys)). **Now.**
-- `CREDENTIAL_ENCRYPTION_KEY` on `worker` (`kid:secret` list) seals each restaurant's
-  Facturapi keys. Keep an offline copy: restoring those keys from a backup needs it.
+- `CREDENTIAL_ENCRYPTION_KEY` on `worker` (`kid:secret` list) will seal each
+  restaurant's Facturapi keys (030). Keep an offline copy: restoring those keys from a backup needs it.
   Declared on `worker` (`.railway/railway.ts:128`; placeholder at
   `.env.example:187`) and refused by a deployed web (`server/config-rules.ts:72`);
   nothing reads it before **030**.
@@ -431,7 +436,7 @@ line), and keep where noted.
   [PILOT_SOP.md §7](PILOT_SOP.md#7-a-quién-llamar).
 - The launch itself (M11 in [COMPLETION_LEDGER.md](COMPLETION_LEDGER.md)) is your
   recorded decision ([PROVISIONING.md §10](PROVISIONING.md#10-first-deploy-and-rehearsal)
-  step 4).
+  step 5).
 
 ## 2. Launch sequence
 
@@ -513,7 +518,7 @@ before the previous one is verified.
     ([RUNBOOK.md, "Signals"](RUNBOOK.md#signals),
     ["The POS is down" playbook](RUNBOOK.md#the-pos-is-down-playbook)), and record the
     M11 decision and evidence ([PROVISIONING.md §10](PROVISIONING.md#10-first-deploy-and-rehearsal)
-    step 4).
+    step 5).
 11. **Rollback, if needed.** [RUNBOOK.md, "Rollback"](RUNBOOK.md#rollback): redeploy an
     older SHA that was live on staging (it keeps the live Railway configuration);
     migrations are expand-only and are never reverted by hand; data is repaired only
