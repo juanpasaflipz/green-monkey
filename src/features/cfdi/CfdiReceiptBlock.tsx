@@ -43,7 +43,9 @@ export function CfdiReceiptBlock({
         <p>{t(PRINT, "cfdiReceiptOffline")}</p>
       </div>
     );
-  if (!status.selfInvoice?.enabled)
+  // The QR only where the portal offers self-invoicing: an organization that is ready, the same
+  // predicate as selfInvoiceOffered (CFDI-UX-12); otherwise "Pídela en caja".
+  if (!status.selfInvoice?.enabled || !status.ready)
     return (
       <div className="cfdi-receipt-block">
         <p>

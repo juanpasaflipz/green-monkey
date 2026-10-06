@@ -398,7 +398,7 @@ export default function SelfInvoicePortal() {
               })}
             </strong>
           </p>
-          {ticket.deadline && ticket.eligibility === "available" && (
+          {ticket.deadline && canForm && (
             <p>
               {tr(locale, "cfdiPortalDeadline", {
                 date: shortDate(ticket.deadline, ticket.timezone, locale),

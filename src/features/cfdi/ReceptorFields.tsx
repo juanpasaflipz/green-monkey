@@ -41,6 +41,7 @@ export function ReceptorFields({
   locale,
   requireEmail,
   disabled = false,
+  shared = false,
 }: {
   value: Receptor;
   onChange: (next: Receptor) => void;
@@ -48,6 +49,12 @@ export function ReceptorFields({
   locale: Locale;
   requireEmail: boolean;
   disabled?: boolean;
+  /**
+   * A staff dialog on a shared POS terminal: no autofill history for the customer's email or
+   * postal code, which the next employee would be offered (CFDI-SECRETS-6). The portal runs on
+   * the customer's own device and keeps the autofill tokens.
+   */
+  shared?: boolean;
 }) {
   const id = useId();
   const t = strings[locale];
@@ -153,7 +160,7 @@ export function ReceptorFields({
           value={value.postalCode}
           disabled={disabled}
           inputMode="numeric"
-          autoComplete="postal-code"
+          autoComplete={shared ? "off" : "postal-code"}
           maxLength={5}
           onChange={(e) =>
             set({ postalCode: e.target.value.replace(/\D/g, "").slice(0, 5) })
@@ -184,7 +191,7 @@ export function ReceptorFields({
           type="email"
           value={value.email ?? ""}
           disabled={disabled}
-          autoComplete="email"
+          autoComplete={shared ? "off" : "email"}
           maxLength={254}
           onChange={(e) =>
             set({ email: e.target.value.trim() ? e.target.value : null })

@@ -1074,8 +1074,13 @@ export function eligibility(
   if (!s.settings || !s.settings.enabled) return "disabled";
   if (s.organization?.status !== "ready") return "not_ready";
   const invoice = t.coverage.find((c) => c.kind === "invoice");
+  // An invoice whose cancellation waits for the receptor is still the ticket's CFDI (CFDI-UX-9).
   if (invoice)
-    return t.coverage.some((c) => c.kind === "invoice" && c.status === "valid")
+    return t.coverage.some(
+      (c) =>
+        c.kind === "invoice" &&
+        (c.status === "valid" || c.status === "canceling"),
+    )
       ? "invoiced"
       : "invoicing";
   const global = t.coverage.find(
@@ -1125,15 +1130,21 @@ export async function ticketView(
     !csdUsable(state.organization, settings?.mode ?? "test", now.getTime())
   )
     status = "not_ready";
+  // The portal's deadline applies to a ticket it could reissue from a global too (CFDI-UX-10).
   if (
     o.portal &&
-    status === "available" &&
+    (status === "available" ||
+      (status === "in_global" && !!settings?.portalReissueGlobal)) &&
     deadline &&
     Date.parse(deadline) < now.getTime()
   )
     status = "expired";
   const covering =
-    t.coverage.find((c) => c.kind === "invoice" && c.status === "valid") ??
+    t.coverage.find(
+      (c) =>
+        c.kind === "invoice" &&
+        (c.status === "valid" || c.status === "canceling"),
+    ) ??
     t.coverage.find((c) => c.kind === "invoice") ??
     t.coverage.find((c) => c.kind === "global" && c.state === "active") ??
     null;

@@ -136,17 +136,23 @@ export async function onCanceled(
     where c.document_id = ${doc.id} and c.state = 'released' and c.released_reason = 'canceled'
       and g.status in ('built','empty')
     order by g.period_key`;
+  // Motive 03 ("la operación no se llevó a cabo"): the refund is usually recorded right after;
+  // the freed ticket waits a day, so it is not globalized at its full amount first (CFDI-SAT-5).
+  const runAt =
+    c.motive === "03" ? new Date(Date.now() + 24 * 3600_000) : undefined;
   for (const p of periods)
     await cfdiEnqueue(tx, tenantId, {
       kind: "cfdi_global",
       dedupeKey: `${dedupe.tickAfterCancel(doc.id)}:${p.period_key as string}`,
       payload: { periodKey: p.period_key as string, force: true },
+      runAt,
     });
   if (!periods.length)
     await cfdiEnqueue(tx, tenantId, {
       kind: "cfdi_global",
       dedupeKey: dedupe.tickAfterCancel(doc.id),
       payload: {},
+      runAt,
     });
 }
 

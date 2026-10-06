@@ -4196,6 +4196,105 @@ try {
     assert.ok(exp * 1000 > Date.now() + 890_000, "a fresh 900 s token");
   });
 
+  await test("lows: CFDI turned back on restarts its tick chain (WORKER-4); a motive-03 cancellation re-globalizes a day later (SAT-5); an invoice whose cancellation waits reads invoiced (UX-9); a past CSD end date reads expired (UX-16); an upload naming an organization key never opens or wipes it (SECRETS-2)", async () => {
+    const W = await makeTenant("lows");
+    await activate(W, { testFrom: daysAgo(40), periodicity: "day" });
+    // WORKER-4: pause, a paused tick runs and exits, turn back on in the same 10 minutes.
+    await saveSettings(W, { enabled: false });
+    await web(W, (tx) => service.getSettings(tx, W.manager));
+    await due(W.tenantId, "cfdi_global");
+    await settle(W.tenantId);
+    assert.equal(
+      (await liveTicks(W.tenantId)).length,
+      0,
+      "paused: the chain's ticks exit",
+    );
+    await saveSettings(W, { enabled: true });
+    assert.ok(
+      (await liveTicks(W.tenantId)).some((j) =>
+        String(j.dedupe_key).startsWith("tick:enabled:"),
+      ),
+    );
+    await settle(W.tenantId);
+    assert.ok((await liveTicks(W.tenantId)).length >= 1, "the chain continues");
+    // SAT-5: an invoice of a closed day canceled with motive 03 frees its ticket for tomorrow.
+    const day = daysAgo(3);
+    const tk = await makeTicket(W, { businessDate: day });
+    const d = await invoice(W, tk);
+    await settle(W.tenantId);
+    await tick(W);
+    await web(W, (tx) =>
+      service.cancelDocument(
+        tx,
+        W.manager,
+        { operationId: op(), motive: "03", reason: "No se concretó" },
+        { params: { id: d.id } } as never,
+      ),
+    );
+    await settle(W.tenantId);
+    const [later] =
+      await admin`select next_at from jobs where tenant_id = ${W.tenantId} and kind = 'cfdi_global'
+        and dedupe_key like ${"tick:after-cancel:" + d.id + "%"}`;
+    assert.ok(Date.parse(later.next_at) > Date.now() + 23 * 3600_000);
+    // UX-9: while the receptor decides, the ticket is still invoiced.
+    const tk2 = await makeTicket(W);
+    const d2 = await invoice(W, tk2);
+    await settle(W.tenantId);
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_pending",
+      match: { type: "I", global: false },
+    });
+    await cancelAs(W, W.manager, d2.id);
+    await settle(W.tenantId);
+    assert.equal((await docRow(d2.id)).status, "canceling");
+    const v = await web(W, (tx) =>
+      service.getTicket(tx, W.manager, {
+        params: { ticketId: tk2.id },
+      } as never),
+    );
+    assert.equal(v.eligibility, "invoiced");
+    // UX-16: the panel reads a certificate past its end date as expired.
+    await asWorker(
+      W,
+      (tx) =>
+        tx`update cfdi_organizations set csd_status = 'valid', csd_valid_until = now() - interval '1 hour'`,
+    );
+    const view = await web(W, (tx) => service.getSettings(tx, W.manager));
+    assert.equal(view.organization?.csd.status, "expired");
+    // SECRETS-2: an upload row naming the organization's sealed key is never opened or wiped.
+    const [org] =
+      await admin`select test_secret_id from cfdi_organizations where tenant_id = ${W.tenantId}`;
+    const uploadId = randomUUID();
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${W.tenantId}, true)`;
+      await tx`insert into cfdi_csd_uploads(tenant_id, id, secret_id, status, requested_by, created_at)
+        values (${W.tenantId}, ${uploadId}, ${org.test_secret_id}, 'queued', ${W.owner.employeeId},
+          now() - interval '2 hours')`;
+    });
+    await web(W, (tx) =>
+      cfdiEnqueue(tx, W.tenantId, {
+        kind: "cfdi_csd",
+        dedupeKey: "csd:" + uploadId,
+        payload: { uploadId },
+      }),
+    );
+    await settle(W.tenantId);
+    await tick(W);
+    const [key] =
+      await admin`select payload_secret is not null as sealed, wiped_at from cfdi_secrets where id = ${org.test_secret_id}`;
+    assert.deepEqual({ ...key }, { sealed: true, wiped_at: null });
+    const [u] =
+      await admin`select status, error_code from cfdi_csd_uploads where id = ${uploadId}`;
+    assert.deepEqual(
+      { ...u },
+      {
+        status: "rejected",
+        error_code: "cfdi_csd_abandoned",
+      },
+    );
+  });
+
   console.log(`cfdi DB checks passed: ${checks}`);
 } finally {
   await runner.stop(2000);

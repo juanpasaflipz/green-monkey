@@ -509,8 +509,9 @@ supplies the test key. The accountant confirms D4, D5, D11 and the RESICO retent
 ## Open items
 
 - **Sandbox verification** needs a Facturapi test key: rounding (D18), the base-priced RESICO
-  concepts (`tax_included: false`), the egreso to PUBLICO EN GENERAL (Facturapi's
-  `InvoiceEgresoInput` has no `global` field), the undocumented `idempotency_key_in_use` status
+  concepts (`tax_included: false`), the rounding and identity of an egreso to PUBLICO EN
+  GENERAL (it carries no InformacionGlobal: CFDI40130 requires that node only for type "I", and
+  SAT's Apéndice 2 egreso examples have none), the undocumented `idempotency_key_in_use` status
   and the receptor test identity.
 - **Live qualification** with a real CSD and production approval.
 

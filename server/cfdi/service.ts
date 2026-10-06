@@ -223,7 +223,13 @@ async function settingsView(
           legalSyncedVersion: org.legalSyncedVersion,
           fiscalProfileVersion: facts.version,
           csd: {
-            status: org.csdStatus,
+            // A certificate past its end date reads expired before a refresh marks it (UX-16).
+            status:
+              org.csdStatus === "valid" &&
+              !!org.csdValidUntil &&
+              Date.parse(org.csdValidUntil) <= Date.now()
+                ? "expired"
+                : org.csdStatus,
             serial: org.csdSerial,
             validUntil: org.csdValidUntil,
             lastUpload,
@@ -282,9 +288,13 @@ export async function getSettings(tx: Tx, s: Session) {
         dedupeKey: dedupe.refresh(now),
         payload: { action: "refresh" },
       });
+    // While paused a tick would only exit and use up the bucket's key (CFDI-WORKER-4). The
+    // abandoned-CSD sweep still runs: the tick does it before it checks the switch.
     await cfdiEnqueue(tx, s.tenantId, {
       kind: "cfdi_global",
-      dedupeKey: dedupe.tickEnsure(now),
+      dedupeKey: state.settings.enabled
+        ? dedupe.tickEnsure(now)
+        : `${dedupe.tickEnsure(now)}:paused`,
       payload: {},
     });
   }
@@ -411,6 +421,14 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
       dedupeKey: dedupe.tickEnsure(new Date()),
       payload: {},
     });
+    // Turned back on: the chain ended while paused, and the bucket's key may be used up by a
+    // tick that ran (and exited) while paused, so the restart has a key of its own (WORKER-4).
+    if (p.enabled && !before.enabled)
+      await cfdiEnqueue(tx, s.tenantId, {
+        kind: "cfdi_global",
+        dedupeKey: `tick:enabled:${before.version + 1}`,
+        payload: {},
+      });
     return { ok: true };
   });
   return settingsView(tx, s);

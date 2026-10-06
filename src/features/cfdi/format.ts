@@ -10,6 +10,7 @@ import {
 } from "../../../shared/domain";
 import {
   docLabel,
+  globalPeriodFor,
   PAYMENT_FORMS,
   type CfdiDocumentKind,
   type CfdiDocumentSummary,
@@ -138,6 +139,27 @@ export function periodLabel(
     ? `Semana ${d}–${to} ${month("short")} ${y}`
     : `Week ${d}–${to} ${month("short")} ${y}`;
 }
+/**
+ * What the amount check measured (CFDI-MONEY-3): the stamped total BEFORE the RESICO retention
+ * against the expected total, else the stamped IVA against the expected IVA. Null when both match.
+ */
+export function amountDifference(d: {
+  total: number | null;
+  withheld: number | null;
+  expectedTotal: number | null;
+  tax: number | null;
+  expectedTax: number | null;
+}): { kind: "total" | "tax"; amount: number } | null {
+  const total = Math.abs(
+    (d.total ?? 0) + (d.withheld ?? 0) - (d.expectedTotal ?? 0),
+  );
+  if (d.total !== null && d.expectedTotal !== null && total > 0)
+    return { kind: "total", amount: total };
+  const tax = Math.abs((d.tax ?? 0) - (d.expectedTax ?? 0));
+  if (d.tax !== null && d.expectedTax !== null && tax > 0)
+    return { kind: "tax", amount: tax };
+  return null;
+}
 /** The period of a period key ("D2026-10-04", "M2026-10", …) for chips. */
 export function periodKeyLabel(key: string | null, locale: Locale): string {
   if (!key) return "";
@@ -162,7 +184,12 @@ export function periodKeyLabel(key: string | null, locale: Locale): string {
       locale,
     );
   }
-  return periodLabel({ periodicity: "week", from: body, to: body }, locale);
+  // The week's real (month-clipped) range from its start date (CFDI-UX-8).
+  const week = globalPeriodFor(body, "week");
+  return periodLabel(
+    { periodicity: "week", from: week.from, to: week.to },
+    locale,
+  );
 }
 
 export function paymentFormLabel(form: string | null): string {

@@ -336,6 +336,7 @@ export function InvoiceDialog({
               locale={locale}
               requireEmail={false}
               disabled={busy}
+              shared
             />
             {ticket.needsCardForm && (
               <fieldset className="cfdi-radios">

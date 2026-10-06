@@ -41,6 +41,7 @@ import {
   eventLabel,
   issueOfError,
   periodKeyLabel,
+  amountDifference,
   periodLabel,
   withServerIssue,
 } from "../src/features/cfdi/format";
@@ -170,6 +171,22 @@ describe("cfdi client: ReceptorFields (23)", () => {
     // 605 (sueldos) is a persona-física regime: not offered for a 12-character RFC.
     expect(out).not.toContain('value="605"');
   });
+  it("CFDI-SECRETS-6: on a shared staff terminal the email and postal code keep no autofill history; the portal keeps the tokens", () => {
+    const render = (shared: boolean) =>
+      html(
+        createElement(ReceptorFields, {
+          value: receptor,
+          onChange: () => {},
+          issues: [],
+          locale: "es",
+          requireEmail: false,
+          shared,
+        }),
+      );
+    expect(render(true)).not.toMatch(/autoComplete="(email|postal-code)"/i);
+    expect(render(false)).toMatch(/autoComplete="email"/i);
+    expect(render(false)).toMatch(/autoComplete="postal-code"/i);
+  });
   it("renders English labels, the required email and translated issues with warnings apart", () => {
     const out = html(
       createElement(ReceptorFields, {
@@ -238,6 +255,17 @@ describe("cfdi client: printed block (23, 2.12)", () => {
         }),
       ),
     ).toContain("Pídela en caja con el folio A-000123.");
+    // CFDI-UX-12: an organization that is not ready prints no QR either.
+    const notReady = html(
+      createElement(CfdiReceiptBlock, {
+        ticket,
+        status: status({ ready: false }),
+        kind: "receipt",
+        origin,
+      }),
+    );
+    expect(notReady).toContain("Pídela en caja con el folio A-000123.");
+    expect(notReady).not.toContain("<svg");
     expect(
       html(
         createElement(CfdiReceiptBlock, {
@@ -523,6 +551,9 @@ describe("cfdi client: helpers", () => {
     expect(periodKeyLabel("D2026-10-04", "es")).toBe("4 oct 2026");
     expect(periodKeyLabel("F2026-10-2", "es")).toBe("2ª quincena oct 2026");
     expect(periodKeyLabel(null, "es")).toBe("");
+    // CFDI-UX-8: a week shows its real range, clipped at the end of the month.
+    expect(periodKeyLabel("W2026-10-05", "es")).toBe("Semana 5–11 oct 2026");
+    expect(periodKeyLabel("W2026-08-31", "es")).toBe("Semana 31–31 ago 2026");
   });
   it("a provider error path highlights its receptor field once", () => {
     const issue = issueOfError({
@@ -749,6 +780,36 @@ describe("cfdi client: helpers", () => {
     expect(portalMessage("network_unavailable", "es")).not.toContain(
       "vendiendo",
     );
+  });
+  it("CFDI-MONEY-3: the amount check line compares the pre-retention total, then the IVA", () => {
+    // RESICO: Total 11,455 after 145 of ISR withheld; expected 11,600 before it.
+    expect(
+      amountDifference({
+        total: 11455,
+        withheld: 145,
+        expectedTotal: 11600,
+        tax: 1600,
+        expectedTax: 1601,
+      }),
+    ).toEqual({ kind: "tax", amount: 1 });
+    expect(
+      amountDifference({
+        total: 11599,
+        withheld: 0,
+        expectedTotal: 11600,
+        tax: 1600,
+        expectedTax: 1600,
+      }),
+    ).toEqual({ kind: "total", amount: 1 });
+    expect(
+      amountDifference({
+        total: 11455,
+        withheld: 145,
+        expectedTotal: 11600,
+        tax: 1600,
+        expectedTax: 1600,
+      }),
+    ).toBeNull();
   });
   it("CFDI-UX-4: a valid document waits for both files before the dialog links them", () => {
     const doc = (files: string[], status = "valid") =>

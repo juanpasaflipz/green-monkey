@@ -191,7 +191,15 @@ export async function portalTicket(
             order by d.created_at desc limit 1`;
     if (newest) {
       const doc = await loadDocument(tx, newest.id as string);
-      if (doc) latest = { ...portalStatus(doc, null) };
+      // Before the RFC check: status and reason only, no masked RFC or email and no UUID
+      // (CFDI-SECRETS-3: a masked company RFC leaves only its date digits to guess).
+      if (doc)
+        latest = {
+          ...portalStatus(doc, null),
+          rfcMasked: "",
+          emailMasked: null,
+          uuid: null,
+        };
     }
     // account (031): privacyUrl = await restaurantPrivacyUrl(tx);
     const privacyUrl: string | null = null;

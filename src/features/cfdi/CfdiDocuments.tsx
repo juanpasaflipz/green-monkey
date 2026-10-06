@@ -27,6 +27,7 @@ import { InvoiceDialog } from "./InvoiceDialog";
 import { emptyReceptor, ReceptorFields } from "./ReceptorFields";
 import { fileUrl } from "./download";
 import {
+  amountDifference,
   cancellationLabel,
   cfdiStatusLabel,
   dateTimeLabel,
@@ -84,25 +85,28 @@ export function CfdiDocuments({
   const [ticket, setTicket] = useState<CfdiTicketView | null>(null);
   const [ticketError, setTicketError] = useState("");
 
-  const fetchPage = useCallback(
-    async (after: string | null) => {
-      const params = new URLSearchParams({ from, to });
-      if (kind) params.set("kind", kind);
-      if (status) params.set("status", status);
-      if (q.trim()) params.set("q", q.trim());
-      if (after) params.set("after", after);
-      return api<{ rows: CfdiDocumentSummary[]; next: string | null }>(
-        `/cfdi/documents?${params}`,
-      );
-    },
-    [from, to, kind, status, q],
-  );
+  /** The filters as typed; Filtrar applies them. */
+  const filters = useCallback(() => {
+    const params = new URLSearchParams({ from, to });
+    if (kind) params.set("kind", kind);
+    if (status) params.set("status", status);
+    if (q.trim()) params.set("q", q.trim());
+    return params.toString();
+  }, [from, to, kind, status, q]);
+  /** The query of the rows on screen: "Ver más" pages through it, never through unapplied edits. */
+  const [applied, setApplied] = useState<string | null>(null);
+  const fetchPage = (query: string, after: string | null) =>
+    api<{ rows: CfdiDocumentSummary[]; next: string | null }>(
+      `/cfdi/documents?${query}${after ? `&after=${encodeURIComponent(after)}` : ""}`,
+    );
 
   const search = useCallback(async () => {
     setBusy(true);
     setError("");
     try {
-      const page = await fetchPage(null);
+      const query = filters();
+      setApplied(query);
+      const page = await fetchPage(query, null);
       setRows(page.rows);
       setNext(page.next);
     } catch (e) {
@@ -110,7 +114,7 @@ export function CfdiDocuments({
     } finally {
       setBusy(false);
     }
-  }, [fetchPage, locale]);
+  }, [filters, locale]);
 
   // The first page loads once; later searches run from the Filtrar button.
   const [loaded, setLoaded] = useState(false);
@@ -121,10 +125,10 @@ export function CfdiDocuments({
   }, [loaded, search]);
 
   async function more() {
-    if (!next) return;
+    if (!next || applied === null) return;
     setBusy(true);
     try {
-      const page = await fetchPage(next);
+      const page = await fetchPage(applied, next);
       setRows((r) => [...(r ?? []), ...page.rows]);
       setNext(page.next);
     } catch (e) {
@@ -509,12 +513,18 @@ export function DocumentDetail({
                 <dd>
                   {doc.amountCheck === "exact"
                     ? t.cfdiAmountExact
-                    : tr(locale, "cfdiAmountDiffers", {
-                        amount: moneyLabel(
-                          Math.abs((doc.total ?? 0) - (doc.expectedTotal ?? 0)),
-                          locale,
-                        ),
-                      })}
+                    : (() => {
+                        const diff = amountDifference(doc);
+                        return diff
+                          ? tr(
+                              locale,
+                              diff.kind === "total"
+                                ? "cfdiAmountDiffers"
+                                : "cfdiAmountDiffersTax",
+                              { amount: moneyLabel(diff.amount, locale) },
+                            )
+                          : t.cfdiAmountDiffersRounding;
+                      })()}
                 </dd>
               </>
             )}
@@ -1138,6 +1148,7 @@ function SubstituteDialog({
           locale={locale}
           requireEmail={false}
           disabled={busy}
+          shared
         />
         {card && (
           <fieldset className="cfdi-radios">

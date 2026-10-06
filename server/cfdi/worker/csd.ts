@@ -20,9 +20,10 @@ async function terminal(
     | { accepted: true }
     | { accepted: false; code: string; previous: "valid" | null },
 ) {
+  // Only an upload box: the secret id comes from a row the runtime role wrote (CFDI-SECRETS-2).
   await tx`
     update cfdi_secrets set payload_secret = null, wiped_at = now()
-    where id = ${upload.secretId} and wiped_at is null`;
+    where id = ${upload.secretId} and purpose = 'csd_upload' and wiped_at is null`;
   if (outcome.accepted)
     await tx`
       update cfdi_csd_uploads set status = 'accepted', processed_at = now()
@@ -61,6 +62,7 @@ export async function csdJob(ctx: JobContext): Promise<JobOutcome> {
     const [u] = await tx`
       select u.id, u.secret_id, u.status, u.cert_rfc, s.payload_secret
       from cfdi_csd_uploads u join cfdi_secrets s on s.tenant_id = u.tenant_id and s.id = u.secret_id
+        and s.purpose = 'csd_upload'
       where u.id = ${uploadId}`;
     if (!u || !["queued", "processing"].includes(u.status)) return null;
     const org = await loadOrganization(tx);

@@ -772,9 +772,11 @@ export type EgresoBuild = {
  * (84111506, ACT, "Devolución del ticket {folio}"), receptor = the parent's (G02 when the régimen
  * allows it, else S01) or PUBLICO EN GENERAL with S01 for a global parent.
  *
- * Open item (sandbox): Anexo 20 requires InformacionGlobal when the receptor is XAXX010101000 with
- * the name PUBLICO EN GENERAL, but Facturapi's InvoiceEgresoInput has no `global` field. The egreso
- * of a global parent is built as the spec says and must be verified in the sandbox (docs/CFDI.md).
+ * An egreso to PUBLICO EN GENERAL carries no InformacionGlobal: the matriz de errores rule
+ * CFDI40130 requires that node only when TipoDeComprobante is "I", SAT's own Apéndice 2 egreso
+ * examples to público en general have none, and Facturapi's InvoiceEgresoInput has no `global`
+ * field (facturapi-schema.ts refuses one). The sandbox checks only rounding and identity
+ * (CFDI-SAT-8). A route-III note (`credit`) is the same shape for a ticket's whole net amount.
  */
 export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
   const { parent, refund } = i;

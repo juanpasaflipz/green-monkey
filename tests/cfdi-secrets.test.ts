@@ -1,6 +1,7 @@
 // cfdi (030) unit tests 17-19, 21 and 25 (spec §7.1): the credential vault, the sealed CSD upload
 // box, CSD inspection, configuration through loadConfig and provider-key redaction. Pure: no
 // database, no network.
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ConfigError, loadConfig } from "../server/config-rules";
@@ -425,5 +426,24 @@ describe("25. redaction", () => {
     const text = JSON.stringify(out);
     expect(text).not.toMatch(/sk_(user|test|live)_[A-Za-z0-9]/);
     expect(text).toContain("[redacted]");
+  });
+});
+
+describe("credential key generator (CFDI-SECRETS-5)", () => {
+  it("two keys generated the same day have different kids, which the keyring accepts together", () => {
+    const run = () =>
+      execFileSync(process.execPath, [
+        "scripts/cfdi-generate-credential-key.mjs",
+      ])
+        .toString()
+        .trim();
+    const a = run();
+    const b = run();
+    expect(a.split(":")[0]).toMatch(/^\d{4}-\d{2}-\d{2}-[0-9a-f]{6}$/);
+    expect(a.split(":")[0]).not.toBe(b.split(":")[0]);
+    expect(parseCredentialKeyring(`${b},${a}`).kids).toEqual([
+      b.split(":")[0],
+      a.split(":")[0],
+    ]);
   });
 });

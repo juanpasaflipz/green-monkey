@@ -239,7 +239,7 @@ export default defineArea({
     cfdiCancelPreStart:
       "El ticket es de antes de que empezara la facturación en la app: ninguna factura global de la app lo incluirá. Inclúyelo en la factura global que emitas por tu cuenta.",
     cfdiCancelRefundHint:
-      "Si el cliente no pagó o se le devolvió el dinero, registra también el reembolso.",
+      "Si el cliente no pagó o se le devolvió el dinero, registra el reembolso antes de confirmar (o hoy mismo): el ticket vuelve a la factura global hasta mañana, por su importe neto.",
     cfdiCancelAcceptance:
       "El cliente debe aceptar la cancelación en el portal del SAT (3 días hábiles; si no responde a la primera solicitud, se cancela).",
     cfdiConfirmCancel: "Cancelar factura",
@@ -266,6 +266,9 @@ export default defineArea({
     cfdiCreditNoteOf: "Nota de crédito de {doc}",
     cfdiCreditNotes: "Notas de crédito",
     cfdiAmountDiffers: "El importe timbrado difiere del ticket en {amount}.",
+    cfdiAmountDiffersTax: "El IVA timbrado difiere del calculado en {amount}.",
+    cfdiAmountDiffersRounding:
+      "Un concepto se redondeó distinto (un centavo); los totales coinciden.",
     cfdiProviderDetail: "Detalle del SAT/PAC",
     cfdiStuckHint: "Sin cambios desde hace más de 30 minutos.",
     cfdiGlobalsTitle: "Facturas globales",
@@ -621,7 +624,7 @@ export default defineArea({
     cfdiCancelPreStart:
       "The ticket is from before invoicing started in the app: no global invoice from the app will include it. Include it in the global invoice you issue on your own.",
     cfdiCancelRefundHint:
-      "If the customer did not pay or got the money back, also record the refund.",
+      "If the customer did not pay or got the money back, record the refund before confirming (or today): the ticket goes back to the global invoice tomorrow, at its net amount.",
     cfdiCancelAcceptance:
       "The customer must accept the cancellation on the SAT portal (3 business days; if there is no reply to the first request, it is cancelled).",
     cfdiConfirmCancel: "Cancel invoice",
@@ -649,6 +652,10 @@ export default defineArea({
     cfdiCreditNotes: "Credit notes",
     cfdiAmountDiffers:
       "The stamped amount differs from the ticket by {amount}.",
+    cfdiAmountDiffersTax:
+      "The stamped VAT differs from the computed one by {amount}.",
+    cfdiAmountDiffersRounding:
+      "One concept was rounded differently (one centavo); the totals match.",
     cfdiProviderDetail: "SAT/PAC detail",
     cfdiStuckHint: "No change for more than 30 minutes.",
     cfdiGlobalsTitle: "Global invoices",
