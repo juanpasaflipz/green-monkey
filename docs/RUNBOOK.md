@@ -42,6 +42,7 @@ acknowledged a critical alert within 15 minutes during service hours
 | `cfdi_global_overdue:*`, `cfdi_global_late:*`, `cfdi_global_failed:*` (warning) | ntfy, from the worker | a global invoice missed its 24 h deadline, a late supplementary part was issued after it, or a part failed: Facturas globales → **Emitir ahora** / **Reintentar** |
 | `cfdi_stamp_unresolved:*`, `cfdi_cancel_unresolved:*`, `cfdi_cancel_failed:*`, `cfdi_substitution_rejected:*`, `cfdi_reissue_failed:*`, `cfdi_refund_unresolved:*`, `cfdi_ticket_excluded:*`, `cfdi_amount_mismatch:*` (warning) | ntfy, from the worker | one restaurant's document needs a person (`<tenant>` = first 8 hex characters of the tenant id): see the action per key in [CFDI](CFDI.md) "Operations" |
 | `cfdi_csd_expiring:*` (info) | ntfy, from the worker | a restaurant's CSD expires within 30 days: the owner uploads a new one |
+| `jobs_dead_cfdi_*` (warning) | ntfy, from the worker | a cfdi job used up its attempts. The global tick's recovery sweep re-enqueues what the document needs within a day (or a manager presses **Reintentar** on it); a dead `cfdi_global` tick already scheduled the next one, and the chain also restarts at the next worker deploy and operator sign-in ([CFDI](CFDI.md) "Jobs") |
 
 Alerts carry codes and counts only, never personal or tenant data. Logs are
 single-line JSON in Railway: filter with `@level:error`, `@message:http_request`,

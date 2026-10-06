@@ -176,6 +176,32 @@ every 6 h up to 10 days. A document in `queued` or `stamping` with no change for
 **Atascada**: press **Reintentar** in Facturas emitidas (it adopts an existing invoice by
 `external_id` instead of stamping twice).
 
+Recovery (`server/cfdi/recovery.ts`):
+
+- **CFDI unavailable in the worker** (no Facturapi keys on the deploy, or the boot check got a
+  401): a claimed cfdi job does not use up attempts. It hands over to a fresh copy of itself
+  (`<dedupe key>:wait:<k>`, same payload) due in 15 minutes, doubling to 6 hours, and completes.
+  When the keys are back every pending state resumes.
+- **A job that ended without finishing the state** (a poll chain stopped or died, a cancellation
+  never sent, a stopped reissue, files never stored): every global tick runs a recovery sweep
+  over documents unchanged for 30 minutes and re-enqueues, at most once a day and only when no
+  live job serves the document, the poll of a `pending` stamp or a `canceling` cancellation, the
+  cancellation, the reissue step or the download; invoices still `waiting` on a replacement
+  global that already finished are queued. A manager can do the same at once with
+  **Reintentar** on the document (pending, canceling, a queued cancellation, missing files).
+  Reconcile chains merge: a poll does not schedule the next one while another chain of the same
+  document already has one waiting.
+- **The global tick chain** never ends: a tick that keeps failing schedules a fresh tick at the
+  next hour before it goes dead (`jobs_dead_cfdi_global` still alerts), and a restaurant with
+  CFDI enabled and no live tick gets one back at the worker boot (`seedGlobalTicks`, restaurants
+  found through their `cfdi_global` jobs) and at every operator sign-in (`GET /cfdi/status`,
+  `ensureTick`, one insert per 10 minutes at most).
+- **Invoice after a global**: the web request and `cfdi_reissue` take the same per-document key
+  of the global (LO-3). The request re-reads the global and the ticket's claim under the key; if
+  the reissue already canceled the global it answers `cfdi_global_in_progress`, and the retry
+  lands on the replacement global once it is valid. A motive-04 cancellation is only inserted
+  for a valid global.
+
 ## Global periods
 
 Membership is the ticket's fiscal `business_date` (decision D5, binding). A period is built at
@@ -211,9 +237,9 @@ at most 4,000 concepts; a ticket is never split. With automatic emission off, pe
 | `cfdi_stamp_unresolved:<tenant>:<doc>` | warning | Facturapi kept the stamp pending past its recovery window: check the invoice in Facturapi |
 | `cfdi_cancel_unresolved:<tenant>:<doc>` / `cfdi_cancel_failed:<tenant>:<doc>` | warning | a cancellation is unanswered after 10 days / was refused: read the detail, repeat or handle at the SAT portal |
 | `cfdi_refund_unresolved:<tenant>:<refund>` | warning | a refund's credit note could not be issued: check its parent document; the refund sweep retries |
-| `cfdi_reissue_failed:<tenant>:<doc>` | warning | a global replacement (motive 04) was refused: read the detail; the waiting invoices stay queued |
+| `cfdi_reissue_failed:<tenant>:<doc>` | warning | a global replacement (motive 04) was refused: read the detail; the waiting invoices fail (their tickets are freed) and must be requested again once the cause is fixed |
 | `cfdi_csd_expiring:<tenant>` | info | the CSD expires in less than 30 days: the owner uploads a new one |
-| `jobs_dead_cfdi_<kind>` | warning | a job exhausted its attempts (Wave 2.0 runner) |
+| `jobs_dead_cfdi_<kind>` | warning | a job exhausted its attempts (Wave 2.0 runner). Nothing is lost: the tick's recovery sweep re-enqueues what the document still needs within a day, or press **Reintentar** on it. `jobs_dead_cfdi_global`: a fresh tick was already scheduled at the next hour; if the cause persists (read the job's `error_code`), the chain also restarts at the next worker deploy and the next sign-in |
 
 `<tenant>` is the first 8 hex characters of the tenant id. Alerts carry codes, counts and ids,
 never names, RFCs, emails or amounts. Retention never deletes `cfdi_*` rows. A production deploy
@@ -365,8 +391,8 @@ redeclared.
 
 | Command | Covers |
 | --- | --- |
-| `npm test` | `tests/cfdi.test.ts` (builders, rounding proof, XML parser, error classifier), `tests/cfdi-facturapi-contract.test.ts` (documented API), `tests/cfdi-facturapi-fake.test.ts`, `tests/cfdi-shared.test.ts` (receptor rules, periods, deadlines, payment forms, settings), `tests/cfdi-resico.test.ts`, `tests/cfdi-secrets.test.ts` (vault, upload box, CSD inspection, config, redaction), `tests/cfdi-jobs.test.ts` (kinds, limits, retry, dedupe keys), `tests/cfdi-portal-http.test.ts` (portal limiters over HTTP), `tests/cfdi-client.test.ts` (receptor form, printed block, alerts, ticket status, order actions), `tests/import-graph.test.ts` (process boundary) |
-| `npm run test:db:cfdi` | 31 checks through the worker login and the in-process fake: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos, substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation |
+| `npm test` | `tests/cfdi.test.ts` (builders, rounding proof, XML parser, error classifier), `tests/cfdi-facturapi-contract.test.ts` (documented API), `tests/cfdi-facturapi-fake.test.ts`, `tests/cfdi-shared.test.ts` (receptor rules, periods, deadlines, payment forms, settings), `tests/cfdi-resico.test.ts`, `tests/cfdi-secrets.test.ts` (vault, upload box, CSD inspection, config, redaction), `tests/cfdi-jobs.test.ts` (kinds, limits, retry, dedupe keys), `tests/cfdi-portal-http.test.ts` (portal limiters over HTTP), `tests/cfdi-client.test.ts` (receptor form, printed block, alerts, ticket status, order actions), `tests/import-graph.test.ts` (process boundary), `tests/cfdi-merge-gate.test.ts` (the fiscal rebase gate) |
+| `npm run test:db:cfdi` | checks through the worker login and the in-process fake: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos, substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor |
 | `npx playwright test tests/browser/cfdi.spec.ts` | the panel before activation and the portal (always); activation + CSD, staff invoice + cancel, portal self-invoice (skip until fiscal 027 and the worker with the fake run) |
 | `npm run test:facturapi:sandbox` | opt-in, `FACTURAPI_TEST_KEY` only, official URL, test mode; `RECORD=1` rewrites fixtures as `recorded@<date>` (not run: no key) |
 
@@ -408,6 +434,13 @@ behaviour.
    `extra.cfdi = await cfdiCoverage(tx, range)`, `TodayDashboard` renders
    `cfdiReportAlertText`, and `documents.tsx` renders `CfdiCorteCoverage` unless it already does.
 6. Run the full qualification; the three stamping browser tests then run instead of skipping.
+   The merge gate enforces this: once `server/fiscal-read.ts` is in the tree,
+   `tests/cfdi-merge-gate.test.ts` fails until both compat shims and the stand-in are gone, no
+   file imports them, `recordRefundTax` calls `enqueueCfdiRefund`, the worker reads
+   `refunds.method`, the stamping tests no longer skip for a missing fiscal, and the CFDI status
+   lines (DELIVERY_STATUS, FEATURE_MATRIX, COMPLETION_LEDGER) were re-verified; the browser
+   stamping tests themselves fail (instead of skipping) without `GET /api/fiscal/context`, and in
+   CI without the worker and the fake.
 
 ## Limitations and decisions
 
