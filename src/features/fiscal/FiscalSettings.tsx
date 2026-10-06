@@ -420,6 +420,9 @@ export function FiscalSettings({
                       setForm({
                         ...form,
                         taxRegion: region,
+                        // A newly chosen border region needs a new attestation.
+                        borderConfirmed:
+                          region !== "general" && region === data.taxRegion,
                         // IVA 8% exists only in a border region.
                         defaultTaxCategory:
                           region === "general" &&
@@ -492,7 +495,7 @@ export function FiscalSettings({
           </fieldset>
           {editable && (
             <Button variant="primary" type="submit">
-              {busy ? t.fiscalLoading : t.fiscalSave}
+              {t.fiscalSave}
             </Button>
           )}
         </fieldset>
