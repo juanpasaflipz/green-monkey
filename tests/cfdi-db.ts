@@ -483,9 +483,12 @@ async function waitFor(check: () => Promise<boolean>, ms = 10_000) {
   }
 }
 /** Advisory-lock requests waiting in this (isolated) test database. */
+// pg_locks spans the whole cluster: count this database's waiters only, so another suite running
+// on the same local server (other worktrees share it) never satisfies a wait early.
 const advisoryWaiters = async () =>
   (
-    await admin`select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted`
+    await admin`select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted
+      and database = (select oid from pg_database where datname = current_database())`
   )[0].n as number;
 /** LD-12 named-trigger pattern: moves a document's clocks back (the guard refuses every role). */
 async function age(documentIds: string[], minutes: number) {
