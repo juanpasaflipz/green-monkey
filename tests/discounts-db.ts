@@ -5,12 +5,9 @@
 // are left in place (the isolated test database is disposable; refunds,
 // discounts and closed drawers refuse DELETE).
 //
-// Fiscal 027 is built in parallel (server/compat/discounts-fiscal.ts): DB 8's
-// ticket case, DB 13, 21, 37 and 38 (fiscalTest) run only when the fiscal
-// tables exist and report SKIP otherwise; the fiscal assertions inside DB 7,
-// the refund_balance_due check and the whole-check comp check run only then,
-// without a SKIP line. All are un-gated at discounts' merge after fiscal
-// (specs/wave2-cross-track.md §2).
+// Fiscal 027 merged first (wave2-cross-track §2): DB 7's ticket, DB 8's
+// ticket case, DB 13, 21, 37 and 38 and the fiscal assertions of the balance
+// and whole-check comp checks run against fiscal's real ticket and refund tax.
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -66,6 +63,7 @@ import { extractTax } from "../shared/tax.js";
 import type { SessionAccess } from "../shared/access.js";
 import { discountRemovable } from "../src/features/discounts/format.js";
 import { isolatedTarget } from "./isolated-target.js";
+import { noRetries } from "./db-retries.js";
 
 const { runtime: url, migration } = isolatedTarget(process.env);
 const sql = connect(url),
@@ -168,25 +166,10 @@ const foreignKitchen = as(
 const managerApproval = { employeeId: managerId, secret: managerPin };
 
 let checks = 0;
-let skipped = 0;
 async function test(name: string, fn: () => Promise<void>) {
   await fn();
   checks++;
   console.log("PASS", name);
-}
-/** Runs only once fiscal 027 is on the branch (its tables exist). */
-const fiscalPresent = async () => {
-  const [r] =
-    await admin`select to_regclass('public.fiscal_adjustments') is not null as present`;
-  return r.present as boolean;
-};
-async function fiscalTest(name: string, fn: () => Promise<void>) {
-  if (!(await fiscalPresent())) {
-    skipped++;
-    console.log("SKIP", name, "(fiscal 027 not on this branch)");
-    return;
-  }
-  await test(name, fn);
 }
 async function rejects(promise: Promise<unknown>, code: string | RegExp) {
   await assert.rejects(promise, (e: any) => {
@@ -646,39 +629,34 @@ try {
     assert.equal(after.total, 10000);
     assert.equal(after.checkState, "closed");
     assert.equal(after.closeReason, "settled");
-    if (await fiscalPresent()) {
-      const [t] = await run(
-        owner,
-        (tx) =>
-          tx`select gross,discount from fiscal_tickets where order_id=${o.id}`,
-      );
-      assert.equal(
-        t.gross,
-        10000,
-        "fiscal: the ticket is issued for the net total",
-      );
-    }
+    const [t] = await run(
+      owner,
+      (tx) =>
+        tx`select gross,discount from fiscal_tickets where order_id=${o.id}`,
+    );
+    assert.equal(
+      t.gross,
+      10000,
+      "fiscal: the ticket is issued for the net total",
+    );
   });
 
-  await fiscalTest(
-    "fiscal: a discount on a ticketed check fails with fiscal_ticket_issued",
-    async () => {
-      const table = tables[2].id as string;
-      const o = await newOrder([{ product: taco, quantity: 2 }], {
-        tableId: table,
-      });
-      await pay(o.id, 9000);
-      const paid = await orderOf(o.id);
-      assert.equal(paid.checkState, "paid");
-      await rejects(
-        discount(manager, o.id, percentBody(paid, 1000)),
-        "fiscal_ticket_issued",
-      );
-      await run(owner, (tx) =>
-        closeCheck(tx, owner, o.id, { operationId: randomUUID() }),
-      );
-    },
-  );
+  await test("fiscal: a discount on a ticketed check fails with fiscal_ticket_issued", async () => {
+    const table = tables[2].id as string;
+    const o = await newOrder([{ product: taco, quantity: 2 }], {
+      tableId: table,
+    });
+    await pay(o.id, 9000);
+    const paid = await orderOf(o.id);
+    assert.equal(paid.checkState, "paid");
+    await rejects(
+      discount(manager, o.id, percentBody(paid, 1000)),
+      "fiscal_ticket_issued",
+    );
+    await run(owner, (tx) =>
+      closeCheck(tx, owner, o.id, { operationId: randomUUID() }),
+    );
+  });
 
   await test("a discount on a closed check fails with check_closed; a stale version with stale_order", async () => {
     const o = await newOrder([{ product: taco, quantity: 1 }]);
@@ -1102,28 +1080,25 @@ try {
     await pay(o.id, 4050, { items: [`${line}:0`] });
   });
 
-  await fiscalTest(
-    "fiscal: a discounted order's ticket taxes equal per-category netting and unallocated_discount is 0",
-    async () => {
-      const o = await newOrder([
-        { product: taco, quantity: 2 },
-        { product: bowl, quantity: 1 },
-      ]);
-      const d = await discount(manager, o.id, percentBody(o, 1000));
-      await pay(o.id, d.total);
-      const [t] = await run(
-        owner,
-        (tx) =>
-          tx`select gross,discount,unallocated_discount,base,tax from fiscal_tickets where order_id=${o.id}`,
-      );
-      assert.equal(t.gross, d.total);
-      assert.equal(t.discount, 2150);
-      assert.equal(t.unallocated_discount, 0);
-      const iva = extractTax(d.total, 1600);
-      assert.equal(t.tax, iva.tax);
-      assert.equal(t.base, iva.base);
-    },
-  );
+  await test("fiscal: a discounted order's ticket taxes equal per-category netting and unallocated_discount is 0", async () => {
+    const o = await newOrder([
+      { product: taco, quantity: 2 },
+      { product: bowl, quantity: 1 },
+    ]);
+    const d = await discount(manager, o.id, percentBody(o, 1000));
+    await pay(o.id, d.total);
+    const [t] = await run(
+      owner,
+      (tx) =>
+        tx`select gross,discount,unallocated_discount,base,tax from fiscal_tickets where order_id=${o.id}`,
+    );
+    assert.equal(t.gross, d.total);
+    assert.equal(t.discount, 2150);
+    assert.equal(t.unallocated_discount, 0);
+    const iva = extractTax(d.total, 1600);
+    assert.equal(t.tax, iva.tax);
+    assert.equal(t.base, iva.base);
+  });
 
   await test("MON-4: card refund recorded against the original external tender with reference and confirmation; drawer cash expected unchanged; terminal net decreases", async () => {
     const drawer = await openDrawer(devices.a);
@@ -1371,8 +1346,9 @@ try {
         }
       throw new Error("refund_changed 40 times in a row");
     };
-    const results = await Promise.allSettled(
-      Array.from({ length: 20 }, device),
+    // LO-R9: no burst may deadlock, even once, behind tenant()'s retry.
+    const results = await noRetries("refund caps burst", () =>
+      Promise.allSettled(Array.from({ length: 20 }, device)),
     );
     const ok = results.filter((x) => x.status === "fulfilled").length;
     for (const x of results)
@@ -1576,69 +1552,66 @@ try {
     assert.equal((await orderOf(o.id)).refunded, 6500);
   });
 
-  await fiscalTest(
-    "fiscal: each refund money row writes fiscal_adjustments with the item scope gross; a full refund nets the category IVA to zero",
-    async () => {
-      // §4.3 worked example on the iva16 taco line: a 10 % line discount on units {0,1}.
-      const o = await newOrder([{ product: taco, quantity: 3 }]);
-      const line = o.lines[0].id;
-      const d = await discount(manager, o.id, {
-        operationId: randomUUID(),
-        expectedVersion: o.version,
-        scope: "line",
-        lineId: line,
-        quantity: 2,
-        kind: "percent",
-        percentBps: 1000,
-        reasonCode: "promotion",
-      });
-      assert.equal(d.total, 12600);
-      await pay(o.id, 6075);
-      await pay(o.id, 6525, { method: "external", reference: "T-21" });
-      const card = (await orderOf(o.id)).tenders[1].id;
-      const r = await refundOrder(
-        manager,
-        o.id,
-        itemsBody([{ lineId: line, quantity: 2 }], 8550, {
-          external: [{ tenderId: card, reference: "R-21", confirmed: true }],
-        }),
-      );
-      const adjustments = await run(
-        owner,
-        (
-          tx,
-        ) => tx`select a.refund_id,a.category,a.gross,a.tax from fiscal_adjustments a
+  await test("fiscal: each refund money row writes fiscal_adjustments with the item scope gross; a full refund nets the category IVA to zero", async () => {
+    // §4.3 worked example on the iva16 taco line: a 10 % line discount on units {0,1}.
+    const o = await newOrder([{ product: taco, quantity: 3 }]);
+    const line = o.lines[0].id;
+    const d = await discount(manager, o.id, {
+      operationId: randomUUID(),
+      expectedVersion: o.version,
+      scope: "line",
+      lineId: line,
+      quantity: 2,
+      kind: "percent",
+      percentBps: 1000,
+      reasonCode: "promotion",
+    });
+    assert.equal(d.total, 12600);
+    await pay(o.id, 6075);
+    await pay(o.id, 6525, { method: "external", reference: "T-21" });
+    const card = (await orderOf(o.id)).tenders[1].id;
+    const r = await refundOrder(
+      manager,
+      o.id,
+      itemsBody([{ lineId: line, quantity: 2 }], 8550, {
+        external: [{ tenderId: card, reference: "R-21", confirmed: true }],
+      }),
+    );
+    const adjustments = await run(
+      owner,
+      (
+        tx,
+      ) => tx`select a.refund_id,a.category,a.gross,a.tax from fiscal_adjustments a
         where a.refund_id = any(${tx.array(r.batch.rows.map((x) => x.refundId))}::uuid[]) order by a.gross`,
-      );
-      assert.deepEqual(
-        adjustments.map((a) => [a.category, a.gross, a.tax]),
-        [
-          ["iva16", 2025, 279],
-          ["iva16", 6525, 900],
-        ],
-      );
-      const last = await refundOrder(
-        manager,
-        o.id,
-        itemsBody([{ lineId: line, quantity: 1 }], 4050),
-      );
-      const [net] = await run(
-        owner,
-        (
-          tx,
-        ) => tx`select t.tax - coalesce((select sum(a.tax) from fiscal_adjustments a where a.order_id=t.order_id),0) as tax
+    );
+    assert.deepEqual(
+      adjustments.map((a) => [a.category, a.gross, a.tax]),
+      [
+        ["iva16", 2025, 279],
+        ["iva16", 6525, 900],
+      ],
+    );
+    const last = await refundOrder(
+      manager,
+      o.id,
+      itemsBody([{ lineId: line, quantity: 1 }], 4050),
+    );
+    const [net] = await run(
+      owner,
+      (
+        tx,
+      ) => tx`select t.tax - coalesce((select sum(a.tax) from fiscal_adjustments a where a.order_id=t.order_id),0) as tax
         from fiscal_tickets t where t.order_id=${o.id}`,
-      );
-      assert.equal(
-        Number(net.tax),
-        0,
-        "refunding everything nets the IVA to zero",
-      );
-      assert(last.batch.rows.length === 1);
-    },
-  );
+    );
+    assert.equal(
+      Number(net.tax),
+      0,
+      "refunding everything nets the IVA to zero",
+    );
+    assert(last.batch.rows.length === 1);
+  });
 
-  await test("lock order (binding global order): repeated 50 times concurrently, offline-style sync, a void that settles, an item refund with a kitchen cancellation and a cash portion, and plain payments on one device all commit with no 40P01 after tenant()'s retry", async () => {
+  await test("lock order (binding global order): repeated 50 times concurrently, offline-style sync, a void that settles, an item refund with a kitchen cancellation and a cash portion, and plain payments on one device all commit and tenant() catches no deadlock (LO-R9: zero db_retry)", async () => {
     await openDrawer(devices.d);
     const s = as(ownerId, "owner", devices.d);
     const m = as(managerId, "manager", devices.d);
@@ -1664,44 +1637,46 @@ try {
         reason: "Concurrencia",
         stockDisposition: "no_return",
       };
-      const results = await Promise.allSettled([
-        // Offline-style sync: create and pay in one transaction (settles).
-        run(s, async (tx) => {
-          const created = await createOrder(tx, s, {
-            operationId: randomUUID(),
-            lines: [
-              {
-                id: randomUUID(),
-                productId: taco.id,
-                quantity: 1,
-                options: [],
-                note: "",
-              },
-            ],
-            mode: "takeaway",
-            tableId: null,
-            name: "sync",
-            note: "",
-            channel: "pos",
-          });
-          return recordPayment(tx, s, created.id, {
-            operationId: randomUUID(),
-            amount: 4500,
-            tip: 0,
-            received: 4500,
-            method: "cash",
-          });
-        }),
-        // A void that settles its check (the bar drink is the last unpaid unit).
-        run(s, (tx) => voidLines(tx, s, toVoid.id, voidBody, ownerId)),
-        refundOrder(
-          m,
-          toRefund.id,
-          itemsBody([{ lineId: toRefund.lines[0].id, quantity: 1 }], 4500),
-        ),
-        pay(toPay.id, 5000, { s }),
-        pay(toPay.id, 7500, { s }),
-      ]);
+      const results = await noRetries(`lock order iteration ${i}`, () =>
+        Promise.allSettled([
+          // Offline-style sync: create and pay in one transaction (settles).
+          run(s, async (tx) => {
+            const created = await createOrder(tx, s, {
+              operationId: randomUUID(),
+              lines: [
+                {
+                  id: randomUUID(),
+                  productId: taco.id,
+                  quantity: 1,
+                  options: [],
+                  note: "",
+                },
+              ],
+              mode: "takeaway",
+              tableId: null,
+              name: "sync",
+              note: "",
+              channel: "pos",
+            });
+            return recordPayment(tx, s, created.id, {
+              operationId: randomUUID(),
+              amount: 4500,
+              tip: 0,
+              received: 4500,
+              method: "cash",
+            });
+          }),
+          // A void that settles its check (the bar drink is the last unpaid unit).
+          run(s, (tx) => voidLines(tx, s, toVoid.id, voidBody, ownerId)),
+          refundOrder(
+            m,
+            toRefund.id,
+            itemsBody([{ lineId: toRefund.lines[0].id, quantity: 1 }], 4500),
+          ),
+          pay(toPay.id, 5000, { s }),
+          pay(toPay.id, 7500, { s }),
+        ]),
+      );
       const failed = results.filter((x) => x.status === "rejected");
       assert.deepEqual(
         failed.map(
@@ -2265,7 +2240,7 @@ try {
     }
   });
 
-  await test("amount refund on a check with balance due is refused (refund_balance_due on POST /orders/:id/refunds mode amount and on legacy POST /refunds, nothing stored); an item refund of paid units still works and a later void settles the check", async () => {
+  await test("MONEY-1 (LD-25, LD-26): no refund, by amount or by item, on an unticketed check with a balance due (refund_balance_due on POST /orders/:id/refunds in both modes and on legacy POST /refunds, nothing stored, not even the kitchen cancellation); after the unpaid agua is voided the check is paid and ticketed, and the item refund then nets the ticket's IVA", async () => {
     const table = tables[3].id as string;
     const o = await newOrder(
       [
@@ -2301,35 +2276,64 @@ try {
       ),
       "refund_balance_due",
     );
+    // FISCAL-1 / MONEY-1: the paid taco cannot be refunded by item either
+    // while the agua is unpaid; the round's kitchen cancellation is not written.
+    const feed = async () => {
+      const [f] = await run(
+        owner,
+        (tx) =>
+          tx`select coalesce((select version from kitchen_feed_versions where tenant_id=${tenantId}),0)::int as v`,
+      );
+      return f.v as number;
+    };
+    const feedBefore = await feed();
+    await rejects(
+      refundOrder(
+        manager,
+        o.id,
+        itemsBody([{ lineId: tacoLine, quantity: 1 }], 4500),
+      ),
+      "refund_balance_due",
+    );
     assert.equal((await counts(o.id)).batches, 0);
+    assert.equal((await counts(o.id)).refunds, 0);
+    assert.equal(await feed(), feedBefore, "no kitchen cancellation");
+    const open = await orderOf(o.id);
+    assert.equal(open.checkState, "open");
+    assert.equal(open.fiscal!.ticket, null);
+    // Staff void the unpaid agua instead: the check is paid and ticketed.
+    const voided = await run(owner, (tx) =>
+      voidLines(
+        tx,
+        owner,
+        o.id,
+        {
+          operationId: randomUUID(),
+          expectedVersion: open.version,
+          lines: [{ lineId: lineOf(o, agua), quantity: 1 }],
+          reason: "Ya no la quiere",
+          stockDisposition: "no_return",
+        },
+        ownerId,
+      ),
+    );
+    assert.equal(voided.checkState, "paid");
+    assert.equal(voided.total, 9000);
+    assert.equal(voided.fiscal!.ticket!.gross, 9000);
     const r = await refundOrder(
       manager,
       o.id,
       itemsBody([{ lineId: tacoLine, quantity: 1 }], 4500),
     );
-    assert.equal(r.order.checkState, "open");
-    const body = {
-      operationId: randomUUID(),
-      expectedVersion: r.order.version,
-      lines: [{ lineId: lineOf(o, agua), quantity: 1 }],
-      reason: "Ya no la quiere",
-      stockDisposition: "no_return",
-    };
-    const voided = await run(owner, (tx) =>
-      voidLines(tx, owner, o.id, body, ownerId),
+    assert.equal(r.order.checkState, "paid");
+    const [t] = await run(
+      owner,
+      (
+        tx,
+      ) => tx`select t.tax - coalesce((select sum(a.tax) from fiscal_adjustments a where a.order_id=t.order_id),0) as remaining
+        from fiscal_tickets t where t.order_id=${o.id}`,
     );
-    assert.equal(voided.checkState, "paid");
-    assert.equal(voided.total, 9000);
-    if (await fiscalPresent()) {
-      const [t] = await run(
-        owner,
-        (
-          tx,
-        ) => tx`select t.tax - coalesce((select sum(a.tax) from fiscal_adjustments a where a.order_id=t.order_id),0) as remaining
-          from fiscal_tickets t where t.order_id=${o.id}`,
-      );
-      assert.equal(Number(t.remaining), extractTax(4500, 1600).tax);
-    }
+    assert.equal(Number(t.remaining), extractTax(4500, 1600).tax);
     await run(owner, (tx) =>
       closeCheck(tx, owner, o.id, { operationId: randomUUID() }),
     );
@@ -2411,14 +2415,12 @@ try {
     assert.equal(closed.total, 0);
     assert.equal(closed.checkState, "closed");
     assert.equal(closed.closeReason, "settled");
-    if (await fiscalPresent()) {
-      const [n] = await run(
-        owner,
-        (tx) =>
-          tx`select count(*)::int as n from fiscal_tickets where order_id=${takeaway.id}`,
-      );
-      assert.equal(n.n, 0, "a zero total issues no ticket");
-    }
+    const [n] = await run(
+      owner,
+      (tx) =>
+        tx`select count(*)::int as n from fiscal_tickets where order_id=${takeaway.id}`,
+    );
+    assert.equal(n.n, 0, "a zero total issues no ticket");
     await rejects(
       reverse(manager, takeaway.id, closed.discounts![0].id, {
         operationId: randomUUID(),
@@ -2540,106 +2542,100 @@ try {
     );
   });
 
-  await fiscalTest(
-    "refund dates: fiscal adjustments copy refund_batches.business_date (D−1 through insertRefundBatch); every batched refund's adjustments carry the batch date; the legacy route also creates a batch",
-    async () => {
-      const o = await newOrder([{ product: taco, quantity: 2 }]);
-      await pay(o.id, 9000);
-      const tenderId = (await orderOf(o.id)).tenders[0].id;
-      const today = businessDate(
-        new Date().toISOString(),
-        restaurant.timezone,
-        restaurant.cutoff,
-      );
-      const yesterday = new Date(Date.parse(today + "T12:00:00Z") - 86_400_000)
-        .toISOString()
-        .slice(0, 10);
-      const drawer = await openDrawer(devices.a);
-      const written = await run(owner, (tx) =>
-        insertRefundBatch(tx, owner, {
-          orderId: o.id,
-          mode: "amount",
-          reasonCode: "charge_error",
-          note: "",
-          restock: false,
-          approverId: ownerId,
-          businessDate: yesterday,
-          drawerId: drawer,
-          portions: [
-            {
-              tenderId,
-              method: "cash",
-              amount: 1000,
-              reference: null,
-              units: [],
-            },
-          ],
-          lines: [],
-        }),
-      );
-      const [adj] = await run(
-        owner,
-        (tx) =>
-          tx`select business_date::text as d from fiscal_adjustments where refund_id=${written.refundIds[0]}`,
-      );
-      assert.equal(adj.d, yesterday);
-      const mismatched = await run(
-        owner,
-        (tx) => tx`select count(*)::int as n from fiscal_adjustments a
+  await test("refund dates: fiscal adjustments copy refund_batches.business_date (D−1 through insertRefundBatch); every batched refund's adjustments carry the batch date; the legacy route also creates a batch", async () => {
+    const o = await newOrder([{ product: taco, quantity: 2 }]);
+    await pay(o.id, 9000);
+    const tenderId = (await orderOf(o.id)).tenders[0].id;
+    const today = businessDate(
+      new Date().toISOString(),
+      restaurant.timezone,
+      restaurant.cutoff,
+    );
+    const yesterday = new Date(Date.parse(today + "T12:00:00Z") - 86_400_000)
+      .toISOString()
+      .slice(0, 10);
+    const drawer = await openDrawer(devices.a);
+    const written = await run(owner, (tx) =>
+      insertRefundBatch(tx, owner, {
+        orderId: o.id,
+        mode: "amount",
+        reasonCode: "charge_error",
+        note: "",
+        restock: false,
+        approverId: ownerId,
+        businessDate: yesterday,
+        drawerId: drawer,
+        portions: [
+          {
+            tenderId,
+            method: "cash",
+            amount: 1000,
+            reference: null,
+            units: [],
+          },
+        ],
+        lines: [],
+      }),
+    );
+    const [adj] = await run(
+      owner,
+      (tx) =>
+        tx`select business_date::text as d from fiscal_adjustments where refund_id=${written.refundIds[0]}`,
+    );
+    assert.equal(adj.d, yesterday);
+    const mismatched = await run(
+      owner,
+      (tx) => tx`select count(*)::int as n from fiscal_adjustments a
         join refunds r on r.tenant_id=a.tenant_id and r.id=a.refund_id
         join refund_batches b on b.tenant_id=r.tenant_id and b.id=r.batch_id
         where a.business_date <> b.business_date`,
-      );
-      assert.equal(mismatched[0].n, 0);
-    },
-  );
+    );
+    assert.equal(mismatched[0].n, 0);
+  });
 
-  await fiscalTest(
-    "complement extraction: after a partial post-ticket item refund and a later amount refund, ticket tax − Σ adjustment tax = extractTax(G − R).tax; 0 ≤ adj.tax ≤ adj.gross; refunding everything nets IVA to 0",
-    async () => {
-      const o = await newOrder([{ product: taco, quantity: 3 }]);
-      await pay(o.id, 13500);
-      const tenderId = (await orderOf(o.id)).tenders[0].id;
-      await refundOrder(
-        manager,
-        o.id,
-        itemsBody([{ lineId: o.lines[0].id, quantity: 1 }], 4500),
-      );
-      await refundOrder(manager, o.id, {
-        mode: "amount",
-        operationId: randomUUID(),
-        tenderId,
-        amount: 3333,
-        reasonCode: "charge_error",
-      });
-      const remaining = async () => {
-        const [t] = await run(
-          owner,
-          (tx) => tx`select t.gross,t.tax,
+  await test("complement extraction: after a partial post-ticket item refund and a later amount refund, ticket tax − Σ adjustment tax = extractTax(G − R).tax; 0 ≤ adj.tax ≤ adj.gross; refunding everything nets IVA to 0", async () => {
+    const o = await newOrder([{ product: taco, quantity: 3 }]);
+    await pay(o.id, 13500);
+    const tenderId = (await orderOf(o.id)).tenders[0].id;
+    await refundOrder(
+      manager,
+      o.id,
+      itemsBody([{ lineId: o.lines[0].id, quantity: 1 }], 4500),
+    );
+    await refundOrder(manager, o.id, {
+      mode: "amount",
+      operationId: randomUUID(),
+      tenderId,
+      amount: 3333,
+      reasonCode: "charge_error",
+    });
+    const remaining = async () => {
+      const [t] = await run(
+        owner,
+        (tx) => tx`select t.gross,t.tax,
           coalesce((select sum(a.gross) from fiscal_adjustments a where a.order_id=t.order_id),0)::int as refunded,
           coalesce((select sum(a.tax) from fiscal_adjustments a where a.order_id=t.order_id),0)::int as refunded_tax,
           coalesce((select bool_and(a.tax >= 0 and a.tax <= a.gross) from fiscal_adjustments a where a.order_id=t.order_id),true) as bounded
           from fiscal_tickets t where t.order_id=${o.id}`,
-        );
-        return t;
-      };
-      const t = await remaining();
-      assert.equal(t.bounded, true);
-      assert.equal(
-        t.tax - t.refunded_tax,
-        extractTax(t.gross - t.refunded, 1600).tax,
       );
-      await refundOrder(manager, o.id, {
-        mode: "amount",
-        operationId: randomUUID(),
-        tenderId,
-        amount: 13500 - 4500 - 3333,
-        reasonCode: "charge_error",
-      });
-      const all = await remaining();
-      assert.equal(all.tax - all.refunded_tax, 0);
-    },
-  );
+      return t;
+    };
+    const t = await remaining();
+    assert.equal(t.bounded, true);
+    assert.equal(
+      t.tax - t.refunded_tax,
+      extractTax(t.gross - t.refunded, 1600).tax,
+    );
+    await refundOrder(manager, o.id, {
+      mode: "amount",
+      operationId: randomUUID(),
+      tenderId,
+      amount: 13500 - 4500 - 3333,
+      reasonCode: "charge_error",
+    });
+    const all = await remaining();
+    assert.equal(all.tax - all.refunded_tax, 0);
+  });
 
   await test("Q5: an item refund of an offline_review round asks the kitchen to cancel (it may still be prepared); a served round asks nothing", async () => {
     const o = await newOrder([{ product: taco, quantity: 2 }]);
@@ -2804,10 +2800,21 @@ try {
   });
 
   await test("clear stale acknowledges a pending refund cancellation of a previous day's round", async () => {
-    // One of two tacos paid: the check stays open (a closed check keeps its
-    // business date) and the paid unit is item-refundable.
-    const o = await newOrder([{ product: taco2, quantity: 2 }], { s: s2 });
-    await pay(o.id, 4500, { s: s2, items: [`${o.lines[0].id}:0`] });
+    // A dine-in table check paid in full: it is ticketed and "paid" but not
+    // closed (a closed check keeps its business date), and since MONEY-1
+    // (LD-25/LD-26) only a check without a balance due takes refunds.
+    const [table2] = await run(
+      s2,
+      (tx) =>
+        tx`select id from dining_tables where archived_at is null order by name desc limit 1`,
+    );
+    const o = await newOrder([{ product: taco2, quantity: 2 }], {
+      s: s2,
+      tableId: table2.id,
+    });
+    const paid = await pay(o.id, 9000, { s: s2 });
+    assert.equal(paid.checkState, "paid");
+    assert.ok(paid.fiscal!.ticket);
     const r = await refundOrder(
       s2,
       o.id,
@@ -2840,11 +2847,13 @@ try {
           and kitchen_ack_required and kitchen_acknowledged_at is null`,
     );
     assert.equal(left.n, 0);
+    // Release the table.
+    await run(s2, (tx) =>
+      closeCheck(tx, s2, o.id, { operationId: randomUUID() }),
+    );
   });
 
-  console.log(
-    `${checks} discounts checks passed${skipped ? `, ${skipped} skipped until fiscal 027 merges` : ""}`,
-  );
+  console.log(`${checks} discounts checks passed`);
 } finally {
   for (const id of [tenantId, otherTenantId])
     await admin.begin(async (tx) => {

@@ -1,15 +1,12 @@
 # Discounts, refunds and drawer controls
 
-Status on October 5, 2026: implemented on `track/discounts` (migration 028) and
-verified locally with `npm test` (`tests/discounts.test.ts`,
-`tests/service-receipt.test.ts`), `npm run test:db:discounts` and
-`tests/browser/discounts.spec.ts`. Not staged. Fiscal 027 is built in parallel:
-until it merges, the refund tax hook and the "ticket issued" guard are no-op
-shims (`server/compat/discounts-fiscal.ts`): the five DB checks that need
-fiscal tickets (DB 8's ticket case, DB 13, 21, 37 and 38) report SKIP, and the
-fiscal assertions inside three other checks (DB 7's ticket, the
-`refund_balance_due` check's remaining ticket IVA and the whole-check comp's
-"no ticket for a zero total") run only once fiscal 027 is present. No card
+Status on October 6, 2026: implemented on `track/discounts` (migration 028),
+merged with fiscal 027 (integration/v1 at `70860d6`) and verified locally with
+`npm test` (`tests/discounts.test.ts`, `tests/service-receipt.test.ts`),
+`npm run test:db:discounts`, `npm run test:db:fiscal` and
+`tests/browser/discounts.spec.ts`. Discounts call fiscal's real ticket guard
+(`assertNoFiscalTicket`), refund rule (`assertRefundAllowed`) and refund tax
+(`recordRefundTax`); every DB check runs, none is skipped. Not staged. No card
 provider, terminal or printer was used: card refunds are recorded after the
 external terminal did them, and the refund slip was checked in Chromium print
 emulation only.
@@ -237,14 +234,16 @@ Reprinted comandas (`ticketsFromOrderRound`) still show refund-cancelled units.
 `refund` (policy `allow`; the movement's causal key is the refund line id, so a
 retry never returns stock twice).
 
-**Business date.** Computed once per refund command and stored on
-`refund_batches.business_date`; fiscal dates its IVA adjustments with it and
-reports buckets the refund by it, so all three agree near the cutoff (D16).
+**Business date.** Computed once per refund command, from the transaction's
+start (the time the command's `refunds` rows carry as `created_at`), and stored
+on `refund_batches.business_date`; fiscal's `recordRefundTax` dates its IVA
+adjustments with it and reports buckets the refund by it, so all three agree
+near the cutoff (D16).
 
 **Legacy `POST /api/refunds`** (old bundles during a deploy): unchanged body,
 fingerprint and step-up; it now locks the order before the tender key, refuses
-`refund_balance_due` and writes a batch like every post-028 refund. Only
-pre-028 refunds are batchless.
+`refund_balance_due` through fiscal's `assertRefundAllowed` and writes a batch
+like every post-028 refund. Only pre-028 refunds are batchless.
 
 ## Refund slip ("Comprobante de reembolso")
 
@@ -406,12 +405,17 @@ Every command follows the [global lock order](ARCHITECTURE.md#global-lock-order-
 (rows 25–27 of its table): `applyDiscount` 1 → 2 → 5 → 5a → 8 → [refresh → 12];
 `reverseDiscount` 1 → 2 → 5 → 5a → 8; `recordRefund` (items) 1 → 2 → 5 → 5a → 6
 → 7 → 9 → 10 (kitchen cancellation) → 11, (amount) 1 → 2 → 5 → 5a → 6 → 11;
-`saveMoneyControls` 1 → 2 → 3; `closeCash`/`closeDrawerRow` 1 → 2 → 11;
-`reviewDrawer` 1 → 2 → 11 (share). The refund's feed before the drawer is the
-global order, the same one offline sync follows. `tests/lock-order.test.ts`
-scans these commands with no allowlist entry; DB test "lock order …" runs 50
-concurrent rounds of offline-style sync, a void that settles, an item refund
-with a kitchen cancellation and payments on one device without a deadlock.
+`saveMoneyControls` 1 → 2 → 3 (its area key has its own class, 929, so the
+scanner reads it as LO-3, not as an operation key); `closeCash`/`closeDrawerRow`
+1 → 2 → 11; `reviewDrawer` 1 → 2 → 11 (share). The refund's feed before the
+drawer is the global order, the same one offline sync follows. The level-monotonic
+scanner (`tests/lock-order.test.ts`) reads every route as its own transaction
+and passes these commands with no allowlist entry. DB test "lock order …" runs
+50 concurrent rounds of offline-style sync, a void that settles, an item refund
+with a kitchen cancellation and payments on one device, and fiscal's own "lock
+order" test has the same refund as its fifth leg; both assert that `tenant()`
+retried nothing (`noRetries`, LO-R9), so a deadlock hidden by the retry fails
+them.
 
 ## Offline
 

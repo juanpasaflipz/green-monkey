@@ -558,10 +558,6 @@ export default defineArea({
       "La orden cambió (otro pago o reembolso). Revisa el importe y confirma de nuevo.",
       "The order changed (another payment or refund). Review the amount and confirm again.",
     ],
-    refund_balance_due: [
-      "Primero liquida o ajusta la cuenta; el reembolso por importe es para cuentas pagadas.",
-      "Settle or adjust the check first; amount refunds are for paid checks.",
-    ],
     cash_close_not_allowed: [
       "Tu rol no puede cerrar caja. Pide a un responsable.",
       "Your role cannot close the drawer. Ask a manager.",

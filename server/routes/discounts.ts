@@ -51,41 +51,46 @@ export async function approvalFor(
 type ApprovedCommand = (
   tx: Tx,
   s: Session,
-  req: express.Request,
   a: ApprovalContext,
 ) => Promise<unknown>;
 
 /**
+ * One approved request: the approval step (its own transactions), then the
+ * command in its own tenant() transaction. `run` has no side effects outside
+ * the transaction (tenant() may replay it).
+ */
+async function approved(
+  sql: Parameters<typeof verifyApproval>[0],
+  mode: "conditional" | "required",
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+  run: ApprovedCommand,
+) {
+  try {
+    const s = (req as AuthRequest).session;
+    const a = await approvalFor(sql, s, req.body?.approval, mode);
+    res.json(await tenant(sql, s.tenantId, (tx) => run(tx, s, a)));
+  } catch (e) {
+    next(e);
+  }
+}
+
+/**
  * Discounts, refunds and drawer controls (028). The legacy GET /cash,
  * POST /cash/close, GET /cash/history and POST /refunds keep their paths in
- * server/index.ts and delegate to server/cash.ts and server/refunds.ts.
+ * server/index.ts and delegate to server/cash.ts and server/refunds.ts. Each
+ * registration passes its own handler, so the lock-order scanner reads every
+ * request as its own transaction.
  */
 export function register({ app, sql, route }: RouteContext) {
-  const approved =
-    (mode: "conditional" | "required", run: ApprovedCommand) =>
-    async (
-      req: express.Request,
-      res: express.Response,
-      next: express.NextFunction,
-    ) => {
-      try {
-        const s = (req as AuthRequest).session;
-        const a = await approvalFor(sql, s, req.body?.approval, mode);
-        // run has no side effects outside the transaction (tenant() may replay it).
-        res.json(await tenant(sql, s.tenantId, (tx) => run(tx, s, req, a)));
-      } catch (e) {
-        next(e);
-      }
-    };
-  app.post(
-    "/api/orders/:id/discounts",
-    approved("conditional", (tx, s, req, a) =>
+  app.post("/api/orders/:id/discounts", (req, res, next) =>
+    approved(sql, "conditional", req, res, next, (tx, s, a) =>
       applyDiscount(tx, s, id.parse(req.params.id), req.body, a),
     ),
   );
-  app.post(
-    "/api/orders/:id/discounts/:discountId/reverse",
-    approved("required", (tx, s, req, a) =>
+  app.post("/api/orders/:id/discounts/:discountId/reverse", (req, res, next) =>
+    approved(sql, "required", req, res, next, (tx, s, a) =>
       reverseDiscount(
         tx,
         s,
@@ -96,9 +101,8 @@ export function register({ app, sql, route }: RouteContext) {
       ),
     ),
   );
-  app.post(
-    "/api/orders/:id/refunds",
-    approved("required", (tx, s, req, a) =>
+  app.post("/api/orders/:id/refunds", (req, res, next) =>
+    approved(sql, "required", req, res, next, (tx, s, a) =>
       recordRefund(tx, s, id.parse(req.params.id), req.body, a),
     ),
   );

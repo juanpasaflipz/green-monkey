@@ -21,6 +21,7 @@ import { closeCheck, listOrders, recordSettlement } from "../server/checks.js";
 import { voidLines } from "../server/voids.js";
 import { assignService } from "../server/service.js";
 import { refund } from "../server/operations.js";
+import { recordRefund } from "../server/refunds.js";
 import { saveLegacyProduct, saveMenuProduct } from "../server/menu.js";
 import {
   reconcileOfflineRecord,
@@ -51,6 +52,7 @@ import {
   type TaxCategory,
 } from "../shared/fiscal.js";
 import type { SessionAccess } from "../shared/access.js";
+import { itemRefundExpectation, planItemRefund } from "../shared/discounts.js";
 
 const { runtime, migration } = isolatedTarget(process.env),
   sql = connect(runtime),
@@ -58,12 +60,21 @@ const { runtime, migration } = isolatedTarget(process.env),
   admin = postgres(migration, { max: 1, onnotice: () => {} });
 await checkRole(sql);
 
-/** Fiscal (027) and menu (025) triggers the cleanup disables to delete fixture rows. */
+/** Fiscal (027), discounts (028) and menu (025) triggers the cleanup disables to delete fixture rows. */
 const CLEANUP_TRIGGERS = [
   ["fiscal_adjustments", "fiscal_adjustments_immutable"],
   ["fiscal_ticket_taxes", "fiscal_ticket_taxes_immutable"],
   ["fiscal_tickets", "fiscal_tickets_immutable"],
   ["fiscal_folio_counters", "fiscal_folio_counters_guard"],
+  // discounts (028): money records refuse DELETE for every role (LD-15 Q4 (A)).
+  ["refund_units", "refund_units_immutable"],
+  ["refund_lines", "refund_lines_no_delete"],
+  ["refunds", "refunds_immutable"],
+  ["refund_batches", "refund_batches_immutable"],
+  ["discount_allocations", "discount_allocations_immutable"],
+  ["discounts", "discounts_no_delete"],
+  ["cash_count_reviews", "cash_count_reviews_immutable"],
+  ["cash_sessions", "cash_sessions_closed_immutable"],
   ["stock_movements", "stock_movements_immutable"],
 ] as const;
 
@@ -2218,7 +2229,7 @@ try {
     }
   });
 
-  await test("lock order: concurrent offline-style sync with payment, a void that settles a check, a service reassignment that settles, and single payments all commit and tenant() catches no deadlock (LO-R9: zero db_retry)", async () => {
+  await test("lock order: concurrent offline-style sync with payment, a void that settles a check, a service reassignment that settles, single payments and an item refund with a kitchen cancellation (discounts 028) all commit and tenant() catches no deadlock (LO-R9: zero db_retry)", async () => {
     const before = await counter(B.id);
     let issued = 0;
     for (let round = 0; round < 50; round++) {
@@ -2245,6 +2256,16 @@ try {
         items: [`${stocked.lines[0].id}:0`],
       });
       const sale = offlineSale(B, offlineB, [{ product: P.fronteraStocked }]);
+      // discounts (028), the fifth leg: a paid, ticketed check whose round the
+      // kitchen has not started; refunding one unit with restock takes orders →
+      // tender key → rounds → stock → feed → drawer, then recordRefundTax.
+      const toRefund = await pay(
+        cashierB,
+        await newOrder(cashierB, [{ product: P.fronteraStocked, quantity: 2 }]),
+      );
+      const refundPlan = planItemRefund(toRefund, [
+        { lineId: toRefund.lines[0].id, quantity: 1 },
+      ]);
       const legs = () => [
         run(offlineB, (tx) => syncOfflineRecord(tx, offlineB, sale)),
         run(ownerB, (tx) =>
@@ -2279,6 +2300,24 @@ try {
             ownerB.employeeId,
           ),
         ),
+        run(ownerB, (tx) =>
+          recordRefund(
+            tx,
+            ownerB,
+            toRefund.id,
+            {
+              mode: "items",
+              operationId: randomUUID(),
+              lines: [{ lineId: toRefund.lines[0].id, quantity: 1 }],
+              ...itemRefundExpectation(refundPlan),
+              expectedRefunded: toRefund.refunded,
+              restock: true,
+              reasonCode: "quality",
+              note: "Frío",
+            },
+            { approverId: ownerB.employeeId },
+          ),
+        ),
       ];
       const results = await noRetries(`lock order round ${round}`, () =>
         Promise.allSettled(legs()),
@@ -2291,9 +2330,10 @@ try {
         )
         .filter(Boolean);
       assert.deepEqual(failed, [], `round ${round}`);
-      // The tab's ticket (issued by its setup payment at open → paid), then the
-      // sale, the void, the payment and the stocked void each issue one.
-      issued += 5;
+      // The tab's and the refunded check's tickets (issued by their setup
+      // payments), then the sale, the void, the payment and the stocked void
+      // each issue one; the refund issues none.
+      issued += 6;
     }
     assert.equal(await counter(B.id), before + issued);
   });
@@ -2656,7 +2696,7 @@ try {
     ]);
   });
 
-  await test("refund business date: a batchless refund near the cutoff is dated by the refund row's created_at (MONEY-3)", async () => {
+  await test("refund business date: a refund near the cutoff is dated by the refund row's created_at (MONEY-3); since discounts 028 the legacy refund writes a batch and its adjustment copies refund_batches.business_date, the same day", async () => {
     // Move A's cutoff to one minute from now (restaurant time), so "now" is the
     // last minute of a business day; the session carries the same cutoff.
     const local = new Date(
@@ -2674,14 +2714,17 @@ try {
       const paid = await pay(cashierNear, o);
       const after = await legacyRefund(s, paid.tenders[0].id, 500);
       const [row] =
-        await admin`select a.business_date::text as d,r.created_at from fiscal_adjustments a
+        await admin`select a.business_date::text as d,r.created_at,b.business_date::text as batch_date
+          from fiscal_adjustments a
           join refunds r on r.tenant_id=a.tenant_id and r.id=a.refund_id
+          join refund_batches b on b.tenant_id=r.tenant_id and b.id=r.batch_id
           where a.tenant_id=${A.id} and a.order_id=${o.id}`;
       assert.equal(
         row.d,
         businessDate((row.created_at as Date).toISOString(), timezone, near),
         "the refund row's business date, not the clock when the tax was written",
       );
+      assert.equal(row.d, row.batch_date, "discounts (028): the batch's date");
       assert.equal(after.fiscal!.refunds[0].businessDate, row.d);
     } finally {
       await admin`update restaurants set cutoff=${cutoff} where id=${A.id}`;
@@ -2721,6 +2764,14 @@ try {
       "fiscal_tickets",
       "fiscal_folio_counters",
       "restaurant_fiscal_profiles",
+      // discounts (028), next in FK order (LD-16 L5).
+      "refund_units",
+      "refund_lines",
+      "refunds",
+      "refund_batches",
+      "discount_allocations",
+      "discounts",
+      "cash_count_reviews",
       "offline_kitchen_reviews",
       "offline_sync_records",
       "offline_archives",

@@ -2,7 +2,7 @@
 // readers fiscal (discountsByLine) and getOrders (adjustmentRows) consume.
 // Lock order (docs/ARCHITECTURE.md, global lock order): applyDiscount
 // 1 → 2 → 5 → 5a → 8 → [refresh → 12]; reverseDiscount 1 → 2 → 5 → 5a → 8;
-// saveMoneyControls 1 → 2 → 3. None of them bumps the kitchen feed or takes
+// saveMoneyControls 1 → 2 → 3 (area key class 929). None of them bumps the kitchen feed or takes
 // the drawer.
 import { randomUUID } from "node:crypto";
 import type { Tx } from "./db.js";
@@ -11,9 +11,7 @@ import { requireRecentAuth } from "./access.js";
 import { requireSelling } from "./free-limits.js";
 import { audit, getOrder, once } from "./orders.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
-// discounts (028): fiscal 027 is built in parallel; this shim is replaced by
-// ./fiscal.js at discounts' merge (specs/discounts.md §4.1).
-import { assertNoFiscalTicket } from "./compat/discounts-fiscal.js";
+import { assertNoFiscalTicket } from "./fiscal.js";
 import { DomainError, type Order, type Session } from "../shared/domain.js";
 import {
   canCloseDrawer,
@@ -122,7 +120,9 @@ export async function saveMoneyControls(tx: Tx, s: Session, raw: unknown) {
   if (!parsed.success) throw new DomainError("money_controls_invalid", 400);
   const p = parsed.data;
   return once(tx, s, p.operationId, "discount.controls", p, async () => {
-    await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + ":money.controls"},0))`;
+    // LO-3 area key, class 929 (docs/ARCHITECTURE.md LO-3): its own non-zero
+    // class, so it never shares class 0 with once()'s operation keys (LO-1).
+    await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + ":money.controls"},929))`;
     const [row] =
       await tx`select * from money_controls where tenant_id=${s.tenantId} for update`;
     if ((row?.version ?? 0) !== p.expectedVersion)

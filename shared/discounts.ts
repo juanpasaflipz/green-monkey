@@ -15,6 +15,7 @@ import {
   type PricedLine,
 } from "./domain.js";
 import type { PayableUnit } from "./settlement.js";
+import type { RefundTaxScope } from "./fiscal.js";
 import { holdsTable } from "./service.js";
 
 export const DISCOUNT_REASONS = [
@@ -911,18 +912,15 @@ export function refundableQuantities(
 
 /**
  * Fiscal scope per refund money row (= per tender), the binding recordRefundTax
- * contract: for each tender and line, units ascending and gross = Σ amount of
+ * contract (RefundTaxScope from shared/fiscal.ts): for each tender and line, units ascending and gross = Σ amount of
  * that tender's unit rows on that line (= Σ refund_units.amount of that refund
  * row and line). Σ gross of a tender = that tender's portion. Lines in
  * first-seen order.
  */
 export function refundTaxScopes(
   units: { tenderId: string; lineId: string; unit: number; amount: number }[],
-): Record<string, { lineId: string; units: number[]; gross: number }[]> {
-  const out: Record<
-    string,
-    { lineId: string; units: number[]; gross: number }[]
-  > = {};
+): Record<string, RefundTaxScope[]> {
+  const out: Record<string, RefundTaxScope[]> = {};
   for (const u of units) {
     const scopes = (out[u.tenderId] ??= []);
     let scope = scopes.find((s) => s.lineId === u.lineId);

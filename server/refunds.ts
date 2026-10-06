@@ -20,9 +20,7 @@ import {
   assertApproverActive,
   type ApprovalContext,
 } from "./discounts.js";
-// discounts (028): fiscal 027 is built in parallel; this shim is replaced by
-// ./fiscal.js at discounts' merge (specs/discounts.md §4.1).
-import { recordRefundTax } from "./compat/discounts-fiscal.js";
+import { assertRefundAllowed, recordRefundTax } from "./fiscal.js";
 import { recipeStockIds } from "../shared/menu.js";
 import {
   businessDate,
@@ -34,7 +32,6 @@ import {
   type Session,
 } from "../shared/domain.js";
 import {
-  amountRefundAllowed,
   itemRefundPlanMatches,
   planItemRefund,
   refundInput,
@@ -141,10 +138,11 @@ export async function insertRefundBatch(
 const KITCHEN_ACK_STATES = ["not_started", "active", "ready", "offline_review"];
 
 /**
- * POST /orders/:id/refunds. Item refunds are allowed in every check state
- * (only fully paid units); amount refunds only without a balance due
- * (refund_balance_due). Card portions need the terminal's reference and an
- * explicit confirmation and never touch drawer cash.
+ * POST /orders/:id/refunds. Item refunds (only fully paid units) and amount
+ * refunds alike are refused on an order without a fiscal ticket that still has
+ * a balance due (refund_balance_due, fiscal's assertRefundAllowed; LD-25/LD-26).
+ * Card portions need the terminal's reference and an explicit confirmation and
+ * never touch drawer cash.
  */
 export async function recordRefund(
   tx: Tx,
@@ -170,15 +168,20 @@ export async function recordRefund(
         throw new DomainError("approval_required", 403);
       if (!a.approverId) requireRecentAuth(s);
       const approverId = a.approverId ?? s.employeeId;
-      // Computed once per command: batch, fiscal adjustments and reports agree.
+      const [o] =
+        await tx`select id,now() as started from orders where id=${orderId} for update`;
+      if (!o) throw new DomainError("not_found", 404);
+      // MONEY-1 (LD-25, LD-26): no refund, by amount or by item, on an order
+      // without a fiscal ticket that still has a balance due; staff collect the
+      // payment or void the unpaid lines instead. Before any planning.
+      await assertRefundAllowed(tx, orderId);
+      // Computed once per command, from the transaction's start (the refunds
+      // rows' created_at): batch, fiscal adjustments and reports agree.
       const businessDay = businessDate(
-        new Date().toISOString(),
+        (o.started as Date).toISOString(),
         s.restaurant.timezone,
         s.restaurant.cutoff,
       );
-      const [o] =
-        await tx`select id from orders where id=${orderId} for update`;
-      if (!o) throw new DomainError("not_found", 404);
       await assertApproverActive(tx, approverId, s);
       const order = await getOrder(tx, orderId);
       // §2.4 rule 2 (DSC-R9): the client's preview is stale when a refund was
@@ -207,8 +210,6 @@ export async function recordRefund(
             .map((u) => ({ lineId: u.lineId, unit: u.unit, amount: u.amount })),
         }));
       } else {
-        if (!amountRefundAllowed(order))
-          throw new DomainError("refund_balance_due", 409);
         const t = order.tenders.find(
           (x: { id: string }) => x.id === p.tenderId.toLowerCase(),
         );
@@ -361,8 +362,8 @@ const legacyRefundInput = z
 /**
  * Legacy POST /refunds (old bundles): a manager's cash refund of one tender,
  * with step-up and no approval. Now also locks the order before the tender
- * key, refuses checks with a balance due and writes a batch, like every
- * post-028 refund.
+ * key, refuses unticketed checks with a balance due (assertRefundAllowed) and
+ * writes a batch, like every post-028 refund.
  */
 export async function refund(tx: Tx, s: Session, raw: unknown) {
   permit(s, managers);
@@ -372,10 +373,10 @@ export async function refund(tx: Tx, s: Session, raw: unknown) {
     const [pointer] =
       await tx`select order_id from tenders where id=${p.tenderId}`;
     if (!pointer) throw new DomainError("not_found", 404);
-    await tx`select id from orders where id=${pointer.order_id} for update`;
-    const order = await getOrder(tx, pointer.order_id);
-    if (!amountRefundAllowed(order))
-      throw new DomainError("refund_balance_due", 409);
+    const [o] =
+      await tx`select id,now() as started from orders where id=${pointer.order_id} for update`;
+    // MONEY-1 (LD-25): fiscal's rule, as for every refund.
+    await assertRefundAllowed(tx, pointer.order_id);
     const tenderId = p.tenderId.toLowerCase();
     // The same key as the refunds trigger: tenant::text || tender::text (S-30).
     await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + tenderId},0))`;
@@ -397,7 +398,7 @@ export async function refund(tx: Tx, s: Session, raw: unknown) {
       restock: false,
       approverId: s.employeeId,
       businessDate: businessDate(
-        new Date().toISOString(),
+        (o.started as Date).toISOString(),
         s.restaurant.timezone,
         s.restaurant.cutoff,
       ),
