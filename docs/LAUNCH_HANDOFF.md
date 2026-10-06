@@ -27,7 +27,7 @@ placeholder in `.env.example:144-189`, including those that fiscal (027), cfdi (
 and account (031) will read. `SUPPORT_DATABASE_URL` (031's operator login) and
 `FACTURAPI_BASE_URL` are deliberately never Railway variables (`.env.example:191-193`). Areas do not edit `.railway/railway.ts`; a missing name
 goes to the lead (contract C-10). The process boundary is already enforced
-(`server/config-rules.ts:62-84`), but what 030 and 031 do with their variables
+(`server/config-rules.ts:64-86`), but what 030 and 031 do with their variables
 (required values, further refusals, log codes) arrives only with their merge.
 Behaviour and log codes marked *proposed* come from those specs, which are working
 documents kept outside the repository, so they can still change. Once an area
@@ -92,7 +92,7 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 ### 1.2 Production domain and DNS
 
 - **Why.** Deployed processes refuse to start without an `https` `APP_URL`
-  (`server/config-rules.ts:204-207`). The Google OAuth redirect must share
+  (`server/config-rules.ts:206-209`). The Google OAuth redirect must share
   `APP_URL`'s origin, and session cookies are `Secure`.
 - **Where it goes.**
   - The domain itself (for example `app.<your-domain>`) and the Cloudflare zone are
@@ -194,17 +194,17 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
     variables it prints (`RAILWAY_TOKEN`, `BACKUP_DATABASE_URL`, `R2_*`,
     `ALERT_WEBHOOK_URL`, `APP_URL`) and the repository variables
     `RAILWAY_CLI_VERSION`, `RAILWAY_IAC_VERSION` ([§7](PROVISIONING.md#7-github)).
-  - Beyond what `github-protect.sh` prints (`scripts/ops/github-protect.sh:32-50`), the
+  - Beyond what `github-protect.sh` prints (`scripts/ops/github-protect.sh:70-92`), the
     production environment needs the secret `MIGRATION_DATABASE_URL` (`gm_migrator`,
     direct endpoint, from `.env.provisioned-production` on stdin), the variable
     `PG_APP_USER` (`gm_production_app`) and optionally the variable `ALERT_WEBHOOK_KIND`
-    (defaults to `ntfy`: `.github/workflows/deploy.yml:145`, `retention.yml:55`)
+    (defaults to `ntfy`: `.github/workflows/deploy.yml:149`, `retention.yml:119`)
     ([§7](PROVISIONING.md#7-github)). The production deploy job passes them to the
-    deploy action's migrate step (`.github/workflows/deploy.yml:141-145`,
-    `.github/actions/deploy/action.yml:61-73`), and the retention workflow reads the
-    secret too (`.github/workflows/retention.yml:50-55`). No Railway service holds
+    deploy action's migrate step (`.github/workflows/deploy.yml:145-149`,
+    `.github/actions/deploy/action.yml:63-75`), and the retention workflow reads the
+    secret too (`.github/workflows/retention.yml:114-119`). No Railway service holds
     the migration credential: both processes refuse it
-    (`server/config-rules.ts:64`, `:79`).
+    (`server/config-rules.ts:66`, `:81`).
 - **How to verify.** `github-protect.sh --dry-run`, then the real run (a 403 means the
   plan lacks rulesets); `gh secret list --env production` lists the names, including
   `MIGRATION_DATABASE_URL`; `gh variable list --env production` shows `PG_APP_USER`;
@@ -219,7 +219,7 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
     the name works as a password, so it must not be guessable.
   - `ALERT_WEBHOOK_URL` (and `ALERT_WEBHOOK_KIND=ntfy`) on both services (`common`,
     `.railway/railway.ts:29-30`; `.env.example:26-27`). It must be `https`
-    (`server/config-rules.ts:219-226`, `alert_webhook_https_required`).
+    (`server/config-rules.ts:221-228`, `alert_webhook_https_required`).
   - The GitHub environment secret `ALERT_WEBHOOK_URL` (the deploy job's retention pass
     and the daily retention workflow alert `retention_failed` through it,
     [RUNBOOK.md, "Retention"](RUNBOOK.md#retention)), and Railway's project deploy
@@ -254,12 +254,12 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 ### 1.9 Error tracking (Sentry DSN): approve or decline
 
 - **Why.** Optional. With `SENTRY_DSN` set, unexpected server errors go to Sentry with
-  the request removed and secrets scrubbed (`server/instrument.ts:18-41`). It is a
+  the request removed and secrets scrubbed (`server/instrument.ts:32-55`). It is a
   third-party processor of operational data, so it is your decision (and your
   counsel's, for 1.12).
 - **Where it goes.** `SENTRY_DSN` on both services (`common`, `.railway/railway.ts:28`;
   `.env.example:24`). `@sentry/node` is **not** a declared dependency
-  (`server/instrument.ts:19-21`); once you approve, the team adds it in a reviewed
+  (`server/instrument.ts:33-35`); once you approve, the team adds it in a reviewed
   change. Declining needs nothing: error tracking stays off
   ([PROVISIONING.md §0](PROVISIONING.md#0-decisions-defaults-chosen-so-work-is-not-blocked)).
 - **How to verify.** The deploy logs show `error_tracking_enabled`;
@@ -272,23 +272,29 @@ set from a private file with `scripts/ops/railway-vars.sh` (never on the command
 line), and keep where noted.
 
 - `JWT_SECRET` on `web`: at least 32 characters or the web refuses to start
-  (`server/config-rules.ts:246-247`); [PROVISIONING.md §3](PROVISIONING.md#3-railway)
+  (`server/config-rules.ts:248-249`); [PROVISIONING.md §3](PROVISIONING.md#3-railway)
   asks for 64+ random characters. It still keys the pairing-code, PIN-fingerprint and
   invitation digests (and 031's transfer digests once it merges), so rotate it only together with an emergency
   signing-key rotation ([RUNBOOK.md, "Signing keys"](RUNBOOK.md#signing-keys) step 3).
-  A deployed worker refuses it (`server/config-rules.ts:82`). **Now.**
+  A deployed worker refuses it (`server/config-rules.ts:84`). A deployed web refuses
+  the CI, local-only and documented placeholder values (`placeholder_jwt_secret`,
+  `server/config-rules.ts:254-257`). **Now.**
 - `SIGNING_KEYS` on `web` (`.railway/railway.ts:63-64`; `.env.example:148-151`): one
   entry printed by `node scripts/ops/generate-signing-key.mjs`, which signs cookies
-  and links (`server/keyring.ts`). Production web refuses to start without it
-  (`missing_signing_keys`, `server/config-rules.ts:251-260`, which also applies the
-  keyring's production test, `server/production.ts:7-12`) or with a malformed one
-  (`invalid_signing_keys`), and a deployed worker refuses it
-  (`server/config-rules.ts:81`). Rotation is routine, in two steps, or emergency
+  and links (`server/keyring.ts`). A deployed web, staging included, refuses to start
+  without it (`missing_signing_keys`, `server/config-rules.ts:258-272`, which also
+  applies the keyring's production test, `server/production.ts:7-12`), with a malformed
+  one (`invalid_signing_keys`), or with a placeholder: the committed CI keyring, a
+  `ci-`/`local-`/`test-` kid, or a secret that decodes to printable text
+  (`placeholder_signing_keys`); never copy `SIGNING_KEYS` from a track or CI env file.
+  A deployed worker refuses it (`server/config-rules.ts:83`). After any change, never
+  roll back from the Railway dashboard (it restores the old variables; RUNBOOK
+  "Rollback"). Rotation is routine, in two steps, or emergency
   ([RUNBOOK.md, "Signing keys"](RUNBOOK.md#signing-keys)). **Now.**
 - `CREDENTIAL_ENCRYPTION_KEY` on `worker` (`kid:secret` list) will seal each
   restaurant's Facturapi keys (030). Keep an offline copy: restoring those keys from a backup needs it.
   Declared on `worker` (`.railway/railway.ts:128`; placeholder at
-  `.env.example:187`) and refused by a deployed web (`server/config-rules.ts:72`);
+  `.env.example:187`) and refused by a deployed web (`server/config-rules.ts:74`);
   nothing reads it before **030**.
 - **How to verify.** Both services start (no `missing_jwt_secret`,
   `missing_signing_keys` or other `ConfigError` code in the deploy logs), the deploy
@@ -370,7 +376,7 @@ line), and keep where noted.
 - **Where it goes** (worker variables: Wave 2.0 declared `FACTURAPI_API_KEY`,
   `FACTURAPI_TEST_KEY`, `CREDENTIAL_ENCRYPTION_KEY` and `CFDI_LIVE_ENABLED` on
   `worker` (`.railway/railway.ts:125-129`; placeholders at `.env.example:185-188`),
-  and a deployed web refuses all four (`server/config-rules.ts:70-73`,
+  and a deployed web refuses all four (`server/config-rules.ts:72-75`,
   `forbidden_credential_in_process`). No code reads them before 030 merges; how 030
   uses them is per its spec):
   - Your Facturapi account and its **User key** (`sk_user_…`) as `FACTURAPI_API_KEY`
@@ -383,7 +389,7 @@ line), and keep where noted.
   - `CFDI_LIVE_ENABLED=true` (its effect is *proposed* by the 030 spec) on the
     production worker only when you decide to go live; per the spec it is refused
     anywhere else (on `integration/v1` today, only the web refuses it,
-    `server/config-rules.ts:73`; the other refusals arrive with 030).
+    `server/config-rules.ts:75`; the other refusals arrive with 030).
   - **Each restaurant's CSD** (Certificado de Sello Digital: the `.cer`, the `.key` and
     the key's password; not the e.firma, which is what the restaurant uses to request
     the CSD from SAT). The restaurant owner uploads it in the app's CFDI settings
@@ -503,7 +509,7 @@ before the previous one is verified.
    production, by hand, which must be green. Only then
    `gh variable set OPS_LIVE_ENVIRONMENTS --body "staging production"`, which turns on
    the nightly backup, the hourly uptime check and the daily retention run at 05:15
-   Mexico City (`.github/workflows/retention.yml:13-15`, `:33-36`;
+   Mexico City (`.github/workflows/retention.yml:24-26`, `:49-52`;
    [PROVISIONING.md §7](PROVISIONING.md#7-github)).
 9. **Pilot restaurant setup.** The restaurant owner signs up with Google on their own
    phone (currency MXN, time zone, business cutoff); support grants Pro for the pilot
@@ -537,7 +543,7 @@ pilot devices have not passed the PILOT_SOP test print and outage drill.
 - Wave 2.0 (platform: signing keyring, worker jobs login, process rules, migrations
   and retention in GitHub Actions) is merged into `integration/v1` but has not run on
   staging or production. No worker-only job kind is registered until 030
-  (`server/worker.ts:23-24`).
+  (`server/worker.ts:24-25`).
 - 027 fiscal, 028 discounts, 029 reports, 030 cfdi, 031 account and Wave 3
   acceptance: not merged. Until they are, production would have no fiscal tickets,
   invoices, discounts, reports, legal pages or support grants
