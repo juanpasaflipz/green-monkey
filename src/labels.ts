@@ -90,6 +90,11 @@ const operations: Record<string, Key> = {
   "offline.settings_changed": "offlineOpSettingsChanged",
   "offline.payment_attempt_recorded": "offlineOpAttemptRecorded",
   "offline.payment_attempt_discarded": "offlineOpAttemptDiscarded",
+  // fiscal (027)
+  "fiscal.ticket.issued": "fiscalOpTicketIssued",
+  "fiscal.profile.saved": "fiscalOpProfileSaved",
+  "fiscal.tickets.repaired": "fiscalOpTicketsRepaired",
+  "fiscal.ticket.unallocated_discount": "fiscalOpUnallocatedDiscount",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",
