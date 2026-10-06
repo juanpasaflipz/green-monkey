@@ -1,8 +1,9 @@
 // Reports (029): corte X / Z documents with their access rules (spec §4.7, §2.12), corte print
 // records with consecutive reprint numbers per document (corte X, corte Z, blind count slip,
-// corte del día), the corte del día, and the remote close of an orphaned drawer (§2.11). Lock order (docs/ARCHITECTURE.md row 28): prints take LO-1 (once)
-// → LO-2 (restaurants FOR SHARE in once) → LO-3 (the report-print advisory key); the remote
-// close takes LO-1 → LO-2 → LO-11 (the drawer row FOR UPDATE).
+// corte del día), the corte del día, and the remote close of an orphaned drawer (§2.11). Lock
+// order (docs/ARCHITECTURE.md row 28): prints take LO-1 (once) → LO-2 (restaurants FOR SHARE in
+// once) → LO-3 (the report-print advisory key); the remote close takes LO-1 → LO-2 → LO-11 (the
+// drawer row FOR UPDATE).
 import { randomUUID } from "node:crypto";
 import type { Tx } from "../db.js";
 import { permit, managers, operators } from "../auth.js";

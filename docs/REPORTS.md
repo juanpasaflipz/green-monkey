@@ -267,7 +267,8 @@ setting. Reports and prints work on Free and while selling is blocked.
     1 (ranges, Efectivo/Terminal split, axe on Finanzas), 2 (Productos, Personal, Horas and
     their CSVs), 3 (Resumen rows and "Todos los totales cuadran."), 4 (Excepciones with the
     employee filter and CSV), 5 (Bitácora paging and filters), 6 (corte X, close, corte Z and
-    REIMPRESIÓN 2), 7 (the blind count slip), 8 (58 and 80 mm fit), 9 (Hoy and its
+    REIMPRESIÓN 2), 7 (the blind count slip, then the manager's first corte Z of that drawer
+    without REIMPRESIÓN: RPT-R11), 8 (58 and 80 mm fit), 9 (Hoy and its
     previous-day drawer alert resolved by the remote close), 13 (the disabled Caja "Corte X"
     with its reason) and 14 (390 and 768 px without page-wide scroll, axe on Hoy and the
     corte preview). Add the phase B GETs to the HTTP check (no-store, cashier forbidden)
@@ -276,11 +277,13 @@ setting. Reports and prints work on Free and while selling is blocked.
 `tests/reports-phaseb-db.ts` (part of `test:db:reports`) skips until 027 and 028 are migrated
 and then runs against the real modules. Before the merge it ran twice outside the repository:
 first against the 027/028 DDL as fiscal.md and discounts.md write it, with stand-in ports;
-then (14 checks) in a scratch copy of this branch with fiscal's and discounts' current
-migrations and modules on a CI-parity database. The 14 checks cover S1–S7 with every
+then (15 checks) in a scratch copy of this branch with fiscal's and discounts' current
+migrations and modules on a CI-parity database. The 15 checks cover S1–S7 with every
 reconciliation check, the breakdowns, order and tender lists, all twelve exception kinds with
 their summary, drawer figures against `drawerTotals`, X/Z prints and reprints, two
-concurrent Z prints numbered 1 and 2, the corte del día, Hoy alerts, the role refusals, the
+concurrent Z prints numbered 1 and 2, a cashier's count slip followed by the manager's first
+corte Z (print 1, no corte_reprint; an uppercase drawer id in the same sequence), the corte
+del día, Hoy alerts, the role refusals, the
 remote close with its step-up and both orphan reasons, and the legacy `/report`. The phase A
 suite (`tests/reports-db.ts`) also refuses cashier, server and kitchen on every phase B
 function and checks the remote-close step-up before any 027/028 statement runs, so those
