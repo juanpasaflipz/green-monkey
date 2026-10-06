@@ -252,7 +252,15 @@ setting. Reports and prints work on Free and while selling is blocked.
    `tests/access-db.ts`, `tests/offline-sync-db.ts` and `tests/offline-recovery-db.ts` to
    the named-trigger transaction, append `report_prints` and `business_day_settings` (and
    their triggers `report_prints_immutable`, `business_day_settings_immutable`) after the
-   discounts tables, as `tests/fixtures/reports-cleanup.ts` orders them.
+   discounts tables, as `tests/fixtures/reports-cleanup.ts` orders them. The same applies
+   to track/fiscal's `tests/fiscal-db.ts` (RPT-R18): it changes the cutoff as the
+   superuser `admin` connection, so 029's `restaurants_business_day_settings` trigger
+   records `business_day_settings` rows for its tenant, and its cleanup then deletes the
+   restaurant. Its cleanup must disable `business_day_settings_immutable` and
+   `report_prints_immutable` and delete from `report_prints` and `business_day_settings`
+   after the discounts tables (or call `removeTenants()`), or `test:db:fiscal` fails with a
+   foreign-key or immutability error once 029 is on top of it. No other wave 2 suite
+   changes the cutoff or timezone.
 10. `scripts/grants.sql` and `package.json` (C23): the `-- 029 reports` grants block and the
     `test:db:reports` entry and qualification suffix go after discounts' (merge order).
 11. The `online` prop (LD-18 LD-P5): keep one copy; this branch already carries discounts'
