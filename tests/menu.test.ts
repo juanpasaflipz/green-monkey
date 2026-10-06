@@ -45,6 +45,9 @@ import {
   withProductAvailable,
 } from "../src/features/menu/availability";
 import type { MenuEditorPayload, MenuGroup } from "../shared/menu";
+import { assertProductFiscalAllowed } from "../server/fiscal.js";
+import type { Tx } from "../server/db.js";
+import { translateError } from "../src/i18n";
 
 const tortilla = "00000000-0000-4000-8000-0000000000a1";
 const queso = "00000000-0000-4000-8000-0000000000a2";
@@ -1006,5 +1009,47 @@ describe("MENU-R1: QR/kiosk polls spare the venue's shared request budget", () =
     expect(ref.current).toBe(5);
     advanceBaseline(ref, 6);
     expect(ref.current).toBe(6);
+  });
+});
+
+describe("LD-28: restoring an archived product reuses fiscal's product rate rule", () => {
+  /** A transaction whose only statement reads the fiscal profile (fiscalContext). */
+  const profile = (region: string | null) =>
+    (async () =>
+      region
+        ? [{ tax_region: region, default_tax_category: "iva16" }]
+        : []) as unknown as Tx;
+
+  it("IVA 8% needs a border region; other rates and products without a fiscal value restore anywhere", async () => {
+    for (const region of ["general", null])
+      await expect(
+        assertProductFiscalAllowed(profile(region), { taxCategory: "iva8" }),
+      ).rejects.toMatchObject({
+        code: "fiscal_border_rate_not_allowed",
+        status: 400,
+      });
+    for (const region of ["border_north", "border_south"])
+      await expect(
+        assertProductFiscalAllowed(profile(region), { taxCategory: "iva8" }),
+      ).resolves.toBeUndefined();
+    for (const fiscal of [
+      undefined,
+      {},
+      { taxCategory: "iva16" },
+      { taxCategory: "default" },
+      { taxCategory: "iva0", satProductKey: "50201708", satUnitKey: null },
+    ])
+      await expect(
+        assertProductFiscalAllowed(profile("general"), fiscal),
+      ).resolves.toBeUndefined();
+  });
+
+  it("the refusal a manager sees on «Restaurar» has Spanish and English copy", () => {
+    expect(translateError("fiscal_border_rate_not_allowed", "es")).toBe(
+      "El IVA 8% solo se puede usar si la sucursal está en región fronteriza.",
+    );
+    expect(translateError("fiscal_border_rate_not_allowed", "en")).toBe(
+      "8% VAT can only be used when the location is in a border region.",
+    );
   });
 });

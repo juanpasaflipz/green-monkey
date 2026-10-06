@@ -291,7 +291,9 @@ adds its block with `setFiscalFooterExtra`.
   (`fiscal_profile_changed`) the panel shows the current data in place of the stale form, so
   a second tap can never write the old values back. It is audited (`fiscal.profile.saved`
   with before/after) and never changes `restaurants.config_version`, so queued offline sales
-  stay valid. Going back to the general region is refused while products use IVA 8%.
+  stay valid. Going back to the general region is refused while active products use IVA
+  8%; an archived IVA 8% product does not block it, and restoring one afterwards is refused
+  with `fiscal_border_rate_not_allowed` (LD-28).
 - **Product tax** (menu editor, Impuestos): restaurant default, IVA 16%, IVA 8% (border
   region only), IVA 0%, exempt, and optional SAT keys (default `90101501` Restaurantes and
   `E48` Unidad de servicio, used only for itemized CFDI). A tax change bumps the product
