@@ -2947,9 +2947,12 @@ test.describe("offline table service (Beta) turned on", () => {
       "La orden de este borrador ya no existe en este dispositivo ni en el servidor.",
     );
     await expect(entry).toHaveCount(0);
-    await drafts
-      .getByRole("button", { name: "Descartar borrador", exact: true })
-      .click();
+    // The discard action names its draft and takes the focus the entry had (POL-5).
+    const discard = drafts.getByRole("button", {
+      name: /^Descartar borrador: #999 · ronda sin enviar · .+ · 1 /,
+    });
+    await expect(discard).toBeFocused();
+    await discard.click();
     await expect(drafts).not.toContainText("#999");
     await expect(page.locator(".cart-bottom [role=alert]")).toHaveCount(0);
   });

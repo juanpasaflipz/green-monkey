@@ -1063,7 +1063,16 @@ export async function findOpenOrder(
 /** Where a cart parked in Borradores for an order goes back to (resolveParkedOrder). */
 export type ParkedOrderTarget =
   | { kind: "local"; order: LocalOrderView }
-  | { kind: "server"; orderId: string; cached: LocalOrderView | null }
+  | {
+      kind: "server";
+      orderId: string;
+      cached: LocalOrderView | null;
+      /**
+       * For a local order that synced: its provisional number and the server number the
+       * sync returned, so Borradores names it "B-07 → #142" without a cached copy.
+       */
+      synced?: { provisionalNumber: string | null; number: number | null };
+    }
   | { kind: "gone" };
 
 /**
@@ -1076,6 +1085,7 @@ export type ParkedOrderTarget =
  *   for a local order whose record synced (or a manager reconciled), since the server
  *   owns it from then on (OFF-R12). `cached` is this device's projection of it (OFF-R2),
  *   the only copy usable offline (null when table service is off or it is not cached).
+ *   `synced` carries such a local order's provisional and server numbers.
  * - gone: a local order this device no longer has (its record was archived) that never
  *   became a server order, or one whose record synced without naming its server order.
  */
@@ -1094,12 +1104,18 @@ export async function resolveParkedOrder(
       (order) => order.offline.localOperationId === id,
     );
     if (local) return { kind: "local", order: local };
-    const orderId = resultOf(record)?.orderId ?? null;
+    const result = resultOf(record);
+    const orderId = result?.orderId ?? null;
     if (!orderId) return { kind: "gone" };
     return {
       kind: "server",
       orderId,
       cached: await findOpenOrder(session, { orderId }),
+      synced: {
+        provisionalNumber: record.body.provisionalNumber ?? null,
+        number:
+          typeof result?.orderNumber === "number" ? result.orderNumber : null,
+      },
     };
   }
   return {

@@ -40,12 +40,13 @@ import {
 import { useOfflineSelling } from "./offline/useOfflineSelling";
 import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
-import { fmt, orderLabel } from "./offline/format";
+import { fmt, orderLabel, parkedOrderLabel } from "./offline/format";
 import { currentBusinessDate } from "../labels";
 import {
   isServerOrder,
   resolveParkedOrder,
   type LocalOrderView,
+  type ParkedOrderTarget,
 } from "../offline-records";
 import { DiscountButton } from "./discounts/DiscountButton";
 import { CheckDiscountSummary } from "./discounts/OrderAdjustments";
@@ -142,6 +143,8 @@ export function Selling({
   const [busy, setBusy] = useState(false);
   const [pendingPayment, setPendingPayment] = useState(false);
   const [parked, setParked] = useState<ParkedDraft[] | null>(null);
+  /** The draft whose entry just turned "gone": its discard button takes focus. */
+  const [goneFocus, setGoneFocus] = useState<string | null>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [cashSession, setCashSession] = useState<any>(null);
   const [notice, setNotice] = useState("");
@@ -375,20 +378,10 @@ export function Selling({
           const where = order
             ? await resolveParkedOrder(session, order.id).catch(() => null)
             : null;
-          const known =
-            where?.kind === "local"
-              ? where.order
-              : where?.kind === "server"
-                ? where.cached
-                : null;
           return {
             draft,
             order,
-            label: known
-              ? orderLabel(known, today, locale)
-              : order?.number
-                ? "#" + order.number
-                : null,
+            label: parkedOrderLabel(where, order, today, locale),
             gone: where?.kind === "gone",
           };
         }),
@@ -397,6 +390,8 @@ export function Selling({
   }
   /** A draft whose order no longer exists anywhere (LD-13 addendum). */
   function markGone(id: string) {
+    // Its button is replaced by the gone panel: focus moves to its discard action.
+    setGoneFocus(id);
     setParked(
       (list) =>
         list?.map((p) => (p.draft.id === id ? { ...p, gone: true } : p)) ??
@@ -419,7 +414,15 @@ export function Selling({
   async function restoreDraft({ draft: d, order: parkedOrder }: ParkedDraft) {
     let target: Order | null = null;
     if (parkedOrder) {
-      const where = await resolveParkedOrder(session, parkedOrder.id);
+      let where: ParkedOrderTarget;
+      try {
+        where = await resolveParkedOrder(session, parkedOrder.id);
+      } catch (e) {
+        // This device's store could not be read: the round stays parked.
+        setParked(null);
+        setError(errorNotice(e, locale));
+        return;
+      }
       if (where.kind === "gone") {
         markGone(d.id);
         return;
@@ -1835,21 +1838,22 @@ export function Selling({
             <Empty title={t("noData")} />
           ) : (
             parked.map((p) => {
-              const text = (
-                <>
-                  {p.label &&
-                    t("serviceDraftRound").replace("{order}", p.label) + " · "}
-                  {p.draft.order.name || t("order")} ·{" "}
-                  {p.draft.order.lines.length} {t("items")}
-                </>
-              );
+              const text =
+                (p.label
+                  ? t("serviceDraftRound").replace("{order}", p.label) + " · "
+                  : "") +
+                `${p.draft.order.name || t("order")} · ${p.draft.order.lines.length} ${t("items")}`;
               return p.gone ? (
                 <div className="draft-gone" key={p.draft.id}>
                   <p>{text}</p>
                   <p className="warning-panel" role="status">
                     {t("serviceDraftOrderGone")}
                   </p>
-                  <Button onClick={() => void discardDraft(p)}>
+                  <Button
+                    aria-label={`${t("serviceDraftDiscard")}: ${text}`}
+                    autoFocus={goneFocus === p.draft.id}
+                    onClick={() => void discardDraft(p)}
+                  >
                     {t("serviceDraftDiscard")}
                   </Button>
                 </div>

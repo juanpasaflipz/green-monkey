@@ -59,6 +59,7 @@ import {
   refreshOfflineSettings,
   setOfflineTableServiceForTests,
 } from "../src/offline-settings";
+import { parkedOrderLabel } from "../src/features/offline/format";
 
 const mockedApi = vi.mocked(api);
 const uuid = (n: number) =>
@@ -1792,17 +1793,23 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
       open.offline.provisionalNumber,
     );
     expect(mockedApi).not.toHaveBeenCalled();
-    // The order record syncs: the local id now names the server order.
+    // The order record syncs: the local id now names the server order, and the
+    // record still knows both numbers (POL-5: Borradores names it without a copy).
     const serverId = uuid(400);
     await markSynced(
       open.id,
       { orderId: serverId, orderNumber: 77 },
       Date.now(),
     );
-    expect(await resolveParkedOrder(s, open.id)).toEqual({
+    const uncached = await resolveParkedOrder(s, open.id);
+    expect(uncached).toEqual({
       kind: "server",
       orderId: serverId,
       cached: null,
+      synced: {
+        provisionalNumber: open.offline.provisionalNumber,
+        number: 77,
+      },
     });
     // Once the device caches the server copy, it is usable offline.
     await cacheSnapshot(s, [
@@ -1815,6 +1822,66 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
     expect(synced.cached!.offline.provisionalNumber).toBe(
       open.offline.provisionalNumber,
     );
+  });
+
+  it("Borradores names the parked round's order: projection, cached copy, the synced record's numbers, else the stored number (POL-5)", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    const provisional = open.offline.provisionalNumber!;
+    expect(provisional).toBeTruthy();
+    // Parked under the local id: stored number 0.
+    const stored = { number: 0 };
+    expect(
+      parkedOrderLabel(
+        await resolveParkedOrder(s, open.id),
+        stored,
+        "2026-10-06",
+        "es",
+      ),
+    ).toBe(provisional);
+    // Synced, then closed online: no cached copy, the record names both numbers.
+    const serverId = uuid(430);
+    await markSynced(
+      open.id,
+      { orderId: serverId, orderNumber: 142 },
+      Date.now(),
+    );
+    expect(
+      parkedOrderLabel(
+        await resolveParkedOrder(s, open.id),
+        stored,
+        "2026-10-06",
+        "es",
+      ),
+    ).toBe(`${provisional} → #142`);
+    // A synced record without the server number still names the provisional one.
+    expect(
+      parkedOrderLabel(
+        {
+          kind: "server",
+          orderId: serverId,
+          cached: null,
+          synced: { provisionalNumber: provisional, number: null },
+        },
+        stored,
+        "2026-10-06",
+        "es",
+      ),
+    ).toBe(provisional);
+    // A plain server order with no copy: the number stored when it was parked.
+    expect(
+      parkedOrderLabel(
+        { kind: "server", orderId: uuid(431), cached: null },
+        { number: 12 },
+        "2026-10-06",
+        "es",
+      ),
+    ).toBe("#12");
+    // A gone local order, or a new order's draft: nothing names it.
+    expect(parkedOrderLabel({ kind: "gone" }, stored, "2026-10-06", "es")).toBe(
+      null,
+    );
+    expect(parkedOrderLabel(null, null, "2026-10-06", "es")).toBe(null);
   });
 
   it("a server order id resolves to itself (with its cached copy when there is one)", async () => {

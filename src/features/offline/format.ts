@@ -6,6 +6,7 @@ import {
 } from "../../../shared/offline-recovery";
 import { strings, type Key } from "../../i18n";
 import { orderNumberText } from "../../labels";
+import type { ParkedOrderTarget } from "../../offline-records";
 
 /** Replaces {name} placeholders in a translated string. */
 export function fmt(text: string, vars: Record<string, string | number>) {
@@ -58,6 +59,38 @@ export function orderLabel(
   if (provisional && number) return `${provisional} → ${number}`;
   if (provisional) return provisional;
   return number ?? "#" + order.id.slice(0, 8);
+}
+
+/**
+ * How Borradores names the order a parked round belongs to (LD-13 addendum):
+ * as staff know it from the local projection or this device's cached copy
+ * ("B-07", "B-07 → #142", "#12"); for a local order that synced with no cached
+ * copy (for example closed online), from its record ("B-07 → #142"); else the
+ * number stored when the round was parked. Null when nothing names it (a new
+ * order's draft, or a local order that is gone).
+ */
+export function parkedOrderLabel(
+  where: ParkedOrderTarget | null,
+  stored: { number: number } | null,
+  today: string | null | undefined,
+  locale: Locale,
+): string | null {
+  if (where?.kind === "local") return orderLabel(where.order, today, locale);
+  if (where?.kind === "server") {
+    if (where.cached) return orderLabel(where.cached, today, locale);
+    const synced = where.synced;
+    if (synced && (synced.provisionalNumber || synced.number))
+      return orderLabel(
+        {
+          id: where.orderId,
+          number: synced.number ?? 0,
+          offline: { provisionalNumber: synced.provisionalNumber },
+        },
+        today,
+        locale,
+      );
+  }
+  return stored?.number ? "#" + stored.number : null;
 }
 
 /** True while only this device knows the order's number (the hint applies). */
