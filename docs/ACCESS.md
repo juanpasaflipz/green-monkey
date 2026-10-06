@@ -74,7 +74,10 @@ PIN in the dialog (`verifyApproval`), and that PIN is the only one asked (LD-2):
 the actor's own step-up applies only to a within-limit staff discount with no
 approver; saving the money controls (owner) needs the step-up. Reports (029):
 the remote close of an orphaned drawer (`POST /api/reports/drawers/:id/close`,
-owners and managers) needs the step-up. The client asks "Confirma con tu PIN"
+owners and managers) needs the step-up. Account (031): every
+`/api/account-data/*` path (the owner data export; a guard on the whole prefix,
+owners only) and the owner's restaurant privacy notice and Free-selection mode
+saves need the step-up. The client asks "Confirma con tu PIN"
 and retries the identical request (same `operationId`). Google-entered sessions
 on a personal device are exempt; PIN sessions are not, on any device. A pending
 prompt belongs to the session whose command asked for it:
