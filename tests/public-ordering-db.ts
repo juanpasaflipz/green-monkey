@@ -3348,6 +3348,26 @@ try {
     assert.equal(audited.detail.abuseAcknowledged, true);
   });
 
+  await test("44. the inbox's churn read uses the cancelled-holds partial index, not the tenant's history (PUB-HR-3)", async () => {
+    const t = await makeTenant("churnplan");
+    const plan = (
+      await run(t.s.cashier, async (tx) => {
+        await tx`set local enable_seqscan = off`;
+        return tx.unsafe(
+          `explain select coalesce(h.table_id,h.link_id),count(*)
+            from public_order_holds h
+            where h.state='cancelled'
+              and h.created_at>now()-make_interval(mins=>$1)
+            group by coalesce(h.table_id,h.link_id)`,
+          [PUBLIC_LIMITS.windowMinutes],
+        );
+      })
+    )
+      .map((r: any) => r["QUERY PLAN"])
+      .join("\n");
+    assert.match(plan, /public_order_holds_cancelled_recent/, plan);
+  });
+
   console.log(`${checks} public ordering checks passed`);
   await pub.close();
 } finally {

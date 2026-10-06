@@ -191,6 +191,10 @@ CREATE INDEX public_order_holds_link_recent
   ON public_order_holds (tenant_id, link_id, created_at DESC);
 CREATE INDEX public_order_holds_table_recent
   ON public_order_holds (tenant_id, table_id, created_at DESC) WHERE table_id IS NOT NULL;
+-- The inbox's churn read (every 10 s per terminal): the window's diner
+-- cancellations across every code, without scanning the tenant's history.
+CREATE INDEX public_order_holds_cancelled_recent
+  ON public_order_holds (tenant_id, created_at) WHERE state = 'cancelled';
 
 -- Exactly one decision; the diner's request is immutable evidence.
 CREATE FUNCTION public_order_hold_transition() RETURNS trigger LANGUAGE plpgsql AS $$
