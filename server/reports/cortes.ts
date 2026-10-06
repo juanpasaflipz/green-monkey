@@ -1,6 +1,6 @@
 // Reports (029): corte X / Z documents with their access rules (spec §4.7, §2.12), corte print
-// records with consecutive reprint numbers, the corte del día, and the remote close of an
-// orphaned drawer (§2.11). Lock order (docs/ARCHITECTURE.md row 28): prints take LO-1 (once)
+// records with consecutive reprint numbers per document (corte X, corte Z, blind count slip,
+// corte del día), the corte del día, and the remote close of an orphaned drawer (§2.11). Lock order (docs/ARCHITECTURE.md row 28): prints take LO-1 (once)
 // → LO-2 (restaurants FOR SHARE in once) → LO-3 (the report-print advisory key); the remote
 // close takes LO-1 → LO-2 → LO-11 (the drawer row FOR UPDATE).
 import { randomUUID } from "node:crypto";
@@ -16,6 +16,7 @@ import {
   buildDayCorteDocument,
   corteAccess,
   cortePrintInput,
+  cortePrintKind,
   currentBusinessDate,
   dayCortePrintInput,
   remoteCloseInput,
@@ -23,6 +24,7 @@ import {
   type CorteControls,
   type CorteDocument,
   type DayCorteDocument,
+  type ReportPrintKind,
 } from "../../shared/reports.js";
 import { heavyStatementTimeout } from "./snapshot.js";
 import { loadDrawers, type LoadedDrawer } from "./drawers.js";
@@ -37,11 +39,18 @@ const n = aggregateInt;
 /** The advisory key that serializes the prints of one document (LO-3, spec §4.9). */
 export function reportPrintKey(
   tenantId: string,
-  kind: "corte_x" | "corte_z" | "day_corte",
+  kind: ReportPrintKind,
   subject: string,
 ) {
   return tenantId + ":report-print:" + kind + ":" + subject;
 }
+
+/**
+ * A drawer id as Postgres prints a uuid (lowercase): the print subject, its advisory key and
+ * the audit entity match `cash_sessions.id::text` whatever case the request used (029's
+ * subject CHECK accepts lowercase only).
+ */
+const canonicalId = (drawerId: string) => drawerId.toLowerCase();
 
 /** Discounts, refunds and paid-outs recorded on the drawer's device between its open and close. */
 async function corteControls(tx: Tx, d: LoadedDrawer): Promise<CorteControls> {
@@ -108,7 +117,7 @@ export async function drawerCorte(
   permit(s, operators);
   const settings = restaurant ?? (await restaurantOf(tx, s));
   const [[d], controls] = await Promise.all([
-    loadDrawers(tx, s, settings, { id: drawerId }),
+    loadDrawers(tx, s, settings, { id: canonicalId(drawerId) }),
     ports.moneyControls(tx),
   ]);
   if (!d) throw new DomainError("not_found", 404);
@@ -150,10 +159,14 @@ export async function drawerCorte(
 }
 
 /**
- * POST /api/reports/drawers/:id/corte: records a corte X or Z print and returns the
- * authoritative document with its print number (> 1 is a reprint). Two prints of one document
- * with different operation ids are serialized on the report-print key before numbering, so they
- * get consecutive numbers (DB test 34); a replayed operation id returns the same document.
+ * POST /api/reports/drawers/:id/corte: records a corte X, corte Z or count slip print and returns
+ * the authoritative document with its print number (> 1 is a reprint). Each document has its own
+ * sequence (cortePrintKind): a blind role's count slip and the full corte Z of the same drawer
+ * are numbered apart, so the manager's first Z is print 1 and only full Z reprints are audited
+ * as reports.corte_z.reprinted (the corte_reprint exception). Two prints of one document with
+ * different operation ids are serialized on that document's report-print key before numbering,
+ * so they get consecutive numbers (DB test 34); a replayed operation id returns the same
+ * document.
  */
 export async function printDrawerCorte(
   tx: Tx,
@@ -167,25 +180,30 @@ export async function printDrawerCorte(
   // print one (drawerCorte applies the per-drawer access rules inside).
   permit(s, operators);
   const p = cortePrintInput.parse(raw);
-  const kind = p.kind === "x" ? "corte_x" : "corte_z";
+  const subject = canonicalId(drawerId);
   return once(
     tx,
     s,
     p.operationId,
     "reports.corte",
-    { drawerId, kind: p.kind },
+    { drawerId: subject, kind: p.kind },
     async () => {
-      await tx`select pg_advisory_xact_lock(hashtextextended(${reportPrintKey(s.tenantId, kind, drawerId)}, 0))`;
-      const doc = await drawerCorte(tx, s, drawerId, ports);
+      // The document (and so which sequence it numbers in) depends on the viewer's access;
+      // drawerCorte only reads, so the report-print key (LO-3) is still taken before numbering.
+      const doc = await drawerCorte(tx, s, subject, ports);
       if (doc.kind !== p.kind)
         throw new DomainError("reports_corte_state", 409);
-      const printNumber = await recordPrint(tx, s, kind, drawerId);
+      const kind = cortePrintKind(doc);
+      await tx`select pg_advisory_xact_lock(hashtextextended(${reportPrintKey(s.tenantId, kind, subject)}, 0))`;
+      const printNumber = await recordPrint(tx, s, kind, subject);
       const detail = { printNumber, zNumber: doc.zNumber };
       if (kind === "corte_x")
-        await audit(tx, s, "reports.corte_x.printed", drawerId, detail);
+        await audit(tx, s, "reports.corte_x.printed", subject, detail);
+      else if (kind === "count_slip")
+        await audit(tx, s, "reports.count_slip.printed", subject, detail);
       else if (printNumber > 1)
-        await audit(tx, s, "reports.corte_z.reprinted", drawerId, detail);
-      else await audit(tx, s, "reports.corte_z.printed", drawerId, detail);
+        await audit(tx, s, "reports.corte_z.reprinted", subject, detail);
+      else await audit(tx, s, "reports.corte_z.printed", subject, detail);
       return { ...doc, printNumber };
     },
   );
@@ -195,7 +213,7 @@ export async function printDrawerCorte(
 async function recordPrint(
   tx: Tx,
   s: Session,
-  kind: "corte_x" | "corte_z" | "day_corte",
+  kind: ReportPrintKind,
   subject: string,
 ): Promise<number> {
   const [last] = await tx<Row[]>`
@@ -272,7 +290,7 @@ export async function printDayCorte(
 export async function closeDrawerRemotely(
   tx: Tx,
   s: Session,
-  drawerId: string,
+  rawDrawerId: string,
   raw: unknown,
   ports: ReportsPorts,
 ): Promise<CorteDocument> {
@@ -280,6 +298,7 @@ export async function closeDrawerRemotely(
   permit(s, managers);
   requireRecentAuth(s);
   const p = remoteCloseInput.parse(raw);
+  const drawerId = canonicalId(rawDrawerId);
   return once(
     tx,
     s,

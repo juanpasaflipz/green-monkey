@@ -17,6 +17,7 @@ import {
   composeSalesSummary,
   corteAccess,
   cortePrintInput,
+  cortePrintKind,
   currentBusinessDate,
   DATE_BOUNDS,
   decodeReportCursor,
@@ -675,6 +676,7 @@ describe("audit groups and exception kinds (GAP-3)", () => {
     expect(groupsOf("discount.controls.saved")).toEqual(["settings"]);
     expect(groupsOf("fiscal.profile.saved")).toEqual(["settings", "fiscal"]);
     expect(groupsOf("reports.corte_z.reprinted")).toEqual(["reports"]);
+    expect(groupsOf("reports.count_slip.printed")).toEqual(["reports"]);
     expect(groupsOf("offline.kitchen.review")).toEqual(["kitchen"]);
     // Offline (026), menu floor (025) and forward entries (LD-16 L7, LD-18 LD-P4).
     expect(groupsOf("offline.synced")).toEqual(["sales"]);
@@ -2877,6 +2879,22 @@ describe("corte access (§4.7, D7)", () => {
         visibility: "blind",
       });
     }
+  });
+
+  it("RPT-R11: the blind count slip is its own printed document, numbered apart from the full corte Z", () => {
+    // A blind cashier closes and prints the slip; the manager then prints the official Z. They
+    // land in different report_prints sequences, so the manager's first Z is print 1.
+    const cashierSlip = access("cashier", closedAt(5), false);
+    const managerZ = access("manager", closedAt(5), false);
+    expect(cortePrintKind(cashierSlip)).toBe("count_slip");
+    expect(cortePrintKind(managerZ)).toBe("corte_z");
+    // A cashier allowed to see expected cash prints the full Z itself: the same document as the
+    // manager's, so the manager's print after it is a reprint.
+    expect(cortePrintKind(access("cashier", closedAt(5), true))).toBe(
+      "corte_z",
+    );
+    expect(cortePrintKind(access("manager", open, true))).toBe("corte_x");
+    expect(cortePrintKind({ kind: "x", visibility: "full" })).toBe("corte_x");
   });
 });
 

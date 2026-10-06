@@ -33,8 +33,10 @@ export type LoadedDrawer = DrawerFacts & {
  * external, with the part recorded after the close), refunds by method, cash movements (paid-outs
  * and pay-ins), its review and its corte Z print count. The closer is cash_sessions.closed_by
  * (028), or for a drawer closed before 028 the actor of its cash.close audit row. Z numbers are
- * the position among closed drawers ordered by (closed_at, id): computed, gapless and stable,
- * because closed drawers are immutable (028).
+ * the position among closed drawers ordered by (closed_at, id): computed and gapless, and stable
+ * once the closes involved have committed (closed drawers are immutable, 028). Two closes whose
+ * commits land in the opposite order of their closed_at can renumber a drawer read between the
+ * two commits (docs/REPORTS.md "Numbering", review RPT-R13).
  */
 export async function loadDrawers(
   tx: Tx,

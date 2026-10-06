@@ -1944,6 +1944,23 @@ export function corteAccess(i: {
   return { kind: "z", visibility: seesExpected ? "full" : "blind" };
 }
 
+/** The documents a `report_prints` row numbers (the 029 kind CHECK). */
+export type ReportPrintKind =
+  "corte_x" | "corte_z" | "count_slip" | "day_corte";
+
+/**
+ * The printed document a drawer corte is, which owns its print sequence: the corte X, the full
+ * corte Z, or the blind count slip ("COMPROBANTE DE CONTEO"). The slip and the Z of one drawer
+ * are different documents, so a cashier's slip never makes the manager's first Z a reprint, and
+ * only reprints of the full Z are corte_reprint exceptions.
+ */
+export function cortePrintKind(
+  doc: Pick<CorteDocument, "kind" | "visibility">,
+): Exclude<ReportPrintKind, "day_corte"> {
+  if (doc.kind === "x") return "corte_x";
+  return doc.visibility === "blind" ? "count_slip" : "corte_z";
+}
+
 /** Folio runs of fiscal_tickets per series, formatted with fiscal's formatFolio. */
 export function folioRanges(
   runs: readonly {

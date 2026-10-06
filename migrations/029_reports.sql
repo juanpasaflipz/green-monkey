@@ -73,12 +73,15 @@ LANGUAGE sql STABLE SET search_path = pg_catalog, public, pg_temp AS $$
   LIMIT 1
 $$;
 
--- 2. Print records for cortes (X and Z per drawer, corte del día per business date).
---    print_number is consecutive per (kind, subject); print_number > 1 is a reprint.
+-- 2. Print records for cortes (X, Z and the blind count slip per drawer, corte del
+--    día per business date). print_number is consecutive per (kind, subject);
+--    print_number > 1 is a reprint. The count slip a blind-count role prints is a
+--    different document from the corte Z, so it has its own sequence: a cashier's
+--    slip never turns the manager's first corte Z into "REIMPRESIÓN 2".
 CREATE TABLE report_prints(
   tenant_id uuid NOT NULL REFERENCES restaurants(id),
   id uuid NOT NULL,
-  kind text NOT NULL CHECK (kind IN ('corte_x','corte_z','day_corte')),
+  kind text NOT NULL CHECK (kind IN ('corte_x','corte_z','count_slip','day_corte')),
   subject text NOT NULL,
   print_number integer NOT NULL CHECK (print_number BETWEEN 1 AND 100000),
   actor_id uuid NOT NULL,

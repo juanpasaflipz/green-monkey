@@ -1455,6 +1455,81 @@ try {
     "27. remote close: step_up_required without a recent PIN on a shared terminal; refused for a healthy same-day drawer; with a fresh PIN closes a previous-day drawer on an active device, a revoked device's drawer and the orphan with closed_by, visible count and audit remote:true; a second close is reports_drawer_closed",
   );
 
+  // ---- RPT-R11: the blind count slip and the full corte Z are numbered apart. prevDay is now
+  // the last drawer of the Terraza device, closed minutes ago; its cashier may not see expected
+  // cash (028 default), so what they print is the count slip.
+  const terraza = session(E.cashier, "cashier", D.d3);
+  const corteZ = (s: any, drawer: string): Promise<any> =>
+    tenant(sql, T, (tx: Tx) =>
+      C.printDrawerCorte(
+        tx,
+        s,
+        drawer,
+        { operationId: id(), kind: "z" },
+        ports,
+      ),
+    );
+  const slip1 = await corteZ(terraza, DR.prevDay);
+  assert.deepEqual(
+    {
+      visibility: slip1.visibility,
+      print: slip1.printNumber,
+      cash: slip1.cash,
+      counted: slip1.counted,
+    },
+    { visibility: "blind", print: 1, cash: null, counted: 10000 },
+  );
+  const firstZ = await corteZ(manager, DR.prevDay);
+  assert.deepEqual(
+    { visibility: firstZ.visibility, print: firstZ.printNumber },
+    { visibility: "full", print: 1 },
+    "the manager's first corte Z is print 1, not REIMPRESIÓN 2",
+  );
+  assert.equal((await corteZ(terraza, DR.prevDay)).printNumber, 2);
+  // RPT-R14: an uppercase id in the URL numbers in the same sequence (no check_violation).
+  assert.equal(
+    (await corteZ(manager, DR.prevDay.toUpperCase())).printNumber,
+    2,
+  );
+  const slipPrints = (await scoped(
+    (tx) =>
+      tx`select kind, print_number, subject from report_prints
+          where lower(subject) = ${DR.prevDay} order by kind, print_number`,
+  )) as any[];
+  assert.deepEqual(
+    slipPrints.map((p) => [p.kind, p.print_number, p.subject]),
+    [
+      ["corte_z", 1, DR.prevDay],
+      ["corte_z", 2, DR.prevDay],
+      ["count_slip", 1, DR.prevDay],
+      ["count_slip", 2, DR.prevDay],
+    ].sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
+  );
+  const [slipAudits] = (await scoped(
+    (tx) =>
+      tx`select count(*) filter (where operation='reports.count_slip.printed')::int as slips,
+          count(*) filter (where operation='reports.corte_z.printed')::int as printed,
+          count(*) filter (where operation='reports.corte_z.reprinted')::int as reprinted
+          from audit where entity_id=${DR.prevDay}`,
+  )) as any;
+  assert.deepEqual({ ...slipAudits }, { slips: 2, printed: 1, reprinted: 1 });
+  const afterSlips = await read(owner, (tx: Tx) =>
+    exceptionRows(tx, owner, { from: yesterday, to: today, limit: "500" }),
+  );
+  assert.deepEqual(
+    afterSlips.rows
+      .filter(
+        (r: any) =>
+          r.kind === "corte_reprint" && r.detail.drawerId === DR.prevDay,
+      )
+      .map((r: any) => [r.detail.printNumber, r.actorName]),
+    [[2, "Marisol Vega"]],
+    "only the manager's second full Z is a corte_reprint; count slips never are",
+  );
+  ok(
+    "RPT-R11: a cashier's blind count slip is count_slip 1, the manager's first corte Z is still print 1 (corte_z.printed, no corte_reprint), slips and Zs keep separate sequences, and an uppercase drawer id numbers in the lowercase sequence (RPT-R14)",
+  );
+
   // ---- legacy /report.
   const legacy: any = await read(manager, (tx: Tx) =>
     legacyDailyReport(tx, manager, { date: today }),

@@ -94,6 +94,7 @@ const operations: Record<string, Key> = {
   "reports.corte_x.printed": "reportsOpCorteXPrinted",
   "reports.corte_z.printed": "reportsOpCorteZPrinted",
   "reports.corte_z.reprinted": "reportsOpCorteZReprinted",
+  "reports.count_slip.printed": "reportsOpCountSlipPrinted",
   "reports.day_corte.printed": "reportsOpDayCortePrinted",
 };
 const stockCauses: Record<string, Key> = {

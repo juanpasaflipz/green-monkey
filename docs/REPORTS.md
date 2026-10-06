@@ -127,10 +127,22 @@ offline.
   bound for one binds for both), the drawers, the controls and the cost line, on 58/80 mm or
   as a letter/A4 sheet ("Imprimir o guardar PDF").
 - **Numbering.** The Z number is a drawer's position among this location's closed drawers by
-  `(closed_at, id)`: computed, gapless and stable. Every print is recorded in `report_prints`;
-  the second print of a document says "REIMPRESIÓN 2". Prints of one document serialize on
-  the advisory key `tenant:report-print:kind:subject` (lock level LO-3) before numbering, so
-  two prints at once get 1 and 2.
+  `(closed_at, id)`: computed and gapless, and stable once the closes involved have committed.
+  `closed_at` is taken when the close updates the row, so two drawers closing at nearly the
+  same moment can commit in the opposite order. A report or print that reads after the first
+  commit and before the second can show a drawer as Z n that every later read numbers n+1, so
+  a Z printed in that window disagrees with its reprint. It needs two closes within the same
+  instant (a remote close stays open longer, because it builds the corte Z before it commits)
+  and a print in between. A stored, serialized Z counter would remove it (a later expand
+  migration, not in 029). Every print is recorded in `report_prints`, one sequence per document: the corte X,
+  the corte Z, the blind count slip (kind `count_slip`) and the corte del día. The second
+  print of a document says "REIMPRESIÓN 2". A cashier's count slip and the manager's corte Z
+  of the same drawer are different documents, so the manager's first Z is print 1, and only
+  reprints of the full Z are audited as `reports.corte_z.reprinted` and listed as
+  `corte_reprint` exceptions (slips are audited as `reports.count_slip.printed`). Prints of
+  one document serialize on the advisory key `tenant:report-print:kind:subject` (lock level
+  LO-3) before numbering, so two prints at once get 1 and 2. The subject is the lowercase
+  drawer id, whatever case the URL used.
 - **Access** (spec §4.7, §2.12): owners and managers print any corte Z in full and a corte X
   when they may see expected cash. Cashiers and servers print only their own device's
   drawer: a corte X if they may see expected cash, and the corte Z or count slip of the
@@ -284,8 +296,16 @@ reports (RLS forbids cross-tenant reads), per-employee "collected by" (tenders c
 employee), tip distribution, inventory valuation, delivery-platform imports and ESC/POS
 printer SDKs. The integrations panel keeps "Impresión directa a impresora" disabled: browser
 printing works without it, and that label describes direct printer integration, which does
-not exist (spec D16 not applied). Decisions D1–D20 are in the spec; the binding lead decisions
-are LD-15 (reports Q1, Q4–Q7) and LD-16 (L3, L5, L7, L8).
+not exist (spec D16 not applied). This deviation still needs a lead decision: wave2-cross-track
+C13 says reports sets `printer` at `server/index.ts:559`, and cfdi plans to keep that line.
+Until a decision is recorded, `/capabilities` keeps `printer: {enabled: false, reason:
+"device_not_paired"}`, so cfdi's "keep reports' printer line" has nothing to keep.
+
+The blind count slip numbered apart from the corte Z (kind `count_slip`) departs from the
+spec's literal `kind = "corte_" + p.kind` (§4.5 printDrawerCorte) to keep the spec's own rule
+that the second print *of a document* is the reprint (review RPT-R11); it needs the lead's
+sign-off. Decisions D1–D20 are in the spec; the binding lead decisions are LD-15 (reports Q1,
+Q4–Q7) and LD-16 (L3, L5, L7, L8).
 
 ## Sources
 

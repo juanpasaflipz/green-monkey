@@ -381,7 +381,7 @@ try {
     assert.equal(seen.n, 0);
   });
 
-  await test("print records: numbers are consecutive per (kind, subject) by trigger, the subject has the kind's shape, and gm_app inserts only inside its tenant", async () => {
+  await test("print records: numbers are consecutive per (kind, subject) by trigger, the blind count slip numbers apart from the corte Z, the subject has the kind's lowercase shape, and gm_app inserts only inside its tenant", async () => {
     const drawer = ids.drawer1;
     const insert = (s: Session, kind: string, subject: string, n: number) =>
       write(
@@ -398,6 +398,25 @@ try {
     await insert(manager, "day_corte", "2026-10-05", 1);
     await rejects(insert(manager, "day_corte", drawer, 1), "23514");
     await rejects(insert(manager, "corte_z", "2026-10-05", 1), "23514");
+    // RPT-R11: the blind count slip is a document of its own. A cashier's slip is slip 1 and
+    // the manager's first corte Z of the same drawer is still Z 1, not a reprint.
+    await insert(cashier, "count_slip", drawer, 1);
+    await insert(manager, "corte_z", drawer, 1);
+    await rejects(insert(manager, "corte_z", drawer, 3), "23514");
+    await insert(cashier, "count_slip", drawer, 2);
+    await rejects(insert(cashier, "count_slip", "2026-10-05", 1), "23514");
+    await rejects(insert(manager, "corte", drawer, 1), "23514");
+    // RPT-R14: subjects are lowercase uuids (cash_sessions.id::text); the print command
+    // lowercases the drawer id before it numbers or records anything.
+    await rejects(insert(manager, "corte_x", drawer.toUpperCase(), 1), "23514");
+    const [sequences] = await write(
+      owner,
+      (tx) => tx`select
+        max(print_number) filter (where kind = 'count_slip')::int as slips,
+        max(print_number) filter (where kind = 'corte_z')::int as zs
+        from report_prints where subject = ${drawer}`,
+    );
+    assert.deepEqual({ ...sequences }, { slips: 2, zs: 1 });
     // A row for another tenant fails RLS WITH CHECK.
     await rejects(
       write(
