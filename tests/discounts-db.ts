@@ -58,6 +58,10 @@ const { runtime: url, migration } = isolatedTarget(process.env);
 const sql = connect(url),
   admin = postgres(migration, { max: 1 });
 await checkRole(sql);
+// This suite creates a few hundred orders; their kitchen_dispatch jobs are
+// removed at the end so a rerun of the qualification chain never meets a
+// backlog that the jobs suite's drain check cannot clear in time.
+const [{ started }] = await admin`select clock_timestamp() as started`;
 
 const tenantId = "10000000-0000-4000-8000-000000000001";
 const otherTenantId = "10000000-0000-4000-8000-000000000002";
@@ -2236,6 +2240,11 @@ try {
     `${checks} discounts checks passed${skipped ? `, ${skipped} skipped until fiscal 027 merges` : ""}`,
   );
 } finally {
+  for (const id of [tenantId, otherTenantId])
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id',${id},true)`;
+      await tx`delete from jobs where tenant_id=${id} and kind='kitchen_dispatch' and created_at>=${started}`;
+    });
   await sql.end();
   await admin.end();
 }
