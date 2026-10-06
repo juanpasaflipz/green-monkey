@@ -40,6 +40,20 @@ async function call(page: Page, path: string, body?: unknown) {
 }
 const op = () => crypto.randomUUID();
 const runId = () => Math.random().toString(36).slice(2, 7);
+/**
+ * Opens this device's drawer unless it is already open: a second
+ * POST /cash/open on the same device hits one_open_drawer, and the server
+ * logs that as an internal error.
+ */
+async function openDrawer(page: Page) {
+  const d = (await call(page, "/cash")).data as {
+    id?: string;
+    closed_at?: string | null;
+  } | null;
+  if (d?.id && !d.closed_at) return;
+  const r = await call(page, "/cash/open", { operationId: op(), opening: 0 });
+  expect(r.status, JSON.stringify(r.data)).toBe(200);
+}
 async function axe(page: Page) {
   const results = await new AxeBuilder({ page })
     .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
@@ -182,7 +196,7 @@ class Fixture {
    * rest (PUB-B3-L1).
    */
   async settleOrders() {
-    await call(this.page, "/cash/open", { operationId: op(), opening: 0 });
+    await openDrawer(this.page);
     let first: { error: unknown } | null = null;
     for (const id of this.orders) {
       try {
@@ -557,7 +571,7 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     expect(order!.name).toBe(`${label} · QR ${f.id}`);
     // B1: staff collect the check at the table while the kitchen works; the
     // payment issues its fiscal ticket (027).
-    await call(page, "/cash/open", { operationId: op(), opening: 0 });
+    await openDrawer(page);
     const due = (await call(page, `/orders/${order!.id}`)).data;
     const paid = await call(page, `/orders/${order!.id}/payments`, {
       operationId: op(),
@@ -780,7 +794,7 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
   await login(page);
   await withFixture(page, async (f) => {
     f.policies = true;
-    await call(page, "/cash/open", { operationId: op(), opening: 0 });
+    await openDrawer(page);
     await page
       .getByRole("button", { name: "Configuración", exact: true })
       .click();
@@ -955,7 +969,7 @@ test("pay-first refusal after a terminal charge: the cashier is told to record t
   await login(page);
   await withFixture(page, async (f) => {
     f.policies = true;
-    await call(page, "/cash/open", { operationId: op(), opening: 0 });
+    await openDrawer(page);
     const v = (await call(page, "/ordering/settings")).data;
     const saved = await call(page, "/ordering/settings", {
       operationId: op(),
