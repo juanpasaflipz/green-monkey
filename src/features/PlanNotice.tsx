@@ -29,6 +29,7 @@ type Shell = {
       initiatedBy: string;
       toEmailMasked: string;
       availableAt: string;
+      expiresAt: string;
       organizationName: string;
     }>;
     supportActions: Array<{ action: string; createdAt: string }>;
@@ -203,23 +204,37 @@ export function PlanNotice({
           </div>
         </div>
       )}
-      {account?.transfers.map((transfer) => (
-        <div role="alert" className="plan-notice critical" key={transfer.id}>
-          <p>
-            {(transfer.initiatedBy === "recovery_code"
-              ? t("accountTransferRecoveryInitiated")
-              : t("accountTransferSupportInitiated")
-            )
-              .replace("{email}", transfer.toEmailMasked)
-              .replace("{date}", date(transfer.availableAt))}
-          </p>
-          <div className="row">
-            <Button onClick={() => (location.href = "/app?account=1")}>
-              {t("accountTransferCancel")}
-            </Button>
+      {account?.transfers.map((transfer) => {
+        // Only transfers the primary did not start are warnings (ACC-1): the
+        // server sends no others, and an unknown kind is never shown as one.
+        const warning: Key | null =
+          transfer.initiatedBy === "support"
+            ? "accountTransferSupportInitiated"
+            : transfer.initiatedBy === "recovery_code"
+              ? "accountTransferRecoveryInitiated"
+              : null;
+        if (!warning) return null;
+        return (
+          <div role="alert" className="plan-notice critical" key={transfer.id}>
+            <p>
+              {t(warning)
+                .replace("{email}", transfer.toEmailMasked)
+                .replace("{date}", date(transfer.availableAt))}
+            </p>
+            {/* A PIN-entered owner seat (shared terminal) cannot open the
+                account console here; it is told where to cancel (ACC-5). */}
+            {session.access?.ownerAccount === false ? (
+              <p>{t("accountTransferCancelElsewhere")}</p>
+            ) : (
+              <div className="row">
+                <Button onClick={() => (location.href = "/app?account=1")}>
+                  {t("accountTransferCancel")}
+                </Button>
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
       {account?.legalPending && !dismissed(legalKey) && (
         <div role="status" className="plan-notice info">
           <p>{t("accountNoticeLegalPending")}</p>

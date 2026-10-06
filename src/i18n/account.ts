@@ -140,6 +140,8 @@ export default defineArea({
     accountTransferRecoveryInitiated:
       "Se usó un código de recuperación para transferir la propiedad a {email}. Se podrá completar desde el {date}. Si no fuiste tú, cancélala y genera códigos nuevos.",
     accountTransferCancel: "Cancelar transferencia",
+    accountTransferCancelElsewhere:
+      "Cancélala desde tu propio teléfono o computadora, en Cuenta.",
     accountTransferIncoming:
       "Te ofrecen la titularidad de {org} ({n} sucursales).",
     accountTransferFrom: "Ofrecida por {name}",
@@ -402,6 +404,8 @@ export default defineArea({
     accountTransferRecoveryInitiated:
       "A recovery code was used to transfer ownership to {email}. It can be completed from {date}. If this wasn't you, cancel it and generate new codes.",
     accountTransferCancel: "Cancel transfer",
+    accountTransferCancelElsewhere:
+      "Cancel it from your own phone or computer, under Account.",
     accountTransferIncoming:
       "You are offered primary ownership of {org} ({n} locations).",
     accountTransferFrom: "Offered by {name}",

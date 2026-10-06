@@ -264,11 +264,17 @@ export type ShellState = {
   };
   account: null | {
     legalPending: boolean;
+    /**
+     * Only the transfers the primary did not start (support or a recovery
+     * code): the hijack warnings of §2.10/§2.11. The primary's own pending
+     * transfer stays in the account console (accountTransferPendingOut).
+     */
     transfers: Array<{
       id: string;
-      initiatedBy: string;
+      initiatedBy: "support" | "recovery_code";
       toEmailMasked: string;
       availableAt: string;
+      expiresAt: string;
       organizationName: string;
     }>;
     supportActions: Array<{ action: string; createdAt: string }>;
@@ -277,7 +283,8 @@ export type ShellState = {
 
 /**
  * GET /api/account/shell: plan notices for the POS shell (any role; the client
- * does not poll for kitchen). The owner block needs a Google-entered session.
+ * does not poll for kitchen). The owner block needs an owner session whose
+ * account is known: a Google entry, or an owner seat with an active membership.
  */
 export async function shellState(
   tx: Tx,
@@ -318,15 +325,28 @@ export async function shellState(
   };
 }
 
+/**
+ * The owner account behind a POS session: the Google entry's account, or for
+ * an owner seat entered with its PIN on a shared terminal, the account of the
+ * seat's active membership (ACC-5), so the recovery-code and support transfer
+ * warnings reach the primary wherever they work during the hold.
+ */
+async function sessionOwnerAccount(tx: Tx, s: Session): Promise<string | null> {
+  const [session] =
+    await tx`select owner_account_id from sessions where id=${s.id}`;
+  if (session?.owner_account_id) return session.owner_account_id as string;
+  const [membership] = await tx`select account_id from owner_memberships
+      where tenant_id=${s.tenantId} and employee_id=${s.employeeId} and revoked_at is null`;
+  return (membership?.account_id as string | undefined) ?? null;
+}
+
 async function ownerShell(
   tx: Tx,
   s: Session,
   legal: LegalConfig,
 ): Promise<ShellState["account"]> {
-  const [session] =
-    await tx`select owner_account_id from sessions where id=${s.id}`;
-  if (!session?.owner_account_id) return null;
-  const accountId: string = session.owner_account_id;
+  const accountId = await sessionOwnerAccount(tx, s);
+  if (!accountId) return null;
   await tx`select set_config('app.account_id',${accountId},true)`;
   const [r] =
     await tx`select organization_id from restaurants where id=${s.tenantId}`;
@@ -337,11 +357,14 @@ async function ownerShell(
     return null;
   }
   const state = await legalState(tx, accountId, legal);
+  // The primary's own transfer is not a warning (ACC-1): only support and
+  // recovery-code transfers reach the POS shell.
   const transfers =
     role === "primary"
-      ? await tx`select t.id,t.initiated_by,t.to_email,t.available_at,o.name as organization_name
+      ? await tx`select t.id,t.initiated_by,t.to_email,t.available_at,t.expires_at,o.name as organization_name
           from ownership_transfers t join organizations o on o.id=t.organization_id
-          where t.organization_id=${r.organization_id} and t.state='pending' and t.expires_at>now()`
+          where t.organization_id=${r.organization_id} and t.state='pending' and t.expires_at>now()
+            and t.initiated_by in ('support','recovery_code')`
       : [];
   const support = await tx`select action,created_at from support_actions
     where organization_id=${r.organization_id} and created_at>now()-interval '7 days'
@@ -350,9 +373,10 @@ async function ownerShell(
     legalPending: Boolean(state.pending.length || state.dpaPending.length),
     transfers: transfers.map((t) => ({
       id: t.id,
-      initiatedBy: t.initiated_by,
+      initiatedBy: t.initiated_by as "support" | "recovery_code",
       toEmailMasked: maskEmail(t.to_email),
       availableAt: iso(t.available_at)!,
+      expiresAt: iso(t.expires_at)!,
       organizationName: t.organization_name,
     })),
     supportActions: support.map((x) => ({

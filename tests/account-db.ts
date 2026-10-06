@@ -13,7 +13,7 @@ import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { LEGAL_CI_ENV } from "./fixtures/legal-ci.js";
 import { tenant, type Tx } from "../server/db.js";
-import { authentication, hash, sign } from "../server/auth.js";
+import { authentication, hash, password, sign } from "../server/auth.js";
 import { checkPin, createSession, deviceScope } from "../server/access.js";
 import {
   createOwnerRestaurant,
@@ -51,7 +51,7 @@ import {
   redeemRecoveryCode,
   requestTransfer,
 } from "../server/ownership-transfer.js";
-import { accountOverview } from "../server/account-center.js";
+import { accountOverview, shellState } from "../server/account-center.js";
 import {
   exportHandler,
   exportScope,
@@ -1921,6 +1921,104 @@ try {
         else throw e;
       }
     assert.deepEqual(failures, []);
+  });
+  await test("33 shell: the POS shell's owner block warns only about support and recovery-code transfers (never the primary's own), lists support actions of the last 7 days, reaches the owner seat entered with its PIN on a terminal, and is null for other roles", async () => {
+    const o = await owner("shell");
+    const S = await restaurant(o, `Aviso ${run}`);
+    const shell = (s: Session) =>
+      inTenant(S.tenantId, (tx) => shellState(tx, s, PUBLISHED));
+    const google = await ownerSession(o, S.tenantId);
+    assert.equal(google.access?.ownerAccount, true);
+    // 1. The primary's own transfer is not a warning; the console shows it.
+    const own = await as(o, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: S.organizationId,
+          email: `shell-to-${run}@example.com`,
+          previousOwnerStays: false,
+          confirmName: `Aviso ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    let state = await shell(google);
+    assert.ok(state.account, "a Google-entered owner gets the owner block");
+    assert.deepEqual(state.account.transfers, []);
+    const center = await as(o, (tx, x) =>
+      accountOverview(tx, x, PUBLISHED, TAX),
+    );
+    assert.equal(
+      center.organizations.find((g) => g.id === S.organizationId)?.transfer
+        ?.initiatedBy,
+      "owner",
+    );
+    await as(o, (tx, x) => cancelTransfer(tx, x, { transferId: own.id }));
+    // 2. A support-initiated transfer is a warning with its dates, and the
+    // support action is listed.
+    const actionId = randomUUID();
+    await admin`insert into support_actions(id,operator_login,operator_label,ticket,reason,action,organization_id)
+      values(${actionId},'x','Operadora Prueba','T-3301','Transferencia de prueba del suite','transfer_ownership',${S.organizationId})`;
+    const supportTransfer = randomUUID();
+    await admin`insert into ownership_transfers(id,organization_id,from_account_id,to_email,token_hash,
+        initiated_by,support_action_id,previous_owner_stays,available_at,expires_at)
+      values(${supportTransfer},${S.organizationId},${o.id},${`soporte-${run}@example.com`},${hash(randomUUID())},
+        'support',${actionId},false,now()+interval '72 hours',now()+interval '72 hours'+interval '7 days')`;
+    state = await shell(google);
+    assert.equal(state.account?.transfers.length, 1);
+    const warning = state.account!.transfers[0];
+    assert.equal(warning.initiatedBy, "support");
+    assert.equal(warning.toEmailMasked, "s***@e***.com");
+    assert.equal(warning.organizationName, `Aviso ${run}`);
+    assert.ok(Date.parse(warning.expiresAt) > Date.parse(warning.availableAt));
+    assert.deepEqual(
+      state.account!.supportActions.map((x) => x.action),
+      ["transfer_ownership"],
+    );
+    await admin`update ownership_transfers set state='canceled',canceled_at=now(),canceled_by='support' where id=${supportTransfer}`;
+    // Support actions older than 7 days are not listed (LD-12 named trigger).
+    await admin.begin(async (tx) => {
+      await tx`alter table support_actions disable trigger support_actions_append_only`;
+      await tx`update support_actions set created_at=now()-interval '8 days' where id=${actionId}`;
+      await tx`alter table support_actions enable trigger support_actions_append_only`;
+    });
+    state = await shell(google);
+    assert.deepEqual(state.account?.supportActions, []);
+    assert.deepEqual(state.account?.transfers, []);
+    // 3. A recovery-code transfer warns the primary, also on the owner seat
+    // entered with its PIN on a shared terminal (ACC-5).
+    const { codes } = await as(o, (tx, x) => generateRecoveryCodes(tx, x));
+    const thief = await owner("shell-recovery");
+    await as(thief, (tx, x) => redeemRecoveryCode(tx, x, { code: codes[0] }));
+    state = await shell(google);
+    assert.deepEqual(
+      state.account?.transfers.map((x) => x.initiatedBy),
+      ["recovery_code"],
+    );
+    const ownerSeat = (await seat(o.id, S.tenantId)).employee_id;
+    const pinned = await sessionFor(
+      await terminalSession(S.tenantId, ownerSeat),
+    );
+    assert.equal(pinned.role, "owner");
+    assert.equal(pinned.access?.ownerAccount, false);
+    const pinState = await shell(pinned);
+    assert.deepEqual(
+      pinState.account?.transfers.map((x) => x.initiatedBy),
+      ["recovery_code"],
+    );
+    // 4. Other roles get no owner block.
+    const cashierId = randomUUID();
+    await admin`insert into employees(tenant_id,id,name,login,secret_hash,role,pin_set_at)
+      values(${S.tenantId},${cashierId},'Cajera aviso',${`aviso-${run}`},${password("246813")},'cashier',now())`;
+    const cashier = await sessionFor(
+      await terminalSession(S.tenantId, cashierId),
+    );
+    assert.equal((await shell(cashier)).account, null);
+    // A revoked owner seat (an owner session left over) gets none either.
+    await admin`update owner_memberships set revoked_at=now(),revoked_by=${o.id} where account_id=${o.id} and tenant_id=${S.tenantId}`;
+    assert.equal((await shell(pinned)).account, null);
   });
   console.log(
     `Account DB passed (${checks} checks): legal acceptance and gating, co-owners on access's lifecycle, transfers, recovery codes, export, restaurant privacy and the 031 RLS paths. Fixtures retained (append-only evidence).`,
