@@ -308,7 +308,11 @@ export async function reverseDiscount(
             join discount_allocations b on b.tenant_id=xa.tenant_id and b.discount_id=d.id
               and b.line_id=xa.line_id and b.unit_index=xa.unit_index
             where x.tenant_id=d.tenant_id and x.order_id=d.order_id and x.id<>d.id
-              and x.reversed_at is null and (x.created_at,x.id) > (d.created_at,d.id)) as covered
+              and x.reversed_at is null and (x.created_at,x.id) > (d.created_at,d.id)
+              -- an overlap on a unit voided since no longer matters (DSC-R6,
+              -- same rule as discountRemovable on the client)
+              and not exists (select 1 from line_voids v where v.tenant_id=b.tenant_id
+                              and v.line_id=b.line_id and b.unit_index=any(v.units))) as covered
         from discounts d where d.id=${discountId} and d.order_id=${orderId} for update of d`;
       if (!d) throw new DomainError("not_found", 404);
       if (d.reversed_at || d.paid || d.covered)

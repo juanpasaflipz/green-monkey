@@ -1,4 +1,4 @@
-import type { Locale } from "../../../shared/domain";
+import type { Label, Locale, Order } from "../../../shared/domain";
 import {
   formatPercentBps,
   type DiscountReason,
@@ -72,4 +72,48 @@ export function discountRowLabel(
       percent: formatPercentBps(d.percentBps, locale),
     });
   return t.discountsRowAmount;
+}
+
+/**
+ * A line's name with its option names, "Taco (con queso, 2× salsa)": two lines
+ * of one product can differ only by options (rebase I-08), so every place that
+ * names a line in a discount or refund uses this.
+ */
+export function lineLabel(
+  line: { name: Label; optionNames?: Label[] } | undefined,
+  locale: Locale,
+): string {
+  if (!line) return "";
+  const options = (line.optionNames ?? []).map((o) => o[locale]).join(", ");
+  return line.name[locale] + (options ? ` (${options})` : "");
+}
+
+/**
+ * Whether "Quitar descuento" is offered: the check is not closed, the discount
+ * is active, none of its non-voided units is paid and no later active discount
+ * covers one of them (the server re-checks all of it: discount_not_reversible).
+ * Voided units no longer matter on either side (DSC-R6).
+ */
+export function discountRemovable(order: Order, d: OrderDiscount): boolean {
+  if (order.checkState === "closed" || d.reversal || d.activeAmount <= 0)
+    return false;
+  const units = new Set(
+    d.allocations.filter((a) => !a.voided).map((a) => `${a.lineId}:${a.unit}`),
+  );
+  if (
+    (order.paymentUnits ?? []).some(
+      (u) => units.has(`${u.lineId}:${u.unit}`) && u.paid > 0,
+    )
+  )
+    return false;
+  const later = (order.discounts ?? []).filter(
+    (x) =>
+      x.id !== d.id &&
+      !x.reversal &&
+      (x.createdAt > d.createdAt ||
+        (x.createdAt === d.createdAt && x.id > d.id)),
+  );
+  return !later.some((x) =>
+    x.allocations.some((a) => !a.voided && units.has(`${a.lineId}:${a.unit}`)),
+  );
 }

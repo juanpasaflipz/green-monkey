@@ -28,7 +28,11 @@ import {
   voidLines,
   verifyApproval,
 } from "../server/voids.js";
-import { kitchenFeed } from "../server/kitchen.js";
+import { clearStaleRounds, kitchenFeed } from "../server/kitchen.js";
+import {
+  decideOfflineKitchen,
+  placeRoundsInOfflineReview,
+} from "../server/offline-kitchen.js";
 import { closeCheck, listOrders } from "../server/checks.js";
 import { progressPreparation } from "../server/service.js";
 import {
@@ -52,6 +56,7 @@ import { approvalFor } from "../server/routes/discounts.js";
 import { businessDate, type Order, type Session } from "../shared/domain.js";
 import { extractTax } from "../shared/tax.js";
 import type { SessionAccess } from "../shared/access.js";
+import { discountRemovable } from "../src/features/discounts/format.js";
 import { isolatedTarget } from "./isolated-target.js";
 
 const { runtime: url, migration } = isolatedTarget(process.env);
@@ -1980,6 +1985,68 @@ try {
     );
   });
 
+  await test("DSC-R6: a later discount's overlap on a unit voided since does not block the reversal (server and client agree)", async () => {
+    // Two one-taco lines: the check discount covers both units, a later comp
+    // covers line B's unit, then that unit is voided.
+    const o = await newOrder([
+      { product: taco, quantity: 1 },
+      { product: taco, quantity: 1 },
+    ]);
+    const b = o.lines[1].id;
+    const d1 = await discount(manager, o.id, percentBody(o, 1000));
+    const d2 = await discount(manager, o.id, {
+      operationId: randomUUID(),
+      expectedVersion: d1.version,
+      scope: "line",
+      lineId: b,
+      quantity: 1,
+      kind: "comp",
+      reasonCode: "courtesy",
+    });
+    assert.equal(d2.total, 4050);
+    const first = d2.discounts!.find((d) => d.scope === "order")!;
+    // Before the void the overlap is live: LIFO refuses on both sides.
+    assert.equal(discountRemovable(d2, first), false);
+    await rejects(
+      reverse(manager, o.id, first.id, {
+        operationId: randomUUID(),
+        expectedVersion: d2.version,
+        note: "Se aplicó por error",
+      }),
+      "discount_not_reversible",
+    );
+    const voided = await run(owner, (tx) =>
+      voidLines(
+        tx,
+        owner,
+        o.id,
+        {
+          operationId: randomUUID(),
+          expectedVersion: d2.version,
+          lines: [{ lineId: b, quantity: 1 }],
+          reason: "Ya no lo quiere",
+          stockDisposition: "no_return",
+        },
+        ownerId,
+      ),
+    );
+    assert.equal(voided.total, 4050);
+    assert.equal(voided.discount, 450);
+    const live = voided.discounts!.find((d) => d.id === first.id)!;
+    assert.equal(discountRemovable(voided, live), true, "client offers it");
+    const r = await reverse(manager, o.id, first.id, {
+      operationId: randomUUID(),
+      expectedVersion: voided.version,
+      note: "Se aplicó por error",
+    });
+    assert.equal(r.total, 4500);
+    assert.equal(r.discount, 0);
+    assert.equal(
+      r.discounts!.find((d) => d.id === first.id)!.reversal!.amount,
+      450,
+    );
+  });
+
   await test("whole-check comp: a takeaway check comped to zero closes at once and its reversal fails with discount_not_reversible; a dine-in table check comped to zero becomes paid, its reversal returns it to open; after Cerrar cuenta the table comp is final too", async () => {
     const comp = (o: Order) => ({
       operationId: randomUUID(),
@@ -2255,6 +2322,174 @@ try {
     );
     assert.equal(done.batch.lines[0].preparationState, "completed");
     assert.equal(done.batch.lines[0].kitchenPending, false);
+  });
+
+  // Q5 / T-14 on the second demo tenant (its KDS feed is not crowded by the
+  // open rounds this suite leaves on the first one): the two kitchen
+  // decisions with a refund line present, and clear-stale acknowledging one.
+  const s2 = foreign;
+  const kitchen2 = foreignKitchen;
+  const taco2 = (await run(s2, catalog)).find(
+    (p) => p.name.es === "Taco de hongos",
+  )!;
+  await run(s2, async (tx) => {
+    const [d] =
+      await tx`select id from cash_sessions where device_id=${otherDevice} and closed_at is null`;
+    if (!d)
+      await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening) values(${otherTenantId},${randomUUID()},${otherDevice},${otherOwnerId},0)`;
+  });
+  /** A paid taco order whose round 1 sits in the offline review lane (offline 026). */
+  async function offlineReviewOrder(quantity: number) {
+    const o = await newOrder([{ product: taco2, quantity }], { s: s2 });
+    await pay(o.id, 4500 * quantity, { s: s2 });
+    const operationId = randomUUID();
+    await run(s2, async (tx) => {
+      await tx`insert into offline_sync_records(tenant_id,operation_id,kind,format_version,path,
+          device_id,employee_id,session_id,order_id,round_number,recorded_at,sold_at,business_date,
+          kitchen_delivery,actor_id)
+        values(${otherTenantId},${operationId},'order',3,'automatic',${otherDevice},${otherOwnerId},
+          ${randomUUID()},${o.id},1,now(),now(),current_date,'device_list',${otherOwnerId})`;
+      await placeRoundsInOfflineReview(tx, s2, {
+        orderId: o.id,
+        roundNumber: 1,
+        operationId,
+      });
+    });
+    const round = (await orderOf(o.id, s2)).rounds[0];
+    assert.equal(round.state, "offline_review");
+    return { o, roundId: round.id as string };
+  }
+  const feedRound = async (orderId: string) => {
+    const feed = await run(kitchen2, (tx) => kitchenFeed(tx, kitchen2, {}));
+    assert(!feed.unchanged && !feed.truncated);
+    return feed.rounds.find((x) => x.orderId === orderId);
+  };
+  const pendingOf = async (orderId: string) =>
+    (await run(s2, (tx) => listOrders(tx, s2, { status: "all" }))).items.find(
+      (x) => x.id === orderId,
+    )!.voidAckPending;
+
+  await test("Q5 / T-14: 'Preparar ahora' on an offline_review round with a refund puts the cancellation on the KDS; the station acknowledgement clears it and completes the fully removed round", async () => {
+    const { o, roundId } = await offlineReviewOrder(2);
+    const first = await refundOrder(
+      s2,
+      o.id,
+      itemsBody([{ lineId: o.lines[0].id, quantity: 1 }], 4500),
+    );
+    assert.equal(first.batch.lines[0].preparationState, "offline_review");
+    assert.equal(first.batch.lines[0].kitchenPending, true);
+    assert.equal(await feedRound(o.id), undefined, "held for review");
+    await run(kitchen2, (tx) =>
+      decideOfflineKitchen(tx, kitchen2, roundId, {
+        operationId: randomUUID(),
+        decision: "prepare",
+      }),
+    );
+    const prepared = await feedRound(o.id);
+    assert(prepared, "the round reaches the KDS with its cancellation");
+    assert.equal(prepared.state, "active");
+    assert.equal(prepared.lines[0].voidedQuantity, 1);
+    assert.deepEqual(
+      prepared.pendingVoids.map((v) => [v.kind, v.quantity]),
+      [["refund", 1]],
+    );
+    assert.equal(await pendingOf(o.id), true);
+    // The second unit is refunded once the round is live (the decision marked
+    // it seen): a regular notice.
+    const second = await refundOrder(
+      s2,
+      o.id,
+      itemsBody([{ lineId: o.lines[0].id, quantity: 1 }], 4500),
+    );
+    assert.equal(second.batch.lines[0].preparationState, "active");
+    assert.equal(second.batch.lines[0].kitchenPending, true);
+    const both = await feedRound(o.id);
+    assert.deepEqual(
+      both!.pendingVoids.map((v) => [v.kind, v.quantity]),
+      [
+        ["refund", 1],
+        ["refund", 1],
+      ],
+    );
+    const ack = await run(kitchen2, (tx) =>
+      acknowledgeVoids(tx, kitchen2, roundId, { operationId: randomUUID() }),
+    );
+    assert.equal(ack.acknowledged, 2);
+    assert.equal(await feedRound(o.id), undefined, "nothing left to cook");
+    const done = await orderOf(o.id, s2);
+    assert.equal(done.rounds[0].state, "completed");
+    assert.ok(
+      done.refundBatches!.every((b) => b.lines.every((l) => !l.kitchenPending)),
+    );
+    assert.equal(await pendingOf(o.id), false);
+  });
+
+  await test("Q5 / T-14: 'Ya servido' on an offline_review round acknowledges its refund cancellation; the round completes and nothing stays pending", async () => {
+    const { o, roundId } = await offlineReviewOrder(2);
+    const r = await refundOrder(
+      s2,
+      o.id,
+      itemsBody([{ lineId: o.lines[0].id, quantity: 1 }], 4500),
+    );
+    assert.equal(r.batch.lines[0].kitchenPending, true);
+    assert.equal(await pendingOf(o.id), true);
+    await run(kitchen2, (tx) =>
+      decideOfflineKitchen(tx, kitchen2, roundId, {
+        operationId: randomUUID(),
+        decision: "already_served",
+      }),
+    );
+    const [rl] = await run(
+      s2,
+      (tx) =>
+        tx`select kitchen_acknowledged_at,kitchen_acknowledged_by from refund_lines where batch_id=${r.batch.id}`,
+    );
+    assert.ok(rl.kitchen_acknowledged_at);
+    assert.equal(rl.kitchen_acknowledged_by, kitchen2.employeeId);
+    const after = await orderOf(o.id, s2);
+    assert.equal(after.rounds[0].state, "completed");
+    assert.equal(after.refundBatches![0].lines[0].kitchenPending, false);
+    assert.equal(await pendingOf(o.id), false);
+    assert.equal(await feedRound(o.id), undefined);
+  });
+
+  await test("clear stale acknowledges a pending refund cancellation of a previous day's round", async () => {
+    // One of two tacos paid: the check stays open (a closed check keeps its
+    // business date) and the paid unit is item-refundable.
+    const o = await newOrder([{ product: taco2, quantity: 2 }], { s: s2 });
+    await pay(o.id, 4500, { s: s2, items: [`${o.lines[0].id}:0`] });
+    const r = await refundOrder(
+      s2,
+      o.id,
+      itemsBody([{ lineId: o.lines[0].id, quantity: 1 }], 4500),
+    );
+    assert.equal(r.batch.lines[0].kitchenPending, true);
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id',${otherTenantId},true)`;
+      await tx`update orders set business_date=business_date-1,number=${700000 + Math.floor(Math.random() * 90000)}
+        where tenant_id=${otherTenantId} and id=${o.id}`;
+    });
+    const cleared = await run(s2, (tx) =>
+      clearStaleRounds(tx, s2, { operationId: randomUUID(), station: "all" }),
+    );
+    assert.ok(cleared.cleared >= 1);
+    const [rl] = await run(
+      s2,
+      (tx) =>
+        tx`select kitchen_acknowledged_by from refund_lines where batch_id=${r.batch.id}`,
+    );
+    assert.equal(rl.kitchen_acknowledged_by, s2.employeeId);
+    const after = await orderOf(o.id, s2);
+    assert.equal(after.rounds[0].state, "completed");
+    assert.equal(after.refundBatches![0].lines[0].kitchenPending, false);
+    // Not listed today any more (yesterday's check): read the removals view.
+    const [left] = await run(
+      s2,
+      (tx) =>
+        tx`select count(*)::int as n from kitchen_removals where order_id=${o.id}
+          and kitchen_ack_required and kitchen_acknowledged_at is null`,
+    );
+    assert.equal(left.n, 0);
   });
 
   console.log(
