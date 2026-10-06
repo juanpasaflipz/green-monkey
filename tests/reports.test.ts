@@ -695,6 +695,9 @@ describe("audit groups and exception kinds (GAP-3)", () => {
       "public.settings_saved",
       "public.paused",
       "public.resumed",
+      // LD-21: the platform's job operator commands (POST /api/jobs/:id/cancel, /requeue).
+      "job.cancelled",
+      "job.requeued",
     ])
       expect(groupsOf(op)).toEqual(["settings"]);
     // auditGroupsOf is the same matching in JS.

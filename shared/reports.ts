@@ -244,7 +244,8 @@ export type ExceptionKind = (typeof EXCEPTION_KINDS)[number];
  * merge later, so their labels need no edit here: `cfdi.` (030) under Fiscal, `account.` (031)
  * under Accesos (LD-16 L7), and public ordering's `public.hold_` under Ventas and
  * `public.link_` / `public.settings` / `public.paused` / `public.resumed` under Configuración
- * (LD-18 LD-P4). A prefix may sit in two groups (`fiscal.profile` is fiscal and a setting).
+ * (LD-18 LD-P4), and the platform's `job.` operator commands (job.cancelled, job.requeued,
+ * labelled on integration) under Configuración (LD-21). A prefix may sit in two groups (`fiscal.profile` is fiscal and a setting).
  */
 export const AUDIT_GROUPS = {
   sales: [
@@ -292,6 +293,7 @@ export const AUDIT_GROUPS = {
     "public.settings",
     "public.paused",
     "public.resumed",
+    "job.",
   ],
   fiscal: ["fiscal.", "cfdi."],
   reports: ["reports."],

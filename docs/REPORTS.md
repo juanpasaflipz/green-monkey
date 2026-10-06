@@ -108,8 +108,9 @@ offline.
   "Autorizó" (LD-16 L3). Drawer shortages and overages never cancel out.
 - **Bitácora:** keyset paging past the old newest-100 limit, filters by employee, activity
   group and order number, translated labels. Activity groups match by operation prefix
-  (`AUDIT_GROUPS`), including forward prefixes for cfdi (030), account (031) and public
-  ordering, and a unit test keeps every labelled operation in a group.
+  (`AUDIT_GROUPS`), including forward prefixes for cfdi (030), account (031), public
+  ordering and the platform's `job.` operator commands (Configuración, LD-21), and a unit
+  test keeps every labelled operation in a group.
 
 ## Cortes
 
