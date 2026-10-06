@@ -92,6 +92,14 @@ export function cfdiBadge(v: CfdiSettingsView): { key: Key; tone: string } {
     : { key: "cfdiBadgeTest", tone: "amber" };
 }
 
+/**
+ * The organization's error, translated. A missing code (never stored: error rows carry one) reads
+ * as Facturapi's unexpected error rather than the bare generic "error" (CFDI-INT-6).
+ */
+export function orgErrorText(code: string | null, locale: Locale): string {
+  return translateError(code ?? "cfdi_unexpected_error", locale);
+}
+
 /** Something the worker is still doing: poll until it settles. */
 export function settling(v: CfdiSettingsView | null): boolean {
   if (!v?.settings) return false;
@@ -352,10 +360,7 @@ export function CfdiSettings({
               {org.status === "ready" && t.cfdiOrgReady}
               {org.status === "error" &&
                 tr(locale, "cfdiOrgError", {
-                  error: translateError(
-                    org.errorCode ?? "cfdi_provider_error",
-                    locale,
-                  ),
+                  error: orgErrorText(org.errorCode, locale),
                 })}
             </dd>
             {org.taxId && (

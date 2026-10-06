@@ -74,7 +74,11 @@ import {
   SubstitutionAlert,
   ticketsLabel,
 } from "../src/features/cfdi/CfdiDocuments";
-import { cfdiBadge, settling } from "../src/features/cfdi/CfdiSettings";
+import {
+  cfdiBadge,
+  orgErrorText,
+  settling,
+} from "../src/features/cfdi/CfdiSettings";
 import { CfdiCorteCoverage } from "../src/features/cfdi/CfdiCorteCoverage";
 import { base64Of, passwordLifetimeMs } from "../src/features/cfdi/CsdUpload";
 import {
@@ -743,6 +747,20 @@ describe("cfdi client: helpers", () => {
         strings[locale].cfdiInGlobalHasCreditNotes,
       ])
         expect(text).not.toMatch(impossible);
+  });
+  it("settings: an organization error without a code reads as a translated message, never the bare generic error (CFDI-INT-6)", () => {
+    for (const locale of ["es", "en"] as const) {
+      expect(orgErrorText(null, locale)).toBe(
+        translateError("cfdi_unexpected_error", locale),
+      );
+      expect(orgErrorText(null, locale)).not.toBe(strings[locale].error);
+      expect(orgErrorText("cfdi_provider_unavailable", locale)).toBe(
+        translateError("cfdi_provider_unavailable", locale),
+      );
+      expect(orgErrorText("cfdi_provider_unavailable", locale)).not.toBe(
+        strings[locale].error,
+      );
+    }
   });
   it("settings: badge and polling decisions", () => {
     const view = (over: Partial<CfdiSettingsView>) =>
