@@ -886,23 +886,19 @@ try {
     await admin`update owner_sessions set created_at=now()-interval '1 hour' where id=${a.sessionId}`;
     await rejects(
       as(a, (tx, x) =>
-        removeCoOwner(
-          tx,
-          x,
-          { organizationId: A.organizationId, accountId: co.id },
-          PUBLISHED,
-        ),
+        removeCoOwner(tx, x, {
+          organizationId: A.organizationId,
+          accountId: co.id,
+        }),
       ),
       "reauthentication_required",
     );
     await admin`update owner_sessions set created_at=now() where id=${a.sessionId}`;
     await as(a, (tx, x) =>
-      removeCoOwner(
-        tx,
-        x,
-        { organizationId: A.organizationId, accountId: co.id },
-        PUBLISHED,
-      ),
+      removeCoOwner(tx, x, {
+        organizationId: A.organizationId,
+        accountId: co.id,
+      }),
     );
     for (const t of [A.tenantId, A2]) {
       const s = await seat(co.id, t);
@@ -2255,12 +2251,10 @@ try {
     const other = await inviteStaff(c, S.tenantId, outsider.email);
     const kept = await inviteStaff(p, S.tenantId, `kept-${run}@example.com`);
     await as(p, (tx, x) =>
-      removeCoOwner(
-        tx,
-        x,
-        { organizationId: S.organizationId, accountId: c.id },
-        PUBLISHED,
-      ),
+      removeCoOwner(tx, x, {
+        organizationId: S.organizationId,
+        accountId: c.id,
+      }),
     );
     assert.equal(await revokedFlag(self.id), true);
     assert.equal(await revokedFlag(other.id), true);
@@ -2478,6 +2472,182 @@ try {
     );
     assert.equal((await seat(invitee.id, W.tenantId)).role, "cashier");
     assert.ok(!(await spentInvitations()).includes(spent.id));
+  });
+  await test("38 co-owner: removal is never gated by pending legal acceptance (UX-1) and cancels every pending transfer to the removed co-owner, by email or account; a removed co-owner cannot complete a transfer created before the removal; leaving cancels the leaver's own (AUTHZ-1)", async () => {
+    const p = await owner("authz1-primary");
+    const Z = await restaurant(p, `Remocion ${run}`);
+    const [c, c2] = [await owner("authz1-co"), await owner("authz1-co2")];
+    for (const who of [c, c2])
+      await acceptInvite(
+        who,
+        (await inviteCoOwner(p, Z.organizationId, who.email)).path,
+      );
+    // Case 1: an owner-initiated link to the co-owner's Gmail, then the deal
+    // collapses while the primary has documents pending (a material change).
+    const link = await as(p, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: Z.organizationId,
+          email: c.email.toUpperCase(),
+          previousOwnerStays: false,
+          confirmName: `Remocion ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context,accepted_at)
+        values(${randomUUID()},${p.id},${p.sessionId},'terms','2026-01-01',${legalContentHash("terms")},${PUBLISHED.entityHash},true,'es','reacceptance',now())`;
+    await rejects(
+      as(p, (tx) => requireCurrentLegal(tx, p.id, PUBLISHED)),
+      "legal_acceptance_required",
+    );
+    await as(p, (tx, x) =>
+      removeCoOwner(tx, x, {
+        organizationId: Z.organizationId,
+        accountId: c.id,
+      }),
+    );
+    const [canceled] =
+      await admin`select state,canceled_by from ownership_transfers where id=${link.id}`;
+    assert.deepEqual(
+      [canceled.state, canceled.canceled_by],
+      ["canceled", "owner"],
+    );
+    const [removedEvent] =
+      await admin`select detail from account_events where organization_id=${Z.organizationId}
+        and kind='co_owner_removed' and subject_account_id=${c.id}`;
+    assert.equal(removedEvent.detail.transfersCanceled, 1);
+    const [cancelEvent] =
+      await admin`select actor_account_id,detail from account_events where organization_id=${Z.organizationId}
+        and kind='transfer_canceled' and detail->>'transferId'=${link.id}`;
+    assert.equal(cancelEvent.actor_account_id, p.id);
+    assert.equal(cancelEvent.detail.reason, "co_owner_removed");
+    const back = {
+      ...c,
+      cookie: await signInGoogleOwner(sql, {
+        issuer: "https://accounts.google.com",
+        subject: c.subject,
+        email: c.email,
+      }),
+    };
+    await rejects(
+      as(back, (tx, x) =>
+        acceptTransfer(
+          tx,
+          x,
+          { token: token(link.path, "transfer"), legalAccepted: V },
+          PUBLISHED,
+        ),
+      ),
+      "transfer_unavailable",
+    );
+    // Defence in depth: a pending transfer to them that predates the removal
+    // (as if a cancellation were missed) is refused at acceptance too.
+    const missedId = randomUUID();
+    const missed = missedId + "." + randomBytes(32).toString("hex");
+    await admin`insert into ownership_transfers(id,organization_id,from_account_id,to_email,token_hash,
+        initiated_by,previous_owner_stays,available_at,expires_at,created_at)
+      values(${missedId},${Z.organizationId},${p.id},${c.email},${hash(missed)},'owner',false,
+        now()-interval '2 hours',now()+interval '2 days',now()-interval '2 hours')`;
+    await rejects(
+      as(back, (tx, x) =>
+        acceptTransfer(tx, x, { token: missed, legalAccepted: V }, PUBLISHED),
+      ),
+      "transfer_unavailable",
+    );
+    await as(p, (tx, x) => cancelTransfer(tx, x, { transferId: missedId }));
+    // Case 2: a co-owner redeems the primary's recovery code (24 h hold); the
+    // primary reacts by removing them: the transfer by account dies too.
+    await as(p, (tx) =>
+      recordAcceptances(
+        tx,
+        p,
+        {
+          documents: [{ document: "terms", version: V.terms }],
+          locale: "es",
+          context: "reacceptance",
+        },
+        PUBLISHED,
+      ),
+    );
+    const { codes } = await as(p, (tx, x) => generateRecoveryCodes(tx, x));
+    const redeemed = await as(c2, (tx, x) =>
+      redeemRecoveryCode(tx, x, { code: codes[0] }),
+    );
+    await as(p, (tx, x) =>
+      removeCoOwner(tx, x, {
+        organizationId: Z.organizationId,
+        accountId: c2.id,
+      }),
+    );
+    const [recovery] =
+      await admin`select state,canceled_by from ownership_transfers where id=${redeemed.transferId}`;
+    assert.deepEqual(
+      [recovery.state, recovery.canceled_by],
+      ["canceled", "owner"],
+    );
+    // Leaving: a transfer addressed to the leaver is cancelled by the target.
+    const c3 = await owner("authz1-co3");
+    await acceptInvite(
+      c3,
+      (await inviteCoOwner(p, Z.organizationId, c3.email)).path,
+    );
+    const offered = await as(p, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: Z.organizationId,
+          email: c3.email,
+          previousOwnerStays: true,
+          confirmName: `Remocion ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(c3, (tx, x) =>
+      leaveCoOwnership(tx, x, { organizationId: Z.organizationId }),
+    );
+    const [left] =
+      await admin`select state,canceled_by from ownership_transfers where id=${offered.id}`;
+    assert.deepEqual([left.state, left.canceled_by], ["canceled", "target"]);
+    // A transfer to someone else is untouched by a co-owner's removal.
+    const [c4, buyer] = [
+      await owner("authz1-co4"),
+      await owner("authz1-buyer"),
+    ];
+    await acceptInvite(
+      c4,
+      (await inviteCoOwner(p, Z.organizationId, c4.email)).path,
+    );
+    const sale = await as(p, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: Z.organizationId,
+          email: buyer.email,
+          previousOwnerStays: false,
+          confirmName: `Remocion ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(p, (tx, x) =>
+      removeCoOwner(tx, x, {
+        organizationId: Z.organizationId,
+        accountId: c4.id,
+      }),
+    );
+    const [kept] =
+      await admin`select state from ownership_transfers where id=${sale.id}`;
+    assert.equal(kept.state, "pending");
+    await as(p, (tx, x) => cancelTransfer(tx, x, { transferId: sale.id }));
   });
   console.log(
     `Account DB passed (${checks} checks): legal acceptance and gating, co-owners on access's lifecycle, transfers, recovery codes, export, restaurant privacy and the 031 RLS paths. Fixtures retained (append-only evidence).`,

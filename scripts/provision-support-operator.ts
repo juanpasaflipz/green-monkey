@@ -61,9 +61,7 @@ async function main() {
       `create role "${role}" login password '${password}' nosuperuser nocreatedb nocreaterole nobypassrls`,
     );
     await sql.unsafe(`grant gm_support to "${role}"`);
-    await sql.unsafe(
-      `grant connect on database "${database}" to "${role}"`,
-    );
+    await sql.unsafe(`grant connect on database "${database}" to "${role}"`);
     process.stdout.write(
       JSON.stringify({
         message: "support_operator_provisioned",

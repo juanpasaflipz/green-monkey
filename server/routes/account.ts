@@ -219,7 +219,7 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
   );
   router.post("/co-owners/remove", writes, (req, res, next) =>
     answer(req, res, next, "command", (tx, a) =>
-      removeCoOwner(tx, a, req.body, legal),
+      removeCoOwner(tx, a, req.body),
     ),
   );
   router.post("/co-owners/leave", writes, (req, res, next) =>

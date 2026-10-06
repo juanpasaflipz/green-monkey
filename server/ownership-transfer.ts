@@ -315,6 +315,13 @@ export async function acceptTransfer(
   if (owns) throw new DomainError("transfer_target_owns_organization", 409);
   await tx`select set_config('app.organization_id',${organizationId},true),
       set_config('app.transfer_id',${t.id},true)`;
+  // Defence in depth for AUTHZ-1: removing a co-owner cancels transfers to
+  // them, and a co-owner the primary removed after this transfer was created
+  // can never complete it (generic error, like a cancelled link).
+  const [removed] =
+    await tx`select 1 from organization_co_owners where organization_id=${organizationId}
+      and account_id=${a.id} and removal='removed' and removed_at>${t.created_at}`;
+  if (removed) throw new DomainError("transfer_unavailable", 403);
   if (!t.to_account_id)
     await tx`update ownership_transfers set to_account_id=${a.id} where id=${t.id}`;
   const legal = await legalState(tx, a.id, c);

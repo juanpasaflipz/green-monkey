@@ -61,7 +61,9 @@ pending.
    invitation acceptance (unless the request carries the acceptance), new
    locations, Free location selection, transfers, billing requests and the tax
    profile. POS entry, logout, the account overview and every POS route are
-   never gated.
+   never gated, and neither are the security actions that take access away:
+   removing a co-owner (UX-1), leaving co-ownership and cancelling or declining
+   a transfer.
 5. Changing the legal entity values (name, address, RFC, privacy contact,
    jurisdiction) changes the entity hash and therefore also asks everyone
    again; plan it like a material change.
@@ -166,7 +168,15 @@ every location) are revoked in the same transaction (ACC-15), and the
 `co_owner_removed` / `co_owner_left` / `transfer_completed` events record
 `invitationsRevoked`. A removed co-owner therefore cannot rejoin through a
 manager invitation they sent to themselves; only a current owner's invitation
-brings them back. Acceptance also checks the creator's standing (defence in
+brings them back. Removing or losing a co-owner also **cancels a pending
+ownership transfer addressed to them** (AUTHZ-1), by account (a recovery-code
+or claimed transfer) or by email (an unclaimed link): the primary's removal
+records `canceled_by='owner'`, leaving records `canceled_by='target'`, each with
+a `transfer_canceled` event (`reason` `co_owner_removed` / `co_owner_left`) and
+`transfersCanceled` on the removal event; the cancellation runs under 931, then
+the transfer key 932. As defence in depth, `acceptTransfer` refuses
+(`transfer_unavailable`) a target whose co-ownership the primary removed after
+the transfer was created. Acceptance also checks the creator's standing (defence in
 depth): a staff invitation needs its creator to still hold an active owner
 seat at that location, a co-owner invitation needs its creator to still be the
 primary. Revocation and acceptance serialize on the organization's co-owner key

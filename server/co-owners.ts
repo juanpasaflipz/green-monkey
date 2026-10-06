@@ -413,22 +413,75 @@ export async function acceptCoOwnerInvitation(
 const removeInput = z
   .object({ organizationId: z.uuid(), accountId: z.uuid() })
   .strict();
-/** The primary removes a co-owner: their seats and sessions end everywhere. */
+/**
+ * Cancels the organization's pending ownership transfer when it is addressed
+ * to the departing co-owner (AUTHZ-1): by account (a recovery-code or an
+ * already-claimed transfer) or by email (an unclaimed link). Under 931, then
+ * the transfer key 932 (lock order row 30), so no acceptance is in flight.
+ */
+async function cancelTransfersTo(
+  tx: Tx,
+  organizationId: string,
+  target: { accountId: string; emails: Array<string | null | undefined> },
+  by: { canceledBy: "owner" | "target"; actor: string },
+): Promise<string[]> {
+  await lockOrganization(tx, organizationId, 932);
+  const emails = [
+    ...new Set(
+      target.emails
+        .filter((e): e is string => Boolean(e))
+        .map((e) => e.trim().toLowerCase()),
+    ),
+  ];
+  const canceled =
+    await tx`update ownership_transfers set state='canceled',canceled_at=now(),canceled_by=${by.canceledBy}
+    where organization_id=${organizationId} and state='pending'
+      and (to_account_id=${target.accountId} or to_email = any(${emails}::text[]))
+    returning id`;
+  for (const t of canceled)
+    await accountEvent(tx, {
+      organizationId,
+      actor: by.actor,
+      subject: target.accountId,
+      kind: "transfer_canceled",
+      detail: {
+        transferId: t.id,
+        by: by.canceledBy,
+        reason:
+          by.canceledBy === "owner" ? "co_owner_removed" : "co_owner_left",
+      },
+    });
+  return canceled.map((t) => t.id as string);
+}
+
+/**
+ * The primary removes a co-owner: their seats and sessions end everywhere,
+ * and a pending ownership transfer addressed to them is cancelled (AUTHZ-1).
+ * Removing someone's access is a security action, so it is never gated by
+ * pending legal acceptance (UX-1), like leaving and cancelling a transfer.
+ */
 export async function removeCoOwner(
   tx: Tx,
   account: AccountCtx,
   raw: unknown,
-  c: LegalConfig = legalConfig(process.env),
 ): Promise<{ ok: true }> {
   const p = removeInput.parse(raw);
   await requireFreshOwnerSession(tx, account.sessionId);
-  await requireCurrentLegal(tx, account.id, c);
   await organizationScope(tx, account.id, p.organizationId, "primary");
   await lockOrganization(tx, p.organizationId, 931);
+  // Read while the active co-owner row still shows it (owner_accounts_org_read).
+  const [removed] =
+    await tx`select email from owner_accounts where id=${p.accountId}`;
   const rows =
     await tx`update organization_co_owners set removed_at=now(),removed_by=${account.id},removal='removed'
     where organization_id=${p.organizationId} and account_id=${p.accountId} and removed_at is null returning id`;
   if (!rows.length) throw new DomainError("co_owner_not_found", 404);
+  const transfers = await cancelTransfersTo(
+    tx,
+    p.organizationId,
+    { accountId: p.accountId, emails: [removed?.email] },
+    { canceledBy: "owner", actor: account.id },
+  );
   const revoked = await revokeOwnerSeat(
     tx,
     p.organizationId,
@@ -441,7 +494,10 @@ export async function removeCoOwner(
     actor: account.id,
     subject: p.accountId,
     kind: "co_owner_removed",
-    detail: { invitationsRevoked: revoked.invitations },
+    detail: {
+      invitationsRevoked: revoked.invitations,
+      transfersCanceled: transfers.length,
+    },
   });
   return { ok: true };
 }
@@ -466,6 +522,13 @@ export async function leaveCoOwnership(
     await tx`update organization_co_owners set removed_at=now(),removed_by=${account.id},removal='left'
     where organization_id=${p.organizationId} and account_id=${account.id} and removed_at is null returning id`;
   if (!rows.length) throw new DomainError("co_owner_not_found", 404);
+  // A transfer addressed to the leaver ends with their co-ownership (AUTHZ-1).
+  const transfers = await cancelTransfersTo(
+    tx,
+    p.organizationId,
+    { accountId: account.id, emails: [account.email, account.verifiedEmail] },
+    { canceledBy: "target", actor: account.id },
+  );
   const revoked = await revokeOwnerSeat(
     tx,
     p.organizationId,
@@ -478,7 +541,10 @@ export async function leaveCoOwnership(
     actor: account.id,
     subject: account.id,
     kind: "co_owner_left",
-    detail: { invitationsRevoked: revoked.invitations },
+    detail: {
+      invitationsRevoked: revoked.invitations,
+      transfersCanceled: transfers.length,
+    },
   });
   return { ok: true };
 }
