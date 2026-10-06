@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 // Local helpers (wave rule: no shared helper module in-wave).
 async function login(page: Page) {
@@ -48,6 +49,9 @@ async function axe(page: Page) {
 // modifier group made here never contains a seeded name: it gets its own name
 // (or a "Prueba …" prefix) plus this suffix.
 const suffix = () => Math.random().toString(36).slice(2, 7);
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test("manager builds a taquería menu with required, optional and repeatable choices, a combo and an open-price item, then sells it", async ({
   page,

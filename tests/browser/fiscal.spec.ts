@@ -483,9 +483,16 @@ test("FIT-7 (fiscal part): the ticket register lists the folio, finds it by foli
   await panel.getByText("Registro de tickets").click();
   await panel.getByRole("button", { name: "Mostrar", exact: true }).click();
   const table = panel.locator(".fiscal-table").last();
-  await expect(
-    panel.getByRole("cell", { name: folio, exact: true }),
-  ).toBeVisible();
+  // W3-2: the day's register lists the oldest 200 first, so on a database
+  // that keeps earlier runs' tickets the new folio is on a later page:
+  // «Cargar más» until it is listed.
+  const cell = panel.getByRole("cell", { name: folio, exact: true });
+  const more = panel.getByRole("button", { name: "Cargar más", exact: true });
+  await expect(async () => {
+    if (await cell.isVisible()) return;
+    if ((await more.count()) && (await more.isEnabled())) await more.click();
+    await expect(cell).toBeVisible({ timeout: 1000 });
+  }).toPass({ timeout: 30000 });
   await expect(
     panel.getByRole("region", { name: "Resumen de IVA" }),
   ).toContainText("IVA 16%");

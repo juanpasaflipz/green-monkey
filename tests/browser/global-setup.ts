@@ -16,6 +16,12 @@ const MARGIN_MINUTES = 180;
  * away. Rollover behaviour itself is covered by DB tests with explicit times.
  * Only the isolated local fixture database is touched (as the specs' own
  * fixture guards require); any other target is left alone.
+ *
+ * It also delivers the kitchen rounds earlier runs left open on the demo
+ * restaurants (W3-2), so a reused fixture starts each run with an empty KDS,
+ * as a fresh one does (tests/browser/kitchen-hygiene.ts cleans up after each
+ * test; this catches anything left behind by tests outside it or by an
+ * interrupted run).
  */
 export default async function globalSetup() {
   const runtime = new URL(process.env.DATABASE_URL ?? "http://invalid"),
@@ -53,7 +59,47 @@ export default async function globalSetup() {
         await tx`update restaurants set cutoff = ${SHIFTED_CUTOFF} where id = ${id}`;
       });
     }
+    const demo = await sql<{ id: string }[]>`
+      select id from restaurants where organization_id = ${DEMO_ORGANIZATION}`;
+    for (const { id } of demo)
+      await sql.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${id}, true)`;
+        await deliverOpenRounds(tx);
+      });
   } finally {
     await sql.end();
   }
+}
+
+/**
+ * Fixture reset, not a business command (no audit row): what the KDS would
+ * do for every open round of the restaurant set in app.tenant_id. Pending
+ * cancellations are acknowledged by the restaurant's owner (the single
+ * acknowledgement the void and refund triggers allow), every open round is
+ * delivered (rounds held for offline review stay for their review), and an
+ * order whose rounds are all delivered reads completed, as
+ * refreshOrderState sets it.
+ */
+async function deliverOpenRounds(tx: postgres.TransactionSql) {
+  const [owner] = await tx<{ id: string }[]>`
+    select id from employees where role = 'owner' order by id limit 1`;
+  if (!owner) return;
+  const open = tx`r.state <> 'completed' and r.state <> 'offline_review'`;
+  for (const table of ["line_voids", "refund_lines"] as const)
+    await tx`update ${tx(table)} v
+      set kitchen_acknowledged_at = now(), kitchen_acknowledged_by = ${owner.id}
+      from order_lines l, rounds r
+      where l.tenant_id = v.tenant_id and l.id = v.line_id
+        and r.tenant_id = v.tenant_id and r.order_id = v.order_id
+        and r.number = l.round and r.station = l.data->>'station' and ${open}
+        and v.kitchen_ack_required and v.kitchen_acknowledged_at is null`;
+  const delivered = await tx<{ order_id: string }[]>`
+    update rounds r set state = 'completed', seen_at = coalesce(r.seen_at, now())
+    where ${open} returning r.order_id`;
+  if (!delivered.length) return;
+  await tx`update orders o set state = 'completed'
+    where o.id = any(${tx.array([...new Set(delivered.map((d) => d.order_id))])}::uuid[])
+      and o.state not like 'recovery%' and o.state <> 'cancelled'
+      and not exists (select 1 from rounds r where r.order_id = o.id and r.state <> 'completed')`;
+  await tx`update kitchen_feed_versions set version = version + 1, updated_at = now()`;
 }

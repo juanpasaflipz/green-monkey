@@ -1,5 +1,6 @@
 import { test, expect, type Browser, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 const tenantId =
   process.env.DEMO_TENANT_ID ?? "10000000-0000-4000-8000-000000000001";
@@ -82,6 +83,9 @@ async function createOrder(
 const tag = () =>
   "kds" +
   Array.from(String(Date.now() % 1e8), (d) => "abcdefghij"[Number(d)]).join("");
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test("kitchen display persists station, alerts new tickets and recalls a bump", async ({
   page,
