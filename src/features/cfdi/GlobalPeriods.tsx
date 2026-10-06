@@ -69,8 +69,9 @@ export function GlobalPeriods({
   const operations = useRef(new Map<string, string>());
   const manager = ["owner", "manager"].includes(session.role);
 
+  const cutoff = session.restaurant.cutoff;
   const load = useCallback(async () => {
-    const to = todayFor(session);
+    const to = todayFor({ timezone: tz, cutoff });
     const from = shiftDate(to.slice(0, 8) + "01", -62).slice(0, 8) + "01";
     try {
       const rows = await api<GlobalPeriodView[]>(
@@ -80,7 +81,7 @@ export function GlobalPeriods({
     } catch (e) {
       setError(translateError((e as Error).message, locale));
     }
-  }, [session, locale]);
+  }, [tz, cutoff, locale]);
   useEffect(() => {
     void load();
   }, [load]);

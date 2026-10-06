@@ -158,6 +158,11 @@ export function CfdiSettings({
   );
   const [liveFrom, setLiveFrom] = useState("");
   const alive = useRef(true);
+  // The poll keeps its 2-minute budget when the parent passes a refreshed session object.
+  const sessionRef = useRef(session);
+  useEffect(() => {
+    sessionRef.current = session;
+  }, [session]);
 
   const apply = useCallback((v: CfdiSettingsView, resetForm: boolean) => {
     setData(v);
@@ -210,7 +215,7 @@ export function CfdiSettings({
         const v = await api<CfdiSettingsView>("/cfdi/settings");
         if (!stopped && alive.current) {
           setData(v);
-          if (!settling(v)) void prefetchCfdiStatus(session);
+          if (!settling(v)) void prefetchCfdiStatus(sessionRef.current);
         }
       } catch {
         stopped = true;
@@ -223,7 +228,7 @@ export function CfdiSettings({
       stopped = true;
       clearInterval(timer);
     };
-  }, [polling, session]);
+  }, [polling]);
 
   async function post(
     path: string,

@@ -65,7 +65,7 @@ export function CfdiDocuments({
   locale: Locale;
 }) {
   const t = strings[locale];
-  const today = todayFor(session);
+  const today = todayFor(session.restaurant);
   const [from, setFrom] = useState(() => shiftDate(today, -6));
   const [to, setTo] = useState(today);
   const [kind, setKind] = useState<CfdiDocumentKind | "">("");

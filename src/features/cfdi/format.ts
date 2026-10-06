@@ -266,13 +266,11 @@ export function cfdiReportAlertText(
   }
 }
 
-/** Today's business date for the session's restaurant. */
-export function todayFor(s: Session): string {
-  return businessDate(
-    new Date().toISOString(),
-    s.restaurant.timezone,
-    s.restaurant.cutoff,
-  );
+/** Today's business date for a restaurant (its timezone and day cutoff). */
+export function todayFor(
+  r: Pick<Session["restaurant"], "timezone" | "cutoff">,
+): string {
+  return businessDate(new Date().toISOString(), r.timezone, r.cutoff);
 }
 /** `date` plus `days` calendar days. */
 export function shiftDate(date: string, days: number): string {
