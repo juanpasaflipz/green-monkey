@@ -5,6 +5,8 @@ import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { legalContentHash } from "../../server/legal.js";
 import { ownerCookie, withOwner } from "../../server/owner-accounts.js";
+import { createCoOwnerInvitation } from "../../server/co-owners.js";
+import { acceptInvitation } from "../../server/owner-management.js";
 import {
   cancelTransfer,
   generateRecoveryCodes,
@@ -14,6 +16,7 @@ import {
 import { LEGAL_CI_ENV } from "../fixtures/legal-ci.js";
 import { LEGAL_DOCUMENTS } from "../../shared/legal.js";
 import {
+  CURRENT_ACCEPTANCE,
   PUBLISHED_LEGAL,
   deleteOwnerFixtures,
   fixtureDatabases,
@@ -344,6 +347,125 @@ test("ownership transfer: request, accept as target with DPA, previous owner see
   } finally {
     await other.close();
     await deleteOwnerFixtures(admin, [from.accountId, to.accountId]);
+    await sql.end();
+    await admin.end();
+  }
+});
+
+test("each panel keeps its own acceptance: the re-acceptance boxes never enable a transfer, which needs its DPA (ACC-13)", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const primary = await ownerFixture(sql, "panelsa");
+  const target = await ownerFixture(sql, "panelsc");
+  const offering = await ownerFixture(sql, "panelsq");
+  try {
+    // The target co-owns one organization (so it re-accepts in the console)
+    // and is offered another.
+    const tenantA = await ownerRestaurant(sql, primary, "Paneles A");
+    const [{ organization_id: organizationA }] =
+      await admin`select organization_id from restaurants where id=${tenantA}`;
+    const invite = await withOwner(sql, primary.cookie, undefined, (tx, a) =>
+      createCoOwnerInvitation(
+        tx,
+        a,
+        {
+          operationId: randomUUID(),
+          organizationId: organizationA,
+          email: target.email,
+        },
+        PUBLISHED_LEGAL,
+      ),
+    );
+    await withOwner(sql, target.cookie, undefined, (tx, a) =>
+      acceptInvitation(
+        tx,
+        a,
+        {
+          token: invite.path.split("#invite=")[1],
+          legalAccepted: {
+            terms: CURRENT_ACCEPTANCE.terms,
+            privacy: CURRENT_ACCEPTANCE.privacy,
+          },
+        },
+        PUBLISHED_LEGAL,
+      ),
+    );
+    const tenantB = await ownerRestaurant(sql, offering, "Paneles B");
+    const [{ organization_id: organizationB }] =
+      await admin`select organization_id from restaurants where id=${tenantB}`;
+    const offer = await withOwner(sql, offering.cookie, undefined, (tx, a) =>
+      requestTransfer(
+        tx,
+        a,
+        {
+          operationId: randomUUID(),
+          organizationId: organizationB,
+          email: target.email,
+          previousOwnerStays: false,
+          confirmName: "Paneles B",
+        },
+        PUBLISHED_LEGAL,
+      ),
+    );
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context,accepted_at)
+      values(${randomUUID()},${target.accountId},${ownerCookie(target.cookie).id},'terms','2026-01-01',${legalContentHash("terms")},${PUBLISHED_LEGAL.entityHash},true,'es','reacceptance',now()+interval '1 second')`;
+    await useOwnerCookie(context, target, baseURL);
+    const url = new URL(offer.path, baseURL);
+    await page.goto(url.pathname + url.search + url.hash);
+    const reaccept = center(page)
+      .locator(".panel")
+      .filter({ hasText: "Actualizamos nuestros documentos" });
+    const transfer = center(page).getByRole("region", {
+      name: "Transferir propiedad",
+    });
+    const accept = transfer.getByRole("button", {
+      name: "Aceptar y convertirme en titular",
+      exact: true,
+    });
+    await expect(accept).toBeDisabled();
+    await reaccept
+      .getByRole("checkbox", {
+        name: "Acepto los Términos del servicio.",
+        exact: true,
+      })
+      .check();
+    await reaccept
+      .getByRole("checkbox", {
+        name: "Leí el Aviso de privacidad.",
+        exact: true,
+      })
+      .check();
+    await expect(
+      reaccept.getByRole("button", {
+        name: "Aceptar y continuar",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    await expect(accept).toBeDisabled();
+    await transfer
+      .getByRole("checkbox", {
+        name: "Acepto los Términos del servicio. Acepto el Contrato de encargo de datos de Paneles B.",
+        exact: true,
+      })
+      .check();
+    await expect(accept).toBeDisabled();
+    await transfer
+      .getByRole("checkbox", {
+        name: "Leí el Aviso de privacidad.",
+        exact: true,
+      })
+      .check();
+    await expect(accept).toBeEnabled();
+    await axe(page);
+  } finally {
+    await deleteOwnerFixtures(admin, [
+      primary.accountId,
+      target.accountId,
+      offering.accountId,
+    ]);
     await sql.end();
     await admin.end();
   }
