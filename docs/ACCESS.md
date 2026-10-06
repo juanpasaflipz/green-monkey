@@ -187,7 +187,7 @@ Code security:
   longer answers `GET /api/auth/account` with the owner's account, restaurants
   or invitations.
 
-Operator fallback (support only, privileged database URL):
+Operator fallback (local and CI databases only, privileged database URL):
 
 ```bash
 npm run access:pairing-code -- --tenant <restaurant uuid> --name "Caja 1" \
@@ -196,7 +196,12 @@ npm run access:pairing-code -- --tenant <restaurant uuid> --name "Caja 1" \
 
 `JWT_SECRET` must be the secret of the server that will redeem the code. The
 command prints one code and its expiry, attributes it to the restaurant owner
-and writes the `access.pairing_code_created` audit row.
+and writes the `access.pairing_code_created` audit row. Since Wave 2.0 it
+refuses any target that is not a loopback database, before connecting
+(access A4): the deployed migrator credential lives only in GitHub Actions.
+Deployed support pairs through Configuración → Dispositivos (an owner or
+manager creates the code) or, without any usable owner or manager, through
+account recovery.
 
 ## PIN lockout policy
 
@@ -370,6 +375,24 @@ account's password if the device itself may still be signed in to Google.
 the stage lock to expire (at most 60 minutes), or the owner resets the PIN. A
 hard lock (100 consecutive failures) needs the owner's unlock or a PIN reset.
 A Google owner without a usable PIN on a terminal unlocks from their phone.
+
+**Signing-key rotation and terminals.** Cookies and links are signed with
+the keyring (`SIGNING_KEYS` on `web`, [RUNBOOK.md](RUNBOOK.md) "Signing
+keys"). A routine rotation keeps the old kid listed for at least 31 days
+after the new one starts signing, and keeps `JWT_SECRET` unchanged, so no
+terminal notices it: `gm_device` cookies live at most 30 days and are
+re-signed at every sign-in. An **emergency** rotation (a leaked key removed at
+once) invalidates every cookie and signed link: every staff member signs in
+again with their PIN, owners sign in with Google again, and every terminal
+pairs again. Before it, have each device sync its offline queue where
+possible (a re-paired terminal is a new device, so an unsynced offline
+payment from it goes to manager review). Re-pair terminal by terminal: an
+owner or manager creates one code per terminal in Dispositivos, at most 5
+open codes at a time (each expires after 10 minutes), and **Desvincular**s the
+old entry once the terminal is back. Rotate `JWT_SECRET` only together with an
+emergency rotation: it keys the pairing-code and PIN-fingerprint digests, so
+outstanding pairing codes stop working. Production refuses pre-2.0 tokens;
+staging and local still accept them for sign-in while `JWT_SECRET` is set.
 
 **Re-pairing a tablet used with Google before this release.** Devices created by
 Google "Entrar" are `personal`: they still offer Google and show "Lo usan varios

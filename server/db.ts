@@ -8,6 +8,7 @@ import {
   statementTimeoutMs,
   withoutParams,
 } from "./db-support.js";
+import { PRIVILEGED_MEMBERSHIPS } from "./roles.js";
 // postgres 3.4.8 omits the tagged-template signature from TransactionSql.
 export interface Tx extends postgres.TransactionSql {
   <T extends readonly object[] = postgres.Row[]>(
@@ -71,14 +72,68 @@ export async function waitForDatabase(
     }
   }
 }
+type LoginFacts = {
+  rolsuper: boolean;
+  rolbypassrls: boolean;
+  rolcreaterole: boolean;
+  rolcreatedb: boolean;
+  memberships: string[];
+  owned: number;
+};
+/** Attributes, privileged memberships (direct or inherited) and owned tables of the connected login. */
+export async function loginFacts(
+  sql: postgres.Sql,
+): Promise<LoginFacts | undefined> {
+  const [r] = await sql<LoginFacts[]>`
+    select rolsuper, rolbypassrls, rolcreaterole, rolcreatedb,
+      coalesce((select array_agg(c order by c) from unnest(${PRIVILEGED_MEMBERSHIPS as string[]}::text[]) c
+        where to_regrole(c) is not null and pg_has_role(current_user, to_regrole(c), 'member')), '{}') as memberships,
+      (select count(*)::int from pg_tables where schemaname='public' and tableowner=current_user) as owned
+    from pg_roles where rolname=current_user`;
+  return r;
+}
+
+/** The runtime login: no superuser, BYPASSRLS, CREATEROLE or CREATEDB, no capability or owner membership, owns nothing. */
 export async function checkRole(sql: postgres.Sql) {
-  const [r] =
-    await sql`select rolsuper,rolbypassrls,coalesce(pg_has_role(current_user,to_regrole('gm_billing_worker'),'member'),false) as billing from pg_roles where rolname=current_user`;
-  if (r.rolsuper || r.rolbypassrls || r.billing)
+  const r = await loginFacts(sql);
+  if (
+    !r ||
+    r.rolsuper ||
+    r.rolbypassrls ||
+    r.rolcreaterole ||
+    r.rolcreatedb ||
+    r.memberships.length
+  )
     throw Error("Runtime role must not bypass RLS");
-  const [owner] =
-    await sql`select count(*)::int as count from pg_tables where schemaname='public' and tableowner=current_user`;
-  if (owner.count) throw Error("Runtime role must not own application tables");
+  if (r.owned) throw Error("Runtime role must not own application tables");
+}
+
+/** Jobs worker pool (WORKER_DATABASE_URL): connect()'s TLS and pool policy, without the PG_APP_USER check. */
+export function connectWorker(url: string) {
+  const parsed = new URL(url);
+  return postgres(
+    withoutParams(parsed).href,
+    poolOptions(parsed, { applicationName: "gm-worker-jobs" }),
+  );
+}
+
+/** The worker login: a gm_jobs_worker member and nothing more privileged. */
+export async function checkWorkerRole(sql: postgres.Sql) {
+  const r = await loginFacts(sql);
+  const others = r?.memberships.filter((m) => m !== "gm_jobs_worker") ?? [];
+  if (
+    !r ||
+    r.rolsuper ||
+    r.rolbypassrls ||
+    r.rolcreaterole ||
+    r.rolcreatedb ||
+    !r.memberships.includes("gm_jobs_worker") ||
+    others.length
+  )
+    throw Error(
+      "Worker role must be a gm_jobs_worker member without other privileges",
+    );
+  if (r.owned) throw Error("Worker role must not own application tables");
 }
 const RETRYABLE = new Set(["40P01", "40001"]);
 /**

@@ -18,6 +18,9 @@ regexes = [
   '''sk_test_fixture''',
   # tests/config.test.ts: placeholder proving deployed web refuses Stripe keys.
   '''sk_live_supersecret''',
+  # qualification.yml SIGNING_KEYS (Wave 2.0): base64url of the 41-byte text
+  # "synthetic-ci-only-never-use-outside-tests"; never a real signing key.
+  '''c3ludGhldGljLWNpLW9ubHktbmV2ZXItdXNlLW91dHNpZGUtdGVzdHM''',
 ]
 paths = [
   '''docs/evidence/''',

@@ -10,6 +10,7 @@ import type postgres from "postgres";
 import type { AppEnv } from "../config-rules.js";
 import type { Tx } from "../db.js";
 import { log } from "../logging.js";
+import { PRIVILEGED_MEMBERSHIPS } from "../roles.js";
 
 export interface MigrationFile {
   name: string;
@@ -23,13 +24,6 @@ export interface MigrationFile {
 export const MIGRATION_LOCK = 7102481;
 export const STATEMENT_BREAK = "-- gm:statement-break";
 const NAME = /^\d{3}_[a-z0-9_]+\.sql$/;
-const CAPABILITY_ROLES = [
-  "gm_billing_worker",
-  "gm_jobs_worker",
-  "gm_maintenance",
-  "gm_backup_reader",
-  "gm_migrator",
-];
 
 export class MigrationError extends Error {
   constructor(
@@ -305,12 +299,15 @@ export function quoteIdent(value: string) {
 
 export const ROLE_NAME = /^[a-z_][a-z0-9_]{0,62}$/i;
 
-/** Rejects a runtime role that could bypass row-level security or own the schema. */
+/**
+ * Rejects a runtime role that could bypass row-level security or own the schema:
+ * the same membership list as checkRole (server/roles.ts).
+ */
 export async function assertRuntimeRole(tx: Tx, role: string) {
   const [r] = await tx`
     select rolsuper, rolbypassrls, rolcreatedb, rolcreaterole,
       (select count(*)::int from pg_tables where schemaname='public' and tableowner=${role}) as owned,
-      (select coalesce(array_agg(c), '{}') from unnest(${CAPABILITY_ROLES}::text[]) c
+      (select coalesce(array_agg(c), '{}') from unnest(${PRIVILEGED_MEMBERSHIPS as string[]}::text[]) c
         where to_regrole(c) is not null and pg_has_role(${role}::name, to_regrole(c), 'member')) as capabilities
     from pg_roles where rolname=${role}`;
   if (!r) throw new MigrationError("runtime_role_missing", { role });

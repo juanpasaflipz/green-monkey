@@ -55,7 +55,9 @@ export async function once<T>(
       throw new DomainError("operation_conflict", 409);
     return prior.result as T;
   }
-  if (kind !== "restaurant.settings") {
+  // Commands that update the restaurants row lock it FOR UPDATE themselves:
+  // a FOR SHARE here would be a SHARE->UPDATE upgrade (lock order LO-R6).
+  if (kind !== "restaurant.settings" && kind !== "stock.policy") {
     const [restaurant] =
       await tx`select currency,timezone,cutoff from restaurants where id=${s.tenantId} for share`;
     if (

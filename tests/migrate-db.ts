@@ -16,10 +16,9 @@ import {
   readMigrations,
 } from "../server/ops/schema.js";
 import type { Tx } from "../server/db.js";
-import { main } from "../scripts/migrate.js";
+import { main, RETENTION_SKIPPED_EXIT } from "../scripts/migrate.js";
 import { requireReadySchema } from "../server/readiness.js";
 import {
-  createRetentionSchedule,
   RETENTION_LOCK_TIMEOUT_MS,
   RETENTION_STATEMENT_TIMEOUT_MS,
   retentionPass,
@@ -362,7 +361,7 @@ try {
   const app = pool(appUrl.href);
 
   await check(
-    "preDeploy (migrate, then grants, then retention) leaves the runtime role ready and refuses privileged roles (DB-6)",
+    "the deploy job's migrate --grants --retention (migrate, then grants, then retention) leaves the runtime role ready and refuses privileged roles (DB-6)",
     async () => {
       assert.equal(await main(["--grants", "--retention"], env()), 0);
       await requireReadySchema(app);
@@ -400,6 +399,49 @@ try {
         }),
         (e: any) => e.code === "runtime_role_invalid",
       );
+    },
+  );
+
+  await check(
+    "--grants applies the 2.0 jobs-worker block: on `jobs`, gm_jobs_worker holds exactly SELECT, INSERT and UPDATE of the five runner columns",
+    async () => {
+      // Scoped to `jobs`: area blocks (-- 030 cfdi) grant the worker more tables.
+      const adminReal = pool(urlFor(real));
+      const [r] = await adminReal`
+        select
+          (select array_agg(a.privilege_type::text order by a.privilege_type)
+             from pg_class c, aclexplode(c.relacl) a
+            where c.oid = 'public.jobs'::regclass and a.grantee = 'gm_jobs_worker'::regrole) as table_privileges,
+          (select array_agg(att.attname::text || ':' || a.privilege_type order by att.attname, a.privilege_type)
+             from pg_attribute att, aclexplode(att.attacl) a
+            where att.attrelid = 'public.jobs'::regclass and att.attnum > 0
+              and a.grantee = 'gm_jobs_worker'::regrole) as column_privileges,
+          has_table_privilege('gm_jobs_worker', 'public.jobs', 'DELETE') as can_delete,
+          has_table_privilege('gm_jobs_worker', 'public.jobs', 'TRUNCATE') as can_truncate,
+          has_schema_privilege('gm_jobs_worker', 'public', 'USAGE') as schema_usage`;
+      assert.deepEqual(r.table_privileges, ["INSERT", "SELECT"]);
+      assert.deepEqual(r.column_privileges, [
+        "attempts:UPDATE",
+        "error_code:UPDATE",
+        "lease_until:UPDATE",
+        "next_at:UPDATE",
+        "state:UPDATE",
+      ]);
+      assert.equal(r.can_delete, false);
+      assert.equal(r.can_truncate, false);
+      assert.equal(r.schema_usage, true);
+      for (const column of [
+        "payload",
+        "kind",
+        "dedupe_key",
+        "tenant_id",
+        "id",
+        "created_at",
+      ]) {
+        const [c] = await adminReal`
+          select has_column_privilege('gm_jobs_worker', 'public.jobs', ${column}, 'UPDATE') as can_update`;
+        assert.equal(c.can_update, false, `no UPDATE of jobs.${column}`);
+      }
     },
   );
 
@@ -491,45 +533,55 @@ try {
   );
 
   await check(
-    "the worker's retention schedule runs as the owner, never overlaps, and alerts retention_failed when it cannot run (OPS-R6)",
+    "--retention-only exits 75 when a concurrent transaction holds a lock on jobs past the retention lock timeout (P-9)",
     async () => {
-      const alerts: Alert[] = [];
-      const alert = async (a: Alert) => void alerts.push(a);
-      const schedule = createRetentionSchedule({ url: migratorUrl, alert });
+      assert.equal(RETENTION_SKIPPED_EXIT, 75);
+      // pg_dump (the nightly backup) holds ACCESS SHARE on jobs for its whole
+      // run; retention's ALTER needs ACCESS EXCLUSIVE and waits only
+      // RETENTION_LOCK_TIMEOUT_MS, so the table is skipped, not failed.
+      const holder = pool(urlFor(real), 1);
+      let release!: () => void;
+      const released = new Promise<void>((r) => (release = r));
+      let locked!: () => void;
+      const isLocked = new Promise<void>((r) => (locked = r));
+      const held = holder.begin(async (tx) => {
+        await tx`lock table jobs in access share mode`;
+        locked();
+        await released;
+      });
+      await isLocked;
+      lines.length = 0;
+      let code: number;
       try {
-        const [first, overlapping] = await Promise.all([
-          schedule.runNow(),
-          schedule.runNow(),
-        ]);
-        assert.deepEqual(first?.failed, []);
-        assert.equal(
-          overlapping,
-          null,
-          "a second run while one is active is skipped",
-        );
-        assert.ok(schedule.lastRunAt());
-        assert.deepEqual(alerts, []);
+        code = await main(["--retention-only"], {
+          MIGRATION_DATABASE_URL: migratorUrl,
+          APP_ENV: "staging",
+        });
       } finally {
-        await schedule.stop();
+        release();
+        await held;
       }
-      const wrong = new URL(migratorUrl);
-      wrong.password = "not-the-password";
-      const broken = createRetentionSchedule({ url: wrong.href, alert });
-      try {
-        assert.equal((await broken.runNow())?.failed.length, 2);
-        assert.deepEqual(
-          alerts.map((a) => [a.key, a.severity, a.body]),
-          [
-            [
-              "retention_failed",
-              "warning",
-              "retention_failed tables=oauth_login_attempts,jobs",
-            ],
-          ],
-        );
-      } finally {
-        await broken.stop();
-      }
+      assert.equal(code, RETENTION_SKIPPED_EXIT);
+      assert.ok(
+        lines.some(
+          (l) =>
+            l.includes('"retention_only_complete"') &&
+            l.includes('"skipped":["jobs"]'),
+        ),
+        "the run logs the skipped table",
+      );
+      assert.ok(
+        !lines.some((l) => l.includes('"retention_failed"')),
+        "a skip is routine: no retention_failed alert",
+      );
+      // With the lock released the next attempt (the workflow's retry) passes.
+      assert.equal(
+        await main(["--retention-only"], {
+          MIGRATION_DATABASE_URL: migratorUrl,
+          APP_ENV: "staging",
+        }),
+        0,
+      );
     },
   );
 

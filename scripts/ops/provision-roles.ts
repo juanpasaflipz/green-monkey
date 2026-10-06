@@ -4,7 +4,8 @@
 //   - creates the capability roles and gm_migrator (scripts/ops/sql/globals.sql)
 //     and makes gm_migrator a LOGIN without superuser, BYPASSRLS or CREATEROLE;
 //   - creates gm_<env>_app (runtime), gm_<env>_billing (member of
-//     gm_billing_worker) and gm_<env>_backup (member of gm_backup_reader);
+//     gm_billing_worker), gm_<env>_worker (member of gm_jobs_worker; the
+//     worker's jobs login) and gm_<env>_backup (member of gm_backup_reader);
 //   - sets per-role defaults with ALTER ROLE ... SET, which Neon's pooler
 //     honours (statement/lock/idle timeouts);
 //   - grants CONNECT to the logins, revokes it from PUBLIC, applies
@@ -16,15 +17,25 @@
 // owner takes INHERIT and SET on gm_migrator explicitly (OPS-R9;
 // tests/provision-db.ts "Neon parity").
 // Passwords for new logins are generated here and written, before any role
-// changes, to .env.provisioned-<env> (mode 0600, never overwritten); a re-run
-// reuses them. An existing login keeps its password (rotation is
+// changes, to .env.provisioned-<env> (mode 0600); a re-run reuses them and
+// appends any key the file lacks (a login added by a later release), never
+// rewriting one. An existing login keeps its password (rotation is
 // scripts/ops/rotate-db-login.ts) and its URL is written without one.
+// MIGRATION_DATABASE_URL from the env file goes to the GitHub environment
+// secret (gh secret set MIGRATION_DATABASE_URL --env <env> on stdin), never to
+// Railway: the deploy job and the retention workflow migrate (DB-1).
 //   PROVISION_DATABASE_URL=... tsx scripts/ops/provision-roles.ts --env staging [--dry-run]
 // --dry-run runs everything and rolls back. Prints names and actions only.
 import "dotenv/config";
 import postgres from "postgres";
 import { randomBytes } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { pathToFileURL } from "node:url";
 import { parse } from "dotenv";
 import type { Tx } from "../../server/db.js";
@@ -38,6 +49,11 @@ export const roleDefaults: Record<string, Record<string, string>> = {
     idle_in_transaction_session_timeout: "15s",
   },
   billing: {
+    statement_timeout: "30s",
+    lock_timeout: "8s",
+    idle_in_transaction_session_timeout: "60s",
+  },
+  worker: {
     statement_timeout: "30s",
     lock_timeout: "8s",
     idle_in_transaction_session_timeout: "60s",
@@ -109,6 +125,7 @@ export async function provisionRoles(o: {
     migrator: "gm_migrator",
     app: `gm_${o.env}_app`,
     billing: `gm_${o.env}_billing`,
+    worker: `gm_${o.env}_worker`,
     backup: `gm_${o.env}_backup`,
   };
   const file = o.file === undefined ? `.env.provisioned-${o.env}` : o.file;
@@ -139,6 +156,7 @@ export async function provisionRoles(o: {
     migrator: "MIGRATION_DATABASE_URL",
     app: "DATABASE_URL",
     billing: "BILLING_DATABASE_URL",
+    worker: "WORKER_DATABASE_URL",
     backup: "BACKUP_DATABASE_URL",
   } as const;
   const passwords = Object.fromEntries(
@@ -160,9 +178,11 @@ export async function provisionRoles(o: {
     MIGRATION_DATABASE_URL: url(roles.migrator, passwords.migrator, false),
     DATABASE_URL: url(roles.app, passwords.app, true),
     BILLING_DATABASE_URL: url(roles.billing, passwords.billing, true),
+    WORKER_DATABASE_URL: url(roles.worker, passwords.worker, true),
     BACKUP_DATABASE_URL: url(roles.backup, passwords.backup, false),
     PG_APP_USER: roles.app,
   };
+  const actions: string[] = [];
   if (file && !existsSync(file) && !o.dryRun)
     writeFileSync(
       file,
@@ -173,8 +193,31 @@ export async function provisionRoles(o: {
         "\n",
       { mode: 0o600, flag: "wx" },
     );
+  else if (file && !o.dryRun) {
+    // P-8: an environment provisioned by an earlier release gains the keys of
+    // logins added since (WORKER_DATABASE_URL). Saved keys are never rewritten.
+    const missing = Object.entries(urls).filter(([k]) => !(k in saved));
+    if (missing.length) {
+      const text = readFileSync(file, "utf8");
+      appendFileSync(
+        file,
+        (text.endsWith("\n") || !text ? "" : "\n") +
+          missing.map(([k, v]) => `${k}=${v}`).join("\n") +
+          "\n",
+      );
+      actions.push(`env file: appended ${missing.map(([k]) => k).join(",")}`);
+    }
+    for (const [k] of missing) {
+      const key = (Object.keys(keys) as (keyof typeof keys)[]).find(
+        (name) => keys[name] === k,
+      );
+      if (key && !passwords[key])
+        actions.push(
+          `${roles[key]}: existing login without a saved password; rotate it (rotate-db-login.ts --kind ${key === "app" ? "runtime" : key})`,
+        );
+    }
+  }
 
-  const actions: string[] = [];
   const sql = postgres(withoutParams(owner).href, {
     max: 1,
     ssl: databaseTls(owner),
@@ -239,6 +282,7 @@ export async function provisionRoles(o: {
         await login("migrator");
         await login("app");
         await login("billing", "gm_billing_worker");
+        await login("worker", "gm_jobs_worker");
         await login("backup", "gm_backup_reader");
         await tx.unsafe(
           `revoke connect on database ${ident(database)} from public`,

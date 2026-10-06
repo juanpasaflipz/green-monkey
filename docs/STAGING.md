@@ -113,19 +113,23 @@ Prepared, not yet cut over (the cutover is an operator step with the owner's
 consent: [RUNBOOK.md](RUNBOOK.md) "Staging cutover"). After the cutover:
 
 - Merging to `main` runs Qualification; on success `.github/workflows/deploy.yml`
-  applies `.railway/railway.ts` (non-destructive changes only), stamps
-  `build-info.json` with the commit, uploads the `worker` service (its
-  preDeploy runs `migrate.js --grants --retention` as `gm_migrator`) and then
-  `web`, and runs `scripts/ops/smoke.mjs` until `/api/version` reports the
-  merged SHA. Nobody uploads from a workstation and nobody types
+  first runs `migrate.js --grants --retention` as `gm_migrator` from the
+  GitHub environment secret `MIGRATION_DATABASE_URL` (a failure stops before
+  Railway), then applies `.railway/railway.ts` (non-destructive changes only),
+  stamps `build-info.json` with the commit, uploads the `worker` service and
+  then `web`, and runs `scripts/ops/smoke.mjs` until `/api/version` reports
+  the merged SHA. Nobody uploads from a workstation and nobody types
   `RAILWAY_GIT_COMMIT_SHA` by hand any more; delete that service variable.
 - `web` holds only `DATABASE_URL`/`PG_APP_USER` (runtime role), `JWT_SECRET`,
-  Google OAuth, `STRIPE_WEBHOOK_SECRET` and, with billing enabled,
-  `BILLING_DATABASE_URL`. It refuses to start with `MIGRATION_DATABASE_URL`,
-  `BACKUP_DATABASE_URL` or `STRIPE_SECRET_KEY` when `APP_ENV=staging`.
-- `worker` (new service, no public domain) holds `MIGRATION_DATABASE_URL`
-  (`gm_migrator`, direct endpoint), `PG_APP_USER`, `BILLING_DATABASE_URL`, the
-  Stripe sandbox keys and `ALERT_WEBHOOK_URL`. `web` reaches its `/healthz` at
+  `SIGNING_KEYS`, Google OAuth, `STRIPE_WEBHOOK_SECRET` and, with billing
+  enabled, `BILLING_DATABASE_URL`. It refuses to start with
+  `MIGRATION_DATABASE_URL`, `BACKUP_DATABASE_URL`, `STRIPE_SECRET_KEY`,
+  `WORKER_DATABASE_URL` or the Facturapi keys when `APP_ENV=staging`.
+- `worker` (new service, no public domain) holds `WORKER_DATABASE_URL`
+  (`gm_staging_worker`, a `gm_jobs_worker` member, pooled endpoint),
+  `BILLING_DATABASE_URL`, the Stripe sandbox keys and `ALERT_WEBHOOK_URL`. It
+  refuses `MIGRATION_DATABASE_URL`, `SIGNING_KEYS` and `JWT_SECRET`; the
+  schema-owner credential lives only in the GitHub environment `staging`. `web` reaches its `/healthz` at
   `http://worker.railway.internal:3002` (`WORKER_URL`) for `/api/ops/status`.
 - Health: `/api/health` (schema ready, not draining); public status:
   `/api/ops/status`; client-address probe: `/api/ops/diagnostics/ip`, which the
@@ -174,3 +178,20 @@ node --env-file=.env.neon-staging scripts/staging-smoke.mjs
 ```
 
 A smoke success does not imply full acceptance. Staging backup/restore and rollback rehearsal, full offline/reconnection and split/refund browser suites on the cloud target, sustained performance, provider sandboxes, physical printing and all remaining matrix gaps still require qualification.
+
+## Wave 2.0 cutover record
+
+Pending (operator, with the owner's consent; nothing below has run against
+staging yet). The staging cutover runs once from the integrated code that
+contains Wave 2.0, with the deltas in [RUNBOOK.md](RUNBOOK.md) "Staging
+cutover" (Wave 2.0 deltas). Record here, without values:
+
+| Item | Date | Evidence |
+| --- | --- | --- |
+| `globals.sql` run on the staging cluster (`gm_jobs_worker`, `gm_support`) | — | — |
+| `gm_staging_worker` created by `provision-roles.ts`; `WORKER_DATABASE_URL` set on `worker` | — | — |
+| GitHub environment `staging`: secret `MIGRATION_DATABASE_URL`, variables `PG_APP_USER`, `ALERT_WEBHOOK_KIND` | — | — |
+| `SIGNING_KEYS` set on `web` | — | — |
+| First deploy migrated from GitHub Actions; first `worker_ready` line with `jobs:true` | — | — |
+| `v2.` prefix on a freshly issued `gm_session` cookie | — | — |
+| First green Actions → Retention → staging dispatch | — | — |

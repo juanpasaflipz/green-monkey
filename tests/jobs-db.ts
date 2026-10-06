@@ -1,9 +1,10 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
-import { check, passed } from "./ops-roles.js";
+import { check, disposableLogins, passed } from "./ops-roles.js";
 import { connect, tenant } from "../server/db.js";
 import {
   enqueueJob,
@@ -19,6 +20,15 @@ import {
   requeueJob,
 } from "../server/jobs/queue.js";
 import { createJobRunner } from "../server/jobs/runner.js";
+import {
+  clearWorkerJobHandlers,
+  discoverTenants,
+  registerWorkerJobHandler,
+  workerHandlers,
+} from "../server/jobs/worker-registry.js";
+// The web registry (kitchen_dispatch): server/index.ts imports it as a side
+// effect; the runner no longer does (Wave 2.0, P-1).
+import "../server/jobs/handlers/index.js";
 import { setLogSink } from "../server/logging.js";
 import { catalog, createOrder } from "../server/orders.js";
 import type { Session } from "../shared/domain.js";
@@ -32,6 +42,11 @@ const second = connect(runtime);
 const tenantId = "10000000-0000-4000-8000-000000000001";
 const otherTenantId = "10000000-0000-4000-8000-000000000002";
 const kind = "ops_test_" + randomUUID().slice(0, 8);
+// Kinds the temporary discovery policy covers (LIKE 'opstest\_%'), like cfdi's
+// jobs_worker_discover covers 'cfdi\_%' (cfdi 030).
+const workerKind = "opstest_" + randomUUID().slice(0, 8);
+const discoverPolicy = "opstest_discover_" + randomUUID().slice(0, 8);
+const cleanup: { drop?: () => Promise<void> } = {};
 const base = {
   expiresAt: "",
   offlineUntil: "",
@@ -417,13 +432,478 @@ try {
     },
   );
 
+  await check(
+    "runAt defers the first claim: not claimable before it, claimable after; a repeated key keeps the first runAt",
+    async () => {
+      const at = new Date(Date.now() + 1500);
+      await tenant(app, tenantId, (tx) =>
+        enqueueJob(tx, owner, {
+          kind,
+          dedupeKey: "later",
+          payload: {},
+          runAt: at,
+        }),
+      );
+      await tenant(app, tenantId, (tx) =>
+        enqueueJob(tx, owner, {
+          kind,
+          dedupeKey: "later",
+          payload: {},
+          runAt: new Date(Date.now() - 60_000),
+        }),
+      );
+      const [row] = await admin`
+        select next_at, state from jobs where kind=${kind} and dedupe_key='later'`;
+      assert.equal(row.state, "available");
+      assert.equal(
+        (row.next_at as Date).getTime(),
+        at.getTime(),
+        "next_at is runAt, and the repeated key did not move it",
+      );
+      assert.deepEqual(await claim(app, owner), [], "not before runAt");
+      await new Promise((r) =>
+        setTimeout(r, Math.max(0, at.getTime() - Date.now()) + 150),
+      );
+      const [job] = await claim(app, owner);
+      assert.equal(job?.dedupeKey, "later", "claimable once runAt passed");
+      assert.equal(await completeJob(app, job), true);
+      await enqueue(owner, "now");
+      const [now] = await claim(app, owner);
+      assert.equal(now?.dedupeKey, "now", "no runAt means now");
+      await admin`delete from jobs where kind=${kind}`;
+    },
+  );
+
+  await check(
+    "per-kind maxAttempts: a kind registered with 3 goes dead on the third failure; a default kind on the eighth",
+    async () => {
+      const three = kind + "_m3";
+      const eight = kind + "_m8";
+      const fail = async () => {
+        throw Object.assign(new Error("provider down"), {
+          code: "provider_down",
+        });
+      };
+      registerJobHandler(three, fail, { maxAttempts: 3 });
+      registerJobHandler(eight, fail);
+      assert.equal(handlers().get(eight)!.maxAttempts, MAX_ATTEMPTS);
+      const dead: string[] = [];
+      const only = new Map([
+        [three, handlers().get(three)!],
+        [eight, handlers().get(eight)!],
+      ]);
+      const runner = createJobRunner(app, {
+        handlers: () => only,
+        onDead: (job, code) => dead.push(`${job.kind}:${job.attempts}:${code}`),
+      });
+      await tenant(app, tenantId, async (tx) => {
+        await enqueueJob(tx, owner, {
+          kind: three,
+          dedupeKey: "m",
+          payload: {},
+        });
+        await enqueueJob(tx, owner, {
+          kind: eight,
+          dedupeKey: "m",
+          payload: {},
+        });
+      });
+      // The default kind starts two claims before its limit.
+      await admin`update jobs set attempts=${MAX_ATTEMPTS - 2} where kind=${eight}`;
+      const state = async (k: string) =>
+        (await admin`select state, attempts from jobs where kind=${k}`)[0] as {
+          state: string;
+          attempts: number;
+        };
+      const settle = async () => {
+        for (let i = 0; i < 100 && runner.running() > 0; i++)
+          await new Promise((r) => setTimeout(r, 20));
+        await admin`update jobs set next_at=now() where kind in (${three}, ${eight}) and state='available'`;
+      };
+      const seen: string[] = [];
+      for (let round = 1; round <= 3; round++) {
+        await runner.drainTenant(tenantId);
+        await settle();
+        const a = await state(three);
+        const b = await state(eight);
+        seen.push(`${a.state}:${a.attempts} ${b.state}:${b.attempts}`);
+      }
+      await runner.stop(5000);
+      assert.deepEqual(seen, [
+        `available:1 available:${MAX_ATTEMPTS - 1}`,
+        `available:2 dead:${MAX_ATTEMPTS}`,
+        `dead:3 dead:${MAX_ATTEMPTS}`,
+      ]);
+      assert.deepEqual(dead.sort(), [
+        `${three}:3:provider_down`,
+        `${eight}:${MAX_ATTEMPTS}:provider_down`,
+      ]);
+      await admin`delete from jobs where kind in (${three}, ${eight})`;
+    },
+  );
+
+  // Wave 2.0 (c): the worker's jobs login. Capability roles come from
+  // globals.sql (idempotent; roles are cluster-global); the login is a
+  // disposable member of gm_jobs_worker, like gm_<env>_worker.
+  await admin.unsafe(readFileSync("scripts/ops/sql/globals.sql", "utf8"));
+  const { logins, drop } = await disposableLogins(admin, runtime, {
+    worker: ["gm_jobs_worker"],
+  });
+  cleanup.drop = drop;
+  const worker = logins.worker.sql;
+  const insertJob = (
+    tenantId: string,
+    o: {
+      kind?: string;
+      key: string;
+      state?: string;
+      next?: string;
+      lease?: string | null;
+    },
+  ) =>
+    admin.unsafe(
+      `insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,next_at,lease_until)
+       values($1,$2,$3,$4,'{}',$5,${o.next ?? "now()"},${o.lease ?? "null"})`,
+      [
+        tenantId,
+        randomUUID(),
+        o.kind ?? workerKind,
+        o.key,
+        o.state ?? "available",
+      ],
+    );
+  const createPolicy = () =>
+    admin.unsafe(
+      `create policy "${discoverPolicy}" on jobs for select to gm_jobs_worker using (kind like 'opstest\\_%')`,
+    );
+  const dropPolicy = () =>
+    admin.unsafe(`drop policy if exists "${discoverPolicy}" on jobs`);
+  const forbidden = async (promise: Promise<unknown>) =>
+    assert.rejects(promise, (e: any) => {
+      assert.match(`${e?.code} ${e?.message}`, /42501|permission denied/);
+      return true;
+    });
+
+  await check(
+    "the worker login claims, extends, completes and enqueues a follow-up job inside tenant() with only the 2.0 grants",
+    async () => {
+      await tenant(app, tenantId, (tx) =>
+        enqueueJob(tx, owner, {
+          kind: workerKind,
+          dedupeKey: "w1",
+          payload: {},
+        }),
+      );
+      const [job] = await tenant(worker, tenantId, (tx) =>
+        claimJobs(tx, [workerKind], 5, 60),
+      );
+      assert.equal(job?.dedupeKey, "w1");
+      assert.equal(job.tenantId, tenantId);
+      const renewed = await extendLease(worker, job, 90);
+      assert.ok(renewed && renewed !== job.lease, "the lease is extended");
+      await tenant(worker, tenantId, (tx) =>
+        enqueueJob(
+          tx,
+          { tenantId },
+          {
+            kind: workerKind,
+            dedupeKey: "w1-follow-up",
+            payload: { after: job.id },
+            runAt: new Date(Date.now() + 60_000),
+          },
+        ),
+      );
+      // A repeated follow-up (a replayed handler) is ignored, not an error.
+      await tenant(worker, tenantId, (tx) =>
+        enqueueJob(
+          tx,
+          { tenantId },
+          {
+            kind: workerKind,
+            dedupeKey: "w1-follow-up",
+            payload: {},
+          },
+        ),
+      );
+      assert.equal(
+        await completeJob(worker, { ...job, lease: renewed! }),
+        true,
+      );
+      const states = await admin`
+        select dedupe_key, state from jobs where kind=${workerKind} order by dedupe_key`;
+      assert.deepEqual(
+        states.map((r) => `${r.dedupe_key}:${r.state}`),
+        ["w1:done", "w1-follow-up:available"],
+      );
+      // The failure path too: a claimed job goes back for retry.
+      await admin`update jobs set next_at=now() where kind=${workerKind} and dedupe_key='w1-follow-up'`;
+      const [next] = await tenant(worker, tenantId, (tx) =>
+        claimJobs(tx, [workerKind], 5, 60),
+      );
+      assert.equal(
+        await failJob(worker, next, { code: "provider_down", maxAttempts: 3 }),
+        "retry",
+      );
+      await admin`delete from jobs where kind=${workerKind}`;
+    },
+  );
+
+  await check(
+    "the worker login cannot DELETE jobs, UPDATE payload or kind, or see another tenant's rows inside tenant()",
+    async () => {
+      await insertJob(tenantId, { key: "mine" });
+      await insertJob(otherTenantId, { key: "theirs" });
+      await forbidden(
+        tenant(
+          worker,
+          tenantId,
+          (tx) => tx`delete from jobs where kind=${workerKind}`,
+        ),
+      );
+      await forbidden(
+        tenant(
+          worker,
+          tenantId,
+          (tx) =>
+            tx`update jobs set payload='{"x":1}' where kind=${workerKind}`,
+        ),
+      );
+      await forbidden(
+        tenant(
+          worker,
+          tenantId,
+          (tx) =>
+            tx`update jobs set kind='other_kind' where kind=${workerKind}`,
+        ),
+      );
+      const [inside] = await tenant(
+        worker,
+        tenantId,
+        (tx) =>
+          tx`select count(*)::int as all, count(*) filter (where tenant_id=${otherTenantId})::int as other from jobs where kind=${workerKind}`,
+      );
+      assert.deepEqual({ ...inside }, { all: 1, other: 0 });
+      const [outside] =
+        await worker`select count(*)::int as n from jobs where kind=${workerKind}`;
+      assert.equal(outside.n, 0, "no policy: nothing visible outside tenant()");
+      assert.deepEqual(
+        await discoverTenants(worker, [workerKind]),
+        [],
+        "discovery returns [] without an area policy",
+      );
+      await admin`delete from jobs where kind=${workerKind}`;
+    },
+  );
+
+  await check(
+    "discoverTenants, with a temporary opstest_% SELECT policy TO gm_jobs_worker: due queued/available or expired running jobs, oldest due first; never future, live running, blocked, done, dead or other-kind jobs; [] without the policy",
+    async () => {
+      const otherKind = workerKind + "_other";
+      await createPolicy();
+      try {
+        // Only jobs discovery must ignore.
+        await insertJob(tenantId, {
+          key: "future",
+          next: "now() + interval '1 hour'",
+        });
+        await insertJob(tenantId, {
+          key: "live",
+          state: "running",
+          next: "now() - interval '1 hour'",
+          lease: "now() + interval '5 minutes'",
+        });
+        for (const state of ["blocked", "done", "dead"])
+          await insertJob(tenantId, {
+            key: state,
+            state,
+            next: "now() - interval '1 hour'",
+          });
+        // Due, but of a kind not asked for (and of a kind the policy hides).
+        await insertJob(otherTenantId, {
+          kind: otherKind,
+          key: "other",
+          next: "now() - interval '1 hour'",
+        });
+        await insertJob(otherTenantId, {
+          kind,
+          key: "hidden",
+          next: "now() - interval '1 hour'",
+        });
+        assert.deepEqual(await discoverTenants(worker, [workerKind, kind]), []);
+        assert.deepEqual(await discoverTenants(worker, []), []);
+
+        await insertJob(tenantId, {
+          key: "queued",
+          state: "queued",
+          next: "now() - interval '10 minutes'",
+        });
+        await insertJob(otherTenantId, {
+          key: "available",
+          next: "now() - interval '5 minutes'",
+        });
+        assert.deepEqual(await discoverTenants(worker, [workerKind]), [
+          tenantId,
+          otherTenantId,
+        ]);
+        // An expired lease is due since lease_until: older than both.
+        await insertJob(otherTenantId, {
+          key: "expired",
+          state: "running",
+          next: "now()",
+          lease: "now() - interval '20 minutes'",
+        });
+        assert.deepEqual(await discoverTenants(worker, [workerKind]), [
+          otherTenantId,
+          tenantId,
+        ]);
+        assert.deepEqual(await discoverTenants(worker, [workerKind], 1), [
+          otherTenantId,
+        ]);
+        assert.deepEqual(
+          (await discoverTenants(worker, [otherKind])).length,
+          1,
+          "kinds select the jobs",
+        );
+        await dropPolicy();
+        assert.deepEqual(await discoverTenants(worker, [workerKind]), []);
+      } finally {
+        await dropPolicy();
+        await admin`delete from jobs where kind like ${workerKind + "%"} or (kind=${kind} and dedupe_key='hidden')`;
+      }
+    },
+  );
+
+  await check(
+    "with that policy present, a claim in tenant A never leases tenant B's job, and a fenced write with the wrong tenant matches no row (§4.3 regression)",
+    async () => {
+      await createPolicy();
+      try {
+        await insertJob(tenantId, {
+          key: "a1",
+          next: "now() - interval '1 minute'",
+        });
+        await insertJob(otherTenantId, {
+          key: "b1",
+          next: "now() - interval '2 minutes'",
+        });
+        const [seenB] = await tenant(
+          worker,
+          tenantId,
+          (tx) =>
+            tx`select count(*)::int as n from jobs where kind=${workerKind} and tenant_id=${otherTenantId}`,
+        );
+        assert.equal(seenB.n, 1, "the policy widens plain SELECT visibility");
+        const claimed = await tenant(worker, tenantId, (tx) =>
+          claimJobs(tx, [workerKind], 10, 60),
+        );
+        assert.deepEqual(
+          claimed.map((j) => `${j.tenantId}:${j.dedupeKey}`),
+          [`${tenantId}:a1`],
+        );
+        const [job] = claimed;
+        const wrong = { ...job, tenantId: otherTenantId };
+        assert.equal(await completeJob(worker, wrong), false);
+        assert.equal(await failJob(worker, wrong, { code: "x" }), "lost");
+        assert.equal(await extendLease(worker, wrong, 60), null);
+        const states = await admin`
+          select tenant_id, dedupe_key, state from jobs where kind=${workerKind} order by dedupe_key`;
+        assert.deepEqual(
+          states.map((r) => `${r.dedupe_key}:${r.state}`),
+          ["a1:running", "b1:available"],
+          "nothing changed in either tenant",
+        );
+        assert.equal(await completeJob(worker, job), true);
+      } finally {
+        await dropPolicy();
+        await admin`delete from jobs where kind=${workerKind}`;
+      }
+    },
+  );
+
+  await check(
+    "the runtime login sees no other tenant's jobs even with the policy present",
+    async () => {
+      await createPolicy();
+      try {
+        await insertJob(otherTenantId, { key: "b2" });
+        const [inside] = await tenant(
+          app,
+          tenantId,
+          (tx) =>
+            tx`select count(*)::int as n from jobs where kind=${workerKind}`,
+        );
+        assert.equal(inside.n, 0);
+        const [outside] =
+          await app`select count(*)::int as n from jobs where kind=${workerKind}`;
+        assert.equal(outside.n, 0);
+      } finally {
+        await dropPolicy();
+        await admin`delete from jobs where kind=${workerKind}`;
+      }
+    },
+  );
+
+  await check(
+    "worker runner end to end: createJobRunner(worker pool, {handlers: worker registry, discover}) runs an opstest kind for two tenants and marks both done within 10 s",
+    async () => {
+      const e2e = workerKind + "_e2e";
+      const ran: string[] = [];
+      registerWorkerJobHandler(e2e, async (ctx) => {
+        // ctx.tenant runs in the job's tenant scope. The jobs login holds
+        // grants on jobs only in Wave 2.0 (areas add theirs in their block).
+        const [r] = await ctx.tenant(
+          (tx) =>
+            tx`select current_setting('app.tenant_id') as scope, current_user as login`,
+        );
+        ran.push(
+          `${ctx.job.tenantId}:${r.scope === ctx.job.tenantId}:${r.login === logins.worker.role}`,
+        );
+      });
+      await createPolicy();
+      const runner = createJobRunner(worker, {
+        handlers: workerHandlers,
+        concurrency: 4,
+        sweepMs: 200,
+        discover: () => discoverTenants(worker, [...workerHandlers().keys()]),
+      });
+      try {
+        for (const s of [owner, other])
+          await tenant(app, s.tenantId, (tx) =>
+            enqueueJob(tx, s, { kind: e2e, dedupeKey: "e2e", payload: {} }),
+          );
+        const started = Date.now();
+        runner.start();
+        for (;;) {
+          const [row] = await admin`
+            select count(*) filter (where state='done')::int as done from jobs where kind=${e2e}`;
+          if (row.done === 2) break;
+          assert.ok(Date.now() - started < 10_000, "both done within 10 s");
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        assert.deepEqual(
+          ran.sort(),
+          [`${tenantId}:true:true`, `${otherTenantId}:true:true`].sort(),
+        );
+      } finally {
+        await runner.stop(5000);
+        clearWorkerJobHandlers();
+        await dropPolicy();
+        await admin`delete from jobs where kind=${e2e}`;
+      }
+    },
+  );
+
   console.log(
-    `Jobs DB checks passed: ${passed()} checks (runtime-role claims, lease fencing, retry/dead, requeue, tenant scope, kitchen drain, bounded stop, resume after restart).`,
+    `Jobs DB checks passed: ${passed()} checks (runtime-role claims, lease fencing, retry/dead, requeue, tenant scope, kitchen drain, bounded stop, resume after restart, runAt, per-kind maxAttempts, worker login, discovery, worker runner).`,
   );
 } finally {
-  await admin`delete from jobs where kind like ${kind + "%"}`.catch(
+  await admin`delete from jobs where kind like ${kind + "%"} or kind like ${workerKind + "%"}`.catch(
     () => undefined,
   );
+  await admin
+    .unsafe(`drop policy if exists "${discoverPolicy}" on jobs`)
+    .catch(() => undefined);
+  await cleanup.drop?.();
   await second.end();
   await app.end();
   await admin.end();

@@ -293,6 +293,9 @@ export async function saveNegativeStockPolicy(
   permit(s, managers);
   const p = stockPolicyInput.parse(raw);
   return once(tx, s, p.operationId, "stock.policy", p, async () => {
+    // LO-2 FOR UPDATE first (once() skips its FOR SHARE for this kind): two
+    // concurrent saves queue here instead of deadlocking on an upgrade (P-18).
+    await tx`select id from restaurants where id=current_setting('app.tenant_id')::uuid for update`;
     const before = await negativeStockPolicy(tx);
     await tx`update restaurants set negative_stock_policy=${p.policy} where id=current_setting('app.tenant_id')::uuid`;
     await audit(tx, s, "stock.policy.changed", s.tenantId, {

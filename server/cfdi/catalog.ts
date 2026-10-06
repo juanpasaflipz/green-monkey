@@ -1,47 +1,22 @@
 /**
  * cfdi core: SAT catalog values and pure rules the builders need, kept LOCAL for now.
  *
- * TEMPORARY. Two blocks here move elsewhere in later steps; keep the names and signatures so the
+ * TEMPORARY. One block here moves elsewhere in a later step; keep the names and signatures so the
  * swap is an import change only:
- *   1. SatUse / USE_LABELS / USE_REGIMES / usoCfdiAllowed: the exact text of spec §4.2 that the
- *      platform (Wave 2.0 (j)) appends to shared/sat.ts. When it lands, replace this block with
- *      `export { USE_LABELS, USE_REGIMES, usoCfdiAllowed, type SatUse } from "../../shared/sat.js";`.
+ *   1. SatUse / USE_LABELS / USE_REGIMES / usoCfdiAllowed now live in shared/sat.ts (Wave 2.0 (j),
+ *      LD-14 OQ-4): re-exported below, so one uso catalog exists.
  *   2. CFDI_USES / CardForm / PAYMENT_FORMS / paymentFormFor / needsCardForm / Receptor: spec §4.2
  *      shared/cfdi.ts (implementation step 1). When that lands, re-export them from there.
  */
+import type { SatUse } from "../../shared/sat.js";
 
-// --- 1. c_UsoCFDI (spec §4.2 text; moves to shared/sat.ts) ------------------------------------
-export type SatUse = "G01" | "G02" | "G03" | "S01";
-export const USE_LABELS: Record<SatUse, { es: string; en: string }> = {
-  G03: { es: "Gastos en general", en: "General expenses" },
-  G01: { es: "Adquisición de mercancías", en: "Purchase of goods" },
-  S01: { es: "Sin efectos fiscales", en: "No tax effects" },
-  G02: {
-    es: "Devoluciones, descuentos o bonificaciones",
-    en: "Returns, discounts or bonuses",
-  },
-};
-/** c_UsoCFDI receptor regimes (Facturapi OpenAPI v2 "Uso del CFDI" table, SAT catalog). */
-// prettier-ignore
-const BUSINESS = ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"];
-// prettier-ignore
-const S01_REGIMES = [
-  "601", "603", "605", "606", "607", "608", "610", "611", "612", "614", "615", "616", "620",
-  "621", "622", "623", "624", "625", "626",
-];
-export const USE_REGIMES: Record<SatUse, readonly string[]> = {
-  G01: BUSINESS,
-  G02: BUSINESS,
-  G03: BUSINESS,
-  S01: S01_REGIMES,
-};
-/** False for any use outside USE_REGIMES (callers with a wider catalog apply their own fallback). */
-export function usoCfdiAllowed(regimen: string, uso: string): boolean {
-  return (
-    Object.hasOwn(USE_REGIMES, uso) &&
-    USE_REGIMES[uso as SatUse].includes(regimen)
-  );
-}
+// --- 1. c_UsoCFDI (shared/sat.ts, Wave 2.0 (j)) -------------------------------------------------
+export {
+  USE_LABELS,
+  USE_REGIMES,
+  usoCfdiAllowed,
+  type SatUse,
+} from "../../shared/sat.js";
 
 // --- 2. Receptor and payment form (spec §4.2; moves to shared/cfdi.ts) ------------------------
 export const CFDI_USES = [

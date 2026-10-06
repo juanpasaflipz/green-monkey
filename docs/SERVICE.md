@@ -124,15 +124,15 @@ cached before the deploy keep working. A later contract change removes them.
   version before the data, so a concurrent change is either included or seen on
   the next poll. A poll with the current version returns `unchanged` after one
   row read.
-- **Lock order.** Commands lock order rows (several sorted by id), then rounds,
-  line voids, stock items and the drawer; the feed row is the **last new lock**
-  a command takes. Offline sync is the one command that already holds its
-  drawer (`FOR UPDATE`, from the start) when `createOrder` bumps the feed. In
-  wave 1 no command waits for a drawer while holding the feed row, so this
-  forms no cycle (spec 4.9, which also gives the wave-2 order). The feed is
-  never bumped by payments, settlements, refunds or cash commands, because
-  those lock several orders and the drawer one after another. DB test "kitchen
-  feed and progress do not deadlock" runs mixed concurrent bursts.
+- **Lock order.** Every command follows the binding
+  [global lock order](ARCHITECTURE.md#global-lock-order-binding) (Wave 2.0):
+  order rows (several sorted by id), rounds, line voids, stock items, then the
+  feed row (level LO-10), then the drawer and `refreshCheckState`, which takes
+  the fiscal folio counter last from 027. `createOrder`, `voidLines` and
+  `assignService` still bump the feed after `refreshCheckState`; fiscal moves
+  those three call sites in its merge commit (`tests/lock-order.test.ts`
+  allowlists them until then). DB test "kitchen feed and progress do not
+  deadlock" runs mixed concurrent bursts.
 - The feed is bounded to the 200 oldest open rounds and excludes rounds held
   for offline review. A truncated feed shows an alert that new tickets do not
   appear until tickets are delivered and that a manager can retire the ones
@@ -348,8 +348,9 @@ the drawer is open.
   Keep `orders.total >= sum(tenders.amount)`; never change a closed check.
 - `assertCheckWritable(row)`, `applyRound()` and `getOrders(tx, ids)` (constant
   statements for any number of ids).
-- `bumpKitchenFeed(tx, s)` is the last lock-taking statement of a KDS-affecting
-  command and is never called in money commands.
+- `bumpKitchenFeed(tx, s)` runs after every order, round, void and stock lock of
+  a KDS-affecting command and before the drawer and `refreshCheckState`
+  ([global lock order](ARCHITECTURE.md#global-lock-order-binding), LO-10).
 - "Sale concluded" for fiscal/CFDI: `check_state = 'closed'` and
   `close_reason in ('settled','released','recovery')`; `closed_at` is the
   conclusion time and `business_date` the fiscal day.

@@ -182,3 +182,36 @@ export function validateRfc(raw: string): {
     checkDigit: ok && rfcCheckDigitValid(rfc),
   };
 }
+
+// shared/sat.ts — appended by Wave 2.0 (j); moved from cfdi §4.2.
+export type SatUse = "G01" | "G02" | "G03" | "S01";
+export const USE_LABELS: Record<SatUse, { es: string; en: string }> = {
+  G03: { es: "Gastos en general", en: "General expenses" },
+  G01: { es: "Adquisición de mercancías", en: "Purchase of goods" },
+  S01: { es: "Sin efectos fiscales", en: "No tax effects" },
+  G02: {
+    es: "Devoluciones, descuentos o bonificaciones",
+    en: "Returns, discounts or bonuses",
+  },
+};
+/** c_UsoCFDI receptor regimes (Facturapi OpenAPI v2 "Uso del CFDI" table, SAT catalog). */
+// prettier-ignore
+const BUSINESS = ["601", "603", "606", "612", "620", "621", "622", "623", "624", "625", "626"];
+// prettier-ignore
+const S01_REGIMES = [
+  "601", "603", "605", "606", "607", "608", "610", "611", "612", "614", "615", "616", "620",
+  "621", "622", "623", "624", "625", "626",
+];
+export const USE_REGIMES: Record<SatUse, readonly string[]> = {
+  G01: BUSINESS,
+  G02: BUSINESS,
+  G03: BUSINESS,
+  S01: S01_REGIMES,
+};
+/** False for any use outside USE_REGIMES (callers with a wider catalog apply their own fallback). */
+export function usoCfdiAllowed(regimen: string, uso: string): boolean {
+  return (
+    Object.hasOwn(USE_REGIMES, uso) &&
+    USE_REGIMES[uso as SatUse].includes(regimen)
+  );
+}

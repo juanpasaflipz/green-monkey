@@ -48,3 +48,15 @@ GRANT SELECT,INSERT ON offline_sync_records,offline_archives,offline_kitchen_rev
 GRANT UPDATE(state,decided_by,decided_at) ON offline_kitchen_reviews TO gm_app;
 GRANT UPDATE(offline_prefix) ON devices TO gm_app;
 GRANT UPDATE(offline_table_service) ON restaurants TO gm_app;
+-- 2.0 jobs worker: capability roles come from scripts/ops/sql/globals.sql (never from a
+-- migration); logins gm_<env>_worker / local gm_worker are members of gm_jobs_worker.
+-- gm_support is checked here too, so a cluster that missed globals.sql fails at this
+-- deploy rather than at 031's.
+DO $$ BEGIN
+ IF to_regrole('gm_jobs_worker') IS NULL OR to_regrole('gm_support') IS NULL THEN
+  RAISE EXCEPTION 'role gm_jobs_worker or gm_support is missing: run scripts/ops/sql/globals.sql as the database owner first (docs/PROVISIONING.md)';
+ END IF;
+END $$;
+GRANT USAGE ON SCHEMA public TO gm_jobs_worker;
+GRANT SELECT,INSERT ON jobs TO gm_jobs_worker;
+GRANT UPDATE(state,attempts,next_at,lease_until,error_code) ON jobs TO gm_jobs_worker;

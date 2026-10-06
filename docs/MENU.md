@@ -118,10 +118,11 @@ at worst), so one guest Wi-Fi IP still carries about 50 pages that are refocused
 constantly, and several times that many ordinary ones. The per-link budget keys
 on the server-signed link id, so one busy table cannot slow another table or the
 kiosk. Public routes accept a link only spelled exactly as the server signed
-it: the shared token
-check (`verify()` in `server/auth.ts`) also accepts other spellings of the same
-signature (anything after a second `.`, a trailing `=` or `!`), which are
-refused here with 401 before any database work. A refused poll is retried on
+it: the shared token check (`verify()`, `server/keyring.ts`) accepts exactly one
+spelling per signed token (the exact part count, canonical base64url, no
+trailing `=` or `!`, no stray low bits), so any other spelling of a link is
+refused with 401 before any database work and one signed link has one
+rate-limit key (Wave 2.0, P-22). A refused poll is retried on
 the next tick. Refusals answer 429 with `{"error":"rate_limited"}`. Per-link and
 per-table limits on stored links are public-ordering's (032).
 
@@ -275,9 +276,12 @@ after the device cached its catalog is different: sync refuses the line
 **Lock order and retry (DB-5).** Every command takes the stock rows it touches in
 one `SELECT … ORDER BY id FOR UPDATE` (`lockStockItems`) before any movement:
 all lines of an order or round (product and choice recipes merged) and all lines
-of a void with stock return. Lock classes follow the wave's global order (order
-locks first, stock rows after, menu and floor serialization only on configuration
-paths). `tenant()` retries a transaction once on `40P01`/`40001`; a second failure
+of a void with stock return. Lock classes follow the binding
+[global lock order](ARCHITECTURE.md#global-lock-order-binding) (order locks
+first, stock rows after, menu and floor serialization only on configuration
+paths; a void with stock return locks stock before its rounds, exception E3).
+The negative-stock policy save takes the restaurant row `FOR UPDATE` first, so
+two concurrent saves queue instead of deadlocking (Wave 2.0, D20). `tenant()` retries a transaction once on `40P01`/`40001`; a second failure
 returns `concurrent_update` (409). Code inside `tenant()` must therefore have no
 side effects outside the transaction.
 

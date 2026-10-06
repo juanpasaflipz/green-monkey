@@ -7,3 +7,10 @@ END IF;
 END $$;
 SELECT 'CREATE DATABASE green_monkey_dev OWNER gm_provisioner' WHERE NOT EXISTS(SELECT FROM pg_database WHERE datname='green_monkey_dev')\gexec
 SELECT 'CREATE DATABASE green_monkey_test OWNER gm_provisioner' WHERE NOT EXISTS(SELECT FROM pg_database WHERE datname='green_monkey_test')\gexec
+-- Jobs worker login (Wave 2.0). Membership of gm_jobs_worker is granted after
+-- scripts/ops/sql/globals.sql creates the capability role (setup-local.sh, CI).
+DO $$ BEGIN
+IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='gm_worker') THEN
+CREATE ROLE gm_worker LOGIN PASSWORD 'local-only-worker' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+END IF;
+END $$;

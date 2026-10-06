@@ -2,16 +2,30 @@
  * Pure process-configuration rules. server/config.ts applies them at startup
  * (preloaded through server/instrument.ts); tests call loadConfig() directly.
  *
- * Process model (wave 1):
- *   web     serves the API with the runtime role (DATABASE_URL) and, when
- *           billing is enabled, the billing capability login for owner
+ * Process model (Wave 2.0):
+ *   web     serves the API with the runtime role (DATABASE_URL) and, while
+ *           sandbox billing is on, the billing capability login for owner
  *           billing commands (BILLING_DATABASE_URL) plus the webhook secret.
- *           It never holds the migration owner, backup or provisioning
- *           credentials, nor the Stripe secret key.
- *   worker  runs the billing provider loop (Stripe secret key) and the
- *           watchdog. Its Railway preDeploy runs migrate + grants, so the
- *           migration credential lives in the worker service, not in web.
+ *           It holds the signing keys. It never holds the migration owner,
+ *           backup, provisioning, worker or support credentials, the Stripe
+ *           secret key or the worker kinds' provider keys.
+ *   worker  runs the jobs runner for worker-only kinds on its own login
+ *           (WORKER_DATABASE_URL, a member of gm_jobs_worker), the billing
+ *           provider loop (Stripe secret key) and the watchdog, and holds the
+ *           provider keys of its kinds. It holds no signing key.
+ * Migrations, grants and retention run in GitHub Actions as gm_migrator
+ * (.github/actions/deploy, .github/workflows/retention.yml): no runtime
+ * process holds the schema-owner credential (DB-1).
+ *
+ * This module enforces process boundaries only. Areas validate their own
+ * values with one pure call between the "area config checks" markers below
+ * (contract C-9), throwing ConfigError from server/config-error.ts.
  */
+import { ConfigError } from "./config-error.js";
+import { parseSigningKeys } from "./keyring.js";
+
+export { ConfigError };
+
 export type ProcessKind = "web" | "worker";
 export type AppEnv = "development" | "test" | "staging" | "production";
 export type AlertKind = "ntfy" | "slack" | "discord" | "generic";
@@ -35,24 +49,37 @@ export interface Config {
   /** web only: private URL of the worker's /healthz for /api/ops/status */
   workerUrl: string | null;
   billingEnabled: boolean;
+  /** worker: WORKER_DATABASE_URL (jobs login) or null when unset; web: null */
+  workerDatabaseUrl: string | null;
 }
 
-export class ConfigError extends Error {
-  constructor(public code: string) {
-    super(code);
-    this.name = "ConfigError";
-  }
-}
-
-/** Credentials that must never be present in a deployed process of each kind (DB-1, OPS-8). */
+/**
+ * Credentials that must never be present in a deployed process of each kind
+ * (DB-1, OPS-8, critic #4). The worker parses external input and holds
+ * provider keys, so it holds no signing key either (P-15).
+ */
 export const forbiddenCredentials: Record<ProcessKind, readonly string[]> = {
   web: [
     "MIGRATION_DATABASE_URL",
     "BACKUP_DATABASE_URL",
     "PROVISION_DATABASE_URL",
     "STRIPE_SECRET_KEY",
+    "WORKER_DATABASE_URL",
+    "SUPPORT_DATABASE_URL",
+    "FACTURAPI_API_KEY",
+    "FACTURAPI_TEST_KEY",
+    "CREDENTIAL_ENCRYPTION_KEY",
+    "CFDI_LIVE_ENABLED",
   ],
-  worker: ["DATABASE_URL", "BACKUP_DATABASE_URL", "PROVISION_DATABASE_URL"],
+  worker: [
+    "DATABASE_URL",
+    "BACKUP_DATABASE_URL",
+    "PROVISION_DATABASE_URL",
+    "MIGRATION_DATABASE_URL",
+    "SUPPORT_DATABASE_URL",
+    "SIGNING_KEYS",
+    "JWT_SECRET",
+  ],
 };
 
 const appEnvs: readonly AppEnv[] = [
@@ -215,12 +242,23 @@ export function loadConfig(
 
   if (kind === "web") {
     const url = databaseUrl(env.DATABASE_URL, "DATABASE_URL");
-    // Session, device, ordering and invitation tokens are signed with
-    // JWT_SECRET until the keyring (OPS-10) lands.
     if (!env.JWT_SECRET || env.JWT_SECRET.length < 32)
       throw new ConfigError("missing_jwt_secret");
+    // JWT_SECRET stays required: it verifies legacy-format tokens and keys the lookup
+    // digests (pairing codes, PIN fingerprints, invitation and transfer tokens); wave 3
+    // retires it (access A1 with account's HMACs).
+    if (env.SIGNING_KEYS) {
+      try {
+        parseSigningKeys(env.SIGNING_KEYS);
+      } catch {
+        throw new ConfigError("invalid_signing_keys");
+      }
+    } else if (appEnv === "production")
+      throw new ConfigError("missing_signing_keys");
     if (billingEnabled && !env.STRIPE_WEBHOOK_SECRET)
       throw new ConfigError("missing_stripe_webhook_secret");
+    // >>> area config checks: web (one pure call per area: fn(env, appEnv), throws ConfigError)
+    // <<< area config checks: web
     return Object.freeze({
       ...common,
       port: positiveInt(env.PORT, 3001, "invalid_port"),
@@ -234,6 +272,7 @@ export function loadConfig(
       workerUrl: env.WORKER_URL
         ? httpUrl(env.WORKER_URL, "invalid_worker_url", false).origin
         : null,
+      workerDatabaseUrl: null,
     });
   }
 
@@ -247,6 +286,8 @@ export function loadConfig(
     ])
       if (!env[name]) throw new ConfigError(`missing_${name.toLowerCase()}`);
   if (billingEnabled && !appUrl) throw new ConfigError("missing_app_url");
+  // >>> area config checks: worker (one pure call per area: fn(env, appEnv), throws ConfigError)
+  // <<< area config checks: worker
   // PROCESS_KIND=worker (Railway, containers) means PORT belongs to this
   // process. A local `npm run worker` shares .env with the web server, so it
   // uses WORKER_PORT or 3002 instead of the web PORT.
@@ -263,5 +304,8 @@ export function loadConfig(
       "invalid_draining_seconds",
     ),
     workerUrl: null,
+    workerDatabaseUrl: env.WORKER_DATABASE_URL
+      ? databaseUrl(env.WORKER_DATABASE_URL, "WORKER_DATABASE_URL")
+      : null,
   });
 }
