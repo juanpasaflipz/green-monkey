@@ -13,10 +13,15 @@ import {
 import { ConfigError as PureConfigError } from "../server/config-error.js";
 
 const secret = "x".repeat(40);
+// A synthetic keyring entry built at runtime (no key material is committed).
+const signingKeys = (kid = "k1", fill = 7, bytes = 32) =>
+  `${kid}:${Buffer.alloc(bytes, fill).toString("base64url")}`;
 const web = {
   DATABASE_URL: "postgresql://gm_app:pw@127.0.0.1:5432/green_monkey_dev",
   JWT_SECRET: secret,
 };
+// PLATFORM-KEYS-3: a deployed web, staging included, requires SIGNING_KEYS, so
+// the staging fixture carries a keyring (deliberate behaviour change).
 const deployedWeb = {
   ...web,
   APP_ENV: "staging",
@@ -24,20 +29,21 @@ const deployedWeb = {
   APP_URL: "https://staging.example.com",
   DATABASE_URL:
     "postgresql://gm_staging_app:pw@ep-x-pooler.us-east-1.aws.neon.tech/green_monkey_staging",
+  SIGNING_KEYS: signingKeys(),
 };
+const workerDatabaseUrl =
+  "postgresql://gm_production_worker:pw@ep-x-pooler.us-east-1.aws.neon.tech/green_monkey_production";
 // Migrations run in GitHub Actions (Wave 2.0 (l)): a deployed worker now
 // refuses MIGRATION_DATABASE_URL, so the fixture no longer carries it.
+// PLATFORM-OPS-4: a deployed worker requires its jobs login, so it carries
+// WORKER_DATABASE_URL (deliberate behaviour change).
 const deployedWorker = {
   APP_ENV: "production",
   NODE_ENV: "production",
   APP_URL: "https://app.example.com",
   PROCESS_KIND: "worker",
+  WORKER_DATABASE_URL: workerDatabaseUrl,
 };
-const workerDatabaseUrl =
-  "postgresql://gm_production_worker:pw@ep-x-pooler.us-east-1.aws.neon.tech/green_monkey_production";
-// A synthetic keyring entry built at runtime (no key material is committed).
-const signingKeys = (kid = "k1", fill = 7, bytes = 32) =>
-  `${kid}:${Buffer.alloc(bytes, fill).toString("base64url")}`;
 const billingWorker = {
   ...deployedWorker,
   BILLING_SANDBOX_ENABLED: "true",
@@ -195,9 +201,28 @@ describe("process configuration", () => {
         "worker",
       ).workerDatabaseUrl,
     ).toBe(workerDatabaseUrl);
-    expect(loadConfig(deployedWorker, "worker").workerDatabaseUrl).toBeNull();
+    // PLATFORM-OPS-4: a deployed worker (staging or production) refuses to start
+    // without its jobs login; unset and empty are the same. Development may run
+    // without one (billing and watchdog only).
+    const { WORKER_DATABASE_URL: _url, ...noJobsLogin } = deployedWorker;
+    for (const appEnv of ["staging", "production"])
+      for (const value of [undefined, "", "  "])
+        expect(
+          () =>
+            loadConfig(
+              { ...noJobsLogin, APP_ENV: appEnv, WORKER_DATABASE_URL: value },
+              "worker",
+            ),
+          `${appEnv} ${JSON.stringify(value)}`,
+        ).toThrow("missing_worker_database_url");
+    for (const appEnv of [undefined, "development", "test"])
+      expect(
+        loadConfig({ PROCESS_KIND: "worker", APP_ENV: appEnv }, "worker")
+          .workerDatabaseUrl,
+        `${appEnv} without a jobs login`,
+      ).toBeNull();
     expect(
-      loadConfig({ ...deployedWorker, WORKER_DATABASE_URL: "" }, "worker")
+      loadConfig({ PROCESS_KIND: "worker", WORKER_DATABASE_URL: "" }, "worker")
         .workerDatabaseUrl,
       "empty means unset",
     ).toBeNull();
@@ -235,9 +260,10 @@ describe("process configuration", () => {
     ).toBeNull();
   });
 
-  it("production web requires SIGNING_KEYS; staging and development do not", () => {
+  it("a deployed web (staging and production) requires SIGNING_KEYS; development does not (PLATFORM-KEYS-3)", () => {
+    const { SIGNING_KEYS: _keys, ...noKeys } = deployedWeb;
     const production = {
-      ...deployedWeb,
+      ...noKeys,
       APP_ENV: "production",
       APP_URL: "https://app.example.com",
     };
@@ -248,16 +274,20 @@ describe("process configuration", () => {
     expect(
       loadConfig({ ...production, SIGNING_KEYS: signingKeys() }, "web").appEnv,
     ).toBe("production");
+    // Staging rehearses production: it never falls back to a key derived from
+    // JWT_SECRET, which would then sign cfdi-portal-file tokens (P-23).
+    expect(() => loadConfig(noKeys, "web")).toThrow("missing_signing_keys");
+    expect(() =>
+      loadConfig({ ...noKeys, SIGNING_KEYS: " " }, "web"),
+    ).toThrow("missing_signing_keys");
     expect(loadConfig(deployedWeb, "web").appEnv).toBe("staging");
     expect(loadConfig(web, "web").appEnv).toBe("development");
+    expect(loadConfig({ ...web, APP_ENV: "test" }, "web").appEnv).toBe("test");
     // Railway's production environment counts too, in any case, as it does
     // for the keyring (server/production.ts), so the web never boots into a
-    // ring that refuses every signature (PLAT-R1).
+    // ring that refuses every signature (PLAT-R1), even with APP_ENV unset.
     expect(() =>
-      loadConfig(
-        { ...deployedWeb, RAILWAY_ENVIRONMENT_NAME: "Production" },
-        "web",
-      ),
+      loadConfig({ ...web, RAILWAY_ENVIRONMENT_NAME: "Production" }, "web"),
     ).toThrow("missing_signing_keys");
     // JWT_SECRET stays required next to SIGNING_KEYS (legacy tokens, lookup digests).
     const { JWT_SECRET: _jwt, ...noJwt } = production;
@@ -311,6 +341,130 @@ describe("process configuration", () => {
     } catch (error) {
       expect(String((error as Error).message)).not.toContain(
         Buffer.alloc(32, 7).toString("base64url"),
+      );
+    }
+  });
+
+  it("a deployed web refuses the committed CI keyring, fixture kids, text secrets and placeholder JWT_SECRETs; development accepts them (PLATFORM-CI-1, KEYS-5)", () => {
+    // qualification.yml's synthetic entry, rebuilt here from its documented text
+    // (the committed literal is allowlisted in .gitleaks.toml).
+    const ciText = "synthetic-ci-only-never-use-outside-tests";
+    const ciKeys = `ci-20261005:${Buffer.from(ciText).toString("base64url")}`;
+    const text = (kid: string, value: string) =>
+      `${kid}:${Buffer.from(value).toString("base64url")}`;
+    const placeholders: [string, Record<string, string>, string][] = [
+      ["the CI keyring", { SIGNING_KEYS: ciKeys }, "placeholder_signing_keys"],
+      [
+        "a ci- kid with random-looking bytes",
+        { SIGNING_KEYS: signingKeys("ci-20261005") },
+        "placeholder_signing_keys",
+      ],
+      [
+        "a local- kid",
+        { SIGNING_KEYS: signingKeys("local-dev") },
+        "placeholder_signing_keys",
+      ],
+      [
+        "a test- kid",
+        { SIGNING_KEYS: signingKeys("test-1") },
+        "placeholder_signing_keys",
+      ],
+      [
+        "the CI text under a production-shaped kid",
+        { SIGNING_KEYS: text("k20261005-ab12", ciText) },
+        "placeholder_signing_keys",
+      ],
+      [
+        "a typed passphrase (printable text)",
+        {
+          SIGNING_KEYS: text(
+            "k20261005-ab12",
+            "correct horse battery staple and more words",
+          ),
+        },
+        "placeholder_signing_keys",
+      ],
+      [
+        "a good key first and the CI key second",
+        { SIGNING_KEYS: `${signingKeys()},${ciKeys}` },
+        "placeholder_signing_keys",
+      ],
+      [
+        "CI's JWT_SECRET",
+        {
+          JWT_SECRET:
+            "synthetic-ci-only-never-use-outside-disposable-tests-123456789",
+        },
+        "placeholder_jwt_secret",
+      ],
+      [
+        "a local-only JWT_SECRET",
+        { JWT_SECRET: "local-only-jwt-secret-for-this-track-0123456789" },
+        "placeholder_jwt_secret",
+      ],
+      [
+        ".env.example's placeholder",
+        {
+          JWT_SECRET: "replace-with-an-environment-specific-random-secret",
+        },
+        "placeholder_jwt_secret",
+      ],
+      [
+        "replace-me",
+        { JWT_SECRET: "replace-me-replace-me-replace-me-replace-me" },
+        "placeholder_jwt_secret",
+      ],
+    ];
+    for (const [label, vars, code] of placeholders) {
+      for (const appEnv of ["staging", "production"])
+        expect(
+          () =>
+            loadConfig(
+              {
+                ...deployedWeb,
+                APP_ENV: appEnv,
+                APP_URL: "https://app.example.com",
+                ...vars,
+              },
+              "web",
+            ),
+          `${appEnv}: ${label}`,
+        ).toThrow(code);
+      // Railway's production environment refuses them even without APP_ENV.
+      expect(
+        () =>
+          loadConfig(
+            { ...web, RAILWAY_ENVIRONMENT_NAME: "production", ...vars },
+            "web",
+          ),
+        `RAILWAY_ENVIRONMENT_NAME=production: ${label}`,
+      ).toThrow(code);
+      // Local and CI runs (APP_ENV unset) keep using them.
+      expect(
+        loadConfig({ ...web, ...vars }, "web").appEnv,
+        `development: ${label}`,
+      ).toBe("development");
+    }
+    // generate-signing-key.mjs output (random bytes, k<YYYYMMDD>-<hex> kid) passes,
+    // as does a two-key rotation ring.
+    const random = (kid: string) =>
+      `${kid}:${Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 37 + 129) % 256)).toString("base64url")}`;
+    expect(
+      loadConfig(
+        {
+          ...deployedWeb,
+          SIGNING_KEYS: `${random("k20261005-ab12")},${signingKeys("k20261001-0f0f", 3)}`,
+        },
+        "web",
+      ).appEnv,
+    ).toBe("staging");
+    // The error names the variable class, never the value.
+    try {
+      loadConfig({ ...deployedWeb, SIGNING_KEYS: ciKeys }, "web");
+    } catch (error) {
+      expect(String((error as Error).message)).not.toContain(ciText);
+      expect(String((error as Error).message)).not.toContain(
+        ciKeys.split(":")[1],
       );
     }
   });

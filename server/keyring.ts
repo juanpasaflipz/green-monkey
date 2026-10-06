@@ -7,8 +7,10 @@
  * the first key signs and every listed key verifies (rotation: docs/RUNBOOK.md
  * "Signing keys").
  *
- * Without SIGNING_KEYS (development, test, and staging until its cutover) one key is
- * derived from JWT_SECRET under the reserved kid "jwt". Legacy acceptance: while
+ * Without SIGNING_KEYS (local development and test only) one key is derived from
+ * JWT_SECRET under the reserved kid "jwt". A deployed web (staging included, from the
+ * platform hardening) refuses to start without SIGNING_KEYS (missing_signing_keys) or
+ * with placeholder or CI keys (server/config-rules.ts, PLATFORM-KEYS-3, CI-1). Legacy acceptance: while
  * JWT_SECRET is set, the pre-2.0 two-part "body.sig" format and "v2.jwt.*" tokens verify
  * for use "sign" only, and never in production (LD-8 D5: none were ever issued there),
  * so a leaked JWT_SECRET never mints a sealed token (P-23).
@@ -26,7 +28,7 @@ export interface SigningKey {
 }
 /** keyring()[0] signs; every entry verifies. */
 export type Keyring = readonly SigningKey[];
-/** Reserved kid derived from JWT_SECRET when SIGNING_KEYS is unset (development, test, staging only). */
+/** Reserved kid derived from JWT_SECRET when SIGNING_KEYS is unset (local development and test only). */
 export const FALLBACK_KID = "jwt";
 const KID = /^[a-z0-9-]{1,32}$/;
 const B64URL = /^[A-Za-z0-9_-]+$/;
@@ -91,6 +93,16 @@ export function keyring(): Keyring {
   return (ring = [{ kid: FALLBACK_KID, secret: fallbackSecret(jwt) }]);
 }
 
+/**
+ * The active kids only (never key material), for the web's startup log line
+ * `signing_keys_active`: after an emergency rotation the operator confirms there that the
+ * new kid signs and the leaked one is gone (docs/RUNBOOK.md "Signing keys").
+ */
+export function keyringSummary(): { signKid: string; kids: string[] } {
+  const ring = keyring();
+  return { signKid: ring[0].kid, kids: ring.map((k) => k.kid) };
+}
+
 /** Test hook. */
 export function resetKeyring(): void {
   ring = null;
@@ -139,8 +151,8 @@ export function signToken(use: string, data: unknown): string {
 }
 
 /**
- * The parsed body, or null. With legacy, a two-part "body.sig" under JWT_SECRET verifies
- * while it is set, outside production (LD-8 D5). Exactly one spelling per token is
+ * The parsed body, or null. With legacy and use "sign", a two-part "body.sig" under
+ * JWT_SECRET verifies while it is set, outside production (LD-8 D5). Exactly one spelling per token is
  * accepted (P-22, MENU-R3): the part count is exact, and the body and the signature must
  * be canonical base64url, because Buffer.from(…, "base64url") silently skips "=", "!",
  * whitespace and the unused low bits of the last character.
@@ -162,10 +174,13 @@ export function verifyToken(
       .digest();
   } else if (
     o.legacy &&
+    use === "sign" &&
     parts.length === 2 &&
     jwtSecret() &&
     !isProductionEnv()
   ) {
+    // Legacy acceptance is for cookies and links only: a "seal:*" use never
+    // accepts a JWT_SECRET-only token, whatever the caller passes (PLATFORM-KEYS-4).
     [body, sig] = parts;
     expected = createHmac("sha256", jwtSecret()!).update(body).digest();
   } else return null;

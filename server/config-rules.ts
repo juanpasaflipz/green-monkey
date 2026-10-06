@@ -6,13 +6,15 @@
  *   web     serves the API with the runtime role (DATABASE_URL) and, while
  *           sandbox billing is on, the billing capability login for owner
  *           billing commands (BILLING_DATABASE_URL) plus the webhook secret.
- *           It holds the signing keys. It never holds the migration owner,
+ *           It holds the signing keys (SIGNING_KEYS, required when deployed,
+ *           never a committed placeholder). It never holds the migration owner,
  *           backup, provisioning, worker or support credentials, the Stripe
  *           secret key or the worker kinds' provider keys.
  *   worker  runs the jobs runner for worker-only kinds on its own login
- *           (WORKER_DATABASE_URL, a member of gm_jobs_worker), the billing
- *           provider loop (Stripe secret key) and the watchdog, and holds the
- *           provider keys of its kinds. It holds no signing key.
+ *           (WORKER_DATABASE_URL, a member of gm_jobs_worker; required when
+ *           deployed), the billing provider loop (Stripe secret key) and the
+ *           watchdog, and holds the provider keys of its kinds. It holds no
+ *           signing key.
  * Migrations, grants and retention run in GitHub Actions as gm_migrator
  * (.github/actions/deploy, .github/workflows/retention.yml): no runtime
  * process holds the schema-owner credential (DB-1).
@@ -51,7 +53,7 @@ export interface Config {
   /** web only: private URL of the worker's /healthz for /api/ops/status */
   workerUrl: string | null;
   billingEnabled: boolean;
-  /** worker: WORKER_DATABASE_URL (jobs login) or null when unset; web: null */
+  /** worker: WORKER_DATABASE_URL (jobs login), required when deployed, null when unset in development/test; web: null */
   workerDatabaseUrl: string | null;
 }
 
@@ -249,15 +251,25 @@ export function loadConfig(
     // JWT_SECRET stays required: it verifies legacy-format tokens and keys the lookup
     // digests (pairing codes, PIN fingerprints, invitation and transfer tokens); wave 3
     // retires it (access A1 with account's HMACs).
+    // A deployed web (staging included) or Railway's production environment never runs
+    // on committed or text placeholder secrets (PLATFORM-CI-1, KEYS-5).
+    const live = deployed || isProductionEnv(env);
+    if (live && isPlaceholderSecret(env.JWT_SECRET))
+      throw new ConfigError("placeholder_jwt_secret");
     if (env.SIGNING_KEYS) {
+      let ring: ReturnType<typeof parseSigningKeys>;
       try {
-        parseSigningKeys(env.SIGNING_KEYS);
+        ring = parseSigningKeys(env.SIGNING_KEYS);
       } catch {
         throw new ConfigError("invalid_signing_keys");
       }
-    } else if (appEnv === "production" || isProductionEnv(env))
-      // The keyring's own production test (RAILWAY_ENVIRONMENT_NAME too):
-      // without keys it would refuse every signature at runtime instead.
+      if (live && ring.some(isPlaceholderSigningKey))
+        throw new ConfigError("placeholder_signing_keys");
+    } else if (live)
+      // Staging rehearses production, so it refuses the same configuration
+      // (PLATFORM-KEYS-3): without keys the keyring would fall back to a key
+      // derived from JWT_SECRET (staging) or refuse every signature at runtime
+      // (production, RAILWAY_ENVIRONMENT_NAME too).
       throw new ConfigError("missing_signing_keys");
     if (billingEnabled && !env.STRIPE_WEBHOOK_SECRET)
       throw new ConfigError("missing_stripe_webhook_secret");
@@ -310,8 +322,47 @@ export function loadConfig(
       "invalid_draining_seconds",
     ),
     workerUrl: null,
-    workerDatabaseUrl: env.WORKER_DATABASE_URL
-      ? databaseUrl(env.WORKER_DATABASE_URL, "WORKER_DATABASE_URL")
-      : null,
+    // A deployed worker without its jobs login would run no worker kind while
+    // every health signal stays green (PLATFORM-OPS-4): refuse to start.
+    workerDatabaseUrl:
+      env.WORKER_DATABASE_URL || deployed
+        ? databaseUrl(env.WORKER_DATABASE_URL, "WORKER_DATABASE_URL")
+        : null,
   });
+}
+
+/**
+ * Committed or human-typed stand-ins that must never sign anything in a deployed
+ * environment: the CI and local fixture markers (the literals .gitleaks.toml allowlists)
+ * and the documented placeholders.
+ */
+const PLACEHOLDER_MARKERS = [
+  "synthetic",
+  "local-only",
+  "replace-me",
+  "replace-with",
+  "never-use",
+  "demo-green-monkey",
+  "changeme",
+];
+
+/** A JWT_SECRET that is a committed or documented placeholder. */
+export function isPlaceholderSecret(value: string): boolean {
+  const lower = value.toLowerCase();
+  return PLACEHOLDER_MARKERS.some((marker) => lower.includes(marker));
+}
+
+/**
+ * A keyring entry that is not production material (PLATFORM-CI-1, KEYS-5): a fixture kid
+ * (ci-*, local-*, test-*), a secret that decodes to a placeholder marker, or a secret that
+ * is printable ASCII text throughout. scripts/ops/generate-signing-key.mjs writes 32 random
+ * bytes, which are all printable with probability (95/256)^32, about 2e-14.
+ */
+export function isPlaceholderSigningKey(key: {
+  kid: string;
+  secret: Buffer;
+}): boolean {
+  if (/^(ci|local|test)-/.test(key.kid)) return true;
+  const text = key.secret.toString("latin1");
+  return isPlaceholderSecret(text) || /^[\x20-\x7e]+$/.test(text);
 }

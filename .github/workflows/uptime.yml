@@ -1,6 +1,7 @@
 name: Uptime
 # Hourly external check (OPS-4): production /api/ops/status must be ok and not
-# degraded (database, schema, worker), and the last successful production
+# degraded (database, schema, worker, and a worker whose jobs runner is on,
+# PLATFORM-OPS-4), and the last successful production
 # backup must be under 26 hours old. Alerts the ntfy topic and opens or
 # updates an "ops-alert: production" issue. Railway does not monitor the
 # healthcheck after a deploy goes live, so this runs outside Railway.
@@ -31,7 +32,7 @@ jobs:
           body=$(curl -fsS --max-time 15 "$APP_URL/api/ops/status")
           node -e '
             const s = JSON.parse(process.argv[1]);
-            console.log(JSON.stringify({ ok: s.ok, degraded: s.degraded, db: s.db, schema: s.schema, worker: s.worker?.status, commit: s.commit }));
+            console.log(JSON.stringify({ ok: s.ok, degraded: s.degraded, db: s.db, schema: s.schema, worker: s.worker?.status, workerJobs: s.worker?.jobs, workerCommit: s.worker?.commit, commit: s.commit }));
             if (s.ok !== true || s.degraded !== false) process.exit(1);' "$body"
       - name: Backup freshness
         env:

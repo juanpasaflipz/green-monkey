@@ -1,9 +1,10 @@
 // Worker process (Railway service "worker"). Started with
 //   node --import ./build/server/instrument.js build/server/worker.js
 // so configuration (dotenv + validation) loads before anything else.
-// It runs the billing provider loop (sandbox billing only), the watchdog and, when
-// WORKER_DATABASE_URL is set, the jobs runner for worker-only kinds on its own login
-// (a member of gm_jobs_worker). It never holds the schema-owner credential or a signing
+// It runs the billing provider loop (sandbox billing only), the watchdog and the jobs
+// runner for worker-only kinds on its own login (WORKER_DATABASE_URL, a member of
+// gm_jobs_worker; a deployed worker refuses to start without it, PLATFORM-OPS-4, and only a
+// development run goes without). It never holds the schema-owner credential or a signing
 // key: migrations, grants and retention run in GitHub Actions (.github/actions/deploy,
 // .github/workflows/retention.yml), and server/config-rules.ts refuses those variables.
 import "./config.js";
@@ -136,7 +137,9 @@ if (config.workerDatabaseUrl) {
         body: `jobs_dead kind=${job.kind} code=${code}`,
       }),
   });
-} else log.warn("worker_jobs_disabled", { reason: "no_worker_database_url" });
+} else
+  // Development only: config refuses a deployed worker without its jobs login.
+  log.warn("worker_jobs_disabled", { reason: "no_worker_database_url" });
 // >>> worker areas: boot hooks (one awaited call per area, after the jobs login is
 // verified and the runner created, before it starts; receives workerSql, null when
 // WORKER_DATABASE_URL is unset, and process.env; a throw is fatal, so hooks
