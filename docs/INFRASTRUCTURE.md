@@ -141,7 +141,12 @@ context; the runtime role has no DELETE anywhere.
 | `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_FOUNDERS` | Compatibility candidates from POS Lite; map plans explicitly rather than assuming old prices |
 | Luma `STRIPE_PRICE_MONTHLY`, `*_ANNUAL`, `*_POS_MONTHLY`, `*_PRO_*` | Map existing subscriptions/products during migration; not a second billing engine |
 | `MP_*`, `GETNET_*`, `CLIP_*` | Preserve documented provider configuration where enabled; restaurant credentials remain tenant-scoped |
-| `FACTURAPI_API_KEY`, `FACTURAPI_TEST_KEY` | Canonical invoicing variables, `worker` only (a deployed web refuses them); verify sandbox/live separation |
+| `FACTURAPI_API_KEY`, `FACTURAPI_TEST_KEY` | Canonical invoicing variables, `worker` only (a deployed web refuses them). `FACTURAPI_API_KEY` is the platform's Facturapi **User key** (`sk_user_…`): one organization per restaurant, each with its own test and live keys. `FACTURAPI_TEST_KEY` (`sk_test_…`) alone gives the shared sandbox for staging/dev rehearsal and the opt-in sandbox check; refused alone in production ([CFDI](CFDI.md) "Environment matrix") |
+| `CREDENTIAL_ENCRYPTION_KEY` | `worker` only, required with `FACTURAPI_API_KEY`: `kid:base64url(>=32 bytes)[,…]`, first entry seals the organization keys and derives the CSD upload key pair; generate with `scripts/cfdi-generate-credential-key.mjs`, rotate by prepending a kid, redeploying and running `npm run cfdi:rekey` |
+| `CFDI_LIVE_ENABLED` | `worker` only: `true` only with `APP_ENV=production` and a User key; publishes live availability (each restaurant still switches with step-up) |
+| `CFDI_GLOBAL_GRACE_MINUTES` | `worker` only: minutes after a period closes before its global invoice is built (0–600, default 60) |
+| `CFDI_INVOICE_LINK_EXPIRY_HOURS` | `web`: lifetime of the self-invoicing portal's request links (1–168 h, default 72) |
+| `FACTURAPI_BASE_URL` | development/test only, loopback host only (the Facturapi fake, `npm run dev:facturapi-fake`); refused in staging and production; not registered in Railway |
 | `R2_*`, `FEATURE_MENU_PHOTOS`, `VITE_FEATURE_MENU_PHOTOS` | Preserve asset capability and server/client flags |
 | `RESEND_API_KEY`, `ANTHROPIC_API_KEY` | Optional reports/email and reviewed import assistance |
 | `TYPESAFE_API_KEY` | New: optional, server-only key for the TypeSafe judgment-assist modules in the feature matrix; never expose to the browser; unset disables them and keeps the manual flow |

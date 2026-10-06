@@ -32,7 +32,7 @@
 | Cash sessions, paid-outs, end-of-day | POS Lite drawers; Luma cash cut | Guided close and discrepancy explanations | 2, required |
 | Team, shifts, payroll/tips summaries | POS Lite staff/payroll; Luma team | Role-focused management; configurable rules | 5, required; not legal payroll certification |
 | Onboarding, account, subscription billing | Both | One onboarding path and entitlement system | 5, required; billing provider sandbox gate |
-| CFDI invoice/customer self-service/cancellation | Both FacturAPI flows | Verified provider adapter; private credential handling | 5, configured module; required before invoice cutover |
+| CFDI invoice/customer self-service/cancellation | Both FacturAPI flows | Delivered (030): Facturapi organization per restaurant, staff invoice, QR/code self-invoicing portal, global invoices by period, cancellation/substitution, credit notes, worker-only sealed credentials ([CFDI](CFDI.md)). Contract-tested, not sandbox-verified; disabled until keys are configured; live not enabled | 5, configured module; required before invoice cutover |
 | Uber Eats/Rappi/DiDi imports and connectors | POS Lite adapters; Luma delivery parser | Import-first plus verified live connectors | 4–5; live connectivity gated |
 | Courier dispatch (Uber Direct) | POS Lite | Retain distinct dispatch lifecycle and retries | Optional configured module |
 | Loyalty/stamps/referrals | POS Lite | Integrate after checkout; do not obstruct cash sale | 5, configured module |

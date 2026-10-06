@@ -38,6 +38,10 @@ acknowledged a critical alert within 15 minutes during service hours
 | Uptime workflow failure | ntfy + GitHub issue `ops-alert: production` | `/api/ops/status` not ok or degraded, or the last successful production backup run is older than 26 h |
 | Backup workflow failure | ntfy + GitHub issue `ops-alert: <env>` | the nightly dump failed |
 | Railway deploy failed/crashed | ntfy (Railway webhook, manual setup below) | a deploy or a running instance failed |
+| `cfdi_provider_auth_failed` (critical) | ntfy, from the worker | Facturapi refused the platform User key (CFDI publishes `disabled`) or a restaurant's organization key: check the worker's `FACTURAPI_API_KEY` / that organization ([CFDI](CFDI.md) "Operations") |
+| `cfdi_global_overdue:*`, `cfdi_global_late:*`, `cfdi_global_failed:*` (warning) | ntfy, from the worker | a global invoice missed its 24 h deadline, a late supplementary part was issued after it, or a part failed: Facturas globales → **Emitir ahora** / **Reintentar** |
+| `cfdi_stamp_unresolved:*`, `cfdi_cancel_unresolved:*`, `cfdi_cancel_failed:*`, `cfdi_substitution_rejected:*`, `cfdi_reissue_failed:*`, `cfdi_refund_unresolved:*`, `cfdi_ticket_excluded:*`, `cfdi_amount_mismatch:*` (warning) | ntfy, from the worker | one restaurant's document needs a person (`<tenant>` = first 8 hex characters of the tenant id): see the action per key in [CFDI](CFDI.md) "Operations" |
+| `cfdi_csd_expiring:*` (info) | ntfy, from the worker | a restaurant's CSD expires within 30 days: the owner uploads a new one |
 
 Alerts carry codes and counts only, never personal or tenant data. Logs are
 single-line JSON in Railway: filter with `@level:error`, `@message:http_request`,
@@ -237,6 +241,11 @@ Other secrets:
   `GOOGLE_CLIENT_SECRET`, deploy, then disable the old secret.
 - R2 token, Railway project token, ntfy topic: create the new one, update the
   GitHub environment secret/variable, delete the old one.
+- cfdi `CREDENTIAL_ENCRYPTION_KEY` (worker only): prepend a new kid, redeploy
+  the worker, run `npm run cfdi:rekey`, then drop the old kid
+  ([CFDI](CFDI.md) "Credential key rotation"). The Facturapi User key: create a
+  new one in Facturapi, set `FACTURAPI_API_KEY` on `worker`, deploy, revoke the
+  old one.
 
 ## Signing keys
 
