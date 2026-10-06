@@ -23,6 +23,7 @@
  */
 import { ConfigError } from "./config-error.js";
 import { parseSigningKeys } from "./keyring.js";
+import { isProductionEnv } from "./production.js";
 
 export { ConfigError };
 
@@ -253,7 +254,9 @@ export function loadConfig(
       } catch {
         throw new ConfigError("invalid_signing_keys");
       }
-    } else if (appEnv === "production")
+    } else if (appEnv === "production" || isProductionEnv(env))
+      // The keyring's own production test (RAILWAY_ENVIRONMENT_NAME too):
+      // without keys it would refuse every signature at runtime instead.
       throw new ConfigError("missing_signing_keys");
     if (billingEnabled && !env.STRIPE_WEBHOOK_SECRET)
       throw new ConfigError("missing_stripe_webhook_secret");

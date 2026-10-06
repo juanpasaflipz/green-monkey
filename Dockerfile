@@ -12,7 +12,9 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/build ./build
 COPY --from=build /app/migrations ./migrations
-# The migrate/grants preDeploy and the readiness check read these at runtime.
+# The readiness check and the image smoke (`migrate.js --check`) read these at
+# runtime; no Railway service runs a preDeploy after Wave 2.0 (migrations, grants
+# and retention run in GitHub Actions as gm_migrator).
 COPY --from=build /app/scripts/grants.sql ./scripts/grants.sql
 COPY --from=build /app/scripts/db/post-migrate.sql ./scripts/db/post-migrate.sql
 # Stamped by CD (scripts/ops/stamp-build.mjs) so /api/version reports the build.

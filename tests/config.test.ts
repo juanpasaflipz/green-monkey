@@ -242,6 +242,15 @@ describe("process configuration", () => {
     ).toBe("production");
     expect(loadConfig(deployedWeb, "web").appEnv).toBe("staging");
     expect(loadConfig(web, "web").appEnv).toBe("development");
+    // Railway's production environment counts too, in any case, as it does
+    // for the keyring (server/production.ts), so the web never boots into a
+    // ring that refuses every signature (PLAT-R1).
+    expect(() =>
+      loadConfig(
+        { ...deployedWeb, RAILWAY_ENVIRONMENT_NAME: "Production" },
+        "web",
+      ),
+    ).toThrow("missing_signing_keys");
     // JWT_SECRET stays required next to SIGNING_KEYS (legacy tokens, lookup digests).
     const { JWT_SECRET: _jwt, ...noJwt } = production;
     expect(() =>
