@@ -696,7 +696,10 @@ describe("cfdi client: helpers", () => {
     expect(html(doc({ waitingSubstituteId: null }))).toBe("");
   });
   it("credit notes: the register says why Cancelar and Sustituir are missing, the dialog says how a credited global is invoiced, and no message tells staff to cancel credit notes (CFDI-INT-1)", () => {
-    const html = (over: Partial<CfdiDocumentView>, locale: "es" | "en" = "es") =>
+    const html = (
+      over: Partial<CfdiDocumentView>,
+      locale: "es" | "en" = "es",
+    ) =>
       renderToStaticMarkup(
         createElement(CreditNotesBlockNote, {
           doc: {
@@ -717,7 +720,10 @@ describe("cfdi client: helpers", () => {
       inGlobalNotice({ reissueRoute: "cancel", reissueReason: null }),
     ).toBe("cfdiInGlobalManager");
     expect(
-      inGlobalNotice({ reissueRoute: "credit_note", reissueReason: "deadline" }),
+      inGlobalNotice({
+        reissueRoute: "credit_note",
+        reissueReason: "deadline",
+      }),
     ).toBe("cfdiInGlobalCreditNote");
     expect(
       inGlobalNotice({

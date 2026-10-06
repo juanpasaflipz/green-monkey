@@ -4345,7 +4345,11 @@ try {
         route: staffView.reissueRoute,
         reason: staffView.reissueReason,
       },
-      { eligibility: "in_global", route: "credit_note", reason: "credit_notes" },
+      {
+        eligibility: "in_global",
+        route: "credit_note",
+        reason: "credit_notes",
+      },
     );
     const owner = await web(W, (tx) =>
       service.getDocument(tx, W.owner, { params: { id: g.id } } as never),
