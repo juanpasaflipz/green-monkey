@@ -470,9 +470,11 @@ on a scratch database.
 - **Browser.**
   - `tests/browser/public-ordering.spec.ts`, plus the rewritten QR legs of
     `menu.spec` (FIT-4, OWNER-2/11), `core.spec` and `security.spec`.
-  - Every test uses its own `QR <runId>` tables and codes, and undoes its
-    holds, links, pause, policies, checks and tables in a `finally` (and in an
-    `afterEach` for timeouts; LD-P9).
+  - Every test uses its own `QR <runId>` tables or run-id-labelled codes, and
+    undoes what it created (holds, links, pause, policies, checks, tables) in
+    a `finally` (LD-P9). `public-ordering.spec` and `core.spec` also run that
+    cleanup from an `afterEach`, for a test that times out before its
+    `finally`.
   - Evidence: `docs/evidence/public-*.png`.
 
 ## Phase B: what is still to do

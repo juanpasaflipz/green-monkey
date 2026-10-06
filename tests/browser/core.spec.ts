@@ -321,36 +321,92 @@ test("offline cash persists and synchronizes after reconnect", async ({
   );
 });
 
+// LD-P9: the QR test's cleanup. It runs in the test's finally and, should the
+// test time out before reaching it, here.
+let qrCleanup: (() => Promise<void>) | null = null;
+test.afterEach(async () => {
+  const cleanup = qrCleanup;
+  qrCleanup = null;
+  if (cleanup) await cleanup();
+});
+
 test("QR orders wait for staff, are priced by the server, and the customer follows them once accepted", async ({
   page,
   context,
 }) => {
   await login(page);
   const id = crypto.randomUUID().slice(0, 5);
-  const post = (path: string, body: unknown) =>
+  const name = `QR acceptance ${id}`;
+  const label = `Aceptación ${id}`;
+  /** Authenticated JSON call (GET without a body) with the app's CSRF token. */
+  const call = (path: string, body?: unknown) =>
     page.evaluate(
       async ({ path, body }) => {
         const s = await (await fetch("/api/session")).json();
         const r = await fetch("/api" + path, {
-          method: "POST",
+          method: body === undefined ? "GET" : "POST",
           headers: {
             "Content-Type": "application/json",
             "x-csrf-token": s.csrf,
           },
-          body: JSON.stringify(body),
+          body: body === undefined ? undefined : JSON.stringify(body),
         });
         return r.json();
       },
       { path, body },
     );
-  // Public ordering (032): a revocable counter code instead of a 24 h signed
-  // link, and the order waits for staff instead of going to the kitchen.
-  const link = await post("/ordering/links", {
-    kind: "counter",
-    label: `Aceptación ${id}`,
-  });
-  let orderId: string | null = null;
+  let linkId: string | null = null;
+  // Rejects every hold of this test still waiting for staff, settles and
+  // releases every check its acceptance opened, then deactivates the code.
+  const cleanup = async () => {
+    qrCleanup = null;
+    const inbox = await call("/ordering/inbox");
+    for (const h of (inbox.holds ?? []) as {
+      id: string;
+      name: string;
+      linkLabel: string;
+    }[])
+      if (h.name.includes(name) || h.linkLabel === label)
+        await call(`/ordering/holds/${h.id}/reject`, {
+          operationId: crypto.randomUUID(),
+          reason: "other",
+        });
+    const open = await call(
+      "/service/orders?status=open&limit=100&q=" + encodeURIComponent(name),
+    );
+    for (const item of (open.items ?? []) as { id: string; name: string }[]) {
+      if (!item.name.includes(name)) continue;
+      const order = await call(`/orders/${item.id}`);
+      if (!order?.id || order.checkState === "closed") continue;
+      const due = order.total - order.paid;
+      if (due > 0) {
+        await call("/cash/open", {
+          operationId: crypto.randomUUID(),
+          opening: 0,
+        });
+        await call(`/orders/${item.id}/payments`, {
+          operationId: crypto.randomUUID(),
+          amount: due,
+          received: due,
+          method: "cash",
+        });
+      }
+      await call(`/service/orders/${item.id}/close`, {
+        operationId: crypto.randomUUID(),
+      });
+    }
+    if (linkId)
+      await call(`/ordering/links/${linkId}/revoke`, {
+        operationId: crypto.randomUUID(),
+      });
+  };
+  qrCleanup = cleanup;
   try {
+    // Public ordering (032): a revocable counter code instead of a 24 h signed
+    // link, and the order waits for staff instead of going to the kitchen.
+    const link = await call("/ordering/links", { kind: "counter", label });
+    linkId = link.id ?? null;
+    expect(linkId, JSON.stringify(link)).not.toBeNull();
     const customer = await context.newPage();
     await customer.goto(link.path);
     await expect(
@@ -359,16 +415,14 @@ test("QR orders wait for staff, are priced by the server, and the customer follo
     await customer.getByRole("button", { name: /^Taco de hongos/ }).click();
     await customer
       .getByRole("textbox", { name: "Nombre (opcional)" })
-      .fill(`QR acceptance ${id}`);
+      .fill(name);
     await customer
       .getByRole("button", { name: "Enviar pedido", exact: true })
       .click();
     const head = customer.locator(".diner-status-head");
     await expect(head).toContainText("Esperando confirmación del personal");
     await page.getByRole("button", { name: "Órdenes", exact: true }).click();
-    const card = page
-      .locator(".hold-card")
-      .filter({ hasText: `QR acceptance ${id}` });
+    const card = page.locator(".hold-card").filter({ hasText: name });
     await expect(card).toContainText("$45.00");
     await card
       .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
@@ -381,39 +435,12 @@ test("QR orders wait for staff, are priced by the server, and the customer follo
     );
     const summary = page
       .locator(".order-summary")
-      .filter({ hasText: `QR acceptance ${id}` })
+      .filter({ hasText: name })
       .first();
     await expect(summary).toContainText("$45.00");
-    orderId = await page.evaluate(
-      async (name) =>
-        (
-          await (
-            await fetch(
-              "/api/service/orders?status=open&limit=100&q=" +
-                encodeURIComponent(name),
-            )
-          ).json()
-        ).items.find((o: { name: string }) => o.name === name)?.id ?? null,
-      `QR acceptance ${id}`,
-    );
     await customer.close();
   } finally {
-    // Pay the takeaway check (it closes) and deactivate the code.
-    if (orderId) {
-      await post("/cash/open", {
-        operationId: crypto.randomUUID(),
-        opening: 0,
-      });
-      await post(`/orders/${orderId}/payments`, {
-        operationId: crypto.randomUUID(),
-        amount: 4500,
-        received: 4500,
-        method: "cash",
-      });
-    }
-    await post(`/ordering/links/${link.id}/revoke`, {
-      operationId: crypto.randomUUID(),
-    });
+    if (qrCleanup) await cleanup();
   }
 });
 
