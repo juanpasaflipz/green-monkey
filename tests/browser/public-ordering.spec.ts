@@ -430,6 +430,24 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
         state: "ready",
       });
     await expect(head).toContainText("Listo", { timeout: 30000 });
+
+    // B1: once staff collect the check, its fiscal ticket exists and the
+    // diner's status shows the folio, as the printed ticket does (027).
+    await call(page, "/cash/open", { operationId: op(), opening: 0 });
+    const due = (await call(page, `/orders/${order!.id}`)).data;
+    const paid = await call(page, `/orders/${order!.id}/payments`, {
+      operationId: op(),
+      amount: due.total - due.paid,
+      received: due.total - due.paid,
+      method: "cash",
+    });
+    expect(paid.status, JSON.stringify(paid.data)).toBe(200);
+    const folio = paid.data.fiscal?.ticket?.folio as string;
+    expect(folio).toMatch(/^(?:[A-Z0-9]{1,10}-)?\d{6}$/);
+    await expect(customer.locator(".diner-money")).toHaveText(
+      `Pagado · Folio ${folio}`,
+      { timeout: 30000 },
+    );
   });
 });
 
@@ -684,6 +702,19 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     await expect(page.locator(".receipt")).toBeVisible();
     // MONEY-2: the receipt carries the code the diner holds (order note).
     await expect(page.locator(".receipt")).toContainText(label);
+    // B1: the accept's payment issued the fiscal ticket in the same
+    // transaction, so the receipt prints its folio, and the ticket's gross is
+    // the total the inbox showed for the hold (fiscal 027, X26).
+    const folioLine = page.locator(".receipt .fiscal-folio");
+    await expect(folioLine).toHaveText(/^Folio: (?:[A-Z0-9]{1,10}-)?\d{6}$/);
+    const folio = (await folioLine.innerText()).replace(/^Folio:\s*/, "");
+    const tickets = await call(
+      page,
+      "/fiscal/tickets?folio=" + encodeURIComponent(folio),
+    );
+    expect(tickets.status, JSON.stringify(tickets.data)).toBe(200);
+    expect(tickets.data.rows).toHaveLength(1);
+    expect(tickets.data.rows[0].gross).toBe(before.data.holds[0].currentTotal);
     await expect(inbox(page)).toContainText(acceptedNotice(label));
     await page
       .getByRole("button", { name: /Siguiente|Listo/ })
