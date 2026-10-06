@@ -78,16 +78,10 @@ Before production accepts its first restaurant (see also
    polls (inbox summary and inbox on operator devices, diner revision,
    submit and status) before `DB_POOL_MAX` is chosen (LOAD_TEST.md,
    PUBLIC-OPS-7).
-   `PUBLIC_ORDERING_ENABLED` is unset or `true` on production
-   (`/api/account-config` reports `publicOrdering.enabled: true`; since public
-   ordering's flag flip, B4, unset means on everywhere), and a staging browser
-   run passed on the same revision. To turn QR and kiosk ordering off (roll
-   back), set it to `false` on `web` and redeploy: no deploy window and no
-   new build (RUNBOOK "Online ordering abuse", step 6). Reverting the B4
-   commit restores the old default (off in production when unset) only
-   where that commit exists; `main` takes squashed or rebased merges, so
-   there the forward change in PUBLIC_ORDERING "Rolling back QR and kiosk
-   ordering" applies (PUBLIC-OPS-2).
+   `PUBLIC_ORDERING_ENABLED` stays unset or `false` in production
+   (`/api/account-config` reports `publicOrdering.enabled: false`) until the
+   flag-flip commit (public B4) is deployed; `false` is the kill switch
+   afterwards.
 6. At least one support operator is provisioned (`npm run support:provision`,
    [operations](OPERATIONS.md), Support) and can run `lookup`; pilot
    restaurants get Pro with `grant-entitlement`.
