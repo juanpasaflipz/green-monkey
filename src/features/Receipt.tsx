@@ -381,6 +381,8 @@ export function ReceiptModal({
   reprint = false,
   label,
   labelHint,
+  printLabel,
+  printLabelHint,
   extraActions,
   noteActions,
   header,
@@ -396,6 +398,12 @@ export function ReceiptModal({
   reprint?: boolean;
   label?: string;
   labelHint?: string;
+  /**
+   * fiscal (027): the printed copy is a comprobante and prints in Spanish
+   * (D10), so a label in the UI language has a Spanish twin for the print.
+   */
+  printLabel?: string;
+  printLabelHint?: string;
   extraActions?: ReactNode;
   /**
    * Selling's "Editar nota" (and "Reimprimir comanda" after an edit) while the
@@ -464,11 +472,11 @@ export function ReceiptModal({
               <ReceiptDocument
                 order={order}
                 session={session}
-                locale={locale}
+                locale="es"
                 kind={kind}
                 reprint={reprint}
-                label={label}
-                labelHint={labelHint}
+                label={printLabel ?? label}
+                labelHint={printLabelHint ?? labelHint}
                 header={header}
                 footer={footer}
               />,

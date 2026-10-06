@@ -163,6 +163,15 @@ export function OrderDetail({
                   )}
               </>
             )}
+            {order.fiscal?.ticket && (
+              <>
+                <br />
+                {t("fiscalReceiptFolio").replace(
+                  "{folio}",
+                  order.fiscal.ticket.folio,
+                )}
+              </>
+            )}
           </p>
           <div className="row wrap">
             <Badge
@@ -396,7 +405,7 @@ export function OrderDetail({
                     <ReceiptDocument
                       order={order}
                       session={session}
-                      locale={locale}
+                      locale="es"
                       kind="check"
                     />,
                     settings.paper,
@@ -415,7 +424,7 @@ export function OrderDetail({
                     <ReceiptDocument
                       order={order}
                       session={session}
-                      locale={locale}
+                      locale="es"
                       kind="receipt"
                       reprint
                     />,
