@@ -18,6 +18,15 @@
  *   next authenticated request.
  * - Delivery is at least once and latency is not bounded; handlers must be
  *   idempotent and must not assume a job runs within a deadline.
+ *
+ * Worker mode: with `discover`, the sweep asks the database which tenants have
+ * claimable jobs of the registered kinds (an area SELECT policy TO
+ * gm_jobs_worker), every sweepMs and once at start, instead of revisiting
+ * recently active tenants. The worker uses this mode; the web does not.
+ *
+ * This module registers no handler: the web entry imports
+ * server/jobs/handlers/index.ts, the worker registers its kinds in
+ * server/jobs/worker-registry.ts (import-graph test).
  */
 import type postgres from "postgres";
 import { tenant } from "../db.js";
@@ -35,7 +44,6 @@ import {
   failJob,
   jobErrorCode,
 } from "./queue.js";
-import "./handlers/index.js";
 
 export type JobAction =
   | { action: "complete" }
@@ -99,6 +107,9 @@ export function createJobRunner(
     handlers?: () => ReadonlyMap<string, RegisteredHandler>;
     onDead?: (job: ClaimedJob, code: string) => void;
     log?: Logger;
+    /** Worker mode: polled once at start and then every sweepMs; each tenant it returns is
+     *  noted (drained). When set, the sweep does not revisit recently active tenants. */
+    discover?: () => Promise<string[]>;
   } = {},
 ): JobRunner {
   const limit = o.concurrency ?? 2;
@@ -177,7 +188,10 @@ export function createJobRunner(
           else jobLog.debug("job_done", { attempts: job.attempts });
           return;
         }
-        const state = await failJob(sql, job, action);
+        const state = await failJob(sql, job, {
+          ...action,
+          maxAttempts: entry.maxAttempts,
+        });
         const attrs = { code: action.code, attempts: job.attempts, state };
         if (state === "lost") jobLog.warn("job_lease_lost", { stage: "fail" });
         else if (state === "dead") {
@@ -252,7 +266,31 @@ export function createJobRunner(
     scheduled.set(tenantId, timer);
   }
 
+  function noteTenant(tenantId: string, activity: "write" | "read" = "write") {
+    if (stopping || getHandlers().size === 0) return;
+    if (activity === "read" && seen.has(tenantId)) return;
+    seen.delete(tenantId);
+    seen.set(tenantId, Date.now());
+    // Bound memory: forget the least recently active tenant.
+    if (seen.size > maxTenants) seen.delete(seen.keys().next().value!);
+    schedule(tenantId, debounceMs);
+  }
+
+  let discovering = false;
   function sweep() {
+    if (o.discover) {
+      if (discovering || stopping) return;
+      discovering = true;
+      o.discover()
+        .then((ids) => {
+          for (const id of ids) noteTenant(id);
+        })
+        .catch((error) => log.warn("jobs_discover_failed", {}, error))
+        .finally(() => {
+          discovering = false;
+        });
+      return;
+    }
     const cutoff = Date.now() - activeForMs;
     for (const [tenantId, at] of seen) {
       if (at < cutoff) seen.delete(tenantId);
@@ -265,16 +303,11 @@ export function createJobRunner(
       stopping = false;
       sweepTimer = setInterval(sweep, sweepMs);
       sweepTimer.unref();
+      // Discovery runs even with zero handlers, so the worker's jobs loop
+      // keeps ticking.
+      if (o.discover) sweep();
     },
-    noteTenant(tenantId, activity = "write") {
-      if (stopping || getHandlers().size === 0) return;
-      if (activity === "read" && seen.has(tenantId)) return;
-      seen.delete(tenantId);
-      seen.set(tenantId, Date.now());
-      // Bound memory: forget the least recently active tenant.
-      if (seen.size > maxTenants) seen.delete(seen.keys().next().value!);
-      schedule(tenantId, debounceMs);
-    },
+    noteTenant,
     drainTenant,
     async stop(timeoutMs) {
       stopping = true;

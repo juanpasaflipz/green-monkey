@@ -1,6 +1,7 @@
 /**
- * Lease-fenced queue operations, run by the runtime role inside a tenant
- * transaction (RLS scopes every statement to that tenant). The exact text of
+ * Lease-fenced queue operations, run by the runtime role (web) or the jobs
+ * login (worker) inside a tenant transaction: RLS scopes every statement to
+ * that tenant, and every claim and fenced write also names the tenant. The exact text of
  * lease_until returned by the claim is the fencing token: once a lease expires
  * and another runner reclaims the job, the old holder's writes match no row.
  * The token is bound as text and parsed by the server, because postgres.js
@@ -27,17 +28,24 @@ export function backoffMs(attempts: number, rand: () => number = Math.random) {
   return Math.round(base * (0.8 + 0.4 * rand()));
 }
 
-/** Outcome of a failure after `attempts` tries. */
+/** Outcome of a failure after `attempts` tries of a kind allowed `maxAttempts`. */
 export function failureState(
   attempts: number,
   outcome: { dead?: boolean; blocked?: boolean },
+  maxAttempts: number = MAX_ATTEMPTS,
 ): "retry" | "dead" | "blocked" {
   if (outcome.blocked) return "blocked";
-  if (outcome.dead || attempts >= MAX_ATTEMPTS) return "dead";
+  if (outcome.dead || attempts >= maxAttempts) return "dead";
   return "retry";
 }
 
-/** Leases up to n runnable jobs of the given kinds for the transaction's tenant. */
+/**
+ * Leases up to n runnable jobs of the given kinds for the transaction's tenant.
+ * The explicit tenant predicate is defense in depth: RLS already limits a
+ * FOR UPDATE claim to tenant_scope, but the claim must never depend on which
+ * other (SELECT) policies exist on jobs, such as an area's worker discovery
+ * policy.
+ */
 export async function claimJobs(
   tx: Tx,
   kinds: string[],
@@ -48,9 +56,12 @@ export async function claimJobs(
   const rows = await tx`
     with c as (
       select tenant_id, id from jobs
-      where kind = any(${kinds}::text[]) and (
-            (state in ('queued','available') and next_at <= now())
-         or (state = 'running' and lease_until < now()))
+      where tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
+        and kind = any(${kinds}::text[])
+        -- Claim predicate: discoverTenants (worker-registry.ts) uses exactly
+        -- this; change both together.
+        and ((state in ('queued','available') and next_at <= now())
+          or (state = 'running' and lease_until < now()))
       order by next_at, id
       for update skip locked
       limit ${n})
@@ -82,7 +93,8 @@ export async function completeJob(
     job.tenantId,
     (tx) => tx`
     update jobs set state='done', lease_until=null, error_code=null
-    where id=${job.id} and state='running' and lease_until=${job.lease}::text::timestamptz`,
+    where tenant_id=${job.tenantId} and id=${job.id} and state='running'
+      and lease_until=${job.lease}::text::timestamptz`,
   );
   return result.count === 1;
 }
@@ -96,9 +108,11 @@ export async function failJob(
     retryAfterMs?: number;
     dead?: boolean;
     blocked?: boolean;
+    /** The kind's limit (RegisteredHandler.maxAttempts); default MAX_ATTEMPTS. */
+    maxAttempts?: number;
   },
 ): Promise<"retry" | "dead" | "blocked" | "lost"> {
-  const state = failureState(job.attempts, outcome);
+  const state = failureState(job.attempts, outcome, outcome.maxAttempts);
   const code = jobErrorCode(outcome.code);
   const waitSeconds = (outcome.retryAfterMs ?? backoffMs(job.attempts)) / 1000;
   const result = await tenant(sql, job.tenantId, (tx) =>
@@ -106,10 +120,12 @@ export async function failJob(
       ? tx`
           update jobs set state='available', lease_until=null, error_code=${code},
             next_at=now() + make_interval(secs => ${waitSeconds}::double precision)
-          where id=${job.id} and state='running' and lease_until=${job.lease}::text::timestamptz`
+          where tenant_id=${job.tenantId} and id=${job.id} and state='running'
+            and lease_until=${job.lease}::text::timestamptz`
       : tx`
           update jobs set state=${state}, lease_until=null, error_code=${code}
-          where id=${job.id} and state='running' and lease_until=${job.lease}::text::timestamptz`,
+          where tenant_id=${job.tenantId} and id=${job.id} and state='running'
+            and lease_until=${job.lease}::text::timestamptz`,
   );
   return result.count === 1 ? state : "lost";
 }
@@ -125,7 +141,8 @@ export async function extendLease(
     job.tenantId,
     (tx) => tx`
     update jobs set lease_until=clock_timestamp() + make_interval(secs => ${seconds}::double precision)
-    where id=${job.id} and state='running' and lease_until=${job.lease}::text::timestamptz
+    where tenant_id=${job.tenantId} and id=${job.id} and state='running'
+      and lease_until=${job.lease}::text::timestamptz
     returning lease_until::text as lease`,
   );
   return row?.lease ?? null;

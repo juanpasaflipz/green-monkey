@@ -62,6 +62,7 @@ import { recordSettlement } from "./checks.js";
 import { makeRoute, trustProxy } from "./http.js";
 import { log, logRequestError, requestIdOf, requestLog } from "./logging.js";
 import { createJobRunner } from "./jobs/runner.js";
+import "./jobs/handlers/index.js";
 import { opsState } from "./ops/status.js";
 import {
   alertTargetFromEnv,

@@ -19,6 +19,9 @@ import {
   requeueJob,
 } from "../server/jobs/queue.js";
 import { createJobRunner } from "../server/jobs/runner.js";
+// The web registry (kitchen_dispatch): server/index.ts imports it as a side
+// effect; the runner no longer does (Wave 2.0, P-1).
+import "../server/jobs/handlers/index.js";
 import { setLogSink } from "../server/logging.js";
 import { catalog, createOrder } from "../server/orders.js";
 import type { Session } from "../shared/domain.js";
@@ -417,8 +420,118 @@ try {
     },
   );
 
+  await check(
+    "runAt defers the first claim: not claimable before it, claimable after; a repeated key keeps the first runAt",
+    async () => {
+      const at = new Date(Date.now() + 1500);
+      await tenant(app, tenantId, (tx) =>
+        enqueueJob(tx, owner, {
+          kind,
+          dedupeKey: "later",
+          payload: {},
+          runAt: at,
+        }),
+      );
+      await tenant(app, tenantId, (tx) =>
+        enqueueJob(tx, owner, {
+          kind,
+          dedupeKey: "later",
+          payload: {},
+          runAt: new Date(Date.now() - 60_000),
+        }),
+      );
+      const [row] = await admin`
+        select next_at, state from jobs where kind=${kind} and dedupe_key='later'`;
+      assert.equal(row.state, "available");
+      assert.equal(
+        (row.next_at as Date).getTime(),
+        at.getTime(),
+        "next_at is runAt, and the repeated key did not move it",
+      );
+      assert.deepEqual(await claim(app, owner), [], "not before runAt");
+      await new Promise((r) =>
+        setTimeout(r, Math.max(0, at.getTime() - Date.now()) + 150),
+      );
+      const [job] = await claim(app, owner);
+      assert.equal(job?.dedupeKey, "later", "claimable once runAt passed");
+      assert.equal(await completeJob(app, job), true);
+      await enqueue(owner, "now");
+      const [now] = await claim(app, owner);
+      assert.equal(now?.dedupeKey, "now", "no runAt means now");
+      await admin`delete from jobs where kind=${kind}`;
+    },
+  );
+
+  await check(
+    "per-kind maxAttempts: a kind registered with 3 goes dead on the third failure; a default kind on the eighth",
+    async () => {
+      const three = kind + "_m3";
+      const eight = kind + "_m8";
+      const fail = async () => {
+        throw Object.assign(new Error("provider down"), {
+          code: "provider_down",
+        });
+      };
+      registerJobHandler(three, fail, { maxAttempts: 3 });
+      registerJobHandler(eight, fail);
+      assert.equal(handlers().get(eight)!.maxAttempts, MAX_ATTEMPTS);
+      const dead: string[] = [];
+      const only = new Map([
+        [three, handlers().get(three)!],
+        [eight, handlers().get(eight)!],
+      ]);
+      const runner = createJobRunner(app, {
+        handlers: () => only,
+        onDead: (job, code) => dead.push(`${job.kind}:${job.attempts}:${code}`),
+      });
+      await tenant(app, tenantId, async (tx) => {
+        await enqueueJob(tx, owner, {
+          kind: three,
+          dedupeKey: "m",
+          payload: {},
+        });
+        await enqueueJob(tx, owner, {
+          kind: eight,
+          dedupeKey: "m",
+          payload: {},
+        });
+      });
+      // The default kind starts two claims before its limit.
+      await admin`update jobs set attempts=${MAX_ATTEMPTS - 2} where kind=${eight}`;
+      const state = async (k: string) =>
+        (await admin`select state, attempts from jobs where kind=${k}`)[0] as {
+          state: string;
+          attempts: number;
+        };
+      const settle = async () => {
+        for (let i = 0; i < 100 && runner.running() > 0; i++)
+          await new Promise((r) => setTimeout(r, 20));
+        await admin`update jobs set next_at=now() where kind in (${three}, ${eight}) and state='available'`;
+      };
+      const seen: string[] = [];
+      for (let round = 1; round <= 3; round++) {
+        await runner.drainTenant(tenantId);
+        await settle();
+        const a = await state(three);
+        const b = await state(eight);
+        seen.push(`${a.state}:${a.attempts} ${b.state}:${b.attempts}`);
+      }
+      await runner.stop(5000);
+      assert.deepEqual(seen, [
+        `available:1 available:${MAX_ATTEMPTS - 1}`,
+        `available:2 dead:${MAX_ATTEMPTS}`,
+        `dead:3 dead:${MAX_ATTEMPTS}`,
+      ]);
+      assert.deepEqual(dead.sort(), [
+        `${three}:3:provider_down`,
+        `${eight}:${MAX_ATTEMPTS}:provider_down`,
+      ]);
+      await admin`delete from jobs where kind in (${three}, ${eight})`;
+    },
+  );
+
   console.log(
-    `Jobs DB checks passed: ${passed()} checks (runtime-role claims, lease fencing, retry/dead, requeue, tenant scope, kitchen drain, bounded stop, resume after restart).`,
+    `Jobs DB checks passed: ${passed()} checks (runtime-role claims, lease fencing, retry/dead, requeue, tenant scope, kitchen drain, bounded stop, resume after restart, runAt, per-kind maxAttempts).`,
   );
 } finally {
   await admin`delete from jobs where kind like ${kind + "%"}`.catch(
