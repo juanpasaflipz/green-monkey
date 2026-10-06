@@ -181,6 +181,11 @@ CREATE TABLE cfdi_organizations(
 CREATE POLICY cfdi_organizations_insert ON cfdi_organizations AS RESTRICTIVE FOR INSERT
   WITH CHECK (cfdi_is_worker() OR (status = 'provisioning' AND provider_org_id IS NULL
     AND test_secret_id IS NULL AND live_secret_id IS NULL));
+-- `npm run cfdi:rekey` (worker env) lists the restaurants with sealed organization keys across
+-- tenants. Only in a transaction that sets app.cfdi_rekey_list = 'on' (the script's listing
+-- statement), never in a tenant transaction, so loadOrganization() keeps seeing one row.
+CREATE POLICY cfdi_organizations_rekey_list ON cfdi_organizations FOR SELECT TO gm_jobs_worker
+  USING (current_setting('app.cfdi_rekey_list', true) = 'on');
 CREATE FUNCTION cfdi_worker_update_only() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN RAISE EXCEPTION '% rows are not deleted', TG_TABLE_NAME USING ERRCODE = 'restrict_violation'; END IF;

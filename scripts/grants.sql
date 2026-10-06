@@ -67,6 +67,9 @@ GRANT UPDATE(state,attempts,next_at,lease_until,error_code) ON jobs TO gm_jobs_w
 -- No employees grant: foreign-key checks run as the referenced table's owner and no handler reads
 -- employee rows.
 GRANT SELECT ON restaurants, orders, tenders, refunds TO gm_jobs_worker;
+-- restaurants' owner_restaurant_read policy looks up owner_memberships, so reading restaurants
+-- needs SELECT there too; its FORCE RLS membership_read policy shows no row without app.account_id.
+GRANT SELECT ON owner_memberships TO gm_jobs_worker;
 -- Fiscal 027 and discounts 028 tables the worker reads (wave2-cross-track C26). Guarded only so the
 -- block applies on a branch database migrated before 027/028; on integration every table exists.
 DO $$ DECLARE t text; BEGIN
