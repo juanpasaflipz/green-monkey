@@ -21,6 +21,7 @@ import {
   loadDocument,
   releaseClaims,
 } from "../store.js";
+import { lockDocument } from "../locks.js";
 import { classify, event, MINUTE, runtimeOr } from "./common.js";
 import { cancellationOutcome, loadCancellation } from "./cancel.js";
 import { documentKey, raise, tenantTag } from "./runtime.js";
@@ -30,7 +31,7 @@ type Payload = { globalDocumentId?: string };
 export async function reissueJob(ctx: JobContext): Promise<JobOutcome> {
   const globalId = (ctx.job.payload as Payload | null)?.globalDocumentId;
   if (!globalId) return { status: "dead", code: "cfdi_invalid_payload" };
-  const { rt, outcome } = runtimeOr(ctx);
+  const { rt, outcome } = await runtimeOr(ctx);
   if (!rt) return outcome;
   const tenantId = ctx.job.tenantId;
 
@@ -43,17 +44,20 @@ export async function reissueJob(ctx: JobContext): Promise<JobOutcome> {
   if (!loaded) return { status: "done" };
   const { g, c, key } = loaded;
 
-  /** Waiting invoices behind G fail when the global cannot be canceled. */
-  const failWaiters = (code: string) =>
-    ctx.tenant(async (tx) => {
-      const waiters = await tx`
-        select id from cfdi_documents where depends_on = ${globalId} and status = 'waiting'`;
-      for (const w of waiters) {
-        await tx`update cfdi_documents set status = 'failed', error_code = ${code} where id = ${w.id}`;
-        await releaseClaims(tx, w.id, "failed");
-        await event(tx, ctx, w.id, "failed", { code });
-      }
-    });
+  /**
+   * Waiting invoices behind G fail when the global cannot be canceled. Runs in the transaction that
+   * ends the cancellation, under G's document key (the key createInvoiceRequest takes before it
+   * adds a waiter), so no request can join a cancellation that is being refused (CFDI-R1).
+   */
+  const failWaiters = async (tx: Tx, code: string) => {
+    const waiters = await tx`
+      select id from cfdi_documents where depends_on = ${globalId} and status = 'waiting'`;
+    for (const w of waiters) {
+      await tx`update cfdi_documents set status = 'failed', error_code = ${code} where id = ${w.id}`;
+      await releaseClaims(tx, w.id, "failed");
+      await event(tx, ctx, w.id, "failed", { code });
+    }
+  };
 
   let canceled = g.status === "canceled";
   if (!canceled) {
@@ -71,11 +75,12 @@ export async function reissueJob(ctx: JobContext): Promise<JobOutcome> {
       const result = cancellationOutcome(inv);
       if (result === "rejected") {
         await ctx.tenant(async (tx) => {
+          await lockDocument(tx, tenantId, globalId);
           await tx`update cfdi_documents set status = 'valid' where id = ${globalId} and status = 'canceling'`;
           await tx`update cfdi_cancellations set status = 'rejected', processed_at = now() where id = ${c.id}`;
           await event(tx, ctx, globalId, "cancel_rejected", { motive: "04" });
+          await failWaiters(tx, "cfdi_cancel_rejected_provider");
         });
-        await failWaiters("cfdi_cancel_rejected_provider");
         return { status: "done" };
       }
       if (result !== "canceled") {
@@ -102,6 +107,7 @@ export async function reissueJob(ctx: JobContext): Promise<JobOutcome> {
           afterMs: failure.afterMs,
         });
       await ctx.tenant(async (tx) => {
+        await lockDocument(tx, tenantId, globalId);
         await tx`
           update cfdi_cancellations set status = 'failed', error_code = ${failure.code}, processed_at = now()
           where id = ${c.id} and status in ('queued','requested')`;
@@ -110,8 +116,8 @@ export async function reissueJob(ctx: JobContext): Promise<JobOutcome> {
           motive: "04",
           code: failure.code,
         });
+        await failWaiters(tx, "cfdi_cancel_rejected_provider");
       });
-      await failWaiters("cfdi_cancel_rejected_provider");
       raise(rt, {
         key: `cfdi_reissue_failed:${tenantTag(tenantId)}:${globalId}`,
         severity: "warning",
@@ -122,9 +128,12 @@ export async function reissueJob(ctx: JobContext): Promise<JobOutcome> {
     }
   }
 
-  // 3. G is canceled: free its tickets, activate the waiting invoices' claims, and issue G'.
+  // 3. G is canceled: free its tickets, activate the waiting invoices' claims, and issue G'. Under
+  // G's document key (LO-3), the key createInvoiceRequest holds while it adds a waiter: a waiter
+  // committed before this transaction is collected here, and a request that comes after it sees G
+  // canceled and answers cfdi_global_in_progress (CFDI-R1).
   await ctx.tenant(async (tx) => {
-    await tx`select pg_advisory_xact_lock(hashtextextended(${tenantId + ":cfdi-reissue:" + globalId}, 0))`;
+    await lockDocument(tx, tenantId, globalId);
     const current = await loadDocument(tx, globalId, { forUpdate: true });
     if (!current) return;
     if (current.status === "valid" || current.status === "canceling")

@@ -22,6 +22,7 @@ import {
   dedupe,
   INVOICE_MAX_ATTEMPTS,
 } from "./jobs.js";
+import { lockDocument, lockTicket } from "./locks.js";
 import {
   cfdiState,
   fiscalFacts,
@@ -45,18 +46,7 @@ export type InvoiceRequest = {
   reissueGlobal: boolean;
 };
 
-/** Takes the per-ticket advisory key (LO-3). */
-export async function lockTicket(tx: Tx, tenantId: string, ticketId: string) {
-  await tx`select pg_advisory_xact_lock(hashtextextended(${tenantId + ":cfdi-ticket:" + ticketId}, 0))`;
-}
-/** Takes a document's advisory key (LO-3, after any ticket key). */
-export async function lockDocument(
-  tx: Tx,
-  tenantId: string,
-  documentId: string,
-) {
-  await tx`select pg_advisory_xact_lock(hashtextextended(${tenantId + ":cfdi-doc:" + documentId}, 0))`;
-}
+export { lockDocument, lockTicket };
 
 /**
  * Validates eligibility and inserts the document, its claim and its jobs. Returns only ids (spec
@@ -148,11 +138,27 @@ export async function createInvoiceRequest(
 
   // Invoice after a global (SAT FAQ Q10): cancel G with 04, reissue it without the ticket, then
   // stamp this invoice. Later requests against the same global join the same cancellation.
+  // cfdi_reissue completes the cancellation (G canceled, claims released, waiters collected, G'
+  // created) under this same document key, so everything read before the key is read again here:
+  // a request that loses the race answers cfdi_global_in_progress and the retry lands on G'
+  // (review CFDI-R1). A motive-04 cancellation is only ever inserted for a valid global.
   await lockDocument(tx, r.tenantId, global.documentId);
+  const [current] = await tx`
+    select d.status,
+      exists (select 1 from cfdi_document_tickets c where c.document_id = d.id
+        and c.ticket_id = ${r.ticketId} and c.state = 'active') as holds_ticket
+    from cfdi_documents d where d.id = ${global.documentId}`;
+  if (
+    !current?.holds_ticket ||
+    !["valid", "canceling"].includes(current.status as string)
+  )
+    throw new DomainError("cfdi_global_in_progress", 409);
   const [open] = await tx`
     select id, motive from cfdi_cancellations
     where document_id = ${global.documentId} and status in ('queued','requested')`;
   if (open && open.motive !== "04")
+    throw new DomainError("cfdi_global_in_progress", 409);
+  if (!open && current.status !== "valid")
     throw new DomainError("cfdi_global_in_progress", 409);
   const cancellationId: string = open?.id ?? randomUUID();
   if (!open)
