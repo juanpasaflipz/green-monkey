@@ -281,7 +281,11 @@ export function AccountCenter({
         </div>
       )}
       {preview && (
-        <div className="panel" aria-label={t("accountTransferTitle")}>
+        <div
+          className="panel"
+          role="region"
+          aria-label={t("accountTransferTitle")}
+        >
           <h3>{t("accountTransferTitle")}</h3>
           <p>
             {t("accountTransferIncoming")
@@ -429,7 +433,12 @@ export function AccountCenter({
         const primary = org.role === "primary";
         const full = org.coOwners.length >= org.coOwnerLimit;
         return (
-          <div className="panel" key={org.id} aria-label={org.name}>
+          <div
+            className="panel"
+            key={org.id}
+            role="group"
+            aria-label={org.name}
+          >
             <h3>
               {t("accountOwnersTitle")} · {org.name}
             </h3>

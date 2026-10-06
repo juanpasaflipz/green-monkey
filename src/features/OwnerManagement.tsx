@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { PRO_OFFER } from "../../shared/plans";
 import { Button, Field } from "../components/ui";
-import { strings, type Key } from "../i18n";
+import { strings, translateError, type Key } from "../i18n";
 import type { AccountConfig } from "./accountConfig";
 
 type Restaurant = {
@@ -121,14 +121,18 @@ export function OwnerManagement({
     try {
       await work();
     } catch (e) {
+      const code = (e as Error).message;
       setError(
-        (e as Error).message === "pro_required"
-          ? es
-            ? "La sucursal de origen necesita Pro activo para agregar otra ubicación."
-            : "The source location needs active Pro to add another location."
-          : es
-            ? "No se pudo completar. Revisa la conexión y vuelve a intentar; una solicitud pendiente puede tardar."
-            : "Could not complete. Check your connection and retry; a pending request may take a moment.",
+        // account (031): a material change waits for the console's acceptance.
+        code === "legal_acceptance_required"
+          ? translateError(code, locale)
+          : code === "pro_required"
+            ? es
+              ? "La sucursal de origen necesita Pro activo para agregar otra ubicación."
+              : "The source location needs active Pro to add another location."
+            : es
+              ? "No se pudo completar. Revisa la conexión y vuelve a intentar; una solicitud pendiente puede tardar."
+              : "Could not complete. Check your connection and retry; a pending request may take a moment.",
       );
     } finally {
       setBusy(false);

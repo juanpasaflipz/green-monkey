@@ -37,6 +37,9 @@
 .legal-page a {
   color: var(--brand);
   overflow-wrap: anywhere;
+  /* Links inside text are underlined, not told apart by color alone (axe link-in-text-block). */
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 .legal-page p,
 .legal-page li {

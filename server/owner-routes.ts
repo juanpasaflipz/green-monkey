@@ -47,15 +47,20 @@ export function ownerRoutes(sql: postgres.Sql) {
     res.set("Referrer-Policy", "no-referrer");
     next();
   });
+  // Reads (including the account console's overview, account 031) share the
+  // 120/min budget; every other request shares 30/min. The account-center
+  // router adds its own read and command limits behind these.
+  const ownerRead = (req: Request) =>
+    req.method === "GET" &&
+    (["/providers", "/account", "/account/invitations"].includes(req.path) ||
+      /^\/account-center(\/|$)/i.test(req.path));
   router.use(
     rateLimit({
       windowMs: 60_000,
       limit: 30,
       standardHeaders: true,
       legacyHeaders: false,
-      skip: (req) =>
-        req.method === "GET" &&
-        ["/providers", "/account", "/account/invitations"].includes(req.path),
+      skip: ownerRead,
     }),
   );
   router.use(
@@ -64,9 +69,7 @@ export function ownerRoutes(sql: postgres.Sql) {
       limit: 120,
       standardHeaders: true,
       legacyHeaders: false,
-      skip: (req) =>
-        req.method !== "GET" ||
-        !["/providers", "/account", "/account/invitations"].includes(req.path),
+      skip: (req) => !ownerRead(req),
     }),
   );
   // GAP-2: a shared terminal never starts Google sign-in or owner account
