@@ -134,10 +134,11 @@ cached before the deploy keep working. A later contract change removes them.
   feed row (level LO-10), then the drawer and `refreshCheckState`, which takes
   the fiscal folio counter (LO-12) last. `createOrder`, `voidLines` and
   `assignService` bump the feed before `refreshCheckState` since fiscal's merge
-  (their `tests/lock-order.test.ts` allowlist entries are gone; `voidLines:D`
-  stays, MENU-INT-5). DB test "kitchen feed and progress do not deadlock" runs
-  mixed concurrent bursts, and fiscal DB test "lock order" adds offline sync,
-  settling voids, reassignments and payments.
+  (LO-R3; their `createOrder:12>10`, `voidLines:12>10` and
+  `assignService:12>10` entries in `tests/lock-order.test.ts` are gone;
+  `voidLines:9>7` stays, E3 / MENU-INT-5). DB test "kitchen feed and progress
+  do not deadlock" runs mixed concurrent bursts, and fiscal DB test "lock
+  order" adds offline sync, settling voids, reassignments and payments.
 - The feed is bounded to the 200 oldest open rounds and excludes rounds held
   for offline review. A truncated feed shows an alert that new tickets do not
   appear until tickets are delivered and that a manager can retire the ones

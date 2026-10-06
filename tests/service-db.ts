@@ -45,6 +45,7 @@ import {
   type OrderListResponse,
 } from "../shared/service.js";
 import { isolatedTarget } from "./isolated-target.js";
+import { noRetries } from "./db-retries.js";
 
 // Every run creates its own fictional organization and two restaurants, so
 // feeds, lists and occupancy are deterministic regardless of earlier runs.
@@ -1297,10 +1298,9 @@ try {
       const o = await newOrder({ mode: "dine_in", tableId: tables[i % 4].id });
       const paid = await pay(o, o.total);
       assert.equal(paid.checkState, "paid");
-      const [closing, adding] = await Promise.allSettled([
-        close(o.id),
-        round(paid),
-      ]);
+      const [closing, adding] = await noRetries("close vs round", () =>
+        Promise.allSettled([close(o.id), round(paid)]),
+      );
       const after = await read(o.id);
       // fiscal 027 (LD-15 fiscal Q2): the paid check already has its ticket, so
       // the round never lands: check_closed when the close wins the order lock,
@@ -1566,7 +1566,10 @@ try {
           return settle(o, await fresh((k + 1) % 3));
         });
       }
-      const results = await Promise.allSettled(commands.map((c) => c()));
+      // LO-R9 (PLATFORM-LOCKS-3): no deadlock may hide behind tenant()'s retry.
+      const results = await noRetries(`kitchen mix burst ${burst}`, () =>
+        Promise.allSettled(commands.map((c) => c())),
+      );
       assert.ok(
         results.filter((r) => r.status === "fulfilled").length >= 5,
         "the mix must actually commit commands concurrently",

@@ -52,7 +52,7 @@ export async function saveOfflineSettings(
   requireRecentAuth(s);
   const p = settingsInput.parse(raw);
   const [before] =
-    await tx`select offline_table_service from restaurants where id=${s.tenantId} for update`;
+    await tx`select offline_table_service from restaurants where id=${s.tenantId} for no key update`;
   if (!before) throw new DomainError("not_found", 404);
   if (before.offline_table_service !== p.tableService) {
     await tx`update restaurants set offline_table_service=${p.tableService} where id=${s.tenantId}`;

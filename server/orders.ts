@@ -61,7 +61,7 @@ export async function once<T>(
       throw new DomainError("operation_conflict", 409);
     return prior.result as T;
   }
-  // Commands that update the restaurants row lock it FOR UPDATE themselves:
+  // Commands that update the restaurants row lock it FOR NO KEY UPDATE themselves:
   // a FOR SHARE here would be a SHARE->UPDATE upgrade (lock order LO-R6).
   if (kind !== "restaurant.settings" && kind !== "stock.policy") {
     const [restaurant] =
@@ -491,7 +491,8 @@ export async function recordPayment(
     });
     // Settle the check before the receipt is read; a settling payment issues
     // the fiscal ticket there (folio counter, LO-12, last). Payments never bump
-    // the kitchen feed.
+    // the kitchen feed: it is LO-10, below the drawer this command holds
+    // (LO-11, LO-R3).
     await refreshCheckState(tx, s, orderId);
     const receipt = await getOrder(tx, orderId);
     await tx`insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,error_code) values(${s.tenantId},${randomUUID()},'receipt',${p.operationId},${tx.json({ orderId, receipt })},'blocked','printer_not_paired')`;

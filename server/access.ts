@@ -5,7 +5,11 @@ import { z } from "zod";
 import { tenant, type Tx } from "./db.js";
 import { cookieOptions, hash, operators, sign, verify } from "./auth.js";
 import { withOwner } from "./owner-accounts.js";
-import { selectFirstDevice, sellingAllowed } from "./free-limits.js";
+import {
+  lockFreeLimits,
+  selectFirstDevice,
+  sellingAllowed,
+} from "./free-limits.js";
 import { issueOfflineLease, renewOfflineLease } from "./offline-leases.js";
 import { googleConfig } from "./google-identity.js";
 import { log } from "./logging.js";
@@ -518,6 +522,10 @@ async function signInOnDevice(
   secret: string,
 ): Promise<SignInResult> {
   return tenant(sql, device.tenantId, async (tx): Promise<SignInResult> => {
+    // The Free-limits key (LO-3) before the device and employee rows: a new
+    // session takes it in selectFirstDevice, and saveFreeSelection holds it
+    // while updating every slotted device and employee (PLATFORM-LOCKS-6).
+    await lockFreeLimits(tx);
     const row = await loadDevice(tx, device);
     if (!row) return { revoked: true };
     const check = await checkPin(tx, target, secret, deviceScope(row.id));
@@ -646,6 +654,7 @@ export async function legacyLogin(
         session: { id: string; token: string; absoluteExpiresAt: Date };
       };
   const result = await tenant(sql, p.tenantId, async (tx): Promise<DemoResult> => {
+    await lockFreeLimits(tx); // LO-3 before the employee row (PLATFORM-LOCKS-6)
     const check = await checkPin(tx, { login: p.login }, p.secret, "unpaired");
     if (check.outcome !== "ok") return { rejected: check };
     if (check.employee.role !== "owner") return { pair: true };

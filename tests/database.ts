@@ -21,6 +21,7 @@ import {
   stock,
 } from "../server/orders.js";
 import type { Session } from "../shared/domain.js";
+import { noRetries } from "./db-retries.js";
 const { runtime: url, migration } = isolatedTarget(process.env);
 const u = new URL(url);
 const identity = u.hostname + ":" + (u.port || "5432") + u.pathname;
@@ -91,9 +92,11 @@ try {
   };
   let order: any;
   await test("concurrent identical order creates one effect", async () => {
-    const results = await Promise.all(
-      Array.from({ length: 8 }, () =>
-        tenant(sql, s.tenantId, (tx) => createOrder(tx, s, body)),
+    const results = await noRetries("identical order creates", () =>
+      Promise.all(
+        Array.from({ length: 8 }, () =>
+          tenant(sql, s.tenantId, (tx) => createOrder(tx, s, body)),
+        ),
       ),
     );
     assert.equal(new Set(results.map((r) => r.id)).size, 1);
@@ -151,16 +154,18 @@ try {
       await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening) values(${s.tenantId},${randomUUID()},${s.deviceId},${s.employeeId},0)`;
   });
   await test("concurrent payments cannot overcollect", async () => {
-    const results = await Promise.allSettled(
-      [1, 2].map(() =>
-        tenant(sql, s.tenantId, (tx) =>
-          recordPayment(tx, s, order.id, {
-            operationId: randomUUID(),
-            amount: order.total,
-            tip: 0,
-            received: order.total,
-            method: "cash",
-          }),
+    const results = await noRetries("concurrent payments", () =>
+      Promise.allSettled(
+        [1, 2].map(() =>
+          tenant(sql, s.tenantId, (tx) =>
+            recordPayment(tx, s, order.id, {
+              operationId: randomUUID(),
+              amount: order.total,
+              tip: 0,
+              received: order.total,
+              method: "cash",
+            }),
+          ),
         ),
       ),
     );
@@ -209,10 +214,12 @@ try {
       await tx`insert into stock_items(tenant_id,id,name,unit,kind) values(${s.tenantId},${stockId},'Concurrency fixture','piece','prepared')`;
       await stock(tx, s, stockId, "1", "opening", stockId, "test");
     });
-    const results = await Promise.allSettled(
-      [1, 2].map(() =>
-        tenant(sql, s.tenantId, (tx) =>
-          stock(tx, s, stockId, "-1", "sale", randomUUID(), "test", "block"),
+    const results = await noRetries("last-portion stock decisions", () =>
+      Promise.allSettled(
+        [1, 2].map(() =>
+          tenant(sql, s.tenantId, (tx) =>
+            stock(tx, s, stockId, "-1", "sale", randomUUID(), "test", "block"),
+          ),
         ),
       ),
     );
@@ -354,14 +361,16 @@ try {
       recordPayment(tx, s, created.id, request),
     );
     assert.equal(settled.paid, retry.paid);
-    const results = await Promise.allSettled(
-      [1, 2].map(() =>
-        tenant(sql, s.tenantId, (tx) =>
-          recordPayment(
-            tx,
-            s,
-            created.id,
-            pay(unitPrice, [created.paymentUnits![1].key]),
+    const results = await noRetries("competing item settlements", () =>
+      Promise.allSettled(
+        [1, 2].map(() =>
+          tenant(sql, s.tenantId, (tx) =>
+            recordPayment(
+              tx,
+              s,
+              created.id,
+              pay(unitPrice, [created.paymentUnits![1].key]),
+            ),
           ),
         ),
       ),
@@ -566,22 +575,24 @@ try {
         lines: [{ ...body.lines[0], id: randomUUID() }],
       }),
     );
-    await Promise.all([
-      tenant(sql, s.tenantId, (tx) =>
-        progressPreparation(tx, s, created.rounds[0].id, {
-          operationId: randomUUID(),
-          state: "ready",
-        }),
-      ),
-      tenant(sql, s.tenantId, (tx) =>
-        addRound(tx, s, created.id, {
-          ...body,
-          operationId: randomUUID(),
-          expectedVersion: created.version,
-          lines: [{ ...body.lines[0], id: randomUUID() }],
-        }),
-      ),
-    ]);
+    await noRetries("kitchen progress vs new round", () =>
+      Promise.all([
+        tenant(sql, s.tenantId, (tx) =>
+          progressPreparation(tx, s, created.rounds[0].id, {
+            operationId: randomUUID(),
+            state: "ready",
+          }),
+        ),
+        tenant(sql, s.tenantId, (tx) =>
+          addRound(tx, s, created.id, {
+            ...body,
+            operationId: randomUUID(),
+            expectedVersion: created.version,
+            lines: [{ ...body.lines[0], id: randomUUID() }],
+          }),
+        ),
+      ]),
+    );
     const result = await tenant(sql, s.tenantId, (tx) =>
       getOrder(tx, created.id),
     );

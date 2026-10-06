@@ -28,6 +28,7 @@ import { pathToFileURL } from "node:url";
 import type { Tx } from "../../server/db.js";
 import { databaseTls, withoutParams } from "../../server/db-support.js";
 import { applyGrantsTx } from "../../server/ops/schema.js";
+import { PRIVILEGED_MEMBERSHIPS } from "../../server/roles.js";
 import { ensurePrivilegesOf, pooledHost } from "./provision-roles.js";
 
 const ROLE = /^[a-z_][a-z0-9_]{0,62}$/;
@@ -84,6 +85,11 @@ export async function rotateLogin(o: {
     throw Error("invalid role names");
   if (old === "gm_migrator")
     throw Error("use --kind migrator for the migration owner");
+  if (
+    PRIVILEGED_MEMBERSHIPS.includes(old) ||
+    PRIVILEGED_MEMBERSHIPS.includes(newName)
+  )
+    throw Error(`${old} is a capability role, not a login (PLATFORM-ROLES-3)`);
   const password = randomBytes(32).toString("hex");
   const url = loginUrl(o.ownerUrl, newName, password, o.kind !== "backup");
   const file =
@@ -103,8 +109,12 @@ export async function rotateLogin(o: {
     await sql.begin(async (raw) => {
       const tx = raw as Tx;
       const [source] = await tx`
-        select oid, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb from pg_roles where rolname=${old}`;
+        select oid, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolcanlogin from pg_roles where rolname=${old}`;
       if (!source) throw Error(`old login ${old} not found`);
+      if (!source.rolcanlogin)
+        throw Error(
+          `${old} cannot log in; it is not a login (PLATFORM-ROLES-3)`,
+        );
       if (
         source.rolsuper ||
         source.rolbypassrls ||
@@ -248,9 +258,23 @@ async function remainingGrants(tx: Tx, old: string) {
 export async function finalizeRotation(o: { ownerUrl: string; old: string }) {
   if (!ROLE.test(o.old) || o.old === "gm_migrator")
     throw Error("invalid old login");
+  // A typo such as --old gm_jobs_worker must never DROP OWNED a capability role:
+  // that revokes every grant and policy of the role and silently removes every
+  // login's membership (PLATFORM-ROLES-3).
+  if (PRIVILEGED_MEMBERSHIPS.includes(o.old))
+    throw Error(
+      `${o.old} is a capability role, not a login; nothing was dropped`,
+    );
   const sql = connect(o.ownerUrl);
   const actions: string[] = [];
   try {
+    const [role] =
+      await sql`select rolcanlogin from pg_roles where rolname=${o.old}`;
+    if (!role) throw Error(`${o.old} not found`);
+    if (!role.rolcanlogin)
+      throw Error(
+        `${o.old} cannot log in; it is not a login; nothing was dropped`,
+      );
     const [active] =
       await sql`select count(*)::int as n from pg_stat_activity where usename=${o.old}`;
     if (active.n)

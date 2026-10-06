@@ -63,6 +63,7 @@ import {
 } from "../server/owner-accounts.js";
 import type { Session } from "../shared/domain.js";
 import { effectiveIdleLock, type SessionAccess } from "../shared/access.js";
+import { noRetries } from "./db-retries.js";
 
 /** fiscal (027) triggers a cleanup disables (in its own transaction) to delete fixture rows. */
 const FISCAL_TRIGGERS = [
@@ -311,11 +312,13 @@ try {
       createPairingCode(tx, owner, { deviceName: "Caja doble" }),
     );
     assert.match(code.code, /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);
-    const results = await Promise.allSettled([
-      redeemPairingCode(sql, { code: code.code }, null),
-      redeemPairingCode(sql, { code: code.code.toLowerCase() }, null),
-      redeemPairingCode(sql, { code: code.code.replace("-", " ") }, null),
-    ]);
+    const results = await noRetries("pairing redeem race", () =>
+      Promise.allSettled([
+        redeemPairingCode(sql, { code: code.code }, null),
+        redeemPairingCode(sql, { code: code.code.toLowerCase() }, null),
+        redeemPairingCode(sql, { code: code.code.replace("-", " ") }, null),
+      ]),
+    );
     const ok = results.filter((r) => r.status === "fulfilled");
     assert.equal(ok.length, 1);
     for (const r of results)

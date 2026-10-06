@@ -25,6 +25,7 @@ import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
 } from "../server/payment-recovery.js";
+import { noRetries } from "./db-retries.js";
 
 /** fiscal (027) triggers a cleanup disables (in its own transaction) to delete fixture rows. */
 const FISCAL_TRIGGERS = [
@@ -67,7 +68,10 @@ const run = <T>(fn: Parameters<typeof tenant<T>>[2]) =>
   tenant(sql, tenantId, fn);
 
 async function completeAll<T>(promises: Promise<T>[]): Promise<T[]> {
-  const results = await Promise.allSettled(promises);
+  // LO-R9 (PLATFORM-LOCKS-3): a deadlock retried by tenant() fails the burst.
+  const results = await noRetries("offline recovery burst", () =>
+    Promise.allSettled(promises),
+  );
   const failure = results.find((r) => r.status === "rejected");
   if (failure?.status === "rejected") throw failure.reason;
   return results.map((r) => (r as PromiseFulfilledResult<T>).value);
