@@ -121,7 +121,28 @@ export async function onCanceled(
       motive: c.motive,
     });
     await redecideRefunds(tx, ctx, substitute);
-  } else
+    return;
+  }
+  // The freed tickets always return to a CFDI (CFDI-MONEY-2, SAT-1; RMF 2.7.1.21): each built
+  // period of theirs gets a forced build (a supplementary part), whatever its age; the tick's
+  // late sweep only looks back 62 days. A ticket in a period still open waits for its normal
+  // build (the restaurant may issue its globals by hand), and a ticket from before CFDI started
+  // belongs to no period (the cancel dialog says so).
+  const periods = await tx`
+    select distinct g.period_key from cfdi_document_tickets c
+    join fiscal_tickets t on t.tenant_id = c.tenant_id and t.id = c.ticket_id
+    join cfdi_global_periods g on g.tenant_id = c.tenant_id and g.mode = ${doc.mode}
+      and t.business_date between g.date_from and g.date_to
+    where c.document_id = ${doc.id} and c.state = 'released' and c.released_reason = 'canceled'
+      and g.status in ('built','empty')
+    order by g.period_key`;
+  for (const p of periods)
+    await cfdiEnqueue(tx, tenantId, {
+      kind: "cfdi_global",
+      dedupeKey: `${dedupe.tickAfterCancel(doc.id)}:${p.period_key as string}`,
+      payload: { periodKey: p.period_key as string, force: true },
+    });
+  if (!periods.length)
     await cfdiEnqueue(tx, tenantId, {
       kind: "cfdi_global",
       dedupeKey: dedupe.tickAfterCancel(doc.id),

@@ -913,7 +913,9 @@ function CancelDialog({
           <p className="muted">
             {doc.waitingSubstituteId
               ? t.cfdiCancelToSubstitute
-              : t.cfdiCancelBackToGlobal}
+              : doc.preStart
+                ? t.cfdiCancelPreStart
+                : t.cfdiCancelBackToGlobal}
           </p>
         )}
         {motive === "03" && <p className="muted">{t.cfdiCancelRefundHint}</p>}

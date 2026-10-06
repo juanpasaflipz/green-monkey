@@ -236,7 +236,11 @@ export async function loadSettings(
 
 /** The first business date the current mode covers (test_from, or live_from in live mode). */
 export function modeFrom(s: SettingsRow): string {
-  return s.mode === "live" ? (s.liveFrom ?? s.testFrom) : s.testFrom;
+  return modeStart(s, s.mode);
+}
+/** The first business date a mode covers (test from activation, live from its start date). */
+export function modeStart(s: SettingsRow, mode: CfdiMode): string {
+  return mode === "live" ? (s.liveFrom ?? s.testFrom) : s.testFrom;
 }
 
 export async function loadOrganization(
@@ -814,6 +818,13 @@ export async function documentView(
         and s.status = any(${[...UNFINISHED_SUBSTITUTE]}::text[])
         and (s.kind = 'egreso' or exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
           and c.document_id = s.id and c.state = 'pending'))) as substitute_unfinished,
+      -- A ticket of this document is from before the mode's start: no global covers it.
+      exists (select 1 from cfdi_document_tickets c
+        join fiscal_tickets t on t.tenant_id = c.tenant_id and t.id = c.ticket_id
+        join cfdi_settings s on s.tenant_id = c.tenant_id
+        where c.document_id = ${id} and c.state <> 'released'
+          and t.business_date < (case when ${d.mode} = 'live' then coalesce(s.live_from, s.test_from)
+                                 else s.test_from end)) as pre_start,
       -- A credit note's parent is still valid with no cancellation open: it can be corrected.
       exists (select 1 from cfdi_documents p where p.id = ${d.parentDocumentId} and p.status = 'valid'
         and not exists (select 1 from cfdi_cancellations x where x.tenant_id = p.tenant_id
@@ -902,6 +913,7 @@ export async function documentView(
     ).map((e) => ({ kind: e.kind, at: iso(e.at)!, detail: e.detail })),
     createdByName: extra.created_by_name ?? null,
     waitingSubstituteId,
+    preStart: !!extra.pre_start,
     canCancel,
     canSubstitute:
       (d.kind === "invoice" && canCancel && !extra.substitute_unfinished) ||
@@ -1148,6 +1160,21 @@ export async function ticketView(
 // Attention, alerts, coverage and periods
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * SQL predicate over a period row aliased `g`: the period has a ticket of its dates, on or after
+ * `from` (the mode's start), with a net amount left and no live claim in the period's mode. A
+ * closed period that has one is due (CFDI-MONEY-2, SAT-1): a cancellation released it, an
+ * offline sale synced late, or a repair issued it after the build.
+ */
+export function unclaimedTickets(tx: Tx, from: ReturnType<Tx>) {
+  return tx`exists (select 1 from fiscal_tickets t where t.tenant_id = g.tenant_id
+    and t.business_date between g.date_from and g.date_to and t.business_date >= ${from}
+    and not exists (select 1 from cfdi_document_tickets c where c.tenant_id = t.tenant_id
+      and c.ticket_id = t.id and c.mode = g.mode and c.state <> 'released')
+    and t.gross > coalesce((select sum(a.gross) from fiscal_adjustments a
+      where a.tenant_id = t.tenant_id and a.order_id = t.order_id), 0))`;
+}
+
 /** Counts for the panel badge, Today and the worker's alerts (one statement). */
 export async function attention(tx: Tx): Promise<CfdiAlertsView> {
   const [r] = await tx`
@@ -1156,7 +1183,11 @@ export async function attention(tx: Tx): Promise<CfdiAlertsView> {
         and ((g.due_at < now() and (g.status = 'open'
                or exists (select 1 from cfdi_documents d where d.tenant_id = g.tenant_id and d.mode = g.mode
                    and d.kind = 'global' and d.period_key = g.period_key
-                   and d.status in ('queued','stamping','pending'))))
+                   and d.status in ('queued','stamping','pending'))
+               or ${unclaimedTickets(
+                 tx,
+                 tx`(case when s.mode = 'live' then coalesce(s.live_from, s.test_from) else s.test_from end)`,
+               )}))
           or exists (select 1 from cfdi_documents d where d.tenant_id = g.tenant_id and d.mode = g.mode
                    and d.kind = 'global' and d.period_key = g.period_key and d.status = 'failed'
                    and not exists (select 1 from cfdi_documents n where n.tenant_id = d.tenant_id and n.mode = d.mode
@@ -1220,10 +1251,13 @@ export async function periodViews(
     mode: CfdiMode;
     canRun: boolean;
     globalAuto: boolean;
+    /** The mode's start date (modeFrom): tickets before it belong to no period. */
+    modeFrom: string;
   },
 ): Promise<GlobalPeriodView[]> {
   const rows = await tx`
     select g.*, g.date_from::text as from_date, g.date_to::text as to_date,
+      ${unclaimedTickets(tx, tx`${q.modeFrom}::date`)} as unclaimed,
       coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'part', d.part, 'status', d.status,
           'uuid', d.uuid, 'late', d.created_at > g.due_at, 'total', coalesce(d.total, d.expected_total, 0),
           'tax', coalesce(d.tax, d.expected_tax, 0), 'tickets', d.ticket_count) order by d.part)
@@ -1256,9 +1290,10 @@ export async function periodViews(
       ["queued", "stamping", "pending", "waiting"].includes(d.status),
     );
     const failed = current.some((d) => d.status === "failed");
+    // A built or empty period that has a ticket in no CFDI is due again (CFDI-MONEY-2, SAT-1).
     const status: GlobalPeriodView["status"] = failed
       ? "failed"
-      : g.status === "open"
+      : g.status === "open" || (closed && g.unclaimed)
         ? closed
           ? overdue
             ? "overdue"

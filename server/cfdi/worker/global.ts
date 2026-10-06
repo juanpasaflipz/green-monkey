@@ -55,6 +55,7 @@ import {
   loadOrganization,
   loadSettings,
   modeFrom,
+  unclaimedTickets,
   type FiscalFacts,
   type SettingsRow,
 } from "../store.js";
@@ -473,7 +474,9 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
                    and c.ticket_id = t.id and c.mode = g.mode and c.state <> 'released')))
           or exists (select 1 from cfdi_documents d where d.tenant_id = g.tenant_id and d.mode = g.mode
             and d.kind = 'global' and d.period_key = g.period_key
-            and d.status in ('failed','queued','stamping','pending')))
+            and d.status in ('failed','queued','stamping','pending'))
+          -- A built period with a ticket in no CFDI (CFDI-MONEY-2, SAT-1).
+          or (g.status in ('built','empty') and ${unclaimedTickets(tx, tx`${plan.from}::date`)}))
       returning g.period_key`;
     const org = await loadOrganization(tx);
     const [next] = await tx`

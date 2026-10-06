@@ -3876,6 +3876,104 @@ try {
     );
   });
 
+  await test("MONEY-2a / SAT-1. tickets released by a cancellation return to a CFDI whatever their age: an invoice and a global canceled with motive 02 more than 62 days after their period hand their tickets to a supplementary part of that period", async () => {
+    const W = await makeTenant("money-2a");
+    const oldDay = daysAgo(75);
+    // A ticket that exists before activation: the activation tick globalizes its day.
+    const inGlobal = await makeTicket(W, { businessDate: oldDay });
+    await activate(W, { testFrom: daysAgo(120), periodicity: "day" });
+    const [g] =
+      await admin`select id from cfdi_documents where tenant_id = ${W.tenantId} and kind = 'global'
+        and period_key = ${"D" + oldDay} and status = 'valid'`;
+    assert.ok(g, "the old day was globalized");
+    // A late ticket of an even older day, invoiced to a customer (its day's global is built).
+    const veryOld = daysAgo(80);
+    const late = await makeTicket(W, { businessDate: veryOld });
+    const d = await invoice(W, late);
+    await settle(W.tenantId);
+    assert.equal((await docRow(d.id)).status, "valid");
+    await cancelAs(W, W.manager, d.id);
+    await settle(W.tenantId);
+    assert.equal((await docRow(d.id)).status, "canceled");
+    const holder = async (ticketId: string) => {
+      const [c] = (await claims(ticketId)).filter((r) => r.state === "active");
+      return c ? docRow(c.document_id) : null;
+    };
+    const lateHolder = await holder(late.id);
+    assert.deepEqual(
+      lateHolder && {
+        kind: lateHolder.kind,
+        period: lateHolder.period_key,
+        status: lateHolder.status,
+      },
+      { kind: "global", period: "D" + veryOld, status: "valid" },
+    );
+    // The owner cancels the old global (02): its ticket goes into a new part of the same day.
+    await cancelAs(W, W.owner, g.id);
+    await settle(W.tenantId);
+    assert.equal((await docRow(g.id)).status, "canceled");
+    const again = await holder(inGlobal.id);
+    assert.deepEqual(
+      again && {
+        period: again.period_key,
+        status: again.status,
+        part: again.part,
+      },
+      { period: "D" + oldDay, status: "valid", part: 2 },
+    );
+  });
+
+  await test("MONEY-2b / SAT-1. a closed period with an unclaimed eligible ticket shows as overdue with Emitir ahora and counts in Today's overdue globals until it is issued; a pre-start invoice says its ticket does not go back to a global", async () => {
+    const W = await makeTenant("money-2b");
+    await activate(W, { testFrom: daysAgo(120), periodicity: "day" });
+    const day = daysAgo(70);
+    const before = (await web(W, (tx) => cfdiAlerts(tx))).overdueGlobals;
+    await makeTicket(W, { businessDate: day });
+    const period = async () =>
+      (
+        await web(W, (tx) =>
+          service.listGlobals(tx, W.manager, {
+            query: { from: day, to: day },
+          } as never),
+        )
+      )[0];
+    const p = await period();
+    assert.deepEqual(
+      { status: p.status, canRun: p.canRun },
+      { status: "overdue", canRun: true },
+    );
+    assert.equal(
+      (await web(W, (tx) => cfdiAlerts(tx))).overdueGlobals,
+      before + 1,
+    );
+    await web(W, (tx) =>
+      service.runGlobals(tx, W.manager, {
+        operationId: op(),
+        periodKey: "D" + day,
+      }),
+    );
+    await settle(W.tenantId);
+    const built = await period();
+    assert.equal(built.status, "built");
+    assert.equal(built.ticketCount, 1);
+    assert.equal((await web(W, (tx) => cfdiAlerts(tx))).overdueGlobals, before);
+    // A ticket from before CFDI started is invoiced on request; canceling it frees it, but no
+    // global covers days before the start: the document says so.
+    const pre = await makeTicket(W, { businessDate: daysAgo(130) });
+    const inv = await web(W, (tx) =>
+      service.requestInvoice(tx, W.manager, {
+        operationId: op(),
+        ticketId: pre.id,
+        receptor: MORAL,
+        cardForm: null,
+        confirmPreStart: true,
+        reissueGlobal: false,
+      }),
+    );
+    await settle(W.tenantId);
+    assert.equal((await viewOf(W, inv.id)).preStart, true);
+  });
+
   console.log(`cfdi DB checks passed: ${checks}`);
 } finally {
   await runner.stop(2000);

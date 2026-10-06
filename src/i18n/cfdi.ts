@@ -231,6 +231,8 @@ export default defineArea({
     cfdiCancelReason: "Explica el motivo",
     cfdiCancelBackToGlobal:
       "El ticket volverá a incluirse en la factura global de su periodo.",
+    cfdiCancelPreStart:
+      "El ticket es de antes de que empezara la facturación en la app: ninguna factura global de la app lo incluirá. Inclúyelo en la factura global que emitas por tu cuenta.",
     cfdiCancelRefundHint:
       "Si el cliente no pagó o se le devolvió el dinero, registra también el reembolso.",
     cfdiCancelAcceptance:
@@ -595,6 +597,8 @@ export default defineArea({
     cfdiCancelReason: "Explain the reason",
     cfdiCancelBackToGlobal:
       "The ticket will be included again in its period's global invoice.",
+    cfdiCancelPreStart:
+      "The ticket is from before invoicing started in the app: no global invoice from the app will include it. Include it in the global invoice you issue on your own.",
     cfdiCancelRefundHint:
       "If the customer did not pay or got the money back, also record the refund.",
     cfdiCancelAcceptance:

@@ -686,6 +686,8 @@ export type CfdiDocumentView = CfdiDocumentSummary & {
   canCancel: boolean;
   /** Not while a substitute is still unfinished (cfdi_substitution_pending). */
   canSubstitute: boolean;
+  /** A ticket of this document predates CFDI's start in its mode: no global ever covers it. */
+  preStart: boolean;
   /** Request this document's cancellation again with motive 01 and the waiting substitute. */
   canRequestAgain: boolean;
   canRetry: boolean;

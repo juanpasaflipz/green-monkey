@@ -73,6 +73,7 @@ import {
   ticketIdByFolio,
   ticketView,
   UNFINISHED_SUBSTITUTE,
+  modeStart,
   waitingSubstitute,
   type CfdiState,
   type DocumentRow,
@@ -1114,12 +1115,14 @@ export async function listGlobals(
   const state = await cfdiState(tx);
   if (!state.settings) return [];
   await tx`select set_config('statement_timeout', '30s', true)`;
+  const mode = q.mode ?? state.settings.mode;
   return periodViews(tx, {
     from: q.from,
     to: q.to,
-    mode: q.mode ?? state.settings.mode,
+    mode,
     canRun: true,
     globalAuto: state.settings.globalAuto,
+    modeFrom: modeStart(state.settings, mode),
   });
 }
 
@@ -1156,6 +1159,7 @@ export async function runGlobals(tx: Tx, s: Session, raw: unknown) {
     mode: settings.mode,
     canRun: true,
     globalAuto: settings.globalAuto,
+    modeFrom: modeStart(settings, settings.mode),
   });
 }
 
