@@ -35,7 +35,10 @@ changes: name, price, open price or ceiling, kind, station, category, linked
 groups or their compiled content, recipe, cost, or archive. It does **not** change
 for availability, positions or a category rename. Offline sync and order lines
 (`productVersion`) therefore treat a version change as "the priced content
-changed", and 86-ing an item never sends queued offline sales to review.
+changed", and 86-ing an item never marks queued offline sales as a catalog
+change. Their sync still prices them with `quote()`, which refuses an item 86'd
+after the device cached its catalog (`unavailable`), so such a record goes to
+manager review (see the negative-stock policy below).
 
 **Reusable modifier groups (`modifier_groups`).** A group has a bilingual name,
 `min` (0–30), `max` (1–30), `repeat`, and 1–50 choices with non-negative prices.
@@ -251,9 +254,23 @@ a sale is refused (`count_changed`).
 | Policy | Behaviour |
 | --- | --- |
 | `allow` (default for every restaurant) | The sale goes through. The ingredient shows **Negativo** with the date, and the copy says it does not indicate a shortage by itself (INV-04). |
-| `block` (opt-in) | Sales, waste and prep that would take an ingredient below zero are refused with `insufficient_stock`. Offline cash already collected is always recorded (`AppendOptions.stockPolicy = "allow"`). |
+| `block` (opt-in) | Sales, waste and prep that would take an ingredient below zero are refused with `insufficient_stock`. Offline records are always recorded (`AppendOptions.stockPolicy = "allow"`, see below). |
 
 Receipts, openings, counts, prep outputs and void returns are never blocked.
+
+**Offline records and `block` (decision LD-13, accepted).** Everything saved
+offline that moves stock (a sale, an order sent with **Enviar (sin conexión)**, a
+round) syncs with `stockPolicy: "allow"` (offline D8), whatever the restaurant's
+policy, because the sale physically happened. Under `block` such a record can
+therefore take an ingredient below zero: the ledger records the movement, the
+ingredient shows **Negativo**, and the record does not go to manager review for
+stock. This includes records saved while the server was reachable in manual
+**Trabajar sin conexión** mode, which stays available to every role (it exists
+for slow or flaky connections, and gating it would add friction during a rush),
+so a cashier in that mode can sell past `block` without a manager. An item 86'd
+after the device cached its catalog is different: sync refuses the line
+(`unavailable`) and the record goes to manager review. See
+[Offline and payment recovery](OFFLINE_RECOVERY.md) ("Stock policy at sync").
 
 **Lock order and retry (DB-5).** Every command takes the stock rows it touches in
 one `SELECT … ORDER BY id FOR UPDATE` (`lockStockItems`) before any movement:

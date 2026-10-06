@@ -45,7 +45,8 @@ by more than 2 minutes.
 **Trabajar sin conexión** (Sync screen switch, slow banner) is a device-local mode
 for any operator. While it is on, the POS never attempts blocking server commands
 such as sending or charging; background probes and background sync continue
-whenever the server answers. The mode survives reloads and sign-outs, so the login
+whenever the server answers. What is saved in this mode syncs like any offline
+record, including its stock policy (see "Stock policy at sync"). The mode survives reloads and sign-outs, so the login
 screen says the device is in offline mode and offers **Volver a conectarme**.
 Signing in always reads the new session from the server, even in that mode; only
 the startup check is skipped. A cached session is never restored right after a
@@ -314,9 +315,20 @@ collides with rows the server already has (a unique or foreign-key violation, fo
 example a table deleted after the outage) is `offline_record_conflict` for a manager,
 never a 500 retried forever. Payments go through the normal payment command,
 so a record can never pay past the order's balance (`offline_payment_exceeds_due`).
-Offline-collected sales may take stock negative because the sale physically
-happened. The order's business date comes from the validated sale time, not the
-sync time.
+The order's business date comes from the validated sale time, not the sync time.
+
+**Stock policy at sync (decision LD-13, accepted).** Every offline record that
+moves stock (a sale, an order sent with **Enviar (sin conexión)**, a round) syncs
+with `stockPolicy: "allow"` (offline D8), whatever the restaurant's negative-stock
+policy, because the sale physically happened. Stock may therefore go negative even
+when the restaurant uses `block`: the ledger records every movement and the
+ingredient shows **Negativo**, as under `allow`, and the record does not go to
+manager review for stock. This includes records saved while the server was
+reachable in manual **Trabajar sin conexión** mode, which stays available to every
+role: it exists for slow or flaky connections, and gating it would add friction
+during a rush. An item 86'd after the device cached its catalog is different: the
+server refuses its line at sync (`unavailable`) and the record goes to manager
+review. See [Menu, tables and ingredients](MENU.md) (negative-stock policy).
 
 ## Clock handling
 
