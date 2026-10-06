@@ -605,7 +605,10 @@ export function Kitchen({
                   <strong>{t("kitchenVoided")}</strong>
                   {r.pendingVoids.map((v) => (
                     <p key={v.id}>
-                      {v.quantity} × {v.name[locale]} · {v.reason}
+                      {v.kind === "refund" &&
+                        `${t("discountsKdsRefundCancel")} · `}
+                      {v.quantity} × {v.name[locale]}
+                      {v.reason && ` · ${v.reason}`}
                     </p>
                   ))}
                   {canAckVoids && (

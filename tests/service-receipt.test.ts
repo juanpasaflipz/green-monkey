@@ -437,3 +437,217 @@ describe("tender labels", () => {
     );
   });
 });
+
+describe("discount and refund rows (discounts 028, T-06)", () => {
+  // Taco ×3 at 4500 (one comped unit) and a 10 % check discount on the rest.
+  const taco = line({ id: "l3", quantity: 3, total: 13500, unitPrice: 4500 });
+  const at = "2026-10-05T18:05:00.000Z";
+  const discounted: Order = {
+    ...order,
+    note: "",
+    rounds: [],
+    lines: [taco],
+    total: 8100,
+    paid: 8100,
+    refunded: 4050,
+    discount: 5400,
+    tenders: [
+      {
+        id: "t1",
+        method: "cash",
+        amount: 8100,
+        tip: 0,
+        received: 8100,
+        refunded: 4050,
+        external_reference: null,
+      },
+    ],
+    discounts: [
+      {
+        id: "d1",
+        scope: "line",
+        lineId: "l3",
+        kind: "comp",
+        percentBps: null,
+        base: 4500,
+        amount: 4500,
+        units: 1,
+        activeAmount: 4500,
+        releasedAmount: 0,
+        allocations: [{ lineId: "l3", unit: 0, amount: 4500, voided: false }],
+        reasonCode: "courtesy",
+        note: "",
+        actorName: "Ana",
+        approverName: "Luis",
+        createdAt: at,
+        reversal: null,
+      },
+      {
+        id: "d2",
+        scope: "order",
+        lineId: null,
+        kind: "percent",
+        percentBps: 1000,
+        base: 9000,
+        amount: 900,
+        units: 2,
+        activeAmount: 900,
+        releasedAmount: 0,
+        allocations: [
+          { lineId: "l3", unit: 1, amount: 450, voided: false },
+          { lineId: "l3", unit: 2, amount: 450, voided: false },
+        ],
+        reasonCode: "senior_inapam",
+        note: "",
+        actorName: "Ana",
+        approverName: "Luis",
+        createdAt: at,
+        reversal: null,
+      },
+    ],
+    refundBatches: [
+      {
+        id: "b1",
+        mode: "items",
+        amount: 4050,
+        cashAmount: 4050,
+        externalAmount: 0,
+        reasonCode: "quality",
+        note: "frío",
+        restock: false,
+        actorName: "Ana",
+        approverName: "Luis",
+        createdAt: at,
+        businessDate: "2026-10-05",
+        legacy: false,
+        rows: [
+          {
+            refundId: "r1",
+            tenderId: "t1",
+            method: "cash",
+            amount: 4050,
+            reference: null,
+          },
+        ],
+        lines: [
+          {
+            id: "rl1",
+            lineId: "l3",
+            units: [2],
+            amount: 4050,
+            restocked: false,
+            preparationState: "completed",
+            kitchenPending: false,
+          },
+        ],
+      },
+    ],
+  };
+
+  it("prints line and check discounts before the Total, so the receipt adds up", () => {
+    const text = plain(render({ order: discounted }));
+    expect(text).toContain("Cortesía (1 de 3) −$45.00");
+    expect(text).toContain("Subtotal antes de descuentos $135.00");
+    expect(text).toContain("Descuentos −$45.00");
+    expect(text).toContain(
+      "Descuento en la cuenta · Adulto mayor (INAPAM) 10 % −$9.00",
+    );
+    expect(text.indexOf("Subtotal antes de descuentos")).toBeLessThan(
+      text.indexOf("Total"),
+    );
+    expect(text.indexOf("Descuento en la cuenta")).toBeLessThan(
+      text.indexOf("Total $81.00"),
+    );
+    // 135.00 − 45.00 − 9.00 = 81.00
+    expect(text).toContain("Total $81.00");
+  });
+
+  it("renders nothing for an order without discounts or item refunds", () => {
+    const text = plain(render());
+    expect(text).not.toContain("Subtotal antes de descuentos");
+    expect(text).not.toContain("Descuento");
+    expect(text).not.toContain("Cortesía");
+  });
+
+  it("follows the refund row with what the item refund returned", () => {
+    const text = plain(render({ order: discounted }));
+    const refund = text.indexOf("Reembolso −$40.50");
+    expect(refund).toBeGreaterThan(-1);
+    expect(text.indexOf("1 × Taco de asada −$40.50")).toBeGreaterThan(refund);
+  });
+
+  it("a cached (offline) copy shows its total discount in one row", () => {
+    const cached = {
+      ...order,
+      state: "local",
+      total: 8100,
+      paid: 8100,
+      discount: 900,
+      tenders: [],
+    } as Order;
+    const text = plain(render({ order: cached, kind: "local" }));
+    expect(text).toContain("Subtotal antes de descuentos $90.00");
+    expect(text).toContain("Descuentos −$9.00");
+  });
+
+  it("the refund slip prints in Spanish, with the reason label, the people and no fiscal lines without fiscal data", async () => {
+    const { RefundSlip } = await import("../src/features/discounts/RefundSlip");
+    const text = plain(
+      renderToStaticMarkup(
+        createElement(RefundSlip, {
+          order: discounted,
+          batch: discounted.refundBatches![0],
+          session,
+          locale: "es",
+        }),
+      ),
+    );
+    expect(text).toContain("COMPROBANTE DE REEMBOLSO");
+    expect(text).toContain("Orden #42");
+    expect(text).toContain("1 × Taco de asada $40.50");
+    expect(text).toContain("Efectivo $40.50");
+    expect(text).toContain("Total reembolsado $40.50");
+    expect(text).toContain(
+      "Motivo: Producto con defecto o queja · &quot;frío&quot;",
+    );
+    expect(text).toContain("Registró Ana · autorizó Luis");
+    expect(text).toContain("Este comprobante no es una factura (CFDI).");
+    expect(text).not.toContain("IVA reembolsado");
+    expect(text).not.toContain("Ticket original");
+    // With fiscal's order.fiscal (027): the original folio and the IVA line.
+    const fiscal = plain(
+      renderToStaticMarkup(
+        createElement(RefundSlip, {
+          order: {
+            ...discounted,
+            fiscal: {
+              ticket: { folio: "A-000123" },
+              provisional: null,
+              refunds: [
+                {
+                  refundId: "r1",
+                  createdAt: at,
+                  businessDate: "2026-10-05",
+                  groups: [
+                    {
+                      category: "iva16",
+                      rateBps: 1600,
+                      gross: 4050,
+                      base: 3491,
+                      tax: 559,
+                    },
+                  ],
+                },
+              ],
+            },
+          } as Order,
+          batch: discounted.refundBatches![0],
+          session,
+          locale: "es",
+        }),
+      ),
+    );
+    expect(fiscal).toContain("Ticket original: A-000123");
+    expect(fiscal).toContain("Importe sin IVA $34.91 · IVA reembolsado $5.59");
+  });
+});

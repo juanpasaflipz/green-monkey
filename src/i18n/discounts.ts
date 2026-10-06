@@ -248,6 +248,7 @@ export default defineArea({
     discountsApproverSelf: "Autoriza: tú (confirmas con tu PIN si se pide).",
     discountsLimitWithin: "Dentro de tu límite.",
     discountsReceiptDiscounts: "Descuentos",
+    discountsRefundMode: "Tipo de reembolso",
   },
   en: {
     discountsAction: "Discount",
@@ -488,6 +489,7 @@ export default defineArea({
     discountsApproverSelf: "Approver: you (confirm with your PIN if asked).",
     discountsLimitWithin: "Within your limit.",
     discountsReceiptDiscounts: "Discounts",
+    discountsRefundMode: "Refund type",
   },
   errors: {
     discount_invalid: [

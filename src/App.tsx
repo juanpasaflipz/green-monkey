@@ -806,6 +806,7 @@ export default function App() {
               view={view}
               session={session}
               locale={locale}
+              online={online}
               navigate={setView}
             />
           ))}

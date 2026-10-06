@@ -19,6 +19,12 @@ import {
   noteEditableOf,
 } from "./Receipt";
 import { KitchenTicketDocument, ticketsForOpenRounds } from "./KitchenTicket";
+import { DiscountDialog } from "./discounts/DiscountDialog";
+import { OrderAdjustments } from "./discounts/OrderAdjustments";
+import {
+  LineDiscountRows,
+  OrderDiscountRows,
+} from "./discounts/ReceiptAdjustments";
 
 const reasonKey: Record<string, Key> = {
   settled: "serviceCloseReasonSettled",
@@ -36,6 +42,7 @@ export function OrderDetail({
   navigate,
   close,
   changed,
+  online = true,
 }: {
   orderId: string;
   session: Session;
@@ -44,6 +51,8 @@ export function OrderDetail({
   navigate: (view: string) => void;
   close: () => void;
   changed: () => void;
+  /** Connectivity from Órdenes (contract §0.8): discounts and refunds need it. */
+  online?: boolean;
 }) {
   const t = (k: Key) => strings[locale][k];
   const [order, setOrder] = useState<Order | null>(null);
@@ -53,8 +62,10 @@ export function OrderDetail({
   const [offerReprint, setOfferReprint] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dialog, setDialog] = useState<
-    "void" | "service" | "refund" | "note" | null
+    "void" | "service" | "refund" | "note" | "discount" | null
   >(null);
+  /** The line a per-line "Descuento" link preselects. */
+  const [discountLine, setDiscountLine] = useState<string | undefined>();
   const [settings] = usePrintSettings();
   const closeKey = useRef(crypto.randomUUID());
   const zone =
@@ -82,15 +93,15 @@ export function OrderDetail({
     await load();
     changed();
   };
-  const manager = ["owner", "manager"].includes(session.role);
   const state = order ? checkStateOf(order) : "open";
   const closed = state === "closed";
   const balance = order ? order.total - order.paid : 0;
+  // discounts (028): cash or terminal, by any operator (approval in the dialog).
   const refundable = order
-    ? order.tenders.some(
-        (x: any) => x.method === "cash" && x.amount > x.refunded,
-      )
+    ? order.tenders.some((x: any) => x.amount > x.refunded)
     : false;
+  const discountable =
+    !!order && !closed && !order.recovery && balance > 0 && online;
   const voidable = order?.paymentUnits?.some((u) => u.paid === 0) ?? false;
   const holdsTable = order?.mode === "dine_in" && !!order?.tableId;
   const notes = order ? roundNotes(order) : [];
@@ -207,6 +218,28 @@ export function OrderDetail({
                     </div>
                   ))}
                   {l.note && <p className="line-note">{l.note}</p>}
+                  <LineDiscountRows
+                    order={order}
+                    line={l}
+                    locale={locale}
+                    money={money}
+                  />
+                  {discountable &&
+                    order.paymentUnits?.some(
+                      (u) =>
+                        u.lineId === l.id && u.due > 0 && !u.lineDiscounted,
+                    ) && (
+                      <button
+                        type="button"
+                        className="text-button"
+                        onClick={() => {
+                          setDiscountLine(l.id);
+                          setDialog("discount");
+                        }}
+                      >
+                        {t("discountsLineLink")}
+                      </button>
+                    )}
                 </div>
               );
             })}
@@ -319,6 +352,7 @@ export function OrderDetail({
                 </small>
               </div>
             ))}
+            <OrderDiscountRows order={order} locale={locale} money={money} />
             <div className="row between">
               <span>{t("total")}</span>
               <strong>{money(order.total)}</strong>
@@ -338,6 +372,14 @@ export function OrderDetail({
               <strong>{money(balance)}</strong>
             </div>
           </section>
+          <OrderAdjustments
+            order={order}
+            session={session}
+            locale={locale}
+            money={money}
+            online={online}
+            changed={saved}
+          />
           <div className="row wrap">
             {!closed && !order.recovery && (
               <Button
@@ -361,8 +403,24 @@ export function OrderDetail({
                 {t("voidAction")}
               </Button>
             )}
-            {manager && refundable && (
-              <Button variant="ghost" onClick={() => setDialog("refund")}>
+            {discountable && (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setDiscountLine(undefined);
+                  setDialog("discount");
+                }}
+              >
+                {t("discountsAction")}
+              </Button>
+            )}
+            {refundable && (
+              <Button
+                variant="ghost"
+                disabled={!online}
+                title={online ? undefined : t("discountsRefundOffline")}
+                onClick={() => setDialog("refund")}
+              >
                 {t("refund")}
               </Button>
             )}
@@ -457,6 +515,19 @@ export function OrderDetail({
           money={money}
           close={() => setDialog(null)}
           saved={saved}
+          online={online}
+        />
+      )}
+      {order && dialog === "discount" && (
+        <DiscountDialog
+          order={order}
+          session={session}
+          locale={locale}
+          money={money}
+          online={online}
+          initialLineId={discountLine}
+          close={() => setDialog(null)}
+          applied={saved}
         />
       )}
       {order && dialog === "note" && (
