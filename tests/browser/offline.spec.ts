@@ -1737,32 +1737,46 @@ test("Service worker update keeps the old revision intact; the prompt applies on
     const assets = current![1].filter((path) => path.startsWith("/assets/"));
     const html = await (await page.request.get("/index.html")).text();
     const source = readFileSync("public/sw.js", "utf8");
-    const serve = async (buildId: string, extraAssets: string[]) => {
-      await context.unrouteAll({ behavior: "ignoreErrors" });
+    // The routes stay for the whole test and answer for the revision being served. Replacing them
+    // while one of Chromium's own update checks fetches through them can leave that fetch
+    // unanswered: its install never ends and every update() queued behind it comes back empty.
+    let revision: string | null = null;
+    await context.route("**/index.html", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body:
+          revision === null
+            ? html
+            : html.replace(
+                /<meta name="gm-build" content="[^"]*">/,
+                `<meta name="gm-build" content="${revision}">`,
+              ),
+      }),
+    );
+    await context.route("**/assets/missing-next.js", (route) =>
+      route.fulfill({ status: 404, body: "missing" }),
+    );
+    /** Serves a revision, or with null the deployed one again. */
+    const serve = (buildId: string | null, extraAssets: string[] = []) => {
       writeFileSync(
         "dist/sw.js",
-        transformServiceWorker(source, {
-          buildId,
-          assets: [...assets, ...extraAssets],
-        }),
+        buildId === null
+          ? deployed
+          : transformServiceWorker(source, {
+              buildId,
+              assets: [...assets, ...extraAssets],
+            }),
       );
-      await context.route("**/index.html", (route) =>
-        route.fulfill({
-          contentType: "text/html",
-          body: html.replace(
-            /<meta name="gm-build" content="[^"]*">/,
-            `<meta name="gm-build" content="${buildId}">`,
-          ),
-        }),
-      );
-      await context.route("**/assets/missing-next.js", (route) =>
-        route.fulfill({ status: 404, body: "missing" }),
-      );
+      revision = buildId;
     };
     // A new revision whose install fails leaves the old revision untouched.
-    await serve(`browser-failed-${Date.now()}`, ["/assets/missing-next.js"]);
+    serve(`browser-failed-${Date.now()}`, ["/assets/missing-next.js"]);
     expect(await updateWorker(page)).toBe("redundant");
     expect(await shellCaches(page)).toEqual(before);
+    // The failed release is withdrawn. Left in place, Chromium's own update check after the
+    // reloads below (a soft update once back online) installs it again, and that install was
+    // still running when the next revision was served (CI runs 37397108279, 37442666133).
+    serve(null);
     await context.setOffline(true);
     await page.reload();
     await expect(pill(page, /^Sin conexión/)).toBeVisible();
@@ -1773,7 +1787,7 @@ test("Service worker update keeps the old revision intact; the prompt applies on
     await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
     // A complete revision waits; the prompt stays disabled while a record is unsynced.
     const next = `browser-next-${Date.now()}`;
-    await serve(next, []);
+    serve(next);
     const s = await session(page);
     const row = queuedSale(s, {
       status: "conflict",
