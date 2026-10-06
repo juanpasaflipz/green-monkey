@@ -380,7 +380,8 @@ export async function adjustmentRows(
        where d.order_id=i.id) as discounts,
       (select coalesce(jsonb_agg(jsonb_build_object('refundId',r.id,'tenderId',r.tender_id,'batchId',r.batch_id,
           'method',r.method,'amount',r.amount,'reference',r.external_reference,'reason',r.reason,
-          'createdAt',r.created_at,'actorName',e.name) order by r.created_at,r.id),'[]')
+          'createdAt',r.created_at,'actorName',e.name)
+          order by r.created_at,t.created_at,t.id,r.id),'[]')
        from tenders t join refunds r on r.tenant_id=t.tenant_id and r.tender_id=t.id
        join employees e on e.tenant_id=r.tenant_id and e.id=r.actor_id
        where t.order_id=i.id) as refunds,
