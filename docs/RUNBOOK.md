@@ -65,7 +65,11 @@ from a matched line to see all of that request's lines (for a 5xx,
 `request_failed` has the error name, message, stack and route). Domain refusals
 the screen explains (for example a closed check or a wrong PIN) and failures that
 never reached the server (no connection, timeouts) show no reference: there is
-no server line to find.
+no server line to find. A few failures show a fixed message instead of the
+server's answer and carry no reference either: background refreshes, a settings
+panel that could not load, and the sign-in screen, which reads a server error
+as "Sin conexión". For those, ask for the screen and the time and filter by
+`@level:error` and `@route`.
 
 ## "The POS is down" playbook
 

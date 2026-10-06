@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api, ApiError } from "../src/api";
-import { errorNotice, supportReferenceOf, translateError } from "../src/i18n";
+import { api, ApiError, responseError } from "../src/api";
+import {
+  errorNotice,
+  supportReferenceOf,
+  translateError,
+  withSupportReference,
+} from "../src/i18n";
 import { log, requestContext, setLogSink } from "../server/logging.js";
 import { supportReference } from "../shared/support";
 
@@ -92,6 +97,75 @@ describe("support reference", () => {
     const bare = await failure(api("/x", {}));
     expect(bare.message).toBe("server_unavailable");
     expect(supportReferenceOf(bare)).toBe("3F2A9C1B");
+  });
+
+  it("the owner console's own fetches fail with the status and request id, so its notices carry the reference (POL-4)", () => {
+    const json = (
+      status: number,
+      body: unknown,
+      headers: Record<string, string> = {},
+    ) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "content-type": "application/json", ...headers },
+      });
+    // Body id first, else the header; the code falls back when the body has none.
+    const fromBody = responseError(
+      json(500, { error: "internal_error", requestId: ID }),
+      { error: "internal_error", requestId: ID },
+      "request_failed",
+    );
+    expect(fromBody).toMatchObject({
+      message: "internal_error",
+      status: 500,
+      kind: "server",
+      requestId: ID,
+    });
+    const fromHeader = responseError(
+      json(502, {}, { "x-request-id": ID }),
+      {},
+      "request_failed",
+    );
+    expect(fromHeader).toMatchObject({
+      message: "request_failed",
+      status: 502,
+      kind: "server",
+      requestId: ID,
+    });
+    expect(errorNotice(fromHeader, "es")).toBe(
+      `${translateError("request_failed", "es")} Referencia de soporte: 3F2A9C1B`,
+    );
+    // A screen's own generic text keeps its words and gains the reference.
+    expect(withSupportReference("No se pudo entrar.", fromBody, "es")).toBe(
+      "No se pudo entrar. Referencia de soporte: 3F2A9C1B",
+    );
+    expect(withSupportReference("Could not enter.", fromBody, "en")).toBe(
+      "Could not enter. Support reference: 3F2A9C1B",
+    );
+    // Domain refusals, sign-in answers and network failures stay as they were.
+    const refused = responseError(
+      json(409, { error: "pro_required", requestId: ID }),
+      { error: "pro_required", requestId: ID },
+      "request_failed",
+    );
+    expect(refused).toMatchObject({ kind: "domain", status: 409 });
+    expect(withSupportReference("No se pudo.", refused, "es")).toBe(
+      "No se pudo.",
+    );
+    const auth = responseError(
+      json(401, { error: "unauthorized", requestId: ID }),
+      { error: "unauthorized", requestId: ID },
+      "",
+    );
+    expect(auth.kind).toBe("auth");
+    expect(withSupportReference("No se pudo.", auth, "es")).toBe("No se pudo.");
+    expect(
+      withSupportReference(
+        "No se pudo.",
+        new TypeError("Failed to fetch"),
+        "es",
+      ),
+    ).toBe("No se pudo.");
   });
 
   it("every log line of a request carries supportRef, the value staff read out", () => {

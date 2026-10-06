@@ -748,7 +748,22 @@ export function supportReferenceOf(error: unknown): string | null {
  */
 export function errorNotice(error: unknown, locale: Locale): string {
   const code = (error as { message?: unknown } | null | undefined)?.message;
-  const text = translateError(typeof code === "string" ? code : "", locale);
+  return withSupportReference(
+    translateError(typeof code === "string" ? code : "", locale),
+    error,
+    locale,
+  );
+}
+
+/**
+ * A screen's own text for a failed request (for example a generic "could not enter"),
+ * followed by the "Referencia de soporte" when the error carries one (supportReferenceOf).
+ */
+export function withSupportReference(
+  text: string,
+  error: unknown,
+  locale: Locale,
+): string {
   const ref = supportReferenceOf(error);
   return ref
     ? `${text} ${strings[locale].opsSupportReference.replace("{ref}", ref)}`

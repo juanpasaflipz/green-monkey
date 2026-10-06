@@ -306,8 +306,10 @@ export function Selling({
    * cart is in Borradores under the same operation id; the waiter is told it
    * did not reach the kitchen, since the cart on screen is another check now.
    */
-  function failedAfterSwitch(target: Order | null, code: string) {
-    const reason = translateError(code, locale);
+  function failedAfterSwitch(target: Order | null, error: unknown) {
+    const code = (error as Error).message;
+    // With the "Referencia de soporte" when the send failed on the server.
+    const reason = errorNotice(error, locale);
     setError(
       target
         ? t("serviceRoundFailedAfterSwitch")
@@ -821,12 +823,12 @@ export function Selling({
       // operation id, so sending it from there replays or recovers it (FOH-11);
       // the cart on screen belongs to another order and stays as it is, and
       // the waiter is told the send did not land (SVC-REV-1).
-      if (moved()) throw failedAfterSwitch(target, code);
+      if (moved()) throw failedAfterSwitch(target, e);
       if (code === "stale_order" && target) {
         // Refresh in place; the unsent lines and their operation id stay.
         try {
           const latest = await api<Order>("/orders/" + target.id);
-          if (moved()) throw failedAfterSwitch(target, code);
+          if (moved()) throw failedAfterSwitch(target, e);
           setCurrent(latest);
           if (checkStateOf(latest) === "closed") {
             setClosedCheck("server");
@@ -863,7 +865,7 @@ export function Selling({
           target ? api<Order>("/orders/" + target.id).catch(() => null) : null,
         );
         // SVC-R10: the parked copy recovers the same way when it is sent.
-        if (moved()) throw failedAfterSwitch(target, code);
+        if (moved()) throw failedAfterSwitch(target, e);
         if (latest) {
           const operationId = crypto.randomUUID();
           const ids = idSequence();

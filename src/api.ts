@@ -19,6 +19,41 @@ export class ApiError extends Error {
     );
   }
 }
+/**
+ * The server's request id of an answer (the error body's `requestId`, else the
+ * X-Request-Id header): the "Referencia de soporte" an error notice shows (errorNotice).
+ */
+export function responseRequestId(
+  response: Response,
+  body: unknown,
+): string | undefined {
+  const id = (body as { requestId?: unknown } | null | undefined)?.requestId;
+  return typeof id === "string"
+    ? id
+    : (response.headers.get("x-request-id") ?? undefined);
+}
+
+/**
+ * The ApiError of a failed answer read outside api() (the owner console's own fetches):
+ * the body's error code (else `fallback`), the status, and the request id.
+ */
+export function responseError(
+  response: Response,
+  body: unknown,
+  fallback: string,
+): ApiError {
+  const code = (body as { error?: unknown } | null | undefined)?.error;
+  return new ApiError(
+    typeof code === "string" && code ? code : fallback,
+    response.status,
+    response.status === 401
+      ? "auth"
+      : response.status >= 500
+        ? "server"
+        : "domain",
+    responseRequestId(response, body),
+  );
+}
 export type ApiOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -149,12 +184,7 @@ async function request<T>(
         observer?.({ ok: true, latencyMs: Date.now() - started, path });
         return data as T;
       }
-      // The server's request id (body, else the X-Request-Id header): the
-      // "Referencia de soporte" an error notice shows (errorNotice).
-      const requestId =
-        typeof data?.requestId === "string"
-          ? data.requestId
-          : (response.headers.get("x-request-id") ?? undefined);
+      const requestId = responseRequestId(response, data);
       if (typeof data?.error === "string") {
         if (data.error === "session_changed" && typeof window !== "undefined")
           window.dispatchEvent(new Event("gm-session-changed"));

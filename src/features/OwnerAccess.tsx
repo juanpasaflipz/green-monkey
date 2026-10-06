@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { Button, Field } from "../components/ui";
 import { changeRestaurant, db } from "../offline";
-import { clearSessionScope } from "../api";
+import { clearSessionScope, responseError } from "../api";
 import { OwnerManagement } from "./OwnerManagement";
-import { strings, errorNotice } from "../i18n";
+import { strings, errorNotice, withSupportReference } from "../i18n";
 import { AccountCenter } from "./AccountCenter";
 import { LegalAcceptance, type LegalAccepted } from "./LegalAcceptance";
 import {
@@ -218,7 +218,9 @@ export function OwnerAccess({
       const error = await response.json().catch(() => ({}));
       setInvalid(error.error === "invalid_input");
       if (error.error === "device_is_terminal") setTerminal(true);
-      throw Error(error.error ?? "");
+      // With its status and request id, so a server error shows the
+      // "Referencia de soporte" (docs/RUNBOOK.md "Signals").
+      throw responseError(response, error, "");
     }
     return response.json();
   }
@@ -243,9 +245,13 @@ export function OwnerAccess({
           ? locale === "es"
             ? "Sincroniza o resuelve las ventas pendientes antes de cambiar de restaurante."
             : "Sync or resolve pending sales before switching restaurants."
-          : locale === "es"
-            ? "No se pudo entrar. Revisa la conexión y la activación de la sucursal."
-            : "Could not enter. Check your connection and location activation.",
+          : withSupportReference(
+              locale === "es"
+                ? "No se pudo entrar. Revisa la conexión y la activación de la sucursal."
+                : "Could not enter. Check your connection and location activation.",
+              error,
+              locale,
+            ),
       );
       setFailed(true);
     } finally {
