@@ -49,10 +49,30 @@ export async function loadCancellation(
 }
 
 /**
+ * The valid substitute of a canceled document still waiting for its ticket (pending claims): the
+ * newest one, since a second substitution after a rejected one leaves an older valid substitute
+ * behind (the alert asks the manager to cancel it).
+ */
+async function waitingSubstitute(
+  tx: Tx,
+  documentId: string,
+): Promise<string | null> {
+  const [r] = await tx`
+    select d.id from cfdi_documents d
+    where d.replaces_document_id = ${documentId} and d.status = 'valid'
+      and exists (select 1 from cfdi_document_tickets c where c.tenant_id = d.tenant_id
+        and c.document_id = d.id and c.state = 'pending')
+    order by d.created_at desc limit 1`;
+  return (r?.id as string | undefined) ?? null;
+}
+
+/**
  * The CFDI is canceled (spec §4.8.5 onCanceled): its claims are released, the acuse is fetched,
- * and by source a substitute's pending claims activate or the freed tickets go back to the next
- * global tick (a supplementary part of their own period). Reissue cancellations are completed by
- * cfdi_reissue, which re-reads the state.
+ * and a valid substitute's pending claims activate, on EVERY cancellation path of the original:
+ * the motive-01 cancellation of a substitution, or a staff cancellation (02/03) requested after a
+ * rejected or expired substitution (CFDI-R2-4). Without a waiting substitute the freed tickets go
+ * back to the next global tick (a supplementary part of their own period). Reissue cancellations
+ * are completed by cfdi_reissue, which re-reads the state.
  */
 export async function onCanceled(
   tx: Tx,
@@ -78,10 +98,15 @@ export async function onCanceled(
   });
   if (c.source === "reissue") return;
   await releaseClaims(tx, doc.id, "canceled");
-  if (c.source === "substitution" && c.substituteDocumentId) {
-    await activatePendingClaims(tx, c.substituteDocumentId);
-    await event(tx, ctx, c.substituteDocumentId, "substitution_completed", {
+  const substitute =
+    c.source === "substitution" && c.substituteDocumentId
+      ? c.substituteDocumentId
+      : await waitingSubstitute(tx, doc.id);
+  if (substitute) {
+    await activatePendingClaims(tx, substitute);
+    await event(tx, ctx, substitute, "substitution_completed", {
       replaced: doc.id,
+      motive: c.motive,
     });
   } else
     await cfdiEnqueue(tx, tenantId, {

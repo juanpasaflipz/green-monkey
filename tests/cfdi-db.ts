@@ -1215,6 +1215,93 @@ try {
     void tk;
   });
 
+  await test("R2-4. after a rejected substitution, a staff cancellation (02) of the original hands the ticket to the valid substitute: a later refund gets a credit note related to the substitute and coverage counts the ticket as invoiced", async () => {
+    const S = await makeTenant("substitution after rejection");
+    await activate(S);
+    const tk = await makeTicket(S);
+    const d1 = await invoice(S, tk);
+    await settle(S.tenantId);
+    assert.equal((await docRow(d1.id)).status, "valid");
+    // The receptor rejects the motive-01 cancellation once (the original's name carries no
+    // marker, so the later 02 cancellation is accepted at once: under 24 h and $1,000).
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_rejected",
+      match: { type: "I", global: false },
+    });
+    const d2 = await web(S, (tx) =>
+      service.substituteDocument(
+        tx,
+        S.manager,
+        {
+          operationId: op(),
+          receptor: { ...MORAL, postalCode: "86990" },
+          cardForm: null,
+          reason: "CP equivocado",
+        },
+        { params: { id: d1.id } } as never,
+      ),
+    );
+    await settle(S.tenantId);
+    assert.equal((await docRow(d1.id)).status, "canceling");
+    await due(S.tenantId, "cfdi_reconcile");
+    await settle(S.tenantId);
+    assert.equal((await docRow(d1.id)).status, "valid");
+    assert.equal((await docRow(d2.id)).status, "valid");
+    const stateOf = async () =>
+      Object.fromEntries(
+        (await claims(tk.id)).map((r) => [r.document_id, r.state]),
+      );
+    assert.deepEqual(await stateOf(), {
+      [d1.id]: "active",
+      [d2.id]: "pending",
+    });
+    let attention = await web(S, (tx) => service.getAlerts(tx, S.manager));
+    assert.equal(attention.rejectedSubstitutions, 1);
+
+    // The alert's "request the cancellation again": Cancelar on the original, motive 02.
+    await web(S, (tx) =>
+      service.cancelDocument(
+        tx,
+        S.manager,
+        { operationId: op(), motive: "02", reason: "Sustituida" },
+        { params: { id: d1.id } } as never,
+      ),
+    );
+    await settle(S.tenantId);
+    assert.equal((await docRow(d1.id)).status, "canceled");
+    assert.deepEqual(await stateOf(), {
+      [d1.id]: "released",
+      [d2.id]: "active",
+    });
+    assert.ok((await events(d2.id)).includes("substitution_completed"));
+    attention = await web(S, (tx) => service.getAlerts(tx, S.manager));
+    assert.equal(attention.rejectedSubstitutions, 0);
+    assert.deepEqual(
+      await web(S, (tx) => cfdiCoverage(tx, { from: today(), to: today() })),
+      {
+        mode: "test",
+        tickets: 1,
+        invoiced: 1,
+        globalized: 0,
+        uncovered: 0,
+        invoicedTotal: 11600,
+        globalTotal: 0,
+      },
+    );
+
+    // A later refund produces a credit note related to the substitute.
+    const refundId = await refund(S, tk, { iva16: 5800 });
+    await settle(S.tenantId);
+    const [egreso] =
+      await admin`select * from cfdi_documents where refund_id = ${refundId}`;
+    assert.equal(egreso?.status, "valid");
+    assert.equal(egreso.parent_document_id, d2.id);
+    assert.deepEqual(egreso.request.related_documents, [
+      { relationship: "01", documents: [(await docRow(d2.id)).uuid] },
+    ]);
+  });
+
   await test("11. a stamping timeout retries with the same idempotency key, adopts the invoice by external_id and never creates two provider invoices", async () => {
     const tk = await makeTicket(A);
     const d = await invoice(A, tk, {

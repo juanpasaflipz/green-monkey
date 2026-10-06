@@ -196,6 +196,15 @@ Recovery (`server/cfdi/recovery.ts`):
   CFDI enabled and no live tick gets one back at the worker boot (`seedGlobalTicks`, restaurants
   found through their `cfdi_global` jobs) and at every operator sign-in (`GET /cfdi/status`,
   `ensureTick`, one insert per 10 minutes at most).
+- **Substitution after a rejected cancellation**: when the receptor rejects (or lets expire) the
+  motive-01 cancellation, both invoices stay valid and the substitute's claim waits (pending;
+  alert `cfdi_substitution_rejected`). Cancelling the original again (**Cancelar**, motive 02 or
+  03) hands the ticket to the newest valid substitute as soon as the original is canceled
+  (`substitution_completed`), exactly as an accepted motive-01 cancellation does; later refunds
+  get credit notes related to the substitute (CFDI-R2-4). Cancelling the substitute instead
+  leaves the original in force.
+- **Advisory keys** (LO-3, `server/cfdi/locks.ts`): per-ticket (class 926), then per-document
+  (927), then per-period (928), never the reverse; `tests/cfdi-locks.test.ts` checks the order.
 - **Invoice after a global**: the web request and `cfdi_reissue` take the same per-document key
   of the global (LO-3). The request re-reads the global and the ticket's claim under the key; if
   the reissue already canceled the global it answers `cfdi_global_in_progress`, and the retry
