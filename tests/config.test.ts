@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  ConfigError,
   detectKind,
   forbiddenCredentials,
   loadConfig,
 } from "../server/config-rules.js";
+import { ConfigError as PureConfigError } from "../server/config-error.js";
 
 const secret = "x".repeat(40);
 const web = {
@@ -23,15 +25,16 @@ const deployedWeb = {
   DATABASE_URL:
     "postgresql://gm_staging_app:pw@ep-x-pooler.us-east-1.aws.neon.tech/green_monkey_staging",
 };
+// Migrations run in GitHub Actions (Wave 2.0 (l)): a deployed worker now
+// refuses MIGRATION_DATABASE_URL, so the fixture no longer carries it.
 const deployedWorker = {
   APP_ENV: "production",
   NODE_ENV: "production",
   APP_URL: "https://app.example.com",
   PROCESS_KIND: "worker",
-  // The Railway preDeploy (migrate, then grants) runs in the worker service.
-  MIGRATION_DATABASE_URL:
-    "postgresql://gm_migrator:pw@ep-x.us-east-1.aws.neon.tech/green_monkey_production",
 };
+const workerDatabaseUrl =
+  "postgresql://gm_production_worker:pw@ep-x-pooler.us-east-1.aws.neon.tech/green_monkey_production";
 const billingWorker = {
   ...deployedWorker,
   BILLING_SANDBOX_ENABLED: "true",
@@ -51,6 +54,12 @@ describe("process configuration", () => {
       "BACKUP_DATABASE_URL",
       "PROVISION_DATABASE_URL",
       "STRIPE_SECRET_KEY",
+      "WORKER_DATABASE_URL",
+      "SUPPORT_DATABASE_URL",
+      "FACTURAPI_API_KEY",
+      "FACTURAPI_TEST_KEY",
+      "CREDENTIAL_ENCRYPTION_KEY",
+      "CFDI_LIVE_ENABLED",
     ]);
     expect(loadConfig(deployedWeb, "web").deployed).toBe(true);
     for (const name of forbiddenCredentials.web)
@@ -70,11 +79,14 @@ describe("process configuration", () => {
     expect(loadConfig(billingWorker, "worker").billingDatabaseUrl).toContain(
       "gm_production_billing",
     );
-    for (const name of [
-      "DATABASE_URL",
-      "BACKUP_DATABASE_URL",
-      "PROVISION_DATABASE_URL",
-    ])
+    expect(forbiddenCredentials.worker).toEqual(
+      expect.arrayContaining([
+        "DATABASE_URL",
+        "BACKUP_DATABASE_URL",
+        "PROVISION_DATABASE_URL",
+      ]),
+    );
+    for (const name of forbiddenCredentials.worker)
       expect(
         () =>
           loadConfig(
@@ -83,6 +95,174 @@ describe("process configuration", () => {
           ),
         name,
       ).toThrow(`forbidden_credential_in_process: ${name}`);
+  });
+
+  it("deployed web refuses WORKER_DATABASE_URL, SUPPORT_DATABASE_URL, FACTURAPI_API_KEY, FACTURAPI_TEST_KEY, CREDENTIAL_ENCRYPTION_KEY and CFDI_LIVE_ENABLED (even 'false')", () => {
+    for (const [name, value] of [
+      ["WORKER_DATABASE_URL", workerDatabaseUrl],
+      ["SUPPORT_DATABASE_URL", "postgresql://gm_support_x:pw@db/x"],
+      ["FACTURAPI_API_KEY", "sk_live_fixture"],
+      ["FACTURAPI_TEST_KEY", "sk_test_fixture"],
+      ["CREDENTIAL_ENCRYPTION_KEY", "fixture"],
+      ["CFDI_LIVE_ENABLED", "false"],
+    ])
+      for (const appEnv of ["staging", "production"])
+        expect(
+          () =>
+            loadConfig(
+              {
+                ...deployedWeb,
+                APP_ENV: appEnv,
+                [name]: value,
+              },
+              "web",
+            ),
+          `${appEnv} ${name}`,
+        ).toThrow(`forbidden_credential_in_process: ${name}`);
+  });
+
+  it("deployed worker refuses MIGRATION_DATABASE_URL, SUPPORT_DATABASE_URL, SIGNING_KEYS and JWT_SECRET (DB-1 regression, P-15)", () => {
+    for (const name of [
+      "MIGRATION_DATABASE_URL",
+      "SUPPORT_DATABASE_URL",
+      "SIGNING_KEYS",
+      "JWT_SECRET",
+    ]) {
+      expect(forbiddenCredentials.worker).toContain(name);
+      for (const appEnv of ["staging", "production"])
+        expect(
+          () =>
+            loadConfig(
+              {
+                ...deployedWorker,
+                APP_ENV: appEnv,
+                [name]:
+                  name === "JWT_SECRET"
+                    ? secret
+                    : name === "SIGNING_KEYS"
+                      ? "k1:" + Buffer.alloc(32, 7).toString("base64url")
+                      : "postgresql://gm_migrator:pw@ep-x.us-east-1.aws.neon.tech/x",
+              },
+              "worker",
+            ),
+          `${appEnv} ${name}`,
+        ).toThrow(`forbidden_credential_in_process: ${name}`);
+    }
+  });
+
+  it("development tolerates every one of them", () => {
+    const all = Object.fromEntries(
+      [...forbiddenCredentials.web, ...forbiddenCredentials.worker].map(
+        (name) => [
+          name,
+          name.endsWith("DATABASE_URL")
+            ? "postgresql://u:p@127.0.0.1:55439/green_monkey_dev"
+            : name === "JWT_SECRET"
+              ? secret
+              : name === "SIGNING_KEYS"
+                ? "k1:" + Buffer.alloc(32, 7).toString("base64url")
+                : "fixture",
+        ],
+      ),
+    );
+    for (const appEnv of [undefined, "development", "test"]) {
+      expect(
+        loadConfig({ ...all, APP_ENV: appEnv }, "web").deployed,
+        `web ${appEnv}`,
+      ).toBe(false);
+      expect(
+        loadConfig({ ...all, APP_ENV: appEnv }, "worker").workerDatabaseUrl,
+        `worker ${appEnv}`,
+      ).toBe("postgresql://u:p@127.0.0.1:55439/green_monkey_dev");
+    }
+  });
+
+  it("the worker accepts WORKER_DATABASE_URL with database_tls_required and invalid_worker_database_url; the web's workerDatabaseUrl is null", () => {
+    expect(
+      loadConfig(
+        { ...deployedWorker, WORKER_DATABASE_URL: workerDatabaseUrl },
+        "worker",
+      ).workerDatabaseUrl,
+    ).toBe(workerDatabaseUrl);
+    expect(loadConfig(deployedWorker, "worker").workerDatabaseUrl).toBeNull();
+    expect(
+      loadConfig({ ...deployedWorker, WORKER_DATABASE_URL: "" }, "worker")
+        .workerDatabaseUrl,
+      "empty means unset",
+    ).toBeNull();
+    expect(() =>
+      loadConfig(
+        {
+          ...deployedWorker,
+          WORKER_DATABASE_URL: workerDatabaseUrl + "?sslmode=disable",
+        },
+        "worker",
+      ),
+    ).toThrow("database_tls_required");
+    for (const bad of ["not a url", "https://example.com/db"])
+      expect(
+        () =>
+          loadConfig({ ...deployedWorker, WORKER_DATABASE_URL: bad }, "worker"),
+        bad,
+      ).toThrow("invalid_worker_database_url");
+    expect(
+      loadConfig(
+        {
+          PROCESS_KIND: "worker",
+          WORKER_DATABASE_URL:
+            "postgresql://gm_worker:local-only-worker@127.0.0.1:55439/green_monkey_dev?sslmode=disable",
+        },
+        "worker",
+      ).workerDatabaseUrl,
+      "loopback needs no TLS",
+    ).toContain("127.0.0.1");
+    expect(loadConfig(deployedWeb, "web").workerDatabaseUrl).toBeNull();
+    expect(
+      loadConfig({ ...web, WORKER_DATABASE_URL: workerDatabaseUrl }, "web")
+        .workerDatabaseUrl,
+      "the web never uses it, even in development",
+    ).toBeNull();
+  });
+
+  it("ConfigError from config-rules.ts is the class from config-error.ts", () => {
+    expect(ConfigError).toBe(PureConfigError);
+    let thrown: unknown;
+    try {
+      loadConfig({ ...web, APP_ENV: "prod" }, "web");
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(PureConfigError);
+    expect(thrown).toMatchObject({
+      code: "invalid_app_env",
+      name: "ConfigError",
+    });
+  });
+
+  it("each branch has exactly one area-config marker pair (source scan)", () => {
+    const source = readFileSync("server/config-rules.ts", "utf8");
+    const count = (marker: string) => source.split(marker).length - 1;
+    for (const branch of ["web", "worker"]) {
+      expect(count(`// >>> area config checks: ${branch} `), branch).toBe(1);
+      expect(count(`// <<< area config checks: ${branch}\n`), branch).toBe(1);
+      expect(
+        source.indexOf(`// >>> area config checks: ${branch} `),
+      ).toBeLessThan(source.indexOf(`// <<< area config checks: ${branch}\n`));
+    }
+    // The web pair sits inside the web branch, the worker pair after it.
+    const webBranch = source.indexOf('if (kind === "web") {');
+    const webReturn = source.indexOf("return Object.freeze", webBranch);
+    const webMarker = source.indexOf("// >>> area config checks: web ");
+    expect(webMarker).toBeGreaterThan(webBranch);
+    expect(webMarker).toBeLessThan(webReturn);
+    expect(
+      source.indexOf("// >>> area config checks: worker "),
+    ).toBeGreaterThan(webReturn);
+    // config-rules.ts imports the class, never defines it (module cycles, C-9).
+    expect(source).not.toMatch(/class ConfigError/);
+    expect(readFileSync("server/config-error.ts", "utf8")).not.toMatch(
+      /^import /m,
+    );
   });
 
   it("production web holds the cross-tenant billing login only while billing is enabled (DB-1 follow-up)", () => {

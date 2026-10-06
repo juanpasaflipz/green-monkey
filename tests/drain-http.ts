@@ -3,7 +3,9 @@
 //  - web: SIGTERM finishes an in-flight request, answers /api/health 503
 //    server_draining meanwhile, ignores idle keep-alive sockets and exits 0
 //    well inside RAILWAY_DEPLOYMENT_DRAINING_SECONDS (OPS-6);
-//  - worker: /healthz reports ready and SIGTERM exits 0.
+//  - worker: with the jobs login (WORKER_DATABASE_URL, a gm_jobs_worker
+//    member) /healthz reports ready with jobs:true, and SIGTERM exits 0
+//    within RAILWAY_DEPLOYMENT_DRAINING_SECONDS.
 // Requires `npm run build` and the isolated local development fixture.
 import "dotenv/config";
 import assert from "node:assert/strict";
@@ -21,6 +23,21 @@ if (
   throw Error(
     "Drain qualification requires the isolated local development fixture",
   );
+// The worker's jobs login on the same database: WORKER_DATABASE_URL (local
+// .env from setup:local), else the runtime URL with the local gm_worker
+// credentials that provision-local.sql and CI create (Wave 2.0, §5.6).
+const workerTarget = (() => {
+  if (process.env.WORKER_DATABASE_URL) return process.env.WORKER_DATABASE_URL;
+  const u = new URL(target.href);
+  u.username = "gm_worker";
+  u.password = "local-only-worker";
+  return u.href;
+})();
+{
+  const w = new URL(workerTarget);
+  if (w.host !== target.host || w.pathname !== target.pathname)
+    throw Error("WORKER_DATABASE_URL must point at the same local database");
+}
 const port = Number(process.env.RESTART_TEST_PORT ?? 3003);
 const origin = `http://127.0.0.1:${port}`;
 const DRAIN_SECONDS = 20;
@@ -167,17 +184,72 @@ try {
     PORT: String(port),
     APP_URL: origin,
     DATABASE_URL: "",
+    WORKER_DATABASE_URL: workerTarget,
   });
   await waitFor(origin + "/healthz");
   const status = await (await fetch(origin + "/healthz")).json();
   assert.equal(status.ok, true);
   assert.equal(typeof status.commit, "string");
+  assert.equal(status.jobs, true, "the jobs runner is on");
+  assert.deepEqual(status.stale, []);
+  assert.match(
+    output.join(""),
+    /"message":"worker_ready"[^\n]*"jobs":true/,
+    "worker_ready logs jobs:true",
+  );
   const workerExit = once(worker, "exit");
+  const workerSignalledAt = Date.now();
   worker.kill("SIGTERM");
   const [workerCode] = await workerExit;
+  const workerElapsed = Date.now() - workerSignalledAt;
   assert.equal(workerCode, 0);
-  console.log("PASS worker reports /healthz and exits 0 on SIGTERM");
-  console.log("Drain qualification passed: 2 process checks.");
+  assert.ok(
+    workerElapsed < DRAIN_SECONDS * 1000,
+    `worker exit within drainSeconds (took ${workerElapsed} ms)`,
+  );
+  console.log(
+    `PASS worker reports /healthz with jobs:true and exits 0 on SIGTERM in ${workerElapsed} ms`,
+  );
+
+  // ---- worker without the jobs login (§2.4) ----
+  output.length = 0;
+  const noJobs = start("build/server/worker.js", {
+    PROCESS_KIND: "worker",
+    PORT: String(port),
+    APP_URL: origin,
+    DATABASE_URL: "",
+    WORKER_DATABASE_URL: "",
+  });
+  await waitFor(origin + "/healthz");
+  const idle = await (await fetch(origin + "/healthz")).json();
+  assert.equal(idle.ok, true);
+  assert.equal(idle.jobs, false, "no jobs runner without WORKER_DATABASE_URL");
+  const disabled = output
+    .join("")
+    .split("\n")
+    .filter((l) => l.includes('"message":"worker_jobs_disabled"'));
+  assert.equal(disabled.length, 1, "worker_jobs_disabled is logged once");
+  assert.match(disabled[0], /"reason":"no_worker_database_url"/);
+  const noJobsExit = once(noJobs, "exit");
+  noJobs.kill("SIGTERM");
+  assert.equal((await noJobsExit)[0], 0);
+  console.log("PASS worker without WORKER_DATABASE_URL reports jobs:false");
+
+  // ---- a jobs login that is not a gm_jobs_worker member is fatal (§2.4) ----
+  output.length = 0;
+  const misconfigured = start("build/server/worker.js", {
+    PROCESS_KIND: "worker",
+    PORT: String(port),
+    APP_URL: origin,
+    DATABASE_URL: "",
+    // The runtime login: no gm_jobs_worker membership.
+    WORKER_DATABASE_URL: target.href,
+  });
+  const [badCode] = await once(misconfigured, "exit");
+  assert.equal(badCode, 1, "checkWorkerRole failure exits 1");
+  assert.match(output.join(""), /"message":"database_fatal"/);
+  console.log("PASS a misconfigured jobs login stops the worker with exit 1");
+  console.log("Drain qualification passed: 4 process checks.");
 } catch (error) {
   console.error(output.join("").slice(-4000));
   throw error;

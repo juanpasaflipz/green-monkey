@@ -57,11 +57,27 @@ describe("process boundaries", () => {
     expect(runner.has("server/jobs/worker-registry.ts")).toBe(false);
   });
 
-  it("the worker never imports the web entry or the runtime jobs runner", () => {
+  it("the worker reaches config.ts, the runner and worker-registry, never server/index.ts or server/jobs/handlers/index.ts", () => {
     const worker = reachable("server/worker.ts");
-    expect(worker.has("server/index.ts")).toBe(false);
-    expect(worker.has("server/jobs/runner.ts")).toBe(false);
     expect(worker.has("server/config.ts")).toBe(true);
+    expect(worker.has("server/jobs/runner.ts")).toBe(true);
+    expect(worker.has("server/jobs/worker-registry.ts")).toBe(true);
+    expect(worker.has("server/index.ts")).toBe(false);
+    expect(
+      [...worker].filter((f) => f.startsWith("server/jobs/handlers/")),
+    ).toEqual([]);
+    // P-15 defense: the worker holds no signing key and never mints a sealed
+    // token (it reaches server/auth.ts through server/jobs/queue.ts, but never
+    // the seal/unseal module), nor the retention schedule or the migrator.
+    for (const forbidden of [
+      "server/tokens.ts",
+      "server/ops/retention.ts",
+      "server/ops/schema.ts",
+    ])
+      expect(worker.has(forbidden), forbidden).toBe(false);
+    expect([...worker].filter((f) => f.startsWith("server/routes/"))).toEqual(
+      [],
+    );
   });
 
   it("the instrument preload loads configuration before anything else", () => {

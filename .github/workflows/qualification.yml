@@ -101,7 +101,7 @@ jobs:
           WORKER_URL: http://127.0.0.1:3005
         run: |
           NODE_ENV=production node --import ./build/server/instrument.js build/server/index.js > /tmp/green-monkey-server.log 2>&1 &
-          NODE_ENV=production WORKER_PORT=3005 DATABASE_URL= npm run start:worker > /tmp/green-monkey-worker.log 2>&1 &
+          NODE_ENV=production WORKER_PORT=3005 DATABASE_URL= WORKER_DATABASE_URL=postgresql://gm_worker:local-only-worker@127.0.0.1:5432/green_monkey_dev npm run start:worker > /tmp/green-monkey-worker.log 2>&1 &
           node --input-type=module -e 'for(let i=0;i<60;i++){try{if((await fetch("http://127.0.0.1:3002/api/health")).ok&&(await fetch("http://127.0.0.1:3005/healthz")).ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
           # Only the test runner gets the fixture admin URL (owner/Free fixtures);
           # the web and worker processes above never see a migration credential.
@@ -129,12 +129,13 @@ jobs:
           docker run -d --name gm-web --network host -e PORT=3004 -e NODE_ENV=production \
             -e APP_URL=http://127.0.0.1:3004 -e DATABASE_URL -e JWT_SECRET green-monkey:ci
           docker run -d --name gm-worker --network host -e PROCESS_KIND=worker -e PORT=3007 -e NODE_ENV=production \
+            -e WORKER_DATABASE_URL=postgresql://gm_worker:local-only-worker@127.0.0.1:5432/green_monkey_dev \
             green-monkey:ci node --import ./build/server/instrument.js build/server/worker.js
           node --input-type=module -e '
             const wait = async (url, ok) => { for (let i = 0; i < 90; i++) { try { const r = await fetch(url); if (await ok(r)) return; } catch {} await new Promise(r => setTimeout(r, 1000)); } throw Error("timeout " + url); };
             await wait("http://127.0.0.1:3004/api/health", async r => r.ok);
             await wait("http://127.0.0.1:3004/api/version", async r => r.ok && (await r.json()).commit === process.env.GITHUB_SHA);
-            await wait("http://127.0.0.1:3007/healthz", async r => r.ok);
+            await wait("http://127.0.0.1:3007/healthz", async r => r.ok && (await r.json()).jobs === true);
             console.log("image smoke passed");'
           docker run --rm --network host -e APP_ENV=staging -e PG_APP_USER=gm_app \
             -e MIGRATION_DATABASE_URL=postgresql://gm_migrator:local-only-migrator@127.0.0.1:5432/green_monkey_dev \
