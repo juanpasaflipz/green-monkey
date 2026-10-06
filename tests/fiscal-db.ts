@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
+import { noRetries } from "./db-retries.js";
 import { checkRole, connect, tenant, type Tx } from "../server/db.js";
 import {
   addRound,
@@ -727,8 +728,11 @@ try {
     const orders = [];
     for (let i = 0; i < 20; i++)
       orders.push(await newOrder(cashierA, [{ product: P.agua }]));
-    const results = await Promise.allSettled(
-      orders.map((o, i) => pay(i % 2 ? cashierA2 : cashierA, o)),
+    // LO-R9: no deadlock or serialization failure may hide behind tenant()'s retry.
+    const results = await noRetries("20 settling payments", () =>
+      Promise.allSettled(
+        orders.map((o, i) => pay(i % 2 ? cashierA2 : cashierA, o)),
+      ),
     );
     assert.deepEqual(
       results.filter((r) => r.status === "rejected"),
@@ -807,19 +811,23 @@ try {
       const a = await newOrder(cashierA, [{ product: P.agua }]);
       const b = await newOrder(cashierA, [{ product: P.agua }]);
       const c = await newOrder(cashierA, [{ product: P.agua }]);
-      const [settled, single] = await Promise.allSettled([
-        run(cashierA, (tx) =>
-          recordSettlement(tx, cashierA, {
-            operationId: randomUUID(),
-            orders: [
-              { id: a.id, amount: a.total },
-              { id: b.id, amount: b.total },
-            ],
-            received: a.total + b.total,
-          }),
-        ),
-        pay(cashierA2, c),
-      ]);
+      const [settled, single] = await noRetries(
+        "grouped settlement vs single payment",
+        () =>
+          Promise.allSettled([
+            run(cashierA, (tx) =>
+              recordSettlement(tx, cashierA, {
+                operationId: randomUUID(),
+                orders: [
+                  { id: a.id, amount: a.total },
+                  { id: b.id, amount: b.total },
+                ],
+                received: a.total + b.total,
+              }),
+            ),
+            pay(cashierA2, c),
+          ]),
+      );
       assert.equal(
         settled.status,
         "fulfilled",
@@ -1208,10 +1216,12 @@ try {
       await pay(managerA, o, 6000);
       const paid = await pay(managerA, await read(managerA, o.id));
       const [a, b] = paid.tenders;
-      const results = await Promise.allSettled([
-        legacyRefund(managerA, a.id, 1234 + i),
-        legacyRefund(managerA, b.id, 2345 + i),
-      ]);
+      const results = await noRetries("two legacy refunds on one order", () =>
+        Promise.allSettled([
+          legacyRefund(managerA, a.id, 1234 + i),
+          legacyRefund(managerA, b.id, 2345 + i),
+        ]),
+      );
       assert.deepEqual(
         results.filter((r) => r.status === "rejected"),
         [],
@@ -1853,7 +1863,7 @@ try {
     }
   });
 
-  await test("lock order: concurrent offline-style sync with payment, a void that settles a check, a service reassignment that settles, and single payments all commit with no 40P01 after tenant()'s retry", async () => {
+  await test("lock order: concurrent offline-style sync with payment, a void that settles a check, a service reassignment that settles, and single payments all commit and tenant() catches no deadlock (LO-R9: zero db_retry)", async () => {
     const before = await counter(B.id);
     let issued = 0;
     for (let round = 0; round < 50; round++) {
@@ -1880,7 +1890,7 @@ try {
         items: [`${stocked.lines[0].id}:0`],
       });
       const sale = offlineSale(B, offlineB, [{ product: P.fronteraStocked }]);
-      const legs = [
+      const legs = () => [
         run(offlineB, (tx) => syncOfflineRecord(tx, offlineB, sale)),
         run(ownerB, (tx) =>
           voidLines(
@@ -1915,7 +1925,9 @@ try {
           ),
         ),
       ];
-      const results = await Promise.allSettled(legs);
+      const results = await noRetries(`lock order round ${round}`, () =>
+        Promise.allSettled(legs()),
+      );
       const failed = results
         .map((r, i) =>
           r.status === "rejected"

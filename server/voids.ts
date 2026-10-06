@@ -353,7 +353,9 @@ export async function voidLines(
     await tx`update orders set total=total-${voided},version=version+1 where id=${orderId}`;
     await closeFullyVoidedRounds(tx, orderId);
     await refreshOrderState(tx, orderId);
-    // Lock order (wave 2): the feed before refreshCheckState, which may take the folio counter last.
+    // LO-R3: the kitchen feed (LO-10) after every order, round, void and stock
+    // lock of this command and before refreshCheckState, whose issuance takes the
+    // folio counter (LO-12) last.
     await bumpKitchenFeed(tx, s);
     // Balance 0 settles or holds the table; every line voided closes as voided.
     await refreshCheckState(tx, s, orderId);

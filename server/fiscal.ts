@@ -169,8 +169,9 @@ export async function saveFiscalProfile(
   const issue = fiscalProfileIssues(p).find((i) => !i.warning);
   if (issue) throw new DomainError(issue.code, 400);
   return once(tx, s, p.operationId, "fiscal.profile", p, async () => {
-    // LO-3: the area key serializes the first creation, then the row itself.
-    await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + "fiscal.profile"},0))`;
+    // LO-3: the area key (class 922, an area key for the lock scanner like 920 and
+    // 923) serializes the first creation, then the row itself.
+    await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + ":fiscal-profile"},922))`;
     const [row] =
       await tx`select rfc,legal_name,regime,postal_code,address,ticket_series,tax_region,
         default_tax_category,border_confirmed_at,border_confirmed_by,version

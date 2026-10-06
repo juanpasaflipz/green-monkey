@@ -353,9 +353,11 @@ export async function createOrder(
       deviceId: s.deviceId,
       capabilityId: s.id,
     });
-    // Lock order (wave 2): the feed before refreshCheckState, which may take the folio counter last.
+    // LO-R3: the kitchen feed (LO-10) after every order, round and stock lock of
+    // this command and before refreshCheckState, whose issuance takes the folio
+    // counter (LO-12) last. A zero-total takeaway closes at once; it never issues
+    // here (nothing is paid at creation, E5).
     await bumpKitchenFeed(tx, s);
-    // A zero-total takeaway closes at once (it never issues: nothing is paid).
     await refreshCheckState(tx, s, orderId);
     return getOrder(tx, orderId);
   });
