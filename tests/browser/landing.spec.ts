@@ -75,6 +75,23 @@ test("marketing page is responsive, accessible and routes to real app access", a
   await expect(page.getByLabel("Password or PIN")).toBeVisible();
 });
 
+test("kitchen notes are advertised: service 024 shows them on KDS tickets (LANDING_CLAIMS.kitchenNotes)", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(
+    page.getByText(
+      "De la primera ronda a la cuenta dividida. Mesas, notas y pagos juntos, para seguir el ritmo del servicio.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(page.getByText("Sin cebolla", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Cocina", exact: true }).click();
+  await expect(
+    page.getByText("Sin cebolla · Ronda 1", { exact: true }),
+  ).toBeVisible();
+});
+
 test("signup CTA opens Google signup with simplified notice and without the staff demo form (FOH-14)", async ({
   page,
 }) => {

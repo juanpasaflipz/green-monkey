@@ -564,7 +564,7 @@ recovery, account linking and the password fallback pending). M8.6 in-app
 reminders (trial and support grant ending, failed payment, Pro ended, drawer
 continuation): **implemented locally**; email reminders pending a verified
 sender. M8.11 landing truth pass (QR/kiosk claims follow
-`PUBLIC_ORDERING_ENABLED`, kitchen-note examples hidden until verified):
+`PUBLIC_ORDERING_ENABLED`; kitchen-note examples shown, verified by service 024):
 **implemented locally**. Platform legal documents with versioned acceptance,
 owner data export and the vendor support CLI are new and documented in
 [account and legal](ACCOUNT_AND_LEGAL.md). None of it is staging-qualified;
