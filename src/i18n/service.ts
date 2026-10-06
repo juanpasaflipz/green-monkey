@@ -165,7 +165,10 @@ export default defineArea({
       "Guardamos la orden que estabas capturando en Borradores.",
     serviceSendChanged:
       "Parte de esta orden ya había llegado a cocina y después cambiaste cantidades o notas. En el carrito quedó solo lo que falta o cambió; revisa las cantidades y notas antes de enviar.",
-    serviceDraftRound: "#{n} · ronda sin enviar",
+    serviceDraftRound: "{order} · ronda sin enviar",
+    serviceDraftOrderGone:
+      "La orden de este borrador ya no existe en este dispositivo ni en el servidor.",
+    serviceDraftDiscard: "Descartar borrador",
     servicePayDueChanged:
       "El saldo pendiente cambió a {due}. Revisa el importe antes de confirmar.",
     serviceReprintKitchen: "Reimprimir comanda",
@@ -435,7 +438,10 @@ export default defineArea({
     serviceDraftParked: "The order you were entering was saved in Drafts.",
     serviceSendChanged:
       "Part of this order had already reached the kitchen, and quantities or notes changed afterwards. The cart keeps only what is missing or changed; review quantities and notes before sending.",
-    serviceDraftRound: "#{n} · unsent round",
+    serviceDraftRound: "{order} · unsent round",
+    serviceDraftOrderGone:
+      "This draft's order no longer exists on this device or on the server.",
+    serviceDraftDiscard: "Discard draft",
     servicePayDueChanged:
       "The balance due changed to {due}. Review the amount before confirming.",
     serviceReprintKitchen: "Reprint kitchen ticket",

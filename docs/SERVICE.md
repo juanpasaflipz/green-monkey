@@ -223,8 +223,8 @@ order view the save returns, so a product tapped during the save stays, and the
 order note, or the round note, leaves once the record holds it. If the cart
 moved meanwhile (the backstop below), the record's lines leave the copy parked
 in Borradores as they do online (LD-12 R6); what is left stays parked as a
-round of a cached server order, or as a new order when the save went to a
-local order, which Borradores cannot resume.
+round of the order the save reached, a cached server order or a local order
+(Borradores resumes both, see "Parked carts").
 
 ### Switching checks while a send or payment is in flight
 
@@ -291,8 +291,21 @@ store the unsent cart in Borradores. A cart of rounds for an open check also
 keeps that check (IndexedDB cache record `…:parked-order:{operationId}`), is
 listed as "#N · ronda sin enviar" and, when restored, goes back onto that check
 and is sent as a round. If the check closed meanwhile, the cart offers
-**Enviar como orden nueva**; if the check cannot be loaded (offline), the
-draft stays parked.
+**Enviar como orden nueva**.
+
+The check of a parked round is resolved through the device first (LD-13
+addendum, `resolveParkedOrder` in `src/offline-records.ts`): a local order
+created on this device (offline table service, Beta) is listed with its
+provisional number ("B-07 · ronda sin enviar") and goes back onto that local
+order, online or offline; once its order record has synced, the local id
+resolves to the server order the sync recorded ("B-07 → #142 · ronda sin
+enviar"), read from the server online or from the device's cached copy offline.
+Offline, a server check this device did not keep cannot take the round: the
+draft stays parked with "Disponible al volver la conexión" (table service off)
+or the `offline_order_not_cached` message (on). A draft whose check exists
+nowhere any more (a local order whose record was archived, or a server answer
+`not_found`) is shown as "La orden de este borrador ya no existe en este
+dispositivo ni en el servidor." with only **Descartar borrador**.
 
 ## Payment dialog
 

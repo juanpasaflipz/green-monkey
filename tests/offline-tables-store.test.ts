@@ -43,6 +43,7 @@ import {
   reconciledResult,
   refreshOpenOrders,
   rememberOpenOrder,
+  resolveParkedOrder,
   saveOfflineCheckout,
   saveOfflineOrder,
   saveOfflinePartial,
@@ -1770,6 +1771,95 @@ describe("sync loop: one order's records stay in order (I10, OFF-R17)", () => {
     expect(await fakeDb.pending.get(paymentRow.id)).toMatchObject({
       status: "pending",
       attempts: 0,
+    });
+  });
+});
+
+describe("parked carts of local orders (LD-13 addendum)", () => {
+  it("a cart parked for a local order resumes onto its projection, then onto the server order its sync recorded", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    // Parked under the local id while the device alone knows the order.
+    const local = await resolveParkedOrder(s, open.id);
+    expect(local.kind).toBe("local");
+    if (local.kind !== "local") throw Error("unreachable");
+    expect(local.order).toMatchObject({
+      id: open.id,
+      state: "local_open",
+      total: 250,
+    });
+    expect(local.order.offline.provisionalNumber).toBe(
+      open.offline.provisionalNumber,
+    );
+    expect(mockedApi).not.toHaveBeenCalled();
+    // The order record syncs: the local id now names the server order.
+    const serverId = uuid(400);
+    await markSynced(
+      open.id,
+      { orderId: serverId, orderNumber: 77 },
+      Date.now(),
+    );
+    expect(await resolveParkedOrder(s, open.id)).toEqual({
+      kind: "server",
+      orderId: serverId,
+      cached: null,
+    });
+    // Once the device caches the server copy, it is usable offline.
+    await cacheSnapshot(s, [
+      serverCopy(serverId, { offlineOperationIds: [open.id] }),
+    ]);
+    const synced = await resolveParkedOrder(s, open.id);
+    expect(synced).toMatchObject({ kind: "server", orderId: serverId });
+    if (synced.kind !== "server") throw Error("unreachable");
+    expect(synced.cached).toMatchObject({ id: serverId, total: 250 });
+    expect(synced.cached!.offline.provisionalNumber).toBe(
+      open.offline.provisionalNumber,
+    );
+  });
+
+  it("a server order id resolves to itself (with its cached copy when there is one)", async () => {
+    const s = session();
+    const serverId = uuid(410);
+    expect(await resolveParkedOrder(s, serverId)).toEqual({
+      kind: "server",
+      orderId: serverId,
+      cached: null,
+    });
+    await cacheSnapshot(s, [serverCopy(serverId)]);
+    const cached = await resolveParkedOrder(s, serverId);
+    expect(cached).toMatchObject({
+      kind: "server",
+      orderId: serverId,
+      cached: { id: serverId },
+    });
+  });
+
+  it("a local order this device no longer has, or whose sync named no order, is gone; another device's record is not read as a local order", async () => {
+    const s = session();
+    const archived = await localOrder(s, 100);
+    await fakeDb.pending.update(archived.id, {
+      status: "archived",
+      archivedAt: Date.now(),
+    });
+    expect(await resolveParkedOrder(s, archived.id)).toEqual({
+      kind: "gone",
+    });
+    const nameless = await localOrder(s, 100);
+    await fakeDb.pending.update(nameless.id, {
+      status: "synced",
+      result: null,
+      syncedAt: Date.now(),
+    });
+    expect(await resolveParkedOrder(s, nameless.id)).toEqual({
+      kind: "gone",
+    });
+    // A record of another device (scope) never decides for this one.
+    const other = session({ deviceId: uuid(420) });
+    const elsewhere = await localOrder(other, 100);
+    expect(await resolveParkedOrder(s, elsewhere.id)).toEqual({
+      kind: "server",
+      orderId: elsewhere.id,
+      cached: null,
     });
   });
 });

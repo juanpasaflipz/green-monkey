@@ -42,7 +42,11 @@ import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
 import { fmt, orderLabel } from "./offline/format";
 import { currentBusinessDate } from "../labels";
-import { isServerOrder, type LocalOrderView } from "../offline-records";
+import {
+  isServerOrder,
+  resolveParkedOrder,
+  type LocalOrderView,
+} from "../offline-records";
 import { DiscountButton } from "./discounts/DiscountButton";
 import { CheckDiscountSummary } from "./discounts/OrderAdjustments";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
@@ -96,6 +100,10 @@ class HandledError extends Error {
 type ParkedDraft = {
   draft: Draft;
   order: { id: string; number: number } | null;
+  /** How the list names the order: "#12", "B-07" or "B-07 → #12" (LD-13 addendum). */
+  label: string | null;
+  /** The order no longer exists on this device or on the server: only discard. */
+  gone: boolean;
 };
 export function Selling({
   session,
@@ -195,6 +203,8 @@ export function Selling({
   /** Service-owned record of the check a parked round belongs to. */
   const parkedOrderId = (operationId: string) =>
     scope(session) + ":parked-order:" + operationId;
+  // LD-29: an open order from another business day names its date.
+  const today = currentBusinessDate(session.restaurant);
   const offline = useOfflineSelling({
     session,
     catalog,
@@ -355,29 +365,89 @@ export function Selling({
     ).filter((d) => d.id !== activeId);
     setParked(
       await Promise.all(
-        drafts.map(async (draft) => {
+        drafts.map(async (draft): Promise<ParkedDraft> => {
           const value = (await db.cache.get(parkedOrderId(draft.id)))?.value;
+          const order =
+            value && typeof value.id === "string"
+              ? { id: value.id as string, number: Number(value.number) }
+              : null;
+          // LD-13 addendum: a local order is named by this device's records.
+          const where = order
+            ? await resolveParkedOrder(session, order.id).catch(() => null)
+            : null;
+          const known =
+            where?.kind === "local"
+              ? where.order
+              : where?.kind === "server"
+                ? where.cached
+                : null;
           return {
             draft,
-            order:
-              value && typeof value.id === "string"
-                ? { id: value.id as string, number: Number(value.number) }
+            order,
+            label: known
+              ? orderLabel(known, today, locale)
+              : order?.number
+                ? "#" + order.number
                 : null,
+            gone: where?.kind === "gone",
           };
         }),
       ),
     );
   }
-  /** SVC-R5: a parked round goes back onto its check while it is not closed. */
+  /** A draft whose order no longer exists anywhere (LD-13 addendum). */
+  function markGone(id: string) {
+    setParked(
+      (list) =>
+        list?.map((p) => (p.draft.id === id ? { ...p, gone: true } : p)) ??
+        null,
+    );
+  }
+  async function discardDraft({ draft: d }: ParkedDraft) {
+    await db.drafts.delete(d.id);
+    await db.cache.delete(parkedOrderId(d.id));
+    setParked((list) => list?.filter((p) => p.draft.id !== d.id) ?? null);
+  }
+  /**
+   * SVC-R5: a parked round goes back onto its check while it is not closed.
+   * LD-13 addendum: the check may be a local order (created on this device,
+   * not synced yet: its projection), a local order that synced since (the
+   * server order its sync recorded), or a server order (read online; offline,
+   * this device's cached copy). One that no longer exists anywhere is shown
+   * as such, with only a discard action.
+   */
   async function restoreDraft({ draft: d, order: parkedOrder }: ParkedDraft) {
     let target: Order | null = null;
     if (parkedOrder) {
-      try {
-        target = await api<Order>("/orders/" + parkedOrder.id);
-      } catch (e) {
-        // Without the check the round cannot be placed; it stays parked.
+      const where = await resolveParkedOrder(session, parkedOrder.id);
+      if (where.kind === "gone") {
+        markGone(d.id);
+        return;
+      }
+      if (where.kind === "local") target = where.order;
+      else if (online)
+        try {
+          target = await api<Order>("/orders/" + where.orderId);
+        } catch (e) {
+          if (e instanceof ApiError && e.message === "not_found") {
+            markGone(d.id);
+            return;
+          }
+          // Without the check the round cannot be placed; it stays parked.
+          setParked(null);
+          setError(errorNotice(e, locale));
+          return;
+        }
+      else if (where.cached) target = where.cached;
+      else {
+        // Offline, a check this device does not keep cannot take the round
+        // (LD-7); it stays parked until the connection is back.
         setParked(null);
-        setError(errorNotice(e, locale));
+        setError(
+          offline.tableService
+            ? translateError("offline_order_not_cached", locale)
+            : t("offlineAvailableOnReconnect"),
+        );
         return;
       }
     }
@@ -392,7 +462,9 @@ export function Selling({
     }
     await replaceContext(null, d.order);
     if (target) {
-      setClosedCheck("server");
+      // A check paid on this device (local or cached) never had these lines,
+      // so "Enviar como orden nueva" may save them locally (offline §2.3).
+      setClosedCheck(isServerOrder(target) ? "server" : "offline");
       setError(t("serviceCheckClosedKeep"));
     }
   }
@@ -680,13 +752,9 @@ export function Selling({
           // written into the cart now on screen. LD-12 R6: as online, what the
           // record holds leaves the parked copy of that cart, so restoring it
           // never saves those lines twice. The rest stays parked as a round of
-          // a cached server order; a local order cannot be resumed from
-          // Borradores (it has no server id), so then it stays as a new order.
-          const remaining = await trimParkedCopy(
-            d,
-            view,
-            offline.isLocalOrder(view) ? null : view,
-          );
+          // the order it reached, a cached server order or a local order
+          // (Borradores resumes both, LD-13 addendum).
+          const remaining = await trimParkedCopy(d, view, view);
           setNotice(
             [
               t("offlineSentToDevice"),
@@ -1154,8 +1222,6 @@ export function Selling({
       />
     </Field>
   );
-  // LD-29: an open order from another business day names its date.
-  const today = currentBusinessDate(session.restaurant);
   const cartPanel = (
     <>
       <div className="cart-heading">
@@ -1768,21 +1834,35 @@ export function Selling({
           {!parked.length ? (
             <Empty title={t("noData")} />
           ) : (
-            parked.map((p) => (
-              <Button
-                className="full"
-                key={p.draft.id}
-                onClick={() => void restoreDraft(p)}
-              >
-                {p.order &&
-                  t("serviceDraftRound").replace(
-                    "{n}",
-                    String(p.order.number),
-                  ) + " · "}
-                {p.draft.order.name || t("order")} ·{" "}
-                {p.draft.order.lines.length} {t("items")}
-              </Button>
-            ))
+            parked.map((p) => {
+              const text = (
+                <>
+                  {p.label &&
+                    t("serviceDraftRound").replace("{order}", p.label) + " · "}
+                  {p.draft.order.name || t("order")} ·{" "}
+                  {p.draft.order.lines.length} {t("items")}
+                </>
+              );
+              return p.gone ? (
+                <div className="draft-gone" key={p.draft.id}>
+                  <p>{text}</p>
+                  <p className="warning-panel" role="status">
+                    {t("serviceDraftOrderGone")}
+                  </p>
+                  <Button onClick={() => void discardDraft(p)}>
+                    {t("serviceDraftDiscard")}
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  className="full"
+                  key={p.draft.id}
+                  onClick={() => void restoreDraft(p)}
+                >
+                  {text}
+                </Button>
+              );
+            })
           )}
         </Modal>
       )}

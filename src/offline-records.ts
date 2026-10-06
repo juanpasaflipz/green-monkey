@@ -1060,6 +1060,55 @@ export async function findOpenOrder(
   );
 }
 
+/** Where a cart parked in Borradores for an order goes back to (resolveParkedOrder). */
+export type ParkedOrderTarget =
+  | { kind: "local"; order: LocalOrderView }
+  | { kind: "server"; orderId: string; cached: LocalOrderView | null }
+  | { kind: "gone" };
+
+/**
+ * Resolves the order a parked cart belongs to (LD-13 addendum). `id` is the order id
+ * Selling stored when it parked the cart: a server order id, or the local id (the order
+ * record's operation id) of an order created on this device.
+ * - local: this device still owns the order (its order record has not synced): its
+ *   projection, which takes the round like any local order, online or offline.
+ * - server: the server order to read: the id itself, or the server id the sync recorded
+ *   for a local order whose record synced (or a manager reconciled), since the server
+ *   owns it from then on (OFF-R12). `cached` is this device's projection of it (OFF-R2),
+ *   the only copy usable offline (null when table service is off or it is not cached).
+ * - gone: a local order this device no longer has (its record was archived) that never
+ *   became a server order, or one whose record synced without naming its server order.
+ */
+export async function resolveParkedOrder(
+  session: Session,
+  id: string,
+): Promise<ParkedOrderTarget> {
+  const record = await db.pending.get(id);
+  if (
+    record &&
+    record.scope.startsWith(deviceRowsPrefix(session)) &&
+    isV3(record.body) &&
+    record.body.kind === "order"
+  ) {
+    const local = (await localOrders(session)).find(
+      (order) => order.offline.localOperationId === id,
+    );
+    if (local) return { kind: "local", order: local };
+    const orderId = resultOf(record)?.orderId ?? null;
+    if (!orderId) return { kind: "gone" };
+    return {
+      kind: "server",
+      orderId,
+      cached: await findOpenOrder(session, { orderId }),
+    };
+  }
+  return {
+    kind: "server",
+    orderId: id,
+    cached: await findOpenOrder(session, { orderId: id }),
+  };
+}
+
 async function targetNumber(target: OrderTarget): Promise<string | null> {
   if (!("localOrderOperationId" in target)) return null;
   const parent = await db.pending.get(target.localOrderOperationId);

@@ -128,6 +128,10 @@ server balance at sync (for example because the table was paid on another device
 after the last refresh) is refused and shown for review; it is never partially
 applied. Local orders are only changed through offline records, even after the
 connection returns; once their record syncs, selling continues on the server order.
+A round parked in Borradores for a local order (switching to another order with
+unsent items) resumes onto that local order, online or offline, and after its record
+syncs onto the server order the sync recorded (LD-13 addendum; [Service, "Parked
+carts"](SERVICE.md#parked-carts)).
 
 What this does and does not guarantee about charging twice, or too little:
 
