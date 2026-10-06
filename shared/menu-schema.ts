@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { id, money } from "./domain.js";
 import { MENU_LIMITS } from "./menu.js";
+import { productFiscalInput } from "./tax.js";
 
 const name80 = z.string().trim().min(1).max(80);
 /** Spanish name required; a blank English name stores the Spanish one (D9). */
@@ -106,7 +107,7 @@ export const groupInput = z
     });
   });
 
-// Fiscal (next wave) extends this object with `fiscal: productFiscalInput`.
+// fiscal (027): optional; absent keeps the stored value.
 export const productInput = z
   .object({
     operationId: id,
@@ -127,6 +128,7 @@ export const productInput = z
     groupIds: z.array(id).max(MENU_LIMITS.groupsPerProduct).default([]),
     recipe: recipeInput.default([]),
     cost: money.nullable().default(null),
+    fiscal: productFiscalInput.optional(),
   })
   .strict()
   .superRefine((p, ctx) => {
