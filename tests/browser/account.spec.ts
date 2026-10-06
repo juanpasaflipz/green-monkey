@@ -135,6 +135,105 @@ test("signup requires accepting terms+DPA and acknowledging privacy; submit disa
   }
 });
 
+test("signup with a stale document version says the documents changed, reloads them and accepts the current ones (ACC-17)", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const owner = await ownerFixture(sql, "stale");
+  // The first configuration this page reads is a stale copy (an old terms
+  // version, as a cached response would be after a version bump); later
+  // reads pass through.
+  let served = 0;
+  await page.route("**/api/account-config", async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    if (served++ === 0) json.legal.documents.terms.version = "2000-01-01";
+    await route.fulfill({ response, json });
+  });
+  try {
+    await useOwnerCookie(context, owner, baseURL);
+    await page.goto("/app");
+    await page
+      .getByLabel("Nombre del restaurante", { exact: true })
+      .fill("Version vieja");
+    const create = page.getByRole("button", {
+      name: "Crear restaurante gratis",
+      exact: true,
+    });
+    const terms = page.getByRole("checkbox", {
+      name: "Acepto los Términos del servicio y el Contrato de encargo de datos de mi restaurante.",
+      exact: true,
+    });
+    const privacy = page.getByRole("checkbox", {
+      name: "Leí el Aviso de privacidad.",
+      exact: true,
+    });
+    await terms.check();
+    await privacy.check();
+    await create.click();
+    await expect(
+      page
+        .getByRole("alert")
+        .filter({
+          hasText: "Los documentos cambiaron. Recarga y vuelve a aceptar.",
+        }),
+    ).toBeVisible();
+    await expect(page.getByText(/Revisa tu conexión/)).toHaveCount(0);
+    // The current versions were read again and the boxes start unchecked.
+    expect(served).toBeGreaterThanOrEqual(2);
+    await expect(terms).not.toBeChecked();
+    await expect(create).toBeDisabled();
+    await terms.check();
+    await privacy.check();
+    await create.click();
+    await expect(page.locator(".scope")).toContainText("Version vieja");
+    const [accepted] =
+      await admin`select version from legal_acceptances where account_id=${owner.accountId} and document='terms'`;
+    expect(accepted.version).toBe(LEGAL_DOCUMENTS.terms.version);
+  } finally {
+    await deleteOwnerFixtures(admin, [owner.accountId]);
+    await sql.end();
+    await admin.end();
+  }
+});
+
+test("the signup form says the legal documents could not load and retries (ACC-17)", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const owner = await ownerFixture(sql, "noconfig");
+  let fail = true;
+  await page.route("**/api/account-config", (route) =>
+    fail ? route.fulfill({ status: 503, json: {} }) : route.fallback(),
+  );
+  try {
+    await useOwnerCookie(context, owner, baseURL);
+    await page.goto("/app");
+    const unavailable = page
+      .getByRole("alert")
+      .filter({ hasText: "No pudimos cargar los documentos legales." });
+    await expect(unavailable).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Crear restaurante gratis" }),
+    ).toBeDisabled();
+    await axe(page);
+    fail = false;
+    await unavailable.getByRole("button").click();
+    await expect(unavailable).toHaveCount(0);
+    await expect(
+      page.getByRole("group", { name: "Documentos legales" }),
+    ).toBeVisible();
+  } finally {
+    await deleteOwnerFixtures(admin, [owner.accountId]);
+    await sql.end();
+    await admin.end();
+  }
+});
+
 test("simplified privacy notice is shown next to Google sign-up (FOH-14)", async ({
   page,
 }) => {

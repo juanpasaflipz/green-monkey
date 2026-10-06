@@ -32,12 +32,8 @@ export type AccountConfig = {
 };
 
 let cached: Promise<AccountConfig> | null = null;
-/**
- * One fetch per page load (the server caches it for 5 minutes too). A failed
- * fetch is not cached, so the next caller retries.
- */
-export function loadAccountConfig(): Promise<AccountConfig> {
-  cached ??= fetch("/api/account-config", { credentials: "same-origin" })
+function fetchAccountConfig(init: RequestInit): Promise<AccountConfig> {
+  return fetch("/api/account-config", { credentials: "same-origin", ...init })
     .then((response) => {
       if (!response.ok) throw Error(`account config HTTP ${response.status}`);
       return response.json() as Promise<AccountConfig>;
@@ -46,6 +42,22 @@ export function loadAccountConfig(): Promise<AccountConfig> {
       cached = null;
       throw error;
     });
+}
+/**
+ * One fetch per page load (the server caches it for 5 minutes too). A failed
+ * fetch is not cached, so the next caller retries.
+ */
+export function loadAccountConfig(): Promise<AccountConfig> {
+  cached ??= fetchAccountConfig({});
+  return cached;
+}
+/**
+ * A fresh copy past this page's cache and the browser's (the response is
+ * cacheable for 5 minutes): after a 409 legal_version_mismatch the documents
+ * changed, so the next acceptance must use the versions served now (ACC-17).
+ */
+export function reloadAccountConfig(): Promise<AccountConfig> {
+  cached = fetchAccountConfig({ cache: "no-store" });
   return cached;
 }
 
