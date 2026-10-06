@@ -21,6 +21,8 @@ import { checkWorkerRole, connectWorker, waitForDatabase } from "./db.js";
 import { createJobRunner, type JobRunner } from "./jobs/runner.js";
 import { discoverTenants, workerHandlers } from "./jobs/worker-registry.js";
 // >>> worker areas: imports (one line per area module; e.g. cfdi's register and boot modules)
+import "./cfdi/worker/register.js";
+import { cfdiWorkerBoot } from "./cfdi/worker/boot.js";
 // <<< worker areas: imports
 
 const LOOP_STALE_MS = 120_000;
@@ -139,6 +141,7 @@ if (config.workerDatabaseUrl) {
 // verified and the runner created, before it starts; receives workerSql, null when
 // WORKER_DATABASE_URL is unset, and process.env; a throw is fatal, so hooks
 // handle provider outages themselves)
+await cfdiWorkerBoot(workerSql, process.env);
 // <<< worker areas: boot hooks
 if (jobs) {
   tickNow("jobs");
