@@ -63,6 +63,7 @@
     "jose": "6.2.12",
     "lucide-react": "1.45.0",
     "postgres": "3.4.8",
+    "qrcode.react": "4.2.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "zod": "4.3.6"
