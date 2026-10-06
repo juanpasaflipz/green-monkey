@@ -4,16 +4,16 @@ import { Button, Field, Modal } from "../components/ui";
 import { strings, translateError, type Key } from "../i18n";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { stepUpExempt } from "../../shared/access";
+import {
+  ManagerApproval,
+  type ApprovalValue,
+} from "../components/ManagerApproval";
 import { readPrintSettings } from "../print";
 import {
   cancellationsFromVoid,
   type KitchenCancellationModel,
 } from "./printing/cancellations";
 import { printCancellations } from "./printing/KitchenCancellationDocument";
-import {
-  ManagerApproval,
-  type ApprovalValue,
-} from "../components/ManagerApproval";
 
 /**
  * Voids unpaid units of an order. Paid units are excluded (they need a refund).
