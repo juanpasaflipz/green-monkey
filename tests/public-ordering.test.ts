@@ -1,5 +1,8 @@
 import { readFileSync } from "node:fs";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import type { Session } from "../shared/domain";
 import {
   canonicalRequest,
   dinerRejectReason,
@@ -11,6 +14,7 @@ import {
   publicOrderInput,
   roundProgress,
   settingsInput,
+  type InboxHold,
 } from "../shared/public-ordering";
 import {
   linkHash,
@@ -24,6 +28,7 @@ import {
   publicOrderingGate,
 } from "../server/compat/public-account";
 import { parseDinerLocation } from "../src/features/public/dinerRoute";
+import { HoldCard } from "../src/features/public/HoldCard";
 import { moneyFormatter as menuMoney } from "../src/features/menu/format";
 
 // Receipt.tsx (service's staff money formatter) imports the offline store.
@@ -300,6 +305,79 @@ describe("public ordering tokens and schemas (032)", () => {
     ]);
     publicOrderingGate({})({} as never, res as never, () => (passed = true));
     expect(passed).toBe(true);
+  });
+
+  it("15. a table hold offers the target check only with an action that uses it", () => {
+    const hold = (policy: "accept" | "pay_first"): InboxHold => ({
+      id: id(),
+      label: "Q-7",
+      kind: "table",
+      channel: "qr",
+      tableId: id(),
+      tableName: "Mesa 4",
+      linkLabel: "",
+      name: "",
+      note: "",
+      policy,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+      lines: [
+        {
+          id: id(),
+          quantity: 1,
+          name: { es: "Taco", en: "Taco" },
+          optionNames: [],
+          unitPrice: 4500,
+          total: 4500,
+          issue: null,
+          currentTotal: 4500,
+        },
+      ],
+      quotedTotal: 4500,
+      currentTotal: 4500,
+      openChecks: [
+        {
+          id: id(),
+          number: 142,
+          version: 1,
+          checkState: "open",
+          total: 9000,
+          paid: 0,
+          waiterName: "Ana",
+        },
+      ],
+    });
+    const html = (policy: "accept" | "pay_first", role: string) =>
+      renderToStaticMarkup(
+        createElement(HoldCard, {
+          hold: hold(policy),
+          session: { role, restaurant: { currency: "MXN" } } as Session,
+          locale: "es",
+          online: true,
+          busy: false,
+          error: "",
+          nowMs: Date.now(),
+          forceNew: false,
+          onAccept: () => {},
+          onPay: () => {},
+          onReject: () => {},
+        }),
+      );
+    // Pay-first for a cashier: only "Cobrar y enviar a cocina", which always
+    // opens a new check, so no "Enviar a" select suggests Cuenta #142.
+    const cashier = html("pay_first", "cashier");
+    expect(cashier).toContain("Cobrar y enviar a cocina");
+    expect(cashier).not.toContain("<select");
+    expect(cashier).not.toContain("Enviar a<");
+    // A manager's exception and the accept policy do use the target.
+    for (const [policy, role] of [
+      ["pay_first", "manager"],
+      ["accept", "cashier"],
+    ] as const) {
+      const markup = html(policy, role);
+      expect(markup).toContain("<select");
+      expect(markup).toContain("Cuenta #142");
+    }
   });
 
   it("14. every live-hold query bounds created_at to the 2-hour hold window", () => {

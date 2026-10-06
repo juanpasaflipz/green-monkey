@@ -75,6 +75,9 @@ export function HoldCard({
     : null;
   const priceChanged = current !== null && current !== quoted;
   const actions = holdActions(hold.policy, session.role, current);
+  // Paying always opens a new check: the target only matters for accepting.
+  const choosesTarget =
+    hold.kind === "table" && (actions.accept || actions.override);
   const ready =
     online &&
     !busy &&
@@ -198,7 +201,7 @@ export function HoldCard({
           </label>
         </>
       )}
-      {hold.kind === "table" && (
+      {choosesTarget && (
         <label className="field">
           <span>{t("publicTarget")}</span>
           <select
