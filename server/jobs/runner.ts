@@ -27,6 +27,13 @@
  * This module registers no handler: the web entry imports
  * server/jobs/handlers/index.ts, the worker registers its kinds in
  * server/jobs/worker-registry.ts (import-graph test).
+ *
+ * Limits (PLATFORM-OPS-1, OPS-5): `concurrency` (global) and each kind's
+ * concurrency count running handlers plus the slots a drain has reserved for
+ * a claim it is awaiting, so concurrent drains of different tenants never
+ * claim the same free slots. A handler whose lease is about to expire is
+ * aborted and stops counting (job_lease_expired), and a drain that waits for
+ * a slot gives up after sweepMs, so one hung handler never stalls a tenant.
  */
 import type postgres from "postgres";
 import { tenant } from "../db.js";
@@ -40,6 +47,7 @@ import {
 import {
   claimJobs,
   completeJob,
+  expireLostJobs,
   extendLease,
   failJob,
   jobErrorCode,
@@ -126,11 +134,20 @@ export function createJobRunner(
   const seen = new Map<string, number>();
   const scheduled = new Map<string, NodeJS.Timeout>();
   const draining = new Map<string, Promise<number>>();
+  // Slots reserved by drains awaiting a claim, in total and per kind: counted
+  // with `active` so concurrent drains never claim the same free slots.
+  let reserved = 0;
+  const reservedByKind = new Map<string, number>();
   let stopping = false;
   let sweepTimer: NodeJS.Timeout | null = null;
 
   const perKind = (kind: string) =>
-    [...active.values()].filter((a) => a.kind === kind).length;
+    [...active.values()].filter((a) => a.kind === kind).length +
+    (reservedByKind.get(kind) ?? 0);
+  const reserve = (kind: string, n: number) => {
+    reserved += n;
+    reservedByKind.set(kind, (reservedByKind.get(kind) ?? 0) + n);
+  };
 
   function execute(job: ClaimedJob, entry: RegisteredHandler) {
     const abort = new AbortController();
@@ -143,9 +160,18 @@ export function createJobRunner(
     const armLease = (seconds: number) => {
       if (leaseTimer) clearTimeout(leaseTimer);
       // Abort a little before the lease expires; fenced writes would be
-      // rejected anyway once another runner reclaims the job.
+      // rejected anyway once another runner reclaims the job. The job stops
+      // counting against the limits now: a handler that ignores the signal (a
+      // provider call without it, a nested ctx.tenant() on an exhausted pool)
+      // must not hold its slot, or its tenant's drain, forever (PLATFORM-OPS-5).
       leaseTimer = setTimeout(
-        () => abort.abort(new Error("job_lease_expired")),
+        () => {
+          abort.abort(new Error("job_lease_expired"));
+          if (active.get(job.id)?.abort === abort) {
+            active.delete(job.id);
+            jobLog.warn("job_lease_expired", { attempts: job.attempts });
+          }
+        },
         Math.max(1000, seconds * 1000 - 2000),
       );
       leaseTimer.unref();
@@ -163,6 +189,7 @@ export function createJobRunner(
             log: jobLog,
             tenant: (fn) => tenant(sql, job.tenantId, fn),
             extendLease: async (seconds) => {
+              // Throws before any SQL outside 10..MAX_LEASE_SECONDS (PLATFORM-OPS-6).
               const lease = await extendLease(sql, job, seconds);
               if (!lease) {
                 abort.abort(new Error("job_lease_lost"));
@@ -206,7 +233,11 @@ export function createJobRunner(
       }
     })();
     active.set(job.id, { kind: job.kind, promise, abort });
-    void promise.finally(() => active.delete(job.id));
+    void promise.finally(() => {
+      // Only this run's entry: after a lease expiry the id may belong to a
+      // later claim of the same job.
+      if (active.get(job.id)?.abort === abort) active.delete(job.id);
+    });
   }
 
   async function drainOnce(
@@ -217,21 +248,60 @@ export function createJobRunner(
     for (const [kind, entry] of getHandlers()) {
       if (stopping) break;
       const free = Math.min(
-        limit - active.size,
+        limit - active.size - reserved,
         entry.concurrency - perKind(kind),
       );
       if (free <= 0) {
         saturated = true;
         continue;
       }
-      const jobs = await tenant(sql, tenantId, (tx) =>
-        claimJobs(tx, [kind], free, entry.leaseSeconds),
-      );
+      // Reserve before the await: another tenant's drain computing its free
+      // slots meanwhile must see these (PLATFORM-OPS-1).
+      reserve(kind, free);
+      let jobs: ClaimedJob[];
+      let expired: ClaimedJob[];
+      try {
+        ({ jobs, expired } = await tenant(sql, tenantId, async (tx) => ({
+          expired: await expireLostJobs(tx, kind, entry.maxAttempts),
+          jobs: await claimJobs(
+            tx,
+            [kind],
+            free,
+            entry.leaseSeconds,
+            entry.maxAttempts,
+          ),
+        })));
+      } finally {
+        reserve(kind, -free);
+      }
+      // Synchronously after the release: the claimed jobs take the slots.
+      for (const job of jobs) execute(job, entry);
       claimed += jobs.length;
       if (jobs.length === free) saturated = true;
-      for (const job of jobs) execute(job, entry);
+      for (const job of expired) {
+        log
+          .child({ jobId: job.id, kind: job.kind, tenantId: job.tenantId })
+          .error("job_dead", {
+            code: "lease_expired",
+            attempts: job.attempts,
+            state: "dead",
+          });
+        o.onDead?.(job, "lease_expired");
+      }
     }
     return { claimed, saturated };
+  }
+
+  /** Resolves when a running job settles or after ms, whichever comes first. */
+  function slotOrTimeout(ms: number): Promise<void> {
+    let timer: NodeJS.Timeout | undefined;
+    return Promise.race([
+      ...[...active.values()].map((a) => a.promise),
+      new Promise<void>((r) => {
+        timer = setTimeout(r, ms);
+        timer.unref();
+      }),
+    ]).finally(() => clearTimeout(timer));
   }
 
   function drainTenant(tenantId: string): Promise<number> {
@@ -240,13 +310,18 @@ export function createJobRunner(
     const run = (async () => {
       let total = 0;
       // Keep going while slots were the limit (a backlog after a restart);
-      // stop as soon as a pass finds nothing more to claim.
+      // stop as soon as a pass finds nothing more to claim. Each wait for a
+      // slot is bounded by sweepMs (PLATFORM-OPS-5): the next sweep or
+      // discovery picks the tenant up again anyway.
       for (let i = 0; i < 100 && !stopping; i++) {
         const { claimed, saturated } = await drainOnce(tenantId);
         total += claimed;
         if (!saturated) break;
-        if (active.size > 0)
-          await Promise.race([...active.values()].map((a) => a.promise));
+        // Nothing of ours running: the slots are other drains' reservations,
+        // which turn into running jobs (or free up) within one claim.
+        await slotOrTimeout(
+          active.size ? sweepMs : Math.min(sweepMs, debounceMs),
+        );
       }
       return total;
     })().finally(() => draining.delete(tenantId));

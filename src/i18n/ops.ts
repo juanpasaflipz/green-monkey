@@ -12,5 +12,9 @@ export default defineArea({
       "Esta tarea no se puede reintentar.",
       "This task cannot be retried.",
     ],
+    job_not_cancellable: [
+      "Esta tarea ya terminó; no se puede cancelar.",
+      "This task has already finished; it cannot be cancelled.",
+    ],
   },
 });

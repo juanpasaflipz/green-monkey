@@ -3,6 +3,9 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type { PreAuthContext, RouteContext } from "../http.js";
 import { clientIp, ipHash, log, requestIdOf, routeLabel } from "../logging.js";
 import { opsStatus } from "../ops/status.js";
+import { cancelJob, requeueJob } from "../jobs/queue.js";
+import { requireRecentAuth } from "../access.js";
+import { id } from "../../shared/domain.js";
 
 /**
  * Per-IP limiter for the public ops endpoints. Keys on the real client
@@ -78,5 +81,24 @@ export function registerPreAuth(ctx: PreAuthContext) {
   );
 }
 
-/** ops area authenticated routes; use ctx.route for tenant-scoped handlers. */
-export function register(_ctx: RouteContext) {}
+/**
+ * ops area authenticated routes; use ctx.route for tenant-scoped handlers.
+ *
+ * Job controls (PLATFORM-OPS-3, docs/RUNBOOK.md "Jobs"): an owner or manager with a
+ * recent PIN or password (step-up) retries a dead job, or cancels a queued, available,
+ * blocked or running one (it goes dead with error_code cancelled; a running holder loses
+ * its lease). GET /api/jobs lists the tenant's latest jobs.
+ */
+export function register(ctx: RouteContext) {
+  const { route } = ctx;
+  route("post", "/jobs/:id/requeue", async (tx, s, req) => {
+    requireRecentAuth(s);
+    await requeueJob(tx, s, id.parse(req.params.id));
+    return { ok: true };
+  });
+  route("post", "/jobs/:id/cancel", async (tx, s, req) => {
+    requireRecentAuth(s);
+    await cancelJob(tx, s, id.parse(req.params.id));
+    return { ok: true };
+  });
+}
