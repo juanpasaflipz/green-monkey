@@ -64,6 +64,7 @@ import {
 } from "../src/features/cfdi/CfdiReceiptBlock";
 import {
   CfdiOrderActions,
+  TicketChip,
   ticketChip,
 } from "../src/features/cfdi/CfdiOrderActions";
 import {
@@ -414,6 +415,19 @@ describe("cfdi client: order actions (2.5)", () => {
     expect(offline).toContain("Requiere conexión.");
     expect(render(order({ ticket: null }))).toContain("Sin ticket fiscal.");
     expect(render(order({ ticket: null }, { paid: 0 }))).toBe("");
+  });
+  it("the chip's label is visually hidden text, never an aria-label on a generic span (CFDI-R2-7)", () => {
+    const markup = html(
+      createElement(TicketChip, {
+        view: { eligibility: "available", covering: null } as CfdiTicketView,
+        locale: "es",
+      }),
+    );
+    expect(markup).toContain(
+      '<span class="sr-only">Factura del ticket: </span>',
+    );
+    expect(markup).toContain("Sin facturar");
+    expect(markup).not.toContain("aria-label");
   });
   it("chips follow the ticket view", () => {
     const v = (over: Partial<CfdiTicketView>) =>

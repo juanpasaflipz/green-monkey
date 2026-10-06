@@ -436,6 +436,15 @@ test("MON-1/FIT-6: a paid ticket is invoiced from Órdenes (régimen and uso fil
       .filter({ hasText: order.name })
       .click();
     await expect(page.getByText("Sin facturar", { exact: true })).toBeVisible();
+    // The order's CFDI actions with the chip, whose label is visually hidden text (CFDI-R2-7).
+    expect(
+      (
+        await new AxeBuilder({ page })
+          .include(".cfdi-order-actions")
+          .withTags(AXE_TAGS)
+          .analyze()
+      ).violations,
+    ).toEqual([]);
     await page.getByRole("button", { name: "Facturar", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: /^Facturar ticket/ });
     await expect(dialog.getByText(/Modo prueba/)).toBeVisible();

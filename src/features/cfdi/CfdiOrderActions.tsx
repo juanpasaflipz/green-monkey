@@ -45,6 +45,26 @@ export function ticketChip(
   return { text: tr(locale, "cfdiChipNone"), tone: "neutral" };
 }
 
+/**
+ * The ticket's invoice chip. ARIA 1.2 prohibits naming a generic span (screen readers ignore an
+ * aria-label there), so its label is visually hidden text read before the badge (CFDI-R2-7).
+ */
+export function TicketChip({
+  view,
+  locale,
+}: {
+  view: CfdiTicketView;
+  locale: Locale;
+}) {
+  const chip = ticketChip(view, locale);
+  return (
+    <span>
+      <span className="sr-only">{strings[locale].cfdiChipLabel}: </span>
+      <Badge tone={chip.tone}>{chip.text}</Badge>
+    </span>
+  );
+}
+
 export function CfdiOrderActions({
   order,
   session,
@@ -102,14 +122,9 @@ export function CfdiOrderActions({
         {t.cfdiNoTicket}
       </p>
     ) : null;
-  const chip = view ? ticketChip(view, locale) : null;
   return (
     <div className={`cfdi-order-actions ${variant}`}>
-      {chip && (
-        <span aria-label={t.cfdiChipLabel}>
-          <Badge tone={chip.tone}>{chip.text}</Badge>
-        </span>
-      )}
+      {view && <TicketChip view={view} locale={locale} />}
       {view?.mode === "test" && <Badge tone="amber">{t.cfdiTestBadge}</Badge>}
       <Button
         disabled={!canUseServer}
