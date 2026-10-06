@@ -259,7 +259,7 @@ const ok = (name: string) => {
   console.log("PASS", name);
 };
 try {
-  await admin`insert into organizations(id,name) values(${ORG},'Phase B fixture')`;
+  await admin`insert into organizations(id,name) values(${ORG},'Reports fixture')`;
   await admin`insert into restaurants(id,organization_id,name,currency,timezone,cutoff) values(${T},${ORG},${restaurant.name},'MXN',${zone},240)`;
   await scoped(async (tx) => {
     for (const [e, role, name] of [
@@ -1935,6 +1935,14 @@ try {
   );
   await remoteClose(busyDrawer, (await corteOf(busyDrawer)).fingerprint, 10000);
   assert.notEqual((await drawerRow(busyDrawer)).closed_at, null);
+  // REPORTS-CORTES-5: the closing transaction stores only the drawer id; the corte Z the
+  // command answers with is read after the commit (a replay reads it again).
+  const [stored5] = (await asDemo(
+    (tx) =>
+      tx`select result from operations where kind = 'reports.drawer_close'
+          and result->>'drawerId' = ${busyDrawer}`,
+  )) as any;
+  assert.deepEqual(stored5.result, { drawerId: busyDrawer });
   ok(
     "CORTES-1: an earlier day's drawer on an active device is reports_drawer_in_use while the device was seen or took a payment in the last 10 minutes; once idle the remote close goes through",
   );
@@ -2073,7 +2081,7 @@ try {
     "CONTRACTS-2: a check comped to zero (no fiscal ticket) adds its units' cost to COGS",
   );
 
-  console.log(`Reports phase B DB passed (${checks} checks)`);
+  console.log(`Reports (fiscal and discounts) DB passed (${checks} checks)`);
 } finally {
   await removeTenants(admin, [T], [ORG]);
   await sql.end();

@@ -3,7 +3,7 @@ import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import postgres from "postgres";
 
-// Reports (029) phase B browser tests (spec §7.3 tests 1–9, 13, 14) and the second opinion's UI
+// Reports (029) browser tests for Hoy, Finanzas and the cortes (spec §7.3 tests 1–9, 13, 14) and the second opinion's UI
 // findings (LD-27: REPORTS-UI-1..UI-10, CORTES-1). The demo owner "Alex Demo" runs every view;
 // fixture devices and drawers are created in-test and revoked afterwards.
 const tenantId = "10000000-0000-4000-8000-000000000001";

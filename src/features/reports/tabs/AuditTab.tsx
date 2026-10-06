@@ -16,9 +16,34 @@ import { auditGroupLabel, dateTimeLabel, fill, money } from "../format";
 import { ReportStatus, ReportToolbar } from "../parts";
 import { usePagedReport, useReport } from "../useReport";
 
-/** A detail value: nested objects JSON-stringified. */
-const detailValue = (v: unknown) =>
-  v !== null && typeof v === "object" ? JSON.stringify(v) : String(v);
+/** Detail keys whose numbers are money in minor units (shown formatted, review UI-17). */
+const MONEY_KEYS = new Set([
+  "amount",
+  "counted",
+  "expected",
+  "discrepancy",
+  "tip",
+  "restored",
+  "reversedAmount",
+  "externalExpected",
+  "externalReported",
+  "opening",
+  "gross",
+  "total",
+  "cash",
+  "external",
+]);
+/** A detail value: money formatted, nested objects JSON-stringified. */
+export const detailValue = (
+  key: string,
+  v: unknown,
+  m: (n: number) => string,
+) =>
+  typeof v === "number" && Number.isSafeInteger(v) && MONEY_KEYS.has(key)
+    ? m(v)
+    : v !== null && typeof v === "object"
+      ? JSON.stringify(v)
+      : String(v);
 
 /** Finanzas → Bitácora: the activity log with keyset paging and filters (spec §2.8). */
 export function AuditTab({
@@ -200,7 +225,7 @@ export function AuditTab({
                           ).map(([key, value]) => (
                             <div key={key}>
                               <dt>{key}</dt>
-                              <dd>{detailValue(value)}</dd>
+                              <dd>{detailValue(key, value, m)}</dd>
                             </div>
                           ))}
                         </dl>

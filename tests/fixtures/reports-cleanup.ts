@@ -2,8 +2,7 @@
 // financial history. LD-12 pattern: the named triggers are switched off by the owner inside the
 // one transaction that deletes the rows, so no other session ever sees them disabled and a failed
 // cleanup rolls the switch back. LD-16 L5 order: fiscal tables, then discounts, then reports, then
-// the wave-1 tables. Tables and triggers that do not exist yet (a schema before 027/028) are
-// skipped, so the same cleanup works before and after those merges.
+// the wave-1 tables.
 import type postgres from "postgres";
 
 /** Delete order: children first (LD-16 L5). */
@@ -88,20 +87,14 @@ export async function removeTenants(
       select c.relname as table, t.tgname as trigger
         from pg_trigger t join pg_class c on c.oid = t.tgrelid
        where not t.tgisinternal and t.tgname = any (${[...IMMUTABILITY_TRIGGERS]}::text[])`;
-    const tables = await tx<{ name: string }[]>`
-      select relname as name from pg_class
-       where relkind = 'r' and relnamespace = 'public'::regnamespace
-         and relname = any (${[...CLEANUP_TABLES]}::text[])`;
-    const present = new Set(tables.map((t) => t.name));
     // Identifiers come from pg_catalog and the fixed lists above, never from input.
     for (const t of triggers)
       await tx.unsafe(`alter table ${t.table} disable trigger ${t.trigger}`);
     for (const table of CLEANUP_TABLES)
-      if (present.has(table))
-        for (const tenantId of tenants)
-          await tx.unsafe(`delete from ${table} where tenant_id = $1`, [
-            tenantId,
-          ]);
+      for (const tenantId of tenants)
+        await tx.unsafe(`delete from ${table} where tenant_id = $1`, [
+          tenantId,
+        ]);
     await tx`delete from restaurants where id = any (${[...tenants]}::uuid[])`;
     await tx`delete from organizations where id = any (${[...organizations]}::uuid[])`;
     for (const t of triggers)

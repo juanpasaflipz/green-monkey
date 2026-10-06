@@ -1081,7 +1081,7 @@ describe("report transport (LD-15 reports Q1)", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// Findings of the phase B UI smoke (axe, rendering)
+// Findings of the reports UI smoke (axe, rendering)
 // ---------------------------------------------------------------------------------------------
 
 describe("report tables and rows (UI smoke findings)", () => {

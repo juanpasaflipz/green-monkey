@@ -43,9 +43,13 @@ export function CortePreview({
   const t = strings[locale];
   const [settings, saveSettings] = usePrintSettings();
   const [doc, setDoc] = useState<CorteDocument | DayCorte | null>(null);
-  const [error, setError] = useState<{ code: string; text: string } | null>(
-    null,
-  );
+  const [error, setError] = useState<{
+    code: string;
+    text: string;
+    /** The step that failed: Reintentar repeats it (UI-15), a print with its operation id. */
+    step: "load" | "print";
+    sheet?: boolean;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
   // Callers pass a fresh target object on every render; the fetch follows its identity.
@@ -63,7 +67,7 @@ export function CortePreview({
       );
     } catch (e) {
       const code = (e as Error).message;
-      setError({ code, text: translateError(code, locale) });
+      setError({ code, text: translateError(code, locale), step: "load" });
     }
   }, [targetKey, locale]);
   useEffect(() => {
@@ -103,7 +107,12 @@ export function CortePreview({
       else await printDocument(node, settings.paper);
     } catch (e) {
       const code = (e as Error).message;
-      setError({ code, text: translateError(code, locale) });
+      setError({
+        code,
+        text: translateError(code, locale),
+        step: "print",
+        sheet,
+      });
     } finally {
       setBusy(false);
     }
@@ -140,7 +149,15 @@ export function CortePreview({
         <div className="error" role="alert">
           <span>{error.text}</span>
           {error.code === "reports_timeout" && (
-            <Button variant="ghost" onClick={() => void load()}>
+            <Button
+              variant="ghost"
+              disabled={busy || !online}
+              onClick={() =>
+                void (error.step === "print"
+                  ? print(error.sheet ?? false)
+                  : load())
+              }
+            >
               {t.reportsRetry}
             </Button>
           )}

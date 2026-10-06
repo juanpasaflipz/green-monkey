@@ -22,6 +22,7 @@ import {
 } from "../src/features/reports/exception-text";
 import { countFill, folioText, money } from "../src/features/reports/format";
 import { exceptionColumns } from "../src/features/reports/csv";
+import { detailValue } from "../src/features/reports/tabs/AuditTab";
 
 const m = money("MXN", "es");
 
@@ -240,6 +241,13 @@ describe("reports second opinion (LD-27): client and shared regressions", () => 
       auditReason(row("refund.recorded", "customer_cancelled", "Frío"), "es"),
     ).toBe("El cliente canceló · Frío");
     expect(auditReason(row("job.cancelled", "some_code"), "es")).toBe("");
+  });
+
+  it("UI-17: the Bitácora's detail shows money keys as money, other values as written", () => {
+    expect(detailValue("counted", 125_000, m)).toBe(m(125_000));
+    expect(detailValue("expected", 130_000, m)).toBe("$1,300.00");
+    expect(detailValue("printNumber", 2, m)).toBe("2");
+    expect(detailValue("countMode", "blind", m)).toBe("blind");
   });
 
   it("CONTRACTS-1: a corte lists each contiguous folio run in order and summarizes interleaved runs, never one range across a gap", () => {

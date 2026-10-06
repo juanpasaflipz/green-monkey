@@ -1,8 +1,9 @@
 // Reports (029) DB suite: migration 029 (versioned business-day settings, business_date_at,
 // report print records), the read-only snapshot, and the report statements that read wave-1
 // tables only (collections S3, paid-outs S5, the tender list, the employee/hour/channel/mode
-// breakdowns, the activity log and the filters). The statements that need fiscal (027) and
-// discounts (028) are covered here once those merge (docs/REPORTS.md "Merge wiring").
+// breakdowns, the activity log and the filters), the role refusals before any fiscal (027) or
+// discounts (028) statement and a restaurant without fiscal data. The statements that read 027
+// and 028 tables run in tests/reports-phaseb-db.ts.
 // Runs against an isolated target (tests/isolated-target.ts), like tests/voids-db.ts.
 import "dotenv/config";
 import assert from "node:assert/strict";
