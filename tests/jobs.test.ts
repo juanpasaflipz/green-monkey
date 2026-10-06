@@ -560,6 +560,70 @@ describe("runner limits and liveness (PLATFORM-OPS-1, OPS-3, OPS-5, OPS-6)", () 
     }
   });
 
+  it("a handler aborted at lease expiry cannot renew its lease by heartbeating: ctx.extendLease throws job_lease_lost without SQL, so the kind's next job never runs beside it (PLAT-HR-4)", async () => {
+    vi.useFakeTimers();
+    try {
+      const statements: string[] = [];
+      const queues = new Map([
+        [
+          "t-1",
+          [
+            { kind: "opsworker_probe", id: "late" },
+            { kind: "opsworker_probe", id: "next" },
+          ],
+        ],
+      ]);
+      const heartbeats: string[] = [];
+      let release!: () => void;
+      const stuck = new Promise<void>((r) => (release = r));
+      const registry = new Map<string, RegisteredHandler>([
+        [
+          "opsworker_probe",
+          jobRegistration(
+            "opsworker_probe",
+            (async (ctx: {
+              job: { id: string };
+              signal: AbortSignal;
+              extendLease: (s: number) => Promise<void>;
+            }) => {
+              if (ctx.job.id !== "late") return;
+              // Ignores its signal, then heartbeats after the abort.
+              await stuck;
+              heartbeats.push(
+                `${ctx.signal.aborted}:` +
+                  (await ctx.extendLease(60).then(
+                    () => "extended",
+                    (e: { code?: string }) => String(e.code),
+                  )),
+              );
+            }) as never,
+            { concurrency: 1, leaseSeconds: 10 },
+          ),
+        ],
+      ]);
+      const runner = createJobRunner(queueSql({ queues, statements }), {
+        handlers: () => registry,
+        concurrency: 4,
+        sweepMs: 1000,
+        log: recordingLogger([]),
+      });
+      void runner.drainTenant("t-1");
+      // The lease timer fires at 8 s (2 s before the 10 s lease).
+      await vi.advanceTimersByTimeAsync(8500);
+      release();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(heartbeats).toEqual(["true:job_lease_lost"]);
+      expect(
+        statements.filter((t) => t.includes("update jobs set lease_until")),
+        "the late heartbeat reached no SQL",
+      ).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(3000);
+      await runner.stop(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a drain waiting on a full kind ends within sweepMs steps even when nothing settles", async () => {
     vi.useFakeTimers();
     try {

@@ -189,13 +189,20 @@ export function createJobRunner(
             log: jobLog,
             tenant: (fn) => tenant(sql, job.tenantId, fn),
             extendLease: async (seconds) => {
+              const lost = () =>
+                Object.assign(new Error("job_lease_lost"), {
+                  code: "job_lease_lost",
+                });
+              // Once aborted (lease timer, lost lease, stop) the run no longer
+              // counts against the limits; a late heartbeat must not renew a
+              // lease the database still honours for ~2 s, or the runner could
+              // claim another job of this kind beside it (PLAT-HR-4). No SQL.
+              if (abort.signal.aborted) throw lost();
               // Throws before any SQL outside 10..MAX_LEASE_SECONDS (PLATFORM-OPS-6).
               const lease = await extendLease(sql, job, seconds);
               if (!lease) {
                 abort.abort(new Error("job_lease_lost"));
-                throw Object.assign(new Error("job_lease_lost"), {
-                  code: "job_lease_lost",
-                });
+                throw lost();
               }
               job.lease = lease;
               armLease(seconds);
