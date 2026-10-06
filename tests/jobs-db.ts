@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { check, disposableLogins, passed } from "./ops-roles.js";
+import { noRetries } from "./db-retries.js";
 import { connect, tenant } from "../server/db.js";
 import {
   enqueueJob,
@@ -98,14 +99,16 @@ try {
   await check("two runners never lease the same job", async () => {
     for (let i = 0; i < 24; i++) await enqueue(owner, `c${i}`);
     const seen: string[] = [];
-    await Promise.all(
-      [app, second, app, second].map(async (sql) => {
-        for (;;) {
-          const jobs = await claim(sql, owner, 3);
-          if (!jobs.length) return;
-          seen.push(...jobs.map((j) => j.id));
-        }
-      }),
+    await noRetries("claim race", () =>
+      Promise.all(
+        [app, second, app, second].map(async (sql) => {
+          for (;;) {
+            const jobs = await claim(sql, owner, 3);
+            if (!jobs.length) return;
+            seen.push(...jobs.map((j) => j.id));
+          }
+        }),
+      ),
     );
     assert.equal(seen.length, 24);
     assert.equal(new Set(seen).size, 24);

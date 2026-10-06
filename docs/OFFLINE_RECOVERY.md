@@ -357,7 +357,8 @@ Offline sync follows the binding
 by Wave 2.0 (platform). `tests/lock-order.test.ts` checks it statically for each
 unit it can see (the appliers and reconcilers, `applySale`, `reconcileSale`;
 not the dynamic `appliers[kind]` dispatch from `syncOfflineRecord`), and the
-concurrency suites fail on any retried deadlock (`noRetries`, LO-R9): the `once()`
+concurrency bursts that run through `tenant()` fail on any retried deadlock
+(`noRetries`, LO-R9; `tests/db-retries.test.ts` checks that each is wrapped): the `once()`
 key, the restaurant row (`FOR SHARE`), area serialization locks (including the
 offline prefix and archive advisory locks, which are config paths only, and the
 catalog `FOR SHARE` of `verifyLines`), `order_numbers`, `orders` (several sorted
