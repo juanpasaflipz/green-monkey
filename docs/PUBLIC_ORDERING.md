@@ -3,17 +3,17 @@
 Migrations 032 and 033. Audit findings SEC-7, FIT-11, FOH-13 and the DB-9
 remainder.
 
-**Status: Phase A and step B1, built on `track/public`.** Phase A depends
-only on wave 1 and platform 2.0; B1 absorbed fiscal 027 (`integration/v1` at
-`70860d6`), and the track has since absorbed `integration/v1` at `804f6c6`
-(the browser suite's business-day rollover guard, LD-29). The track merges into `integration/v1` once, after account (031)
-and the remaining Phase B steps described in
-[Phase B](#phase-b-what-is-still-to-do). Until then:
+**Status: Phase A and steps B1 and B2, built on `track/public`.** Phase A
+depends only on wave 1 and platform 2.0; B1 absorbed fiscal 027
+(`integration/v1` at `70860d6`), and B2 absorbed discounts 028, reports 029
+and cfdi 030 (`integration/v1` at `407154e`). The track merges into
+`integration/v1` once, after account (031) and the remaining Phase B steps
+described in [Phase B](#phase-b-what-is-still-to-do). Until then:
 
-- Two dependencies still come from compat shims with the owners' exact
+- One dependency still comes from compat shims with the owner's exact
   signatures: account (S1 `server/compat/public-account.ts`, S4
-  `src/compat/public-account.ts`) and cfdi (S3 `server/compat/public-cfdi.ts`).
-  Fiscal's shim (S2) is gone since B1. No shim reaches `integration/v1`.
+  `src/compat/public-account.ts`). Fiscal's shim (S2) is gone since B1 and
+  cfdi's (S3) since B2. No shim reaches `integration/v1`.
 - The shared docs (ARCHITECTURE, OPERATIONS, RUNBOOK, MENU, SERVICE, ACCESS,
   RELEASE, ACCOUNT_AND_LEGAL, DELIVERY_STATUS, the ledger files) are **not**
   edited in Phase A (LD-P10). This file holds everything they will receive at
@@ -185,8 +185,10 @@ is closed.
 - **Online only.** The diner page has no offline queue and never registers the
   service worker. `src/main.tsx` uses
   `publicPage = /^\/(f|factura|qr|kiosk)(\/|$)/`, the same line cfdi writes
-  (LD-P6). Its route test is `/^\/(qr|kiosk)(\/|$)/`, so `/qr#token` never
-  renders the staff POS.
+  (LD-P6). The render chain is cfdi's portal `/^\/(f|factura)(\/|$)/`, then
+  the lazy diner `/^\/(qr|kiosk)(\/|$)/`, then the landing page and
+  `PlatformGate` (account adds `/legal` first at B3, outside the exclusion), so
+  `/qr#token` never renders the staff POS.
 
 ## 3. Staff flows
 
@@ -544,9 +546,13 @@ when B1 merged fiscal 027 (`70860d6`), so it still ships on `track/public`.
   "Cuenta nueva"; it still maps `fiscal_ticket_issued` the same way.
 - **The diner status page** of a new check shows "Folio …" once the check is
   paid, read with fiscal's `fiscalTicketIdentity` (`server/fiscal-read.ts`,
-  one statement); an appended round shows neither money nor a folio. The
-  self-invoice link (`/f/{CODE}`) waits for cfdi: the S3 shim offers none
-  until B2.
+  one statement); an appended round shows neither money nor a folio. With a
+  ticket, it also shows the self-invoice link (`/f/{CODE}`, the ticket's
+  12-character code) when cfdi's `selfInvoiceOffered` (`server/cfdi/store.ts`,
+  one statement) says the restaurant offers self-invoicing: CFDI available,
+  enabled and ready, self-invoicing on, and a certificate the portal accepts.
+  Otherwise the code is `null` and no link renders. `holdStatus` costs 3
+  statements before the ticket and 4 with it (budget 5, OQ-10).
 - **The diner menu** carries no fiscal fields: fiscal's `publicCatalog`
   strips each product's tax category and SAT keys (C29).
 - **`PUBLIC_ORDERING_ENABLED`** belongs to account (031).
@@ -682,8 +688,8 @@ when B1 merged fiscal 027 (`70860d6`), so it still ships on `track/public`.
 | Step | When | Work |
 |---|---|---|
 | **B1** (done) | fiscal 027 merged (`integration/v1` `70860d6` merged into `track/public`, track DBs reset as `gm_migrator`) | 1. `server/compat/public-fiscal.ts` deleted; `server/public-diner.ts` imports fiscal's `fiscalTicketIdentity` from `./fiscal-read.js` (exact S2 signature).<br>2. §6 refreshed against fiscal's reordered `createOrder` (feed before the closing refresh; the ticket last, inside `recordPayment`; no LO-12 for $0).<br>3. Fiscal legs un-gated (DB 9, 15, 16, 18, 33); DB 22 shows `fiscal.folio` after payment; DB 24 runs fiscal DB 28's harness; DB 26 measures `holdStatus` at 3; DB 40 covers the paid-target race with tickets on (D1) and off.<br>4. `publicCatalog` strips `fiscal` (C29) and totals do not depend on the fiscal context (X26): DB 45 on a border restaurant with a full identity, whose pay-first ticket gross equals the hold's quoted and charged totals.<br>5. Browser: the pay-first kiosk receipt prints "Folio" and its ticket's gross is the hold's total; the table diner sees "Pagado · Folio …" after payment.<br>6. `tests/lock-order.test.ts`: the scanner still reports exactly the three LD-24 `acceptHold` pairs; their reasons now name fiscal's sequence (separate commit).<br>7. The round-total guard (MONEY-1) reads the inserted round's own `order_lines` before `recordPayment`, so issuance inside the accept does not touch it. |
-| **B-028/029** (optional) | discounts / reports merged | Keep one copy of the `online` hunks (LD-P5). `AUDIT_GROUPS` gains the `public.` prefixes (LD-P4; else one sanctioned `shared/reports.ts` edit at B3). Re-run DB 24 with discounts' drawer close. Run `reports.spec` after `public-ordering.spec`. |
-| **B2** | cfdi 030 merged; merge and reset | 1. Delete `server/compat/public-cfdi.ts` and import `selfInvoiceOffered` from `./cfdi/store.js`.<br>2. One render chain in `src/main.tsx` (`/legal` → `/(f\|factura)` → `/(qr\|kiosk)`), with the shared `publicPage` line kept byte for byte.<br>3. DB 22 invoice leg; DB 26 `holdStatus` ≤ 5. |
+| **B-028/029** (absorbed with B2) | discounts / reports merged | Absorbed by B2's merge of `integration/v1` (`407154e`). One copy of the `online` hunks, with discounts' merged text (LD-P5). Reports' `AUDIT_GROUPS` already carries the `public.` prefixes (LD-P4), so `shared/reports.ts` needs no public edit. DB 24 closes its drawers with discounts' `closeCash` (`server/cash.ts`). Unions in merge order: `src/labels.ts` (`// public (032)` after cfdi's block), `scripts/grants.sql` (`-- 032` after `-- 030 cfdi`), `test:db:qualification` (`… cfdi → public`), and the settings order `RestaurantSettings → Fiscal → Cfdi → MoneyControls → PublicOrderingSettings → FreeSelection` (LD-P7). |
+| **B2** (done) | cfdi 030 merged (`integration/v1` `407154e` merged into `track/public`, track DBs reset as `gm_migrator`) | 1. `server/compat/public-cfdi.ts` deleted; `server/public-diner.ts` imports cfdi's `selfInvoiceOffered` from `./cfdi/store.js` (exact S3 signature, one statement).<br>2. One render chain in `src/main.tsx`: `/(f\|factura)` → `/(qr\|kiosk)(\/\|$)` → landing → `PlatformGate` (`/legal` arrives with account at B3), with the shared `publicPage` line byte-identical to cfdi's.<br>3. DB 22 (030): a paid table QR check and a kiosk order paid at acceptance of a cfdi-ready restaurant show their ticket's code; with self-invoicing off the code is `null` and the folio stays. DB 26: `holdStatus` 3 statements before the ticket, 4 with it (≤ 5).<br>4. `tests/lock-order.test.ts`: discounts, reports and cfdi left `createOrder`, `addRound` and `recordPayment`'s lock sequence unchanged, and the scanner still reports exactly the three LD-24 `acceptHold` pairs, so their entries and reasons stay as B1 wrote them. |
 | **B3** | account 031 merged (mandatory); merge and reset | 1. Delete `server/compat/public-account.ts` and import `publicOrderingEnabled`, `publicOrderingGate` and `restaurantPrivacyUrl` from `./account-settings.js`. Remove the `public_ordering_disabled` row from `ownedElsewhere`.<br>2. Delete `src/compat/public-account.ts` and use `strings[locale].accountGuest*`.<br>3. Resolve account's hunks in favour of public's versions (`server/public-ordering.ts`, `server/index.ts` `/ordering-links`, `PublicOrdering.tsx`, `ManagementTools.tsx`).<br>4. Settings golden order: `… AccountPrivacy → PublicOrderingSettings → FreeSelection …`.<br>5. Rewrite account's QR tests (HTTP checks 2-3, `account.spec` QR legs) and export test 31.<br>6. Re-grep the DB-9 writers, including raw test fixtures. Keep the `-- 032` grants block last.<br>7. Shared docs in one commit: ARCHITECTURE (LO-2b text and §6 rows), OPERATIONS, RUNBOOK (§11 and §7 validation), MENU (`:88-136`), SERVICE, the ACCESS step-up list, RELEASE, ACCOUNT_AND_LEGAL, DELIVERY_STATUS and the ledgers.<br>8. LD-5 round 2 and full qualification. |
 | **B4** | after B3, a separate revertible commit | Account's flag: unset means on everywhere. Update `tests/public-ordering-flag.test.ts`, the `.railway/railway.ts` and `.env.example` comments, and the RELEASE and ACCOUNT_AND_LEGAL lines. Then a staging browser run, and production per RELEASE. |
 
