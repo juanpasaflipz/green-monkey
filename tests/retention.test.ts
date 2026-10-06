@@ -1,14 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import type postgres from "postgres";
 import type { Alert } from "../server/ops/alerts.js";
 import {
-  createRetentionSchedule,
   inRetentionWindow,
+  RETENTION_BATCH,
   RETENTION_LOCK_TIMEOUT_MS,
   RETENTION_STATEMENT_TIMEOUT_MS,
   RETENTION_WINDOW,
   retentionPass,
+  retentionPasses,
   runRetention,
+  type RetentionResult,
 } from "../server/ops/retention.js";
 import { setLogSink } from "../server/logging.js";
 
@@ -61,34 +64,6 @@ describe("retention pass (OPS-R6)", () => {
       failed: [],
     });
     expect(alerts).toEqual([]);
-  });
-
-  it("the schedule runs first after firstRunMs, then on its interval, never overlapping", async () => {
-    let runs = 0;
-    let release!: () => void;
-    const schedule = createRetentionSchedule({
-      url: "postgresql://nobody:x@127.0.0.1:1/none",
-      alert: async () => {},
-      firstRunMs: 5,
-      intervalMs: 10,
-      // 05:00 in Mexico City: inside the off-hours window (OPS-R10).
-      now: () => Date.parse("2026-10-05T11:00:00Z"),
-      run: async () => {
-        runs++;
-        await new Promise<void>((r) => (release = r));
-        return null;
-      },
-    });
-    schedule.start();
-    await new Promise((r) => setTimeout(r, 60));
-    expect(runs).toBe(1); // the first run is still active; ticks were skipped
-    expect(schedule.lastRunAt()).toBeNull();
-    release();
-    await new Promise((r) => setTimeout(r, 30));
-    expect(runs).toBeGreaterThanOrEqual(2);
-    expect(schedule.lastRunAt()).not.toBeNull();
-    release();
-    await schedule.stop();
   });
 
   it("a statement timeout fails the table and alerts; it is not a routine skip (OPS-R10)", async () => {
@@ -162,32 +137,171 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
     expect(at("2026-01-15T10:30:00Z")).toBe(true); // winter, 04:30
   });
 
-  it("a tick outside the window never touches the database; inside it runs one pass", async () => {
-    let clock = Date.parse("2026-10-05T19:00:00Z"); // 13:00, service hours
-    let runs = 0;
-    const schedule = createRetentionSchedule({
-      url: "postgresql://nobody:x@127.0.0.1:1/none",
-      alert: async () => {},
-      now: () => clock,
-      run: async () => {
-        runs++;
-        return { deleted: {}, skipped: [], failed: [] };
-      },
+  it("server/worker.ts never mentions MIGRATION_DATABASE_URL, retentionPass or createRetentionSchedule (Wave 2.0 (l))", () => {
+    const source = readFileSync("server/worker.ts", "utf8");
+    for (const name of [
+      "MIGRATION_DATABASE_URL",
+      "retentionPass",
+      "createRetentionSchedule",
+    ])
+      expect(source, name).not.toContain(name);
+    expect(readFileSync("server/ops/retention.ts", "utf8")).not.toMatch(
+      /createRetentionSchedule|RetentionSchedule|RETENTION_INTERVAL_MS/,
+    );
+  });
+});
+
+describe("retentionPasses (P-24)", () => {
+  // 05:15 and 06:59 in Mexico City (UTC-6), inside the window; 07:00 is not.
+  const inside = Date.parse("2026-10-05T11:15:00Z");
+  const lastMinute = Date.parse("2026-10-05T12:59:00Z");
+  const after = Date.parse("2026-10-05T13:00:00Z");
+  const noAlert = async () => {};
+  const sql = {} as postgres.Sql;
+  /** An injected pass that returns the scripted results in order and counts calls. */
+  function scripted(results: (RetentionResult | null)[]) {
+    const calls = { n: 0 };
+    const pass = (async () => {
+      const r = results[Math.min(calls.n, results.length - 1)];
+      calls.n++;
+      return r;
+    }) as unknown as typeof retentionPass;
+    return { pass, calls };
+  }
+  const full = (jobs = RETENTION_BATCH, oauth = 0): RetentionResult => ({
+    deleted: { oauth_login_attempts: oauth, jobs },
+    skipped: [],
+    failed: [],
+  });
+
+  it("repeats while a pass deleted a full RETENTION_BATCH from some table and sums deletions", async () => {
+    expect(RETENTION_BATCH).toBe(5000);
+    const { pass, calls } = scripted([
+      full(20 * RETENTION_BATCH, 3),
+      full(RETENTION_BATCH, 0),
+      full(1200, 0),
+    ]);
+    const result = await retentionPasses(sql, noAlert, {
+      pass,
+      now: () => inside,
     });
-    expect(await schedule.tick()).toBeNull();
-    expect(runs).toBe(0);
-    expect(schedule.lastRunAt()).toBeNull();
-    clock = Date.parse("2026-10-05T11:15:00Z"); // 05:15
-    expect(await schedule.tick()).toEqual({
-      deleted: {},
+    expect(calls.n).toBe(3);
+    expect(result).toEqual({
+      deleted: {
+        oauth_login_attempts: 3,
+        jobs: 21 * RETENTION_BATCH + 1200,
+      },
       skipped: [],
       failed: [],
     });
-    expect(runs).toBe(1);
-    // runNow (tests, operators) is not gated by the window.
-    clock = Date.parse("2026-10-05T19:00:00Z");
-    await schedule.runNow();
-    expect(runs).toBe(2);
-    await schedule.stop();
+  });
+
+  it("stops after a short pass", async () => {
+    const { pass, calls } = scripted([full(RETENTION_BATCH - 1, 10)]);
+    await retentionPasses(sql, noAlert, { pass, now: () => inside });
+    expect(calls.n).toBe(1);
+  });
+
+  it("stops at maxPasses (default 10)", async () => {
+    const { pass, calls } = scripted([full()]);
+    const result = await retentionPasses(sql, noAlert, {
+      pass,
+      now: () => inside,
+    });
+    expect(calls.n).toBe(10);
+    expect(result?.deleted.jobs).toBe(10 * RETENTION_BATCH);
+    const three = scripted([full()]);
+    await retentionPasses(sql, noAlert, {
+      pass: three.pass,
+      now: () => inside,
+      maxPasses: 3,
+    });
+    expect(three.calls.n).toBe(3);
+  });
+
+  it("stops when the clock leaves RETENTION_WINDOW; an operator call outside the window runs exactly one pass", async () => {
+    let clock = lastMinute;
+    const { pass, calls } = scripted([full()]);
+    const timed = (async (...args: Parameters<typeof retentionPass>) => {
+      const r = await pass(...args);
+      clock = after; // this pass ran past 07:00
+      return r;
+    }) as typeof retentionPass;
+    await retentionPasses(sql, noAlert, { pass: timed, now: () => clock });
+    expect(calls.n).toBe(1);
+    const operator = scripted([full()]);
+    await retentionPasses(sql, noAlert, {
+      pass: operator.pass,
+      now: () => Date.parse("2026-10-05T19:00:00Z"), // 13:00, service hours
+    });
+    expect(operator.calls.n).toBe(1);
+  });
+
+  it("stops at the first skip, failed table or null run, returning that pass's lists", async () => {
+    const skipped = scripted([
+      full(),
+      {
+        deleted: { oauth_login_attempts: 0, jobs: 0 },
+        skipped: ["jobs"],
+        failed: [],
+      },
+      full(),
+    ]);
+    expect(
+      await retentionPasses(sql, noAlert, {
+        pass: skipped.pass,
+        now: () => inside,
+      }),
+    ).toEqual({
+      deleted: { oauth_login_attempts: 0, jobs: RETENTION_BATCH },
+      skipped: ["jobs"],
+      failed: [],
+    });
+    expect(skipped.calls.n).toBe(2);
+    const failed = scripted([
+      {
+        deleted: { oauth_login_attempts: 0, jobs: RETENTION_BATCH },
+        skipped: [],
+        failed: ["oauth_login_attempts"],
+      },
+      full(),
+    ]);
+    expect(
+      (
+        await retentionPasses(sql, noAlert, {
+          pass: failed.pass,
+          now: () => inside,
+        })
+      )?.failed,
+    ).toEqual(["oauth_login_attempts"]);
+    expect(failed.calls.n).toBe(1);
+    const broken = scripted([full(), null, full()]);
+    expect(
+      await retentionPasses(sql, noAlert, {
+        pass: broken.pass,
+        now: () => inside,
+      }),
+    ).toBeNull();
+    expect(broken.calls.n).toBe(2);
+  });
+
+  it("uses retentionPass by default and passes the pool and alert through", async () => {
+    const alerts: Alert[] = [];
+    const result = await retentionPasses(
+      failing("XX000"),
+      async (a) => {
+        alerts.push(a);
+      },
+      { now: () => inside },
+    );
+    expect(result?.failed).toEqual(["oauth_login_attempts", "jobs"]);
+    expect(alerts.map((a) => a.key)).toEqual(["retention_failed"]);
+    expect(
+      await retentionPasses(empty, noAlert, { now: () => inside }),
+    ).toEqual({
+      deleted: { oauth_login_attempts: 0, jobs: 0 },
+      skipped: [],
+      failed: [],
+    });
   });
 });

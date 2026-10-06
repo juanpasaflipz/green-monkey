@@ -2,6 +2,9 @@ name: Deploy
 # Staging deploys automatically after Qualification passes on main.
 # Production deploys only by manual dispatch of a SHA that is already live on
 # staging, with a typed confirmation and a service-hours guard (OPS-1/OPS-13).
+# Migrations, runtime grants and a retention pass run in the job, as
+# gm_migrator, before any Railway change; no Railway service holds that
+# credential.
 on:
   workflow_run:
     workflows: [Qualification]
@@ -61,6 +64,11 @@ jobs:
           railway-cli-version: ${{ vars.RAILWAY_CLI_VERSION }}
           railway-iac-version: ${{ vars.RAILWAY_IAC_VERSION }}
           app-url: ${{ vars.APP_URL }}
+          migration-database-url: ${{ secrets.MIGRATION_DATABASE_URL }}
+          pg-app-user: ${{ vars.PG_APP_USER }}
+          app-env: staging
+          alert-webhook-url: ${{ secrets.ALERT_WEBHOOK_URL }}
+          alert-webhook-kind: ${{ vars.ALERT_WEBHOOK_KIND || 'ntfy' }}
       - name: Record staging proof for production
         env:
           GH_TOKEN: ${{ github.token }}
@@ -130,6 +138,11 @@ jobs:
           railway-cli-version: ${{ vars.RAILWAY_CLI_VERSION }}
           railway-iac-version: ${{ vars.RAILWAY_IAC_VERSION }}
           app-url: ${{ vars.APP_URL }}
+          migration-database-url: ${{ secrets.MIGRATION_DATABASE_URL }}
+          pg-app-user: ${{ vars.PG_APP_USER }}
+          app-env: production
+          alert-webhook-url: ${{ secrets.ALERT_WEBHOOK_URL }}
+          alert-webhook-kind: ${{ vars.ALERT_WEBHOOK_KIND || 'ntfy' }}
       - name: Tag the release
         env:
           GH_TOKEN: ${{ github.token }}

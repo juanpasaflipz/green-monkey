@@ -16,10 +16,9 @@ import {
   readMigrations,
 } from "../server/ops/schema.js";
 import type { Tx } from "../server/db.js";
-import { main } from "../scripts/migrate.js";
+import { main, RETENTION_SKIPPED_EXIT } from "../scripts/migrate.js";
 import { requireReadySchema } from "../server/readiness.js";
 import {
-  createRetentionSchedule,
   RETENTION_LOCK_TIMEOUT_MS,
   RETENTION_STATEMENT_TIMEOUT_MS,
   retentionPass,
@@ -362,7 +361,7 @@ try {
   const app = pool(appUrl.href);
 
   await check(
-    "preDeploy (migrate, then grants, then retention) leaves the runtime role ready and refuses privileged roles (DB-6)",
+    "the deploy job's migrate --grants --retention (migrate, then grants, then retention) leaves the runtime role ready and refuses privileged roles (DB-6)",
     async () => {
       assert.equal(await main(["--grants", "--retention"], env()), 0);
       await requireReadySchema(app);
@@ -534,45 +533,55 @@ try {
   );
 
   await check(
-    "the worker's retention schedule runs as the owner, never overlaps, and alerts retention_failed when it cannot run (OPS-R6)",
+    "--retention-only exits 75 when a concurrent transaction holds a lock on jobs past the retention lock timeout (P-9)",
     async () => {
-      const alerts: Alert[] = [];
-      const alert = async (a: Alert) => void alerts.push(a);
-      const schedule = createRetentionSchedule({ url: migratorUrl, alert });
+      assert.equal(RETENTION_SKIPPED_EXIT, 75);
+      // pg_dump (the nightly backup) holds ACCESS SHARE on jobs for its whole
+      // run; retention's ALTER needs ACCESS EXCLUSIVE and waits only
+      // RETENTION_LOCK_TIMEOUT_MS, so the table is skipped, not failed.
+      const holder = pool(urlFor(real), 1);
+      let release!: () => void;
+      const released = new Promise<void>((r) => (release = r));
+      let locked!: () => void;
+      const isLocked = new Promise<void>((r) => (locked = r));
+      const held = holder.begin(async (tx) => {
+        await tx`lock table jobs in access share mode`;
+        locked();
+        await released;
+      });
+      await isLocked;
+      lines.length = 0;
+      let code: number;
       try {
-        const [first, overlapping] = await Promise.all([
-          schedule.runNow(),
-          schedule.runNow(),
-        ]);
-        assert.deepEqual(first?.failed, []);
-        assert.equal(
-          overlapping,
-          null,
-          "a second run while one is active is skipped",
-        );
-        assert.ok(schedule.lastRunAt());
-        assert.deepEqual(alerts, []);
+        code = await main(["--retention-only"], {
+          MIGRATION_DATABASE_URL: migratorUrl,
+          APP_ENV: "staging",
+        });
       } finally {
-        await schedule.stop();
+        release();
+        await held;
       }
-      const wrong = new URL(migratorUrl);
-      wrong.password = "not-the-password";
-      const broken = createRetentionSchedule({ url: wrong.href, alert });
-      try {
-        assert.equal((await broken.runNow())?.failed.length, 2);
-        assert.deepEqual(
-          alerts.map((a) => [a.key, a.severity, a.body]),
-          [
-            [
-              "retention_failed",
-              "warning",
-              "retention_failed tables=oauth_login_attempts,jobs",
-            ],
-          ],
-        );
-      } finally {
-        await broken.stop();
-      }
+      assert.equal(code, RETENTION_SKIPPED_EXIT);
+      assert.ok(
+        lines.some(
+          (l) =>
+            l.includes('"retention_only_complete"') &&
+            l.includes('"skipped":["jobs"]'),
+        ),
+        "the run logs the skipped table",
+      );
+      assert.ok(
+        !lines.some((l) => l.includes('"retention_failed"')),
+        "a skip is routine: no retention_failed alert",
+      );
+      // With the lock released the next attempt (the workflow's retry) passes.
+      assert.equal(
+        await main(["--retention-only"], {
+          MIGRATION_DATABASE_URL: migratorUrl,
+          APP_ENV: "staging",
+        }),
+        0,
+      );
     },
   );
 

@@ -1,0 +1,79 @@
+name: Retention
+run-name: Retention ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
+# Deletes only expired OAuth login attempts and done/dead jobs older than 30 days
+# (server/ops/retention.ts), as the schema owner gm_migrator from the GitHub environment
+# secret MIGRATION_DATABASE_URL, never from a Railway service (DB-1). Daily inside
+# RETENTION_WINDOW (04:00-07:00 America/Mexico_City, UTC-6 all year) and after the 03:30
+# backup, whose pg_dump locks would make the pass skip: production 05:15 (11:15 UTC),
+# staging 05:45 (11:45 UTC), off the top of the hour. One run repeats bounded passes while
+# a backlog remains (at most 10, never starting one after 07:00). Every deploy also runs one
+# pass. A lock-timeout skip (exit 75) retries twice, 5 minutes apart; a failure has already
+# alerted retention_failed and this run opens or updates the ops-alert issue.
+on:
+  schedule:
+    - cron: "15 11 * * *"
+    - cron: "45 11 * * *"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment
+        type: choice
+        options: [production, staging]
+        default: staging
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: retention-${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
+  cancel-in-progress: false
+jobs:
+  retention:
+    # Schedules stay off until provisioning lists the environment in the repository
+    # variable OPS_LIVE_ENVIRONMENTS; a manual dispatch always runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.schedule == '15 11 * * *' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'production')) ||
+      (github.event.schedule == '45 11 * * *' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'staging'))
+    runs-on: ubuntu-latest
+    # Three attempts of at most 10 passes of at most ~65 s each, plus two 5-minute waits.
+    timeout-minutes: 50
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
+    env:
+      RETENTION_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Retention pass
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          APP_ENV: ${{ env.RETENTION_ENV }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          ALERT_WEBHOOK_KIND: ${{ vars.ALERT_WEBHOOK_KIND || 'ntfy' }}
+        run: |
+          [ -n "$MIGRATION_DATABASE_URL" ] || { echo "::error::environment secret MIGRATION_DATABASE_URL is not set"; exit 1; }
+          for attempt in 1 2 3; do
+            code=0
+            # tsx directly (not npm run) so the exit code (0, 1 or 75) reaches the shell unchanged.
+            npx --no-install tsx scripts/migrate.ts --retention-only || code=$?
+            [ "$code" -eq 75 ] || exit "$code"
+            if [ "$attempt" -lt 3 ]; then echo "retention skipped (lock timeout); retrying in 5 minutes"; sleep 300; fi
+          done
+          echo "::error::retention skipped three times (lock timeout)"
+          exit 75
+      - name: Open or update the ops-alert issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          message="retention_failed env=$RETENTION_ENV run=$RUN_URL"
+          title="ops-alert: $RETENTION_ENV"
+          gh label create ops-alert -R "$GITHUB_REPOSITORY" --color B60205 \
+            --description "Automated operations alert" --force >/dev/null 2>&1 || true
+          number=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --label ops-alert --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$number" ]; then gh issue comment -R "$GITHUB_REPOSITORY" "$number" --body "$message"
+          else gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --label ops-alert --body "$message"; fi

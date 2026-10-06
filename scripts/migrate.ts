@@ -1,19 +1,25 @@
-// Migration runner (DB-6). Compiled to build/scripts/migrate.js and run by the
-// worker service's Railway preDeploy as the non-superuser gm_migrator role.
+// Migration runner (DB-6). Compiled to build/scripts/migrate.js and run as the
+// non-superuser gm_migrator on the direct endpoint by the GitHub Actions deploy
+// job (`--grants --retention`, before any service deploys) and by the daily
+// retention workflow (`--retention-only`). No Railway service holds this
+// credential (both runtime processes refuse it).
 //
 //   node build/scripts/migrate.js [--grants] [--retention] [--grants-only] [--retention-only] [--check] [--dry-run]
 //     default       apply pending migrations, then reconcile backup policies
-//     --grants      also apply the runtime grants manifest (the Railway
-//                   preDeploy always passes this: migrate, then grants). When
+//     --grants      also apply the runtime grants manifest (the deploy job
+//                   always passes this: migrate, then grants). When
 //                   migrations are pending the grants commit in the newest
 //                   migration's transaction, before its registry row.
 //     --retention   then run the retention pass (oauth attempts, done/dead
 //                   jobs); a failure alerts retention_failed, never fails
 //     --grants-only only apply grants and reconcile policies
 //     --retention-only
-//                   only run the retention pass: no migrations, grants or
-//                   reconcile; exits 1 when a table fails (it has alerted).
-//                   `npm run ops:retention` runs this mode.
+//                   only run retention (up to 10 passes inside
+//                   RETENTION_WINDOW while a backlog remains): no migrations,
+//                   grants or reconcile; exits 1 when a table fails (it has
+//                   alerted), 75 when a table was skipped on a lock timeout.
+//                   `npm run ops:retention` and .github/workflows/retention.yml
+//                   run this mode.
 //     --check       exit 3 if migrations are pending; performs no writes
 //     --dry-run     print pending migration names; performs no writes
 import "dotenv/config";
@@ -23,7 +29,7 @@ import { pathToFileURL } from "node:url";
 import { databaseTls, withoutParams } from "../server/db-support.js";
 import { log } from "../server/logging.js";
 import type { AppEnv } from "../server/config-rules.js";
-import { retentionPass } from "../server/ops/retention.js";
+import { retentionPass, retentionPasses } from "../server/ops/retention.js";
 import {
   alertTargetFromEnv,
   configureAlerts,
@@ -50,6 +56,9 @@ const FLAGS = [
   "--dry-run",
 ] as const;
 type Flag = (typeof FLAGS)[number];
+
+/** --retention-only exit code when a table was skipped on a lock timeout (EX_TEMPFAIL); the workflow retries it. */
+export const RETENTION_SKIPPED_EXIT = 75;
 
 export class UsageError extends Error {
   constructor(public code: string) {
@@ -108,7 +117,10 @@ export function parseFlags(args: string[]): Set<Flag> {
   return flags;
 }
 
-/** Returns the exit code: 0 ok, 1 failure, 2 usage, 3 not ready (--check). */
+/**
+ * Returns the exit code: 0 ok, 1 failure, 2 usage, 3 not ready (--check),
+ * 75 retention skipped (--retention-only).
+ */
 export async function main(
   args: string[],
   env: NodeJS.ProcessEnv = process.env,
@@ -156,17 +168,20 @@ export async function main(
     }
     await assertMigrationRole(sql, appEnv);
     if (flags.has("--retention-only")) {
-      // An operator purge (npm run ops:retention): never migrates, grants or
-      // reconciles the target. Unlike the deploy's --retention, a failed
-      // table fails the run; retentionPass has already alerted.
+      // The daily retention workflow and an operator purge (npm run
+      // ops:retention): never migrates, grants or reconciles the target.
+      // Unlike the deploy's --retention, a failed table fails the run
+      // (retentionPass has already alerted), and a lock-timeout skip exits 75
+      // so the workflow retries it (P-9).
       configureAlerts(alertTargetFromEnv(env), appEnv);
-      const result = await retentionPass(sql, sendAlert);
+      const result = await retentionPasses(sql, sendAlert);
       log.info("retention_only_complete", {
         ok: Boolean(result && !result.failed.length),
         deleted: result?.deleted ?? {},
         skipped: result?.skipped ?? [],
       });
-      return result && !result.failed.length ? 0 : 1;
+      if (!result || result.failed.length) return 1; // retentionPass has already alerted retention_failed
+      return result.skipped.length ? RETENTION_SKIPPED_EXIT : 0;
     }
     const database = decodeURIComponent(target.pathname.slice(1));
     let granted: string | null = null;
@@ -199,8 +214,8 @@ export async function main(
     await reconcilePolicies(sql);
     if (flags.has("--retention")) {
       // Retention never fails a deploy; a failure alerts (retention_failed)
-      // and the worker's off-hours schedule (04:00-07:00 Mexico City, every
-      // 15 minutes) retries it. Each batch is bounded by the retention lock
+      // and the daily retention workflow (.github/workflows/retention.yml)
+      // retries it. Each batch is bounded by the retention lock
       // and statement timeouts, so a deploy during service stalls order and
       // payment inserts for at most about 1.7 s per batch (OPS-R10).
       configureAlerts(alertTargetFromEnv(env), appEnv);

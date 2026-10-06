@@ -5,15 +5,22 @@
  *   npm run access:pairing-code -- --tenant <uuid> --name "Caja 1" \
  *     --confirm-target <host:port/db>
  *
+ * Local and CI only. The deployed migrator credential lives only in GitHub
+ * Actions (docs/RUNBOOK.md), so the CLI refuses any target that is not a
+ * loopback database (access A4); deployed support uses Configuración →
+ * Dispositivos or account recovery.
+ *
  * Uses MIGRATION_DATABASE_URL (privileged) and JWT_SECRET, which must be the
- * secret of the server that will redeem the code. The code is stored only as
- * an HMAC, expires in 10 minutes, and is attributed to the restaurant owner.
+ * secret of the server that will redeem the code (it keys the pairing
+ * digest). The code is stored only as an HMAC, expires in 10 minutes, and is
+ * attributed to the restaurant owner.
  */
 import "dotenv/config";
 import { randomUUID } from "node:crypto";
 import { parseArgs } from "node:util";
 import postgres from "postgres";
 import type { Tx } from "../server/db.js";
+import { isLoopbackHost } from "../server/config-rules.js";
 import { z } from "zod";
 import { generatePairingCode, pairingHash } from "../server/access-pairing.js";
 import { ACCESS, formatPairingCode } from "../shared/access.js";
@@ -35,6 +42,10 @@ const parsed = new URL(url);
 const identity = `${parsed.hostname}:${parsed.port || "5432"}${parsed.pathname}`;
 if (values["confirm-target"] !== identity)
   throw Error(`--confirm-target must equal ${identity}`);
+if (!isLoopbackHost(parsed.hostname))
+  throw Error(
+    "pairing CLI is limited to local and CI databases; deployed support uses Configuración → Dispositivos or account recovery",
+  );
 
 const sql = postgres(url, { max: 1 });
 try {
@@ -45,13 +56,15 @@ try {
       await tx`select id from employees where tenant_id=${tenantId} and role='owner' and active order by id limit 1`;
     if (!owner) throw Error("No active owner for that restaurant");
     await tx`select pg_advisory_xact_lock(hashtextextended(${tenantId},923))`;
-    const [open] = await tx`select count(*)::int as count from device_pairing_codes
+    const [open] =
+      await tx`select count(*)::int as count from device_pairing_codes
       where tenant_id=${tenantId} and consumed_at is null and cancelled_at is null and expires_at>now()`;
     if (open.count >= ACCESS.maxOpenPairingCodes)
       throw Error("Too many open pairing codes; cancel one or wait 10 minutes");
     const id = randomUUID(),
       code = generatePairingCode();
-    const [row] = await tx`insert into device_pairing_codes(tenant_id,id,code_hash,device_name,created_by,expires_at)
+    const [row] =
+      await tx`insert into device_pairing_codes(tenant_id,id,code_hash,device_name,created_by,expires_at)
       values(${tenantId},${id},${pairingHash(code)},${deviceName},${owner.id},
         now()+make_interval(mins=>${ACCESS.pairingCodeMinutes}))
       returning expires_at`;

@@ -1,9 +1,9 @@
 name: Deploy to Railway
 description: >-
-  Applies the Railway IaC (non-destructive changes only, and only when asked),
-  stamps the build, uploads the worker (its preDeploy runs migrate, then
-  grants, then retention) and the web service, and runs the HTTP smoke against
-  the expected commit.
+  Migrates, applies the runtime grants and runs retention as gm_migrator from GitHub
+  Actions (the schema-owner credential never reaches Railway), then applies the Railway
+  IaC (non-destructive changes only, and only when asked), stamps the build, uploads the
+  worker and then the web service, and runs the HTTP smoke against the expected commit.
 inputs:
   sha:
     description: Full commit SHA being deployed (already checked out).
@@ -28,6 +28,23 @@ inputs:
   app-url:
     description: Public origin of the environment.
     required: true
+  migration-database-url:
+    description: gm_migrator URL on the direct endpoint (GitHub environment secret MIGRATION_DATABASE_URL).
+    required: true
+  pg-app-user:
+    description: Runtime login the grants manifest targets (GitHub environment variable PG_APP_USER).
+    required: true
+  app-env:
+    description: staging or production (assertMigrationRole refuses a privileged migration login there).
+    required: true
+  alert-webhook-url:
+    description: Webhook for retention_failed (environment secret ALERT_WEBHOOK_URL); empty disables alerts.
+    required: false
+    default: ""
+  alert-webhook-kind:
+    description: ntfy, slack, discord or generic.
+    required: false
+    default: ntfy
 runs:
   using: composite
   steps:
@@ -38,6 +55,22 @@ runs:
     - name: Install and build
       shell: bash
       run: npm ci && npm run build
+    # Before any Railway change: a failure here leaves the old revision serving
+    # on the old schema. Migrations are expand-only, so the running revision
+    # keeps working on the expanded schema while the new one uploads.
+    - name: Migrate, apply runtime grants and run retention (gm_migrator, direct endpoint)
+      shell: bash
+      env:
+        MIGRATION_DATABASE_URL: ${{ inputs.migration-database-url }}
+        PG_APP_USER: ${{ inputs.pg-app-user }}
+        APP_ENV: ${{ inputs.app-env }}
+        ALERT_WEBHOOK_URL: ${{ inputs.alert-webhook-url }}
+        ALERT_WEBHOOK_KIND: ${{ inputs.alert-webhook-kind }}
+      run: |
+        [ -n "$MIGRATION_DATABASE_URL" ] || { echo "::error::environment secret MIGRATION_DATABASE_URL is not set"; exit 1; }
+        [[ "$PG_APP_USER" =~ ^[a-z_][a-z0-9_]{0,62}$ ]] || { echo "::error::environment variable PG_APP_USER is not set"; exit 1; }
+        [[ "$APP_ENV" =~ ^(staging|production)$ ]] || { echo "::error::app-env must be staging or production"; exit 1; }
+        node build/scripts/migrate.js --grants --retention
     - name: Install the IaC authoring package (not a project dependency)
       if: inputs.sync-config == 'true'
       shell: bash
@@ -67,7 +100,7 @@ runs:
       env:
         SHA: ${{ inputs.sha }}
       run: node scripts/ops/stamp-build.mjs "$SHA"
-    - name: Deploy worker (preDeploy migrates) then web
+    - name: Deploy worker then web
       shell: bash
       env:
         RAILWAY_TOKEN: ${{ inputs.railway-token }}

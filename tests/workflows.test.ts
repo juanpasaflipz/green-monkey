@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { inRetentionWindow } from "../server/ops/retention.js";
 
 /**
  * CI/CD workflow rules that the local suites cannot exercise end to end.
@@ -20,6 +21,7 @@ const deploy = read(".github/workflows/deploy.yml");
 const action = read(".github/actions/deploy/action.yml");
 const backup = read(".github/workflows/backup.yml");
 const uptime = read(".github/workflows/uptime.yml");
+const retention = read(".github/workflows/retention.yml");
 const hasJq = (() => {
   try {
     execFileSync("jq", ["--version"], { stdio: "ignore" });
@@ -137,6 +139,275 @@ describe("deploy: a rollback never re-applies an older Railway IaC (OPS-R4 regre
   });
 });
 
+describe("migrations, grants and retention run in GitHub Actions as gm_migrator (Wave 2.0 (l), DB-1)", () => {
+  it("the deploy action's migrate step comes before every step that runs a railway command", () => {
+    const all = steps(action);
+    const migrate = all.findIndex((s) =>
+      s.includes("node build/scripts/migrate.js --grants --retention"),
+    );
+    expect(migrate).toBeGreaterThan(-1);
+    const build = all.findIndex((s) => s.includes("npm run build"));
+    expect(build).toBeGreaterThan(-1);
+    expect(build).toBeLessThan(migrate);
+    const railway = all
+      .map((s, i) => [s, i] as const)
+      .filter(([s]) => /railway(\/cli)?@|railway@|@railway\/cli/.test(s));
+    expect(railway.length).toBeGreaterThanOrEqual(3);
+    for (const [, i] of railway) expect(i).toBeGreaterThan(migrate);
+    // The migrate step is unconditional and fails before Railway without its inputs.
+    const step = all[migrate];
+    expect(step).not.toMatch(/\n\s*if:/);
+    expect(step).toContain(
+      'echo "::error::environment secret MIGRATION_DATABASE_URL is not set"; exit 1;',
+    );
+    expect(step).toContain(
+      "MIGRATION_DATABASE_URL: ${{ inputs.migration-database-url }}",
+    );
+    for (const input of [
+      "migration-database-url",
+      "pg-app-user",
+      "app-env",
+      "alert-webhook-url",
+      "alert-webhook-kind",
+    ])
+      expect(action).toMatch(new RegExp(`\\n  ${input}:\\n`));
+    // No step uploads before the migrate step, and nothing preDeploys.
+    expect(action).not.toMatch(/preDeploy/i);
+  });
+
+  it("the migrate step's guard refuses a missing secret, PG_APP_USER or app-env before running migrate.js", () => {
+    const step = steps(action).find((s) =>
+      s.includes("node build/scripts/migrate.js"),
+    )!;
+    const body = step
+      .split("run: |\n")[1]
+      .split("\n")
+      .map((l) => l.replace(/^ {8}/, ""))
+      .join("\n")
+      .replace(
+        "node build/scripts/migrate.js --grants --retention",
+        "echo MIGRATED",
+      );
+    const run = (env: Record<string, string>) => {
+      try {
+        return execFileSync("bash", ["-c", `set -euo pipefail\n${body}`], {
+          env: { PATH: process.env.PATH ?? "", ...env },
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (error) {
+        const e = error as { stdout: string; status: number };
+        return `exit ${e.status}: ${e.stdout}`;
+      }
+    };
+    const ok = {
+      MIGRATION_DATABASE_URL: "postgresql://m@h/d",
+      PG_APP_USER: "gm_staging_app",
+      APP_ENV: "staging",
+    };
+    expect(run(ok).trim()).toBe("MIGRATED");
+    expect(run({ ...ok, APP_ENV: "production" }).trim()).toBe("MIGRATED");
+    expect(run({ ...ok, MIGRATION_DATABASE_URL: "" })).toContain(
+      "environment secret MIGRATION_DATABASE_URL is not set",
+    );
+    expect(run({ ...ok, PG_APP_USER: "" })).toContain(
+      "environment variable PG_APP_USER is not set",
+    );
+    expect(run({ ...ok, PG_APP_USER: "x; drop" })).toContain("exit 1");
+    expect(run({ ...ok, APP_ENV: "development" })).toContain(
+      "app-env must be staging or production",
+    );
+  });
+
+  it("deploy.yml passes migration-database-url only from secrets.MIGRATION_DATABASE_URL, in both jobs, with app-env staging and production", () => {
+    const [, staging, production] = deploy.split(
+      /\n {2}(?=staging:|production:)/,
+    );
+    for (const [job, appEnv] of [
+      [staging, "staging"],
+      [production, "production"],
+    ] as const) {
+      const call = job.slice(job.indexOf("uses: ./.github/actions/deploy"));
+      expect(call).toContain(
+        "migration-database-url: ${{ secrets.MIGRATION_DATABASE_URL }}",
+      );
+      expect(call).toContain("pg-app-user: ${{ vars.PG_APP_USER }}");
+      expect(call).toContain(`app-env: ${appEnv}\n`);
+      expect(call).toContain(
+        "alert-webhook-url: ${{ secrets.ALERT_WEBHOOK_URL }}",
+      );
+      expect(call).toContain(
+        "alert-webhook-kind: ${{ vars.ALERT_WEBHOOK_KIND || 'ntfy' }}",
+      );
+    }
+    expect(deploy.match(/migration-database-url:/g)).toHaveLength(2);
+    expect(
+      deploy.match(
+        /migration-database-url: \$\{\{ secrets\.MIGRATION_DATABASE_URL \}\}/g,
+      ),
+    ).toHaveLength(2);
+    // Only the deploy and retention workflows read the schema-owner secret (R6).
+    for (const file of readdirSync(".github/workflows")) {
+      const text = read(`.github/workflows/${file}`);
+      if (file === "deploy.yml" || file === "retention.yml")
+        expect(text, file).toContain("secrets.MIGRATION_DATABASE_URL");
+      else expect(text, file).not.toContain("secrets.MIGRATION_DATABASE_URL");
+    }
+  });
+
+  it("retention.yml runs scripts/migrate.ts --retention-only with pinned actions and the environment secret, and its crons fall inside RETENTION_WINDOW and at least 90 minutes after backup.yml's production cron", () => {
+    const pass = steps(retention).find((s) => s.includes("--retention-only"))!;
+    expect(pass).toContain(
+      "npx --no-install tsx scripts/migrate.ts --retention-only",
+    );
+    expect(pass).toContain(
+      "MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}",
+    );
+    expect(pass).toContain("APP_ENV: ${{ env.RETENTION_ENV }}");
+    expect(retention).toMatch(/\n {4}environment: \$\{\{ /);
+    expect(retention).toContain("timeout-minutes: 50");
+    const envExpression =
+      "github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging')";
+    expect(retention).toContain(`run-name: Retention \${{ ${envExpression} }}`);
+    expect(retention).toContain(`environment: \${{ ${envExpression} }}`);
+    expect(retention).toContain(`RETENTION_ENV: \${{ ${envExpression} }}`);
+    // The pins are exactly backup.yml's (one release, one commit).
+    const pins = (text: string) =>
+      [...text.matchAll(/uses:\s*(\S+@[0-9a-f]{40} # v[\d.]+)/g)].map(
+        (m) => m[1],
+      );
+    expect(pins(retention)).toEqual(pins(backup));
+    const crons = (text: string) =>
+      [...text.matchAll(/cron: "([^"]+)"/g)].map((m) => m[1]);
+    const utcMinutes = (cron: string) => {
+      const [minute, hour] = cron.split(" ").map(Number);
+      return hour * 60 + minute;
+    };
+    expect(crons(retention)).toEqual(["15 11 * * *", "45 11 * * *"]);
+    const backupProduction = utcMinutes(crons(backup)[0]);
+    expect(crons(backup)[0]).toBe("30 9 * * *");
+    for (const cron of crons(retention)) {
+      const minutes = utcMinutes(cron);
+      expect(cron.split(" ").slice(2).join(" "), cron).toBe("* * *");
+      expect(minutes % 60, `${cron} is off the top of the hour`).not.toBe(0);
+      expect(minutes - backupProduction, cron).toBeGreaterThanOrEqual(90);
+      for (const day of ["2026-01-15", "2026-07-15", "2026-10-05"]) {
+        const at = Date.parse(
+          `${day}T${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}:00Z`,
+        );
+        expect(inRetentionWindow(at), `${cron} on ${day}`).toBe(true);
+        // A whole 10-pass run (about 11 minutes) still starts inside the window.
+        expect(inRetentionWindow(at + 11 * 60_000), `${cron} + 11 min`).toBe(
+          true,
+        );
+      }
+    }
+  });
+
+  it("retention.yml retries exit 75 at most twice, 5 minutes apart, and passes 0 and 1 through", () => {
+    const pass = steps(retention).find((s) => s.includes("--retention-only"))!;
+    const body = pass
+      .split("run: |\n")[1]
+      .split("\n")
+      .map((l) => l.replace(/^ {10}/, ""))
+      .join("\n");
+    const dir = mkdtempSync(join(tmpdir(), "gm-retention-yml-"));
+    try {
+      // Stubs: npx exits with the next scripted code; sleep records its argument.
+      writeFileSync(
+        join(dir, "npx"),
+        '#!/usr/bin/env bash\necho "npx $*" >> "$CALLS"\nn=$(wc -l < "$CALLS")\ncode=$(sed -n "${n}p" "$CODES")\nexit "${code:-0}"\n',
+        { mode: 0o755 },
+      );
+      writeFileSync(
+        join(dir, "sleep"),
+        '#!/usr/bin/env bash\necho "sleep $*" >> "$SLEEPS"\n',
+        { mode: 0o755 },
+      );
+      const run = (codes: number[]) => {
+        const calls = join(dir, `calls-${codes.join("-")}`);
+        const sleeps = join(dir, `sleeps-${codes.join("-")}`);
+        const codesFile = join(dir, `codes-${codes.join("-")}`);
+        writeFileSync(calls, "");
+        writeFileSync(sleeps, "");
+        writeFileSync(codesFile, codes.join("\n") + "\n");
+        let status = 0;
+        let out: string;
+        try {
+          out = execFileSync("bash", ["-e", "-c", body], {
+            env: {
+              PATH: `${dir}:${process.env.PATH ?? ""}`,
+              MIGRATION_DATABASE_URL: "postgresql://m@h/d",
+              CALLS: calls,
+              SLEEPS: sleeps,
+              CODES: codesFile,
+            },
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+        } catch (error) {
+          const e = error as { status: number; stdout: string };
+          status = e.status;
+          out = e.stdout;
+        }
+        return {
+          status,
+          out,
+          calls: read(calls).trim().split("\n").filter(Boolean),
+          sleeps: read(sleeps).trim().split("\n").filter(Boolean),
+        };
+      };
+      expect(run([0])).toMatchObject({ status: 0, sleeps: [] });
+      expect(run([0]).calls).toEqual([
+        "npx --no-install tsx scripts/migrate.ts --retention-only",
+      ]);
+      expect(run([1])).toMatchObject({ status: 1, sleeps: [] });
+      const retried = run([75, 0]);
+      expect(retried).toMatchObject({ status: 0, sleeps: ["sleep 300"] });
+      expect(retried.calls).toHaveLength(2);
+      expect(run([75, 75, 1])).toMatchObject({
+        status: 1,
+        sleeps: ["sleep 300", "sleep 300"],
+      });
+      const red = run([75, 75, 75, 0]);
+      expect(red.status).toBe(75);
+      expect(red.calls).toHaveLength(3);
+      expect(red.sleeps).toEqual(["sleep 300", "sleep 300"]);
+      expect(red.out).toContain("::error::retention skipped three times");
+      // A missing secret fails before any attempt.
+      const env = { PATH: `${dir}:${process.env.PATH ?? ""}` };
+      let missing = "";
+      try {
+        execFileSync("bash", ["-e", "-c", body], {
+          env,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (error) {
+        missing = (error as { stdout: string }).stdout;
+      }
+      expect(missing).toContain(
+        "::error::environment secret MIGRATION_DATABASE_URL is not set",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("no workflow or action passes RD_* variables to a railway command (LD-3)", () => {
+    const files = [
+      ...readdirSync(".github/workflows").map((f) => `.github/workflows/${f}`),
+      ".github/actions/deploy/action.yml",
+    ];
+    for (const file of files) {
+      const text = read(file);
+      expect(text, file).not.toMatch(/\bRD_[A-Z0-9_]+/);
+      for (const step of steps(text).filter((s) => /railway/.test(s)))
+        expect(step, file).not.toMatch(/LEGAL_[A-Z_]+:|SUPPORT_[A-Z_]+:/);
+    }
+  });
+});
+
 describe("backup freshness counts production runs only (OPS-R7 regression)", () => {
   const envExpression =
     "github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging')";
@@ -195,13 +466,19 @@ describe("alerting and schedules before provisioning (OPS-R9)", () => {
     expect(backup).toContain(
       "(github.event.schedule == '0 10 * * 0' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'staging'))",
     );
+    expect(retention).toContain(
+      "(github.event.schedule == '15 11 * * *' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'production'))",
+    );
+    expect(retention).toContain(
+      "(github.event.schedule == '45 11 * * *' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'staging'))",
+    );
     // Environment-level variables are invisible to job-level conditions.
-    for (const text of [uptime, backup])
+    for (const text of [uptime, backup, retention])
       expect(text).not.toMatch(/\n {4}if:[^\n]*vars\.APP_URL/);
   });
 
   it("every alert step creates the ops-alert label before filing an issue", () => {
-    for (const text of [uptime, backup]) {
+    for (const text of [uptime, backup, retention]) {
       const alert = steps(text).find((s) => s.includes("gh issue create"))!;
       expect(alert).toMatch(/\n\s*if: failure\(\)\n/);
       const label = alert.indexOf("gh label create ops-alert");
