@@ -8,6 +8,10 @@
  *   transfer-ownership --organization <id> --to-email <e> [--hold-hours 72]
  *   cancel-transfer    --transfer <id>
  *   set-free-device    --tenant <id> --device <id>
+ *   rectify-account    --account <id> [--name "<n>"] [--email <e>]   (ARCO rectification)
+ *   block-account      --account <id> [--offboarding]                (ARCO cancellation: blocking)
+ *   anonymize-account  --account <id>          (after the blocking period; never --yes)
+ *   redact-email       --email <e>             (someone who never had an account)
  *   actions            --organization <id> [--limit 50]
  *
  * Every command needs --operator "<human name>" --ticket <ref> --reason "<10–500 chars>"
@@ -15,7 +19,9 @@
  * Mutating commands ask for the restaurant or organization name (--yes skips it,
  * except for transfer-ownership). Connects only with SUPPORT_DATABASE_URL, an
  * operator login that is a gm_support member (npm run support:provision); never a
- * Railway service variable. Runbook: docs/OPERATIONS.md (Support).
+ * Railway service variable. transfer-ownership prints its link on
+ * SUPPORT_APP_URL (or APP_URL), which must be the deployment's https origin
+ * (OPS-5). Runbook: docs/OPERATIONS.md (Support).
  */
 import "dotenv/config";
 import { createInterface } from "node:readline/promises";
@@ -46,7 +52,7 @@ async function main() {
       print: (line) => process.stdout.write(line + "\n"),
       confirm: async (prompt, expected) =>
         (await rl.question(prompt)).trim() === expected,
-      appUrl: process.env.APP_URL,
+      appUrl: process.env.SUPPORT_APP_URL || process.env.APP_URL,
     });
   } finally {
     rl.close();

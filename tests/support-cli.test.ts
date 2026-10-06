@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   parseSupportArgs,
+  runSupportCommand,
+  supportLinkOrigin,
   validateSupportArgs,
 } from "../scripts/support-commands";
 
@@ -132,6 +134,104 @@ describe("vendor support CLI arguments (GAP-5)", () => {
     expect(() => grant("2027-01-05")).toThrow("support_grant_too_long");
     expect(() => grant("2026-10-01")).toThrow("support_grant_in_past");
     expect(() => grant("2026-13-01")).toThrow("support_argument_invalid");
+  });
+
+  it("ARCO commands: rectify needs a new name or email, anonymize never takes --yes, emails are validated and lower-cased (LEGAL-5, DATA-1)", () => {
+    const account = tenant;
+    expect(() =>
+      validate(["rectify-account", "--account", account, ...ticketed]),
+    ).toThrow("support_rectify_nothing");
+    expect(
+      validate([
+        "rectify-account",
+        "--account",
+        account,
+        "--email",
+        "Nueva@Correo.MX",
+        ...ticketed,
+      ]).request,
+    ).toEqual({
+      command: "rectify-account",
+      account,
+      name: null,
+      email: "nueva@correo.mx",
+    });
+    expect(() =>
+      validate([
+        "rectify-account",
+        "--account",
+        account,
+        "--email",
+        "no-es-correo",
+        ...ticketed,
+      ]),
+    ).toThrow("support_argument_invalid");
+    expect(
+      validate(["block-account", "--account", account, ...ticketed]).request,
+    ).toEqual({ command: "block-account", account, offboarding: false });
+    expect(
+      validate([
+        "block-account",
+        "--account",
+        account,
+        "--offboarding",
+        ...ticketed,
+      ]).request,
+    ).toMatchObject({ offboarding: true });
+    expect(() =>
+      validate([
+        "anonymize-account",
+        "--account",
+        account,
+        "--yes",
+        ...ticketed,
+      ]),
+    ).toThrow("support_yes_not_allowed");
+    expect(
+      validate(["redact-email", "--email", "MARIA@Gmail.com", ...ticketed])
+        .request,
+    ).toEqual({ command: "redact-email", email: "maria@gmail.com" });
+  });
+
+  it("transfer-ownership prints its one-time link only on an https origin, before touching the database (OPS-5)", async () => {
+    expect(supportLinkOrigin("https://pos.desktop.kitchen/")).toBe(
+      "https://pos.desktop.kitchen",
+    );
+    expect(supportLinkOrigin("https://127.0.0.1:3390")).toBe(
+      "https://127.0.0.1:3390",
+    );
+    for (const bad of [
+      undefined,
+      "",
+      "http://localhost:3001",
+      "http://pos.desktop.kitchen",
+      "https://localhost:3001",
+      "/app",
+    ])
+      expect(supportLinkOrigin(bad), String(bad)).toBeNull();
+    const request = validate([
+      "transfer-ownership",
+      "--organization",
+      tenant,
+      "--to-email",
+      "nueva@taqueria.mx",
+      ...ticketed,
+    ]);
+    const untouched = new Proxy(
+      {},
+      {
+        get() {
+          throw Error("database touched");
+        },
+      },
+    );
+    await expect(
+      runSupportCommand(untouched as never, request, {
+        print: () => {},
+        confirm: async () => true,
+        appUrl: "http://localhost:3001",
+      }),
+    ).rejects.toThrow("support_app_url_required");
   });
 
   it("rejects unknown commands and malformed ids", () => {

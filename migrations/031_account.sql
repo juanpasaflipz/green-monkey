@@ -46,7 +46,8 @@ CREATE TABLE support_actions (
   ticket text NOT NULL CHECK (length(ticket) BETWEEN 3 AND 100),
   reason text NOT NULL CHECK (length(reason) BETWEEN 10 AND 500),
   action text NOT NULL CHECK (action IN ('lookup','unlock_employee','grant_entitlement',
-    'end_entitlement','transfer_ownership','cancel_transfer','set_free_device')),
+    'end_entitlement','transfer_ownership','cancel_transfer','set_free_device',
+    'rectify_account','block_account','anonymize_account','redact_email')),
   organization_id uuid REFERENCES organizations(id),
   tenant_id uuid REFERENCES restaurants(id),
   target jsonb NOT NULL DEFAULT '{}'::jsonb,
@@ -55,10 +56,17 @@ CREATE TABLE support_actions (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX support_actions_organization ON support_actions(organization_id, created_at DESC);
+-- The operator is the database login and the time is the transaction's (the gm_support
+-- policies below match a write to the action row of the same transaction through
+-- created_at = now()). A tenant-scoped action always names that tenant's organization, so
+-- the restaurant's owners see it (support_action_owner_read; AUTHZ-2).
 CREATE FUNCTION support_action_operator() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   NEW.operator_login := session_user;
   NEW.created_at := now();
+  IF NEW.tenant_id IS NOT NULL THEN
+    NEW.organization_id := (SELECT r.organization_id FROM restaurants r WHERE r.id = NEW.tenant_id);
+  END IF;
   RETURN NEW;
 END $$;
 CREATE TRIGGER support_action_operator BEFORE INSERT ON support_actions
@@ -118,9 +126,25 @@ CREATE TABLE ownership_transfers (
 CREATE UNIQUE INDEX one_pending_transfer ON ownership_transfers(organization_id) WHERE state = 'pending';
 CREATE INDEX ownership_transfers_to ON ownership_transfers(to_account_id) WHERE state = 'pending';
 -- One transition (pending -> completed or canceled), plus filling to_account_id once.
+-- The one other change: ARCO cancellation (docs/OPERATIONS.md, support anonymize-account
+-- and redact-email) replaces a closed transfer's target email by its sha256 digest and
+-- touches nothing else.
 CREATE FUNCTION ownership_transfer_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'ownership_transfers is append-only'; END IF;
+  IF OLD.state <> 'pending' AND OLD.to_email NOT LIKE 'redacted:%'
+     AND NEW.to_email = 'redacted:' || encode(sha256(convert_to(OLD.to_email, 'UTF8')), 'hex')
+     AND (NEW.id, NEW.organization_id, NEW.from_account_id, NEW.to_account_id, NEW.token_hash,
+          NEW.initiated_by, NEW.support_action_id, NEW.previous_owner_stays, NEW.state,
+          NEW.available_at, NEW.expires_at, NEW.created_at, NEW.completed_at, NEW.canceled_at,
+          NEW.canceled_by)
+         IS NOT DISTINCT FROM
+         (OLD.id, OLD.organization_id, OLD.from_account_id, OLD.to_account_id, OLD.token_hash,
+          OLD.initiated_by, OLD.support_action_id, OLD.previous_owner_stays, OLD.state,
+          OLD.available_at, OLD.expires_at, OLD.created_at, OLD.completed_at, OLD.canceled_at,
+          OLD.canceled_by) THEN
+    RETURN NEW;
+  END IF;
   IF OLD.state <> 'pending'
      OR (NEW.id, NEW.organization_id, NEW.from_account_id, NEW.to_email, NEW.token_hash,
          NEW.initiated_by, NEW.support_action_id, NEW.previous_owner_stays,
@@ -475,10 +499,21 @@ CREATE POLICY invitation_org_scope ON restaurant_invitations
     AND r.organization_id = nullif(current_setting('app.organization_id', true), '')::uuid));
 
 -- Vendor support capability role (least privilege, no DELETE, column-scoped) -----------
+-- AUTHZ-2 / OPS-2 (LD-32): every gm_support write is bound to a support_actions row the
+-- same login wrote in the same transaction (created_at = now(), forced by the trigger
+-- above), for that tenant or organization and that target, so a raw psql session with an
+-- operator's SUPPORT_DATABASE_URL cannot change anything the owners do not see in
+-- «Acciones de soporte». The restrictive policies also bound the values: an unlock only
+-- clears, an audit row is only the unlock's own row with server-set created_at, the Free
+-- slot moves only to the logged device, and an account row becomes exactly the logged
+-- after_state (compared as digests: support_actions is append-only, so it stores no
+-- plaintext email or name). The CLI (scripts/support-commands.ts) logs first, then writes.
 GRANT USAGE ON SCHEMA public TO gm_support;
 GRANT SELECT (id, organization_id, name, timezone, activation_pending, free_location) ON restaurants TO gm_support;
 GRANT SELECT (id, name, created_by_account) ON organizations TO gm_support;
 GRANT SELECT (id, email, name, active, created_at) ON owner_accounts TO gm_support;
+-- ARCO rectification, blocking and anonymization (LEGAL-5, DATA-1).
+GRANT UPDATE (email, name, active) ON owner_accounts TO gm_support;
 GRANT SELECT (account_id, tenant_id, employee_id, revoked_at) ON owner_memberships TO gm_support;
 GRANT SELECT (tenant_id, id, name, login, role, active, failed_attempts, locked_until, free_slot,
   pin_set_at, deactivated_at) ON employees TO gm_support;
@@ -486,8 +521,9 @@ GRANT UPDATE (failed_attempts, locked_until) ON employees TO gm_support;
 -- unlock-employee mirrors access clearLocks(): per-device throttles (access 023).
 GRANT SELECT ON pin_throttles TO gm_support;
 GRANT UPDATE (failures, lock_level, locked_until, last_failure_at) ON pin_throttles TO gm_support;
--- unlock-employee writes the access.employee_unlocked audit row {by:"support"}.
-GRANT INSERT ON audit TO gm_support;
+-- unlock-employee writes the access.employee_unlocked audit row {by:"support"}; created_at
+-- is not grantable, so it always takes the server default.
+GRANT INSERT (tenant_id, id, actor_id, operation, entity_id, detail) ON audit TO gm_support;
 GRANT SELECT (tenant_id, id, name, active, free_slot) ON devices TO gm_support;
 GRANT UPDATE (free_slot) ON devices TO gm_support;
 GRANT SELECT (tenant_id, status, access_until, source, version, updated_at) ON restaurant_entitlements TO gm_support;
@@ -500,12 +536,22 @@ GRANT SELECT (id, organization_id, from_account_id, to_email, to_account_id, ini
   support_action_id, previous_owner_stays, state, available_at, expires_at, created_at,
   completed_at, canceled_at, canceled_by) ON ownership_transfers TO gm_support;
 GRANT INSERT ON ownership_transfers TO gm_support;
-GRANT UPDATE (state, canceled_at, canceled_by) ON ownership_transfers TO gm_support;
+GRANT UPDATE (state, canceled_at, canceled_by, to_email) ON ownership_transfers TO gm_support;
 GRANT SELECT, INSERT ON support_actions TO gm_support;
 
 CREATE POLICY support_read ON restaurants FOR SELECT TO gm_support USING (true);
 CREATE POLICY support_read ON organizations FOR SELECT TO gm_support USING (true);
 CREATE POLICY support_read ON owner_accounts FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_update ON owner_accounts FOR UPDATE TO gm_support USING (true) WITH CHECK (true);
+CREATE POLICY support_limit_update ON owner_accounts AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (true)
+  WITH CHECK (EXISTS (SELECT 1 FROM support_actions a
+    WHERE a.action IN ('rectify_account','block_account','anonymize_account')
+      AND a.operator_login = session_user AND a.created_at = now()
+      AND a.target->>'accountId' = owner_accounts.id::text
+      AND a.after_state->>'emailSha256' = encode(sha256(convert_to(owner_accounts.email, 'UTF8')), 'hex')
+      AND a.after_state->>'nameSha256' = encode(sha256(convert_to(owner_accounts.name, 'UTF8')), 'hex')
+      AND (a.after_state->>'active')::boolean = owner_accounts.active));
 CREATE POLICY support_read ON owner_memberships FOR SELECT TO gm_support USING (true);
 CREATE POLICY support_read ON organization_billing FOR SELECT TO gm_support USING (true);
 CREATE POLICY support_read ON billing_locations FOR SELECT TO gm_support USING (true);
@@ -516,24 +562,77 @@ CREATE POLICY support_read ON ownership_transfers FOR SELECT TO gm_support USING
 CREATE POLICY support_insert ON ownership_transfers FOR INSERT TO gm_support WITH CHECK (true);
 CREATE POLICY support_cancel ON ownership_transfers FOR UPDATE TO gm_support USING (true) WITH CHECK (true);
 CREATE POLICY support_limit_insert ON ownership_transfers AS RESTRICTIVE FOR INSERT TO gm_support
-  WITH CHECK (initiated_by = 'support' AND support_action_id IS NOT NULL
-    AND NOT previous_owner_stays AND available_at >= now() + interval '24 hours');
+  WITH CHECK (initiated_by = 'support' AND NOT previous_owner_stays
+    AND available_at >= now() + interval '24 hours'
+    AND expires_at <= available_at + interval '7 days'
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.id = ownership_transfers.support_action_id AND a.action = 'transfer_ownership'
+        AND a.organization_id = ownership_transfers.organization_id
+        AND a.operator_login = session_user AND a.created_at = now()));
+-- A cancellation (cancel-transfer, or transfer-ownership closing an expired row) or the
+-- ARCO email redaction of a closed transfer (ownership_transfer_guard allows nothing else).
 CREATE POLICY support_limit_update ON ownership_transfers AS RESTRICTIVE FOR UPDATE TO gm_support
-  USING (state = 'pending') WITH CHECK (state = 'canceled' AND canceled_by = 'support');
+  USING (true)
+  WITH CHECK (
+    (state = 'canceled' AND canceled_by = 'support' AND to_email NOT LIKE 'redacted:%'
+      AND EXISTS (SELECT 1 FROM support_actions a
+        WHERE a.action IN ('cancel_transfer','transfer_ownership','anonymize_account','redact_email')
+          AND a.organization_id = ownership_transfers.organization_id
+          AND a.operator_login = session_user AND a.created_at = now()))
+    OR (state <> 'pending' AND to_email LIKE 'redacted:%'
+      AND EXISTS (SELECT 1 FROM support_actions a
+        WHERE a.action IN ('anonymize_account','redact_email')
+          AND a.organization_id = ownership_transfers.organization_id
+          AND a.operator_login = session_user AND a.created_at = now()
+          AND (a.target->'emailSha256s') ? substr(ownership_transfers.to_email, 10))));
 CREATE POLICY support_read ON restaurant_entitlements FOR SELECT TO gm_support USING (true);
 CREATE POLICY support_insert ON restaurant_entitlements FOR INSERT TO gm_support WITH CHECK (true);
 CREATE POLICY support_update ON restaurant_entitlements FOR UPDATE TO gm_support USING (true) WITH CHECK (true);
 CREATE POLICY support_limit_insert ON restaurant_entitlements AS RESTRICTIVE FOR INSERT TO gm_support
   WITH CHECK (source = 'support'
     AND (access_until IS NULL OR access_until <= now() + interval '92 days')
-    AND NOT EXISTS (SELECT 1 FROM billing_locations l WHERE l.tenant_id = restaurant_entitlements.tenant_id));
+    AND NOT EXISTS (SELECT 1 FROM billing_locations l WHERE l.tenant_id = restaurant_entitlements.tenant_id)
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.action = 'grant_entitlement' AND a.tenant_id = restaurant_entitlements.tenant_id
+        AND a.operator_login = session_user AND a.created_at = now()));
 CREATE POLICY support_limit_update ON restaurant_entitlements AS RESTRICTIVE FOR UPDATE TO gm_support
   USING (source IN ('support','fixture') OR status = 'free')
   WITH CHECK (source = 'support'
     AND (access_until IS NULL OR access_until <= now() + interval '92 days')
-    AND NOT EXISTS (SELECT 1 FROM billing_locations l WHERE l.tenant_id = restaurant_entitlements.tenant_id));
+    AND NOT EXISTS (SELECT 1 FROM billing_locations l WHERE l.tenant_id = restaurant_entitlements.tenant_id)
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.action IN ('grant_entitlement','end_entitlement')
+        AND a.tenant_id = restaurant_entitlements.tenant_id
+        AND a.operator_login = session_user AND a.created_at = now()));
 CREATE POLICY support_actions_insert ON support_actions FOR INSERT TO gm_support WITH CHECK (true);
 CREATE POLICY support_actions_read ON support_actions FOR SELECT TO gm_support USING (true);
--- employees/devices/pin_throttles/audit/restaurant_account_settings: gm_support uses the
--- existing tenant_scope policies (no TO clause, so they apply to every role) by setting
--- app.tenant_id; the column grants above bound what it can see or change.
+-- employees/devices/pin_throttles/audit/restaurant_account_settings: gm_support reaches
+-- rows through the existing tenant_scope policies (no TO clause, so they apply to every
+-- role) by setting app.tenant_id; these restrictive policies bound what it may write.
+CREATE POLICY support_unlock ON employees AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (true)
+  WITH CHECK (failed_attempts = 0 AND locked_until IS NULL
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.action = 'unlock_employee' AND a.tenant_id = employees.tenant_id
+        AND a.target->>'employeeId' = employees.id::text
+        AND a.operator_login = session_user AND a.created_at = now()));
+CREATE POLICY support_unlock ON pin_throttles AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (true)
+  WITH CHECK (failures = 0 AND lock_level = 0 AND locked_until IS NULL AND last_failure_at IS NULL
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.action = 'unlock_employee' AND a.tenant_id = pin_throttles.tenant_id
+        AND a.target->>'employeeId' = pin_throttles.employee_id::text
+        AND a.operator_login = session_user AND a.created_at = now()));
+CREATE POLICY support_unlock_audit ON audit AS RESTRICTIVE FOR INSERT TO gm_support
+  WITH CHECK (operation = 'access.employee_unlocked' AND entity_id = actor_id::text
+    AND detail->>'by' = 'support'
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.id::text = audit.detail->>'supportActionId' AND a.action = 'unlock_employee'
+        AND a.tenant_id = audit.tenant_id AND a.target->>'employeeId' = audit.entity_id
+        AND a.operator_login = session_user AND a.created_at = now()));
+CREATE POLICY support_free_device ON devices AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (true)
+  WITH CHECK (EXISTS (SELECT 1 FROM support_actions a
+    WHERE a.action = 'set_free_device' AND a.tenant_id = devices.tenant_id
+      AND (devices.free_slot IS NULL OR a.target->>'deviceId' = devices.id::text)
+      AND a.operator_login = session_user AND a.created_at = now()));

@@ -5,7 +5,7 @@
  */
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { checkRole, tenant } from "../server/db.js";
@@ -24,6 +24,7 @@ import {
 } from "../server/ownership-transfer.js";
 import { entitlement } from "../server/entitlements.js";
 import {
+  ANONYMIZED_NAME,
   checkSupportRole,
   parseSupportArgs,
   runSupportCommand,
@@ -66,6 +67,7 @@ async function test(name: string, fn: () => Promise<void>) {
 }
 const denied = (p: Promise<unknown>) =>
   assert.rejects(p, /permission denied|row-level security/);
+const sha256 = (v: string) => createHash("sha256").update(v).digest("hex");
 
 let support: postgres.Sql | undefined;
 try {
@@ -158,6 +160,10 @@ try {
     assert.equal(logged.action, "lookup");
     assert.equal(logged.operator_login, role);
     assert.equal(logged.ticket, "SUP-1");
+    // DATA-3: the append-only log keeps the searched email as a digest only.
+    assert.deepEqual(logged.target, {
+      emailSha256: sha256(`support-owner-${role}@example.com`),
+    });
     await denied(support!`select secret_hash from employees limit 1`);
     await denied(support!`select token_hash from ownership_transfers limit 1`);
     await denied(
@@ -266,6 +272,126 @@ try {
     const [still] =
       await admin`select failures from pin_throttles where employee_id=${cashierId}`;
     assert.equal(still.failures, 3);
+  });
+  await test("3c support: a raw gm_support session cannot write what the CLI does not log in the same transaction: no hard lock, no unlogged unlock, no forged or backdated audit row, no manager-budget rows, no unlogged Free slot move, no stale action reuse (AUTHZ-2, OPS-2)", async () => {
+    const asSupport = (fn: (tx: postgres.TransactionSql) => Promise<unknown>) =>
+      support!.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id',${tenantId},true)`;
+        return fn(tx);
+      });
+    const logged = (
+      tx: postgres.TransactionSql,
+      action: string,
+      target: Record<string, unknown>,
+    ) => {
+      const id = randomUUID();
+      return tx`insert into support_actions(id,operator_login,operator_label,ticket,reason,action,tenant_id,target)
+          values(${id},'',${"Operadora Prueba"},${"SUP-3C"},${"Prueba de privilegio mínimo"},${action},${tenantId},${tx.json(target as never)})`.then(
+        () => id,
+      );
+    };
+    // A hard lock on every cashier, even with a logged unlock of that one.
+    await denied(
+      asSupport((tx) => tx`update employees set locked_until='infinity'`),
+    );
+    await denied(
+      asSupport(async (tx) => {
+        await logged(tx, "unlock_employee", { employeeId: cashierId });
+        await tx`update employees set locked_until='infinity' where id=${cashierId}`;
+      }),
+    );
+    await denied(
+      asSupport(
+        (tx) =>
+          tx`update pin_throttles set failures=50,lock_level=9 where employee_id=${cashierId}`,
+      ),
+    );
+    // An unlock without its action row, or with another employee's.
+    await denied(
+      asSupport(
+        (tx) =>
+          tx`update employees set failed_attempts=0,locked_until=null where id=${cashierId}`,
+      ),
+    );
+    await denied(
+      asSupport(async (tx) => {
+        await logged(tx, "unlock_employee", { employeeId: managerId });
+        await tx`update employees set failed_attempts=0,locked_until=null where id=${cashierId}`;
+      }),
+    );
+    // A fabricated audit trail: another operation, a cashier as actor of a
+    // manager-budget unlock, a backdated row.
+    await denied(
+      asSupport(
+        (tx) =>
+          tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail)
+            values(${tenantId},${randomUUID()},${cashierId},'order.void',${randomUUID()},${tx.json({ amount: 50000 })})`,
+      ),
+    );
+    await denied(
+      asSupport(
+        (tx) =>
+          tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail)
+            values(${tenantId},${randomUUID()},${cashierId},'access.employee_unlocked',${cashierId},${tx.json({ by: "manager" })})`,
+      ),
+    );
+    await denied(
+      asSupport(async (tx) => {
+        const id = await logged(tx, "unlock_employee", {
+          employeeId: cashierId,
+        });
+        await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail,created_at)
+            values(${tenantId},${randomUUID()},${cashierId},'access.employee_unlocked',${cashierId},
+              ${tx.json({ by: "support", supportActionId: id })},'2026-10-01 14:00')`;
+      }),
+    );
+    // A Free slot moved without its action row, or to a device it does not name.
+    await denied(
+      asSupport(
+        (tx) => tx`update devices set free_slot=1 where id=${deviceId}`,
+      ),
+    );
+    await denied(
+      asSupport(async (tx) => {
+        await logged(tx, "set_free_device", { deviceId: randomUUID() });
+        await tx`update devices set free_slot=1 where id=${deviceId}`;
+      }),
+    );
+    // An action row from an earlier transaction authorizes nothing later.
+    const stale = await asSupport((tx) =>
+      logged(tx, "unlock_employee", { employeeId: cashierId }),
+    );
+    assert.ok(stale);
+    await denied(
+      asSupport(
+        (tx) =>
+          tx`update employees set failed_attempts=0,locked_until=null where id=${cashierId}`,
+      ),
+    );
+    await denied(
+      asSupport(
+        (tx) =>
+          tx`insert into restaurant_entitlements(tenant_id,status,access_until,source)
+            values(${tenantId},'active',now()+interval '10 days','support')
+            on conflict(tenant_id) do update set status='active',access_until=excluded.access_until,source='support'`,
+      ),
+    );
+    // Every tenant-scoped action is shown to that tenant's owners.
+    const [shown] =
+      await admin`select organization_id from support_actions where id=${stale as string}`;
+    assert.equal(shown.organization_id, r.organization_id);
+    // The CLI path (log first, then write) still unlocks.
+    await admin`update employees set failed_attempts=7 where id=${cashierId}`;
+    await cli(support!, [
+      "unlock-employee",
+      "--tenant",
+      tenantId,
+      "--login",
+      cashierLogin,
+    ]);
+    const [e] =
+      await admin`select failed_attempts from employees where id=${cashierId}`;
+    assert.equal(e.failed_attempts, 0);
   });
   await test("4 support: grant-entitlement gives Pro on an unbound tenant; refused for a Stripe-bound tenant and beyond 90 days, also through raw SQL (restrictive policy)", async () => {
     const until = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
@@ -471,8 +597,285 @@ try {
         where grantee='gm_support' and privilege_type in ('DELETE','TRUNCATE')`;
     assert.equal(grants.n, 0);
   });
+  // ---- ARCO tooling (LEGAL-5, DATA-1, DATA-2) ------------------------------
+  const ownerFixture = async (label: string) => {
+    const email = `${label}-${role}@example.com`;
+    const subject = randomUUID();
+    const login = await signInGoogleOwner(sql, {
+      issuer: "https://accounts.google.com",
+      subject,
+      email,
+      name: `Cuenta ${label}`,
+    });
+    return { login, email, subject, id: ownerCookie(login).accountId };
+  };
+  const ownRestaurant = async (o: { login: string }, name: string) => {
+    const { tenantId: t } = await withOwner(sql, o.login, undefined, (tx, a) =>
+      createOwnerRestaurant(
+        tx,
+        a,
+        {
+          restaurantName: name,
+          currency: "MXN",
+          timezone: "America/Mexico_City",
+          cutoff: 240,
+          openingDays: [1, 2, 3, 4, 5, 6, 7],
+        },
+        legal,
+      ),
+    );
+    const [row] =
+      await admin`select organization_id from restaurants where id=${t}`;
+    return { tenantId: t, organizationId: row.organization_id as string };
+  };
+  /** An active co-ownership, inserted as the fixture owner (the lifecycle itself is account-db's). */
+  const coOwn = async (
+    o: { id: string; email: string },
+    org: { tenantId: string; organizationId: string },
+    by: string,
+  ) => {
+    const invitation = randomUUID();
+    await admin`insert into restaurant_invitations(id,tenant_id,created_by,email,role,token_hash,accepted_by,accepted_at,employee_id)
+        values(${invitation},${org.tenantId},${by},${o.email},'co_owner',${sha256(invitation)},${o.id},now(),${randomUUID()})`;
+    await admin`insert into organization_co_owners(id,organization_id,account_id,added_by,source,invitation_id)
+        values(${randomUUID()},${org.organizationId},${o.id},${by},'invitation',${invitation})`;
+  };
+  const accountActions = async (accountId: string, action: string) =>
+    admin`select organization_id,target,before_state,after_state from support_actions
+      where action=${action} and target->>'accountId'=${accountId} order by organization_id`;
+  const textOf = (rows: unknown) => JSON.stringify(rows);
+
+  await test("9 support: lookup by an email that is primary of one organization and co-owner of another writes one row per organization, each visible to that organization's owners, and the DPA line is that organization's (UX-7, AUTHZ-5, LEGAL-9)", async () => {
+    const both = await ownerFixture("both");
+    const mine = await ownRestaurant(both, `Propia ${role.slice(-6)}`);
+    const other = await ownerFixture("other-primary");
+    const theirs = await ownRestaurant(other, `Ajena ${role.slice(-6)}`);
+    await coOwn(both, theirs, other.id);
+    printed.length = 0;
+    await cli(support!, ["lookup", "--email", both.email]);
+    const rows = await admin`select organization_id,target from support_actions
+        where action='lookup' and target->>'emailSha256'=${sha256(both.email)}
+        order by organization_id`;
+    assert.deepEqual(
+      rows.map((x) => x.organization_id).sort(),
+      [mine.organizationId, theirs.organizationId].sort(),
+    );
+    assert.ok(!textOf(rows).includes(both.email));
+    // A DPA the person accepted for another organization (as its primary
+    // earlier) is not printed as this organization's.
+    const [session] =
+      await admin`select id from owner_sessions where account_id=${both.id} limit 1`;
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context,organization_id)
+        values(${randomUUID()},${both.id},${session.id},'dpa',${LEGAL_DOCUMENTS.dpa.version},${"a".repeat(64)},${"b".repeat(64)},false,'es','transfer',${theirs.organizationId})`;
+    printed.length = 0;
+    await cli(support!, ["lookup", "--tenant", mine.tenantId]);
+    assert.ok(printed.some((l) => l.includes(`Propia ${role.slice(-6)}`)));
+    assert.ok(
+      !printed.some((l) => l.includes("Aceptó dpa")),
+      printed.join("\n"),
+    );
+    // Each organization's owners read their own row through the console policy.
+    for (const org of [mine.organizationId, theirs.organizationId]) {
+      const visible = await sql.begin(async (tx) => {
+        await tx`select set_config('app.organization_id',${org},true)`;
+        return tx`select 1 from support_actions where action='lookup' and organization_id=${org}`;
+      });
+      assert.ok(visible.length >= 1, org);
+    }
+  });
+
+  await test("10 support: rectify-account changes the owner's name and email (lookup finds the new address, co-owners see it), logs only digests, and the database refuses an unlogged or different change (LEGAL-5)", async () => {
+    const p = await ownerFixture("rectify");
+    const org = await ownRestaurant(p, `Rectifica ${role.slice(-6)}`);
+    const newEmail = `rectified-${role}@example.com`;
+    await cli(support!, [
+      "rectify-account",
+      "--account",
+      p.id,
+      "--name",
+      "María Rectificada",
+      "--email",
+      newEmail.toUpperCase(),
+    ]);
+    const [a] =
+      await admin`select email,name,active from owner_accounts where id=${p.id}`;
+    assert.deepEqual(
+      { ...a },
+      {
+        email: newEmail,
+        name: "María Rectificada",
+        active: true,
+      },
+    );
+    const [logged] = await accountActions(p.id, "rectify_account");
+    assert.equal(logged.organization_id, org.organizationId);
+    assert.equal(logged.after_state.emailSha256, sha256(newEmail));
+    assert.ok(!textOf(logged).includes(newEmail));
+    assert.ok(!textOf(logged).includes(p.email));
+    printed.length = 0;
+    await cli(support!, ["lookup", "--email", newEmail]);
+    assert.ok(printed.some((l) => l.includes("María Rectificada")));
+    // Google sign-in is by subject, so the person still enters.
+    await signInGoogleOwner(sql, {
+      issuer: "https://accounts.google.com",
+      subject: p.subject,
+      email: newEmail,
+    });
+    // Raw writes: none without the same-transaction action, none that differ from it.
+    await denied(
+      support!`update owner_accounts set name='Otra' where id=${p.id}`,
+    );
+    await denied(
+      support!.begin(async (tx) => {
+        await tx`insert into support_actions(id,operator_login,operator_label,ticket,reason,action,target,after_state)
+          values(${randomUUID()},'',${"Operadora Prueba"},${"SUP-10"},${"Prueba de rectificación"},'rectify_account',
+            ${tx.json({ accountId: p.id })},${tx.json({ emailSha256: sha256(newEmail), nameSha256: sha256("Pepe"), active: true })})`;
+        await tx`update owner_accounts set name='Otro nombre' where id=${p.id}`;
+      }),
+    );
+    await denied(
+      support!`update owner_accounts set active=false where id=${p.id}`,
+    );
+  });
+
+  await test("11 support: block-account refuses a co-owner and a primary without --offboarding; blocking ends Google entry; anonymize-account waits for the retention period, then replaces email and name, redacts the account's closed transfers and keeps acceptances by id (DATA-1, DATA-2)", async () => {
+    const primary = await ownerFixture("block-primary");
+    const org = await ownRestaurant(primary, `Bloqueo ${role.slice(-6)}`);
+    const co = await ownerFixture("block-co");
+    await coOwn(co, org, primary.id);
+    await assert.rejects(
+      cli(support!, ["block-account", "--account", co.id]),
+      /support_account_is_co_owner/,
+    );
+    await assert.rejects(
+      cli(support!, ["block-account", "--account", primary.id]),
+      /support_account_is_primary/,
+    );
+    // A closed transfer that named the person, and acceptance evidence.
+    const transferId = randomUUID();
+    await admin`insert into ownership_transfers(id,organization_id,from_account_id,to_email,token_hash,initiated_by,
+        previous_owner_stays,available_at,expires_at,state,canceled_at,canceled_by)
+      values(${transferId},${org.organizationId},${primary.id},${co.email},${sha256(transferId)},'owner',false,
+        now()-interval '3 days',now()-interval '1 day','canceled',now()-interval '2 days','owner')`;
+    await admin`update organization_co_owners set removed_at=now(),removed_by=${primary.id},removal='removed'
+        where account_id=${co.id} and removed_at is null`;
+    const [ownerSession] =
+      await admin`select id from owner_sessions where account_id=${co.id} limit 1`;
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context)
+        values(${randomUUID()},${co.id},${ownerSession.id},'terms',${LEGAL_DOCUMENTS.terms.version},${"a".repeat(64)},${"b".repeat(64)},false,'es','signup')`;
+    await cli(support!, ["block-account", "--account", co.id]);
+    await assert.rejects(
+      withOwner(sql, co.login, undefined, async () => null),
+      /unauthorized/,
+    );
+    await assert.rejects(
+      signInGoogleOwner(sql, {
+        issuer: "https://accounts.google.com",
+        subject: co.subject,
+        email: co.email,
+      }),
+      /unauthorized|signup_paused/,
+    );
+    await assert.rejects(
+      cli(support!, ["anonymize-account", "--account", co.id]),
+      /support_retention_not_over/,
+    );
+    // Five years later (test-only: the block row's time moved back inside one
+    // admin transaction with the append-only trigger disabled, LD-12 pattern).
+    await admin.begin(async (tx) => {
+      await tx`alter table support_actions disable trigger support_actions_append_only`;
+      await tx`update support_actions set created_at=now()-interval '5 years 1 day'
+          where action='block_account' and target->>'accountId'=${co.id}`;
+      await tx`alter table support_actions enable trigger support_actions_append_only`;
+    });
+    await cli(support!, ["anonymize-account", "--account", co.id]);
+    const [a] =
+      await admin`select email,name,active from owner_accounts where id=${co.id}`;
+    assert.deepEqual(
+      { ...a },
+      {
+        email: "redacted:" + sha256(co.email),
+        name: ANONYMIZED_NAME,
+        active: false,
+      },
+    );
+    const [t] =
+      await admin`select to_email,state,canceled_by from ownership_transfers where id=${transferId}`;
+    assert.deepEqual(
+      { ...t },
+      {
+        to_email: "redacted:" + sha256(co.email),
+        state: "canceled",
+        canceled_by: "owner",
+      },
+    );
+    const [kept] =
+      await admin`select count(*)::int as n from legal_acceptances where account_id=${co.id}`;
+    assert.equal(kept.n, 1, "acceptance evidence stays, keyed by account id");
+    const logged = await accountActions(co.id, "anonymize_account");
+    assert.deepEqual(
+      logged.map((l) => l.organization_id),
+      [org.organizationId],
+    );
+    assert.ok(!textOf(logged).includes(co.email));
+    // The guard still refuses any other change to a closed transfer.
+    await assert.rejects(
+      admin`update ownership_transfers set to_email='otra@ejemplo.mx' where id=${transferId}`,
+      /ownership_transfer_immutable/,
+    );
+    await assert.rejects(
+      cli(support!, ["anonymize-account", "--account", co.id]),
+      /support_account_anonymized/,
+    );
+    // A primary leaving with its organization (offboarding) can be blocked.
+    await cli(support!, [
+      "block-account",
+      "--account",
+      primary.id,
+      "--offboarding",
+    ]);
+    const [blocked] =
+      await admin`select active from owner_accounts where id=${primary.id}`;
+    assert.equal(blocked.active, false);
+  });
+
+  await test("12 support: redact-email anonymizes a non-customer's closed transfers at once; refused for an email with an account and while a live transfer to it is pending (DATA-1)", async () => {
+    const p = await ownerFixture("redact-primary");
+    const org = await ownRestaurant(p, `Redacta ${role.slice(-6)}`);
+    const stranger = `maria-${role}@gmail.example.com`;
+    const closed = randomUUID();
+    await admin`insert into ownership_transfers(id,organization_id,from_account_id,to_email,token_hash,initiated_by,
+        previous_owner_stays,available_at,expires_at,state,canceled_at,canceled_by)
+      values(${closed},${org.organizationId},${p.id},${stranger},${sha256(closed)},'owner',false,
+        now()-interval '3 days',now()-interval '1 day','canceled',now()-interval '2 days','owner')`;
+    const live = randomUUID();
+    await admin`insert into ownership_transfers(id,organization_id,from_account_id,to_email,token_hash,initiated_by,
+        previous_owner_stays,available_at,expires_at)
+      values(${live},${org.organizationId},${p.id},${stranger},${sha256(live)},'owner',false,now(),now()+interval '1 day')`;
+    await assert.rejects(
+      cli(support!, ["redact-email", "--email", stranger]),
+      /support_transfer_pending/,
+    );
+    await admin`update ownership_transfers set state='canceled',canceled_at=now(),canceled_by='owner' where id=${live}`;
+    await assert.rejects(
+      cli(support!, ["redact-email", "--email", p.email]),
+      /support_email_has_account/,
+    );
+    await cli(support!, ["redact-email", "--email", stranger]);
+    const rows =
+      await admin`select to_email from ownership_transfers where id in (${closed},${live})`;
+    assert.deepEqual(
+      rows.map((x) => x.to_email),
+      ["redacted:" + sha256(stranger), "redacted:" + sha256(stranger)],
+    );
+    const [logged] =
+      await admin`select organization_id,target from support_actions where action='redact_email'
+        and target->'emailSha256s' ? ${sha256(stranger)}`;
+    assert.equal(logged.organization_id, org.organizationId);
+    assert.ok(!textOf(logged).includes(stranger));
+  });
   console.log(
-    `Support DB passed (${checks} checks): vendor CLI least privilege, unlock, grants, transfers and Free device. Fixtures retained.`,
+    `Support DB passed (${checks} checks): vendor CLI least privilege (every write bound to a same-transaction action row), unlock, grants, transfers, Free device and the ARCO tools (rectify, block, anonymize, redact). Fixtures retained.`,
   );
 } finally {
   await support?.end();

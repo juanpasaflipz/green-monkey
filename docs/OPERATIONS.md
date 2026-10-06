@@ -74,7 +74,16 @@ an operator workstation. Every command needs `--operator "<name>" --ticket
 <ref> --reason "<10–500 characters>"`, is written to `support_actions`
 (append-only; the operator login is forced to the database session user) and is
 shown to the restaurant's owners in their account console ("Acciones de
-soporte") and, for 7 days, in the POS shell. Mutating commands ask for the
+soporte") and, for 7 days, in the POS shell. A command that touches several
+organizations (a lookup by email that matches two, an anonymization) writes one
+row per organization, so each one's owners see it. Emails are stored there only
+as sha256 digests. The database enforces this: every `gm_support` write must
+match a `support_actions` row the same login wrote in the same transaction for
+that tenant, organization and target, with bounded values (an unlock only
+clears, the audit row is the unlock's own with a server timestamp, the Free slot
+moves only to the logged device, an account row becomes exactly the logged
+state). A raw `psql` session with an operator URL therefore cannot change
+anything the owners do not see (LD-32 AUTHZ-2, OPS-2). Mutating commands ask for the
 restaurant or organization name (`--yes` skips it, never for
 `transfer-ownership`). Design and data model: [account and legal](ACCOUNT_AND_LEGAL.md).
 
@@ -105,12 +114,16 @@ provisioning owner when they leave.
 | Command | Use |
 | --- | --- |
 | `lookup --email <e> \| --tenant <id> \| --organization <id>` | Accounts, organizations, restaurants, owners, devices, entitlement, pending transfers. Read-only. |
-| `unlock-employee --tenant <id> --login <login>` | Clears a PIN lock exactly like a manager unlock, without spending the manager's daily unlock budget. Writes `access.employee_unlocked` with the ticket. |
+| `unlock-employee --tenant <id> --login <login>` | Clears a PIN lock at owner strength (the failure counter, the lock, a permanent "infinity" lock and every device throttle), without spending the manager's daily unlock budget. The confirmation shows the employee's role and says when the lock is permanent: only act on a permanent lock at the request of the primary or a co-owner shown by `lookup`. Writes `access.employee_unlocked` `{by:"support"}` with the ticket. |
 | `grant-entitlement --tenant <id> --until YYYY-MM-DD` | Pilot Pro (below). |
 | `end-entitlement --tenant <id>` | Ends a support grant now (the restaurant goes to Free; drawers opened before the end continue until closed or 16 h; the row keeps the end time in `access_until`). |
 | `transfer-ownership --organization <id> --to-email <e> [--hold-hours 72]` | Support-assisted ownership transfer after identity verification (below). Hold 24 h minimum, 72 h default. |
 | `cancel-transfer --transfer <id>` | Cancels a pending transfer. |
 | `set-free-device --tenant <id> --device <id>` | Emergency Free device reassignment (the owner cannot reach Settings, for example a stolen laptop held the slot); the device ID must be retyped. The automatic/manual mode is unchanged, so in automatic mode a later drawer open can move the slot again: ask the owner to save a manual selection once they can. |
+| `rectify-account --account <id> [--name "<n>"] [--email <e>]` | ARCO rectification of an owner account's name or email (below). Google sign-in is unaffected (it is keyed by the Google subject). |
+| `block-account --account <id> [--offboarding]` | ARCO cancellation, step 1 (blocking): the account can no longer sign in with Google and its account and POS sessions stop working at once. Refused while the person is an active co-owner (`support_account_is_co_owner`: the primary removes them or they leave first) and, without `--offboarding`, while they are a primary (`support_account_is_primary`: transfer the organization first, unless the organization itself is leaving). |
+| `anonymize-account --account <id>` | ARCO cancellation, step 2 (suppression), only for an account blocked at least 5 years ago (`support_retention_not_over`): email and name become non-identifying values, closed transfers that named the person keep only a sha256 digest of the email. Never takes `--yes`. |
+| `redact-email --email <e>` | ARCO cancellation for someone who never had an account (a transfer target who never signed in): their closed transfers keep only the digest, at once. Refused when the email belongs to an account (`support_email_has_account`) or a live transfer to it is pending (`support_transfer_pending`: cancel it first). |
 | `actions --organization <id> [--limit 50]` | Support history for an organization. |
 
 **Pilot grants (v1 production path to Pro).** Production launches with Stripe
@@ -142,7 +155,16 @@ not shorten the hold below 72 h unless the current primary confirms in writing.
 
 **Unlock.** Prefer the restaurant's own owner or manager; use
 `unlock-employee` only when nobody with that permission can sign in, after
-confirming the caller is the owner or a manager listed in `lookup`.
+confirming the caller is the owner, a co-owner or a manager of the restaurant
+(`lookup` prints the owners and the number of locked employees; confirm a
+manager by name with the owner). A permanent lock is the owner's call: act on
+it only at the request of the primary or a co-owner.
+
+`transfer-ownership` prints its one-time link on `SUPPORT_APP_URL` (or
+`APP_URL`), which must be the deployment's `https` origin; a missing,
+plain-http or `localhost` value stops the command before it writes anything
+(`support_app_url_required`, OPS-5). Set `SUPPORT_APP_URL` in the operator's
+`.env.support-<name>` next to `SUPPORT_DATABASE_URL`.
 
 **ARCO requests** (access, rectification, cancellation, opposition, LFPDPPP
 Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
@@ -152,8 +174,35 @@ Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
 - verify identity as above (INE; for a restaurant's diners or staff, refer
   them to the restaurant, which is the responsable; Green Monkey assists as
   encargado under the DPA);
-- account data: the owner's data export covers restaurant records; account
-  rectification is by support ticket; cancellation follows offboarding below.
+- **access**: the owner's data export covers the restaurant's records; for the
+  person's own account data, `lookup --email` prints what support can read
+  (organizations, roles, transfers, acceptances), and the person sees their
+  account, co-owners, transfers, activity and tax profile in the account
+  console;
+- **rectification** (Art. 23-24): `rectify-account` changes the account's name
+  or email (what other owners and support see). Names on POS seats and staff
+  records are the restaurant's own records: the owner edits them in Equipo;
+- **cancellation** (Art. 2-III, 24-25): first `block-account` (blocking: the
+  account cannot sign in; its data is kept only to answer for the legal
+  relationship), then, once the longest retention has passed,
+  `anonymize-account`. Retention: the subscription's fiscal records 5 years
+  (CFF Art. 30) and the evidence of the contract (legal acceptances) 10 years
+  (Código de Comercio Art. 49); anonymization keeps acceptances, account
+  events and fiscal records keyed by the account id only (append-only ledgers
+  are never edited or deleted). The CLI waits 5 years after the block; keep the
+  acceptance evidence by id for the rest. For someone who never had an
+  account, `redact-email` acts at once;
+- what the tools do **not** touch: the restaurants' own records (orders,
+  tickets, CFDI, staff and seat names, invitation emails), which belong to the
+  restaurant as responsable and leave with its offboarding; backups (below);
+- record every cancellation in the **cancellation register** (outside the
+  database: the ticket system), one line per command: date, ticket, command,
+  account id or email digest. After any restore (Neon branch, PITR or dump,
+  [BACKUP_RESTORE](BACKUP_RESTORE.md)), re-run every command in the register
+  dated after the restored snapshot before the database serves traffic again.
+  Backups themselves expire by lifecycle (daily 35 days, monthly 1,900 days);
+  until then they are encrypted, access-restricted and used only to recover
+  from a disaster, which the privacy notice and DPA state.
 
 **Breach notification.** On a security incident affecting personal data:
 contain it, record what happened, which data and which restaurants, and notify
@@ -163,6 +212,11 @@ account data. Follow the incident steps in [runbook](RUNBOOK.md).
 
 **Offboarding.** When a restaurant leaves: tell the owner to download the JSON
 export (Settings › Privacidad y datos) during an agreed window (30 days by
-default); end any support grant; keep fiscal records the law requires (CFF
-Art. 30, 5 years). Blocking and deletion are manual operator steps until
-deletion tooling exists (deferred): record each step in the ticket.
+default). The JSON does not contain the stamped CFDI files (XML/PDF): the owner
+downloads them from the invoices register or through the SAT's descarga
+masiva and must keep them 5 years (CFF Art. 30). End any support grant; then
+`block-account --offboarding` for the primary (and remove co-owners first).
+The restaurant's records are never deleted by the tools: fiscal records
+(tickets, CFDI) stay blocked for at least 5 years, append-only money ledgers
+stay as they are, and the account follows the ARCO cancellation steps above.
+Record each step in the ticket and the cancellation register.

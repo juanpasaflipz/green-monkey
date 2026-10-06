@@ -22,6 +22,10 @@ export const SUPPORT_COMMANDS = [
   "transfer-ownership",
   "cancel-transfer",
   "set-free-device",
+  "rectify-account",
+  "block-account",
+  "anonymize-account",
+  "redact-email",
   "actions",
 ] as const;
 export type SupportCommand = (typeof SUPPORT_COMMANDS)[number];
@@ -32,11 +36,23 @@ export const MUTATING: ReadonlySet<SupportCommand> = new Set([
   "transfer-ownership",
   "cancel-transfer",
   "set-free-device",
+  "rectify-account",
+  "block-account",
+  "anonymize-account",
+  "redact-email",
 ]);
 /** Pilot grants (D21): at most 90 days ahead; the database allows 92 for the 04:00 local end. */
 export const MAX_GRANT_DAYS = 90;
 export const MIN_HOLD_HOURS = 24;
 export const DEFAULT_HOLD_HOURS = 72;
+/**
+ * ARCO cancellation (LFPDPPP Art. 2-III, 24): an owner account stays blocked
+ * this long before anonymize-account may run, the longest retention its
+ * records carry: the subscription's fiscal records (CFF Art. 30, five years)
+ * and the contract evidence of its legal acceptances (Código de Comercio
+ * Art. 49, ten years, kept by account id after anonymization).
+ */
+export const BLOCK_YEARS_BEFORE_ANONYMIZATION = 5;
 
 export class SupportError extends Error {
   constructor(public code: string) {
@@ -85,6 +101,15 @@ export type SupportRequest =
     }
   | { command: "cancel-transfer"; transfer: string }
   | { command: "set-free-device"; tenant: string; device: string }
+  | {
+      command: "rectify-account";
+      account: string;
+      name: string | null;
+      email: string | null;
+    }
+  | { command: "block-account"; account: string; offboarding: boolean }
+  | { command: "anonymize-account"; account: string }
+  | { command: "redact-email"; email: string }
   | { command: "actions"; organization: string; limit: number };
 export type Operator = { label: string; ticket: string; reason: string };
 
@@ -93,6 +118,12 @@ function text(flags: SupportFlags, name: string): string {
   if (typeof v !== "string" || !v.trim())
     throw new SupportError(`support_flag_required_${name.replace(/-/g, "_")}`);
   return v.trim();
+}
+function emailFlag(flags: SupportFlags, name: string) {
+  const v = text(flags, name).toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v) || v.length > 254)
+    throw new SupportError("support_argument_invalid");
+  return v;
 }
 function uuid(flags: SupportFlags, name: string) {
   const v = text(flags, name);
@@ -171,9 +202,7 @@ export function validateSupportArgs(
           : Number(text(flags, "hold-hours"));
       if (!Number.isInteger(hold) || hold < MIN_HOLD_HOURS || hold > 24 * 30)
         throw new SupportError("support_hold_too_short");
-      const toEmail = text(flags, "to-email").toLowerCase();
-      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(toEmail) || toEmail.length > 254)
-        throw new SupportError("support_argument_invalid");
+      const toEmail = emailFlag(flags, "to-email");
       request = {
         command: "transfer-ownership",
         organization: uuid(flags, "organization"),
@@ -194,6 +223,40 @@ export function validateSupportArgs(
         tenant: uuid(flags, "tenant"),
         device: uuid(flags, "device"),
       };
+      break;
+    case "rectify-account": {
+      const name = flags.name === undefined ? null : text(flags, "name");
+      const newEmail =
+        flags.email === undefined ? null : emailFlag(flags, "email");
+      if (name === null && newEmail === null)
+        throw new SupportError("support_rectify_nothing");
+      if (name !== null && (name.length < 1 || name.length > 200))
+        throw new SupportError("support_argument_invalid");
+      request = {
+        command: "rectify-account",
+        account: uuid(flags, "account"),
+        name,
+        email: newEmail,
+      };
+      break;
+    }
+    case "block-account":
+      request = {
+        command: "block-account",
+        account: uuid(flags, "account"),
+        offboarding: flags.offboarding === true,
+      };
+      break;
+    case "anonymize-account":
+      if (flags.yes !== undefined)
+        throw new SupportError("support_yes_not_allowed");
+      request = {
+        command: "anonymize-account",
+        account: uuid(flags, "account"),
+      };
+      break;
+    case "redact-email":
+      request = { command: "redact-email", email: emailFlag(flags, "email") };
       break;
     case "actions": {
       const limit =
@@ -264,6 +327,18 @@ export type SupportIO = {
   appUrl?: string;
 };
 const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+/** An https origin (loopback allowed only over https, as the acceptance run serves). */
+export function supportLinkOrigin(value: string | undefined): string | null {
+  if (!value) return null;
+  try {
+    const u = new URL(value);
+    if (u.protocol !== "https:" || u.username || u.password) return null;
+    if (u.hostname === "localhost") return null;
+    return u.origin;
+  } catch {
+    return null;
+  }
+}
 /** An employees.locked_until value: null, an instant, or the 'infinity' hard lock. */
 const lockText = (l: Date | null) =>
   l === null
@@ -357,7 +432,7 @@ export async function runSupportCommand(
       const before = await transaction(sql, async (tx) => {
         const t = await tenantRow(tx, r.tenant);
         const [e] =
-          await tx`select id,name,failed_attempts,locked_until from employees where login=${r.login}`;
+          await tx`select id,name,role,failed_attempts,locked_until from employees where login=${r.login}`;
         if (!e) throw new SupportError("support_employee_not_found");
         return { t, e };
       });
@@ -365,7 +440,12 @@ export async function runSupportCommand(
         io,
         yes,
         [
-          `Desbloquear a ${before.e.name} (${r.login}) en ${before.t.name}.`,
+          `Desbloquear a ${before.e.name} (${r.login}, rol ${before.e.role}) en ${before.t.name}.`,
+          ...(lockText(before.e.locked_until) === "infinity"
+            ? [
+                "Bloqueo permanente (solo la persona titular lo quita): confirma que lo pide la persona titular o un copropietario de la consulta (lookup).",
+              ]
+            : []),
           `Intentos fallidos ${before.e.failed_attempts} → 0; bloqueo ${lockText(before.e.locked_until) ?? "ninguno"} → ninguno; bloqueos por dispositivo → 0.`,
         ],
         before.t.name,
@@ -378,11 +458,8 @@ export async function runSupportCommand(
         const [throttles] =
           await tx`select count(*)::int as count,coalesce(max(lock_level),0)::int as max_level
             from pin_throttles where employee_id=${e.id} and (failures>0 or lock_level>0 or locked_until is not null)`;
-        // Mirrors access's clearLocks(): the global counter and lock (the
-        // 'infinity' hard lock included) and every device throttle.
-        await tx`update employees set failed_attempts=0,locked_until=null where id=${e.id}`;
-        await tx`update pin_throttles set failures=0,lock_level=0,locked_until=null,last_failure_at=null
-          where employee_id=${e.id}`;
+        // Logged first: the database accepts the writes below only with this
+        // transaction's action row for this employee (AUTHZ-2, OPS-2).
         const actionId = await logAction(tx, operator, "unlock_employee", {
           organizationId: t.organization_id,
           tenantId: t.id,
@@ -395,6 +472,11 @@ export async function runSupportCommand(
           },
           after: { failedAttempts: 0, lockedUntil: null, lockedDevices: 0 },
         });
+        // Mirrors access's clearLocks(): the global counter and lock (the
+        // 'infinity' hard lock included) and every device throttle.
+        await tx`update employees set failed_attempts=0,locked_until=null where id=${e.id}`;
+        await tx`update pin_throttles set failures=0,lock_level=0,locked_until=null,last_failure_at=null
+          where employee_id=${e.id}`;
         // No support employee exists: the unlocked employee is the audit actor,
         // detail.support marks the real source; by:"support" keeps the
         // manager's daily unlock budget untouched (R-27).
@@ -431,19 +513,25 @@ export async function runSupportCommand(
         if (bound) throw new SupportError("support_grant_stripe_bound");
         const [before] =
           await tx`select status,access_until,source from restaurant_entitlements where tenant_id=${r.tenant}`;
-        const [after] =
-          await tx`insert into restaurant_entitlements(tenant_id,status,access_until,source)
-          values(${r.tenant},'active',(${r.until}::date + time '04:00') at time zone ${t.timezone},'support')
-          on conflict(tenant_id) do update set status='active',access_until=excluded.access_until,
-            source='support',version=restaurant_entitlements.version+1,updated_at=now()
-          returning status,access_until,source`;
+        const [end] =
+          await tx`select (${r.until}::date + time '04:00') at time zone ${t.timezone} as access_until`;
         const id = await logAction(tx, operator, "grant_entitlement", {
           organizationId: t.organization_id,
           tenantId: t.id,
           target: { until: r.until },
           before: before ?? null,
-          after,
+          after: {
+            status: "active",
+            access_until: end.access_until,
+            source: "support",
+          },
         });
+        const [after] =
+          await tx`insert into restaurant_entitlements(tenant_id,status,access_until,source)
+          values(${r.tenant},'active',${end.access_until},'support')
+          on conflict(tenant_id) do update set status='active',access_until=excluded.access_until,
+            source='support',version=restaurant_entitlements.version+1,updated_at=now()
+          returning status,access_until,source`;
         io.print(
           `Listo: Pro hasta ${(after.access_until as Date).toISOString()} (renovable antes de esa fecha).`,
         );
@@ -463,7 +551,24 @@ export async function runSupportCommand(
       return transaction(sql, async (tx) => {
         const t = await tenantRow(tx, r.tenant);
         const [before] =
-          await tx`select status,access_until,source from restaurant_entitlements where tenant_id=${r.tenant}`;
+          await tx`select status,access_until,source,least(access_until,now()) as ends
+            from restaurant_entitlements where tenant_id=${r.tenant} and source in ('support','fixture')`;
+        if (!before) throw new SupportError("support_grant_not_found");
+        const id = await logAction(tx, operator, "end_entitlement", {
+          organizationId: t.organization_id,
+          tenantId: t.id,
+          target: {},
+          before: {
+            status: before.status,
+            access_until: before.access_until,
+            source: before.source,
+          },
+          after: {
+            status: "free",
+            accessUntil: (before.ends as Date | null)?.toISOString() ?? null,
+            source: "support",
+          },
+        });
         // access_until keeps when Pro ended (now, or the grant's own earlier
         // end): drawers opened before it finish their shift and no drawer
         // opened on Free gains drawer continuation (GAP-1, ACC-14).
@@ -472,21 +577,14 @@ export async function runSupportCommand(
             source='support',version=version+1,updated_at=now()
           where tenant_id=${r.tenant} and source in ('support','fixture') returning status,access_until`;
         if (!rows.length) throw new SupportError("support_grant_not_found");
-        const id = await logAction(tx, operator, "end_entitlement", {
-          organizationId: t.organization_id,
-          tenantId: t.id,
-          target: {},
-          before,
-          after: {
-            status: "free",
-            accessUntil: (rows[0].access_until as Date).toISOString(),
-            source: "support",
-          },
-        });
         return { supportActionId: id };
       });
     }
     case "transfer-ownership": {
+      // The link is printed once: never on a missing, plain-http or local
+      // origin a support workstation's .env might carry (OPS-5).
+      if (!supportLinkOrigin(io.appUrl))
+        throw new SupportError("support_app_url_required");
       const org0 = await transaction(sql, async (tx) => {
         const [o] =
           await tx`select id,name,created_by_account from organizations where id=${r.organization}`;
@@ -509,22 +607,25 @@ export async function runSupportCommand(
       return transaction(sql, async (tx) => {
         const [o] =
           await tx`select id,name,created_by_account from organizations where id=${r.organization}`;
+        // Logged first (AUTHZ-2): the insert and the expired-row cleanup need
+        // this transaction's action row. The target email is stored as a
+        // digest (DATA-3): support_actions is append-only.
+        const actionId = await logAction(tx, operator, "transfer_ownership", {
+          organizationId: o.id,
+          target: { toEmailSha256: hash(r.toEmail), holdHours: r.holdHours },
+        });
         await tx`update ownership_transfers set state='canceled',canceled_at=now(),canceled_by='support'
           where organization_id=${r.organization} and state='pending' and expires_at<=now()`;
         const [pending] =
           await tx`select 1 from ownership_transfers where organization_id=${r.organization} and state='pending'`;
         if (pending) throw new SupportError("support_transfer_pending");
-        const actionId = await logAction(tx, operator, "transfer_ownership", {
-          organizationId: o.id,
-          target: { toEmail: r.toEmail, holdHours: r.holdHours },
-        });
         const transferId = randomUUID();
         const token = transferId + "." + randomBytes(32).toString("hex");
         await tx`insert into ownership_transfers(id,organization_id,from_account_id,to_email,token_hash,initiated_by,
             support_action_id,previous_owner_stays,available_at,expires_at)
           values(${transferId},${o.id},${o.created_by_account},${r.toEmail},${hash(token)},'support',${actionId},false,
             now()+make_interval(hours=>${r.holdHours}),now()+make_interval(hours=>${r.holdHours})+interval '7 days')`;
-        const link = `${(io.appUrl ?? "").replace(/\/$/, "")}/app?account=1#transfer=${token}`;
+        const link = `${supportLinkOrigin(io.appUrl)}/app?account=1#transfer=${token}`;
         io.print(
           "Enlace (envíalo solo al correo verificado; no se volverá a mostrar):",
         );
@@ -534,16 +635,27 @@ export async function runSupportCommand(
     }
     case "cancel-transfer":
       return transaction(sql, async (tx) => {
+        const [t] =
+          await tx`select organization_id from ownership_transfers where id=${r.transfer} and state='pending'`;
+        if (!t) throw new SupportError("support_transfer_not_found");
+        const id = await logAction(tx, operator, "cancel_transfer", {
+          organizationId: t.organization_id,
+          target: { transferId: r.transfer },
+        });
         const rows =
           await tx`update ownership_transfers set state='canceled',canceled_at=now(),canceled_by='support'
           where id=${r.transfer} and state='pending' returning organization_id`;
         if (!rows.length) throw new SupportError("support_transfer_not_found");
-        const id = await logAction(tx, operator, "cancel_transfer", {
-          organizationId: rows[0].organization_id,
-          target: { transferId: r.transfer },
-        });
         return { supportActionId: id };
       });
+    case "rectify-account":
+      return rectifyAccount(sql, r, operator, yes, io);
+    case "block-account":
+      return blockAccount(sql, r, operator, yes, io);
+    case "anonymize-account":
+      return anonymizeAccount(sql, r, operator, io);
+    case "redact-email":
+      return redactEmail(sql, r, operator, yes, io);
     case "set-free-device": {
       const t0 = await transaction(sql, async (tx) => {
         const t = await tenantRow(tx, r.tenant);
@@ -575,10 +687,6 @@ export async function runSupportCommand(
         await tx`select pg_advisory_xact_lock(hashtextextended(${r.tenant},920))`;
         const [before] =
           await tx`select id from devices where free_slot is not null`;
-        await tx`update devices set free_slot=null where free_slot is not null`;
-        const moved =
-          await tx`update devices set free_slot=1 where id=${r.device} and active returning id`;
-        if (!moved.length) throw new SupportError("support_device_not_found");
         const id = await logAction(tx, operator, "set_free_device", {
           organizationId: t.organization_id,
           tenantId: t.id,
@@ -586,10 +694,309 @@ export async function runSupportCommand(
           before: { deviceId: before?.id ?? null },
           after: { deviceId: r.device },
         });
+        await tx`update devices set free_slot=null where free_slot is not null`;
+        const moved =
+          await tx`update devices set free_slot=1 where id=${r.device} and active returning id`;
+        if (!moved.length) throw new SupportError("support_device_not_found");
         return { supportActionId: id };
       });
     }
   }
+}
+
+type AccountRow = {
+  id: string;
+  email: string;
+  name: string;
+  active: boolean;
+  created_at: Date;
+};
+async function accountRow(tx: Tx, id: string): Promise<AccountRow> {
+  const [a] =
+    await tx`select id,email,name,active,created_at from owner_accounts where id=${id}`;
+  if (!a) throw new SupportError("support_account_not_found");
+  return a as AccountRow;
+}
+/** Organizations where the account is primary or an active co-owner. */
+async function accountOrganizations(tx: Tx, accountId: string) {
+  const primary =
+    await tx`select id,name from organizations where created_by_account=${accountId} order by name`;
+  const coOwner = await tx`select o.id,o.name from organization_co_owners c
+      join organizations o on o.id=c.organization_id
+    where c.account_id=${accountId} and c.removed_at is null order by o.name`;
+  return {
+    primary: primary as unknown as Array<{ id: string; name: string }>,
+    coOwner: coOwner as unknown as Array<{ id: string; name: string }>,
+  };
+}
+/** The digests the owner_accounts policy compares (support_actions keeps no plaintext). */
+const accountState = (a: { email: string; name: string; active: boolean }) => ({
+  emailSha256: hash(a.email),
+  nameSha256: hash(a.name),
+  active: a.active,
+});
+/**
+ * One action row per organization involved, so each organization's owners see
+ * it in «Acciones de soporte»; a single organization-less row when none is.
+ */
+async function logForOrganizations(
+  tx: Tx,
+  operator: Operator,
+  action: string,
+  organizations: string[],
+  o: { target: Record<string, unknown>; before?: unknown; after?: unknown },
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const organizationId of organizations.length
+    ? [...new Set(organizations)]
+    : [null])
+    ids.push(await logAction(tx, operator, action, { ...o, organizationId }));
+  return ids;
+}
+export const ANONYMIZED_NAME = "Cuenta anonimizada";
+const redacted = (email: string) => "redacted:" + hash(email);
+
+async function rectifyAccount(
+  sql: postgres.Sql,
+  r: Extract<SupportRequest, { command: "rectify-account" }>,
+  operator: Operator,
+  yes: boolean,
+  io: SupportIO,
+) {
+  const a0 = await transaction(sql, (tx) => accountRow(tx, r.account));
+  if (a0.email.startsWith("redacted:"))
+    throw new SupportError("support_account_anonymized");
+  await confirmName(
+    io,
+    yes,
+    [
+      `Rectificar la cuenta ${a0.id} (ARCO, artículo 23):`,
+      `  nombre: ${a0.name} → ${r.name ?? a0.name}`,
+      `  correo: ${a0.email} → ${r.email ?? a0.email}`,
+      "El inicio de sesión con Google no cambia (se identifica por la cuenta de Google, no por el correo).",
+    ],
+    a0.email,
+  );
+  return transaction(sql, async (tx) => {
+    const a = await accountRow(tx, r.account);
+    const after = {
+      email: r.email ?? a.email,
+      name: r.name ?? a.name,
+      active: a.active,
+    };
+    const orgs = await accountOrganizations(tx, a.id);
+    const ids = await logForOrganizations(
+      tx,
+      operator,
+      "rectify_account",
+      [...orgs.primary, ...orgs.coOwner].map((o) => o.id),
+      {
+        target: { accountId: a.id },
+        before: accountState(a),
+        after: accountState(after),
+      },
+    );
+    await tx`update owner_accounts set email=${after.email},name=${after.name} where id=${a.id}`;
+    io.print(
+      `Listo: cuenta rectificada (${ids.length} registro(s) de soporte).`,
+    );
+    return { supportActionIds: ids };
+  });
+}
+
+async function blockAccount(
+  sql: postgres.Sql,
+  r: Extract<SupportRequest, { command: "block-account" }>,
+  operator: Operator,
+  yes: boolean,
+  io: SupportIO,
+) {
+  const check = async (tx: Tx) => {
+    const a = await accountRow(tx, r.account);
+    if (!a.active) throw new SupportError("support_account_already_blocked");
+    const orgs = await accountOrganizations(tx, a.id);
+    // Seats end through the co-owner lifecycle first (the primary removes
+    // them, or they leave): blocking never strands an owner seat.
+    if (orgs.coOwner.length)
+      throw new SupportError("support_account_is_co_owner");
+    // A primary is blocked only when the organization itself leaves
+    // (offboarding); otherwise the business transfers ownership first.
+    if (orgs.primary.length && !r.offboarding)
+      throw new SupportError("support_account_is_primary");
+    return { a, orgs };
+  };
+  const { a: a0, orgs: o0 } = await transaction(sql, check);
+  await confirmName(
+    io,
+    yes,
+    [
+      `Bloquear la cuenta ${a0.id} <${a0.email}> (cancelación ARCO, bloqueo):`,
+      "  deja de poder entrar con Google y sus sesiones de cuenta y del punto de venta terminan;",
+      "  sus datos se conservan bloqueados durante el plazo legal y después se anonimizan (anonymize-account).",
+      ...o0.primary.map(
+        (o) =>
+          `  Titular de ${o.name}: baja de la organización (--offboarding).`,
+      ),
+    ],
+    a0.email,
+  );
+  return transaction(sql, async (tx) => {
+    const { a, orgs } = await check(tx);
+    const ids = await logForOrganizations(
+      tx,
+      operator,
+      "block_account",
+      orgs.primary.map((o) => o.id),
+      {
+        target: { accountId: a.id, offboarding: r.offboarding },
+        before: accountState(a),
+        after: accountState({ ...a, active: false }),
+      },
+    );
+    await tx`update owner_accounts set active=false where id=${a.id}`;
+    io.print(
+      `Listo: cuenta bloqueada. Anonimízala con anonymize-account a partir del ${new Date(Date.now() + BLOCK_YEARS_BEFORE_ANONYMIZATION * 365.25 * 864e5).toISOString().slice(0, 10)}.`,
+    );
+    return { supportActionIds: ids };
+  });
+}
+
+/**
+ * Closes expired pending transfers addressed to the emails (cancel branch),
+ * then replaces each closed transfer's target email by its digest (the one
+ * change ownership_transfer_guard allows). Pending live transfers stay.
+ */
+async function redactTransfers(
+  tx: Tx,
+  emails: string[],
+  accountId: string | null,
+) {
+  await tx`update ownership_transfers set state='canceled',canceled_at=now(),canceled_by='support'
+    where state='pending' and expires_at<=now()
+      and (to_email = any(${emails}::text[]) or to_account_id=${accountId})`;
+  const rows =
+    await tx`update ownership_transfers set to_email='redacted:' || encode(sha256(convert_to(to_email,'UTF8')),'hex')
+    where state<>'pending' and to_email not like 'redacted:%'
+      and (to_email = any(${emails}::text[]) or to_account_id=${accountId})
+    returning id`;
+  return rows.length;
+}
+async function transferOrganizations(
+  tx: Tx,
+  emails: string[],
+  accountId: string | null,
+) {
+  const rows =
+    await tx`select distinct organization_id,to_email,state,expires_at>now() as live from ownership_transfers
+    where to_email not like 'redacted:%'
+      and (to_email = any(${emails}::text[]) or to_account_id=${accountId})`;
+  return rows as unknown as Array<{
+    organization_id: string;
+    to_email: string;
+    state: string;
+    live: boolean;
+  }>;
+}
+
+async function anonymizeAccount(
+  sql: postgres.Sql,
+  r: Extract<SupportRequest, { command: "anonymize-account" }>,
+  operator: Operator,
+  io: SupportIO,
+) {
+  const check = async (tx: Tx) => {
+    const a = await accountRow(tx, r.account);
+    if (a.email.startsWith("redacted:"))
+      throw new SupportError("support_account_anonymized");
+    if (a.active) throw new SupportError("support_account_not_blocked");
+    const [blocked] = await tx`select min(created_at) as at,
+          min(created_at) <= now() - make_interval(years=>${BLOCK_YEARS_BEFORE_ANONYMIZATION}) as over
+        from support_actions where action='block_account' and target->>'accountId'=${a.id}`;
+    if (!blocked?.at) throw new SupportError("support_account_not_blocked");
+    if (!blocked.over) throw new SupportError("support_retention_not_over");
+    const transfers = await transferOrganizations(tx, [a.email], a.id);
+    if (transfers.some((t) => t.state === "pending" && t.live))
+      throw new SupportError("support_transfer_pending");
+    return { a, transfers };
+  };
+  const { a: a0, transfers: t0 } = await transaction(sql, check);
+  await confirmName(
+    io,
+    false,
+    [
+      `Anonimizar la cuenta ${a0.id} <${a0.email}> (cancelación ARCO, supresión):`,
+      `  correo y nombre → valores no identificables; ${t0.length} transferencia(s) con su correo → huella sha256.`,
+      "  Se conservan, ligados solo al identificador de la cuenta: aceptaciones legales (evidencia del contrato), eventos de cuenta y registros fiscales.",
+    ],
+    a0.email,
+  );
+  return transaction(sql, async (tx) => {
+    const { a, transfers } = await check(tx);
+    const emails = [...new Set([a.email, ...transfers.map((t) => t.to_email)])];
+    const after = {
+      email: redacted(a.email),
+      name: ANONYMIZED_NAME,
+      active: false,
+    };
+    const ids = await logForOrganizations(
+      tx,
+      operator,
+      "anonymize_account",
+      transfers.map((t) => t.organization_id),
+      {
+        target: { accountId: a.id, emailSha256s: emails.map(hash) },
+        before: accountState(a),
+        after: accountState(after),
+      },
+    );
+    await tx`update owner_accounts set email=${after.email},name=${after.name} where id=${a.id}`;
+    const count = await redactTransfers(tx, emails, a.id);
+    io.print(
+      `Listo: cuenta anonimizada; ${count} transferencia(s) anonimizada(s).`,
+    );
+    return { supportActionIds: ids, transfersRedacted: count };
+  });
+}
+
+/** ARCO cancellation for someone who never had an account (a transfer target, for example). */
+async function redactEmail(
+  sql: postgres.Sql,
+  r: Extract<SupportRequest, { command: "redact-email" }>,
+  operator: Operator,
+  yes: boolean,
+  io: SupportIO,
+) {
+  const check = async (tx: Tx) => {
+    const [account] =
+      await tx`select id from owner_accounts where lower(email)=${r.email}`;
+    if (account) throw new SupportError("support_email_has_account");
+    const transfers = await transferOrganizations(tx, [r.email], null);
+    if (transfers.some((t) => t.state === "pending" && t.live))
+      throw new SupportError("support_transfer_pending");
+    return transfers;
+  };
+  const t0 = await transaction(sql, check);
+  await confirmName(
+    io,
+    yes,
+    [
+      `Anonimizar ${r.email} en ${t0.length} transferencia(s) cerrada(s) (cancelación ARCO).`,
+    ],
+    r.email,
+  );
+  return transaction(sql, async (tx) => {
+    const transfers = await check(tx);
+    const ids = await logForOrganizations(
+      tx,
+      operator,
+      "redact_email",
+      transfers.map((t) => t.organization_id),
+      { target: { emailSha256s: [hash(r.email)] } },
+    );
+    const count = await redactTransfers(tx, [r.email], null);
+    io.print(`Listo: ${count} transferencia(s) anonimizada(s).`);
+    return { supportActionIds: ids, transfersRedacted: count };
+  });
 }
 
 async function lookup(
@@ -630,9 +1037,12 @@ async function lookup(
     const [transfer] =
       await tx`select id,initiated_by,to_email,available_at,expires_at from ownership_transfers
       where organization_id=${o.id} and state='pending' and expires_at>now()`;
+    // The primary's terms and privacy, and this organization's DPA (LEGAL-9).
     const legal =
       await tx`select distinct on (document) document,version,accepted_at from legal_acceptances
-      where account_id=${o.created_by_account} order by document,accepted_at desc`;
+      where account_id=${o.created_by_account}
+        and (organization_id is null or organization_id=${o.id})
+      order by document,accepted_at desc`;
     const locations =
       await tx`select id,name,activation_pending,free_location from restaurants
       where organization_id=${o.id} order by name`;
@@ -677,10 +1087,20 @@ async function lookup(
       );
   }
   if (!organizations.length) io.print("Sin resultados.");
-  await logAction(tx, operator, "lookup", {
-    organizationId: organizations.length === 1 ? organizations[0].id : null,
-    tenantId: r.by === "tenant" ? r.value : null,
-    target: { [r.by]: r.value },
-  });
+  // One row per organization shown, so each one's owners see that support read
+  // it (UX-7, AUTHZ-5, LEGAL-9); an email is stored as its digest (DATA-3):
+  // support_actions is append-only and may outlive the person's data.
+  const target =
+    r.by === "email" ? { emailSha256: hash(r.value) } : { [r.by]: r.value };
+  if (r.by === "tenant" && organizations.length)
+    await logAction(tx, operator, "lookup", { tenantId: r.value, target });
+  else
+    await logForOrganizations(
+      tx,
+      operator,
+      "lookup",
+      organizations.map((o) => o.id),
+      { target },
+    );
   return result;
 }

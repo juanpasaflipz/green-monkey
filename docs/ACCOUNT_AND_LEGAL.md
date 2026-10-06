@@ -260,9 +260,21 @@ admin transaction with the named triggers disabled (LD-12).
 
 The support role `gm_support` (from `scripts/ops/sql/globals.sql`) reads
 column-scoped account and tenant data and writes only what its commands need:
-`support_actions`, audit rows, PIN lock counters (unlock), support
-entitlements, support-initiated transfers and the Free device slot. It never
-reads secrets (token hashes, secret hashes, CFDI secrets).
+`support_actions`, the unlock's audit row, PIN lock counters (unlock), support
+entitlements, support-initiated transfers, the Free device slot and, for ARCO
+requests, owner account name, email and `active` and a closed transfer's
+email digest. It never reads secrets (token hashes, secret hashes, CFDI
+secrets). **Every write is bound to its log row** (LD-32 AUTHZ-2, OPS-2):
+restrictive policies accept a `gm_support` write only with a `support_actions`
+row the same login wrote in the same transaction (`created_at = now()`, forced
+by the trigger) for that tenant or organization and target, and bound the
+values (unlock only clears; the audit grant excludes `created_at`, and the row
+must be the unlock's own `access.employee_unlocked {by:"support"}`; the Free
+slot only moves to the logged device; an account row must equal the logged
+state, compared as digests). The insert trigger fills a tenant action's
+organization, so its owners always see it. `ownership_transfer_guard` allows
+exactly one change to a closed transfer: replacing its email by
+`redacted:<sha256>` (ARCO cancellation). support-db checks 3c and 9-12.
 
 ## Owner data export
 
