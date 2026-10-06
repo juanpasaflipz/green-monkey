@@ -86,6 +86,12 @@ SUPPORT_PROVISION_TARGET=<host:port/database> \
 npm run support:provision -- --name <alnum>
 ```
 
+`SUPPORT_PROVISION_TARGET` must repeat the owner URL's exact
+`host:port/database`, and the database must be one ops provisioning creates,
+`green_monkey_<env>` (`green_monkey_production`, `green_monkey_staging`; see
+[provisioning](PROVISIONING.md)), or a local `green_monkey[_<name>]_dev`
+(`green_monkey_acceptance_dev`); anything else stops with
+`explicit_support_provision_target_required` before connecting (LD-32 OPS-1).
 It creates `gm_support_<name>` (LOGIN, member of `gm_support`, no superuser,
 CREATEDB, CREATEROLE or BYPASSRLS) and writes the connection URL once to
 `.env.support-<name>` (mode 0600). Keep that file on the operator's

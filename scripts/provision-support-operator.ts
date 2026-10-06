@@ -17,12 +17,7 @@ import { randomBytes } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import postgres from "postgres";
 import { poolOptions, withoutParams } from "../server/db-support.js";
-
-const ALLOWED = [
-  "/green_monkey_staging",
-  "/green_monkey_test",
-  "/green_monkey_dev",
-];
+import { supportProvisionTarget } from "./support-provision-target.js";
 
 async function main() {
   const nameIndex = process.argv.indexOf("--name");
@@ -32,13 +27,13 @@ async function main() {
   if (!process.env.PROVISION_DATABASE_URL)
     throw Error("provision_database_url_required");
   const owner = new URL(process.env.PROVISION_DATABASE_URL);
-  const target = `${owner.hostname}:${owner.port || "5432"}${owner.pathname}`;
-  // Production (/green_monkey) only when its exact target is named (D16).
-  if (
-    process.env.SUPPORT_PROVISION_TARGET !== target ||
-    !(ALLOWED.includes(owner.pathname) || owner.pathname === "/green_monkey")
-  )
-    throw Error("explicit_support_provision_target_required");
+  // The databases ops provisioning creates (green_monkey_<env>) and the local
+  // green_monkey[_<name>]_dev ones, each only when SUPPORT_PROVISION_TARGET
+  // names its exact host:port/database (D16, LD-32 OPS-1).
+  const { database } = supportProvisionTarget(
+    owner.href,
+    process.env.SUPPORT_PROVISION_TARGET,
+  );
   const role = `gm_support_${name}`;
   const password = randomBytes(32).toString("hex");
   const login = new URL(withoutParams(owner).href);
@@ -67,7 +62,7 @@ async function main() {
     );
     await sql.unsafe(`grant gm_support to "${role}"`);
     await sql.unsafe(
-      `grant connect on database "${owner.pathname.slice(1)}" to "${role}"`,
+      `grant connect on database "${database}" to "${role}"`,
     );
     process.stdout.write(
       JSON.stringify({
