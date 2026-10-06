@@ -49,6 +49,7 @@ import {
   type Session,
 } from "../shared/domain.js";
 import { offlineRecord } from "../shared/offline-recovery.js";
+import { noRetries } from "./db-retries.js";
 
 const { runtime, migration } = isolatedTarget(process.env),
   sql = connect(runtime),
@@ -626,18 +627,20 @@ try {
   // 8. Concurrent sync and archive of one record: exactly one wins (I1).
   for (let i = 0; i < 4; i++) {
     const raced = sale(s1);
-    const outcomes = await Promise.allSettled([
-      run((tx) => syncOfflineRecord(tx, s1, raced)),
-      run((tx) =>
-        archiveOfflineRecord(tx, manager1, {
-          operationId: randomUUID(),
-          record: raced,
-          localError: null,
-          reason: "Concurrent archive race fixture",
-          confirmed: true,
-        }),
-      ),
-    ]);
+    const outcomes = await noRetries("sync vs archive", () =>
+      Promise.allSettled([
+        run((tx) => syncOfflineRecord(tx, s1, raced)),
+        run((tx) =>
+          archiveOfflineRecord(tx, manager1, {
+            operationId: randomUUID(),
+            record: raced,
+            localError: null,
+            reason: "Concurrent archive race fixture",
+            confirmed: true,
+          }),
+        ),
+      ]),
+    );
     const won = outcomes.filter((o) => o.status === "fulfilled").length;
     assert.equal(won, 1, "exactly one of sync or archive wins");
     const reasons = outcomes
@@ -660,10 +663,12 @@ try {
     );
   }
   const doubled = sale(s1);
-  const both = await Promise.all([
-    run((tx) => syncOfflineRecord(tx, s1, doubled)),
-    run((tx) => syncOfflineRecord(tx, s1, doubled)),
-  ]);
+  const both = await noRetries("doubled sync", () =>
+    Promise.all([
+      run((tx) => syncOfflineRecord(tx, s1, doubled)),
+      run((tx) => syncOfflineRecord(tx, s1, doubled)),
+    ]),
+  );
   assert.equal(both[0].tenderId, both[1].tenderId);
   assert.equal(await count("tenders", "order_id=$2", both[0].orderId), 1);
 
@@ -947,12 +952,14 @@ try {
   assert.equal(stillActive.state, "active");
 
   // 14. Device prefixes are unique under concurrency and immutable.
-  const prefixes = await Promise.all([
-    run((tx) => offlineDevicePrefix(tx, s1)),
-    run((tx) => offlineDevicePrefix(tx, s2)),
-    run((tx) => offlineDevicePrefix(tx, s1)),
-    run((tx) => offlineDevicePrefix(tx, s2)),
-  ]);
+  const prefixes = await noRetries("device prefixes", () =>
+    Promise.all([
+      run((tx) => offlineDevicePrefix(tx, s1)),
+      run((tx) => offlineDevicePrefix(tx, s2)),
+      run((tx) => offlineDevicePrefix(tx, s1)),
+      run((tx) => offlineDevicePrefix(tx, s2)),
+    ]),
+  );
   assert.equal(prefixes[0].prefix, prefixes[2].prefix);
   assert.equal(prefixes[1].prefix, prefixes[3].prefix);
   assert.notEqual(prefixes[0].prefix, prefixes[1].prefix);

@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import postgres from "postgres";
 import { password } from "../server/auth.js";
-import { checkRole, connect, tenant } from "../server/db.js";
+import { checkRole, connect, dbRetryCount, tenant } from "../server/db.js";
 import {
   addRound,
   createOrder,
@@ -70,6 +70,7 @@ import {
   type Session,
 } from "../shared/domain.js";
 import { isolatedTarget } from "./isolated-target.js";
+import { noRetries } from "./db-retries.js";
 
 const { runtime: url, migration } = isolatedTarget(process.env);
 const sql = connect(url),
@@ -1543,7 +1544,9 @@ try {
         reason: "Cambio de mesa",
       }),
     );
-    const [first, second] = await Promise.allSettled([archive, assign]);
+    const [first, second] = await noRetries("archive vs assign", () =>
+      Promise.allSettled([archive, assign]),
+    );
     assert.equal(first.status, "fulfilled");
     assert.equal(second.status, "rejected");
     assert.equal(
@@ -1768,9 +1771,11 @@ try {
       }),
     );
     try {
-      const results = await Promise.allSettled(
-        [1, 2, 3].map(() =>
-          order(cashier, orderBody([{ productId: product.id }])),
+      const results = await noRetries("INV-02 last-portion sales", () =>
+        Promise.allSettled(
+          [1, 2, 3].map(() =>
+            order(cashier, orderBody([{ productId: product.id }])),
+          ),
         ),
       );
       assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
@@ -1801,13 +1806,17 @@ try {
     const before = await deadlocks();
     try {
       for (let i = 0; i < 15; i++) {
-        const results = await Promise.allSettled(
-          (["block", "allow", "block"] as const).map((policy) =>
-            run(manager, (tx) =>
-              saveNegativeStockPolicy(tx, manager, {
-                operationId: op(),
-                policy,
-              }),
+        // tenant()'s own count (PLATFORM-LOCKS-3): pg_stat_database lags until
+        // the pooled backends go idle, so the counter below is only a backstop.
+        const results = await noRetries("D20 policy saves", () =>
+          Promise.allSettled(
+            (["block", "allow", "block"] as const).map((policy) =>
+              run(manager, (tx) =>
+                saveNegativeStockPolicy(tx, manager, {
+                  operationId: op(),
+                  policy,
+                }),
+              ),
             ),
           ),
         );
@@ -2002,7 +2011,7 @@ try {
     }
     assert(waiting > 0, "the repeated movement must wait for the first one");
     release();
-    await Promise.all([one, two]);
+    await noRetries("repeated stock movements", () => Promise.all([one, two]));
     assert.equal(Number((await onHand(manager, first)).q), 6);
     assert.equal(
       Number((await onHand(manager, second)).q),
@@ -2052,7 +2061,9 @@ try {
         openingQuantity: null,
       }),
     );
-    const [linked, changed] = await Promise.allSettled([link, change]);
+    const [linked, changed] = await noRetries("link vs unit change", () =>
+      Promise.allSettled([link, change]),
+    );
     assert.equal(linked.status, "fulfilled");
     assert.equal(changed.status, "rejected");
     assert.equal((changed as PromiseRejectedResult).reason.code, "unit_locked");
@@ -2385,20 +2396,22 @@ try {
       );
     const before = await deadlocks();
     for (let i = 0; i < 20; i++) {
-      const results = await Promise.allSettled([
-        run(cashier, (tx) =>
-          addRound(tx, cashier, first.id, {
-            ...orderBody([{ productId: px.id }, { productId: py.id }]),
-            expectedVersion: first.version,
-          }),
-        ),
-        run(cashier, (tx) =>
-          addRound(tx, cashier, second.id, {
-            ...orderBody([{ productId: py.id }, { productId: px.id }]),
-            expectedVersion: second.version,
-          }),
-        ),
-      ]);
+      const results = await noRetries("DB-5 opposite rounds", () =>
+        Promise.allSettled([
+          run(cashier, (tx) =>
+            addRound(tx, cashier, first.id, {
+              ...orderBody([{ productId: px.id }, { productId: py.id }]),
+              expectedVersion: first.version,
+            }),
+          ),
+          run(cashier, (tx) =>
+            addRound(tx, cashier, second.id, {
+              ...orderBody([{ productId: py.id }, { productId: px.id }]),
+              expectedVersion: second.version,
+            }),
+          ),
+        ]),
+      );
       for (const r of results)
         assert.equal(
           r.status,
@@ -2436,12 +2449,16 @@ try {
         await tx`select id from stock_items where id=${secondId} for update`;
         return true;
       });
+    const counted = dbRetryCount();
     const both = await Promise.allSettled([crossing(x, y), crossing(y, x)]);
     assert.deepEqual(
       both.map((r) => r.status),
       ["fulfilled", "fulfilled"],
     );
     assert.equal(attempts, 3, "exactly one transaction was retried");
+    // The deliberate deadlock is counted and logged (db_retry), so noRetries()
+    // around the other bursts would have seen one (PLATFORM-LOCKS-3).
+    assert.equal(dbRetryCount() - counted, 1, "tenant() counted the retry");
     let forced = 0;
     await rejects(
       tenant(sql, a.tenantId, async () => {

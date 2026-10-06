@@ -14,10 +14,6 @@ import {
 import { MENU_LIMITS } from "../shared/menu.js";
 export async function commitImport(tx: Tx, s: Session, raw: unknown) {
   permit(s, managers);
-  const [restaurant] =
-    await tx`select currency from restaurants where id=${s.tenantId} for share`;
-  if (restaurant.currency !== s.restaurant.currency)
-    throw new DomainError("settings_changed", 409);
   const report = previewImport(raw);
   if (
     report.targetTenantId !== s.tenantId ||
@@ -26,7 +22,13 @@ export async function commitImport(tx: Tx, s: Session, raw: unknown) {
     throw new DomainError("import_scope", 403);
   if (report.rejected.length) throw new DomainError("import_rejected", 409);
   const fingerprint = hash(JSON.stringify(raw));
+  // The import's operation key (LO-1) before the restaurants row (LO-2), as
+  // once() takes them (global lock order LO-R1).
   await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + report.source + report.sourceTenantId},0))`;
+  const [restaurant] =
+    await tx`select currency from restaurants where id=${s.tenantId} for share`;
+  if (restaurant.currency !== s.restaurant.currency)
+    throw new DomainError("settings_changed", 409);
   const [prior] =
     await tx`select * from import_batches where source=${report.source} and file_hash=${fingerprint}`;
   if (prior) return prior.report;

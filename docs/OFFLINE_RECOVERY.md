@@ -354,7 +354,11 @@ se atrasó desde la última conexión…" until a ping measures the server time 
 
 Offline sync follows the binding
 [global lock order](ARCHITECTURE.md#global-lock-order-binding), written in full
-by Wave 2.0 (platform) and enforced by `tests/lock-order.test.ts`: the `once()`
+by Wave 2.0 (platform). `tests/lock-order.test.ts` checks it statically for each
+unit it can see (the appliers and reconcilers, `applySale`, `reconcileSale`;
+not the dynamic `appliers[kind]` dispatch from `syncOfflineRecord`), and the
+concurrency bursts that run through `tenant()` fail on any retried deadlock
+(`noRetries`, LO-R9; `tests/db-retries.test.ts` checks that each is wrapped): the `once()`
 key, the restaurant row (`FOR SHARE`), area serialization locks (including the
 offline prefix and archive advisory locks, which are config paths only, and the
 catalog `FOR SHARE` of `verifyLines`), `order_numbers`, `orders` (several sorted
@@ -364,15 +368,20 @@ and, from 027, the fiscal folio counter last.
 
 A sale takes order numbers → order → stock → rounds → feed inside `createOrder`,
 then `recordPayment` locks its own new order and the drawer, and the ledger row
-is written. One sanctioned exception remains (ARCHITECTURE E4): sale, order and
-round sync then place the rounds they just created in kitchen review
-(`placeRoundsInOfflineReview`) after the drawer and, from 027, after the folio
-counter. Only rows inserted by the same transaction are updated, so no other
-transaction can hold or wait for them; reordering is blocked by the foreign key
-to `offline_sync_records`, whose ledger row needs the tender id first. Every
-other offline path follows the order: a payment takes the order, then the
-drawer; a round never bumps the feed; a manager reconcile takes the order, then
-the drawer. None locks an order after the drawer.
+is written. One sanctioned and two proposed exceptions apply (ARCHITECTURE
+"Global lock order"; E5 and E6 await a lead decision). E4: sale, order and round sync then place the rounds they just created
+in kitchen review (`placeRoundsInOfflineReview`) after the drawer and, from
+027, after the folio counter. Only rows inserted by the same transaction are
+updated, so no other transaction can hold or wait for them; reordering is
+blocked by the foreign key to `offline_sync_records`, whose ledger row needs
+the tender id first. E5: `createOrder`'s refresh cannot issue (nothing is paid
+yet), so the payment's fresh key, its new order row and the drawer after it are
+not a step back from the folio counter. E6: a manager reconcile whose target is
+a cancelled online create or unresolvable falls back to a financial-only
+recovery, whose new order takes an order number after that lookup. Every other
+offline path follows the order: a payment takes the order, then the drawer; a
+round never bumps the feed; a manager reconcile takes the order, then the
+drawer. None locks an order after the drawer.
 
 ## Late sales and the global invoice
 

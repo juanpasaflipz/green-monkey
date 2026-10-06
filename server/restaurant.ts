@@ -26,7 +26,10 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
   const p = restaurantSettings.parse(raw);
   return once(tx, s, p.operationId, "restaurant.settings", p, async () => {
     await requireSelling(tx, s);
-    await tx`select id from restaurants where id=${s.tenantId} for update`;
+    // FOR NO KEY UPDATE: serializes with once()'s FOR SHARE but not with the
+    // FOR KEY SHARE every foreign-key check on restaurants takes (LO-2,
+    // PLATFORM-LOCKS-5).
+    await tx`select id from restaurants where id=${s.tenantId} for no key update`;
     const old = await getSettings(tx, s);
     if (old.version !== p.expectedVersion)
       throw new DomainError("settings_changed", 409);

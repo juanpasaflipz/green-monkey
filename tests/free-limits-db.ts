@@ -1,6 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { tenant } from "../server/db.js";
@@ -24,7 +24,10 @@ import {
   sellingAllowed,
 } from "../server/free-limits.js";
 import { createOrder, recordPayment } from "../server/orders.js";
+import { hash, sign } from "../server/auth.js";
+import { pinSignIn } from "../server/access.js";
 import type { Session } from "../shared/domain.js";
+import { noRetries } from "./db-retries.js";
 const { runtime, migration } = isolatedTarget(process.env),
   sql = postgres(runtime, { max: 8 }),
   admin = postgres(migration, { max: 1 });
@@ -96,9 +99,11 @@ try {
     secret: "123456",
     active: true,
   });
-  const attempts = await Promise.allSettled(
-    Array.from({ length: 6 }, () =>
-      run((tx) => saveEmployee(tx, s, employee())),
+  const attempts = await noRetries("free-limit employee saves", () =>
+    Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        run((tx) => saveEmployee(tx, s, employee())),
+      ),
     ),
   );
   assert.equal(
@@ -273,6 +278,75 @@ try {
     await run((tx) => sellingAllowed(tx, s.employeeId, s.deviceId)),
     false,
   );
+  // PLATFORM-LOCKS-6: an employee save and a Free selection touching the same
+  // slotted employee take the free-limits key (LO-3) before the employee row in
+  // both commands, so they serialize instead of deadlocking.
+  const [slotted] =
+    await admin`select id,name,login from employees where id=${staff[1].id}`;
+  const seller = { ...s, deviceId: otherDevice };
+  for (let i = 0; i < 10; i++)
+    await noRetries("employee save vs Free selection", () =>
+      Promise.all([
+        run((tx) =>
+          saveEmployee(tx, seller, {
+            operationId: randomUUID(),
+            id: slotted.id,
+            name: slotted.name,
+            login: slotted.login,
+            role: "cashier",
+            secret: "123456",
+            active: true,
+          }),
+        ),
+        run((tx) =>
+          saveFreeSelection(tx, s, {
+            deviceId: otherDevice,
+            employeeIds: [staff[1].id, staff[2].id],
+          }),
+        ),
+      ]),
+    );
+  // PLAT-HR-9: the exact LOCKS-6 cycle. A PIN sign-in on the slotted device locks the
+  // employee row (PIN counters) and creates a session (selectFirstDevice, sellingAllowed);
+  // saveFreeSelection holds the free-limits key while it updates every slotted device
+  // and employee. Both take 920 first, so they serialize and tenant() retries nothing.
+  const terminal = {
+    id: otherDevice,
+    tenantId,
+    token: randomBytes(32).toString("hex"),
+  };
+  await admin`update devices set token_hash=${hash(terminal.token)},
+      token_expires_at=now()+interval '1 day' where id=${otherDevice}`;
+  const signIn = () => {
+    const res = {
+      cookie: () => {},
+      clearCookie: () => {},
+    };
+    return pinSignIn(
+      sql,
+      {
+        cookies: { gm_device: sign(terminal) },
+        body: { employeeId: slotted.id, secret: "123456" },
+        headers: {},
+        method: "POST",
+      } as never,
+      res as never,
+    );
+  };
+  for (let i = 0; i < 10; i++) {
+    const [signedIn] = await noRetries("PIN sign-in vs Free selection", () =>
+      Promise.all([
+        signIn(),
+        run((tx) =>
+          saveFreeSelection(tx, s, {
+            deviceId: otherDevice,
+            employeeIds: [staff[1].id, staff[2].id],
+          }),
+        ),
+      ]),
+    );
+    assert.equal(typeof signedIn.sessionId, "string");
+  }
   await assert.rejects(
     run((tx) =>
       saveFreeSelection(

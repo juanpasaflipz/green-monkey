@@ -99,6 +99,8 @@ const operations: Record<string, Key> = {
   "public.resumed": "publicOpResumed",
   "public.hold_accepted": "publicOpHoldAccepted",
   "public.hold_rejected": "publicOpHoldRejected",
+  "job.requeued": "opsOpJobRequeued",
+  "job.cancelled": "opsOpJobCancelled",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",

@@ -13,8 +13,12 @@ branch protection, environments and the first CD run are pending the steps in
   approvals dismissed, conversations resolved, linear history (squash or
   rebase), no force-push or deletion, required checks `qualify` and
   `security` (strict: up to date with `main`), no bypass actors.
-- GitHub environments `staging` and `production` accept deployments from
-  protected branches only.
+- GitHub environments `staging` and `production` accept deployments from the
+  branch `main` only: a custom deployment branch policy with exactly one
+  rule, `main`, which `github-protect.sh` reads back (PLATFORM-CI-2). The
+  "protected branches" mode is not used, because `main` is protected by a
+  ruleset rather than a classic branch protection rule, and GitHub then lets
+  every branch deploy.
 
 ## Continuous integration (`.github/workflows/qualification.yml`)
 
@@ -37,8 +41,11 @@ full history (`.gitleaks.toml` allowlists only synthetic local/CI values).
 
 Every third-party action in `.github/` is pinned by full commit SHA with the
 release in a trailing comment (`actions/checkout@<sha> # v7.0.1`); the deploy,
-backup and uptime jobs hold production secrets, so a moved tag must not change
-what runs. `tests/workflows.test.ts` refuses a tag or branch reference. To
+retention, backup and uptime jobs hold production secrets, so a moved tag must
+not change what runs. Those privileged jobs also check out with
+`persist-credentials: false` and restore no npm cache
+(`package-manager-cache: false`): the cache Qualification saves would also
+hold `~/.npm/_npx`, where the Railway CLI is installed (PLATFORM-CI-3, CI-5). `tests/workflows.test.ts` refuses a tag or branch reference. To
 update one, read the new tag's commit with
 `git ls-remote https://github.com/actions/<name> refs/tags/<tag>` (an
 annotated tag lists a second `^{}` line: use that commit), review the
@@ -50,8 +57,9 @@ v7.0.1, `actions/setup-node` v7.0.0 and `actions/upload-artifact` v7.0.1, all
 `node24`. No input this repository passes was renamed (checkout v6 stores the
 persisted credentials in a separate file and v7 refuses fork pull-request code
 under `workflow_run`, which `deploy.yml` never checks out because it accepts
-only `push` runs; setup-node v5+ caches npm automatically, and the workflows
-keep `cache: npm` explicit; upload-artifact v7 adds `archive`, default `true`).
+only `push` runs; setup-node v5+ caches npm automatically, so Qualification
+keeps `cache: npm` explicit and the privileged jobs turn it off;
+upload-artifact v7 adds `archive`, default `true`).
 `tests/workflows.test.ts` refuses a pin older than the first Node 24 major of
 each action.
 
@@ -65,7 +73,10 @@ each action.
   it install the pinned IaC package (no lockfile change), run
   `railway config plan` and `railway config apply --yes` (destructive changes
   stop for review), stamp `build-info.json`, upload the `worker` and then
-  `web`, and run `scripts/ops/smoke.mjs --expect-commit <sha>`. If the migrate
+  `web`, and run `scripts/ops/smoke.mjs --expect-commit <sha>`, which also
+  waits until the worker reports that commit with its jobs runner on
+  (`railway up --ci` returns when the build ends, and a worker that fails to
+  boot leaves the old one answering). If the migrate
   step fails (a missing secret fails it with
   `::error::environment secret MIGRATION_DATABASE_URL is not set`), nothing on
   Railway changes and the old revision keeps serving on the old schema; the
@@ -79,8 +90,11 @@ each action.
   America/Mexico_City it also needs `allow_service_hours`. The IaC sync runs
   only when the SHA is the head of `main` (`railway_config: auto`); a
   rollback to an older SHA keeps the live service configuration
-  ([RUNBOOK.md](RUNBOOK.md), Rollback). After the smoke the workflow tags
-  `prod-YYYYMMDD-HHMM-<sha7>` and creates a GitHub release.
+  ([RUNBOOK.md](RUNBOOK.md), Rollback). After the smoke the workflow creates
+  the GitHub release `prod-YYYYMMDD-HHMM-<sha7>` (`gh release create
+  --target <sha>` makes the tag). The newest `prod-*` tag is the live release:
+  the daily retention run checks out its code. Never roll back from the
+  Railway dashboard (it restores old variables; RUNBOOK "Rollback").
 - Required reviewers on environments are not available for private
   repositories on the Free/Pro/Team plans, so the production gate is the
   manual dispatch plus the typed confirmation and the staging proof.
