@@ -242,6 +242,9 @@ CREATE TABLE cfdi_documents(
   card_payment_form text CHECK (card_payment_form IN ('04','28')),
   -- A substitute credit note's FormaPago chosen by the manager who corrects one (CFDI-SAT-2).
   payment_form_override text CHECK (payment_form_override IN ('01','04','28')),
+  -- A credit note to a global for one ticket's net amount, issued before that ticket's nominative
+  -- invoice when the global can no longer be canceled (CFF 29-A; Guía global Apéndice 2 III).
+  credit_ticket_id uuid,
   confirm_pre_start boolean NOT NULL DEFAULT false,
   period_key text CHECK (period_key ~ '^(D[0-9]{4}-[0-9]{2}-[0-9]{2}|W[0-9]{4}-[0-9]{2}-[0-9]{2}|F[0-9]{4}-[0-9]{2}-[12]|M[0-9]{4}-[0-9]{2})$'),
   global_info jsonb CHECK (global_info IS NULL OR jsonb_typeof(global_info) = 'object'),
@@ -290,7 +293,9 @@ CREATE TABLE cfdi_documents(
   CHECK (kind <> 'invoice' OR (receptor IS NOT NULL AND receptor_rfc IS NOT NULL AND period_key IS NULL AND refund_id IS NULL)),
   CHECK (kind <> 'global' OR (receptor IS NULL AND period_key IS NOT NULL AND global_info IS NOT NULL
                               AND part IS NOT NULL AND refund_id IS NULL)),
-  CHECK (kind <> 'egreso' OR (refund_id IS NOT NULL AND parent_document_id IS NOT NULL AND period_key IS NULL)),
+  CHECK (kind <> 'egreso' OR (parent_document_id IS NOT NULL AND period_key IS NULL
+                              AND (refund_id IS NOT NULL) <> (credit_ticket_id IS NOT NULL))),
+  CHECK (credit_ticket_id IS NULL OR kind = 'egreso'),
   CHECK (payment_form_override IS NULL OR (kind = 'egreso' AND replaces_document_id IS NOT NULL)),
   CHECK (status NOT IN ('valid','canceling','canceled')
          OR (uuid IS NOT NULL AND provider_invoice_id IS NOT NULL AND stamped_at IS NOT NULL AND total IS NOT NULL)),
@@ -309,6 +314,10 @@ CREATE UNIQUE INDEX cfdi_documents_refund ON cfdi_documents(tenant_id, refund_id
   WHERE kind = 'egreso' AND status NOT IN ('failed','canceled') AND replaces_document_id IS NULL;
 CREATE UNIQUE INDEX cfdi_documents_egreso_substitute ON cfdi_documents(tenant_id, replaces_document_id)
   WHERE kind = 'egreso' AND status NOT IN ('failed','canceled');
+-- One live route-III credit note per ticket and mode (its substitute aside).
+CREATE UNIQUE INDEX cfdi_documents_credit_ticket ON cfdi_documents(tenant_id, credit_ticket_id, mode)
+  WHERE kind = 'egreso' AND status NOT IN ('failed','canceled') AND credit_ticket_id IS NOT NULL
+    AND replaces_document_id IS NULL;
 CREATE INDEX cfdi_documents_created ON cfdi_documents(tenant_id, created_at DESC, id);
 CREATE INDEX cfdi_documents_open ON cfdi_documents(tenant_id, status, updated_at)
   WHERE status IN ('waiting','queued','stamping','pending','canceling');
@@ -325,7 +334,8 @@ CREATE INDEX cfdi_documents_rfc ON cfdi_documents(tenant_id, receptor_rfc, creat
 CREATE POLICY cfdi_documents_insert ON cfdi_documents AS RESTRICTIVE FOR INSERT
   WITH CHECK (cfdi_is_worker() OR (status IN ('queued','waiting') AND request IS NULL AND uuid IS NULL
     AND provider_invoice_id IS NULL AND attempts = 0
-    AND (kind = 'invoice' OR (kind = 'egreso' AND replaces_document_id IS NOT NULL))));
+    AND (kind = 'invoice'
+      OR (kind = 'egreso' AND (replaces_document_id IS NOT NULL OR credit_ticket_id IS NOT NULL)))));
 
 CREATE FUNCTION cfdi_documents_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
@@ -333,11 +343,11 @@ BEGIN
   IF NOT cfdi_is_worker() THEN RAISE EXCEPTION 'cfdi_document_update_worker_only' USING ERRCODE = 'insufficient_privilege'; END IF;
   IF (NEW.tenant_id, NEW.id, NEW.kind, NEW.source, NEW.mode, NEW.receptor, NEW.receptor_rfc, NEW.card_payment_form,
       NEW.payment_form_override, NEW.confirm_pre_start, NEW.period_key, NEW.global_info, NEW.part, NEW.refund_id,
-      NEW.parent_document_id, NEW.replaces_document_id, NEW.created_by, NEW.created_at)
+      NEW.credit_ticket_id, NEW.parent_document_id, NEW.replaces_document_id, NEW.created_by, NEW.created_at)
      IS DISTINCT FROM
      (OLD.tenant_id, OLD.id, OLD.kind, OLD.source, OLD.mode, OLD.receptor, OLD.receptor_rfc, OLD.card_payment_form,
       OLD.payment_form_override, OLD.confirm_pre_start, OLD.period_key, OLD.global_info, OLD.part, OLD.refund_id,
-      OLD.parent_document_id, OLD.replaces_document_id, OLD.created_by, OLD.created_at) THEN
+      OLD.credit_ticket_id, OLD.parent_document_id, OLD.replaces_document_id, OLD.created_by, OLD.created_at) THEN
     RAISE EXCEPTION 'cfdi_document_identity_immutable';
   END IF;
   IF OLD.request IS NOT NULL AND (NEW.request, NEW.payment_form, NEW.cfdi_use, NEW.series, NEW.netted_refund_ids,
@@ -551,11 +561,14 @@ END LOOP;
 END $$;
 
 -- 13. Statements on existing tables, last (see the header).
--- 13a. Claims reference fiscal's tickets, and a caller that sets app.self_invoice_code to a
--- 12-character code sees exactly that one ticket of any tenant (a 60-bit bearer secret printed on
--- the ticket; the self-invoicing portal resolves its tenant this way, never with a definer function).
+-- 13a. Claims (and a route-III credit note) reference fiscal's tickets, and a caller that sets
+-- app.self_invoice_code to a 12-character code sees exactly that one ticket of any tenant (a
+-- 60-bit bearer secret printed on the ticket; the self-invoicing portal resolves its tenant this
+-- way, never with a definer function).
 ALTER TABLE cfdi_document_tickets ADD CONSTRAINT cfdi_document_tickets_ticket
   FOREIGN KEY (tenant_id, ticket_id) REFERENCES fiscal_tickets(tenant_id, id);
+ALTER TABLE cfdi_documents ADD CONSTRAINT cfdi_documents_credit_ticket_fk
+  FOREIGN KEY (tenant_id, credit_ticket_id) REFERENCES fiscal_tickets(tenant_id, id);
 CREATE POLICY cfdi_self_invoice_lookup ON fiscal_tickets FOR SELECT
   USING (self_invoice_code = nullif(current_setting('app.self_invoice_code', true), ''));
 

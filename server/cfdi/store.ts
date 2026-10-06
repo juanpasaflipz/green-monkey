@@ -12,6 +12,8 @@
  */
 import { boundaries, DomainError } from "../../shared/domain.js";
 import {
+  cancellationAllowed,
+  cancellationDeadline,
   docLabel,
   globalPeriodFor,
   maskEmail,
@@ -128,6 +130,8 @@ export type DocumentRow = {
   cardPaymentForm: CardForm | null;
   /** A substitute credit note's FormaPago chosen by the manager (CFDI-SAT-2). */
   paymentFormOverride: "01" | CardForm | null;
+  /** A route-III credit note to a global for this ticket's net amount (CFDI-SAT-3). */
+  creditTicketId: string | null;
   confirmPreStart: boolean;
   periodKey: string | null;
   globalInfo: {
@@ -559,6 +563,7 @@ function documentRow(r: Record<string, any>): DocumentRow {
     receptorRfc: r.receptor_rfc,
     cardPaymentForm: r.card_payment_form,
     paymentFormOverride: r.payment_form_override ?? null,
+    creditTicketId: r.credit_ticket_id ?? null,
     confirmPreStart: r.confirm_pre_start,
     periodKey: r.period_key,
     globalInfo: r.global_info,
@@ -818,6 +823,8 @@ export async function documentView(
         and s.status = any(${[...UNFINISHED_SUBSTITUTE]}::text[])
         and (s.kind = 'egreso' or exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
           and c.document_id = s.id and c.state = 'pending'))) as substitute_unfinished,
+      (select p.rfc from restaurant_fiscal_profiles p where p.tenant_id = ${row.tenant_id}) as issuer_rfc,
+      (select r.timezone from restaurants r where r.id = ${row.tenant_id}) as timezone,
       -- A ticket of this document is from before the mode's start: no global covers it.
       exists (select 1 from cfdi_document_tickets c
         join fiscal_tickets t on t.tenant_id = c.tenant_id and t.id = c.ticket_id
@@ -853,10 +860,21 @@ export async function documentView(
     d.createdBy === viewer.employeeId &&
     Date.parse(d.createdAt) > Date.now() - 24 * 3600_000;
   const valid = d.status === "valid";
+  // CFF art. 29-A (CFDI-SAT-3): no cancellation (nor substitution, which ends in one) after the
+  // month the annual return of the CFDI's year is due.
+  const cancelDeadline = d.stampedAt
+    ? cancellationDeadline(
+        d.stampedAt,
+        extra.issuer_rfc ?? null,
+        extra.timezone ?? "America/Mexico_City",
+      )
+    : null;
+  const inTime = !cancelDeadline || Date.now() < Date.parse(cancelDeadline);
   // A substitute named by its original's open motive-01 cancellation waits for that to end
   // (CFDI-R4-1): canceling it would leave the original's cancellation without a substitute.
   const actionable =
     valid &&
+    inTime &&
     !openCancellation &&
     !extra.substitution_open &&
     (d.kind === "global" ? owner : manager);
@@ -914,6 +932,7 @@ export async function documentView(
     createdByName: extra.created_by_name ?? null,
     waitingSubstituteId,
     preStart: !!extra.pre_start,
+    cancelDeadline,
     canCancel,
     canSubstitute:
       (d.kind === "invoice" && canCancel && !extra.substitute_unfinished) ||
@@ -1152,8 +1171,29 @@ export async function ticketView(
     reissueAllowed: o.portal
       ? !!settings?.portalReissueGlobal
       : !!o.viewer && ["owner", "manager"].includes(o.viewer.role),
+    reissueRoute: await reissueRoute(tx, t, facts),
     documents,
   };
+}
+
+/**
+ * How a ticket in a valid global gets its nominative invoice (CFDI-SAT-3): cancel the global with
+ * motive 04 and replace it, or, once the global's CFF 29-A deadline has passed, a credit note to the
+ * global for the ticket (Guía global Apéndice 2 III). Null when the ticket is in no valid global.
+ */
+export async function reissueRoute(
+  tx: Tx,
+  t: TicketFacts,
+  facts: Pick<FiscalFacts, "rfc" | "timezone">,
+): Promise<"cancel" | "credit_note" | null> {
+  const g = t.coverage.find((c) => c.kind === "global" && c.state === "active");
+  if (!g || !["valid", "canceling"].includes(g.status)) return null;
+  const [r] =
+    await tx`select stamped_at from cfdi_documents where id = ${g.documentId}`;
+  const stampedAt = r?.stamped_at ? iso(r.stamped_at) : null;
+  return cancellationAllowed(stampedAt, facts.rfc, facts.timezone)
+    ? "cancel"
+    : "credit_note";
 }
 
 // ---------------------------------------------------------------------------------------------

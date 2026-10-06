@@ -170,6 +170,11 @@ export default defineArea({
     cfdiInGlobalManager:
       "Para facturarlo se cancelará la factura global de {period} (motivo 04) y se emitirá una nueva sin este ticket; después se emite la factura del cliente.",
     cfdiReissueAndInvoice: "Sustituir global y facturar",
+    cfdiInGlobalCreditNote:
+      "La factura global de {period} ya no se puede cancelar (artículo 29-A del CFF): se emitirá una nota de crédito a la global por este ticket y después la factura del cliente.",
+    cfdiCreditAndInvoice: "Nota de crédito a la global y facturar",
+    cfdiCancelDeadlinePassed:
+      "Ya no se puede cancelar ni sustituir: el plazo del artículo 29-A del CFF terminó el {date}.",
     cfdiGlobalInProgress:
       "La factura global de este periodo se está emitiendo. Intenta en unos minutos.",
     cfdiBeforeStart:
@@ -537,6 +542,11 @@ export default defineArea({
     cfdiInGlobalManager:
       "To invoice it, the global invoice for {period} will be cancelled (reason 04) and reissued without this ticket; then the customer's invoice is issued.",
     cfdiReissueAndInvoice: "Replace global and invoice",
+    cfdiInGlobalCreditNote:
+      "The global invoice for {period} can no longer be canceled (CFF article 29-A): a credit note to the global is issued for this ticket, then the customer's invoice.",
+    cfdiCreditAndInvoice: "Credit the global and invoice",
+    cfdiCancelDeadlinePassed:
+      "It can no longer be canceled or replaced: the CFF article 29-A deadline ended on {date}.",
     cfdiGlobalInProgress:
       "The global invoice for this period is being issued. Try again in a few minutes.",
     cfdiBeforeStart: "This ticket predates invoicing in Green Monkey.",
@@ -1197,6 +1207,18 @@ export default defineArea({
     cfdi_parent_canceling: [
       "La factura original está en cancelación; la nota de crédito espera el resultado.",
       "The original invoice is being cancelled; the credit note waits for the result.",
+    ],
+    cfdi_parent_credit_open: [
+      "La factura global tiene en curso una nota de crédito por este ticket; el reembolso se decide después.",
+      "The global invoice has a credit note in progress for this ticket; the refund is decided afterwards.",
+    ],
+    cfdi_cancel_deadline_passed: [
+      "El SAT ya no permite cancelar este CFDI: el plazo del artículo 29-A del CFF (hasta el mes de la declaración anual del ejercicio en que se emitió) venció.",
+      "SAT no longer allows canceling this CFDI: the deadline of CFF article 29-A (up to the month the annual return for its year is due) has passed.",
+    ],
+    cfdi_global_credit_failed: [
+      "No se pudo emitir la nota de crédito a la factura global; la factura del cliente no se emitió. Intenta de nuevo.",
+      "The credit note to the global invoice could not be issued; the customer's invoice was not issued. Try again.",
     ],
     cfdi_parent_cancel_open: [
       "La factura original tiene una cancelación en curso; la nota de crédito espera el resultado.",

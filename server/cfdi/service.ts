@@ -29,6 +29,7 @@ import {
   operationInput,
   substituteInput,
   egresoSubstituteInput,
+  cancellationAllowed,
   type CfdiSettingsView,
   type CfdiTicketView,
   type GlobalPeriodView,
@@ -788,6 +789,11 @@ async function cancellable(tx: Tx, s: Session, doc: DocumentRow) {
   await lockDocument(tx, s.tenantId, doc.id);
   const current = (await loadDocument(tx, doc.id))!;
   if (current.status !== "valid") throw new DomainError("cfdi_not_valid", 409);
+  // CFF art. 29-A (CFDI-SAT-3): SAT refuses the cancellation after the month the annual return
+  // of the CFDI's year is due (a substitution ends in one too).
+  const facts = await fiscalFacts(tx);
+  if (!cancellationAllowed(current.stampedAt, facts.rfc, facts.timezone))
+    throw new DomainError("cfdi_cancel_deadline_passed", 409);
   const [open] = await tx`
     select 1 as one from cfdi_cancellations
     where document_id = ${doc.id} and status in ('queued','requested')`;
@@ -983,9 +989,10 @@ async function substituteCreditNote(
       const substitute = randomUUID();
       await tx`
         insert into cfdi_documents(tenant_id, id, kind, source, mode, status, replaces_document_id,
-          parent_document_id, refund_id, receptor, receptor_rfc, payment_form_override, created_by)
+          parent_document_id, refund_id, credit_ticket_id, receptor, receptor_rfc, payment_form_override,
+          created_by)
         values (${s.tenantId}, ${substitute}, 'egreso', 'staff', ${current.mode}, 'queued', ${doc.id},
-          ${current.parentDocumentId}, ${current.refundId},
+          ${current.parentDocumentId}, ${current.refundId}, ${current.creditTicketId},
           ${current.receptor ? tx.json(current.receptor as never) : null}, ${current.receptorRfc},
           ${p.paymentForm}, ${s.employeeId})`;
       await tx`

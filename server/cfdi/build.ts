@@ -740,6 +740,11 @@ export type EgresoBuildInput = {
    * next to the 01 relation to the parent) and the FormaPago the manager chose.
    */
   replaces?: { uuid: string; paymentForm: "01" | CardForm } | null;
+  /**
+   * What the note credits: a refund (default), or a ticket's whole net amount in a global before
+   * its nominative invoice (route III, CFDI-SAT-3), with the ticket's own FormaPago.
+   */
+  credit?: { purpose: "invoiced"; paymentForm: "01" | CardForm } | null;
 };
 export type EgresoBuild = {
   body: FInvoiceInput;
@@ -795,6 +800,7 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
   const cardForms = ["04", "28"];
   const paymentForm =
     i.replaces?.paymentForm ??
+    i.credit?.paymentForm ??
     (refund.method === "external"
       ? parent.paymentForm && cardForms.includes(parent.paymentForm)
         ? parent.paymentForm
@@ -809,7 +815,7 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
       groupItem(
         g,
         {
-          description: `Devolución del ticket ${i.folio}${categorySuffix(g.category)}`,
+          description: `${i.credit ? "Factura nominativa del ticket" : "Devolución del ticket"} ${i.folio}${categorySuffix(g.category)}`,
           key: EGRESO_PRODUCT_KEY,
           unit: SAT_GLOBAL_UNIT_KEY,
           unitName: UNIT_NAMES[SAT_GLOBAL_UNIT_KEY],

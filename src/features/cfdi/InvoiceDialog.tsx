@@ -286,7 +286,13 @@ export function InvoiceDialog({
         )}
         {ticket?.eligibility === "in_global" && manager && !doc && (
           <p className="cfdi-warning">
-            {tr(locale, "cfdiInGlobalManager", { period })}
+            {tr(
+              locale,
+              ticket.reissueRoute === "credit_note"
+                ? "cfdiInGlobalCreditNote"
+                : "cfdiInGlobalManager",
+              { period },
+            )}
           </p>
         )}
         {showForm && (
@@ -347,7 +353,9 @@ export function InvoiceDialog({
                   disabled={busy}
                   onClick={() => void submit(true)}
                 >
-                  {t.cfdiReissueAndInvoice}
+                  {ticket.reissueRoute === "credit_note"
+                    ? t.cfdiCreditAndInvoice
+                    : t.cfdiReissueAndInvoice}
                 </Button>
               ) : (
                 <Button

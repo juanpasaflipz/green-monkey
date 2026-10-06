@@ -351,6 +351,40 @@ export function selfInvoiceDeadline(
     .toString();
 }
 
+/**
+ * CFF art. 29-A (CFDI-SAT-3): a CFDI can be canceled only until the month in which the annual
+ * return of the year it was issued is due: March for a persona moral (12-character RFC), April for
+ * a persona física (13 characters), of the next year. Returns the first instant AFTER that month
+ * in the restaurant's timezone (local midnight of April 1 or May 1); an unknown issuer RFC takes
+ * the earlier, March deadline.
+ */
+export function cancellationDeadline(
+  stampedAt: string,
+  issuerRfc: string | null,
+  timezone: string,
+): string {
+  const year =
+    Temporal.Instant.from(stampedAt).toZonedDateTimeISO(timezone).year;
+  const month = issuerRfc?.trim().length === 13 ? 5 : 4;
+  return Temporal.PlainDate.from({ year: year + 1, month, day: 1 })
+    .toZonedDateTime({ timeZone: timezone })
+    .toInstant()
+    .toString();
+}
+/** Whether a CFDI stamped at `stampedAt` may still be canceled at `now` (CFF art. 29-A). */
+export function cancellationAllowed(
+  stampedAt: string | null,
+  issuerRfc: string | null,
+  timezone: string,
+  now: Date = new Date(),
+): boolean {
+  return (
+    !stampedAt ||
+    now.getTime() <
+      Date.parse(cancellationDeadline(stampedAt, issuerRfc, timezone))
+  );
+}
+
 /** Aliases of fiscal's self-invoice code helpers (12 Crockford characters, printed 4-4-4). */
 export const normalizeTicketCode = normalizeSelfInvoiceCode;
 export const formatTicketCode = groupSelfInvoiceCode;
@@ -688,6 +722,8 @@ export type CfdiDocumentView = CfdiDocumentSummary & {
   canSubstitute: boolean;
   /** A ticket of this document predates CFDI's start in its mode: no global ever covers it. */
   preStart: boolean;
+  /** CFF art. 29-A: the first instant it can no longer be canceled (null before it is stamped). */
+  cancelDeadline: string | null;
   /** Request this document's cancellation again with motive 01 and the waiting substitute. */
   canRequestAgain: boolean;
   canRetry: boolean;
@@ -735,6 +771,8 @@ export type CfdiTicketView = {
   } | null;
   /** Staff: manager/owner; portal: settings.portalReissueGlobal. */
   reissueAllowed: boolean;
+  /** In a valid global: replace it (cancel 04), or credit it past its 29-A deadline (SAT-3). */
+  reissueRoute: "cancel" | "credit_note" | null;
   /** Staff view only (a cashier: own documents of the last 24 h, spec §2.13); [] in the portal. */
   documents: CfdiDocumentSummary[];
 };

@@ -7,7 +7,12 @@ import type { JobContext } from "../../jobs.js";
 import type { Tx } from "../../db.js";
 import { assertLivemode, stampFacts, type FInvoice } from "../facturapi.js";
 import { cfdiEnqueue, dedupe, releaseDependents } from "../jobs.js";
-import { loadDocument, releaseClaims, type DocumentRow } from "../store.js";
+import {
+  activatePendingClaims,
+  loadDocument,
+  releaseClaims,
+  type DocumentRow,
+} from "../store.js";
 import { event, MINUTE } from "./common.js";
 import { raise, tenantTag, type CfdiRuntime } from "./runtime.js";
 
@@ -34,6 +39,18 @@ export async function recordStamped(
       dedupeKey: dedupe.deliver(documentId),
       payload: { documentId },
     });
+    // Route III (CFDI-SAT-3): the credit note to the global is valid, so the global no longer
+    // covers this ticket; the nominative invoice waiting on the note takes it, then stamps.
+    if (doc.creditTicketId && doc.parentDocumentId) {
+      await tx`
+        update cfdi_document_tickets set state = 'released', released_reason = 'superseded',
+          released_at = now()
+        where document_id = ${doc.parentDocumentId} and ticket_id = ${doc.creditTicketId}
+          and state = 'active'`;
+      const waiters = await tx`
+        select id from cfdi_documents where depends_on = ${documentId} and status = 'waiting'`;
+      for (const w of waiters) await activatePendingClaims(tx, w.id as string);
+    }
     await releaseDependents(tx, ctx.job.tenantId, documentId);
     if (doc.replacesDocumentId) {
       const [c] = await tx`
@@ -106,6 +123,19 @@ export async function failDocumentTx(
       update cfdi_cancellations set status = 'failed', error_code = 'cfdi_substitute_failed',
         processed_at = now()
       where substitute_document_id = ${documentId} and status = 'queued'`;
+  // A route-III credit note that failed: the global still covers the ticket, so the invoice
+  // waiting on it fails too (it would otherwise invoice the ticket twice).
+  if (doc.creditTicketId) {
+    const waiters = await tx`
+      update cfdi_documents set status = 'failed', error_code = 'cfdi_global_credit_failed'
+      where depends_on = ${documentId} and status = 'waiting' returning id`;
+    for (const w of waiters) {
+      await releaseClaims(tx, w.id as string, "failed");
+      await event(tx, ctx, w.id as string, "failed", {
+        code: "cfdi_global_credit_failed",
+      });
+    }
+  }
   await releaseDependents(tx, ctx.job.tenantId, documentId);
   await event(tx, ctx, documentId, "failed", {
     code: f.code,

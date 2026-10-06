@@ -6,11 +6,13 @@
  */
 import type { Tx } from "../../db.js";
 import { DomainError } from "../../../shared/domain.js";
-import { formatFolio } from "../../../shared/fiscal.js";
+import { formatFolio, type TaxCategory } from "../../../shared/fiscal.js";
+import { paymentFormFor } from "../../../shared/cfdi.js";
 import {
   buildEgresoRequest,
   buildGlobalRequests,
   buildInvoiceRequest,
+  type EgresoBuildInput,
   type GlobalInfo,
 } from "../build.js";
 import type { FInvoiceInput } from "../facturapi-schema.js";
@@ -144,24 +146,60 @@ async function freezeEgreso(
   settings: SettingsRow,
   facts: FiscalFacts,
 ): Promise<Frozen> {
-  if (!doc.parentDocumentId || !doc.refundId || !facts.postalCode)
+  if (
+    !doc.parentDocumentId ||
+    (!doc.refundId && !doc.creditTicketId) ||
+    !facts.postalCode
+  )
     throw nothing();
   const parent = await loadDocument(tx, doc.parentDocumentId);
   if (!parent?.uuid || !["valid", "canceling"].includes(parent.status))
     throw new DomainError("cfdi_not_valid", 409);
-  const groups = await tx`
-    select category, gross, tax from fiscal_adjustments where refund_id = ${doc.refundId}
-    order by category`;
-  const [ticket] = await tx`
-    select t.series, t.number from fiscal_adjustments a
-    join fiscal_tickets t on t.tenant_id = a.tenant_id and t.order_id = a.order_id
-    where a.refund_id = ${doc.refundId} limit 1`;
-  if (!groups.length || !ticket) throw nothing();
-  // 028's refunds.method ('cash' | 'external', NOT NULL DEFAULT 'cash'): the egreso payment form
-  // (wave2-cross-track C26).
-  const [refund] = await tx<{ method: "cash" | "external" }[]>`
-    select method from refunds where id = ${doc.refundId}`;
-  const method = refund?.method ?? "cash";
+  let groups: { category: TaxCategory; gross: number; tax: number }[];
+  let folio: string;
+  let method: "cash" | "external" = "cash";
+  let credit: EgresoBuildInput["credit"] = null;
+  if (doc.creditTicketId) {
+    // Route III (CFDI-SAT-3): the ticket's net amount per category (its frozen groups less every
+    // refund's tax rows, complement extraction keeps each category consistent).
+    const payload = await ticketForCfdi(tx, doc.creditTicketId);
+    const refunded = new Map<TaxCategory, { gross: number; tax: number }>();
+    for (const g of payload.refunds.flatMap((r) => r.groups)) {
+      const s = refunded.get(g.category) ?? { gross: 0, tax: 0 };
+      refunded.set(g.category, {
+        gross: s.gross + g.gross,
+        tax: s.tax + g.tax,
+      });
+    }
+    groups = payload.ticket.groups
+      .map((g) => ({
+        category: g.category,
+        gross: g.gross - (refunded.get(g.category)?.gross ?? 0),
+        tax: g.tax - (refunded.get(g.category)?.tax ?? 0),
+      }))
+      .filter((g) => g.gross > 0);
+    folio = payload.ticket.folio;
+    credit = {
+      purpose: "invoiced",
+      paymentForm: paymentFormFor(payload.payments, settings.cardPaymentForm),
+    };
+  } else {
+    groups = (await tx`
+      select category, gross, tax from fiscal_adjustments where refund_id = ${doc.refundId}
+      order by category`) as unknown as typeof groups;
+    const [ticket] = await tx`
+      select t.series, t.number from fiscal_adjustments a
+      join fiscal_tickets t on t.tenant_id = a.tenant_id and t.order_id = a.order_id
+      where a.refund_id = ${doc.refundId} limit 1`;
+    if (!ticket) throw nothing();
+    folio = formatFolio(ticket.series, Number(ticket.number));
+    // 028's refunds.method ('cash' | 'external', NOT NULL DEFAULT 'cash'): the egreso payment form
+    // (wave2-cross-track C26).
+    const [refund] = await tx<{ method: "cash" | "external" }[]>`
+      select method from refunds where id = ${doc.refundId}`;
+    method = refund?.method ?? "cash";
+  }
+  if (!groups.length) throw nothing();
   // A substitute credit note relates 04 to the one it replaces, which must still be valid.
   let replaces: { uuid: string; paymentForm: "01" | "04" | "28" } | null = null;
   if (doc.replacesDocumentId) {
@@ -175,7 +213,7 @@ async function freezeEgreso(
   }
   const built = buildEgresoRequest({
     docId: doc.id,
-    folio: formatFolio(ticket.series, Number(ticket.number)),
+    folio,
     parent: {
       kind: parent.kind === "global" ? "global" : "invoice",
       uuid: parent.uuid,
@@ -194,6 +232,7 @@ async function freezeEgreso(
     issuerPostalCode: facts.postalCode,
     cardForm: settings.cardPaymentForm,
     replaces,
+    credit,
   });
   return {
     body: built.body,

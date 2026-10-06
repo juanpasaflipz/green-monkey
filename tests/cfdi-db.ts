@@ -3974,6 +3974,87 @@ try {
     assert.equal((await viewOf(W, inv.id)).preStart, true);
   });
 
+  await test("SAT-3a. CFF art. 29-A: a CFDI stamped in a year whose annual-return month has passed can no longer be canceled or substituted (cfdi_cancel_deadline_passed); the register hides both and shows the deadline", async () => {
+    const W = await makeTenant("sat-3a");
+    await activate(W);
+    const tk = await makeTicket(W);
+    const d = await invoice(W, tk);
+    await settle(W.tenantId);
+    // Stamped 500 days ago: its year's deadline (end of March of the next year) is past.
+    await age([d.id], 500 * 24 * 60);
+    await rejects(cancelAs(W, W.manager, d.id), "cfdi_cancel_deadline_passed");
+    await rejects(substitute(W, d.id), "cfdi_cancel_deadline_passed");
+    const v = await viewOf(W, d.id);
+    assert.equal(v.canCancel, false);
+    assert.equal(v.canSubstitute, false);
+    assert.ok(v.cancelDeadline && Date.parse(v.cancelDeadline) < Date.now());
+    assert.equal((await docRow(d.id)).status, "valid");
+  });
+
+  await test("SAT-3b. a ticket in a global past its 29-A deadline is invoiced through a credit note to the global for its net amount (Guía global Apéndice 2 III), never a motive-04 cancellation: the note relates 01 to the global, then the invoice takes the ticket and stamps", async () => {
+    const W = await makeTenant("sat-3b");
+    await activate(W, { testFrom: daysAgo(40), periodicity: "day" });
+    const day = daysAgo(4);
+    const t1 = await makeTicket(W, {
+      businessDate: day,
+      groups: [
+        { category: "iva16", gross: 11600 },
+        { category: "iva0", gross: 2000 },
+      ],
+    });
+    const t2 = await makeTicket(W, { businessDate: day });
+    await tick(W);
+    const [g] =
+      await admin`select id, uuid from cfdi_documents where tenant_id = ${W.tenantId} and kind = 'global' and status = 'valid'`;
+    await age([g.id], 500 * 24 * 60);
+    const view = await web(W, (tx) =>
+      service.getTicket(tx, W.manager, {
+        params: { ticketId: t1.id },
+      } as never),
+    );
+    assert.deepEqual(
+      { eligibility: view.eligibility, route: view.reissueRoute },
+      { eligibility: "in_global", route: "credit_note" },
+    );
+    await refund(W, t1, { iva0: 500 });
+    await settle(W.tenantId);
+    const inv = await invoice(W, t1, { s: W.manager, reissueGlobal: true });
+    assert.equal(inv.status, "waiting");
+    await settle(W.tenantId);
+    const [note] =
+      await admin`select * from cfdi_documents where tenant_id = ${W.tenantId} and credit_ticket_id = ${t1.id}`;
+    assert.equal(note.kind, "egreso");
+    assert.equal(note.status, "valid");
+    assert.equal(note.parent_document_id, g.id);
+    assert.deepEqual(note.request.related_documents, [
+      { relationship: "01", documents: [g.uuid] },
+    ]);
+    assert.equal(note.expected_total, 11600 + 2000 - 500, "the ticket's net");
+    assert.equal(note.request.use, "S01");
+    const row = await docRow(inv.id);
+    assert.equal(row.status, "valid");
+    assert.equal(row.expected_total, 11600 + 2000 - 500);
+    assert.deepEqual(
+      (await claims(t1.id)).map((r) => [
+        r.document_id,
+        r.state,
+        r.released_reason,
+      ]),
+      [
+        [g.id, "released", "superseded"],
+        [inv.id, "active", null],
+      ],
+    );
+    assert.equal((await docRow(g.id)).status, "valid", "the global stays");
+    const [{ n }] =
+      await admin`select count(*)::int as n from cfdi_cancellations where document_id = ${g.id}`;
+    assert.equal(n, 0, "no cancellation of the global");
+    assert.deepEqual(
+      (await claims(t2.id)).map((r) => [r.document_id, r.state]),
+      [[g.id, "active"]],
+    );
+  });
+
   console.log(`cfdi DB checks passed: ${checks}`);
 } finally {
   await runner.stop(2000);

@@ -21,6 +21,8 @@ import {
   regimesFor,
   resicoWithholds,
   selfInvoiceDeadline,
+  cancellationAllowed,
+  cancellationDeadline,
   usesFor,
   usoCfdiAllowed,
   type Receptor,
@@ -271,6 +273,45 @@ describe("5. periodicityOn", () => {
         nextPeriodicityFrom: null,
       }),
     ).toBe("week");
+  });
+});
+
+describe("CFDI-SAT-3: CFF art. 29-A cancellation deadline", () => {
+  const MX = "America/Mexico_City";
+  it("persona moral (12-character RFC): until the end of March of the next year, local time", () => {
+    expect(
+      cancellationDeadline("2026-11-20T18:00:00Z", "EKU9003173C9", MX),
+    ).toBe("2027-04-01T06:00:00Z");
+    expect(
+      cancellationAllowed(
+        "2026-11-20T18:00:00Z",
+        "EKU9003173C9",
+        MX,
+        new Date("2027-04-01T05:59:59Z"),
+      ),
+    ).toBe(true);
+    expect(
+      cancellationAllowed(
+        "2026-11-20T18:00:00Z",
+        "EKU9003173C9",
+        MX,
+        new Date("2027-04-01T06:00:00Z"),
+      ),
+    ).toBe(false);
+  });
+  it("persona física (13 characters): until the end of April; an unknown RFC takes March", () => {
+    expect(
+      cancellationDeadline("2026-03-02T18:00:00Z", "GODE561231GR8", MX),
+    ).toBe("2027-05-01T06:00:00Z");
+    expect(cancellationDeadline("2026-03-02T18:00:00Z", null, MX)).toBe(
+      "2027-04-01T06:00:00Z",
+    );
+  });
+  it("the stamp year is the restaurant's local year: 31 December 23:30 in Mexico City is 2026", () => {
+    expect(
+      cancellationDeadline("2027-01-01T05:30:00Z", "EKU9003173C9", MX),
+    ).toBe("2027-04-01T06:00:00Z");
+    expect(cancellationAllowed(null, "EKU9003173C9", MX)).toBe(true);
   });
 });
 

@@ -38,6 +38,7 @@ import {
   periodLabel,
   periodKeyLabel,
   shiftDate,
+  shortDate,
   statusTone,
   t as tr,
   todayFor,
@@ -664,6 +665,19 @@ export function DocumentDetail({
               </Button>
             )}
           </div>
+          {doc.status === "valid" &&
+            doc.cancelDeadline &&
+            Date.parse(doc.cancelDeadline) <= Date.now() && (
+              <p className="muted">
+                {tr(locale, "cfdiCancelDeadlinePassed", {
+                  date: shortDate(
+                    new Date(Date.parse(doc.cancelDeadline) - 1).toISOString(),
+                    tz,
+                    locale,
+                  ),
+                })}
+              </p>
+            )}
           {doc.canEmail && (
             <form
               className="row wrap cfdi-email"
