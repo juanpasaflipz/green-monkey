@@ -193,19 +193,45 @@ Recovery (`server/cfdi/recovery.ts`):
   global that already finished are queued. A manager can do the same at once with
   **Reintentar** on the document (pending, canceling, a queued cancellation, missing files).
   Reconcile chains merge: a poll does not schedule the next one while another chain of the same
-  document already has one waiting.
+  document already has one waiting. Each cancellation that needs the receptor's acceptance starts
+  its own chain (`reconcile:<doc>:cancel:c<12 hex of the cancellation>:<n>`), so a document's
+  second cancellation is polled from +30 minutes like the first, although job dedupe keys stay
+  unique for 30 days (CFDI-R3-3).
 - **The global tick chain** never ends: a tick that keeps failing schedules a fresh tick at the
   next hour before it goes dead (`jobs_dead_cfdi_global` still alerts), and a restaurant with
   CFDI enabled and no live tick gets one back at the worker boot (`seedGlobalTicks`, restaurants
   found through their `cfdi_global` jobs) and at every operator sign-in (`GET /cfdi/status`,
   `ensureTick`, one insert per 10 minutes at most).
 - **Substitution after a rejected cancellation**: when the receptor rejects (or lets expire) the
-  motive-01 cancellation, both invoices stay valid and the substitute's claim waits (pending;
-  alert `cfdi_substitution_rejected`). Cancelling the original again (**Cancelar**, motive 02 or
-  03) hands the ticket to the newest valid substitute as soon as the original is canceled
-  (`substitution_completed`), exactly as an accepted motive-01 cancellation does; later refunds
-  get credit notes related to the substitute (CFDI-R2-4). Cancelling the substitute instead
-  leaves the original in force.
+  motive-01 cancellation, or the provider refuses it (`cfdi_cancel_rejected_provider`, alert
+  `cfdi_cancel_failed`), both invoices stay valid and the substitute's claim waits (pending;
+  alert `cfdi_substitution_rejected` for a rejection). While such a substitute waits and no
+  cancellation of the original is open, the original's detail shows the red two-valid-invoices
+  alert and the attention count (`rejectedSubstitutions`, the badge "Requiere atención", Today's
+  `cfdi_substitution_rejected`) includes it, whatever happened after; it never clears while two
+  valid CFDIs exist for the sale (CFDI-R3-1). The ways out:
+  - **Solicitar de nuevo la cancelación…** (managers, step-up): motive 01 again with the waiting
+    substitute (`POST /cfdi/documents/:id/cancel` with `motive: "01"`; refused with
+    `cfdi_substitute_missing` when no valid substitute waits);
+  - **Cancelar** the original (motive 02 or 03): the ticket goes to the waiting substitute as
+    soon as the original is canceled (`substitution_completed`, CFDI-R2-4);
+  - **Cancelar** the substitute (motive 02): the original keeps the ticket.
+  Either cancellation of the original moves the ticket exactly as an accepted motive-01
+  cancellation does, and later refunds get credit notes related to the substitute. A second
+  **Sustituir…** is refused with `cfdi_substitution_pending` while a substitute is unfinished
+  (queued, stamping, pending, valid or canceling, with its claim pending), so one sale never has
+  two substitutes.
+- **Credit notes and cancellations never overlap** (CFDI-R3-2). SAT refuses to cancel a CFDI that
+  a valid credit note relates to. Every path that starts a cancellation checks for credit notes
+  (queued, stamping, pending, valid or canceling egresos) under the document's key: the staff
+  request (`cfdi_has_credit_notes`), the late invoice's reissue request
+  (`cfdi_global_has_credit_notes`; the portal answers `cfdi_ticket_in_global`), and `cfdi_cancel`
+  and `cfdi_reissue` again right before they call the provider (the cancellation fails with
+  `cfdi_has_credit_notes`, the reissue's waiting invoices with `cfdi_global_has_credit_notes`,
+  with the usual alerts). `cfdi_refund` decides under the same key and waits
+  (`cfdi_parent_cancel_open`) while any cancellation of the covering document is queued or
+  requested, whatever its source; once it ends, the claim has moved to the substitute, the
+  replacement global or back to the globals, and the refund is netted or credited there.
 - **Advisory keys** (LO-3, `server/cfdi/locks.ts`): per-ticket (class 926), then per-document
   (927), then per-period (928), never the reverse; `tests/cfdi-locks.test.ts` checks the order.
 - **Invoice after a global**: the web request and `cfdi_reissue` take the same per-document key
@@ -257,7 +283,7 @@ periodicity.
 | `cfdi_global_failed:<tenant>:<doc>` | warning | a global part failed: read the provider error in its detail, fix, **Reintentar** |
 | `cfdi_ticket_excluded:<tenant>:<mode>:<period>` | warning | tickets left out of a global (inconsistent fiscal figures): check fiscal's ticket register |
 | `cfdi_amount_mismatch:<tenant>:<date>` | warning | stamped amounts differ from fiscal's beyond the documented bounds: compare the XML with the ticket; report to engineering |
-| `cfdi_substitution_rejected:<tenant>:<doc>` | warning | the customer rejected a substitution: two invoices are valid; cancel the new one (02) or ask again |
+| `cfdi_substitution_rejected:<tenant>:<doc>` | warning | the customer rejected a substitution: two invoices are valid; cancel the new one (02) or **Solicitar de nuevo la cancelación…** on the original (motive 01 with the same substitute) |
 | `cfdi_stamp_unresolved:<tenant>:<doc>` | warning | Facturapi kept the stamp pending past its recovery window: check the invoice in Facturapi |
 | `cfdi_cancel_unresolved:<tenant>:<doc>` / `cfdi_cancel_failed:<tenant>:<doc>` | warning | a cancellation is unanswered after 10 days / was refused: read the detail, repeat or handle at the SAT portal |
 | `cfdi_refund_unresolved:<tenant>:<refund>` | warning | a refund's credit note could not be issued: check its parent document; the refund sweep retries |
@@ -325,6 +351,7 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_generic_rfc` | Para público en general no se emite factura individual: el ticket se incluye en la factura global. |
 | `cfdi_global_error` | No se pudo preparar la factura global. Lo reintentaremos automáticamente. |
 | `cfdi_global_in_progress` | La factura global de este periodo se está emitiendo. Intenta en unos minutos. |
+| `cfdi_global_has_credit_notes` | La factura global de este ticket tiene notas de crédito vigentes; cancélalas antes de sustituirla. |
 | `cfdi_has_credit_notes` | Cancela primero las notas de crédito relacionadas. |
 | `cfdi_invalid_email` | Escribe un correo electrónico válido. |
 | `cfdi_invalid_legal_name` | Escribe el nombre o razón social (hasta 254 caracteres). |
@@ -351,7 +378,9 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_org_key_invalid` | La llave de la organización ya no es válida. Avisa a soporte. |
 | `cfdi_org_not_ready` | La organización emisora está incompleta en Facturapi. |
 | `cfdi_org_tax_info_invalid` | Facturapi rechazó los datos fiscales del restaurante. Revisa Datos fiscales. |
+| `cfdi_parent_cancel_open` | La factura original tiene una cancelación en curso; la nota de crédito espera el resultado. |
 | `cfdi_parent_canceling` | La factura original está en cancelación; la nota de crédito espera el resultado. |
+| `cfdi_parent_changed` | El ticket pasó a otra factura; la nota de crédito se decide de nuevo en unos minutos. |
 | `cfdi_parent_not_valid` | La factura original aún se está timbrando; la nota de crédito se emitirá después. |
 | `cfdi_parent_receptor_missing` | La factura original no tiene receptor; no se puede emitir la nota de crédito. |
 | `cfdi_period_not_closed` | Ese periodo aún no cierra. |
@@ -391,7 +420,9 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_stamping_rejected` | El SAT o el PAC rechazó la factura. Revisa el detalle. |
 | `cfdi_substitute_failed` | La factura sustituta no se pudo emitir; la original sigue vigente. |
 | `cfdi_substitute_invalid` | Facturapi no aceptó la factura sustituta. La original sigue vigente. |
+| `cfdi_substitute_missing` | Esta factura no tiene una sustituta vigente; cancélala con el motivo 02 o 03. |
 | `cfdi_substitute_pending` | La factura sustituta aún se está timbrando. |
+| `cfdi_substitution_pending` | Esta factura ya tiene una sustituta que espera su cancelación: vuelve a solicitar la cancelación o cancela la sustituta (motivo 02) antes de sustituirla otra vez. |
 | `cfdi_ticket_already_invoiced` | Este ticket ya tiene factura. |
 | `cfdi_ticket_before_start` | Este ticket es anterior al inicio de la facturación. Confirma que no está en otra factura global. |
 | `cfdi_ticket_fully_refunded` | Este ticket fue reembolsado; no hay importe que facturar. |
@@ -416,7 +447,7 @@ redeclared.
 | Command | Covers |
 | --- | --- |
 | `npm test` | `tests/cfdi.test.ts` (builders, rounding proof, XML parser, error classifier), `tests/cfdi-facturapi-contract.test.ts` (documented API), `tests/cfdi-facturapi-fake.test.ts`, `tests/cfdi-shared.test.ts` (receptor rules, periods, deadlines, payment forms, settings), `tests/cfdi-resico.test.ts`, `tests/cfdi-secrets.test.ts` (vault, upload box, CSD inspection, config, redaction), `tests/cfdi-jobs.test.ts` (kinds, limits, retry, dedupe keys), `tests/cfdi-portal-http.test.ts` (portal limiters over HTTP), `tests/cfdi-client.test.ts` (receptor form, printed block, alerts, ticket status, order actions), `tests/import-graph.test.ts` (process boundary), `tests/cfdi-merge-gate.test.ts` (the fiscal rebase gate), `tests/cfdi-locks.test.ts` (advisory key classes and their order inside LO-3) |
-| `npm run test:db:cfdi` | checks through the worker login and the in-process fake: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos, substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, and the EXPLAINs of the running-lease index |
+| `npm run test:db:cfdi` | checks through the worker login and the in-process fake: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos, substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, and the EXPLAINs of the running-lease index |
 | `npx playwright test tests/browser/cfdi.spec.ts` | the panel before activation and the portal (always); activation + CSD, staff invoice + cancel, portal self-invoice (skip until fiscal 027 and the worker with the fake run) |
 | `npm run test:facturapi:sandbox` | opt-in, `FACTURAPI_TEST_KEY` only, official URL, test mode; `RECORD=1` rewrites fixtures as `recorded@<date>` (not run: no key) |
 
