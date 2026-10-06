@@ -36,6 +36,13 @@ import "./cfdi.css";
 const POLL_MS = 2000;
 const POLL_LIMIT_MS = 90_000;
 const IN_FLIGHT = ["waiting", "queued", "stamping", "pending"];
+/** Valid, but cfdi_deliver has not stored the PDF and the XML yet (CFDI-UX-4). */
+export function awaitingFiles(doc: CfdiDocumentView): boolean {
+  return (
+    doc.status === "valid" &&
+    !(doc.files.includes("pdf") && doc.files.includes("xml"))
+  );
+}
 
 export function InvoiceDialog({
   ticketId,
@@ -105,8 +112,13 @@ export function InvoiceDialog({
     doneRef.current = done;
   }, [done]);
 
-  // Poll the document while it is in flight (2 s, single-flight, at most 90 s).
-  const pollId = doc && IN_FLIGHT.includes(doc.status) ? doc.id : null;
+  // Poll the document while it is in flight, and once valid until its PDF and XML are stored
+  // (2 s, single-flight, at most 90 s; CFDI-UX-4).
+  const pollId =
+    doc && (IN_FLIGHT.includes(doc.status) || awaitingFiles(doc))
+      ? doc.id
+      : null;
+  const notified = useRef(false);
   useEffect(() => {
     if (!pollId) return;
     const started = Date.now();
@@ -130,10 +142,11 @@ export function InvoiceDialog({
         );
         if (!alive.current || stopped) return;
         setDoc(next);
-        if (!IN_FLIGHT.includes(next.status)) {
-          stop();
-          if (next.status === "valid") doneRef.current?.(next);
+        if (next.status === "valid" && !notified.current) {
+          notified.current = true;
+          doneRef.current?.(next);
         }
+        if (!IN_FLIGHT.includes(next.status) && !awaitingFiles(next)) stop();
       } catch {
         // A locked or changed session, or a lost connection: stop quietly.
         stop();
@@ -162,6 +175,7 @@ export function InvoiceDialog({
       });
       if (!alive.current) return;
       setTimedOut(false);
+      notified.current = false;
       setDoc(created);
     } catch (e) {
       if (alive.current) setError(translateError((e as Error).message, locale));
@@ -389,20 +403,27 @@ export function InvoiceDialog({
               </strong>
             </p>
             <div className="row wrap">
-              <a
-                className="button secondary"
-                href={fileUrl(doc.id, "pdf")}
-                download
-              >
-                {t.cfdiDownloadPdf}
-              </a>
-              <a
-                className="button secondary"
-                href={fileUrl(doc.id, "xml")}
-                download
-              >
-                {t.cfdiDownloadXml}
-              </a>
+              {awaitingFiles(doc) && (
+                <p className="muted">{t.cfdiPreparingFiles}</p>
+              )}
+              {doc.files.includes("pdf") && (
+                <a
+                  className="button secondary"
+                  href={fileUrl(doc.id, "pdf")}
+                  download
+                >
+                  {t.cfdiDownloadPdf}
+                </a>
+              )}
+              {doc.files.includes("xml") && (
+                <a
+                  className="button secondary"
+                  href={fileUrl(doc.id, "xml")}
+                  download
+                >
+                  {t.cfdiDownloadXml}
+                </a>
+              )}
               {doc.receptor?.email && (
                 <Button disabled={busy} onClick={() => void sendEmail()}>
                   {t.cfdiSendEmail}

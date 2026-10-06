@@ -37,6 +37,7 @@ import {
   fiscalFacts,
   loadDocument,
   portalStatus,
+  filesStored,
   ticketFacts,
   ticketView,
   type DocumentRow,
@@ -135,7 +136,12 @@ function requestToken(tid: string, did: string, tkt: string): string {
   });
 }
 
-function statusOf(doc: DocumentRow, tid: string): PortalDocumentStatus {
+/** A fresh 15-minute download token on every read (the page asks again before a download). */
+async function statusOf(
+  tx: Tx,
+  doc: DocumentRow,
+  tid: string,
+): Promise<PortalDocumentStatus> {
   const valid = doc.status === "valid" || doc.status === "canceling";
   return portalStatus(
     doc,
@@ -144,6 +150,7 @@ function statusOf(doc: DocumentRow, tid: string): PortalDocumentStatus {
           ttlSeconds: 900,
         })
       : null,
+    valid && (await filesStored(tx, doc.id)),
   );
 }
 
@@ -171,9 +178,19 @@ export async function portalTicket(
     void _d;
     void _o;
     let latest: PortalDocumentStatus | null = null;
-    if (covering?.kind === "invoice") {
-      const doc = await loadDocument(tx, covering.documentId);
-      // Status only; downloading needs the RFC (POST …/access).
+    // Status only; downloading needs the RFC (POST …/access). Without a covering invoice, the
+    // ticket's newest portal request, so a customer who comes back sees why it failed
+    // (CFDI-UX-3).
+    const [newest] =
+      covering?.kind === "invoice"
+        ? [{ id: covering.documentId }]
+        : await tx`
+            select d.id from cfdi_document_tickets c
+            join cfdi_documents d on d.tenant_id = c.tenant_id and d.id = c.document_id
+            where c.ticket_id = ${ticketId} and d.kind = 'invoice' and d.source = 'portal'
+            order by d.created_at desc limit 1`;
+    if (newest) {
+      const doc = await loadDocument(tx, newest.id as string);
       if (doc) latest = { ...portalStatus(doc, null) };
     }
     // account (031): privacyUrl = await restaurantPrivacyUrl(tx);
@@ -245,7 +262,7 @@ export async function portalSubmit(
       },
     );
     const doc = (await loadDocument(tx, r.documentId))!;
-    return { documentId: doc.id, status: statusOf(doc, tenantId) };
+    return { documentId: doc.id, status: await statusOf(tx, doc, tenantId) };
   });
   return {
     requestToken: requestToken(tenantId, result.documentId, ticketId),
@@ -264,7 +281,7 @@ export async function portalRequestStatus(
   return tenant(sql, c.tid, async (tx) => {
     const doc = await loadDocument(tx, c.did);
     if (!doc) throw new DomainError("unauthorized", 401);
-    return statusOf(doc, c.tid);
+    return statusOf(tx, doc, c.tid);
   });
 }
 

@@ -3402,6 +3402,37 @@ try {
   const asWorker = <T>(t: Fixture, fn: (tx: Tx) => Promise<T>) =>
     tenant(worker, t.tenantId, fn);
 
+  /** An invoice D with one refund credited by a valid credit note E (related 01 to D). */
+  async function creditedInvoice(t: Fixture) {
+    const tk = await makeTicket(t);
+    const d = await invoice(t, tk);
+    await settle(t.tenantId);
+    const refundId = await refund(t, tk, { iva16: 2320 });
+    await settle(t.tenantId);
+    const [e] =
+      await admin`select id, status, uuid from cfdi_documents where refund_id = ${refundId} and kind = 'egreso'`;
+    assert.equal(e.status, "valid");
+    return { tk, d, refundId, e };
+  }
+  const correctCreditNote = (t: Fixture, id: string, paymentForm: string) =>
+    web(t, (tx) =>
+      service.substituteDocument(
+        tx,
+        t.manager,
+        { operationId: op(), paymentForm, reason: "Se reembolsó en efectivo" },
+        { params: { id } } as never,
+      ),
+    );
+
+  const portalRequest = (code: string, legalName = MORAL.legalName) =>
+    portal.portalSubmit(app, code, {
+      operationId: op(),
+      receptor: { ...MORAL, legalName, email: "cliente@example.com" },
+      cardForm: null,
+      privacyAccepted: true,
+      locale: "es",
+    });
+
   await test("WORKER-1a. a staff cancellation whose DELETE reached SAT but whose answer was lost is read back on the retry: the invoice ends canceled with its ticket released, never failed by a second DELETE", async () => {
     const W = await makeTenant("worker-1a");
     await activate(W);
@@ -3734,28 +3765,6 @@ try {
     }
     assert.equal((await docRow(d.id)).status, "canceled");
   });
-
-  /** An invoice D with one refund credited by a valid credit note E (related 01 to D). */
-  async function creditedInvoice(t: Fixture) {
-    const tk = await makeTicket(t);
-    const d = await invoice(t, tk);
-    await settle(t.tenantId);
-    const refundId = await refund(t, tk, { iva16: 2320 });
-    await settle(t.tenantId);
-    const [e] =
-      await admin`select id, status, uuid from cfdi_documents where refund_id = ${refundId} and kind = 'egreso'`;
-    assert.equal(e.status, "valid");
-    return { tk, d, refundId, e };
-  }
-  const correctCreditNote = (t: Fixture, id: string, paymentForm: string) =>
-    web(t, (tx) =>
-      service.substituteDocument(
-        tx,
-        t.manager,
-        { operationId: op(), paymentForm, reason: "Se reembolsó en efectivo" },
-        { params: { id } } as never,
-      ),
-    );
 
   await test("MONEY-1a / SAT-2. a credit note is never canceled with motive 02 or 03 (cfdi_not_cancellable): the register offers Sustituir, not Cancelar", async () => {
     const W = await makeTenant("money-1a");
@@ -4093,6 +4102,98 @@ try {
     });
     assert.equal(saved.settings?.selfInvoiceEnabled, false);
     assert.equal(saved.settings?.nextPeriodicity, "month");
+  });
+
+  await test("UX-2. restaurant-side portal failures never use up the customer's 5 attempts (only data they can fix counts), and an expired certificate closes self-invoicing (not_ready) instead of failing every attempt", async () => {
+    const W = await makeTenant("ux-2");
+    await activate(W);
+    const tk = await makeTicket(W);
+    for (let i = 0; i < 5; i++) {
+      await portalRequest(tk.code, "UNIVERSIDAD FAKE STAMP FAILED");
+      await settle(W.tenantId);
+    }
+    const [last] =
+      await admin`select status, error_code from cfdi_documents where tenant_id = ${W.tenantId}
+        and source = 'portal' order by created_at desc limit 1`;
+    assert.deepEqual(
+      { ...last },
+      {
+        status: "failed",
+        error_code: "cfdi_stamping_failed",
+      },
+    );
+    const ok = await portalRequest(tk.code);
+    await settle(W.tenantId);
+    assert.equal(
+      (await portal.portalRequestStatus(app, ok.requestToken)).status,
+      "valid",
+    );
+    // The certificate's end date has passed (no refresh marked it yet).
+    const tk2 = await makeTicket(W);
+    await asWorker(
+      W,
+      (tx) =>
+        tx`update cfdi_organizations set csd_status = 'valid', csd_valid_until = now() - interval '1 day'`,
+    );
+    assert.equal(
+      (await portal.portalTicket(app, tk2.code)).eligibility,
+      "not_ready",
+    );
+    await rejects(portalRequest(tk2.code), "cfdi_portal_unavailable");
+  });
+
+  await test("UX-3. a portal invoice that fails after the customer left is shown to the restaurant (attention, Hoy) until a newer request of that ticket, and to the customer who comes back (the ticket's latest request with its reason)", async () => {
+    const W = await makeTenant("ux-3");
+    await activate(W);
+    const tk = await makeTicket(W);
+    const before = (await web(W, (tx) => cfdiAlerts(tx))).failedDocuments;
+    await portalRequest(tk.code, "UNIVERSIDAD FAKE NAME MISMATCH");
+    await settle(W.tenantId);
+    assert.equal(
+      (await web(W, (tx) => cfdiAlerts(tx))).failedDocuments,
+      before + 1,
+    );
+    const back = await portal.portalTicket(app, tk.code);
+    assert.equal(back.eligibility, "available");
+    assert.deepEqual(
+      back.latest && {
+        status: back.latest.status,
+        code: back.latest.error?.code,
+      },
+      { status: "failed", code: "cfdi_receptor_name_mismatch" },
+    );
+    await portalRequest(tk.code);
+    await settle(W.tenantId);
+    assert.equal(
+      (await web(W, (tx) => cfdiAlerts(tx))).failedDocuments,
+      before,
+    );
+  });
+
+  await test("UX-4. a valid document's files are announced only once stored: the portal status carries filesReady (false while cfdi_deliver retries, true after) and each status read mints a fresh download token", async () => {
+    const W = await makeTenant("ux-4");
+    await activate(W);
+    const tk = await makeTicket(W);
+    fake.fault({ op: "invoices.download", fault: "internal_error", times: 2 });
+    const r = await portalRequest(tk.code);
+    await settle(W.tenantId);
+    const stamped = await portal.portalRequestStatus(app, r.requestToken);
+    assert.deepEqual(
+      { status: stamped.status, ready: stamped.filesReady },
+      { status: "valid", ready: false },
+    );
+    for (let i = 0; i < 3; i++) {
+      await due(W.tenantId, "cfdi_deliver");
+      await settle(W.tenantId);
+    }
+    const ready = await portal.portalRequestStatus(app, r.requestToken);
+    assert.equal(ready.filesReady, true);
+    assert.ok(ready.downloadToken);
+    // Minted at this read: it expires 15 minutes from now, whenever the request was made.
+    const exp = JSON.parse(
+      Buffer.from(ready.downloadToken!.split(".")[2], "base64url").toString(),
+    ).exp as number;
+    assert.ok(exp * 1000 > Date.now() + 890_000, "a fresh 900 s token");
   });
 
   console.log(`cfdi DB checks passed: ${checks}`);

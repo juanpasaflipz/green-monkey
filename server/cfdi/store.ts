@@ -961,6 +961,7 @@ export async function documentView(
 export function portalStatus(
   d: DocumentRow,
   downloadToken: string | null,
+  filesReady = false,
 ): PortalDocumentStatus {
   const status = (
     ["waiting"].includes(d.status)
@@ -981,7 +982,35 @@ export function portalStatus(
       ? { code: d.errorCode, message: d.errorMessage, path: d.errorPath }
       : null,
     downloadToken: status === "valid" ? downloadToken : null,
+    filesReady: status === "valid" && filesReady,
   };
+}
+
+/** Whether the document's PDF and XML are stored (cfdi_deliver ran). */
+export async function filesStored(
+  tx: Tx,
+  documentId: string,
+): Promise<boolean> {
+  const [r] = await tx`
+    select count(*)::int as n from cfdi_files where document_id = ${documentId}
+      and format in ('pdf','xml')`;
+  return r?.n === 2;
+}
+
+/**
+ * The restaurant's own certificate can stamp (CFDI-UX-2): never one past its end date (a refresh
+ * may not have marked it expired yet), and in live mode only a valid one; test-mode stamps need no
+ * certificate of the restaurant's. The portal offers self-invoicing only then.
+ */
+export function csdUsable(
+  o: OrganizationRow | null,
+  mode: CfdiMode,
+  now = Date.now(),
+): boolean {
+  if (!o || o.source !== "own") return true;
+  if (o.csdStatus === "expired") return false;
+  if (o.csdValidUntil && Date.parse(o.csdValidUntil) <= now) return false;
+  return mode === "test" || o.csdStatus === "valid";
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1090,6 +1119,12 @@ export async function ticketView(
   const now = o.now ?? new Date();
   const deadline = ticketDeadline(t, settings, facts.timezone);
   let status = eligibility(t, state);
+  if (
+    o.portal &&
+    (status === "available" || status === "in_global") &&
+    !csdUsable(state.organization, settings?.mode ?? "test", now.getTime())
+  )
+    status = "not_ready";
   if (
     o.portal &&
     status === "available" &&
@@ -1232,11 +1267,20 @@ export async function attention(tx: Tx): Promise<CfdiAlertsView> {
                    and d.kind = 'global' and d.period_key = g.period_key and d.status = 'failed'
                    and not exists (select 1 from cfdi_documents n where n.tenant_id = d.tenant_id and n.mode = d.mode
                      and n.kind = 'global' and n.period_key = d.period_key and n.part > d.part)))) as overdue,
-      (select count(*) from cfdi_documents d where d.status = 'failed' and d.kind in ('global','egreso')
+      (select count(*) from cfdi_documents d where d.status = 'failed'
         and d.created_at > now() - interval '30 days'
-        and not exists (select 1 from cfdi_documents n where n.tenant_id = d.tenant_id and n.mode = d.mode
-          and ((d.kind = 'global' and n.kind = 'global' and n.period_key = d.period_key and n.part > d.part)
-            or (d.kind = 'egreso' and n.kind = 'egreso' and n.refund_id = d.refund_id and n.created_at > d.created_at)))) as failed,
+        and ((d.kind in ('global','egreso')
+          and not exists (select 1 from cfdi_documents n where n.tenant_id = d.tenant_id and n.mode = d.mode
+            and ((d.kind = 'global' and n.kind = 'global' and n.period_key = d.period_key and n.part > d.part)
+              or (d.kind = 'egreso' and n.kind = 'egreso' and n.refund_id = d.refund_id and n.created_at > d.created_at))))
+          -- A customer's portal invoice that failed after they left (CFDI-UX-3): until a newer
+          -- document of that ticket exists, the restaurant sees it.
+          or (d.kind = 'invoice' and d.source = 'portal'
+            and not exists (select 1 from cfdi_document_tickets c
+              join cfdi_document_tickets c2 on c2.tenant_id = c.tenant_id and c2.ticket_id = c.ticket_id
+                and c2.mode = c.mode
+              join cfdi_documents n on n.tenant_id = c2.tenant_id and n.id = c2.document_id
+              where c.tenant_id = d.tenant_id and c.document_id = d.id and n.created_at > d.created_at)))) as failed,
       (select count(*) from cfdi_documents d where d.status in ('queued','stamping')
         and d.updated_at < now() - interval '30 minutes') as stuck,
       -- Valid substitutes still waiting for their ticket while the original has no open

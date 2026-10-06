@@ -322,6 +322,17 @@ export default defineArea({
     cfdiPortalDone: "¡Listo! Te enviamos la factura a {email}.",
     cfdiPortalDoneNoEmail: "¡Listo! Tu factura está lista.",
     cfdiPortalFixData: "Corregir mis datos",
+    cfdiPortalRestaurantFailed:
+      "El restaurante no pudo emitir tu factura en este momento. Pídela en el restaurante.",
+    cfdiPortalLatestFailed:
+      "Tu solicitud anterior no se pudo timbrar: {reason}",
+    cfdiPortalAccessed: "Tu factura {doc} · RFC {rfc}",
+    cfdiPortalOffline:
+      "No hay conexión. Tu solicitud no se envió; intenta de nuevo.",
+    cfdiPortalRateLimited:
+      "Demasiados intentos. Espera un minuto e intenta de nuevo.",
+    cfdiPortalTryAgain: "No pudimos completar la solicitud. Intenta de nuevo.",
+    cfdiPreparingFiles: "Preparando los archivos…",
     cfdiPortalPending:
       "Tu factura se está procesando. Te la enviaremos por correo. Puedes volver con el mismo código.",
     cfdiPortalFooter:
@@ -695,6 +706,15 @@ export default defineArea({
     cfdiPortalDone: "Done! We sent the invoice to {email}.",
     cfdiPortalDoneNoEmail: "Done! Your invoice is ready.",
     cfdiPortalFixData: "Fix my details",
+    cfdiPortalRestaurantFailed:
+      "The restaurant could not issue your invoice right now. Ask for it at the restaurant.",
+    cfdiPortalLatestFailed:
+      "Your previous request could not be stamped: {reason}",
+    cfdiPortalAccessed: "Your invoice {doc} · RFC {rfc}",
+    cfdiPortalOffline: "No connection. Your request was not sent; try again.",
+    cfdiPortalRateLimited: "Too many attempts. Wait a minute and try again.",
+    cfdiPortalTryAgain: "We could not complete the request. Try again.",
+    cfdiPreparingFiles: "Preparing the files…",
     cfdiPortalPending:
       "Your invoice is being processed. We will email it to you. You can come back with the same code.",
     cfdiPortalFooter:

@@ -13,6 +13,8 @@ import { DomainError } from "../../shared/domain.js";
 import {
   cancellationAllowed,
   needsCardForm,
+  RECEPTOR_FIXABLE_CODES,
+  RECEPTOR_FIXABLE_PREFIXES,
   type CardForm,
   type Receptor,
 } from "../../shared/cfdi.js";
@@ -26,6 +28,7 @@ import {
 import { lockDocument, lockTicket } from "./locks.js";
 import {
   cfdiState,
+  csdUsable,
   fiscalFacts,
   hasCreditNotes,
   insertEvent,
@@ -90,15 +93,24 @@ export async function createInvoiceRequest(
       throw new DomainError("cfdi_ticket_before_start", 409);
   }
   if (portal) {
+    // An expired or missing certificate fails every stamp: no customer attempt (CFDI-UX-2).
+    if (!csdUsable(state.organization, settings.mode))
+      throw new DomainError("cfdi_portal_unavailable", 409);
     const facts = await fiscalFacts(tx);
     const deadline = ticketDeadline(t, settings, facts.timezone);
     if (deadline && Date.parse(deadline) < Date.now())
       throw new DomainError("cfdi_portal_expired", 409);
+    // Restaurant-side failures (certificate, organization, provider) never use up the customer's
+    // attempts; only data the customer typed counts (CFDI-UX-2).
     const [{ recent }] = await tx`
       select count(*)::int as recent from cfdi_document_tickets c
       join cfdi_documents d on d.tenant_id = c.tenant_id and d.id = c.document_id
       where c.ticket_id = ${r.ticketId} and d.source = 'portal'
-        and d.created_at > now() - interval '24 hours'`;
+        and d.created_at > now() - interval '24 hours'
+        and not (d.status = 'failed' and not (
+          d.error_code like any(${RECEPTOR_FIXABLE_PREFIXES.map((p) => p.replace(/_/g, "\\_") + "%")}::text[])
+          or d.error_code = any(${RECEPTOR_FIXABLE_CODES}::text[])
+          or coalesce(d.error_path, '') like 'customer.%' or d.error_path = 'use'))`;
     if (recent >= 5)
       throw new DomainError("cfdi_portal_too_many_attempts", 429);
   }

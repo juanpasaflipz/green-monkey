@@ -10,6 +10,7 @@ import {
   formatTicketCode,
   normalizeTicketCode,
   firstReceptorError,
+  receptorFixable,
   receptorIssues,
   type PortalDocumentStatus,
   type PortalTicketView,
@@ -77,11 +78,39 @@ export function codeFromPath(pathname: string): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
-/** Error text for the portal: API codes translated, transport failures in plain words. */
+/**
+ * Error text for the portal: API codes translated, transport and session codes in the customer's
+ * words, never the POS staff copy (CFDI-UX-5).
+ */
 export function portalMessage(code: string, locale: Locale): string {
-  return code === REQUEST_FAILED
-    ? strings[locale].cfdiPortalRequestFailed
-    : translateError(code, locale);
+  const t = strings[locale];
+  switch (code) {
+    case REQUEST_FAILED:
+      return t.cfdiPortalRequestFailed;
+    case "network_unavailable":
+      return t.cfdiPortalOffline;
+    case "rate_limited":
+      return t.cfdiPortalRateLimited;
+    case "unauthorized":
+    case "settings_changed":
+    case "operation_conflict":
+      return t.cfdiPortalTryAgain;
+    default:
+      return translateError(code, locale);
+  }
+}
+
+/**
+ * A failed request's text (CFDI-UX-2): the reason when the customer can fix the data; otherwise
+ * the restaurant could not issue it (certificate, organization, provider), with its contact.
+ */
+export function portalFailure(
+  error: { code: string; path: string | null } | null,
+  locale: Locale,
+): { text: string; fixable: boolean } {
+  return error && receptorFixable(error)
+    ? { text: portalMessage(error.code, locale), fixable: true }
+    : { text: strings[locale].cfdiPortalRestaurantFailed, fixable: false };
 }
 
 export default function SelfInvoicePortal() {
@@ -110,6 +139,8 @@ export default function SelfInvoicePortal() {
   const [busy, setBusy] = useState(false);
   const [rfc, setRfc] = useState("");
   const [askRfc, setAskRfc] = useState(false);
+  /** "Descargar mi factura" reached the done step: nothing was just sent (CFDI-UX-15). */
+  const [accessed, setAccessed] = useState(false);
   const started = useRef(false);
 
   useEffect(() => {
@@ -149,8 +180,12 @@ export default function SelfInvoicePortal() {
     if (codeFromPath(location.pathname)) void lookup();
   }, []);
 
-  // Poll the request while it is in flight (2 s, at most 2 min).
-  const pollToken = step === "waiting" ? requestToken : null;
+  // Poll the request while it is in flight, and once valid until its files are stored (2 s, at
+  // most 2 min; CFDI-UX-4).
+  const pollToken =
+    step === "waiting" || (step === "done" && doc && !doc.filesReady)
+      ? requestToken
+      : null;
   useEffect(() => {
     if (!pollToken) return;
     const begun = Date.now();
@@ -175,7 +210,7 @@ export default function SelfInvoicePortal() {
         if (stopped) return;
         setDoc(next);
         if (!IN_FLIGHT.includes(next.status)) {
-          stop();
+          if (next.status !== "valid" || next.filesReady) stop();
           setStep(next.status === "valid" ? "done" : "failed");
         }
       } catch {
@@ -214,6 +249,7 @@ export default function SelfInvoicePortal() {
       );
       setRequestToken(r.requestToken);
       setDoc(r.document);
+      setAccessed(false);
       setTimedOut(false);
       setStep(
         r.document.status === "valid"
@@ -223,8 +259,37 @@ export default function SelfInvoicePortal() {
             : "failed",
       );
     } catch (e) {
-      setError(portalMessage((e as Error).message, locale));
+      const code = (e as Error).message;
+      // The ticket moved meanwhile (a global was built, CFDI-UX-11): show its real state.
+      if (
+        code === "cfdi_ticket_in_global" ||
+        code === "cfdi_global_in_progress"
+      ) {
+        await lookup();
+        setError(
+          (code === "cfdi_ticket_in_global"
+            ? t.cfdiPortalInGlobal
+            : t.cfdiPortalGlobalProgress) + contact,
+        );
+        return;
+      }
+      setError(portalMessage(code, locale));
       setStep("form");
+    }
+  }
+
+  /** A download asks for a fresh 15-minute file token first (CFDI-UX-4). */
+  async function download(format: "pdf" | "xml") {
+    if (!requestToken) return;
+    try {
+      const fresh = await portal<PortalDocumentStatus>(
+        `requests/${encodeURIComponent(requestToken)}`,
+      );
+      setDoc(fresh);
+      if (fresh.downloadToken && fresh.filesReady)
+        location.assign(portalFileUrl(fresh.downloadToken, format));
+    } catch (e) {
+      setError(portalMessage((e as Error).message, locale));
     }
   }
 
@@ -241,6 +306,7 @@ export default function SelfInvoicePortal() {
       );
       setRequestToken(r.requestToken);
       setDoc(status);
+      setAccessed(true);
       setStep("done");
     } catch (e) {
       setError(portalMessage((e as Error).message, locale));
@@ -249,8 +315,8 @@ export default function SelfInvoicePortal() {
     }
   }
 
-  function correct() {
-    setServerIssue(issueOfError(doc?.error ?? null));
+  function correct(error = doc?.error ?? null) {
+    setServerIssue(issueOfError(error));
     setOperationId(crypto.randomUUID());
     setDoc(null);
     setError("");
@@ -412,6 +478,14 @@ export default function SelfInvoicePortal() {
                   {contact}
                 </p>
               )}
+              {canForm && ticket.latest?.status === "failed" && (
+                <LatestFailure
+                  latest={ticket.latest}
+                  locale={locale}
+                  contact={contact}
+                  fix={() => correct(ticket.latest?.error ?? null)}
+                />
+              )}
               {canForm && (
                 <Button variant="primary" onClick={() => setStep("form")}>
                   {t.cfdiGenerate}
@@ -516,22 +590,31 @@ export default function SelfInvoicePortal() {
         <section className="panel cfdi-portal-done" role="status">
           <p>
             <strong>
-              {doc.emailMasked
-                ? tr(locale, "cfdiPortalDone", { email: doc.emailMasked })
-                : t.cfdiPortalDoneNoEmail}
+              {accessed
+                ? tr(locale, "cfdiPortalAccessed", {
+                    doc: docLabel(doc.series, doc.folioNumber) ?? "",
+                    rfc: doc.rfcMasked,
+                  })
+                : doc.emailMasked
+                  ? tr(locale, "cfdiPortalDone", { email: doc.emailMasked })
+                  : t.cfdiPortalDoneNoEmail}
             </strong>
           </p>
-          {docLabel(doc.series, doc.folioNumber) && (
+          {!accessed && docLabel(doc.series, doc.folioNumber) && (
             <p className="muted">
               {docLabel(doc.series, doc.folioNumber)} · {doc.rfcMasked}
             </p>
           )}
-          {doc.downloadToken && (
+          {doc.downloadToken && doc.filesReady ? (
             <div className="row wrap">
               <a
                 className="button secondary"
                 href={portalFileUrl(doc.downloadToken, "pdf")}
                 download
+                onClick={(e) => {
+                  e.preventDefault();
+                  void download("pdf");
+                }}
               >
                 {t.cfdiDownloadPdf}
               </a>
@@ -539,22 +622,37 @@ export default function SelfInvoicePortal() {
                 className="button secondary"
                 href={portalFileUrl(doc.downloadToken, "xml")}
                 download
+                onClick={(e) => {
+                  e.preventDefault();
+                  void download("xml");
+                }}
               >
                 {t.cfdiDownloadXml}
               </a>
             </div>
+          ) : (
+            <p className="muted">{t.cfdiPreparingFiles}</p>
           )}
         </section>
       )}
 
       {step === "failed" && (
         <section className="panel cfdi-portal-failed" role="alert">
-          <p className="error">
-            {portalMessage(doc?.error?.code ?? REQUEST_FAILED, locale)}
-          </p>
-          <Button variant="primary" onClick={correct}>
-            {t.cfdiPortalFixData}
-          </Button>
+          {doc?.error ? (
+            <PortalFailureText
+              error={doc.error}
+              locale={locale}
+              contact={contact}
+              fix={() => correct()}
+            />
+          ) : (
+            <>
+              <p className="error">{portalMessage(REQUEST_FAILED, locale)}</p>
+              <Button variant="primary" onClick={() => correct()}>
+                {t.cfdiPortalFixData}
+              </Button>
+            </>
+          )}
         </section>
       )}
 
@@ -583,6 +681,60 @@ export default function SelfInvoicePortal() {
               })
             : null}
       </footer>
+    </div>
+  );
+}
+
+/** A failed request's reason and, when the customer can fix the data, "Corregir mis datos". */
+function PortalFailureText({
+  error,
+  locale,
+  contact,
+  fix,
+}: {
+  error: { code: string; path: string | null };
+  locale: Locale;
+  contact: string;
+  fix: () => void;
+}) {
+  const f = portalFailure(error, locale);
+  return (
+    <>
+      <p className="error">
+        {f.text}
+        {f.fixable ? "" : contact}
+      </p>
+      {f.fixable && (
+        <Button variant="primary" onClick={fix}>
+          {strings[locale].cfdiPortalFixData}
+        </Button>
+      )}
+    </>
+  );
+}
+
+/** A customer back after a request that failed when they had left (CFDI-UX-3). */
+function LatestFailure({
+  latest,
+  locale,
+  contact,
+  fix,
+}: {
+  latest: PortalDocumentStatus;
+  locale: Locale;
+  contact: string;
+  fix: () => void;
+}) {
+  const f = portalFailure(latest.error, locale);
+  return (
+    <div role="alert" className="cfdi-failed">
+      <p className="error">
+        {tr(locale, "cfdiPortalLatestFailed", { reason: f.text })}
+        {f.fixable ? "" : contact}
+      </p>
+      {f.fixable && (
+        <Button onClick={fix}>{strings[locale].cfdiPortalFixData}</Button>
+      )}
     </div>
   );
 }

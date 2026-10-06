@@ -385,6 +385,30 @@ export function cancellationAllowed(
   );
 }
 
+/**
+ * Failures the customer (or a cashier) fixes by correcting the receptor data (CFDI-UX-2): the
+ * receptor checks and SAT's receptor refusals, or a provider error on a customer field. Every other
+ * failure is the restaurant's (certificate, organization, provider) and the portal says so.
+ */
+export const RECEPTOR_FIXABLE_PREFIXES = ["cfdi_receptor_", "cfdi_invalid_"];
+export const RECEPTOR_FIXABLE_CODES = [
+  "cfdi_regime_mismatch",
+  "cfdi_use_not_allowed",
+  "cfdi_generic_rfc",
+  "cfdi_email_required",
+];
+export function receptorFixable(
+  error: { code: string; path?: string | null } | null,
+): boolean {
+  if (!error) return false;
+  return (
+    RECEPTOR_FIXABLE_PREFIXES.some((p) => error.code.startsWith(p)) ||
+    RECEPTOR_FIXABLE_CODES.includes(error.code) ||
+    !!error.path?.startsWith("customer.") ||
+    error.path === "use"
+  );
+}
+
 /** Aliases of fiscal's self-invoice code helpers (12 Crockford characters, printed 4-4-4). */
 export const normalizeTicketCode = normalizeSelfInvoiceCode;
 export const formatTicketCode = groupSelfInvoiceCode;
@@ -812,6 +836,8 @@ export type PortalDocumentStatus = {
   error: { code: string; message: string | null; path: string | null } | null;
   /** Set when valid. */
   downloadToken: string | null;
+  /** The PDF and XML are stored (cfdi_deliver ran): downloads work (CFDI-UX-4). */
+  filesReady: boolean;
 };
 export type PortalTicketView = Omit<
   CfdiTicketView,

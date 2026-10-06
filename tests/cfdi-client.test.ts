@@ -77,8 +77,11 @@ import { CfdiCorteCoverage } from "../src/features/cfdi/CfdiCorteCoverage";
 import { base64Of, passwordLifetimeMs } from "../src/features/cfdi/CsdUpload";
 import {
   codeFromPath,
+  portalFailure,
   portalMessage,
 } from "../src/features/cfdi/SelfInvoicePortal";
+import { awaitingFiles } from "../src/features/cfdi/InvoiceDialog";
+import { receptorFixable } from "../shared/cfdi";
 
 const apiMock = vi.mocked(api);
 
@@ -690,6 +693,46 @@ describe("cfdi client: helpers", () => {
       strings.es.cfdiPortalRequestFailed,
     );
     expect(portalMessage("cfdi_portal_code_not_found", "en")).toContain("12");
+  });
+  it("CFDI-UX-2/UX-5: the portal offers 'Corregir mis datos' only for data the customer can fix, says the restaurant failed otherwise, and words transport codes for customers", () => {
+    expect(receptorFixable({ code: "cfdi_receptor_name_mismatch" })).toBe(true);
+    expect(receptorFixable({ code: "cfdi_invalid_rfc" })).toBe(true);
+    expect(receptorFixable({ code: "cfdi_use_not_allowed" })).toBe(true);
+    expect(
+      receptorFixable({
+        code: "cfdi_stamping_rejected",
+        path: "customer.tax_id",
+      }),
+    ).toBe(true);
+    expect(receptorFixable({ code: "cfdi_csd_expired" })).toBe(false);
+    expect(receptorFixable({ code: "cfdi_org_tax_info_invalid" })).toBe(false);
+    expect(receptorFixable(null)).toBe(false);
+    const csd = portalFailure({ code: "cfdi_csd_expired", path: null }, "es");
+    expect(csd).toEqual({
+      text: strings.es.cfdiPortalRestaurantFailed,
+      fixable: false,
+    });
+    expect(
+      portalFailure({ code: "cfdi_receptor_zip_mismatch", path: null }, "es")
+        .fixable,
+    ).toBe(true);
+    expect(portalMessage("network_unavailable", "es")).toBe(
+      strings.es.cfdiPortalOffline,
+    );
+    expect(portalMessage("rate_limited", "en")).toBe(
+      strings.en.cfdiPortalRateLimited,
+    );
+    expect(portalMessage("network_unavailable", "es")).not.toContain(
+      "vendiendo",
+    );
+  });
+  it("CFDI-UX-4: a valid document waits for both files before the dialog links them", () => {
+    const doc = (files: string[], status = "valid") =>
+      ({ status, files }) as unknown as Parameters<typeof awaitingFiles>[0];
+    expect(awaitingFiles(doc([]))).toBe(true);
+    expect(awaitingFiles(doc(["xml"]))).toBe(true);
+    expect(awaitingFiles(doc(["xml", "pdf"]))).toBe(false);
+    expect(awaitingFiles(doc([], "failed"))).toBe(false);
   });
   it("CFDI-R10: a typed CSD password never outlives the idle lock (at most 2 minutes untouched)", () => {
     expect(passwordLifetimeMs(60)).toBe(60_000);
