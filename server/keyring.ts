@@ -91,6 +91,16 @@ export function keyring(): Keyring {
   return (ring = [{ kid: FALLBACK_KID, secret: fallbackSecret(jwt) }]);
 }
 
+/**
+ * The active kids only (never key material), for the web's startup log line
+ * `signing_keys_active`: after an emergency rotation the operator confirms there that the
+ * new kid signs and the leaked one is gone (docs/RUNBOOK.md "Signing keys").
+ */
+export function keyringSummary(): { signKid: string; kids: string[] } {
+  const ring = keyring();
+  return { signKid: ring[0].kid, kids: ring.map((k) => k.kid) };
+}
+
 /** Test hook. */
 export function resetKeyring(): void {
   ring = null;
@@ -139,8 +149,8 @@ export function signToken(use: string, data: unknown): string {
 }
 
 /**
- * The parsed body, or null. With legacy, a two-part "body.sig" under JWT_SECRET verifies
- * while it is set, outside production (LD-8 D5). Exactly one spelling per token is
+ * The parsed body, or null. With legacy and use "sign", a two-part "body.sig" under
+ * JWT_SECRET verifies while it is set, outside production (LD-8 D5). Exactly one spelling per token is
  * accepted (P-22, MENU-R3): the part count is exact, and the body and the signature must
  * be canonical base64url, because Buffer.from(…, "base64url") silently skips "=", "!",
  * whitespace and the unused low bits of the last character.
@@ -162,10 +172,13 @@ export function verifyToken(
       .digest();
   } else if (
     o.legacy &&
+    use === "sign" &&
     parts.length === 2 &&
     jwtSecret() &&
     !isProductionEnv()
   ) {
+    // Legacy acceptance is for cookies and links only: a "seal:*" use never
+    // accepts a JWT_SECRET-only token, whatever the caller passes (PLATFORM-KEYS-4).
     [body, sig] = parts;
     expected = createHmac("sha256", jwtSecret()!).update(body).digest();
   } else return null;

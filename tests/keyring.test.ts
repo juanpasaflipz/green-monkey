@@ -4,6 +4,7 @@ import {
   FALLBACK_KID,
   KeyringError,
   keyring,
+  keyringSummary,
   parseSigningKeys,
   resetKeyring,
   signToken,
@@ -276,6 +277,52 @@ describe("keyring (OPS-10)", () => {
     expect(
       verifyToken("seal:cfdi-portal-file", sealed, { legacy: true }),
     ).toBeNull();
+  });
+
+  it("a legacy two-part body.sig never verifies for a 'seal:*' use, even when the caller asks for legacy acceptance (PLATFORM-KEYS-4)", () => {
+    for (const vars of [
+      { JWT_SECRET: JWT },
+      { SIGNING_KEYS: entry("k1", 1), JWT_SECRET: JWT },
+      { SIGNING_KEYS: entry("k1", 1), JWT_SECRET: JWT, APP_ENV: "staging" },
+    ]) {
+      env(vars);
+      const old = legacy({ tid: "t", did: "d" });
+      // The same token is a valid legacy cookie outside production…
+      expect(verifyToken("sign", old, { legacy: true })).toEqual({
+        tid: "t",
+        did: "d",
+      });
+      // …and is refused for every other use, legacy flag or not.
+      for (const use of [
+        "seal:cfdi-portal-file",
+        "seal:cfdi-portal",
+        "seal:x",
+        "other",
+      ])
+        expect(
+          verifyToken(use, old, { legacy: true }),
+          `${use} ${JSON.stringify(vars)}`,
+        ).toBeNull();
+    }
+  });
+
+  it("keyringSummary names the signing kid and every verifying kid, never key material (PLATFORM-KEYS-1 startup log)", () => {
+    env({
+      SIGNING_KEYS: `${entry("k20261005-ab12", 1)},${entry("k20260901-0f0f", 2)}`,
+      JWT_SECRET: JWT,
+    });
+    const summary = keyringSummary();
+    expect(summary).toEqual({
+      signKid: "k20261005-ab12",
+      kids: ["k20261005-ab12", "k20260901-0f0f"],
+    });
+    expect(JSON.stringify(summary)).not.toContain(secret(1));
+    expect(JSON.stringify(summary)).not.toContain(secret(2));
+    env({ JWT_SECRET: JWT });
+    expect(keyringSummary()).toEqual({
+      signKid: FALLBACK_KID,
+      kids: [FALLBACK_KID],
+    });
   });
 
   it("production refuses legacy body.sig and v2.jwt.* tokens even while JWT_SECRET is set; staging accepts both for sign (LD-8 D5)", () => {
