@@ -310,6 +310,69 @@ test("manager removes a discount before payment and the balance goes back up", a
   await expect(row(page, name)).toContainText("$90.00");
 });
 
+test("DSC-R2: Quitar descuento recovers from stale_order: it reloads the check, keeps the reason and succeeds on the next confirm", async ({
+  page,
+}) => {
+  const name = "Desfasada " + tag();
+  await login(page);
+  const o = await order(page, name, 2);
+  const lineId = o.lines[0].id;
+  // A 10 % discount on one of the two tacos (unit 0).
+  await call(page, `/orders/${o.id}/discounts`, {
+    operationId: uuid(),
+    expectedVersion: o.version,
+    scope: "line",
+    lineId,
+    quantity: 1,
+    kind: "percent",
+    percentBps: 1000,
+    reasonCode: "regular_customer",
+  });
+  await orders(page);
+  await row(page, name)
+    .getByRole("button", { name: "Detalle", exact: true })
+    .click();
+  const detail = page.getByRole("dialog", { name: /Orden #/ });
+  await detail
+    .getByRole("button", { name: "Quitar descuento", exact: true })
+    .click();
+  const remove = page.getByRole("dialog", { name: "Quitar descuento" });
+  await remove.getByLabel("Motivo para quitarlo").fill("Se aplicó por error");
+  // Another device discounts the other taco: the check's version moves on,
+  // and the first discount stays removable (no overlap).
+  const current = await call(page, "/orders/" + o.id);
+  await call(page, `/orders/${o.id}/discounts`, {
+    operationId: uuid(),
+    expectedVersion: current.version,
+    scope: "line",
+    lineId,
+    quantity: 1,
+    kind: "comp",
+    reasonCode: "courtesy",
+  });
+  await remove
+    .getByRole("button", { name: "Quitar y sumar $4.50", exact: true })
+    .click();
+  await expect(remove.getByRole("alert")).toHaveText(
+    "La orden cambió en otro dispositivo. Revisa y confirma de nuevo.",
+  );
+  await expect(remove.getByLabel("Motivo para quitarlo")).toHaveValue(
+    "Se aplicó por error",
+  );
+  // The screen behind it picked up the other device's comp.
+  await expect(detail).toContainText("Cortesía");
+  await remove
+    .getByRole("button", { name: "Quitar y sumar $4.50", exact: true })
+    .click();
+  await expect(remove).toBeHidden();
+  await expect(detail).toContainText(
+    "Quitado por Alex Demo · Se aplicó por error",
+  );
+  const after = await call(page, "/orders/" + o.id);
+  expect(after.total).toBe(4500);
+  expect(after.discount).toBe(4500);
+});
+
 test("MON-4: refund one paid item by card; the terminal reference is required; the kitchen shows it as refunded and acknowledges it", async ({
   page,
 }) => {
@@ -418,6 +481,56 @@ test("MON-4: a cash item refund with restock prints the refund slip and lowers t
   expect((await call(page, "/cash")).expected).toBe(before - 4500);
   const after = await call(page, "/orders/" + o.id);
   expect(after.refundBatches[0].lines[0].restocked).toBe(true);
+});
+
+test("DSC-R1: leaving the refund result with Escape or the X button refreshes Órdenes and Detalle de orden", async ({
+  page,
+}) => {
+  const name = "Escape " + tag();
+  await login(page);
+  await openDrawer(page);
+  const o = await order(page, name, 2);
+  await pay(page, o.id, 9000);
+  await orders(page);
+  const card = row(page, name);
+  await expect(card).toContainText("Cobrado");
+  await card.getByRole("button", { name: "Reembolsar", exact: true }).click();
+  const refund = page.getByRole("dialog", { name: /Reembolso · Orden/ });
+  await refund.getByLabel(/Taco de hongos · \$45\.00 c\/u/).fill("1");
+  await refund
+    .getByLabel("Motivo del reembolso")
+    .selectOption({ label: "El cliente canceló" });
+  await refund
+    .getByRole("button", { name: "Reembolsar $45.00", exact: true })
+    .click();
+  await expect(refund).toContainText("Reembolso registrado: $45.00");
+  await page.keyboard.press("Escape");
+  await expect(refund).toBeHidden();
+  // The card shows the refund without a manual "Actualizar".
+  await expect(card).toContainText("Reembolsado");
+  // Detalle de orden: the X button refreshes it too.
+  await card.getByRole("button", { name: "Detalle", exact: true }).click();
+  const detail = page.getByRole("dialog", { name: /Orden #/ });
+  await expect(detail.locator("section.order-adjustments")).toHaveCount(1);
+  await detail.getByRole("button", { name: "Reembolsar", exact: true }).click();
+  const again = page.getByRole("dialog", { name: /Reembolso · Orden/ });
+  await again.getByLabel(/Taco de hongos · \$45\.00 c\/u/).fill("1");
+  await again
+    .getByLabel("Motivo del reembolso")
+    .selectOption({ label: "El cliente canceló" });
+  await again
+    .getByRole("button", { name: "Reembolsar $45.00", exact: true })
+    .click();
+  await expect(again).toContainText("Reembolso registrado: $45.00");
+  await again.getByRole("button", { name: "Cerrar", exact: true }).click();
+  await expect(again).toBeHidden();
+  const refunds = detail
+    .locator("section.order-adjustments")
+    .filter({ hasText: "Reembolsos" });
+  await expect(refunds.locator("li")).toHaveCount(2);
+  await expect(
+    detail.getByRole("button", { name: "Reembolsar", exact: true }),
+  ).toHaveCount(0);
 });
 
 test("MON-9/FIT-10: blind close — the cashier never sees expected cash; the manager sees the difference in history and reviews it", async ({
@@ -583,6 +696,48 @@ test("controls: the owner sets the cashier limit to 10%; a 5% cashier discount n
   await expect(row(page, name)).toContainText("Descuento −$4.50");
 });
 
+test("DSC-R7: controls accept 0.00 %, and after another device saves first the form reloads and the next save succeeds", async ({
+  page,
+}) => {
+  await login(page);
+  await page
+    .getByRole("button", { name: "Configuración", exact: true })
+    .click();
+  const panel = page.locator("section.money-controls");
+  const save = panel.getByRole("button", {
+    name: "Guardar controles",
+    exact: true,
+  });
+  await panel.getByLabel("Mesero · Hasta (%)").fill("0.00");
+  await save.click();
+  await expect(panel.getByRole("status")).toContainText("Controles guardados");
+  // Another device saves a 7 % cashier limit with the current version.
+  const view = await call(page, "/discounts/controls");
+  await call(page, "/discounts/controls", {
+    operationId: uuid(),
+    expectedVersion: view.version,
+    limits: {
+      cashier: { maxPercentBps: 700, maxAmount: 0 },
+      server: { maxPercentBps: 0, maxAmount: 0 },
+    },
+    blindClose: view.blindClose,
+    expectedRoles: view.expectedRoles,
+    closeRoles: view.closeRoles,
+  });
+  await panel.getByLabel("Cajero · Hasta (%)").fill("12");
+  await save.click();
+  await expect(panel.getByRole("alert")).toHaveText(
+    "Otro dispositivo cambió estos controles. Ya ves los valores actuales; revisa y guarda de nuevo.",
+  );
+  await expect(panel.getByLabel("Cajero · Hasta (%)")).toHaveValue("7");
+  await panel.getByLabel("Cajero · Hasta (%)").fill("12");
+  await save.click();
+  await expect(panel.getByRole("status")).toContainText("Controles guardados");
+  expect(
+    (await call(page, "/discounts/controls")).limits.cashier.maxPercentBps,
+  ).toBe(1200);
+});
+
 test("discount and refund actions are disabled offline", async ({
   page,
   context,
@@ -610,6 +765,46 @@ test("discount and refund actions are disabled offline", async ({
   await expect(
     card.getByRole("button", { name: "Reembolsar", exact: true }),
   ).toBeDisabled();
+  // DSC-R5: the reason is visible (touch tablets show no tooltip) and is the
+  // buttons' accessible description.
+  await expect(
+    card.getByText("Los descuentos requieren conexión."),
+  ).toBeVisible();
+  await expect(
+    card.getByText("Los reembolsos requieren conexión."),
+  ).toBeVisible();
+  await expect(
+    card.getByRole("button", { name: "Descuento", exact: true }),
+  ).toHaveAccessibleDescription("Los descuentos requieren conexión.");
+  await expect(
+    card.getByRole("button", { name: "Reembolsar", exact: true }),
+  ).toHaveAccessibleDescription("Los reembolsos requieren conexión.");
+  // Detalle de orden (opened online; it reads the order from the server)
+  // keeps Descuento visible, disabled, with its reason once offline.
+  await context.setOffline(false);
+  await expect(
+    card.getByRole("button", { name: "Descuento", exact: true }),
+  ).toBeEnabled();
+  await card.getByRole("button", { name: "Detalle", exact: true }).click();
+  const detail = page.getByRole("dialog", { name: /Orden #/ });
+  // The action row's Descuento (the per-line links share the name and hide
+  // offline).
+  const discountAction = detail
+    .getByRole("button", { name: "Descuento", exact: true })
+    .last();
+  await expect(discountAction).toBeEnabled();
+  await context.setOffline(true);
+  await expect(
+    detail.getByRole("button", { name: "Descuento", exact: true }),
+  ).toHaveCount(1);
+  await expect(discountAction).toBeDisabled();
+  await expect(discountAction).toHaveAccessibleDescription(
+    "Los descuentos requieren conexión.",
+  );
+  await expect(
+    detail.getByRole("button", { name: "Reembolsar", exact: true }),
+  ).toHaveAccessibleDescription("Los reembolsos requieren conexión.");
+  await page.keyboard.press("Escape");
   await context.setOffline(false);
 });
 
