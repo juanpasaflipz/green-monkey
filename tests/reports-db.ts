@@ -42,7 +42,7 @@ import {
 import { hash } from "../server/auth.js";
 import { todaySummary } from "../server/reports/today.js";
 import { legacyDailyReport } from "../server/reports/legacy.js";
-import type { ReportsPorts } from "../server/reports/ports.js";
+import { reportsPorts, type ReportsPorts } from "../server/reports/ports.js";
 import { restaurantOf } from "../server/reports/restaurant.js";
 import { windowOf } from "../server/reports/days.js";
 import { businessDate, type Session } from "../shared/domain.js";
@@ -1284,6 +1284,28 @@ try {
       remote(onTerminal(new Date().toISOString())),
       "not_found",
     );
+  });
+
+  await test("18. a restaurant that issues no fiscal tickets (USD, tenant C) has no IVA block and no estimated margin, and Hoy never asks fiscal for missing tickets", async () => {
+    const port = (name: string) => () => {
+      throw new Error("port_called:" + name);
+    };
+    const noFiscal: ReportsPorts = {
+      ...reportsPorts,
+      fiscalSummary: port("fiscalSummary"),
+      missingTicketCount: port("missingTicketCount"),
+    };
+    const day = { from: today, to: today };
+    const summary = await read(ownerC, (tx) =>
+      salesSummary(tx, ownerC, day, "req", noFiscal),
+    );
+    assert.equal(summary.tax, null);
+    assert.equal(summary.margin.estimatedMargin, null);
+    assert.ok(!summary.checks.some((c) => c.code === "tickets_vs_orders"));
+    const hoy = await read(ownerC, (tx) =>
+      todaySummary(tx, ownerC, "req", noFiscal),
+    );
+    assert.ok(!hoy.alerts.some((a) => a.code === "missing_tickets"));
   });
 
   await test("keyset cursors keep microseconds: tenders that share one instant page each once (tenant C)", async () => {

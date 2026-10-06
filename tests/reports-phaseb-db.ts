@@ -1641,6 +1641,92 @@ try {
     "SQL-1/CONTRACTS-1/CORTES-4: a summary keeps fiscal's folio runs (a gap is never inside a range); a corte X lists its device's runs by issue time, an old order's ticket included",
   );
 
+  // ---- spec DB test 12: a 60-day summary reads fiscal in two chunks of at most 31 days and
+  // merges them into the same figures as the chunks.
+  const sixty = { from: addDays(today, -59), to: today };
+  const chunks: { from: string; to: string }[] = [];
+  const counting = {
+    ...ports,
+    fiscalSummary: (tx: Tx, s: any, r: { from: string; to: string }) => {
+      chunks.push(r);
+      return ports.fiscalSummary(tx, s, r);
+    },
+  };
+  const merged = (await read(owner, (tx: Tx) =>
+    S.fiscalForRange(tx, owner, sixty, counting),
+  ))!;
+  assert.deepEqual(chunks, [
+    { from: sixty.from, to: addDays(sixty.from, 30) },
+    { from: addDays(sixty.from, 31), to: today },
+  ]);
+  let tickets = 0,
+    gross = 0,
+    tax = 0;
+  for (const c of chunks) {
+    const part = await read(owner, (tx: Tx) =>
+      ports.fiscalSummary(tx, owner, c),
+    );
+    tickets += part.tickets.count;
+    gross += part.totals.gross;
+    tax += part.totals.netTax;
+  }
+  assert.deepEqual(
+    {
+      from: merged.from,
+      to: merged.to,
+      tickets: merged.tickets.count,
+      gross: merged.totals.gross,
+      tax: merged.totals.netTax,
+    },
+    { from: sixty.from, to: today, tickets, gross, tax },
+  );
+  ok(
+    "12. a 60-day summary reads fiscal in two ≤ 31-day chunks and merges them into the chunks' figures",
+  );
+
+  // ---- spec DB test 37: a batchless refund (the previous revision during a deploy overlap)
+  // has no fiscal adjustment, and refunds_vs_fiscal fails for its day on purpose.
+  const legacy37 = await order({
+    date: addDays(today, -20),
+    created: at(addDays(today, -20), "12:00:00"),
+    lines: [{ product: P.agua, qty: 1, unit: 3000, cost: null }],
+  });
+  const t37 = await tender(
+    legacy37.id,
+    null,
+    "cash",
+    3000,
+    0,
+    at(addDays(today, -20), "12:05:00"),
+  );
+  const day37 = await read(owner, (tx: Tx) =>
+    S.salesSummary(tx, owner, { from: today, to: today }, "req-37", ports),
+  );
+  assert.ok(day37.checks.find((c: any) => c.code === "refunds_vs_fiscal").ok);
+  await scoped(
+    (tx) =>
+      tx`insert into refunds(tenant_id,id,tender_id,session_id,amount,reason,disposition,actor_id,method)
+        values(${T},${id()},${t37},${DR.open1},1000,'Sin lote','no_stock_return',${E.cashier},'cash')`,
+  );
+  const after37 = await read(owner, (tx: Tx) =>
+    S.salesSummary(tx, owner, { from: today, to: today }, "req-37", ports),
+  );
+  const check37 = after37.checks.find(
+    (c: any) => c.code === "refunds_vs_fiscal",
+  );
+  assert.deepEqual(
+    {
+      ok: check37.ok,
+      expected:
+        check37.expected -
+        day37.checks.find((c: any) => c.code === "refunds_vs_fiscal").expected,
+    },
+    { ok: false, expected: 1000 },
+  );
+  ok(
+    "37. a batchless refund counts on the day it was recorded and fails refunds_vs_fiscal (no fiscal adjustment), as documented",
+  );
+
   // =============================================================================================
   // Real commands on the demo tenant (second opinion LD-27): fiscal's and discounts' commands
   // write every row. Figures are compared as deltas, since other suites share this tenant.
