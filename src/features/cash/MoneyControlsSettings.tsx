@@ -124,18 +124,14 @@ export function MoneyControlsSettings({
     }
     setBusy(true);
     try {
-      const saved = await api<MoneyControlsView>(
-        "/discounts/controls",
-        {
-          operationId,
-          expectedVersion: view.version,
-          limits,
-          blindClose: form.blindClose,
-          expectedRoles: form.expectedRoles,
-          closeRoles: form.closeRoles,
-        },
-        { idempotent: true },
-      );
+      const saved = await api<MoneyControlsView>("/discounts/controls", {
+        operationId,
+        expectedVersion: view.version,
+        limits,
+        blindClose: form.blindClose,
+        expectedRoles: form.expectedRoles,
+        closeRoles: form.closeRoles,
+      });
       setMoneyControls(saved, session);
       setView(saved);
       setForm(fromView(saved));

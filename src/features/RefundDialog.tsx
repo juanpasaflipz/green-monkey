@@ -237,7 +237,6 @@ export function RefundDialog({
               },
             }
           : body,
-        { idempotent: true },
       );
       setOperationId(crypto.randomUUID());
       setResult(r);

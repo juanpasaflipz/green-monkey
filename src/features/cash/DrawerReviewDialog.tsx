@@ -45,11 +45,10 @@ export function DrawerReviewDialog({
           setBusy(true);
           setError("");
           try {
-            await api(
-              `/cash/drawers/${drawerId}/review`,
-              { operationId, note: note.trim() },
-              { idempotent: true },
-            );
+            await api(`/cash/drawers/${drawerId}/review`, {
+              operationId,
+              note: note.trim(),
+            });
             await saved();
           } catch (err) {
             setError(translateError((err as Error).message, locale));

@@ -173,9 +173,7 @@ export function DiscountDialog({
         : {}),
     };
     try {
-      const o = await api<Order>(`/orders/${order.id}/discounts`, body, {
-        idempotent: true,
-      });
+      const o = await api<Order>(`/orders/${order.id}/discounts`, body);
       setOperationId(crypto.randomUUID());
       await applied(o);
       close();

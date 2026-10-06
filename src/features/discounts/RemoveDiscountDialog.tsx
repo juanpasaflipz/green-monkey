@@ -70,7 +70,6 @@ export function RemoveDiscountDialog({
                     }
                   : {}),
               },
-              { idempotent: true },
             );
             await removed(o);
             close();

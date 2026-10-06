@@ -125,16 +125,12 @@ export function DrawerCloseDialog({
     }
     setBusy(true);
     try {
-      const view = await api<DrawerView>(
-        "/cash/close",
-        {
-          operationId,
-          counted,
-          reason: reason.trim(),
-          ...(terminal !== null ? { externalReported: terminal } : {}),
-        },
-        { idempotent: true },
-      );
+      const view = await api<DrawerView>("/cash/close", {
+        operationId,
+        counted,
+        reason: reason.trim(),
+        ...(terminal !== null ? { externalReported: terminal } : {}),
+      });
       setResult(view);
       setStep("result");
     } catch (e) {
