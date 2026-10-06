@@ -289,6 +289,47 @@ describe("the scanner finds what the rules forbid (fixtures)", () => {
     ]);
   });
 
+  it("PUBLIC-CONCURRENCY-1: public ordering's LO-3 rows (links FOR UPDATE, the settings row and its upsert) and LO-4 hold numbers are ordered objects too", () => {
+    const found = scan({
+      "p.ts": `
+        export async function orderThenLink(tx, s) {
+          await tx\`select * from orders where id=\${id} for update\`;
+          await tx\`select id from public_links where id=\${l} for update\`;
+        }
+        export async function drawerThenSettings(tx, s) {
+          await tx\`select * from cash_sessions where id=\${d} for update\`;
+          await tx\`select paused from public_ordering_settings for update\`;
+        }
+        export async function orderThenSettingsUpsert(tx, s) {
+          await tx\`select * from orders where id=\${id} for update\`;
+          await tx\`insert into public_ordering_settings(tenant_id,paused) values(\${t},true) on conflict(tenant_id) do update set paused=true\`;
+        }
+        export async function orderThenHoldNumber(tx, s) {
+          await tx\`select * from orders where id=\${id} for update\`;
+          await tx\`insert into public_hold_numbers(tenant_id,business_date,value) values(\${t},\${d},1) on conflict(tenant_id,business_date) do update set value=public_hold_numbers.value+1\`;
+        }
+        export async function revokeAfterOrder(tx, s) {
+          await tx\`select * from orders where id=\${id} for update\`;
+          await tx\`update public_links set revoked_at=now() where id=\${l}\`;
+        }
+        export async function conforming(tx, s) {
+          await tx\`select id from public_order_holds where id=\${h} for update\`;
+          await tx\`select id from public_links where id=\${l} for update\`;
+          await tx\`select paused from public_ordering_settings for update\`;
+          await tx\`insert into public_hold_numbers(tenant_id,business_date,value) values(\${t},\${d},1) on conflict(tenant_id,business_date) do update set value=public_hold_numbers.value+1\`;
+          await tx\`select * from orders where id=\${id} for update\`;
+        }
+      `,
+    });
+    expect(found).toEqual([
+      "p.ts#drawerThenSettings:11>3",
+      "p.ts#orderThenHoldNumber:5>4",
+      "p.ts#orderThenLink:5>3",
+      "p.ts#orderThenSettingsUpsert:5>3",
+      "p.ts#revokeAfterOrder:5>3",
+    ]);
+  });
+
   it("LOCKS-2: locks taken inside helpers, imported functions (aliased, re-exported, namespaced), wrapped consts, object-literal and class methods count", () => {
     const found = scan({
       "server/locks.ts": `

@@ -486,6 +486,15 @@ the row lock, not with the transaction's start time; it takes no extra lock.
   At B1 the scanner, run against fiscal's reordered `createOrder` and
   `addRound`, still reports exactly these three pairs; only their reasons in
   `tests/lock-order.test.ts` were refreshed.
+- The scanner knows this area's own objects since LD-41
+  (PUBLIC-CONCURRENCY-1): `public_links` rows and the
+  `public_ordering_settings` row at LO-3, `public_hold_numbers` at LO-4, and
+  the upserts of both. A later change that takes one of them after an order,
+  drawer or folio lock (for example a check close that revokes its table's
+  code, or a drawer close that pauses ordering) fails the ratchet instead of
+  passing unseen. With them added the server still reports only the three
+  pairs above (a fixture test shows `5>3`, `11>3` and `5>4` for such
+  changes).
 - The dynamic check is DB test 24: 50 rounds of concurrent pay-first accepts,
   appends, abuse rejections, link rotations, drawer closes, settling voids and
   offline-style sales. No deadlock surfaces. Since B1 it also checks fiscal's
