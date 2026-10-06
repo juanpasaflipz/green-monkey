@@ -4476,6 +4476,212 @@ try {
     assert.equal((await docRow(d.id)).status, "valid");
   });
 
+  /** A 13600 ticket (11600 at 16 %, 2000 at 0 %) in a valid daily global past its 29-A deadline. */
+  async function inOldGlobal(label: string) {
+    const W = await makeTenant(label);
+    await activate(W, { testFrom: daysAgo(40), periodicity: "day" });
+    const tk = await makeTicket(W, {
+      businessDate: daysAgo(4),
+      groups: [
+        { category: "iva16", gross: 11600 },
+        { category: "iva0", gross: 2000 },
+      ],
+    });
+    await tick(W);
+    const [g] =
+      await admin`select id from cfdi_documents where tenant_id = ${W.tenantId} and kind = 'global' and status = 'valid'`;
+    await age([g.id], 500 * 24 * 60);
+    return { W, tk, g: g.id as string };
+  }
+  /** What a global declares for one ticket: its concepts carrying the ticket's folio. */
+  async function declaredFor(globalId: string, folio: string) {
+    const row = await docRow(globalId);
+    return (row.request.items as { product: { price: number; sku?: string } }[])
+      .filter((i) => i.product.sku === folio)
+      .reduce((s, i) => s + Math.round(i.product.price * 100), 0);
+  }
+  /** The live credit notes to a global for these refunds, in centavos. */
+  async function creditedFor(globalId: string, refundIds: string[]) {
+    const [{ n }] = await admin`
+      select coalesce(sum(expected_total), 0)::int as n from cfdi_documents
+      where parent_document_id = ${globalId} and kind = 'egreso'
+        and refund_id = any(${refundIds}::uuid[]) and status not in ('failed','canceled')`;
+    return n as number;
+  }
+  /** Runs the credit-note decisions that wait with a backoff until they end. */
+  async function settleRefunds(tenantId: string) {
+    for (let i = 0; i < 6; i++) {
+      await due(tenantId, "cfdi_refund");
+      await settle(tenantId);
+    }
+  }
+  const routeIIINote = async (ticketId: string) =>
+    (
+      await admin`select * from cfdi_documents where credit_ticket_id = ${ticketId} order by created_at`
+    ).at(-1)!;
+
+  await test("INT-2a. route III credits exactly what the global still declares for the ticket: a refund recorded just before the request (its credit-note decision not run yet) stays inside the note, the invoice nets it and the decision ends with no credit note, so the global ends at zero for the ticket and the CFDI income equals fiscal's net", async () => {
+    const { W, tk, g } = await inOldGlobal("int-2a");
+    // SAT-3b's numbers without the settle between the refund and the request.
+    const r = await refund(W, tk, { iva0: 500 });
+    const inv = await invoice(W, tk, { s: W.manager, reissueGlobal: true });
+    assert.equal(inv.status, "waiting");
+    await settle(W.tenantId);
+    await settleRefunds(W.tenantId);
+    const declared = await declaredFor(g, tk.folio);
+    assert.equal(
+      declared,
+      13600,
+      "the global declared the ticket before the refund",
+    );
+    const note = await routeIIINote(tk.id);
+    assert.deepEqual(
+      {
+        status: note.status,
+        parent: note.parent_document_id,
+        total: note.expected_total,
+        netted: note.netted_refund_ids,
+      },
+      { status: "valid", parent: g, total: 13600, netted: [] },
+    );
+    const credited = await creditedFor(g, [r]);
+    assert.equal(credited, 0, "no credit note to the global for the refund");
+    assert.equal(
+      note.expected_total + credited,
+      declared,
+      "the global ends at zero for the ticket",
+    );
+    const row = await docRow(inv.id);
+    assert.deepEqual(
+      {
+        status: row.status,
+        total: row.expected_total,
+        netted: row.netted_refund_ids,
+      },
+      { status: "valid", total: 13600 - 500, netted: [r] },
+    );
+    assert.equal(
+      (await admin`select 1 from cfdi_documents where refund_id = ${r}`).length,
+      0,
+      "the refund needs no credit note: the invoice nets it",
+    );
+    const [decision] =
+      await admin`select state from jobs where tenant_id = ${W.tenantId} and kind = 'cfdi_refund'
+        and payload->>'refundId' = ${r}`;
+    assert.equal(decision.state, "done");
+    assert.equal(
+      declared - note.expected_total - credited + row.expected_total,
+      13600 - 500,
+      "CFDI income for the ticket equals fiscal's net",
+    );
+  });
+
+  await test("INT-2b. a refund whose credit note to the global failed stays inside the route-III note (the global still declares it) and a refund credited by a live note is left out; Reintentar on the failed note afterwards finds the refund netted by the invoice and issues nothing", async () => {
+    const { W, tk, g } = await inOldGlobal("int-2b");
+    fake.fault({
+      op: "invoices.create",
+      fault: "stamp_failed",
+      match: { type: "E" },
+    });
+    const r1 = await refund(W, tk, { iva0: 500 });
+    await settle(W.tenantId);
+    const [e1] =
+      await admin`select id, status from cfdi_documents where refund_id = ${r1}`;
+    assert.equal(e1.status, "failed");
+    const r2 = await refund(W, tk, { iva16: 1160 });
+    await settle(W.tenantId);
+    const [e2] =
+      await admin`select status, expected_total from cfdi_documents where refund_id = ${r2}`;
+    assert.deepEqual({ ...e2 }, { status: "valid", expected_total: 1160 });
+    const inv = await invoice(W, tk, { s: W.manager, reissueGlobal: true });
+    await settle(W.tenantId);
+    await settleRefunds(W.tenantId);
+    const declared = await declaredFor(g, tk.folio);
+    assert.equal(declared, 13600);
+    const note = await routeIIINote(tk.id);
+    assert.deepEqual(
+      {
+        status: note.status,
+        total: note.expected_total,
+        netted: note.netted_refund_ids,
+      },
+      { status: "valid", total: 13600 - 1160, netted: [r2] },
+    );
+    const credited = await creditedFor(g, [r1, r2]);
+    assert.equal(credited, 1160);
+    assert.equal(note.expected_total + credited, declared);
+    const row = await docRow(inv.id);
+    assert.deepEqual(
+      {
+        status: row.status,
+        total: row.expected_total,
+        netted: [...row.netted_refund_ids].sort(),
+      },
+      { status: "valid", total: 13600 - 500 - 1160, netted: [r1, r2].sort() },
+    );
+    await web(W, (tx) =>
+      service.retryDocument(tx, W.manager, { operationId: op() }, {
+        params: { id: e1.id },
+      } as never),
+    );
+    await settle(W.tenantId);
+    await settleRefunds(W.tenantId);
+    assert.deepEqual(
+      (
+        await admin`select status from cfdi_documents where refund_id = ${r1} order by created_at`
+      ).map((x) => x.status),
+      ["failed"],
+      "no second credit for the refund: the note and the invoice already account for it",
+    );
+  });
+
+  await test("INT-2c. while a credit note to the global for one of the ticket's refunds is still in flight the request answers cfdi_global_in_progress (the note's figure would depend on that stamp); once it is valid the request goes through and the note leaves that refund out", async () => {
+    const { W, tk, g } = await inOldGlobal("int-2c");
+    fake.fault({
+      op: "invoices.create",
+      fault: "pending",
+      match: { type: "E" },
+    });
+    const r = await refund(W, tk, { iva0: 500 });
+    await settle(W.tenantId);
+    const [e] =
+      await admin`select id, status from cfdi_documents where refund_id = ${r}`;
+    assert.equal(e.status, "pending");
+    await rejects(
+      invoice(W, tk, { s: W.manager, reissueGlobal: true }),
+      "cfdi_global_in_progress",
+    );
+    assert.equal(
+      (
+        await admin`select 1 from cfdi_documents where credit_ticket_id = ${tk.id}`
+      ).length,
+      0,
+    );
+    await due(W.tenantId, "cfdi_reconcile");
+    await settle(W.tenantId);
+    assert.equal((await docRow(e.id)).status, "valid");
+    const inv = await invoice(W, tk, { s: W.manager, reissueGlobal: true });
+    await settle(W.tenantId);
+    const note = await routeIIINote(tk.id);
+    assert.deepEqual(
+      {
+        status: note.status,
+        total: note.expected_total,
+        netted: note.netted_refund_ids,
+      },
+      { status: "valid", total: 13600 - 500, netted: [r] },
+    );
+    assert.equal(
+      note.expected_total + (await creditedFor(g, [r])),
+      await declaredFor(g, tk.folio),
+    );
+    const row = await docRow(inv.id);
+    assert.deepEqual(
+      { status: row.status, total: row.expected_total },
+      { status: "valid", total: 13600 - 500 },
+    );
+  });
+
   console.log(`cfdi DB checks passed: ${checks}`);
 } finally {
   await runner.stop(2000);

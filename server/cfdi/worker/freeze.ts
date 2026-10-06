@@ -12,6 +12,7 @@ import {
   buildEgresoRequest,
   buildGlobalRequests,
   buildInvoiceRequest,
+  netGroups,
   type EgresoBuildInput,
   type GlobalInfo,
 } from "../build.js";
@@ -159,25 +160,31 @@ async function freezeEgreso(
   let folio: string;
   let method: "cash" | "external" = "cash";
   let credit: EgresoBuildInput["credit"] = null;
+  let nettedRefundIds: string[] = [];
   if (doc.creditTicketId) {
-    // Route III (CFDI-SAT-3): the ticket's net amount per category (its frozen groups less every
-    // refund's tax rows, complement extraction keeps each category consistent).
+    // Route III (CFDI-SAT-3): the note credits exactly what the global still declares for the
+    // ticket (CFDI-INT-2), per category: the ticket's groups less the refunds the global netted
+    // when it was frozen and less the refunds a live credit note to the global credits. Any other
+    // refund is still inside the global's figure, so this note credits it too; the waiting
+    // invoice, frozen once this note is valid, nets every refund, and cfdi_refund, which waits for
+    // this note (cfdi_parent_credit_open), then finds the refund netted by that invoice. The
+    // request refuses while a credit note to the global for one of the ticket's refunds has not
+    // settled (createInvoiceRequest), so "live" here is final: valid, or its live substitute.
     const payload = await ticketForCfdi(tx, doc.creditTicketId);
-    const refunded = new Map<TaxCategory, { gross: number; tax: number }>();
-    for (const g of payload.refunds.flatMap((r) => r.groups)) {
-      const s = refunded.get(g.category) ?? { gross: 0, tax: 0 };
-      refunded.set(g.category, {
-        gross: s.gross + g.gross,
-        tax: s.tax + g.tax,
-      });
-    }
-    groups = payload.ticket.groups
-      .map((g) => ({
-        category: g.category,
-        gross: g.gross - (refunded.get(g.category)?.gross ?? 0),
-        tax: g.tax - (refunded.get(g.category)?.tax ?? 0),
-      }))
-      .filter((g) => g.gross > 0);
+    const ids = payload.refunds.map((r) => r.refundId);
+    const credited = ids.length
+      ? (
+          await tx`
+            select distinct refund_id from cfdi_documents
+            where parent_document_id = ${parent.id} and kind = 'egreso'
+              and refund_id = any(${ids}::uuid[]) and status not in ('failed','canceled')`
+        ).map((r) => r.refund_id as string)
+      : [];
+    const accounted = new Set([...parent.nettedRefundIds, ...credited]);
+    const subtracted = payload.refunds.filter((r) => accounted.has(r.refundId));
+    // netGroups is the global builder's own netting (loadTickets), so the figures match its part.
+    groups = netGroups(payload.ticket.groups, subtracted);
+    nettedRefundIds = subtracted.map((r) => r.refundId);
     folio = payload.ticket.folio;
     credit = {
       purpose: "invoiced",
@@ -241,7 +248,9 @@ async function freezeEgreso(
     expectedWithholding: built.expectedWithholding,
     conceptCount: built.conceptCount,
     ticketCount: 0,
-    nettedRefundIds: [],
+    // A route-III note: the ticket's refunds it left out because the global already accounts
+    // for them (netted, or credited by their own notes). Empty for a refund's credit note.
+    nettedRefundIds,
     // The ≤ 1 centavo difference from fiscal's adjustment IVA is expected (spec §4.8.3).
     detail: { fiscalTax: built.fiscalTax },
     excluded: [],

@@ -190,6 +190,19 @@ export async function createInvoiceRequest(
   if (route === "credit_note") {
     if (open || current.status !== "valid")
       throw new DomainError("cfdi_global_in_progress", 409);
+    // The note credits what the global still declares for the ticket, which depends on whether
+    // each credit note to the global for one of the ticket's refunds stamps (CFDI-INT-2). One still
+    // in flight is settled first: once the note exists no new one starts (cfdi_refund decides
+    // under this key and waits, cfdi_parent_credit_open), so the note's figure is final. Read
+    // under the key, refunds recorded since ticketFacts included.
+    const [unsettled] = await tx`
+      select 1 as one from cfdi_documents e
+      where e.parent_document_id = ${global.documentId} and e.kind = 'egreso'
+        and e.status in ('queued','stamping','pending')
+        and e.refund_id in (select a.refund_id from fiscal_adjustments a
+          where a.order_id = ${t.payload.ticket.orderId})
+      limit 1`;
+    if (unsettled) throw new DomainError("cfdi_global_in_progress", 409);
     const creditId = randomUUID();
     await tx`
       insert into cfdi_documents(tenant_id, id, kind, source, mode, status, parent_document_id,
