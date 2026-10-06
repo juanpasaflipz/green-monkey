@@ -499,6 +499,10 @@ try {
     ["discounts", "discounts_no_delete"],
     ["cash_count_reviews", "cash_count_reviews_immutable"],
     ["cash_sessions", "cash_sessions_closed_immutable"],
+    // reports (029): print records and the business-day settings history are
+    // immutable too; they follow discounts in the delete order (LD-16 L5).
+    ["report_prints", "report_prints_immutable"],
+    ["business_day_settings", "business_day_settings_immutable"],
   ];
   await admin.begin(async (tx) => {
     // fiscal (027): fiscal records are immutable even for the owner, so this
@@ -522,6 +526,9 @@ try {
       "discount_allocations",
       "discounts",
       "cash_count_reviews",
+      // reports (029), after discounts (LD-16 L5).
+      "report_prints",
+      "business_day_settings",
       "offline_kitchen_reviews",
       "offline_sync_records",
       "offline_archives",
