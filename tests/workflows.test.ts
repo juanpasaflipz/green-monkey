@@ -554,16 +554,26 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
   });
 
   it("no workflow or action passes RD_* variables to a railway command (LD-3)", () => {
+    // The fictional/acceptance RD_* sets may appear in test steps (acceptance), never in
+    // a step that runs a railway command, nor anywhere on the deploy path.
     const files = [
       ...readdirSync(".github/workflows").map((f) => `.github/workflows/${f}`),
       ".github/actions/deploy/action.yml",
     ];
+    let railwaySteps = 0;
     for (const file of files) {
       const text = read(file);
-      expect(text, file).not.toMatch(/\bRD_[A-Z0-9_]+/);
-      for (const step of steps(text).filter((s) => /railway/.test(s)))
-        expect(step, file).not.toMatch(/LEGAL_[A-Z_]+:|SUPPORT_[A-Z_]+:/);
+      if (file.endsWith("deploy.yml") || file.endsWith("action.yml"))
+        expect(text, file).not.toMatch(/\bRD_[A-Z0-9_]+/);
+      for (const step of steps(text).filter((s) =>
+        /@railway\/cli|railway@|\brailway (up|config|variable)/.test(s),
+      )) {
+        railwaySteps++;
+        expect(step, file).not.toMatch(/\bRD_[A-Z0-9_]+/);
+        expect(step, file).not.toMatch(/\b(LEGAL|SUPPORT)_[A-Z_]+:/);
+      }
     }
+    expect(railwaySteps).toBeGreaterThanOrEqual(3);
   });
 });
 
