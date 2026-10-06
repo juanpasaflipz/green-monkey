@@ -101,6 +101,19 @@ async function enterSecret(
   }
   await scope.getByRole("button", { name: submit, exact: true }).click();
 }
+/**
+ * The next server call after a session was ended in the database. A background
+ * poll may meet the 401 first and raise the lock before this click lands (the
+ * lock dialog then intercepts it), so the click is best-effort; callers assert
+ * the lock itself.
+ */
+async function nextServerCall(page: Page) {
+  await page
+    .getByRole("button", { name: "Órdenes", exact: true })
+    .click({ timeout: 5_000 })
+    .catch(() => {});
+}
+
 async function sessionOf(page: Page) {
   return page.evaluate(async () => (await fetch("/api/session")).json());
 }
@@ -744,7 +757,7 @@ test("a session the server revoked stays locked offline: Salir offers no manual 
     await admin`update sessions set revoked=true, ended_at=now(),
       end_reason='employee_deactivated', expires_at=least(expires_at,now())
       where id=${s.id}`;
-    await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await nextServerCall(tablet);
     const lock = tablet.getByRole("dialog", {
       name: "Un responsable cerró esta sesión o desactivó al empleado.",
     });
@@ -990,7 +1003,7 @@ test("an expired session shows the PIN lock with its reason, not a generic error
     const s = await sessionOf(tablet);
     await admin`update sessions set expires_at=now()-interval '1 second',
       absolute_expires_at=now()-interval '1 second' where id=${s.id}`;
-    await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await nextServerCall(tablet);
     const lock = tablet.getByRole("dialog", {
       name: "Tu sesión terminó. Ingresa tu PIN para continuar.",
     });

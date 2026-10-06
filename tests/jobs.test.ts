@@ -13,6 +13,7 @@ import {
   JOB_KIND,
   MAX_ATTEMPTS,
   MAX_ATTEMPTS_LIMIT,
+  MAX_LEASE_SECONDS,
   registerJobHandler,
   type RegisteredHandler,
 } from "../server/jobs.js";
@@ -26,6 +27,7 @@ import { alertRequest, createAlerter } from "../server/ops/alerts.js";
 import { setLogSink, type Logger } from "../server/logging.js";
 
 beforeAll(() => setLogSink(() => {}));
+const noopHandler = async () => {};
 afterAll(() => setLogSink(null));
 
 describe("jobs framework", () => {
@@ -348,6 +350,500 @@ describe("jobs API (Wave 2.0)", () => {
       await runner.stop(100);
     } finally {
       vi.useRealTimers();
+    }
+  });
+});
+
+/**
+ * A postgres.Sql stand-in that serves a per-tenant queue: the claim statement returns up
+ * to n queued jobs of the claimed kind (after `claimDelayMs`, so concurrent drains really
+ * interleave), the lease-expiry statement returns the tenant's `lost` jobs once, and the
+ * fenced writes succeed. `claims` records [tenant, kind, n, maxAttempts] per claim.
+ */
+function queueSql(o: {
+  queues: Map<string, { kind: string; id: string }[]>;
+  lost?: Map<string, { kind: string; id: string; attempts: number }[]>;
+  claimDelayMs?: number;
+  claims?: [string, string, number, number][];
+  statements?: string[];
+}) {
+  return {
+    begin: async (fn: (t: unknown) => Promise<unknown>) => {
+      let tenantId = "";
+      const tx = async (
+        strings: TemplateStringsArray,
+        ...params: unknown[]
+      ) => {
+        const text = strings.join("?");
+        o.statements?.push(text);
+        if (text.includes("set_config('app.tenant_id'")) {
+          tenantId = String(params[0]);
+          return [];
+        }
+        if (text.includes("error_code='lease_expired'")) {
+          const [kind] = params as [string];
+          const all = o.lost?.get(tenantId) ?? [];
+          const mine = all.filter((j) => j.kind === kind);
+          o.lost?.set(
+            tenantId,
+            all.filter((j) => j.kind !== kind),
+          );
+          return mine.map((j) => ({
+            tenant_id: tenantId,
+            id: j.id,
+            kind: j.kind,
+            dedupe_key: j.id,
+            payload: {},
+            attempts: j.attempts,
+            lease: null,
+            created_at: new Date(0),
+          }));
+        }
+        if (text.includes("with c as (")) {
+          const [kinds, maxAttempts, n] = params as [string[], number, number];
+          o.claims?.push([tenantId, kinds[0], n, maxAttempts]);
+          if (o.claimDelayMs)
+            await new Promise((r) => setTimeout(r, o.claimDelayMs));
+          const queue = o.queues.get(tenantId) ?? [];
+          const taken = queue.filter((j) => kinds.includes(j.kind)).slice(0, n);
+          o.queues.set(
+            tenantId,
+            queue.filter((j) => !taken.includes(j)),
+          );
+          return taken.map((j) => ({
+            tenant_id: tenantId,
+            id: j.id,
+            kind: j.kind,
+            dedupe_key: j.id,
+            payload: {},
+            attempts: 1,
+            lease: "2026-10-05 12:00:00.123456+00",
+            created_at: new Date(0),
+          }));
+        }
+        if (text.includes("returning lease_until::text as lease"))
+          return [{ lease: "2026-10-05 12:10:00.123456+00" }];
+        return Object.assign([], { count: 1 });
+      };
+      return fn(tx);
+    },
+  } as unknown as postgres.Sql;
+}
+
+describe("runner limits and liveness (PLATFORM-OPS-1, OPS-3, OPS-5, OPS-6)", () => {
+  it("50 tenants drained at once never run more than the global or per-kind concurrency, and every job runs", async () => {
+    const kinds = ["opsa_probe", "opsb_probe"];
+    const queues = new Map<string, { kind: string; id: string }[]>();
+    const tenants = Array.from({ length: 50 }, (_, i) => `t-${i}`);
+    for (const t of tenants)
+      queues.set(
+        t,
+        kinds.flatMap((kind) =>
+          [1, 2].map((n) => ({ kind, id: `${t}-${kind}-${n}` })),
+        ),
+      );
+    let running = 0;
+    let maxRunning = 0;
+    const perKind = new Map<string, number>();
+    const maxPerKind = new Map<string, number>();
+    const ran = new Set<string>();
+    const handler =
+      (kind: string) =>
+      async ({ job }: { job: { id: string } }) => {
+        running++;
+        perKind.set(kind, (perKind.get(kind) ?? 0) + 1);
+        maxRunning = Math.max(maxRunning, running);
+        maxPerKind.set(
+          kind,
+          Math.max(maxPerKind.get(kind) ?? 0, perKind.get(kind)!),
+        );
+        await new Promise((r) => setTimeout(r, 3));
+        ran.add(job.id);
+        running--;
+        perKind.set(kind, perKind.get(kind)! - 1);
+      };
+    const registry = new Map<string, RegisteredHandler>(
+      kinds.map((kind) => [
+        kind,
+        jobRegistration(kind, handler(kind) as never, { concurrency: 2 }),
+      ]),
+    );
+    // debounceMs is how long a saturated drain waits when its slots are other drains'
+    // reservations; at 1 ms, 50 drains spun through ~500,000 timers and the test took
+    // 2-30 s on a loaded machine. 10 ms keeps every assertion and runs in ~2 s.
+    const runner = createJobRunner(queueSql({ queues, claimDelayMs: 2 }), {
+      handlers: () => registry,
+      concurrency: 4,
+      sweepMs: 1000,
+      debounceMs: 10,
+    });
+    // Every tenant drains at once (discovery notes them together); later
+    // rounds stand in for the next sweeps, which pick up what a bounded drain
+    // left.
+    let claimed = 0;
+    for (
+      let round = 0;
+      round < 200 && [...queues.values()].some((q) => q.length);
+      round++
+    )
+      claimed += (
+        await Promise.all(tenants.map((t) => runner.drainTenant(t)))
+      ).reduce((a, b) => a + b, 0);
+    // Let the last handlers settle.
+    for (let i = 0; i < 50 && runner.running() > 0; i++)
+      await new Promise((r) => setTimeout(r, 5));
+    expect(maxRunning, "global limit").toBeLessThanOrEqual(4);
+    expect(maxRunning, "the limit is used").toBe(4);
+    for (const kind of kinds)
+      expect(maxPerKind.get(kind), kind).toBeLessThanOrEqual(2);
+    expect({
+      claimed,
+      ran: ran.size,
+      left: [...queues.values()].flat().length,
+    }).toEqual({ claimed: 200, ran: 200, left: 0 });
+    await runner.stop(100);
+  }, 30_000);
+
+  it("a handler that ignores its abort signal stops counting at lease expiry; the tenant's drain finishes and its next job runs", async () => {
+    vi.useFakeTimers();
+    try {
+      const lines: string[] = [];
+      const queues = new Map([
+        [
+          "t-1",
+          [
+            { kind: "opsworker_probe", id: "hung" },
+            { kind: "opsworker_probe", id: "next" },
+          ],
+        ],
+      ]);
+      const ran: string[] = [];
+      const registry = new Map<string, RegisteredHandler>([
+        [
+          "opsworker_probe",
+          jobRegistration(
+            "opsworker_probe",
+            (async ({ job }: { job: { id: string } }) => {
+              ran.push(job.id);
+              // A provider call without the signal that never answers.
+              if (job.id === "hung") await new Promise(() => {});
+            }) as never,
+            { concurrency: 1, leaseSeconds: 10 },
+          ),
+        ],
+      ]);
+      const runner = createJobRunner(queueSql({ queues }), {
+        handlers: () => registry,
+        concurrency: 4,
+        sweepMs: 1000,
+        log: recordingLogger(lines),
+      });
+      let settled = false;
+      const drain = runner.drainTenant("t-1").then((n) => {
+        settled = true;
+        return n;
+      });
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(ran).toEqual(["hung"]);
+      expect(runner.running()).toBe(1);
+      expect(settled, "the drain waits for the slot, in bounded steps").toBe(
+        false,
+      );
+      // The lease timer fires 2 s before the 10 s lease expires.
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(lines).toContain("job_lease_expired");
+      expect(ran).toEqual(["hung", "next"]);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(settled).toBe(true);
+      expect(await drain).toBe(2);
+      expect(runner.running(), "the hung handler holds no slot").toBe(0);
+      await runner.stop(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a handler aborted at lease expiry cannot renew its lease by heartbeating: ctx.extendLease throws job_lease_lost without SQL, so the kind's next job never runs beside it (PLAT-HR-4)", async () => {
+    vi.useFakeTimers();
+    try {
+      const statements: string[] = [];
+      const queues = new Map([
+        [
+          "t-1",
+          [
+            { kind: "opsworker_probe", id: "late" },
+            { kind: "opsworker_probe", id: "next" },
+          ],
+        ],
+      ]);
+      const heartbeats: string[] = [];
+      let release!: () => void;
+      const stuck = new Promise<void>((r) => (release = r));
+      const registry = new Map<string, RegisteredHandler>([
+        [
+          "opsworker_probe",
+          jobRegistration(
+            "opsworker_probe",
+            (async (ctx: {
+              job: { id: string };
+              signal: AbortSignal;
+              extendLease: (s: number) => Promise<void>;
+            }) => {
+              if (ctx.job.id !== "late") return;
+              // Ignores its signal, then heartbeats after the abort.
+              await stuck;
+              heartbeats.push(
+                `${ctx.signal.aborted}:` +
+                  (await ctx.extendLease(60).then(
+                    () => "extended",
+                    (e: { code?: string }) => String(e.code),
+                  )),
+              );
+            }) as never,
+            { concurrency: 1, leaseSeconds: 10 },
+          ),
+        ],
+      ]);
+      const runner = createJobRunner(queueSql({ queues, statements }), {
+        handlers: () => registry,
+        concurrency: 4,
+        sweepMs: 1000,
+        log: recordingLogger([]),
+      });
+      void runner.drainTenant("t-1");
+      // The lease timer fires at 8 s (2 s before the 10 s lease).
+      await vi.advanceTimersByTimeAsync(8500);
+      release();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(heartbeats).toEqual(["true:job_lease_lost"]);
+      expect(
+        statements.filter((t) => t.includes("update jobs set lease_until")),
+        "the late heartbeat reached no SQL",
+      ).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(3000);
+      await runner.stop(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a drain waiting on a full kind ends within sweepMs steps even when nothing settles", async () => {
+    vi.useFakeTimers();
+    try {
+      const queues = new Map([
+        [
+          "t-1",
+          [
+            { kind: "opsworker_probe", id: "a" },
+            { kind: "opsworker_probe", id: "b" },
+          ],
+        ],
+      ]);
+      const registry = new Map<string, RegisteredHandler>([
+        [
+          "opsworker_probe",
+          jobRegistration(
+            "opsworker_probe",
+            (async () => new Promise(() => {})) as never,
+            { concurrency: 1, leaseSeconds: 3600 },
+          ),
+        ],
+      ]);
+      const runner = createJobRunner(queueSql({ queues }), {
+        handlers: () => registry,
+        sweepMs: 1000,
+      });
+      let settled = false;
+      void runner.drainTenant("t-1").then(() => (settled = true));
+      // 100 bounded waits of sweepMs at most: the drain never hangs on the
+      // running job's promise.
+      await vi.advanceTimersByTimeAsync(101_000);
+      expect(settled).toBe(true);
+      const stopped = runner.stop(10);
+      await vi.advanceTimersByTimeAsync(2000);
+      await stopped;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("claims pass the kind's maxAttempts, and jobs whose lease expired on their last claim go dead with lease_expired and alert", async () => {
+    const claims: [string, string, number, number][] = [];
+    const dead: [string, string][] = [];
+    const lines: string[] = [];
+    const registry = new Map<string, RegisteredHandler>([
+      [
+        "opsworker_probe",
+        jobRegistration("opsworker_probe", noopHandler, { maxAttempts: 3 }),
+      ],
+    ]);
+    const runner = createJobRunner(
+      queueSql({
+        queues: new Map(),
+        lost: new Map([
+          ["t-1", [{ kind: "opsworker_probe", id: "crashed", attempts: 3 }]],
+        ]),
+        claims,
+      }),
+      {
+        handlers: () => registry,
+        log: recordingLogger(lines),
+        onDead: (job, code) => void dead.push([job.id, code]),
+      },
+    );
+    expect(await runner.drainTenant("t-1")).toBe(0);
+    expect(claims).toEqual([["t-1", "opsworker_probe", 2, 3]]);
+    expect(dead).toEqual([["crashed", "lease_expired"]]);
+    expect(lines).toContain("job_dead");
+    // Once dead it is not reported again.
+    await runner.drainTenant("t-1");
+    expect(dead).toHaveLength(1);
+    await runner.stop(10);
+  });
+
+  it("the lease-expiry statement runs at most once per sweepMs per tenant and kind, not on every drain (PLAT-HR-7)", async () => {
+    vi.useFakeTimers();
+    try {
+      const statements: string[] = [];
+      const registry = new Map<string, RegisteredHandler>([
+        ["opsworker_probe", jobRegistration("opsworker_probe", noopHandler)],
+      ]);
+      const runner = createJobRunner(
+        queueSql({ queues: new Map(), statements }),
+        { handlers: () => registry, sweepMs: 1000 },
+      );
+      const expiries = () =>
+        statements.filter((t) => t.includes("error_code='lease_expired'"))
+          .length;
+      const claims = () =>
+        statements.filter((t) => t.includes("with c as (")).length;
+      await runner.drainTenant("t-1");
+      await runner.drainTenant("t-1");
+      await runner.drainTenant("t-2");
+      expect({ claims: claims(), expiries: expiries() }).toEqual({
+        claims: 3,
+        expiries: 2,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      await runner.drainTenant("t-1");
+      expect(expiries(), "due again after sweepMs").toBe(3);
+      await runner.stop(10);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leases are whole seconds from 10 to 3600, at registration and in ctx.extendLease (before any SQL)", async () => {
+    expect(MAX_LEASE_SECONDS).toBe(3600);
+    expect(
+      jobRegistration("ok_kind", noopHandler, { leaseSeconds: 3600 })
+        .leaseSeconds,
+    ).toBe(3600);
+    for (const leaseSeconds of [3601, 86_400, 30 * 86_400])
+      expect(() =>
+        jobRegistration("ok_kind", noopHandler, { leaseSeconds }),
+      ).toThrow(/lease/);
+    const statements: string[] = [];
+    const outcomes: unknown[] = [];
+    const registry = new Map<string, RegisteredHandler>([
+      [
+        "opsworker_probe",
+        jobRegistration("opsworker_probe", (async (ctx: {
+          extendLease: (s: number) => Promise<void>;
+        }) => {
+          for (const seconds of [86_400, 9, 10.5, Number.NaN])
+            outcomes.push(
+              await ctx.extendLease(seconds).then(
+                () => "extended",
+                (e: Error) => e.message,
+              ),
+            );
+          outcomes.push(await ctx.extendLease(600).then(() => "extended"));
+        }) as never),
+      ],
+    ]);
+    const runner = createJobRunner(
+      queueSql({
+        queues: new Map([["t-1", [{ kind: "opsworker_probe", id: "j" }]]]),
+        statements,
+      }),
+      { handlers: () => registry },
+    );
+    await runner.drainTenant("t-1");
+    for (let i = 0; i < 20 && runner.running() > 0; i++)
+      await new Promise((r) => setTimeout(r, 5));
+    expect(outcomes.slice(0, 4)).toEqual(
+      Array(4).fill("job lease must be an integer from 10 to 3600 seconds"),
+    );
+    expect(outcomes[4]).toBe("extended");
+    // Only the valid extension reached the database.
+    expect(
+      statements.filter((t) => t.includes("update jobs set lease_until")),
+    ).toHaveLength(1);
+    await runner.stop(10);
+  });
+});
+
+describe("job controls (PLATFORM-OPS-3)", () => {
+  it("POST /api/jobs/:id/requeue and /cancel need a recent PIN and a manager before any SQL", async () => {
+    const { register } = await import("../server/routes/ops.js");
+    const routes = new Map<
+      string,
+      (tx: Tx, s: never, req: never) => Promise<unknown>
+    >();
+    register({
+      app: null as never,
+      sql: null as never,
+      route: (method, path, fn) =>
+        void routes.set(`${method} ${path}`, fn as never),
+    });
+    expect([...routes.keys()]).toEqual([
+      "post /jobs/:id/requeue",
+      "post /jobs/:id/cancel",
+    ]);
+    const tx = (() => {
+      throw new Error("no SQL may run");
+    }) as unknown as Tx;
+    const access = (authenticatedAt: string) => ({
+      absoluteExpiresAt: null,
+      authenticatedAt,
+      deviceName: "Caja",
+      deviceKind: "shared",
+      idleLockSeconds: 180,
+      ownerAccount: false,
+    });
+    const req = { params: { id: "40000000-0000-4000-8000-000000000001" } };
+    for (const fn of routes.values()) {
+      await expect(
+        fn(
+          tx,
+          {
+            role: "manager",
+            access: access("2000-01-01T00:00:00Z"),
+          } as never,
+          req as never,
+        ),
+      ).rejects.toMatchObject({ code: "step_up_required", status: 403 });
+      await expect(
+        fn(
+          tx,
+          {
+            role: "cashier",
+            access: access(new Date().toISOString()),
+          } as never,
+          req as never,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+      await expect(
+        fn(
+          tx,
+          {
+            role: "manager",
+            access: access(new Date().toISOString()),
+          } as never,
+          { params: { id: "not-a-uuid" } } as never,
+        ),
+      ).rejects.toThrow();
     }
   });
 });

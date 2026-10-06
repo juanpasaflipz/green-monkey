@@ -56,8 +56,18 @@ test("ops status reports readiness and no secrets", async ({ request }) => {
     "worker",
   ]);
   expect(status).toMatchObject({ ok: true, db: "ok", schema: "ready" });
-  expect(Object.keys(status.worker).sort()).toEqual(["lastBeatAt", "status"]);
+  // PLATFORM-OPS-2/OPS-4: the worker's build commit and jobs flag pass through.
+  expect(Object.keys(status.worker).sort()).toEqual([
+    "commit",
+    "jobs",
+    "lastBeatAt",
+    "status",
+  ]);
   expect(["ok", "stale", "unknown"]).toContain(status.worker.status);
+  if (status.worker.status === "ok") {
+    expect(status.worker.commit).toMatch(/^(?:[0-9a-f]{7,40}|local)$/);
+    expect(typeof status.worker.jobs).toBe("boolean");
+  } else expect(status.worker.jobs).toBeNull();
   expect(JSON.stringify(status)).not.toMatch(
     /postgres|password|secret|tenant|token/i,
   );

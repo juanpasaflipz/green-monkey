@@ -1,6 +1,7 @@
 // shared/fiscal.ts — pure fiscal core (Mexico): tax extraction per order, per-line ticket
 // snapshots, allocation of order-level amounts, refund tax rules, fiscal profile validation and
-// folio formatting. No database access: server/fiscal.ts (next wave) loads rows and calls these.
+// folio formatting. No database access: server/fiscal.ts and server/fiscal-read.ts load rows and
+// call these.
 // Every amount is an integer number of centavos; every price is tax-inclusive (LFPC art. 7 Bis).
 import { z } from "zod";
 import {
@@ -37,7 +38,7 @@ export * from "./sat.js";
 
 /**
  * A persisted order line as fiscal reads it. `tax` is the immutable snapshot taken in quote()
- * once migration 027 lands (shared/domain.ts PricedLine.tax in the next wave); lines priced
+ * (shared/domain.ts PricedLine.tax, migration 027); lines priced
  * before that have no snapshot and resolve to the restaurant default at issuance.
  */
 export type TaxedLine = PricedLine & { tax?: LineTaxSnapshot | null };
@@ -462,6 +463,9 @@ export function allocationOrder<L extends { id: string; round?: number }>(
  * Allocates an order-level tax-inclusive amount (an order discount or comp) to lines with
  * allocate(amount, remaining net per line) in (round, id) order, and returns the merged
  * per-line discounts. No line's discount ever exceeds its remaining total.
+ *
+ * For previews and tests only. Persisted ticket data always uses discounts 028's
+ * `discountsByLine` (per-unit allocation by due); no server code calls this.
  */
 export function allocateOrderDiscount(input: {
   lines: TaxedLine[];
@@ -490,6 +494,10 @@ export function allocateOrderDiscount(input: {
  * The tax-inclusive category amounts of an item-scoped refund: each refunded unit's amount
  * (units from allocate(line.total, quantity), as for voids and item splits) minus its share of
  * the line discount, which is allocated over the line's remaining (non-voided) units.
+ *
+ * Fallback only for scope entries without `gross` (refundScopeCategories step 3). Never use it
+ * on an order that has discount allocations: it spreads a line's discount evenly over the
+ * remaining units, while discounts 028 allocates per unit by due.
  */
 export function refundScopeGross(input: {
   lines: TaxedLine[];
@@ -535,7 +543,84 @@ export function refundScopeGross(input: {
   });
 }
 
-/** Tax split of one refund, cumulative so that refunds of a whole sale net its IVA to exactly zero. */
+/** The contract type of recordRefundTax's item scope: one entry per refund money row and line. */
+export type RefundTaxScope = { lineId: string; units: number[]; gross: number };
+
+/**
+ * Category amounts of an item refund. An entry's `gross` (discounts 028: Σ refund_units.amount
+ * of that refund row for that line) is used verbatim and grouped by the line's category; unit
+ * discounts are never recomputed. Entries without `gross` (legacy callers only) fall back to
+ * refundScopeGross(), which is refused on a discounted line.
+ */
+export function refundScopeCategories(input: {
+  lines: TaxedLine[];
+  scope: (Omit<RefundTaxScope, "gross"> & { gross?: number })[];
+  lineDiscounts?: Readonly<Record<string, number>>;
+  ctx: FiscalContext;
+  /**
+   * lineId → the category the ticket froze for that line (ticket.lines). It wins over the
+   * line's snapshot and the current default, so a line priced without a snapshot is refunded
+   * in the category it was sold under even after the default changed (MONEY-4).
+   */
+  categories?: Readonly<Record<string, TaxCategory>>;
+}): { category: TaxCategory; gross: number }[] {
+  const categoryOf = (line: TaxedLine) =>
+    own(input.categories, line.id) ??
+    lineSnapshot(line)?.category ??
+    input.ctx.defaultCategory;
+  const byId = new Map(input.lines.map((l) => [l.id, l]));
+  const seen = new Set<string>();
+  const sums = new Map<TaxCategory, number>();
+  for (const entry of input.scope) {
+    const line = byId.get(entry.lineId);
+    if (!line) throw new DomainError("invalid_allocation", 409);
+    const voided = new Set(line.voidedUnits ?? []);
+    for (const unit of entry.units) {
+      const key = `${line.id}:${unit}`;
+      if (
+        !Number.isInteger(unit) ||
+        unit < 0 ||
+        unit >= line.quantity ||
+        voided.has(unit) ||
+        seen.has(key)
+      )
+        throw new DomainError("invalid_allocation", 409);
+      seen.add(key);
+    }
+    let category: TaxCategory;
+    let gross: number;
+    if (entry.gross !== undefined) {
+      if (!isAmount(entry.gross)) throw fiscalMismatch();
+      const unitGross = allocate(line.total, Array(line.quantity).fill(1));
+      if (entry.gross > total(entry.units.map((u) => unitGross[u])))
+        throw refundExceeds();
+      category = categoryOf(line);
+      gross = entry.gross;
+    } else {
+      if ((own(input.lineDiscounts, line.id) ?? 0) > 0)
+        throw new RangeError("refund_scope_gross_required");
+      const rows = refundScopeGross({
+        lines: [line],
+        scope: [{ lineId: line.id, units: entry.units }],
+        ctx: input.ctx,
+      });
+      category = categoryOf(line);
+      gross = total(rows.map((r) => r.gross));
+    }
+    sums.set(category, add(sums.get(category) ?? 0, gross));
+  }
+  return TAX_CATEGORIES.flatMap((category) => {
+    const gross = sums.get(category) ?? 0;
+    return gross > 0 ? [{ category, gross }] : [];
+  });
+}
+
+/**
+ * Tax split of one refund, by complement extraction so that the ticket's remaining IVA is
+ * always extract(net): per category, tax = extract(S − refunded).tax − extract(S − refunded −
+ * amount).tax, where S is the category's sale gross. After any sequence of refunds against the
+ * same S the remaining IVA is exactly extract(S − R), and a full refund nets it to zero.
+ */
 export function refundTaxSplit(input: {
   refundGross: number;
   /** Ticket groups, or the provisional summary's groups when the order has no ticket. */
@@ -546,7 +631,7 @@ export function refundTaxSplit(input: {
   }[];
   /** Earlier adjustments of this order. */
   previous: { category: TaxCategory; gross: number; tax: number }[];
-  /** Item-scoped refund (discounts 028), from refundScopeGross(). */
+  /** Item-scoped refund (discounts 028), from refundScopeCategories(). */
   scope?: { category: TaxCategory; gross: number }[];
 }): CategoryTax[] {
   if (!isAmount(input.refundGross)) throw new DomainError("invalid_amount");
@@ -589,11 +674,63 @@ export function refundTaxSplit(input: {
     const amount = split[i];
     if (amount === 0) return [];
     const rateBps = TAX_RULES[category].rateBps;
-    const before = refunded.get(category) ?? 0;
+    // Step 2 guarantees amount ≤ remaining[i], so both arguments are ≥ 0.
+    const left = remaining[i];
     const tax =
-      extractTax(before + amount, rateBps).tax -
-      extractTax(before, rateBps).tax;
+      extractTax(left, rateBps).tax - extractTax(left - amount, rateBps).tax;
     return [{ category, rateBps, gross: amount, base: amount - tax, tax }];
+  });
+}
+
+/**
+ * A sale's per-category amounts net of refund adjustments: tax = Σ sale.tax − Σ refund.tax, so
+ * for post-ticket refunds it equals extractTax(net gross).tax exactly (P1). Canonical category
+ * order; categories netted to gross 0 are omitted; base = gross − tax. A negative net gross or
+ * IVA, IVA above the net gross, a refund of a category the sale lacks, or IVA left on a zero net
+ * throws fiscal_total_mismatch. cfdi's netGroups may delegate to it.
+ */
+export function netCategoryTax(
+  sale: {
+    category: TaxCategory;
+    rateBps: number | null;
+    gross: number;
+    tax: number;
+  }[],
+  refunds: { category: TaxCategory; gross: number; tax: number }[],
+): CategoryTax[] {
+  const sums = new Map<TaxCategory, { gross: number; tax: number }>();
+  for (const g of sale) {
+    if (!isCategory(g.category)) throw new RangeError("invalid_tax_category");
+    if (g.rateBps !== TAX_RULES[g.category].rateBps)
+      throw new RangeError("invalid_tax_rate");
+    if (!isAmount(g.gross) || !isAmount(g.tax) || g.tax > g.gross)
+      throw fiscalMismatch();
+    const s = sums.get(g.category) ?? { gross: 0, tax: 0 };
+    sums.set(g.category, {
+      gross: add(s.gross, g.gross),
+      tax: add(s.tax, g.tax),
+    });
+  }
+  for (const r of refunds) {
+    if (!isCategory(r.category)) throw new RangeError("invalid_tax_category");
+    if (!isAmount(r.gross) || !isAmount(r.tax)) throw fiscalMismatch();
+    const s = sums.get(r.category);
+    if (!s) throw fiscalMismatch();
+    sums.set(r.category, {
+      gross: add(s.gross, -r.gross),
+      tax: add(s.tax, -r.tax),
+    });
+  }
+  return TAX_CATEGORIES.flatMap((category) => {
+    const s = sums.get(category);
+    if (!s) return [];
+    if (s.gross < 0 || s.tax < 0 || s.tax > s.gross) throw fiscalMismatch();
+    const rateBps = TAX_RULES[category].rateBps;
+    if (!rateBps && s.tax !== 0) throw fiscalMismatch();
+    if (s.gross === 0) return [];
+    return [
+      { category, rateBps, gross: s.gross, base: s.gross - s.tax, tax: s.tax },
+    ];
   });
 }
 
@@ -667,6 +804,66 @@ export const fiscalAddressInput = z
   .strict();
 export type FiscalAddress = z.infer<typeof fiscalAddressInput>;
 
+/**
+ * Two-digit postal-code prefixes of the states of each border region, the only places where the
+ * IVA 8% incentive applies (Decreto de estímulos fiscales región fronteriza norte, DOF
+ * 31/12/2018: municipalities of Baja California, Sonora, Chihuahua, Coahuila, Nuevo León and
+ * Tamaulipas; región fronteriza sur, DOF 30/12/2020: municipalities of Campeche, Chiapas,
+ * Quintana Roo and Tabasco; both in force until 31/12/2026 by the decree of DOF 31/12/2025).
+ *
+ * Source of the prefixes: SAT, "Catálogo de códigos postales" (Código Postal → Clave Entidad
+ * Federativa, the INEGI state key),
+ * http://omawww.sat.gob.mx/terceros_autorizados/receptor_doctos_electronicos/Documents/catalogos/Cat_Codigos_Postales.pdf,
+ * checked 2026-10-06: each of its 31,637 codes' two-digit prefix belongs to exactly one state
+ * (Correos de México assigns the first two digits per entidad federativa, DOF 20/04/1981). Baja
+ * California (02) 21-22; Sonora (26) 83-85; Chihuahua (08) 31-33; Coahuila (05) 25-27; Nuevo
+ * León (19) 64-67; Tamaulipas (28) 87-89; Campeche (04) 24; Chiapas (07) 29-30; Quintana Roo
+ * (23) 77; Tabasco (27) 86.
+ *
+ * This is a state-level guard against an obvious mistake (a CDMX restaurant choosing the border
+ * region), not the incentive's test: the PAC validates the exact c_CodigoPostal "Estímulo Franja
+ * Fronteriza" mark of the place of issue and the issuer RFC's registration in the LCO, and the
+ * owner's accountant confirms both before a border pilot (docs/FISCAL.md).
+ */
+// prettier-ignore
+export const BORDER_POSTAL_PREFIXES = {
+  border_north: [
+    "21", "22", // Baja California
+    "83", "84", "85", // Sonora
+    "31", "32", "33", // Chihuahua
+    "25", "26", "27", // Coahuila
+    "64", "65", "66", "67", // Nuevo León
+    "87", "88", "89", // Tamaulipas
+  ],
+  border_south: [
+    "24", // Campeche
+    "29", "30", // Chiapas
+    "77", // Quintana Roo
+    "86", // Tabasco
+  ],
+} as const satisfies Record<Exclude<TaxRegion, "general">, readonly string[]>;
+
+/** Whether a 5-digit postal code lies in a state of the given border region. */
+export function borderPostalCodeAllowed(
+  region: Exclude<TaxRegion, "general">,
+  postalCode: string,
+): boolean {
+  const code = postalCode.trim();
+  return (
+    /^\d{5}$/.test(code) &&
+    (BORDER_POSTAL_PREFIXES[region] as readonly string[]).includes(
+      code.slice(0, 2),
+    )
+  );
+}
+
+/** The branch-address parts CFF art. 29-A fr. I requires when the RFC has several premises. */
+export const BRANCH_ADDRESS_FIELDS = [
+  "street",
+  "municipality",
+  "state",
+] as const;
+
 export const fiscalProfileInput = z
   .object({
     operationId: id,
@@ -690,6 +887,9 @@ export const fiscalProfileInput = z
     taxRegion: z.enum(TAX_REGIONS),
     defaultTaxCategory: z.enum(TAX_CATEGORIES),
     borderConfirmed: z.boolean().default(false),
+    // "Este RFC tiene más de una sucursal": the branch address becomes mandatory (CFF art.
+    // 29-A fr. I).
+    multipleBranches: z.boolean().default(false),
   })
   .strict();
 export type FiscalProfileInput = z.infer<typeof fiscalProfileInput>;
@@ -700,6 +900,7 @@ export type FiscalIssue = {
     | "legalName"
     | "regime"
     | "postalCode"
+    | (typeof BRANCH_ADDRESS_FIELDS)[number]
     | "ticketSeries"
     | "taxRegion"
     | "defaultTaxCategory"
@@ -757,6 +958,29 @@ export function fiscalProfileIssues(p: FiscalProfileInput): FiscalIssue[] {
     else if (!/^\d{5}$/.test(postalCode))
       issues.push({ field: "postalCode", code: "fiscal_invalid_postal_code" });
   }
+  // The IVA 8% incentive needs an identified issuer at a place of issue in the region (SAT-1).
+  // An incomplete identity already has its own issues above.
+  if (p.taxRegion !== "general") {
+    if (!identity) {
+      issues.push({ field: "rfc", code: "fiscal_border_identity_required" });
+      issues.push({
+        field: "postalCode",
+        code: "fiscal_border_identity_required",
+      });
+    } else {
+      const postalCode = identity.postalCode.trim();
+      if (
+        /^\d{5}$/.test(postalCode) &&
+        !borderPostalCodeAllowed(p.taxRegion, postalCode)
+      )
+        issues.push({ field: "postalCode", code: "fiscal_border_postal_code" });
+    }
+  }
+  // CFF art. 29-A fr. I: with more than one premises, the issuing branch's address (SAT-2).
+  if (p.multipleBranches)
+    for (const field of BRANCH_ADDRESS_FIELDS)
+      if (!p.identity?.address[field]?.trim())
+        issues.push({ field, code: "fiscal_address_required" });
   if (!TICKET_SERIES_PATTERN.test(p.ticketSeries.trim().toUpperCase()))
     issues.push({ field: "ticketSeries", code: "fiscal_invalid_series" });
   if (p.defaultTaxCategory === "iva8" && p.taxRegion === "general")
@@ -773,7 +997,7 @@ export function fiscalProfileIssues(p: FiscalProfileInput): FiscalIssue[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// View types (JSON shapes on the wire; produced by server/fiscal.ts in the next wave)
+// View types (JSON shapes on the wire; produced by server/fiscal.ts and server/fiscal-read.ts)
 // ---------------------------------------------------------------------------------------------
 
 export type IssuerSnapshot = {
@@ -830,6 +1054,8 @@ export type OrderFiscal = {
 export type FiscalContextView = {
   version: number;
   complete: boolean;
+  /** The RFC has more than one premises: the branch address prints and is required. */
+  multipleBranches: boolean;
   currencySupported: boolean;
   issuer: Omit<IssuerSnapshot, "tradeName" | "taxRegion"> | null;
   tradeName: string;
@@ -840,10 +1066,14 @@ export type FiscalContextView = {
 };
 export type FiscalProfileView = FiscalContextView & {
   canEdit: boolean;
+  /** FISCAL_TICKETS_ENABLED is not "false": issuance and the repair run. */
+  ticketsEnabled: boolean;
   borderConfirmedAt: string | null;
   updatedAt: string | null;
   updatedByName: string | null;
   lastFolio: string | null;
+  /** While the current series has no ticket: the last folio of the series used before it. */
+  previousFolio: string | null;
   missingTickets: number;
   iva8Products: number;
 };
@@ -861,6 +1091,10 @@ export type FiscalSummary = {
   to: string;
   tickets: {
     count: number;
+    /**
+     * Contiguous folio runs (last − first + 1 = count), ordered by series then first folio: a
+     * series has several runs when later folios belong to other business dates.
+     */
     series: { series: string; first: number; last: number; count: number }[];
   };
   sales: CategoryTotals[];
@@ -898,7 +1132,7 @@ export type TicketRow = {
   selfInvoiceCode: string;
   source: string;
 };
-/** What ticketForCfdi() (server, next wave) returns to cfdi 030. */
+/** What ticketForCfdi() (server/fiscal-read.ts) returns to cfdi 030. */
 export type CfdiTicketPayload = {
   ticket: FiscalTicketView;
   concepts: {

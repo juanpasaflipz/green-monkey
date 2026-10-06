@@ -7,6 +7,12 @@ import {
   optionLabel,
   selectionIssue,
 } from "./menu.js";
+import {
+  DEFAULT_FISCAL_CONTEXT,
+  lineTaxSnapshot,
+  type FiscalContext,
+  type LineTaxSnapshot,
+} from "./tax.js";
 export type Locale = "es" | "en";
 export type Label = { es: string; en: string };
 export class DomainError extends Error {
@@ -78,7 +84,7 @@ export type Product = {
   openMax?: number | null;
   archived?: boolean;
   groupIds?: string[];
-  /** RESERVED for fiscal (027): menu preserves it, never writes it. */
+  /** fiscal (027): ProductFiscal; absent = restaurant default. */
   fiscal?: unknown;
 };
 export type PricedLine = LineInput & {
@@ -99,6 +105,8 @@ export type PricedLine = LineInput & {
   round?: number;
   /** Present on persisted lines: payable unit indexes removed by voids. */
   voidedUnits?: number[];
+  /** Present on lines priced after 027: immutable tax snapshot (fiscal). */
+  tax?: LineTaxSnapshot;
 };
 export type LineVoid = {
   id: string;
@@ -153,6 +161,7 @@ export function quote(
   lines: LineInput[],
   catalog: Product[],
   canOpen = false,
+  fiscal: FiscalContext = DEFAULT_FISCAL_CONTEXT,
 ): PricedLine[] {
   if (new Set(lines.map((l) => l.id)).size !== lines.length)
     throw new DomainError("duplicate_line");
@@ -183,7 +192,11 @@ export function quote(
       category: p.category,
       categoryId: p.categoryId ?? null,
       kind: p.kind ?? "item",
-      // fiscal (027): append line tax snapshot here
+      tax: lineTaxSnapshot(
+        p.fiscal,
+        money.parse(unitPrice * l.quantity),
+        fiscal,
+      ),
     };
   });
 }
@@ -350,6 +363,7 @@ export type Order = {
   rounds: any[];
   tenders: any[];
   offline?: { provisionalNumber: string | null; soldAt: string } | null;
+  fiscal?: import("./fiscal.js").OrderFiscal; // fiscal
   discount?: number; // discounts: effective discount (orders.discount)
   discounts?: import("./discounts.js").OrderDiscount[]; // discounts
   lineDiscounts?: Record<string, number>; // discounts: active, non-voided units

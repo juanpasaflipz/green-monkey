@@ -2,13 +2,16 @@
 /* global process, console, fetch, setTimeout, AbortSignal */
 // Post-deploy HTTP smoke (no browser). Used by .github/workflows/deploy.yml.
 //   node scripts/ops/smoke.mjs --base-url https://app.example.com \
-//     --expect-commit <40-char sha> [--timeout 600] [--local]
+//     --expect-commit <40-char sha> [--timeout 600] [--local] [--poll-ms 5000]
 // Checks: the new revision is live (/api/version), health, ops status with a
-// healthy worker, the proxy hop (client IP is public, arrives as a forwarded
-// hop and spoofed forwarding headers are ignored; --local skips this for
-// loopback runs), malformed JSON
-// handling with a matching request id, and that the API requires a session.
-// Prints one JSON report and exits 1 on any failure.
+// healthy worker that runs the same commit with its jobs runner on (a deployed
+// run waits for the new worker: `railway up --ci` returns when the build ends,
+// and a worker that fails to boot leaves the old one answering, PLATFORM-OPS-2),
+// the proxy hop (client IP is public, arrives as a forwarded hop and spoofed
+// forwarding headers are ignored), malformed JSON handling with a matching
+// request id, and that the API requires a session. --local (loopback runs)
+// skips the proxy hop and the worker commit/jobs requirement. Prints one JSON
+// report and exits 1 on any failure.
 
 const args = Object.fromEntries(
   process.argv
@@ -27,6 +30,7 @@ const base = String(args["base-url"] ?? process.env.APP_URL ?? "").replace(
 );
 const expected = args["expect-commit"];
 const timeoutMs = Number(args.timeout ?? 600) * 1000;
+const pollMs = Number(args["poll-ms"] ?? 5000);
 const local = args.local === true;
 const report = { base, expectedCommit: expected ?? null, checks: [] };
 
@@ -73,7 +77,7 @@ async function until(name, deadline, probe) {
     } catch (error) {
       last = String(error?.message ?? error);
     }
-    await sleep(5000);
+    await sleep(pollMs);
   }
   throw Error(`${name}: ${last}`);
 }
@@ -118,7 +122,8 @@ await check("health", async () => {
 await check("ops_status", async () => {
   const result = await until(
     "ops_status",
-    Math.min(deadline, Date.now() + 120_000),
+    // The worker uploads first but may finish its health check after the web.
+    Math.min(deadline, Date.now() + 300_000),
     async () => {
       const response = await get("/api/ops/status");
       const body = await response.json();
@@ -126,13 +131,29 @@ await check("ops_status", async () => {
         return { ok: false, reason: `db=${body.db} schema=${body.schema}` };
       if (body.worker?.status !== "ok")
         return { ok: false, reason: `worker ${body.worker?.status}` };
+      if (!local) {
+        // The live worker must be this deploy's, with its jobs runner on: a new
+        // worker that failed to boot leaves the old one answering ok.
+        if (expected && body.worker.commit !== expected)
+          return {
+            ok: false,
+            reason: `worker serving ${String(body.worker.commit).slice(0, 12)}`,
+          };
+        if (body.worker.jobs !== true)
+          return { ok: false, reason: "worker jobs runner is off" };
+        if (body.degraded !== false) return { ok: false, reason: "degraded" };
+      }
       return { ok: true, body };
     },
   );
   const keys = Object.keys(result.body).sort().join(",");
   if (keys !== "commit,db,degraded,ok,schema,version,worker")
     throw Error(`unexpected keys ${keys}`);
-  return { degraded: result.body.degraded };
+  return {
+    degraded: result.body.degraded,
+    workerCommit: result.body.worker.commit ?? null,
+    workerJobs: result.body.worker.jobs ?? null,
+  };
 });
 await check("client_ip", async () => {
   const plain = await (await get("/api/ops/diagnostics/ip")).json();

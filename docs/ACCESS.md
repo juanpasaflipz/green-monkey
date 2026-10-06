@@ -60,9 +60,11 @@ a stolen device.
   `unauthorized`. The client shows the lock screen (session codes) or the
   pairing screen (device codes) instead of a generic error.
 
-**Step-up**: on a terminal, refunds, paid-outs, manager self-approved voids and
+**Step-up**: on a terminal, refunds, paid-outs, manager self-approved voids,
 every staff, device and pairing-code command (including the legacy
-`POST /api/team/save`) need a PIN entered within
+`POST /api/team/save`), and fiscal's profile save (`POST /api/fiscal/profile`,
+owner) and missing-ticket repair (`POST /api/fiscal/tickets/repair`, managers;
+LD-15 fiscal Q5) need a PIN entered within
 `ACCESS_STEP_UP_SECONDS` (default 120). Discounts (028): a manager or owner
 applying or removing a discount or recording a refund alone gets the same
 step-up and is the approver of record; a cashier or server needs a manager's

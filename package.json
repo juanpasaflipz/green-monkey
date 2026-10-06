@@ -35,7 +35,7 @@
     "test:access-http": "tsx tests/access-http.ts",
     "access:pairing-code": "tsx scripts/pairing-code.ts",
     "test:db:recovery": "tsx tests/offline-recovery-db.ts",
-    "test:db:qualification": "npm run test:db:core && npm run test:db:identity && npm run test:db:owner && npm run test:db:entitlements && npm run test:db:billing && npm run test:db:free && npm run test:db:recovery && npm run test:db:voids && npm run test:db:ops && npm run test:db:access && npm run test:db:service && npm run test:db:menu && npm run test:db:offline && npm run test:db:discounts",
+    "test:db:qualification": "npm run test:db:core && npm run test:db:identity && npm run test:db:owner && npm run test:db:entitlements && npm run test:db:billing && npm run test:db:free && npm run test:db:recovery && npm run test:db:voids && npm run test:db:ops && npm run test:db:access && npm run test:db:service && npm run test:db:menu && npm run test:db:offline && npm run test:db:fiscal && npm run test:db:discounts",
     "test:browser": "playwright test",
     "test:db:service": "tsx tests/service-db.ts",
     "db:migrate": "tsx scripts/migrate.ts",
@@ -49,6 +49,7 @@
     "test:db:discounts": "tsx tests/discounts-db.ts",
     "test:restart": "tsx tests/restart-http.ts",
     "test:db:voids": "tsx tests/voids-db.ts",
+    "test:db:fiscal": "tsx tests/fiscal-db.ts",
     "dev:facturapi-fake": "tsx tests/fakes/facturapi-fake.ts"
   },
   "dependencies": {

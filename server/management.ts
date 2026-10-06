@@ -1,4 +1,8 @@
-import { employeeSlot, requireSelling } from "./free-limits.js";
+import {
+  employeeSlot,
+  lockFreeLimits,
+  requireSelling,
+} from "./free-limits.js";
 import { requirePro } from "./entitlements.js";
 import { z } from "zod";
 import { Decimal } from "decimal.js";
@@ -45,6 +49,9 @@ export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
     { ...p, secret: pinFingerprint(p.secret) },
     async () => {
       await requireSelling(tx, s);
+      // LO-3 (Free limits) before the employee row, as employeeSlot and
+      // saveFreeSelection take them (PLATFORM-LOCKS-6).
+      await lockFreeLimits(tx);
       const [old] =
         await tx`select role from employees where id=${p.id} for update`;
       const slot = await employeeSlot(tx, p.id, p.active, p.role);

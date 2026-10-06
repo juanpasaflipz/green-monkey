@@ -44,7 +44,7 @@ Discounts and courtesies by line or for the whole check (reason codes, per-role 
 
 New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
 
-The seed is explicit, repeatable, and refuses non-local hosts. It is never run at boot. Seed prices/costs are fictional. Live tax configuration is not yet implemented.
+The seed is explicit, repeatable, and refuses non-local hosts. It is never run at boot. Seed prices/costs are fictional. Prices are tax-inclusive (Mexico): each product has a tax category (IVA 16%, IVA 8% in a registered border region, IVA 0% or exempt), every order line keeps an immutable tax snapshot, and every settled sale gets a ticket with a consecutive folio and the issuer's RFC, régimen and place of issue, from the owner's fiscal profile. CFDI invoicing is pending (cfdi 030); IEPS is out of scope. See [docs/FISCAL.md](docs/FISCAL.md).
 
 ## Build and checks
 

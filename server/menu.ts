@@ -11,6 +11,7 @@ import { menuRevision } from "./menu-read.js";
 import { negativeStockPolicy } from "./stock.js";
 import { entitlement, requirePro } from "./entitlements.js";
 import { requireSelling } from "./free-limits.js";
+import { assertProductFiscalAllowed } from "./fiscal.js";
 import { managers, permit } from "./auth.js";
 import {
   DomainError,
@@ -37,6 +38,7 @@ import {
   productInput,
   reorderInput,
 } from "../shared/menu-schema.js";
+import type { ProductFiscal } from "../shared/tax.js";
 
 type CategoryRow = {
   id: string;
@@ -74,6 +76,8 @@ type ProductDraft = {
   groupIds: string[];
   recipe: RecipeLine[];
   cost: number | null;
+  /** fiscal (027): absent keeps the stored value (legacy saves, imports). */
+  fiscal?: ProductFiscal;
 };
 
 const json = (value: unknown) => JSON.stringify(value);
@@ -494,6 +498,7 @@ async function writeProduct(
     groups: compiled,
     recipe: p.recipe,
     cost: p.cost,
+    ...(p.fiscal !== undefined ? { fiscal: p.fiscal } : {}),
     version: p.expectedVersion + 1,
   };
   await writeDoc(tx, s, data);
@@ -503,6 +508,7 @@ async function writeProduct(
     price: data.price,
     openMax: data.openMax,
     groupIds: data.groupIds,
+    taxCategory: p.fiscal?.taxCategory,
   });
   return data;
 }
@@ -512,7 +518,11 @@ export async function saveMenuProduct(tx: Tx, s: Session, raw: unknown) {
   const p = productInput.parse(raw);
   return once(tx, s, p.operationId, "menu.product.save", p, async () => {
     await requireSelling(tx, s);
+    // The menu_state row first: a fiscal profile save that leaves the border region takes it
+    // before counting IVA 8% products, so the two checks cannot pass each other
+    // (FISCAL-CONCURRENCY-3).
     await bumpMenuRevision(tx);
+    if (p.fiscal !== undefined) await assertProductFiscalAllowed(tx, p.fiscal);
     return writeProduct(tx, s, p, true);
   });
 }

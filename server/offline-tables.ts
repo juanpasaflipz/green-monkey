@@ -147,7 +147,9 @@ appliers.round = async (tx, s, p, ctx) => {
   } catch (e) {
     if (
       e instanceof DomainError &&
-      (e.code === "check_closed" || e.code === "stale_order")
+      (e.code === "check_closed" ||
+        e.code === "stale_order" ||
+        e.code === "fiscal_ticket_issued")
     )
       throw new DomainError("offline_order_closed", 409);
     throw e;

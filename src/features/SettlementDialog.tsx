@@ -107,7 +107,8 @@ export function SettlementDialog({
                     key={o.id}
                     order={o}
                     session={session}
-                    locale={locale}
+                    // fiscal (027): comprobantes print in Spanish (D10).
+                    locale="es"
                     kind="receipt"
                   />
                 )),

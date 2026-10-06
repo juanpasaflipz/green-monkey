@@ -32,6 +32,7 @@ import {
   recordPayment,
 } from "../server/orders.js";
 import { openOrdersSnapshot } from "../server/offline-tables.js";
+import { closeCheck } from "../server/checks.js";
 import { resolvePaymentAttempt } from "../server/offline-attempts.js";
 import {
   paymentRecoveryStatus,
@@ -49,6 +50,15 @@ import {
   type Session,
 } from "../shared/domain.js";
 import { offlineRecord } from "../shared/offline-recovery.js";
+import { noRetries } from "./db-retries.js";
+
+/** fiscal (027) triggers a cleanup disables (in its own transaction) to delete fixture rows. */
+const FISCAL_TRIGGERS = [
+  ["fiscal_adjustments", "fiscal_adjustments_immutable"],
+  ["fiscal_ticket_taxes", "fiscal_ticket_taxes_immutable"],
+  ["fiscal_tickets", "fiscal_tickets_immutable"],
+  ["fiscal_folio_counters", "fiscal_folio_counters_guard"],
+] as const;
 
 const { runtime, migration } = isolatedTarget(process.env),
   sql = connect(runtime),
@@ -626,18 +636,20 @@ try {
   // 8. Concurrent sync and archive of one record: exactly one wins (I1).
   for (let i = 0; i < 4; i++) {
     const raced = sale(s1);
-    const outcomes = await Promise.allSettled([
-      run((tx) => syncOfflineRecord(tx, s1, raced)),
-      run((tx) =>
-        archiveOfflineRecord(tx, manager1, {
-          operationId: randomUUID(),
-          record: raced,
-          localError: null,
-          reason: "Concurrent archive race fixture",
-          confirmed: true,
-        }),
-      ),
-    ]);
+    const outcomes = await noRetries("sync vs archive", () =>
+      Promise.allSettled([
+        run((tx) => syncOfflineRecord(tx, s1, raced)),
+        run((tx) =>
+          archiveOfflineRecord(tx, manager1, {
+            operationId: randomUUID(),
+            record: raced,
+            localError: null,
+            reason: "Concurrent archive race fixture",
+            confirmed: true,
+          }),
+        ),
+      ]),
+    );
     const won = outcomes.filter((o) => o.status === "fulfilled").length;
     assert.equal(won, 1, "exactly one of sync or archive wins");
     const reasons = outcomes
@@ -660,10 +672,12 @@ try {
     );
   }
   const doubled = sale(s1);
-  const both = await Promise.all([
-    run((tx) => syncOfflineRecord(tx, s1, doubled)),
-    run((tx) => syncOfflineRecord(tx, s1, doubled)),
-  ]);
+  const both = await noRetries("doubled sync", () =>
+    Promise.all([
+      run((tx) => syncOfflineRecord(tx, s1, doubled)),
+      run((tx) => syncOfflineRecord(tx, s1, doubled)),
+    ]),
+  );
   assert.equal(both[0].tenderId, both[1].tenderId);
   assert.equal(await count("tenders", "order_id=$2", both[0].orderId), 1);
 
@@ -947,12 +961,14 @@ try {
   assert.equal(stillActive.state, "active");
 
   // 14. Device prefixes are unique under concurrency and immutable.
-  const prefixes = await Promise.all([
-    run((tx) => offlineDevicePrefix(tx, s1)),
-    run((tx) => offlineDevicePrefix(tx, s2)),
-    run((tx) => offlineDevicePrefix(tx, s1)),
-    run((tx) => offlineDevicePrefix(tx, s2)),
-  ]);
+  const prefixes = await noRetries("device prefixes", () =>
+    Promise.all([
+      run((tx) => offlineDevicePrefix(tx, s1)),
+      run((tx) => offlineDevicePrefix(tx, s2)),
+      run((tx) => offlineDevicePrefix(tx, s1)),
+      run((tx) => offlineDevicePrefix(tx, s2)),
+    ]),
+  );
   assert.equal(prefixes[0].prefix, prefixes[2].prefix);
   assert.equal(prefixes[1].prefix, prefixes[3].prefix);
   assert.notEqual(prefixes[0].prefix, prefixes[1].prefix);
@@ -1777,19 +1793,39 @@ try {
     ),
     0,
   );
-  const stillServiceable = await run((tx) =>
-    addRoundOnline(tx, s4, tab.id, {
-      operationId: randomUUID(),
-      lines: [line(ids.drink)],
-      mode: "dine_in",
-      tableId: lateTable,
-      name: "Mesa del cajón cerrado",
-      note: "",
-      channel: "pos",
-      expectedVersion: paidLate.version,
-    }),
+  // fiscal 027 (LD-15 fiscal Q2): the reconciled payment settled the table's
+  // check, which got its ticket in this transaction; a paid ticketed check
+  // takes no more rounds (late items go out as a new order), and it is still
+  // a normal check that "Liberar mesa" closes.
+  assert.equal(paidLate.checkState, "paid");
+  assert.ok(
+    paidLate.fiscal?.ticket,
+    "the settling reconcile issued the ticket",
   );
-  assert.equal(stillServiceable.total, 150);
+  await expectCode(
+    run((tx) =>
+      addRoundOnline(tx, s4, tab.id, {
+        operationId: randomUUID(),
+        lines: [line(ids.drink)],
+        mode: "dine_in",
+        tableId: lateTable,
+        name: "Mesa del cajón cerrado",
+        note: "",
+        channel: "pos",
+        expectedVersion: paidLate.version,
+      }),
+    ),
+    "fiscal_ticket_issued",
+  );
+  const stillServiceable = await run((tx) =>
+    closeCheck(tx, s4, tab.id, { operationId: randomUUID() }),
+  );
+  assert.equal(stillServiceable.closeReason, "released");
+  assert.equal(
+    stillServiceable.fiscal?.ticket?.folio,
+    paidLate.fiscal!.ticket!.folio,
+    "releasing the table keeps the same ticket",
+  );
 
   // OFF-R27: a sale or order refused because its create had already
   // committed online (response lost) names that order in the manager review.
@@ -2581,9 +2617,20 @@ try {
   ];
   await admin.begin(async (tx) => {
     await tx`alter table stock_movements disable trigger stock_movements_immutable`;
-    for (const [table, trigger] of moneyTriggers)
+    // fiscal (027): fiscal records are immutable even for the owner, so this
+    // cleanup switches their named triggers off in the same transaction that
+    // deletes the fixture tenants (LD-12 pattern, LD-16 L5): no other session
+    // ever sees them disabled, and a failed cleanup rolls the switch back.
+    for (const [table, trigger] of [...FISCAL_TRIGGERS, ...moneyTriggers])
       await tx.unsafe(`alter table ${table} disable trigger ${trigger}`);
     for (const table of [
+      // fiscal (027), first in FK order (LD-16 L5).
+      "fiscal_adjustments",
+      "fiscal_ticket_taxes",
+      "fiscal_tickets",
+      "fiscal_folio_counters",
+      "restaurant_fiscal_profiles",
+      // discounts (028), next in FK order (LD-16 L5).
       "refund_units",
       "refund_lines",
       "refunds",
@@ -2634,7 +2681,7 @@ try {
     await tx`delete from restaurants where id in (${tenantId},${otherTenant})`;
     await tx`delete from organizations where id in (${organizationId},${otherOrganization})`;
     await tx`alter table stock_movements enable trigger stock_movements_immutable`;
-    for (const [table, trigger] of moneyTriggers)
+    for (const [table, trigger] of [...FISCAL_TRIGGERS, ...moneyTriggers])
       await tx.unsafe(`alter table ${table} enable trigger ${trigger}`);
   });
   await sql.end();

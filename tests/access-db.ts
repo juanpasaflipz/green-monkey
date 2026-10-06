@@ -63,6 +63,15 @@ import {
 } from "../server/owner-accounts.js";
 import type { Session } from "../shared/domain.js";
 import { effectiveIdleLock, type SessionAccess } from "../shared/access.js";
+import { noRetries } from "./db-retries.js";
+
+/** fiscal (027) triggers a cleanup disables (in its own transaction) to delete fixture rows. */
+const FISCAL_TRIGGERS = [
+  ["fiscal_adjustments", "fiscal_adjustments_immutable"],
+  ["fiscal_ticket_taxes", "fiscal_ticket_taxes_immutable"],
+  ["fiscal_tickets", "fiscal_tickets_immutable"],
+  ["fiscal_folio_counters", "fiscal_folio_counters_guard"],
+] as const;
 
 const { runtime, migration } = isolatedTarget(process.env);
 const sql = connect(runtime),
@@ -303,11 +312,13 @@ try {
       createPairingCode(tx, owner, { deviceName: "Caja doble" }),
     );
     assert.match(code.code, /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);
-    const results = await Promise.allSettled([
-      redeemPairingCode(sql, { code: code.code }, null),
-      redeemPairingCode(sql, { code: code.code.toLowerCase() }, null),
-      redeemPairingCode(sql, { code: code.code.replace("-", " ") }, null),
-    ]);
+    const results = await noRetries("pairing redeem race", () =>
+      Promise.allSettled([
+        redeemPairingCode(sql, { code: code.code }, null),
+        redeemPairingCode(sql, { code: code.code.toLowerCase() }, null),
+        redeemPairingCode(sql, { code: code.code.replace("-", " ") }, null),
+      ]),
+    );
     const ok = results.filter((r) => r.status === "fulfilled");
     assert.equal(ok.length, 1);
     for (const r of results)
@@ -2248,10 +2259,20 @@ try {
     ["cash_sessions", "cash_sessions_closed_immutable"],
   ];
   await admin.begin(async (tx) => {
-    for (const [table, trigger] of moneyTriggers)
+    // fiscal (027): fiscal records are immutable even for the owner, so this
+    // cleanup switches their named triggers off in the same transaction that
+    // deletes the fixture tenants (LD-12 pattern, LD-16 L5): no other session
+    // ever sees them disabled, and a failed cleanup rolls the switch back.
+    for (const [table, trigger] of [...FISCAL_TRIGGERS, ...moneyTriggers])
       await tx.unsafe(`alter table ${table} disable trigger ${trigger}`);
     for (const id of [tenantId, otherTenantId, ...signupTenants]) {
       for (const table of [
+        // fiscal (027), first in FK order (LD-16 L5).
+        "fiscal_adjustments",
+        "fiscal_ticket_taxes",
+        "fiscal_tickets",
+        "fiscal_folio_counters",
+        "restaurant_fiscal_profiles",
         // discounts (028), in FK order before the wave-1 lists (LD-16 L5).
         "refund_units",
         "refund_lines",
@@ -2304,15 +2325,15 @@ try {
         await tx.unsafe(`delete from ${table} where tenant_id=$1`, [id]);
       await tx`delete from restaurants where id=${id}`;
     }
-    for (const [table, trigger] of moneyTriggers)
+    await tx`delete from organizations where id=${organizationId}`;
+    for (const accountId of accountIds) {
+      await tx`delete from organizations where created_by_account=${accountId}`;
+      await tx`delete from owner_sessions where account_id=${accountId}`;
+      await tx`delete from owner_accounts where id=${accountId}`;
+    }
+    for (const [table, trigger] of [...FISCAL_TRIGGERS, ...moneyTriggers])
       await tx.unsafe(`alter table ${table} enable trigger ${trigger}`);
   });
-  await admin`delete from organizations where id=${organizationId}`;
-  for (const accountId of accountIds) {
-    await admin`delete from organizations where created_by_account=${accountId}`;
-    await admin`delete from owner_sessions where account_id=${accountId}`;
-    await admin`delete from owner_accounts where id=${accountId}`;
-  }
   await sql.end();
   await admin.end();
 }

@@ -769,9 +769,16 @@ export function Selling({
         }
         throw new HandledError(code);
       }
-      if (code === "check_closed") {
+      // fiscal (027, LD-15 fiscal Q2): a ticketed check takes no more rounds;
+      // like a closed one, the cart keeps its items and is offered "Enviar
+      // como orden nueva" for the same table.
+      if (code === "check_closed" || code === "fiscal_ticket_issued") {
         setClosedCheck("server");
-        setError(t("serviceCheckClosedKeep"));
+        setError(
+          code === "fiscal_ticket_issued"
+            ? translateError(code, locale)
+            : t("serviceCheckClosedKeep"),
+        );
         throw new HandledError(code, true);
       }
       if (code === "operation_conflict") {
@@ -1692,6 +1699,8 @@ export function Selling({
           onBack={() => setReceipt(null)}
           label={offline.receiptProps(receipt)?.label}
           labelHint={offline.receiptProps(receipt)?.labelHint}
+          printLabel={offline.receiptProps(receipt)?.printLabel}
+          printLabelHint={offline.receiptProps(receipt)?.printLabelHint}
           extraActions={
             receipt.state === "local" &&
             receiptOps.length > 0 && (
