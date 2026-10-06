@@ -25,6 +25,8 @@ import {
   discountInputIssue,
   discountLimitCheck,
   formatPercentBps,
+  itemRefundExpectation,
+  itemRefundPlanMatches,
   moneyControlsInput,
   percentToBps,
   planDiscount,
@@ -678,6 +680,78 @@ describe("item refunds (MON-4)", () => {
     ).toBe("refund_exceeds");
   });
 
+  it("DSC-R9: a stale preview of an identical unit has the same total but other units; itemRefundPlanMatches tells them apart", () => {
+    // Two tacos at 4500 paid in cash; two devices preview refunding one.
+    const taco = line(9000, 2);
+    const cash = tender("cash", 9000);
+    const allocations: TenderAllocation[] = [
+      { tenderId: cash.id, lineId: taco.id, unit: 0, amount: 4500 },
+      { tenderId: cash.id, lineId: taco.id, unit: 1, amount: 4500 },
+    ];
+    const request = [{ lineId: taco.id, quantity: 1 }];
+    const stale = view({ lines: [taco], allocations, tenders: [cash] });
+    const previewed = planItemRefund(stale, request);
+    const expected = itemRefundExpectation(previewed);
+    expect(expected).toEqual({
+      expectedAmount: 4500,
+      expectedUnits: [{ lineId: taco.id, units: [1] }],
+    });
+    expect(itemRefundPlanMatches(previewed, expected)).toBe(true);
+    // The other device refunded unit 1: the server now plans unit 0 for 4500.
+    const after = view({
+      lines: [taco],
+      allocations,
+      tenders: [{ ...cash, refunded: 4500 }],
+      refundedUnits: [
+        {
+          refundId: "r",
+          tenderId: cash.id,
+          lineId: taco.id,
+          unit: 1,
+          amount: 4500,
+        },
+      ],
+    });
+    const server = planItemRefund(after, request);
+    expect(server.total).toBe(previewed.total);
+    expect(server.lines[0].units).toEqual([0]);
+    expect(itemRefundPlanMatches(server, expected)).toBe(false);
+    expect(after.refunded).not.toBe(stale.refunded);
+    // Order of lines and of units, and the id's case, do not matter; a missing
+    // or an extra line, another total or a duplicated line id do.
+    const both = planItemRefund(stale, [{ lineId: taco.id, quantity: 2 }]);
+    expect(
+      itemRefundPlanMatches(both, {
+        expectedAmount: 9000,
+        expectedUnits: [{ lineId: taco.id.toUpperCase(), units: [1, 0] }],
+      }),
+    ).toBe(true);
+    expect(
+      itemRefundPlanMatches(both, {
+        ...itemRefundExpectation(both),
+        expectedAmount: 8999,
+      }),
+    ).toBe(false);
+    expect(
+      itemRefundPlanMatches(both, {
+        expectedAmount: 9000,
+        expectedUnits: [
+          { lineId: taco.id, units: [0, 1] },
+          { lineId: taco.id, units: [0, 1] },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      itemRefundPlanMatches(both, {
+        expectedAmount: 9000,
+        expectedUnits: [
+          { lineId: taco.id, units: [0, 1] },
+          { lineId: randomUUID(), units: [0] },
+        ],
+      }),
+    ).toBe(false);
+  });
+
   it("15. refundableQuantities matches the largest successful planItemRefund per line", () => {
     const w = worked();
     const o = view({
@@ -870,15 +944,43 @@ describe("inputs and helpers", () => {
     expect(
       discountInputIssue({ ...p, reasonCode: "other", note: "frío" }),
     ).toBeNull();
-    const items = refundInput.parse({
+    const lineId = randomUUID();
+    const itemsRequest = {
       mode: "items",
       operationId: randomUUID(),
-      lines: [{ lineId: randomUUID(), quantity: 1 }],
+      lines: [{ lineId, quantity: 1 }],
       expectedAmount: 4500,
+      expectedUnits: [{ lineId, units: [1] }],
+      expectedRefunded: 0,
       restock: false,
       reasonCode: "quality",
-    });
+    };
+    const items = refundInput.parse(itemsRequest);
     expect(items).toMatchObject({ note: "", external: [] });
+    // DSC-R9: the preview's units and refunded total are required.
+    for (const missing of ["expectedUnits", "expectedRefunded"] as const) {
+      const { [missing]: _drop, ...rest } = itemsRequest;
+      expect(refundInput.safeParse(rest).success).toBe(false);
+    }
+    expect(
+      refundInput.safeParse({
+        mode: "amount",
+        operationId: randomUUID(),
+        tenderId: randomUUID(),
+        amount: 100,
+        reasonCode: "charge_error",
+      }).success,
+    ).toBe(false);
+    expect(
+      refundInput.safeParse({
+        mode: "amount",
+        operationId: randomUUID(),
+        tenderId: randomUUID(),
+        amount: 100,
+        expectedRefunded: 0,
+        reasonCode: "charge_error",
+      }).success,
+    ).toBe(true);
     expect(
       refundInput.safeParse({
         mode: "amount",

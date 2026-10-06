@@ -35,6 +35,7 @@ import {
 } from "../shared/domain.js";
 import {
   amountRefundAllowed,
+  itemRefundPlanMatches,
   planItemRefund,
   refundInput,
   refundTaxScopes,
@@ -180,13 +181,20 @@ export async function recordRefund(
       if (!o) throw new DomainError("not_found", 404);
       await assertApproverActive(tx, approverId, s);
       const order = await getOrder(tx, orderId);
+      // §2.4 rule 2 (DSC-R9): the client's preview is stale when a refund was
+      // recorded since (another device, or a dialog reopened on an old order
+      // after a lost response), even when the next units cost the same.
+      if (order.refunded !== p.expectedRefunded)
+        throw new DomainError("refund_changed", 409);
       let portions: RefundBatchWrite["portions"];
       let planned: { lineId: string; units: number[]; amount: number }[] = [];
       if (p.mode === "items") {
         if (!order.itemSplitAvailable)
           throw new DomainError("unallocated_history", 409);
         const plan = planItemRefund(order, p.lines);
-        if (plan.total !== p.expectedAmount)
+        // ...and when the server's plan is not the previewed one, unit for
+        // unit (a payment in between makes a later unit refundable).
+        if (!itemRefundPlanMatches(plan, p))
           throw new DomainError("refund_changed", 409);
         planned = plan.lines;
         portions = plan.byTender.map((t) => ({
@@ -244,7 +252,10 @@ export async function recordRefund(
         const t = order.tenders.find(
           (y: { id: string }) => y.id === x.tenderId,
         );
-        if (x.amount > t.amount - (refunded.get(x.tenderId) ?? 0))
+        const now = refunded.get(x.tenderId) ?? 0;
+        // A refund the order lock did not see (an earlier revision) also
+        // makes the plan stale, not only one that leaves too little.
+        if (now !== t.refunded || x.amount > t.amount - now)
           throw new DomainError("refund_changed", 409);
       }
       let lines: RefundBatchWrite["lines"] = [];

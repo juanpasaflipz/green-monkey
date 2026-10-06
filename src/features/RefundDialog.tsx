@@ -8,6 +8,7 @@ import {
 import { parseMoneyInput } from "../../shared/service";
 import {
   amountRefundAllowed,
+  itemRefundExpectation,
   planItemRefund,
   refundableQuantities,
   REFUND_REASONS,
@@ -206,13 +207,16 @@ export function RefundDialog({
       reference: (externals[p.tenderId]?.reference ?? "").trim(),
       confirmed: true as const,
     }));
+    // The refund state this preview was built on: the server answers
+    // refund_changed when it moved on (DSC-R9), and the dialog reloads.
     const body =
       tab === "items"
         ? {
             mode: "items",
             operationId,
             lines: entries,
-            expectedAmount: total,
+            ...itemRefundExpectation(plan!),
+            expectedRefunded: order.refunded,
             restock,
             reasonCode,
             note: note.trim(),
@@ -223,6 +227,7 @@ export function RefundDialog({
             operationId,
             tenderId: tender!.id,
             amount,
+            expectedRefunded: order.refunded,
             reasonCode,
             note: note.trim(),
             external,

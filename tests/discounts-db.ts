@@ -54,6 +54,7 @@ import {
 } from "../server/cash.js";
 import { approvalFor } from "../server/routes/discounts.js";
 import { businessDate, type Order, type Session } from "../shared/domain.js";
+import { itemRefundExpectation, planItemRefund } from "../shared/discounts.js";
 import { extractTax } from "../shared/tax.js";
 import type { SessionAccess } from "../shared/access.js";
 import { discountRemovable } from "../src/features/discounts/format.js";
@@ -290,7 +291,40 @@ async function reverse(
   const a = await approvalFor(sql, s, body.approval, "required");
   return run(s, (tx) => reverseDiscount(tx, s, orderId, discountId, body, a));
 }
+/**
+ * The refund state a client previewed (DSC-R9), as RefundDialog sends it:
+ * the order's refunded total and, for item refunds, the planned units.
+ */
+function previewOf(order: Order, body: any) {
+  const out: any = { expectedRefunded: order.refunded };
+  if (body.mode === "items")
+    try {
+      const plan = planItemRefund(order, body.lines);
+      out.expectedUnits = itemRefundExpectation(plan).expectedUnits;
+    } catch {
+      // The server's own planning refuses this request first.
+      out.expectedUnits = body.lines.map((l: { lineId: string }) => ({
+        lineId: l.lineId,
+        units: [0],
+      }));
+    }
+  return out;
+}
+/**
+ * Like a client that just loaded the order, a body without the preview fields
+ * gets them from the current order. They are written into the body, so
+ * replaying the same body object sends the same request (same once()
+ * fingerprint). Stale-preview tests pass their own.
+ */
 async function refundOrder(s: Session, orderId: string, body: any) {
+  if (
+    body.expectedRefunded === undefined ||
+    (body.mode === "items" && body.expectedUnits === undefined)
+  ) {
+    const preview = previewOf(await orderOf(orderId, s), body);
+    body.expectedRefunded ??= preview.expectedRefunded;
+    if (body.mode === "items") body.expectedUnits ??= preview.expectedUnits;
+  }
   const a = await approvalFor(sql, s, body.approval, "required");
   return run(s, (tx) => recordRefund(tx, s, orderId, body, a));
 }
@@ -1136,16 +1170,29 @@ try {
     const o = await newOrder([{ product: bowl, quantity: 1 }]);
     await pay(o.id, 12500);
     const tenderId = (await orderOf(o.id)).tenders[0].id;
+    // Twenty devices refund 1000 each at once. A preview that another device's
+    // refund made stale answers refund_changed (DSC-R9); like RefundDialog,
+    // that device reloads and confirms again with the same operation id, until
+    // it is refunded or the tender has no room left (at most one retry per
+    // other device's success, so 40 attempts always suffice).
+    const device = async () => {
+      const operationId = randomUUID();
+      for (let attempt = 0; attempt < 40; attempt++)
+        try {
+          return await refundOrder(manager, o.id, {
+            mode: "amount",
+            operationId,
+            tenderId,
+            amount: 1000,
+            reasonCode: "charge_error",
+          });
+        } catch (e: any) {
+          if (e.code !== "refund_changed") throw e;
+        }
+      throw new Error("refund_changed 40 times in a row");
+    };
     const results = await Promise.allSettled(
-      Array.from({ length: 20 }, () =>
-        refundOrder(manager, o.id, {
-          mode: "amount",
-          operationId: randomUUID(),
-          tenderId,
-          amount: 1000,
-          reasonCode: "charge_error",
-        }),
-      ),
+      Array.from({ length: 20 }, device),
     );
     const ok = results.filter((x) => x.status === "fulfilled").length;
     for (const x of results)
@@ -1232,6 +1279,121 @@ try {
       "refund_changed",
     );
     assert.equal((await counts(o.id)).batches, 0);
+  });
+
+  await test("DSC-R9: two item refunds of one identical unit built from the same stale check: the first succeeds, the second answers refund_changed and stores nothing", async () => {
+    // Two staff refund the customer's one cold taco on two devices.
+    const o = await newOrder([{ product: taco, quantity: 2 }]);
+    await pay(o.id, 9000);
+    const line = o.lines[0].id;
+    const stale = await orderOf(o.id);
+    const request = [{ lineId: line, quantity: 1 }];
+    const first = itemsBody(
+      request,
+      4500,
+      previewOf(stale, { mode: "items", lines: request }),
+    );
+    const second = itemsBody(
+      request,
+      4500,
+      previewOf(stale, { mode: "items", lines: request }),
+    );
+    assert.deepEqual(first.expectedUnits, [{ lineId: line, units: [1] }]);
+    const done = await refundOrder(manager, o.id, first);
+    assert.equal(done.batch.amount, 4500);
+    // The server would now refund unit 0 for the same 4500: the total alone
+    // cannot tell the second preview is stale.
+    const fresh = await orderOf(o.id);
+    const next = planItemRefund(fresh, request);
+    assert.equal(next.total, 4500);
+    assert.deepEqual(next.lines[0].units, [0]);
+    await rejects(refundOrder(manager, o.id, second), "refund_changed");
+    // The units alone also tell: the refunded total is current, the units are not.
+    await rejects(
+      refundOrder(
+        manager,
+        o.id,
+        itemsBody(request, 4500, {
+          expectedRefunded: fresh.refunded,
+          expectedUnits: [{ lineId: line, units: [1] }],
+        }),
+      ),
+      "refund_changed",
+    );
+    let after = await orderOf(o.id);
+    assert.equal((await counts(o.id)).batches, 1);
+    assert.equal(after.refunded, 4500);
+    assert.deepEqual(
+      after.refundedUnits!.map((u) => u.unit),
+      [1],
+      "only the first refund's unit",
+    );
+    // After the reload the person confirms again on the current check.
+    await refundOrder(manager, o.id, itemsBody(request, 4500));
+    after = await orderOf(o.id);
+    assert.equal(after.refunded, 9000);
+    assert.equal((await counts(o.id)).batches, 2);
+  });
+
+  await test("DSC-R9: a payment in between makes a later identical unit refundable: the stale preview's units differ and the server answers refund_changed", async () => {
+    const o = await newOrder([{ product: taco, quantity: 2 }]);
+    const line = o.lines[0].id;
+    await pay(o.id, 4500, { items: [`${line}:0`] });
+    const request = [{ lineId: line, quantity: 1 }];
+    const stale = await orderOf(o.id);
+    const body = itemsBody(
+      request,
+      4500,
+      previewOf(stale, { mode: "items", lines: request }),
+    );
+    assert.deepEqual(body.expectedUnits, [{ lineId: line, units: [0] }]);
+    // Another device pays the second taco (by card): same price, same refunded total.
+    await pay(o.id, 4500, { method: "external", items: [`${line}:1`] });
+    const fresh = await orderOf(o.id);
+    assert.equal(fresh.refunded, stale.refunded);
+    assert.deepEqual(planItemRefund(fresh, request).lines[0].units, [1]);
+    await rejects(refundOrder(manager, o.id, body), "refund_changed");
+    assert.equal((await counts(o.id)).batches, 0);
+  });
+
+  await test("DSC-R9: amount refunds built from a stale check answer refund_changed while the tender still has capacity, after an amount or an item refund", async () => {
+    const o = await newOrder([{ product: taco, quantity: 2 }]);
+    await pay(o.id, 9000);
+    const stale = await orderOf(o.id);
+    const tenderId = stale.tenders[0].id;
+    const amountBody = (expectedRefunded: number) => ({
+      mode: "amount",
+      operationId: randomUUID(),
+      tenderId,
+      amount: 1000,
+      expectedRefunded,
+      reasonCode: "charge_error",
+      note: "",
+    });
+    await refundOrder(manager, o.id, amountBody(stale.refunded));
+    // Same request from the same stale check: 8000 of capacity is left.
+    await rejects(
+      refundOrder(manager, o.id, amountBody(stale.refunded)),
+      "refund_changed",
+    );
+    assert.equal((await orderOf(o.id)).refunded, 1000);
+    // An item refund in between makes an amount preview stale too.
+    const beforeItem = await orderOf(o.id);
+    await refundOrder(
+      manager,
+      o.id,
+      itemsBody([{ lineId: o.lines[0].id, quantity: 1 }], 4500),
+    );
+    await rejects(
+      refundOrder(manager, o.id, amountBody(beforeItem.refunded)),
+      "refund_changed",
+    );
+    const after = await orderOf(o.id);
+    assert.equal(after.refunded, 5500);
+    assert.equal((await counts(o.id)).batches, 2);
+    // Confirmed again on the current check, it goes through.
+    await refundOrder(manager, o.id, amountBody(after.refunded));
+    assert.equal((await orderOf(o.id)).refunded, 6500);
   });
 
   await fiscalTest(

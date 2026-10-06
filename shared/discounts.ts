@@ -143,6 +143,20 @@ export const refundInput = z.discriminatedUnion("mode", [
         .min(1)
         .max(100),
       expectedAmount: money.refine((n) => n > 0),
+      // §2.4 rule 2 (DSC-R9): the plan the preview showed, per line the units
+      // it refunds (itemRefundExpectation), and the order's refunded total.
+      expectedUnits: z
+        .array(
+          z
+            .object({
+              lineId: id,
+              units: z.array(z.number().int().min(0).max(999)).min(1).max(99),
+            })
+            .strict(),
+        )
+        .min(1)
+        .max(100),
+      expectedRefunded: money,
       restock: z.boolean(),
       reasonCode: z.enum(REFUND_REASONS),
       note: z.string().trim().max(300).default(""),
@@ -156,6 +170,8 @@ export const refundInput = z.discriminatedUnion("mode", [
       operationId: id,
       tenderId: id,
       amount: money.refine((n) => n > 0),
+      // §2.4 rule 2 (DSC-R9): the order's refunded total the preview saw.
+      expectedRefunded: money,
       reasonCode: z.enum(REFUND_REASONS),
       note: z.string().trim().max(300).default(""),
       external: z.array(externalRefund).max(1).default([]),
@@ -753,6 +769,44 @@ export function planItemRefund(
   if (sum(byTender.map((t) => t.amount)) !== sum(units.map((u) => u.amount)))
     throw new DomainError("refund_units_unavailable", 409);
   return { total: sum(units.map((u) => u.amount)), units, byTender, lines };
+}
+
+/**
+ * The plan an item-refund preview showed, as the client sends it (§2.4 server
+ * rule 2): its total and, per line, the units it refunds.
+ */
+export function itemRefundExpectation(
+  plan: Pick<ItemRefundPlan, "total" | "lines">,
+) {
+  return {
+    expectedAmount: plan.total,
+    expectedUnits: plan.lines.map((l) => ({
+      lineId: l.lineId,
+      units: [...l.units],
+    })),
+  };
+}
+
+/**
+ * Whether the server's item-refund plan is the one the client previewed: the
+ * same total and, per line, the same units (DSC-R9). Equal totals are not
+ * enough: when another device refunded (or paid) an identical unit in
+ * between, the plan moves to the next unit at the same price.
+ */
+export function itemRefundPlanMatches(
+  plan: Pick<ItemRefundPlan, "total" | "lines">,
+  expected: ReturnType<typeof itemRefundExpectation>,
+): boolean {
+  if (plan.total !== expected.expectedAmount) return false;
+  const key = (units: number[]) => [...units].sort((a, b) => a - b).join(",");
+  const want = new Map(
+    expected.expectedUnits.map((l) => [l.lineId.toLowerCase(), key(l.units)]),
+  );
+  return (
+    want.size === expected.expectedUnits.length &&
+    want.size === plan.lines.length &&
+    plan.lines.every((l) => want.get(l.lineId.toLowerCase()) === key(l.units))
+  );
 }
 
 /** Per line, the largest quantity for which planItemRefund succeeds. */

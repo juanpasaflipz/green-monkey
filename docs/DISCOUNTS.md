@@ -189,8 +189,14 @@ comprobante**, **Listo**) refreshes the screen behind it however it is left
 (Listo, the close button or Escape), so Órdenes and Detalle de orden never keep
 showing the pre-refund check after money moved.
 
-Server rules: the client sends the previewed `expectedAmount` (`refund_changed`
-when another device changed the order); caps per tender (Σ refunds ≤ tender
+Server rules: the client sends the refund state its preview was built on: the
+order's refunded total (`expectedRefunded`, both modes) and, for item refunds,
+the previewed total and the units it refunds per line (`expectedAmount`,
+`expectedUnits`). Under the order lock the server answers `refund_changed` (409)
+when any of them differs, and the dialog reloads the check and keeps the inputs.
+Comparing the units matters because identical units cost the same: when two
+devices refund the same cold taco, the second plan would move to the next taco
+at the same price, so a total-only check would refund twice. Caps per tender (Σ refunds ≤ tender
 amount) and per unit and tender (Σ unit refunds ≤ allocation), enforced in code
 under the tender keys and again by triggers 7e/7f; method must match the tender.
 
