@@ -7,6 +7,7 @@ import {
   MAX_CO_OWNERS,
   accountEvent,
   ensureOwnerSeat,
+  lockCoOwnerLimit,
   organizationRole,
   organizationScope,
   requireFreshOwnerSession,
@@ -291,6 +292,8 @@ export async function acceptTransfer(
   await requireFreshOwnerSession(tx, a.sessionId);
   const found = await liveTransfer(tx, { ...p, accountId: a.id });
   if (!found) throw new DomainError("transfer_unavailable", 403);
+  // 931 then 932: the co-owner limit is re-checked below (ACC-10).
+  await lockCoOwnerLimit(tx, found.organization_id);
   await lockTransfers(tx, found.organization_id);
   const [t] =
     await tx`select *,expires_at>now() as live,available_at>now() as on_hold
@@ -347,6 +350,14 @@ export async function acceptTransfer(
   for (const d of documents)
     if (d.version !== LEGAL_DOCUMENTS[d.document].version)
       throw new DomainError("legal_version_mismatch", 409);
+  if (t.previous_owner_stays) {
+    // Max 3 at acceptance too (ACC-10, under 931): co-owners who joined during
+    // the 72 h window count; the target's own row is about to be 'promoted'.
+    const [active] =
+      await tx`select count(*)::int as n from organization_co_owners
+        where organization_id=${organizationId} and removed_at is null and account_id<>${a.id}`;
+    if (active.n >= MAX_CO_OWNERS) throw new DomainError("co_owner_limit", 409);
+  }
   const moved =
     await tx`update organizations set created_by_account=${a.id} where id=${organizationId} and created_by_account=${t.from_account_id} returning id`;
   if (!moved.length) throw new DomainError("transfer_unavailable", 403);

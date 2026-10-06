@@ -261,6 +261,12 @@ async function coOwnerCount(tx: Tx, organizationId: string, pending: boolean) {
 }
 const lockOrganization = (tx: Tx, organizationId: string, key: number) =>
   tx`select pg_advisory_xact_lock(hashtextextended(${organizationId},${key}))`;
+/**
+ * The co-owner limit key (931). Taken before the transfer key (932) by any
+ * command that needs both (ARCHITECTURE lock order, row 30).
+ */
+export const lockCoOwnerLimit = (tx: Tx, organizationId: string) =>
+  lockOrganization(tx, organizationId, 931);
 
 const inviteInput = z
   .object({ operationId: z.uuid(), organizationId: z.uuid(), email })

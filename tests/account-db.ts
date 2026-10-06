@@ -2020,6 +2020,133 @@ try {
     await admin`update owner_memberships set revoked_at=now(),revoked_by=${o.id} where account_id=${o.id} and tenant_id=${S.tenantId}`;
     assert.equal((await shell(pinned)).account, null);
   });
+  await test("34 transfer: the co-owner limit is re-checked at acceptance under 931 when the previous owner stays (co-owners who joined during the window count; the promoted target does not)", async () => {
+    const coOwner = async (from: Owner, organizationId: string, to: Owner) => {
+      const invite = await as(from, (tx, x) =>
+        createCoOwnerInvitation(
+          tx,
+          x,
+          { operationId: randomUUID(), organizationId, email: to.email },
+          PUBLISHED,
+        ),
+      );
+      await as(to, (tx, x) =>
+        acceptInvitation(
+          tx,
+          x,
+          {
+            token: token(invite.path, "invite"),
+            legalAccepted: { terms: V.terms, privacy: V.privacy },
+          },
+          PUBLISHED,
+        ),
+      );
+    };
+    const active = async (organizationId: string) =>
+      (
+        await admin`select account_id from organization_co_owners
+          where organization_id=${organizationId} and removed_at is null`
+      )
+        .map((r) => r.account_id as string)
+        .sort();
+    const transferTo = (
+      from: Owner,
+      organizationId: string,
+      name: string,
+      to: Owner,
+    ) =>
+      as(from, (tx, x) =>
+        requestTransfer(
+          tx,
+          x,
+          {
+            operationId: randomUUID(),
+            organizationId,
+            email: to.email,
+            previousOwnerStays: true,
+            confirmName: name,
+          },
+          PUBLISHED,
+        ),
+      );
+    // An outside target: 2 co-owners at request, a third joins in the window.
+    const f = await owner("limit-from");
+    const L = await restaurant(f, `Limite ${run}`);
+    const [c1, c2, c3, outsider] = [
+      await owner("limit-c1"),
+      await owner("limit-c2"),
+      await owner("limit-c3"),
+      await owner("limit-to"),
+    ];
+    await coOwner(f, L.organizationId, c1);
+    await coOwner(f, L.organizationId, c2);
+    const t = await transferTo(f, L.organizationId, `Limite ${run}`, outsider);
+    await coOwner(f, L.organizationId, c3);
+    await rejects(
+      as(outsider, (tx, x) =>
+        acceptTransfer(
+          tx,
+          x,
+          { token: token(t.path, "transfer"), legalAccepted: V },
+          PUBLISHED,
+        ),
+      ),
+      "co_owner_limit",
+    );
+    const [unchanged] =
+      await admin`select o.created_by_account,t.state from organizations o
+        join ownership_transfers t on t.organization_id=o.id where t.id=${t.id}`;
+    assert.deepEqual(
+      [unchanged.created_by_account, unchanged.state],
+      [f.id, "pending"],
+    );
+    assert.equal((await active(L.organizationId)).length, 3);
+    // Once a co-owner leaves, the previous owner becomes the third.
+    await as(c3, (tx, x) =>
+      leaveCoOwnership(tx, x, { organizationId: L.organizationId }),
+    );
+    await as(outsider, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(t.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.deepEqual(
+      await active(L.organizationId),
+      [c1.id, c2.id, f.id].sort(),
+    );
+    // A co-owner target is promoted, so it does not count against the limit.
+    const g = await owner("promote-limit-from");
+    const P = await restaurant(g, `Limite promocion ${run}`);
+    const [d1, d2, d3] = [
+      await owner("promote-limit-d1"),
+      await owner("promote-limit-d2"),
+      await owner("promote-limit-d3"),
+    ];
+    await coOwner(g, P.organizationId, d1);
+    await coOwner(g, P.organizationId, d2);
+    const promote = await transferTo(
+      g,
+      P.organizationId,
+      `Limite promocion ${run}`,
+      d1,
+    );
+    await coOwner(g, P.organizationId, d3);
+    await as(d1, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(promote.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.deepEqual(
+      await active(P.organizationId),
+      [d2.id, d3.id, g.id].sort(),
+    );
+  });
   console.log(
     `Account DB passed (${checks} checks): legal acceptance and gating, co-owners on access's lifecycle, transfers, recovery codes, export, restaurant privacy and the 031 RLS paths. Fixtures retained (append-only evidence).`,
   );
