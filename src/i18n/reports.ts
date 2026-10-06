@@ -405,6 +405,7 @@ export default defineArea({
     reportsOfflineSaleRecovered: "Venta sin conexión recuperada",
     reportsDocument: "Documento",
     reportsCorteZPrintCount: "{n} impresiones",
+    reportsKitchenNotStarted: "sin empezar",
   },
   en: {
     reportsTitle: "Reports",
@@ -801,6 +802,7 @@ export default defineArea({
     reportsOfflineSaleRecovered: "Offline sale recovered",
     reportsDocument: "Document",
     reportsCorteZPrintCount: "{n} prints",
+    reportsKitchenNotStarted: "not started",
   },
   errors: {
     reports_range_invalid: [

@@ -4,6 +4,9 @@ import { Button, Field, Modal } from "../components/ui";
 import { strings, translateError, type Key } from "../i18n";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { stepUpExempt } from "../../shared/access";
+import { readPrintSettings } from "../print";
+import { cancellationsFromVoid } from "./printing/cancellations";
+import { printCancellations } from "./printing/KitchenCancellationDocument";
 import {
   ManagerApproval,
   type ApprovalValue,
@@ -92,14 +95,15 @@ export function VoidDialog({
             setBusy(true);
             setError("");
             try {
-              await api(`/orders/${order.id}/voids`, {
+              const reason = String(f.get("reason") ?? "");
+              const after = await api<Order>(`/orders/${order.id}/voids`, {
                 operationId,
                 expectedVersion: order.version,
                 lines: selected.map(([lineId, quantity]) => ({
                   lineId,
                   quantity,
                 })),
-                reason: String(f.get("reason") ?? ""),
+                reason,
                 stockDisposition:
                   returnStock && returnAllowed ? "return" : "no_return",
                 ...(needsApproval
@@ -111,7 +115,20 @@ export function VoidDialog({
                     }
                   : {}),
               });
+              // reports (029): with "Imprimir comanda al enviar" the kitchen gets a
+              // cancellation chit; printing never fails the void.
+              const printed = readPrintSettings().kitchenOnSend
+                ? await printCancellations(
+                    cancellationsFromVoid(order, after, reason),
+                    locale,
+                    session.restaurant.timezone,
+                  )
+                : true;
               await saved();
+              if (!printed) {
+                setError(t("reportsKitchenCancelPrintFailed"));
+                return;
+              }
               close();
             } catch (err) {
               setError(translateError((err as Error).message, locale));

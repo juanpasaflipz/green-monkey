@@ -25,11 +25,13 @@ export function Operations({
   session,
   locale,
   navigate,
+  online = true,
 }: {
   view: string;
   session: Session;
   locale: Locale;
   navigate: (s: string) => void;
+  online?: boolean;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
@@ -60,6 +62,12 @@ export function Operations({
       // These views load and poll by themselves.
       if (["orders", "tables", "kitchen", "sync"].includes(view)) {
         setData(null);
+        return;
+      }
+      // reports (029): Hoy and Finanzas need a connection (spec §2.3).
+      if ((view === "today" || view === "finance") && !online) {
+        setData(null);
+        setError(t("reportsOffline"));
         return;
       }
       if (view === "settings") setData(await api("/capabilities"));
