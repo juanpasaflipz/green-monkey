@@ -369,13 +369,14 @@ the drawer is open.
   `header`/`footer` slots (see integration points).
 - Per-device settings (localStorage `gm-print-settings`): paper width, print a
   kitchen ticket on send (off by default) and auto-print new KDS tickets (off).
-- **Silent printing** requires Chromium launched with `--kiosk-printing` and the
-  thermal printer set as the OS default printer. Public sources describe this as
-  working on Windows; macOS and Android always show the print dialog. Verify on
-  the target device; it has not been verified here, and no official Chrome or
-  Chromium documentation confirms the flag, so the KDS "Impresión" dialog's hint
-  points staff to the pilot manual's print steps ([PILOT_SOP §1.3](PILOT_SOP.md))
-  instead of the flag (LD-17).
+- **Silent printing** (no print dialog) has no confirmed method today. Public
+  sources, not official Chrome or Chromium documentation, describe launching
+  Chromium with `--kiosk-printing` with the thermal printer as the OS default
+  printer as working on Windows, and say macOS and Android always show the
+  print dialog; none of this has been verified here. The KDS "Impresión"
+  dialog's hint therefore points staff to the pilot manual's print steps
+  ([PILOT_SOP §1.3](PILOT_SOP.md)), which count on the dialog at every print
+  (LD-17).
 - Browser printing never confirms that paper came out.
 - Kitchen cancellation chits (reports 029): a KDS with auto-print and a selling device
   that prints on send also print "CANCELACIÓN · NO PREPARAR" after a void, per round and

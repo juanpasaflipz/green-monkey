@@ -105,6 +105,9 @@ los de esta sección. La app ya no recomienda abrir Chrome con impresión de kio
 documentación oficial que consultamos lo confirma (LD-17; se volvió a consultar la
 documentación de políticas de Chrome Enterprise y la de Chromium el 6 de octubre de 2026).
 
+**Hoy no existe una forma confirmada de imprimir sin diálogo.** Con los pasos siguientes,
+el diálogo del navegador aparece en cada recibo, cuenta y comanda.
+
 **Pasos de impresión del piloto, en cada equipo que imprime:**
 
 1. Configura la impresora térmica en el sistema operativo (sección 1.2, pasos 1 a 9) y
