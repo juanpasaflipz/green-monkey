@@ -29,6 +29,10 @@ type Dialog =
   | { kind: "table"; table?: DiningTable; areaId?: string | null }
   | { kind: "bulk"; areaId?: string | null };
 
+/** Why a table cannot be archived: an open check, or only a pending QR order. */
+const inUse = (tb: DiningTable) =>
+  tb.pendingQr ? "table_pending_qr" : "table_in_use";
+
 function swap<T>(list: T[], index: number, delta: number): T[] {
   const next = [...list];
   const [item] = next.splice(index, 1);
@@ -263,7 +267,13 @@ export function FloorWorkspace({
                               </span>
                             )}
                             {tb.open && (
-                              <Badge tone="amber">{t("menuTableOpen")}</Badge>
+                              <Badge tone="amber">
+                                {t(
+                                  tb.pendingQr
+                                    ? "publicTablePending"
+                                    : "menuTableOpen",
+                                )}
+                              </Badge>
                             )}
                             {tb.archived && (
                               <Badge>{t("menuArchivedBadge")}</Badge>
@@ -343,7 +353,7 @@ export function FloorWorkspace({
                             disabled={locked || (tb.open && !tb.archived)}
                             title={
                               tb.open && !tb.archived
-                                ? translateError("table_in_use", locale)
+                                ? translateError(inUse(tb), locale)
                                 : undefined
                             }
                             aria-label={`${t(tb.archived ? "menuRestore" : "menuArchive")} ${tb.name}`}
@@ -362,7 +372,7 @@ export function FloorWorkspace({
                         </div>
                         {tb.open && !tb.archived && (
                           <p className="tiny muted menu-row-note">
-                            {translateError("table_in_use", locale)}
+                            {translateError(inUse(tb), locale)}
                           </p>
                         )}
                       </li>

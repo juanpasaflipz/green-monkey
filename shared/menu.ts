@@ -207,6 +207,8 @@ export type DiningTable = {
   version: number;
   archived: boolean;
   open: boolean;
+  /** In use only by a pending QR order (public ordering 032), not a check. */
+  pendingQr?: true;
 };
 export type StockItem = {
   id: string;

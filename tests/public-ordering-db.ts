@@ -32,7 +32,11 @@ import { kitchenFeed } from "../server/kitchen.js";
 import { closeCash } from "../server/operations.js";
 import { closeCheck, tableOccupancy } from "../server/checks.js";
 import { saveFiscalProfile } from "../server/fiscal.js";
-import { archiveTable, tablesWithOpenChecks } from "../server/floor.js";
+import {
+  archiveTable,
+  floorPayload,
+  tablesWithOpenChecks,
+} from "../server/floor.js";
 import { publicOrdering } from "../server/public-ordering.js";
 import {
   createLink,
@@ -1583,7 +1587,7 @@ try {
     );
   });
 
-  await test("14. tables: an archived table blocks its link; a pending hold blocks archiving; an expired one does not; occupancy counts pending holds", async () => {
+  await test("14. tables: an archived table blocks its link; a pending hold blocks archiving with its own wording (table_pending_qr); an expired one does not; occupancy counts pending holds", async () => {
     const t = await makeTenant("tables");
     const [m1, m2, m3] = await noRetries("14. three table links", () =>
       Promise.all(
@@ -1625,11 +1629,19 @@ try {
         .status,
       200,
     );
-    await rejects(archive(t.tables[0].id), "table_in_use");
+    // A table held only by a pending QR order says so (PUBLIC-UX-2).
+    await rejects(archive(t.tables[0].id), "table_pending_qr");
     assert(
       (
         await run(t.s.owner, (tx) => tablesWithOpenChecks(tx, [t.tables[0].id]))
       ).has(t.tables[0].id),
+    );
+    const floor = await run(t.s.manager, (tx) => floorPayload(tx, t.s.manager));
+    assert.deepEqual(
+      floor.tables
+        .filter((x) => x.id === t.tables[0].id)
+        .map((x) => [x.open, x.pendingQr]),
+      [[true, true]],
     );
     await insertHold(t, m2, { expired: true });
     await archive(t.tables[1].id);
@@ -3065,7 +3077,7 @@ try {
 
   // ------------------------------------------------------------------ HTTP
 
-  await test("28. the kill switch (account's publicOrderingGate and publicOrderingEnabled): every diner route answers public_ordering_disabled before any limiter; staff routes refuse and the summary is empty", async () => {
+  await test("28. the kill switch (account's publicOrderingGate and publicOrderingEnabled): every diner route answers public_ordering_disabled before any limiter; staff routes refuse and the summary is empty; a pending table order neither shows on Mesas nor blocks archiving while it is off (PUBLIC-UX-2, PUBLIC-SECURITY-2)", async () => {
     const t = await makeTenant("gate");
     const l = await link(t, { kind: "counter", label: "Ventanilla" });
     const previous = process.env.PUBLIC_ORDERING_ENABLED;
@@ -3142,6 +3154,59 @@ try {
     } finally {
       await new Promise<void>((r) => server.close(() => r()));
     }
+
+    // PUBLIC-UX-2 / PUBLIC-SECURITY-2: with the switch off nobody can accept
+    // or reject a pending QR order, so it neither shows on Mesas nor blocks
+    // archiving its table; with the switch on again it does both.
+    const mesa = await link(t, { kind: "table", tableId: t.tables[0].id });
+    assert.equal(
+      (await pub.submit(mesa.token, await body(t, [{ productId: t.p.taco }])))
+        .status,
+      200,
+    );
+    const pendingOf = async () =>
+      (await run(t.s.cashier, (tx) => tableOccupancy(tx, t.s.cashier))).find(
+        (o) => o.id === t.tables[0].id,
+      )?.pendingHolds;
+    const tableVersion = async () =>
+      (
+        await asAdmin(
+          t.tenantId,
+          (tx) =>
+            tx`select version from dining_tables where id=${t.tables[0].id}`,
+        )
+      )[0].version as number;
+    const archiveMesa = async (archived: boolean) =>
+      run(t.s.manager, async (tx) =>
+        archiveTable(tx, t.s.manager, {
+          operationId: op(),
+          id: t.tables[0].id,
+          expectedVersion: await tableVersion(),
+          archived,
+        }),
+      );
+    assert.equal(await pendingOf(), 1);
+    await rejects(archiveMesa(true), "table_pending_qr");
+    process.env.PUBLIC_ORDERING_ENABLED = "false";
+    try {
+      assert.equal(await pendingOf(), 0, "no QR badge while switched off");
+      const floor = await run(t.s.manager, (tx) =>
+        floorPayload(tx, t.s.manager),
+      );
+      assert.deepEqual(
+        floor.tables
+          .filter((x) => x.id === t.tables[0].id)
+          .map((x) => [x.open, x.pendingQr]),
+        [[false, undefined]],
+      );
+      const archived = await archiveMesa(true);
+      assert.deepEqual([archived.archived, archived.open], [true, false]);
+    } finally {
+      if (previous === undefined) delete process.env.PUBLIC_ORDERING_ENABLED;
+      else process.env.PUBLIC_ORDERING_ENABLED = previous;
+    }
+    await archiveMesa(false);
+    assert.equal(await pendingOf(), 1, "the switch on again shows it");
   });
 
   await test("29. HTTP limits: per-link revision budget, malformed tokens refused before the database, one IP's flood stops at the ceilings, submit and cancel budgets, separate clients", async () => {

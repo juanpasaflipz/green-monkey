@@ -474,6 +474,10 @@ export default defineArea({
     publicOpHoldRejected: "Online order rejected",
   },
   errors: {
+    table_pending_qr: [
+      "Esta mesa tiene un pedido QR por confirmar. Acéptalo o recházalo en Órdenes antes de archivarla.",
+      "This table has a QR order waiting for confirmation. Accept or reject it in Orders before archiving it.",
+    ],
     public_link_invalid: [
       "Este código ya no funciona. Pide al personal un código nuevo.",
       "This code no longer works. Ask the staff for a new one.",

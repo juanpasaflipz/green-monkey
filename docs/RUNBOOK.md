@@ -507,7 +507,10 @@ kitchen, stock or a fiscal record on its own.
 6. **Kill switch.** `PUBLIC_ORDERING_ENABLED=false` on `web` (a redeploy)
    turns QR and kiosk ordering off for every restaurant: diner and staff
    ordering routes answer `404 public_ordering_disabled`, and staff screens
-   hide the panel, the table QR actions and the inbox.
+   hide the panel, the table QR actions and the inbox. Pending QR orders can
+   be neither accepted nor rejected while it is off, so they stop counting
+   on tables too: Mesas shows no "Pedido QR por confirmar" badge and a table
+   held only by one can be archived. They expire on their own.
 
 ## DB-9 validation
 

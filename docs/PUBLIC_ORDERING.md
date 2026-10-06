@@ -634,6 +634,13 @@ when B1 merged fiscal 027 (`70860d6`), so it still ships on `track/public`.
   - Off: `/api/public/*` answers `404 public_ordering_disabled` before any
     limiter. The staff link, decision and inbox routes answer the same code.
     The settings panel, the table QR actions and the inbox stay hidden.
+    Pending QR orders no longer hold their tables (`tableOccupancy` counts
+    none, `tablesInUse` skips them), because nobody can accept or reject
+    them: Mesas shows no badge and archiving such a table succeeds
+    (PUBLIC-UX-2, PUBLIC-SECURITY-2; DB test 28). With ordering on, a table
+    held only by a pending QR order refuses archiving with
+    `table_pending_qr` ("Esta mesa tiene un pedido QR por confirmar…")
+    instead of the open-check wording.
   - B4 flips "unset" to on in every environment, as a separately revertible
     commit; `false` stays the kill switch.
 
