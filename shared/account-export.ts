@@ -19,6 +19,9 @@ export const EXPORT_TABLE_DENYLIST: ReadonlySet<string> = new Set([
   "signup_billing_intents",
   "billing_locations",
   "jobs",
+  // Organization-scoped (app.organization_id): owners see them in the account
+  // console; a tenant-only export transaction would read them empty.
+  "support_actions",
   // cfdi 030: provider credential ciphertext, and the XML/PDF binaries (the
   // CFDI register offers its own downloads).
   "cfdi_secrets",
