@@ -2425,6 +2425,55 @@ try {
     assert.equal(await revokedFlag(coLost.id), true);
     await rejects(acceptInvite(w, coLost.path), "invitation_unavailable");
   });
+  await test("37 deploy window (ACC-22): the pre-031 acceptInvitation, replayed under 031's policies, spends an invitation without a seat; the ACCOUNT_AND_LEGAL deploy-note query lists it until the owner's new invitation is accepted", async () => {
+    const p = await owner("window-primary");
+    const W = await restaurant(p, `Ventana ${run}`);
+    const invitee = await owner("window-staff");
+    const spent = await inviteStaff(p, W.tenantId, invitee.email);
+    const raw = token(spent.path, "invite");
+    // The previous revision's acceptInvitation (release/v1
+    // server/owner-management.ts): its membership lookup by tenant only, then
+    // the invitation update, run as gm_app under 031's policies.
+    await as(invitee, async (tx, a) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${a.id},918))`;
+      await tx`select set_config('app.invitation_hash',${hash(raw)},true)`;
+      const [i] =
+        await tx`select *,expires_at>now() as valid from restaurant_invitations where token_hash=${hash(raw)} for update`;
+      await tx`select set_config('app.tenant_id',${i.tenant_id},true)`;
+      const [existing] =
+        await tx`select employee_id from owner_memberships where tenant_id=${i.tenant_id}`;
+      assert.ok(existing, "membership_tenant_read shows the primary's seat");
+      await tx`update restaurant_invitations set accepted_by=${a.id},accepted_at=now(),employee_id=${existing.employee_id} where id=${i.id}`;
+    });
+    assert.equal(await seat(invitee.id, W.tenantId), undefined, "no seat");
+    // docs/ACCOUNT_AND_LEGAL.md, "Deploy note" (run with a BYPASSRLS role).
+    const spentInvitations = async () =>
+      (
+        await admin`select i.tenant_id, i.id, i.email, i.role, i.accepted_at
+          from restaurant_invitations i
+         where i.accepted_by is not null
+           and not exists (select 1 from owner_memberships m
+                            where m.tenant_id = i.tenant_id and m.account_id = i.accepted_by)
+           and exists (select 1 from owner_memberships o
+                        where o.tenant_id = i.tenant_id and o.employee_id = i.employee_id
+                          and o.account_id <> i.accepted_by)`
+      ).map((r) => r.id as string);
+    assert.ok((await spentInvitations()).includes(spent.id));
+    // The new revision treats the link as accepted; entry is refused.
+    assert.equal(
+      (await acceptInvite(invitee, spent.path)).tenantId,
+      W.tenantId,
+    );
+    await rejects(entry(invitee, W.tenantId), "forbidden");
+    // The remedy: the owner invites the same email again.
+    const again = await inviteStaff(p, W.tenantId, invitee.email);
+    assert.equal(
+      (await acceptInvite(invitee, again.path)).tenantId,
+      W.tenantId,
+    );
+    assert.equal((await seat(invitee.id, W.tenantId)).role, "cashier");
+    assert.ok(!(await spentInvitations()).includes(spent.id));
+  });
   console.log(
     `Account DB passed (${checks} checks): legal acceptance and gating, co-owners on access's lifecycle, transfers, recovery codes, export, restaurant privacy and the 031 RLS paths. Fixtures retained (append-only evidence).`,
   );

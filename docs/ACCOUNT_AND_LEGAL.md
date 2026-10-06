@@ -360,6 +360,37 @@ terminal. Without an owner Google session the console answers
 `401 unauthorized`. Reads of the console overview share the owner routes'
 120/minute read budget; commands have their own 30/minute limit.
 
+## Deploy note: invitations accepted during the 031 window (ACC-22)
+
+031 adds `membership_tenant_read`, which lets a tenant-scoped transaction read
+every owner membership of that restaurant. Between the migrate step and the
+new web revision taking traffic, the previous revision still serves, and its
+`acceptInvitation` looks for "an existing membership" by tenant only: it now
+finds the primary owner's seat, marks the invitation accepted with the owner's
+employee and creates no seat for the invitee. Nobody gains access, but the
+link is spent: the new revision treats it as already accepted by the invitee,
+whose entry to the restaurant is then refused (`forbidden`).
+
+This can only happen in an environment that served a pre-031 revision with
+live invitations (staging; production has no restaurants before go-live).
+After such a deploy, list the spent invitations once with a role that bypasses
+RLS (the Neon owner role); a role without BYPASSRLS sees no rows here:
+
+```sql
+select i.tenant_id, i.id, i.email, i.role, i.accepted_at
+  from restaurant_invitations i
+ where i.accepted_by is not null
+   and not exists (select 1 from owner_memberships m
+                    where m.tenant_id = i.tenant_id and m.account_id = i.accepted_by)
+   and exists (select 1 from owner_memberships o
+                where o.tenant_id = i.tenant_id and o.employee_id = i.employee_id
+                  and o.account_id <> i.accepted_by);
+```
+
+For each row, ask that restaurant's owner to invite the same email again
+(owner console, "Invitar a tu equipo"): the new revision accepts a new
+invitation normally.
+
 ## Merge notes (integration)
 
 - **Browser qualification needs the legal set.** From this merge the signup,
@@ -371,7 +402,7 @@ terminal. Without an owner Google session the console answers
   the browser suite (the integration qualification script, a track's browser
   command) must start it after `. tests/fixtures/legal-ci.sh`, for example
   `(. tests/fixtures/legal-ci.sh && PORT=… APP_URL=… NODE_ENV=production node build/server/index.js &)`.
-  Without it those 11 tests fail on the closed signup, not on a product bug.
+  Without it those 14 tests fail on the closed signup, not on a product bug.
   The DB, HTTP and drain suites do not need it (account-http starts its own
   servers with and without the set).
 - **Load smoke (LD-15 Q8).** The zero-`concurrent_update` assertion for

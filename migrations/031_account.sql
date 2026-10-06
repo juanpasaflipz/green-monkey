@@ -451,6 +451,9 @@ CREATE POLICY owner_accounts_org_read ON owner_accounts FOR SELECT USING (
       AND o.id = nullif(current_setting('app.organization_id', true), '')::uuid));
 
 -- Memberships: tenant-scoped read/revoke (leaf), co-owner provisioning insert.
+-- Deploy window (ACC-22): the pre-031 acceptInvitation reads memberships by tenant only,
+-- so an invitation it accepts after this policy exists is spent without a seat; see
+-- docs/ACCOUNT_AND_LEGAL.md, "Deploy note", for the query that finds them.
 CREATE POLICY membership_tenant_read ON owner_memberships FOR SELECT
   USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
 CREATE POLICY membership_revoke ON owner_memberships FOR UPDATE
