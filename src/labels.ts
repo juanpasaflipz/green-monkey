@@ -90,6 +90,17 @@ const operations: Record<string, Key> = {
   "offline.settings_changed": "offlineOpSettingsChanged",
   "offline.payment_attempt_recorded": "offlineOpAttemptRecorded",
   "offline.payment_attempt_discarded": "offlineOpAttemptDiscarded",
+  // cfdi (030)
+  "cfdi.activated": "cfdiOpActivated",
+  "cfdi.settings.saved": "cfdiOpSettingsSaved",
+  "cfdi.csd.uploaded": "cfdiOpCsdUploaded",
+  "cfdi.live.requested": "cfdiOpLiveRequested",
+  "cfdi.invoice.requested": "cfdiOpInvoiceRequested",
+  "cfdi.cancel.requested": "cfdiOpCancelRequested",
+  "cfdi.substitute.requested": "cfdiOpSubstituteRequested",
+  "cfdi.globals.run": "cfdiOpGlobalsRun",
+  "cfdi.document.retried": "cfdiOpRetried",
+  "cfdi.email.requested": "cfdiOpEmailRequested",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",

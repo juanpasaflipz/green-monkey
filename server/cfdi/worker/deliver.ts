@@ -21,7 +21,9 @@ import { documentKey, raise, tenantTag } from "./runtime.js";
 type Payload = {
   documentId?: string;
   email?: boolean;
-  to?: string | null;
+  /** A resend: the address is in the document's `email_requested` event (spec R16: no personal
+   *  data in job payloads). */
+  requestId?: string;
   acuse?: boolean;
 };
 
@@ -87,6 +89,14 @@ export async function deliverJob(ctx: JobContext): Promise<JobOutcome> {
     const files = (
       await tx`select format from cfdi_files where document_id = ${documentId}`
     ).map((r) => r.format as string);
+    let requestedTo: string | null = null;
+    if (p.email && p.requestId) {
+      const [e] = await tx`
+        select detail->>'to' as to from cfdi_events
+        where document_id = ${documentId} and kind = 'email_requested'
+          and detail->>'requestId' = ${p.requestId}`;
+      requestedTo = e?.to ?? null;
+    }
     let parentEmail: string | null = null;
     if (doc.kind === "egreso" && doc.parentDocumentId) {
       const parent = await loadDocument(tx, doc.parentDocumentId);
@@ -96,6 +106,7 @@ export async function deliverJob(ctx: JobContext): Promise<JobOutcome> {
       doc,
       files,
       parentEmail,
+      requestedTo,
       key: await documentKey(rt, tx, tenantId, doc.mode),
     };
   });
@@ -189,7 +200,7 @@ export async function deliverJob(ctx: JobContext): Promise<JobOutcome> {
       doc.kind === "egreso"
         ? loaded.parentEmail
         : (doc.receptor?.email ?? null);
-    const to = p.email ? (p.to ?? receptorEmail) : receptorEmail;
+    const to = p.email ? (loaded.requestedTo ?? receptorEmail) : receptorEmail;
     const auto = !p.email && doc.emailedAt === null && doc.emailError === null;
     if (to && doc.kind !== "global" && (p.email || auto)) {
       try {
