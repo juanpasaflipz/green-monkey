@@ -50,7 +50,11 @@ import {
   orderTaxSummary,
 } from "../shared/fiscal";
 import { line as fiscalLine, rng } from "./fixtures/fiscal";
-import { removableAfterReload } from "../src/features/discounts/format";
+import {
+  countText,
+  removableAfterReload,
+} from "../src/features/discounts/format";
+import { strings, type Key } from "../src/i18n";
 
 const code = (fn: () => unknown) => {
   try {
@@ -1134,6 +1138,40 @@ describe("inputs and helpers", () => {
     expect(discountClosesCheck({ ...o, paid: 4500 }, { amount: 4500 })).toBe(
       true,
     );
+  });
+});
+
+describe("count strings (DSC-R14)", () => {
+  const pairs: [Key, Key][] = [
+    ["discountsEligibleUnits", "discountsEligibleUnitsOne"],
+    ["discountsRefundAvailable", "discountsRefundAvailableOne"],
+    ["discountsRefundKitchen", "discountsRefundKitchenOne"],
+    ["discountsDrawerPayments", "discountsDrawerPaymentsOne"],
+  ];
+  it("a count of 1 reads in the singular in Spanish and English; other counts use the plural template", () => {
+    const es = (k: Key) => strings.es[k];
+    const en = (k: Key) => strings.en[k];
+    expect(pairs.map(([many, one]) => countText(es, many, one, 1))).toEqual([
+      "1 pieza sin cobrar",
+      "1 reembolsable",
+      "Cocina recibirá el aviso de no preparar 1 producto.",
+      "1 cobro",
+    ]);
+    expect(pairs.map(([many, one]) => countText(es, many, one, 2))).toEqual([
+      "2 piezas sin cobrar",
+      "2 reembolsables",
+      "Cocina recibirá el aviso de no preparar 2 productos.",
+      "2 cobros",
+    ]);
+    expect(pairs.map(([many, one]) => countText(en, many, one, 1))).toEqual([
+      "1 unpaid unit",
+      "1 refundable",
+      "The kitchen will be told not to prepare 1 item.",
+      "1 payment",
+    ]);
+    expect(
+      countText(en, "discountsDrawerPayments", "discountsDrawerPaymentsOne", 0),
+    ).toBe("0 payments");
   });
 });
 

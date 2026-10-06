@@ -22,6 +22,7 @@ export default defineArea({
     discountsLineOption: "{q} × {name} · {due} pendiente",
     discountsQuantity: "Cantidad",
     discountsEligibleUnits: "{n} piezas sin cobrar",
+    discountsEligibleUnitsOne: "1 pieza sin cobrar",
     discountsKind: "Tipo",
     discountsKindPercent: "Porcentaje",
     discountsKindAmount: "Importe fijo",
@@ -77,6 +78,7 @@ export default defineArea({
       "Elige los productos cobrados que se devuelven. Se reembolsa lo que se pagó por cada uno, con el mismo método de pago.",
     discountsRefundLine: "{name} · {amount} c/u",
     discountsRefundAvailable: "{n} reembolsables",
+    discountsRefundAvailableOne: "1 reembolsable",
     discountsRefundNoItems:
       "No hay productos pagados que se puedan reembolsar por producto. Usa «Por importe».",
     discountsRefundTender: "Pago a reembolsar",
@@ -99,6 +101,8 @@ export default defineArea({
       "Confirmo que la terminal aprobó el reembolso de {amount}",
     discountsRefundKitchen:
       "Cocina recibirá el aviso de no preparar {n} productos.",
+    discountsRefundKitchenOne:
+      "Cocina recibirá el aviso de no preparar 1 producto.",
     discountsRefundStock: "Inventario",
     discountsRefundNoRestock: "No regresar a inventario",
     discountsRefundRestock: "Regresar ingredientes a inventario",
@@ -137,6 +141,7 @@ export default defineArea({
       "Corte ciego: el efectivo esperado se muestra a un responsable después del conteo.",
     discountsDrawerOpenedBy: "Abrió {name} · {time}",
     discountsDrawerPayments: "{n} cobros",
+    discountsDrawerPaymentsOne: "1 cobro",
     discountsDrawerCash: "Efectivo",
     discountsDrawerCashSales: "Ventas en efectivo",
     discountsDrawerCashTips: "Propinas en efectivo",
@@ -268,6 +273,7 @@ export default defineArea({
     discountsLineOption: "{q} × {name} · {due} due",
     discountsQuantity: "Quantity",
     discountsEligibleUnits: "{n} unpaid units",
+    discountsEligibleUnitsOne: "1 unpaid unit",
     discountsKind: "Type",
     discountsKindPercent: "Percentage",
     discountsKindAmount: "Fixed amount",
@@ -323,6 +329,7 @@ export default defineArea({
       "Choose the paid items being returned. Each is refunded what was paid for it, with the same payment method.",
     discountsRefundLine: "{name} · {amount} each",
     discountsRefundAvailable: "{n} refundable",
+    discountsRefundAvailableOne: "1 refundable",
     discountsRefundNoItems:
       'No paid items can be refunded by item. Use "By amount".',
     discountsRefundTender: "Payment to refund",
@@ -345,6 +352,8 @@ export default defineArea({
       "I confirm the terminal approved the refund of {amount}",
     discountsRefundKitchen:
       "The kitchen will be told not to prepare {n} items.",
+    discountsRefundKitchenOne:
+      "The kitchen will be told not to prepare 1 item.",
     discountsRefundStock: "Inventory",
     discountsRefundNoRestock: "Do not return to stock",
     discountsRefundRestock: "Return ingredients to stock",
@@ -384,6 +393,7 @@ export default defineArea({
       "Blind count: expected cash is shown to a manager after the count.",
     discountsDrawerOpenedBy: "Opened by {name} · {time}",
     discountsDrawerPayments: "{n} payments",
+    discountsDrawerPaymentsOne: "1 payment",
     discountsDrawerCash: "Cash",
     discountsDrawerCashSales: "Cash sales",
     discountsDrawerCashTips: "Cash tips",

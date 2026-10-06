@@ -26,7 +26,12 @@ import { strings, translateError, type Key } from "../i18n";
 import { tenderMethodLabel } from "../labels";
 import { printDocument, readPrintSettings } from "../print";
 import { RefundSlip } from "./discounts/RefundSlip";
-import { REFUND_REASON_LABELS, fill, lineLabel } from "./discounts/format";
+import {
+  REFUND_REASON_LABELS,
+  countText,
+  fill,
+  lineLabel,
+} from "./discounts/format";
 import "./discounts/discounts.css";
 
 type Tender = {
@@ -405,7 +410,12 @@ export function RefundDialog({
                       />
                     </Field>
                     <small className="muted">
-                      {fill(t("discountsRefundAvailable"), { n: max })}
+                      {countText(
+                        t,
+                        "discountsRefundAvailable",
+                        "discountsRefundAvailableOne",
+                        max,
+                      )}
                     </small>
                   </div>
                 );
@@ -417,7 +427,12 @@ export function RefundDialog({
               )}
               {kitchenUnits > 0 && (
                 <p className="warning-panel" role="note">
-                  {fill(t("discountsRefundKitchen"), { n: kitchenUnits })}
+                  {countText(
+                    t,
+                    "discountsRefundKitchen",
+                    "discountsRefundKitchenOne",
+                    kitchenUnits,
+                  )}
                 </p>
               )}
               <fieldset className="field">

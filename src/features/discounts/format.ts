@@ -18,6 +18,19 @@ export function fill(
 }
 
 /**
+ * A count with its singular form (DSC-R14): `one` when n is 1 ("1 pieza sin
+ * cobrar"), otherwise `many` filled with {n} ("2 piezas sin cobrar").
+ */
+export function countText(
+  t: (k: Key) => string,
+  many: Key,
+  one: Key,
+  n: number,
+): string {
+  return n === 1 ? t(one) : fill(t(many), { n });
+}
+
+/**
  * Discount reason labels. Reports (029) looks labels up by (kind, code): the
  * code `quality` reads "Producto con defecto" for a discount and "Producto con
  * defecto o queja" for a refund; `other` is shared (C18).

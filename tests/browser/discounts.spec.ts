@@ -501,7 +501,7 @@ test("MON-4: refund one paid item by card; the terminal reference is required; t
     "Terminal · pago original Ref. T-482913 · $45.00",
   );
   await expect(refund).toContainText(
-    "Cocina recibirá el aviso de no preparar 1 productos.",
+    "Cocina recibirá el aviso de no preparar 1 producto.",
   );
   await refund
     .getByLabel("Motivo del reembolso")
@@ -690,7 +690,10 @@ test("DSC-R9: a refund confirmed on a stale check after another device refunded 
   );
   // Nothing was stored; the dialog shows the reloaded check with its inputs.
   expect((await call(page, "/orders/" + o.id)).refunded).toBe(4500);
-  await expect(refund).toContainText("1 reembolsables");
+  // DSC-R14: the singular reads "1 reembolsable", not "1 reembolsables".
+  await expect(
+    refund.getByText("1 reembolsable", { exact: true }),
+  ).toBeVisible();
   await expect(quantity).toHaveValue("1");
   await expect(refund.getByLabel("Explicación")).toHaveValue("frío");
   // Confirmed again, knowingly, on the current check.

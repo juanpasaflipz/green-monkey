@@ -3,7 +3,7 @@ import type { Locale, Session } from "../../../shared/domain";
 import { Badge, Button } from "../../components/ui";
 import { strings, type Key } from "../../i18n";
 import { tenderMethodLabel } from "../../labels";
-import { fill } from "../discounts/format";
+import { countText, fill } from "../discounts/format";
 import { DrawerCloseDialog, type DrawerView } from "./DrawerCloseDialog";
 import "./cash.css";
 
@@ -105,7 +105,13 @@ export function DrawerPanel({
             })}{" "}
             ·{" "}
             {fill(t("discountsDrawerOpening"), { amount: money(data.opening) })}{" "}
-            · {fill(t("discountsDrawerPayments"), { n: data.paymentCount })}
+            ·{" "}
+            {countText(
+              t,
+              "discountsDrawerPayments",
+              "discountsDrawerPaymentsOne",
+              data.paymentCount,
+            )}
           </p>
         </div>
         <div className="row wrap">

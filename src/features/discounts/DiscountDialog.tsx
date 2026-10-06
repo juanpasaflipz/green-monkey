@@ -28,7 +28,7 @@ import {
   type ApprovalValue,
 } from "../../components/ManagerApproval";
 import { strings, translateError, type Key } from "../../i18n";
-import { DISCOUNT_REASON_LABELS, fill, lineLabel } from "./format";
+import { countText, DISCOUNT_REASON_LABELS, fill, lineLabel } from "./format";
 import { loadMoneyControls, useMoneyControls } from "./useMoneyControls";
 import "./discounts.css";
 
@@ -283,7 +283,12 @@ export function DiscountDialog({
               />
             </Field>
             <small className="muted">
-              {fill(t("discountsEligibleUnits"), { n: chosenLine.eligible })}
+              {countText(
+                t,
+                "discountsEligibleUnits",
+                "discountsEligibleUnitsOne",
+                chosenLine.eligible,
+              )}
             </small>
           </div>
         )}
