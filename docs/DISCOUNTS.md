@@ -61,8 +61,9 @@ conexión.", linked to the button with `aria-describedby`): Vender's
 **Descuento** button next to **Guardar borrador** (it first offers "Enviar
 productos primero" when the cart has unsent lines; a send error shows in that
 confirmation), the Órdenes row action, and Detalle de orden (whole check, or
-**Descuento** under a line; offline the per-line links hide and the action stays
-visible, disabled). A cart blocked by an unavailable item disables Vender's
+**Descuento** under a line, whose accessible name includes the line, e.g.
+"Descuento: Taco de hongos"; offline the per-line links hide and the action
+stays visible, disabled). A cart blocked by an unavailable item disables Vender's
 button too, with Selling's own warning as the reason. Lines are named with their
 option names ("Taco de asada (Salsa verde, Queso)") wherever a discount or a
 refund names them: the dialogs, Detalle de orden, Vender's check block, the
@@ -103,7 +104,9 @@ the server and in the client's `discountRemovable` alike); otherwise
 `discount_not_reversible`. A reason (3–300 characters) is required. The reversal
 restores the active amount and is the discount's single, immutable reversal. On
 `stale_order` the dialog reloads the check, hands it to the screen behind it,
-keeps the reason and its operation id, and asks to confirm again.
+keeps the reason and its operation id, and asks to confirm again; from then on
+the reloaded check decides the amount shown and whether the confirm is enabled,
+in Vender as in Detalle de orden.
 
 **Voids of discounted units** pick undiscounted units first, then the highest
 index. The balance drops by the unit's net and its discount is released
