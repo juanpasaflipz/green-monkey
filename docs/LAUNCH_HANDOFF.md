@@ -341,6 +341,23 @@ line), and keep where noted.
   publication date: nothing is in force before it, so nothing needs 15 days' notice).
   Include your decision on Sentry (1.9): if approved, it joins the processor lists in
   that same version.
+- **QR and kiosk ordering's diner data (032-034, on for every Pro restaurant since
+  public ordering's B4).** Give counsel this list too, so the platform notice and the
+  guidance for each restaurant's own notice cover it (LD-41, PUBLIC-OPS-5):
+  - the diner's optional **name** and kitchen **note** on each held order
+    (`public_order_holds`). The hold's copy is blanked after **30 days** by the daily
+    retention, in any state, or earlier on an ARCO request (support's block in
+    [PUBLIC_ORDERING.md](PUBLIC_ORDERING.md), "Redacting a hold (ARCO)";
+    [OPERATIONS.md](OPERATIONS.md), "ARCO requests"). Once staff accept it, the name
+    and note also become the order's call name and note, part of the restaurant's
+    sales record, kept with its orders;
+  - **`ipHash`** in the `rate_limited` and `public_order_limited` log lines: a 48-bit
+    unsalted SHA-256 prefix of the client address. For IPv4 it can be reversed by
+    enumeration, so it is pseudonymous personal data. Logs stay in Railway for the
+    plan's period ([RUNBOOK.md](RUNBOOK.md), "Log retention"); record which plan
+    production runs on;
+  - each restaurant is the controller for its diners: Configuración and the table
+    QR dialogs warn while a restaurant has not set its own notice URL.
 - **How to verify.** The three pages open on the production domain with your
   values; the simplified notice appears next to the Google button and restaurant
   signup; a test signup records its acceptance.

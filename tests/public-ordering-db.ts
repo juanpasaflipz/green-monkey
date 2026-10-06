@@ -95,6 +95,7 @@ import {
 import { isolatedTarget, requireWorker } from "./isolated-target.js";
 import { noRetries } from "./db-retries.js";
 import { setLogSink } from "../server/logging.js";
+import { runRetention } from "../server/ops/retention.js";
 
 // The runner and the router log through the shared sink; keep the output to PASS lines.
 const logLines: string[] = [];
@@ -1038,7 +1039,7 @@ try {
     assert.equal(cross.updated, 0);
   });
 
-  await test("25. grants: no DELETE on the four tables; identity columns are not updatable; decision columns are", async () => {
+  await test("25. grants: no DELETE on the four tables; identity columns, and a hold's name and note (034), are not updatable; decision columns are", async () => {
     const la = await link(a, { kind: "counter", label: "Grants" });
     const b1 = await body(a, [{ productId: a.p.taco }]);
     assert.equal((await pub.submit(la.token, b1)).status, 200);
@@ -1058,6 +1059,11 @@ try {
     );
     await denied(
       (tx) => tx`update public_order_holds set lines='[]' where id=${h.id}`,
+    );
+    // 034: the trigger allows a redaction, the grants keep it to the owner.
+    await denied(
+      (tx) =>
+        tx`update public_order_holds set name='',note='' where id=${h.id}`,
     );
     await denied(
       (tx) =>
@@ -2203,7 +2209,7 @@ try {
     );
   });
 
-  await test("21. diner cancel: only a pending, unexpired hold; the trigger refuses moving expiry and a second decision; support's documented ARCO redaction, as gm_migrator, blanks one cancelled hold's name and note and refuses an accepted hold or a missing restaurant (PUB-B3-2)", async () => {
+  await test("21. diner cancel: only a pending, unexpired hold; the trigger refuses moving expiry and a second decision; support's documented ARCO redaction, as gm_migrator, blanks one hold's name and note in any state (an accepted one keeps its order's call name), refuses a missing restaurant, and takes no table lock (PUB-B3-2, LD-41, PUBLIC-SECURITY-3, PUBLIC-CONCURRENCY-3)", async () => {
     const t = await makeTenant("cancel");
     const l = await link(t, { kind: "counter", label: "Ventanilla" });
     const b1 = await body(t, [{ productId: t.p.taco }]);
@@ -2311,12 +2317,9 @@ try {
       [before[target.id].name, before[target.id].note],
       ["Ana", "sin cebolla"],
     );
-    const refused = /expected exactly one hold that is not accepted, found 0/;
-    // An accepted hold is the restaurant's sales record: refused.
-    await assert.rejects(
-      asMigrator(await fillArco((await holdOf(t, b2)).id)),
-      refused,
-    );
+    const refused = /expected exactly one hold, found 0/;
+    // 034: a plain tenant-scoped UPDATE, no trigger change and no table lock.
+    assert.doesNotMatch(arco, /disable trigger|alter table|lock table/i);
     // Without the restaurant, FORCE RLS hides every hold: refused.
     const noTenant = arco.replace(
       /^select set_config\('app\.tenant_id'.*\n/m,
@@ -2330,17 +2333,42 @@ try {
     assert.deepEqual(await holds(), before, "a refused block changes nothing");
     const done = await asMigrator(await fillArco(target.id));
     assert.equal(done.at(-1)?.command, "COMMIT");
-    assert.deepEqual(await holds(), {
+    const blanked = {
       ...before,
       [target.id]: { ...before[target.id], name: "", note: "" },
+    };
+    assert.deepEqual(await holds(), blanked);
+    // An accepted hold too (LD-41): its copy goes, the order keeps its call
+    // name and note, the restaurant's sales record.
+    const acceptedNamed = await body(t, [{ productId: t.p.taco }], {
+      name: "Luis",
+      note: "sin sal",
     });
+    await pub.submit(l.token, acceptedNamed);
+    const acceptedHold = await holdOf(t, acceptedNamed);
+    const r = await accept(t, acceptedHold.id);
+    const label = r.hold.label;
+    const withAccepted = await holds();
+    await asMigrator(await fillArco(acceptedHold.id));
+    assert.deepEqual(await holds(), {
+      ...withAccepted,
+      [acceptedHold.id]: {
+        ...withAccepted[acceptedHold.id],
+        name: "",
+        note: "",
+      },
+    });
+    const [order] = await asAdmin(
+      t.tenantId,
+      (tx) => tx`select name,note from orders where id=${r.order.id}`,
+    );
+    assert.deepEqual(
+      { ...order },
+      { name: `${label} · Luis`, note: `${label} · sin sal` },
+    );
     const [trigger] =
       await admin`select tgenabled from pg_trigger where tgname = 'public_order_holds_transition'`;
-    assert.equal(
-      trigger.tgenabled,
-      "O",
-      "the transition trigger is enabled again",
-    );
+    assert.equal(trigger.tgenabled, "O", "the transition trigger stays on");
     await assert.rejects(
       asAdmin(
         t.tenantId,
@@ -2349,6 +2377,60 @@ try {
       ),
       /public_order_hold_immutable/,
     );
+
+    // PUBLIC-CONCURRENCY-3: while the block's transaction is open on one
+    // hold, another restaurant's diner submits and this restaurant's other
+    // holds are decided as usual.
+    const other = await makeTenant("arco-other");
+    const otherLink = await link(other, { kind: "counter", label: "Otra" });
+    const waiting = await body(t, [{ productId: t.p.taco }], { name: "Eva" });
+    await pub.submit(l.token, waiting);
+    const waitingHold = await holdOf(t, waiting);
+    const open = postgres(migration, {
+      max: 1,
+      onnotice: () => {},
+      connection: { role: "gm_migrator" },
+    });
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const holding = new Promise<void>((r) => (locked = r));
+    const redaction = open.begin(async (tx) => {
+      for (const statement of sqlStatements(await fillArco(target.id)).slice(
+        1,
+        -1,
+      ))
+        await tx.unsafe(statement);
+      locked();
+      await released;
+    });
+    try {
+      await holding;
+      const fast = <T>(p: Promise<T>) =>
+        Promise.race([
+          p,
+          new Promise<never>((_, no) =>
+            setTimeout(() => no(new Error("blocked by the redaction")), 3000),
+          ),
+        ]);
+      const elsewhere = await fast(
+        pub.submit(
+          otherLink.token,
+          await body(other, [{ productId: other.p.taco }]),
+        ),
+      );
+      assert.equal(elsewhere.status, 200, JSON.stringify(elsewhere.body));
+      const decided = await fast(reject(t, waitingHold.id));
+      assert.equal(decided.hold.state, "rejected");
+      const here = await fast(
+        pub.submit(l.token, await body(t, [{ productId: t.p.taco }])),
+      );
+      assert.equal(here.status, 200, JSON.stringify(here.body));
+    } finally {
+      release();
+      await redaction;
+      await open.end();
+    }
   });
 
   await test("22. status view: progress follows the hold's round, money for a new check, none for an appended round; unknown and foreign keys are not found", async () => {
@@ -4376,6 +4458,243 @@ try {
       [h.name, h.note],
       ["José Ñúñez", "sin cebolla\n\tsalsa aparte"],
     );
+  });
+
+  await test("47. 034: the transition trigger lets a redaction-only update through in every state (name and note blanked, nothing else changed) and still refuses every other change, a redaction mixed with another change included; only the schema owner may send it (LD-41, PUBLIC-SECURITY-3)", async () => {
+    const t = await makeTenant("redaction");
+    const l = await link(t, { kind: "counter", label: "Ventanilla" });
+    const owner = postgres(migration, {
+      max: 1,
+      onnotice: () => {},
+      connection: { role: "gm_migrator" },
+    });
+    const asOwner = <T>(fn: (tx: any) => Promise<T>) =>
+      owner.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id',${t.tenantId},true)`;
+        return fn(tx);
+      }) as Promise<T>;
+    const row = async (id: string) =>
+      (
+        await asOwner(
+          (tx) => tx`select * from public_order_holds where id=${id}`,
+        )
+      )[0];
+    const immutable = /public_order_hold_immutable/;
+    try {
+      const named = async (
+        state: "pending" | "accepted" | "rejected" | "cancelled",
+      ) => {
+        const b = await body(t, [{ productId: t.p.taco }], {
+          name: `Ana ${state}`,
+          note: "sin cebolla",
+        });
+        await pub.submit(l.token, b);
+        const h = await holdOf(t, b);
+        if (state === "accepted") await accept(t, h.id);
+        if (state === "rejected") await reject(t, h.id);
+        if (state === "cancelled") await pub.cancel(l.token, b.statusKey);
+        return h.id as string;
+      };
+      for (const state of [
+        "pending",
+        "accepted",
+        "rejected",
+        "cancelled",
+      ] as const) {
+        const id = await named(state);
+        const before = await row(id);
+        assert.equal(before.state, state);
+        // Mixed with any other change it is not a redaction: refused.
+        await assert.rejects(
+          asOwner(
+            (tx) =>
+              tx`update public_order_holds set name='',note='',expires_at=expires_at+interval '1 minute' where id=${id}`,
+          ),
+          immutable,
+          state,
+        );
+        await assert.rejects(
+          asOwner(
+            (tx) =>
+              tx`update public_order_holds set name='',note='',lines='[]' where id=${id}`,
+          ),
+          immutable,
+        );
+        // Half a redaction is a change too.
+        await assert.rejects(
+          asOwner(
+            (tx) => tx`update public_order_holds set name='' where id=${id}`,
+          ),
+          immutable,
+        );
+        await assert.rejects(
+          asOwner(
+            (tx) =>
+              tx`update public_order_holds set name='',note='otra' where id=${id}`,
+          ),
+          immutable,
+        );
+        if (state === "pending")
+          await assert.rejects(
+            asOwner(
+              (tx) =>
+                tx`update public_order_holds set name='',note='',state='cancelled',decided_at=now() where id=${id}`,
+            ),
+            immutable,
+          );
+        assert.deepEqual(
+          await row(id),
+          before,
+          "refused updates change nothing",
+        );
+        await asOwner(
+          (tx) =>
+            tx`update public_order_holds set name='',note='' where id=${id}`,
+        );
+        assert.deepEqual(await row(id), { ...before, name: "", note: "" });
+        // Redacting again is a no-op, not an error.
+        await asOwner(
+          (tx) =>
+            tx`update public_order_holds set name='',note='' where id=${id}`,
+        );
+      }
+      // A redacted pending hold is still decided as usual.
+      const pendingId = await named("pending");
+      await asOwner(
+        (tx) =>
+          tx`update public_order_holds set name='',note='' where id=${pendingId}`,
+      );
+      const r = await accept(t, pendingId);
+      assert.equal(r.order.name, r.hold.label, "no name left to call");
+      // The runtime role cannot send it (grants, scripts/grants.sql -- 034).
+      const [privileges] =
+        await admin`select has_column_privilege('gm_app','public_order_holds','name','UPDATE') as name,
+          has_column_privilege('gm_app','public_order_holds','note','UPDATE') as note,
+          has_column_privilege('gm_app','public_order_holds','state','UPDATE') as state`;
+      assert.deepEqual(
+        { ...privileges },
+        { name: false, note: false, state: true },
+      );
+    } finally {
+      await owner.end();
+    }
+  });
+
+  await test("48. retention blanks the name and note of holds older than 30 days in every state, keeps newer ones, never deletes a hold, restores FORCE RLS and counts the redactions in its summary (LD-41, PUBLIC-SECURITY-3)", async () => {
+    const t = await makeTenant("retention");
+    const l = await link(t, { kind: "counter", label: "Ventanilla" });
+    const recent = await body(t, [{ productId: t.p.taco }], {
+      name: "Reciente",
+      note: "sin sal",
+    });
+    await pub.submit(l.token, recent);
+    const kept = await holdOf(t, recent);
+    const paid = await body(t, [{ productId: t.p.taco }], {
+      name: "Pagó",
+      note: "aparte",
+    });
+    await pub.submit(l.token, paid);
+    const order = await accept(t, (await holdOf(t, paid)).id);
+    /** A hold created 40 days ago, as the previous months left it. */
+    const old = (state: "pending" | "cancelled" | "accepted") =>
+      asAdmin(t.tenantId, async (tx) => {
+        const date = (
+          await tx`select (now() - interval '40 days')::date as d`
+        )[0].d;
+        const [n] =
+          await tx`insert into public_hold_numbers(tenant_id,business_date,value)
+          values(${t.tenantId},${date},1) on conflict(tenant_id,business_date)
+          do update set value=public_hold_numbers.value+1 returning value`;
+        const lineId = randomUUID();
+        const decided =
+          state === "pending"
+            ? tx`null,null,null,null,null,null`
+            : state === "cancelled"
+              ? tx`now()-interval '40 days'+interval '5 minutes',null,null,null,null,null`
+              : tx`now()-interval '40 days'+interval '5 minutes',${t.ids.cashier}::uuid,${order.order.id}::uuid,1,4500,${tx.json([{ id: lineId, unitPrice: 4500, total: 4500 }])}`;
+        const [h] =
+          await tx`insert into public_order_holds(tenant_id,id,link_id,operation_id,request_hash,
+            status_key_hash,business_date,number,channel,mode,table_id,policy,name,note,lines,priced,quoted_total,
+            menu_revision,order_operation_id,state,created_at,expires_at,
+            decided_at,decided_by,order_id,order_round,accepted_total,accepted_lines)
+          values(${t.tenantId},${randomUUID()},${l.id},${randomUUID()},${"0".repeat(64)},
+            ${statusHash(newPublicToken())},${date},${n.value},'qr','takeaway',null,'accept',
+            ${"Antes " + state},'nota vieja',
+            ${tx.json([{ id: lineId, productId: t.p.taco, quantity: 1, options: [] }])},
+            ${tx.json([{ id: lineId, quantity: 1, name: { es: "Taco", en: "Taco" }, optionNames: [], unitPrice: 4500, total: 4500 }])},
+            4500,0,${randomUUID()},${state},now()-interval '40 days',now()-interval '40 days'+interval '30 minutes',
+            ${decided})
+          returning id`;
+        return h.id as string;
+      });
+    const olds = [
+      await old("pending"),
+      await old("cancelled"),
+      await old("accepted"),
+    ];
+    const owner = postgres(migration, {
+      max: 1,
+      onnotice: () => {},
+      connection: { role: "gm_migrator" },
+    });
+    const counted = () =>
+      asAdmin(
+        t.tenantId,
+        (tx) =>
+          tx`select id,name,note,state from public_order_holds order by id`,
+      );
+    try {
+      const before = await counted();
+      logLines.length = 0;
+      const result = await runRetention(owner, { pauseMs: 0 });
+      assert.deepEqual([result.failed, result.skipped], [[], []]);
+      assert.ok(
+        result.redacted.public_order_holds >= olds.length,
+        JSON.stringify(result),
+      );
+      assert.ok("jobs" in result.deleted, "the summary keeps its deletions");
+      const after = await counted();
+      assert.equal(after.length, before.length, "no hold was deleted");
+      const byId = new Map(after.map((h: any) => [h.id, h]));
+      for (const id of olds)
+        assert.deepEqual(
+          [byId.get(id).name, byId.get(id).note],
+          ["", ""],
+          `old hold ${id}`,
+        );
+      assert.deepEqual(
+        [byId.get(kept.id).name, byId.get(kept.id).note],
+        ["Reciente", "sin sal"],
+      );
+      const paidHold = after.find((h: any) => h.name === "Pagó");
+      assert.ok(paidHold, "a recent accepted hold keeps its name");
+      const [states] = await asAdmin(
+        t.tenantId,
+        (tx) =>
+          tx`select array_agg(state order by id) as s from public_order_holds where id=any(${tx.array(olds)}::uuid[])`,
+      );
+      assert.deepEqual(
+        [...states.s].sort(),
+        ["accepted", "cancelled", "pending"],
+        "states unchanged",
+      );
+      const [forced] =
+        await admin`select relforcerowsecurity as f from pg_class where oid=to_regclass('public.public_order_holds')`;
+      assert.equal(forced.f, true, "FORCE ROW LEVEL SECURITY is restored");
+      const summary = logLines
+        .map((line) => JSON.parse(line))
+        .find((line) => line.message === "retention_run");
+      assert.ok(summary, "retention_run logged");
+      assert.equal(
+        summary.redacted.public_order_holds,
+        result.redacted.public_order_holds,
+      );
+      // A second run finds nothing left of these holds to blank.
+      const again = await runRetention(owner, { pauseMs: 0 });
+      assert.deepEqual(again.redacted, { public_order_holds: 0 });
+    } finally {
+      await owner.end();
+    }
   });
 
   console.log(`${checks} public ordering checks passed`);

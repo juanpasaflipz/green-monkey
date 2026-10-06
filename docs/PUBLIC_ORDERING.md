@@ -1,7 +1,8 @@
 # Public ordering: QR and kiosk ("pedidos en línea")
 
-Migrations 032 and 033. Audit findings SEC-7, FIT-11, FOH-13 and the DB-9
-remainder.
+Migrations 032, 033 and 034. Audit findings SEC-7, FIT-11, FOH-13 and the
+DB-9 remainder; 034 is the LD-41 redaction (PUBLIC-SECURITY-3,
+PUBLIC-CONCURRENCY-3).
 
 **Status: Phase A and steps B1, B2 and B3, built on `track/public`.** Phase A
 depends only on wave 1 and platform 2.0; B1 absorbed fiscal 027
@@ -733,34 +734,43 @@ grants hook on a scratch database.
   unsalted SHA-256 prefix of the client address. For IPv4 it can be reversed
   by enumeration, so it is pseudonymous **personal data**, not anonymous: it
   belongs in the restaurant and platform privacy-notice inputs (counsel
-  review, LAUNCH_HANDOFF), and log access follows the log retention rules. A keyed hash (or hashing the /24
+  review, LAUNCH_HANDOFF 1.12), and logs stay in Railway for the plan's
+  period, readable by the project's members (RUNBOOK "Log retention"). A keyed hash (or hashing the /24
   and /48 prefix) is an ops proposal.
-- **ARCO requests for holds.** Rejected, cancelled and expired holds never
-  become sales, so no fiscal rule requires keeping their name and note, yet
-  the runtime role cannot change or delete them (the transition trigger and
-  the grants). Until an ops retention rule redacts them (proposal: blank
-  `name` and `note` of holds that are not `accepted` after 30 days, as the
-  schema owner, with a redaction-only exception in the trigger), support
-  handles an ARCO cancellation request for a hold with the block in
-  "Redacting a hold (ARCO)" below. An accepted hold's data also lives on the
-  order (its call name and note): that is the restaurant's sales record, and
-  diners' ARCO requests for it go to the restaurant, the responsable
-  ([account and legal](ACCOUNT_AND_LEGAL.md)).
-- **Export and retention.** `token_hash`, `status_key_hash` and
-  `request_hash` are excluded by account's export rule for `_hash` columns
-  (DB test 31: the owner export of the four tables carries no token, status
-  key or hash). Retention never deletes the four `public_*` tables.
+- **ARCO requests for holds.** No fiscal or financial rule needs a hold's
+  copy of the diner's name and note, in any state: rejected, cancelled and
+  expired holds never become sales, and an accepted hold's sales record is
+  the order (its call name and note, which stay with the restaurant, the
+  responsable; [account and legal](ACCOUNT_AND_LEGAL.md)). The runtime role
+  cannot change them (the grants), so support handles an ARCO cancellation
+  request for a hold, accepted or not, with the block in "Redacting a hold
+  (ARCO)" below, and records it in the cancellation register (OPERATIONS
+  "ARCO requests").
+- **Retention.** Migration 034 lets the transition trigger accept a
+  redaction-only update (name and note blanked, every other column
+  unchanged), and ops retention blanks the name and note of every hold older
+  than 30 days, in any state, in the daily pass (`retention.yml` /
+  `migrate.js --retention`), counted as `redacted.public_order_holds` in the
+  `retention_run` and `retention_only_complete` log lines. Retention never
+  deletes a `public_*` row (LD-41, PUBLIC-SECURITY-3).
+- **Export.** `token_hash`, `status_key_hash` and `request_hash` are
+  excluded by account's export rule for `_hash` columns (DB test 31: the
+  owner export of the four tables carries no token, status key or hash). A
+  hold's name and note appear in the owner export until they are redacted.
 - **Grants.** The runtime role has no DELETE. It updates only the decision
-  columns of holds (including `accepted_total` and `accepted_lines`), the
+  columns of holds (including `accepted_total` and `accepted_lines`), never
+  `name` or `note` (034's grants block revokes them explicitly), the
   revocation columns and label of links, the settings columns and hold
-  numbers. Transition triggers keep a hold's request and a
-  link's identity immutable.
+  numbers. Transition triggers keep a hold's request and a link's identity
+  immutable; the only change to a hold's request they allow is the
+  redaction.
 
 ### Redacting a hold (ARCO)
 
-Run the block below as the schema owner `gm_migrator`
-(`MIGRATION_DATABASE_URL`) in a logged session, with an incident note,
-preferably outside service hours. Fill in:
+Run the block below as the schema owner `gm_migrator` in a logged session
+(see [INFRASTRUCTURE](INFRASTRUCTURE.md), "Neon connections", for the manual
+uses of that login), and record the redaction in the cancellation register
+([OPERATIONS](OPERATIONS.md), "ARCO requests"). Fill in:
 
 - the restaurant's id;
 - the hold's business date;
@@ -774,41 +784,46 @@ How the block protects the data:
   update finds no hold (PUB-B3-2). The `tenant_id` condition keeps the update
   to that restaurant even for a role that bypasses RLS.
 - **Exactly one hold, or nothing.** The `do` block refuses unless exactly one
-  hold that is not `accepted` matched. The error reads `expected exactly one
-  hold that is not accepted, found 0`. The whole transaction rolls back,
-  including the trigger change.
-- **A short lock.** `DISABLE TRIGGER` holds `SHARE ROW EXCLUSIVE` on
-  `public_order_holds` until `commit`. Diner submissions and cancellations,
-  and staff decisions on holds, wait for it; reads do not. `lock_timeout`
-  gives up after 5 s instead of queueing ahead of them. The trigger is
-  enabled again before `commit`, so no other session ever runs without it.
+  hold matched. The error reads `expected exactly one hold, found 0`, and the
+  whole transaction rolls back.
+- **Any state.** Accepted holds are redacted too: the order keeps its own
+  call name and note, which are the restaurant's sales record.
+- **A row lock, no table lock.** Since 034 the transition trigger accepts a
+  redaction-only update (name and note blanked, every other column
+  unchanged), so the block is a plain tenant-scoped `UPDATE`: no `DISABLE
+  TRIGGER`, no lock on the table, nothing waits except an accept or a
+  decision on that same hold. The block sets `statement_timeout` and
+  `idle_in_transaction_session_timeout`, so a session paused between
+  statements or abandoned ends within 10 s and rolls back (PUBLIC-CONCURRENCY-3).
+  Paste it whole; it can run at any hour.
 
 ```sql
 begin;
 set local lock_timeout = '5s';
+set local statement_timeout = '5s';
+set local idle_in_transaction_session_timeout = '10s';
 select set_config('app.tenant_id', '<restaurant uuid>', true);
-alter table public_order_holds disable trigger public_order_holds_transition;
 do $$
 declare n integer;
 begin
   update public_order_holds set name = '', note = ''
    where tenant_id = '<restaurant uuid>' and business_date = '<YYYY-MM-DD>'
-     and number = <number> and state <> 'accepted';
+     and number = <number>;
   get diagnostics n = row_count;
   if n <> 1 then
-    raise exception 'expected exactly one hold that is not accepted, found %', n;
+    raise exception 'expected exactly one hold, found %', n;
   end if;
 end $$;
-alter table public_order_holds enable trigger public_order_holds_transition;
 commit;
 ```
 
 DB test 21 runs this block exactly as written, as `gm_migrator`:
 
-- It blanks one cancelled hold's name and note and changes nothing else.
-- It leaves the trigger enabled.
-- It refuses an accepted hold, and a run without the `set_config` line, and
-  in both cases changes nothing.
+- It blanks a cancelled hold's and an accepted hold's name and note and
+  changes nothing else; the accepted hold's order keeps its call name.
+- It refuses a run without the `set_config` line and changes nothing.
+- While its transaction is open, another restaurant's diner submits and
+  this restaurant's other holds are decided as usual (no table lock).
 
 ## 13. Tests
 

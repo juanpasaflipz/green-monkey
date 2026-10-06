@@ -151,12 +151,24 @@ than 30 days (`server/ops/retention.ts`). It never deletes sessions, any
 `offline_*` table, operations, audit, `device_pairing_codes`, any money,
 stock, cash or void table, `fiscal_*`, `cfdi_*`, `business_day_settings`,
 `report_prints`, `support_actions`, `legal_acceptances`, `account_events`,
-`ownership_transfers`, `billing_*`, or blocked receipt jobs
-(`tests/retention.test.ts` asserts the allow-list).
+`ownership_transfers`, `billing_*`, any `public_*` table
+(`public_ordering_settings`, `public_links`, `public_hold_numbers`,
+`public_order_holds`: diner status pages, the abuse and churn reads and the
+owner export use them), or blocked receipt jobs (`tests/retention.test.ts`
+asserts the allow-list).
 
-Both tables force row-level security and the runtime login has no DELETE, so
-retention runs as the schema owner `gm_migrator` from GitHub Actions (the
-environment secret `MIGRATION_DATABASE_URL`), never from a Railway service:
+It also **redacts** in place, never deletes: the diner's name and note of
+every public ordering hold older than 30 days, in any state, are blanked
+(migration 034 lets the transition trigger accept exactly that update;
+LD-41). Each run reports them as `redacted.public_order_holds` in the
+`retention_run` log line (and `retention_only_complete` for the daily run).
+034's partial index `public_order_holds_unredacted` keeps each batch to the
+holds that still carry a name or note.
+
+The three tables force row-level security and the runtime login has no
+DELETE (nor UPDATE on a hold's name or note), so retention runs as the
+schema owner `gm_migrator` from GitHub Actions (the environment secret
+`MIGRATION_DATABASE_URL`), never from a Railway service:
 
 - **Once per deploy:** the deploy job's `migrate.js --grants --retention`. A
   failure alerts and never fails the deploy.
@@ -190,8 +202,9 @@ environment secret `MIGRATION_DATABASE_URL`), never from a Railway service:
   issue.
 
 Each batch briefly turns off FORCE row-level security, which takes an ACCESS
-EXCLUSIVE lock on the table until it commits, and every order and payment
-inserts into `jobs`. So each batch waits at most 200 ms for that lock and
+EXCLUSIVE lock on the table until it commits (for `public_order_holds`, diner
+submits and staff decisions wait for it the same way), and every order and
+payment inserts into `jobs`. So each batch waits at most 200 ms for that lock and
 runs each statement at most 1.5 s. Every batch, from a deploy or the daily
 run, can therefore stall order and payment inserts for up to about 1.7 s;
 that matters during service (a deploy) and for a restaurant that already
@@ -210,6 +223,19 @@ migrations, grants or policy reconcile; inside the window it repeats passes
 while a backlog remains, outside it runs exactly one. It exits 1 when a table
 fails (after alerting) and 75 when a table was skipped on a lock timeout. Run
 it outside service hours for the same reason.
+
+### Log retention
+
+Service logs (web and worker) live only in Railway, which keeps them for the
+workspace plan's period: 7 days on Hobby, 30 days on Pro, up to 90 days on
+Enterprise (Railway's documentation, "Logs", checked 2026-10-06). Railway
+notes that upgrading a plan restores older logs at once, so the period limits
+what is shown, not what Railway stores. Members of the Railway project can
+read them; nothing forwards them elsewhere. Some lines carry pseudonymous
+personal data (`ipHash` in `rate_limited` and `public_order_limited`,
+[PUBLIC_ORDERING.md](PUBLIC_ORDERING.md) §12), so keep project membership to
+the people who operate the service and record the plan in use for counsel
+([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.12).
 
 ## Jobs
 
@@ -255,7 +281,11 @@ in the same window once production has traffic (P-27, LD-P15 OQ-14): its
 `orders`, `rounds` and `jobs` (first in the file, `lock_timeout` 5 s, retried
 on 55P03), and a deadlock with live KDS reads rolls the whole file back and
 fails the deploy (re-running it is safe). Run "DB-9 validation" below before
-the first deploy that carries 032 and 033. The fiscal operations
+the first deploy that carries 032 and 033. Public ordering's 034 replaces the
+hold transition function (no table lock) and builds a small non-concurrent
+partial index on `public_order_holds`, so diner submits and hold decisions
+wait while it builds; it belongs in the same window once QR ordering has
+traffic. The fiscal operations
 (missing tickets, kill switch, series, border incentive) are in
 [FISCAL.md](FISCAL.md#runbook).
 
@@ -500,8 +530,7 @@ kitchen, stock or a fiscal record on its own.
    deactivate that code.
 5. **Logs.** `rate_limited` lines carry the limiter name and `ipHash`;
    `public_order_limited` lines carry the code, the link's `ref` and kind, and
-   `ipHash` (pseudonymous personal data: log access follows the log retention
-   rules). Neither stores tokens or paths. The durable caps (3 pending per
+   `ipHash` (pseudonymous personal data: see "Log retention" above). Neither stores tokens or paths. The durable caps (3 pending per
    table, 5 per kiosk, 10 per takeaway code, 40 per restaurant; windows per
    15 minutes) bound the damage whatever the IP.
 6. **Kill switch.** `PUBLIC_ORDERING_ENABLED=false` on `web` (a redeploy)
@@ -584,6 +613,16 @@ schema owner (`gm_migrator`'s shape), they fail instead of passing. A new value 
 columns needs a migration that drops and re-adds its constraint
 (`-- gm:contract-approved`), tests that write it, and a note to public
 ordering (LD-P13).
+
+## Hold redaction (ARCO)
+
+A diner's ARCO cancellation of the name or note typed on a QR or kiosk
+order: support runs [PUBLIC_ORDERING.md](PUBLIC_ORDERING.md) "Redacting a
+hold (ARCO)" as `gm_migrator`, for one hold in any state, and records it in
+the cancellation register ([OPERATIONS.md](OPERATIONS.md), "ARCO requests").
+Since 034 it is a plain tenant-scoped `UPDATE` that locks only that hold, so
+it can run at any hour; retention blanks every hold older than 30 days
+anyway ("Retention" above).
 
 ## Open follow-ups
 

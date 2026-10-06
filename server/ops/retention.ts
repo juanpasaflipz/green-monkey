@@ -3,7 +3,10 @@
  *   - oauth_login_attempts that are consumed or expired (after a 1-day grace);
  *   - jobs in a terminal state (done or dead) older than 30 days.
  * It never deletes sessions, leases, operations, audit, money, stock, cash,
- * void or offline evidence rows (tests assert the allow-list).
+ * void, offline evidence or public ordering rows (tests assert the
+ * allow-list). It redacts in place only (redactionRules): the diner name and
+ * note of public ordering holds older than 30 days, which 034's transition
+ * trigger allows as a redaction-only update (LD-41, PUBLIC-SECURITY-3).
  *
  * Both tables force row-level security and the runtime role has no DELETE,
  * so the pass runs as the schema owner from GitHub Actions: once per deploy
@@ -77,6 +80,8 @@ export function inRetentionWindow(
 
 export type RetentionResult = {
   deleted: Record<string, number>;
+  /** Rows whose personal data a redaction rule blanked (never deleted). */
+  redacted: Record<string, number>;
   skipped: string[];
   failed: string[];
 };
@@ -133,14 +138,18 @@ export async function retentionPasses(
   const now = o.now ?? Date.now;
   const pass = o.pass ?? retentionPass;
   const deleted: Record<string, number> = {};
+  const redacted: Record<string, number> = {};
   for (let n = 0; ; n++) {
     const r = await pass(sql, alert);
     if (!r) return null;
     for (const [table, count] of Object.entries(r.deleted))
       deleted[table] = (deleted[table] ?? 0) + count;
-    const backlog = Object.values(r.deleted).some(
-      (count) => count >= RETENTION_BATCH,
-    );
+    for (const [table, count] of Object.entries(r.redacted ?? {}))
+      redacted[table] = (redacted[table] ?? 0) + count;
+    const backlog = [
+      ...Object.values(r.deleted),
+      ...Object.values(r.redacted ?? {}),
+    ].some((count) => count >= RETENTION_BATCH);
     if (
       r.failed.length ||
       r.skipped.length ||
@@ -148,8 +157,9 @@ export async function retentionPasses(
       n + 1 >= maxPasses ||
       !inRetentionWindow(now())
     ) {
-      if (n > 0) log.info("retention_passes", { passes: n + 1, deleted });
-      return { deleted, skipped: r.skipped, failed: r.failed };
+      if (n > 0)
+        log.info("retention_passes", { passes: n + 1, deleted, redacted });
+      return { deleted, redacted, skipped: r.skipped, failed: r.failed };
     }
   }
 }
@@ -162,6 +172,27 @@ export const retentionRules: readonly { table: string; predicate: string }[] = [
   {
     table: "jobs",
     predicate: `state IN ('done', 'dead') AND created_at < now() - interval '30 days'`,
+  },
+];
+
+/**
+ * Personal data blanked in place, never deleted: the hold rows stay (status
+ * pages, the abuse and churn reads and the owner export use them; public
+ * ordering's tables are never deleted). The diner's name and note of every
+ * hold older than 30 days, in any state (LD-41): an accepted hold's call name
+ * lives on as the order's, which is the restaurant's sales record. 034's
+ * partial index public_order_holds_unredacted serves the predicate, and its
+ * transition trigger allows exactly this update.
+ */
+export const redactionRules: readonly {
+  table: string;
+  set: string;
+  predicate: string;
+}[] = [
+  {
+    table: "public_order_holds",
+    set: `name = '', note = ''`,
+    predicate: `(name <> '' OR note <> '') AND created_at < now() - interval '30 days'`,
   },
 ];
 
@@ -184,11 +215,7 @@ export async function runRetention(
     pauseMs?: number;
     now?: () => number;
   } = {},
-): Promise<{
-  deleted: Record<string, number>;
-  skipped: string[];
-  failed: string[];
-}> {
+): Promise<RetentionResult> {
   const batch = o.batch ?? RETENTION_BATCH;
   const maxBatches = o.maxBatches ?? 20;
   const budgetMs = o.budgetMs ?? 60_000;
@@ -202,11 +229,24 @@ export async function runRetention(
   const now = o.now ?? Date.now;
   const started = now();
   const deleted: Record<string, number> = {};
+  const redacted: Record<string, number> = {};
   const skipped: string[] = [];
   const failed: string[] = [];
-  for (const rule of retentionRules) {
+  const rules = [
+    ...retentionRules.map((rule) => ({
+      ...rule,
+      counts: deleted,
+      statement: `delete from ${rule.table} where ctid in (select ctid from ${rule.table} where ${rule.predicate} limit $1)`,
+    })),
+    ...redactionRules.map((rule) => ({
+      ...rule,
+      counts: redacted,
+      statement: `update ${rule.table} set ${rule.set} where ctid in (select ctid from ${rule.table} where ${rule.predicate} limit $1)`,
+    })),
+  ];
+  for (const rule of rules) {
     if (!IDENT.test(rule.table)) throw Error("retention_table_invalid");
-    deleted[rule.table] = 0;
+    rule.counts[rule.table] = 0;
     try {
       for (let n = 0; n < maxBatches && now() - started < budgetMs; n++) {
         if (n > 0 && pauseMs > 0)
@@ -214,17 +254,15 @@ export async function runRetention(
         const count = await sql.begin(async (raw) => {
           const tx = raw as Tx;
           // Transaction-local: the lock wait and every statement (the
-          // DELETE's scan above all) are bounded while ACCESS EXCLUSIVE is
-          // held; a timeout rolls the whole batch back, FORCE included.
+          // DELETE's or UPDATE's scan above all) are bounded while ACCESS
+          // EXCLUSIVE is held; a timeout rolls the whole batch back, FORCE
+          // included.
           await tx`select set_config('lock_timeout', ${lockTimeoutMs + "ms"}, true),
                           set_config('statement_timeout', ${statementTimeoutMs + "ms"}, true)`;
           await tx.unsafe(
             `alter table ${rule.table} no force row level security`,
           );
-          const result = await tx.unsafe(
-            `delete from ${rule.table} where ctid in (select ctid from ${rule.table} where ${rule.predicate} limit $1)`,
-            [batch],
-          );
+          const result = await tx.unsafe(rule.statement, [batch]);
           await tx.unsafe(`alter table ${rule.table} force row level security`);
           const [state] = await tx`
             select relforcerowsecurity as forced from pg_class
@@ -232,7 +270,7 @@ export async function runRetention(
           if (!state?.forced) throw Error("retention_rls_not_restored");
           return result.count;
         });
-        deleted[rule.table] += count;
+        rule.counts[rule.table] += count;
         if (count < batch) break;
       }
     } catch (error) {
@@ -256,6 +294,12 @@ export async function runRetention(
       }
     }
   }
-  log.info("retention_run", { deleted, skipped, failed, ms: now() - started });
-  return { deleted, skipped, failed };
+  log.info("retention_run", {
+    deleted,
+    redacted,
+    skipped,
+    failed,
+    ms: now() - started,
+  });
+  return { deleted, redacted, skipped, failed };
 }

@@ -194,6 +194,17 @@ Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
   are never edited or deleted). The CLI waits 5 years after the block; keep the
   acceptance evidence by id for the rest. For someone who never had an
   account, `redact-email` acts at once;
+- **held QR/kiosk orders** (public ordering, 032-034): a diner who typed a
+  name or a note on a QR or kiosk order can have the hold's copy blanked.
+  The restaurant has no tool for it (the runtime role cannot change a hold's
+  name or note), so when the restaurant (or the diner, with the restaurant's
+  label `Q-14`/`K-14`, the date and the restaurant) asks, support runs
+  [PUBLIC_ORDERING.md](PUBLIC_ORDERING.md) "Redacting a hold (ARCO)" as
+  `gm_migrator` for that one hold, in any state, and records it in the
+  cancellation register (date, ticket, "hold redaction", restaurant id, date
+  and number). Retention blanks every hold's copy after 30 days anyway. An
+  accepted hold's order keeps its call name and note: that is the
+  restaurant's sales record, edited only by the restaurant;
 - what the tools do **not** touch: the restaurants' own records (orders,
   tickets, CFDI, staff and seat names, invitation emails), which belong to the
   restaurant as responsable and leave with its offboarding; backups (below);

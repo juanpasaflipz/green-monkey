@@ -138,3 +138,10 @@ GRANT UPDATE(paused,table_policy,counter_policy,hold_minutes,max_order_total,ver
 GRANT UPDATE(label,revoked_at,revoked_by,revoke_reason) ON public_links TO gm_app;
 GRANT UPDATE(value) ON public_hold_numbers TO gm_app;
 GRANT UPDATE(state,decided_at,decided_by,reject_reason,order_id,order_round,excluded_line_ids,paid_at_accept,policy_override,accepted_total,accepted_lines) ON public_order_holds TO gm_app;
+
+-- 034 public-ordering redaction
+-- The hold transition trigger lets a redaction-only update through (name and
+-- note blanked, nothing else changed); the grants decide who may send it.
+-- gm_app never updates name or note: support's ARCO block and the retention
+-- pass run as the schema owner. Stated here so the manifest says so.
+REVOKE UPDATE(name,note) ON public_order_holds FROM gm_app;
