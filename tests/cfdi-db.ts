@@ -2725,13 +2725,22 @@ try {
     const kinds = [...workerHandlers().keys()].filter((k) =>
       k.startsWith("cfdi_"),
     );
-    await discoverTenants(explaining(worker), kinds);
-    await tenant(worker, X.tenantId, (tx) =>
-      claimJobs(explaining(tx), kinds, 4, 60, 12),
-    );
-    await tenant(worker, X.tenantId, (tx) =>
-      expireLostJobs(explaining(tx), "cfdi_deliver", 12),
-    );
+    // Sequential scans off (in these transactions only): CI's Postgres 18 and a jobs table
+    // filled by the earlier suites must not turn the check into a planner-cost coin flip; the
+    // other indexes stay available, so the plan still shows which index serves the predicate.
+    const noSeqScan = (tx: Tx) => tx`set local enable_seqscan = off`;
+    await worker.begin(async (tx) => {
+      await noSeqScan(tx as unknown as Tx);
+      await discoverTenants(explaining(tx as unknown as typeof worker), kinds);
+    });
+    await tenant(worker, X.tenantId, async (tx) => {
+      await noSeqScan(tx);
+      return claimJobs(explaining(tx), kinds, 4, 60, 12);
+    });
+    await tenant(worker, X.tenantId, async (tx) => {
+      await noSeqScan(tx);
+      return expireLostJobs(explaining(tx), "cfdi_deliver", 12);
+    });
     assert.equal(plans.length, 3);
     const scans = (plan: unknown) => {
       const out: { index: string; cond: string }[] = [];

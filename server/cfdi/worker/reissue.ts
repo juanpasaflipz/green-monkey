@@ -163,7 +163,7 @@ export async function reissueJob(ctx: JobContext): Promise<JobOutcome> {
     // G' claims G's freed tickets except those now held by the waiting invoices. Its part number
     // is taken under the period's key, after G's document key (LO-3), the key the global builder
     // numbers its parts under: a late or supplementary build of the same period never takes the
-    // same part (CFDI-R2-5; the unique index cfdi_documents_global_part backs it).
+    // same part (CFDI-R2-5; the unique index cfdi_documents_period backs it).
     if (current.periodKey)
       await lockPeriod(tx, tenantId, current.mode, current.periodKey);
     const replacement = randomUUID();
