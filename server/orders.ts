@@ -17,6 +17,11 @@ export { stock };
 import { recipeStockIds } from "../shared/menu.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { bumpKitchenFeed } from "./kitchen.js";
+import { adjustmentRows } from "./discounts.js";
+import {
+  composeOrderAdjustments,
+  type TenderAllocation,
+} from "../shared/discounts.js";
 import {
   DomainError,
   orderInput,
@@ -99,6 +104,7 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
     allocationRows,
     recoveryRows,
     offlineRows,
+    adjustmentMap /* discounts */,
   ] = await Promise.all([
     tx`select o.*,o.business_date::text as business_day,e.name as waiter_name,
           opener.name as opened_by,t.name as table_name
@@ -120,7 +126,7 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
     tx`select t.*,coalesce((select sum(r.amount) from refunds r where r.tenant_id=t.tenant_id and r.tender_id=t.id),0)::int as refunded
         from tenders t where t.order_id=any(${list}::uuid[]) order by t.created_at,t.id`,
     tx`select * from rounds where order_id=any(${list}::uuid[]) order by number,station`,
-    tx`select order_id,line_id as "lineId",unit_index as unit,amount
+    tx`select order_id,tender_id as "tenderId",line_id as "lineId",unit_index as unit,amount
         from tender_allocations where order_id=any(${list}::uuid[])`,
     tx`select r.order_id,r.id,r.reason,r.original_sold_at,
           r.recognized_at,r.evidence_version,r.item_allocation_complete,
@@ -134,6 +140,8 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
         from offline_sync_records
         where order_id=any(${list}::uuid[]) and kind in ('sale','order')
         order by order_id,sold_at`,
+    // discounts (028): discounts, refund batches, unit and line refunds (one statement).
+    adjustmentRows(tx, ids),
   ]);
   const linesBy = byOrder(
     lineRows as unknown as {
@@ -153,7 +161,7 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
     roundRows as unknown as ({ order_id: string } & Record<string, any>)[],
   );
   const allocationsBy = byOrder(
-    allocationRows as unknown as ({ order_id: string } & Allocation)[],
+    allocationRows as unknown as ({ order_id: string } & TenderAllocation)[],
   );
   const recoveryBy = byOrder(
     recoveryRows as unknown as ({ order_id: string } & Record<string, any>)[],
@@ -175,9 +183,15 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
     const voids = voidsBy.get(orderId) ?? [];
     const tenders = tendersBy.get(orderId) ?? [];
     const rounds = roundsBy.get(orderId) ?? [];
-    const allocations = (allocationsBy.get(orderId) ?? []).map(
-      ({ order_id: _order, ...a }) => a as Allocation,
+    const tenderAllocations = (allocationsBy.get(orderId) ?? []).map(
+      ({ order_id: _order, ...a }) => a as TenderAllocation,
     );
+    const allocations = tenderAllocations.map(
+      ({ tenderId: _tender, ...a }) => a as Allocation,
+    );
+    const adj = composeOrderAdjustments(adjustmentMap.get(orderId), {
+      lines: lines.map((l) => l.data),
+    }); // discounts
     const allocated = sum(allocations.map((a) => a.amount));
     const paid = sum(tenders.map((t) => t.amount));
     const recovery = recoveryBy.get(orderId)?.[0];
@@ -207,6 +221,7 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
             ? payableUnits(
                 lines.map((l) => l.data),
                 allocations,
+                adj.unitDiscounts, // discounts
               ).filter(
                 (unit) =>
                   !lines
@@ -254,6 +269,12 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
               soldAt: offline.sold_at.toISOString(),
             }
           : null,
+        discount: o.discount, // discounts
+        discounts: adj.discounts, // discounts
+        lineDiscounts: adj.lineDiscounts, // discounts
+        refundBatches: adj.refundBatches, // discounts
+        refundedUnits: adj.refundedUnits, // discounts
+        tenderAllocations, // discounts
       } as Order,
     ];
   });

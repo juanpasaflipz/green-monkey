@@ -33,7 +33,7 @@ export async function listOfflineKitchen(tx: Tx, s: Session) {
       sr.kitchen_delivery,d.name as device_name,o.mode,t.name as table_name,o.name,
       (select coalesce(jsonb_agg(jsonb_build_object(
           'id',l.id,'quantity',(l.data->>'quantity')::int,
-          'voidedQuantity',coalesce((select sum(cardinality(v.units)) from line_voids v
+          'voidedQuantity',coalesce((select sum(cardinality(v.units)) from kitchen_removals v
              where v.tenant_id=l.tenant_id and v.line_id=l.id),0),
           'name',l.data->'name','optionNames',coalesce(l.data->'optionNames','[]'::jsonb),
           'note',coalesce(l.data->>'note','')) order by l.id),'[]'::jsonb)
@@ -117,13 +117,20 @@ export async function decideOfflineKitchen(
       const roundState = p.decision === "prepare" ? "active" : "completed";
       await tx`update offline_kitchen_reviews set state=${p.decision},decided_by=${s.employeeId},decided_at=now() where round_id=${roundId}`;
       await tx`update rounds set state=${roundState},seen_at=coalesce(seen_at,now()) where id=${roundId}`;
-      if (p.decision === "already_served")
+      if (p.decision === "already_served") {
         // Food already served: that round's pending void tickets are moot.
         await tx`update line_voids v set kitchen_acknowledged_at=now(),kitchen_acknowledged_by=${s.employeeId}
           from order_lines l
           where l.tenant_id=v.tenant_id and l.id=v.line_id and v.order_id=${pointer.order_id}
             and l.round=${round.number} and l.data->>'station'=${round.station}
             and v.kitchen_ack_required and v.kitchen_acknowledged_at is null`;
+        // discounts (028): and so are its refund cancellations.
+        await tx`update refund_lines v set kitchen_acknowledged_at=now(),kitchen_acknowledged_by=${s.employeeId}
+          from order_lines l
+          where l.tenant_id=v.tenant_id and l.id=v.line_id and v.order_id=${pointer.order_id}
+            and l.round=${round.number} and l.data->>'station'=${round.station}
+            and v.kitchen_ack_required and v.kitchen_acknowledged_at is null`;
+      }
       await refreshOrderState(tx, pointer.order_id);
       const [current] =
         await tx`select state from orders where id=${pointer.order_id}`;

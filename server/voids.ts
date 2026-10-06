@@ -12,6 +12,7 @@ import { recipeStockIds } from "../shared/menu.js";
 import { DomainError, id, type Session } from "../shared/domain.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { bumpKitchenFeed } from "./kitchen.js";
+import { voidCandidates } from "../shared/discounts.js";
 
 /** First-stage throttle values (see shared/access.ts ACCESS.pin). */
 export const MAX_FAILED_ATTEMPTS = ACCESS.pin.firstStage;
@@ -235,19 +236,22 @@ export async function refreshOrderState(tx: Tx, orderId: string) {
   await tx`update orders set state=${state} where id=${orderId} and state not like 'recovery%'`;
 }
 
-/** Completes rounds whose every line has been voided and acknowledged. */
+/**
+ * Completes rounds whose every unit has been removed (voided, or refunded
+ * before it was served: kitchen_removals, discounts 028) and acknowledged.
+ */
 async function closeFullyVoidedRounds(tx: Tx, orderId: string) {
   await tx`update rounds r set state='completed',seen_at=coalesce(seen_at,now())
     where r.order_id=${orderId} and r.state<>'completed'
       and not exists (
-        select 1 from line_voids v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id
+        select 1 from kitchen_removals v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id
         where v.order_id=r.order_id and l.round=r.number and l.data->>'station'=r.station
           and v.kitchen_ack_required and v.kitchen_acknowledged_at is null)
       and not exists (
         select 1 from order_lines l
         where l.order_id=r.order_id and l.round=r.number and l.data->>'station'=r.station
           and (l.data->>'quantity')::int >
-            coalesce((select sum(cardinality(v.units)) from line_voids v
+            coalesce((select sum(cardinality(v.units)) from kitchen_removals v
                       where v.tenant_id=l.tenant_id and v.line_id=l.id),0))`;
 }
 
@@ -296,19 +300,22 @@ export async function voidLines(
           ),
         ),
       );
-    let voided = 0;
+    // discounts (028): the balance drops by each unit's net; line_voids.amount
+    // stays gross and the discount on the voided units is released.
+    let net = 0,
+      released = 0;
     for (const request of input.lines) {
       const line = order.lines.find((l) => l.id === request.lineId);
       if (!line || line.round === undefined)
         throw new DomainError("not_found", 404);
-      // Void the highest-numbered unpaid units; paid units require a refund.
-      const unpaid = order
-        .paymentUnits!.filter((u) => u.lineId === line.id && u.paid === 0)
-        .sort((a, b) => b.unit - a.unit);
+      // Void unpaid units, undiscounted first, then the highest-numbered;
+      // paid units require a refund (discounts 028).
+      const unpaid = voidCandidates(order, line.id);
       if (unpaid.length < request.quantity)
         throw new DomainError("void_exceeds_unpaid", 409);
       const units = unpaid.slice(0, request.quantity);
       const amount = units.reduce((a, u) => a + u.total, 0);
+      const lineNet = units.reduce((a, u) => a + u.total - u.discount, 0);
 
       const [round] =
         await tx`select state,seen_at from rounds where order_id=${orderId} and number=${line.round} and station=${line.station} for update`;
@@ -347,10 +354,13 @@ export async function voidLines(
         approverId,
         stockDisposition: input.stockDisposition,
         preparation,
+        net: lineNet,
+        discountReleased: amount - lineNet,
       });
-      voided += amount;
+      net += lineNet;
+      released += amount - lineNet;
     }
-    await tx`update orders set total=total-${voided},version=version+1 where id=${orderId}`;
+    await tx`update orders set total=total-${net},discount=discount-${released},version=version+1 where id=${orderId}`;
     await closeFullyVoidedRounds(tx, orderId);
     await refreshOrderState(tx, orderId);
     // Balance 0 settles or holds the table; every line voided closes as voided.
@@ -388,13 +398,22 @@ export async function acknowledgeVoids(
           and l.round=${r.number} and l.data->>'station'=${r.station}
           and v.kitchen_ack_required and v.kitchen_acknowledged_at is null
         returning v.id`;
+      // discounts (028): refund cancellations of this ticket, same machinery.
+      const refunds = await tx`update refund_lines v set
+          kitchen_acknowledged_at=now(),kitchen_acknowledged_by=${s.employeeId}
+        from order_lines l
+        where l.tenant_id=v.tenant_id and l.id=v.line_id and v.order_id=${r.order_id}
+          and l.round=${r.number} and l.data->>'station'=${r.station}
+          and v.kitchen_ack_required and v.kitchen_acknowledged_at is null
+        returning v.id`;
       await closeFullyVoidedRounds(tx, r.order_id);
       await refreshOrderState(tx, r.order_id);
       await audit(tx, s, "kitchen.void_ack", r.id, {
         voids: acknowledged.map((v) => v.id),
+        refunds: refunds.map((v) => v.id),
       });
       await bumpKitchenFeed(tx, s);
-      return { ok: true, acknowledged: acknowledged.length };
+      return { ok: true, acknowledged: acknowledged.length + refunds.length };
     },
   );
 }

@@ -404,6 +404,8 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
       note: o.note,
       total: o.total,
       paid: o.paid,
+      // discounts (028): shown read-only on a cached check (I-06).
+      discount: o.discount,
       state: o.state,
       createdAt: o.created_at.toISOString(),
       serviceVersion: o.service_version,

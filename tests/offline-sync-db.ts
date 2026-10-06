@@ -2566,9 +2566,31 @@ try {
   // (contracts §5.2 rule 3) in the same transaction that deletes the
   // fixture tenants: no other session ever sees it disabled, and a failed
   // cleanup rolls the switch back with the deletes.
+  // discounts (028): refunds and cash_sessions refuse DELETE for every role
+  // too (LD-15 Q4 (A)); the same transaction disables those named triggers
+  // and deletes the discounts tables first, in FK order (LD-16 L5).
+  const moneyTriggers = [
+    ["refund_units", "refund_units_immutable"],
+    ["refund_lines", "refund_lines_no_delete"],
+    ["refunds", "refunds_immutable"],
+    ["refund_batches", "refund_batches_immutable"],
+    ["discount_allocations", "discount_allocations_immutable"],
+    ["discounts", "discounts_no_delete"],
+    ["cash_count_reviews", "cash_count_reviews_immutable"],
+    ["cash_sessions", "cash_sessions_closed_immutable"],
+  ];
   await admin.begin(async (tx) => {
     await tx`alter table stock_movements disable trigger stock_movements_immutable`;
+    for (const [table, trigger] of moneyTriggers)
+      await tx.unsafe(`alter table ${table} disable trigger ${trigger}`);
     for (const table of [
+      "refund_units",
+      "refund_lines",
+      "refunds",
+      "refund_batches",
+      "discount_allocations",
+      "discounts",
+      "cash_count_reviews",
       "offline_kitchen_reviews",
       "offline_sync_records",
       "offline_archives",
@@ -2612,6 +2634,8 @@ try {
     await tx`delete from restaurants where id in (${tenantId},${otherTenant})`;
     await tx`delete from organizations where id in (${organizationId},${otherOrganization})`;
     await tx`alter table stock_movements enable trigger stock_movements_immutable`;
+    for (const [table, trigger] of moneyTriggers)
+      await tx.unsafe(`alter table ${table} enable trigger ${trigger}`);
   });
   await sql.end();
   await admin.end();

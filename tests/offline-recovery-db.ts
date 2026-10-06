@@ -473,40 +473,69 @@ try {
     "Offline recovery DB passed: v1 compatibility, v2 lease evidence, exact sync/reconciliation replay, price conflict review, uncertain-payment status/retry, revoked-session manager recovery, closed-drawer late correction, durable kitchen/stock task resolution, tenant isolation and capped refund.",
   );
 } finally {
-  for (const table of [
-    "offline_kitchen_reviews",
-    "offline_sync_records",
-    "offline_archives",
-    "refunds",
-    "tender_allocations",
-    "offline_recovery_tasks",
-    "offline_recoveries",
-    "tenders",
-    "rounds",
-    "order_lines",
-    "jobs",
-    "operations",
-    "audit",
-    "orders",
-    "order_numbers",
-    "cash_movements",
-    "cash_sessions",
-    "recipe_versions",
-    "menu_state",
-    "menu_categories",
-    "modifier_groups",
-    "dining_areas",
-    "catalog",
-    "offline_lease_renewals",
-    "sessions",
-    "devices",
-    "employees",
-    "restaurant_entitlements",
-    "kitchen_feed_versions",
-  ])
-    await admin.unsafe(`delete from ${table} where tenant_id=$1`, [tenantId]);
-  await admin`delete from restaurants where id=${tenantId}`;
-  await admin`delete from organizations where id=${organizationId}`;
+  // discounts (028): refunds and cash_sessions refuse DELETE for every role
+  // (money records are never deleted, LD-15 Q4 (A)); its legacy refunds now
+  // also write refund_batches. This disposable-database cleanup disables the
+  // named triggers inside the same transaction as the deletes (LD-12 pattern,
+  // LD-16 L5 FK order), so no other session ever sees them off.
+  const moneyTriggers = [
+    ["refund_units", "refund_units_immutable"],
+    ["refund_lines", "refund_lines_no_delete"],
+    ["refunds", "refunds_immutable"],
+    ["refund_batches", "refund_batches_immutable"],
+    ["discount_allocations", "discount_allocations_immutable"],
+    ["discounts", "discounts_no_delete"],
+    ["cash_count_reviews", "cash_count_reviews_immutable"],
+    ["cash_sessions", "cash_sessions_closed_immutable"],
+  ];
+  await admin.begin(async (tx) => {
+    for (const [table, trigger] of moneyTriggers)
+      await tx.unsafe(`alter table ${table} disable trigger ${trigger}`);
+    for (const table of [
+      // discounts (028), in FK order before the wave-1 list (LD-16 L5).
+      "refund_units",
+      "refund_lines",
+      "refunds",
+      "refund_batches",
+      "discount_allocations",
+      "discounts",
+      "cash_count_reviews",
+      "offline_kitchen_reviews",
+      "offline_sync_records",
+      "offline_archives",
+      "refunds",
+      "tender_allocations",
+      "offline_recovery_tasks",
+      "offline_recoveries",
+      "tenders",
+      "rounds",
+      "order_lines",
+      "jobs",
+      "operations",
+      "audit",
+      "orders",
+      "order_numbers",
+      "cash_movements",
+      "cash_sessions",
+      "recipe_versions",
+      "menu_state",
+      "menu_categories",
+      "modifier_groups",
+      "dining_areas",
+      "catalog",
+      "offline_lease_renewals",
+      "sessions",
+      "devices",
+      "employees",
+      "restaurant_entitlements",
+      "kitchen_feed_versions",
+    ])
+      await tx.unsafe(`delete from ${table} where tenant_id=$1`, [tenantId]);
+    await tx`delete from restaurants where id=${tenantId}`;
+    await tx`delete from organizations where id=${organizationId}`;
+    for (const [table, trigger] of moneyTriggers)
+      await tx.unsafe(`alter table ${table} enable trigger ${trigger}`);
+  });
   await sql.end();
   await admin.end();
 }
