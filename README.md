@@ -42,7 +42,7 @@ Front-of-house service (orders and tables lists, check lifecycle with **Liberar 
 
 Discounts and courtesies by line or for the whole check (reason codes, per-role limits, one manager PIN for staff over their limit), refunds by item or by amount for cash and external-terminal payments with a kitchen cancellation and optional restock, and drawer controls (cash and terminal apart, blind counts, closer attribution and manager review of differences) are described in [Discounts, refunds and drawer controls](docs/DISCOUNTS.md).
 
-Reporting (migration 029) buckets every figure by stored or versioned business dates: sales, IVA from fiscal tickets, collections by cash and terminal, breakdowns, loss-prevention exceptions, a paged activity log, cortes X/Z/del día on 58/80 mm or letter/A4, and CSV exports. Kitchen cancellation chits print today through the browser/OS print path (checked in Chromium print emulation, not yet on a physical printer); the report views are wired when fiscal (027) and discounts (028) merge. See [Reports](docs/REPORTS.md).
+Reporting (migration 029) buckets every figure by stored or versioned business dates: sales, IVA from fiscal tickets, collections by cash and terminal, breakdowns, loss-prevention exceptions, a paged activity log, cortes X/Z/del día on 58/80 mm or letter/A4, and CSV exports. Hoy and Finanzas read fiscal (027) and discounts (028); cortes, kitchen cancellation chits and report sheets print through the browser/OS print path (checked in Chromium print emulation, not yet on a physical printer). See [Reports](docs/REPORTS.md).
 
 New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
 

@@ -1,24 +1,13 @@
 # Reports
 
-Status on October 5, 2026: **reports FULL, phase A live, phase B built and waiting for
-fiscal (027) and discounts (028)**. Reports read fiscal's and discounts' tables and call
-their functions, which are not on this branch yet, so the work is split (wave2-cross-track
-§2):
-
-- **Live on this branch (phase A).** Migration 029 (versioned business-day settings,
-  `business_date_at()`, corte print records). The read-only report snapshot. The routes
-  `GET /api/reports/audit` (the Bitácora), `/api/reports/filters` and
-  `/api/reports/tenders`. Printed **kitchen cancellation chits** on a KDS with auto-print
-  and on a selling device with "Imprimir comanda al enviar". Every `reports*` string and
-  error in Spanish and English. The `online` prop of Operations. Offline, Hoy and Finanzas
-  no longer fetch the old `/report` and say "Los reportes requieren conexión.".
-- **Built, not yet wired (phase B).** The statements S1–S5 and every other report query, the
-  Hoy dashboard, the eight Finanzas tabs, the corte X/Z and corte del día documents and
-  prints, CSV exports, the remote close of an orphaned drawer and the legacy `/report`
-  move. They are typed against fiscal's and discounts' documented signatures
-  (`server/reports/ports.ts`) and register once those modules merge ("Merge wiring" below).
-  Until then Hoy and Finanzas show the old view, and `/api/report` is still the old route in
-  `server/index.ts`.
+Status on October 6, 2026: **reports FULL, wired on fiscal (027) and discounts (028)** at
+reports' merge (integration/v1 at 5e74ee6), with the second opinion's findings fixed (LD-27).
+Migration 029 (versioned business-day settings, `business_date_at()`, corte print records, the
+drawer folio index), Hoy, Finanzas (eight tabs), the corte X / Z / count slip / corte del día
+prints, CSV exports, the remote close of an orphaned drawer, the kitchen cancellation chits
+(KDS, void and item refund) and the legacy `/report` (served by reports for older bundles) are
+live. Reports read fiscal and discounts through `server/reports/ports.ts` (the real modules;
+tests wrap them) and call discounts' `closeDrawerRow` directly.
 
 Nothing here has been checked with a physical printer or by an accountant.
 
@@ -61,12 +50,18 @@ definitions are spec §2.2. Highlights:
 - Ventas brutas − Descuentos = Ventas totales, by construction.
 - IVA comes only from fiscal's `fiscalSummary` (`SalesSummary.tax`), read in ≤ 31-day chunks
   and merged (`mergeFiscalSummaries`). It is never recomputed from orders or CFDI totals.
+  Folios stay fiscal's contiguous runs: a series has several runs when a late offline sync, a
+  repair or a cross-day settlement puts a later folio into an earlier date, and the merge
+  joins two runs only when one continues the other across a chunk boundary, so Resumen, its
+  CSV and the corte del día never print a range across a gap (LD-27 SQL-1).
   Fiscal splits refund IVA by complement extraction, so a day's net IVA equals the IVA cfdi
   stamps on that day's global invoice; an egreso's IVA may differ from fiscal's adjustment
   by ≤ 1 centavo per category (see docs/FISCAL.md and docs/CFDI.md). Without fiscal data
   (non-MXN) the IVA card says so and the margin shows "—".
-- COGS counts remaining units of ticketed orders at the line's cost snapshot; voided units
-  not returned to stock are waste cost; restocked refunds return their cost.
+- COGS counts remaining units of ticketed orders at the line's cost snapshot, and of orders
+  comped to zero (fiscal never tickets a zero total: a staff meal's food cost still counts);
+  voided units not returned to stock are waste cost; restocked refunds return their cost.
+  Horas y canales places a manager's financial recovery at its original sale time.
 - Offline sales (`channel = 'offline'`) exclude manager recovery orders, which are disclosed
   as "Ventas sin conexión conciliadas (sin detalle de productos)".
 - Amount refunds need a fully paid check (discounts' `refund_balance_due`).
@@ -86,7 +81,7 @@ retries. The client waits up to 40 s for report reads and prints, and report out
 as reachability only (`src/connectivity.ts`): a slow report never makes a device look
 offline.
 
-## Views (phase B)
+## Views
 
 - **Hoy:** the current business date, refreshed every 60 s while visible: tiles (Ventas
   totales with the same-weekday comparison, Órdenes, Ticket promedio, Efectivo cobrado,
@@ -96,7 +91,14 @@ offline.
 - **Finanzas:** a range picker (Hoy, Ayer, Esta semana, Semana pasada, Este mes, Mes pasado,
   custom; weeks start Monday) and eight tabs: Resumen, Productos, Personal, Horas y canales,
   Pagos, Cortes, Excepciones and Bitácora. Summaries and cortes read up to 92 days, row lists
-  up to 31. Each tab has Actualizar and Descargar CSV.
+  up to 31. Each tab has Actualizar and Descargar CSV. A tab shows figures only for the range
+  and filters they were fetched for: while another range loads, after it fails and offline the
+  previous figures are gone, so a CSV, a sheet or a tile never pairs the new range with old
+  figures; a paged list (Pagos, Excepciones, Bitácora) restarts at its first page when a filter
+  changes, and the Caja filter of Pagos is cleared when the range changes. Resumen's Cajas card
+  shows faltantes and sobrantes apart, then the net with its word (faltante / sobrante /
+  cuadra); every drawer or terminal difference in Excepciones starts with its word; refunds
+  show their cash and terminal split as rows of their own; tile amounts never wrap mid-number.
 - **Personal** attributes a check to its assigned server, else to whoever opened it. QR and
   kiosk orders run under the link creator's session, so unassigned ones form a **"QR /
   Kiosco"** row instead of crediting that employee (LD-15 Q4).
@@ -115,9 +117,13 @@ offline.
 ## Cortes
 
 - **Corte X** (open drawer): float, cash sales and tips, cash refunds, paid-outs (and pay-ins
-  when any), expected cash; the terminal section; payments; controls (discounts, refunds and
-  paid-outs on that device while the drawer was open) and the folio range issued there.
-- **Corte Z** (closed drawer): every figure as of close. Tenders recorded after the close
+  when any), expected cash; the terminal section; payments; controls (discounts active at the
+  end of the window, refunds and paid-outs on that device while the drawer was open) and the
+  folio runs of the tickets issued on that device while it was open, by issue time (an old
+  order's ticket issued there counts; folios other devices issued in between are gaps; more
+  than four runs of a series print as one "… en N tramos" line).
+- **Corte Z** (closed drawer): every figure as of close; a discount reversed after the close
+  stays on it, so a reprint equals the signed original. Tenders recorded after the close
   (offline late sync) are disclosed apart ("Registrado después del cierre"). Stored expected
   and counted cash, the signed difference (faltante / sobrante / cuadra), the explanation,
   the review, the terminal batch total and difference, and two signature lines.
@@ -133,19 +139,22 @@ offline.
   same moment can commit in the opposite order. A report or print that reads after the first
   commit and before the second can show a drawer as Z n that every later read numbers n+1, so
   a Z printed in that window disagrees with its reprint. It needs two closes within the same
-  instant (a remote close stays open longer, because it builds the corte Z before it commits)
-  and a print in between. A stored, serialized Z counter would remove it (a later expand
-  migration, not in 029). Every print is recorded in `report_prints`, one sequence per document: the corte X,
+  instant and a print in between (the remote close commits the close alone and reads its corte
+  Z afterwards, so its window is as short as any close). A stored, serialized Z counter would
+  remove it (a later expand migration, not in 029). A printed document comes from one
+  `REPEATABLE READ` snapshot, so a payment committing during the print is on none of its
+  lines; its number comes from a separate `READ COMMITTED` transaction. Every print is
+  recorded in `report_prints`, one sequence per document: the corte X,
   the corte Z, the blind count slip (kind `count_slip`) and the corte del día. The second
   print of a corte Z, count slip or corte del día says "REIMPRESIÓN 2"; a corte X never
   does, because each one is a new partial reading with new figures (RPT-R20). A cashier's
   count slip and the manager's corte Z of the same drawer are different documents, so the manager's first Z is print 1, and only
   reprints of the full Z are audited as `reports.corte_z.reprinted` and listed as
   `corte_reprint` exceptions (slips are audited as `reports.count_slip.printed`). Prints of
-  one document serialize on the advisory key `tenant:report-print:kind:subject`, class 926
-  (an LO-3 area key; class 0 would be an LO-1 operation key after once()'s LO-2) before
-  numbering, so two prints at once get 1 and 2. The subject is the lowercase
-  drawer id, whatever case the URL used.
+  one document serialize on the advisory key `tenant:report-print:kind:subject`, class 930
+  (an LO-3 area key; class 0 would be an LO-1 operation key after once()'s LO-2; 926 is
+  cfdi's per-ticket key, LD-31) before numbering, so two prints at once get 1 and 2. The
+  subject is the lowercase drawer id, whatever case the URL used.
 - **Access** (spec §4.7, §2.12): owners and managers print any corte Z in full and a corte X
   when they may see expected cash. Cashiers and servers print only their own device's
   drawer: a corte X if they may see expected cash, and the corte Z or count slip of the
@@ -159,8 +168,16 @@ offline.
   revoked or deactivated, or that is still open from an earlier business date ("Cerrar caja
   desde aquí" in Cortes). It counts visibly with a required reason, goes through discounts'
   `closeDrawerRow`, is audited `cash.close` with `remote: true`, and answers with the corte
-  Z. A same-day drawer of a healthy device is refused (`reports_drawer_not_orphaned`).
-  Unsynced offline sales left on a revoked device are archived or reconciled in Recuperación.
+  Z, read after the close commits. A same-day drawer of a healthy device is refused
+  (`reports_drawer_not_orphaned`). An earlier day's drawer whose device was seen or took a
+  payment in the last 10 minutes is refused too (`reports_drawer_in_use`, "ciérrala en su
+  dispositivo"): that device's own close runs the pending-sync guard. The dialog reads the
+  drawer's live corte X when it opens and again before the confirm step, and sends that
+  reading's fingerprint (every money figure of the drawer); under the drawer lock the server
+  refuses a drawer that changed since (`reports_drawer_changed`), so a count never closes
+  against figures the manager did not see, and the dialog asks for a recount (LD-27
+  CORTES-1). Unsynced offline sales left on a revoked device are archived or reconciled in
+  Recuperación.
 
 Every document says "Documento interno; no es comprobante fiscal." Internal documents
 (cortes, corte del día, report sheets, kitchen tickets and cancellation chits) print in the
@@ -194,7 +211,9 @@ confirms that paper came out. Cash-drawer kick and auto-cut depend on the printe
 UTF-8 with BOM, comma separator, CRLF, quoted fields with doubled quotes, headers in the UI
 language, money as dot decimals with the currency exponent, dates `AAAA-MM-DD` and date-times
 `AAAA-MM-DD HH:mm` in the restaurant zone. A text cell that starts with `= + - @`, TAB, CR,
-LF or a full-width `＝＋－＠` is prefixed with `'` (OWASP formula injection). Files are
+LF or a full-width `＝＋－＠` is prefixed with `'` (OWASP formula injection), and a text cell
+with a `;` or TAB before such a character is quoted, so Excel with a `;` list separator never
+splits it into a formula cell. Files are
 `{dataset}_{from}_{to}.csv` (or `{dataset}_{date}.csv`); paged datasets export every page up
 to 20,000 rows and then say "La exportación se detuvo en 20,000 filas. Reduce el rango.". The
 writer is `shared/csv.ts` (cfdi and fiscal reuse it). For Excel set to another locale use
@@ -212,6 +231,9 @@ setting. Reports and prints work on Free and while selling is blocked.
   unchanged (the settings history is in `business_day_settings`).
 - **"Una caja quedó abierta."** Finanzas → Cortes → "Cerrar caja desde aquí" (manager, PIN).
   Count the drawer's cash first; reconcile or archive unsynced offline sales in Recuperación.
+  "Esta caja se usó en su dispositivo…": close it on that device (Caja). "La caja cambió…":
+  money reached the drawer after the dialog read it; count again against the new expected
+  cash.
 - **"Reimprimir un corte Z."** Finanzas → Cortes (or Caja → Historial de cajas) → Reimprimir
   corte Z; it prints "REIMPRESIÓN n" and appears in Excepciones.
 - **"Los totales no cuadran."** Send support the codes and the request id shown under
@@ -219,98 +241,49 @@ setting. Reports and prints work on Free and while selling is blocked.
 - **"Exportar para el contador."** Finanzas → Resumen and the tabs → Descargar CSV, plus
   fiscal's ticket register. Reports are internal documents, not comprobantes.
 
-## Merge wiring (phase B, after 027 and 028)
+## Integration notes (reports 029 merge)
 
-1. `server/routes/reports.ts`: `register(ctx)` passes the ports instead of `null`:
-   `{ fiscalSummary, missingTicketCount }` from `../fiscal.js`, `moneyControls` from
-   `../discounts.js`, `canSeeExpected` from `../../shared/discounts.js`, `closeDrawerRow` from
-   `../cash.js` (signatures in `server/reports/ports.ts`).
-2. `server/index.ts`: delete the old `/report` route and the `businessDate`, `boundaries`
-   imports (wave2-cross-track C13); `registerReports` re-registers `/report`.
-3. `src/features/Operations.tsx`: add `"today"`, `"finance"` to the self-loading list, drop the
-   `today`/`finance` → `report` mapping, the phase-A offline guard, its `shownOnline`
-   reload effect and the `loads` sequence check (the views poll with `enabled: online`
-   themselves), replace the old
-   Today/Finance block with `<TodayDashboard … online={online} />` and
-   `<ReportsView … online={online} />`, point the settings "Historial de auditoría" button at
-   `openReports("audit"); navigate("finance")`, and drop the then unused `ArrowUpRight`,
-   `Empty` and `useRef` imports.
-4. Slots in discounts' components (C9, C10): `actions={<CortePrintButton … label="Corte X"
-   online={online} />}` on `DrawerPanel` for an open drawer the viewer may see; one
-   `CortePrintButton` (Imprimir corte Z / comprobante de conteo) in `DrawerCloseDialog`'s
-   result step; `rowActions` on `CashHistory` from Operations with a Corte Z button.
-5. `RefundDialog`: after an item refund, `printCancellations(cancellationsFromRefund(order,
-   batch, reason), …)` when "comanda al enviar" is on; confirm that discounts'
-   `RefundBatchView` has `lines[].lineId/units/kitchenPending`.
-6. `src/features/reports/exception-text.ts` `reasonLabel`: return discounts' discount-reason
-   and refund-reason labels (C18).
-7. `tests/browser/core.spec.ts` (Hoy drill-down): `.metric-grid` → `.report-tiles`, and
-   "Ver órdenes" instead of the first metric.
-8. Docs: docs/ACCESS.md (remote close replaces the support-SQL workaround), this file's
-   status, DELIVERY_STATUS and the ledgers.
-9. Shared cleanups (wave2-cross-track C16, LD-16 L5): after fiscal converts
-   `tests/access-db.ts`, `tests/offline-sync-db.ts` and `tests/offline-recovery-db.ts` to
-   the named-trigger transaction, append `report_prints` and `business_day_settings` (and
-   their triggers `report_prints_immutable`, `business_day_settings_immutable`) after the
-   discounts tables, as `tests/fixtures/reports-cleanup.ts` orders them. The same applies
-   to track/fiscal's `tests/fiscal-db.ts` (RPT-R18): it changes the cutoff as the
-   superuser `admin` connection, so 029's `restaurants_business_day_settings` trigger
-   records `business_day_settings` rows for its tenant, and its cleanup then deletes the
-   restaurant. Its cleanup must disable `business_day_settings_immutable` and
-   `report_prints_immutable` and delete from `report_prints` and `business_day_settings`
-   after the discounts tables (or call `removeTenants()`), or `test:db:fiscal` fails with a
-   foreign-key or immutability error once 029 is on top of it. No other wave 2 suite
-   changes the cutoff or timezone.
-10. `scripts/grants.sql` and `package.json` (C23): the `-- 029 reports` grants block and the
-    `test:db:reports` entry and qualification suffix go after discounts' (merge order).
-11. The `online` prop (LD-18 LD-P5): keep one copy; this branch already carries discounts'
-    exact text, doc comment included.
-12. `tests/reports-phaseb-db.ts` moves to the real commands (spec §7.2): payments that issue
-    fiscal tickets, `applyDiscount`/`reverseDiscount`, `recordRefund` in items and amount
-    modes and the legacy refund, `closeCash`/`reviewDrawer`, `recordPaidOut` and offline
-    sync/reconcile. Hand-inserted rows stay only for clock-dependent cases. It also gains
-    spec DB tests 3 (past summaries, breakdowns and exceptions unchanged after a cutoff
-    change), 12 (a 60-day summary merges two fiscal chunks), 18 (a non-MXN restaurant has
-    null tax and margin), 33 (performance), 35 (complement extraction), 37 (a refund at the
-    cutoff instant; a batchless refund fails refunds_vs_fiscal) and 38 (acceptance rows).
-    Until then the reconciliation checks are proven only against self-consistent hand rows.
-13. Browser tests (spec §7.3) in `tests/browser/reports.spec.ts`, required with the views:
-    1 (ranges, Efectivo/Terminal split, axe on Finanzas), 2 (Productos, Personal, Horas and
-    their CSVs), 3 (Resumen rows and "Todos los totales cuadran."), 4 (Excepciones with the
-    employee filter and CSV), 5 (Bitácora paging and filters), 6 (corte X, close, corte Z and
-    REIMPRESIÓN 2), 7 (the blind count slip, then the manager's first corte Z of that drawer
-    without REIMPRESIÓN: RPT-R11), 8 (58 and 80 mm fit), 9 (Hoy and its
-    previous-day drawer alert resolved by the remote close), 13 (the disabled Caja "Corte X"
-    with its reason) and 14 (390 and 768 px without page-wide scroll, axe on Hoy and the
-    corte preview). Add the phase B GETs to the HTTP check (no-store, cashier forbidden)
-    and check that a print or remote-close POST without the CSRF token is refused.
-14. Lock order (RPT-R17): at the absorb step, `tests/lock-order.test.ts` runs the
-    level-monotonic `tests/lock-scan.ts`. Reports adds no allowlist entry: the report-print
-    key is advisory class 926 (an LO-3 area key, after public's 924 and 925; the lead
-    confirms the number), and `registerReports` registers through local `get`/`post`
-    helpers, so the scanner makes every route its own unit. Integration's scanner (605cac7)
-    run over this branch from a scratch copy reports no `server/reports` or
-    `server/routes/reports.ts` violation; re-run it after absorbing integration and after
-    wiring the ports. The scanner does not follow `ports.closeDrawerRow` (a call through an
-    object property), so the remote close's LO-11 sequence inside discounts' function stays
-    covered by the phase B DB suite.
+Wired at the merge on fiscal 027 and discounts 028 (wave2-cross-track §2 phase B):
 
-`tests/reports-phaseb-db.ts` (part of `test:db:reports`) skips until 027 and 028 are migrated
-and then runs against the real modules. Before the merge it ran twice outside the repository:
-first against the 027/028 DDL as fiscal.md and discounts.md write it, with stand-in ports;
-then (15 checks) in a scratch copy of this branch with fiscal's and discounts' current
-migrations and modules on a CI-parity database. The 15 checks cover S1–S7 with every
-reconciliation check, the breakdowns, order and tender lists, all twelve exception kinds with
-their summary, drawer figures against `drawerTotals`, X/Z prints and reprints, two
-concurrent Z prints numbered 1 and 2, a cashier's count slip followed by the manager's first
-corte Z (print 1, no corte_reprint; an uppercase drawer id in the same sequence), the corte
-del día, Hoy alerts, the role refusals, the
-remote close with its step-up and both orphan reasons, and the legacy `/report`. The phase A
-suite (`tests/reports-db.ts`) also refuses cashier, server and kitchen on every phase B
-function and checks the remote-close step-up before any 027/028 statement runs, so those
-checks already run in qualification. The phase B views were rendered only in an uncommitted
-setup (axe on Hoy and the Finanzas tabs, 390 px, CSV and print flows); item 13 re-proves that
-with committed tests at the merge.
+- `server/reports/ports.ts` holds the real fiscal and discounts functions; every report route
+  registers in `server/routes/reports.ts` and the old `/report` left `server/index.ts`
+  (C13; the legacy keys and semantics are kept for older bundles).
+- Operations mounts `TodayDashboard` and `ReportsView` with `online` and `refreshKey`; the
+  settings "Historial de auditoría" button opens the Bitácora. The `online` prop text is
+  discounts' (LD-18 LD-P5).
+- Corte buttons in discounts' components (C9, C10, LD-16 L6): `DrawerPanel` `actions` (Corte X
+  of an open drawer the viewer may see), `closedActions` (the closed drawer's corte Z or count
+  slip: managers, or the device's cashier for 12 h), `closeResultActions` (the close dialog's
+  result step, passed to `DrawerCloseDialog` `resultActions`), and `CashHistory` `rowActions`
+  (Imprimir corte Z next to "Revisar diferencia").
+- `RefundDialog` prints the kitchen cancellation chits of an item refund with "comanda al
+  enviar" (a failed chit offers only a print retry). Reason codes read with discounts'
+  `reasonLabel(kind, code)` in Excepciones, the Bitácora and their CSVs (C18).
+- `AUDIT_GROUPS` keeps the forward prefixes (`cfdi.`, `account.`, `public.*`) and puts the
+  platform's `job.` commands under Configuración (LD-21).
+- Shared cleanups follow LD-16 L5 (`tests/fixtures/reports-cleanup.ts`); grants and the
+  qualification chain follow fiscal and discounts (C23).
+- DB suites: `tests/reports-db.ts` (migration 029, snapshot, role refusals before any fiscal
+  or discounts statement) and `tests/reports-phaseb-db.ts` (S1–S7 and every report against
+  the real modules, plus fiscal's and discounts' commands on the demo tenant for the second
+  opinion's cases: the remote close's fingerprint and in-use refusal, a payment committed in
+  the middle of a corte X and a corte del día print, a whole-check comp's COGS, folio runs).
+  Browser: `tests/browser/finance.spec.ts` (spec §7.3 tests 1–9, 13, 14) and
+  `tests/browser/reports.spec.ts` (kitchen chits, A13.8, the HTTP routes with CSRF).
+
+For cfdi (030): the report-print key moved from advisory class 926 to **930** (cfdi's
+per-ticket key keeps 926; ARCHITECTURE LO-3), so `tests/lock-scan.ts` sees two distinct LO-3
+keys. The anchors stay: `collectAlerts()` (`// cfdi (030): alerts.push(...)` in
+`server/reports/today.ts`), `dayCorte()` (`extra.cfdi` in `server/reports/cortes.ts`) and
+`doc.extra.cfdi` rendering in the corte del día. Hoy's `AlertLine` shows no line for an alert
+code it cannot word, so cfdi maps its own codes there.
+
+Spec DB tests 12 (a 60-day summary in two fiscal chunks), 18 (no IVA and no margin without
+fiscal data) and 37 (a batchless refund fails `refunds_vs_fiscal`) run in the DB suites. Not
+done here (follow-ups): spec DB tests 3 for summaries, breakdowns and exceptions (DB-7/MON-6
+covers collections and activity pages), 33 (performance), 35 (fiscal's complement extraction,
+covered in fiscal's suite) and 38 (the acceptance rows, covered by unit test 21 on the
+document); `DocRow` adoption in the receipt documents (deferred to Wave 3, LD-16 L8).
 
 ## Limitations and decisions
 
@@ -329,7 +302,14 @@ The blind count slip numbered apart from the corte Z (kind `count_slip`) departs
 spec's literal `kind = "corte_" + p.kind` (§4.5 printDrawerCorte) to keep the spec's own rule
 that the second print *of a document* is the reprint (review RPT-R11); it needs the lead's
 sign-off. Decisions D1–D20 are in the spec; the binding lead decisions are LD-15 (reports Q1,
-Q4–Q7) and LD-16 (L3, L5, L7, L8).
+Q4–Q7), LD-16 (L3, L5, L7, L8), LD-27 (the second opinion) and LD-31 (class 930).
+
+Open for a lead decision (second opinion REPORTS-SECURITY-1): Hoy and Finanzas keep the last
+figures on screen offline (spec §5.2), and the lock screen's offline "Continuar como …" removes
+the lock without a PIN over the same mounted view, so a manager's cached report can be read on
+a locked tablet that went offline. Clearing report data when a lock engages, or remounting the
+view after an offline continue, would close it; it is not changed here because §5.2 asks for
+the cached figures.
 
 ## Sources
 
