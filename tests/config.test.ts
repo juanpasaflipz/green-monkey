@@ -162,9 +162,17 @@ describe("process configuration", () => {
             ? "postgresql://u:p@127.0.0.1:55439/green_monkey_dev"
             : name === "JWT_SECRET"
               ? secret
-              : name === "SIGNING_KEYS"
+              : name === "SIGNING_KEYS" || name === "CREDENTIAL_ENCRYPTION_KEY"
                 ? "k1:" + Buffer.alloc(32, 7).toString("base64url")
-                : "fixture",
+                : // cfdi (030) validates the shape of its own variables in
+                  // every environment (server/cfdi/config.ts).
+                  name === "FACTURAPI_API_KEY"
+                  ? "sk_user_fixture"
+                  : name === "FACTURAPI_TEST_KEY"
+                    ? "sk_test_fixture"
+                    : name === "CFDI_LIVE_ENABLED"
+                      ? "false"
+                      : "fixture",
         ],
       ),
     );
