@@ -27,7 +27,7 @@ import {
   idSequence,
   type PaymentValues,
 } from "../../shared/service";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import { api, ApiError, isSessionRejection } from "../api";
 import {
   attemptsForOrder,
@@ -376,7 +376,7 @@ export function Selling({
       } catch (e) {
         // Without the check the round cannot be placed; it stays parked.
         setParked(null);
-        setError(translateError((e as Error).message, locale));
+        setError(errorNotice(e, locale));
         return;
       }
     }
@@ -447,8 +447,7 @@ export function Selling({
               setPendingPayment(false);
               setError(t("offlineAttemptParked"));
             }
-          } else if (live)
-            setError(translateError((e as Error).message, locale));
+          } else if (live) setError(errorNotice(e, locale));
         }
       })();
     }
@@ -541,7 +540,7 @@ export function Selling({
           });
           setNotice(notes.join(" "));
         })
-        .catch((e) => setError(translateError((e as Error).message, locale)));
+        .catch((e) => setError(errorNotice(e, locale)));
     }
     if (table) {
       // A new check for a table never adds rounds to the order on screen.
@@ -765,7 +764,7 @@ export function Selling({
           setNotice(t("serviceStaleRefreshed"));
         } catch (refresh) {
           if (refresh instanceof HandledError) throw refresh;
-          setError(translateError((refresh as Error).message, locale));
+          setError(errorNotice(refresh, locale));
         }
         throw new HandledError(code);
       }
@@ -776,7 +775,7 @@ export function Selling({
         setClosedCheck("server");
         setError(
           code === "fiscal_ticket_issued"
-            ? translateError(code, locale)
+            ? errorNotice(e, locale)
             : t("serviceCheckClosedKeep"),
         );
         throw new HandledError(code, true);
@@ -831,7 +830,7 @@ export function Selling({
       if (code === "offline_check_paid") setClosedCheck("offline");
       if (CATALOG_CODES.includes(code))
         window.dispatchEvent(new Event("gm-menu-refresh"));
-      setError(translateError(code, locale));
+      setError(errorNotice(e, locale));
       throw new HandledError(code);
     } finally {
       if (!landed) requestFailed();
@@ -869,7 +868,7 @@ export function Selling({
     payingRef.current = true;
     setPaying(true);
     void collect(values, items)
-      .catch((e) => setError(translateError((e as Error).message, locale)))
+      .catch((e) => setError(errorNotice(e, locale)))
       .finally(() => {
         payingRef.current = false;
         setPaying(false);
@@ -972,7 +971,7 @@ export function Selling({
                   );
               });
             } catch (e) {
-              setError(translateError((e as Error).message, locale));
+              setError(errorNotice(e, locale));
             } finally {
               setPendingPayment(!!(await db.cache.get(attemptId)));
               setBusy(false);
@@ -1101,8 +1100,7 @@ export function Selling({
       }
       // SVC-REV-1: a switch waiting for this payment keeps its error on screen.
       if (epoch === contextEpoch.current) requestFailed();
-      if (!(e instanceof HandledError))
-        setError(translateError((e as Error).message, locale));
+      if (!(e instanceof HandledError)) setError(errorNotice(e, locale));
       // "Enviar como orden nueva" lives in the cart: close the dialog for it.
       else if (e.offerNew) setPayment(false);
     } finally {

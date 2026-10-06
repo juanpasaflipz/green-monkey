@@ -8,7 +8,7 @@ import {
   type OrderSummary,
 } from "../../shared/service";
 import { api } from "../api";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import { channelLabel } from "../labels";
 import { Badge, Button, Empty, Field } from "../components/ui";
 import {
@@ -129,7 +129,7 @@ export function Orders({
       );
       setError("");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
       throw e;
     } finally {
       setLoaded(true);
@@ -185,7 +185,7 @@ export function Orders({
       });
       setNextCursor(r.nextCursor);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   async function openDialog(
@@ -196,7 +196,7 @@ export function Orders({
     try {
       setDialog({ kind, order: await api<Order>("/orders/" + id) });
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusyId(null);
     }
@@ -210,7 +210,7 @@ export function Orders({
       closeKeys.current.delete(o.id);
       refresh();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusyId(null);
     }

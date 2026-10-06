@@ -14,7 +14,7 @@ import {
   validatePayment,
   type PaymentValues,
 } from "../../shared/service";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { Button, Field, Modal } from "../components/ui";
 import { moneyFormatter } from "./Receipt";
 
@@ -277,7 +277,7 @@ export function PaymentDialog({
               setAmountFollows(false);
               setReceivedInput(null);
             } catch (e) {
-              setLocalError(translateError((e as Error).message, locale));
+              setLocalError(errorNotice(e, locale));
             }
           }}
         >

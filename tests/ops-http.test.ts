@@ -7,6 +7,7 @@ import { apiErrorHandler } from "../server/api-errors.js";
 import { clientIp, requestLog, setLogSink } from "../server/logging.js";
 import { opsLimiter } from "../server/routes/ops.js";
 import { DomainError } from "../shared/domain.js";
+import { supportReference } from "../shared/support.js";
 
 let lines: Record<string, any>[] = [];
 let server: http.Server | null = null;
@@ -185,6 +186,25 @@ describe("request log, client address and error logging", () => {
     expect(JSON.stringify(lines)).not.toContain("SECRET-ORDERING-TOKEN");
     const access = lines.find((l) => l.message === "http_request")!;
     expect(access).toMatchObject({ level: "error", status: 500 });
+  });
+
+  it("a 500 carries its request id in X-Request-Id and the body, and its log lines carry the support reference staff read out (LD-17)", async () => {
+    const origin = await start();
+    const response = await fetch(`${origin}/api/public/abc/orders`);
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: "internal_error",
+      requestId: expect.any(String),
+    });
+    expect(response.headers.get("x-request-id")).toBe(body.requestId);
+    const ref = supportReference(body.requestId);
+    expect(ref).toMatch(/^[0-9A-F]{8}$/);
+    for (const message of ["request_failed", "http_request"])
+      expect(lines.find((l) => l.message === message)).toMatchObject({
+        requestId: body.requestId,
+        supportRef: ref,
+      });
   });
 
   it("DomainError 5xx is logged; reads log at debug; successful tenant writes notify the jobs runner", async () => {

@@ -8,7 +8,7 @@ import {
   type ExceptionRow,
   type ExceptionSummary,
 } from "../../../../shared/reports";
-import { strings, translateError } from "../../../i18n";
+import { strings, errorNotice } from "../../../i18n";
 import { Button, Field } from "../../../components/ui";
 import { OrderDetail } from "../../OrderDetail";
 import { fetchAllPages, fetchExceptions, fetchFilters } from "../api";
@@ -68,7 +68,7 @@ export function ExceptionsTab({
     try {
       await list.loadMore();
     } catch (e) {
-      setNotice(translateError((e as Error).message, locale));
+      setNotice(errorNotice(e, locale));
     }
   }
   async function all() {
@@ -90,7 +90,7 @@ export function ExceptionsTab({
       );
       if (result.truncated) setNotice(t.reportsCsvTruncated);
     } catch (e) {
-      setNotice(translateError((e as Error).message, locale));
+      setNotice(errorNotice(e, locale));
     } finally {
       setCsvBusy(false);
     }
@@ -135,7 +135,7 @@ export function ExceptionsTab({
       );
       if (result.truncated) setNotice(t.reportsCsvTruncated);
     } catch (e) {
-      setNotice(translateError((e as Error).message, locale));
+      setNotice(errorNotice(e, locale));
     } finally {
       setCsvBusy(false);
     }

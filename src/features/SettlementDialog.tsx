@@ -9,7 +9,7 @@ import {
 import { parseMoneyInput, type OrderSummary } from "../../shared/service";
 import { api } from "../api";
 import { Button, Field, Modal } from "../components/ui";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import { printDocument, usePrintSettings } from "../print";
 import { ReceiptDocument, auditPrint } from "./Receipt";
 import { onlineChargeRefusal } from "./offline/useOnlineChargeBlocks";
@@ -158,7 +158,7 @@ export function SettlementDialog({
             });
             await saved();
           } catch (err) {
-            setError(translateError((err as Error).message, locale));
+            setError(errorNotice(err, locale));
           } finally {
             setBusy(false);
           }

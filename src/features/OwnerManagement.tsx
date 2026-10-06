@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { PRO_OFFER } from "../../shared/plans";
 import { Button, Field } from "../components/ui";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import type { AccountConfig } from "./accountConfig";
 
 type Restaurant = {
@@ -125,7 +125,7 @@ export function OwnerManagement({
       setError(
         // account (031): a material change waits for the console's acceptance.
         code === "legal_acceptance_required"
-          ? translateError(code, locale)
+          ? errorNotice(e, locale)
           : code === "pro_required"
             ? es
               ? "La sucursal de origen necesita Pro activo para agregar otra ubicación."

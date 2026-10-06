@@ -1,4 +1,5 @@
 import type { Locale } from "../shared/domain";
+import { supportReference } from "../shared/support";
 import ops from "./i18n/ops";
 import access from "./i18n/access";
 import service from "./i18n/service";
@@ -708,4 +709,48 @@ export const errorText: Record<string, readonly [string, string]> = {
 };
 export function translateError(code: string, locale: Locale) {
   return errorText[code]?.[locale === "es" ? 0 : 1] ?? strings[locale].error;
+}
+
+/** Answers that mean the request itself was malformed: a client bug support has to trace. */
+const MALFORMED_REQUEST = new Set([
+  "invalid_input",
+  "invalid_json",
+  "payload_too_large",
+  "request_aborted",
+]);
+
+/**
+ * The "Referencia de soporte" of a failed request (docs/RUNBOOK.md "Signals"), or null.
+ * Only for a server error (5xx) or an unexpected 4xx (a code this client has no text for,
+ * or a malformed request), and only when the server returned its request id; domain
+ * answers ("check_closed", a 401 sign-in) and requests that never reached the server
+ * carry none.
+ */
+export function supportReferenceOf(error: unknown): string | null {
+  const e = error as
+    | { status?: unknown; requestId?: unknown; message?: unknown }
+    | null
+    | undefined;
+  if (typeof e?.requestId !== "string" || !e.requestId) return null;
+  if (typeof e.status !== "number") return null;
+  const code = typeof e.message === "string" ? e.message : "";
+  const unexpected =
+    e.status >= 500 ||
+    (e.status >= 400 &&
+      e.status !== 401 &&
+      (!Object.hasOwn(errorText, code) || MALFORMED_REQUEST.has(code)));
+  return unexpected ? supportReference(e.requestId) : null;
+}
+
+/**
+ * The notice for a caught error: its translated code, followed by "Referencia de soporte:
+ * XXXXXXXX" when support needs the request to find it in the logs (supportReferenceOf).
+ */
+export function errorNotice(error: unknown, locale: Locale): string {
+  const code = (error as { message?: unknown } | null | undefined)?.message;
+  const text = translateError(typeof code === "string" ? code : "", locale);
+  const ref = supportReferenceOf(error);
+  return ref
+    ? `${text} ${strings[locale].opsSupportReference.replace("{ref}", ref)}`
+    : text;
 }

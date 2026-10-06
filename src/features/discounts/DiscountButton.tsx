@@ -4,7 +4,7 @@ import type { Locale, Order, Session } from "../../../shared/domain";
 import { balanceDue } from "../../../shared/discounts";
 import { api } from "../../api";
 import { Button, Modal } from "../../components/ui";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, type Key } from "../../i18n";
 import { DiscountDialog } from "./DiscountDialog";
 import "./discounts.css";
 
@@ -56,7 +56,7 @@ export function DiscountButton({
       // The freshest copy: units, payments and discounts of this order.
       setTarget(await api<Order>("/orders/" + o.id));
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -118,7 +118,7 @@ export function DiscountButton({
                 } catch (e) {
                   // Selling did not handle it: say so here and keep the
                   // confirmation open for a retry (DSC-R8).
-                  setSendError(translateError((e as Error).message, locale));
+                  setSendError(errorNotice(e, locale));
                   setBusy(false);
                   return;
                 }

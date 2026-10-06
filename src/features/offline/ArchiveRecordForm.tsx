@@ -4,7 +4,7 @@ import { api } from "../../api";
 import { db, type Pending } from "../../offline";
 import { settleAlreadySynced } from "../../offline-queue";
 import { Button, Field } from "../../components/ui";
-import { translateError } from "../../i18n";
+import { errorNotice } from "../../i18n";
 import { withLocks } from "../../platform";
 import { translator } from "./format";
 
@@ -58,7 +58,7 @@ export function ArchiveRecordForm({
       });
       done();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

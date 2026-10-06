@@ -4,7 +4,7 @@ import { lineRemaining } from "../../shared/settlement";
 import { changeDue, roundNotes } from "../../shared/service";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { api } from "../api";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { channelLabel, tenderMethodLabel } from "../labels";
 import { Badge, Button, Field, Modal } from "../components/ui";
 import { printDocument, usePrintSettings } from "../print";
@@ -85,7 +85,7 @@ export function OrderDetail({
       setOrder(await api<Order>("/orders/" + orderId));
       setError("");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -469,7 +469,7 @@ export function OrderDetail({
                     closeKey.current = crypto.randomUUID();
                     await saved();
                   } catch (e) {
-                    setError(translateError((e as Error).message, locale));
+                    setError(errorNotice(e, locale));
                   } finally {
                     setBusy(false);
                   }
@@ -634,7 +634,7 @@ export function NoteDialog({
             await saved(o);
             close();
           } catch (err) {
-            setError(translateError((err as Error).message, locale));
+            setError(errorNotice(err, locale));
           } finally {
             setBusy(false);
           }

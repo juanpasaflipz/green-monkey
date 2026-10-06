@@ -7,7 +7,7 @@ import {
 import { parseMoneyInput } from "../../../shared/service";
 import { api } from "../../api";
 import { Button, Field, Modal } from "../../components/ui";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, translateError, type Key } from "../../i18n";
 import { fill } from "../discounts/format";
 import { DrawerReviewDialog } from "./DrawerReviewDialog";
 import "./cash.css";
@@ -140,7 +140,7 @@ export function DrawerCloseDialog({
       setResult(view);
       setStep("result");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
       setStep("count");
     } finally {
       setBusy(false);

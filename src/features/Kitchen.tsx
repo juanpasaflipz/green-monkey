@@ -14,7 +14,7 @@ import {
   type KitchenRound,
 } from "../../shared/service";
 import { api } from "../api";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { channelLabel } from "../labels";
 import { Badge, Button, Empty, Modal } from "../components/ui";
 import { usePoll, useStoredState } from "../serviceHooks";
@@ -352,7 +352,7 @@ export function Kitchen({
       }
       setActionError("");
     } catch (e) {
-      setActionError(translateError((e as Error).message, locale));
+      setActionError(errorNotice(e, locale));
     } finally {
       busyRef.current.delete(id);
       setBusyIds(new Set(busyRef.current));

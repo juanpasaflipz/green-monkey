@@ -28,7 +28,7 @@ import { persistenceStatus } from "../storage-persistence";
 import { serviceWorkerSupported } from "../service-worker";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";
-import { translateError } from "../i18n";
+import { errorNotice, translateError } from "../i18n";
 import { ArchiveRecordForm } from "./offline/ArchiveRecordForm";
 import { OfflineTableServiceSetting } from "./offline/OfflineTableServiceSetting";
 import { clockTime, rowErrorCode, translator } from "./offline/format";
@@ -147,7 +147,7 @@ export function RecoveryQueue({
         );
         setAttempts(value.attempts);
       },
-      error: (e: Error) => setError(translateError(e.message, locale)),
+      error: (e: Error) => setError(errorNotice(e, locale)),
     });
     return () => subscription.unsubscribe();
   }, [visible]);
@@ -164,9 +164,7 @@ export function RecoveryQueue({
   useEffect(() => {
     if (!manager || !net.canUseServer) return;
     const refresh = () =>
-      void loadServer().catch((e: Error) =>
-        setError(translateError(e.message, locale)),
-      );
+      void loadServer().catch((e: Error) => setError(errorNotice(e, locale)));
     refresh();
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") refresh();
@@ -192,7 +190,7 @@ export function RecoveryQueue({
       await fn();
       if (net.canUseServer) await loadServer().catch(() => {});
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

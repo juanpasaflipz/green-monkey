@@ -6,7 +6,7 @@ import type {
   MethodTotals,
   TenderReportRow,
 } from "../../../../shared/reports";
-import { strings, translateError } from "../../../i18n";
+import { strings, errorNotice } from "../../../i18n";
 import { tenderMethodLabel } from "../../../labels";
 import { Badge, Button, Field } from "../../../components/ui";
 import { OrderDetail } from "../../OrderDetail";
@@ -86,7 +86,7 @@ export function PaymentsTab({
     try {
       await list.loadMore();
     } catch (e) {
-      setNotice(translateError((e as Error).message, locale));
+      setNotice(errorNotice(e, locale));
     }
   }
   async function csv() {
@@ -105,7 +105,7 @@ export function PaymentsTab({
       );
       if (all.truncated) setNotice(t.reportsCsvTruncated);
     } catch (e) {
-      setNotice(translateError((e as Error).message, locale));
+      setNotice(errorNotice(e, locale));
     } finally {
       setCsvBusy(false);
     }

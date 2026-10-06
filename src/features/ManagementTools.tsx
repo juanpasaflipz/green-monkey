@@ -1,7 +1,7 @@
 import { currencyExponent } from "../../shared/domain";
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { Button, Field, Modal } from "../components/ui";
 import { minor, type Session, type Locale } from "../../shared/domain";
 import { loadAccountConfig } from "./accountConfig";
@@ -52,7 +52,7 @@ export function ManagementTools({
         api("/inventory").then(setStock),
         api("/suppliers").then(setSuppliers),
         api("/team").then(setTeam),
-      ]).catch((e) => setError(translateError(e.message, locale)));
+      ]).catch((e) => setError(errorNotice(e, locale)));
     }
   }, [mode]);
   async function save(path: string, body: unknown) {
@@ -62,7 +62,7 @@ export function ManagementTools({
       setDialogOperationId(crypto.randomUUID());
       await refresh();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   return (
@@ -113,7 +113,7 @@ export function ManagementTools({
                       });
                       setLink(location.origin + result.path);
                     } catch (e) {
-                      setError(translateError((e as Error).message, locale));
+                      setError(errorNotice(e, locale));
                     }
                   }}
                 >
@@ -205,7 +205,7 @@ export function ManagementTools({
                       await api("/imports/preview", JSON.parse(rawImport)),
                     );
                   } catch (e) {
-                    setError(translateError((e as Error).message, locale));
+                    setError(errorNotice(e, locale));
                   }
                 }}
               >
@@ -273,7 +273,7 @@ export function ManagementTools({
                       reason: val("reason"),
                     });
                 } catch (e) {
-                  setError(translateError((e as Error).message, locale));
+                  setError(errorNotice(e, locale));
                 }
               }}
             >

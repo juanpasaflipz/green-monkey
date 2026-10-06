@@ -49,8 +49,23 @@ acknowledged a critical alert within 15 minutes during service hours
 
 Alerts carry codes and counts only, never personal or tenant data. Logs are
 single-line JSON in Railway: filter with `@level:error`, `@message:http_request`,
-`@requestId:<id>` (the "Referencia de soporte" a cashier reads out is the first
-8 characters of a request id), `@route:/api/orders/:id`.
+`@requestId:<id>`, `@supportRef:<ref>`, `@route:/api/orders/:id`.
+
+**Referencia de soporte.** When a request fails on the server (any 5xx) or gets a
+4xx the screen has no specific text for (an unknown code, or a malformed request:
+`invalid_input`, `invalid_json`, `payload_too_large`, `request_aborted`), the red
+error notice on that screen ends with "Referencia de soporte: 3F2A9C1B" (English
+UI: "Support reference: 3F2A9C1B"). The reference is the first 8 letters and
+digits of the request id, in capitals; the full id is the response's
+`X-Request-Id` header and the error body's `requestId` (Railway's
+`X-Railway-Request-Id` when the edge sent one). Every log line of that request
+carries the reference as `supportRef`: search `@supportRef:3F2A9C1B` exactly as
+the cashier reads it (capital letters), then `@requestId:<id>` with the full id
+from a matched line to see all of that request's lines (for a 5xx,
+`request_failed` has the error name, message, stack and route). Domain refusals
+the screen explains (for example a closed check or a wrong PIN) and failures that
+never reached the server (no connection, timeouts) show no reference: there is
+no server line to find.
 
 ## "The POS is down" playbook
 

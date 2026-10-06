@@ -6,7 +6,7 @@ import {
   type Session,
 } from "../../../shared/domain";
 import type { CorteDocument, DrawerRow } from "../../../shared/reports";
-import { strings, translateError } from "../../i18n";
+import { strings, errorNotice, translateError } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
 import { fetchDrawerCorte, remoteClose } from "./api";
 import { CortePreview } from "./CortePreview";
@@ -65,7 +65,7 @@ export function RemoteCloseDialog({
       setLive(doc);
       return doc;
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
       return null;
     }
   }
@@ -111,7 +111,7 @@ export function RemoteCloseDialog({
       closed();
     } catch (e) {
       const code = (e as Error).message;
-      setError(translateError(code, locale));
+      setError(errorNotice(e, locale));
       if (code === "reports_drawer_changed") {
         // Money moved since the dialog read the drawer: read it again and count again.
         setOperationId(crypto.randomUUID());

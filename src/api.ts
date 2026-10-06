@@ -149,6 +149,12 @@ async function request<T>(
         observer?.({ ok: true, latencyMs: Date.now() - started, path });
         return data as T;
       }
+      // The server's request id (body, else the X-Request-Id header): the
+      // "Referencia de soporte" an error notice shows (errorNotice).
+      const requestId =
+        typeof data?.requestId === "string"
+          ? data.requestId
+          : (response.headers.get("x-request-id") ?? undefined);
       if (typeof data?.error === "string") {
         if (data.error === "session_changed" && typeof window !== "undefined")
           window.dispatchEvent(new Event("gm-session-changed"));
@@ -160,13 +166,18 @@ async function request<T>(
             : response.status >= 500
               ? "server"
               : "domain",
-          data.requestId,
+          requestId,
         );
       }
       if (response.status === 429)
-        throw new ApiError("rate_limited", 429, "server");
+        throw new ApiError("rate_limited", 429, "server", requestId);
       if (response.status >= 500)
-        throw new ApiError("server_unavailable", response.status, "server");
+        throw new ApiError(
+          "server_unavailable",
+          response.status,
+          "server",
+          requestId,
+        );
       throw new ApiError("invalid_response", response.status, "domain");
     } catch (e) {
       if (!(e instanceof ApiError)) throw e;

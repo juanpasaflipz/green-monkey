@@ -4,10 +4,12 @@ export default defineArea({
   es: {
     opsOpJobRequeued: "Tarea reintentada",
     opsOpJobCancelled: "Tarea cancelada",
+    opsSupportReference: "Referencia de soporte: {ref}",
   },
   en: {
     opsOpJobRequeued: "Task retried",
     opsOpJobCancelled: "Task cancelled",
+    opsSupportReference: "Support reference: {ref}",
   },
   errors: {
     server_draining: [

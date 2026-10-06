@@ -14,7 +14,7 @@ import {
 } from "../../../shared/menu";
 import { productInput } from "../../../shared/menu-schema";
 import { api } from "../../api";
-import { strings, translateError } from "../../i18n";
+import { strings, errorNotice, translateError } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
 import { CategoryDialog } from "./CategoryDialog";
 import { ConfirmDialog, useDiscardGuard } from "./ConfirmDialog";
@@ -241,10 +241,9 @@ export function ProductEditor({
       const code = (e as Error).message;
       setStale(code === "menu_changed" || code === "operation_conflict");
       setError(
-        translateError(
-          code === "operation_conflict" ? "menu_changed" : code,
-          locale,
-        ),
+        code === "operation_conflict"
+          ? translateError("menu_changed", locale)
+          : errorNotice(e, locale),
       );
       return null;
     } finally {
@@ -272,7 +271,7 @@ export function ProductEditor({
     } catch (e) {
       const code = (e as Error).message;
       setStale(code === "menu_changed");
-      setError(translateError(code, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -292,7 +291,7 @@ export function ProductEditor({
       onAvailability?.(product.id, next);
     } catch (e) {
       setAvailable(!next);
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
 

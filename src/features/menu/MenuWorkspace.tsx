@@ -7,7 +7,7 @@ import type {
   MenuGroup,
 } from "../../../shared/menu";
 import { api } from "../../api";
-import { translateError } from "../../i18n";
+import { errorNotice, translateError } from "../../i18n";
 import { Badge, Button, Empty, Modal } from "../../components/ui";
 import { CategoryDialog } from "./CategoryDialog";
 import { GroupEditor } from "./GroupEditor";
@@ -101,8 +101,7 @@ export function MenuWorkspace({
       const next = await api<MenuEditorPayload>("/menu");
       if (mine === generation.current) setPayload(next);
     } catch (e) {
-      if (mine === generation.current)
-        setError(translateError((e as Error).message, locale));
+      if (mine === generation.current) setError(errorNotice(e, locale));
     }
   }
   /** Optimistic local change; supersedes any reload already in flight. */
@@ -128,7 +127,7 @@ export function MenuWorkspace({
       saved();
       return true;
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
       await load();
       return false;
     } finally {

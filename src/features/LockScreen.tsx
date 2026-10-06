@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { Lock } from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import type { TerminalState, TerminalStaff } from "../../shared/access";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import { ApiError, api, holdRequests } from "../api";
 import { Button } from "../components/ui";
 import {
@@ -179,7 +179,7 @@ export function LockScreen({
         return;
       }
       const code = (e as ApiError).message;
-      setError(translateError(code, locale));
+      setError(errorNotice(e, locale));
       if (["pin_locked", "pin_hard_locked"].includes(code))
         await refreshTerminal();
     } finally {

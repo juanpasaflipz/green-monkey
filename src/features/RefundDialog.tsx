@@ -23,7 +23,7 @@ import {
   ManagerApproval,
   type ApprovalValue,
 } from "../components/ManagerApproval";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import { tenderMethodLabel } from "../labels";
 import { printDocument, readPrintSettings } from "../print";
 import { RefundSlip } from "./discounts/RefundSlip";
@@ -189,7 +189,7 @@ export function RefundDialog({
     try {
       plan = planItemRefund(order, entries);
     } catch (e) {
-      planError = translateError((e as Error).message, locale);
+      planError = errorNotice(e, locale);
     }
   const tender =
     tab === "amount" ? amountTenders.find((x) => x.id === tenderId) : undefined;
@@ -316,7 +316,7 @@ export function RefundDialog({
       setError(
         code === "operation_conflict"
           ? t("discountsOperationRecorded")
-          : translateError(code, locale),
+          : errorNotice(e, locale),
       );
       // CONCURRENCY-4: an earlier attempt with this id was recorded; the
       // reloaded check shows it, a new confirm is a new operation, and leaving

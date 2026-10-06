@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import type { TableCheck, TableOccupancy } from "../../shared/service";
 import { api } from "../api";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { Badge, Button, Empty, Modal } from "../components/ui";
 import { requestSellingContext, usePoll } from "../serviceHooks";
 import { moneyFormatter } from "./Receipt";
@@ -39,7 +39,7 @@ export function Tables({
         setTables(await api<TableOccupancy[]>("/service/tables"));
         setError("");
       } catch (e) {
-        setError(translateError((e as Error).message, locale));
+        setError(errorNotice(e, locale));
         throw e;
       }
     },
@@ -66,7 +66,7 @@ export function Tables({
     try {
       await fn();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
       poll.refresh();

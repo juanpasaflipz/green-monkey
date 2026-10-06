@@ -4,7 +4,7 @@ import { Button, Field } from "../components/ui";
 import { changeRestaurant, db } from "../offline";
 import { clearSessionScope } from "../api";
 import { OwnerManagement } from "./OwnerManagement";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice } from "../i18n";
 import { AccountCenter } from "./AccountCenter";
 import { LegalAcceptance, type LegalAccepted } from "./LegalAcceptance";
 import {
@@ -234,7 +234,7 @@ export function OwnerAccess({
       if (code === "owner_reauth_required") {
         // The device was unpaired after this Google sign-in, which the server
         // has now ended: show the Google sign-in again (A6).
-        setTransitionError(translateError(code, locale));
+        setTransitionError(errorNotice(error, locale));
         await refresh();
         return;
       }
@@ -308,7 +308,7 @@ export function OwnerAccess({
               setFailed(true);
               return;
             }
-            setTransitionError(translateError(code, locale));
+            setTransitionError(errorNotice(error, locale));
             // Changed documents or a paused signup: read the settings
             // served now (past the 5-minute cache), so the form asks
             // for the current versions or hides itself.
@@ -586,9 +586,7 @@ export function OwnerAccess({
                     setPreview(null);
                     await refresh();
                   } catch (error) {
-                    setTransitionError(
-                      translateError((error as Error).message, locale),
-                    );
+                    setTransitionError(errorNotice(error, locale));
                   } finally {
                     setBusy(false);
                   }

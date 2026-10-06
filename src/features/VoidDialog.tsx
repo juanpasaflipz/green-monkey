@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../api";
 import { Button, Field, Modal } from "../components/ui";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { stepUpExempt } from "../../shared/access";
 import { voidCandidates } from "../../shared/discounts";
@@ -170,7 +170,7 @@ export function VoidDialog({
               }
               close();
             } catch (err) {
-              setError(translateError((err as Error).message, locale));
+              setError(errorNotice(err, locale));
             } finally {
               setBusy(false);
             }

@@ -29,7 +29,7 @@ import {
   ManagerApproval,
   type ApprovalValue,
 } from "../../components/ManagerApproval";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, translateError, type Key } from "../../i18n";
 import { countText, DISCOUNT_REASON_LABELS, fill, lineLabel } from "./format";
 import { loadMoneyControls, useMoneyControls } from "./useMoneyControls";
 import "./discounts.css";
@@ -172,7 +172,7 @@ export function DiscountDialog({
         amount,
       });
     } catch (e) {
-      inputError = translateError((e as Error).message, locale);
+      inputError = errorNotice(e, locale);
     }
   // The server's figure (MONEY-2/MONEY-3): the request's kind rule and, per
   // check, the staff discounts already recorded without an approver.
@@ -234,7 +234,7 @@ export function DiscountDialog({
             ? t("discountsTicketIssued")
             : code === "operation_conflict"
               ? t("discountsOperationRecorded")
-              : translateError(code, locale),
+              : errorNotice(e, locale),
       );
       // An earlier attempt with this id was recorded (CONCURRENCY-4): the
       // reloaded check shows it, and a new confirm is a new operation.

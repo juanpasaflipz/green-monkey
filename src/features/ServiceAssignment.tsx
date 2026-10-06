@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Button, Field, Modal } from "../components/ui";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import type { Locale, Order } from "../../shared/domain";
 export function ServiceAssignment({
   order,
@@ -27,7 +27,7 @@ export function ServiceAssignment({
   useEffect(() => {
     void api("/service/options")
       .then(setOptions)
-      .catch((e) => setError(translateError(e.message, locale)));
+      .catch((e) => setError(errorNotice(e, locale)));
   }, []);
   return (
     <Modal title={t("assignService")} close={close} closeLabel={t("close")}>
@@ -60,7 +60,7 @@ export function ServiceAssignment({
               await saved();
               close();
             } catch (e) {
-              setError(translateError((e as Error).message, locale));
+              setError(errorNotice(e, locale));
             } finally {
               setBusy(false);
             }

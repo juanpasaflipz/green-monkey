@@ -9,7 +9,7 @@ import {
   type ReportAlert,
   type TodaySummary,
 } from "../../../shared/reports";
-import { strings, translateError } from "../../i18n";
+import { strings, errorNotice } from "../../i18n";
 import { usePoll } from "../../serviceHooks";
 import { Button } from "../../components/ui";
 import { fetchToday } from "./api";
@@ -60,7 +60,7 @@ export function TodayDashboard({
         setData(await fetchToday());
         setError("");
       } catch (e) {
-        setError(translateError((e as Error).message, locale));
+        setError(errorNotice(e, locale));
         throw e;
       }
     },

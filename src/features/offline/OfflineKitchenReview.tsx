@@ -3,7 +3,7 @@ import type { Locale, Session } from "../../../shared/domain";
 import { api } from "../../api";
 import { useConnectivity } from "../../connectivity";
 import { Button, Modal } from "../../components/ui";
-import { translateError } from "../../i18n";
+import { errorNotice } from "../../i18n";
 import { lanePollDelay } from "../../offline-policy";
 import { clockTime, translator } from "./format";
 import "./offline.css";
@@ -131,7 +131,7 @@ export function OfflineKitchenReview({
     try {
       await fn();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
       const loaded = await load();

@@ -1,7 +1,18 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
 // Operations surface of the compiled server: request ids, body errors, the
-// public status document and the client-address probe. No login needed.
+// public status document and the client-address probe (no login), and the
+// support reference staff read out from an error notice (signed in).
+
+async function login(page: Page) {
+  await page.goto("/app");
+  await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Hoy", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+}
 
 test("malformed JSON gets 400 invalid_json with a matching X-Request-Id", async ({
   request,
@@ -86,4 +97,36 @@ test("the client-address probe returns only the requester's address", async ({
   const health = await request.get("/api/health");
   expect(health.status()).toBe(200);
   expect(await health.json()).toEqual({ ok: true });
+});
+
+test("a server error notice shows the Referencia de soporte staff read out (LD-17, RUNBOOK Signals)", async ({
+  page,
+}) => {
+  await login(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  const requestId = "3f2a9c1b-7d4e-4c2a-9b1e-0123456789ab";
+  // The server fails before creating anything; its answer carries the id.
+  await page.route("**/api/orders", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill({
+          status: 500,
+          headers: { "X-Request-Id": requestId },
+          json: { error: "internal_error", requestId },
+        })
+      : route.continue(),
+  );
+  try {
+    await page
+      .locator("button.product")
+      .filter({ has: page.getByText("Taco de hongos", { exact: true }) })
+      .click();
+    await page.getByLabel("Nombre para llamar").fill("Soporte " + Date.now());
+    await page
+      .getByRole("button", { name: "Enviar a cocina", exact: true })
+      .click();
+    const notice = page.locator(".cart-bottom [role=alert]");
+    await expect(notice).toContainText("Referencia de soporte: 3F2A9C1B");
+  } finally {
+    await page.unroute("**/api/orders");
+  }
 });

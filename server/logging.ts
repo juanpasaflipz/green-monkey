@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type express from "express";
+import { supportReference } from "../shared/support.js";
 
 /**
  * Structured JSON logger. One line per call on stdout in the shape Railway
@@ -143,6 +144,10 @@ function emit(level: Level, message: string, bound: Attrs, attrs?: Attrs) {
     ...(redact(bound) as Attrs),
     ...(attrs ? (redact(attrs) as Attrs) : {}),
   };
+  // The "Referencia de soporte" staff read out (RUNBOOK "Signals"): every line
+  // of a request is searchable as @supportRef:<ref>.
+  if (typeof record.requestId === "string" && record.supportRef === undefined)
+    record.supportRef = supportReference(record.requestId);
   try {
     sink(JSON.stringify(record));
   } catch {

@@ -3,7 +3,7 @@ import type { Locale, Session } from "../../shared/domain";
 import { stepUpExempt } from "../../shared/access";
 import { api, ApiError } from "../api";
 import { Button, Field } from "../components/ui";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice, translateError } from "../i18n";
 import "./account.css";
 
 type Privacy = { privacyNoticeUrl: string | null; version: number };
@@ -55,7 +55,7 @@ export function AccountPrivacy({
       setPrivacy(p);
       setUrl(p.privacyNoticeUrl ?? "");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -88,7 +88,7 @@ export function AccountPrivacy({
       setError(
         code === "invalid_input"
           ? t.accountPrivacyUrlInvalid
-          : translateError(code, locale),
+          : errorNotice(e, locale),
       );
       if (code === "settings_changed") {
         setOperationId(crypto.randomUUID());
