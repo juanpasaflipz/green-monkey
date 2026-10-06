@@ -201,7 +201,7 @@ Every command that locks rows takes its locks **in this order**, skipping the le
 | 21 | `saveNegativeStockPolicy` (`server/stock-items.ts`) | 1 (`once()` skips `FOR SHARE`) → 2 `FOR NO KEY UPDATE` → update | Conforms since Wave 2.0 (it used to upgrade SHARE→UPDATE: D20, P-18; `FOR NO KEY UPDATE` since the platform hardening, PLATFORM-LOCKS-5). |
 | 22 | `resolvePaymentAttempt` (`server/offline-attempts.ts`) | 1 → 2 → 1′ (the attempt's payment key) → 5 → 11 → refresh [12] | Conforms (LO-R5). |
 | 23 | `resolveOfflineRecoveryTask` (`server/offline-sync.ts`); `recordPrint` (`server/checks.ts`) | 1 → 2 → 5 → task row / no locks | Conforms. |
-| 24 | fiscal `saveFiscalProfile` / `repairMissingTickets` (`server/fiscal.ts`) | 1 → 2 → 3 (`fiscal.profile` key 922, then the profile row) / 1 → 2 → 5 (all candidates, one statement sorted by id) → 12 per ticket | Conforms (fiscal DB "lock order", "repair"). |
+| 24 | fiscal `saveFiscalProfile` / `repairMissingTickets` (`server/fiscal.ts`) | 1 → 2 → 3 (`fiscal.profile` key 922, then the profile row) / 1 → 2 → 5 (at most 20 candidates, one statement sorted by id; then the missing-ticket predicate again) → reads → 12 (two statements per ticket, then one insert each for all category and audit rows) | Conforms (fiscal DB "lock order", "CONCURRENCY-1", "SAT-6"). |
 | 25 | discounts `applyDiscount` / `reverseDiscount` | 1 → 2 → 5 → 5a → 8 → [refresh → 12] / 1 → 2 → 5 → 5a → 8 | As specified in discounts' spec. |
 | 26 | discounts `recordRefund`: items / amount | 1 → 2 → 5 → 5a → 6 → 7 → 9 → 10 (kitchen cancel) → 11 / 1 → 2 → 5 → 6 → 11 | As specified; never calls `refresh`. |
 | 27 | discounts `saveMoneyControls`; `closeCash`/`closeDrawerRow`/`reviewDrawer` | 1 → 2 → 3 / 1 → 2 → 11 | As specified. |

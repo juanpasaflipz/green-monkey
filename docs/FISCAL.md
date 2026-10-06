@@ -1,7 +1,7 @@
 # Fiscal (Mexico)
 
-Status on October 5, 2026: **fiscal integration (migration 027) built and verified
-locally**. Every settled sale gets an immutable ticket with a consecutive, gapless folio,
+Status on October 6, 2026: **fiscal integration (migration 027) built, hardened after its
+second opinion (lead decision LD-25) and verified locally**. Every settled sale gets an immutable ticket with a consecutive, gapless folio,
 the issuer's fiscal data and its IVA per rate; refunds write immutable IVA adjustments; the
 owner keeps the restaurant's fiscal profile in Configuración; managers see the ticket
 register, the IVA summary and the accountant's CSV. Evidence: `tests/tax.test.ts`,
@@ -28,16 +28,30 @@ Not done here, and not claimed:
    (LIVA art. 2-A fr. I, last paragraph). 0% applies only to unprepared foods and other
    art. 2-A goods (a sealed bag of coffee beans). Restaurants with establishments in the
    northern or southern border region that are registered in the SAT beneficiary list may
-   apply the incentive equivalent to IVA 8%; the DOF decree of 31-12-2025 extends it to
-   31-12-2026 (`BORDER_STIMULUS_VALID_UNTIL`). A September 2026 press report of an extension
-   to 2030 has no DOF publication yet; update the constant when one appears. Exempt is
-   supported for completeness.
+   apply the incentive equivalent to IVA 8%; the DOF decree of 31-12-2025 extends both
+   decrees (norte, DOF 31-12-2018; sur, DOF 30-12-2020) to 31-12-2026
+   (`BORDER_STIMULUS_VALID_UNTIL`). A September 2026 press report of an extension to 2030
+   has no DOF publication yet; update the constant when one appears, and if none is
+   published, border tenants must switch to 16% on 2027-01-01 (a dated operator check in
+   [RUNBOOK.md](RUNBOOK.md) and [LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md)). The app lets a
+   profile use a border region only with a complete issuer identity (RFC and postal code)
+   whose postal code lies in a state of that region (`BORDER_POSTAL_PREFIXES` in
+   `shared/fiscal.ts`, two-digit prefixes from the SAT postal-code catalog;
+   `fiscal_border_identity_required`, `fiscal_border_postal_code`), plus the owner's
+   attestation. That is a state-level guard, not the incentive's test: **the PAC validates the
+   exact `c_CodigoPostal` "Estímulo Franja Fronteriza" mark of the place of issue (1 north, 2
+   south) and the issuer RFC's registration in the LCO with mark 2**, and the owner's
+   accountant confirms both before a border pilot. Exempt is supported for completeness.
 2. **Prices include taxes** (LFPC art. 7 Bis). Every menu price is final; IVA is
    **extracted** from it, never added on top.
 3. **Comprobante simplificado (ticket)** for sales to the general public (RMF rule
-   2.7.1.21): CFF art. 29-A fr. I data (issuer RFC and régimen fiscal) and fr. III data
-   (place and date of issue), a **consecutive folio**, quantity and description, and total
-   value. The ticket also shows the IVA breakdown that the global CFDI must separate.
+   2.7.1.21): CFF art. 29-A fr. I data (the issuer's RFC, name or razón social and régimen
+   fiscal and, when the taxpayer has more than one establishment, the address of the
+   establishment that issues the comprobante) and fr. III data (place and date of issue), a
+   **consecutive folio**, quantity and description, and total value. The ticket also shows
+   the IVA breakdown that the global CFDI must separate. "Este RFC tiene más de una
+   sucursal" in Datos fiscales makes street, municipality and state mandatory
+   (`fiscal_address_required`); without them the profile stays Incompleto.
 4. **Global CFDI** (cfdi 030): daily, weekly or monthly (RESICO monthly), within 24 hours
    after the period closes, IVA separated, each ticket's folio as `NoIdentificacion`.
 5. **CFDI tax tolerance.** A traslado's `Importe` must lie between
@@ -112,7 +126,8 @@ one. Every committed folio therefore exists exactly once and none is skipped (DB
 20 concurrent payments, rollback, counter without ticket).
 
 Changing the series (Configuración) starts the new series at 1; the old series' history
-stays. Several locations under one RFC should each use their own series.
+stays. Several locations under one RFC should each use their own series and tick "Este RFC
+tiene más de una sucursal", so every ticket prints the issuing branch's address.
 
 ## Data model (`migrations/027_fiscal.sql`)
 
@@ -123,7 +138,7 @@ instant 027 ran; repair never issues tickets for older orders.
 
 | Table | Contents | Runtime grants |
 | --- | --- | --- |
-| `restaurant_fiscal_profiles` | RFC, razón social, régimen, C.P., address, series, region, default category, border attestation, version | SELECT, INSERT, column UPDATE |
+| `restaurant_fiscal_profiles` | RFC, razón social, régimen, C.P., address, series, region, default category, border attestation, "more than one branch", version; checks: a border region has an RFC, more than one branch has street, municipality and state | SELECT, INSERT, column UPDATE |
 | `fiscal_folio_counters` | `(tenant_id, series) → last_value` | SELECT, INSERT, UPDATE(last_value) |
 | `fiscal_tickets` | one per order: folio, self-invoice code, issue time, business date, issuer, device, source (`sale`/`recovery`/`repair`), totals, tip, tax basis, lines, payments | SELECT, INSERT |
 | `fiscal_ticket_taxes` | per ticket and category: gross before/after discount, base before/after discount, base, IVA | SELECT, INSERT |
@@ -171,11 +186,17 @@ ticket). Properties, each a property test in `tests/fiscal.test.ts`:
 - **P4.** One refund's IVA is within 1 centavo of `extract(refund gross)`, which is what a
   CFDI de egreso stamps for that refund alone; cfdi's egreso amount check uses the canonical
   value, and that ≤ 1 centavo per category difference is expected ([CFDI.md](CFDI.md)).
-- **P5.** An item refund recorded **before** the ticket, against a provisional gross that
-  later changes (a new round, a void, a discount), leaves the ticket's net IVA within `c`
-  centavos of `extract(S_final − R)`, `c` being the number of gross changes after the first
-  pre-ticket refund (one refund: at most 1). cfdi's amount check marks such a ticket
-  `differs`.
+- **P5 (the function's bound; the app never reaches it).** A refund split against a
+  provisional gross that later changes would leave the ticket's net IVA within `c` centavos
+  of `extract(S_final − R)`, `c` being the number of gross changes after the first refund;
+  at `S_final = R` that is IVA on a zero net, which `netCategoryTax` and cfdi's `netGroups`
+  refuse. So **no refund, by amount or by item, is accepted on an order without a ticket and
+  with a balance due** (`refund_balance_due`, LD-25 MONEY-1): before payment staff void
+  lines instead. The legacy refund checks it under the order lock, and `recordRefundTax`
+  refuses it as a backstop for every refund path. An unticketed order can only be refunded
+  once fully paid (kill switch, non-MXN); its gross can then only grow (a new round, which
+  blocks refunds again until it is paid), so no adjustment is ever recorded against a
+  provisional gross that can still shrink.
 
 It replaced the cumulative form `extract(refunded + amount) − extract(refunded)` because
 `extract(G) − extract(R) ≠ extract(G − R)`: a partially refunded ticket left the fiscal
@@ -187,17 +208,21 @@ canonical `extract(55.56)` is 7.66, which the complement row (IVA 9.37) leaves.
 
 Item refunds (discounts 028) pass, per refund money row, `scope = [{lineId, units, gross}]`
 with `gross` = Σ `refund_units.amount` of that row and line; fiscal uses it verbatim,
-grouped by the line's snapshot category, and never recomputes unit discounts
+grouped by the category the ticket froze for that line (the line's snapshot before a ticket
+exists; a line without a snapshot keeps the default it was ticketed under even after the
+default changes), and never recomputes unit discounts
 (`refundScopeCategories`). `refundScopeGross` is a fallback only for entries without
 `gross` and is refused on a discounted line; `allocateOrderDiscount` is for previews and
 tests only.
 
 Refund dates: a refund batch's `business_date` (discounts 028) once it exists; until then
-(the legacy `POST /refunds`) the refund's business date from the clock. The legacy refund
-locks the tender's order before the tender key (LD-15 fiscal Q3), so concurrent refunds of
-two tenders of one order read the earlier adjustments in turn. Amount refunds on an
-unsettled check are possible through the legacy route until discounts adds
-`refund_balance_due` (accepted window, LD-15 Q3). Non-MXN restaurants write no adjustments.
+(the legacy `POST /refunds`) the business date of the refund row's own `created_at`, the
+date reports gives a batchless refund, never the clock when the tax rows are written. The
+legacy refund locks the tender's order before the tender key (LD-15 fiscal Q3), so
+concurrent refunds of two tenders of one order read the earlier adjustments in turn, and
+refuses `refund_balance_due` there (the LD-15 Q3 pre-ticket window is closed: it could
+misstate IVA by whole amounts, not only 1 centavo, when a category was later voided).
+Non-MXN restaurants write no adjustments.
 
 ## Global lock order
 
@@ -210,7 +235,12 @@ fiscal reordered `createOrder`, `voidLines` and `assignService` accordingly and 
 balance is already `paid`), so `addRound` never takes the counter. Offline sale, order and
 round sync touch their own new rounds after the folio (exception E4, LD-15 fiscal Q4). The
 legacy refund is `1 → 2 → 5 → 6 → 11`. Every settling payment of a location serializes on
-its counter row until commit; payment transactions are short.
+its counter row until commit, so nothing slow runs under it: a payment writes the ticket,
+its category rows and its audit rows (four statements) after taking the counter, and the
+repair computes every ticket and the remaining count before it, then holds the counter for
+two statements per ticket plus one insert each for all category and audit rows, at most 20
+tickets per call (a payment concurrent with a full batch commits without a retry: fiscal DB
+"CONCURRENCY-1"). The profile's area key is advisory class 922 (LO-3).
 
 ## The printed ticket
 
@@ -222,10 +252,15 @@ adds its block with `setFiscalFooterExtra`.
 - **Header:** razón social (only when it differs from the trade name, case- and
   accent-insensitively), RFC, régimen, address if set, "Lugar de expedición: C.P. …",
   **Folio**, "Fecha de expedición" (restaurant time zone). Without a ticket: the issuer from
-  the cached fiscal context and "Comprobante de pago parcial…" (partial payment), "Sin
-  folio fiscal…" (paid without a ticket) or "Folio fiscal pendiente: se asigna al
-  sincronizar." (offline local receipt). An incomplete profile prints "Ticket sin datos
-  fiscales del emisor." (D5: selling is never blocked).
+  the cached fiscal context and "Comprobante de pago parcial…" (partial payment, also on a
+  partial local payment with offline table service), "Sin folio fiscal…" (paid without a
+  ticket) or "Folio fiscal pendiente: se asigna al sincronizar." (offline local receipt that
+  settles the sale). An incomplete profile prints "Ticket sin datos fiscales del emisor."
+  (D5: selling is never blocked). A synced offline sale prints "Venta sin conexión B-07 ·
+  {fecha}" (its provisional number and sale time, the two things on the customer's local
+  receipt), and a ticket whose order has no lines left (a financial-only recovery) prints the
+  ticket's frozen lines ("1 × Venta sin conexión conciliada"), so the comprobante always
+  states quantity and description; the recovery's order note prints in Spanish.
 - **Footer:** "Base IVA 16%" / "IVA 16%" (and 8%), "Venta a tasa 0%", "Venta exenta",
   "IVA reembolsado", "Precios con IVA incluido", the tip legend when there is a tip, "Este
   ticket no es una factura (CFDI)." and "¿Necesitas factura? Pídela con el folio …". A
@@ -241,14 +276,20 @@ adds its block with `setFiscalFooterExtra`.
 ## Configuración: Datos fiscales and Registro de tickets
 
 - **Datos fiscales** (owner edits with a fresh PIN; managers read). RFC (pattern; generic
-  RFCs refused; a check-digit mismatch is only a warning), razón social without the company
-  suffix, régimen from `c_RegimenFiscal` filtered by RFC type, C.P. de expedición, optional
-  address and series, region (general, border north, border south; a border region needs
-  the attestation, with the DOF validity hint turning amber after it expires) and the
-  default product tax. The identity is all or nothing. Saving is versioned
-  (`fiscal_profile_changed`), audited (`fiscal.profile.saved` with before/after) and never
-  changes `restaurants.config_version`, so queued offline sales stay valid. Going back to
-  the general region is refused while products use IVA 8%.
+  RFCs refused; a check-digit mismatch is a warning shown as soon as the RFC is complete:
+  the first save stops on it and **Guardar de todos modos** keeps the RFC, and the warning
+  stays until the RFC changes), razón social without the company suffix, régimen from
+  `c_RegimenFiscal` filtered by RFC type, C.P. de expedición, the branch address (mandatory
+  with "Este RFC tiene más de una sucursal"), series, region (general, border north, border
+  south; a border region needs the full identity, a C.P. in the region and the attestation,
+  with the DOF validity hint, by the restaurant's own date, turning amber after it expires)
+  and the default product tax (a border region warns while the default is not IVA 8%). The
+  identity is all or nothing. A blocked save names the problem next to the button and moves
+  focus to the first marked field. Saving is versioned: when another device saved meanwhile
+  (`fiscal_profile_changed`) the panel shows the current data in place of the stale form, so
+  a second tap can never write the old values back. It is audited (`fiscal.profile.saved`
+  with before/after) and never changes `restaurants.config_version`, so queued offline sales
+  stay valid. Going back to the general region is refused while products use IVA 8%.
 - **Product tax** (menu editor, Impuestos): restaurant default, IVA 16%, IVA 8% (border
   region only), IVA 0%, exempt, and optional SAT keys (default `90101501` Restaurantes and
   `E48` Unidad de servicio, used only for itemized CFDI). A tax change bumps the product
@@ -257,7 +298,11 @@ adds its block with `setFiscalFooterExtra`.
 - **Registro de tickets** (owner and manager): business-date range up to 31 days or an exact
   folio; columns folio, issued, order, total, base, IVA, refunds, payment methods and
   **Reimprimir** (prints in Spanish, audited as a reprint). **Resumen de IVA**: sales,
-  refunds and net per category, folio runs per series, paid sales without ticket.
+  refunds and net per category, the contiguous folio runs of each series (a ticket issued
+  after its sale day, such as a late offline sync, is its own run instead of a range that
+  reads as missing folios), paid sales without ticket. Staff find a synced offline sale in
+  **Órdenes** by the provisional number on the customer's paper; order detail shows it next
+  to the folio, and the Sincronización list maps "B-07 → #142 · Folio 000123".
 
 ## Accountant notes
 
@@ -265,7 +310,11 @@ adds its block with `setFiscalFooterExtra`.
   headers): `folio, serie, numero, fecha_expedicion` (restaurant time, `AAAA-MM-DD HH:mm`),
   `dia_negocio, orden, total, base_iva16, iva16, base_iva8, iva8, venta_tasa0,
   venta_exenta, descuentos, propinas, reembolsos, iva_reembolsado, formas_pago,
-  codigo_facturacion`. Text cells starting like a formula are neutralized.
+  codigo_facturacion`. Text cells starting like a formula are neutralized. `reembolsos` and
+  `iva_reembolsado` sum the refunds of each ticket **recorded up to the range's last
+  day**, so a period's export does not change when a later refund arrives; refunds are
+  deducted in their own period (LIVA art. 7) and the Resumen de IVA dates them by their own
+  business date.
 - The summary dates tickets by their sale's business date and refund adjustments by the
   refund's. IVA is never recomputed from orders.
 - A ticket created after its period's global invoice (offline sync, repair, a cross-day
@@ -277,18 +326,25 @@ adds its block with `setFiscalFooterExtra`.
 - **Missing tickets.** Configuración shows "{n} ventas cobradas no tienen ticket" when paid
   sales of the last 40 business days (created after 027) have none: an older revision
   processed a payment during a deploy, or the kill switch was off. **Emitir tickets
-  faltantes** (managers, fresh PIN) issues up to 100 per click in creation order with source
-  `repair` (audited `fiscal.tickets.repaired`); repeat while the count stays. Liberar mesa
-  also issues a missing ticket of a table check.
+  faltantes** (managers, fresh PIN) issues up to 20 per click in creation order with source
+  `repair` (audited `fiscal.tickets.repaired`, listing only the folios it issued; an order
+  ticketed meanwhile by a payment or Liberar mesa is skipped); repeat while the count stays.
+  While the kill switch is on the button is replaced by "La emisión de tickets está
+  pausada" and the command answers `fiscal_tickets_disabled`. A non-MXN restaurant counts no
+  missing tickets. Liberar mesa also issues a missing ticket of a table check.
 - **Kill switch.** If a fiscal bug ever blocks payments (`fiscal_total_mismatch` or a
   trigger error rolls payments back), set `FISCAL_TICKETS_ENABLED=false` on the web service
   (Railway variable) and redeploy: payments continue without tickets. Fix, set it back to
   `true` (or unset) and run the repair. Any other value refuses to start.
-- **New location under the same RFC.** Give it its own series in Datos fiscales; the series
-  starts at 1.
-- **Border incentive.** The hint turns amber after `BORDER_STIMULUS_VALID_UNTIL`; nothing
-  switches automatically. Confirm with the accountant; if the incentive lapsed, move IVA 8%
-  products to IVA 16% and switch the region to general.
+- **New location under the same RFC.** Give it its own series in Datos fiscales (the series
+  starts at 1) and tick "Este RFC tiene más de una sucursal" with that branch's address.
+- **Border incentive.** Before a border pilot the owner's accountant confirms that the
+  place of issue's C.P. carries the SAT "Estímulo Franja Fronteriza" mark and that the RFC is
+  in the LCO with mark 2 (the PAC rejects 8% otherwise). The hint turns amber after
+  `BORDER_STIMULUS_VALID_UNTIL`; nothing switches automatically. **Dated check, 2026-12-31:**
+  if the DOF has published no extension, on 2027-01-01 move IVA 8% products and the default
+  to IVA 16% and switch the region to general (before switching, sync every device's pending
+  offline sales: queued sales are taxed with the settings in force at sync).
 - **Deploy.** 027 takes `SHARE ROW EXCLUSIVE` on `orders`, `order_lines` and other hot tables
   until it commits: deploy it in the morning window ([RUNBOOK.md](RUNBOOK.md)).
 - **Backups.** Fiscal rows are part of every database backup; control totals for
@@ -301,8 +357,8 @@ adds its block with `setFiscalFooterExtra`.
 | service (024) | `refreshCheckState` issues on open → paid and before a settled close; `closeCheck` before releasing; `applyRound` refuses ticketed checks; `getOrders` has one batched `fiscalRows` member (`Order.fiscal`: ticket, provisional summary, refunds); Selling handles `fiscal_ticket_issued` like `check_closed`. |
 | menu (025) | `productInput.fiscal`, `assertProductFiscalAllowed`, `quote(lines, catalog, canOpen, fiscalContext)`, the editor's Impuestos section; `publicCatalog` strips `fiscal`. |
 | offline (026) | `verifyLines` prices with the server context; `financialRecovery` issues a `recovery` ticket; the round applier maps `fiscal_ticket_issued` to `offline_order_closed`; local receipts print the cached issuer and "Folio fiscal pendiente". |
-| discounts (028) | `assertNoFiscalTicket` before discount writes; `recordRefundTax(tx, s, refundId, scope?)` with `RefundTaxScope = {lineId, units, gross}`; replaces `{}` with `discountsByLine` in `issueDueTicket` and `recordRefundTax`, adds the refund batch date, and becomes the single caller of `recordRefundTax`. |
-| reports (029) | `fiscalSummary(tx, s, {from, to})` (≤ 31 days, 30 s statement timeout), `missingTicketCount(tx, range?)`, `formatFolio`, `fiscal_epoch()`. |
+| discounts (028) | `assertNoFiscalTicket` before discount writes; `recordRefundTax(tx, s, refundId, scope?)` with `RefundTaxScope = {lineId, units, gross}`; `assertRefundAllowed(tx, orderId)` (`refund_balance_due`, now declared by fiscal) for amount **and** item refunds, inside the order lock; replaces `{}` with `discountsByLine` in `prepareTicket` (the computation `issueDueTicket` and the repair share) and `recordRefundTax`, adds the refund batch date, and becomes the single caller of `recordRefundTax`. |
+| reports (029) | `fiscalSummary(tx, s, {from, to})` (≤ 31 days, 30 s statement timeout; `tickets.series` lists contiguous runs, several per series when later folios belong to other days), `missingTicketCount(tx, range?)` (MXN restaurants only), `formatFolio`, `fiscal_epoch()`. |
 | cfdi (030) | `server/fiscal-read.ts` (a leaf: db and shared imports only, re-exported by `server/fiscal.ts`): `ticketForCfdi`, ticket and refund readers; `setFiscalFooterExtra`; `fiscal_immutable()`; the `recordRefundTax` hook comment for `enqueueCfdiRefund`. Worker grants on the fiscal tables are cfdi's. |
 | public ordering (032) | `fiscalTicketIdentity(tx, orderId): Promise<{folio, selfInvoiceCode} \| null>` in `server/fiscal-read.ts` (one statement). |
 | account (031) | `rfcSchema`, `regimenFiscalSchema`, `REGIMEN_FISCAL`, `postalCodeSchema`, `validateRfc` from `shared/sat.ts`. |
@@ -322,7 +378,7 @@ Wire and audit: routes in `server/routes/fiscal.ts` (`GET /fiscal/context`, `GET
 | D3 | Folio scope | Per location, optional series, gapless, starting at 1 per series. |
 | D4 | Offline folios | None on the device; assigned at sync. |
 | D5 | Incomplete profile | Selling continues; the ticket says it lacks issuer data. |
-| D6 | Border incentive | Attestation required; 31-12-2026 per DOF; amber warning afterwards. |
+| D6 | Border incentive | Full issuer identity, a C.P. in a state of the region and the attestation; 31-12-2026 per DOF; amber warning afterwards; the PAC checks the C.P. mark and the LCO. |
 | D7 | Comps | A 100% discount contributes no gross and no IVA. Accountant to confirm. |
 | D8 | IEPS | Out of scope. |
 | D9 | Fiscal business date | The order's business date; the printed date of issue is `issued_at`. Accountant to confirm for cross-day partial payments. |
@@ -331,13 +387,17 @@ Wire and audit: routes in `server/routes/fiscal.ts` (`GET /fiscal/context`, `GET
 | D12 | Default SAT keys | `90101501` and `E48`, overridable per product. |
 | D13 | IVA on the ticket | Shown per rate, with "Precios con IVA incluido". |
 | D14 | Late tickets | Supplementary global for their own period (cfdi D5). Accountant to confirm. |
-| D15 | Refund IVA | Complement extraction; ≤ 1 centavo per category against a CFDI de egreso, ≤ 1 per gross change for pre-ticket item refunds. Accountant to confirm. |
+| D15 | Refund IVA | Complement extraction; ≤ 1 centavo per category against a CFDI de egreso; no refund on an unticketed order with a balance due. Accountant to confirm. |
 
 ## Limitations
 
 - IEPS (alcohol, sugary drinks) is not modeled.
 - An offline sale's customer leaves with a provisional receipt; the folio exists after
-  sync (reprint from order history).
+  sync. Staff find the order in Órdenes by the provisional number and reprint it; the
+  register's folio search does not accept provisional numbers.
+- Queued offline sales are taxed with the fiscal profile in force when they sync, not when
+  they were sold (the profile save never invalidates offline leases): change the region or
+  the default product tax only after every device has synced.
 - No second paper copy of each ticket.
 - Tickets are issued only for MXN restaurants.
 - Physical thermal printers and any PAC were not tested.
@@ -352,8 +412,14 @@ Wire and audit: routes in `server/routes/fiscal.ts` (`GET /fiscal/context`, `GET
   EWE1709045U0, URE180429TM6, XIQB891116QE4 and CACX7605101P8, and agrees with an
   independent implementation on 20,000 random RFCs. Fixtures and the browser suite use the
   fictional test RFC EKU9003173C9.
-- **Border incentive date:** `BORDER_STIMULUS_VALID_UNTIL = 2026-12-31` follows the DOF
-  decree of 31-12-2025 cited in the area spec; not re-checked against the DOF in this step.
+- **Border incentive date:** `BORDER_STIMULUS_VALID_UNTIL = 2026-12-31` re-checked on
+  2026-10-06 against the text of the DOF decree of 31-12-2025 (SAT minisitio copy): its
+  articles Primero and Segundo set both the northern (DOF 31-12-2018) and southern (DOF
+  30-12-2020) decrees in force until 31-12-2026.
+- **Border postal-code prefixes:** derived on 2026-10-06 from the SAT "Catálogo de códigos
+  postales" (31,637 codes with their Clave Entidad Federativa): every two-digit prefix
+  belongs to exactly one state; the ten border states' prefixes are listed in
+  `shared/fiscal.ts` (`BORDER_POSTAL_PREFIXES`).
 - **Complement extraction:** P1–P4 and the old cumulative drift were checked over 400,000
   random sequences and P5 over 6,000,000 during the spec revision; the suite re-checks them
   on 5,000 to 100,000 seeded sequences.
@@ -365,7 +431,10 @@ Wire and audit: routes in `server/routes/fiscal.ts` (`GET /fiscal/context`, `GET
 - SAT global CFDI guide: http://omawww.sat.gob.mx/tramitesyservicios/Paginas/documentos/Guia_llenado_CFDI_global.pdf
 - Anexo 20 filling guide (CFDI 4.0), traslado limits: http://omawww.sat.gob.mx/tramitesyservicios/Paginas/documentos/Anexo_20_Guia_de_llenado_CFDI.pdf
 - Ley del IVA arts. 1 and 2-A: https://www.diputados.gob.mx/LeyesBiblio/pdf/LIVA.pdf
-- Border-region IVA incentive, DOF 31-12-2025: https://dof.gob.mx/nota_detalle.php?codigo=5777697&fecha=31%2F12%2F2025
+- Border-region IVA incentive, DOF 31-12-2025: https://dof.gob.mx/nota_detalle.php?codigo=5777697&fecha=31%2F12%2F2025 (SAT copy: https://www.sat.gob.mx/minisitio/EstimulosFiscalesFronteraNorteSur/documentos/Decreto_modifica_diversos_estimulos_fiscales_region_fronteriza_norte_sur.pdf)
+- Decreto de estímulos fiscales región fronteriza sur (DOF 30-12-2020): https://sidof.segob.gob.mx/notas/docFuente/5609182
+- SAT, facturación con estímulo en la región fronteriza (the place of issue's C.P. must carry the "Estímulo Franja Fronteriza" mark): https://wwwmat.sat.gob.mx/consultas/22035/facturacion-con-estimulo-en-la-region-fronteriza-
+- SAT postal-code catalog (C.P. → entidad federativa): http://omawww.sat.gob.mx/terceros_autorizados/receptor_doctos_electronicos/Documents/catalogos/Cat_Codigos_Postales.pdf
 - LFPC art. 7 Bis: https://www.diputados.gob.mx/LeyesBiblio/pdf/LFPC.pdf
 - CFF arts. 29, 29-A, 30: https://www.diputados.gob.mx/LeyesBiblio/pdf/CFF.pdf
 - c_RegimenFiscal data generated from the SAT catalog: https://github.com/phpcfdi/resources-sat-catalogs (`database/data/cfdi_40_regimenes_fiscales.sql`)

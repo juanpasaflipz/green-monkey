@@ -246,6 +246,15 @@ the same window: its foreign keys to `orders`, `restaurants`, `employees`,
 (missing tickets, kill switch, series, border incentive) are in
 [FISCAL.md](FISCAL.md#runbook).
 
+**Dated operator check, 2026-12-31 (border tenants, lead decision LD-25).** The
+IVA 8% border incentive runs until 31-12-2026 (DOF decree of 31-12-2025). In
+the last week of December, look for a DOF extension. If none is published, on
+2027-01-01, before the first sale, each border restaurant's owner moves IVA 8%
+products and the default product tax to IVA 16% and switches Datos fiscales to
+the general region, after every device has synced its offline sales (queued
+sales are taxed with the settings in force at sync). If one is published,
+update `BORDER_STIMULUS_VALID_UNTIL` in `shared/tax.ts` and deploy.
+
 ## Credential rotation
 
 Database logins (`scripts/ops/rotate-db-login.ts`, owner credential from the
