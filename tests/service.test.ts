@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import type { LineInput, Product } from "../shared/domain";
+import { businessDate, type LineInput, type Product } from "../shared/domain";
+import {
+  businessDayLabel,
+  currentBusinessDate,
+  orderNumberLabel,
+  orderNumberText,
+} from "../src/labels";
+import { orderLabel } from "../src/features/offline/format";
 import {
   cashSuggestions,
   changeDue,
@@ -669,5 +676,69 @@ describe("notes and lost sends", () => {
     expect(next.draft.note).toBe("Nota nueva");
     expect(next.draft.lines).toEqual([a]);
     expect(next.draft.operationId).toBe("n");
+  });
+});
+
+describe("LD-29: business-day labels after the cutoff rollover", () => {
+  const mexico = { timezone: "America/Mexico_City", cutoff: 240 };
+  // Mexico City is UTC−6 all year (no DST since 2022): 09:59Z is 03:59 local.
+  const at = (iso: string) => Date.parse(iso);
+
+  it("the current business date follows the restaurant's timezone and cutoff: 03:59 is still the day before, 04:00 is the new day", () => {
+    expect(currentBusinessDate(mexico, at("2026-10-06T09:59:00Z"))).toBe(
+      "2026-10-05",
+    );
+    expect(currentBusinessDate(mexico, at("2026-10-06T10:00:00Z"))).toBe(
+      "2026-10-06",
+    );
+    // Same instant, another restaurant timezone (Tijuana, UTC−7 in October).
+    expect(
+      currentBusinessDate(
+        { timezone: "America/Tijuana", cutoff: 240 },
+        at("2026-10-06T10:59:00Z"),
+      ),
+    ).toBe("2026-10-05");
+    // The server's own helper gives the same day for the same inputs.
+    expect(currentBusinessDate(mexico, at("2026-10-06T10:00:00Z"))).toBe(
+      businessDate("2026-10-06T10:00:00Z", mexico.timezone, mexico.cutoff),
+    );
+  });
+
+  it("a same-day order reads #10; one from the previous business day reads #10 · 5 oct (en: #10 · Oct 5)", () => {
+    const order = { number: 10, businessDate: "2026-10-05" };
+    const before = currentBusinessDate(mexico, at("2026-10-06T09:59:00Z"));
+    const after = currentBusinessDate(mexico, at("2026-10-06T10:00:00Z"));
+    expect(orderNumberLabel(order, before, "es")).toBe("#10");
+    expect(orderNumberLabel(order, after, "es")).toBe("#10 · 5 oct");
+    expect(orderNumberLabel(order, after, "en")).toBe("#10 · Oct 5");
+    expect(orderNumberText(order, after, "es")).toBe("10 · 5 oct");
+    expect(businessDayLabel("2026-01-31", "es")).toBe("31 ene");
+    // Today's new #10 keeps the plain number; unknown dates never invent one.
+    expect(
+      orderNumberLabel({ number: 10, businessDate: after }, after, "es"),
+    ).toBe("#10");
+    expect(orderNumberLabel({ number: 10 }, after, "es")).toBe("#10");
+    expect(orderNumberLabel(order, null, "es")).toBe("#10");
+  });
+
+  it("the cart heading names a numbered order's date; provisional numbers are unchanged", () => {
+    const id = "00000000-0000-4000-8000-000000000010";
+    const order = { id, number: 10, businessDate: "2026-10-05" };
+    expect(orderLabel(order, "2026-10-06", "es")).toBe("#10 · 5 oct");
+    expect(orderLabel(order, "2026-10-05", "es")).toBe("#10");
+    expect(orderLabel(order)).toBe("#10");
+    expect(
+      orderLabel(
+        { ...order, offline: { provisionalNumber: "B-07" } },
+        "2026-10-06",
+        "en",
+      ),
+    ).toBe("B-07 → #10 · Oct 5");
+    expect(
+      orderLabel(
+        { id, number: 0, offline: { provisionalNumber: "B-07" } },
+        "2026-10-06",
+      ),
+    ).toBe("B-07");
   });
 });

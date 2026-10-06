@@ -1,4 +1,4 @@
-import type { Locale } from "../shared/domain";
+import { businessDate, type Locale } from "../shared/domain";
 import { strings, type Key } from "./i18n";
 
 /**
@@ -184,4 +184,57 @@ export function channelLabel(channel: string, locale: Locale): string {
 }
 export function integrationLabel(key: string, locale: Locale): string {
   return strings[locale][integrations[key] ?? "serviceIntegrationOther"];
+}
+
+// ---- business-day labels (LD-29) -----------------------------------------
+
+/** "5 oct" / "Oct 5": a business date (YYYY-MM-DD) as day and short month, no timezone shift. */
+export function businessDayLabel(date: string, locale: Locale): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Intl.DateTimeFormat(locale === "es" ? "es-MX" : "en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+/**
+ * The restaurant's current business date with the server's own helper and settings
+ * (shared/domain businessDate: the restaurant timezone and cutoff), for screens whose
+ * response does not carry it.
+ */
+export function currentBusinessDate(
+  restaurant: { timezone: string; cutoff: number },
+  now: number = Date.now(),
+): string {
+  return businessDate(
+    new Date(now).toISOString(),
+    restaurant.timezone,
+    restaurant.cutoff,
+  );
+}
+
+/**
+ * An order number as staff read it: "10", or "10 · 5 oct" ("10 · Oct 5") when the order
+ * belongs to another business day than `today`. Numbers restart every business day, so
+ * after the cutoff an open order from the day before and a new one can both be #10.
+ */
+export function orderNumberText(
+  order: { number: number; businessDate?: string | null },
+  today: string | null | undefined,
+  locale: Locale,
+): string {
+  const day = order.businessDate;
+  return day && today && day !== today
+    ? `${order.number} · ${businessDayLabel(day, locale)}`
+    : String(order.number);
+}
+
+/** "#10", or "#10 · 5 oct" for an order from another business day (orderNumberText). */
+export function orderNumberLabel(
+  order: { number: number; businessDate?: string | null },
+  today: string | null | undefined,
+  locale: Locale,
+): string {
+  return "#" + orderNumberText(order, today, locale);
 }

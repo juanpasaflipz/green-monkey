@@ -9,7 +9,7 @@ import {
 } from "../../shared/service";
 import { api } from "../api";
 import { strings, errorNotice, translateError, type Key } from "../i18n";
-import { channelLabel } from "../labels";
+import { channelLabel, orderNumberLabel } from "../labels";
 import { Badge, Button, Empty, Field } from "../components/ui";
 import {
   requestSellingContext,
@@ -305,7 +305,11 @@ export function Orders({
                 <label className="selection-check">
                   <input
                     type="checkbox"
-                    aria-label={t("selectOrder") + " #" + o.number}
+                    aria-label={
+                      t("selectOrder") +
+                      " " +
+                      orderNumberLabel(o, today, locale)
+                    }
                     disabled={closed || o.balance <= 0 || !!chargeBlocks[o.id]}
                     checked={selected.includes(o.id)}
                     onChange={() =>
@@ -319,7 +323,7 @@ export function Orders({
                 </label>
                 <div>
                   <span className="eyebrow">
-                    #{o.number} · {t(o.mode as Key)} ·{" "}
+                    {orderNumberLabel(o, today, locale)} · {t(o.mode as Key)} ·{" "}
                     {channelLabel(o.channel, locale)}
                   </span>
                   <h3>{o.name || t("order")}</h3>

@@ -41,6 +41,7 @@ import { useOfflineSelling } from "./offline/useOfflineSelling";
 import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
 import { fmt, orderLabel } from "./offline/format";
+import { currentBusinessDate } from "../labels";
 import { isServerOrder, type LocalOrderView } from "../offline-records";
 import { DiscountButton } from "./discounts/DiscountButton";
 import { CheckDiscountSummary } from "./discounts/OrderAdjustments";
@@ -1153,12 +1154,14 @@ export function Selling({
       />
     </Field>
   );
+  // LD-29: an open order from another business day names its date.
+  const today = currentBusinessDate(session.restaurant);
   const cartPanel = (
     <>
       <div className="cart-heading">
         <div>
           <span className="eyebrow">
-            {current ? orderLabel(current) : t("newOrder")}
+            {current ? orderLabel(current, today, locale) : t("newOrder")}
           </span>
           <h2>{t("order")}</h2>
         </div>
@@ -1241,7 +1244,7 @@ export function Selling({
         {current && (
           <div className="existing">
             <strong>
-              {orderLabel(current)} · {t("sent")}
+              {orderLabel(current, today, locale)} · {t("sent")}
             </strong>
             <p>
               {current.lines

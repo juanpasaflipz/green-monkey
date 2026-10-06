@@ -31,6 +31,7 @@ export default defineArea({
     serviceVoidAckPending: "Cocina aún no confirma",
     // Order detail and receipt
     serviceDetailTitle: "Orden #{n}",
+    servicePayOrderTitle: "Cobrar {order}",
     serviceDetailItems: "Productos",
     serviceDetailRounds: "Rondas de cocina",
     serviceDetailPayments: "Pagos",
@@ -310,6 +311,7 @@ export default defineArea({
     serviceReleaseTable: "Release table",
     serviceVoidAckPending: "Kitchen has not confirmed",
     serviceDetailTitle: "Order #{n}",
+    servicePayOrderTitle: "Collect payment for {order}",
     serviceDetailItems: "Items",
     serviceDetailRounds: "Kitchen rounds",
     serviceDetailPayments: "Payments",

@@ -5,7 +5,12 @@ import { changeDue, roundNotes } from "../../shared/service";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { api } from "../api";
 import { strings, errorNotice, type Key } from "../i18n";
-import { channelLabel, tenderMethodLabel } from "../labels";
+import {
+  channelLabel,
+  currentBusinessDate,
+  orderNumberText,
+  tenderMethodLabel,
+} from "../labels";
 import { Badge, Button, Field, Modal } from "../components/ui";
 import { printDocument, usePrintSettings } from "../print";
 import { requestSellingContext } from "../serviceHooks";
@@ -112,7 +117,13 @@ export function OrderDetail({
       wide
       title={t("serviceDetailTitle").replace(
         "{n}",
-        String(order?.number ?? ""),
+        order
+          ? orderNumberText(
+              order,
+              currentBusinessDate(session.restaurant),
+              locale,
+            )
+          : "",
       )}
       close={close}
       closeLabel={t("close")}

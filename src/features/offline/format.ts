@@ -5,6 +5,7 @@ import {
   type OfflineRecordKind,
 } from "../../../shared/offline-recovery";
 import { strings, type Key } from "../../i18n";
+import { orderNumberText } from "../../labels";
 
 /** Replaces {name} placeholders in a translated string. */
 export function fmt(text: string, vars: Record<string, string | number>) {
@@ -36,17 +37,27 @@ export function clockTime(
 /**
  * How an order is named on screen and on receipts (§2.4): "B-07" while only
  * the device knows it, "B-07 → #142" once the server numbered an order that
- * began offline, and "#142" otherwise.
+ * began offline, and "#142" otherwise. Given the current business date (and
+ * the locale), a numbered order from another business day also names its
+ * date: "#142 · 5 oct" (LD-29).
  */
-export function orderLabel(order: {
-  number: number;
-  id: string;
-  offline?: { provisionalNumber?: string | null } | null;
-}): string {
+export function orderLabel(
+  order: {
+    number: number;
+    id: string;
+    businessDate?: string | null;
+    offline?: { provisionalNumber?: string | null } | null;
+  },
+  today?: string | null,
+  locale: Locale = "es",
+): string {
   const provisional = order.offline?.provisionalNumber ?? null;
-  if (provisional && order.number) return `${provisional} → #${order.number}`;
+  const number = order.number
+    ? "#" + orderNumberText(order, today, locale)
+    : null;
+  if (provisional && number) return `${provisional} → ${number}`;
   if (provisional) return provisional;
-  return "#" + (order.number || order.id.slice(0, 8));
+  return number ?? "#" + order.id.slice(0, 8);
 }
 
 /** True while only this device knows the order's number (the hint applies). */
