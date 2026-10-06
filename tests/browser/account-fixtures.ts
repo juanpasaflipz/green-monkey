@@ -23,6 +23,7 @@ export const CURRENT_ACCEPTANCE = {
   terms: LEGAL_DOCUMENTS.terms.version,
   privacy: LEGAL_DOCUMENTS.privacy.version,
   dpa: LEGAL_DOCUMENTS.dpa.version,
+  billingConsent: LEGAL_DOCUMENTS.privacy.version,
 };
 
 /** Runtime and fixture-admin connections, local dev fixture only (owner.spec guard). */

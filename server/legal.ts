@@ -7,13 +7,14 @@ import { LEGAL_CI_ENV } from "./legal-ci.js";
 import { DomainError } from "../shared/domain.js";
 import { validateRfc } from "../shared/sat.js";
 import {
+  BILLING_CONSENT,
   LEGAL_CONTENT,
   LEGAL_DOCUMENTS,
-  acceptancePending,
-  pendingDocuments,
+  acceptanceStatus,
   type AcceptanceRow,
   type LegalDocumentKey,
   type LegalEntity,
+  type LegalEvidenceKey,
 } from "../shared/legal.js";
 
 export type { LegalDocumentKey, LegalEntity };
@@ -242,36 +243,68 @@ export function signupOpen(c: LegalConfig): boolean {
   return c.status === "published" || c.unpublishedSignupAllowed;
 }
 
-const contentHashes = new Map<LegalDocumentKey, string>();
-/** sha256 of {version, es, en}: what exactly the person accepted. */
-export function legalContentHash(doc: LegalDocumentKey): string {
+const contentHashes = new Map<LegalEvidenceKey, string>();
+/**
+ * sha256 of {version, es, en}: what exactly the person accepted. The billing
+ * consent hashes its checkbox text with the privacy version it belongs to.
+ */
+export function legalContentHash(doc: LegalEvidenceKey): string {
   let value = contentHashes.get(doc);
   if (!value) {
     value = sha256(
-      JSON.stringify({
-        version: LEGAL_DOCUMENTS[doc].version,
-        es: LEGAL_CONTENT[doc].es,
-        en: LEGAL_CONTENT[doc].en,
-      }),
+      JSON.stringify(
+        doc === "billing_consent"
+          ? {
+              version: LEGAL_DOCUMENTS.privacy.version,
+              es: BILLING_CONSENT.es,
+              en: BILLING_CONSENT.en,
+            }
+          : {
+              version: LEGAL_DOCUMENTS[doc].version,
+              es: LEGAL_CONTENT[doc].es,
+              en: LEGAL_CONTENT[doc].en,
+            },
+      ),
     );
     contentHashes.set(doc, value);
   }
   return value;
 }
+/** The version an evidence row must carry: the billing consent follows the privacy notice. */
+export const evidenceVersion = (doc: LegalEvidenceKey) =>
+  LEGAL_DOCUMENTS[doc === "billing_consent" ? "privacy" : doc].version;
 
+export type LegalNotice = {
+  document: LegalDocumentKey;
+  /**
+   * announced: a material change takes effect on effectiveFrom (accepting
+   * early is allowed); updated: a newer non-material version; entity_updated:
+   * only the responsable's data changed. None of them gates anything.
+   */
+  kind: "announced" | "updated" | "entity_updated";
+  version: string;
+  effectiveFrom: string;
+};
 export type LegalState = {
   status: LegalConfig["status"];
   signupOpen: boolean;
+  /** Gating now (428): never accepted, a draft acceptance, or a material change in effect. */
   pending: Array<"terms" | "privacy">;
   /** Organizations where this account is primary and the DPA is pending. */
   dpaPending: string[];
+  /** Non-gating notices (LEGAL-3); the DPA's only for primaries. */
+  notices: LegalNotice[];
+  /** Primary organizations whose DPA has a notice (accepting it records one row each). */
+  dpaNoticeOrganizations: string[];
   accepted: Partial<
     Record<"terms" | "privacy", { version: string; acceptedAt: string }>
   >;
+  /** Whether the express billing consent (UX-3) was ever recorded for this account. */
+  billingConsent: boolean;
 };
 
 type AcceptanceDbRow = {
-  document: LegalDocumentKey;
+  document: LegalEvidenceKey;
   organization_id: string | null;
   version: string;
   entity_hash: string;
@@ -287,12 +320,14 @@ const toRow = (r: AcceptanceDbRow): AcceptanceRow => ({
 /**
  * Pending documents for one account (app.account_id must be set). The DPA is
  * pending per organization where the account is primary; co-owners never accept
- * it. Unpublished documents are never pending.
+ * it. Unpublished documents are never pending. `now` defaults to the server
+ * clock: a material change gates from its effectiveFrom (LEGAL-3).
  */
 export async function legalState(
   tx: Tx,
   accountId: string,
   c: LegalConfig,
+  now: number = Date.now(),
 ): Promise<LegalState> {
   const rows = await tx<AcceptanceDbRow[]>`
     select distinct on (document, organization_id) document,organization_id,version,entity_hash,published,accepted_at
@@ -312,26 +347,69 @@ export async function legalState(
         acceptedAt: r.accepted_at.toISOString(),
       };
   }
+  const statusOf = (d: LegalDocumentKey, r: AcceptanceDbRow | undefined) =>
+    acceptanceStatus(d, r && toRow(r), current, now);
+  const notices: LegalNotice[] = [];
+  const notice = (d: LegalDocumentKey, status: string) => {
+    if (
+      (status === "announced" ||
+        status === "updated" ||
+        status === "entity_updated") &&
+      !notices.some((n) => n.document === d)
+    )
+      notices.push({
+        document: d,
+        kind: status,
+        version: LEGAL_DOCUMENTS[d].version,
+        effectiveFrom: LEGAL_DOCUMENTS[d].effectiveFrom,
+      });
+  };
+  const pending: Array<"terms" | "privacy"> = [];
+  for (const d of ["terms", "privacy"] as const) {
+    const status = statusOf(d, accountRow(d));
+    if (status === "required") pending.push(d);
+    else notice(d, status);
+  }
+  const dpaPending: string[] = [];
+  const dpaNoticeOrganizations: string[] = [];
+  for (const o of primary) {
+    const id = o.id as string;
+    const status = statusOf(
+      "dpa",
+      rows.find((x) => x.document === "dpa" && x.organization_id === id),
+    );
+    if (status === "required") dpaPending.push(id);
+    else if (status !== "accepted") {
+      dpaNoticeOrganizations.push(id);
+      notice("dpa", status);
+    }
+  }
   return {
     status: c.status,
     signupOpen: signupOpen(c),
-    pending: pendingDocuments(
-      {
-        terms: accountRow("terms") && toRow(accountRow("terms")!),
-        privacy: accountRow("privacy") && toRow(accountRow("privacy")!),
-      },
-      current,
-    ),
-    dpaPending: primary
-      .map((o) => o.id as string)
-      .filter((id) => {
-        const r = rows.find(
-          (x) => x.document === "dpa" && x.organization_id === id,
-        );
-        return acceptancePending("dpa", r && toRow(r), current);
-      }),
+    pending,
+    dpaPending,
+    notices,
+    dpaNoticeOrganizations,
     accepted,
+    billingConsent: rows.some((r) => r.document === "billing_consent"),
   };
+}
+
+/**
+ * The legalAccepted fields a primary-making command (signup, transfer)
+ * needs while the documents are published: the billing consent as well as
+ * the documents (UX-3). Returns the evidence row to record, or null.
+ */
+export function billingConsentEvidence(
+  accepted: { billingConsent?: string } | undefined,
+  c: LegalConfig,
+): { document: "billing_consent"; version: string } | null {
+  if (c.status === "published" && !accepted?.billingConsent)
+    throw new DomainError("legal_acceptance_required", 428);
+  return accepted?.billingConsent
+    ? { document: "billing_consent", version: accepted.billingConsent }
+    : null;
 }
 
 export type AcceptanceContext =
@@ -348,7 +426,7 @@ export async function recordAcceptances(
   account: { id: string; sessionId: string },
   input: {
     documents: Array<{
-      document: LegalDocumentKey;
+      document: LegalEvidenceKey;
       version: string;
       organizationId?: string;
     }>;
@@ -359,7 +437,7 @@ export async function recordAcceptances(
 ): Promise<void> {
   if (!signupOpen(c)) throw new DomainError("signup_paused", 503);
   for (const d of input.documents)
-    if (d.version !== LEGAL_DOCUMENTS[d.document].version)
+    if (d.version !== evidenceVersion(d.document))
       throw new DomainError("legal_version_mismatch", 409);
   for (const d of input.documents) {
     let organizationId: string | null = null;
@@ -401,11 +479,19 @@ export function legalDocumentsSummary() {
       {
         version: LEGAL_DOCUMENTS[k].version,
         requiresAcceptanceSince: LEGAL_DOCUMENTS[k].requiresAcceptanceSince,
+        announcedAt: LEGAL_DOCUMENTS[k].announcedAt,
+        effectiveFrom: LEGAL_DOCUMENTS[k].effectiveFrom,
         path: LEGAL_DOCUMENTS[k].path,
       },
     ]),
   ) as Record<
     LegalDocumentKey,
-    { version: string; requiresAcceptanceSince: string; path: string }
+    {
+      version: string;
+      requiresAcceptanceSince: string;
+      announcedAt: string;
+      effectiveFrom: string;
+      path: string;
+    }
   >;
 }

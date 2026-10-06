@@ -9,10 +9,27 @@ import type { LegalDocumentContent } from "../legal.js";
  * Spanish governs.
  */
 
-/** Simplified notice shown where data is collected (Art. 16-II: Art. 15 I-IV plus the integral notice). */
+/**
+ * Simplified notice shown where data is collected (Art. 16-II: Art. 15 I-IV
+ * plus where to read the integral notice): the responsable's identity and
+ * domicilio (I), the data and that no sensitive data is collected (II), the
+ * purposes (III) and how to limit use (IV). The one source for every screen
+ * that shows it (rendered with legalText; LEGAL-1).
+ */
 export const PRIVACY_SIMPLIFIED = {
-  es: "{{entity.name}} es responsable de tus datos personales. Usaremos tu nombre y correo de Google para crear y proteger tu cuenta, prestarte el servicio, facturar tu suscripción y darte soporte. No los usamos para publicidad. Para limitar su uso o ejercer tus derechos ARCO escribe a {{entity.privacyContactEmail}}. Consulta el aviso de privacidad integral en /legal/privacidad.",
-  en: "{{entity.name}} is the controller of your personal data. We use your Google name and email to create and protect your account, provide the service, bill your subscription and support you. We do not use them for advertising. To limit their use or exercise your ARCO rights, write to {{entity.privacyContactEmail}}. Read the full privacy notice at /legal/privacy.",
+  es: "{{entity.name}}, con domicilio en {{entity.address}}, es responsable de tus datos personales. Tratamos tu nombre, tu correo y el identificador que te asigna Google, y datos técnicos de sesión (cookies, dispositivos vinculados y direcciones IP); no recabamos datos personales sensibles. Los usamos para crear y proteger tu cuenta, prestarte el servicio, facturar tu suscripción y darte soporte. No los usamos para publicidad. Para limitar su uso o ejercer tus derechos ARCO escribe a {{entity.privacyContactEmail}}. Consulta el aviso de privacidad integral en /legal/privacidad.",
+  en: "{{entity.name}}, with its address at {{entity.address}}, is the controller of your personal data. We process your name, your email and the identifier Google assigns you, and technical session data (cookies, paired devices and IP addresses); we collect no sensitive personal data. We use them to create and protect your account, provide the service, bill your subscription and support you. We do not use them for advertising. To limit their use or exercise your ARCO rights, write to {{entity.privacyContactEmail}}. Read the full privacy notice at /legal/privacy.",
+} as const;
+
+/**
+ * The express consent §2 describes (LFPDPPP Art. 7; UX-3, LEGAL-7): its own
+ * checkbox wherever a person becomes a primary owner (signup, transfer),
+ * recorded as its own evidence row (document "billing_consent", versioned with
+ * this notice). Never folded into "Leí el Aviso de privacidad".
+ */
+export const BILLING_CONSENT = {
+  es: "Consiento expresamente el tratamiento de mis datos financieros y patrimoniales para facturar la suscripción de mi restaurante, como explica el Aviso de privacidad.",
+  en: "I expressly consent to the processing of my financial and property data to bill my restaurant's subscription, as the Privacy notice explains.",
 } as const;
 
 export const privacyContent: LegalDocumentContent = {
@@ -40,9 +57,10 @@ export const privacyContent: LegalDocumentContent = {
           "Datos de identificación y contacto de propietarios y miembros invitados: nombre, correo electrónico y el identificador que te asigna Google al iniciar sesión.",
           "Datos de sesión y seguridad: cookies técnicas, dispositivos vinculados, identificadores de solicitud y direcciones IP que usamos solo de forma transitoria para limitar intentos y prevenir abusos.",
           "Datos de facturación de la suscripción: Stripe procesa los datos de tarjeta; Green Monkey no almacena números de tarjeta. De forma opcional, los datos fiscales que captures para la factura de tu suscripción (RFC, razón social, régimen fiscal y código postal).",
+          "Datos fiscales de tu restaurante que captures (RFC, nombre o razón social, régimen fiscal y código postal) y, si activas la facturación electrónica, su certificado de sello digital (CSD): lo recibimos en un sobre cifrado, lo entregamos a Facturapi para timbrar tus CFDI y borramos nuestra copia.",
           "Las comunicaciones que tengas con soporte.",
           "No solicitamos datos personales sensibles (artículo 15, fracción II).",
-          "Los datos financieros o patrimoniales relacionados con la facturación de tu suscripción requieren tu consentimiento expreso (artículo 7), que otorgas al marcar la casilla de aceptación al crear tu cuenta o restaurante.",
+          "Los datos financieros o patrimoniales relacionados con la facturación de tu suscripción se tratan con tu consentimiento expreso (artículo 7), que otorgas con una casilla propia, distinta de la que confirma que leíste este aviso, al crear tu restaurante o al aceptar la titularidad de una organización. Guardamos la versión y la fecha de ese consentimiento, y puedes revocarlo como indica la sección 8.",
         ],
       },
       {
@@ -64,7 +82,7 @@ export const privacyContent: LegalDocumentContent = {
         id: "encargados-transferencias",
         title: "5. Encargados y transferencias",
         paragraphs: [
-          "Para prestar el servicio usamos proveedores que tratan datos por nuestra cuenta como personas encargadas, sin que ello sea una transferencia: Google (inicio de sesión), Stripe (pagos de la suscripción), Neon (base de datos) y Railway (hospedaje). Algunos pueden ubicarse fuera de México.",
+          "Para prestar el servicio usamos proveedores que tratan datos por nuestra cuenta como personas encargadas, sin que ello sea una transferencia: Google (inicio de sesión), Stripe (pagos de la suscripción), Neon (base de datos), Railway (hospedaje), Cloudflare (almacenamiento cifrado de los respaldos), GitHub (ejecución automatizada de los respaldos) y, solo cuando un restaurante activa la facturación electrónica, Facturapi (timbrado de CFDI a través de un proveedor autorizado de certificación y envío del CFDI por correo). Algunos pueden ubicarse fuera de México.",
           "Solo transferimos datos en los supuestos del artículo 36, como una orden de autoridad competente o un requerimiento legal; esas transferencias no requieren tu consentimiento (artículos 35 y 36).",
         ],
       },
@@ -73,6 +91,7 @@ export const privacyContent: LegalDocumentContent = {
         title: "6. Datos de comensales y empleados de los restaurantes",
         paragraphs: [
           "Cuando un restaurante registra en Green Monkey datos de sus empleados o comensales, el restaurante es el responsable de esos datos y Green Monkey actúa como persona encargada conforme al contrato de encargo de datos (artículo 2, fracción XII).",
+          "Esto incluye los datos fiscales que un comensal captura para pedir su factura (RFC, nombre o razón social, régimen fiscal, código postal y correo), que Green Monkey envía a Facturapi para timbrar y entregar el CFDI por cuenta del restaurante.",
           "Si eres comensal o empleado, dirige tus solicitudes de derechos ARCO al restaurante. Si recibimos una, la reenviaremos al restaurante correspondiente.",
         ],
       },
@@ -103,7 +122,8 @@ export const privacyContent: LegalDocumentContent = {
         id: "conservacion",
         title: "10. Conservación",
         paragraphs: [
-          "Conservamos tus datos mientras tu cuenta esté activa. Después los bloqueamos y, al terminar el plazo legal aplicable, los suprimimos, salvo los registros que debamos conservar por 5 años conforme al artículo 30 del Código Fiscal de la Federación (artículos 2, fracción III, y 10).",
+          "Conservamos tus datos mientras tu cuenta esté activa. Después los bloqueamos: solo los conservamos para atender las responsabilidades derivadas de nuestra relación y, al terminar el plazo legal aplicable, los suprimimos o anonimizamos (artículos 2, fracción III, y 10). Los registros fiscales se conservan 5 años (artículo 30 del Código Fiscal de la Federación) y la evidencia de tu aceptación de estos documentos, 10 años (artículo 49 del Código de Comercio), ligada solo al identificador de tu cuenta.",
+          "Los respaldos cifrados de la base de datos (diarios, guardados 35 días, y mensuales, guardados hasta 1,900 días) también contienen esos datos. Su acceso está restringido, se tratan como datos bloqueados, solo se usan para recuperar el servicio ante un desastre y se eliminan al cumplir su plazo. Si alguna vez restauramos uno, volvemos a aplicar las cancelaciones atendidas después de su fecha.",
         ],
       },
       {
@@ -118,7 +138,7 @@ export const privacyContent: LegalDocumentContent = {
         id: "cambios",
         title: "12. Cambios a este aviso",
         paragraphs: [
-          "Te avisaremos de cualquier cambio dentro de la aplicación, con la versión y la fecha. Los cambios materiales requieren que los aceptes la siguiente vez que entres a tu cuenta (artículo 15, fracción VI).",
+          "Te avisaremos dentro de la aplicación de cada nueva versión de este aviso, con su fecha de entrada en vigor. Los cambios materiales se anuncian al menos 15 días antes de entrar en vigor y, desde esa fecha, te pediremos aceptarlos para seguir administrando tu cuenta; tu restaurante sigue operando mientras tanto. Los cambios menores y la actualización de los datos del responsable se te muestran en la aplicación sin pedirte una nueva aceptación (artículo 15, fracción VI).",
         ],
       },
       {
@@ -154,9 +174,10 @@ export const privacyContent: LegalDocumentContent = {
           "Identification and contact data of owners and invited members: name, email address and the identifier Google assigns you when you sign in.",
           "Session and security data: technical cookies, paired devices, request identifiers and IP addresses that we use only transiently to limit attempts and prevent abuse.",
           "Subscription billing data: Stripe processes card data; Green Monkey stores no card numbers. Optionally, the tax details you enter for your subscription invoice (RFC, legal name, tax regime and postal code).",
+          "Your restaurant's tax details that you enter (RFC, name or legal name, tax regime and postal code) and, if you enable electronic invoicing, its digital seal certificate (CSD): we receive it in an encrypted envelope, hand it to Facturapi to stamp your CFDI and delete our copy.",
           "Your communications with support.",
           "We do not request sensitive personal data (article 15, section II).",
-          "Financial or property data related to billing your subscription require your express consent (article 7), which you give by ticking the acceptance box when you create your account or restaurant.",
+          "Financial or property data related to billing your subscription are processed with your express consent (article 7), which you give with a checkbox of its own, separate from the one confirming you read this notice, when you create your restaurant or accept the ownership of an organization. We keep the version and date of that consent, and you can withdraw it as section 8 explains.",
         ],
       },
       {
@@ -178,7 +199,7 @@ export const privacyContent: LegalDocumentContent = {
         id: "encargados-transferencias",
         title: "5. Processors and transfers",
         paragraphs: [
-          "To provide the service we use providers that process data on our behalf as processors, which is not a transfer: Google (sign-in), Stripe (subscription payments), Neon (database) and Railway (hosting). Some may be located outside Mexico.",
+          "To provide the service we use providers that process data on our behalf as processors, which is not a transfer: Google (sign-in), Stripe (subscription payments), Neon (database), Railway (hosting), Cloudflare (encrypted backup storage), GitHub (automated backup runs) and, only when a restaurant enables electronic invoicing, Facturapi (CFDI stamping through an authorized certification provider and CFDI delivery by email). Some may be located outside Mexico.",
           "We transfer data only in the cases of article 36, such as an order from a competent authority or a legal requirement; those transfers do not require your consent (articles 35 and 36).",
         ],
       },
@@ -187,6 +208,7 @@ export const privacyContent: LegalDocumentContent = {
         title: "6. Data of restaurant guests and employees",
         paragraphs: [
           "When a restaurant records data about its employees or guests in Green Monkey, the restaurant is the controller of that data and Green Monkey acts as a processor under the data processing agreement (article 2, section XII).",
+          "This includes the tax details a guest enters to request an invoice (RFC, name or legal name, tax regime, postal code and email), which Green Monkey sends to Facturapi to stamp and deliver the CFDI on the restaurant's behalf.",
           "If you are a guest or an employee, send your ARCO requests to the restaurant. If we receive one, we will forward it to the restaurant concerned.",
         ],
       },
@@ -217,7 +239,8 @@ export const privacyContent: LegalDocumentContent = {
         id: "conservacion",
         title: "10. Retention",
         paragraphs: [
-          "We keep your data while your account is active. Afterwards we block it and, once the applicable legal period ends, delete it, except records we must keep for 5 years under article 30 of the Federal Tax Code (articles 2, section III, and 10).",
+          "We keep your data while your account is active. Afterwards we block it: we keep it only to answer for responsibilities arising from our relationship and, once the applicable legal period ends, we delete or anonymize it (articles 2, section III, and 10). Tax records are kept for 5 years (Federal Tax Code, article 30) and the evidence of your acceptance of these documents for 10 years (Commercial Code, article 49), tied only to your account identifier.",
+          "Encrypted database backups (daily ones kept 35 days, monthly ones kept up to 1,900 days) also contain that data. Access to them is restricted, they are treated as blocked data, they are used only to recover the service after a disaster, and they are deleted when their period ends. If we ever restore one, we re-apply the cancellations handled after its date.",
         ],
       },
       {
@@ -232,7 +255,7 @@ export const privacyContent: LegalDocumentContent = {
         id: "cambios",
         title: "12. Changes to this notice",
         paragraphs: [
-          "We will notify you of any change inside the app, with its version and date. Material changes require your acceptance the next time you sign in to your account (article 15, section VI).",
+          "We will notify you inside the app of every new version of this notice, with the date it takes effect. Material changes are announced at least 15 days before they take effect and, from that date, we will ask you to accept them to keep managing your account; your restaurant keeps operating meanwhile. Minor changes and updates to the controller's details are shown in the app without asking you to accept again (article 15, section VI).",
         ],
       },
       {

@@ -79,7 +79,9 @@ CREATE TABLE legal_acceptances (
   id uuid PRIMARY KEY,
   account_id uuid NOT NULL REFERENCES owner_accounts(id),
   owner_session_id uuid NOT NULL,
-  document text NOT NULL CHECK (document IN ('terms','privacy','dpa')),
+  -- billing_consent: the express consent for billing data (LFPDPPP Art. 7), its own
+  -- checkbox and its own row, versioned with the privacy notice (UX-3).
+  document text NOT NULL CHECK (document IN ('terms','privacy','dpa','billing_consent')),
   version text NOT NULL CHECK (version ~ '^\d{4}-\d{2}-\d{2}(\.\d+)?$'),
   content_hash text NOT NULL CHECK (content_hash ~ '^[a-f0-9]{64}$'),
   entity_hash text NOT NULL CHECK (entity_hash ~ '^[a-f0-9]{64}$'),
@@ -96,6 +98,17 @@ CREATE INDEX legal_acceptances_organization ON legal_acceptances(organization_id
   WHERE organization_id IS NOT NULL;
 CREATE TRIGGER legal_acceptances_append_only BEFORE UPDATE OR DELETE ON legal_acceptances
   FOR EACH ROW EXECUTE FUNCTION account_append_only();
+-- Evidence time is the server's, never the caller's (LEGAL-8), and the table cannot be
+-- truncated (Código de Comercio Art. 49: kept whole and unaltered).
+CREATE FUNCTION legal_acceptance_time() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.accepted_at := now();
+  RETURN NEW;
+END $$;
+CREATE TRIGGER legal_acceptance_time BEFORE INSERT ON legal_acceptances
+  FOR EACH ROW EXECUTE FUNCTION legal_acceptance_time();
+CREATE TRIGGER legal_acceptances_no_truncate BEFORE TRUNCATE ON legal_acceptances
+  FOR EACH STATEMENT EXECUTE FUNCTION account_append_only();
 
 -- Ownership transfers (owner-, support- or recovery-initiated) ------------------------
 CREATE TABLE ownership_transfers (

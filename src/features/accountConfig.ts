@@ -9,7 +9,13 @@ export type AccountConfig = {
     missing?: string[];
     documents: Record<
       "privacy" | "terms" | "dpa",
-      { version: string; requiresAcceptanceSince: string; path: string }
+      {
+        version: string;
+        requiresAcceptanceSince: string;
+        announcedAt: string;
+        effectiveFrom: string;
+        path: string;
+      }
     >;
   };
   support: {

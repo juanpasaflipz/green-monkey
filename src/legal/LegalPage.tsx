@@ -7,6 +7,7 @@ import { strings, type Key } from "../i18n";
 import {
   LEGAL_CONTENT,
   LEGAL_DOCUMENTS,
+  legalInstant,
   LEGAL_ROUTES,
   legalSegments,
   templateFields,
@@ -151,6 +152,18 @@ export default function LegalPage() {
           {t.accountLegalVersion.replace(
             "{version}",
             LEGAL_DOCUMENTS[doc].version,
+          )}
+          {" · "}
+          {(legalInstant(LEGAL_DOCUMENTS[doc].effectiveFrom) > Date.now()
+            ? t.accountLegalEffectiveFuture
+            : t.accountLegalEffective
+          ).replace(
+            "{date}",
+            new Intl.DateTimeFormat(locale === "es" ? "es-MX" : "en-US", {
+              dateStyle: "long",
+            }).format(
+              new Date(`${LEGAL_DOCUMENTS[doc].effectiveFrom}T12:00:00-06:00`),
+            ),
           )}
         </p>
         <nav className="legal-toc" aria-label={content.title}>

@@ -117,8 +117,31 @@
   font-size: 13px;
   text-align: center;
 }
+/* Sensitive-command sign-in prompt shown before the form (UX-2). */
+.reauth-ahead {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--warning, #b45309);
+}
+.reauth-ahead p {
+  margin: 0 0 8px;
+}
+.account-messages:focus {
+  outline: none;
+}
+.account-recovery-more {
+  margin-top: 12px;
+}
 @media print {
-  body:has(.recovery-codes) .account-center > :not(.recovery) {
+  /* Printing the codes prints only them (UX-9): the console's other panels
+     and the rest of the owner screen stay off the page. */
+  body:has(.recovery-codes) .owner-access > :not(.account-center),
+  body:has(.recovery-codes) .account-center > :not(.recovery):not(:has(.recovery)),
+  body:has(.recovery-codes) .account-recovery-more > :not(.recovery),
+  body:has(.recovery-codes) .recovery > :not(.recovery-codes) {
+    display: none;
+  }
+  body:has(.recovery-codes) .recovery-codes .row {
     display: none;
   }
 }

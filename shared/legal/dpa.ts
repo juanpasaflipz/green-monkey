@@ -25,6 +25,8 @@ export const dpaContent: LegalDocumentContent = {
         paragraphs: [
           "Empleados: nombre, usuario, rol, PIN cifrado, turnos y tarifa por hora. La tarifa por hora es un dato financiero o patrimonial: el restaurante debe obtener el consentimiento expreso de sus empleados (artículo 7).",
           "Comensales: nombre o alias en las órdenes y notas de las órdenes. Una nota de alergia vinculada a un nombre es un dato sensible (artículos 2, fracción VI, y 8); recomendamos usar alias.",
+          "Receptores de CFDI, cuando el restaurante activa la facturación electrónica: RFC, nombre o razón social, régimen fiscal, código postal y correo electrónico de quien pide su factura, que Green Monkey envía a Facturapi para timbrar el CFDI y entregarlo por correo.",
+          "El certificado de sello digital (CSD) del restaurante y su contraseña: Green Monkey los recibe en un sobre cifrado, los entrega a Facturapi para que pueda timbrar los CFDI del restaurante y borra su copia.",
         ],
       },
       {
@@ -52,7 +54,7 @@ export const dpaContent: LegalDocumentContent = {
         id: "subencargados",
         title: "6. Subencargados",
         paragraphs: [
-          "El responsable autoriza a los siguientes subencargados: Google (inicio de sesión), Stripe (pagos de la suscripción), Neon (base de datos) y Railway (hospedaje). Algunos pueden ubicarse fuera de México. Green Monkey avisará en la aplicación antes de agregar otro.",
+          "El responsable autoriza a los siguientes subencargados: Google (inicio de sesión), Stripe (pagos de la suscripción), Neon (base de datos), Railway (hospedaje), Cloudflare (almacenamiento cifrado de los respaldos), GitHub (ejecución automatizada de los respaldos) y, solo si el restaurante activa la facturación electrónica, Facturapi (timbrado de CFDI a través de un proveedor autorizado de certificación y envío del CFDI por correo). Algunos pueden ubicarse fuera de México. Green Monkey avisará en la aplicación, al menos 15 días antes, de cualquier subencargado nuevo.",
         ],
       },
       {
@@ -73,7 +75,8 @@ export const dpaContent: LegalDocumentContent = {
         id: "terminacion",
         title: "9. Terminación",
         paragraphs: [
-          "Al terminar el servicio, el responsable puede exportar sus datos durante 30 días. Después, Green Monkey los bloquea y los suprime al vencer el plazo de conservación, salvo los que deba conservar por ley.",
+          "Al terminar el servicio, el responsable puede exportar sus datos durante 30 días. La exportación no incluye los archivos XML y PDF de los CFDI timbrados: el responsable los descarga del registro de facturas o mediante la descarga masiva del SAT y debe conservarlos 5 años (artículo 30 del Código Fiscal de la Federación).",
+          "Después, Green Monkey bloquea los datos y los suprime o anonimiza al vencer el plazo de conservación, salvo los que deba conservar por ley. Los respaldos cifrados de la base de datos contienen esos datos hasta que expiran (35 días los diarios y hasta 1,900 días los mensuales); mientras tanto se tratan como bloqueados y solo se usan para recuperar el servicio ante un desastre.",
         ],
       },
       {
@@ -87,7 +90,7 @@ export const dpaContent: LegalDocumentContent = {
         id: "transferencias",
         title: "11. Transferencias",
         paragraphs: [
-          "Green Monkey no transfiere los datos a terceros, salvo por orden de autoridad competente, y en ese caso lo informará al responsable cuando la ley lo permita.",
+          "Green Monkey no transfiere los datos a terceros, salvo las comunicaciones que la ley exige o que hace por instrucción del responsable, como el envío de los datos de un CFDI a un proveedor autorizado de certificación para su timbrado y, por su conducto, al SAT (artículo 36); y las órdenes de autoridad competente, que informará al responsable cuando la ley lo permita.",
         ],
       },
     ],
@@ -109,6 +112,8 @@ export const dpaContent: LegalDocumentContent = {
         paragraphs: [
           "Employees: name, login, role, hashed PIN, shifts and hourly rate. The hourly rate is financial or property data: the restaurant must obtain its employees' express consent (article 7).",
           "Guests: name or alias on orders and order notes. An allergy note tied to a name is sensitive data (articles 2, section VI, and 8); we recommend using aliases.",
+          "CFDI recipients, when the restaurant enables electronic invoicing: the RFC, name or legal name, tax regime, postal code and email of whoever requests an invoice, which Green Monkey sends to Facturapi to stamp the CFDI and deliver it by email.",
+          "The restaurant's digital seal certificate (CSD) and its password: Green Monkey receives them in an encrypted envelope, hands them to Facturapi so it can stamp the restaurant's CFDI, and deletes its copy.",
         ],
       },
       {
@@ -136,7 +141,7 @@ export const dpaContent: LegalDocumentContent = {
         id: "subencargados",
         title: "6. Sub-processors",
         paragraphs: [
-          "The controller authorizes the following sub-processors: Google (sign-in), Stripe (subscription payments), Neon (database) and Railway (hosting). Some may be located outside Mexico. Green Monkey will give notice in the app before adding another.",
+          "The controller authorizes the following sub-processors: Google (sign-in), Stripe (subscription payments), Neon (database), Railway (hosting), Cloudflare (encrypted backup storage), GitHub (automated backup runs) and, only if the restaurant enables electronic invoicing, Facturapi (CFDI stamping through an authorized certification provider and CFDI delivery by email). Some may be located outside Mexico. Green Monkey will give notice in the app, at least 15 days in advance, of any new sub-processor.",
         ],
       },
       {
@@ -157,7 +162,8 @@ export const dpaContent: LegalDocumentContent = {
         id: "terminacion",
         title: "9. Termination",
         paragraphs: [
-          "When the service ends, the controller can export its data for 30 days. Afterwards, Green Monkey blocks it and deletes it when the retention period expires, except data it must keep by law.",
+          "When the service ends, the controller can export its data for 30 days. The export does not include the stamped CFDI XML and PDF files: the controller downloads them from the invoice register or through the SAT's bulk download and must keep them for 5 years (Federal Tax Code, article 30).",
+          "Afterwards, Green Monkey blocks the data and deletes or anonymizes it when the retention period expires, except data it must keep by law. Encrypted database backups contain that data until they expire (35 days for daily ones and up to 1,900 days for monthly ones); meanwhile they are treated as blocked and used only to recover the service after a disaster.",
         ],
       },
       {
@@ -171,7 +177,7 @@ export const dpaContent: LegalDocumentContent = {
         id: "transferencias",
         title: "11. Transfers",
         paragraphs: [
-          "Green Monkey does not transfer the data to third parties, except by order of a competent authority, and will then inform the controller where the law allows.",
+          "Green Monkey does not transfer the data to third parties, except communications the law requires or that it makes on the controller's instructions, such as sending a CFDI's data to an authorized certification provider for stamping and, through it, to the SAT (article 36); and orders from a competent authority, which it will report to the controller where the law allows.",
         ],
       },
     ],

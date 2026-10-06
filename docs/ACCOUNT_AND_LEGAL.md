@@ -23,9 +23,26 @@ about the legal entity is hard-coded.
 
 | Document | Spanish path | English path | Accepted by |
 | --- | --- | --- | --- |
-| Aviso de privacidad integral (LFPDPPP Art. 15, simplified modality Art. 16-II in `#simplificado`) | `/legal/privacidad` | `/legal/privacy` | every account (acknowledgment) |
+| Aviso de privacidad integral (LFPDPPP Art. 15, simplified modality Art. 16-II in `#simplificado`) | `/legal/privacidad` | `/legal/privacy` | every account (acknowledgment), plus the separate express consent for billing data by primaries |
 | Términos del servicio | `/legal/terminos` | `/legal/terms` | every account |
 | Contrato de encargo de datos (DPA: Green Monkey processes diner and staff data for the restaurant, the responsable) | `/legal/encargo-de-datos` | `/legal/data-processing` | the primary owner, per organization |
+
+The simplified notice shown next to "Continuar con Google" is
+`PRIVACY_SIMPLIFIED` rendered with `legalText`, the same versioned text as
+`/legal/privacidad#simplificado` (one source, LEGAL-1): the responsable's name
+and domicilio, the data (name, email and Google identifier, technical session
+data) with "no recabamos datos personales sensibles", the purposes, how to
+limit use and where the integral notice is. The Google button appears only
+once `/api/account-config` has loaded, so no sign-in starts without it.
+
+The processor lists (privacy §5, DPA §6) name Google, Stripe, Neon, Railway,
+Cloudflare (encrypted backup storage), GitHub (backup runs) and, only when a
+restaurant enables CFDI, Facturapi (stamping through a PAC and CFDI email);
+the DPA's §2 covers CFDI receptors' data and the restaurant's CSD, and §11
+allows communications the law requires or the responsable instructs (PAC,
+SAT). Sentry is not listed: add it (a material DPA change, 15 days' notice)
+only if the error reporter is approved (LAUNCH_HANDOFF). Privacy §10 and DPA §9
+disclose the encrypted backups and their lifecycle (LEGAL-2, UX-5, DATA-2).
 
 `/legal` lists them. The pages render outside the POS shell, work from the
 offline shell (with a "connect to see the current version" notice when the
@@ -33,42 +50,78 @@ configuration cannot load) and print cleanly. The QR/kiosk footer links to
 `/legal/privacidad#restaurantes`, the section that explains Green Monkey's role
 as encargado for diners.
 
-Each document has a `version` and a `requiresAcceptanceSince` (both
-`YYYY-MM-DD`, optionally `.n`). Acceptance rows (`legal_acceptances`,
-append-only) record the version, the content hash, the entity hash, whether the
+Each document has a `version`, a `requiresAcceptanceSince`, the
+`previousVersion` and `previousRequiresAcceptanceSince` it replaces (null for
+the first), an `announcedAt` and an `effectiveFrom` (all `YYYY-MM-DD`, versions
+optionally `.n`; dates are 00:00 Mexico City). Acceptance rows
+(`legal_acceptances`, append-only, `accepted_at` forced to the server's time,
+no TRUNCATE) record the version, the content hash, the entity hash, whether the
 documents were published, the locale, the context (`signup`, `invitation`,
-`reacceptance`, `transfer`) and, for the DPA, the organization.
+`reacceptance`, `transfer`) and, for the DPA, the organization. The **express
+consent for billing data** (LFPDPPP Art. 7, privacy §2) is its own checkbox
+wherever a person becomes a primary owner (signup, transfer) and its own row,
+document `billing_consent`, versioned with the privacy notice (UX-3); a primary
+without one is asked with the next acceptance in the console.
 
-A document is **pending** for an account when the documents are published and:
-it was never accepted; or the latest acceptance is of a version older than
-`requiresAcceptanceSince`; or it was accepted for another legal entity (entity
-hash); or it was accepted while unpublished. Unpublished documents are never
-pending.
+Where an account stands with a document (`acceptanceStatus`, LEGAL-3):
+
+- **required** (gates the commands below with `428 legal_acceptance_required`):
+  never accepted; accepted as an unpublished draft; or a material change is in
+  effect (`effectiveFrom` passed) and the acceptance is older than
+  `requiresAcceptanceSince` (or older than the previous material version, which
+  the announcement window never relaxes);
+- **announced**: that material change is announced but not in effect yet. The
+  console shows "Nuevas versiones de nuestros documentos" with the date, each
+  document's link and changes, and an optional early acceptance; owners and
+  Google-entered managers see a dismissible POS banner from `announcedAt`;
+- **entity_updated**: only the responsable's data changed (entity hash). Not
+  material: the console shows the generated entry "Datos del responsable
+  actualizados …" and an optional acceptance under the new data;
+- **updated**: a newer non-material version: shown with its changes, never
+  asked again;
+- **accepted**. Unpublished documents are never required.
+
+The re-acceptance path reaches everyone the documents apply to (LEGAL-4):
+primaries and co-owners, and Google members such as invited managers (any
+account with an active membership or an earlier acceptance) in the console and,
+when they entered through Google, in the POS shell; the DPA part only for the
+primary. A brand-new account accepts with its first command instead.
 
 ### How to publish a new version
 
 1. Edit the text in `shared/legal/<document>.ts` (both languages).
-2. In `LEGAL_DOCUMENTS` (`shared/legal.ts`) set `version` to the release date
-   and add the human summary to `changes` (es and en).
+2. In `LEGAL_DOCUMENTS` (`shared/legal.ts`) set `previousVersion` and
+   `previousRequiresAcceptanceSince` to the outgoing values, `version` to the
+   release date, `announcedAt` to the day the text deploys, and add the human
+   summary to `changes` (es and en).
 3. **Non-material change** (typos, clarifications): leave
-   `requiresAcceptanceSince` alone. Nobody is asked again.
-4. **Material change** (new purposes, new transfers, new obligations): set
-   `requiresAcceptanceSince` to the new `version`. Every account that accepted
-   an older version sees "Actualizamos nuestros documentos" in its account
-   console, and owners see "Hay documentos legales por aceptar en Cuenta." in
-   the POS shell. Until they accept, these commands answer
-   `428 legal_acceptance_required`: signup, staff and co-owner invitations,
-   invitation acceptance (unless the request carries the acceptance), new
-   locations, Free location selection, transfers, billing requests and the tax
-   profile. POS entry, logout, the account overview and every POS route are
-   never gated, and neither are the security actions that take access away:
-   removing a co-owner (UX-1), leaving co-ownership and cancelling or declining
-   a transfer.
+   `requiresAcceptanceSince` alone and set `effectiveFrom` = `announcedAt`.
+   Accounts see the change listed ("updated"); nobody is asked again.
+4. **Material change** (new purposes, new transfers or sub-processors, new
+   obligations): set `requiresAcceptanceSince` to the new `version` and
+   `effectiveFrom` **at least 15 days after** `announcedAt` (terms §13,
+   privacy §12, DPA §6; `tests/legal.test.ts` refuses less). Until
+   `effectiveFrom` accounts see the announcement and may accept early; from
+   `effectiveFrom` every account that accepted an older version sees
+   "Actualizamos nuestros documentos" in its account console, and owners see
+   "Hay documentos legales por aceptar en Cuenta." in the POS shell. Until they
+   accept, these commands answer `428 legal_acceptance_required`: signup, staff
+   and co-owner invitations, invitation acceptance (unless the request carries
+   the acceptance), new locations, Free location selection, transfers, billing
+   requests and the tax profile. POS entry, logout, the account overview and
+   every POS route are never gated, and neither are the security actions that
+   take access away: removing a co-owner (UX-1), leaving co-ownership and
+   cancelling or declining a transfer.
 5. Changing the legal entity values (name, address, RFC, privacy contact,
-   jurisdiction) changes the entity hash and therefore also asks everyone
-   again; plan it like a material change.
-6. Run `npm test` (`tests/legal.test.ts` checks every template token and the
-   version order) and the browser legal suite.
+   jurisdiction) changes the entity hash: accounts see "Datos del responsable
+   actualizados" and nothing is gated. When the change is material (a different
+   company becomes the responsable or the provider), mark it so: publish a
+   material version of each document (step 4) whose `changes` say what
+   changed, announced 15 days ahead.
+6. Run `npm test` (`tests/legal.test.ts` checks every template token, the
+   version order, the 15-day notice for material changes, the simplified
+   notice's Art. 15 I-IV elements and the processor lists) and the browser
+   legal suite.
 
 ## Configuration checklist
 

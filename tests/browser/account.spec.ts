@@ -6,7 +6,10 @@ import AxeBuilder from "@axe-core/playwright";
 import { legalContentHash } from "../../server/legal.js";
 import { ownerCookie, withOwner } from "../../server/owner-accounts.js";
 import { createCoOwnerInvitation } from "../../server/co-owners.js";
-import { acceptInvitation } from "../../server/owner-management.js";
+import {
+  acceptInvitation,
+  createInvitation,
+} from "../../server/owner-management.js";
 import {
   cancelTransfer,
   generateRecoveryCodes,
@@ -14,7 +17,12 @@ import {
   requestTransfer,
 } from "../../server/ownership-transfer.js";
 import { LEGAL_CI_ENV } from "../fixtures/legal-ci.js";
-import { LEGAL_DOCUMENTS } from "../../shared/legal.js";
+import {
+  BILLING_CONSENT,
+  LEGAL_DOCUMENTS,
+  PRIVACY_SIMPLIFIED,
+  legalText,
+} from "../../shared/legal.js";
 import {
   CURRENT_ACCEPTANCE,
   PUBLISHED_LEGAL,
@@ -103,6 +111,11 @@ test("signup requires accepting terms+DPA and acknowledging privacy; submit disa
       name: "Leí el Aviso de privacidad.",
       exact: true,
     });
+    // UX-3: the express billing consent is its own box.
+    const consent = page.getByRole("checkbox", {
+      name: BILLING_CONSENT.es,
+      exact: true,
+    });
     await expect(
       page.getByRole("group", { name: "Documentos legales" }),
     ).toBeVisible();
@@ -110,6 +123,8 @@ test("signup requires accepting terms+DPA and acknowledging privacy; submit disa
     await terms.check();
     await expect(create).toBeDisabled();
     await privacy.check();
+    await expect(create).toBeDisabled();
+    await consent.check();
     await expect(create).toBeEnabled();
     await terms.uncheck();
     await expect(create).toBeDisabled();
@@ -125,9 +140,19 @@ test("signup requires accepting terms+DPA and acknowledging privacy; submit disa
     const rows =
       await admin`select document,version,published,context,organization_id is not null as organization
         from legal_acceptances where account_id=${owner.accountId} order by document`;
-    expect(rows.map((r) => r.document)).toEqual(["dpa", "privacy", "terms"]);
+    expect(rows.map((r) => r.document)).toEqual([
+      "billing_consent",
+      "dpa",
+      "privacy",
+      "terms",
+    ]);
     expect(rows.every((r) => r.published && r.context === "signup")).toBe(true);
-    expect(rows.map((r) => r.organization)).toEqual([true, false, false]);
+    expect(rows.map((r) => r.organization)).toEqual([
+      false,
+      true,
+      false,
+      false,
+    ]);
   } finally {
     await deleteOwnerFixtures(admin, [owner.accountId]);
     await sql.end();
@@ -170,8 +195,13 @@ test("signup with a stale document version says the documents changed, reloads t
       name: "Leí el Aviso de privacidad.",
       exact: true,
     });
+    const consent = page.getByRole("checkbox", {
+      name: BILLING_CONSENT.es,
+      exact: true,
+    });
     await terms.check();
     await privacy.check();
+    await consent.check();
     await create.click();
     await expect(
       page.getByRole("alert").filter({
@@ -185,6 +215,7 @@ test("signup with a stale document version says the documents changed, reloads t
     await expect(create).toBeDisabled();
     await terms.check();
     await privacy.check();
+    await consent.check();
     await create.click();
     await expect(page.locator(".scope")).toContainText("Version vieja");
     const [accepted] =
@@ -241,9 +272,15 @@ test("simplified privacy notice is shown next to Google sign-up (FOH-14)", async
   );
   await page.goto("/app?signup");
   const notice = page.locator("#signup-privacy-notice");
+  // One source (LEGAL-1): the versioned simplified notice with the
+  // responsable's domicilio and the data / no-sensitive-data clause.
   await expect(notice).toHaveText(
-    `${LEGAL_CI_ENV.LEGAL_ENTITY_NAME} es responsable de tus datos personales. Usaremos tu nombre y correo de Google para crear y proteger tu cuenta, prestarte el servicio, facturar tu suscripción y darte soporte. No los usamos para publicidad. Para limitar su uso o ejercer tus derechos ARCO escribe a ${LEGAL_CI_ENV.LEGAL_PRIVACY_CONTACT_EMAIL}. Aviso de privacidad · Términos del servicio`,
+    `${legalText(PRIVACY_SIMPLIFIED.es, PUBLISHED_LEGAL.entity, "es")} Aviso de privacidad · Términos del servicio`,
   );
+  await expect(notice).toContainText(
+    `${LEGAL_CI_ENV.LEGAL_ENTITY_NAME}, con domicilio en ${LEGAL_CI_ENV.LEGAL_ENTITY_ADDRESS}, es responsable`,
+  );
+  await expect(notice).toContainText("no recabamos datos personales sensibles");
   await expect(
     page.getByRole("link", { name: "Continuar con Google", exact: true }),
   ).toHaveAttribute("aria-describedby", "signup-privacy-notice");
@@ -416,6 +453,11 @@ test("ownership transfer: request, accept as target with DPA, previous owner see
         exact: true,
       })
       .check();
+    // The new primary bills the subscription: the express consent (UX-3).
+    await expect(accept).toBeDisabled();
+    await offer
+      .getByRole("checkbox", { name: BILLING_CONSENT.es, exact: true })
+      .check();
     await axe(target);
     await accept.click();
     await expect(center(target)).toContainText(
@@ -428,6 +470,9 @@ test("ownership transfer: request, accept as target with DPA, previous owner see
     const [dpa] =
       await admin`select context from legal_acceptances where account_id=${to.accountId} and document='dpa'`;
     expect(dpa.context).toBe("transfer");
+    const [consent] =
+      await admin`select context from legal_acceptances where account_id=${to.accountId} and document='billing_consent'`;
+    expect(consent.context).toBe("transfer");
 
     await page.reload();
     const after = center(page);
@@ -555,6 +600,10 @@ test("each panel keeps its own acceptance: the re-acceptance boxes never enable 
         exact: true,
       })
       .check();
+    await expect(accept).toBeDisabled();
+    await transfer
+      .getByRole("checkbox", { name: BILLING_CONSENT.es, exact: true })
+      .check();
     await expect(accept).toBeEnabled();
     await axe(page);
   } finally {
@@ -634,6 +683,13 @@ test("recovery codes are shown once, printable, and redeem schedules a held tran
     const newAccount = await other.newPage();
     await newAccount.goto("/app");
     const redeem = center(newAccount);
+    // A new account's first screen is its restaurant form; the recovery tools
+    // wait behind a disclosure (UX-8).
+    await redeem
+      .getByText("Códigos de recuperación y recuperar una cuenta anterior", {
+        exact: true,
+      })
+      .click();
     await expect(
       redeem.getByRole("heading", {
         name: "¿Perdiste acceso a tu cuenta anterior?",
@@ -1387,6 +1443,236 @@ test("material change re-acceptance panel gates account commands but not POS ent
     await sql.end();
     await admin.end();
   }
+});
+
+test("a new account sees its restaurant form first at 390 px; the recovery tools wait behind a disclosure (UX-8)", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const owner = await ownerFixture(sql, "firstform");
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await useOwnerCookie(context, owner, baseURL);
+    await page.goto("/app");
+    const form = page.getByRole("form", { name: "Crea tu restaurante" });
+    await expect(form).toBeVisible();
+    // The first form control after the account header is the restaurant name.
+    const first = await page.evaluate(() => {
+      const header = [...document.querySelectorAll("h2")].find(
+        (h) => h.textContent === "Tu restaurante",
+      )!;
+      const controls = [
+        ...document.querySelectorAll(
+          "input, select, textarea, button, a.button",
+        ),
+      ].filter(
+        (el) =>
+          header.compareDocumentPosition(el) &
+            Node.DOCUMENT_POSITION_FOLLOWING &&
+          (el as HTMLElement).offsetParent !== null,
+      );
+      return controls[0]?.getAttribute("name");
+    });
+    expect(first).toBe("restaurantName");
+    // The recovery panels are collapsed until the account owns something.
+    const more = page.getByText(
+      "Códigos de recuperación y recuperar una cuenta anterior",
+      { exact: true },
+    );
+    await expect(more).toBeVisible();
+    await expect(
+      page.getByLabel("Código de recuperación", { exact: true }),
+    ).toBeHidden();
+    await more.click();
+    await expect(
+      page.getByLabel("Código de recuperación", { exact: true }),
+    ).toBeVisible();
+    await axe(page);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  } finally {
+    await deleteOwnerFixtures(admin, [owner.accountId]);
+    await sql.end();
+    await admin.end();
+  }
+});
+
+test("a Google session older than 15 minutes sees the sign-in prompt before the sensitive forms, which stay disabled (UX-2)", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const owner = await ownerFixture(sql, "stale-session");
+  try {
+    await ownerRestaurant(sql, owner, "Sesión vieja");
+    await admin`update owner_sessions set created_at=now()-interval '1 hour' where id=${ownerCookie(owner.cookie).id}`;
+    await page.setViewportSize({ width: 390, height: 844 });
+    await useOwnerCookie(context, owner, baseURL);
+    await page.goto("/app");
+    const console = center(page);
+    const transfer = console
+      .locator("form")
+      .filter({ hasText: "Crear enlace de transferencia" });
+    await expect(transfer).toContainText(
+      "Para invitar o quitar copropietarios, transferir la propiedad o generar códigos de recuperación, inicia sesión con Google de nuevo",
+    );
+    await expect(
+      transfer.getByRole("link", { name: "Iniciar sesión de nuevo" }),
+    ).toHaveAttribute("href", "/api/auth/google/start");
+    await expect(
+      transfer.getByLabel("Correo de Google de la nueva persona titular", {
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await expect(
+      transfer.getByRole("button", { name: "Crear enlace de transferencia" }),
+    ).toBeDisabled();
+    const invite = console
+      .locator("form")
+      .filter({ hasText: "Invitar copropietario" });
+    await expect(
+      invite.getByRole("link", { name: "Iniciar sesión de nuevo" }),
+    ).toBeVisible();
+    await expect(
+      invite.getByRole("button", { name: "Crear invitación" }),
+    ).toBeDisabled();
+    await expect(
+      console.getByRole("button", { name: "Generar códigos nuevos" }),
+    ).toBeDisabled();
+    await axe(page);
+    // A fresh session shows no prompt.
+    await admin`update owner_sessions set created_at=now() where id=${ownerCookie(owner.cookie).id}`;
+    await page.reload();
+    await expect(
+      center(page).getByRole("button", {
+        name: "Crear enlace de transferencia",
+      }),
+    ).toBeEnabled();
+    await expect(
+      center(page).getByText(/inicia sesión con Google de nuevo/),
+    ).toHaveCount(0);
+  } finally {
+    await deleteOwnerFixtures(admin, [owner.accountId]);
+    await sql.end();
+    await admin.end();
+  }
+});
+
+test("a Google-member manager with an older acceptance re-accepts in the console, without the DPA (LEGAL-4)", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const owner = await ownerFixture(sql, "legal4owner");
+  const manager = await ownerFixture(sql, "legal4manager");
+  try {
+    const tenantId = await ownerRestaurant(sql, owner, "Gerente Google");
+    const invitation = await withOwner(sql, owner.cookie, undefined, (tx, a) =>
+      createInvitation(
+        tx,
+        a.id,
+        {
+          operationId: randomUUID(),
+          tenantId,
+          email: manager.email,
+          role: "manager",
+        },
+        PUBLISHED_LEGAL,
+      ),
+    );
+    await withOwner(sql, manager.cookie, undefined, (tx, a) =>
+      acceptInvitation(
+        tx,
+        a,
+        {
+          token: invitation.path.split("#invite=")[1],
+          legalAccepted: {
+            terms: CURRENT_ACCEPTANCE.terms,
+            privacy: CURRENT_ACCEPTANCE.privacy,
+          },
+        },
+        PUBLISHED_LEGAL,
+      ),
+    );
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context)
+      values(${randomUUID()},${manager.accountId},${ownerCookie(manager.cookie).id},'privacy','2026-01-01',${legalContentHash("privacy")},${PUBLISHED_LEGAL.entityHash},true,'es','reacceptance')`;
+    await useOwnerCookie(context, manager, baseURL);
+    await page.goto("/app");
+    const panel = center(page)
+      .locator(".panel")
+      .filter({ hasText: "Actualizamos nuestros documentos" });
+    await expect(panel).toBeVisible();
+    await expect(
+      panel.getByRole("heading", {
+        name: `Aviso de privacidad · ${LEGAL_DOCUMENTS.privacy.version}`,
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(panel.getByText(/Contrato de encargo/)).toHaveCount(0);
+    await panel
+      .getByRole("checkbox", {
+        name: "Acepto los Términos del servicio.",
+        exact: true,
+      })
+      .check();
+    await panel
+      .getByRole("checkbox", {
+        name: "Leí el Aviso de privacidad.",
+        exact: true,
+      })
+      .check();
+    await axe(page);
+    await panel
+      .getByRole("button", { name: "Aceptar y continuar", exact: true })
+      .click();
+    await expect(panel).toHaveCount(0);
+    const [row] =
+      await admin`select version,context from legal_acceptances where account_id=${manager.accountId}
+        and document='privacy' order by accepted_at desc limit 1`;
+    expect(row).toMatchObject({
+      version: LEGAL_DOCUMENTS.privacy.version,
+      context: "reacceptance",
+    });
+  } finally {
+    await deleteOwnerFixtures(admin, [owner.accountId, manager.accountId]);
+    await sql.end();
+    await admin.end();
+  }
+});
+
+test("the Google button waits for the legal configuration, so no sign-in starts without the simplified notice (LEGAL-1)", async ({
+  page,
+}) => {
+  await page.route("**/api/auth/providers", (route) =>
+    route.fulfill({ json: { google: true, billingSandbox: false } }),
+  );
+  let fail = true;
+  await page.route("**/api/account-config", (route) =>
+    fail ? route.fulfill({ status: 503, json: {} }) : route.fallback(),
+  );
+  await page.goto("/app?signup");
+  const unavailable = page
+    .getByRole("alert")
+    .filter({ hasText: "No pudimos cargar los documentos legales." });
+  await expect(unavailable).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Continuar con Google" }),
+  ).toHaveCount(0);
+  fail = false;
+  await unavailable.getByRole("button", { name: "Reintentar" }).click();
+  await expect(
+    page.getByRole("link", { name: "Continuar con Google", exact: true }),
+  ).toHaveAttribute("aria-describedby", "signup-privacy-notice");
+  await expect(page.locator("#signup-privacy-notice")).toContainText(
+    `con domicilio en ${LEGAL_CI_ENV.LEGAL_ENTITY_ADDRESS}`,
+  );
 });
 
 test("an old QR link on a disabled deployment shows only the counter message", async ({

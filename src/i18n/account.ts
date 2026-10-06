@@ -24,9 +24,6 @@ export default defineArea({
     accountLegalBack: "Volver al inicio",
     accountLegalPrint: "Imprimir",
     accountLegalLoading: "Cargando documento…",
-    accountSimplifiedNotice:
-      "{entity} es responsable de tus datos personales. Usaremos tu nombre y correo de Google para crear y proteger tu cuenta, prestarte el servicio, facturar tu suscripción y darte soporte. No los usamos para publicidad. Para limitar su uso o ejercer tus derechos ARCO escribe a {email}.",
-    accountSimplifiedNoticeLink: "Lee el aviso de privacidad integral",
     accountSimplifiedNoticeDraft:
       "Entorno de prueba: el aviso de privacidad aún no está publicado.",
     accountSignupPaused:
@@ -43,6 +40,18 @@ export default defineArea({
     accountLegalUpdatedBody:
       "Revisa los cambios y acepta para seguir administrando tu cuenta. Tu restaurante sigue operando mientras tanto.",
     accountLegalAccept: "Aceptar y continuar",
+    accountLegalEffective: "Vigente desde el {date}",
+    accountLegalEffectiveFuture:
+      "Entra en vigor el {date}; hasta entonces sigue vigente la versión anterior.",
+    accountLegalAnnouncedTitle: "Nuevas versiones de nuestros documentos",
+    accountLegalAnnouncedBody:
+      "Entran en vigor el {date}. Desde esa fecha te pediremos aceptarlas para seguir administrando tu cuenta; tu restaurante sigue operando. Puedes revisarlas y aceptarlas desde ahora.",
+    accountLegalNoticeTitle: "Novedades en nuestros documentos",
+    accountLegalNoticeBody:
+      "No necesitas hacer nada para seguir usando Green Monkey. Puedes revisar los cambios y confirmar que los leíste.",
+    accountLegalAcceptOptional: "Aceptar estas versiones",
+    accountNoticeLegalAnnounced:
+      "El {date} entran en vigor nuevas versiones de los documentos legales. Revísalas en Cuenta.",
     accountLegalDpaPendingPrimary:
       "La persona titular debe aceptar el contrato de encargo actualizado.",
     // Help and support (GAP-5)
@@ -179,6 +188,21 @@ export default defineArea({
     accountReauth:
       "Por seguridad, vuelve a iniciar sesión con Google para continuar.",
     accountReauthButton: "Iniciar sesión de nuevo",
+    accountReauthAhead:
+      "Para invitar o quitar copropietarios, transferir la propiedad o generar códigos de recuperación, inicia sesión con Google de nuevo: por seguridad, tu sesión debe tener menos de 15 minutos.",
+    accountSignupFormTitle: "Crea tu restaurante",
+    accountRecoveryMore:
+      "Códigos de recuperación y recuperar una cuenta anterior",
+    accountTransferIncomingRecovery:
+      "Recuperación de la titularidad de {org} ({n} sucursales) con un código de recuperación.",
+    accountTransferLeaveWarning:
+      "Sin esta opción perderás el acceso a todas las sucursales cuando la nueva persona titular acepte.",
+    accountTransferPendingStays: "Seguirás como copropietario.",
+    accountTransferPendingLeaves:
+      "No seguirás como copropietario: perderás el acceso cuando la acepte.",
+    accountRecoveryRegenerateConfirm:
+      "Generar códigos nuevos anula los {n} códigos que aún no usas. ¿Continuar?",
+    accountSignupPausedContact: "Para ayuda escribe a soporte:",
     accountSupportActions: "Acciones de soporte",
     accountSupportActionLabel: "Soporte de Green Monkey · ticket {ticket}",
     accountSupportAction_lookup: "Consulta de cuenta",
@@ -302,9 +326,6 @@ export default defineArea({
     accountLegalBack: "Back to home",
     accountLegalPrint: "Print",
     accountLegalLoading: "Loading document…",
-    accountSimplifiedNotice:
-      "{entity} is the controller of your personal data. We use your Google name and email to create and protect your account, provide the service, bill your subscription and support you. We do not use them for advertising. To limit their use or exercise your ARCO rights, write to {email}.",
-    accountSimplifiedNoticeLink: "Read the full privacy notice",
     accountSimplifiedNoticeDraft:
       "Test environment: the privacy notice is not published yet.",
     accountSignupPaused:
@@ -321,6 +342,18 @@ export default defineArea({
     accountLegalUpdatedBody:
       "Review the changes and accept to keep managing your account. Your restaurant keeps operating meanwhile.",
     accountLegalAccept: "Accept and continue",
+    accountLegalEffective: "In effect since {date}",
+    accountLegalEffectiveFuture:
+      "Takes effect on {date}; until then the previous version stays in effect.",
+    accountLegalAnnouncedTitle: "New versions of our documents",
+    accountLegalAnnouncedBody:
+      "They take effect on {date}. From that date we will ask you to accept them to keep managing your account; your restaurant keeps operating. You can review and accept them now.",
+    accountLegalNoticeTitle: "Updates to our documents",
+    accountLegalNoticeBody:
+      "You don't need to do anything to keep using Green Monkey. You can review the changes and confirm you read them.",
+    accountLegalAcceptOptional: "Accept these versions",
+    accountNoticeLegalAnnounced:
+      "New versions of the legal documents take effect on {date}. Review them under Account.",
     accountLegalDpaPendingPrimary:
       "The primary owner must accept the updated data processing agreement.",
     accountHelp: "Help",
@@ -447,6 +480,20 @@ export default defineArea({
     accountRecoverySupport: "No codes? Contact support for an identity check.",
     accountReauth: "For security, sign in with Google again to continue.",
     accountReauthButton: "Sign in again",
+    accountReauthAhead:
+      "To invite or remove co-owners, transfer ownership or generate recovery codes, sign in with Google again: for security, your session must be less than 15 minutes old.",
+    accountSignupFormTitle: "Create your restaurant",
+    accountRecoveryMore: "Recovery codes and recovering a previous account",
+    accountTransferIncomingRecovery:
+      "Recovering the ownership of {org} ({n} locations) with a recovery code.",
+    accountTransferLeaveWarning:
+      "Without this option you will lose access to every location when the new primary owner accepts.",
+    accountTransferPendingStays: "You will stay as a co-owner.",
+    accountTransferPendingLeaves:
+      "You will not stay as a co-owner: you lose access when they accept.",
+    accountRecoveryRegenerateConfirm:
+      "Generating new codes voids the {n} codes you have not used. Continue?",
+    accountSignupPausedContact: "For help, contact support:",
     accountSupportActions: "Support actions",
     accountSupportActionLabel: "Green Monkey support · ticket {ticket}",
     accountSupportAction_lookup: "Account lookup",

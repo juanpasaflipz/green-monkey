@@ -24,6 +24,8 @@ export async function signupLegal(
       terms: legal.documents.terms.version,
       privacy: legal.documents.privacy.version,
       dpa: legal.documents.dpa.version,
+      // The express billing consent, versioned with the privacy notice (UX-3).
+      billingConsent: legal.documents.privacy.version,
     },
   };
 }

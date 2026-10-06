@@ -10,9 +10,10 @@ import { LegalAcceptance, type LegalAccepted } from "./LegalAcceptance";
 import {
   loadAccountConfig,
   reloadAccountConfig,
+  supportHref,
   type AccountConfig,
 } from "./accountConfig";
-import { legalText } from "../../shared/legal";
+import { PRIVACY_SIMPLIFIED, legalText } from "../../shared/legal";
 
 type Account = {
   name: string;
@@ -258,6 +259,169 @@ export function OwnerAccess({
       </section>
     );
   if (loading && !account) return <p role="status">{t.loading}</p>;
+  // UX-8: an account that belongs to no organization sees its restaurant
+  // form first (with its own heading), before the account console; a
+  // pending invitation or transfer link keeps the console first.
+  const signupFirst = Boolean(
+    account &&
+    !account.organizations?.length &&
+    !invitation &&
+    !transferToken &&
+    (!config || config.legal.signupOpen),
+  );
+  const signupBlock = account &&
+    (!config || config.legal.signupOpen) &&
+    !account.organizations?.some((o) => o.role === "primary") && (
+      <form
+        aria-labelledby="signup-form-title"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const f = new FormData(e.currentTarget);
+          setBusy(true);
+          setFailed(false);
+          setTransitionError("");
+          const [hours, minutes] = String(f.get("cutoff"))
+            .split(":")
+            .map(Number);
+          try {
+            const result = await command("signup", {
+              trialRequested:
+                billingSandbox && f.get("trialRequested") === "on",
+              restaurantName: f.get("restaurantName"),
+              currency: f.get("currency"),
+              timezone: f.get("timezone"),
+              cutoff: hours * 60 + minutes,
+              openingDays: f.getAll("openingDays").map(Number),
+              locale,
+              ...(signupLegal ? { legalAccepted: signupLegal } : {}),
+            });
+            await enter(result.tenantId);
+          } catch (error) {
+            // Account refusals say what happened (ACC-17); only network
+            // failures and invalid input keep the generic message.
+            const code = (error as Error).message;
+            if (
+              error instanceof TypeError ||
+              !code ||
+              code === "invalid_input"
+            ) {
+              setFailed(true);
+              return;
+            }
+            setTransitionError(translateError(code, locale));
+            // Changed documents or a paused signup: read the settings
+            // served now (past the 5-minute cache), so the form asks
+            // for the current versions or hides itself.
+            if (
+              code === "legal_version_mismatch" ||
+              code === "legal_acceptance_required" ||
+              code === "signup_paused"
+            ) {
+              setSignupLegal(null);
+              setConfig(await reloadAccountConfig().catch(() => null));
+            }
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <h2 id="signup-form-title">{strings[locale].accountSignupFormTitle}</h2>
+        <Field label={t.name}>
+          <input
+            name="restaurantName"
+            maxLength={100}
+            required
+            autoComplete="organization"
+          />
+        </Field>
+        <details open={invalid || undefined}>
+          <summary>{t.settings}</summary>
+          <Field label={t.currency}>
+            <select name="currency" defaultValue="MXN">
+              <option>MXN</option>
+              <option>USD</option>
+              <option>EUR</option>
+            </select>
+          </Field>
+          <Field label={t.timezone}>
+            <input
+              name="timezone"
+              defaultValue="America/Mexico_City"
+              required
+              list="owner-timezones"
+            />
+          </Field>
+          <datalist id="owner-timezones">
+            <option value="America/Mexico_City" />
+            <option value="America/Cancun" />
+            <option value="America/Tijuana" />
+            <option value="America/New_York" />
+            <option value="Europe/Madrid" />
+          </datalist>
+          <Field label={t.cutoff}>
+            <input name="cutoff" type="time" defaultValue="04:00" required />
+          </Field>
+          <fieldset>
+            <legend>{t.days}</legend>
+            {t.week.map((name, i) => (
+              <label className="opening-day" key={name}>
+                <input
+                  type="checkbox"
+                  name="openingDays"
+                  value={i + 1}
+                  defaultChecked
+                />
+                {name}
+              </label>
+            ))}
+          </fieldset>
+        </details>
+        {billingSandbox ? (
+          <label className="opening-day">
+            <input type="checkbox" name="trialRequested" defaultChecked />
+            {locale === "es"
+              ? "Prueba Pro de 14 días sin tarjeta (sandbox). Desmarca para continuar en Free. Si la activación tarda, puedes seguir usando tu restaurante."
+              : "14-day Pro trial without a card (sandbox). Uncheck to continue on Free. You can keep using your restaurant while activation is pending."}
+          </label>
+        ) : (
+          <p className="muted">{t.free}</p>
+        )}
+        {config ? (
+          <LegalAcceptance
+            // New versions remount it unchecked: accept them again.
+            key={[
+              config.legal.documents.terms.version,
+              config.legal.documents.privacy.version,
+              config.legal.documents.dpa.version,
+            ].join(":")}
+            mode="signup"
+            config={config}
+            locale={locale}
+            onChange={setSignupLegal}
+          />
+        ) : (
+          <div role="alert" className="row">
+            <span>{strings[locale].accountLegalUnavailable}</span>
+            <Button
+              disabled={busy}
+              onClick={async () =>
+                setConfig(await reloadAccountConfig().catch(() => null))
+              }
+            >
+              {t.retry}
+            </Button>
+          </div>
+        )}
+        <Button
+          type="submit"
+          disabled={busy || !config || !signupLegal}
+          variant="primary"
+          className="full"
+        >
+          {busy ? t.busy : t.create}
+        </Button>
+      </form>
+    );
   return (
     <section className="owner-access" aria-label={t.title}>
       {authError && authError !== "terminal" && (
@@ -283,27 +447,57 @@ export function OwnerAccess({
               : config && !config.legal.signupOpen
                 ? strings[locale].accountSignupPaused
                 : t.signupHint}
+            {google &&
+              config &&
+              !config.legal.signupOpen &&
+              config.support.configured && (
+                // UX-15: who to ask while signup is paused.
+                <>
+                  {" "}
+                  {strings[locale].accountSignupPausedContact}{" "}
+                  <a href={supportHref(config)}>
+                    {config.support.email ??
+                      config.support.whatsapp ??
+                      config.support.phone ??
+                      config.support.url}
+                  </a>
+                </>
+              )}
           </p>
-          {google && (
+          {/* The button waits for the configuration, so a Google sign-in never
+              starts without the simplified notice shown next to it (LEGAL-1). */}
+          {google && config && (
             <a
               className={`button full ${wantsSignup ? "primary" : ""}`}
               href="/api/auth/google/start"
               aria-describedby={
-                config?.legal.signupOpen ? "signup-privacy-notice" : undefined
+                config.legal.signupOpen ? "signup-privacy-notice" : undefined
               }
             >
-              {config && !config.legal.signupOpen
+              {!config.legal.signupOpen
                 ? strings[locale].accountGoogleExisting
                 : t.google}
             </a>
           )}
+          {google && !config && (
+            <div role="alert" className="row">
+              <span>{strings[locale].accountLegalUnavailable}</span>
+              <Button
+                disabled={busy}
+                onClick={async () =>
+                  setConfig(await reloadAccountConfig().catch(() => null))
+                }
+              >
+                {t.retry}
+              </Button>
+            </div>
+          )}
           {google && config && config.legal.signupOpen && (
             <p id="signup-privacy-notice" className="muted signup-notice">
+              {/* One source: the versioned simplified notice (LEGAL-1). */}
               {config.legal.status === "published" && config.legal.entity
                 ? legalText(
-                    strings[locale].accountSimplifiedNotice
-                      .replace("{entity}", "{{entity.name}}")
-                      .replace("{email}", "{{entity.privacyContactEmail}}"),
+                    PRIVACY_SIMPLIFIED[locale],
                     config.legal.entity,
                     locale,
                   )
@@ -440,11 +634,15 @@ export function OwnerAccess({
               refresh={refresh}
             />
           )}
+          {signupFirst && signupBlock}
           <AccountCenter
             locale={locale}
             csrf={account.csrf}
             config={config}
             refresh={refresh}
+            reloadConfig={async () =>
+              setConfig(await reloadAccountConfig().catch(() => null))
+            }
             transferToken={transferToken}
             clearTransferToken={() => {
               sessionStorage.removeItem("gm-transfer");
@@ -458,165 +656,7 @@ export function OwnerAccess({
                 {strings[locale].accountSignupPaused}
               </p>
             )}
-          {(!config || config.legal.signupOpen) &&
-            !account.organizations?.some((o) => o.role === "primary") && (
-              <form
-                onSubmit={async (e) => {
-                  e.preventDefault();
-                  const f = new FormData(e.currentTarget);
-                  setBusy(true);
-                  setFailed(false);
-                  setTransitionError("");
-                  const [hours, minutes] = String(f.get("cutoff"))
-                    .split(":")
-                    .map(Number);
-                  try {
-                    const result = await command("signup", {
-                      trialRequested:
-                        billingSandbox && f.get("trialRequested") === "on",
-                      restaurantName: f.get("restaurantName"),
-                      currency: f.get("currency"),
-                      timezone: f.get("timezone"),
-                      cutoff: hours * 60 + minutes,
-                      openingDays: f.getAll("openingDays").map(Number),
-                      locale,
-                      ...(signupLegal ? { legalAccepted: signupLegal } : {}),
-                    });
-                    await enter(result.tenantId);
-                  } catch (error) {
-                    // Account refusals say what happened (ACC-17); only network
-                    // failures and invalid input keep the generic message.
-                    const code = (error as Error).message;
-                    if (
-                      error instanceof TypeError ||
-                      !code ||
-                      code === "invalid_input"
-                    ) {
-                      setFailed(true);
-                      return;
-                    }
-                    setTransitionError(translateError(code, locale));
-                    // Changed documents or a paused signup: read the settings
-                    // served now (past the 5-minute cache), so the form asks
-                    // for the current versions or hides itself.
-                    if (
-                      code === "legal_version_mismatch" ||
-                      code === "legal_acceptance_required" ||
-                      code === "signup_paused"
-                    ) {
-                      setSignupLegal(null);
-                      setConfig(await reloadAccountConfig().catch(() => null));
-                    }
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-              >
-                <Field label={t.name}>
-                  <input
-                    name="restaurantName"
-                    maxLength={100}
-                    required
-                    autoComplete="organization"
-                  />
-                </Field>
-                <details open={invalid || undefined}>
-                  <summary>{t.settings}</summary>
-                  <Field label={t.currency}>
-                    <select name="currency" defaultValue="MXN">
-                      <option>MXN</option>
-                      <option>USD</option>
-                      <option>EUR</option>
-                    </select>
-                  </Field>
-                  <Field label={t.timezone}>
-                    <input
-                      name="timezone"
-                      defaultValue="America/Mexico_City"
-                      required
-                      list="owner-timezones"
-                    />
-                  </Field>
-                  <datalist id="owner-timezones">
-                    <option value="America/Mexico_City" />
-                    <option value="America/Cancun" />
-                    <option value="America/Tijuana" />
-                    <option value="America/New_York" />
-                    <option value="Europe/Madrid" />
-                  </datalist>
-                  <Field label={t.cutoff}>
-                    <input
-                      name="cutoff"
-                      type="time"
-                      defaultValue="04:00"
-                      required
-                    />
-                  </Field>
-                  <fieldset>
-                    <legend>{t.days}</legend>
-                    {t.week.map((name, i) => (
-                      <label className="opening-day" key={name}>
-                        <input
-                          type="checkbox"
-                          name="openingDays"
-                          value={i + 1}
-                          defaultChecked
-                        />
-                        {name}
-                      </label>
-                    ))}
-                  </fieldset>
-                </details>
-                {billingSandbox ? (
-                  <label className="opening-day">
-                    <input
-                      type="checkbox"
-                      name="trialRequested"
-                      defaultChecked
-                    />
-                    {locale === "es"
-                      ? "Prueba Pro de 14 días sin tarjeta (sandbox). Desmarca para continuar en Free. Si la activación tarda, puedes seguir usando tu restaurante."
-                      : "14-day Pro trial without a card (sandbox). Uncheck to continue on Free. You can keep using your restaurant while activation is pending."}
-                  </label>
-                ) : (
-                  <p className="muted">{t.free}</p>
-                )}
-                {config ? (
-                  <LegalAcceptance
-                    // New versions remount it unchecked: accept them again.
-                    key={[
-                      config.legal.documents.terms.version,
-                      config.legal.documents.privacy.version,
-                      config.legal.documents.dpa.version,
-                    ].join(":")}
-                    mode="signup"
-                    config={config}
-                    locale={locale}
-                    onChange={setSignupLegal}
-                  />
-                ) : (
-                  <div role="alert" className="row">
-                    <span>{strings[locale].accountLegalUnavailable}</span>
-                    <Button
-                      disabled={busy}
-                      onClick={async () =>
-                        setConfig(await reloadAccountConfig().catch(() => null))
-                      }
-                    >
-                      {t.retry}
-                    </Button>
-                  </div>
-                )}
-                <Button
-                  type="submit"
-                  disabled={busy || !config || !signupLegal}
-                  variant="primary"
-                  className="full"
-                >
-                  {busy ? t.busy : t.create}
-                </Button>
-              </form>
-            )}
+          {!signupFirst && signupBlock}
           <Button
             disabled={busy}
             variant="ghost"

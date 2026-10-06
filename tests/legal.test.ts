@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  billingConsentEvidence,
   legalConfig,
   legalContentHash,
   logLegalStartup,
@@ -7,15 +8,21 @@ import {
 } from "../server/legal";
 import { setLogSink } from "../server/logging";
 import {
+  BILLING_CONSENT,
   LEGAL_CONTENT,
   LEGAL_DOCUMENTS,
+  MATERIAL_NOTICE_DAYS,
   PRIVACY_SIMPLIFIED,
   acceptancePending,
+  acceptanceStatus,
   compareLegalVersions,
+  legalInstant,
   legalSegments,
   legalText,
+  materialChange,
   pendingDocuments,
   type LegalDocumentKey,
+  type LegalDocumentMeta,
 } from "../shared/legal";
 import { LEGAL_CI_ENV } from "./fixtures/legal-ci";
 
@@ -262,7 +269,7 @@ describe("legal documents", () => {
     ...over,
   });
 
-  it("pendingDocuments: missing, older than requiresAcceptanceSince, entity change, unpublished acceptance after publish", () => {
+  it("pendingDocuments: missing, older than requiresAcceptanceSince, unpublished acceptance after publish; an entity-only change is a notice, never pending (LEGAL-3)", () => {
     const v = LEGAL_DOCUMENTS.terms.version;
     expect(pendingDocuments({}, current)).toEqual(["terms", "privacy"]);
     expect(
@@ -276,7 +283,14 @@ describe("legal documents", () => {
         { terms: row(v), privacy: row(v, { entityHash: "b".repeat(64) }) },
         current,
       ),
-    ).toEqual(["privacy"]);
+    ).toEqual([]);
+    expect(
+      acceptanceStatus(
+        "privacy",
+        row(v, { entityHash: "b".repeat(64) }),
+        current,
+      ),
+    ).toBe("entity_updated");
     expect(
       pendingDocuments(
         { terms: row(v, { published: false }), privacy: row(v) },
@@ -287,6 +301,169 @@ describe("legal documents", () => {
       pendingDocuments({}, { status: "unpublished", entityHash: "x" }),
     ).toEqual([]);
     expect(acceptancePending("dpa", null, current)).toBe(true);
+  });
+
+  it("a material change is announced first and gates only from effectiveFrom; an earlier missed material change stays required; a newer minor version is a notice (LEGAL-3, UX-4)", () => {
+    const meta = LEGAL_DOCUMENTS.terms;
+    const original = { ...meta };
+    try {
+      Object.assign(meta, {
+        version: "2027-03-01",
+        requiresAcceptanceSince: "2027-03-01",
+        previousVersion: "2026-10-06",
+        previousRequiresAcceptanceSince: "2026-10-06",
+        announcedAt: "2027-03-01",
+        effectiveFrom: "2027-03-16",
+      } satisfies Partial<LegalDocumentMeta>);
+      const accepted = row("2026-10-06");
+      const before = legalInstant("2027-03-16") - 1;
+      const after = legalInstant("2027-03-16");
+      expect(acceptanceStatus("terms", accepted, current, before)).toBe(
+        "announced",
+      );
+      expect(acceptancePending("terms", accepted, current, before)).toBe(false);
+      expect(acceptanceStatus("terms", accepted, current, after)).toBe(
+        "required",
+      );
+      // An acceptance older than the previous material version was already
+      // required: the new announcement does not relax it.
+      expect(
+        acceptanceStatus("terms", row("2026-01-01"), current, before),
+      ).toBe("required");
+      // Accepting the announced version early settles it.
+      expect(
+        acceptanceStatus("terms", row("2027-03-01"), current, before),
+      ).toBe("accepted");
+      // A minor version after it: shown, never asked again.
+      Object.assign(meta, {
+        version: "2027-04-01",
+        previousVersion: "2027-03-01",
+        previousRequiresAcceptanceSince: "2027-03-01",
+        announcedAt: "2027-04-01",
+        effectiveFrom: "2027-04-01",
+      });
+      expect(acceptanceStatus("terms", row("2027-03-01"), current, after)).toBe(
+        "updated",
+      );
+      expect(materialChange(meta)).toBe(false);
+    } finally {
+      Object.assign(meta, original);
+    }
+  });
+
+  it(`every material change is announced at least ${MATERIAL_NOTICE_DAYS} days before it takes effect (terms §13, privacy §12)`, () => {
+    for (const doc of Object.keys(LEGAL_DOCUMENTS) as LegalDocumentKey[]) {
+      const m = LEGAL_DOCUMENTS[doc];
+      expect(m.announcedAt, doc).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(m.effectiveFrom, doc).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(legalInstant(m.effectiveFrom), doc).toBeGreaterThanOrEqual(
+        legalInstant(m.announcedAt),
+      );
+      if (materialChange(m))
+        expect(
+          legalInstant(m.effectiveFrom) - legalInstant(m.announcedAt),
+          `${doc} ${m.version}`,
+        ).toBeGreaterThanOrEqual(MATERIAL_NOTICE_DAYS * 864e5);
+      // The first version has nothing to announce; later ones name their predecessor.
+      if (m.previousVersion === null)
+        expect(m.previousRequiresAcceptanceSince, doc).toBeNull();
+      else
+        expect(
+          compareLegalVersions(m.previousVersion, m.version),
+          doc,
+        ).toBeLessThan(0);
+      expect(
+        compareLegalVersions(m.requiresAcceptanceSince, m.version),
+        doc,
+      ).toBeLessThanOrEqual(0);
+    }
+    // The rule itself: a material change announced 14 days ahead fails it.
+    const tooSoon = {
+      ...LEGAL_DOCUMENTS.terms,
+      version: "2027-03-01",
+      requiresAcceptanceSince: "2027-03-01",
+      previousVersion: "2026-10-06",
+      announcedAt: "2027-03-01",
+      effectiveFrom: "2027-03-15",
+    };
+    expect(materialChange(tooSoon)).toBe(true);
+    expect(
+      legalInstant(tooSoon.effectiveFrom) - legalInstant(tooSoon.announcedAt),
+    ).toBeLessThan(MATERIAL_NOTICE_DAYS * 864e5);
+  });
+
+  it("the billing consent is its own required evidence while published, hashed with the privacy version (UX-3)", () => {
+    const published = legalConfig(valid);
+    expect(() =>
+      billingConsentEvidence({ billingConsent: undefined }, published),
+    ).toThrow("legal_acceptance_required");
+    expect(
+      billingConsentEvidence(
+        { billingConsent: LEGAL_DOCUMENTS.privacy.version },
+        published,
+      ),
+    ).toEqual({
+      document: "billing_consent",
+      version: LEGAL_DOCUMENTS.privacy.version,
+    });
+    expect(billingConsentEvidence(undefined, legalConfig({}))).toBeNull();
+    expect(legalContentHash("billing_consent")).toMatch(/^[a-f0-9]{64}$/);
+    expect(legalContentHash("billing_consent")).not.toBe(
+      legalContentHash("privacy"),
+    );
+    // The notice's consent paragraph describes that separate box.
+    const datos = LEGAL_CONTENT.privacy.es.sections
+      .find((x) => x.id === "datos")!
+      .paragraphs.join(" ");
+    expect(datos).toContain("casilla propia, distinta de la que confirma");
+    expect(BILLING_CONSENT.es).toMatch(/^Consiento expresamente/);
+    expect(BILLING_CONSENT.en).toMatch(/^I expressly consent/);
+  });
+
+  it("processor lists name every external provider the platform uses: Facturapi for CFDI, backup storage and runs (LEGAL-2, UX-5, DATA-2)", () => {
+    const text = (doc: LegalDocumentKey, id: string, locale: "es" | "en") =>
+      LEGAL_CONTENT[doc][locale].sections
+        .find((x) => x.id === id)!
+        .paragraphs.join(" ");
+    for (const locale of ["es", "en"] as const)
+      for (const [doc, id] of [
+        ["dpa", "subencargados"],
+        ["privacy", "encargados-transferencias"],
+      ] as const)
+        for (const provider of [
+          "Google",
+          "Stripe",
+          "Neon",
+          "Railway",
+          "Cloudflare",
+          "GitHub",
+          "Facturapi",
+        ])
+          expect(text(doc, id, locale), `${doc} ${locale}`).toContain(provider);
+    expect(text("dpa", "objeto", "es")).toContain("Receptores de CFDI");
+    expect(text("dpa", "objeto", "es")).toContain(
+      "certificado de sello digital",
+    );
+    expect(text("dpa", "transferencias", "es")).toContain(
+      "instrucción del responsable",
+    );
+    expect(text("dpa", "terminacion", "es")).toContain("1,900 días");
+    expect(text("privacy", "conservacion", "es")).toContain("1,900 días");
+    expect(text("privacy", "conservacion", "es")).toContain(
+      "artículo 49 del Código de Comercio",
+    );
+  });
+
+  it("the terms describe support-assisted and recovery-code transfers and operator access (UX-6)", () => {
+    const cuentas = (locale: "es" | "en") =>
+      LEGAL_CONTENT.terms[locale].sections
+        .find((x) => x.id === "cuentas")!
+        .paragraphs.join(" ");
+    expect(cuentas("es")).toContain("códigos de recuperación");
+    expect(cuentas("es")).toContain("72 horas");
+    expect(cuentas("es")).toContain("Acciones de soporte");
+    expect(cuentas("en")).toContain("recovery codes");
+    expect(cuentas("en")).toContain("72 hours");
   });
 
   it("orders versions with numeric suffixes", () => {
@@ -356,10 +533,16 @@ describe("legal documents", () => {
     expect(responsable.paragraphs.join(" ")).toContain("{{entity.address}}");
   });
 
-  it("simplified notice contains entity name, purposes, limiting option and integral link (Art. 16-II)", () => {
+  it("simplified notice contains entity name and domicilio, the data and no-sensitive-data clause, purposes, limiting option and integral link (Art. 16-II with Art. 15 I-IV; LEGAL-1)", () => {
     const entity = legalConfig(valid).entity!;
     const es = legalText(PRIVACY_SIMPLIFIED.es, entity, "es");
     expect(es).toContain(valid.LEGAL_ENTITY_NAME);
+    expect(es).toContain(`con domicilio en ${valid.LEGAL_ENTITY_ADDRESS}`);
+    expect(es).toContain("identificador que te asigna Google");
+    expect(es).toContain("no recabamos datos personales sensibles");
+    const en = legalText(PRIVACY_SIMPLIFIED.en, entity, "en");
+    expect(en).toContain(`with its address at ${valid.LEGAL_ENTITY_ADDRESS}`);
+    expect(en).toContain("we collect no sensitive personal data");
     expect(es).toContain("crear y proteger tu cuenta");
     expect(es).toContain("No los usamos para publicidad");
     expect(es).toContain("limitar su uso");

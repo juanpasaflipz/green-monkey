@@ -1,10 +1,14 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Locale } from "../../shared/domain";
 import { Button, Field } from "../components/ui";
 import { strings, translateError, type Key } from "../i18n";
 import type { AccountConfig } from "./accountConfig";
 import { LegalAcceptance, type LegalAccepted } from "./LegalAcceptance";
-import { LEGAL_DOCUMENTS, type LegalDocumentKey } from "../../shared/legal";
+import {
+  ENTITY_UPDATED_CHANGE,
+  LEGAL_DOCUMENTS,
+  type LegalDocumentKey,
+} from "../../shared/legal";
 import {
   REGIMEN_FISCAL,
   USE_LABELS,
@@ -58,18 +62,30 @@ type Organization = {
   }>;
   taxProfile: TaxProfile | null | "disabled";
 };
+type LegalNotice = {
+  document: LegalDocumentKey;
+  kind: "announced" | "updated" | "entity_updated";
+  version: string;
+  effectiveFrom: string;
+};
 type Overview = {
   account: { id: string; email: string; name: string };
   legal: {
     status: string;
     pending: Array<"terms" | "privacy">;
     dpaPending: string[];
+    notices: LegalNotice[];
+    dpaNoticeOrganizations: string[];
+    accepted: Partial<Record<"terms" | "privacy", { version: string }>>;
+    billingConsent: boolean;
   };
+  memberships: number;
   freshSession: boolean;
   organizations: Organization[];
   incomingTransfers: Array<{
     id: string;
     organizationName: string;
+    locations: number;
     fromName: string | null;
     initiatedBy: string;
     availableAt: string;
@@ -105,6 +121,7 @@ export function AccountCenter({
   csrf,
   config,
   refresh,
+  reloadConfig,
   transferToken,
   clearTransferToken,
 }: {
@@ -112,6 +129,8 @@ export function AccountCenter({
   csrf: string;
   config: AccountConfig | null;
   refresh: () => Promise<void>;
+  /** Reads /api/account-config past every cache (changed documents, UX-10). */
+  reloadConfig: () => Promise<void>;
   transferToken: string;
   clearTransferToken: () => void;
 }) {
@@ -148,6 +167,16 @@ export function AccountCenter({
   const [confirming, setConfirming] = useState("");
   const [inviteOp, setInviteOp] = useState(() => crypto.randomUUID());
   const [transferOp, setTransferOp] = useState(() => crypto.randomUUID());
+  const [leaving, setLeaving] = useState<Record<string, boolean>>({});
+  const [noticeAccepted, setNoticeAccepted] = useState<LegalAccepted | null>(
+    null,
+  );
+  // Errors and the sign-in prompt render at the top of the console: move the
+  // focus there (and so into view) when a command fails (UX-2).
+  const messages = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (error || reauth) messages.current?.focus();
+  }, [error, reauth]);
   async function load() {
     try {
       const response = await fetch("/api/auth/account-center", {
@@ -187,6 +216,15 @@ export function AccountCenter({
         clearTransferToken();
         setPreview(null);
       }
+      // The documents changed since this page loaded: read the served
+      // versions again so the boxes ask for them (UX-10).
+      if (code === "legal_version_mismatch") {
+        setReaccepted(null);
+        setPreviewAccepted(null);
+        setIncomingAccepted({});
+        setNoticeAccepted(null);
+        await reloadConfig();
+      }
     } finally {
       setBusy(false);
     }
@@ -212,13 +250,45 @@ export function AccountCenter({
       <p role="status">{t("accountLoading")}</p>
     );
   const published = overview.legal.status === "published";
-  // An account that administers no organization yet accepts with its first
-  // command instead (signup, invitation or transfer each carry the boxes), so
-  // the re-acceptance panel never doubles the signup form's checkboxes.
+  // Anyone who already belongs somewhere (an owner, a co-owner, a Google
+  // member such as an invited manager: LEGAL-4) or accepted before re-accepts
+  // here. A brand-new account accepts with its first command instead
+  // (signup, invitation or transfer each carry the boxes), so this panel
+  // never doubles the signup form's checkboxes.
+  const member =
+    overview.organizations.length > 0 ||
+    overview.memberships > 0 ||
+    Object.keys(overview.legal.accepted ?? {}).length > 0;
   const legalPending =
     published &&
-    overview.organizations.length > 0 &&
+    member &&
     (overview.legal.pending.length > 0 || overview.legal.dpaPending.length > 0);
+  // Announced material changes, newer minor versions and new responsable data
+  // (LEGAL-3): shown, never gating; accepting records the new versions.
+  const notices = legalPending ? [] : (overview.legal.notices ?? []);
+  const announced = notices
+    .filter((n) => n.kind === "announced")
+    .map((n) => n.effectiveFrom)
+    .sort()[0];
+  // The express billing consent (UX-3) a primary never recorded is asked
+  // with the next acceptance.
+  const consentDue =
+    published &&
+    !overview.legal.billingConsent &&
+    overview.organizations.some((o) => o.role === "primary");
+  const fresh = overview.freshSession;
+  const reauthAhead = !fresh && (
+    <div className="reauth-ahead" role="note">
+      <p>{t("accountReauthAhead")}</p>
+      <a className="button" href="/api/auth/google/start">
+        {t("accountReauthButton")}
+      </a>
+    </div>
+  );
+  const day = (d: string) =>
+    new Intl.DateTimeFormat(tag, { dateStyle: "long" }).format(
+      new Date(`${d}T12:00:00-06:00`),
+    );
   const form = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     return new FormData(e.currentTarget);
@@ -235,7 +305,19 @@ export function AccountCenter({
   ];
   // A transfer contracts for the organization: terms, privacy and its DPA.
   const transferReady = (accepted: LegalAccepted | null | undefined) =>
-    Boolean(accepted?.terms && accepted.privacy && accepted.dpa);
+    Boolean(
+      accepted?.terms &&
+      accepted.privacy &&
+      accepted.dpa &&
+      (accepted.billingConsent || !published),
+    );
+  // New versions remount the boxes unchecked (UX-10).
+  const versionsKey = (c: AccountConfig) =>
+    [
+      c.legal.documents.terms.version,
+      c.legal.documents.privacy.version,
+      c.legal.documents.dpa.version,
+    ].join(":");
   // The checkboxes need the published versions; without them (offline or a
   // failed load) say so and offer a retry instead of a dead button.
   const legalUnavailable = (
@@ -246,23 +328,151 @@ export function AccountCenter({
       </Button>
     </div>
   );
+  const noOrganization = overview.organizations.length === 0;
+  const recovery = (
+    <>
+      <div className="panel recovery">
+        <h3>{t("accountRecoveryTitle")}</h3>
+        <p className="muted">{t("accountRecoveryHint")}</p>
+        <p>
+          {overview.recoveryCodes.generatedAt
+            ? t("accountRecoveryRemaining")
+                .replace("{n}", String(overview.recoveryCodes.remaining))
+                .replace("{date}", date(overview.recoveryCodes.generatedAt))
+            : t("accountRecoveryNone")}
+        </p>
+        {codes && (
+          <div className="recovery-codes">
+            <p role="alert">{t("accountRecoveryShownOnce")}</p>
+            <ol aria-label={t("accountRecoveryTitle")}>
+              {codes.map((c) => (
+                <li key={c}>
+                  <code>{c}</code>
+                </li>
+              ))}
+            </ol>
+            <div className="row">
+              <Button
+                onClick={() =>
+                  void navigator.clipboard?.writeText(codes.join("\n"))
+                }
+              >
+                {t("accountRecoveryCopyAll")}
+              </Button>
+              <Button onClick={() => window.print()}>
+                {t("accountRecoveryPrint")}
+              </Button>
+            </div>
+          </div>
+        )}
+        {reauthAhead}
+        {confirming === "regenerate" ? (
+          <div className="row">
+            <span>
+              {t("accountRecoveryRegenerateConfirm").replace(
+                "{n}",
+                String(overview.recoveryCodes.remaining),
+              )}
+            </span>
+            <Button
+              variant="danger"
+              disabled={busy || !fresh}
+              onClick={() =>
+                void run(async () => {
+                  const result = await post<{ codes: string[] }>(
+                    "recovery-codes",
+                    {},
+                  );
+                  setCodes(result.codes);
+                  setConfirming("");
+                })
+              }
+            >
+              {t("accountConfirm")}
+            </Button>
+            <Button onClick={() => setConfirming("")}>
+              {t("accountCancel")}
+            </Button>
+          </div>
+        ) : (
+          <Button
+            disabled={busy || !fresh}
+            onClick={() =>
+              // Printed codes still unused are voided: ask first (UX-14).
+              overview.recoveryCodes.remaining > 0
+                ? setConfirming("regenerate")
+                : void run(async () => {
+                    const result = await post<{ codes: string[] }>(
+                      "recovery-codes",
+                      {},
+                    );
+                    setCodes(result.codes);
+                  })
+            }
+          >
+            {t("accountRecoveryGenerate")}
+          </Button>
+        )}
+      </div>
+      {!overview.organizations.some((o) => o.role === "primary") && (
+        <form
+          className="panel account-form"
+          onSubmit={(e) => {
+            const f = form(e);
+            void run(async () => {
+              const result = await post<{ availableAt: string }>(
+                "recovery/redeem",
+                {
+                  code: String(f.get("code") ?? "").trim(),
+                },
+              );
+              setNotice(
+                t("accountRecoveryScheduled").replace(
+                  "{date}",
+                  date(result.availableAt),
+                ),
+              );
+            });
+          }}
+        >
+          <h3>{t("accountRecoveryRedeemTitle")}</h3>
+          <Field label={t("accountRecoveryRedeemLabel")}>
+            <input
+              name="code"
+              required
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              pattern="[0-9A-Za-z]{4}(-[0-9A-Za-z]{4}){5}"
+            />
+          </Field>
+          <Button type="submit" disabled={busy}>
+            {t("accountRecoveryRedeem")}
+          </Button>
+          <p className="muted">{t("accountRecoverySupport")}</p>
+        </form>
+      )}
+    </>
+  );
   return (
     <section className="account-center" aria-labelledby="account-center-title">
       <h2 id="account-center-title">{t("accountConsoleTitle")}</h2>
-      {reauth && (
-        <div role="alert" className="panel warning-panel">
-          <p>{t("accountReauth")}</p>
-          <a className="button" href="/api/auth/google/start">
-            {t("accountReauthButton")}
-          </a>
-        </div>
-      )}
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      {notice && <p role="status">{notice}</p>}
+      <div ref={messages} tabIndex={-1} className="account-messages">
+        {reauth && (
+          <div role="alert" className="panel warning-panel">
+            <p>{t("accountReauth")}</p>
+            <a className="button" href="/api/auth/google/start">
+              {t("accountReauthButton")}
+            </a>
+          </div>
+        )}
+        {error && (
+          <p role="alert" className="error">
+            {error}
+          </p>
+        )}
+        {notice && <p role="status">{notice}</p>}
+      </div>
       {legalPending && (
         <div className="panel warning-panel">
           <h3>{t("accountLegalUpdatedTitle")}</h3>
@@ -282,9 +492,10 @@ export function AccountCenter({
           ))}
           {config ? (
             <LegalAcceptance
-              mode={
-                overview.legal.dpaPending.length ? "signup" : "reacceptance"
-              }
+              key={versionsKey(config)}
+              mode="reacceptance"
+              dpa={overview.legal.dpaPending.length > 0}
+              billingConsent={consentDue}
               config={config}
               locale={locale}
               onChange={setReaccepted}
@@ -315,11 +526,116 @@ export function AccountCenter({
                         ),
                       }
                     : {}),
+                  ...(reaccepted!.billingConsent
+                    ? { billingConsent: reaccepted!.billingConsent }
+                    : {}),
                 });
+                setReaccepted(null);
               })
             }
           >
             {t("accountLegalAccept")}
+          </Button>
+        </div>
+      )}
+      {published && member && notices.length > 0 && (
+        <div
+          className="panel"
+          role="region"
+          aria-label={
+            announced
+              ? t("accountLegalAnnouncedTitle")
+              : t("accountLegalNoticeTitle")
+          }
+        >
+          <h3>
+            {announced
+              ? t("accountLegalAnnouncedTitle")
+              : t("accountLegalNoticeTitle")}
+          </h3>
+          <p>
+            {announced
+              ? t("accountLegalAnnouncedBody").replace("{date}", day(announced))
+              : t("accountLegalNoticeBody")}
+          </p>
+          {notices.map((n) => (
+            <div className="legal-changes" key={n.document}>
+              <h4>
+                <a
+                  href={
+                    locale === "es"
+                      ? LEGAL_DOCUMENTS[n.document].path
+                      : LEGAL_DOCUMENTS[n.document].enPath
+                  }
+                  target="_blank"
+                  rel="noopener"
+                >
+                  {t(documentTitle[n.document])}
+                </a>{" "}
+                · {n.version}
+              </h4>
+              <p className="muted">
+                {n.kind === "announced"
+                  ? t("accountLegalEffectiveFuture").replace(
+                      "{date}",
+                      day(n.effectiveFrom),
+                    )
+                  : t("accountLegalChanges")}
+              </p>
+              <ul>
+                {(n.kind === "entity_updated"
+                  ? [ENTITY_UPDATED_CHANGE[locale]]
+                  : LEGAL_DOCUMENTS[n.document].changes[locale]
+                ).map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          {config ? (
+            <LegalAcceptance
+              key={versionsKey(config)}
+              mode="reacceptance"
+              dpa={overview.legal.dpaNoticeOrganizations.length > 0}
+              billingConsent={consentDue}
+              config={config}
+              locale={locale}
+              onChange={setNoticeAccepted}
+            />
+          ) : (
+            legalUnavailable
+          )}
+          <Button
+            disabled={busy || !config || !noticeAccepted}
+            onClick={() =>
+              void run(async () => {
+                const has = (d: LegalDocumentKey) =>
+                  notices.some((n) => n.document === d);
+                await post("legal/accept", {
+                  locale,
+                  ...(has("terms") ? { terms: noticeAccepted!.terms } : {}),
+                  ...(has("privacy")
+                    ? { privacy: noticeAccepted!.privacy }
+                    : {}),
+                  ...(overview.legal.dpaNoticeOrganizations.length
+                    ? {
+                        dpa: overview.legal.dpaNoticeOrganizations.map(
+                          (organizationId) => ({
+                            organizationId,
+                            version: config!.legal.documents.dpa.version,
+                          }),
+                        ),
+                      }
+                    : {}),
+                  ...(noticeAccepted!.billingConsent
+                    ? { billingConsent: noticeAccepted!.billingConsent }
+                    : {}),
+                });
+                setNoticeAccepted(null);
+              })
+            }
+          >
+            {t("accountLegalAcceptOptional")}
           </Button>
         </div>
       )}
@@ -367,11 +683,13 @@ export function AccountCenter({
           ) : (
             legalUnavailable
           )}
+          {!preview.onHold && reauthAhead}
           <div className="row">
             <Button
               variant="primary"
               disabled={
                 busy ||
+                !fresh ||
                 preview.onHold ||
                 !preview.emailMatches ||
                 !transferReady(previewAccepted)
@@ -412,11 +730,14 @@ export function AccountCenter({
           <div className="panel" key={incoming.id}>
             <h3>{t("accountTransferTitle")}</h3>
             <p>
-              {t("accountTransferIncoming")
+              {(incoming.initiatedBy === "recovery_code"
+                ? t("accountTransferIncomingRecovery")
+                : t("accountTransferIncoming")
+              )
                 .replace("{org}", incoming.organizationName)
-                .replace("{n}", "—")}
+                .replace("{n}", String(incoming.locations))}
             </p>
-            {incoming.fromName && (
+            {incoming.fromName && incoming.initiatedBy !== "recovery_code" && (
               <p>
                 {t("accountTransferFrom").replace("{name}", incoming.fromName)}
               </p>
@@ -444,11 +765,15 @@ export function AccountCenter({
             ) : (
               legalUnavailable
             )}
+            {!held && reauthAhead}
             <div className="row">
               <Button
                 variant="primary"
                 disabled={
-                  busy || held || !transferReady(incomingAccepted[incoming.id])
+                  busy ||
+                  held ||
+                  !fresh ||
+                  !transferReady(incomingAccepted[incoming.id])
                 }
                 onClick={() =>
                   void run(async () => {
@@ -511,6 +836,13 @@ export function AccountCenter({
                       ),
                     )}
                 </p>
+                {org.transfer.initiatedBy === "owner" && (
+                  <p>
+                    {org.transfer.previousOwnerStays
+                      ? t("accountTransferPendingStays")
+                      : t("accountTransferPendingLeaves")}
+                  </p>
+                )}
                 {org.transfer.initiatedBy === "owner" && !link && (
                   <p className="muted">{t("accountTransferLinkLost")}</p>
                 )}
@@ -549,9 +881,10 @@ export function AccountCenter({
                     (confirming === "remove:" + c.accountId ? (
                       <span className="row">
                         <span>{t("accountCoOwnerRemoveConfirm")}</span>
+                        {reauthAhead}
                         <Button
                           variant="danger"
-                          disabled={busy}
+                          disabled={busy || !fresh}
                           onClick={() =>
                             void run(() =>
                               post("co-owners/remove", {
@@ -657,16 +990,17 @@ export function AccountCenter({
                     String(org.coOwnerLimit),
                   )}
                 </p>
+                {!full && reauthAhead}
                 <Field label={t("accountCoOwnerEmail")}>
                   <input
                     name="email"
                     type="email"
                     required
                     autoComplete="off"
-                    disabled={full}
+                    disabled={full || !fresh}
                   />
                 </Field>
-                <Button type="submit" disabled={busy || full}>
+                <Button type="submit" disabled={busy || full || !fresh}>
                   {t("accountCoOwnerCreate")}
                 </Button>
               </form>
@@ -723,23 +1057,36 @@ export function AccountCenter({
               >
                 <h4>{t("accountTransferTitle")}</h4>
                 <p className="muted">{t("accountTransferHint")}</p>
+                {reauthAhead}
                 <Field label={t("accountTransferEmail")}>
                   <input
                     name="email"
                     type="email"
                     required
                     autoComplete="off"
+                    disabled={!fresh}
                   />
                 </Field>
                 <label className="opening-day">
                   <input
                     type="checkbox"
                     name="stays"
-                    defaultChecked={!full}
-                    disabled={full}
+                    checked={!full && !leaving[org.id]}
+                    onChange={(e) =>
+                      setLeaving((all) => ({
+                        ...all,
+                        [org.id]: !e.target.checked,
+                      }))
+                    }
+                    disabled={full || !fresh}
                   />
                   {t("accountTransferStay")}
                 </label>
+                {!full && leaving[org.id] && (
+                  <p role="note" className="warning">
+                    {t("accountTransferLeaveWarning")}
+                  </p>
+                )}
                 {full && (
                   <p className="muted">
                     {t("accountTransferStayFull").replace(
@@ -754,9 +1101,18 @@ export function AccountCenter({
                     org.name,
                   )}
                 >
-                  <input name="confirmName" required autoComplete="off" />
+                  <input
+                    name="confirmName"
+                    required
+                    autoComplete="off"
+                    disabled={!fresh}
+                  />
                 </Field>
-                <Button type="submit" variant="danger" disabled={busy}>
+                <Button
+                  type="submit"
+                  variant="danger"
+                  disabled={busy || !fresh}
+                >
                   {t("accountTransferCreate")}
                 </Button>
               </form>
@@ -816,92 +1172,15 @@ export function AccountCenter({
           </div>
         );
       })}
-      <div className="panel recovery">
-        <h3>{t("accountRecoveryTitle")}</h3>
-        <p className="muted">{t("accountRecoveryHint")}</p>
-        <p>
-          {overview.recoveryCodes.generatedAt
-            ? t("accountRecoveryRemaining")
-                .replace("{n}", String(overview.recoveryCodes.remaining))
-                .replace("{date}", date(overview.recoveryCodes.generatedAt))
-            : t("accountRecoveryNone")}
-        </p>
-        {codes && (
-          <div className="recovery-codes">
-            <p role="alert">{t("accountRecoveryShownOnce")}</p>
-            <ol aria-label={t("accountRecoveryTitle")}>
-              {codes.map((c) => (
-                <li key={c}>
-                  <code>{c}</code>
-                </li>
-              ))}
-            </ol>
-            <div className="row">
-              <Button
-                onClick={() =>
-                  void navigator.clipboard?.writeText(codes.join("\n"))
-                }
-              >
-                {t("accountRecoveryCopyAll")}
-              </Button>
-              <Button onClick={() => window.print()}>
-                {t("accountRecoveryPrint")}
-              </Button>
-            </div>
-          </div>
-        )}
-        <Button
-          disabled={busy}
-          onClick={() =>
-            void run(async () => {
-              const result = await post<{ codes: string[] }>(
-                "recovery-codes",
-                {},
-              );
-              setCodes(result.codes);
-            })
-          }
-        >
-          {t("accountRecoveryGenerate")}
-        </Button>
-      </div>
-      {!overview.organizations.some((o) => o.role === "primary") && (
-        <form
-          className="panel account-form"
-          onSubmit={(e) => {
-            const f = form(e);
-            void run(async () => {
-              const result = await post<{ availableAt: string }>(
-                "recovery/redeem",
-                {
-                  code: String(f.get("code") ?? "").trim(),
-                },
-              );
-              setNotice(
-                t("accountRecoveryScheduled").replace(
-                  "{date}",
-                  date(result.availableAt),
-                ),
-              );
-            });
-          }}
-        >
-          <h3>{t("accountRecoveryRedeemTitle")}</h3>
-          <Field label={t("accountRecoveryRedeemLabel")}>
-            <input
-              name="code"
-              required
-              autoComplete="off"
-              autoCapitalize="characters"
-              spellCheck={false}
-              pattern="[0-9A-Za-z]{4}(-[0-9A-Za-z]{4}){5}"
-            />
-          </Field>
-          <Button type="submit" disabled={busy}>
-            {t("accountRecoveryRedeem")}
-          </Button>
-          <p className="muted">{t("accountRecoverySupport")}</p>
-        </form>
+      {/* A new account's first screen is its restaurant form (UX-8): the
+          recovery panels wait behind a disclosure until it owns something. */}
+      {noOrganization ? (
+        <details className="account-recovery-more">
+          <summary>{t("accountRecoveryMore")}</summary>
+          {recovery}
+        </details>
+      ) : (
+        recovery
       )}
     </section>
   );

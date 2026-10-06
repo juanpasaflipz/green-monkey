@@ -1,14 +1,22 @@
 import { useEffect, useId, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { strings } from "../i18n";
+import { BILLING_CONSENT } from "../../shared/legal";
 import type { AccountConfig } from "./accountConfig";
 import "./account.css";
 
-export type LegalAccepted = { terms: string; privacy: string; dpa?: string };
+export type LegalAccepted = {
+  terms: string;
+  privacy: string;
+  dpa?: string;
+  billingConsent?: string;
+};
 
 /**
  * The acceptance checkboxes (account 031, FIT-12): terms (plus the DPA where
- * the person contracts for an organization) and the privacy acknowledgment.
+ * the person contracts for an organization), the privacy acknowledgment and,
+ * where the person becomes a primary owner (signup, transfer), the express
+ * consent for billing data in its own box (UX-3, recorded as its own row).
  * onChange receives the current versions once every required box is checked,
  * else null. Draft documents (test environments) say so in the heading.
  */
@@ -17,19 +25,29 @@ export function LegalAcceptance({
   config,
   locale,
   organizationName,
+  dpa,
+  billingConsent,
   onChange,
 }: {
   mode: "signup" | "invitation" | "reacceptance" | "transfer";
   config: AccountConfig;
   locale: Locale;
   organizationName?: string;
+  /** Overrides: re-acceptance asks for the DPA only when a primary's is due. */
+  dpa?: boolean;
+  /** Overrides: re-acceptance asks for the consent only when none was recorded. */
+  billingConsent?: boolean;
   onChange: (accepted: LegalAccepted | null) => void;
 }) {
   const t = strings[locale];
   const id = useId();
   const [terms, setTerms] = useState(false);
   const [privacy, setPrivacy] = useState(false);
-  const withDpa = mode === "signup" || mode === "transfer";
+  const [consent, setConsent] = useState(false);
+  const withDpa = dpa ?? (mode === "signup" || mode === "transfer");
+  // Where the person becomes the primary owner, who bills the subscription.
+  const withConsent =
+    billingConsent ?? (mode === "signup" || mode === "transfer");
   const docs = config.legal.documents;
   const path = (d: "terms" | "privacy" | "dpa") =>
     locale === "es"
@@ -41,15 +59,16 @@ export function LegalAcceptance({
         }[d];
   useEffect(() => {
     onChange(
-      terms && privacy
+      terms && privacy && (consent || !withConsent)
         ? {
             terms: docs.terms.version,
             privacy: docs.privacy.version,
             ...(withDpa ? { dpa: docs.dpa.version } : {}),
+            ...(withConsent ? { billingConsent: docs.privacy.version } : {}),
           }
         : null,
     );
-  }, [terms, privacy]);
+  }, [terms, privacy, consent]);
   const link = (d: "terms" | "privacy" | "dpa", label: string) => (
     <a href={path(d)} target="_blank" rel="noopener">
       {label}
@@ -74,7 +93,7 @@ export function LegalAcceptance({
           onChange={(e) => setTerms(e.target.checked)}
           required
         />
-        {mode === "transfer" && organizationName
+        {withDpa && organizationName
           ? `${t.accountAcceptTerms} ${t.accountAcceptDpa.replace("{org}", organizationName)}`
           : withDpa
             ? t.accountAcceptTermsDpa
@@ -89,6 +108,17 @@ export function LegalAcceptance({
         />
         {t.accountAcknowledgePrivacy}
       </label>
+      {withConsent && (
+        <label className="opening-day">
+          <input
+            type="checkbox"
+            checked={consent}
+            onChange={(e) => setConsent(e.target.checked)}
+            required
+          />
+          {BILLING_CONSENT[locale]}
+        </label>
+      )}
     </fieldset>
   );
 }

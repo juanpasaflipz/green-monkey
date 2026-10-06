@@ -29,6 +29,8 @@ export const termsContent: LegalDocumentContent = {
         title: "3. Cuentas, accesos y dispositivos",
         paragraphs: [
           "La persona titular administra la organización, su facturación y la transferencia de la propiedad. Puede invitar hasta tres copropietarios con control total de sucursales, equipo y configuración.",
+          "Una transferencia de la titularidad también puede iniciarse sin que la persona titular la pida: (a) con uno de sus códigos de recuperación, y entonces queda en espera 24 horas; o (b) por el soporte de Green Monkey, después de verificar la identidad de quien la solicita y su facultad sobre el negocio, y entonces queda en espera al menos 24 horas (72 horas de forma predeterminada). Durante la espera la persona titular ve un aviso en su cuenta y en el punto de venta, solo dentro de la aplicación (no enviamos correo), y puede cancelarla. Si no la cancela, la nueva persona titular puede completarla al terminar la espera.",
+          "El personal de soporte de Green Monkey accede a los datos de tu cuenta y de tus restaurantes solo a través de herramientas que registran cada acción con su motivo; puedes consultar esas acciones en tu cuenta («Acciones de soporte»).",
           "Los empleados entran con PIN en dispositivos vinculados. Eres responsable de a quién das acceso, de mantener seguros tus PIN y dispositivos y de desvincular los que ya no uses.",
         ],
       },
@@ -101,7 +103,7 @@ export const termsContent: LegalDocumentContent = {
         id: "cambios",
         title: "13. Cambios",
         paragraphs: [
-          "Te avisaremos dentro de la aplicación con al menos 15 días de anticipación de cualquier cambio material a estos términos, y te pediremos aceptarlo de nuevo.",
+          "Te avisaremos dentro de la aplicación de cada nueva versión de estos términos, con su fecha de entrada en vigor. Los cambios materiales se anuncian al menos 15 días antes de entrar en vigor y, desde esa fecha, te pediremos aceptarlos para seguir administrando tu cuenta; tu restaurante sigue operando mientras tanto. Los cambios menores y la actualización de los datos de Green Monkey se muestran en la aplicación sin pedirte una nueva aceptación.",
         ],
       },
       {
@@ -143,6 +145,8 @@ export const termsContent: LegalDocumentContent = {
         title: "3. Accounts, access and devices",
         paragraphs: [
           "The primary owner manages the organization, its billing and the transfer of ownership. They can invite up to three co-owners with full control of locations, team and settings.",
+          "An ownership transfer can also start without the primary owner asking for it: (a) with one of their recovery codes, and it is then held for 24 hours; or (b) by Green Monkey support, after verifying the requester's identity and authority over the business, and it is then held for at least 24 hours (72 hours by default). During the hold the primary owner sees a warning in their account and in the point of sale, only inside the app (we send no email), and can cancel it. If they do not, the new primary owner can complete it when the hold ends.",
+          "Green Monkey support staff access your account's and restaurants' data only through tools that record every action with its reason; you can review those actions in your account (\"Support actions\").",
           "Employees sign in with a PIN on paired devices. You are responsible for whom you give access to, for keeping your PINs and devices secure, and for unpairing devices you no longer use.",
         ],
       },
@@ -215,7 +219,7 @@ export const termsContent: LegalDocumentContent = {
         id: "cambios",
         title: "13. Changes",
         paragraphs: [
-          "We will notify you inside the app at least 15 days in advance of any material change to these terms, and ask you to accept them again.",
+          "We will notify you inside the app of every new version of these terms, with the date it takes effect. Material changes are announced at least 15 days before they take effect and, from that date, we will ask you to accept them to keep managing your account; your restaurant keeps operating meanwhile. Minor changes and updates to Green Monkey's details are shown in the app without asking you to accept again.",
         ],
       },
       {

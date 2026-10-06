@@ -15,6 +15,7 @@ import {
   type AccountCtx,
 } from "./co-owners.js";
 import {
+  billingConsentEvidence,
   legalConfig,
   legalState,
   recordAcceptances,
@@ -326,7 +327,7 @@ export async function acceptTransfer(
     await tx`update ownership_transfers set to_account_id=${a.id} where id=${t.id}`;
   const legal = await legalState(tx, a.id, c);
   const documents: Array<{
-    document: "terms" | "privacy" | "dpa";
+    document: "terms" | "privacy" | "dpa" | "billing_consent";
     version: string;
     organizationId?: string;
   }> = [];
@@ -342,6 +343,8 @@ export async function acceptTransfer(
       version: p.legalAccepted.dpa,
       organizationId,
     });
+    // The new primary bills the subscription: express consent, its own row (UX-3).
+    documents.push(billingConsentEvidence(p.legalAccepted, c)!);
   } else if (p.legalAccepted && signupOpen(c)) {
     // Unpublished drafts (test environments): evidence with published=false.
     for (const d of ["terms", "privacy"] as const)
@@ -353,9 +356,15 @@ export async function acceptTransfer(
         version: p.legalAccepted.dpa,
         organizationId,
       });
+    const consent = billingConsentEvidence(p.legalAccepted, c);
+    if (consent) documents.push(consent);
   }
   for (const d of documents)
-    if (d.version !== LEGAL_DOCUMENTS[d.document].version)
+    if (
+      d.version !==
+      LEGAL_DOCUMENTS[d.document === "billing_consent" ? "privacy" : d.document]
+        .version
+    )
       throw new DomainError("legal_version_mismatch", 409);
   if (t.previous_owner_stays) {
     // Max 3 at acceptance too (ACC-10, under 931): co-owners who joined during

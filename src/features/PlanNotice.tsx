@@ -24,6 +24,7 @@ type Shell = {
   };
   account: null | {
     legalPending: boolean;
+    legalAnnounced: string | null;
     transfers: Array<{
       id: string;
       initiatedBy: string;
@@ -36,7 +37,20 @@ type Shell = {
   };
 };
 const POLL_MS = 300_000;
-const today = () => new Date().toISOString().slice(0, 10);
+/** Today in the restaurant's time zone (UX-12), so a dismissal lasts the local day. */
+let zone = "America/Mexico_City";
+const today = () => {
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: zone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+};
 function dismissed(key: string) {
   try {
     return localStorage.getItem(key) === today();
@@ -97,7 +111,7 @@ export function PlanNotice({
   }, [kitchen, online, session.id]);
   if (kitchen) return null;
   const tag = locale === "es" ? "es-MX" : "en-US";
-  const zone = session.restaurant.timezone;
+  zone = session.restaurant.timezone;
   const date = (iso: string | null) =>
     iso
       ? new Intl.DateTimeFormat(tag, {
@@ -249,6 +263,40 @@ export function PlanNotice({
           </Button>
         </div>
       )}
+      {account?.legalAnnounced &&
+        !account.legalPending &&
+        !dismissed(`${legalKey}announced:${account.legalAnnounced}`) && (
+          // A material change announced 15 days ahead (LEGAL-3).
+          <div role="status" className="plan-notice info">
+            <p>
+              {t("accountNoticeLegalAnnounced").replace(
+                "{date}",
+                new Intl.DateTimeFormat(tag, { dateStyle: "long" }).format(
+                  new Date(`${account.legalAnnounced}T12:00:00-06:00`),
+                ),
+              )}
+            </p>
+            <div className="row">
+              <a
+                className="button"
+                href="/legal"
+                target="_blank"
+                rel="noopener"
+              >
+                {t("accountLegalIndexTitle")}
+              </a>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  dismiss(`${legalKey}announced:${account.legalAnnounced}`);
+                  setTick((x) => x + 1);
+                }}
+              >
+                {t("accountNoticeDismiss")}
+              </Button>
+            </div>
+          </div>
+        )}
       {account?.supportActions.slice(0, 1).map((a) => (
         <p role="status" className="plan-notice info" key={a.createdAt}>
           {t("accountNoticeSupportAction")

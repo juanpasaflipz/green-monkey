@@ -7,6 +7,7 @@ import { type Tx } from "./db.js";
 import { DomainError } from "../shared/domain.js";
 import type { VerifiedGoogleIdentity } from "./google-identity.js";
 import {
+  billingConsentEvidence,
   legalConfig,
   legalState,
   recordAcceptances,
@@ -160,6 +161,8 @@ export async function createOwnerRestaurant(
   if (legal.status === "published" && !p.legalAccepted?.dpa)
     throw new DomainError("legal_acceptance_required", 428);
   const accepted = p.legalAccepted;
+  // The new primary's express billing consent (UX-3), its own evidence row.
+  const consent = billingConsentEvidence(accepted, legal);
   if (accepted)
     for (const d of ["terms", "privacy", "dpa"] as const)
       if (
@@ -167,6 +170,8 @@ export async function createOwnerRestaurant(
         accepted[d] !== LEGAL_DOCUMENTS[d].version
       )
         throw new DomainError("legal_version_mismatch", 409);
+  if (consent && consent.version !== LEGAL_DOCUMENTS.privacy.version)
+    throw new DomainError("legal_version_mismatch", 409);
   const tenantId = randomUUID(),
     organizationId = randomUUID(),
     employeeId = randomUUID();
@@ -192,6 +197,7 @@ export async function createOwnerRestaurant(
                 },
               ]
             : []),
+          ...(consent ? [consent] : []),
         ],
         locale: p.locale,
         context: "signup",

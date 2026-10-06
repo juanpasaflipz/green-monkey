@@ -168,6 +168,8 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
       locale: z.enum(["es", "en"]).default("es"),
       terms: legalVersion.optional(),
       privacy: legalVersion.optional(),
+      // A primary's express billing consent, when none was recorded (UX-3).
+      billingConsent: legalVersion.optional(),
       dpa: z
         .array(
           z
@@ -178,7 +180,9 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
         .optional(),
     })
     .strict()
-    .refine((v) => Boolean(v.terms || v.privacy || v.dpa?.length));
+    .refine((v) =>
+      Boolean(v.terms || v.privacy || v.dpa?.length || v.billingConsent),
+    );
   router.post("/legal/accept", writes, (req, res, next) =>
     answer(req, res, next, "command", async (tx, a) => {
       const p = acceptInput.parse(req.body);
@@ -198,6 +202,14 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
               version: d.version,
               organizationId: d.organizationId,
             })),
+            ...(p.billingConsent
+              ? [
+                  {
+                    document: "billing_consent" as const,
+                    version: p.billingConsent,
+                  },
+                ]
+              : []),
           ],
           locale: p.locale,
           context: "reacceptance",

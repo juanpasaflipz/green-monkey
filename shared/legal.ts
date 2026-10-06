@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { privacyContent, PRIVACY_SIMPLIFIED } from "./legal/privacy.js";
+import {
+  BILLING_CONSENT,
+  privacyContent,
+  PRIVACY_SIMPLIFIED,
+} from "./legal/privacy.js";
 import { termsContent } from "./legal/terms.js";
 import { dpaContent } from "./legal/dpa.js";
 
@@ -11,8 +15,9 @@ import { dpaContent } from "./legal/dpa.js";
  * The legal entity is never hard-coded: templates carry {{entity.<field>}}
  * tokens that the server fills from configuration (server/legal.ts, LD-3).
  * How to publish a new version: docs/ACCOUNT_AND_LEGAL.md. A non-material edit
- * bumps `version` only; a material edit also bumps `requiresAcceptanceSince`,
- * which makes every owner re-accept at the next account sign-in.
+ * bumps `version` only; a material edit also bumps `requiresAcceptanceSince`
+ * and is announced in the app from `announcedAt` at least 15 days before its
+ * `effectiveFrom`, the day account commands start asking for it (428).
  */
 export type LegalDocumentKey = "terms" | "privacy" | "dpa";
 export type LegalLocale = "es" | "en";
@@ -27,11 +32,40 @@ export type LegalDocumentContent = Record<
 >;
 export type LegalDocumentMeta = {
   version: string;
+  /**
+   * Acceptances of older versions stop counting once `effectiveFrom` passes:
+   * equal to `version` for a material change, unchanged for a non-material one.
+   */
   requiresAcceptanceSince: string;
+  /** The version this one replaces; null for the first published version. */
+  previousVersion: string | null;
+  /**
+   * The previous version's requiresAcceptanceSince: an acceptance older than
+   * it was already required before this version was announced, so the
+   * announcement window does not relax it. null for the first version.
+   */
+  previousRequiresAcceptanceSince: string | null;
+  /** YYYY-MM-DD: from this day owners see the new text announced in the app (LEGAL-3). */
+  announcedAt: string;
+  /**
+   * YYYY-MM-DD (00:00 Mexico City): the version takes effect; a material
+   * change gates account commands (428) only from this day, at least
+   * MATERIAL_NOTICE_DAYS after announcedAt (terms §13).
+   */
+  effectiveFrom: string;
   path: string;
   enPath: string;
   changes: Record<LegalLocale, readonly string[]>;
 };
+/** Days between the announcement and the effect of a material change (terms §13, privacy §12). */
+export const MATERIAL_NOTICE_DAYS = 15;
+/** 00:00 in Mexico City (UTC-6, no daylight saving since 2022) of a YYYY-MM-DD day. */
+export const legalInstant = (day: string) =>
+  Date.parse(`${day}T00:00:00-06:00`);
+/** A change after the first version that every account must accept again. */
+export const materialChange = (meta: LegalDocumentMeta) =>
+  meta.previousVersion !== null &&
+  meta.requiresAcceptanceSince === meta.version;
 
 export const LEGAL_VERSION_PATTERN = /^\d{4}-\d{2}-\d{2}(\.\d+)?$/;
 export const legalVersion = z.string().regex(LEGAL_VERSION_PATTERN);
@@ -41,6 +75,13 @@ export const legalAcceptedInput = z
     terms: legalVersion,
     privacy: legalVersion,
     dpa: legalVersion.optional(),
+    /**
+     * The express consent for billing data (UX-3, LFPDPPP Art. 7): the
+     * privacy version whose BILLING_CONSENT text the person consented to, in
+     * its own checkbox. Required wherever the person becomes a primary owner
+     * (signup, transfer) while the documents are published.
+     */
+    billingConsent: legalVersion.optional(),
   })
   .strict();
 export type LegalAccepted = z.infer<typeof legalAcceptedInput>;
@@ -49,29 +90,43 @@ const FIRST = {
   es: ["Primera versión publicada."],
   en: ["First published version."],
 } as const;
+/**
+ * The first published version (2026-10-06, after the account second opinion:
+ * the simplified notice's domicilio and data clause, the billing consent, the
+ * CFDI and backup processors, change notices and support transfers). Never
+ * deployed before it, so it is still the first version: nothing to announce.
+ */
+const FIRST_VERSION = {
+  version: "2026-10-06",
+  requiresAcceptanceSince: "2026-10-06",
+  previousVersion: null,
+  previousRequiresAcceptanceSince: null,
+  announcedAt: "2026-10-06",
+  effectiveFrom: "2026-10-06",
+  changes: FIRST,
+} as const;
 
 export const LEGAL_DOCUMENTS: Record<LegalDocumentKey, LegalDocumentMeta> = {
   privacy: {
-    version: "2026-10-05",
-    requiresAcceptanceSince: "2026-10-05",
+    ...FIRST_VERSION,
     path: "/legal/privacidad",
     enPath: "/legal/privacy",
-    changes: FIRST,
   },
   terms: {
-    version: "2026-10-05",
-    requiresAcceptanceSince: "2026-10-05",
+    ...FIRST_VERSION,
     path: "/legal/terminos",
     enPath: "/legal/terms",
-    changes: FIRST,
   },
   dpa: {
-    version: "2026-10-05",
-    requiresAcceptanceSince: "2026-10-05",
+    ...FIRST_VERSION,
     path: "/legal/encargo-de-datos",
     enPath: "/legal/data-processing",
-    changes: FIRST,
   },
+};
+/** Generated change entry when only the responsable's data changed (LEGAL-3). */
+export const ENTITY_UPDATED_CHANGE: Record<LegalLocale, string> = {
+  es: "Datos del responsable actualizados (nombre, domicilio, RFC, contacto o jurisdicción). El resto del texto no cambió.",
+  en: "Controller details updated (name, address, RFC, contact or jurisdiction). The rest of the text did not change.",
 };
 
 export const LEGAL_CONTENT: Record<LegalDocumentKey, LegalDocumentContent> = {
@@ -79,7 +134,9 @@ export const LEGAL_CONTENT: Record<LegalDocumentKey, LegalDocumentContent> = {
   terms: termsContent,
   dpa: dpaContent,
 };
-export { PRIVACY_SIMPLIFIED };
+export { BILLING_CONSENT, PRIVACY_SIMPLIFIED };
+/** Evidence rows: the three documents plus the separately recorded billing consent (UX-3). */
+export type LegalEvidenceKey = LegalDocumentKey | "billing_consent";
 
 /** Client routes of the legal pages; the English aliases switch the page to English. */
 export const LEGAL_ROUTES: Record<
@@ -189,35 +246,60 @@ export type AcceptanceRow = {
 export type LegalStatus = "published" | "unpublished";
 
 /**
- * Whether a document needs (re-)acceptance: never accepted; accepted before its
- * requiresAcceptanceSince; accepted for another legal entity; or accepted as an
- * unpublished draft after the documents were published. Unpublished documents
- * are never pending: nothing is in force to accept.
+ * Where an account stands with one document (LEGAL-3):
+ * - "required": never accepted; accepted as an unpublished draft; or a
+ *   material change is in effect (effectiveFrom passed) and the acceptance is
+ *   older than requiresAcceptanceSince. Account commands answer 428.
+ * - "announced": that material change is announced but not yet in effect:
+ *   a banner links the new text; accepting early is allowed, nothing is gated.
+ * - "entity_updated": only the responsable's data changed (entity hash): a
+ *   generated "datos del responsable actualizados" notice, not material.
+ *   An operator who considers an entity change material publishes a material
+ *   version of the documents instead (docs/ACCOUNT_AND_LEGAL.md).
+ * - "updated": a newer non-material version: shown, never asked again.
+ * - "accepted". Unpublished documents are never required: nothing is in force.
  */
+export type AcceptanceStatus =
+  "required" | "announced" | "entity_updated" | "updated" | "accepted";
+export function acceptanceStatus(
+  document: LegalDocumentKey,
+  row: AcceptanceRow | null | undefined,
+  current: { status: LegalStatus; entityHash: string },
+  now: number = Date.now(),
+): AcceptanceStatus {
+  if (current.status !== "published") return "accepted";
+  if (!row || !row.published) return "required";
+  const meta = LEGAL_DOCUMENTS[document];
+  if (compareLegalVersions(row.version, meta.requiresAcceptanceSince) < 0) {
+    const missedEarlier =
+      meta.previousRequiresAcceptanceSince !== null &&
+      compareLegalVersions(row.version, meta.previousRequiresAcceptanceSince) <
+        0;
+    return missedEarlier || now >= legalInstant(meta.effectiveFrom)
+      ? "required"
+      : "announced";
+  }
+  if (row.entityHash !== current.entityHash) return "entity_updated";
+  if (compareLegalVersions(row.version, meta.version) < 0) return "updated";
+  return "accepted";
+}
+/** Whether the document gates account commands now (428). */
 export function acceptancePending(
   document: LegalDocumentKey,
   row: AcceptanceRow | null | undefined,
   current: { status: LegalStatus; entityHash: string },
+  now: number = Date.now(),
 ): boolean {
-  if (current.status !== "published") return false;
-  if (!row) return true;
-  if (
-    compareLegalVersions(
-      row.version,
-      LEGAL_DOCUMENTS[document].requiresAcceptanceSince,
-    ) < 0
-  )
-    return true;
-  if (row.entityHash !== current.entityHash) return true;
-  return !row.published;
+  return acceptanceStatus(document, row, current, now) === "required";
 }
 
 /** The account-level documents (terms, privacy) still to accept. */
 export function pendingDocuments(
   accepted: Partial<Record<"terms" | "privacy", AcceptanceRow>>,
   current: { status: LegalStatus; entityHash: string },
+  now: number = Date.now(),
 ): Array<"terms" | "privacy"> {
   return (["terms", "privacy"] as const).filter((d) =>
-    acceptancePending(d, accepted[d], current),
+    acceptancePending(d, accepted[d], current, now),
   );
 }

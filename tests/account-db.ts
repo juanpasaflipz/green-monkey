@@ -87,6 +87,7 @@ const V = {
   terms: LEGAL_DOCUMENTS.terms.version,
   privacy: LEGAL_DOCUMENTS.privacy.version,
   dpa: LEGAL_DOCUMENTS.dpa.version,
+  billingConsent: LEGAL_DOCUMENTS.privacy.version,
 };
 const TAX = saasTaxConfig({}, "web");
 const input = {
@@ -283,15 +284,43 @@ try {
       ),
       "legal_version_mismatch",
     );
+    // UX-3: the express billing consent is its own required box.
+    const { billingConsent: _omitted, ...withoutConsent } = V;
+    void _omitted;
+    await rejects(
+      as(a, (tx, x) =>
+        createOwnerRestaurant(
+          tx,
+          x,
+          {
+            ...input,
+            restaurantName: "Sin consentimiento",
+            legalAccepted: withoutConsent,
+          },
+          PUBLISHED,
+        ),
+      ),
+      "legal_acceptance_required",
+    );
   });
   const A = await restaurant(a, `Taquería Primaria ${run}`);
-  await test("2 legal: signup records terms, privacy and dpa with content/entity hashes and session FK", async () => {
+  await test("2 legal: signup records terms, privacy, dpa and the separate billing consent with content/entity hashes and session FK; the evidence time is the server's", async () => {
     const rows =
       await admin`select * from legal_acceptances where account_id=${a.id} order by document`;
     assert.deepEqual(
       rows.map((r) => r.document),
-      ["dpa", "privacy", "terms"],
+      ["billing_consent", "dpa", "privacy", "terms"],
     );
+    const [consent] = rows;
+    assert.equal(consent.version, LEGAL_DOCUMENTS.privacy.version);
+    // LEGAL-8: accepted_at is forced to the server's time on insert.
+    const backdated = randomUUID();
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context,accepted_at)
+        values(${backdated},${a.id},${a.sessionId},'terms',${V.terms},${legalContentHash("terms")},${PUBLISHED.entityHash},true,'es','reacceptance','2020-01-01')`;
+    const [time] =
+      await admin`select accepted_at > now() - interval '1 minute' as recent from legal_acceptances where id=${backdated}`;
+    assert.equal(time.recent, true);
+    await assert.rejects(admin`truncate legal_acceptances`, /append-only/);
     for (const r of rows) {
       assert.equal(r.content_hash, legalContentHash(r.document));
       assert.equal(r.entity_hash, PUBLISHED.entityHash);
@@ -359,7 +388,7 @@ try {
   await test("4 legal: unpublished + allow records published=false and pending after publish", async () => {
     const rows =
       await admin`select published,entity_hash from legal_acceptances where account_id=${c.id}`;
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 4);
     assert.ok(rows.every((r) => r.published === false));
     const state = await as(c, (tx) => legalState(tx, c.id, PUBLISHED));
     assert.deepEqual(state.pending, ["terms", "privacy"]);
@@ -437,15 +466,77 @@ try {
     );
     await as(a, (tx) => requireCurrentLegal(tx, a.id, PUBLISHED));
   });
-  await test("6 legal: entity change makes privacy and terms pending and DPA pending for primary", async () => {
+  await test("6 legal: an entity-only change is not material: nothing gates, terms, privacy and the primary's DPA carry an entity_updated notice, and re-accepting clears it (LEGAL-3)", async () => {
     const changed = legalConfig({
       ...LEGAL_CI_ENV,
       NODE_ENV: "production",
       LEGAL_JURISDICTION: "Guadalajara, Jalisco",
     });
     const state = await as(a, (tx) => legalState(tx, a.id, changed));
-    assert.deepEqual(state.pending, ["terms", "privacy"]);
-    assert.deepEqual(state.dpaPending, [A.organizationId]);
+    assert.deepEqual(state.pending, []);
+    assert.deepEqual(state.dpaPending, []);
+    assert.deepEqual(
+      state.notices.map((n) => [n.document, n.kind]),
+      [
+        ["terms", "entity_updated"],
+        ["privacy", "entity_updated"],
+        ["dpa", "entity_updated"],
+      ],
+    );
+    assert.deepEqual(state.dpaNoticeOrganizations, [A.organizationId]);
+    await as(a, (tx) => requireCurrentLegal(tx, a.id, changed));
+    // The POS shell and the console say so without gating.
+    const overview = await as(a, (tx, x) =>
+      accountOverview(tx, x, changed, TAX),
+    );
+    assert.equal(overview.legal.notices.length, 3);
+    // Accepting under the new entity records new rows and clears the notice.
+    await as(a, (tx, x) =>
+      recordAcceptances(
+        tx,
+        x,
+        {
+          documents: [
+            { document: "terms", version: V.terms },
+            { document: "privacy", version: V.privacy },
+            {
+              document: "dpa",
+              version: V.dpa,
+              organizationId: A.organizationId,
+            },
+          ],
+          locale: "es",
+          context: "reacceptance",
+        },
+        changed,
+      ),
+    );
+    assert.deepEqual(
+      (await as(a, (tx) => legalState(tx, a.id, changed))).notices,
+      [],
+    );
+    // Under the original entity those new rows are the notice now: re-accept
+    // once more so later checks start clean.
+    await as(a, (tx, x) =>
+      recordAcceptances(
+        tx,
+        x,
+        {
+          documents: [
+            { document: "terms", version: V.terms },
+            { document: "privacy", version: V.privacy },
+            {
+              document: "dpa",
+              version: V.dpa,
+              organizationId: A.organizationId,
+            },
+          ],
+          locale: "es",
+          context: "reacceptance",
+        },
+        PUBLISHED,
+      ),
+    );
   });
   await test("7 legal: acceptances cannot be updated or deleted (trigger + grants)", async () => {
     await assert.rejects(
@@ -2648,6 +2739,89 @@ try {
       await admin`select state from ownership_transfers where id=${sale.id}`;
     assert.equal(kept.state, "pending");
     await as(p, (tx, x) => cancelTransfer(tx, x, { transferId: sale.id }));
+  });
+  await test("39 legal: a Google-member manager with an older acceptance gets the re-acceptance path in the console and the POS shell (LEGAL-4); an announced material change is a banner until its effectiveFrom, then gates (LEGAL-3)", async () => {
+    const p = await owner("legal4-primary");
+    const M = await restaurant(p, `Gerencia ${run}`);
+    const m = await owner("legal4-manager");
+    await acceptInvite(
+      m,
+      (await inviteStaff(p, M.tenantId, m.email, "manager")).path,
+    );
+    const pos = await ownerSession(m, M.tenantId);
+    assert.equal(pos.role, "manager");
+    const shell = () =>
+      inTenant(M.tenantId, (tx) => shellState(tx, pos, PUBLISHED));
+    assert.deepEqual((await shell()).account, {
+      legalPending: false,
+      legalAnnounced: null,
+      transfers: [],
+      supportActions: [],
+    });
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context)
+        values(${randomUUID()},${m.id},${m.sessionId},'terms','2026-01-01',${legalContentHash("terms")},${PUBLISHED.entityHash},true,'es','reacceptance')`;
+    assert.equal((await shell()).account?.legalPending, true);
+    const overview = await as(m, (tx, x) =>
+      accountOverview(tx, x, PUBLISHED, TAX),
+    );
+    assert.equal(overview.organizations.length, 0);
+    assert.equal(overview.memberships, 1);
+    assert.deepEqual(overview.legal.pending, ["terms"]);
+    assert.deepEqual(overview.legal.dpaPending, [], "never the DPA");
+    await as(m, (tx, x) =>
+      recordAcceptances(
+        tx,
+        x,
+        {
+          documents: [{ document: "terms", version: V.terms }],
+          locale: "es",
+          context: "reacceptance",
+        },
+        PUBLISHED,
+      ),
+    );
+    assert.equal((await shell()).account?.legalPending, false);
+    // A material change of the terms, announced today, effective in 20 days.
+    const meta = LEGAL_DOCUMENTS.terms;
+    const original = { ...meta };
+    const day = (offset: number) =>
+      new Date(Date.now() + offset * 864e5).toISOString().slice(0, 10);
+    try {
+      Object.assign(meta, {
+        version: "2099-01-01",
+        requiresAcceptanceSince: "2099-01-01",
+        previousVersion: original.version,
+        previousRequiresAcceptanceSince: original.requiresAcceptanceSince,
+        announcedAt: day(0),
+        effectiveFrom: day(20),
+      });
+      const before = await as(p, (tx) => legalState(tx, p.id, PUBLISHED));
+      assert.deepEqual(before.pending, []);
+      assert.deepEqual(
+        before.notices.map((n) => [n.document, n.kind, n.effectiveFrom]),
+        [["terms", "announced", day(20)]],
+      );
+      await as(p, (tx) => requireCurrentLegal(tx, p.id, PUBLISHED));
+      const ownerPos = await ownerSession(p, M.tenantId);
+      assert.equal(
+        (
+          await inTenant(M.tenantId, (tx) =>
+            shellState(tx, ownerPos, PUBLISHED),
+          )
+        ).account?.legalAnnounced,
+        day(20),
+      );
+      // From effectiveFrom on, the same acceptance gates account commands.
+      Object.assign(meta, { announcedAt: day(-20), effectiveFrom: day(-1) });
+      const after = await as(p, (tx) => legalState(tx, p.id, PUBLISHED));
+      assert.deepEqual(after.pending, ["terms"]);
+      await rejects(
+        as(p, (tx) => requireCurrentLegal(tx, p.id, PUBLISHED)),
+        "legal_acceptance_required",
+      );
+    } finally {
+      Object.assign(meta, original);
+    }
   });
   console.log(
     `Account DB passed (${checks} checks): legal acceptance and gating, co-owners on access's lifecycle, transfers, recovery codes, export, restaurant privacy and the 031 RLS paths. Fixtures retained (append-only evidence).`,

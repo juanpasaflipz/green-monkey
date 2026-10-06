@@ -21,6 +21,8 @@ import { planNotice, type PlanNotice } from "../shared/plan-notice.js";
 export type AccountOverview = {
   account: { id: string; email: string; name: string };
   legal: LegalState;
+  /** Active restaurant memberships (any role): a member who accepted documents before re-accepts here (LEGAL-4). */
+  memberships: number;
   freshSession: boolean;
   organizations: Array<{
     id: string;
@@ -70,6 +72,7 @@ export type AccountOverview = {
   incomingTransfers: Array<{
     id: string;
     organizationName: string;
+    locations: number;
     fromName: string | null;
     initiatedBy: string;
     availableAt: string;
@@ -194,16 +197,20 @@ export async function accountOverview(
     // Verified by to_account_id: the target may read the offered organization.
     await tx`select set_config('app.organization_id',${t.organization_id},true)`;
     const [org] =
-      await tx`select name from organizations where id=${t.organization_id}`;
+      await tx`select name,(select count(*)::int from restaurants r where r.organization_id=o.id) as locations
+        from organizations o where o.id=${t.organization_id}`;
     incomingTransfers.push({
       id: t.id,
       organizationName: org?.name ?? "",
+      locations: org?.locations ?? 0,
       fromName: await fromName(tx, t.organization_id, t.from_account_id),
       initiatedBy: t.initiated_by,
       availableAt: iso(t.available_at)!,
       expiresAt: iso(t.expires_at)!,
     });
   }
+  const [memberships] =
+    await tx`select count(*)::int as n from owner_memberships where account_id=${a.id} and revoked_at is null`;
   const [codes] = await tx`select
       count(*) filter (where used_at is null and revoked_at is null)::int as remaining,
       max(created_at) filter (where revoked_at is null or used_at is not null) as generated_at
@@ -211,6 +218,7 @@ export async function accountOverview(
   return {
     account: { id: a.id, email: a.email, name: a.name },
     legal: legalNow,
+    memberships: memberships?.n ?? 0,
     freshSession,
     organizations,
     incomingTransfers,
@@ -264,6 +272,11 @@ export type ShellState = {
   };
   account: null | {
     legalPending: boolean;
+    /**
+     * The earliest effectiveFrom of a material change announced to this
+     * account and not yet in effect (LEGAL-3): the shell links the new text.
+     */
+    legalAnnounced: string | null;
     /**
      * Only the transfers the primary did not start (support or a recovery
      * code): the hijack warnings of §2.10/§2.11. The primary's own pending
@@ -321,7 +334,46 @@ export async function shellState(
       thisDevice: slot?.id === s.deviceId,
       mode: await freeSelectionMode(tx),
     },
-    account: s.role === "owner" ? await ownerShell(tx, s, legal) : null,
+    account:
+      s.role === "owner"
+        ? await ownerShell(tx, s, legal)
+        : s.role === "manager"
+          ? await memberShell(tx, s, legal)
+          : null,
+  };
+}
+
+/** The legal part of the shell's account block for one account (app.account_id set). */
+async function legalShell(tx: Tx, accountId: string, legal: LegalConfig) {
+  const state = await legalState(tx, accountId, legal);
+  const announced = state.notices
+    .filter((n) => n.kind === "announced")
+    .map((n) => n.effectiveFrom)
+    .sort();
+  return {
+    legalPending: Boolean(state.pending.length || state.dpaPending.length),
+    legalAnnounced: announced[0] ?? null,
+  };
+}
+
+/**
+ * A manager entered through Google (an invited member's own browser) sees the
+ * re-acceptance notice for the documents that apply to them (LEGAL-4: terms
+ * and privacy; never the DPA). PIN sessions carry no account and see nothing.
+ */
+async function memberShell(
+  tx: Tx,
+  s: Session,
+  legal: LegalConfig,
+): Promise<ShellState["account"]> {
+  const [session] =
+    await tx`select owner_account_id from sessions where id=${s.id}`;
+  if (!session?.owner_account_id) return null;
+  await tx`select set_config('app.account_id',${session.owner_account_id},true)`;
+  return {
+    ...(await legalShell(tx, session.owner_account_id as string, legal)),
+    transfers: [],
+    supportActions: [],
   };
 }
 
@@ -356,7 +408,7 @@ async function ownerShell(
   } catch {
     return null;
   }
-  const state = await legalState(tx, accountId, legal);
+  const legalBlock = await legalShell(tx, accountId, legal);
   // The primary's own transfer is not a warning (ACC-1): only support and
   // recovery-code transfers reach the POS shell.
   const transfers =
@@ -370,7 +422,7 @@ async function ownerShell(
     where organization_id=${r.organization_id} and created_at>now()-interval '7 days'
     order by created_at desc limit 5`;
   return {
-    legalPending: Boolean(state.pending.length || state.dpaPending.length),
+    ...legalBlock,
     transfers: transfers.map((t) => ({
       id: t.id,
       initiatedBy: t.initiated_by as "support" | "recovery_code",

@@ -107,6 +107,14 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
         exact: true,
       })
       .check();
+    // account (031, UX-3): the express billing consent is its own box.
+    await expect(create).toBeDisabled();
+    await page
+      .getByRole("checkbox", {
+        name: "I expressly consent to the processing of my financial and property data to bill my restaurant's subscription, as the Privacy notice explains.",
+        exact: true,
+      })
+      .check();
     await expect(create).toBeEnabled();
     await create.focus();
     await page.keyboard.press("Enter");
