@@ -6,7 +6,14 @@
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { scanServer, scanSources, sqlEvents, type Node } from "./lock-scan.js";
+import { join } from "node:path";
+import {
+  scanServer,
+  scanSources,
+  serverFiles,
+  sqlEvents,
+  type Node,
+} from "./lock-scan.js";
 
 const CLASSES = { 926: "ticket", 927: "document", 928: "period" } as const;
 
@@ -53,28 +60,11 @@ describe("cfdi advisory keys (LO-3, row 29)", () => {
     ]);
   });
 
-  it("no cfdi advisory key is taken outside server/cfdi/locks.ts", () => {
-    const { program } = scanServer();
-    const outside = program.units
-      .filter((u) => u.file.startsWith("server/cfdi/"))
-      .filter((u) => u.file !== "server/cfdi/locks.ts")
-      .filter((u) =>
-        /pg_advisory_xact_lock/.test(
-          JSON.stringify(u.nodes.filter((n) => "event" in n)),
-        ),
-      )
-      .map((u) => `${u.file}#${u.name}`);
+  it("no cfdi module takes an advisory key outside server/cfdi/locks.ts", () => {
+    const outside = serverFiles("server/cfdi")
+      .filter((f) => f !== join("server", "cfdi", "locks.ts"))
+      .filter((f) => /pg_advisory(_xact)?_lock/.test(readFileSync(f, "utf8")));
     expect(outside).toEqual([]);
-    for (const file of [
-      "server/cfdi/service.ts",
-      "server/cfdi/requests.ts",
-      "server/cfdi/portal.ts",
-      "server/cfdi/worker/global.ts",
-      "server/cfdi/worker/reissue.ts",
-    ])
-      expect(readFileSync(file, "utf8"), file).not.toMatch(
-        /pg_advisory_xact_lock/,
-      );
   });
 
   it("every transaction takes ticket keys, then document keys, then the period key", () => {
