@@ -469,20 +469,44 @@ and update at once. 033 (`-- gm:no-transaction`, one `VALIDATE` per part,
 - It also needs tests that write the value, and a note to this area.
 - `tests/public-ordering-db.ts` (test 2) writes every listed value.
 
-**Validation runs as the owner, unfiltered by RLS.** Validation is an internal
-heap scan. DB test 3 proves that `gm_migrator`, under FORCE RLS with no
-tenant, still finds another tenant's bad row.
+**Validation runs as the owner, unfiltered by RLS.** `VALIDATE` is an
+internal heap scan. DB test 1+3 proves that a non-superuser owner such as
+`gm_migrator`, under FORCE RLS with no tenant, still finds another tenant's
+bad row.
 
-**DB-9 validation (before the first deploy that carries 032/033).** Run
-read-only as `gm_migrator` on staging and production. Each query must return
-0:
+**The operator's queries are filtered (PUB-B3-1).** A `select` or `update`
+run as `gm_migrator` with no tenant set sees no rows of `orders`, `rounds` or
+`jobs`, so a check run that way would always pass. The check therefore runs
+as the Neon owner role (`neondb_owner`, which bypasses RLS through
+`neon_superuser`; [PROVISIONING](PROVISIONING.md)), connected as that role and
+never after `SET ROLE gm_migrator`. It starts with
+`set local row_security = off`, so a role that does not bypass RLS gets
+`query would be affected by row-level security policy` instead of an empty
+result.
+
+DB test 1+3 runs both blocks below exactly as written, and RUNBOOK "DB-9
+validation" must carry the same two blocks (the test compares them):
+
+- As a BYPASSRLS non-superuser member of the owner (the Neon owner role's
+  shape), they list and repair one bad row of another tenant in each of the
+  five columns.
+- As the schema owner (`gm_migrator`'s shape), both blocks fail.
+- Without the `row_security` line, the schema owner's check returns nothing:
+  that is the trap the line guards against.
+
+**DB-9 validation (before the first deploy that carries 032/033).** Run the
+check as the Neon owner role on staging and production. It must return no
+rows:
 
 ```sql
-select count(*) from orders where state not in ('active','ready','completed','cancelled','recovery_pending','recovery_reviewed');
-select count(*) from orders where channel not in ('pos','qr','kiosk','offline');
-select count(*) from orders where mode not in ('takeaway','dine_in','delivery');
-select count(*) from rounds where state not in ('active','ready','completed','offline_review');
-select count(*) from jobs where state not in ('queued','available','running','done','blocked','dead');
+begin read only;
+set local row_security = off;
+select tenant_id, id, state from orders where state not in ('active','ready','completed','cancelled','recovery_pending','recovery_reviewed');
+select tenant_id, id, channel from orders where channel not in ('pos','qr','kiosk','offline');
+select tenant_id, id, mode from orders where mode not in ('takeaway','dine_in','delivery');
+select tenant_id, id, state from rounds where state not in ('active','ready','completed','offline_review');
+select tenant_id, id, state from jobs where state not in ('queued','available','running','done','blocked','dead');
+rollback;
 ```
 
 **If 033 fails anyway** (a row outside a set):
@@ -490,11 +514,20 @@ select count(*) from jobs where state not in ('queued','available','running','do
 1. Nothing is lost: 032 committed, and the constraints already block new bad
    writes. The new revision never passes readiness, because the registry row
    of 033 is written only after every part succeeds.
-2. Find the row with the query above. Repair it to the value the current code
-   would write (for example a legacy `state`), with an audit note in the
-   incident log.
+2. Find each row with the check above (its table, `tenant_id` and `id`), as
+   the Neon owner role. Repair it as the same role with the block below. Set
+   it to the value the current code would write (for example a legacy
+   `state`), with an audit note in the incident log. `UPDATE 0` means the
+   `tenant_id` or `id` is wrong and nothing changed.
 3. Re-run the deploy. `VALIDATE` of an already valid constraint is a no-op,
    so the parts that succeeded cost nothing.
+
+```sql
+begin;
+set local row_security = off;
+update <table> set <column> = '<value>' where tenant_id = '<tenant_id>' and id = '<id>';
+commit;
+```
 
 **Deploy window.** 032's `ADD CONSTRAINT … NOT VALID` briefly takes `ACCESS
 EXCLUSIVE` on `orders`, `rounds` and `jobs`. They come first in 032, so the
@@ -635,13 +668,11 @@ when B1 merged fiscal 027 (`70860d6`), so it still ships on `track/public`.
   the grants). Until an ops retention rule redacts them (proposal: blank
   `name` and `note` of holds that are not `accepted` after 30 days, as the
   schema owner, with a redaction-only exception in the trigger), support
-  handles an ARCO cancellation request for a hold as the schema owner in a
-  logged session: find the hold by restaurant, label and date, and set `name`
-  and `note` to `''` with the transition trigger disabled inside one
-  transaction (the LD-12 named-trigger pattern), with an incident note. An
-  accepted hold's data also lives on the order (its call name and note): that
-  is the restaurant's sales record, and diners' ARCO requests for it go to the
-  restaurant, the responsable ([account and legal](ACCOUNT_AND_LEGAL.md)).
+  handles an ARCO cancellation request for a hold with the block in
+  "Redacting a hold (ARCO)" below. An accepted hold's data also lives on the
+  order (its call name and note): that is the restaurant's sales record, and
+  diners' ARCO requests for it go to the restaurant, the responsable
+  ([account and legal](ACCOUNT_AND_LEGAL.md)).
 - **Export and retention.** `token_hash`, `status_key_hash` and
   `request_hash` are excluded by account's export rule for `_hash` columns
   (DB test 31: the owner export of the four tables carries no token, status
@@ -651,6 +682,60 @@ when B1 merged fiscal 027 (`70860d6`), so it still ships on `track/public`.
   revocation columns and label of links, the settings columns and hold
   numbers. Transition triggers keep a hold's request and a
   link's identity immutable.
+
+### Redacting a hold (ARCO)
+
+Run the block below as the schema owner `gm_migrator`
+(`MIGRATION_DATABASE_URL`) in a logged session, with an incident note,
+preferably outside service hours. Fill in:
+
+- the restaurant's id;
+- the hold's business date;
+- the number of its label (`Q-14` and `K-14` are both number 14).
+
+How the block protects the data:
+
+- **The restaurant is set first.** `public_order_holds` uses FORCE ROW LEVEL
+  SECURITY and `gm_migrator` does not bypass it, so the block sets the
+  restaurant with `set_config` before anything else. Without that step the
+  update finds no hold (PUB-B3-2). The `tenant_id` condition keeps the update
+  to that restaurant even for a role that bypasses RLS.
+- **Exactly one hold, or nothing.** The `do` block refuses unless exactly one
+  hold that is not `accepted` matched. The error reads `expected exactly one
+  hold that is not accepted, found 0`. The whole transaction rolls back,
+  including the trigger change.
+- **A short lock.** `DISABLE TRIGGER` holds `SHARE ROW EXCLUSIVE` on
+  `public_order_holds` until `commit`. Diner submissions and cancellations,
+  and staff decisions on holds, wait for it; reads do not. `lock_timeout`
+  gives up after 5 s instead of queueing ahead of them. The trigger is
+  enabled again before `commit`, so no other session ever runs without it.
+
+```sql
+begin;
+set local lock_timeout = '5s';
+select set_config('app.tenant_id', '<restaurant uuid>', true);
+alter table public_order_holds disable trigger public_order_holds_transition;
+do $$
+declare n integer;
+begin
+  update public_order_holds set name = '', note = ''
+   where tenant_id = '<restaurant uuid>' and business_date = '<YYYY-MM-DD>'
+     and number = <number> and state <> 'accepted';
+  get diagnostics n = row_count;
+  if n <> 1 then
+    raise exception 'expected exactly one hold that is not accepted, found %', n;
+  end if;
+end $$;
+alter table public_order_holds enable trigger public_order_holds_transition;
+commit;
+```
+
+DB test 21 runs this block exactly as written, as `gm_migrator`:
+
+- It blanks one cancelled hold's name and note and changes nothing else.
+- It leaves the trigger enabled.
+- It refuses an accepted hold, and a run without the `set_config` line, and
+  in both cases changes nothing.
 
 ## 13. Tests
 

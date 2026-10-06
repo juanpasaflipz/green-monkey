@@ -6,6 +6,7 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import express from "express";
 import postgres from "postgres";
 import { ZodError } from "zod";
@@ -117,6 +118,69 @@ async function rejects(promise: Promise<unknown>, code: string) {
   });
 }
 const op = () => randomUUID();
+/**
+ * The fenced `sql` blocks of one documentation section, from its heading to
+ * the next heading of the same or a higher level. The operator procedures run
+ * exactly as documented (PUB-B3-1, PUB-B3-2).
+ */
+function docSql(file: string, heading: string): string[] {
+  const text = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+  const at = text.indexOf(`\n${heading}\n`);
+  assert.ok(at >= 0, `${file}: ${heading}`);
+  const level = heading.indexOf(" ");
+  const rest = text.slice(at + heading.length + 2);
+  const end = rest.search(new RegExp(`\\n#{1,${level}} `));
+  return [
+    ...(end < 0 ? rest : rest.slice(0, end)).matchAll(/```sql\n([\s\S]*?)```/g),
+  ].map((m) => m[1]);
+}
+/** The statements of a documented SQL block, in order: comment lines dropped, `;` inside `$$` bodies and quotes kept. */
+function sqlStatements(block: string): string[] {
+  const text = block
+    .split("\n")
+    .filter((l) => !/^\s*--/.test(l))
+    .join("\n");
+  const out: string[] = [];
+  let cur = "",
+    dollar = false,
+    quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    if (!quoted && text.startsWith("$$", i)) {
+      dollar = !dollar;
+      cur += "$$";
+      i++;
+      continue;
+    }
+    if (!dollar && text[i] === "'") quoted = !quoted;
+    if (text[i] === ";" && !dollar && !quoted) {
+      if (cur.trim()) out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += text[i];
+  }
+  if (cur.trim()) out.push(cur.trim());
+  return out;
+}
+/**
+ * Runs a documented block statement by statement on one fresh connection, as
+ * an operator would in psql (after the `prelude`, such as SET ROLE). Returns
+ * each statement's result; an error ends the connection, which rolls the
+ * block's transaction back.
+ */
+async function runDocBlock(url: string, block: string, prelude: string[] = []) {
+  const c = postgres(url, { max: 1, onnotice: () => {} });
+  try {
+    for (const s of prelude) await c.unsafe(s);
+    const results: postgres.RowList<postgres.Row[]>[] = [];
+    for (const s of sqlStatements(block)) results.push(await c.unsafe(s));
+    return results;
+  } finally {
+    await c.end();
+  }
+}
+const rowsOf = (results: postgres.RowList<postgres.Row[]>[]) =>
+  results.flatMap((r) => [...r]);
 const restaurant = {
   name: "Pedidos en línea · Prueba",
   currency: "MXN",
@@ -637,10 +701,16 @@ try {
 
   // ------------------------------------------------------------ migrations
 
-  await test("1+3. 032/033 apply in order as a non-superuser owner; 033 fails on another tenant's bad row until it is repaired; re-running is a no-op; the runner applies a no-transaction newest file with the grants hook", async () => {
+  await test("1+3. 032/033 apply in order as a non-superuser owner; 033 fails on another tenant's bad rows until they are repaired; RUNBOOK's DB-9 check and repair, run as written, find and fix one bad row per column as a Neon-owner-like BYPASSRLS role and fail as the owner instead of passing (PUB-B3-1); re-running is a no-op; the runner applies a no-transaction newest file with the grants hook", async () => {
     const suffix = randomBytes(5).toString("hex");
     const role = `gm_pub_mig_${suffix}`;
     const secret = randomBytes(16).toString("hex");
+    // The Neon owner role's shape (PROVISIONING.md): LOGIN BYPASSRLS, never a
+    // superuser, a member of the schema owner with INHERIT and SET.
+    const neon = {
+      name: `gm_pub_neon_${suffix}`,
+      password: randomBytes(16).toString("hex"),
+    };
     const database = `green_monkey_pub_mig_${suffix}_test`;
     const urlFor = (user?: { name: string; password: string }) => {
       const u = new URL(migration);
@@ -654,12 +724,30 @@ try {
     await admin.unsafe(
       `create role "${role}" login password '${secret}' nosuperuser nocreatedb nocreaterole nobypassrls`,
     );
+    await admin.unsafe(
+      `create role "${neon.name}" login password '${neon.password}' nosuperuser nocreatedb nocreaterole bypassrls`,
+    );
+    await admin.unsafe(
+      `grant "${role}" to "${neon.name}" with inherit true, set true`,
+    );
     await admin.unsafe(`create database "${database}" owner "${role}"`);
-    const owner = postgres(urlFor({ name: role, password: secret }), {
+    const asOwner = urlFor({ name: role, password: secret }),
+      asNeon = urlFor(neon);
+    const owner = postgres(asOwner, {
       max: 2,
       onnotice: () => {},
     });
     const root = postgres(urlFor(), { max: 1, onnotice: () => {} });
+    // The operator procedure: RUNBOOK "DB-9 validation" and PUBLIC_ORDERING
+    // §7 carry the same two blocks, the check and the repair.
+    const documented = docSql("docs/RUNBOOK.md", "## DB-9 validation");
+    assert.equal(documented.length, 2, "RUNBOOK: the check and the repair");
+    assert.deepEqual(
+      docSql("docs/PUBLIC_ORDERING.md", "## 7. DB-9 contract and validation"),
+      documented,
+      "PUBLIC_ORDERING §7 carries RUNBOOK's two blocks",
+    );
+    const [check, repair] = documented;
     try {
       const files = readMigrations();
       const before = files.filter((m) => m.number < 32);
@@ -671,19 +759,33 @@ try {
         (await applyMigrations(owner, before)).length,
         before.length,
       );
-      // History the previous revision could write: another tenant's order
-      // with a state outside the 032 set (no constraint yet).
+      // History the previous revision could write: another tenant's rows,
+      // each with a value outside one 032 set (no constraint yet).
       const org = randomUUID(),
         tenantId = randomUUID(),
-        employee = randomUUID(),
-        orderId = randomUUID();
+        employee = randomUUID();
+      const bad = {
+        state: randomUUID(),
+        channel: randomUUID(),
+        mode: randomUUID(),
+        round: randomUUID(),
+        job: randomUUID(),
+      };
       await root.begin(async (tx) => {
         await tx`insert into organizations(id,name) values(${org},'DB-9 fixture')`;
         await tx`insert into restaurants(id,organization_id,name) values(${tenantId},${org},'DB-9')`;
         await tx`insert into employees(tenant_id,id,name,login,secret_hash,role)
           values(${tenantId},${employee},'Caja','caja','x','cashier')`;
         await tx`insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,state,total)
-          values(${tenantId},${orderId},1,'2026-03-01',${employee},'takeaway','','','pos','legacy',0)`;
+          values(${tenantId},${bad.state},1,'2026-03-01',${employee},'takeaway','','','pos','legacy',0)`;
+        await tx`insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,state,total)
+          values(${tenantId},${bad.channel},2,'2026-03-01',${employee},'takeaway','','','web','completed',0)`;
+        await tx`insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,state,total)
+          values(${tenantId},${bad.mode},3,'2026-03-01',${employee},'eat_in','','','pos','completed',0)`;
+        await tx`insert into rounds(tenant_id,id,order_id,number,station,state)
+          values(${tenantId},${bad.round},${bad.channel},1,'kitchen','bogus')`;
+        await tx`insert into jobs(tenant_id,id,kind,dedupe_key,payload,state)
+          values(${tenantId},${bad.job},'db9','legacy',${tx.json({})},'failed')`;
       });
       const [who] =
         await owner`select rolsuper, rolbypassrls, current_setting('app.tenant_id', true) as tenant from pg_roles where rolname=current_user`;
@@ -716,11 +818,81 @@ try {
         jobs_state_valid: false,
       });
       await assert.rejects(
-        root`update orders set state='held' where id=${orderId}`,
+        root`update orders set state='held' where id=${bad.state}`,
         (e: any) => e.code === "23514",
       );
-      // Repair (docs/PUBLIC_ORDERING.md "DB-9 validation") and re-run.
-      await root`update orders set state='completed' where id=${orderId}`;
+      // The documented check, as the Neon owner role's shape with no tenant
+      // set, lists every bad row of the other tenant (PUB-B3-1).
+      const probe = postgres(asNeon, { max: 1, onnotice: () => {} });
+      try {
+        const [shape] =
+          await probe`select rolsuper, rolbypassrls, pg_has_role(current_user, ${role}, 'USAGE') as inherits
+            from pg_roles where rolname = current_user`;
+        assert.deepEqual(
+          { ...shape },
+          { rolsuper: false, rolbypassrls: true, inherits: true },
+        );
+      } finally {
+        await probe.end();
+      }
+      const found = async () =>
+        rowsOf(await runDocBlock(asNeon, check)).map((r) => ({ ...r }));
+      assert.deepEqual(await found(), [
+        { tenant_id: tenantId, id: bad.state, state: "legacy" },
+        { tenant_id: tenantId, id: bad.channel, channel: "web" },
+        { tenant_id: tenantId, id: bad.mode, mode: "eat_in" },
+        { tenant_id: tenantId, id: bad.round, state: "bogus" },
+        { tenant_id: tenantId, id: bad.job, state: "failed" },
+      ]);
+      // As the owner (gm_migrator's shape: FORCE RLS, no tenant), the guard
+      // fails the check instead of letting it pass on rows it cannot see.
+      const rlsRefused = (e: any) =>
+        e.code === "42501" && /row-level security/.test(e.message);
+      await assert.rejects(runDocBlock(asOwner, check), rlsRefused);
+      // Without the guard the owner sees nothing: the trap it closes.
+      const unguarded = check.replace("set local row_security = off;\n", "");
+      assert.notEqual(unguarded, check, "the check carries the guard");
+      assert.deepEqual(rowsOf(await runDocBlock(asOwner, unguarded)), []);
+      // The documented repair, one row at a time.
+      const fill = (
+        table: string,
+        column: string,
+        value: string,
+        id: string,
+      ) => {
+        const block = repair
+          .replace("<table>", table)
+          .replace("<column>", column)
+          .replace("<value>", value)
+          .replace("<tenant_id>", tenantId)
+          .replace("<id>", id);
+        assert.doesNotMatch(block, /<[a-z_]+>/, "every placeholder filled");
+        return block;
+      };
+      // As the owner it fails too: never a silent UPDATE 0.
+      await assert.rejects(
+        runDocBlock(asOwner, fill("orders", "state", "completed", bad.state)),
+        rlsRefused,
+      );
+      for (const [table, column, value, id] of [
+        ["orders", "state", "completed", bad.state],
+        ["orders", "channel", "pos", bad.channel],
+        ["orders", "mode", "takeaway", bad.mode],
+        ["rounds", "state", "completed", bad.round],
+        ["jobs", "state", "dead", bad.job],
+      ]) {
+        const results = await runDocBlock(
+          asNeon,
+          fill(table, column, value, id),
+        );
+        assert.equal(
+          results.find((r) => r.command === "UPDATE")?.count,
+          1,
+          `${table}.${column}: UPDATE 1`,
+        );
+        assert.equal(results.at(-1)?.command, "COMMIT");
+      }
+      assert.deepEqual(await found(), []);
       assert.deepEqual(
         await applyMigrations(owner, files, { beforeLastRecord: grants }),
         ["033_state_checks_validate.sql"],
@@ -745,6 +917,7 @@ try {
       await owner.end();
       await root.end();
       await admin.unsafe(`drop database if exists "${database}" with (force)`);
+      await admin.unsafe(`drop role if exists "${neon.name}"`);
       await admin.unsafe(`drop role if exists "${role}"`);
     }
   });
@@ -2012,7 +2185,7 @@ try {
     );
   });
 
-  await test("21. diner cancel: only a pending, unexpired hold; the trigger refuses moving expiry and a second decision", async () => {
+  await test("21. diner cancel: only a pending, unexpired hold; the trigger refuses moving expiry and a second decision; support's documented ARCO redaction, as gm_migrator, blanks one cancelled hold's name and note and refuses an accepted hold or a missing restaurant (PUB-B3-2)", async () => {
     const t = await makeTenant("cancel");
     const l = await link(t, { kind: "counter", label: "Ventanilla" });
     const b1 = await body(t, [{ productId: t.p.taco }]);
@@ -2061,6 +2234,100 @@ try {
         t.tenantId,
         (tx) =>
           tx`update public_order_holds set state='rejected',reject_reason='other',decided_by=${t.ids.manager} where id=${h.id}`,
+      ),
+      /public_order_hold_immutable/,
+    );
+
+    // PUB-B3-2: the ARCO redaction (PUBLIC_ORDERING §12), run as written as
+    // the schema owner under FORCE RLS.
+    const [arco, ...extra] = docSql(
+      "docs/PUBLIC_ORDERING.md",
+      "### Redacting a hold (ARCO)",
+    );
+    assert.ok(arco && extra.length === 0, "one documented block");
+    const [owned] =
+      await admin`select t.tableowner, r.rolsuper, r.rolbypassrls from pg_tables t
+        join pg_roles r on r.rolname = t.tableowner where t.tablename = 'public_order_holds'`;
+    assert.deepEqual(
+      { ...owned },
+      { tableowner: "gm_migrator", rolsuper: false, rolbypassrls: false },
+      "the test database is migrated as gm_migrator (CI parity)",
+    );
+    const asMigrator = (block: string) =>
+      runDocBlock(migration, block, ["set role gm_migrator"]);
+    const fillArco = async (holdId: string, block = arco) => {
+      const [k] = await asAdmin(
+        t.tenantId,
+        (tx) =>
+          tx`select business_date::text as day, number from public_order_holds where id=${holdId}`,
+      );
+      const filled = block
+        .replaceAll("<restaurant uuid>", t.tenantId)
+        .replace("<YYYY-MM-DD>", k.day)
+        .replace("<number>", String(k.number));
+      assert.doesNotMatch(filled, /<[A-Za-z -]+>/, "every placeholder filled");
+      return filled;
+    };
+    const holds = async () =>
+      Object.fromEntries(
+        (
+          await asAdmin(
+            t.tenantId,
+            (tx) =>
+              tx`select id, state, name, note, lines, decided_at from public_order_holds order by id`,
+          )
+        ).map((r: any) => [r.id, { ...r }]),
+      );
+    const named = await body(t, [{ productId: t.p.taco }], {
+      name: "Ana",
+      note: "sin cebolla",
+    });
+    await pub.submit(l.token, named);
+    assert.equal(
+      (await pub.cancel(l.token, named.statusKey)).body.state,
+      "cancelled",
+    );
+    const target = await holdOf(t, named);
+    const before = await holds();
+    assert.deepEqual(
+      [before[target.id].name, before[target.id].note],
+      ["Ana", "sin cebolla"],
+    );
+    const refused = /expected exactly one hold that is not accepted, found 0/;
+    // An accepted hold is the restaurant's sales record: refused.
+    await assert.rejects(
+      asMigrator(await fillArco((await holdOf(t, b2)).id)),
+      refused,
+    );
+    // Without the restaurant, FORCE RLS hides every hold: refused.
+    const noTenant = arco.replace(
+      /^select set_config\('app\.tenant_id'.*\n/m,
+      "",
+    );
+    assert.notEqual(noTenant, arco, "the block sets the restaurant");
+    await assert.rejects(
+      asMigrator(await fillArco(target.id, noTenant)),
+      refused,
+    );
+    assert.deepEqual(await holds(), before, "a refused block changes nothing");
+    const done = await asMigrator(await fillArco(target.id));
+    assert.equal(done.at(-1)?.command, "COMMIT");
+    assert.deepEqual(await holds(), {
+      ...before,
+      [target.id]: { ...before[target.id], name: "", note: "" },
+    });
+    const [trigger] =
+      await admin`select tgenabled from pg_trigger where tgname = 'public_order_holds_transition'`;
+    assert.equal(
+      trigger.tgenabled,
+      "O",
+      "the transition trigger is enabled again",
+    );
+    await assert.rejects(
+      asAdmin(
+        t.tenantId,
+        (tx) =>
+          tx`update public_order_holds set name='x' where id=${target.id}`,
       ),
       /public_order_hold_immutable/,
     );

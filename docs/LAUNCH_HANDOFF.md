@@ -578,6 +578,7 @@ pilot devices have not passed the PILOT_SOP test print and outage drill.
   [BACKUP_RESTORE.md](BACKUP_RESTORE.md)).
 - Physical printers, tablets, silent printing and a real outage: not checked (1.16).
 - Public QR/kiosk ordering (032/033): built on `track/public` and verified locally
-  only. Its first production deploy runs the DB-9 validation queries first and goes
+  only. Its first production deploy runs the DB-9 validation check first, as the
+  Neon owner role (never `gm_migrator`, which FORCE RLS blinds), and goes
   before 07:00 Mexico City ([RUNBOOK.md](RUNBOOK.md), "DB-9 validation" and "Deploy
   window"); QR scanners and printed cards are field checks (1.16).

@@ -245,7 +245,10 @@ reaching the kitchen), FOH-13 (tables not bound) and the DB-9 remainder:
   table blocks its code; a pending hold blocks archiving and counts as
   occupancy), browser "inbox details";
 - DB-9: DB 1+3, 1b and 2 (032/033 as a non-superuser owner, validation of
-  another tenant's row, every allowed value writable and nothing else);
+  another tenant's rows, RUNBOOK's check and repair run as written: they find
+  and fix a bad row in each column as a Neon-owner-like BYPASSRLS role and
+  fail as the owner instead of passing; every allowed value writable and
+  nothing else);
 - account integration (B3): DB 28 (account's gate before any limiter), 30
   (account's privacy URL on the diner menu), 31 (the export drops the three
   hash columns), `tests/account-http.ts` checks 2-3, `account.spec` QR legs.

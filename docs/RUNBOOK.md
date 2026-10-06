@@ -515,26 +515,56 @@ kitchen, stock or a fiscal record on its own.
 `orders.mode`, `rounds.state` and `jobs.state` (enforced for every new write
 at once); 033 (`-- gm:no-transaction`, one `VALIDATE` per part, `SHARE UPDATE
 EXCLUSIVE`) validates existing rows. **Before the first deploy that carries
-them,** run read-only as `gm_migrator` on staging and on production; each
-query must return 0:
+them,** run the check below on staging and on production. It lists every row
+033 would refuse, by table, `tenant_id` and `id`, and it must return no rows.
+
+**Run it as the Neon owner role** (`neondb_owner`, which bypasses RLS through
+`neon_superuser`; [PROVISIONING.md](PROVISIONING.md)), connected as that role
+and never after `SET ROLE gm_migrator`. Do not run it as `gm_migrator`:
+`orders`, `rounds` and `jobs` use FORCE ROW LEVEL SECURITY, and `gm_migrator`
+is neither a superuser nor BYPASSRLS. With no restaurant set it sees no rows
+at all, so the check would pass whatever the data. The block's
+`set local row_security = off` turns that mistake into an error (`query would
+be affected by row-level security policy for table "orders"`) instead of an
+empty result. If you get that error, reconnect as the Neon owner role.
 
 ```sql
-select count(*) from orders where state not in ('active','ready','completed','cancelled','recovery_pending','recovery_reviewed');
-select count(*) from orders where channel not in ('pos','qr','kiosk','offline');
-select count(*) from orders where mode not in ('takeaway','dine_in','delivery');
-select count(*) from rounds where state not in ('active','ready','completed','offline_review');
-select count(*) from jobs where state not in ('queued','available','running','done','blocked','dead');
+begin read only;
+set local row_security = off;
+select tenant_id, id, state from orders where state not in ('active','ready','completed','cancelled','recovery_pending','recovery_reviewed');
+select tenant_id, id, channel from orders where channel not in ('pos','qr','kiosk','offline');
+select tenant_id, id, mode from orders where mode not in ('takeaway','dine_in','delivery');
+select tenant_id, id, state from rounds where state not in ('active','ready','completed','offline_review');
+select tenant_id, id, state from jobs where state not in ('queued','available','running','done','blocked','dead');
+rollback;
 ```
 
-If 033 fails anyway (a row outside a set): nothing is lost, because 032
-committed and its constraints already block new bad writes, and the new
-revision never passes readiness (033's registry row is written only after
-every part succeeds). Find the row with the queries above, repair it to the
-value the current code would write (for example a legacy `state`) with a note
-in the incident log, and re-run the deploy: `VALIDATE` of an already valid
-constraint is a no-op. A new value in any of these columns needs a migration
-that drops and re-adds its constraint (`-- gm:contract-approved`), tests that
-write it, and a note to public ordering (LD-P13).
+If 033 fails anyway (a row outside a set), nothing is lost. 032 committed, so
+its constraints already block new bad writes, and the new revision never
+passes readiness because 033's registry row is written only after every part
+succeeds. To recover:
+
+1. Run the check above, as the Neon owner role, to find each row.
+2. Repair each row as the same role, with the block below. Set it to the
+   value the current code would write (for example, a legacy `state`), and
+   record it in the incident log. `UPDATE 0` means the `tenant_id` or `id` is
+   wrong and nothing changed.
+3. Re-run the deploy. `VALIDATE` of an already valid constraint is a no-op.
+
+```sql
+begin;
+set local row_security = off;
+update <table> set <column> = '<value>' where tenant_id = '<tenant_id>' and id = '<id>';
+commit;
+```
+
+`tests/public-ordering-db.ts` test 1+3 runs both blocks exactly as written
+here. As a BYPASSRLS non-superuser member of the owner (the Neon owner role's
+shape), they list and repair another tenant's bad row in every column. As the
+schema owner (`gm_migrator`'s shape), they fail instead of passing. A new value in any of these
+columns needs a migration that drops and re-adds its constraint
+(`-- gm:contract-approved`), tests that write it, and a note to public
+ordering (LD-P13).
 
 ## Open follow-ups
 

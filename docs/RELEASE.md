@@ -66,11 +66,12 @@ Before production accepts its first restaurant (see also
    startup log has no `legal_documents_unpublished`.
 4. `LEGAL_UNPUBLISHED_SIGNUP` is unset (startup logs
    `legal_unpublished_signup_ignored` otherwise).
-5. Public ordering (032/033): the "DB-9 validation" queries
-   ([RUNBOOK.md](RUNBOOK.md)) return 0 on production before the first deploy
-   that carries 032 and 033, that deploy runs before 07:00 Mexico City once
-   production has traffic (RUNBOOK "Deploy window"), and the LD-5 delta review
-   of B1-B4 is done. `PUBLIC_ORDERING_ENABLED` is unset or `true` on
+5. Public ordering (032/033): the "DB-9 validation" check
+   ([RUNBOOK.md](RUNBOOK.md)), run as the Neon owner role and never as
+   `gm_migrator` (FORCE RLS hides every row from it), returns no rows on
+   production before the first deploy that carries 032 and 033. That deploy
+   runs before 07:00 Mexico City once production has traffic (RUNBOOK "Deploy
+   window"), and the LD-5 delta review of B1-B4 is done. `PUBLIC_ORDERING_ENABLED` is unset or `true` on
    production (`/api/account-config` reports `publicOrdering.enabled: true`;
    since public ordering's flag flip, B4, unset means on everywhere), and a
    staging browser run passed on the same revision. To turn QR and kiosk
