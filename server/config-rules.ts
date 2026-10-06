@@ -24,6 +24,7 @@
 import { ConfigError } from "./config-error.js";
 import { parseSigningKeys } from "./keyring.js";
 import { isProductionEnv } from "./production.js";
+import { accountWebConfig, accountWorkerConfig } from "./account-config.js";
 
 export { ConfigError };
 
@@ -185,7 +186,8 @@ export function loadConfig(
   // across tenants (gm_billing_worker policies), and web uses it only for
   // owner billing commands while billing is enabled. Production web never
   // holds it otherwise; the billing_requests inbox that removes it from web
-  // altogether is the account area's follow-up (RUNBOOK.md, Open follow-ups).
+  // altogether belongs to the post-launch billing area that builds the live
+  // Stripe adapter (LD-15 account Q7; RUNBOOK.md, Open follow-ups).
   if (
     appEnv === "production" &&
     kind === "web" &&
@@ -261,6 +263,7 @@ export function loadConfig(
     if (billingEnabled && !env.STRIPE_WEBHOOK_SECRET)
       throw new ConfigError("missing_stripe_webhook_secret");
     // >>> area config checks: web (one pure call per area: fn(env, appEnv), throws ConfigError)
+    accountWebConfig(env, appEnv);
     // <<< area config checks: web
     return Object.freeze({
       ...common,
@@ -290,6 +293,7 @@ export function loadConfig(
       if (!env[name]) throw new ConfigError(`missing_${name.toLowerCase()}`);
   if (billingEnabled && !appUrl) throw new ConfigError("missing_app_url");
   // >>> area config checks: worker (one pure call per area: fn(env, appEnv), throws ConfigError)
+  accountWorkerConfig(env, appEnv);
   // <<< area config checks: worker
   // PROCESS_KIND=worker (Railway, containers) means PORT belongs to this
   // process. A local `npm run worker` shares .env with the web server, so it
