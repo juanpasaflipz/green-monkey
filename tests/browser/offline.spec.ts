@@ -1737,8 +1737,29 @@ test("Service worker update keeps the old revision intact; the prompt applies on
     const assets = current![1].filter((path) => path.startsWith("/assets/"));
     const html = await (await page.request.get("/index.html")).text();
     const source = readFileSync("public/sw.js", "utf8");
-    const serve = async (buildId: string, extraAssets: string[]) => {
-      await context.unrouteAll({ behavior: "ignoreErrors" });
+    // The routes stay installed for the whole test and serve() only swaps the
+    // revision they answer with. Unrouting turns Playwright's request
+    // interception off, and a worker request paused at that moment is never
+    // continued: that install hangs and holds the registration's update queue,
+    // so the next update never starts ("no-update" on the second update).
+    let build = "";
+    let held: Promise<void> = Promise.resolve();
+    await context.route("**/index.html", (route) =>
+      build
+        ? route.fulfill({
+            contentType: "text/html",
+            body: html.replace(
+              /<meta name="gm-build" content="[^"]*">/,
+              `<meta name="gm-build" content="${build}">`,
+            ),
+          })
+        : route.fallback(),
+    );
+    await context.route("**/assets/missing-next.js", async (route) => {
+      await held;
+      await route.fulfill({ status: 404, body: "missing" });
+    });
+    const serve = (buildId: string, extraAssets: string[]) => {
       writeFileSync(
         "dist/sw.js",
         transformServiceWorker(source, {
@@ -1746,21 +1767,10 @@ test("Service worker update keeps the old revision intact; the prompt applies on
           assets: [...assets, ...extraAssets],
         }),
       );
-      await context.route("**/index.html", (route) =>
-        route.fulfill({
-          contentType: "text/html",
-          body: html.replace(
-            /<meta name="gm-build" content="[^"]*">/,
-            `<meta name="gm-build" content="${buildId}">`,
-          ),
-        }),
-      );
-      await context.route("**/assets/missing-next.js", (route) =>
-        route.fulfill({ status: 404, body: "missing" }),
-      );
+      build = buildId;
     };
     // A new revision whose install fails leaves the old revision untouched.
-    await serve(`browser-failed-${Date.now()}`, ["/assets/missing-next.js"]);
+    serve(`browser-failed-${Date.now()}`, ["/assets/missing-next.js"]);
     expect(await updateWorker(page)).toBe("redundant");
     expect(await shellCaches(page)).toEqual(before);
     await context.setOffline(true);
@@ -1771,9 +1781,29 @@ test("Service worker update keeps the old revision intact; the prompt applies on
     ).toBeVisible();
     await context.setOffline(false);
     await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    // The browser can start an update from the failed script on its own (a
+    // soft update after the reload). The next revision is deployed while such
+    // an install is still running: it fails and the next update installs.
+    let release!: () => void;
+    held = new Promise<void>((resolve) => (release = resolve));
+    await page.evaluate(async () => {
+      const registration = await navigator.serviceWorker.getRegistration();
+      void registration?.update().catch(() => {});
+    });
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            async () =>
+              !!(await navigator.serviceWorker.getRegistration())?.installing,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
     // A complete revision waits; the prompt stays disabled while a record is unsynced.
     const next = `browser-next-${Date.now()}`;
-    await serve(next, []);
+    serve(next, []);
+    release();
     const s = await session(page);
     const row = queuedSale(s, {
       status: "conflict",
