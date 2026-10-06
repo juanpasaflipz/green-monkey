@@ -216,7 +216,7 @@ time for reprints.
 A provisional number is never a fiscal folio (LD-12). The local receipt prints the
 issuer data from the fiscal context cached on the device (Dexie
 `{tenantId}:fiscal-context`, refreshed at every sign-in and when the window
-regains focus after a minute) and "Folio fiscal pendiente: se asigna al
+regains focus after a minute) and "Folio pendiente: se asigna al
 sincronizar." (a partial local payment says the folio comes when the check is
 settled). The server assigns the consecutive folio when the sale syncs (or when a
 manager reconciles it), with the sale's business date; order history and reprints

@@ -253,12 +253,14 @@ adds its block with `setFiscalFooterExtra`.
   accent-insensitively), RFC, régimen, address if set, "Lugar de expedición: C.P. …",
   **Folio**, "Fecha de expedición" (restaurant time zone). Without a ticket: the issuer from
   the cached fiscal context and "Comprobante de pago parcial…" (partial payment, also on a
-  partial local payment with offline table service), "Sin folio fiscal…" (paid without a
-  ticket) or "Folio fiscal pendiente: se asigna al sincronizar." (offline local receipt that
-  settles the sale). An incomplete profile prints "Ticket sin datos fiscales del emisor."
-  (D5: selling is never blocked). A synced offline sale prints "Venta sin conexión B-07 ·
-  {fecha}" (its provisional number and sale time, the two things on the customer's local
-  receipt), and a ticket whose order has no lines left (a financial-only recovery) prints the
+  partial local payment with offline table service), "Ticket sin folio." (paid without a
+  ticket) or "Folio pendiente: se asigna al sincronizar." (offline local receipt that
+  settles the sale). Customer paper never says "folio fiscal" (in Mexican usage that is the
+  CFDI's UUID) and carries no staff instruction; managers issue missing tickets from
+  Configuración → "Emitir tickets faltantes" (FISCAL-UI-7, acceptance Q17). An incomplete
+  profile prints "Ticket sin datos fiscales del emisor." (D5: selling is never blocked). A
+  synced offline sale prints "Venta sin conexión B-07 · {fecha}" (its provisional number and
+  sale time, the two things on the customer's local receipt), and a ticket whose order has no lines left (a financial-only recovery) prints the
   ticket's frozen lines ("1 × Venta sin conexión conciliada"), so the comprobante always
   states quantity and description; the recovery's order note prints in Spanish.
 - **Footer:** "Base IVA 16%" / "IVA 16%" (and 8%), "Venta a tasa 0%", "Venta exenta",
@@ -356,7 +358,7 @@ adds its block with `setFiscalFooterExtra`.
 | --- | --- |
 | service (024) | `refreshCheckState` issues on open → paid and before a settled close; `closeCheck` before releasing; `applyRound` refuses ticketed checks; `getOrders` has one batched `fiscalRows` member (`Order.fiscal`: ticket, provisional summary, refunds); Selling handles `fiscal_ticket_issued` like `check_closed`. |
 | menu (025) | `productInput.fiscal`, `assertProductFiscalAllowed`, `quote(lines, catalog, canOpen, fiscalContext)`, the editor's Impuestos section; `publicCatalog` strips `fiscal`. |
-| offline (026) | `verifyLines` prices with the server context; `financialRecovery` issues a `recovery` ticket; the round applier maps `fiscal_ticket_issued` to `offline_order_closed`; local receipts print the cached issuer and "Folio fiscal pendiente". |
+| offline (026) | `verifyLines` prices with the server context; `financialRecovery` issues a `recovery` ticket; the round applier maps `fiscal_ticket_issued` to `offline_order_closed`; local receipts print the cached issuer and "Folio pendiente". |
 | discounts (028) | `assertNoFiscalTicket` before discount writes; `recordRefundTax(tx, s, refundId, scope?)` with `RefundTaxScope = {lineId, units, gross}`; `assertRefundAllowed(tx, orderId)` (`refund_balance_due`, now declared by fiscal) for amount **and** item refunds, inside the order lock; replaces `{}` with `discountsByLine` in `prepareTicket` (the computation `issueDueTicket` and the repair share) and `recordRefundTax`, adds the refund batch date, and becomes the single caller of `recordRefundTax`. |
 | reports (029) | `fiscalSummary(tx, s, {from, to})` (≤ 31 days, 30 s statement timeout; `tickets.series` lists contiguous runs, several per series when later folios belong to other days), `missingTicketCount(tx, range?)` (MXN restaurants only), `formatFolio`, `fiscal_epoch()`. |
 | cfdi (030) | `server/fiscal-read.ts` (a leaf: db and shared imports only, re-exported by `server/fiscal.ts`): `ticketForCfdi`, ticket and refund readers; `setFiscalFooterExtra`; `fiscal_immutable()`; the `recordRefundTax` hook comment for `enqueueCfdiRefund`. Worker grants on the fiscal tables are cfdi's. |
