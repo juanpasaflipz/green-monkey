@@ -590,18 +590,20 @@ transactional files is an ops proposal, like PUB-R5). Once production has
 traffic, the deploy that first carries 032 runs before 07:00 Mexico City (the
 P-27 rule).
 
-**Runner fix shipped with 033.** `applyMigrations` called `reserved.begin()`
-for a no-transaction file that was the newest pending one. postgres.js
-reserved connections have no `begin()`, so every deploy with 033 (and the
-grants hook) would have failed. The hook and the registry row now share one
-explicit `begin`/`commit` on the reserved connection
-(`server/ops/schema.ts`). DB test 1 runs the real runner with the grants hook
-on a scratch database. `server/ops/schema.ts` belongs to ops and no spec
-sanctions this edit (PUB-R5). It needs the lead's and ops' sign-off. The
-proposal is to land it on `integration/v1` as its own small ops commit, with
-the same leg in `tests/migrate-db.ts`, so that any Wave 2 track whose newest
-migration is no-transaction gets it too. `integration/v1` had not taken it
-when B1 merged fiscal 027 (`70860d6`), so it still ships on `track/public`.
+**Runner fix (merged history, PUB-R5).** `applyMigrations` called
+`reserved.begin()` for a no-transaction file that was the newest pending one.
+postgres.js 3.4.8 reserved connections have no `begin()`, so every deploy
+with 033 (and the grants hook) would have failed. The hook and the registry
+row now share one explicit `begin`/`commit` on the reserved connection
+(`server/ops/schema.ts`): a failing hook rolls back, records nothing and the
+file is re-run (its statements are idempotent). The edit is in ops' file,
+landed with this track, and the lead signed it off (LD-23, LD-41); 033 is the
+only no-transaction migration so far. Two tests cover it:
+`tests/migrate-db.ts` runs a synthetic no-transaction newest file with a
+failing manifest (nothing recorded or granted, the earlier statements kept)
+and then a good one (granted and recorded), and DB test 1+3 applies the real
+032 and 033 (only those, so later migrations do not move the hook) with the
+grants hook on a scratch database.
 
 ## 8. Fiscal, CFDI and the flag
 

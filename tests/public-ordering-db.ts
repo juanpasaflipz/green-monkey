@@ -755,7 +755,11 @@ try {
     );
     const [check, repair] = documented;
     try {
-      const files = readMigrations();
+      // 032 and 033 only: the test proves 033's no-transaction path through
+      // the grants hook whatever lands after it (PUBLIC-CONCURRENCY-2;
+      // tests/migrate-db.ts covers the hook on synthetic files).
+      const files = readMigrations().filter((m) => m.number <= 33);
+      assert.equal(files.at(-1)?.name, "033_state_checks_validate.sql");
       const before = files.filter((m) => m.number < 32);
       const grants = (tx: Tx) =>
         applyGrantsTx(tx, { role: "gm_app", database });
