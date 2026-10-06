@@ -138,7 +138,7 @@ export function TodayDashboard({
         ]}
       />
       {data.alerts.length > 0 && (
-        <ul className="today-alerts">
+        <div className="today-alerts">
           {data.alerts.map((alert, i) => (
             <AlertLine
               key={alert.code + i}
@@ -151,7 +151,7 @@ export function TodayDashboard({
               }}
             />
           ))}
-        </ul>
+        </div>
       )}
       <div className="report-cards">
         <section className="panel report-card" aria-labelledby="today-checks">
@@ -283,7 +283,7 @@ function AlertLine({
   if (text === null) return null;
   const urgent = alert.code === "checks_mismatch";
   return (
-    <li
+    <div
       className={"today-alert" + (urgent ? " urgent" : "")}
       role={urgent ? "alert" : "status"}
     >
@@ -300,6 +300,6 @@ function AlertLine({
           {t.reportsTabCortes}
         </Button>
       )}
-    </li>
+    </div>
   );
 }

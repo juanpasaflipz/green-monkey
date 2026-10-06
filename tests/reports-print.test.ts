@@ -975,3 +975,63 @@ describe("report transport (LD-15 reports Q1)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Findings of the phase B UI smoke (axe, rendering)
+// ---------------------------------------------------------------------------------------------
+
+describe("report tables and rows (UI smoke findings)", () => {
+  it("a table's totals row has one row header and data cells, never an empty column header (axe empty-table-header)", async () => {
+    const { DataTable } = await import("../src/features/reports/DataTable");
+    const html = renderToStaticMarkup(
+      createElement(DataTable<{ id: string; n: number }>, {
+        caption: "Prueba",
+        locale: "es",
+        rows: [{ id: "a", n: 1 }],
+        rowKey: (r: { id: string }) => r.id,
+        columns: [
+          { key: "id", header: "Id", render: (r: { id: string }) => r.id },
+          { key: "blank", header: "Vacía", render: () => "" },
+          {
+            key: "n",
+            header: "N",
+            numeric: true,
+            render: (r: { n: number }) => r.n,
+          },
+        ],
+        totals: ["Total", "", "1"],
+      }),
+    );
+    const foot = html.match(/<tfoot>([\s\S]*)<\/tfoot>/)![1];
+    expect(foot.match(/<th[^>]*>/g)).toEqual(['<th scope="row">']);
+    expect(foot.match(/<td[^>]*>/g)).toHaveLength(2);
+  });
+
+  it('a deduction of zero is 0, never −0: the summary CSV writes 0.00 and the rows never print "-$0.00"', () => {
+    const empty = composeSalesSummary({
+      range: { from: "2026-10-05", to: "2026-10-05" },
+      currency: "MXN",
+      generatedAt: "2026-10-05T20:00:00.000Z",
+      currentBusinessDate: "2026-10-05",
+      sales: [],
+      lines: [],
+      collections: [],
+      refunds: [],
+      restocks: [],
+      paidOuts: [],
+      drawers: [],
+      tax: null,
+    });
+    const rows = summaryCsvRows(empty, "es");
+    for (const r of rows)
+      if (r.amount !== null)
+        expect(Object.is(r.amount, -0), r.concept).toBe(false);
+    const csv = toCsv(summaryColumns, rows, {
+      locale: "es",
+      currency: "MXN",
+      timezone: "America/Mexico_City",
+    });
+    expect(csv).not.toContain("-0.00");
+    expect(csv).toContain("Ventas,Descuentos y cortesías,0.00,");
+  });
+});

@@ -158,6 +158,7 @@ export function ExceptionsTab({
     {
       key: "detail",
       header: t.reportsColDetail,
+      wrap: true,
       render: (r: ExceptionRow) =>
         [detailText(r), reasonText(r)].filter(Boolean).join(" · "),
     },

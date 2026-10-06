@@ -171,6 +171,7 @@ export function CortesTab({
           {
             key: "actions",
             header: t.reportsColActions,
+            sticky: true,
             render: (d) => (
               <div className="row wrap report-actions">
                 {d.status === "open" && d.expected !== null && (

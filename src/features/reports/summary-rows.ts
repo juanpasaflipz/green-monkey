@@ -27,6 +27,8 @@ export type SummarySection = {
 };
 
 const RATE: Record<string, string> = { iva16: "16%", iva8: "8%" };
+/** A deduction as a negative amount; zero stays 0, never −0 (which prints "-$0.00"). */
+const neg = (n: number) => (n === 0 ? 0 : -n);
 
 /** Every Resumen row of a summary, in screen order. */
 export function summarySections(
@@ -44,15 +46,17 @@ export function summarySections(
   ): SummaryLine => ({ id, label, amount, quantity: null, ...extra });
   const sales: SummaryLine[] = [
     line("grossSales", t.reportsGrossSales, s.grossSales),
-    line("discounts", t.reportsDiscounts, -s.discounts),
-    line("courtesies", t.reportsCourtesies, -s.courtesies, { indent: true }),
+    line("discounts", t.reportsDiscounts, neg(s.discounts)),
+    line("courtesies", t.reportsCourtesies, neg(s.courtesies), {
+      indent: true,
+    }),
     line("salesTotal", t.reportsSalesTotal, s.salesTotal, { strong: true }),
     line("orders", t.reportsOrders, null, {
       quantity: s.orders,
       display: String(s.orders),
     }),
     line("averageTicket", t.reportsAverageTicket, s.averageTicket),
-    line("refunds", t.reportsRefunds, -summary.refunds.total, {
+    line("refunds", t.reportsRefunds, neg(summary.refunds.total), {
       display:
         (summary.refunds.total ? "−" : "") +
         m(summary.refunds.total) +
@@ -138,9 +142,9 @@ export function summarySections(
       line(
         "taxRefundedBase",
         t.reportsTaxRefundedBase,
-        -(x.totals.refundGross - x.totals.refundTax),
+        neg(x.totals.refundGross - x.totals.refundTax),
       ),
-      line("taxRefunded", t.reportsTaxRefunded, -x.totals.refundTax),
+      line("taxRefunded", t.reportsTaxRefunded, neg(x.totals.refundTax)),
       line("taxNet", t.reportsTaxNet, x.totals.netTax, { strong: true }),
       line("netSalesExTax", t.reportsNetSalesExTax, x.totals.base),
       line("salesAfterRefunds", t.reportsSalesAfterRefunds, x.totals.netGross),
@@ -197,7 +201,11 @@ export function summarySections(
       }),
       line(`${id}.amount`, `${name} · ${t.reportsColAmount}`, row.amount),
       line(`${id}.tips`, `${name} · ${t.reportsColTips}`, row.tips),
-      line(`${id}.refunds`, `${name} · ${t.reportsColRefunds}`, -row.refunds),
+      line(
+        `${id}.refunds`,
+        `${name} · ${t.reportsColRefunds}`,
+        neg(row.refunds),
+      ),
       line(`${id}.net`, `${name} · ${t.reportsColNet}`, row.net, {
         strong: true,
       }),
@@ -205,7 +213,7 @@ export function summarySections(
   });
   methods.push(
     line("collected", t.reportsCollected, c.collected, { strong: true }),
-    line("paidOuts", t.reportsPaidOuts, -c.paidOuts, {
+    line("paidOuts", t.reportsPaidOuts, neg(c.paidOuts), {
       quantity: c.paidOutCount,
     }),
   );

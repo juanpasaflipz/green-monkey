@@ -12,7 +12,19 @@ export type Column<T> = {
   render: (row: T) => ReactNode;
   /** Present on sortable columns. */
   sortValue?: (row: T) => number | string;
+  /** Long text (details, reasons) may wrap; other cells stay on one line. */
+  wrap?: boolean;
+  /** Pinned to the right edge while the table scrolls (row actions). */
+  sticky?: boolean;
 };
+const cellClass = (c: {
+  numeric?: boolean;
+  wrap?: boolean;
+  sticky?: boolean;
+}) =>
+  [c.numeric ? "num" : "", c.wrap ? "wrap" : "", c.sticky ? "sticky-end" : ""]
+    .filter(Boolean)
+    .join(" ") || undefined;
 export type SortState = { key: string; dir: "asc" | "desc" } | null;
 
 /**
@@ -69,7 +81,7 @@ export function DataTable<T>({
                 <th
                   key={c.key}
                   scope="col"
-                  className={c.numeric ? "num" : undefined}
+                  className={cellClass(c)}
                   aria-sort={
                     c.sortValue
                       ? active
@@ -119,7 +131,7 @@ export function DataTable<T>({
             sorted.map((row) => (
               <tr key={rowKey(row)}>
                 {columns.map((c) => (
-                  <td key={c.key} className={c.numeric ? "num" : undefined}>
+                  <td key={c.key} className={cellClass(c)}>
                     {c.render(row)}
                   </td>
                 ))}
@@ -130,15 +142,17 @@ export function DataTable<T>({
         {totals && (
           <tfoot>
             <tr>
-              {totals.map((cell, i) => (
-                <th
-                  key={i}
-                  scope={i === 0 ? "row" : undefined}
-                  className={columns[i]?.numeric ? "num" : undefined}
-                >
-                  {cell}
-                </th>
-              ))}
+              {totals.map((cell, i) =>
+                i === 0 ? (
+                  <th key={i} scope="row">
+                    {cell}
+                  </th>
+                ) : (
+                  <td key={i} className={cellClass(columns[i] ?? {})}>
+                    {cell}
+                  </td>
+                ),
+              )}
             </tr>
           </tfoot>
         )}

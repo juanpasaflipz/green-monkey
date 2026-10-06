@@ -191,7 +191,7 @@ export function AuditTab({
                 <td>{operationLabel(r.operation, locale)}</td>
                 <td>{r.actorName ?? ""}</td>
                 <td>{auditReference(r)}</td>
-                <td>
+                <td className="wrap">
                   {[
                     r.summary.amount !== null
                       ? fill(t.reportsAuditAmount, {

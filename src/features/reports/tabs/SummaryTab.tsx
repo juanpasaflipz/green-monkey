@@ -256,7 +256,8 @@ function SummaryView({
             ]}
           />
           <p className="report-line">
-            {t.reportsPaidOuts} −{m(c.paidOuts)} ({c.paidOutCount})
+            {t.reportsPaidOuts} {c.paidOuts ? "−" + m(c.paidOuts) : m(0)} (
+            {c.paidOutCount})
           </p>
           <p className="muted tiny">{t.reportsCollectionsHint}</p>
           {c.late.count > 0 && (
