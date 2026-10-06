@@ -5,6 +5,15 @@
  * Registered purposes (platform spec C-6; a new purpose is a new string, never reused):
  * "cfdi-portal" (TTL CFDI_INVOICE_LINK_EXPIRY_HOURS × 3600) and "cfdi-portal-file" (900 s).
  * Web only: the worker never reaches this module (tests/import-graph.test.ts).
+ *
+ * SIGNED, NOT ENCRYPTED (PLATFORM-KEYS-2). "Seal" here means tamper-evident and
+ * purpose-bound, not confidential: the payload is base64url(JSON) in the clear, and anyone
+ * holding the token (a printed QR code, a URL in browser history, a shared link) can read
+ * it. Put only opaque ids in a payload (tenant, document or order uuids): never secrets,
+ * personal data (RFC, name, email, phone), amounts or provider ids (Facturapi document
+ * ids). This differs from cfdi's vault sealSecret / sealCsdUpload, which encrypt (JWE). If a
+ * payload ever needs confidentiality, add a separate AEAD helper (AES-256-GCM, random
+ * 96-bit nonce, kid and purpose as associated data); never overload seal().
  */
 import { signToken, verifyToken } from "./keyring.js";
 import { DomainError } from "../shared/domain.js";
@@ -12,7 +21,10 @@ import { DomainError } from "../shared/domain.js";
 const PURPOSE = /^[a-z][a-z0-9-]{1,40}$/;
 export const MAX_SEAL_SECONDS = 31 * 86400;
 
-/** A token only unseal(purpose, …) accepts, valid for ttlSeconds (1 s to 31 days). */
+/**
+ * A token only unseal(purpose, …) accepts, valid for ttlSeconds (1 s to 31 days). The
+ * payload is readable by whoever holds the token: opaque ids only (see the header).
+ */
 export function seal(
   purpose: string,
   payload: unknown,

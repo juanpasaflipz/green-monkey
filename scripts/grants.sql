@@ -60,6 +60,19 @@ END $$;
 GRANT USAGE ON SCHEMA public TO gm_jobs_worker;
 GRANT SELECT,INSERT ON jobs TO gm_jobs_worker;
 GRANT UPDATE(state,attempts,next_at,lease_until,error_code) ON jobs TO gm_jobs_worker;
+-- 027 fiscal: tickets, ticket taxes and refund adjustments are INSERT-only (CFF art. 30,
+-- immutable by trigger); the profile and the folio counter take column UPDATEs only. No DELETE.
+GRANT SELECT,INSERT ON restaurant_fiscal_profiles,fiscal_folio_counters,fiscal_tickets,fiscal_ticket_taxes,fiscal_adjustments TO gm_app;
+GRANT UPDATE(rfc,legal_name,regime,postal_code,address,ticket_series,tax_region,default_tax_category,border_confirmed_at,border_confirmed_by,multiple_branches,version,updated_by,updated_at) ON restaurant_fiscal_profiles TO gm_app;
+GRANT UPDATE(last_value) ON fiscal_folio_counters TO gm_app;
+-- 028 discounts: money records are INSERT-only (no DELETE anywhere); discounts allow
+-- only the reversal columns, refund lines only the kitchen acknowledgement, and the
+-- reversal's SELECT ... FOR UPDATE needs that column-level UPDATE privilege.
+GRANT SELECT,INSERT ON money_controls,discounts,discount_allocations,refund_batches,refund_lines,refund_units,cash_count_reviews TO gm_app;
+GRANT UPDATE(cashier_max_percent_bps,cashier_max_amount,server_max_percent_bps,server_max_amount,blind_close,expected_roles,close_roles,version,updated_by,updated_at) ON money_controls TO gm_app;
+GRANT UPDATE(reversed_at,reversed_by,reversal_approver_id,reversal_note,reversed_amount) ON discounts TO gm_app;
+GRANT UPDATE(kitchen_acknowledged_at,kitchen_acknowledged_by) ON refund_lines TO gm_app;
+GRANT SELECT ON kitchen_removals TO gm_app;
 -- 029 reports: business-day settings history (written by the restaurants trigger as
 -- the runtime role) and corte print records; INSERT-only, no UPDATE or DELETE.
 GRANT SELECT,INSERT ON business_day_settings,report_prints TO gm_app;

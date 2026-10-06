@@ -1413,9 +1413,14 @@ test("Manager archives an unverifiable local record and drawer close unblocks", 
   await page.getByRole("button", { name: "Cerrar caja", exact: true }).click();
   await page.getByLabel("Efectivo contado").fill("0");
   await page.getByLabel("Explicación").fill("Cierre con registro pendiente");
+  // discounts (028): count → confirm; the pending-sales guard runs on save.
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "Guardar", exact: true })
+    .getByRole("button", { name: "Continuar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Guardar conteo y cerrar", exact: true })
     .click();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
     "Sincroniza las ventas pendientes",
@@ -1458,7 +1463,15 @@ test("Manager archives an unverifiable local record and drawer close unblocks", 
   await page.getByLabel("Explicación").fill("Cierre después de archivar");
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "Guardar", exact: true })
+    .getByRole("button", { name: "Continuar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Guardar conteo y cerrar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Corte registrado" })
+    .getByRole("button", { name: "Listo", exact: true })
     .click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
@@ -1641,24 +1654,35 @@ async function updateWorker(page: Page) {
         resolve(value);
       };
       const timer = setTimeout(() => finish("no-update"), 30_000);
+      const follow = (worker: ServiceWorker) => {
+        clearTimeout(retry);
+        const settled = () => {
+          if (!["installed", "redundant"].includes(worker.state)) return false;
+          finish(worker.state);
+          return true;
+        };
+        if (!settled()) worker.addEventListener("statechange", settled);
+      };
       registration.addEventListener(
         "updatefound",
-        () => {
-          clearTimeout(retry);
-          const worker = registration.installing!;
-          worker.addEventListener("statechange", () => {
-            if (["installed", "redundant"].includes(worker.state))
-              finish(worker.state);
-          });
-        },
+        () => follow(registration.installing!),
         { once: true },
       );
       const check = () =>
-        registration.update().catch(() => finish("update-failed"));
-      void check();
+        registration
+          .update()
+          .then(() => {
+            // The app's own check (checkForUpdate after a build mismatch
+            // from the ping) may have found this revision first: it is then
+            // already installing or waiting and no updatefound reaches us.
+            if (registration.installing) follow(registration.installing);
+            else if (registration.waiting) finish("installed");
+          })
+          .catch(() => finish("update-failed"));
       // On a slow runner one check can come back empty although the script
-      // changed (CI run 37397108279); a second check sees the new revision.
+      // changed (CI runs 37397108279, 37442666133); a second check retries.
       const retry = setTimeout(() => void check(), 10_000);
+      void check();
     });
   });
 }

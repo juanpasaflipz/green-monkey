@@ -80,16 +80,26 @@ type LoginFacts = {
   memberships: string[];
   owned: number;
 };
-/** Attributes, privileged memberships (direct or inherited) and owned tables of the connected login. */
+/**
+ * Attributes, privileged memberships (direct or inherited) and owned tables of the
+ * connected login. Attributes are not inherited, but a member can SET ROLE to any role it
+ * belongs to and use that role's SUPERUSER or BYPASSRLS, so the attribute flags cover every
+ * role the login is a member of, and owned tables count those of any such role
+ * (PLATFORM-ROLES-2).
+ */
 export async function loginFacts(
   sql: postgres.Sql,
 ): Promise<LoginFacts | undefined> {
   const [r] = await sql<LoginFacts[]>`
-    select rolsuper, rolbypassrls, rolcreaterole, rolcreatedb,
+    with reach as (
+      select * from pg_roles where pg_has_role(current_user, oid, 'member'))
+    select bool_or(rolsuper) as rolsuper, bool_or(rolbypassrls) as rolbypassrls,
+      bool_or(rolcreaterole) as rolcreaterole, bool_or(rolcreatedb) as rolcreatedb,
       coalesce((select array_agg(c order by c) from unnest(${PRIVILEGED_MEMBERSHIPS as string[]}::text[]) c
         where to_regrole(c) is not null and pg_has_role(current_user, to_regrole(c), 'member')), '{}') as memberships,
-      (select count(*)::int from pg_tables where schemaname='public' and tableowner=current_user) as owned
-    from pg_roles where rolname=current_user`;
+      (select count(*)::int from pg_tables where schemaname='public'
+        and pg_has_role(current_user, tableowner, 'member')) as owned
+    from reach having count(*) > 0`;
   return r;
 }
 
@@ -136,11 +146,23 @@ export async function checkWorkerRole(sql: postgres.Sql) {
   if (r.owned) throw Error("Worker role must not own application tables");
 }
 const RETRYABLE = new Set(["40P01", "40001"]);
+let retryableFailures = 0;
+/**
+ * Test hook (PLATFORM-LOCKS-3): how many deadlocks (40P01) or serialization failures
+ * (40001) tenant() has caught in this process, retried or not. LO-R9 makes any of them in
+ * a DB suite a bug, so concurrency suites compare it before and after their burst
+ * (tests/db-retries.ts); pg_stat_database.deadlocks lags behind (stats flush on idle).
+ */
+export function dbRetryCount(): number {
+  return retryableFailures;
+}
 /**
  * Runs fn in one tenant-scoped transaction. A deadlock or serialization
  * failure rolls the whole transaction back and is retried once; a second one
  * becomes concurrent_update (409). fn must therefore be safe to replay: no
- * side effects outside the database transaction.
+ * side effects outside the database transaction. Every such failure logs
+ * db_retry {code, attempt, retried} at warn (RUNBOOK "Signals"): a retried
+ * deadlock is a lock-order bug that only looks like a 1 s stall.
  */
 export async function tenant<T>(
   sql: postgres.Sql,
@@ -157,7 +179,10 @@ export async function tenant<T>(
       })) as T;
     } catch (e) {
       // A statement timeout (57014) is not retryable: only 40P01/40001 are.
-      if (!RETRYABLE.has((e as { code?: string })?.code ?? "")) throw e;
+      const code = (e as { code?: string })?.code ?? "";
+      if (!RETRYABLE.has(code)) throw e;
+      retryableFailures++;
+      log.warn("db_retry", { code, attempt, retried: attempt < 2 });
       if (attempt >= 2) throw new DomainError("concurrent_update", 409);
       await new Promise((r) =>
         setTimeout(r, 25 + Math.floor(Math.random() * 75)),

@@ -6,7 +6,8 @@ import {
   poolOptions,
   withoutParams,
 } from "../server/db-support.js";
-import { connect, connectWorker, tenant } from "../server/db.js";
+import { connect, connectWorker, dbRetryCount, tenant } from "../server/db.js";
+import { setLogSink } from "../server/logging.js";
 
 describe("database connection policy", () => {
   it("connect() strips URL params and uses verify-full for non-loopback hosts, false for loopback (OPS-14 regression)", () => {
@@ -113,5 +114,45 @@ describe("database connection policy", () => {
     await expect(tenant(sql, "", async () => "x")).rejects.toMatchObject({
       code: "missing_tenant",
     });
+  });
+
+  it("tenant() logs db_retry and counts every deadlock or serialization failure it catches; other errors are neither (PLATFORM-LOCKS-3)", async () => {
+    const lines: Record<string, unknown>[] = [];
+    setLogSink((line) => lines.push(JSON.parse(line)));
+    try {
+      const failing = (codes: string[]) => {
+        let n = 0;
+        return {
+          begin: async () => {
+            const code = codes[n++];
+            if (code) throw Object.assign(new Error(code), { code });
+            return "ok";
+          },
+        } as unknown as postgres.Sql;
+      };
+      const t = "10000000-0000-4000-8000-000000000001";
+      const before = dbRetryCount();
+      expect(await tenant(failing(["40P01"]), t, async () => "x")).toBe("ok");
+      expect(dbRetryCount() - before).toBe(1);
+      await expect(
+        tenant(failing(["40001", "40P01"]), t, async () => "x"),
+      ).rejects.toMatchObject({ code: "concurrent_update", status: 409 });
+      expect(dbRetryCount() - before).toBe(3);
+      await expect(
+        tenant(failing(["57014"]), t, async () => "x"),
+      ).rejects.toMatchObject({ code: "57014" });
+      expect(dbRetryCount() - before, "a timeout is not a retry").toBe(3);
+      expect(
+        lines
+          .filter((l) => l.message === "db_retry")
+          .map((l) => [l.level, l.code, l.attempt, l.retried]),
+      ).toEqual([
+        ["warn", "40P01", 1, true],
+        ["warn", "40001", 1, true],
+        ["warn", "40P01", 2, false],
+      ]);
+    } finally {
+      setLogSink(null);
+    }
   });
 });

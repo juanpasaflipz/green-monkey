@@ -358,6 +358,59 @@ try {
         }),
         /migrator/,
       );
+      // PLATFORM-ROLES-3: a capability role or any NOLOGIN role is refused
+      // before anything is dropped or created; the role and its members stay.
+      const members = async (role: string) =>
+        (
+          await admin`select count(*)::int as n from pg_auth_members m
+            join pg_roles r on r.oid=m.roleid where r.rolname=${role}`
+        )[0].n;
+      const before = await members("gm_jobs_worker");
+      for (const capability of [
+        "gm_jobs_worker",
+        "gm_support",
+        "gm_backup_reader",
+        "gm_billing_worker",
+      ]) {
+        await assert.rejects(
+          finalizeRotation({ ownerUrl, old: capability }),
+          /capability role, not a login; nothing was dropped/,
+        );
+        await assert.rejects(
+          rotateLogin({
+            ownerUrl,
+            env,
+            kind: "worker",
+            old: capability,
+            file: null,
+          }),
+          /capability role, not a login/,
+        );
+      }
+      assert.equal(await members("gm_jobs_worker"), before);
+      const nologin = `gm_${env}_nologin_fixture`;
+      await admin.unsafe(`create role ${nologin} nologin`);
+      try {
+        await assert.rejects(
+          finalizeRotation({ ownerUrl, old: nologin }),
+          /cannot log in/,
+        );
+        await assert.rejects(
+          rotateLogin({
+            ownerUrl,
+            env,
+            kind: "runtime",
+            old: nologin,
+            file: null,
+          }),
+          /cannot log in/,
+        );
+        const [still] =
+          await admin`select count(*)::int as n from pg_roles where rolname=${nologin}`;
+        assert.equal(still.n, 1);
+      } finally {
+        await admin.unsafe(`drop role if exists ${nologin}`);
+      }
     },
   );
 

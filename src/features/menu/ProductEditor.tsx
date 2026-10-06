@@ -28,6 +28,7 @@ import {
   translator,
 } from "./format";
 import { SavesAsAmount } from "./SavesAs";
+import { fiscalDraft } from "../fiscal/ProductFiscalFields";
 
 const NEW = "__new";
 
@@ -79,9 +80,9 @@ export function ProductEditor({
   /** The live switch in the header was saved; the list must follow. */
   onAvailability?: (productId: string, available: boolean) => void;
   /**
-   * Extension slot for fiscal (027): renders the "Impuestos" section. While
-   * it is undefined (this wave) no section is shown and no `fiscal` is sent;
-   * saves preserve whatever the stored document holds.
+   * Extension slot for fiscal (027): renders the "Impuestos" section. Without
+   * it no section is shown and no `fiscal` is sent, so saves preserve whatever
+   * the stored document holds; with it the edited value is sent.
    */
   renderFiscal?: (p: {
     value: unknown;
@@ -151,6 +152,8 @@ export function ProductEditor({
   const [error, setError] = useState("");
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState(false);
+  // fiscal (027): the product's tax category and SAT keys (renderFiscal slot).
+  const [fiscal, setFiscal] = useState<unknown>(source?.fiscal);
   const [dialog, setDialog] = useState<"category" | "group" | null>(null);
   const [confirmArchive, setConfirmArchive] = useState(false);
   // Unsaved edits: the form differs from how it opened. Live availability of
@@ -169,6 +172,7 @@ export function ProductEditor({
     recipe,
     recipeValid,
     cost,
+    renderFiscal ? fiscalDraft(fiscal) : null,
   ]);
   const [opened] = useState(snapshot);
   const dirty = snapshot !== opened;
@@ -211,6 +215,8 @@ export function ProductEditor({
       groupIds,
       recipe,
       cost: cost.trim() ? money(cost, "cost") : null,
+      // fiscal (027): a bad SAT key fails productInput under `fiscal`.
+      ...(renderFiscal ? { fiscal: fiscalDraft(fiscal) } : {}),
     };
     if (!recipeValid) invalid.add("recipe");
     if (choices > MENU_LIMITS.choicesPerLine) invalid.add("groupIds");
@@ -654,9 +660,9 @@ export function ProductEditor({
             <fieldset className="menu-section">
               <legend>{t("menuFiscal")}</legend>
               {renderFiscal({
-                value: source?.fiscal,
-                onChange: () => {},
-                disabled: !online,
+                value: fiscal,
+                onChange: setFiscal,
+                disabled: !online || busy,
               })}
             </fieldset>
           )}

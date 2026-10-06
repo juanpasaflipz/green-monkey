@@ -10,7 +10,7 @@
 import type postgres from "postgres";
 import { tenant, type Tx } from "../db.js";
 import { permit, managers } from "../auth.js";
-import { MAX_ATTEMPTS, type ClaimedJob } from "../jobs.js";
+import { assertLeaseSeconds, MAX_ATTEMPTS, type ClaimedJob } from "../jobs.js";
 import { DomainError, type Session } from "../../shared/domain.js";
 
 const CODE = /^[a-z][a-z0-9_]{1,63}$/;
@@ -39,18 +39,35 @@ export function failureState(
   return "retry";
 }
 
+const toJob = (r: postgres.Row): ClaimedJob => ({
+  tenantId: r.tenant_id,
+  id: r.id,
+  kind: r.kind,
+  dedupeKey: r.dedupe_key,
+  payload: r.payload,
+  attempts: r.attempts,
+  lease: r.lease ?? "",
+  createdAt: r.created_at,
+});
+
 /**
  * Leases up to n runnable jobs of the given kinds for the transaction's tenant.
  * The explicit tenant predicate is defense in depth: RLS already limits a
  * FOR UPDATE claim to tenant_scope, but the claim must never depend on which
  * other (SELECT) policies exist on jobs, such as an area's worker discovery
  * policy.
+ *
+ * attempts counts claims. A running job whose lease expired is reclaimed only
+ * while attempts < maxAttempts: a job that keeps killing its process (out of
+ * memory, a synchronous loop) never gets past its kind's limit, because
+ * expireLostJobs marks it dead first (PLATFORM-OPS-3).
  */
 export async function claimJobs(
   tx: Tx,
   kinds: string[],
   n: number,
   leaseSeconds: number,
+  maxAttempts: number = MAX_ATTEMPTS,
 ): Promise<ClaimedJob[]> {
   if (!kinds.length || n <= 0) return [];
   const rows = await tx`
@@ -58,10 +75,11 @@ export async function claimJobs(
       select tenant_id, id from jobs
       where tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
         and kind = any(${kinds}::text[])
-        -- Claim predicate: discoverTenants (worker-registry.ts) uses exactly
-        -- this; change both together.
+        -- Claim predicate: discoverTenants (worker-registry.ts) uses this
+        -- without the attempts bound (it must still find lost jobs to expire);
+        -- change both together.
         and ((state in ('queued','available') and next_at <= now())
-          or (state = 'running' and lease_until < now()))
+          or (state = 'running' and lease_until < now() and attempts < ${maxAttempts}))
       order by next_at, id
       for update skip locked
       limit ${n})
@@ -71,16 +89,28 @@ export async function claimJobs(
     from c where j.tenant_id=c.tenant_id and j.id=c.id
     returning j.tenant_id, j.id, j.kind, j.dedupe_key, j.payload, j.attempts,
       j.lease_until::text as lease, j.created_at`;
-  return rows.map((r) => ({
-    tenantId: r.tenant_id,
-    id: r.id,
-    kind: r.kind,
-    dedupeKey: r.dedupe_key,
-    payload: r.payload,
-    attempts: r.attempts,
-    lease: r.lease,
-    createdAt: r.created_at,
-  }));
+  return rows.map(toJob);
+}
+
+/**
+ * Marks dead, with error_code lease_expired, the transaction tenant's running jobs of
+ * one kind whose lease expired after their last allowed claim (attempts >=
+ * maxAttempts): the holder died mid-job (crash, out of memory, SIGKILL after the drain
+ * budget) on its final attempt. Returns them so the runner logs job_dead and alerts
+ * jobs_dead_<kind>; a manager can requeue them after fixing the cause (PLATFORM-OPS-3).
+ */
+export async function expireLostJobs(
+  tx: Tx,
+  kind: string,
+  maxAttempts: number,
+): Promise<ClaimedJob[]> {
+  const rows = await tx`
+    update jobs set state='dead', lease_until=null, error_code='lease_expired'
+    where tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
+      and kind = ${kind} and state = 'running' and lease_until < now()
+      and attempts >= ${maxAttempts}
+    returning tenant_id, id, kind, dedupe_key, payload, attempts, null::text as lease, created_at`;
+  return rows.map(toJob);
 }
 
 /** Marks a job done; false when the lease was lost. */
@@ -136,6 +166,7 @@ export async function extendLease(
   job: ClaimedJob,
   seconds: number,
 ): Promise<string | null> {
+  assertLeaseSeconds(seconds);
   const [row] = await tenant(
     sql,
     job.tenantId,
@@ -148,14 +179,51 @@ export async function extendLease(
   return row?.lease ?? null;
 }
 
+/** What a staff control changed, for its audit row (server/routes/ops.ts). */
+export type JobControlResult = {
+  kind: string;
+  state: string;
+  errorCode: string | null;
+};
+
 /**
  * Staff "retry" for a dead job (owners and managers). Blocked jobs are left
- * alone: they wait for a device, not for a retry.
+ * alone: they wait for a device, not for a retry. Returns the job's kind, state
+ * and error code before the change.
  */
-export async function requeueJob(tx: Tx, s: Session, jobId: string) {
+export async function requeueJob(
+  tx: Tx,
+  s: Session,
+  jobId: string,
+): Promise<JobControlResult> {
   permit(s, managers);
-  const [job] = await tx`select state from jobs where id=${jobId} for update`;
+  const [job] =
+    await tx`select kind, state, error_code from jobs where id=${jobId} for update`;
   if (!job) throw new DomainError("not_found", 404);
   if (job.state !== "dead") throw new DomainError("job_not_requeueable", 409);
   await tx`update jobs set state='available', attempts=0, next_at=now(), error_code=null where id=${jobId}`;
+  return { kind: job.kind, state: job.state, errorCode: job.error_code };
+}
+
+/**
+ * Staff "cancel" (owners and managers, PLATFORM-OPS-3): a queued, available or running job
+ * goes dead with error_code cancelled, so it is never claimed again. A running holder loses
+ * its lease (lease_until is cleared, so its fenced writes match no row) and stops at its
+ * next lease check. Done and dead jobs are refused; requeueJob undoes a cancel. Blocked
+ * jobs can be cancelled too (a receipt that will never print). Returns the job's kind,
+ * state and error code before the change.
+ */
+export async function cancelJob(
+  tx: Tx,
+  s: Session,
+  jobId: string,
+): Promise<JobControlResult> {
+  permit(s, managers);
+  const [job] =
+    await tx`select kind, state, error_code from jobs where id=${jobId} for update`;
+  if (!job) throw new DomainError("not_found", 404);
+  if (job.state === "done" || job.state === "dead")
+    throw new DomainError("job_not_cancellable", 409);
+  await tx`update jobs set state='dead', lease_until=null, error_code='cancelled' where id=${jobId}`;
+  return { kind: job.kind, state: job.state, errorCode: job.error_code };
 }

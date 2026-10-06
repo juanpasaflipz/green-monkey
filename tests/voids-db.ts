@@ -23,6 +23,7 @@ import {
 import { deviceScope } from "../server/access.js";
 import type { Order, Session } from "../shared/domain.js";
 import { isolatedTarget } from "./isolated-target.js";
+import { noRetries } from "./db-retries.js";
 
 const { runtime: url, migration } = isolatedTarget(process.env);
 const sql = connect(url),
@@ -332,11 +333,13 @@ try {
 
   await test("concurrent voids of the same version apply exactly once", async () => {
     const o = await newOrder();
-    const results = await Promise.allSettled([
-      voidAs(owner, o.id, voidBody(o, 2)),
-      voidAs(owner, o.id, voidBody(o, 2)),
-      voidAs(owner, o.id, voidBody(o, 2)),
-    ]);
+    const results = await noRetries("concurrent voids", () =>
+      Promise.allSettled([
+        voidAs(owner, o.id, voidBody(o, 2)),
+        voidAs(owner, o.id, voidBody(o, 2)),
+        voidAs(owner, o.id, voidBody(o, 2)),
+      ]),
+    );
     assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
     const after = await run(owner, (tx) => getOrder(tx, o.id));
     assert.equal(after.lines[0].voidedUnits!.length, 2);

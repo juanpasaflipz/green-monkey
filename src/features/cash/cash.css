@@ -1,0 +1,62 @@
+/* Caja (discounts 028): drawer cards, figures and the close dialog. Controls
+   keep 44 px targets; print colours stay pure black (no drawer document is
+   printed from here; reports' cortes have their own layout). */
+.drawer-panel {
+  display: grid;
+  gap: 16px;
+}
+.drawer-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+.drawer-head p {
+  margin: 6px 0 0;
+}
+.drawer-cards {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+.drawer-card h2 {
+  margin-top: 0;
+}
+.cash-figures {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 16px;
+  margin: 0;
+}
+.cash-figures dt {
+  color: var(--text-2);
+}
+.cash-figures dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cash-close {
+  display: grid;
+  gap: 12px;
+}
+.cash-close h3 {
+  margin: 0;
+}
+.money-controls form {
+  display: grid;
+  gap: 12px;
+}
+.money-controls .form-grid {
+  align-items: end;
+}
+.money-controls fieldset:disabled {
+  opacity: 0.75;
+}
+.cash-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}

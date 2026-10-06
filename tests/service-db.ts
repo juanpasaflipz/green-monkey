@@ -45,6 +45,7 @@ import {
   type OrderListResponse,
 } from "../shared/service.js";
 import { isolatedTarget } from "./isolated-target.js";
+import { noRetries } from "./db-retries.js";
 
 // Every run creates its own fictional organization and two restaurants, so
 // feeds, lists and occupancy are deterministic regardless of earlier runs.
@@ -489,13 +490,25 @@ try {
       t1.checks.map((c) => [c.id, c.checkState]),
       [[dine.id, "paid"]],
     );
-    const more = await round(paid);
-    assert.equal(more.checkState, "open");
-    const repaid = await pay(more, more.total - more.paid);
-    assert.equal(repaid.checkState, "paid");
+    // fiscal 027 (LD-15 fiscal Q2): the ticket is issued at open → paid, so the
+    // paid check takes no more rounds; late items go out as a new order for
+    // the same table, a second check with its own ticket.
+    await rejects(round(paid), "fiscal_ticket_issued");
+    const late = await newOrder({ mode: "dine_in", tableId: tables[1].id });
+    const latePaid = await pay(late, late.total);
+    assert.equal(latePaid.checkState, "paid");
+    const both = await run(owner, (tx) => tableOccupancy(tx, owner));
+    assert.deepEqual(
+      both
+        .find((t) => t.id === tables[1].id)!
+        .checks.map((c) => c.id)
+        .sort(),
+      [dine.id, late.id].sort(),
+    );
     const released = await close(dine.id);
     assert.equal(released.checkState, "closed");
     assert.equal(released.closeReason, "released");
+    assert.equal((await close(late.id)).closeReason, "released");
     const free = await run(owner, (tx) => tableOccupancy(tx, owner));
     assert.equal(free.find((t) => t.id === tables[1].id)!.checks.length, 0);
 
@@ -1285,26 +1298,22 @@ try {
       const o = await newOrder({ mode: "dine_in", tableId: tables[i % 4].id });
       const paid = await pay(o, o.total);
       assert.equal(paid.checkState, "paid");
-      const [closing, adding] = await Promise.allSettled([
-        close(o.id),
-        round(paid),
-      ]);
+      const [closing, adding] = await noRetries("close vs round", () =>
+        Promise.allSettled([close(o.id), round(paid)]),
+      );
       const after = await read(o.id);
-      if (closing.status === "fulfilled") {
-        assert.equal(adding.status, "rejected");
-        assert.equal(
+      // fiscal 027 (LD-15 fiscal Q2): the paid check already has its ticket, so
+      // the round never lands: check_closed when the close wins the order lock,
+      // fiscal_ticket_issued when the round does. The close always succeeds.
+      assert.equal(closing.status, "fulfilled");
+      assert.equal(adding.status, "rejected");
+      assert.ok(
+        ["check_closed", "fiscal_ticket_issued"].includes(
           (adding as PromiseRejectedResult).reason.code,
-          "check_closed",
-        );
-        assert.equal(after.checkState, "closed");
-      } else {
-        assert.equal(
-          (closing as PromiseRejectedResult).reason.code,
-          "balance_due",
-        );
-        assert.equal(adding.status, "fulfilled");
-        assert.equal(after.checkState, "open");
-      }
+        ),
+        (adding as PromiseRejectedResult).reason.code,
+      );
+      assert.equal(after.checkState, "closed");
       if (after.checkState === "closed")
         assert.equal(after.total - after.paid, 0);
     }
@@ -1523,6 +1532,8 @@ try {
       "unallocated_history",
       // SVC-K6: completing a round whose void the kitchen has not acknowledged.
       "void_ack_required",
+      // fiscal 027: a round on the paid (ticketed) table check.
+      "fiscal_ticket_issued",
     ];
     // Three bursts of 20 mixed commands on 3 orders: rounds, progress, voids,
     // payments and grouped settlements that interleave order and drawer locks.
@@ -1555,7 +1566,10 @@ try {
           return settle(o, await fresh((k + 1) % 3));
         });
       }
-      const results = await Promise.allSettled(commands.map((c) => c()));
+      // LO-R9 (PLATFORM-LOCKS-3): no deadlock may hide behind tenant()'s retry.
+      const results = await noRetries(`kitchen mix burst ${burst}`, () =>
+        Promise.allSettled(commands.map((c) => c())),
+      );
       assert.ok(
         results.filter((r) => r.status === "fulfilled").length >= 5,
         "the mix must actually commit commands concurrently",

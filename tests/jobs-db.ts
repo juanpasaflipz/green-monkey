@@ -5,7 +5,8 @@ import { readFileSync } from "node:fs";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { check, disposableLogins, passed } from "./ops-roles.js";
-import { connect, tenant } from "../server/db.js";
+import { noRetries } from "./db-retries.js";
+import { connect, tenant, type Tx } from "../server/db.js";
 import {
   enqueueJob,
   handlers,
@@ -13,8 +14,10 @@ import {
   registerJobHandler,
 } from "../server/jobs.js";
 import {
+  cancelJob,
   claimJobs,
   completeJob,
+  expireLostJobs,
   extendLease,
   failJob,
   requeueJob,
@@ -96,14 +99,16 @@ try {
   await check("two runners never lease the same job", async () => {
     for (let i = 0; i < 24; i++) await enqueue(owner, `c${i}`);
     const seen: string[] = [];
-    await Promise.all(
-      [app, second, app, second].map(async (sql) => {
-        for (;;) {
-          const jobs = await claim(sql, owner, 3);
-          if (!jobs.length) return;
-          seen.push(...jobs.map((j) => j.id));
-        }
-      }),
+    await noRetries("claim race", () =>
+      Promise.all(
+        [app, second, app, second].map(async (sql) => {
+          for (;;) {
+            const jobs = await claim(sql, owner, 3);
+            if (!jobs.length) return;
+            seen.push(...jobs.map((j) => j.id));
+          }
+        }),
+      ),
     );
     assert.equal(seen.length, 24);
     assert.equal(new Set(seen).size, 24);
@@ -208,6 +213,181 @@ try {
         tenant(app, tenantId, (tx) => requeueJob(tx, owner, blocked.id)),
         /job_not_requeueable/,
       );
+      await admin`delete from jobs where kind=${kind}`;
+    },
+  );
+
+  await check(
+    "a running job whose lease expired on its last allowed claim goes dead (lease_expired) and is never reclaimed; an earlier attempt is reclaimed; another tenant's lost job is untouched (PLATFORM-OPS-3)",
+    async () => {
+      await enqueue(owner, "lost-early");
+      await enqueue(owner, "lost-last");
+      await enqueue(other, "lost-other");
+      assert.equal((await claim(app, owner, 2)).length, 2);
+      assert.equal((await claim(app, other, 1)).length, 1);
+      await admin`update jobs set lease_until=now()-interval '1 second' where kind=${kind}`;
+      await admin`update jobs set attempts=3 where kind=${kind} and dedupe_key in ('lost-last','lost-other')`;
+      // claimJobs alone already refuses a lost job at its kind's limit.
+      assert.deepEqual(
+        (
+          await tenant(app, tenantId, (tx) => claimJobs(tx, [kind], 5, 60, 3))
+        ).map((j) => [j.dedupeKey, j.attempts]),
+        [["lost-early", 2]],
+      );
+      await admin`update jobs set lease_until=now()-interval '1 second' where kind=${kind} and dedupe_key='lost-early'`;
+      const { expired, again } = await tenant(app, tenantId, async (tx) => ({
+        expired: await expireLostJobs(tx, kind, 3),
+        again: await claimJobs(tx, [kind], 5, 60, 3),
+      }));
+      assert.deepEqual(
+        expired.map((j) => [j.dedupeKey, j.attempts, j.tenantId]),
+        [["lost-last", 3, tenantId]],
+      );
+      assert.deepEqual(
+        again.map((j) => [j.dedupeKey, j.attempts]),
+        [["lost-early", 3]],
+      );
+      const states = await admin`
+        select dedupe_key, state, error_code, lease_until is null as cleared
+        from jobs where kind=${kind} order by dedupe_key`;
+      assert.deepEqual(
+        states.map((r) => ({ ...r })),
+        [
+          {
+            dedupe_key: "lost-early",
+            state: "running",
+            error_code: null,
+            cleared: false,
+          },
+          {
+            dedupe_key: "lost-last",
+            state: "dead",
+            error_code: "lease_expired",
+            cleared: true,
+          },
+          {
+            dedupe_key: "lost-other",
+            state: "running",
+            error_code: null,
+            cleared: false,
+          },
+        ],
+      );
+      // The other tenant's own drain expires its job.
+      assert.deepEqual(
+        (
+          await tenant(app, otherTenantId, (tx) => expireLostJobs(tx, kind, 3))
+        ).map((j) => j.dedupeKey),
+        ["lost-other"],
+      );
+      await admin`delete from jobs where kind=${kind}`;
+    },
+  );
+
+  await check(
+    "cancelJob: managers cancel a queued, blocked or running job (dead, cancelled; the running holder is fenced out); done, dead and cashiers are refused; requeueJob undoes a cancel (PLATFORM-OPS-3)",
+    async () => {
+      await enqueue(owner, "cancel-running");
+      await enqueue(owner, "cancel-done");
+      const byKey = async (key: string) =>
+        (
+          await admin`select id, state, error_code, lease_until from jobs where kind=${kind} and dedupe_key=${key}`
+        )[0];
+      const [running, done] = await claim(app, owner, 2);
+      assert.deepEqual(
+        [running.dedupeKey, done.dedupeKey],
+        ["cancel-running", "cancel-done"],
+      );
+      assert.equal(await completeJob(app, done), true);
+      await enqueue(owner, "cancel-queued");
+      await enqueue(owner, "cancel-blocked", "blocked");
+      const cancel = (s: Session, jobId: string) =>
+        tenant(app, s.tenantId, (tx) => cancelJob(tx, s, jobId));
+      await assert.rejects(cancel(cashier, running.id), /forbidden/);
+      await assert.rejects(cancel(other, running.id), /not_found/);
+      await assert.rejects(cancel(owner, done.id), /job_not_cancellable/);
+      for (const key of ["cancel-queued", "cancel-blocked", "cancel-running"]) {
+        const row = await byKey(key);
+        await cancel(owner, row.id);
+        const after = await byKey(key);
+        assert.deepEqual(
+          [after.state, after.error_code, after.lease_until],
+          ["dead", "cancelled", null],
+          key,
+        );
+      }
+      // The holder of the cancelled running job is fenced out.
+      assert.equal(await completeJob(app, running), false);
+      assert.equal(await failJob(app, running, { code: "late" }), "lost");
+      await assert.rejects(
+        cancel(owner, running.id),
+        /job_not_cancellable/,
+        "a dead job is refused",
+      );
+      await tenant(app, tenantId, (tx) => requeueJob(tx, owner, running.id));
+      assert.equal((await byKey("cancel-running")).state, "available");
+      await admin`delete from jobs where kind=${kind}`;
+    },
+  );
+
+  await check(
+    "POST /jobs/:id/cancel and /requeue write job.cancelled and job.requeued audit rows with the kind and the state before, in the control's transaction (PLAT-HR-6)",
+    async () => {
+      const { register } = await import("../server/routes/ops.js");
+      const routes = new Map<
+        string,
+        (tx: Tx, s: Session, req: unknown) => Promise<unknown>
+      >();
+      register({
+        app: null as never,
+        sql: null as never,
+        route: (method, path, fn) =>
+          void routes.set(`${method} ${path}`, fn as never),
+      });
+      const stepped: Session = {
+        ...owner,
+        access: {
+          absoluteExpiresAt: null,
+          authenticatedAt: new Date().toISOString(),
+          deviceName: "Caja",
+          deviceKind: "shared",
+          idleLockSeconds: 180,
+          ownerAccount: false,
+        },
+      } as Session;
+      await enqueue(owner, "audited");
+      const [job] =
+        await admin`select id from jobs where kind=${kind} and dedupe_key='audited'`;
+      const call = (path: string) =>
+        tenant(app, tenantId, (tx) =>
+          routes.get(`post ${path}`)!(tx, stepped, {
+            params: { id: job.id },
+          }),
+        );
+      await call("/jobs/:id/cancel");
+      await call("/jobs/:id/requeue");
+      const rows =
+        await admin`select operation, actor_id, detail from audit where tenant_id=${tenantId} and entity_id=${job.id} order by created_at, operation`;
+      assert.deepEqual(
+        rows.map((r) => [r.operation, r.actor_id, r.detail]),
+        [
+          [
+            "job.cancelled",
+            owner.employeeId,
+            { kind, state: "available", errorCode: null },
+          ],
+          [
+            "job.requeued",
+            owner.employeeId,
+            { kind, state: "dead", errorCode: "cancelled" },
+          ],
+        ],
+      );
+      // A refused control writes nothing (the audit row shares its transaction).
+      await assert.rejects(call("/jobs/:id/requeue"), /job_not_requeueable/);
+      const [{ n }] =
+        await admin`select count(*)::int as n from audit where tenant_id=${tenantId} and entity_id=${job.id}`;
+      assert.equal(n, 2);
       await admin`delete from jobs where kind=${kind}`;
     },
   );

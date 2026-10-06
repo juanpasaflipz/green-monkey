@@ -1,0 +1,104 @@
+/* Discounts and refunds (028): dialogs, order detail rows and the refund slip.
+   No edits to src/styles.css; print colours stay pure black, no fixed widths
+   (58/80 mm come from src/print.tsx). */
+.discounts-form {
+  display: grid;
+  gap: 12px;
+}
+.discounts-form .chips {
+  margin: 0;
+}
+.discount-preview {
+  display: grid;
+  gap: 2px;
+  min-height: 24px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--fill);
+}
+.refund-items,
+.refund-amount,
+.refund-breakdown {
+  display: grid;
+  gap: 8px;
+}
+.refund-line {
+  display: grid;
+  gap: 2px;
+}
+.refund-line .field {
+  margin-bottom: 0;
+}
+.refund-terminal {
+  display: grid;
+  gap: 6px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+}
+.refund-terminal p {
+  margin: 0;
+}
+.choice-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+.choice-row input {
+  width: 20px;
+  height: 20px;
+  min-height: 0;
+  flex: none;
+  accent-color: var(--ink);
+}
+.order-adjustments ul {
+  display: grid;
+  gap: 10px;
+}
+.order-adjustments .block,
+.check-discounts .block {
+  display: block;
+}
+.discount-item.reversed {
+  opacity: 0.75;
+}
+.check-discounts {
+  margin: 6px 0 0;
+}
+.check-discounts .row {
+  margin: 2px 0;
+  gap: 8px;
+}
+.receipt-doc .doc-discount {
+  font-size: 14px;
+  padding-left: 12px;
+}
+.receipt-doc .doc-refunds {
+  font-size: 14px;
+  padding-left: 12px;
+}
+.refund-slip .doc-flag {
+  text-align: center;
+}
+@media print {
+  .print-doc .doc-discount,
+  .print-doc .doc-refunds,
+  .print-doc .refund-slip {
+    color: #000;
+  }
+}
+
+/* Vender's "Descuento" entry with its visible offline hint (spec §2.2). */
+.discounts-entry {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+/* A disabled action's visible reason, linked with aria-describedby. */
+.discounts-offline-hint {
+  display: block;
+  max-width: 220px;
+  text-align: right;
+}

@@ -42,6 +42,7 @@ import {
 } from "./offline-leases.js";
 import { requireRecentAuth } from "./access.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
+import { fiscalContext, issueDueTicket } from "./fiscal.js";
 import { allocatePayment } from "../shared/settlement.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
 
@@ -267,8 +268,9 @@ export async function verifyLines(
   // the recipe between verification and stock consumption.
   const versions =
     await tx`select id,data from catalog where id=any(${tx.array(productIds)}::uuid[]) order by id for share`;
-  // Staff path: open-price lines are valid evidence (contract D11).
-  const priced = quote(lines, await catalog(tx), true);
+  // Staff path: open-price lines are valid evidence (contract D11). Synced
+  // orders and rounds snapshot tax with the server's fiscal context (027).
+  const priced = quote(lines, await catalog(tx), true, await fiscalContext(tx));
   const problem = linesProblem(
     lines,
     snapshots,
@@ -1067,7 +1069,7 @@ export async function financialRecovery(
   // Financial recovery is deliberately not a reconstructed fulfillment order.
   // Keep the claimed source lines in audit; do not invent historical unit prices,
   // repeat kitchen dispatch, or deduct current recipes from stock.
-  await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,state,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${lease.employee_id},null,${order?.mode ?? "takeaway"},${order?.name ?? ""},${"Offline cash reconciliation: " + reason},'offline',${payment.amount},'recovery_pending',${tx.json(lease.restaurant_snapshot)})`;
+  await tx`insert into orders(tenant_id,id,number,business_date,employee_id,table_id,mode,name,note,channel,total,state,restaurant_snapshot) values(${s.tenantId},${orderId},${number.value},${date},${lease.employee_id},null,${order?.mode ?? "takeaway"},${order?.name ?? ""},${"Conciliación de efectivo sin conexión: " + reason},'offline',${payment.amount},'recovery_pending',${tx.json(lease.restaurant_snapshot)})`;
   // Global lock order (contract §3.14): the drawer after order_numbers and the
   // order, so a concurrent drawer close waits for this tender.
   const [cash] =
@@ -1098,6 +1100,9 @@ export async function financialRecovery(
     fulfillment: "pending",
     stock: "pending",
   });
+  // fiscal 027: a recovery order is closed at insert, so refreshCheckState never
+  // issues it; one recovery_default group at the restaurant default category.
+  await issueDueTicket(tx, s, orderId, "recovery");
   const result = await getOrder(tx, orderId);
   if (order && !opts.cancelledOnlineCreate)
     await tx`insert into operations(tenant_id,id,kind,hash,result) values(${s.tenantId},${order.operationId},'create_order',${hash(JSON.stringify({ ...order, channel: "offline" }))},${tx.json(result)})`;

@@ -57,6 +57,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.SHA }}
+          persist-credentials: false
       - uses: ./.github/actions/deploy
         with:
           sha: ${{ env.SHA }}
@@ -130,6 +131,9 @@ jobs:
         with:
           ref: ${{ env.SHA }}
           fetch-depth: 0
+          # The job's write token never sits in .git/config for npm, the build or
+          # the Railway CLI to read (PLATFORM-CI-5).
+          persist-credentials: false
       - uses: ./.github/actions/deploy
         with:
           sha: ${{ env.SHA }}
@@ -147,7 +151,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The newest prod-* tag is the live release: retention.yml runs its code.
+          # gh release create makes the tag at $SHA (no local git credentials needed).
           tag="prod-$(date -u +%Y%m%d-%H%M)-${SHA:0:7}"
-          git tag "$tag" "$SHA"
-          git push origin "$tag"
-          gh release create "$tag" --target "$SHA" --generate-notes --title "$tag"
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$SHA" --generate-notes --title "$tag"

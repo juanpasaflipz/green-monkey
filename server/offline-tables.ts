@@ -147,7 +147,9 @@ appliers.round = async (tx, s, p, ctx) => {
   } catch (e) {
     if (
       e instanceof DomainError &&
-      (e.code === "check_closed" || e.code === "stale_order")
+      (e.code === "check_closed" ||
+        e.code === "stale_order" ||
+        e.code === "fiscal_ticket_issued")
     )
       throw new DomainError("offline_order_closed", 409);
     throw e;
@@ -404,6 +406,8 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
       note: o.note,
       total: o.total,
       paid: o.paid,
+      // discounts (028): shown read-only on a cached check (I-06).
+      discount: o.discount,
       state: o.state,
       createdAt: o.created_at.toISOString(),
       serviceVersion: o.service_version,

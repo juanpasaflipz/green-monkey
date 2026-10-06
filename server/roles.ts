@@ -16,8 +16,13 @@ export const CAPABILITY_ROLES = [
   "gm_migrator",
 ] as const;
 export type CapabilityRole = (typeof CAPABILITY_ROLES)[number];
-/** Memberships a runtime or worker login must not hold (the worker's own capability excepted). */
+/**
+ * Memberships a runtime or worker login must not hold (the worker's own capability
+ * excepted). pg_database_owner's implicit member owns schema public and can drop any
+ * table in it (PLATFORM-ROLES-2).
+ */
 export const PRIVILEGED_MEMBERSHIPS: readonly string[] = [
   ...CAPABILITY_ROLES,
   "neon_superuser",
+  "pg_database_owner",
 ];

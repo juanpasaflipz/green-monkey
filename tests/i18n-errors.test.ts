@@ -53,8 +53,8 @@ const machineOnly = new Set(["stripe_webhook_invalid"]);
  * Codes another area translates in its own module (wave contracts 3.12).
  * Until that area merges they are skipped here; once its module declares
  * them they are checked like every other code. `rate_limited` (ops's public
- * /api/ops/* limiter) is offline's; the two fiscal codes come from the pure
- * fiscal core (shared/fiscal.ts), which no route calls until fiscal 027.
+ * /api/ops/* limiter) is offline's. Fiscal (027) translates its codes in
+ * src/i18n/fiscal.ts, so they are checked like every other code.
  */
 const ownedElsewhere: Record<string, keyof typeof areas> = {
   unauthorized: "access",
@@ -67,8 +67,6 @@ const ownedElsewhere: Record<string, keyof typeof areas> = {
   invalid_unit: "menu",
   unavailable: "menu",
   rate_limited: "offline",
-  fiscal_total_mismatch: "fiscal",
-  fiscal_refund_exceeds: "fiscal",
   // CFDI core (pure modules); the full track owns the wording. Reports (029)
   // translates its codes in src/i18n/reports.ts (LD-15 reports Q2).
   cfdi_currency_unsupported: "cfdi",

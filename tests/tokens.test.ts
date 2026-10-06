@@ -137,6 +137,28 @@ describe("sealed tokens (contract C-6)", () => {
     );
   });
 
+  it("a sealed token is signed, not encrypted: its payload decodes without any key (PLATFORM-KEYS-2)", () => {
+    // Opaque ids only (server/tokens.ts header): whoever holds a printed QR code or a
+    // URL can read this.
+    const payload = { tid: "10000000-0000-4000-8000-000000000001", did: "d-1" };
+    const token = seal("cfdi-portal-file", payload, { ttlSeconds: 900 });
+    const [version, kid, body, mac] = token.split(".");
+    expect([version, kid]).toEqual(["v2", "k1"]);
+    expect(mac).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const decoded = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+    expect(decoded).toEqual({
+      p: "cfdi-portal-file",
+      exp: expect.any(Number),
+      d: payload,
+    });
+    // Nothing secret-looking survives in the clear either way: the payload is the
+    // only content, and the MAC is the only key-dependent part.
+    env({ SIGNING_KEYS: entry("k1", 2), JWT_SECRET: JWT });
+    const other = seal("cfdi-portal-file", payload, { ttlSeconds: 900 });
+    expect(JSON.parse(Buffer.from(other.split(".")[2], "base64url").toString()).d).toEqual(payload);
+    expect(other.split(".")[3]).not.toBe(mac);
+  });
+
   it("cfdi-portal and cfdi-portal-file tokens cannot be swapped", () => {
     const portal = seal("cfdi-portal", { id: "doc" }, { ttlSeconds: 3600 });
     const file = seal("cfdi-portal-file", { id: "doc" }, { ttlSeconds: 900 });

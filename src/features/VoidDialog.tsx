@@ -4,6 +4,7 @@ import { Button, Field, Modal } from "../components/ui";
 import { strings, translateError, type Key } from "../i18n";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { stepUpExempt } from "../../shared/access";
+import { voidCandidates } from "../../shared/discounts";
 import {
   ManagerApproval,
   type ApprovalValue,
@@ -61,18 +62,27 @@ export function VoidDialog({
   const units = order.paymentUnits ?? [];
   const lines = order.lines.map((line) => {
     const lineUnits = units.filter((u) => u.lineId === line.id);
-    const unpaid = lineUnits.filter((u) => u.paid === 0);
+    // discounts (028): the order the server voids them in, undiscounted
+    // first; the balance drops by each unit's net (gross minus its discount).
+    const candidates = voidCandidates(order, line.id);
     return {
       line,
-      voidable: unpaid.length,
-      paid: lineUnits.length - unpaid.length,
-      unitPrice: unpaid[0]?.total ?? line.unitPrice,
+      candidates,
+      voidable: candidates.length,
+      paid: lineUnits.length - candidates.length,
+      unitPrice: candidates[0]
+        ? candidates[0].total - candidates[0].discount
+        : line.unitPrice,
     };
   });
   const selected = Object.entries(quantities).filter(([, q]) => q > 0);
   const count = selected.reduce((a, [, q]) => a + q, 0);
   const amount = lines.reduce(
-    (a, l) => a + (quantities[l.line.id] ?? 0) * l.unitPrice,
+    (a, l) =>
+      a +
+      l.candidates
+        .slice(0, quantities[l.line.id] ?? 0)
+        .reduce((n, u) => n + u.total - u.discount, 0),
     0,
   );
   // Stock can return only while every affected ticket is still unseen.

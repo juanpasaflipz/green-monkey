@@ -6,6 +6,7 @@ import {
   type Label,
   type PricedLine,
 } from "./domain.js";
+import type { UnitDiscount } from "./discounts.js";
 export type Allocation = { lineId: string; unit: number; amount: number };
 export type PayableUnit = {
   key: string;
@@ -13,30 +14,50 @@ export type PayableUnit = {
   unit: number;
   name: Label;
   total: number;
+  /** discounts (028): active discount allocations on this unit (tax-inclusive). */
+  discount: number;
+  /** discounts (028): an active line-level discount covers this unit (no stacking). */
+  lineDiscounted: boolean;
   paid: number;
   due: number;
 };
+/**
+ * Every payable unit of the lines with what was paid and what is still due:
+ * due = gross - active discount - paid. Discounts (028) pass the active unit
+ * discounts of the order; two-argument callers see no discounts.
+ */
 export function payableUnits(
   lines: PricedLine[],
   allocations: Allocation[],
+  discounts: readonly UnitDiscount[] = [],
 ): PayableUnit[] {
-  const units = lines.flatMap((line) =>
+  const units: PayableUnit[] = lines.flatMap((line) =>
     allocate(line.total, Array(line.quantity).fill(1)).map((total, unit) => ({
       key: `${line.id}:${unit}`,
       lineId: line.id,
       unit,
       name: line.name,
       total,
+      discount: 0,
+      lineDiscounted: false,
       paid: 0,
       due: total,
     })),
   );
   const byKey = new Map(units.map((unit) => [unit.key, unit]));
+  for (const d of discounts) {
+    const unit = byKey.get(`${d.lineId}:${d.unit}`);
+    if (!unit) throw new DomainError("invalid_allocation", 409);
+    unit.discount = sum([unit.discount, money.parse(d.amount)]);
+    if (d.scope === "line") unit.lineDiscounted = true;
+    unit.due = unit.total - unit.discount;
+    if (unit.due < 0) throw new DomainError("invalid_allocation", 409);
+  }
   for (const allocation of allocations) {
     const unit = byKey.get(`${allocation.lineId}:${allocation.unit}`);
     if (!unit) throw new DomainError("invalid_allocation", 409);
     unit.paid = sum([unit.paid, money.parse(allocation.amount)]);
-    unit.due = unit.total - unit.paid;
+    unit.due = unit.total - unit.discount - unit.paid;
     if (unit.due < 0) throw new DomainError("invalid_allocation", 409);
   }
   return units;

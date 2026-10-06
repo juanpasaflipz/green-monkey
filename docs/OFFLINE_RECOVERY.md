@@ -27,12 +27,12 @@ The top bar pill always shows an icon and text, at every width: **Conectado**,
 **Conexión lenta**, **Sin conexión** or **Sin conexión (manual)**, plus
 "· N por sincronizar". A full-width banner explains the state:
 
-| State | Banner |
-|---|---|
-| Offline | "Sin conexión con el servidor. Las ventas se guardan en este dispositivo y se envían al volver la conexión." plus the offline-window line and **Comandas (k)** / **Ver sincronización** |
-| Manual | "Trabajando sin conexión por decisión del equipo…" with **Volver a conectarme** |
-| Slow (2 of the last 3 requests over 4 s) | "La conexión está lenta…" with **Trabajar sin conexión** |
-| Kitchen role offline | "Sin conexión: esta pantalla no recibe pedidos nuevos. Pide las comandas impresas o en voz al mostrador." |
+| State                                    | Banner                                                                                                                                                                                  |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Offline                                  | "Sin conexión con el servidor. Las ventas se guardan en este dispositivo y se envían al volver la conexión." plus the offline-window line and **Comandas (k)** / **Ver sincronización** |
+| Manual                                   | "Trabajando sin conexión por decisión del equipo…" with **Volver a conectarme**                                                                                                         |
+| Slow (2 of the last 3 requests over 4 s) | "La conexión está lenta…" with **Trabajar sin conexión**                                                                                                                                |
+| Kitchen role offline                     | "Sin conexión: esta pantalla no recibe pedidos nuevos. Pide las comandas impresas o en voz al mostrador."                                                                               |
 
 The offline-window line reads "Puedes vender sin conexión hasta las HH:mm", turns
 amber and bold in the last 30 minutes, and once the window has ended says that no
@@ -59,13 +59,13 @@ backup download of every unsynced record without a session.
 
 ## What can be done offline
 
-| Action | Offline |
-|---|---|
-| New order paid in full in cash | yes |
-| New order paid in full on a separate card terminal (staff confirm approval and type its reference; nothing is verified with the bank) | yes |
-| Item split | no (disabled; an offline save refuses it with "Dividir por productos no está disponible sin conexión") |
-| Settle several orders together, voids, refunds, discounts, drawer open/close/paid-out | no: unavailable offline (they need the server and fail with a connection message) |
-| Integrated card charges, invoicing | no |
+| Action                                                                                                                                | Offline                                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| New order paid in full in cash                                                                                                        | yes                                                                                                    |
+| New order paid in full on a separate card terminal (staff confirm approval and type its reference; nothing is verified with the bank) | yes                                                                                                    |
+| Item split                                                                                                                            | no (disabled; an offline save refuses it with "Dividir por productos no está disponible sin conexión") |
+| Settle several orders together, voids, refunds, discounts, drawer open/close/paid-out                                                 | no: unavailable offline (they need the server and fail with a connection message)                      |
+| Integrated card charges, invoicing                                                                                                    | no                                                                                                     |
 
 Open-price lines are allowed offline (wave contract D11): the server re-prices them
 with the same staff rule at sync.
@@ -92,12 +92,12 @@ setting.
 
 With the setting **on**:
 
-| Action | Offline |
-|---|---|
-| **Enviar (sin conexión)**: send a new order to the kitchen without paying | yes, it becomes a local open order with a provisional number |
-| Add items to a local open order or to a server order cached before the outage | yes, as a new round (additive; no version check), only while the check still has a balance |
-| **Cobrar** a local or cached order, in full or in part, by cash or external terminal | yes, revalidated against the balance at sync |
-| New order paid in part | yes (order and payment saved together) |
+| Action                                                                               | Offline                                                                                    |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| **Enviar (sin conexión)**: send a new order to the kitchen without paying            | yes, it becomes a local open order with a provisional number                               |
+| Add items to a local open order or to a server order cached before the outage        | yes, as a new round (additive; no version check), only while the check still has a balance |
+| **Cobrar** a local or cached order, in full or in part, by cash or external terminal | yes, revalidated against the balance at sync                                               |
+| New order paid in part                                                               | yes (order and payment saved together)                                                     |
 
 The setting ships as the separate `feat(offline-tables)` commit series (wave
 contract §8.1), so the core fixes can ship without it.
@@ -169,7 +169,7 @@ What this does and does not guarantee about charging twice, or too little:
 #### Rounds on paid or ticketed checks
 
 A check with no balance left (dine-in "Pagada · por liberar", a closed check, and
-after fiscal merges, a check with a numbered ticket) takes no offline round. The
+since fiscal 027 any check with a numbered ticket) takes no offline round. The
 device refuses it with "Esta cuenta ya está pagada. Envía lo nuevo como orden nueva
 para la misma mesa." (`offline_check_paid`) and offers **Enviar como orden nueva**,
 which saves the items as a new local order for the same table, mode and name. The
@@ -212,6 +212,26 @@ asigna al sincronizar."; once the server has numbered it, receipts, the cart
 heading, the open-orders list and the Sync screen show "B-07 → #142" and never the
 provisional hint, and `Order.offline` keeps the provisional number and the sale
 time for reprints.
+
+A provisional number is never a fiscal folio (LD-12). The local receipt prints the
+issuer data from the fiscal context cached on the device (Dexie
+`{tenantId}:fiscal-context`, refreshed at every sign-in and when the window
+regains focus after a minute) and "Folio fiscal pendiente: se asigna al
+sincronizar." (a partial local payment says the folio comes when the check is
+settled). The server assigns the consecutive folio when the sale syncs (or when a
+manager reconciles it), with the sale's business date; order history and reprints
+then show "Folio …" and "Venta sin conexión B-07 · {fecha}", staff find the order
+in Órdenes by its provisional number, and the Sincronización list maps
+"B-07 → #142 · Folio 000123" ([FISCAL.md](FISCAL.md)). A financial-only recovery's
+ticket prints its frozen line "1 × Venta sin conexión conciliada".
+Printed receipts are always in Spanish, including the "Número provisional" label,
+whatever the device language. Records never carry tax: the device's tax snapshot
+is dropped from the receipt snapshot, and the server re-prices lines with its own
+fiscal context at sync: a change of the tax region or the default product tax
+applies to sales still queued (the profile save never invalidates leases), so make
+those changes only after every device has synced. Changing a product's tax bumps
+its version, so queued offline sales of that product go to manager review
+(`offline_catalog_changed`).
 
 ## Kitchen during and after an outage
 
@@ -354,25 +374,35 @@ se atrasó desde la última conexión…" until a ping measures the server time 
 
 Offline sync follows the binding
 [global lock order](ARCHITECTURE.md#global-lock-order-binding), written in full
-by Wave 2.0 (platform) and enforced by `tests/lock-order.test.ts`: the `once()`
+by Wave 2.0 (platform). `tests/lock-order.test.ts` checks it statically for each
+unit it can see (the appliers and reconcilers, `applySale`, `reconcileSale`;
+not the dynamic `appliers[kind]` dispatch from `syncOfflineRecord`), and the
+concurrency bursts that run through `tenant()` fail on any retried deadlock
+(`noRetries`, LO-R9; `tests/db-retries.test.ts` checks that each is wrapped): the `once()`
 key, the restaurant row (`FOR SHARE`), area serialization locks (including the
 offline prefix and archive advisory locks, which are config paths only, and the
 catalog `FOR SHARE` of `verifyLines`), `order_numbers`, `orders` (several sorted
 by id), `rounds`, `line_voids`, `stock_items` (all at once through
 `lockStockItems`), `kitchen_feed_versions`, then the drawer (`cash_sessions`)
-and, from 027, the fiscal folio counter last.
+and the fiscal folio counter (027) last.
 
 A sale takes order numbers → order → stock → rounds → feed inside `createOrder`,
 then `recordPayment` locks its own new order and the drawer, and the ledger row
-is written. One sanctioned exception remains (ARCHITECTURE E4): sale, order and
-round sync then place the rounds they just created in kitchen review
-(`placeRoundsInOfflineReview`) after the drawer and, from 027, after the folio
-counter. Only rows inserted by the same transaction are updated, so no other
-transaction can hold or wait for them; reordering is blocked by the foreign key
-to `offline_sync_records`, whose ledger row needs the tender id first. Every
-other offline path follows the order: a payment takes the order, then the
-drawer; a round never bumps the feed; a manager reconcile takes the order, then
-the drawer. None locks an order after the drawer.
+is written. Three sanctioned exceptions apply (ARCHITECTURE "Global lock
+order"; E5 and E6 by lead decision LD-21). E4: sale, order and round sync then
+place the rounds they just created in kitchen review
+(`placeRoundsInOfflineReview`) after the drawer and after the fiscal folio
+counter (027; LD-15 fiscal Q4). Only rows inserted by the same transaction are
+updated, so no other transaction can hold or wait for them; reordering is
+blocked by the foreign key to `offline_sync_records`, whose ledger row needs
+the tender id first. E5: `createOrder`'s refresh cannot issue (nothing is paid
+yet), so the payment's fresh key, its new order row and the drawer after it are
+not a step back from the folio counter. E6: a manager reconcile whose target is
+a cancelled online create or unresolvable falls back to a financial-only
+recovery, whose new order takes an order number after that lookup. Every other
+offline path follows the order: a payment takes the order, then the drawer; a
+round never bumps the feed; a manager reconcile takes the order, then the
+drawer. None locks an order after the drawer.
 
 ## Late sales and the global invoice
 
@@ -389,13 +419,13 @@ the device still leaves at least 4 hours for a daily period.
 Offline adds this steady authenticated traffic, which ops' load test models
 before launch:
 
-| Who | Request | Rate (visible page) | Notes |
-|---|---|---|---|
-| Every device | `GET /api/offline/ping` | every 30 s (120 s hidden); one extra ping 3 s after a failure | pre-auth, no tenant data; one shared `select 1` at most every 2 s per process |
-| Every KDS screen | `GET /api/offline/kitchen` | every 30 s while the lane is empty, 10 s while it has items | one indexed query |
-| Selling devices, only with table service on | `GET /api/offline/open-orders` | on opening selling and every 120 s | one bounded query (2 business days, 200 rows) |
-| Selling devices | `GET /api/offline/settings` | when selling opens and when the connection returns; never polled | one row |
-| Devices with unresolved records | `POST /api/offline/sync` | only while records are due | one record per request |
+| Who                                         | Request                        | Rate (visible page)                                              | Notes                                                                         |
+| ------------------------------------------- | ------------------------------ | ---------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Every device                                | `GET /api/offline/ping`        | every 30 s (120 s hidden); one extra ping 3 s after a failure    | pre-auth, no tenant data; one shared `select 1` at most every 2 s per process |
+| Every KDS screen                            | `GET /api/offline/kitchen`     | every 30 s while the lane is empty, 10 s while it has items      | one indexed query                                                             |
+| Selling devices, only with table service on | `GET /api/offline/open-orders` | on opening selling and every 120 s                               | one bounded query (2 business days, 200 rows)                                 |
+| Selling devices                             | `GET /api/offline/settings`    | when selling opens and when the connection returns; never polled | one row                                                                       |
+| Devices with unresolved records             | `POST /api/offline/sync`       | only while records are due                                       | one record per request                                                        |
 
 With the default settings (table service off) no device fetches open orders.
 
@@ -432,7 +462,9 @@ On the Sync screen a manager can:
   **Marcar como registrado** instead of reconcile or archive.
 - **Conciliar** authentic cash or terminal sales: the money is recorded once in the
   original drawer (even if closed) as a financial-only recovery order, with kitchen
-  and stock follow-up tasks. A reconciled payment of a table check goes into its
+  and stock follow-up tasks, and gets a fiscal ticket (source `recovery`: one line
+  "Venta sin conexión conciliada" at the restaurant's default tax, issued by the
+  reconciling manager). A reconciled payment of a table check goes into its
   order (see "Table service offline"); the device stores the tender the reconcile
   made, so offline balances count it once.
 - A sale whose online create had already committed (its response was lost) and

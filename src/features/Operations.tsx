@@ -8,6 +8,7 @@ import { Orders } from "./Orders";
 import { Tables } from "./Tables";
 import { Kitchen } from "./Kitchen";
 import { RestaurantSettings } from "./RestaurantSettings";
+import { FiscalSettings } from "./fiscal/FiscalSettings";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
 import { useEffect, useRef, useState } from "react";
@@ -20,6 +21,10 @@ import { db, isResolved } from "../offline";
 import { ArchivedDrawerNote } from "./offline/ArchivedDrawerNote";
 import { OfflineKitchenReview } from "./offline/OfflineKitchenReview";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
+import { DrawerPanel } from "./cash/DrawerPanel";
+import { DrawerReviewDialog } from "./cash/DrawerReviewDialog";
+import { MoneyControlsSettings } from "./cash/MoneyControlsSettings";
+import type { CashHistoryRow } from "./CashHistory";
 export function Operations({
   view,
   session,
@@ -106,21 +111,25 @@ export function Operations({
     setDetail(null);
     void load();
   }, [view]);
+  /**
+   * offline (026): this device's local sales must sync before its drawer is
+   * closed. Returns the translated reason, or null (discounts' close dialog
+   * shows it in place).
+   */
+  async function pendingCloseCheck(): Promise<string | null> {
+    const pending = await db.pending
+      .filter(
+        (p) =>
+          p.scope.startsWith(session.tenantId + ":" + session.deviceId + ":") &&
+          !isResolved(p),
+      )
+      .count();
+    return pending ? t("syncBeforeClose") : null;
+  }
+  // discounts (028): "Revisar diferencia" from the drawer history.
+  const [reviewing, setReviewing] = useState<CashHistoryRow | null>(null);
+  const [historyKey, setHistoryKey] = useState(0);
   async function action(path: string, body: unknown) {
-    if (path === "/cash/close") {
-      const pending = await db.pending
-        .filter(
-          (p) =>
-            p.scope.startsWith(
-              session.tenantId + ":" + session.deviceId + ":",
-            ) && !isResolved(p),
-        )
-        .count();
-      if (pending) {
-        setError(t("syncBeforeClose"));
-        return;
-      }
-    }
     setBusy(true);
     setError("");
     try {
@@ -168,6 +177,10 @@ export function Operations({
       {view === "settings" && (
         <>
           <RestaurantSettings session={session} locale={locale} />
+          {manager && <FiscalSettings session={session} locale={locale} />}
+          {manager && (
+            <MoneyControlsSettings session={session} locale={locale} />
+          )}
           {session.role === "owner" && <FreeSelection locale={locale} />}
           {manager && <DeviceManagement session={session} locale={locale} />}
           <PlanSettings
@@ -192,6 +205,7 @@ export function Operations({
               locale={locale}
               navigate={navigate}
               refreshKey={refreshKey}
+              online={online}
             />
           )}
           {view === "tables" && (
@@ -220,102 +234,59 @@ export function Operations({
           )}
           {view === "cash" && manager && (
             <CashHistory
+              key={historyKey}
               locale={locale}
               currency={session.restaurant.currency}
+              rowActions={(row) =>
+                row.needs_review ? (
+                  <Button onClick={() => setReviewing(row)}>
+                    {t("discountsReviewAction")}
+                  </Button>
+                ) : null
+              }
             />
           )}
           {view === "cash" && (
-            <>
-              {!data || data.closed_at ? (
-                <div className="panel narrow">
-                  <Badge>{t("drawerClosed")}</Badge>
-                  <h2>{t("openDrawer")}</h2>
-                  <p>{t("noDrawer")}</p>
-                  <Button
-                    variant="primary"
-                    onClick={() => setModal({ kind: "open" })}
-                  >
-                    {t("openDrawer")}
-                  </Button>
-                  {data && (
-                    <p>
-                      {t("difference")}: {m(data.discrepancy)}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <div className="metric-grid">
-                    <div className="metric">
-                      <span>{t("opening")}</span>
-                      <strong>{m(data.opening)}</strong>
-                    </div>
-                    <div className="metric">
-                      <span>{t("expected")}</span>
-                      <strong>{m(data.expected)}</strong>
-                    </div>
-                    <div className="metric">
-                      <span>{t("tip")}</span>
-                      <strong>
-                        {m(
-                          data.tenders.reduce(
-                            (a: number, t: any) => a + t.tip,
-                            0,
-                          ),
-                        )}
-                      </strong>
-                    </div>
-                  </div>
-                  <div className="row">
-                    <Badge tone="green">{t("drawerOpen")}</Badge>
-                    {manager && (
-                      <>
-                        <Button onClick={() => setModal({ kind: "paidout" })}>
-                          {t("paidOut")}
-                        </Button>
-                        <Button
-                          variant="primary"
-                          onClick={() => setModal({ kind: "close" })}
-                        >
-                          {t("closeDrawer")}
-                        </Button>
-                      </>
-                    )}
-                  </div>
-                  <h2>{t("movements")}</h2>
-                  <div className="data-table">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>{t("date")}</th>
-                          <th>{t("method")}</th>
-                          <th>{t("amount")}</th>
-                          <th>{t("tip")}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.tenders.map((r: any) => (
-                          <tr key={r.id}>
-                            <td>
-                              {new Date(r.created_at).toLocaleTimeString(
-                                locale,
-                              )}
-                            </td>
-                            <td>
-                              {t(
-                                r.method === "cash" ? "cashMethod" : "external",
-                              )}
-                            </td>
-                            <td>{m(r.amount)}</td>
-                            <td>{m(r.tip)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
-              )}
-            </>
+            <DrawerPanel
+              session={session}
+              locale={locale}
+              data={data}
+              money={m}
+              onOpenDrawer={() => setModal({ kind: "open" })}
+              onPaidOut={() => setModal({ kind: "paidout" })}
+              beforeClose={pendingCloseCheck}
+              notice={
+                data && (
+                  <ArchivedDrawerNote
+                    session={session}
+                    drawerId={data.id}
+                    locale={locale}
+                    money={m}
+                  />
+                )
+              }
+              onChanged={async () => {
+                setHistoryKey((n) => n + 1);
+                await load();
+              }}
+            />
+          )}
+          {reviewing && (
+            <DrawerReviewDialog
+              drawerId={reviewing.id}
+              session={session}
+              locale={locale}
+              money={m}
+              figures={{
+                expected: reviewing.expected,
+                counted: reviewing.counted,
+              }}
+              close={() => setReviewing(null)}
+              saved={() => {
+                setReviewing(null);
+                setHistoryKey((n) => n + 1);
+              }}
+            />
           )}
           {view === "inventory" && (
             <>
@@ -519,7 +490,6 @@ export function Operations({
             (
               {
                 open: "openDrawer",
-                close: "closeDrawer",
                 paidout: "paidOut",
                 receipt: "receive",
                 count_adjust: "count",
@@ -573,12 +543,6 @@ export function Operations({
                       operationId,
                       opening: parseAmount(String(f.get("amount"))),
                     });
-                  else if (modal.kind === "close")
-                    await action("/cash/close", {
-                      operationId,
-                      counted: parseAmount(String(f.get("amount"))),
-                      reason: f.get("reason"),
-                    });
                   else if (modal.kind === "paidout")
                     await action("/cash/paid-out", {
                       operationId,
@@ -608,19 +572,6 @@ export function Operations({
                 }
               }}
             >
-              {modal.kind === "close" && (
-                <>
-                  <p>
-                    {t("expected")}: <strong>{m(data.expected)}</strong>
-                  </p>
-                  <ArchivedDrawerNote
-                    session={session}
-                    drawerId={data.id}
-                    locale={locale}
-                    money={m}
-                  />
-                </>
-              )}
               {modal.kind === "prep" ? (
                 <>
                   {["input", "output"].map((k) => (
@@ -646,15 +597,7 @@ export function Operations({
                   ))}
                 </>
               ) : (
-                <Field
-                  label={t(
-                    modal.kind === "close"
-                      ? "counted"
-                      : modal.item
-                        ? "quantity"
-                        : "amount",
-                  )}
-                >
+                <Field label={t(modal.item ? "quantity" : "amount")}>
                   <input
                     name="amount"
                     inputMode="decimal"
@@ -666,11 +609,7 @@ export function Operations({
               )}
               {modal.kind !== "open" && (
                 <Field label={t("reason")}>
-                  <textarea
-                    name="reason"
-                    required={modal.kind !== "close"}
-                    minLength={3}
-                  />
+                  <textarea name="reason" required minLength={3} />
                 </Field>
               )}
               {error && (
