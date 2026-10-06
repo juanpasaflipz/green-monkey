@@ -228,6 +228,7 @@ export function HoldCard({
             <input
               type="checkbox"
               checked={ack}
+              disabled={busy}
               onChange={(e) => setAck(e.target.checked)}
             />
             <span>{t("publicPriceAck")}</span>
