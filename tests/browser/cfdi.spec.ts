@@ -257,6 +257,12 @@ async function ensureCfdiOn(page: Page) {
     v = await settings(page);
   }
   if (!v.settings.enabled) await saveSettings(page, { enabled: true });
+  // The page read its CFDI status (canInvoice, the printed block) at sign-in, before CFDI was
+  // turned on through the API: reload so it reads it again, as a sign-in would.
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Hoy", exact: true }),
+  ).toBeVisible();
 }
 
 async function saveSettings(page: Page, patch: Record<string, unknown>) {
@@ -350,11 +356,20 @@ test("FIT-6: owner activates CFDI in test mode, a wrong CSD password is refused 
   );
   const previous = await ensureFiscalIdentity(page);
   try {
+    // Activation is once per restaurant and this test pauses it when it ends: on a rerun against
+    // the same database, turn the activated restaurant back on so the panel shows its mode.
+    const before = await settings(page);
+    if (before.settings && !before.settings.enabled)
+      await saveSettings(page, { enabled: true });
     await openSettings(page);
     const cfdi = panel(page);
     const activate = cfdi.getByRole("button", {
       name: "Activar en modo prueba",
     });
+    // The panel loads its settings first: decide only once it shows either state.
+    await expect(
+      activate.or(cfdi.getByText("Modo prueba", { exact: true })).first(),
+    ).toBeVisible();
     if (await activate.isVisible()) await activate.click();
     await expect(cfdi.getByText("Lista", { exact: true })).toBeVisible({
       timeout: 30_000,
@@ -431,9 +446,11 @@ test("MON-1/FIT-6: a paid ticket is invoiced from Órdenes (régimen and uso fil
     const order = await paidOrder(page, "CFDI staff " + Date.now());
     await page.getByRole("button", { name: "Operación", exact: true }).click();
     await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    // Detalle de orden opens from the card's Detalle button, not from the card itself.
     await page
       .locator(".order-summary")
       .filter({ hasText: order.name })
+      .getByRole("button", { name: "Detalle", exact: true })
       .click();
     await expect(page.getByText("Sin facturar", { exact: true })).toBeVisible();
     // The order's CFDI actions with the chip, whose label is visually hidden text (CFDI-R2-7).
@@ -482,7 +499,8 @@ test("MON-1/FIT-6: a paid ticket is invoiced from Órdenes (régimen and uso fil
     const detail = page.getByRole("dialog", { name: /^Factura / });
     await detail.getByRole("button", { name: "Cancelar…" }).click();
     const cancel = page.getByRole("dialog", { name: /^Cancelar factura/ });
-    await cancel.getByLabel("Motivo").selectOption("02");
+    // "Motivo" alone also matches the "Explica el motivo" textarea.
+    await cancel.getByRole("combobox", { name: /^Motivo/ }).selectOption("02");
     await cancel
       .getByLabel("Explica el motivo")
       .fill("Datos del cliente con error");
@@ -513,7 +531,9 @@ test("customer self-invoices from /f/{code}: inline receptor errors, then succes
   );
   await ensureFiscalIdentity(page);
   await ensureCfdiOn(page);
-  const customer = await browser.newPage();
+  // axe needs a page from a context the test owns (browser.newPage() pages are refused).
+  const customerContext = await browser.newContext();
+  const customer = await customerContext.newPage();
   try {
     const order = await paidOrder(page, "CFDI portal " + Date.now());
     await customer.goto(`/f/${order.fiscal.ticket.selfInvoiceCode}`);
@@ -545,7 +565,7 @@ test("customer self-invoices from /f/{code}: inline receptor errors, then succes
         .violations,
     ).toEqual([]);
   } finally {
-    await customer.close();
+    await customerContext.close();
     await pauseCfdi(page);
   }
 });
