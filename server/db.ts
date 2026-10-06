@@ -136,11 +136,23 @@ export async function checkWorkerRole(sql: postgres.Sql) {
   if (r.owned) throw Error("Worker role must not own application tables");
 }
 const RETRYABLE = new Set(["40P01", "40001"]);
+let retryableFailures = 0;
+/**
+ * Test hook (PLATFORM-LOCKS-3): how many deadlocks (40P01) or serialization failures
+ * (40001) tenant() has caught in this process, retried or not. LO-R9 makes any of them in
+ * a DB suite a bug, so concurrency suites compare it before and after their burst
+ * (tests/db-retries.ts); pg_stat_database.deadlocks lags behind (stats flush on idle).
+ */
+export function dbRetryCount(): number {
+  return retryableFailures;
+}
 /**
  * Runs fn in one tenant-scoped transaction. A deadlock or serialization
  * failure rolls the whole transaction back and is retried once; a second one
  * becomes concurrent_update (409). fn must therefore be safe to replay: no
- * side effects outside the database transaction.
+ * side effects outside the database transaction. Every such failure logs
+ * db_retry {code, attempt, retried} at warn (RUNBOOK "Signals"): a retried
+ * deadlock is a lock-order bug that only looks like a 1 s stall.
  */
 export async function tenant<T>(
   sql: postgres.Sql,
@@ -157,7 +169,10 @@ export async function tenant<T>(
       })) as T;
     } catch (e) {
       // A statement timeout (57014) is not retryable: only 40P01/40001 are.
-      if (!RETRYABLE.has((e as { code?: string })?.code ?? "")) throw e;
+      const code = (e as { code?: string })?.code ?? "";
+      if (!RETRYABLE.has(code)) throw e;
+      retryableFailures++;
+      log.warn("db_retry", { code, attempt, retried: attempt < 2 });
       if (attempt >= 2) throw new DomainError("concurrent_update", 409);
       await new Promise((r) =>
         setTimeout(r, 25 + Math.floor(Math.random() * 75)),

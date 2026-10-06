@@ -25,6 +25,7 @@ import {
 } from "../server/free-limits.js";
 import { createOrder, recordPayment } from "../server/orders.js";
 import type { Session } from "../shared/domain.js";
+import { noRetries } from "./db-retries.js";
 const { runtime, migration } = isolatedTarget(process.env),
   sql = postgres(runtime, { max: 8 }),
   admin = postgres(migration, { max: 1 });
@@ -96,9 +97,11 @@ try {
     secret: "123456",
     active: true,
   });
-  const attempts = await Promise.allSettled(
-    Array.from({ length: 6 }, () =>
-      run((tx) => saveEmployee(tx, s, employee())),
+  const attempts = await noRetries("free-limit employee saves", () =>
+    Promise.allSettled(
+      Array.from({ length: 6 }, () =>
+        run((tx) => saveEmployee(tx, s, employee())),
+      ),
     ),
   );
   assert.equal(

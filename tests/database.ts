@@ -21,6 +21,7 @@ import {
   stock,
 } from "../server/orders.js";
 import type { Session } from "../shared/domain.js";
+import { noRetries } from "./db-retries.js";
 const { runtime: url, migration } = isolatedTarget(process.env);
 const u = new URL(url);
 const identity = u.hostname + ":" + (u.port || "5432") + u.pathname;
@@ -91,9 +92,11 @@ try {
   };
   let order: any;
   await test("concurrent identical order creates one effect", async () => {
-    const results = await Promise.all(
-      Array.from({ length: 8 }, () =>
-        tenant(sql, s.tenantId, (tx) => createOrder(tx, s, body)),
+    const results = await noRetries("identical order creates", () =>
+      Promise.all(
+        Array.from({ length: 8 }, () =>
+          tenant(sql, s.tenantId, (tx) => createOrder(tx, s, body)),
+        ),
       ),
     );
     assert.equal(new Set(results.map((r) => r.id)).size, 1);
