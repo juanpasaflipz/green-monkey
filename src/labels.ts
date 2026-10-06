@@ -1,4 +1,5 @@
 import { businessDate, type Locale } from "../shared/domain";
+import { serverNow } from "./clock";
 import { strings, type Key } from "./i18n";
 
 /**
@@ -201,11 +202,13 @@ export function businessDayLabel(date: string, locale: Locale): string {
 /**
  * The restaurant's current business date with the server's own helper and settings
  * (shared/domain businessDate: the restaurant timezone and cutoff), for screens whose
- * response does not carry it.
+ * response does not carry it. "Now" is the corrected server clock (src/clock.ts, the one
+ * offline evidence uses), so a tablet whose clock is a few minutes off still agrees with
+ * Órdenes and the kitchen (whose date comes from the server) around the cutoff.
  */
 export function currentBusinessDate(
   restaurant: { timezone: string; cutoff: number },
-  now: number = Date.now(),
+  now: number = serverNow(),
 ): string {
   return businessDate(
     new Date(now).toISOString(),

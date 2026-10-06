@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { businessDate, type LineInput, type Product } from "../shared/domain";
 import {
@@ -8,6 +8,7 @@ import {
   orderNumberText,
 } from "../src/labels";
 import { orderLabel } from "../src/features/offline/format";
+import { resetConnectivityForTests } from "../src/connectivity";
 import {
   cashSuggestions,
   changeDue,
@@ -702,6 +703,24 @@ describe("LD-29: business-day labels after the cutoff rollover", () => {
     expect(currentBusinessDate(mexico, at("2026-10-06T10:00:00Z"))).toBe(
       businessDate("2026-10-06T10:00:00Z", mexico.timezone, mexico.cutoff),
     );
+  });
+
+  describe("without an instant", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      resetConnectivityForTests();
+    });
+
+    it("the current business date reads the corrected server clock, not the raw device clock (POL-3)", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      // The tablet reads 03:58 local; the server is 3 minutes ahead (04:01).
+      vi.setSystemTime(at("2026-10-06T09:58:00Z"));
+      resetConnectivityForTests({}, 180_000);
+      expect(currentBusinessDate(mexico)).toBe("2026-10-06");
+      // With no measured offset the device clock is all there is.
+      resetConnectivityForTests({}, null);
+      expect(currentBusinessDate(mexico)).toBe("2026-10-05");
+    });
   });
 
   it("a same-day order reads #10; one from the previous business day reads #10 · 5 oct (en: #10 · Oct 5)", () => {
