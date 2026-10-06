@@ -818,6 +818,56 @@ test("owner downloads JSON and CSV exports", async ({
   }
 });
 
+/**
+ * The revocable counter code the privacy-URL test creates on the persistent
+ * demo restaurant, until it is deactivated. LD-P9: a timed-out test never
+ * reaches its finally (and its page is closed before then), so the afterEach
+ * below deactivates it through the fixture database instead (PUBLIC-UX-6).
+ */
+let privacyLinkOpen: string | null = null;
+async function revokeAsAdmin(
+  admin: ReturnType<typeof fixtureDatabases>["admin"],
+  linkId: string,
+) {
+  await admin.begin(async (tx) => {
+    await tx`select set_config('app.tenant_id',${DEMO_TENANT},true)`;
+    await tx`update public_links set revoked_at=now(),revoked_by=created_by,revoke_reason='revoked'
+      where tenant_id=${DEMO_TENANT} and id=${linkId} and revoked_at is null`;
+  });
+}
+/**
+ * Deactivates the code through the page, and through the fixture database
+ * when the page cannot (it was closed, or the call failed). Returns the
+ * page's status (null when the call itself failed).
+ */
+async function deactivatePrivacyLink(
+  page: Page,
+  admin: ReturnType<typeof fixtureDatabases>["admin"],
+  linkId: string,
+): Promise<number | null> {
+  const status = await call(page, `/ordering/links/${linkId}/revoke`, {
+    operationId: randomUUID(),
+  }).then(
+    (r) => r.status,
+    () => null,
+  );
+  if (status !== 200) await revokeAsAdmin(admin, linkId);
+  privacyLinkOpen = null;
+  return status;
+}
+test.afterEach(async ({ baseURL }) => {
+  const linkId = privacyLinkOpen;
+  privacyLinkOpen = null;
+  if (!linkId) return;
+  const { sql, admin } = fixtureDatabases(baseURL);
+  try {
+    await revokeAsAdmin(admin, linkId);
+  } finally {
+    await sql.end();
+    await admin.end();
+  }
+});
+
 test("restaurant privacy URL appears on QR ordering; missing URL shows no-notice text", async ({
   page,
   context,
@@ -857,6 +907,7 @@ test("restaurant privacy URL appears on QR ordering; missing URL shows no-notice
     });
     expect(access.status, JSON.stringify(access.body)).toBe(200);
     linkId = access.body.id;
+    privacyLinkOpen = linkId;
     const customer = await context.newPage();
     await customer.goto(access.body.path);
     const notice = customer.getByRole("link", {
@@ -893,15 +944,13 @@ test("restaurant privacy URL appears on QR ordering; missing URL shows no-notice
     await expect(notice).toHaveCount(0);
   } finally {
     // The restore and the connection cleanup run whatever the revoke
-    // answers; its status is asserted last (PUB-B3-4).
+    // answers; its status is asserted last (PUB-B3-4). When the page cannot
+    // deactivate the code (a closed page throws), the fixture database does,
+    // so the demo restaurant never keeps an active "Privacidad" code
+    // (PUBLIC-UX-6).
     let revoked: number | null = null;
     try {
-      if (linkId)
-        revoked = (
-          await call(page, `/ordering/links/${linkId}/revoke`, {
-            operationId: randomUUID(),
-          })
-        ).status;
+      if (linkId) revoked = await deactivatePrivacyLink(page, admin, linkId);
     } finally {
       try {
         // The demo restaurant keeps the settings row it had before.
@@ -919,6 +968,39 @@ test("restaurant privacy URL appears on QR ordering; missing URL shows no-notice
       }
     }
     if (linkId) expect(revoked).toBe(200);
+  }
+});
+
+test("the privacy test's cleanup deactivates its code even when its page is already closed (PUBLIC-UX-6)", async ({
+  context,
+  baseURL,
+}) => {
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const page = await context.newPage();
+  let linkId: string | null = null;
+  try {
+    await demoOwnerLogin(page);
+    const access = await call(page, "/ordering/links", {
+      kind: "counter",
+      label: `Privacidad ${randomUUID().slice(0, 5)}`,
+    });
+    expect(access.status, JSON.stringify(access.body)).toBe(200);
+    linkId = access.body.id as string;
+    privacyLinkOpen = linkId;
+    // A timed-out test's page is closed before its cleanup runs.
+    await page.close();
+    expect(await deactivatePrivacyLink(page, admin, linkId)).toBeNull();
+    const [row] = await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id',${DEMO_TENANT},true)`;
+      return tx`select revoked_at,revoke_reason from public_links where id=${linkId}`;
+    });
+    expect(row.revoked_at).not.toBeNull();
+    expect(row.revoke_reason).toBe("revoked");
+    expect(privacyLinkOpen).toBeNull();
+  } finally {
+    if (linkId) await revokeAsAdmin(admin, linkId);
+    await sql.end();
+    await admin.end();
   }
 });
 
