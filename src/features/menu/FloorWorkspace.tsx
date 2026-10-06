@@ -15,6 +15,13 @@ import { translateError } from "../../i18n";
 import { Badge, Button, Empty, Field, Modal } from "../../components/ui";
 import { translator } from "./format";
 import { ConfirmDialog } from "./ConfirmDialog";
+import type {
+  PublicLinkView,
+  PublicLinksResponse,
+  PublicSettingsView,
+} from "../../../shared/public-ordering";
+import { TableQrDialog, shortDate } from "../public/TableQrDialog";
+import { TableQrBulkDialog } from "../public/TableQrBulkDialog";
 
 type Floor = { areas: DiningArea[]; tables: DiningTable[] };
 type Dialog =
@@ -31,7 +38,7 @@ function swap<T>(list: T[], index: number, delta: number): T[] {
 
 /** Menú e inventario → Mesas: areas and tables. */
 export function FloorWorkspace({
-  session: _session,
+  session,
   locale,
   online,
 }: {
@@ -47,6 +54,26 @@ export function FloorWorkspace({
   const [showArchived, setShowArchived] = useState(false);
   const [dialog, setDialog] = useState<(Dialog & { key: string }) | null>(null);
   const [archiveTable, setArchiveTable] = useState<DiningTable | null>(null);
+  // Public ordering (032): table QR codes, when this server offers them on Pro.
+  const [qr, setQr] = useState<PublicLinkView[] | null>(null);
+  const [qrTable, setQrTable] = useState<DiningTable | null>(null);
+  const [qrBulk, setQrBulk] = useState(false);
+
+  async function loadQr() {
+    try {
+      const v = await api<PublicSettingsView>("/ordering/settings");
+      if (!v.available || !v.pro) return setQr(null);
+      setQr((await api<PublicLinksResponse>("/ordering/links")).links);
+    } catch {
+      setQr(null);
+    }
+  }
+  useEffect(() => {
+    void loadQr();
+  }, []);
+  const tableLink = (id: string) =>
+    qr?.find((l) => l.kind === "table" && l.tableId === id && !l.revokedAt) ??
+    null;
 
   async function load() {
     try {
@@ -126,6 +153,11 @@ export function FloorWorkspace({
         <Button disabled={!online} onClick={() => open({ kind: "area" })}>
           {t("menuAreaNew")}
         </Button>
+        {qr && (
+          <Button disabled={!online} onClick={() => setQrBulk(true)}>
+            {t("publicBulkTitle")}
+          </Button>
+        )}
         <label className="menu-check">
           <input
             type="checkbox"
@@ -237,6 +269,20 @@ export function FloorWorkspace({
                               <Badge>{t("menuArchivedBadge")}</Badge>
                             )}
                           </div>
+                          {qr && (
+                            <span className="tiny muted">
+                              {tableLink(tb.id)
+                                ? t("publicTableQrActive", {
+                                    ref: tableLink(tb.id)!.ref,
+                                    date: shortDate(
+                                      tableLink(tb.id)!.createdAt,
+                                      locale,
+                                      session.restaurant.timezone,
+                                    ),
+                                  })
+                                : t("publicTableQrNone")}
+                            </span>
+                          )}
                         </div>
                         <div className="row wrap menu-row-actions">
                           {!tb.archived && (
@@ -282,6 +328,17 @@ export function FloorWorkspace({
                           >
                             {t("menuEdit")}
                           </Button>
+                          {qr && !tb.archived && (
+                            <Button
+                              aria-label={t("publicTableQrFor", {
+                                name: tb.name,
+                              })}
+                              disabled={!online}
+                              onClick={() => setQrTable(tb)}
+                            >
+                              {t("publicTableQr")}
+                            </Button>
+                          )}
                           <Button
                             disabled={locked || (tb.open && !tb.archived)}
                             title={
@@ -317,6 +374,27 @@ export function FloorWorkspace({
           })
       ) : (
         <Empty title={t("menuFloorEmpty")} />
+      )}
+      {qrTable && (
+        <TableQrDialog
+          table={qrTable}
+          link={tableLink(qrTable.id)}
+          restaurant={session.restaurant.name}
+          timezone={session.restaurant.timezone}
+          locale={locale}
+          onClose={() => setQrTable(null)}
+          onChanged={() => void loadQr()}
+        />
+      )}
+      {qrBulk && qr && (
+        <TableQrBulkDialog
+          tables={floor.tables.filter((tb) => !tb.archived)}
+          links={qr}
+          restaurant={session.restaurant.name}
+          locale={locale}
+          onClose={() => setQrBulk(false)}
+          onChanged={() => void loadQr()}
+        />
       )}
       {archiveTable && (
         <ConfirmDialog

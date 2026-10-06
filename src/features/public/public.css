@@ -1,0 +1,262 @@
+/* Public ordering (032), staff side: shell badge and banner, the Órdenes
+   inbox, the settings panel and the printable QR cards. */
+.nav-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--negative);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.rail button .nav-badge {
+  margin-left: auto;
+}
+.operations-tabs button .nav-badge {
+  margin-left: 6px;
+}
+.public-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-weight: 600;
+}
+.public-banner p {
+  margin: 0;
+}
+.badge-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  min-height: 24px;
+}
+.badge-button:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+  border-radius: 999px;
+}
+
+/* Órdenes inbox */
+.public-inbox {
+  margin-bottom: 24px;
+  padding: 16px;
+  border: 2px solid var(--warning-line);
+  border-radius: 16px;
+  background: var(--surface);
+}
+.public-inbox-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.public-inbox-head h2 {
+  margin: 0;
+  font-size: 18px;
+  flex: 1 1 auto;
+}
+.public-pill {
+  display: inline-flex;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.public-pill.open {
+  background: var(--positive-bg);
+  color: var(--positive);
+}
+.public-notice {
+  margin: 12px 0 0;
+  font-weight: 600;
+}
+.hold-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+.hold-card {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.hold-head h3 {
+  margin: 0;
+  font-size: 18px;
+}
+.hold-head p {
+  margin: 4px 0;
+}
+.hold-name {
+  margin: 8px 0 0;
+  font-weight: 600;
+}
+/* Like the kitchen's ticket notes: allergy mentions stand out. */
+.hold-note {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+  font-weight: 600;
+}
+.hold-note.allergy {
+  background: var(--negative);
+  color: #fff;
+}
+.hold-lines {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.hold-lines li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0 12px;
+}
+.hold-lines li.out .hold-line-name,
+.hold-lines li.out .hold-line-total {
+  text-decoration: line-through;
+  color: var(--text-2);
+}
+.hold-lines .option {
+  margin: 4px 0;
+  min-height: 48px;
+}
+.hold-issue {
+  grid-column: 1 / -1;
+  margin: 0 0 6px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--warning);
+}
+.hold-total {
+  display: flex;
+  justify-content: space-between;
+  margin: 8px 0 0;
+}
+.hold-actions {
+  margin-top: 12px;
+}
+.hold-more {
+  margin-top: 8px;
+}
+
+/* Settings panel */
+.public-settings-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.public-settings-head h2 {
+  margin: 0;
+}
+.public-policies {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+  align-items: end;
+}
+.public-policies > .button {
+  justify-self: start;
+}
+.public-links ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.public-link-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.public-link-row p {
+  margin: 2px 0 0;
+}
+.public-add-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+}
+.public-add-link .field {
+  flex: 1 1 220px;
+  margin-bottom: 0;
+}
+.field.inline {
+  margin: 0;
+}
+
+/* QR cards: preview in dialogs and printed one per section. */
+.qr-preview {
+  display: grid;
+  place-items: center;
+  margin: 12px 0;
+}
+.qr-card {
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  text-align: center;
+  color: #000;
+  background: #fff;
+}
+.qr-card p {
+  margin: 0;
+}
+.qr-card-restaurant {
+  font-size: 18px;
+  font-weight: 700;
+}
+.qr-card-place {
+  font-size: 22px;
+  font-weight: 800;
+}
+.qr-card-code {
+  width: 200px;
+  height: 200px;
+  shape-rendering: crispEdges;
+}
+.qr-card-line {
+  font-size: 14px;
+}
+.print-doc .qr-card-code {
+  width: 44mm;
+  height: 44mm;
+}
+.print-doc.paper-58 .qr-card-code {
+  width: 36mm;
+  height: 36mm;
+}
+.public-bulk-tables {
+  max-height: 50vh;
+  overflow: auto;
+}
+
+@media (max-width: 650px) {
+  .public-policies {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

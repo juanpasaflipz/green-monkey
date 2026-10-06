@@ -74,6 +74,11 @@ import {
   restoredLock,
 } from "./access/lock";
 import "./access/access.css";
+import { usePublicInbox } from "./features/public/usePublicInbox";
+import {
+  NavBadge,
+  PublicInboxBanner,
+} from "./features/public/PublicInboxBanner";
 type StepUpRequest = {
   sessionId: string;
   resolve: () => void;
@@ -89,6 +94,7 @@ export default function App() {
   const [view, setView] = useState("sell");
   const net = useConnectivity();
   const online = net.canUseServer;
+  const inbox = usePublicInbox(session, online);
   const [error, setError] = useState("");
   const [ticketsOpen, setTicketsOpen] = useState(false);
   const [, setOwnerAccess] = useState(false);
@@ -652,6 +658,9 @@ export default function App() {
               >
                 <Glyph size={20} strokeWidth={current ? 2.4 : 2} />
                 <span>{t(name as Key)}</span>
+                {(name === "orders" || name === "operation") && (
+                  <NavBadge count={inbox.pending} />
+                )}
               </button>
             );
           })}
@@ -731,6 +740,7 @@ export default function App() {
                   aria-current={view === key ? "page" : undefined}
                 >
                   {t(key)}
+                  {key === "orders" && <NavBadge count={inbox.pending} />}
                 </button>
               ),
             )}
@@ -747,6 +757,13 @@ export default function App() {
           onOpenSync={() => setView("sync")}
           onOpenTickets={() => setTicketsOpen(true)}
         />
+        {inbox.pending > 0 && view !== "orders" && (
+          <PublicInboxBanner
+            count={inbox.pending}
+            locale={locale}
+            onView={() => setView("orders")}
+          />
+        )}
         <UpdatePrompt locale={locale} session={session} />
         {expiring && (
           <div role="status" className="expiry-banner">
@@ -806,6 +823,7 @@ export default function App() {
               view={view}
               session={session}
               locale={locale}
+              online={online}
               navigate={setView}
             />
           ))}

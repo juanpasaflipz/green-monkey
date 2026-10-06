@@ -3,6 +3,7 @@ import { DeviceManagement } from "./DeviceManagement";
 import { StaffManagement } from "./StaffManagement";
 import { RecoveryQueue } from "./RecoveryQueue";
 import { FreeSelection } from "./FreeSelection";
+import { PublicOrderingSettings } from "./public/PublicOrderingSettings";
 import { PlanSettings } from "./PlanSettings";
 import { Orders } from "./Orders";
 import { Tables } from "./Tables";
@@ -25,11 +26,13 @@ export function Operations({
   session,
   locale,
   navigate,
+  online = true,
 }: {
   view: string;
   session: Session;
   locale: Locale;
   navigate: (s: string) => void;
+  online?: boolean;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
@@ -145,6 +148,12 @@ export function Operations({
       {view === "settings" && (
         <>
           <RestaurantSettings session={session} locale={locale} />
+          <PublicOrderingSettings
+            session={session}
+            locale={locale}
+            online={online}
+            navigate={navigate}
+          />
           {session.role === "owner" && <FreeSelection locale={locale} />}
           {manager && <DeviceManagement session={session} locale={locale} />}
           <PlanSettings
@@ -169,6 +178,7 @@ export function Operations({
               locale={locale}
               navigate={navigate}
               refreshKey={refreshKey}
+              online={online}
             />
           )}
           {view === "tables" && (

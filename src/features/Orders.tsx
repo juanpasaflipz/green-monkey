@@ -23,6 +23,7 @@ import { SettlementDialog } from "./SettlementDialog";
 import { OrderDetail } from "./OrderDetail";
 import { moneyFormatter } from "./Receipt";
 import { useOnlineChargeBlocks } from "./offline/useOnlineChargeBlocks";
+import { PublicOrderInbox } from "./public/PublicOrderInbox";
 
 type Tab = "current" | "open" | "closed";
 const isTab = (v: unknown): v is Tab =>
@@ -35,11 +36,13 @@ export function Orders({
   locale,
   navigate,
   refreshKey,
+  online = true,
 }: {
   session: Session;
   locale: Locale;
   navigate: (view: string) => void;
   refreshKey: number;
+  online?: boolean;
 }) {
   const t = (k: Key) => strings[locale][k];
   const money = moneyFormatter(session.restaurant.currency, locale);
@@ -218,6 +221,13 @@ export function Orders({
     });
   return (
     <div className="orders-view">
+      <PublicOrderInbox
+        session={session}
+        locale={locale}
+        online={online}
+        navigate={navigate}
+        onChanged={refresh}
+      />
       <div
         className="orders-toolbar"
         role="search"
