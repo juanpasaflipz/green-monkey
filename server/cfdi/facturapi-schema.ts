@@ -29,8 +29,8 @@ const zip = z.string().regex(/^\d{5}$/);
 // Requests (strict)
 // ---------------------------------------------------------------------------------------------
 
-/** BaseTax: IVA traslado only (IEPS and withholdings are out of scope, fiscal D8). */
-export const taxInput = z
+/** BaseTax: an IVA traslado (IEPS is out of scope, fiscal D8). */
+export const ivaTaxInput = z
   .object({
     type: z.literal("IVA"),
     rate: z.union([z.literal(0.16), z.literal(0.08), z.literal(0)]),
@@ -38,8 +38,30 @@ export const taxInput = z
     withholding: z.literal(false),
   })
   .strict();
+/**
+ * BaseTax: the RESICO ISR retention (LISR 113-J, LD-16 L9), 1.25 % of the concept base, withheld by
+ * a persona moral from a persona física in régimen 626. Shape from the OpenAPI BaseTax (type enum
+ * IVA/ISR/IEPS, `withholding` boolean) and the Node SDK `Tax` type (Context7 /facturapi/facturapi-node).
+ */
+export const isrWithholdingInput = z
+  .object({
+    type: z.literal("ISR"),
+    rate: z.literal(0.0125),
+    factor: z.literal("Tasa"),
+    withholding: z.literal(true),
+  })
+  .strict();
+export const taxInput = z.union([ivaTaxInput, isrWithholdingInput]);
 
-/** LineItemProductInput / LineItemProductEgresoInput (ProductProperties). */
+/**
+ * LineItemProductInput / LineItemProductEgresoInput (ProductProperties).
+ *
+ * Taxes: exactly the IVA traslado, or the IVA traslado followed by the RESICO ISR retention. With
+ * a retention the price is the concept BASE (`tax_included: false`): the documentation says a
+ * tax-inclusive price includes "all applicable taxes" without saying how a withholding enters that
+ * price, so a tax-inclusive price could move the base away from fiscal's. Without a retention the
+ * price is tax-inclusive (`tax_included: true`), the exact strategy of spec §4.3.
+ */
 export const productInput = z
   .object({
     description: z.string().min(1).max(1000),
@@ -47,14 +69,35 @@ export const productInput = z
     unit_key: z.string().regex(/^[A-Z0-9]{1,3}$/),
     unit_name: z.string().min(1).max(20),
     price: z.number().positive().multipleOf(0.000001),
-    tax_included: z.literal(true),
+    tax_included: z.boolean(),
     taxability: z.literal("02"),
-    taxes: z.array(taxInput).length(1),
+    taxes: z.array(taxInput).min(1).max(2),
     // NoIdentificacion. ProductProperties (ingreso) documents `sku`; ProductEgresoProperties does
     // not, so credit notes never send it (enforced on the invoice body below).
     sku: z.string().min(1).max(100).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((p, ctx) => {
+    const [first, second] = p.taxes;
+    if (first.type !== "IVA" || first.withholding)
+      ctx.addIssue({
+        code: "custom",
+        path: ["taxes", 0],
+        message: "the first tax is the IVA traslado",
+      });
+    if (second && second.type !== "ISR")
+      ctx.addIssue({
+        code: "custom",
+        path: ["taxes", 1],
+        message: "the second tax can only be the ISR retention",
+      });
+    if (p.tax_included !== !second)
+      ctx.addIssue({
+        code: "custom",
+        path: ["tax_included"],
+        message: "a price with a retention is the base (tax_included false)",
+      });
+  });
 
 /** LineItemInput / LineItemEgresoInput with an inline product. */
 export const itemInput = z
@@ -137,6 +180,7 @@ export const invoiceInput = z
 export type FInvoiceInput = z.infer<typeof invoiceInput>;
 export type FItemInput = z.infer<typeof itemInput>;
 export type FTaxInput = z.infer<typeof taxInput>;
+export type FIvaTaxInput = z.infer<typeof ivaTaxInput>;
 export type FCustomerInput = z.infer<typeof customerInput>;
 
 /** OrganizationLegalInput (name and legal_name ≤ 100: the documented limit, spec R14). */

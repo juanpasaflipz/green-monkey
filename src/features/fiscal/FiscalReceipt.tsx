@@ -228,6 +228,8 @@ export function FiscalReceiptFooter({
     return (
       <div className="fiscal-footer">
         <p>{t.fiscalReceiptIncluded}</p>
+        {/* cfdi (030): a local (offline) receipt's "ask for it once synced" line (CFDI-UX-6). */}
+        {kind === "local" ? extra : null}
       </div>
     );
   const refunds = order.fiscal?.refunds ?? [];

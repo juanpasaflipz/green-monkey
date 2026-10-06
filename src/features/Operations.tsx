@@ -9,6 +9,7 @@ import { Tables } from "./Tables";
 import { Kitchen } from "./Kitchen";
 import { RestaurantSettings } from "./RestaurantSettings";
 import { FiscalSettings } from "./fiscal/FiscalSettings";
+import { CfdiSettings } from "./cfdi/CfdiSettings";
 import { AccountPrivacy } from "./AccountPrivacy";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
@@ -162,6 +163,7 @@ export function Operations({
         <>
           <RestaurantSettings session={session} locale={locale} />
           {manager && <FiscalSettings session={session} locale={locale} />}
+          {manager && <CfdiSettings session={session} locale={locale} />}
           {manager && (
             <MoneyControlsSettings session={session} locale={locale} />
           )}

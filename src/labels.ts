@@ -108,6 +108,17 @@ const operations: Record<string, Key> = {
   "reports.corte_z.reprinted": "reportsOpCorteZReprinted",
   "reports.count_slip.printed": "reportsOpCountSlipPrinted",
   "reports.day_corte.printed": "reportsOpDayCortePrinted",
+  // cfdi (030)
+  "cfdi.activated": "cfdiOpActivated",
+  "cfdi.settings.saved": "cfdiOpSettingsSaved",
+  "cfdi.csd.uploaded": "cfdiOpCsdUploaded",
+  "cfdi.live.requested": "cfdiOpLiveRequested",
+  "cfdi.invoice.requested": "cfdiOpInvoiceRequested",
+  "cfdi.cancel.requested": "cfdiOpCancelRequested",
+  "cfdi.substitute.requested": "cfdiOpSubstituteRequested",
+  "cfdi.globals.run": "cfdiOpGlobalsRun",
+  "cfdi.document.retried": "cfdiOpRetried",
+  "cfdi.email.requested": "cfdiOpEmailRequested",
   // account (031), added at account's merge (contracts 3.13)
   "account.owner_seat": "accountOpOwnerSeat",
   "account.owner_seat_revoked": "accountOpOwnerSeatRevoked",

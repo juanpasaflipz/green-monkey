@@ -356,7 +356,7 @@ cómo conservar la bitácora.
 | Función | Estado | Mientras tanto | Dónde se documentará |
 | --- | --- | --- | --- |
 | Ticket fiscal (folio consecutivo, RFC, régimen, desglose de IVA en el recibo) | Disponible (fiscal, migración 027) | Cada venta cobrada imprime su ticket con folio; llena «Datos fiscales» antes del piloto (sección 4.1). | [Fiscal](FISCAL.md#the-printed-ticket) |
-| Factura electrónica (CFDI) para el cliente y factura global del día | Pendiente (ola 2, CFDI) | Si un cliente pide factura, usa el proceso que el restaurante ya tenga con su contador. | [CFDI](CFDI.md#pending-spec-implementation-steps) |
+| Factura electrónica (CFDI) para el cliente y factura global del día | Construida (CFDI, migración 030), sin verificar con Facturapi; desactivada hasta configurar las llaves y el CSD | Mientras no esté activada y verificada, si un cliente pide factura usa el proceso que el restaurante ya tenga con su contador. | [CFDI](CFDI.md#onboarding-runbook) |
 | Descuentos y cortesías | Pendiente (ola 2, descuentos) | No hay descuentos en la app. No cambies precios del menú para simularlos. | `docs/DISCOUNTS.md`, que agrega esa ola |
 | Reportes y cortes por forma de pago | Disponible (reportes, migración 029) | «Hoy» y «Finanzas» (propietario y gerentes); corte X, corte Z y corte del día impresos desde «Caja» o «Finanzas → Cortes». | [Reports](REPORTS.md#cortes) |
 | Cerrar una caja desde otro dispositivo | Disponible (reportes, migración 029) | «Finanzas → Cortes → Cerrar caja desde aquí» (gerente, con PIN) para una caja de un dispositivo desvinculado o que quedó abierta de un día anterior; si su tablet funciona, ciérrala ahí. | [Reports](REPORTS.md#cortes) |

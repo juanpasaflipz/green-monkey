@@ -27,6 +27,7 @@ import {
 } from "./format";
 import { Tiles } from "./parts";
 import { openReports } from "./ReportsView";
+import { cfdiReportAlertText } from "../cfdi/format";
 import "./reports.css";
 
 /**
@@ -319,8 +320,9 @@ function AlertLine({
                     "reportsAlertOfflineReviewOne",
                     alert.count,
                   )
-                : null;
-  // cfdi (030) maps its own alerts; an alert this build cannot word is not shown as a raw code.
+                : // cfdi (030) words its own cfdi_* alerts.
+                  cfdiReportAlertText(alert, locale);
+  // An alert this build cannot word is not shown as a raw code.
   if (text === null) return null;
   const urgent = alert.code === "checks_mismatch";
   return (
@@ -341,7 +343,7 @@ function AlertLine({
           {t.reportsTabCortes}
         </Button>
       )}
-      {alert.code === "missing_tickets" && (
+      {(alert.code === "missing_tickets" || alert.code.startsWith("cfdi_")) && (
         <Button variant="ghost" onClick={() => navigate("settings")}>
           {t.reportsAlertOpenSettings}
         </Button>

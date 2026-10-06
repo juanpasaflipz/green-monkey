@@ -23,7 +23,7 @@ fixture is an envelope:
 | `provenance` | Meaning |
 | --- | --- |
 | `docs@1c2e617` | **Authored** from the official API documentation at FacturAPI/facturapi-docs commit `1c2e617` (2026-09-19): the OpenAPI v2 schema in `openapi-v2-subset.json` and, for errors, `getting-started/errors.mdx`. `note` says which values are documented examples (verbatim) and which were written by hand. |
-| `recorded@YYYY-MM-DD` | Rewritten from a real Facturapi **test-mode** response on that date by the opt-in sandbox script (`tests/cfdi-facturapi-sandbox.ts` with `RECORD=1`, spec §7.4), with keys and personal data redacted. That script is not built yet. |
+| `recorded@YYYY-MM-DD` | Rewritten from a real Facturapi **test-mode** response on that date by the opt-in sandbox script (`tests/cfdi-facturapi-sandbox.ts` with `RECORD=1`, spec §7.4), with keys and personal data redacted. It has not run yet: no Facturapi test key exists. |
 
 `source` is a JSON pointer into `openapi-v2-subset.json` (the file name stands for the upstream
 `website/openapi_v2.en.yaml`). The contract test checks that every `docs@` fixture's pointer

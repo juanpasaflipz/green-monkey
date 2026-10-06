@@ -41,13 +41,23 @@
  *                        reading of Facturapi's rounding (decision D18); the stamped totals can then
  *                        differ from cfdi's expected figures by a centavo
  *   FAKE CANCEL PENDING → a cancellation needs receptor acceptance, accepted at the next read
+ * Concepts priced at their base (`tax_included: false`, the RESICO ISR retention of LD-16 L9) are
+ * stamped as Base = price, IVA = Base × rate and ISR retained = Base × 1.25 %, each rounded half up
+ * per concept; the comprobante carries TotalImpuestosRetenidos and Total = SubTotal + traslados −
+ * retenciones.
  *   FAKE REJECT CANCEL  → a cancellation needs acceptance and is rejected at the next read
  * An organization name containing FAKE LOST RESPONSE is created and its response dropped; an
  * email whose local part starts with "bounce" fails delivery. Faults that data cannot carry
  * (globals are always PUBLICO EN GENERAL) are queued with `fault()` or POST /__fake/faults. The
  * queued-only fault "conflict" answers POST /invoices with 409 `conflict` (CommonErrorCode) BEFORE
  * the idempotency lookup, as a retry colliding with a first request still in process would; the
- * next request with the same key gets the invoice.
+ * next request with the same key gets the invoice. On DELETE /invoices/{id}, the queued faults
+ * "unavailable" (503 invoice_cancellation_service_unavailable) and "internal_error" (500) leave the
+ * invoice untouched, "cancel_refused" answers 409 invoice_not_cancelable_by_sat (a final
+ * refusal), and "timeout" / "lost_response" CANCEL the invoice (as SAT would) and then never answer
+ * or drop the connection: the client cannot know the cancellation happened (review CFDI-WORKER-1).
+ * On PUT /organizations/{id}/legal, the queued fault "legal_rejected" answers 400
+ * organization_tax_info_invalid (a permanent refusal) and any other queued fault a 500.
  *
  * Control API (loopback CLI only, also methods on the fake): POST /__fake/reset,
  * POST /__fake/faults {op, fault, times?, match?}, POST /__fake/organizations/{id}/manifesto,
@@ -76,7 +86,7 @@ import {
   rfcKind,
 } from "../../shared/fiscal";
 import { conceptCentavos } from "../../server/cfdi/build";
-import { usoCfdiAllowed } from "../../server/cfdi/catalog";
+import { usoCfdiAllowed } from "../../shared/sat";
 import {
   cancelQuery,
   invoiceInput,
@@ -114,6 +124,8 @@ export type FakeFault =
   | "conflict"
   | "cancel_pending"
   | "cancel_rejected"
+  | "cancel_refused"
+  | "legal_rejected"
   | "email_failed";
 export type FaultRule = {
   op: FakeOp;
@@ -150,6 +162,8 @@ const faultRule = z
       "conflict",
       "cancel_pending",
       "cancel_rejected",
+      "cancel_refused",
+      "legal_rejected",
       "email_failed",
     ]),
     times: z.number().int().min(1).max(10_000).optional(),
@@ -189,6 +203,8 @@ type Concept = {
   base: number;
   tax: number | null; // null: exento
   rate: string | null;
+  /** ISR retained (RESICO, base-priced concepts); 0 otherwise. */
+  withheld: number;
   /** six_decimals mode: Base and Importe kept in micro-pesos (6 decimals) in the XML. */
   micro?: { base: bigint; tax: bigint | null };
 };
@@ -210,6 +226,8 @@ type Invoice = {
   concepts: Concept[];
   subtotal: number;
   tax: number;
+  /** TotalImpuestosRetenidos (RESICO ISR). */
+  withheld: number;
   total: number;
   issuer: { rfc: string; name: string; regime: string };
   /** Reads left before a pending stamp or cancellation resolves. */
@@ -304,6 +322,10 @@ const MESSAGES: Record<string, [string, string]> = {
     "Ocurrió un error inesperado.",
     "An unexpected internal error occurred.",
   ],
+  organization_tax_info_invalid: [
+    "Los datos fiscales de la organización no son válidos.",
+    "The organization's tax information is invalid.",
+  ],
   organization_incomplete: [
     "La organización no está configurada para esta operación.",
     "The organization is not fully configured for this operation.",
@@ -347,6 +369,14 @@ const MESSAGES: Record<string, [string, string]> = {
   invoice_cancellation_in_progress: [
     "La factura ya tiene una solicitud de cancelación pendiente.",
     "The invoice already has a pending cancellation request.",
+  ],
+  invoice_not_cancelable_by_sat: [
+    "El SAT no permite cancelar esta factura.",
+    "SAT does not allow this invoice to be canceled.",
+  ],
+  invoice_cancellation_service_unavailable: [
+    "El servicio de cancelación no está disponible.",
+    "The cancellation service is unavailable.",
   ],
   invoice_cancellation_receipt_unavailable: [
     "El acuse de cancelación no está disponible.",
@@ -861,7 +891,17 @@ export function createFacturapiFake(
             amount(c.base, m.base),
             c.tax === null || m.tax === null ? null : amount(c.tax, m.tax),
             c.rate,
-          )}</cfdi:Traslados></cfdi:Impuestos></cfdi:Concepto>`
+          )}</cfdi:Traslados>${
+            c.withheld
+              ? `<cfdi:Retenciones><cfdi:Retencion ${attrs([
+                  ["Base", pesos(c.base)],
+                  ["Impuesto", "001"],
+                  ["TipoFactor", "Tasa"],
+                  ["TasaOCuota", "0.012500"],
+                  ["Importe", pesos(c.withheld)],
+                ])}/></cfdi:Retenciones>`
+              : ""
+          }</cfdi:Impuestos></cfdi:Concepto>`
         );
       })
       .join("");
@@ -916,9 +956,11 @@ export function createFacturapiFake(
         ["UsoCFDI", b.use],
       ])}/>` +
       `<cfdi:Conceptos>${concepts}</cfdi:Conceptos>` +
-      `<cfdi:Impuestos${anyTaxed ? ` TotalImpuestosTrasladados="${pesos(inv.tax)}"` : ""}><cfdi:Traslados>${rateGroups(
-        inv.concepts,
-      )
+      `<cfdi:Impuestos${inv.withheld ? ` TotalImpuestosRetenidos="${pesos(inv.withheld)}"` : ""}${anyTaxed ? ` TotalImpuestosTrasladados="${pesos(inv.tax)}"` : ""}>${
+        inv.withheld
+          ? `<cfdi:Retenciones><cfdi:Retencion Impuesto="001" Importe="${pesos(inv.withheld)}"/></cfdi:Retenciones>`
+          : ""
+      }<cfdi:Traslados>${rateGroups(inv.concepts)
         .map((g) =>
           traslado(pesos(g.base), g.tax === null ? null : pesos(g.tax), g.rate),
         )
@@ -1189,8 +1231,30 @@ export function createFacturapiFake(
     b: FInvoiceInput,
     mode: "half_up" | "truncate" | "six_decimals",
   ): Concept[] {
+    const halfUp = (centavos: number, bps: number) =>
+      Math.floor((centavos * bps * 2 + 10000) / 20000);
     return b.items.map((item) => {
       const t = item.product.taxes[0];
+      const isr = item.product.taxes[1];
+      if (!item.product.tax_included) {
+        // Base-priced concept (RESICO retention): Base = price, IVA and ISR on the base.
+        const base = conceptCentavos(item);
+        const rate = t.factor === "Exento" ? null : Math.round(t.rate * 10000);
+        const tax =
+          rate === null
+            ? null
+            : mode === "truncate"
+              ? Math.floor((base * rate) / 10000)
+              : halfUp(base, rate);
+        return {
+          item,
+          gross: base + (tax ?? 0),
+          base,
+          tax,
+          rate: rate === null ? null : t.rate.toFixed(6),
+          withheld: isr ? halfUp(base, 125) : 0,
+        };
+      }
       const gross = conceptCentavos(item);
       if (t.factor === "Exento")
         return {
@@ -1199,6 +1263,7 @@ export function createFacturapiFake(
           base: gross,
           tax: null,
           rate: null,
+          withheld: 0,
           ...(mode === "six_decimals"
             ? { micro: { base: BigInt(gross) * 10_000n, tax: null } }
             : {}),
@@ -1214,6 +1279,7 @@ export function createFacturapiFake(
           base: microToCentavos(base6),
           tax: microToCentavos(tax6),
           rate: t.rate.toFixed(6),
+          withheld: 0,
           micro: { base: base6, tax: tax6 },
         };
       }
@@ -1221,7 +1287,14 @@ export function createFacturapiFake(
         mode === "truncate"
           ? Math.floor((gross * rate) / (10000 + rate))
           : extractTax(gross, rate).tax;
-      return { item, gross, base: gross - tax, tax, rate: t.rate.toFixed(6) };
+      return {
+        item,
+        gross,
+        base: gross - tax,
+        tax,
+        rate: t.rate.toFixed(6),
+        withheld: 0,
+      };
     });
   }
 
@@ -1331,6 +1404,7 @@ export function createFacturapiFake(
       lines.reduce((s, c) => s + microOf(c).base, 0n),
     );
     const tax = rateGroups(lines).reduce((s, g) => s + (g.tax ?? 0), 0);
+    const withheld = lines.reduce((s, c) => s + c.withheld, 0);
     const folioKey = `${org.id}:${live}:${b.series}`;
     const folio = (folios.get(folioKey) ?? 0) + 1;
     folios.set(folioKey, folio);
@@ -1352,7 +1426,8 @@ export function createFacturapiFake(
       concepts: lines,
       subtotal,
       tax,
-      total: subtotal + tax,
+      withheld,
+      total: subtotal + tax - withheld,
       issuer: {
         rfc: org.certificate?.rfc ?? org.legal.tax_id ?? TEST_ISSUER.tax_id,
         name: org.legal.legal_name,
@@ -1420,7 +1495,7 @@ export function createFacturapiFake(
     a: Auth & { kind: "test" | "live" },
     inv: Invoice,
     url: URL,
-  ): Response {
+  ): Outcome {
     const query = cancelQuery.safeParse(
       Object.fromEntries(
         [...url.searchParams].filter(
@@ -1467,6 +1542,14 @@ export function createFacturapiFake(
     const fault =
       takeFault("invoices.cancel", inv.body) ??
       marker(inv.body.customer.legal_name);
+    if (fault === "unavailable")
+      return error(503, "invoice_cancellation_service_unavailable");
+    if (fault === "internal_error") return error(500, "internal_error");
+    if (fault === "cancel_refused")
+      return error(409, "invoice_not_cancelable_by_sat");
+    // The request reaches SAT and its answer is lost on the way back (CFDI-WORKER-1).
+    const lost =
+      fault === "timeout" || fault === "lost_response" ? fault : null;
     // SAT (FAQ cancelación 2026, Q12): no acceptance for público en general, totals up to
     // $1,000.00, egresos, or within 24 h of issuance.
     const needsAcceptance =
@@ -1491,6 +1574,7 @@ export function createFacturapiFake(
       inv.cancellationStatus = "accepted";
       inv.canceledAt = now();
     }
+    if (lost) return { kind: lost === "timeout" ? "hang" : "drop" };
     return json(200, invoiceView(inv));
   }
 
@@ -1630,8 +1714,10 @@ export function createFacturapiFake(
         if (raw instanceof Response) return raw;
         const parsed = legalInput.safeParse(raw);
         if (!parsed.success) return invalid(parsed.error.issues);
-        if (takeFault("organizations.legal"))
-          return error(500, "internal_error");
+        const legalFault = takeFault("organizations.legal");
+        if (legalFault === "legal_rejected")
+          return error(400, "organization_tax_info_invalid");
+        if (legalFault) return error(500, "internal_error");
         org.legal = { ...parsed.data, tax_id: org.certificate?.rfc ?? null };
         return json(200, orgView(org));
       }

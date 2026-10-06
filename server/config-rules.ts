@@ -25,6 +25,7 @@
  */
 import { ConfigError } from "./config-error.js";
 import { parseSigningKeys } from "./keyring.js";
+import { cfdiWebConfig, cfdiWorkerConfig } from "./cfdi/config.js";
 import { isProductionEnv } from "./production.js";
 import { fiscalWebConfig } from "./fiscal-config.js";
 import { accountWebConfig, accountWorkerConfig } from "./account-config.js";
@@ -277,6 +278,7 @@ export function loadConfig(
       throw new ConfigError("missing_stripe_webhook_secret");
     // >>> area config checks: web (one pure call per area: fn(env, appEnv), throws ConfigError)
     fiscalWebConfig(env, appEnv);
+    cfdiWebConfig(env, appEnv);
     accountWebConfig(env, appEnv);
     // <<< area config checks: web
     return Object.freeze({
@@ -307,6 +309,7 @@ export function loadConfig(
       if (!env[name]) throw new ConfigError(`missing_${name.toLowerCase()}`);
   if (billingEnabled && !appUrl) throw new ConfigError("missing_app_url");
   // >>> area config checks: worker (one pure call per area: fn(env, appEnv), throws ConfigError)
+  cfdiWorkerConfig(env, appEnv);
   accountWorkerConfig(env, appEnv);
   // <<< area config checks: worker
   // PROCESS_KIND=worker (Railway, containers) means PORT belongs to this

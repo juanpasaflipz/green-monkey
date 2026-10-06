@@ -40,6 +40,7 @@ import { exceptionDayTotals } from "./exceptions.js";
 import { fiscalCurrency, type ReportsPorts } from "./ports.js";
 import { restaurantOf, type ReportRestaurant } from "./restaurant.js";
 import { summaryWithDrawers } from "./summary.js";
+import { cfdiCoverage } from "../cfdi/hooks.js";
 
 type Row = Record<string, unknown>;
 const n = aggregateInt;
@@ -322,7 +323,9 @@ export async function dayCorte(
     exceptionDayTotals(tx, s, range, restaurant),
   ]);
   const extra: Record<string, unknown> = {};
-  // cfdi (030): extra.cfdi = await cfdiCoverage(tx, {from: date, to: date})
+  // cfdi (030): the day's CFDI coverage (absent while CFDI is off).
+  const cfdi = await cfdiCoverage(tx, range);
+  if (cfdi) extra.cfdi = cfdi;
   return buildDayCorteDocument({
     date,
     restaurant: {
