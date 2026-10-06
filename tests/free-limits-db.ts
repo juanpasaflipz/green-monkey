@@ -1,6 +1,6 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { tenant } from "../server/db.js";
@@ -24,6 +24,8 @@ import {
   sellingAllowed,
 } from "../server/free-limits.js";
 import { createOrder, recordPayment } from "../server/orders.js";
+import { hash, sign } from "../server/auth.js";
+import { pinSignIn } from "../server/access.js";
 import type { Session } from "../shared/domain.js";
 import { noRetries } from "./db-retries.js";
 const { runtime, migration } = isolatedTarget(process.env),
@@ -304,6 +306,47 @@ try {
         ),
       ]),
     );
+  // PLAT-HR-9: the exact LOCKS-6 cycle. A PIN sign-in on the slotted device locks the
+  // employee row (PIN counters) and creates a session (selectFirstDevice, sellingAllowed);
+  // saveFreeSelection holds the free-limits key while it updates every slotted device
+  // and employee. Both take 920 first, so they serialize and tenant() retries nothing.
+  const terminal = {
+    id: otherDevice,
+    tenantId,
+    token: randomBytes(32).toString("hex"),
+  };
+  await admin`update devices set token_hash=${hash(terminal.token)},
+      token_expires_at=now()+interval '1 day' where id=${otherDevice}`;
+  const signIn = () => {
+    const res = {
+      cookie: () => {},
+      clearCookie: () => {},
+    };
+    return pinSignIn(
+      sql,
+      {
+        cookies: { gm_device: sign(terminal) },
+        body: { employeeId: slotted.id, secret: "123456" },
+        headers: {},
+        method: "POST",
+      } as never,
+      res as never,
+    );
+  };
+  for (let i = 0; i < 10; i++) {
+    const [signedIn] = await noRetries("PIN sign-in vs Free selection", () =>
+      Promise.all([
+        signIn(),
+        run((tx) =>
+          saveFreeSelection(tx, s, {
+            deviceId: otherDevice,
+            employeeIds: [staff[1].id, staff[2].id],
+          }),
+        ),
+      ]),
+    );
+    assert.equal(typeof signedIn.sessionId, "string");
+  }
   await assert.rejects(
     run((tx) =>
       saveFreeSelection(
