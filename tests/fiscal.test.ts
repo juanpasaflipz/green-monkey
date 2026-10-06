@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { allocate, DomainError } from "../shared/domain";
+import { allocate, DomainError, quote, type Product } from "../shared/domain";
+import { legacyProductInput, productInput } from "../shared/menu-schema";
 import * as taxModule from "../shared/tax";
 import * as satModule from "../shared/sat";
 import * as fiscalModule from "../shared/fiscal";
@@ -2219,5 +2220,181 @@ describe("allocate() assumptions this module relies on", () => {
       const parts = allocate(random.int(0, W), weights);
       parts.forEach((p, k) => expect(p).toBeLessThanOrEqual(weights[k]));
     }
+  });
+});
+
+describe("quote tax snapshot", () => {
+  const product = (
+    price: number,
+    fiscal?: unknown,
+    extra: Partial<Product> = {},
+  ): Product => ({
+    id: randomUUID(),
+    name: { es: "Producto", en: "Product" },
+    category: { es: "Pruebas", en: "Tests" },
+    price,
+    available: true,
+    station: "kitchen",
+    groups: [],
+    cost: null,
+    version: 1,
+    ...(fiscal === undefined ? {} : { fiscal }),
+    ...extra,
+  });
+  const lineOf = (p: Product, quantity = 1, options: string[] = []) => ({
+    id: randomUUID(),
+    productId: p.id,
+    quantity,
+    options,
+    note: "",
+  });
+
+  it('quote with a border fiscal context snapshots iva8 for an iva8 product and the restaurant default for "default" products', () => {
+    const burrito = product(2000, { taxCategory: "iva8" });
+    const soda = product(1000);
+    const beans = product(5000, {
+      taxCategory: "iva0",
+      satProductKey: "50201708",
+      satUnitKey: "KGM",
+    });
+    const lines = quote(
+      [lineOf(burrito, 2), lineOf(soda), lineOf(beans)],
+      [burrito, soda, beans],
+      false,
+      border,
+    );
+    expect(lines.map((l) => [l.tax!.category, l.tax!.basis])).toEqual([
+      ["iva8", "product"],
+      ["iva8", "default"],
+      ["iva0", "product"],
+    ]);
+    expect(lines[0].tax).toEqual({
+      v: 1,
+      category: "iva8",
+      rateBps: 800,
+      basis: "product",
+      satProductKey: "90101501",
+      satUnitKey: "E48",
+      ...extractTax(4000, 800),
+    });
+    expect([lines[2].tax!.satProductKey, lines[2].tax!.satUnitKey]).toEqual([
+      "50201708",
+      "KGM",
+    ]);
+    // The default context (client previews): general region, IVA 16%; an iva8 product falls back.
+    expect(
+      quote([lineOf(burrito)], [burrito]).map((l) => [
+        l.tax!.category,
+        l.tax!.basis,
+      ]),
+    ).toEqual([["iva16", "fallback"]]);
+  });
+
+  it("quote: every line's snapshot base + tax equals its total and the snapshot is computed from the same total (property over random catalogs)", () => {
+    const random = rng(2714);
+    for (let i = 0; i < 500; i++) {
+      const region = random.pick(taxModule.TAX_REGIONS);
+      const ctx: FiscalContext = {
+        region,
+        defaultCategory: random.pick(taxModule.allowedCategories(region)),
+      };
+      const option = {
+        id: randomUUID(),
+        name: { es: "Extra", en: "Extra" },
+        price: random.int(0, 3000),
+        available: true,
+      };
+      const catalog = Array.from({ length: random.int(1, 6) }, () =>
+        product(
+          random.int(0, 60_000),
+          random.next() < 0.3
+            ? undefined
+            : {
+                taxCategory: random.pick([
+                  "default",
+                  ...TAX_CATEGORIES,
+                ] as const),
+              },
+          random.next() < 0.3
+            ? {
+                groups: [
+                  {
+                    id: randomUUID(),
+                    name: { es: "Extras", en: "Extras" },
+                    min: 0,
+                    max: 1,
+                    options: [option],
+                  },
+                ],
+              }
+            : {},
+        ),
+      );
+      const lines = quote(
+        catalog.map((p) =>
+          lineOf(
+            p,
+            random.int(1, 9),
+            p.groups.length && random.next() < 0.5 ? [option.id] : [],
+          ),
+        ),
+        catalog,
+        false,
+        ctx,
+      );
+      for (const l of lines) {
+        const t = l.tax!;
+        expect(t.base + t.tax).toBe(l.total);
+        expect({ base: t.base, tax: t.tax }).toEqual(
+          extractTax(l.total, t.rateBps),
+        );
+        expect(t.rateBps).toBe(rate(t.category));
+        expect(taxModule.allowedCategories(region)).toContain(t.category);
+      }
+    }
+  });
+
+  it("menu-schema: productInput accepts an optional strict fiscal object, rejects unknown fiscal keys and bad SAT keys; legacyProductInput is unchanged", () => {
+    const base = {
+      operationId: randomUUID(),
+      id: randomUUID(),
+      expectedVersion: 0,
+      name: { es: "Café", en: "" },
+      categoryId: randomUUID(),
+      price: 1000,
+      station: "kitchen",
+    };
+    expect(productInput.safeParse(base).success).toBe(true);
+    expect(productInput.parse(base).fiscal).toBeUndefined();
+    expect(
+      productInput.parse({ ...base, fiscal: { taxCategory: "iva0" } }).fiscal,
+    ).toEqual({ taxCategory: "iva0", satProductKey: null, satUnitKey: null });
+    for (const fiscal of [
+      { taxCategory: "iva0", extra: 1 },
+      { taxCategory: "iva21" },
+      { satProductKey: "1234567" },
+      { satUnitKey: "e48" },
+      { satUnitKey: "ABCD" },
+    ])
+      expect(productInput.safeParse({ ...base, fiscal }).success).toBe(false);
+    const legacy = {
+      operationId: randomUUID(),
+      id: randomUUID(),
+      name: { es: "Café", en: "Coffee" },
+      category: { es: "Bebidas", en: "Drinks" },
+      price: 1000,
+      available: true,
+      station: "bar",
+      expectedVersion: 0,
+      cost: null,
+      recipe: [],
+    };
+    expect(legacyProductInput.safeParse(legacy).success).toBe(true);
+    expect(
+      legacyProductInput.safeParse({
+        ...legacy,
+        fiscal: { taxCategory: "iva0" },
+      }).success,
+    ).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 // shared/fiscal.ts — pure fiscal core (Mexico): tax extraction per order, per-line ticket
 // snapshots, allocation of order-level amounts, refund tax rules, fiscal profile validation and
-// folio formatting. No database access: server/fiscal.ts (next wave) loads rows and calls these.
+// folio formatting. No database access: server/fiscal.ts and server/fiscal-read.ts load rows and
+// call these.
 // Every amount is an integer number of centavos; every price is tax-inclusive (LFPC art. 7 Bis).
 import { z } from "zod";
 import {
@@ -37,7 +38,7 @@ export * from "./sat.js";
 
 /**
  * A persisted order line as fiscal reads it. `tax` is the immutable snapshot taken in quote()
- * once migration 027 lands (shared/domain.ts PricedLine.tax in the next wave); lines priced
+ * (shared/domain.ts PricedLine.tax, migration 027); lines priced
  * before that have no snapshot and resolve to the restaurant default at issuance.
  */
 export type TaxedLine = PricedLine & { tax?: LineTaxSnapshot | null };
@@ -899,7 +900,7 @@ export function fiscalProfileIssues(p: FiscalProfileInput): FiscalIssue[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// View types (JSON shapes on the wire; produced by server/fiscal.ts in the next wave)
+// View types (JSON shapes on the wire; produced by server/fiscal.ts and server/fiscal-read.ts)
 // ---------------------------------------------------------------------------------------------
 
 export type IssuerSnapshot = {
@@ -1024,7 +1025,7 @@ export type TicketRow = {
   selfInvoiceCode: string;
   source: string;
 };
-/** What ticketForCfdi() (server, next wave) returns to cfdi 030. */
+/** What ticketForCfdi() (server/fiscal-read.ts) returns to cfdi 030. */
 export type CfdiTicketPayload = {
   ticket: FiscalTicketView;
   concepts: {
