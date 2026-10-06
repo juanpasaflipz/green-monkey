@@ -1,6 +1,6 @@
 import type express from "express";
 import type { PreAuthContext, RouteContext } from "../http.js";
-import { managers, type AuthRequest } from "../auth.js";
+import { managers, operators, permit, type AuthRequest } from "../auth.js";
 import { tenant, type Tx } from "../db.js";
 import { requireRecentAuth } from "../access.js";
 import { verifyApproval } from "../voids.js";
@@ -30,7 +30,9 @@ export function registerPreAuth(_ctx: PreAuthContext) {}
  * - staff without an approval: none for a discount (the command decides
  *   whether their limit allows it), approval_required for a reversal or refund.
  * verifyApproval runs without an order id: its pre-check is void-specific
- * (LD-15 Q3).
+ * (LD-15 Q3). A role that may never discount or refund (kitchen) is refused
+ * first, before any PIN is checked or counted (APPROVALS-4): a correct guess
+ * must not be told apart from a wrong one.
  */
 export async function approvalFor(
   sql: Parameters<typeof verifyApproval>[0],
@@ -38,6 +40,7 @@ export async function approvalFor(
   raw: unknown,
   mode: "conditional" | "required",
 ): Promise<ApprovalContext> {
+  permit(s, operators);
   if (raw !== undefined && raw !== null)
     return { approverId: await verifyApproval(sql, s, raw) };
   if (managers.includes(s.role)) {

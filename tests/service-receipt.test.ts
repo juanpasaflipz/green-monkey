@@ -549,8 +549,9 @@ describe("discount and refund rows (discounts 028, T-06)", () => {
     expect(text).toContain("Cortesía (1 de 3) −$45.00");
     expect(text).toContain("Subtotal antes de descuentos $135.00");
     expect(text).toContain("Descuentos −$45.00");
+    // MONEY-5: the base the rate applied to (only what was due then).
     expect(text).toContain(
-      "Descuento en la cuenta · Adulto mayor (INAPAM) 10 % −$9.00",
+      "Descuento en la cuenta · Adulto mayor (INAPAM) 10 % de $90.00 −$9.00",
     );
     expect(text.indexOf("Subtotal antes de descuentos")).toBeLessThan(
       text.indexOf("Total"),
@@ -569,11 +570,50 @@ describe("discount and refund rows (discounts 028, T-06)", () => {
     expect(text).not.toContain("Cortesía");
   });
 
-  it("follows the refund row with what the item refund returned", () => {
+  it("follows the refund row with what the item refund returned, unsigned (a breakdown, UI-7)", () => {
     const text = plain(render({ order: discounted }));
     const refund = text.indexOf("Reembolso −$40.50");
     expect(refund).toBeGreaterThan(-1);
-    expect(text.indexOf("1 × Taco de asada −$40.50")).toBeGreaterThan(refund);
+    expect(text.indexOf("1 × Taco de asada $40.50")).toBeGreaterThan(refund);
+    expect(text).not.toContain("1 × Taco de asada −$40.50");
+  });
+
+  it("a card item refund prints its amount once with a minus sign; the item and the terminal reference are its breakdown (UI-7, MONEY-6)", () => {
+    const card: Order = {
+      ...discounted,
+      tenders: [
+        {
+          id: "t1",
+          method: "external",
+          amount: 8100,
+          tip: 0,
+          received: 0,
+          refunded: 4050,
+          external_reference: "T-1001",
+        },
+      ],
+      refundBatches: [
+        {
+          ...discounted.refundBatches![0],
+          cashAmount: 0,
+          externalAmount: 4050,
+          rows: [
+            {
+              refundId: "r1",
+              tenderId: "t1",
+              method: "external",
+              amount: 4050,
+              reference: "778812",
+            },
+          ],
+        },
+      ],
+    };
+    const text = plain(render({ order: card }));
+    expect(text.split("−$40.50").length - 1).toBe(1);
+    expect(text).toContain("Reembolso −$40.50");
+    expect(text).toContain("1 × Taco de asada $40.50");
+    expect(text).toContain("Terminal · Ref. reembolso 778812 $40.50");
   });
 
   it("a cached (offline) copy shows its total discount in one row", () => {
@@ -756,8 +796,9 @@ describe("discount and refund rows (discounts 028, T-06)", () => {
 
     it("the receipt's refund rows tell the two tacos apart", () => {
       const text = plain(render({ order: twin }));
-      expect(text).toContain(`${QUESO} −$45.00`);
-      expect(text).toContain(`${SIN} −$45.00`);
+      // The breakdown under "Reembolso −$90.00" is unsigned (UI-7).
+      expect(text).toContain(`${QUESO} $45.00`);
+      expect(text).toContain(`${SIN} $45.00`);
     });
 
     it("the refund slip tells the two tacos apart", async () => {

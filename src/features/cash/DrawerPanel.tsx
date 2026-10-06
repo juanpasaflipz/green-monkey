@@ -129,6 +129,9 @@ export function DrawerPanel({
           <section className="panel drawer-card">
             <h2>{t("discountsDrawerCash")}</h2>
             <dl className="cash-figures">
+              {/* UI-10: the float is part of the bold total, so it is a row too. */}
+              <dt>{t("discountsDrawerOpeningRow")}</dt>
+              <dd>{money(data.opening)}</dd>
               <dt>{t("discountsDrawerCashSales")}</dt>
               <dd>{money(cash.sales)}</dd>
               <dt>{t("discountsDrawerCashTips")}</dt>

@@ -34,7 +34,9 @@ export const REFUND_REASONS = [
   "wrong_item",
   "long_wait",
   "charge_error",
-  "duplicate_terminal_charge",
+  // MONEY-8: no "duplicate terminal charge" reason. A terminal that charged
+  // twice left one tender in the POS: the duplicate is reversed on the
+  // terminal only, never recorded as a refund of the sale that stood.
   "other",
 ] as const;
 export type DiscountReason = (typeof DISCOUNT_REASONS)[number];
@@ -350,28 +352,79 @@ export function planDiscount(
   };
 }
 
-/** "self" for owner/manager; otherwise whether the plan fits the role's limit (a comp is 100 %). */
+/**
+ * What staff (cashiers and servers) discounted on this check without a
+ * manager's approval (MONEY-3 / APPROVALS-1): the active amounts of the
+ * discounts recorded with no approver (approverName is null exactly when
+ * discounts.approver_id is null), and how many there are.
+ */
+export function unapprovedDiscounts(order: Pick<Order, "discounts">): {
+  amount: number;
+  count: number;
+} {
+  const own = (order.discounts ?? []).filter(
+    (d) => !d.reversal && d.approverName === null && d.activeAmount > 0,
+  );
+  return { amount: sum(own.map((d) => d.activeAmount)), count: own.length };
+}
+
+/**
+ * "self" for owner/manager; for a cashier or server whether the request fits
+ * the role's limits without a manager's approval (LD-26):
+ * - the request itself (MONEY-2): a percentage compares the requested
+ *   percentage with the limit; a fixed amount compares its amount with
+ *   discount(base, limit), the same half-up rounding a percentage of that base
+ *   gets; a comp needs a 100 % limit;
+ * - per check (MONEY-3): this discount plus the check's active discounts
+ *   recorded without an approver stay within the amount limit and within the
+ *   limit's percentage of the check's gross (Σ line totals after voids, before
+ *   discounts = orders.total + orders.discount), allowing each of those
+ *   discounts its half centavo of rounding. Splitting a discount into several
+ *   small ones, or stacking a check discount on line discounts, adds up.
+ * The server runs it under the order lock; the dialog runs the same figure.
+ */
 export function discountLimitCheck(
   role: string,
+  request: Pick<DiscountRequest, "kind" | "percentBps">,
   plan: Pick<DiscountPlan, "base" | "amount">,
   c: MoneyControls,
+  order: Pick<Order, "total" | "discount" | "discounts">,
 ): "self" | "within" | "exceeds" {
   if (role === "owner" || role === "manager") return "self";
   if (role !== "cashier" && role !== "server") return "exceeds";
   const lim = c.limits[role];
-  return plan.amount * 10000 <= plan.base * lim.maxPercentBps &&
-    plan.amount <= lim.maxAmount
+  const own =
+    request.kind === "percent"
+      ? (request.percentBps ?? 10001) <= lim.maxPercentBps
+      : request.kind === "amount"
+        ? plan.amount <= discount(plan.base, lim.maxPercentBps)
+        : lim.maxPercentBps >= 10000;
+  if (!own) return "exceeds";
+  const earlier = unapprovedDiscounts(order);
+  const total = earlier.amount + plan.amount;
+  const gross = order.total + (order.discount ?? 0);
+  return total <= lim.maxAmount &&
+    total * 10000 <= gross * lim.maxPercentBps + 5000 * (earlier.count + 1)
     ? "within"
     : "exceeds";
 }
 
-/** Unpaid units of a line in the order the server voids them: undiscounted first, then highest index. */
+/**
+ * Unpaid units of a line in the order the server voids them: undiscounted
+ * first, then highest index. Once the check has a fiscal ticket its discounted
+ * (comped) units are frozen on it with their discount (FISCAL-4): they are not
+ * voidable, so orders.discount never drifts from the ticket.
+ */
 export function voidCandidates(
-  order: Pick<Order, "paymentUnits">,
+  order: Pick<Order, "paymentUnits" | "fiscal">,
   lineId: string,
 ): PayableUnit[] {
+  const ticketed = !!order.fiscal?.ticket;
   return (order.paymentUnits ?? [])
-    .filter((u) => u.lineId === lineId && u.paid === 0)
+    .filter(
+      (u) =>
+        u.lineId === lineId && u.paid === 0 && !(ticketed && u.discount > 0),
+    )
     .sort(
       (a, b) =>
         Number(a.discount > 0) - Number(b.discount > 0) || b.unit - a.unit,
@@ -419,14 +472,47 @@ export function discountClosesCheck(
   );
 }
 
+/**
+ * True when applying `plan` settles a dine-in table check whose total stays
+ * above 0 (FISCAL-2): under fiscal D1 the check becomes "paid" and gets its
+ * fiscal ticket in the same transaction (MXN restaurants), so the discount is
+ * final, the check takes no more rounds and corrections are refunds. A table
+ * check discounted to a zero total gets no ticket and stays correctable.
+ */
+export function discountIssuesTicket(
+  o: Pick<
+    Order,
+    "total" | "paid" | "mode" | "tableId" | "channel" | "restaurantSnapshot"
+  >,
+  plan: Pick<DiscountPlan, "amount">,
+): boolean {
+  return (
+    balanceDue(o) - plan.amount === 0 &&
+    o.total - plan.amount > 0 &&
+    (o.restaurantSnapshot?.currency ?? "MXN") === "MXN" &&
+    holdsTable({
+      mode: o.mode,
+      tableId: o.tableId,
+      channel: o.channel ?? "pos",
+    })
+  );
+}
+/** Either way the discount becomes final: the check closes or gets its ticket. */
+export const discountIsFinal = (
+  o: Parameters<typeof discountIssuesTicket>[0],
+  plan: Pick<DiscountPlan, "amount">,
+) => discountClosesCheck(o, plan) || discountIssuesTicket(o, plan);
+
 type DiscountCheck = Pick<
   Order,
-  "total" | "paid" | "mode" | "tableId" | "channel"
+  "total" | "paid" | "mode" | "tableId" | "channel" | "restaurantSnapshot"
 >;
 /**
  * What a discount preview showed, as the client sends it (§2.2, DSC-R13): the
  * plan (amount, base and, per line, the units and the part of each), the
- * balance due it started from and whether it warned that the check closes.
+ * balance due it started from and whether it warned that the discount becomes
+ * final (`expectedCloses`: the check closes, or a table check is settled and
+ * ticketed, FISCAL-2).
  */
 export function discountExpectation(o: DiscountCheck, plan: DiscountPlan) {
   const lines: { lineId: string; units: number[]; amounts: number[] }[] = [];
@@ -441,7 +527,7 @@ export function discountExpectation(o: DiscountCheck, plan: DiscountPlan) {
     expectedBase: plan.base,
     expectedAllocations: lines,
     expectedDue: balanceDue(o),
-    expectedCloses: discountClosesCheck(o, plan),
+    expectedCloses: discountIsFinal(o, plan),
   };
 }
 export type DiscountExpectation = ReturnType<typeof discountExpectation>;
@@ -449,7 +535,7 @@ export type DiscountExpectation = ReturnType<typeof discountExpectation>;
 /**
  * Whether the server's plan, on the check as it is under the order lock, is
  * the one the client previewed (DSC-R13): the same amount, base and part per
- * unit, the same starting balance and the same closing outcome. A payment on
+ * unit, the same starting balance and the same final outcome. A payment on
  * another device (or a service change, which may release the table) leaves
  * orders.version alone but changes one of them: a whole-check comp previewed at
  * −$400 would otherwise record −$300 after one plate was paid elsewhere.
@@ -885,6 +971,28 @@ export function itemRefundPlanMatches(
     want.size === plan.lines.length &&
     plan.lines.every((l) => want.get(l.lineId.toLowerCase()) === key(l.units))
   );
+}
+
+/**
+ * FISCAL-3: once an order has an amount refund (fiscal split it across the
+ * ticket's tax categories in proportion), an order whose remaining lines span
+ * more than one category takes no item refunds: an item's gross could exceed
+ * what its own category has left (fiscal_refund_exceeds), after the terminal
+ * already refunded the card. Such an order is refunded by amount from then on.
+ * Lines without a tax snapshot count as their own category (conservative).
+ */
+export function itemRefundsBlocked(
+  order: Pick<Order, "refundBatches" | "lines" | "paymentUnits">,
+): boolean {
+  if (!(order.refundBatches ?? []).some((b) => b.mode === "amount"))
+    return false;
+  const live = new Set((order.paymentUnits ?? []).map((u) => u.lineId));
+  const categories = new Set(
+    order.lines
+      .filter((l) => live.has(l.id))
+      .map((l) => l.tax?.category ?? "default"),
+  );
+  return categories.size > 1;
 }
 
 /** Per line, the largest quantity for which planItemRefund succeeds. */

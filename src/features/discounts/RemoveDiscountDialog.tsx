@@ -18,6 +18,9 @@ import "./discounts.css";
  * and no later discount covers them; the server answers
  * discount_not_reversible otherwise.
  *
+ * A check with a fiscal ticket keeps its discounts (FISCAL-2): the server
+ * answers fiscal_ticket_issued and the dialog says so and reloads.
+ *
  * On stale_order (another device changed the check) the dialog reloads the
  * order, keeps the reason and the operation id, hands the fresh order to the
  * parent through `refreshed` (so the screen behind it re-evaluates its version
@@ -104,13 +107,28 @@ export function RemoveDiscountDialog({
             close();
           } catch (err) {
             const code = (err as Error).message;
-            setError(
+            const message =
               code === "stale_order"
                 ? t("discountsStaleOrder")
-                : translateError(code, locale),
-            );
-            if (code === "stale_order" || code === "discount_not_reversible")
+                : code === "fiscal_ticket_issued"
+                  ? t("discountsTicketIssued")
+                  : code === "operation_conflict"
+                    ? t("discountsOperationRecorded")
+                    : translateError(code, locale);
+            setError(message);
+            if (
+              [
+                "stale_order",
+                "discount_not_reversible",
+                // FISCAL-2: the check got its ticket meanwhile; its discounts are final.
+                "fiscal_ticket_issued",
+                // CONCURRENCY-4: an earlier attempt of this dialog was recorded.
+                "operation_conflict",
+              ].includes(code)
+            ) {
               await reload();
+              if (code !== "stale_order") setError(message);
+            }
             setApproval((a) => ({ ...a, secret: "" }));
           } finally {
             setBusy(false);

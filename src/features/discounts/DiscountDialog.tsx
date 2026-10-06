@@ -11,6 +11,7 @@ import {
   DISCOUNT_REASONS,
   discountClosesCheck,
   discountExpectation,
+  discountIssuesTicket,
   discountLimitCheck,
   formatPercentBps,
   PERCENT_CHIPS_BPS,
@@ -20,6 +21,7 @@ import {
   type DiscountPlan,
   type DiscountReason,
   type DiscountScope,
+  unapprovedDiscounts,
 } from "../../../shared/discounts";
 import { api } from "../../api";
 import { Button, Field, Modal } from "../../components/ui";
@@ -33,7 +35,12 @@ import { loadMoneyControls, useMoneyControls } from "./useMoneyControls";
 import "./discounts.css";
 
 /** Codes after which the dialog reloads the check and keeps its inputs. */
-const RELOAD_CODES = ["stale_order", "discount_changed"];
+const RELOAD_CODES = [
+  "stale_order",
+  "discount_changed",
+  "fiscal_ticket_issued",
+  "operation_conflict",
+];
 
 /**
  * "Descuento · Orden #N" (§2.2): a line or check discount, or a comp, on the
@@ -77,7 +84,9 @@ export function DiscountDialog({
     initialLineId || hasOrderDiscount ? "line" : "order",
   );
   const [lineId, setLineId] = useState(initialLineId ?? "");
-  const [quantityText, setQuantityText] = useState("");
+  // null until staff edit the field: it then shows exactly what they typed,
+  // even empty (UI-3), instead of snapping back to the eligible count.
+  const [quantityText, setQuantityText] = useState<string | null>(null);
   const [kind, setKind] = useState<DiscountKind>("percent");
   const [percentText, setPercentText] = useState("10");
   const [amountText, setAmountText] = useState("");
@@ -108,14 +117,25 @@ export function DiscountDialog({
       };
     })
     .filter((l) => l.eligible > 0);
+  // Once a line is chosen it is never swapped for another one (UI-5): after a
+  // reload that left it without eligible units, staff pick again.
   const chosenLine =
     scope === "line"
-      ? (lines.find((l) => l.line.id === lineId) ?? lines[0])
+      ? lineId
+        ? lines.find((l) => l.line.id === lineId)
+        : lines[0]
       : undefined;
+  const lineGone = scope === "line" && !!lineId && !chosenLine;
   const quantity =
-    scope === "line" && quantityText.trim()
-      ? Number(quantityText)
-      : chosenLine?.eligible;
+    scope !== "line" || !chosenLine
+      ? undefined
+      : quantityText === null
+        ? chosenLine.eligible
+        : /^\d{1,2}$/.test(quantityText.trim()) &&
+            Number(quantityText) >= 1 &&
+            Number(quantityText) <= chosenLine.eligible
+          ? Number(quantityText)
+          : null;
 
   let plan: DiscountPlan | null = null;
   let inputError = "";
@@ -132,6 +152,11 @@ export function DiscountDialog({
       inputError = translateError("invalid_amount", locale);
     }
   }
+  if (lineGone) inputError = t("discountsLineGone");
+  else if (quantity === null && chosenLine)
+    inputError = fill(t("discountsQuantityRequired"), {
+      n: chosenLine.eligible,
+    });
   if (
     !inputError &&
     (kind !== "amount" || amount !== undefined) &&
@@ -141,7 +166,7 @@ export function DiscountDialog({
       plan = planDiscount(order, {
         scope,
         lineId: chosenLine?.line.id,
-        quantity: scope === "line" ? quantity : undefined,
+        quantity: scope === "line" ? (quantity ?? undefined) : undefined,
         kind,
         percentBps,
         amount,
@@ -149,10 +174,24 @@ export function DiscountDialog({
     } catch (e) {
       inputError = translateError((e as Error).message, locale);
     }
+  // The server's figure (MONEY-2/MONEY-3): the request's kind rule and, per
+  // check, the staff discounts already recorded without an approver.
   const check =
-    plan && controls ? discountLimitCheck(session.role, plan, controls) : null;
+    plan && controls
+      ? discountLimitCheck(
+          session.role,
+          { kind, percentBps },
+          plan,
+          controls,
+          order,
+        )
+      : null;
   const overLimit = staff && (check === "exceeds" || askApproval);
+  const staffLimit =
+    staff && controls && controls.limits[session.role as "cashier" | "server"];
   const closes = plan ? discountClosesCheck(order, plan) : false;
+  // FISCAL-2: a table check settled by the discount gets its ticket.
+  const tickets = plan ? discountIssuesTicket(order, plan) : false;
   const somePaid = units.some((u) => u.paid > 0);
   const noteRequired = reasonCode === "other";
 
@@ -191,8 +230,15 @@ export function DiscountDialog({
       setError(
         code === "stale_order"
           ? t("discountsStaleOrder")
-          : translateError(code, locale),
+          : code === "fiscal_ticket_issued"
+            ? t("discountsTicketIssued")
+            : code === "operation_conflict"
+              ? t("discountsOperationRecorded")
+              : translateError(code, locale),
       );
+      // An earlier attempt with this id was recorded (CONCURRENCY-4): the
+      // reloaded check shows it, and a new confirm is a new operation.
+      if (code === "operation_conflict") setOperationId(crypto.randomUUID());
       if (RELOAD_CODES.includes(code))
         try {
           setOrder(await api<Order>("/orders/" + order.id));
@@ -233,12 +279,17 @@ export function DiscountDialog({
               name="scope"
               checked={scope === "order"}
               disabled={hasOrderDiscount}
+              aria-describedby={
+                hasOrderDiscount ? "discount-order-exists" : undefined
+              }
               onChange={() => setScope("order")}
             />
             {t("discountsScopeOrder")}
           </label>
           {hasOrderDiscount && (
-            <small className="muted">{t("discountsOrderDiscountExists")}</small>
+            <small className="muted" id="discount-order-exists">
+              {t("discountsOrderDiscountExists")}
+            </small>
           )}
           <label className="choice">
             <input
@@ -251,16 +302,23 @@ export function DiscountDialog({
             {t("discountsScopeLine")}
           </label>
         </fieldset>
-        {scope === "line" && chosenLine && (
+        {scope === "line" && (chosenLine || lineGone) && (
           <div className="form-grid">
             <Field label={t("discountsLine")}>
               <select
-                value={chosenLine.line.id}
+                value={chosenLine?.line.id ?? ""}
+                aria-invalid={lineGone || undefined}
+                aria-describedby={lineGone ? "discount-input-error" : undefined}
                 onChange={(e) => {
                   setLineId(e.target.value);
-                  setQuantityText("");
+                  setQuantityText(null);
                 }}
               >
+                {lineGone && (
+                  <option value="" disabled>
+                    —
+                  </option>
+                )}
                 {lines.map((l) => (
                   <option key={l.line.id} value={l.line.id}>
                     {fill(t("discountsLineOption"), {
@@ -272,24 +330,34 @@ export function DiscountDialog({
                 ))}
               </select>
             </Field>
-            <Field label={t("discountsQuantity")}>
-              <input
-                type="number"
-                inputMode="numeric"
-                min={1}
-                max={chosenLine.eligible}
-                value={quantityText || String(chosenLine.eligible)}
-                onChange={(e) => setQuantityText(e.target.value)}
-              />
-            </Field>
-            <small className="muted">
-              {countText(
-                t,
-                "discountsEligibleUnits",
-                "discountsEligibleUnitsOne",
-                chosenLine.eligible,
-              )}
-            </small>
+            {chosenLine && (
+              <>
+                <Field label={t("discountsQuantity")}>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    autoComplete="off"
+                    value={quantityText ?? String(chosenLine.eligible)}
+                    aria-invalid={quantity === null || undefined}
+                    aria-describedby={
+                      quantity === null
+                        ? "discount-input-error discount-eligible"
+                        : "discount-eligible"
+                    }
+                    onChange={(e) => setQuantityText(e.target.value)}
+                  />
+                </Field>
+                <small className="muted" id="discount-eligible">
+                  {countText(
+                    t,
+                    "discountsEligibleUnits",
+                    "discountsEligibleUnitsOne",
+                    chosenLine.eligible,
+                  )}
+                </small>
+              </>
+            )}
           </div>
         )}
         <div
@@ -348,6 +416,10 @@ export function DiscountDialog({
               inputMode="decimal"
               required
               value={amountText}
+              aria-invalid={(!plan && !!inputError) || undefined}
+              aria-describedby={
+                !plan && inputError ? "discount-input-error" : undefined
+              }
               onChange={(e) => setAmountText(e.target.value)}
             />
           </Field>
@@ -399,9 +471,21 @@ export function DiscountDialog({
               )}
             </>
           ) : (
-            inputError && <span className="error">{inputError}</span>
+            inputError && (
+              <span className="error" id="discount-input-error">
+                {inputError}
+              </span>
+            )
           )}
         </div>
+        {plan && staffLimit && (
+          <p className="muted tiny">
+            {fill(t("discountsLimitUsed"), {
+              used: money(unapprovedDiscounts(order).amount + plan.amount),
+              max: money(staffLimit.maxAmount),
+            })}
+          </p>
+        )}
         {closes && (
           <p className="warning-panel" role="note">
             {t(
@@ -409,6 +493,11 @@ export function DiscountDialog({
                 ? "discountsCompClosesWarning"
                 : "discountsClosesWarning",
             )}
+          </p>
+        )}
+        {tickets && (
+          <p className="warning-panel" role="note">
+            {t("discountsTicketWarning")}
           </p>
         )}
         {overLimit && (

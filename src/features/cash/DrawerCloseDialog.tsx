@@ -95,21 +95,24 @@ export function DrawerCloseDialog({
 
   let counted: number | null = null;
   let terminal: number | null = null;
-  let inputError = "";
+  // UI-12: each money field has its own error, linked to it.
+  let countedError = "";
+  let terminalError = "";
   try {
     counted = countedText.trim()
       ? parseMoneyInput(countedText, exponent)
       : null;
   } catch {
-    inputError = t("discountsCloseCountInvalid");
+    countedError = t("discountsCloseCountInvalid");
   }
   try {
     terminal = terminalText.trim()
       ? parseMoneyInput(terminalText, exponent)
       : null;
   } catch {
-    inputError = translateError("invalid_amount", locale);
+    terminalError = `${t("discountsCloseTerminal")}: ${translateError("invalid_amount", locale)}`;
   }
+  const inputError = countedError || terminalError;
   const visibleDifference =
     visible && counted !== null && drawer.expected !== null
       ? counted - drawer.expected
@@ -259,7 +262,10 @@ export function DrawerCloseDialog({
               inputMode="decimal"
               required
               value={countedText}
-              aria-invalid={!!inputError || undefined}
+              aria-invalid={!!countedError || undefined}
+              aria-describedby={
+                countedError ? "close-counted-error" : undefined
+              }
               onChange={(e) => setCountedText(e.target.value)}
             />
           </Field>
@@ -267,6 +273,10 @@ export function DrawerCloseDialog({
             <input
               inputMode="decimal"
               value={terminalText}
+              aria-invalid={!!terminalError || undefined}
+              aria-describedby={
+                terminalError ? "close-terminal-error" : undefined
+              }
               onChange={(e) => setTerminalText(e.target.value)}
             />
           </Field>
@@ -278,9 +288,14 @@ export function DrawerCloseDialog({
               onChange={(e) => setReason(e.target.value)}
             />
           </Field>
-          {inputError && (
-            <p className="error" role="alert">
-              {inputError}
+          {countedError && (
+            <p className="error" role="alert" id="close-counted-error">
+              {countedError}
+            </p>
+          )}
+          {terminalError && (
+            <p className="error" role="alert" id="close-terminal-error">
+              {terminalError}
             </p>
           )}
           {error && (

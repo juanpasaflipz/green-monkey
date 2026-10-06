@@ -225,7 +225,9 @@ export async function applyDiscount(
       // under the order lock, before any approval or limit is evaluated.
       if (!discountPlanMatches(order, plan, p))
         throw new DomainError("discount_changed", 409);
-      const check = discountLimitCheck(s.role, plan, controls);
+      // MONEY-2/MONEY-3 (LD-26): the request's own kind rule and, per check,
+      // the staff discounts recorded without an approver, read under the lock.
+      const check = discountLimitCheck(s.role, p, plan, controls, order);
       let approver: string | null;
       if (check === "self") approver = a.approverId ?? s.employeeId;
       else if (check === "within") approver = a.approverId;

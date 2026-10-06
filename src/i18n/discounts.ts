@@ -85,8 +85,6 @@ export default defineArea({
     discountsRefundTenderOption:
       "{method} · {paid} cobrado · {available} reembolsable",
     discountsRefundTipNote: "La propina no se reembolsa desde aquí.",
-    discountsRefundAmountNeedsPaid:
-      "El reembolso por importe se habilita cuando la cuenta está pagada. Por ahora solo puedes reembolsar productos ya cobrados.",
     discountsRefundCashPart:
       "Entrega {amount} en efectivo de la caja de este dispositivo.",
     discountsRefundDrawerNeeded:
@@ -124,7 +122,6 @@ export default defineArea({
     discountsRefundReasonWrongItem: "Producto equivocado",
     discountsRefundReasonLongWait: "Demora en el servicio",
     discountsRefundReasonChargeError: "Cobro equivocado",
-    discountsRefundReasonDuplicateTerminal: "Cobro duplicado en terminal",
     discountsRefundReasonOther: "Otro (explica en la nota)",
     discountsSlipTitle: "COMPROBANTE DE REEMBOLSO",
     discountsSlipOrder: "Orden #{n} · {date}",
@@ -188,12 +185,12 @@ export default defineArea({
       "Solo el propietario puede cambiar estos controles.",
     discountsControlsLimits: "Descuentos sin autorización de gerente",
     discountsControlsLimitsHint:
-      "Por arriba de estos límites, un gerente autoriza con su PIN. Gerentes y propietario no tienen límite.",
+      "Por cuenta: se suman los descuentos que el personal aplica sin autorización en la misma cuenta. Por arriba de estos límites, un gerente autoriza con su PIN. Gerentes y propietario no tienen límite.",
     discountsRoleCashier: "Cajero",
     discountsRoleServer: "Mesero",
     discountsRoleManager: "Gerente",
-    discountsControlsMaxPercent: "Hasta (%)",
-    discountsControlsMaxAmount: "Y hasta (importe por descuento)",
+    discountsControlsMaxPercent: "Hasta (% por cuenta)",
+    discountsControlsMaxAmount: "Y hasta (importe por cuenta)",
     discountsControlsBlind:
       "Corte ciego: el conteo se captura sin ver el efectivo esperado",
     discountsControlsExpectedRoles:
@@ -256,6 +253,32 @@ export default defineArea({
     discountsLimitWithin: "Dentro de tu límite.",
     discountsReceiptDiscounts: "Descuentos",
     discountsRefundMode: "Tipo de reembolso",
+    // second-opinion hardening (LD-26)
+    discountsReasonOtherShort: "Otro",
+    discountsTicketWarning:
+      "La cuenta quedará pagada y se emitirá su ticket: el descuento ya no se podrá quitar y la cuenta no aceptará más rondas (lo nuevo va como orden nueva).",
+    discountsTicketIssued:
+      "Esta cuenta ya tiene ticket con folio: sus descuentos ya no cambian. Lo cobrado se corrige con un reembolso.",
+    discountsQuantityRequired: "Escribe cuántas piezas, de 1 a {n}.",
+    discountsLineGone:
+      "Ese producto ya no tiene piezas sin cobrar y sin descuento. Elige otro.",
+    discountsLimitUsed:
+      "Descuentos sin autorización en esta cuenta: {used} de {max}.",
+    discountsReversedByApproved:
+      "Quitado por {actor} · autorizó {approver} · {note}",
+    discountsRowOrderBase: "{percent} de {base}",
+    discountsRefundTenderGone:
+      "Ese pago ya no tiene saldo reembolsable. Elige el pago a reembolsar.",
+    discountsRefundTenderPick: "Elige un pago",
+    discountsRefundDoneCash: "Entrega {amount} en efectivo",
+    discountsRefundDoneTerminal:
+      "Terminal: {amount}, ya reembolsado en la terminal (Ref. {ref})",
+    discountsRefundLineSelected: "Seleccionado: {amount}",
+    discountsRefundItemsAfterAmount:
+      "Esta cuenta ya tuvo un reembolso por importe y sus productos tienen distintas tasas de IVA: reembolsa por importe.",
+    discountsOperationRecorded:
+      "Ese intento ya se había registrado con otros datos. Ya ves la cuenta actualizada; revisa antes de confirmar de nuevo.",
+    discountsDrawerOpeningRow: "Fondo inicial",
   },
   en: {
     discountsAction: "Discount",
@@ -336,8 +359,6 @@ export default defineArea({
     discountsRefundTenderOption:
       "{method} · {paid} collected · {available} refundable",
     discountsRefundTipNote: "Tips are not refunded here.",
-    discountsRefundAmountNeedsPaid:
-      "Amount refunds are available once the check is paid. For now you can refund only items already paid.",
     discountsRefundCashPart:
       "Hand back {amount} in cash from this device's drawer.",
     discountsRefundDrawerNeeded:
@@ -376,7 +397,6 @@ export default defineArea({
     discountsRefundReasonWrongItem: "Wrong item",
     discountsRefundReasonLongWait: "Long wait",
     discountsRefundReasonChargeError: "Charging error",
-    discountsRefundReasonDuplicateTerminal: "Duplicate terminal charge",
     discountsRefundReasonOther: "Other (explain in the note)",
     discountsSlipTitle: "REFUND SLIP",
     discountsSlipOrder: "Order #{n} · {date}",
@@ -439,12 +459,12 @@ export default defineArea({
     discountsControlsOwnerOnly: "Only the owner can change these controls.",
     discountsControlsLimits: "Discounts without manager approval",
     discountsControlsLimitsHint:
-      "Above these limits a manager approves with their PIN. Managers and the owner have no limit.",
+      "Per check: the discounts staff apply without approval on the same check add up. Above these limits a manager approves with their PIN. Managers and the owner have no limit.",
     discountsRoleCashier: "Cashier",
     discountsRoleServer: "Server",
     discountsRoleManager: "Manager",
-    discountsControlsMaxPercent: "Up to (%)",
-    discountsControlsMaxAmount: "And up to (amount per discount)",
+    discountsControlsMaxPercent: "Up to (% per check)",
+    discountsControlsMaxAmount: "And up to (amount per check)",
     discountsControlsBlind:
       "Blind count: the count is entered without seeing expected cash",
     discountsControlsExpectedRoles: "Can see expected cash during the shift",
@@ -504,6 +524,32 @@ export default defineArea({
     discountsLimitWithin: "Within your limit.",
     discountsReceiptDiscounts: "Discounts",
     discountsRefundMode: "Refund type",
+    // second-opinion hardening (LD-26)
+    discountsReasonOtherShort: "Other",
+    discountsTicketWarning:
+      "The check will be paid and its ticket issued: the discount can no longer be removed and the check takes no more rounds (new items go as a new order).",
+    discountsTicketIssued:
+      "This check already has a ticket with a folio: its discounts can no longer change. Correct what was paid with a refund.",
+    discountsQuantityRequired: "Enter how many units, from 1 to {n}.",
+    discountsLineGone:
+      "That item no longer has unpaid, undiscounted units. Choose another.",
+    discountsLimitUsed:
+      "Discounts without approval on this check: {used} of {max}.",
+    discountsReversedByApproved:
+      "Removed by {actor} · approved by {approver} · {note}",
+    discountsRowOrderBase: "{percent} of {base}",
+    discountsRefundTenderGone:
+      "That payment has nothing left to refund. Choose the payment to refund.",
+    discountsRefundTenderPick: "Choose a payment",
+    discountsRefundDoneCash: "Hand over {amount} in cash",
+    discountsRefundDoneTerminal:
+      "Terminal: {amount}, already refunded on the terminal (Ref. {ref})",
+    discountsRefundLineSelected: "Selected: {amount}",
+    discountsRefundItemsAfterAmount:
+      "This check already had an amount refund and its items have different VAT rates: refund by amount.",
+    discountsOperationRecorded:
+      "That attempt was already recorded with other data. You now see the updated check; review it before confirming again.",
+    discountsDrawerOpeningRow: "Opening float",
   },
   errors: {
     discount_invalid: [
@@ -553,6 +599,10 @@ export default defineArea({
     refund_units_unavailable: [
       "No hay suficientes productos pagados para reembolsar. Actualiza la orden.",
       "There are not enough paid items to refund. Refresh the order.",
+    ],
+    refund_items_after_amount: [
+      "Esta cuenta ya tuvo un reembolso por importe y sus productos tienen distintas tasas de IVA: reembolsa por importe.",
+      "This check already had an amount refund and its items have different VAT rates: refund by amount.",
     ],
     refund_changed: [
       "La orden cambió (otro pago o reembolso). Revisa el importe y confirma de nuevo.",

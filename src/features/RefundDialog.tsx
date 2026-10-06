@@ -9,6 +9,7 @@ import { parseMoneyInput } from "../../shared/service";
 import {
   amountRefundAllowed,
   itemRefundExpectation,
+  itemRefundsBlocked,
   planItemRefund,
   refundableQuantities,
   REFUND_REASONS,
@@ -43,14 +44,22 @@ type Tender = {
   source?: string;
 };
 /** Codes after which the dialog reloads the order and keeps the inputs. */
-const RELOAD_CODES = ["refund_changed", "refund_balance_due", "stale_order"];
+const RELOAD_CODES = [
+  "refund_changed",
+  "refund_balance_due",
+  "refund_items_after_amount",
+  "stale_order",
+  "operation_conflict",
+];
 
 /**
  * Refunds (discounts 028): by item (fully paid units, returned to the tenders
- * that paid them, in any check state) or by amount (one tender, only once the
- * check has no balance due). Cash leaves this device's drawer; a terminal
- * (card) portion is only recorded, after the terminal approved it, with its
- * reference. Staff need a manager's PIN (the only PIN asked, LD-2); a manager
+ * that paid them) or by amount (one tender). Neither is possible on a check
+ * without a fiscal ticket that still has a balance due (MONEY-1, LD-25/LD-26):
+ * the dialog then shows only what to do instead (collect the payment or void
+ * the unpaid lines), never the item tab or the terminal step. Cash leaves this
+ * device's drawer; a terminal (card) portion is only recorded, after the
+ * terminal approved it, with its reference. Staff need a manager's PIN (the only PIN asked, LD-2); a manager
  * or owner acting alone confirms with the standard "Confirma con tu PIN"
  * step-up when the server asks for it (LD-15 Q2). One operation id per opened
  * dialog, kept across retries until it succeeds (MON-3).
@@ -80,7 +89,14 @@ export function RefundDialog({
   const [mode, setMode] = useState<"items" | "amount" | null>(null);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [restock, setRestock] = useState(false);
-  const [tenderId, setTenderId] = useState("");
+  // UI-2: the tender is chosen once (the first refundable one by default) and
+  // never silently swapped: after a reload that left it with nothing to
+  // refund, staff pick again.
+  const [tenderId, setTenderId] = useState(
+    () =>
+      ((initial.tenders ?? []) as Tender[]).find((x) => x.amount > x.refunded)
+        ?.id ?? "",
+  );
   const [amountText, setAmountText] = useState("");
   const [reasonCode, setReasonCode] = useState<RefundReason | "">("");
   const [note, setNote] = useState("");
@@ -93,6 +109,9 @@ export function RefundDialog({
   });
   const [drawerOpen, setDrawerOpen] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
+  // Set when the server says an earlier attempt of this dialog was recorded
+  // (operation_conflict): leaving the dialog then refreshes the screen behind.
+  const [recorded, setRecorded] = useState(false);
   const [finishing, setFinishing] = useState(false);
   const finished = useRef(false);
   const [error, setError] = useState("");
@@ -116,14 +135,22 @@ export function RefundDialog({
   }, []);
 
   const tenders = (order.tenders ?? []) as Tender[];
+  // MONEY-1: fiscal's rule (assertRefundAllowed), as the server applies it.
+  const refundAllowed = !!order.fiscal?.ticket || amountRefundAllowed(order);
+  // FISCAL-3: after an amount refund, a mixed-rate check is refunded by amount.
+  const itemsBlocked = itemRefundsBlocked(order);
   const refundable = useMemo(
-    () => (order.itemSplitAvailable ? refundableQuantities(order) : {}),
+    () =>
+      order.itemSplitAvailable && !itemRefundsBlocked(order)
+        ? refundableQuantities(order)
+        : {},
     [order],
   );
-  const itemLines = order.lines.filter((l) => (refundable[l.id] ?? 0) > 0);
+  const itemLines = refundAllowed
+    ? order.lines.filter((l) => (refundable[l.id] ?? 0) > 0)
+    : [];
   const amountTenders = tenders.filter((x) => x.amount > x.refunded);
-  const paidCheck = amountRefundAllowed(order);
-  const amountAllowed = paidCheck && amountTenders.length > 0;
+  const amountAllowed = refundAllowed && amountTenders.length > 0;
   const tab: "items" | "amount" | null =
     mode === "amount" && amountAllowed
       ? "amount"
@@ -146,15 +173,14 @@ export function RefundDialog({
       planError = translateError((e as Error).message, locale);
     }
   const tender =
-    tab === "amount"
-      ? (amountTenders.find((x) => x.id === tenderId) ?? amountTenders[0])
-      : undefined;
+    tab === "amount" ? amountTenders.find((x) => x.id === tenderId) : undefined;
+  const tenderGone = tab === "amount" && !tender;
   let amount = 0;
   let amountError = "";
-  if (tab === "amount" && amountText.trim())
+  if (tab === "amount" && amountText.trim() && tender)
     try {
       amount = parseMoneyInput(amountText, exponent);
-      if (tender && amount > tender.amount - tender.refunded)
+      if (amount > tender.amount - tender.refunded)
         amountError = translateError("refund_exceeds", locale);
     } catch {
       amountError = translateError("invalid_amount", locale);
@@ -254,7 +280,18 @@ export function RefundDialog({
       setResult(r);
     } catch (e) {
       const code = (e as Error).message;
-      setError(translateError(code, locale));
+      setError(
+        code === "operation_conflict"
+          ? t("discountsOperationRecorded")
+          : translateError(code, locale),
+      );
+      // CONCURRENCY-4: an earlier attempt with this id was recorded; the
+      // reloaded check shows it, a new confirm is a new operation, and leaving
+      // the dialog refreshes the screen behind it.
+      if (code === "operation_conflict") {
+        setOperationId(crypto.randomUUID());
+        setRecorded(true);
+      }
       if (RELOAD_CODES.includes(code)) await reload();
       if (staff) setApproval((a) => ({ ...a, secret: "" }));
     } finally {
@@ -263,6 +300,8 @@ export function RefundDialog({
   }
 
   const title = fill(t("discountsRefundTitle"), { n: order.number });
+  /** Cancel and close: after a recorded attempt the parent refreshes too. */
+  const leave = () => (recorded ? void finish() : close());
   /**
    * Leaving the result view (Listo, the X button or Escape) always refreshes
    * the screen behind it: the money has already moved, so the parent must not
@@ -281,11 +320,33 @@ export function RefundDialog({
   if (result)
     return (
       <Modal title={title} close={() => void finish()} closeLabel={t("close")}>
-        <p className="notice" role="status">
-          {fill(t("discountsRefundDone"), {
-            amount: money(result.batch.amount),
-          })}
-        </p>
+        <div className="notice refund-result" role="status">
+          {result.batch.cashAmount > 0 && (
+            <p className="refund-result-cash">
+              <strong>
+                {fill(t("discountsRefundDoneCash"), {
+                  amount: money(result.batch.cashAmount),
+                })}
+              </strong>
+            </p>
+          )}
+          {result.batch.externalAmount > 0 && (
+            <p>
+              {fill(t("discountsRefundDoneTerminal"), {
+                amount: money(result.batch.externalAmount),
+                ref: result.batch.rows
+                  .filter((r) => r.method === "external")
+                  .map((r) => r.reference ?? "—")
+                  .join(", "),
+              })}
+            </p>
+          )}
+          <p className="muted">
+            {fill(t("discountsRefundDone"), {
+              amount: money(result.batch.amount),
+            })}
+          </p>
+        </div>
         <div className="row wrap">
           <Button
             onClick={() =>
@@ -317,7 +378,7 @@ export function RefundDialog({
   // cfdi (030): cfdiTicketCovered(useCfdiTicketStatus(order.fiscal?.ticket?.id ?? null))
   const cfdiCovered = false as boolean;
   return (
-    <Modal title={title} close={close} closeLabel={t("close")} wide>
+    <Modal title={title} close={leave} closeLabel={t("close")} wide>
       <p>
         #{order.number} · {order.name || t("order")}
       </p>
@@ -328,13 +389,19 @@ export function RefundDialog({
       )}
       {!tab ? (
         <>
-          <p className="muted" role="note">
-            {paidCheck
+          {/* MONEY-1: only guidance while a balance is due; no item tab, no terminal step. */}
+          <p className={refundAllowed ? "muted" : "warning-panel"} role="note">
+            {refundAllowed
               ? t("discountsRefundNothing")
-              : t("discountsRefundAmountNeedsPaid")}
+              : translateError("refund_balance_due", locale)}
           </p>
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
           <div className="row">
-            <Button onClick={close}>{t("discountsCancel")}</Button>
+            <Button onClick={leave}>{t("discountsCancel")}</Button>
           </div>
         </>
       ) : (
@@ -371,9 +438,9 @@ export function RefundDialog({
               </button>
             )}
           </div>
-          {!paidCheck && (
+          {itemsBlocked && (
             <p className="muted tiny" role="note">
-              {t("discountsRefundAmountNeedsPaid")}
+              {t("discountsRefundItemsAfterAmount")}
             </p>
           )}
           {tab === "items" ? (
@@ -384,13 +451,25 @@ export function RefundDialog({
                 const one = planItemRefund(order, [
                   { lineId: line.id, quantity: 1 },
                 ]).total;
+                // UI-11: "c/u" only when every refundable unit returns the
+                // same amount; otherwise the exact amount of the chosen units.
+                const uniform =
+                  planItemRefund(order, [{ lineId: line.id, quantity: max }])
+                    .total ===
+                  one * max;
+                const chosen = quantities[line.id] ?? 0;
+                const selected = plan?.lines.find((l) => l.lineId === line.id);
                 return (
                   <div className="refund-line" key={line.id}>
                     <Field
-                      label={fill(t("discountsRefundLine"), {
-                        name: lineLabel(line, locale),
-                        amount: money(one),
-                      })}
+                      label={
+                        uniform
+                          ? fill(t("discountsRefundLine"), {
+                              name: lineLabel(line, locale),
+                              amount: money(one),
+                            })
+                          : lineLabel(line, locale)
+                      }
                     >
                       <input
                         type="number"
@@ -416,6 +495,12 @@ export function RefundDialog({
                         "discountsRefundAvailableOne",
                         max,
                       )}
+                      {!uniform &&
+                        chosen > 0 &&
+                        selected &&
+                        ` · ${fill(t("discountsRefundLineSelected"), {
+                          amount: money(selected.amount),
+                        })}`}
                     </small>
                   </div>
                 );
@@ -467,8 +552,17 @@ export function RefundDialog({
               <Field label={t("discountsRefundTender")}>
                 <select
                   value={tender?.id ?? ""}
+                  aria-invalid={tenderGone || undefined}
+                  aria-describedby={
+                    tenderGone ? "refund-tender-error" : undefined
+                  }
                   onChange={(e) => setTenderId(e.target.value)}
                 >
+                  {tenderGone && (
+                    <option value="" disabled>
+                      {t("discountsRefundTenderPick")}
+                    </option>
+                  )}
                   {amountTenders.map((x) => (
                     <option key={x.id} value={x.id}>
                       {fill(t("discountsRefundTenderOption"), {
@@ -483,18 +577,26 @@ export function RefundDialog({
                   ))}
                 </select>
               </Field>
+              {tenderGone && (
+                <p className="error" role="alert" id="refund-tender-error">
+                  {t("discountsRefundTenderGone")}
+                </p>
+              )}
               <Field label={t("amount")}>
                 <input
                   inputMode="decimal"
                   required
                   value={amountText}
                   aria-invalid={!!amountError || undefined}
+                  aria-describedby={
+                    amountError ? "refund-amount-error" : undefined
+                  }
                   onChange={(e) => setAmountText(e.target.value)}
                 />
               </Field>
               <p className="muted tiny">{t("discountsRefundTipNote")}</p>
               {amountError && (
-                <p className="error" role="alert">
+                <p className="error" role="alert" id="refund-amount-error">
                   {amountError}
                 </p>
               )}
@@ -609,7 +711,7 @@ export function RefundDialog({
             </p>
           )}
           <div className="row wrap">
-            <Button onClick={close}>{t("discountsCancel")}</Button>
+            <Button onClick={leave}>{t("discountsCancel")}</Button>
             <Button variant="primary" type="submit" disabled={busy || !ready}>
               {fill(t("discountsRefundSubmit"), { amount: money(total) })}
             </Button>

@@ -52,11 +52,15 @@ export const REFUND_REASON_LABELS: Record<RefundReason, Key> = {
   wrong_item: "discountsRefundReasonWrongItem",
   long_wait: "discountsRefundReasonLongWait",
   charge_error: "discountsRefundReasonChargeError",
-  duplicate_terminal_charge: "discountsRefundReasonDuplicateTerminal",
   other: "discountsRefundReasonOther",
 };
 
-/** A stored reason code in the given language; an unknown code reads "Otro". */
+/**
+ * A stored reason code as printed and listed (receipts, the refund slip,
+ * Detalle de orden, reports): "Otro" for `other` and for an unknown code. The
+ * option text "Otro (explica en la nota)" is an instruction and stays in the
+ * dialogs' selects only (UI-8).
+ */
 export function reasonLabel(
   kind: "discount" | "refund",
   code: string,
@@ -65,11 +69,9 @@ export function reasonLabel(
   const map: Record<string, Key> =
     kind === "discount" ? DISCOUNT_REASON_LABELS : REFUND_REASON_LABELS;
   return strings[locale][
-    Object.hasOwn(map, code)
+    code !== "other" && Object.hasOwn(map, code)
       ? map[code]
-      : kind === "discount"
-        ? "discountsReasonOther"
-        : "discountsRefundReasonOther"
+      : "discountsReasonOtherShort"
   ];
 }
 
@@ -102,14 +104,19 @@ export function lineLabel(
 }
 
 /**
- * Whether "Quitar descuento" is offered: the check is not closed, the discount
- * is active, none of its non-voided units is paid and no later active discount
- * covers one of them (the server re-checks all of it: discount_not_reversible).
- * Voided units no longer matter on either side (DSC-R6).
+ * Whether "Quitar descuento" is offered: the check is not closed and has no
+ * fiscal ticket (FISCAL-2: a ticketed check's discounts are final, the server
+ * answers fiscal_ticket_issued), the discount is active, none of its
+ * non-voided units is paid and no later active discount covers one of them
+ * (the server re-checks all of it: discount_not_reversible). Voided units no
+ * longer matter on either side (DSC-R6). A check discount whose units were all
+ * voided (active 0) can still be removed, which frees the check's single
+ * check-discount slot (MONEY-4); a line discount at 0 has nothing to remove.
  */
 export function discountRemovable(order: Order, d: OrderDiscount): boolean {
-  if (order.checkState === "closed" || d.reversal || d.activeAmount <= 0)
+  if (order.checkState === "closed" || order.fiscal?.ticket || d.reversal)
     return false;
+  if (d.activeAmount <= 0 && d.scope !== "order") return false;
   const units = new Set(
     d.allocations.filter((a) => !a.voided).map((a) => `${a.lineId}:${a.unit}`),
   );

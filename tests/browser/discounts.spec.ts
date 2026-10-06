@@ -333,7 +333,7 @@ test("manager removes a discount before payment and the balance goes back up", a
     .click();
   await expect(remove).toBeHidden();
   await expect(detail).toContainText(
-    "Quitado por Alex Demo · Se aplicó por error",
+    "Quitado por Alex Demo · autorizó Alex Demo · Se aplicó por error",
   );
   await page.keyboard.press("Escape");
   await expect(row(page, name)).toContainText("$90.00");
@@ -411,7 +411,7 @@ test("DSC-R2: Quitar descuento recovers from stale_order: it reloads the check, 
     .click();
   await expect(remove).toBeHidden();
   await expect(detail).toContainText(
-    "Quitado por Alex Demo · Se aplicó por error",
+    "Quitado por Alex Demo · autorizó Alex Demo · Se aplicó por error",
   );
   const after = await call(page, "/orders/" + o.id);
   expect(after.total).toBe(4500);
@@ -892,10 +892,9 @@ test("controls: the owner sets the cashier limit to 10%; a 5% cashier discount n
     .click();
   const panel = page.locator("section.money-controls");
   await expect(panel).toContainText("Descuentos y corte de caja");
-  await panel.getByLabel("Cajero · Hasta (%)").fill("10");
-  await panel
-    .getByLabel("Cajero · Y hasta (importe por descuento)")
-    .fill("100");
+  // MONEY-3 / APPROVALS-1: the limits hold per check.
+  await panel.getByLabel("Cajero · Hasta (% por cuenta)").fill("10");
+  await panel.getByLabel("Cajero · Y hasta (importe por cuenta)").fill("100");
   const axe = await new AxeBuilder({ page })
     .include("section.money-controls")
     .withTags(AXE_TAGS)
@@ -936,7 +935,7 @@ test("DSC-R7: controls accept 0.00 %, and after another device saves first the f
     name: "Guardar controles",
     exact: true,
   });
-  await panel.getByLabel("Mesero · Hasta (%)").fill("0.00");
+  await panel.getByLabel("Mesero · Hasta (% por cuenta)").fill("0.00");
   await save.click();
   await expect(panel.getByRole("status")).toContainText("Controles guardados");
   // Another device saves a 7 % cashier limit with the current version.
@@ -952,13 +951,15 @@ test("DSC-R7: controls accept 0.00 %, and after another device saves first the f
     expectedRoles: view.expectedRoles,
     closeRoles: view.closeRoles,
   });
-  await panel.getByLabel("Cajero · Hasta (%)").fill("12");
+  await panel.getByLabel("Cajero · Hasta (% por cuenta)").fill("12");
   await save.click();
   await expect(panel.getByRole("alert")).toHaveText(
     "Otro dispositivo cambió estos controles. Ya ves los valores actuales; revisa y guarda de nuevo.",
   );
-  await expect(panel.getByLabel("Cajero · Hasta (%)")).toHaveValue("7");
-  await panel.getByLabel("Cajero · Hasta (%)").fill("12");
+  await expect(panel.getByLabel("Cajero · Hasta (% por cuenta)")).toHaveValue(
+    "7",
+  );
+  await panel.getByLabel("Cajero · Hasta (% por cuenta)").fill("12");
   await save.click();
   await expect(panel.getByRole("status")).toContainText("Controles guardados");
   expect(
@@ -1085,33 +1086,41 @@ test("Axe: the refund dialog, the drawer close dialog and the controls panel hav
   expect(settings.violations).toEqual([]);
 });
 
-test("amount refunds need a paid check: with a balance due the dialog hides Por importe and explains why; after full payment it appears", async ({
+test("MONEY-1 (LD-25, LD-26): with a balance due and no ticket the refund dialog shows only what to do instead, with no item tab and no terminal step; once paid both tabs appear", async ({
   page,
 }) => {
   const name = "Saldo " + tag();
   await login(page);
   await openDrawer(page);
   const o = await order(page, name, 2);
-  await pay(page, o.id, 4500, { items: [`${o.lines[0].id}:0`] });
+  // One taco paid by card: before, the dialog offered it "Por productos" with
+  // a terminal step, and the server refused it after the card was refunded.
+  await pay(page, o.id, 4500, {
+    method: "external",
+    items: [`${o.lines[0].id}:0`],
+  });
   await orders(page);
   await row(page, name)
     .getByRole("button", { name: "Reembolsar", exact: true })
     .click();
   const refund = page.getByRole("dialog", { name: /Reembolso · Orden/ });
+  await expect(refund.getByRole("note")).toHaveText(
+    "Esta cuenta tiene saldo pendiente y aún no tiene ticket: cobra el saldo o anula las líneas en lugar de reembolsar.",
+  );
+  await expect(
+    refund.getByRole("button", { name: "Por productos", exact: true }),
+  ).toHaveCount(0);
   await expect(
     refund.getByRole("button", { name: "Por importe", exact: true }),
   ).toHaveCount(0);
-  await expect(refund).toContainText(
-    "El reembolso por importe se habilita cuando la cuenta está pagada. Por ahora solo puedes reembolsar productos ya cobrados.",
+  await expect(
+    refund.getByLabel("Referencia del reembolso en la terminal"),
+  ).toHaveCount(0);
+  await expect(refund.getByRole("button", { name: /^Reembolsar/ })).toHaveCount(
+    0,
   );
-  await refund.getByLabel(/Taco de hongos/).fill("1");
-  await refund
-    .getByLabel("Motivo del reembolso")
-    .selectOption({ label: "Producto equivocado" });
-  await refund
-    .getByRole("button", { name: "Reembolsar $45.00", exact: true })
-    .click();
-  await refund.getByRole("button", { name: "Listo", exact: true }).click();
+  await refund.getByRole("button", { name: "Cancelar", exact: true }).click();
+  await expect(refund).toBeHidden();
   await pay(page, o.id, 4500);
   await page.getByRole("button", { name: "Actualizar" }).click();
   await row(page, name)
@@ -1119,8 +1128,159 @@ test("amount refunds need a paid check: with a balance due the dialog hides Por 
     .click();
   const again = page.getByRole("dialog", { name: /Reembolso · Orden/ });
   await expect(
+    again.getByRole("button", { name: "Por productos", exact: true }),
+  ).toBeVisible();
+  await expect(
     again.getByRole("button", { name: "Por importe", exact: true }),
   ).toBeVisible();
+  await again.getByRole("button", { name: "Cancelar", exact: true }).click();
+});
+
+test("UI-4: the refund result says how much cash to hand over and what the terminal already refunded", async ({
+  page,
+}) => {
+  const name = "Mixto " + tag();
+  await login(page);
+  await openDrawer(page);
+  const o = await order(page, name, 2);
+  await pay(page, o.id, 4500, { items: [`${o.lines[0].id}:0`] });
+  await pay(page, o.id, 4500, {
+    method: "external",
+    items: [`${o.lines[0].id}:1`],
+  });
+  await orders(page);
+  await row(page, name)
+    .getByRole("button", { name: "Reembolsar", exact: true })
+    .click();
+  const refund = page.getByRole("dialog", { name: /Reembolso · Orden/ });
+  await refund.getByLabel(/Taco de hongos · \$45\.00 c\/u/).fill("2");
+  await refund
+    .getByLabel("Motivo del reembolso")
+    .selectOption({ label: "El cliente canceló" });
+  await refund
+    .getByLabel("Referencia del reembolso en la terminal")
+    .fill("R-5501");
+  await refund
+    .getByLabel("Confirmo que la terminal aprobó el reembolso de $45.00")
+    .check();
+  await refund
+    .getByRole("button", { name: "Reembolsar $90.00", exact: true })
+    .click();
+  const done = refund.getByRole("status");
+  await expect(done).toContainText("Entrega $45.00 en efectivo");
+  await expect(done).toContainText(
+    "Terminal: $45.00, ya reembolsado en la terminal (Ref. R-5501)",
+  );
+  await expect(done).toContainText("Reembolso registrado: $90.00");
+  await expect(done).not.toContainText("Entrega $90.00");
+  await refund.getByRole("button", { name: "Listo", exact: true }).click();
+  // Both tacos were cancelled before the kitchen served them.
+  const after = await call(page, "/orders/" + o.id);
+  await call(page, `/kitchen/${after.rounds[0].id}/voids/ack`, {
+    operationId: uuid(),
+  });
+});
+
+test("UI-2: after a reload the refund dialog never moves 'Por importe' to another payment; staff pick one again", async ({
+  page,
+}) => {
+  const name = "Pagos " + tag();
+  await login(page);
+  await openDrawer(page);
+  const o = await order(page, name, 2);
+  await pay(page, o.id, 4500, {
+    method: "external",
+    items: [`${o.lines[0].id}:0`],
+  });
+  await pay(page, o.id, 4500, { items: [`${o.lines[0].id}:1`] });
+  await orders(page);
+  await row(page, name)
+    .getByRole("button", { name: "Reembolsar", exact: true })
+    .click();
+  const refund = page.getByRole("dialog", { name: /Reembolso · Orden/ });
+  await refund
+    .getByRole("button", { name: "Por importe", exact: true })
+    .click();
+  const tenderSelect = refund.getByLabel("Pago a reembolsar");
+  await expect(tenderSelect.locator("option:checked")).toContainText(
+    "Ref. T-482913",
+  );
+  await refund.getByLabel("Importe").fill("45");
+  await refund
+    .getByLabel("Motivo del reembolso")
+    .selectOption({ label: "Cobro equivocado" });
+  await refund
+    .getByLabel("Referencia del reembolso en la terminal")
+    .fill("R-7001");
+  await refund
+    .getByLabel("Confirmo que la terminal aprobó el reembolso de $45.00")
+    .check();
+  // Another device refunds the whole card payment first.
+  const card = (await call(page, "/orders/" + o.id)).tenders.find(
+    (t: { method: string }) => t.method === "external",
+  );
+  await call(page, `/orders/${o.id}/refunds`, {
+    mode: "amount",
+    operationId: uuid(),
+    tenderId: card.id,
+    amount: 4500,
+    expectedRefunded: 0,
+    reasonCode: "charge_error",
+    note: "",
+    external: [{ tenderId: card.id, reference: "R-7000", confirmed: true }],
+  });
+  await refund
+    .getByRole("button", { name: "Reembolsar $45.00", exact: true })
+    .click();
+  await expect(
+    refund.getByText(
+      "La orden cambió (otro pago o reembolso). Revisa el importe y confirma de nuevo.",
+    ),
+  ).toBeVisible();
+  // Not silently the cash payment: staff must choose.
+  await expect(
+    refund.getByText(
+      "Ese pago ya no tiene saldo reembolsable. Elige el pago a reembolsar.",
+    ),
+  ).toBeVisible();
+  await expect(tenderSelect).toHaveValue("");
+  await expect(
+    refund.getByRole("button", { name: /^Reembolsar/ }),
+  ).toBeDisabled();
+  expect((await call(page, "/orders/" + o.id)).refunded).toBe(4500);
+  await refund.getByRole("button", { name: "Cancelar", exact: true }).click();
+});
+
+test("UI-3: the discount quantity field can be emptied and retyped; while empty it asks how many units and nothing can be applied", async ({
+  page,
+}) => {
+  const name = "Cantidad " + tag();
+  await login(page);
+  await order(page, name, 3);
+  await orders(page);
+  await row(page, name)
+    .getByRole("button", { name: "Descuento", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: /Descuento · Orden/ });
+  await dialog.getByLabel("Un producto").check();
+  const quantity = dialog.getByLabel("Cantidad");
+  await expect(quantity).toHaveValue("3");
+  // Tap at the end of the field and delete the digit, as on the iPad.
+  await quantity.evaluate((e: HTMLInputElement) => {
+    e.focus();
+    e.setSelectionRange(e.value.length, e.value.length);
+  });
+  await quantity.press("Backspace");
+  await expect(quantity).toHaveValue("");
+  await expect(dialog).toContainText("Escribe cuántas piezas, de 1 a 3.");
+  await expect(
+    dialog.getByRole("button", { name: /^Aplicar descuento/ }),
+  ).toBeDisabled();
+  await quantity.pressSequentially("1");
+  await expect(quantity).toHaveValue("1");
+  await dialog.getByRole("button", { name: "10 %", exact: true }).click();
+  await expect(dialog).toContainText("Descuento: −$4.50");
+  await dialog.getByRole("button", { name: "Cancelar", exact: true }).click();
 });
 
 test("a whole-check comp on a takeaway check warns, closes the check and offers no Quitar descuento", async ({

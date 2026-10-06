@@ -1,6 +1,5 @@
 import type { Locale, Order, Session } from "../../../shared/domain";
 import type { RefundBatchView } from "../../../shared/discounts";
-import type { OrderFiscal } from "../../../shared/fiscal";
 import { strings } from "../../i18n";
 import { moneyFormatter } from "../Receipt";
 import { fill, lineLabel, reasonLabel } from "./format";
@@ -12,7 +11,7 @@ import { fill, lineLabel, reasonLabel } from "./format";
  * asks of a restitution (amount and IVA apart, and the original ticket); for
  * an invoiced sale the formal document is the CFDI de egreso (cfdi 030). The
  * folio and IVA lines come from fiscal's order.fiscal (027) and are left out
- * while it is absent.
+ * when it has none (a non-MXN restaurant).
  */
 export function RefundSlip({
   order,
@@ -28,8 +27,7 @@ export function RefundSlip({
   const t = strings[locale];
   const restaurant = order.restaurantSnapshot ?? session.restaurant;
   const money = moneyFormatter(restaurant.currency, locale);
-  // discounts (028): read through a typed accessor until fiscal adds Order.fiscal.
-  const fiscal = (order as Order & { fiscal?: OrderFiscal | null }).fiscal;
+  const fiscal = order.fiscal;
   const refundIds = new Set(batch.rows.map((r) => r.refundId));
   const taxes = (fiscal?.refunds ?? [])
     .filter((r) => refundIds.has(r.refundId))

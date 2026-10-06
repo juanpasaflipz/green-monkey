@@ -24,8 +24,13 @@ import {
   discountExpectation,
   discountInput,
   discountInputIssue,
+  discountIsFinal,
+  discountIssuesTicket,
   discountLimitCheck,
   discountPlanMatches,
+  itemRefundsBlocked,
+  REFUND_REASONS,
+  unapprovedDiscounts,
   formatPercentBps,
   itemRefundExpectation,
   itemRefundPlanMatches,
@@ -52,6 +57,8 @@ import {
 import { line as fiscalLine, rng } from "./fixtures/fiscal";
 import {
   countText,
+  discountRemovable,
+  reasonLabel,
   removableAfterReload,
 } from "../src/features/discounts/format";
 import { strings, type Key } from "../src/i18n";
@@ -389,35 +396,286 @@ describe("discount planning (FIT-8)", () => {
     ).toBe("discount_nothing_due");
   });
 
-  it("9. discountLimitCheck: self for managers; within/exceeds for cashier and server by percent and amount; comp is 100%", () => {
+  it("9. discountLimitCheck: self for managers; for cashier and server the request's kind rule (MONEY-2) and the amount cap; comp needs 100%", () => {
     const c = controls({ maxPercentBps: 1000, maxAmount: 5000 });
-    expect(discountLimitCheck("owner", { base: 10, amount: 10 }, c)).toBe(
-      "self",
-    );
-    expect(discountLimitCheck("manager", { base: 10, amount: 10 }, c)).toBe(
+    const check = (total: number) => ({ total, discount: 0, discounts: [] });
+    const pct = (percentBps: number) => ({
+      kind: "percent" as const,
+      percentBps,
+    });
+    const fixed = { kind: "amount" as const };
+    const comp = { kind: "comp" as const };
+    const plan = (base: number, amount: number) => ({ base, amount });
+    expect(discountLimitCheck("owner", comp, plan(10, 10), c, check(10))).toBe(
       "self",
     );
     expect(
-      discountLimitCheck("cashier", { base: 20000, amount: 2000 }, c),
+      discountLimitCheck("manager", comp, plan(10, 10), c, check(10)),
+    ).toBe("self");
+    expect(
+      discountLimitCheck(
+        "cashier",
+        pct(1000),
+        plan(20000, 2000),
+        c,
+        check(20000),
+      ),
     ).toBe("within");
     expect(
-      discountLimitCheck("cashier", { base: 20000, amount: 2001 }, c),
+      discountLimitCheck(
+        "cashier",
+        pct(1001),
+        plan(20000, 2002),
+        c,
+        check(20000),
+      ),
+    ).toBe("exceeds");
+    // The amount cap holds whatever the percentage.
+    expect(
+      discountLimitCheck(
+        "cashier",
+        pct(1000),
+        plan(60000, 6000),
+        c,
+        check(60000),
+      ),
     ).toBe("exceeds");
     expect(
-      discountLimitCheck("cashier", { base: 60000, amount: 5001 }, c),
-    ).toBe("exceeds");
-    expect(discountLimitCheck("cashier", { base: 4500, amount: 4500 }, c)).toBe(
-      "exceeds",
-    );
-    expect(discountLimitCheck("server", { base: 20000, amount: 1 }, c)).toBe(
-      "exceeds",
-    );
-    expect(discountLimitCheck("kitchen", { base: 20000, amount: 1 }, c)).toBe(
-      "exceeds",
-    );
-    const comp = controls({ maxPercentBps: 10000, maxAmount: 4500 });
+      discountLimitCheck("cashier", fixed, plan(20000, 2000), c, check(20000)),
+    ).toBe("within");
     expect(
-      discountLimitCheck("cashier", { base: 4500, amount: 4500 }, comp),
+      discountLimitCheck("cashier", fixed, plan(20000, 2001), c, check(20000)),
+    ).toBe("exceeds");
+    // A comp is 100 %: a 10 % limit never covers it.
+    expect(
+      discountLimitCheck("cashier", comp, plan(4500, 4500), c, check(4500)),
+    ).toBe("exceeds");
+    expect(
+      discountLimitCheck(
+        "server",
+        pct(500),
+        plan(20000, 1000),
+        c,
+        check(20000),
+      ),
+    ).toBe("exceeds");
+    expect(
+      discountLimitCheck(
+        "kitchen",
+        pct(500),
+        plan(20000, 1000),
+        c,
+        check(20000),
+      ),
+    ).toBe("exceeds");
+    const comps = controls({ maxPercentBps: 10000, maxAmount: 4500 });
+    expect(
+      discountLimitCheck("cashier", comp, plan(4500, 4500), comps, check(4500)),
+    ).toBe("within");
+    // A comp of 99.99 % is not a comp: the limit must be 100 %.
+    const almost = controls({ maxPercentBps: 9999, maxAmount: 100000 });
+    expect(
+      discountLimitCheck(
+        "cashier",
+        comp,
+        plan(4500, 4500),
+        almost,
+        check(4500),
+      ),
+    ).toBe("exceeds");
+  });
+
+  it("9b. MONEY-2: a percentage at exactly the limit is within on odd bases (half-up rounding); a fixed amount compares with discount(base, limit)", () => {
+    const ten = controls({ maxPercentBps: 1000, maxAmount: 1_000_000 });
+    const one = (total: number) => ({ total, discount: 0, discounts: [] });
+    // The INAPAM scenario: $134.55 due, 10 % chip → −$13.46 (1345.5 rounds up).
+    expect(discount(13455, 1000)).toBe(1346);
+    expect(
+      discountLimitCheck(
+        "cashier",
+        { kind: "percent", percentBps: 1000 },
+        { base: 13455, amount: 1346 },
+        ten,
+        one(13455),
+      ),
+    ).toBe("within");
+    // Every odd base from $10.00 to $199.99 at exactly the 10 % limit.
+    for (let base = 1000; base < 20000; base++)
+      expect(
+        discountLimitCheck(
+          "cashier",
+          { kind: "percent", percentBps: 1000 },
+          { base, amount: discount(base, 1000) },
+          ten,
+          one(base),
+        ),
+        `base ${base}`,
+      ).toBe("within");
+    // 12.5 % on a $45.00 taco: 562.5 → 563.
+    const eighth = controls({ maxPercentBps: 1250, maxAmount: 1_000_000 });
+    expect(
+      discountLimitCheck(
+        "cashier",
+        { kind: "percent", percentBps: 1250 },
+        { base: 4500, amount: discount(4500, 1250) },
+        eighth,
+        one(4500),
+      ),
+    ).toBe("within");
+    // A fixed amount: up to discount(base, limit), the same rounding.
+    const fixed = { kind: "amount" as const };
+    expect(
+      discountLimitCheck(
+        "cashier",
+        fixed,
+        { base: 13455, amount: 1346 },
+        ten,
+        one(13455),
+      ),
+    ).toBe("within");
+    expect(
+      discountLimitCheck(
+        "cashier",
+        fixed,
+        { base: 13455, amount: 1347 },
+        ten,
+        one(13455),
+      ),
+    ).toBe("exceeds");
+    expect(
+      discountLimitCheck(
+        "cashier",
+        fixed,
+        { base: 4501, amount: 450 },
+        ten,
+        one(4501),
+      ),
+    ).toBe("within");
+    expect(
+      discountLimitCheck(
+        "cashier",
+        fixed,
+        { base: 4501, amount: 451 },
+        ten,
+        one(4501),
+      ),
+    ).toBe("exceeds");
+  });
+
+  it("9c. MONEY-3 / APPROVALS-1: the limits hold per check for discounts recorded without an approver; split or stacked discounts add up", () => {
+    const staff = (
+      amount: number,
+      over: Partial<OrderDiscount> = {},
+    ): OrderDiscount => ({
+      id: randomUUID(),
+      scope: "line",
+      lineId: "l",
+      kind: "comp",
+      percentBps: null,
+      base: amount,
+      amount,
+      units: 1,
+      activeAmount: amount,
+      releasedAmount: 0,
+      allocations: [],
+      reasonCode: "courtesy",
+      note: "",
+      actorName: "Dani Demo",
+      approverName: null,
+      createdAt: "2026-10-05T12:00:00.000Z",
+      reversal: null,
+      ...over,
+    });
+    const comp = { kind: "comp" as const };
+    // "Cashiers may comp up to $50": 10 tacos at $45, one comp at a time.
+    const cap50 = controls({ maxPercentBps: 10000, maxAmount: 5000 });
+    const first = { total: 45000, discount: 0, discounts: [] };
+    expect(
+      discountLimitCheck(
+        "cashier",
+        comp,
+        { base: 4500, amount: 4500 },
+        cap50,
+        first,
+      ),
+    ).toBe("within");
+    const second = {
+      total: 40500,
+      discount: 4500,
+      discounts: [staff(4500)],
+    };
+    expect(unapprovedDiscounts(second)).toEqual({ amount: 4500, count: 1 });
+    expect(
+      discountLimitCheck(
+        "cashier",
+        comp,
+        { base: 4500, amount: 4500 },
+        cap50,
+        second,
+      ),
+    ).toBe("exceeds");
+    // Approved and reversed discounts do not count.
+    const approved = {
+      total: 40500,
+      discount: 4500,
+      discounts: [
+        staff(4500, { approverName: "Luis" }),
+        staff(4500, {
+          activeAmount: 0,
+          reversal: {
+            at: "2026-10-05T12:01:00.000Z",
+            byName: "Luis",
+            approverName: "Luis",
+            note: "No aplicaba",
+            amount: 4500,
+          },
+        }),
+      ],
+    };
+    expect(unapprovedDiscounts(approved)).toEqual({ amount: 0, count: 0 });
+    expect(
+      discountLimitCheck(
+        "cashier",
+        comp,
+        { base: 4500, amount: 4500 },
+        cap50,
+        approved,
+      ),
+    ).toBe("within");
+    // 10 %: a 10 % line discount on every line is exactly 10 % of the check;
+    // a 10 % check discount on top of it would make it 19 %.
+    const ten = controls({ maxPercentBps: 1000, maxAmount: 1_000_000 });
+    const pct = { kind: "percent" as const, percentBps: 1000 };
+    const lines = {
+      total: 67500,
+      discount: 7500,
+      discounts: [staff(5400), staff(2100)],
+    };
+    expect(
+      discountLimitCheck("cashier", pct, { base: 21000, amount: 2100 }, ten, {
+        total: 69600,
+        discount: 5400,
+        discounts: [staff(5400)],
+      }),
+    ).toBe("within");
+    expect(
+      discountLimitCheck(
+        "cashier",
+        pct,
+        { base: 67500, amount: 6750 },
+        ten,
+        lines,
+      ),
+    ).toBe("exceeds");
+    // Each discount keeps its half centavo of rounding: two 10 % line
+    // discounts on $123.45 items (1235 each) fit 10 % of $246.90.
+    expect(discount(12345, 1000)).toBe(1235);
+    expect(
+      discountLimitCheck("cashier", pct, { base: 12345, amount: 1235 }, ten, {
+        total: 23455,
+        discount: 1235,
+        discounts: [staff(1235)],
+      }),
     ).toBe("within");
   });
 
@@ -478,6 +736,15 @@ describe("discount planning (FIT-8)", () => {
       ],
     });
     expect(voidCandidates(o, taco.id).map((u) => u.unit)).toEqual([1, 0, 2]);
+    // FISCAL-4: once the check has its fiscal ticket, its discounted (comped)
+    // units are frozen on it and are not voidable; zero-priced units still are.
+    const ticketed = {
+      ...o,
+      fiscal: { ticket: { folio: "A-000001" } },
+    } as unknown as Order;
+    expect(voidCandidates(ticketed, taco.id).map((u) => u.unit)).toEqual([
+      1, 0,
+    ]);
   });
 
   it("12. composeOrderAdjustments: active amounts exclude voided and reversed allocations; legacy refunds become synthetic batches", () => {
@@ -1137,6 +1404,158 @@ describe("inputs and helpers", () => {
     expect(discountClosesCheck(o, { amount: 900 })).toBe(false);
     expect(discountClosesCheck({ ...o, paid: 4500 }, { amount: 4500 })).toBe(
       true,
+    );
+  });
+
+  it("25b. FISCAL-2: a discount that settles a dine-in table check with a total above 0 issues its ticket, so it is final; at a zero total it stays correctable", () => {
+    const table = {
+      total: 9000,
+      paid: 4500,
+      mode: "dine_in",
+      tableId: randomUUID(),
+      channel: "pos",
+      restaurantSnapshot: null,
+    };
+    // The last unpaid taco comped: total 4500 = paid → paid + ticket.
+    expect(discountClosesCheck(table, { amount: 4500 })).toBe(false);
+    expect(discountIssuesTicket(table, { amount: 4500 })).toBe(true);
+    expect(discountIsFinal(table, { amount: 4500 })).toBe(true);
+    // Nothing paid, comped to 0: no ticket for a zero total.
+    expect(discountIssuesTicket({ ...table, paid: 0 }, { amount: 9000 })).toBe(
+      false,
+    );
+    expect(discountIsFinal({ ...table, paid: 0 }, { amount: 9000 })).toBe(
+      false,
+    );
+    // A balance still due afterwards: no ticket yet.
+    expect(discountIssuesTicket(table, { amount: 450 })).toBe(false);
+    // A takeaway check closes instead (final either way).
+    const takeaway = { ...table, mode: "takeaway", tableId: null };
+    expect(discountIssuesTicket(takeaway, { amount: 4500 })).toBe(false);
+    expect(discountIsFinal(takeaway, { amount: 4500 })).toBe(true);
+    // Fiscal tickets are MXN only.
+    expect(
+      discountIssuesTicket(
+        {
+          ...table,
+          restaurantSnapshot: {
+            name: "Diner",
+            currency: "USD",
+            timezone: "America/Mexico_City",
+            cutoff: 240,
+          },
+        },
+        { amount: 4500 },
+      ),
+    ).toBe(false);
+    // The preview carries it: a confirm on a check that would no longer
+    // issue the ticket (or newly would) answers discount_changed.
+    const taco = line(9000, 2);
+    const paidOne = view({
+      lines: [taco],
+      allocations: [{ tenderId: "t", lineId: taco.id, unit: 0, amount: 4500 }],
+      tenders: [{ ...tender("cash", 4500), id: "t" }],
+    });
+    const atTable = { ...paidOne, mode: "dine_in", tableId: randomUUID() };
+    const comp = { scope: "order" as const, kind: "comp" as const };
+    expect(
+      discountExpectation(atTable, planDiscount(atTable, comp)).expectedCloses,
+    ).toBe(true);
+  });
+
+  it("25c. FISCAL-2 / MONEY-4: Quitar descuento is never offered on a ticketed check; a check discount whose units were all voided can still be removed (it frees the slot)", () => {
+    const taco = line(9000, 2, { voidedUnits: [0, 1] });
+    const released: OrderDiscount = {
+      id: "d1",
+      scope: "order",
+      lineId: null,
+      kind: "percent",
+      percentBps: 1000,
+      base: 9000,
+      amount: 900,
+      units: 2,
+      activeAmount: 0,
+      releasedAmount: 900,
+      allocations: [
+        { lineId: taco.id, unit: 0, amount: 450, voided: true },
+        { lineId: taco.id, unit: 1, amount: 450, voided: true },
+      ],
+      reasonCode: "senior_inapam",
+      note: "",
+      actorName: "Ana",
+      approverName: "Luis",
+      createdAt: "2026-10-05T12:00:00.000Z",
+      reversal: null,
+    };
+    const o = view({ lines: [taco], discounts: [released] });
+    expect(discountRemovable(o, released)).toBe(true);
+    expect(
+      discountRemovable(o, { ...released, scope: "line", lineId: taco.id }),
+    ).toBe(false);
+    const live = view({
+      lines: [line(9000, 2)],
+      discounts: [{ ...released, activeAmount: 900, releasedAmount: 0 }],
+    });
+    const d = live.discounts![0];
+    expect(discountRemovable(live, d)).toBe(true);
+    expect(
+      discountRemovable(
+        { ...live, fiscal: { ticket: { folio: "A-1" } } } as unknown as Order,
+        d,
+      ),
+    ).toBe(false);
+  });
+
+  it("26. FISCAL-3: after an amount refund a check whose lines span two tax categories takes no item refunds; one category still does", () => {
+    const tax = (category: string) =>
+      ({
+        v: 1,
+        category,
+        rateBps: category === "iva16" ? 1600 : 0,
+        basis: "inclusive",
+        satProductKey: "90101500",
+        satUnitKey: "H87",
+        base: 0,
+        tax: 0,
+      }) as unknown as PricedLine["tax"];
+    const latte = line(10000, 1, { tax: tax("iva16") });
+    const beans = line(20000, 1, { tax: tax("iva0") });
+    const amountBatch = {
+      id: "b",
+      mode: "amount",
+    } as unknown as NonNullable<Order["refundBatches"]>[number];
+    const mixed = view({ lines: [latte, beans] });
+    expect(itemRefundsBlocked(mixed)).toBe(false);
+    expect(itemRefundsBlocked({ ...mixed, refundBatches: [amountBatch] })).toBe(
+      true,
+    );
+    const single = view({
+      lines: [latte, line(5000, 1, { tax: tax("iva16") })],
+    });
+    expect(
+      itemRefundsBlocked({ ...single, refundBatches: [amountBatch] }),
+    ).toBe(false);
+    // A fully voided line no longer counts.
+    const voidedBeans = view({
+      lines: [latte, { ...beans, voidedUnits: [0] }],
+    });
+    expect(
+      itemRefundsBlocked({ ...voidedBeans, refundBatches: [amountBatch] }),
+    ).toBe(false);
+  });
+
+  it("27. MONEY-8 / UI-8: no duplicate-terminal-charge reason; printed reason labels say 'Otro', never the form's instruction", () => {
+    expect(REFUND_REASONS as readonly string[]).not.toContain(
+      "duplicate_terminal_charge",
+    );
+    expect(reasonLabel("discount", "other", "es")).toBe("Otro");
+    expect(reasonLabel("refund", "other", "en")).toBe("Other");
+    expect(reasonLabel("refund", "something_old", "es")).toBe("Otro");
+    expect(reasonLabel("refund", "quality", "es")).toBe(
+      "Producto con defecto o queja",
+    );
+    expect(reasonLabel("discount", "quality", "es")).toBe(
+      "Producto con defecto",
     );
   });
 });

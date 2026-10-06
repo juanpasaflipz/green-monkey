@@ -33,6 +33,7 @@ import {
 } from "../shared/domain.js";
 import {
   itemRefundPlanMatches,
+  itemRefundsBlocked,
   planItemRefund,
   refundInput,
   refundTaxScopes,
@@ -194,6 +195,8 @@ export async function recordRefund(
       if (p.mode === "items") {
         if (!order.itemSplitAvailable)
           throw new DomainError("unallocated_history", 409);
+        if (itemRefundsBlocked(order))
+          throw new DomainError("refund_items_after_amount", 409);
         const plan = planItemRefund(order, p.lines);
         // ...and when the server's plan is not the previewed one, unit for
         // unit (a payment in between makes a later unit refundable).

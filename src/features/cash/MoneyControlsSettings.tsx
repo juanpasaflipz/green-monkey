@@ -147,6 +147,10 @@ export function MoneyControlsSettings({
         // Another device saved first: show its values with the current
         // version, so the next save can succeed (DSC-R7).
         if (await load(true)) setError(t("discountsControlsReloaded"));
+      } else if (code === "operation_conflict") {
+        // An earlier save with this id was recorded (CONCURRENCY-4): show the
+        // saved values; load() starts a new operation for the next save.
+        if (await load(true)) setError(t("discountsOperationRecorded"));
       } else setError(translateError(code, locale));
     } finally {
       setBusy(false);

@@ -2696,6 +2696,74 @@ try {
     ]);
   });
 
+  await test("FISCAL-3 (discounts 028): after an amount refund, a check with an IVA 16% and an IVA 0% line takes no item refunds (refund_items_after_amount, nothing written); a one-category check still does", async () => {
+    const refundBy = (o: Order, body: Record<string, unknown>) =>
+      run(managerA, (tx) =>
+        recordRefund(
+          tx,
+          managerA,
+          o.id,
+          {
+            operationId: randomUUID(),
+            expectedRefunded: o.refunded,
+            reasonCode: "charge_error",
+            note: "",
+            ...body,
+          },
+          { approverId: managerA.employeeId },
+        ),
+      );
+    const mixed = await pay(
+      managerA,
+      await newOrder(managerA, [{ product: P.agua }, { product: P.cafe }]),
+    );
+    assert.ok(await ticketOf(A.id, mixed.id));
+    const after = await refundBy(mixed, {
+      mode: "amount",
+      tenderId: mixed.tenders[0].id,
+      amount: 2000,
+    });
+    // Fiscal split the $20.00 across both categories in proportion: the IVA 0%
+    // category has less than the beans' $180.00 left, the tender has $195.00.
+    const [beans] = after.order.lines.filter((l) => l.productId === P.cafe);
+    const plan = planItemRefund(after.order, [
+      { lineId: beans.id, quantity: 1 },
+    ]);
+    assert.equal(plan.total, 18000, "the tender alone would allow it");
+    await rejects(
+      refundBy(after.order, {
+        mode: "items",
+        lines: [{ lineId: beans.id, quantity: 1 }],
+        ...itemRefundExpectation(plan),
+        restock: false,
+      }),
+      "refund_items_after_amount",
+    );
+    const [rows] =
+      await admin`select count(*)::int as n from refund_batches where tenant_id=${A.id} and order_id=${mixed.id}`;
+    assert.equal(rows.n, 1, "only the amount refund");
+    // One category: the item refund after an amount refund stays within it.
+    const single = await pay(
+      managerA,
+      await newOrder(managerA, [{ product: P.agua, quantity: 2 }]),
+    );
+    const partly = await refundBy(single, {
+      mode: "amount",
+      tenderId: single.tenders[0].id,
+      amount: 1000,
+    });
+    const one = planItemRefund(partly.order, [
+      { lineId: single.lines[0].id, quantity: 1 },
+    ]);
+    const items = await refundBy(partly.order, {
+      mode: "items",
+      lines: [{ lineId: single.lines[0].id, quantity: 1 }],
+      ...itemRefundExpectation(one),
+      restock: false,
+    });
+    assert.equal(items.batch.amount, 3500);
+  });
+
   await test("refund business date: a refund near the cutoff is dated by the refund row's created_at (MONEY-3); since discounts 028 the legacy refund writes a batch and its adjustment copies refund_batches.business_date, the same day", async () => {
     // Move A's cutoff to one minute from now (restaurant time), so "now" is the
     // last minute of a business day; the session carries the same cutoff.

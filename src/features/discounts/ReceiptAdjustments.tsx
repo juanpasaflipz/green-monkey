@@ -56,8 +56,9 @@ export function LineDiscountRows({
 /**
  * Before the Total: the subtotal before discounts, the line discounts already
  * shown under their lines, and the check discount ("Descuento en la cuenta ·
- * Adulto mayor (INAPAM) 10 %"). A cached (offline) copy has only the total
- * discount and shows one row.
+ * Adulto mayor (INAPAM) 10 % de $135.00": the base the rate applied to, since
+ * a check discount covers only what was due when it was applied, MONEY-5). A
+ * cached (offline) copy has only the total discount and shows one row.
  */
 export function OrderDiscountRows({
   order,
@@ -102,7 +103,11 @@ export function OrderDiscountRows({
                   ? `${t.discountsRowOrder} · ${t.discountsRowComp}`
                   : `${t.discountsRowOrder} · ${reasonLabel("discount", d.reasonCode, locale)}${
                       d.kind === "percent" && d.percentBps
-                        ? " " + formatPercentBps(d.percentBps, locale)
+                        ? " " +
+                          fill(t.discountsRowOrderBase, {
+                            percent: formatPercentBps(d.percentBps, locale),
+                            base: money(d.base),
+                          })
                         : ""
                     }`}
               </span>
@@ -115,7 +120,11 @@ export function OrderDiscountRows({
   );
 }
 
-/** After "Reembolso −X": what each item refund returned, and terminal references. */
+/**
+ * After "Reembolso −X": a muted breakdown of it (UI-7, MONEY-6), unsigned so
+ * each refunded peso carries one signed figure: what each item refund
+ * returned, and the terminal references with their amounts.
+ */
 export function RefundDetailRows({
   order,
   locale,
@@ -141,7 +150,7 @@ export function RefundDetailRows({
                   name: lineLabel(line, locale),
                 })}
               </span>
-              <span>−{money(l.amount)}</span>
+              <span>{money(l.amount)}</span>
             </div>
           );
         }),
@@ -152,7 +161,7 @@ export function RefundDetailRows({
               <span>
                 {fill(t.discountsSlipTerminalRef, { ref: r.reference! })}
               </span>
-              <span>−{money(r.amount)}</span>
+              <span>{money(r.amount)}</span>
             </div>
           )),
       ])}

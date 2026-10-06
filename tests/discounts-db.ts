@@ -15,6 +15,7 @@ import postgres from "postgres";
 import { hash, password } from "../server/auth.js";
 import { checkRole, connect, tenant, type Tx } from "../server/db.js";
 import {
+  addRound,
   createOrder,
   getOrder,
   getOrders,
@@ -1926,7 +1927,7 @@ try {
       operationId: randomUUID(),
       tenderId: (await orderOf(cardOrder.id)).tenders[0].id,
       amount: 12500,
-      reasonCode: "duplicate_terminal_charge",
+      reasonCode: "customer_cancelled",
       external: [
         {
           tenderId: (await orderOf(cardOrder.id)).tenders[0].id,
@@ -2851,6 +2852,266 @@ try {
     await run(s2, (tx) =>
       closeCheck(tx, s2, o.id, { operationId: randomUUID() }),
     );
+  });
+
+  await test("FISCAL-2 / FISCAL-4 (LD-26): comping the last unpaid unit of a partly paid table check settles it and issues the ticket with the comp frozen on it; removing the comp answers fiscal_ticket_issued (the client offers no Quitar descuento), the comped unit cannot be voided and the check takes no rounds", async () => {
+    const table = tables[5].id as string;
+    const o = await newOrder([{ product: taco, quantity: 2 }], {
+      tableId: table,
+    });
+    const tacoLine = o.lines[0].id;
+    await pay(o.id, 4500, { items: [`${tacoLine}:0`] });
+    const before = await orderOf(o.id);
+    assert.equal(before.checkState, "open");
+    assert.equal(before.fiscal!.ticket, null);
+    const compBody = {
+      operationId: randomUUID(),
+      expectedVersion: before.version,
+      scope: "line",
+      lineId: tacoLine,
+      quantity: 1,
+      kind: "comp",
+      reasonCode: "courtesy",
+    };
+    // The preview warns that the discount is final (expectedCloses).
+    assert.equal(
+      discountExpectation(before, planDiscount(before, compBody as any))
+        .expectedCloses,
+      true,
+    );
+    const comped = await discount(manager, o.id, compBody);
+    assert.equal(comped.checkState, "paid");
+    assert.equal(comped.total, 4500);
+    const ticket = comped.fiscal!.ticket!;
+    assert.ok(ticket, "the zero balance issued the ticket");
+    const [frozen] = await run(
+      owner,
+      (tx) =>
+        tx`select gross,discount from fiscal_tickets where order_id=${o.id}`,
+    );
+    assert.deepEqual(
+      { gross: frozen.gross, discount: frozen.discount },
+      { gross: 4500, discount: 4500 },
+    );
+    const d = comped.discounts![0];
+    assert.equal(discountRemovable(comped, d), false, "client: not offered");
+    await rejects(
+      reverse(manager, o.id, d.id, {
+        operationId: randomUUID(),
+        expectedVersion: comped.version,
+        note: "Era para otra mesa",
+      }),
+      "fiscal_ticket_issued",
+    );
+    // FISCAL-4: the comped unit is frozen on the ticket.
+    await rejects(
+      run(owner, (tx) =>
+        voidLines(
+          tx,
+          owner,
+          o.id,
+          {
+            operationId: randomUUID(),
+            expectedVersion: comped.version,
+            lines: [{ lineId: tacoLine, quantity: 1 }],
+            reason: "No lo quiso",
+            stockDisposition: "no_return",
+          },
+          ownerId,
+        ),
+      ),
+      "void_exceeds_unpaid",
+    );
+    await rejects(
+      run(owner, (tx) =>
+        addRound(tx, owner, o.id, {
+          operationId: randomUUID(),
+          expectedVersion: comped.version,
+          lines: [
+            {
+              id: randomUUID(),
+              productId: agua.id,
+              quantity: 1,
+              options: [],
+              note: "",
+            },
+          ],
+          mode: "dine_in",
+          tableId: table,
+          name: "Descuentos",
+          note: "",
+          channel: "pos",
+        }),
+      ),
+      "fiscal_ticket_issued",
+    );
+    const after = await orderOf(o.id);
+    assert.equal(
+      after.discount,
+      4500,
+      "orders.discount still matches the ticket",
+    );
+    await run(owner, (tx) =>
+      closeCheck(tx, owner, o.id, { operationId: randomUUID() }),
+    );
+  });
+
+  await test("MONEY-2 / MONEY-3 (LD-26): a cashier's comps add up per check (two $45 comps under a $50 cap need a manager for the second); approved discounts do not count; a 10 % check discount at exactly the 10 % limit on an odd base needs no approval", async () => {
+    await setControls({
+      limits: {
+        cashier: { maxPercentBps: 10000, maxAmount: 5000 },
+        server: { maxPercentBps: 0, maxAmount: 0 },
+      },
+    });
+    try {
+      const o = await newOrder([{ product: taco, quantity: 3 }], {
+        s: cashier,
+      });
+      const line = o.lines[0].id;
+      const compOne = (version: number, extra: object = {}) => ({
+        operationId: randomUUID(),
+        expectedVersion: version,
+        scope: "line",
+        lineId: line,
+        quantity: 1,
+        kind: "comp",
+        reasonCode: "courtesy",
+        ...extra,
+      });
+      const fresh = as(cashierId, "cashier", devices.a, {});
+      const first = await discount(fresh, o.id, compOne(o.version));
+      assert.equal(first.discounts![0].approverName, null);
+      // Split into another comp: Σ 9000 > 5000 → a manager approves.
+      await rejects(
+        discount(fresh, o.id, compOne(first.version)),
+        "approval_required",
+      );
+      assert.equal((await counts(o.id)).discounts, 1);
+      await resetManagerPin();
+      const second = await discount(
+        fresh,
+        o.id,
+        compOne(first.version, { approval: managerApproval }),
+      );
+      assert.equal(second.discounts!.length, 2);
+      assert.equal(second.total, 4500);
+    } finally {
+      await setControls();
+    }
+    await setControls({
+      limits: {
+        cashier: { maxPercentBps: 1000, maxAmount: 100000 },
+        server: { maxPercentBps: 0, maxAmount: 0 },
+      },
+    });
+    try {
+      const o = await newOrder(
+        [
+          { product: taco, quantity: 1 },
+          { product: agua, quantity: 1 },
+        ],
+        { s: cashier },
+      );
+      // A manager's 5-centavo line discount leaves an odd base: 4495 + 3500.
+      const odd = await discount(manager, o.id, {
+        operationId: randomUUID(),
+        expectedVersion: o.version,
+        scope: "line",
+        lineId: lineOf(o, taco),
+        quantity: 1,
+        kind: "amount",
+        amount: 5,
+        reasonCode: "promotion",
+      });
+      const fresh = as(cashierId, "cashier", devices.a, {});
+      // 10 % of 7995 = 799.5 → 800 (half up): at the limit, not over it.
+      const ten = await discount(fresh, o.id, percentBody(odd, 1000));
+      const check = ten.discounts!.find((d) => d.scope === "order")!;
+      assert.equal(check.amount, 800);
+      assert.equal(check.approverName, null);
+    } finally {
+      await setControls();
+    }
+  });
+
+  await test("MONEY-4: a check discount whose units were all voided (active 0) can be removed, which frees the check's single check-discount slot", async () => {
+    const o = await newOrder([{ product: taco, quantity: 2 }]);
+    const d1 = await discount(manager, o.id, percentBody(o, 1000));
+    const round = await run(owner, (tx) =>
+      addRound(tx, owner, o.id, {
+        operationId: randomUUID(),
+        expectedVersion: d1.version,
+        lines: [
+          {
+            id: randomUUID(),
+            productId: bowl.id,
+            quantity: 1,
+            options: [],
+            note: "",
+          },
+        ],
+        mode: "takeaway",
+        tableId: null,
+        name: "Descuentos",
+        note: "",
+        channel: "pos",
+      }),
+    );
+    const voided = await run(owner, (tx) =>
+      voidLines(
+        tx,
+        owner,
+        o.id,
+        {
+          operationId: randomUUID(),
+          expectedVersion: round.version,
+          lines: [{ lineId: lineOf(o, taco), quantity: 2 }],
+          reason: "Se cancelaron",
+          stockDisposition: "no_return",
+        },
+        ownerId,
+      ),
+    );
+    const zero = voided.discounts!.find((d) => d.scope === "order")!;
+    assert.equal(zero.activeAmount, 0);
+    assert.equal(discountRemovable(voided, zero), true);
+    await rejects(
+      discount(manager, o.id, percentBody(voided, 1000)),
+      "discount_already_applied",
+    );
+    const reversed = await reverse(manager, o.id, zero.id, {
+      operationId: randomUUID(),
+      expectedVersion: voided.version,
+      note: "Ya no aplica a lo nuevo",
+    });
+    assert.equal(reversed.total, 12500);
+    const again = await discount(manager, o.id, percentBody(reversed, 1000));
+    assert.equal(again.total, 11250);
+  });
+
+  await test("APPROVALS-4: a kitchen session sending an approval gets forbidden before any PIN is checked or counted", async () => {
+    await resetManagerPin();
+    const throttles = async () => {
+      const [r] = await admin.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id',${tenantId},true)`;
+        return tx`select count(*)::int as n,
+            (select failed_attempts from employees where id=${managerId}) as failed
+          from pin_throttles where employee_id=${managerId}`;
+      });
+      return r as { n: number; failed: number };
+    };
+    const before = await throttles();
+    for (const secret of ["0000", managerPin])
+      await rejects(
+        approvalFor(
+          sql,
+          kitchen,
+          { employeeId: managerId, secret },
+          "required",
+        ),
+        "forbidden",
+      );
+    assert.deepEqual(await throttles(), before);
   });
 
   console.log(`${checks} discounts checks passed`);

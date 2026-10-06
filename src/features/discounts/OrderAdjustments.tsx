@@ -4,6 +4,8 @@ import type { OrderDiscount } from "../../../shared/discounts";
 import { Button } from "../../components/ui";
 import { strings, type Key } from "../../i18n";
 import { tenderMethodLabel } from "../../labels";
+import { printDocument, readPrintSettings } from "../../print";
+import { RefundSlip } from "./RefundSlip";
 import {
   discountRemovable,
   discountRowLabel,
@@ -77,10 +79,17 @@ function DiscountItem({
         {d.reversal && (
           <>
             <br />
-            {fill(t("discountsReversedBy"), {
-              actor: d.reversal.byName,
-              note: d.reversal.note,
-            })}
+            {/* LD-16 L3: the approver of the removal, even when it is the actor. */}
+            {d.reversal.approverName
+              ? fill(t("discountsReversedByApproved"), {
+                  actor: d.reversal.byName,
+                  approver: d.reversal.approverName,
+                  note: d.reversal.note,
+                })
+              : fill(t("discountsReversedBy"), {
+                  actor: d.reversal.byName,
+                  note: d.reversal.note,
+                })}
           </>
         )}
       </small>
@@ -188,6 +197,27 @@ export function OrderAdjustments({
                     })}
                   </span>
                 </small>
+                {!b.legacy && (
+                  // UI-6: the comprobante can be printed again after the result
+                  // view closed (always in Spanish, a customer document).
+                  <Button
+                    variant="ghost"
+                    className="small"
+                    onClick={() =>
+                      void printDocument(
+                        <RefundSlip
+                          order={order}
+                          batch={b}
+                          session={session}
+                          locale="es"
+                        />,
+                        readPrintSettings().paper,
+                      )
+                    }
+                  >
+                    {t("discountsRefundPrint")}
+                  </Button>
+                )}
               </li>
             ))}
           </ul>
@@ -258,7 +288,11 @@ export function CheckDiscountSummary({
       );
   } else if (active.length)
     rows = (
-      <div className="check-discounts" aria-label={t("discountsCheckSummary")}>
+      <div
+        className="check-discounts"
+        role="group"
+        aria-label={t("discountsCheckSummary")}
+      >
         {active.map((d) => {
           const line =
             d.scope === "line"
