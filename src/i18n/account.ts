@@ -88,13 +88,14 @@ export default defineArea({
       "Solo la persona propietaria puede cambiar este enlace.",
     accountExportTitle: "Exportar datos del restaurante",
     accountExportHint:
-      "Descarga tus registros: ventas, pagos, caja, menú, inventario, equipo y auditoría. Los importes están en centavos. No incluye contraseñas ni PIN.",
+      "Descarga tus registros: ventas, pagos, caja, menú, inventario, equipo y auditoría. Los importes están en centavos. No incluye contraseñas ni PIN, ni los archivos XML y PDF de tus facturas (CFDI): descárgalos desde Facturas.",
     accountExportJson: "Descargar todo (JSON)",
     accountExportCsv: "Descargar tabla (CSV)",
     accountExportTable: "Tabla",
     accountExportInterrupted:
       "La descarga se interrumpió; vuelve a intentarlo.",
     accountExportStepUpHint: "En terminales compartidas te pediremos tu PIN.",
+    accountExportShowTables: "Mostrar tablas",
     accountExportPreparing: "Preparando la descarga…",
     accountExportStarted: "La descarga comenzó.",
     // Account console: owners, transfers, recovery (GAP-5)
@@ -387,12 +388,13 @@ export default defineArea({
     accountPrivacyOwnerOnly: "Only the owner can change this link.",
     accountExportTitle: "Export restaurant data",
     accountExportHint:
-      "Download your records: sales, payments, cash, menu, inventory, team and audit. Amounts are in cents. Passwords and PINs are not included.",
+      "Download your records: sales, payments, cash, menu, inventory, team and audit. Amounts are in cents. Passwords, PINs and your invoices' XML and PDF files (CFDI) are not included: download those from Invoices.",
     accountExportJson: "Download everything (JSON)",
     accountExportCsv: "Download table (CSV)",
     accountExportTable: "Table",
     accountExportInterrupted: "The download was interrupted; try again.",
     accountExportStepUpHint: "On shared terminals we will ask for your PIN.",
+    accountExportShowTables: "Show tables",
     accountExportPreparing: "Preparing the download…",
     accountExportStarted: "The download started.",
     accountConsoleTitle: "Account and owners",

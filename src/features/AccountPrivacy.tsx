@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { Locale, Session } from "../../shared/domain";
+import { stepUpExempt } from "../../shared/access";
 import { api, ApiError } from "../api";
 import { Button, Field } from "../components/ui";
 import { strings, translateError } from "../i18n";
@@ -35,7 +36,9 @@ export function AccountPrivacy({
 }) {
   const t = strings[locale];
   const owner = session.role === "owner";
-  const terminal = session.access?.deviceKind === "terminal";
+  // The server's own rule (DATA-4): only Google-entered sessions on a personal
+  // device skip the PIN step-up; a PIN-entered owner on a personal device does not.
+  const needsStepUp = !stepUpExempt(session.access);
   const [privacy, setPrivacy] = useState<Privacy | null>(null);
   const [url, setUrl] = useState("");
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
@@ -57,8 +60,8 @@ export function AccountPrivacy({
   }
   useEffect(() => {
     void load();
-    // A personal owner browser needs no PIN: list the tables right away.
-    if (owner && !terminal) void listTables().catch(() => undefined);
+    // An exempt owner browser needs no PIN: list the tables right away.
+    if (owner && !needsStepUp) void listTables().catch(() => undefined);
   }, []);
   async function save(next: string | null) {
     if (!privacy) return;
@@ -179,7 +182,7 @@ export function AccountPrivacy({
         <div className="account-export">
           <h3>{t.accountExportTitle}</h3>
           <p className="muted">{t.accountExportHint}</p>
-          {terminal && <p className="muted">{t.accountExportStepUpHint}</p>}
+          {needsStepUp && <p className="muted">{t.accountExportStepUpHint}</p>}
           <div className="row">
             <Button onClick={() => void download("json")}>
               {t.accountExportJson}
@@ -195,9 +198,26 @@ export function AccountPrivacy({
                 ))}
               </select>
             </Field>
-            <Button onClick={() => void download("csv")}>
-              {t.accountExportCsv}
-            </Button>
+            {tables.length ? (
+              <Button onClick={() => void download("csv")}>
+                {t.accountExportCsv}
+              </Button>
+            ) : (
+              // The owner chooses the table first: the PIN step-up (if any)
+              // runs here, before anything downloads (UX-11).
+              <Button
+                onClick={() =>
+                  void listTables().catch((e) => {
+                    const code =
+                      e instanceof ApiError ? e.message : "export_aborted";
+                    if (code !== "step_up_cancelled")
+                      setExportError(translateError(code, locale));
+                  })
+                }
+              >
+                {t.accountExportShowTables}
+              </Button>
+            )}
           </div>
           <p aria-live="polite" className="muted">
             {exportState}

@@ -107,7 +107,8 @@ rotate the
    other's credentials (`forbidden_credential_in_process`).
    Production leaves `BILLING_SANDBOX_ENABLED` unset (billing disabled)
    unless live-mode billing has been qualified (post-launch billing area,
-   LD-15 account Q7; its live adapter must pass `assertSaasTaxReady`); production
+   LD-15 account Q7; its live adapter must pass `assertSaasTaxReady`, which needs
+   the `LEGAL_*` values declared on the worker as well as the web); production
    `web` refuses to start with `BILLING_DATABASE_URL` set while billing is
    disabled (DB-1 follow-up, [RUNBOOK.md](RUNBOOK.md) "Open follow-ups").
 5. Manual settings from [RUNBOOK.md](RUNBOOK.md): restart policy, region,

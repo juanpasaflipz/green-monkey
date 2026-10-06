@@ -113,6 +113,24 @@ describe("SaaS tax mode (GAP-6)", () => {
     );
   });
 
+  it("the guard reads the legal entity from the process holding the live key: a worker env without the LEGAL_* values fails (OPS-4)", () => {
+    // Today .railway/railway.ts declares LEGAL_* only on the web service; the
+    // worker holds the live Stripe key, so the live adapter must have them
+    // declared on the worker too (BILLING_IMPLEMENTATION, PROVISIONING §3).
+    const worker = {
+      SAAS_TAX_MODE: "tax_rate",
+      STRIPE_TAX_RATE_ID: "txr_1Abc",
+      PROCESS_KIND: "worker",
+    };
+    expect(() => assertSaasTaxReady(worker, legalConfig(worker))).toThrow(
+      "saas_tax_required_for_live_billing",
+    );
+    const declared = { ...worker, ...legal, LEGAL_ENTITY_RFC: "EKU9003173C9" };
+    expect(() =>
+      assertSaasTaxReady(declared, legalConfig(declared)),
+    ).not.toThrow();
+  });
+
   it("startup validators refuse what the modules would reject (C-9)", () => {
     expect(() => accountWebConfig({}, "development")).not.toThrow();
     expect(() =>

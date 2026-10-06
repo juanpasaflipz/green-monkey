@@ -573,6 +573,39 @@ describe("legal documents", () => {
     );
   });
 
+  it("every published version's text is pinned: a text change without a new version fails (LEGAL-8, Código de Comercio Art. 49)", () => {
+    // Add a line here when a new version ships; never edit an existing one.
+    const PUBLISHED: Record<
+      "privacy" | "terms" | "dpa" | "billing_consent",
+      Record<string, string>
+    > = {
+      privacy: {
+        "2026-10-06":
+          "30c412cea63b811aca906f95f7f7964b6ba69580e4d6a14e2d07d5caeac27e85",
+      },
+      terms: {
+        "2026-10-06":
+          "419e6f331b875a5e68eee218d1307d92757fc471eb8f214f445dcce3e2ab3bcd",
+      },
+      dpa: {
+        "2026-10-06":
+          "e27b6ca16653d26a9a31627f7837a96e5c341a4ddf75daa78efc322dc4cc23bb",
+      },
+      billing_consent: {
+        "2026-10-06":
+          "f8d6b72d4a9f528126e3e292bc06d88e41e8ceed87289da561e14cd8e6cba90f",
+      },
+    };
+    for (const doc of Object.keys(PUBLISHED) as Array<keyof typeof PUBLISHED>) {
+      const version =
+        LEGAL_DOCUMENTS[doc === "billing_consent" ? "privacy" : doc].version;
+      expect(
+        PUBLISHED[doc][version],
+        `${doc} ${version}: changed text needs a new version (and a line here)`,
+      ).toBe(legalContentHash(doc));
+    }
+  });
+
   it("legalContentHash is stable and changes with content", () => {
     const first = legalContentHash("privacy");
     expect(first).toMatch(/^[a-f0-9]{64}$/);

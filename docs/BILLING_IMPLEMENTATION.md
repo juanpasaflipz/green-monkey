@@ -51,8 +51,13 @@ launches without billing; pilots get Pro from the support CLI's
   (`server/saas-tax.ts`) refuses (`saas_tax_required_for_live_billing`) unless
   the worker runs `SAAS_TAX_MODE=tax_rate` and the published legal entity has an
   RFC. Live keys are still rejected everywhere today; the post-launch live
-  adapter must call this guard before accepting one. The accountant's
-  confirmation of IVA treatment is on the launch hand-off list.
+  adapter must call this guard before accepting one. The guard reads the legal
+  entity from the process that holds the live key, the worker: today
+  `.railway/railway.ts` declares `LEGAL_*` only on the web service (and Railway
+  plans an undeclared variable as a deletion), so the live-billing change must
+  declare them on the worker too, or the guard always refuses (OPS-4;
+  `tests/saas-tax.test.ts`). The accountant's confirmation of IVA treatment is
+  on the launch hand-off list.
 - **Canceled subscriptions:** reconciliation uses the subscription's
   `ended_at` (when it actually ended) as `access_until` for canceled
   subscriptions, not `canceled_at`.

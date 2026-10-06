@@ -2,7 +2,8 @@
 
 Status: **implemented locally** on `track/account` and qualified with the local
 suites (unit, `test:db:account`, `test:db:support`, `test:account-http`,
-browser). The legal entity is **not configured** in any deployed environment
+browser), with every must-fix issue of the LD-5 second opinion applied (LD-32:
+OPS-1..3, AUTHZ-1..2, LEGAL-1..5, DATA-1..2, UX-1..6, UX-8) plus most lows. The legal entity is **not configured** in any deployed environment
 and the document text is a draft pending **counsel review** (D1, D2). No
 provider (Stripe, Google, Facturapi) behaviour was verified live for this area.
 
@@ -491,28 +492,58 @@ invitation normally.
   0 `db_retry`. ARCHITECTURE E7 lists the writers as built after the platform
   hardening (every one that locks an employee or device row and needs 920
   takes 920 first).
-- **Trial merge with integration (ACC-16).** A scratch merge of this track
-  with release/v1 at e503521 (platform hardening, LD-20/LD-21) passes
-  typecheck, lint and all unit tests, including the hardened lock-order
-  ratchet (`tests/lock-scan.ts`) and `tests/db-retries.test.ts`, with these
-  resolutions:
-  1. `docs/ARCHITECTURE.md`: keep integration's E5 and E6 (LD-21), then
-     account's exception, already numbered **E7** on this track (rows 13 and
-     30 cite E7); row 30 takes account's text, rows 31 to 33 integration's.
-  2. `tests/account-db.ts`: wrap the two concurrent bursts (`results` in
-     checks 11 and 22) in `noRetries("…", () => Promise.allSettled(…))` and
-     import `noRetries` from `./db-retries.js`, which exists only on
-     integration.
-  3. `src/labels.ts`: union integration's `job.requeued` / `job.cancelled`
-     rows with account's `account.*` and `plan.free_slot_auto` rows.
-  4. `tests/free-limits-db.ts`: union the imports (integration's `pinSignIn`
-     and `noRetries`; account's `sellingAccess`, `autoAssignFreeSlots`,
-     `freeSelectionMode`, `requireDrawerOpenAllowed`, `setFreeSelectionMode`,
-     `addRound`, `createSession`, `authentication`, `legalConfig`) and keep
-     integration's PLATFORM-LOCKS-6 / PLAT-HR-9 bursts before account's ACC-14
-     selection-switch check (both leave the other device selected).
-  5. `docs/LAUNCH_HANDOFF.md` legal-values bullets: take account's text (031
-     is implemented).
+- **Merge of integration/v1 (fiscal 027, discounts 028, reports 029; phase 1
+  of the account finish, LD-32).** Resolved as the ACC-16 trial merge
+  foresaw, in merge order: `scripts/grants.sql` blocks 027 → 028 → 029 →
+  031; `src/labels.ts` blocks fiscal → discounts → reports → account;
+  `package.json` `test:db:qualification` ends `… offline → fiscal →
+  discounts → reports → account → support`; `server/config-rules.ts` area
+  checks fiscal then account; Settings in the LD-P7 golden order
+  (`RestaurantSettings → FiscalSettings → MoneyControlsSettings →
+  AccountPrivacy → FreeSelection → DeviceManagement → PlanSettings`; the
+  CfdiSettings slot after FiscalSettings and the PublicOrderingSettings slot
+  after AccountPrivacy belong to cfdi and public); ARCHITECTURE E5/E6 then
+  E7, rows 30 (account) and 31-33 (integration); account-db's two bursts in
+  `noRetries`; `tests/free-limits-db.ts` imports unioned, integration's
+  PLATFORM-LOCKS-6 / PLAT-HR-9 bursts before ACC-14. No public-owned file
+  changed (LD-18 LD-P12); `publicOrderingEnabled`, `publicOrderingGate`,
+  `restaurantPrivacyUrl` and the six `accountGuest*` keys are as account.md
+  states them. `AUDIT_GROUPS` already maps `account.` to access (reports,
+  L7).
+- **PHASE 2 — cfdi 030 (to apply when the lead absorbs integration/v1 after
+  cfdi lands; this track was finished without cfdi, LD-32 / task phase 1 of
+  2).** Account's cfdi touchpoints (LD-16 missing items, wave2-cross-track
+  C30), each to verify or fill against cfdi's merged code:
+  1. **Privacy anchor:** in `server/cfdi/portal.ts`, fill the anchor
+     `// account (031): privacyUrl = await restaurantPrivacyUrl(tx);` with that
+     call (`server/account-settings.ts`, inside the portal's tenant
+     transaction), so the self-invoicing page links the restaurant's own
+     notice as the QR/kiosk pages do. Keep `restaurantPrivacyUrl(tx:
+     Tx): Promise<string | null>` unchanged (LD-P12).
+  2. **Export denylist:** `cfdi_secrets` and `cfdi_files` are already in
+     `EXPORT_TABLE_DENYLIST` (`shared/account-export.ts`); once 030's tables
+     exist, account-db check 29c must print its with-cfdi branch (today it
+     says "030 not applied") and prove discovery never lists them; add any
+     other cfdi table holding secrets or binaries (a column named
+     `*hash*`, `*secret*`, `*token*` is already dropped).
+  3. **Export guard:** every `/api/account-data/*` route requires
+     `permit(owner)` and `requireRecentAuth` (step-up) before its limiter
+     (R-20); confirm no cfdi file route was added under that prefix without
+     the same `exportGuard`.
+  4. **Shared files, in merge order:** `scripts/grants.sql` `-- 030 cfdi`
+     block before `-- 031 account`; `src/labels.ts` cfdi block before
+     account's; `test:db:qualification` `… reports → cfdi → account →
+     support`; Settings `… FiscalSettings → CfdiSettings →
+     MoneyControlsSettings → AccountPrivacy …`; `qualification.yml` union
+     (cfdi's fake and `FACTURAPI_*` on the worker line, account's legal set
+     and `LEGAL_UNPUBLISHED_SIGNUP`, the load smoke's `LOAD_SERVER_LOG`).
+  5. **Legal texts:** privacy §5/§6 and DPA §2/§6/§11 already name Facturapi
+     (CFDI stamping through a PAC and CFDI email), CFDI receptors' data and
+     the CSD (LD-32 LEGAL-2/UX-5). Check them against the providers cfdi's
+     `server/cfdi/config.ts` actually configures and extend
+     `tests/legal.test.ts` ("processor lists name every external provider")
+     to read that list; a new provider is a material DPA change (15 days'
+     notice, `docs` "How to publish a new version").
 - **Lock scanner units.** The account-center routes pass their handlers
   inline (`router.post(path, limiter, (req, res, next) => answer(…))`), so the
   scanner checks each request as its own unit; the earlier
@@ -524,21 +555,6 @@ invitation normally.
   listing them as LO-0 organization classes in `tests/lock-scan.ts` would be
   more accurate; the ratchet passes either way (lead decision for the
   platform-owned scanner).
-
-## Merge notes (cfdi 030)
-
-Built on a branch without cfdi's `server/cfdi/portal.ts`. At the account merge
-(LD-16 missing items):
-
-- **Privacy anchor:** the cfdi portal's restaurant-privacy anchor calls
-  `restaurantPrivacyUrl(tx)` (`server/account-settings.ts`) inside its tenant
-  transaction, so the self-invoicing page links the restaurant's own notice as
-  the QR/kiosk pages do.
-- **Export denylist:** `cfdi_secrets` and `cfdi_files` are already in
-  `EXPORT_TABLE_DENYLIST`; account-db check 29c proves discovery never lists
-  them even when the tables exist.
-- **Export guard:** every `/api/account-data/*` route already requires
-  `permit(owner)` and `requireRecentAuth` (step-up); nothing to add.
 
 ## Help and support
 

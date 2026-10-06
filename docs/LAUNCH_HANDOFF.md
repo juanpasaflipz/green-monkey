@@ -315,6 +315,9 @@ line), and keep where noted.
   value (or a test/demo word in production) counts as missing, and the pages stay
   unpublished. Leave `LEGAL_UNPUBLISHED_SIGNUP` unset in production (it is ignored
   there anyway).
+- **Order.** Setting these values in production **publishes** the documents: do it
+  only after your counsel approved the text (1.12). Until then leave them unset; the
+  POS works and only new owner signups wait.
 - **How to verify.** `GET https://<domain>/api/account-config` reports
   `"legal":{"status":"published",…}`; the web logs carry no
   `legal_documents_unpublished` line (error level in production); the legal pages show
@@ -326,12 +329,18 @@ line), and keep where noted.
 - **Why.** Mexican data-protection law (LFPDPPP) requires the notice where personal
   data is collected; production refuses new Google accounts while no notice is
   published.
-- **Where it goes.** Your counsel reviews the notice text (integral and simplified),
-  the terms and the data-processing agreement ("contrato de encargo") that 031
-  publishes from the 1.11 values at `/legal/privacidad`, `/legal/terminos` and
-  `/legal/encargo-de-datos` (English at `/legal/privacy`, `/legal/terms`,
-  `/legal/data-processing`). The text is versioned code (`shared/legal.ts`); any change
-  counsel asks for ships as a new version. Include your decision on Sentry (1.9).
+- **Where it goes.** **Before** the 1.11 values go to production, a Mexican
+  data-protection lawyer reviews the notice text (integral and simplified), the terms
+  and the data-processing agreement ("contrato de encargo") that 031 publishes from
+  those values at `/legal/privacidad`, `/legal/terminos` and `/legal/encargo-de-datos`
+  (English at `/legal/privacy`, `/legal/terms`, `/legal/data-processing`), including
+  the billing-data consent box, the processor list (Google, Stripe, Neon, Railway,
+  Cloudflare, GitHub, Facturapi) and the support-transfer and ARCO wording (LD-32).
+  The text is versioned code (`shared/legal.ts`); any change counsel asks for ships
+  as a new version (set its `version`, `announcedAt` and `effectiveFrom` to the
+  publication date: nothing is in force before it, so nothing needs 15 days' notice).
+  Include your decision on Sentry (1.9): if approved, it joins the processor lists in
+  that same version.
 - **How to verify.** The three pages open on the production domain with your
   values; the simplified notice appears next to the Google button and restaurant
   signup; a test signup records its acceptance.

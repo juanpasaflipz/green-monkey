@@ -1028,6 +1028,13 @@ test("a terminal export prompts for the PIN", async ({ page, baseURL }) => {
     await expect(privacy).toContainText(
       "En terminales compartidas te pediremos tu PIN.",
     );
+    // UX-11: no CSV downloads before the owner has the list to choose from.
+    await expect(
+      privacy.getByRole("button", { name: "Descargar tabla (CSV)" }),
+    ).toHaveCount(0);
+    await expect(
+      privacy.getByRole("button", { name: "Mostrar tablas", exact: true }),
+    ).toBeVisible();
     let downloads = 0;
     page.on("download", () => downloads++);
     const json = privacy.getByRole("button", {
