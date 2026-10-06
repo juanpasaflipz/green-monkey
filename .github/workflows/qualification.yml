@@ -104,9 +104,15 @@ jobs:
       - name: Compiled browser acceptance (web + worker)
         env:
           WORKER_URL: http://127.0.0.1:3005
+        # cfdi (030): the deterministic Facturapi fake on 127.0.0.1:4799 and, on the worker only,
+        # a fake User key, a synthetic credential keyring (base64url of
+        # "synthetic-ci-only-cfdi-credential-key-000") and the fake's loopback base URL. The web
+        # process never sees FACTURAPI_* or CREDENTIAL_ENCRYPTION_KEY.
         run: |
+          npm run dev:facturapi-fake > /tmp/green-monkey-facturapi-fake.log 2>&1 &
+          node --input-type=module -e 'for(let i=0;i<60;i++){try{await fetch("http://127.0.0.1:4799/v2/organizations");process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
           NODE_ENV=production node --import ./build/server/instrument.js build/server/index.js > /tmp/green-monkey-server.log 2>&1 &
-          NODE_ENV=production WORKER_PORT=3005 DATABASE_URL= WORKER_DATABASE_URL=postgresql://gm_worker:local-only-worker@127.0.0.1:5432/green_monkey_dev npm run start:worker > /tmp/green-monkey-worker.log 2>&1 &
+          NODE_ENV=production WORKER_PORT=3005 DATABASE_URL= WORKER_DATABASE_URL=postgresql://gm_worker:local-only-worker@127.0.0.1:5432/green_monkey_dev FACTURAPI_API_KEY=sk_user_ci_fake CREDENTIAL_ENCRYPTION_KEY=ci-cfdi:c3ludGhldGljLWNpLW9ubHktY2ZkaS1jcmVkZW50aWFsLWtleS0wMDA FACTURAPI_BASE_URL=http://127.0.0.1:4799/v2 npm run start:worker > /tmp/green-monkey-worker.log 2>&1 &
           node --input-type=module -e 'for(let i=0;i<60;i++){try{if((await fetch("http://127.0.0.1:3002/api/health")).ok&&(await fetch("http://127.0.0.1:3005/healthz")).ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
           # Only the test runner gets the fixture admin URL (owner/Free fixtures);
           # the web and worker processes above never see a migration credential.
