@@ -25,7 +25,11 @@ import { strings, type Key } from "../../i18n";
 import { channelLabel, operationLabel, tenderMethodLabel } from "../../labels";
 import { differenceLabel, exceptionKindLabel, hourLabel } from "./format";
 import { summarySections } from "./summary-rows";
-import { exceptionApprover, exceptionEmployee } from "./exception-text";
+import {
+  auditReason,
+  exceptionApprover,
+  exceptionEmployee,
+} from "./exception-text";
 
 /**
  * CSV exports (spec §2.9, §5.6). The writer (BOM, CRLF, quoting, OWASP formula guard, money
@@ -303,7 +307,11 @@ export const auditColumns = (
   { header: h("reportsColEmployee"), type: "t", value: (r) => r.actorName },
   { header: h("reportsColReference"), type: "t", value: reference },
   { header: h("reportsColAmount"), type: "m", value: (r) => r.summary.amount },
-  { header: h("reportsColReason"), type: "t", value: (r) => r.summary.reason },
+  {
+    header: h("reportsColReason"),
+    type: "t",
+    value: (r) => auditReason(r, locale),
+  },
 ];
 
 export const drawerColumns = (locale: Locale): CsvColumn<DrawerRow>[] => [

@@ -23,8 +23,9 @@ type Row = Record<string, unknown>;
 const UUID = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 
 /**
- * The row summary: the first numeric among detail.amount, .counted, .restored, .gross, and the
- * first non-empty text among detail.reason, .note, .reasonCode.
+ * The row summary: the first numeric among detail.amount, .counted, .restored, .gross, the first
+ * non-empty text among detail.reason and .note, and detail.reasonCode apart (discounts' rows
+ * carry only a code; the client labels it by kind, review REPORTS-CONTRACTS-3).
  */
 export function auditSummary(detail: unknown): AuditRow["summary"] {
   const d =
@@ -34,10 +35,14 @@ export function auditSummary(detail: unknown): AuditRow["summary"] {
   const amount = ["amount", "counted", "restored", "gross"]
     .map((k) => d[k])
     .find((v): v is number => typeof v === "number" && Number.isSafeInteger(v));
-  const reason = ["reason", "note", "reasonCode"]
-    .map((k) => d[k])
-    .find((v): v is string => typeof v === "string" && v.trim() !== "");
-  return { amount: amount ?? null, reason: reason ?? null };
+  const text = (v: unknown): v is string =>
+    typeof v === "string" && v.trim() !== "";
+  const reason = ["reason", "note"].map((k) => d[k]).find(text);
+  return {
+    amount: amount ?? null,
+    reason: reason ?? null,
+    reasonCode: text(d.reasonCode) ? d.reasonCode : null,
+  };
 }
 
 /** GET /api/reports/audit: one page of the activity log, newest first. */

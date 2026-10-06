@@ -142,6 +142,25 @@ export function exceptionDetail(
   }
 }
 
+/**
+ * Motivo of an activity row: a discount's or refund's reason code with discounts' label, then
+ * the free text. A code of any other operation is not shown (never a raw code).
+ */
+export function auditReason(row: AuditRow, locale: Locale): string {
+  const code = row.summary.reasonCode;
+  const kind = row.operation.startsWith("discount.")
+    ? "discount"
+    : row.operation.startsWith("refund")
+      ? "refund"
+      : null;
+  return [
+    code && kind ? reasonLabel(kind, code, locale) : null,
+    row.summary.reason?.trim(),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
 /** Referencia of an activity row: #order, or the entity id shortened to 8 characters. */
 export function auditReference(row: AuditRow): string {
   return row.orderNumber !== null

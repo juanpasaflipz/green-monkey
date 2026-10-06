@@ -11,7 +11,7 @@ import { operationLabel } from "../../../labels";
 import { Button, Field } from "../../../components/ui";
 import { fetchAllPages, fetchAudit, fetchFilters } from "../api";
 import { auditColumns, exportCsv } from "../csv";
-import { auditReference } from "../exception-text";
+import { auditReason, auditReference } from "../exception-text";
 import { auditGroupLabel, dateTimeLabel, fill, money } from "../format";
 import { ReportStatus, ReportToolbar } from "../parts";
 import { usePagedReport, useReport } from "../useReport";
@@ -185,7 +185,7 @@ export function AuditTab({
                           amount: m(r.summary.amount),
                         })
                       : "",
-                    r.summary.reason ?? "",
+                    auditReason(r, locale),
                   ]
                     .filter(Boolean)
                     .join(" · ")}

@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { csvCell, toCsv } from "../shared/csv";
 import {
+  type AuditRow,
   composeSalesSummary,
   drawerFingerprint,
   folioRanges,
@@ -13,6 +14,7 @@ import {
 import { dataFor, reportKey } from "../src/features/reports/useReport";
 import { summarySections } from "../src/features/reports/summary-rows";
 import {
+  auditReason,
   exceptionApprover,
   exceptionDetail,
   exceptionEmployee,
@@ -223,6 +225,21 @@ describe("reports second opinion (LD-27): client and shared regressions", () => 
       "Producto con defecto o queja",
     );
     expect(reasonLabel("refund", "unknown_code", "es")).toBe("Otro");
+  });
+
+  it("CONTRACTS-3: the Bitácora labels a discount's or refund's reason code by kind and never shows another operation's raw code", () => {
+    const row = (operation: string, reasonCode: string | null, reason = "") =>
+      ({
+        operation,
+        summary: { amount: 4500, reason: reason || null, reasonCode },
+      }) as unknown as AuditRow;
+    expect(auditReason(row("discount.applied", "staff_meal"), "es")).toBe(
+      "Consumo de personal",
+    );
+    expect(
+      auditReason(row("refund.recorded", "customer_cancelled", "Frío"), "es"),
+    ).toBe("El cliente canceló · Frío");
+    expect(auditReason(row("job.cancelled", "some_code"), "es")).toBe("");
   });
 
   it("CONTRACTS-1: a corte lists each contiguous folio run in order and summarizes interleaved runs, never one range across a gap", () => {

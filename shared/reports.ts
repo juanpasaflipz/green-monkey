@@ -855,7 +855,15 @@ export type AuditRow = {
   entityId: string;
   orderNumber: number | null;
   orderDate: string | null;
-  summary: { amount: number | null; reason: string | null };
+  /**
+   * `reason` is free text (detail.reason or .note); `reasonCode` a discount or refund reason code
+   * (detail.reasonCode), which the client labels with discounts' labels, never shown raw.
+   */
+  summary: {
+    amount: number | null;
+    reason: string | null;
+    reasonCode: string | null;
+  };
   detail: unknown;
 };
 export type Page<T> = { rows: T[]; next: string | null };
