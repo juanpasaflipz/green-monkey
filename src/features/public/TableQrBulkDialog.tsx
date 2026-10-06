@@ -104,9 +104,17 @@ export function TableQrBulkDialog({
       {result ? (
         <>
           <p className="warning-panel">{t("publicRevealOnce")}</p>
-          <p>{t("publicBulkCreated", { n: result.created.length })}</p>
+          <p>
+            {result.created.length === 1
+              ? t("publicBulkCreatedOne")
+              : t("publicBulkCreated", { n: result.created.length })}
+          </p>
           {result.skipped.length > 0 && (
-            <p>{t("publicBulkSkipped", { n: result.skipped.length })}</p>
+            <p>
+              {result.skipped.length === 1
+                ? t("publicBulkSkippedOne")
+                : t("publicBulkSkipped", { n: result.skipped.length })}
+            </p>
           )}
         </>
       ) : (

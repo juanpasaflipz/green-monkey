@@ -27,11 +27,19 @@ export function DinerCart(props: {
   busy: boolean;
   error: string;
   unknown: boolean;
+  /** The kiosk renders no navigational link: notices open in a dialog. */
+  kiosk: boolean;
+  /** The code stopped working on submit (UX-1): no sending, a way to the orders. */
+  invalid: boolean;
+  onShowOrders?: () => void;
+  onPrivacy: () => void;
   onQuantity: (lineId: string, quantity: number) => void;
   onName: (name: string) => void;
   onNote: (note: string) => void;
   onSend: () => void;
   onRetry: () => void;
+  /** After an unknown outcome: edit anyway, as a new order (new keys). */
+  onEditAnyway: () => void;
 }) {
   const { menu, locale, cart, draft } = props;
   const t = strings[locale];
@@ -84,11 +92,16 @@ function CartBody({
   busy,
   error,
   unknown,
+  kiosk,
+  invalid,
+  onShowOrders,
+  onPrivacy,
   onQuantity,
   onName,
   onNote,
   onSend,
   onRetry,
+  onEditAnyway,
 }: Parameters<typeof DinerCart>[0]) {
   const t = strings[locale];
   const guest = guestCopy(locale);
@@ -101,7 +114,11 @@ function CartBody({
     !cart.blocked &&
     !busy &&
     !unknown &&
+    !invalid &&
     ordering.open;
+  // While a send is in flight or its outcome is unknown, the order stays as
+  // sent: an edit is an explicit choice to send a new order (UX-9).
+  const locked = busy || unknown;
   return (
     <div className="diner-cart-body">
       {draft.lines.length === 0 && <p className="muted">{t.publicEmptyCart}</p>}
@@ -124,13 +141,14 @@ function CartBody({
               <div className="diner-stepper">
                 <Button
                   aria-label={fill(t.publicLess, { name })}
+                  disabled={locked}
                   onClick={() => onQuantity(input.id, line.quantity - 1)}
                 >
                   −
                 </Button>
                 <Button
                   aria-label={fill(t.publicMore, { name })}
-                  disabled={line.quantity >= 20}
+                  disabled={locked || line.quantity >= 20}
                   onClick={() => onQuantity(input.id, line.quantity + 1)}
                 >
                   +
@@ -138,6 +156,7 @@ function CartBody({
                 <Button
                   variant="ghost"
                   aria-label={`${t.remove} ${name}`}
+                  disabled={locked}
                   onClick={() => onQuantity(input.id, 0)}
                 >
                   {t.remove}
@@ -157,6 +176,7 @@ function CartBody({
         <span>{guest.nameLabel}</span>
         <input
           value={draft.name}
+          disabled={locked}
           maxLength={40}
           autoComplete="off"
           aria-describedby="diner-name-hint"
@@ -170,6 +190,7 @@ function CartBody({
         <span>{t.publicNoteLabel}</span>
         <textarea
           value={draft.note}
+          disabled={locked}
           maxLength={200}
           rows={2}
           aria-describedby="diner-note-hint"
@@ -180,7 +201,13 @@ function CartBody({
         </small>
       </label>
       <p className="diner-privacy tiny">
-        {menu.restaurant.privacyNoticeUrl ? (
+        {!menu.restaurant.privacyNoticeUrl ? (
+          guest.noNotice
+        ) : kiosk ? (
+          <button type="button" className="diner-link" onClick={onPrivacy}>
+            {fill(guest.privacyLink, { restaurant: menu.restaurant.name })}
+          </button>
+        ) : (
           <a
             href={menu.restaurant.privacyNoticeUrl}
             target="_blank"
@@ -188,45 +215,54 @@ function CartBody({
           >
             {fill(guest.privacyLink, { restaurant: menu.restaurant.name })}
           </a>
-        ) : (
-          guest.noNotice
         )}
       </p>
-      <p className="diner-total">
-        <span>{t.publicTotal}</span>
-        <strong>{money(cart.total)}</strong>
-      </p>
-      {error && (
-        <p className="error diner-error" role="alert">
-          {error}
+      {/* Total and send stay in view while the panel scrolls (UX-4). */}
+      <div className="diner-cart-footer">
+        <p className="diner-total">
+          <span>{t.publicTotal}</span>
+          <strong>{money(cart.total)}</strong>
         </p>
-      )}
-      {unknown ? (
-        <div className="diner-unknown" role="alert">
-          <p>{t.publicUnknownOutcome}</p>
-          <Button variant="primary" disabled={busy} onClick={onRetry}>
-            {busy ? t.publicSending : t.publicRetry}
+        {error && (
+          <p className="error diner-error" role="alert">
+            {error}
+          </p>
+        )}
+        {invalid && onShowOrders && (
+          <Button variant="primary" className="full" onClick={onShowOrders}>
+            {t.publicShowMyOrders}
           </Button>
-        </div>
-      ) : (
-        <>
-          {!ordering.open && (
-            <p className="diner-closed">
-              {ordering.reason === "table_unavailable"
-                ? t.publicTableClosedBanner
-                : t.publicClosedBanner}
-            </p>
-          )}
-          <Button
-            variant="primary"
-            className="full diner-send"
-            disabled={!canSend}
-            onClick={onSend}
-          >
-            {busy ? t.publicSending : t.publicSend}
-          </Button>
-        </>
-      )}
+        )}
+        {unknown ? (
+          <div className="diner-unknown" role="alert">
+            <p>{t.publicUnknownOutcome}</p>
+            <Button variant="primary" disabled={busy} onClick={onRetry}>
+              {busy ? t.publicSending : t.publicRetry}
+            </Button>
+            <Button disabled={busy} onClick={onEditAnyway}>
+              {t.publicEditAnyway}
+            </Button>
+          </div>
+        ) : invalid ? null : (
+          <>
+            {!ordering.open && (
+              <p className="diner-closed">
+                {ordering.reason === "table_unavailable"
+                  ? t.publicTableClosedBanner
+                  : t.publicClosedBanner}
+              </p>
+            )}
+            <Button
+              variant="primary"
+              className="full diner-send"
+              disabled={!canSend}
+              onClick={onSend}
+            >
+              {busy ? t.publicSending : t.publicSend}
+            </Button>
+          </>
+        )}
+      </div>
     </div>
   );
 }

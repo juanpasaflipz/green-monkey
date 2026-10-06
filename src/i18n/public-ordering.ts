@@ -17,7 +17,7 @@ export default defineArea({
       "Tu pedido se prepara cuando lo pagues a tu mesero.",
     publicPolicyPayFirstCounter:
       "Tu pedido se prepara cuando lo pagues en caja.",
-    publicPricesTax: "Precios en MXN con IVA incluido.",
+    publicPricesTax: "Precios en {currency} con IVA incluido.",
     publicSoldOut: "Agotado",
     publicCombo: "Combo",
     publicCartBar: "Ver pedido · {count} · {total}",
@@ -73,6 +73,18 @@ export default defineArea({
     publicInvalidTitle: "Este código ya no funciona",
     publicInvalidBody: "Pide al personal un código nuevo.",
     publicShowMyOrders: "Ver mis pedidos",
+    publicInvalidOwnOrders:
+      "Este código QR ya no funciona: se reemplazó o se desactivó. Pide al personal el nuevo. Tus pedidos anteriores siguen aquí.",
+    publicYourOrdersButton: "Tus pedidos ({labels})",
+    publicOrderStatus: "Estado de tu pedido",
+    publicSentAnnounce:
+      "Pedido {label} enviado. Esperando confirmación del personal.",
+    publicKioskSentAnnounce: "Tu código es {label}. {instructions}",
+    publicPriceChangedAccepted:
+      "El precio cambió al confirmar tu pedido; total confirmado: {amount}.",
+    publicPrivacy: "Privacidad",
+    publicPrivacyScan: "Escanea el código con tu teléfono para leerlo.",
+    publicEditAnyway: "Editar pedido (se enviará como uno nuevo)",
     publicCode: "Tu código",
     publicKioskPayAtCounter:
       "Paga en caja con este código para que preparemos tu pedido.",
@@ -91,7 +103,7 @@ export default defineArea({
     publicStatusOpen: "Recibiendo pedidos",
     publicStatusPaused: "En pausa",
     publicStatusNoStaff:
-      "En pausa: ningún dispositivo del personal está conectado",
+      "En pausa: ninguna terminal compartida (caja o mesero) está conectada",
     publicStatusNoPro: "Disponible en Pro",
     publicProRequired: "Los pedidos en línea están incluidos en Pro.",
     publicPause: "Pausar pedidos en línea",
@@ -107,7 +119,7 @@ export default defineArea({
     publicMaxTotal: "Importe máximo por pedido",
     publicMaxTotalHint: "Entre {min} y {max}.",
     publicAutoPauseHint:
-      "Los pedidos en línea se pausan solos si ningún dispositivo del personal (caja o mesero) tiene Green Monkey abierto en los últimos 5 minutos.",
+      "Los pedidos en línea se pausan solos si ninguna terminal compartida (caja o mesero) ha tenido Green Monkey abierto en los últimos 5 minutos. Vincula una en Dispositivos.",
     publicSave: "Guardar pedidos en línea",
     publicSaved: "Pedidos en línea guardados",
     publicKiosks: "Kioscos",
@@ -129,6 +141,8 @@ export default defineArea({
       "El código actual dejará de funcionar. Los códigos impresos o guardados con él ya no servirán.",
     publicRevoke: "Desactivar",
     publicRevokeItem: "Desactivar {name}",
+    publicRevokeYes: "Sí, desactivar {name}",
+    publicReplaceYes: "Sí, reemplazar {name}",
     publicRevokeConfirm:
       "Nadie podrá pedir con este código. Los pedidos que ya llegaron siguen en Órdenes.",
     publicRevealTitle: "Código listo",
@@ -157,7 +171,9 @@ export default defineArea({
     publicBulkReplace: "Reemplazar también los que ya tienen código",
     publicBulkCreate: "Crear e imprimir",
     publicBulkSkipped: "{n} mesas ya tenían código y no se cambiaron.",
+    publicBulkSkippedOne: "1 mesa ya tenía código y no se cambió.",
     publicBulkCreated: "{n} códigos nuevos.",
+    publicBulkCreatedOne: "1 código nuevo.",
     publicBulkHasCode: "Ya tiene código",
     publicCardScan: "Escanea para ver el menú y pedir",
     publicCardConfirm: "El personal confirma tu pedido",
@@ -169,13 +185,21 @@ export default defineArea({
     publicInboxOffline: "Disponible al volver la conexión.",
     publicInboxExpired:
       "{n} pedidos vencieron sin confirmar en los últimos 30 min.",
+    publicInboxExpiredOne:
+      "1 pedido venció sin confirmar en los últimos 30 min.",
+    publicInboxChurn:
+      "{name}: muchos pedidos cancelados desde el cliente. Si no es un cliente real, reemplaza o desactiva el código.",
     publicHoldAge: "hace {n} min",
+    publicHoldAgeNow: "hace un momento",
     publicHoldExpiresIn: "vence en {n} min",
     publicHoldPayFirst: "Se cobra antes de cocina",
     publicKioskNamed: "Kiosco {name}",
     publicGuestTotal: "Total del cliente",
     publicCurrentTotal: "Total actual",
     publicPriceAck: "El precio cambió desde que el cliente pidió. Ya le avisé.",
+    publicHoldLinkAbuse:
+      "Código desactivado por abuso: verifica con el cliente antes de aceptar.",
+    publicAbuseAck: "Lo verifiqué con el cliente; aceptar de todos modos.",
     publicLineUnavailable: "Ya no disponible",
     publicLinePrice: "Precio actual: {amount}",
     publicIncludeLine: "Incluir {name}",
@@ -199,7 +223,7 @@ export default defineArea({
     publicReasonOther: "Otro",
     publicRejectAndRevoke:
       "Desactivar también este código QR (dejará de funcionar el impreso)",
-    publicAcceptedNotice: "{label} enviado a cocina.",
+    publicAcceptedNotice: "{label} → Orden #{number} enviada a cocina.",
     publicRejectedNotice: "{label} rechazado.",
     publicBannerOne: "1 pedido en línea por confirmar",
     publicBannerMany: "{n} pedidos en línea por confirmar",
@@ -227,7 +251,7 @@ export default defineArea({
       "Your order is prepared once you pay your server.",
     publicPolicyPayFirstCounter:
       "Your order is prepared once you pay at the counter.",
-    publicPricesTax: "Prices in MXN, VAT included.",
+    publicPricesTax: "Prices in {currency}, VAT included.",
     publicSoldOut: "Sold out",
     publicCombo: "Combo",
     publicCartBar: "View order · {count} · {total}",
@@ -283,6 +307,17 @@ export default defineArea({
     publicInvalidTitle: "This code no longer works",
     publicInvalidBody: "Ask the staff for a new one.",
     publicShowMyOrders: "See my orders",
+    publicInvalidOwnOrders:
+      "This QR code no longer works: it was replaced or deactivated. Ask the staff for the new one. Your earlier orders are still here.",
+    publicYourOrdersButton: "Your orders ({labels})",
+    publicOrderStatus: "Your order status",
+    publicSentAnnounce: "Order {label} sent. Waiting for the staff to confirm.",
+    publicKioskSentAnnounce: "Your code is {label}. {instructions}",
+    publicPriceChangedAccepted:
+      "The price changed when your order was confirmed; confirmed total: {amount}.",
+    publicPrivacy: "Privacy",
+    publicPrivacyScan: "Scan the code with your phone to read it.",
+    publicEditAnyway: "Edit order (it will be sent as a new one)",
     publicCode: "Your code",
     publicKioskPayAtCounter:
       "Pay at the counter with this code so we can prepare your order.",
@@ -298,7 +333,8 @@ export default defineArea({
     publicSettingsTitle: "Online ordering (QR and kiosk)",
     publicStatusOpen: "Taking orders",
     publicStatusPaused: "Paused",
-    publicStatusNoStaff: "Paused: no staff device is connected",
+    publicStatusNoStaff:
+      "Paused: no shared terminal (counter or server) is connected",
     publicStatusNoPro: "Available on Pro",
     publicProRequired: "Online ordering is included in Pro.",
     publicPause: "Pause online ordering",
@@ -314,7 +350,7 @@ export default defineArea({
     publicMaxTotal: "Maximum per order",
     publicMaxTotalHint: "Between {min} and {max}.",
     publicAutoPauseHint:
-      "Online ordering pauses itself when no staff device (counter or server) has had Green Monkey open in the last 5 minutes.",
+      "Online ordering pauses itself when no shared terminal (counter or server) has had Green Monkey open in the last 5 minutes. Link one in Devices.",
     publicSave: "Save online ordering",
     publicSaved: "Online ordering saved",
     publicKiosks: "Kiosks",
@@ -336,6 +372,8 @@ export default defineArea({
       "The current code will stop working. Codes printed or saved with it will no longer work.",
     publicRevoke: "Deactivate",
     publicRevokeItem: "Deactivate {name}",
+    publicRevokeYes: "Yes, deactivate {name}",
+    publicReplaceYes: "Yes, replace {name}",
     publicRevokeConfirm:
       "Nobody will be able to order with this code. Orders already received stay in Orders.",
     publicRevealTitle: "Code ready",
@@ -362,7 +400,9 @@ export default defineArea({
     publicBulkReplace: "Also replace tables that already have a code",
     publicBulkCreate: "Create and print",
     publicBulkSkipped: "{n} tables already had a code and were not changed.",
+    publicBulkSkippedOne: "1 table already had a code and was not changed.",
     publicBulkCreated: "{n} new codes.",
+    publicBulkCreatedOne: "1 new code.",
     publicBulkHasCode: "Has a code",
     publicCardScan: "Scan to see the menu and order",
     publicCardConfirm: "The staff confirm your order",
@@ -372,13 +412,20 @@ export default defineArea({
     publicInboxEmpty: "No pending online orders.",
     publicInboxOffline: "Available when the connection returns.",
     publicInboxExpired: "{n} orders expired unconfirmed in the last 30 min.",
+    publicInboxExpiredOne: "1 order expired unconfirmed in the last 30 min.",
+    publicInboxChurn:
+      "{name}: many orders cancelled by the guest. If it is not a real guest, replace or deactivate the code.",
     publicHoldAge: "{n} min ago",
+    publicHoldAgeNow: "just now",
     publicHoldExpiresIn: "expires in {n} min",
     publicHoldPayFirst: "Charge before kitchen",
     publicKioskNamed: "Kiosk {name}",
     publicGuestTotal: "Guest's total",
     publicCurrentTotal: "Current total",
     publicPriceAck: "The price changed since the guest ordered. I told them.",
+    publicHoldLinkAbuse:
+      "Code deactivated for abuse: check with the guest before accepting.",
+    publicAbuseAck: "I checked with the guest; accept anyway.",
     publicLineUnavailable: "No longer available",
     publicLinePrice: "Current price: {amount}",
     publicIncludeLine: "Include {name}",
@@ -402,7 +449,7 @@ export default defineArea({
     publicReasonOther: "Other",
     publicRejectAndRevoke:
       "Also deactivate this QR code (the printed one will stop working)",
-    publicAcceptedNotice: "{label} sent to the kitchen.",
+    publicAcceptedNotice: "{label} → Order #{number} sent to the kitchen.",
     publicRejectedNotice: "{label} rejected.",
     publicBannerOne: "1 online order to confirm",
     publicBannerMany: "{n} online orders to confirm",

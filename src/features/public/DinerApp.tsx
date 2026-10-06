@@ -32,6 +32,7 @@ import { DinerCart } from "./DinerCart";
 import { DinerStatus } from "./DinerStatus";
 import { DinerNotice } from "./DinerNotice";
 import { KioskDone } from "./KioskDone";
+import { PrivacyDialog } from "./PrivacyDialog";
 import { Button, Modal } from "../../components/ui";
 import { guestCopy, PLATFORM_PRIVACY_PATH } from "../../compat/public-account";
 import "./diner.css";
@@ -53,6 +54,8 @@ export type StoredHold = {
 const emptyDraft = (): Draft => ({ lines: [], name: "", note: "" });
 const MAX_QUANTITY = 20;
 const STORED_HOLDS = 5;
+/** A kiosk whose first menu load failed retries on its own (UX-14). */
+const KIOSK_LOAD_RETRY_MS = 20_000;
 
 function storageKey(token: string) {
   return "gm-public-holds:" + token.slice(0, 8);
@@ -121,6 +124,13 @@ export function DinerApp({
   const [offline, setOffline] = useState(false);
   const [idleWarn, setIdleWarn] = useState(false);
   const [announce, setAnnounce] = useState("");
+  const [privacy, setPrivacy] = useState(false);
+  // The code stopped working on a submit: the page keeps the menu and the
+  // cart and says so next to "Ver mis pedidos" (UX-1).
+  const [submitInvalid, setSubmitInvalid] = useState(false);
+  // Focus moves to the status heading after a user action switched to it (UX-6).
+  const [focusStatus, setFocusStatus] = useState(false);
+  const [loadFailures, setLoadFailures] = useState(0);
   const failures = useRef(0);
   const baseline = useRef<number | null>(null);
   const viewRef = useRef(view);
@@ -153,14 +163,26 @@ export function DinerApp({
       return m;
     } catch (e) {
       outcome(e);
-      if (!noticeFor((e as Error).message))
+      if (!noticeFor((e as Error).message)) {
         setLoadError(guestError((e as Error).message, locale));
+        if (isTransient(e)) setLoadFailures((n) => n + 1);
+      }
       throw e;
     }
   }
   useEffect(() => {
     void loadMenu().catch(() => {});
   }, [token]);
+  // A kiosk that powered on before the network keeps trying until the menu
+  // loads, without anyone tapping "Reintentar" (UX-14).
+  useEffect(() => {
+    if (!kiosk || menu || !loadFailures) return;
+    const timer = setTimeout(
+      () => void loadMenu().catch(() => {}),
+      KIOSK_LOAD_RETRY_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [kiosk, menu, loadFailures]);
 
   // MENU-R1: polls are spread, skipped while hidden or off the menu, and the
   // revision call also refreshes whether ordering is open.
@@ -264,10 +286,26 @@ export function DinerApp({
       outcome();
       key.current = null;
       setUnknown(null);
+      // UX-6: the confirmation is announced from the page's persistent live
+      // region (a sheet that closes or a region inserted already filled is
+      // not read).
       if (kiosk) {
+        setAnnounce(
+          fill(strings[locale].publicKioskSentAnnounce, {
+            label: hold.label,
+            instructions:
+              hold.policy === "pay_first"
+                ? strings[locale].publicKioskPayAtCounter
+                : strings[locale].publicKioskGoToCounter,
+          }),
+        );
         setDone(hold);
         setView("kiosk-done");
       } else {
+        setAnnounce(
+          fill(strings[locale].publicSentAnnounce, { label: hold.label }),
+        );
+        setFocusStatus(true);
         const next = [
           {
             key: body.statusKey,
@@ -289,6 +327,15 @@ export function DinerApp({
       setDraft(emptyDraft());
     } catch (e) {
       const code = (e as Error).message;
+      // A code replaced since the menu loaded: keep the menu and the cart and
+      // say so in place, with the way to this phone's orders (UX-1).
+      if (code === "public_link_invalid" && !kiosk && holds.length) {
+        setSubmitInvalid(true);
+        setNotice("invalid");
+        key.current = null;
+        setError(guestError(code, locale));
+        return;
+      }
       outcome(e);
       if (isTransient(e)) {
         // The order may have arrived: the same body (same keys) is retried.
@@ -332,6 +379,7 @@ export function DinerApp({
     setDraft(emptyDraft());
     setPicker(null);
     setIdleWarn(false);
+    setPrivacy(false);
     setDone(null);
     setError("");
     setLocale("es");
@@ -362,6 +410,7 @@ export function DinerApp({
         id: crypto.randomUUID(),
       })),
     }));
+    setFocusStatus(false);
     setView("menu");
   }
 
@@ -369,22 +418,37 @@ export function DinerApp({
   // lookups accept the old code); its menu is gone, also when this page had
   // loaded it before the code was replaced (a later poll says so).
   const ownOrders = notice === "invalid" && !kiosk && !!current;
+  // A poll that finds the code gone switches to this phone's orders; a
+  // submit that does keeps the menu (the cart says so, UX-1).
   useEffect(() => {
-    if (ownOrders) setView("status");
+    if (ownOrders && !submitInvalid) setView("status");
   }, [ownOrders]);
+  const showOrders = () => {
+    setFocusStatus(true);
+    setView("status");
+  };
+  const toMenu = () => {
+    setFocusStatus(false);
+    setView("menu");
+  };
   const statusOnly = ownOrders && view === "status";
-  if (notice && !statusOnly)
+  const keepMenu = submitInvalid && view === "menu" && !!menu;
+  if (notice && !statusOnly && !keepMenu)
     return (
       <DinerNotice
         kind={notice}
         locale={locale}
-        onShowOrders={ownOrders ? () => setView("status") : undefined}
+        onShowOrders={ownOrders ? showOrders : undefined}
       />
     );
   if (statusOnly)
     return (
       <main className="diner" lang={locale}>
+        <p className="diner-closed" role="alert">
+          {t("publicInvalidOwnOrders")}
+        </p>
         <DinerStatus
+          focusHeading={focusStatus}
           token={token}
           locale={locale}
           menu={null}
@@ -397,8 +461,8 @@ export function DinerApp({
             setHolds(next);
             setCurrent(next[0]?.key ?? null);
           }}
-          onNewOrder={() => setView("menu")}
-          onRestore={() => setView("menu")}
+          onNewOrder={toMenu}
+          onRestore={toMenu}
         />
       </main>
     );
@@ -432,24 +496,35 @@ export function DinerApp({
                 .join(" · ")}
         </p>
       </div>
-      <Button
-        className="diner-language"
-        onClick={() => setLocale(locale === "es" ? "en" : "es")}
-        lang={locale === "es" ? "en" : "es"}
-      >
-        {t("publicLanguageToggle")}
-      </Button>
+      <div className="diner-header-actions">
+        {/* UX-2: a diner browsing the menu again gets back to their orders. */}
+        {!kiosk && view === "menu" && holds.length > 0 && (
+          <Button className="diner-your-orders" onClick={showOrders}>
+            {t("publicYourOrdersButton", {
+              labels: holds.map((h) => h.label).join(", "),
+            })}
+          </Button>
+        )}
+        <Button
+          className="diner-language"
+          onClick={() => setLocale(locale === "es" ? "en" : "es")}
+          lang={locale === "es" ? "en" : "es"}
+        >
+          {t("publicLanguageToggle")}
+        </Button>
+      </div>
     </header>
   );
 
   return (
     <main className={"diner" + (kiosk ? " kiosk" : "")} lang={locale}>
-      {header}
+      {view !== "menu" && header}
       <p className="sr-only" aria-live="polite">
         {announce}
       </p>
       {view === "status" && current ? (
         <DinerStatus
+          focusHeading={focusStatus}
           token={token}
           locale={locale}
           menu={menu}
@@ -463,7 +538,7 @@ export function DinerApp({
             setCurrent(next[0]?.key ?? null);
             if (!next.length) setView("menu");
           }}
-          onNewOrder={() => setView("menu")}
+          onNewOrder={toMenu}
           onRestore={(k) => restore(holds.find((h) => h.key === k))}
         />
       ) : view === "kiosk-done" && done ? (
@@ -475,12 +550,17 @@ export function DinerApp({
         />
       ) : (
         <div className="diner-layout">
-          <DinerMenu
-            menu={menu}
-            ordering={ordering ?? menu.ordering}
-            locale={locale}
-            onPick={(p) => (pickerNeeded(p) ? setPicker(p) : add(p))}
-          />
+          {/* The header sits in the menu column, so the side cart starts at
+              the top of the page and fits the viewport (UX-4). */}
+          <div className="diner-main">
+            {header}
+            <DinerMenu
+              menu={menu}
+              ordering={ordering ?? menu.ordering}
+              locale={locale}
+              onPick={(p) => (pickerNeeded(p) ? setPicker(p) : add(p))}
+            />
+          </div>
           <DinerCart
             menu={menu}
             ordering={ordering ?? menu.ordering}
@@ -490,17 +570,52 @@ export function DinerApp({
             busy={busy}
             error={error}
             unknown={!!unknown}
+            kiosk={kiosk}
+            invalid={submitInvalid}
+            onShowOrders={submitInvalid ? showOrders : undefined}
+            onPrivacy={() => setPrivacy(true)}
             onQuantity={setQuantity}
             onName={(name) => edit((d) => ({ ...d, name }))}
             onNote={(note) => edit((d) => ({ ...d, note }))}
             onSend={submit}
             onRetry={() => unknown && void send(unknown)}
+            onEditAnyway={() => {
+              key.current = null;
+              setUnknown(null);
+              setError("");
+            }}
           />
         </div>
       )}
       <footer className="diner-footer">
-        <a href={PLATFORM_PRIVACY_PATH}>{guestCopy(locale).platformPrivacy}</a>
+        {/* PRIVACY-2/UX-5: a kiosk never navigates away from /kiosk#token;
+            a phone opens the notice in a new tab and keeps its order. */}
+        {kiosk ? (
+          <button
+            type="button"
+            className="diner-link"
+            onClick={() => setPrivacy(true)}
+          >
+            {guestCopy(locale).platformPrivacy}
+          </button>
+        ) : (
+          <a
+            href={PLATFORM_PRIVACY_PATH}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {guestCopy(locale).platformPrivacy}
+          </a>
+        )}
       </footer>
+      {privacy && (
+        <PrivacyDialog
+          locale={locale}
+          restaurant={menu.restaurant.name}
+          privacyNoticeUrl={menu.restaurant.privacyNoticeUrl}
+          onClose={() => setPrivacy(false)}
+        />
+      )}
       {picker && (
         <ModifierPicker
           product={picker}

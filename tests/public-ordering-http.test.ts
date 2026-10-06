@@ -89,7 +89,9 @@ async function burst(
 const realIp = (ip: string) => ({ "X-Real-IP": ip });
 
 describe("public ordering limits key on the real client address (LD-11 MENU-INT-1)", () => {
-  it("menu loads: clients the edge forwards with X-Real-IP get their own budget, whatever the token", async () => {
+  // ABUSE-3 (deliberate change): malformed tokens have their own bucket, so
+  // the menu ceiling is exercised with well-formed (unknown) tokens.
+  it("menu loads: clients the edge forwards with X-Real-IP get their own budget, whatever the well-formed token", async () => {
     const send = await start();
     const a = realIp("198.51.100.7");
     const statuses = await burst(
@@ -98,6 +100,7 @@ describe("public ordering limits key on the real client address (LD-11 MENU-INT-
       "GET",
       "menu",
       a,
+      newPublicToken,
     );
     expect(statuses.every((s) => s === 404)).toBe(true);
     const refused = await send("GET", "menu", a, newPublicToken());
@@ -129,20 +132,39 @@ describe("public ordering limits key on the real client address (LD-11 MENU-INT-
     ).toBe(404);
   });
 
-  it("submissions with a malformed token share one per-IP write bucket, so spellings mint no keys", async () => {
+  // ABUSE-3 (deliberate change): malformed tokens used to share the per-IP
+  // write bucket; they now share one bucket of their own, so they still mint
+  // no keys and no longer drain the budgets of diners behind the same IP.
+  it("requests with a malformed token share one per-IP bucket of their own, so spellings mint no keys and drain no shared budget", async () => {
     const send = await start();
     const a = realIp("198.51.100.7");
     const spellings = ["", "x", "eyJhbGciOi.payload.sig", "A".repeat(23)];
     const statuses: number[] = [];
-    for (let i = 0; i < PUBLIC_RATES.writePerIpLink; i++)
+    for (let i = 0; i < PUBLIC_RATES.malformedPerIp; i++)
       statuses.push(
-        (await send("POST", "orders", a, spellings[i % spellings.length]))
-          .status,
+        (
+          await send(
+            i % 2 ? "POST" : "GET",
+            i % 2 ? "orders" : "menu",
+            a,
+            spellings[i % spellings.length],
+          )
+        ).status,
       );
     expect(statuses.every((s) => s === 404)).toBe(true);
     const refused = await send("POST", "orders", a, "y");
     expect(refused.status).toBe(429);
-    expect(refused.limit).toBe(String(PUBLIC_RATES.writePerIpLink));
+    expect(refused.limit).toBe(String(PUBLIC_RATES.malformedPerIp));
+    expect((await send("GET", "revision", a, "z")).status).toBe(429);
+    // The shared budgets of that client are untouched.
+    expect((await send("POST", "orders", a, newPublicToken())).status).toBe(
+      404,
+    );
+    expect((await send("GET", "menu", a, newPublicToken())).status).toBe(404);
+    // Another client is another bucket.
+    expect(
+      (await send("POST", "orders", realIp("198.51.100.8"), "y")).status,
+    ).toBe(404);
   });
 
   it("revision polls: the per-link budget and the per-IP ceiling both key on the client", async () => {

@@ -16,7 +16,7 @@ import {
 } from "../../../shared/public-ordering";
 import { strings, translateError, type Key } from "../../i18n";
 import { api } from "../../api";
-import { Badge, Button, Field } from "../../components/ui";
+import { Badge, Button, Field, Modal } from "../../components/ui";
 import { moneyFormatter } from "../Receipt";
 import { fill } from "../menu/format";
 import { LinkRevealDialog } from "./LinkRevealDialog";
@@ -373,28 +373,45 @@ export function PublicOrderingSettings({
           {error}
         </p>
       )}
+      {/* A dialog, so the confirmation opens where the manager is looking,
+          takes focus and is announced (UX-8). */}
       {confirm && (
-        <div className="warning-panel">
+        <Modal
+          title={
+            confirm.action === "rotate"
+              ? t("publicReplaceItem", { name: confirm.link.label })
+              : t("publicRevokeItem", { name: confirm.link.label })
+          }
+          close={() => setConfirm(null)}
+          closeLabel={t("cancel")}
+          footer={
+            <div className="row wrap">
+              <Button
+                variant={confirm.action === "rotate" ? "primary" : "danger"}
+                disabled={busy}
+                onClick={() => void act(confirm.link, confirm.action)}
+              >
+                {confirm.action === "rotate"
+                  ? t("publicReplaceYes", { name: confirm.link.label })
+                  : t("publicRevokeYes", { name: confirm.link.label })}
+              </Button>
+              <Button disabled={busy} onClick={() => setConfirm(null)}>
+                {t("cancel")}
+              </Button>
+            </div>
+          }
+        >
           <p>
             {confirm.action === "rotate"
               ? t("publicReplaceConfirm")
               : t("publicRevokeConfirm")}
           </p>
-          <div className="row wrap">
-            <Button
-              variant={confirm.action === "rotate" ? "primary" : "danger"}
-              disabled={busy}
-              onClick={() => void act(confirm.link, confirm.action)}
-            >
-              {confirm.action === "rotate"
-                ? t("publicReplaceItem", { name: confirm.link.label })
-                : t("publicRevokeItem", { name: confirm.link.label })}
-            </Button>
-            <Button disabled={busy} onClick={() => setConfirm(null)}>
-              {t("cancel")}
-            </Button>
-          </div>
-        </div>
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
+        </Modal>
       )}
       {revealed && (
         <LinkRevealDialog

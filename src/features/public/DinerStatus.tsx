@@ -53,12 +53,15 @@ export function DinerStatus({
   menu,
   statusKey,
   holds,
+  focusHeading = false,
   onSelect,
   onForget,
   onNewOrder,
   onRestore,
 }: {
   token: string;
+  /** Move focus to the status heading on mount (after a send or "Tus pedidos"). */
+  focusHeading?: boolean;
   locale: Locale;
   /** null when the page's code no longer opens the menu (replaced). */
   menu: PublicMenuView | null;
@@ -79,6 +82,10 @@ export function DinerStatus({
   const [busy, setBusy] = useState(false);
   const forget = useRef(onForget);
   forget.current = onForget;
+  const heading = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (focusHeading) heading.current?.focus();
+  }, []);
 
   useEffect(() => {
     setView(null);
@@ -157,11 +164,16 @@ export function DinerStatus({
 
   return (
     <section className="diner-status">
-      {!view ? (
-        <p role="status">{error || t("loading")}</p>
-      ) : (
-        <>
-          <div className="diner-status-head" role="status">
+      <h2 ref={heading} tabIndex={-1} className="diner-status-heading">
+        {t("publicOrderStatus")}
+      </h2>
+      {/* One live region stays mounted from loading to loaded, and only its
+          text changes, so the confirmation is read (UX-6). */}
+      <div className="diner-status-head" role="status">
+        {!view ? (
+          <p>{error || t("loading")}</p>
+        ) : (
+          <>
             <p className="diner-status-title">
               <strong className="diner-code">{view.label}</strong>
               {" · "}
@@ -187,7 +199,16 @@ export function DinerStatus({
             {view.state === "rejected" && (
               <p>{t(reasonKey[view.rejectReason ?? "other"])}</p>
             )}
-          </div>
+          </>
+        )}
+      </div>
+      {view && (
+        <>
+          {view.state === "accepted" && view.priceChanged && (
+            <p className="diner-price-changed">
+              {t("publicPriceChangedAccepted", { amount: money(view.total) })}
+            </p>
+          )}
           {view.state === "accepted" && view.order?.money && (
             <p className="diner-money">
               {view.order.money.balance > 0
@@ -201,7 +222,11 @@ export function DinerStatus({
           )}
           {view.order?.fiscal?.selfInvoiceCode && (
             <p>
-              <a href={"/f/" + view.order.fiscal.selfInvoiceCode}>
+              <a
+                href={"/f/" + view.order.fiscal.selfInvoiceCode}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
                 {t("publicInvoiceLink")}
               </a>
             </p>

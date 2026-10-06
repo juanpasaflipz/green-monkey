@@ -12,7 +12,9 @@ export type AcceptBody = {
     | { kind: "new" }
     | { kind: "append"; orderId: string; expectedVersion: number };
   excludeLineIds: string[];
-  priceChangeAcknowledged: boolean;
+  /** The current total this card showed (MONEY-1): the server charges nothing else. */
+  acknowledgedTotal: number | null;
+  abuseAcknowledged: boolean;
 };
 
 /**
@@ -54,10 +56,19 @@ export function HoldCard({
   const [target, setTarget] = useState<string>(() =>
     open.length === 1 ? open[0].id : "new",
   );
+  // Until staff choose a target, the default follows the table's checks: a
+  // check opened since (another hold accepted as new) is pre-selected when it
+  // is the only one (MONEY-3, spec §2.7).
+  const [targetTouched, setTargetTouched] = useState(false);
   const [ack, setAck] = useState(false);
+  const [abuseAck, setAbuseAck] = useState(false);
   const [more, setMore] = useState(false);
   // A check that left the list (closed, paid) falls back to a new check.
   useEffect(() => {
+    if (!targetTouched && !forceNew) {
+      setTarget(open.length === 1 ? open[0].id : "new");
+      return;
+    }
     if (target !== "new" && !open.some((c) => c.id === target))
       setTarget("new");
   }, [hold.openChecks]);
@@ -74,6 +85,10 @@ export function HoldCard({
     ? included.reduce((n, l) => n + (l.currentTotal ?? 0), 0)
     : null;
   const priceChanged = current !== null && current !== quoted;
+  // MONEY-1: an acknowledgement covers exactly the total it was given for; a
+  // new price (a poll, an exclusion) needs a new one.
+  useEffect(() => setAck(false), [current]);
+  const abuse = hold.linkRevoked === "abuse";
   const actions = holdActions(hold.policy, session.role, current);
   // Paying always opens a new check: the target only matters for accepting.
   const choosesTarget =
@@ -83,7 +98,8 @@ export function HoldCard({
     !busy &&
     included.length > 0 &&
     current !== null &&
-    (!priceChanged || ack);
+    (!priceChanged || ack) &&
+    (!abuse || abuseAck);
   const minutes = (ms: number) => Math.max(0, Math.round(ms / 60_000));
   const body = (forceNewCheck = false): AcceptBody => {
     const check = open.find((c) => c.id === target);
@@ -97,7 +113,8 @@ export function HoldCard({
             }
           : { kind: "new" },
       excludeLineIds: hold.lines.filter((l) => isOut(l.id)).map((l) => l.id),
-      priceChangeAcknowledged: priceChanged && ack,
+      acknowledgedTotal: current,
+      abuseAcknowledged: abuse && abuseAck,
     };
   };
   const place =
@@ -116,9 +133,11 @@ export function HoldCard({
           <strong>{hold.label}</strong> · {place}
         </h3>
         <p className="muted tiny">
-          {t("publicHoldAge", {
-            n: minutes(nowMs - Date.parse(hold.createdAt)),
-          })}
+          {minutes(nowMs - Date.parse(hold.createdAt)) === 0
+            ? t("publicHoldAgeNow")
+            : t("publicHoldAge", {
+                n: minutes(nowMs - Date.parse(hold.createdAt)),
+              })}
           {" · "}
           {t("publicHoldExpiresIn", {
             n: minutes(Date.parse(hold.expiresAt) - nowMs),
@@ -128,6 +147,20 @@ export function HoldCard({
           <Badge tone="amber">{t("publicHoldPayFirst")}</Badge>
         )}
       </header>
+      {abuse && (
+        <div className="hold-abuse">
+          <p>{t("publicHoldLinkAbuse")}</p>
+          <label className="option">
+            <input
+              type="checkbox"
+              checked={abuseAck}
+              disabled={busy}
+              onChange={(e) => setAbuseAck(e.target.checked)}
+            />
+            <span>{t("publicAbuseAck")}</span>
+          </label>
+        </div>
+      )}
       {hold.name && <p className="hold-name">{hold.name}</p>}
       {hold.note && (
         <p
@@ -207,7 +240,10 @@ export function HoldCard({
           <select
             value={target}
             disabled={busy}
-            onChange={(e) => setTarget(e.target.value)}
+            onChange={(e) => {
+              setTargetTouched(true);
+              setTarget(e.target.value);
+            }}
           >
             {open.map((c) => (
               <option key={c.id} value={c.id}>

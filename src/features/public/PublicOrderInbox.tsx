@@ -34,8 +34,12 @@ const REFRESH = new Set([
   "invalid_modifier",
   "required_modifier",
   "public_hold_price_changed",
+  "public_payment_must_cover_total",
+  "public_hold_link_abuse",
   "insufficient_stock",
 ]);
+/** Codes after which the hold leaves the inbox: the outcome stays in the notice. */
+const GONE = new Set(["public_order_not_pending", "public_order_expired"]);
 
 type AcceptResult = { hold: { label: string }; order: Order; round: number };
 /**
@@ -154,12 +158,20 @@ export function PublicOrderInbox({
       code = "public_hold_target_invalid";
     }
     setErrors((e) => ({ ...e, [hold.id]: translateError(code, locale) }));
+    // The card disappears with the next read; its outcome must not (UX-7).
+    if (GONE.has(code))
+      setNotice(`${hold.label}: ${translateError(code, locale)}`);
     if (REFRESH.has(code) || TARGET_GONE.has(code)) refresh();
   }
   function accepted(hold: InboxHold, r: AcceptResult) {
     keys.current.delete(hold.id);
     setErrors((e) => ({ ...e, [hold.id]: "" }));
-    setNotice(t("publicAcceptedNotice", { label: r.hold.label }));
+    setNotice(
+      t("publicAcceptedNotice", {
+        label: r.hold.label,
+        number: r.order.number,
+      }),
+    );
     printKitchen(r);
     refresh();
     onChanged();
@@ -215,6 +227,10 @@ export function PublicOrderInbox({
       if (code === "step_up_cancelled") return;
       if (code === "operation_conflict") keys.current.delete(hold.id);
       setPaying((p) => p && { ...p, error: translateError(code, locale) });
+      if (GONE.has(code)) {
+        setPaying(null);
+        setNotice(`${hold.label}: ${translateError(code, locale)}`);
+      }
       if (REFRESH.has(code)) refresh();
     } finally {
       setBusy(null);
@@ -281,9 +297,21 @@ export function PublicOrderInbox({
       </p>
       {data && data.recentlyExpired > 0 && (
         <p className="muted">
-          {t("publicInboxExpired", { n: data.recentlyExpired })}
+          {data.recentlyExpired === 1
+            ? t("publicInboxExpiredOne")
+            : t("publicInboxExpired", { n: data.recentlyExpired })}
         </p>
       )}
+      {data?.churning?.map((c) => (
+        <p key={c.kind + c.name} className="public-churn">
+          {t("publicInboxChurn", {
+            name:
+              c.kind === "kiosk"
+                ? t("publicKioskNamed", { name: c.name })
+                : c.name,
+          })}
+        </p>
+      ))}
       {data && !holds.length && (
         <p className="muted">{t("publicInboxEmpty")}</p>
       )}

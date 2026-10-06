@@ -12,7 +12,9 @@ import { createIdleController } from "./kioskIdle";
 /**
  * The kiosk's confirmation: the code in very large type, the total, where to
  * pay, and a 20 s countdown back to the menu. The countdown is not
- * announced each second; the reset is.
+ * announced each second; the code is announced by the page's persistent
+ * live region when the order is sent (UX-6), so the heading stays a plain
+ * heading.
  */
 export function KioskDone({
   hold,
@@ -50,9 +52,7 @@ export function KioskDone({
   return (
     <section className="kiosk-done">
       <p className="muted">{t.publicCode}</p>
-      <h2 className="kiosk-code" role="status">
-        {hold.label}
-      </h2>
+      <h2 className="kiosk-code">{hold.label}</h2>
       <p className="kiosk-total">{money(hold.total)}</p>
       <p className="kiosk-instructions">
         {hold.policy === "pay_first"

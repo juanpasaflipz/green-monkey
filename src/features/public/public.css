@@ -124,6 +124,22 @@
   background: var(--negative);
   color: #fff;
 }
+.hold-abuse {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--negative-bg);
+  color: var(--negative);
+  font-weight: 600;
+}
+.hold-abuse p {
+  margin: 0 0 6px;
+}
+.public-churn {
+  margin: 8px 0 0;
+  color: var(--negative);
+  font-weight: 600;
+}
 .hold-lines {
   list-style: none;
   margin: 12px 0 0;

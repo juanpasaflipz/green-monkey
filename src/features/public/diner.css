@@ -28,8 +28,58 @@
   margin: 4px 0 0;
   font-weight: 600;
 }
+.diner-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: none;
+  max-width: 60%;
+}
 .diner-language {
   flex: none;
+}
+.diner-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  text-align: left;
+}
+.diner-link:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.diner-privacy-codes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: center;
+}
+.diner-privacy-code {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin: 0;
+  max-width: 200px;
+  text-align: center;
+}
+.diner-status-heading {
+  outline: none;
+}
+.diner-status-heading:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.diner-price-changed {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 600;
 }
 .diner-policy p {
   margin: 12px 0 0;
@@ -100,6 +150,7 @@
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 16px;
+  background: var(--surface);
 }
 .diner-cart h2 {
   margin-top: 0;
@@ -236,7 +287,8 @@
 .kiosk-done p {
   margin: 0;
 }
-.kiosk-code {
+/* .diner h2 (0,1,1) would otherwise win over a bare .kiosk-code (UX-3). */
+.diner .kiosk-code {
   font-size: 120px;
   line-height: 1;
   margin: 0;
@@ -268,10 +320,24 @@
     gap: 24px;
     align-items: start;
   }
+  /* The side cart fits the viewport and scrolls inside, with the total and
+     "Enviar pedido" pinned to its bottom (UX-4). The header sits in the menu
+     column, so the panel starts at the top of the page. */
   .diner-cart {
     position: sticky;
     top: 16px;
-    margin-top: 16px;
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    padding-bottom: 0;
+  }
+  .diner-cart .diner-cart-footer {
+    position: sticky;
+    bottom: 0;
+    margin: 0 -16px;
+    padding: 4px 16px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
   }
 }
 @media (min-width: 1024px) {

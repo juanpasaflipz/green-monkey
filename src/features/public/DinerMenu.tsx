@@ -5,7 +5,7 @@ import type {
 } from "../../../shared/public-ordering";
 import { orderable } from "../../../shared/menu";
 import { strings } from "../../i18n";
-import { moneyFormatter } from "../menu/format";
+import { fill, moneyFormatter } from "../menu/format";
 
 /** Products grouped by category in POS order. */
 function byCategory(products: Product[], locale: Locale) {
@@ -46,7 +46,9 @@ export function DinerMenu({
     <section className="diner-menu" aria-label={menu.restaurant.name}>
       <div className="diner-policy">
         <p>{policy}</p>
-        <p className="muted">{t.publicPricesTax}</p>
+        <p className="muted">
+          {fill(t.publicPricesTax, { currency: menu.restaurant.currency })}
+        </p>
       </div>
       {!ordering.open && (
         <p className="diner-closed" role="alert">
