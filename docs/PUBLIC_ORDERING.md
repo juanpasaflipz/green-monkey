@@ -582,13 +582,29 @@ when B1 merged fiscal 027 (`70860d6`), so it still ships on `track/public`.
   "Cuenta nueva"; it still maps `fiscal_ticket_issued` the same way.
 - **The diner status page** of a new check shows "Folio …" once the check is
   paid, read with fiscal's `fiscalTicketIdentity` (`server/fiscal-read.ts`,
-  one statement); an appended round shows neither money nor a folio. With a
-  ticket, it also shows the self-invoice link (`/f/{CODE}`, the ticket's
-  12-character code) when cfdi's `selfInvoiceOffered` (`server/cfdi/store.ts`,
-  one statement) says the restaurant offers self-invoicing: CFDI available,
+  one statement); an appended round shows neither money nor a folio.
+- **The self-invoice code goes only to the payer** (D11 as narrowed by the
+  lead, LD-41: "after payment" became "after this diner's payment"). The
+  code is a bearer credential for the whole ticket: cfdi's portal stamps an
+  invoice with only the code and a receptor, and a second request is refused
+  as already invoiced. The status page therefore shows the self-invoice link
+  (`/f/{CODE}`, the ticket's 12-character code) only when the diner is known
+  to be the payer:
+  - a pay-first hold, whose accept collected this diner's own order
+    (`paid_at_accept`);
+  - a takeaway hold (counter or kiosk, no table): a one-diner check the diner
+    pays at the counter.
+
+  A table check accepted without payment can carry other diners' QR rounds
+  and the waiter's rounds, and whoever pays it holds the printed ticket. Its
+  diner sees the folio and "Pide tu factura con tu ticket impreso o en
+  caja." with `selfInvoiceCode` `null` (PUBLIC-MONEY-1). For a payer, the
+  link renders when cfdi's `selfInvoiceOffered` (`server/cfdi/store.ts`, one
+  statement) says the restaurant offers self-invoicing: CFDI available,
   enabled and ready, self-invoicing on, and a certificate the portal accepts.
   Otherwise the code is `null` and no link renders. `holdStatus` costs 3
-  statements before the ticket and 4 with it (budget 5, OQ-10).
+  statements before the ticket and for a table check paid later, and 4 with
+  a payer's ticket (budget 5, OQ-10).
 - **The diner menu** carries no fiscal fields: fiscal's `publicCatalog`
   strips each product's tax category and SAT keys (C29).
 - **`PUBLIC_ORDERING_ENABLED`** belongs to account (031).

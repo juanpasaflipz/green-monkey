@@ -220,7 +220,7 @@ export function DinerStatus({
                 " · " + t("publicFolio", { folio: view.order.fiscal.folio })}
             </p>
           )}
-          {view.order?.fiscal?.selfInvoiceCode && (
+          {view.order?.fiscal?.selfInvoiceCode ? (
             <p>
               <a
                 href={"/f/" + view.order.fiscal.selfInvoiceCode}
@@ -230,6 +230,13 @@ export function DinerStatus({
                 {t("publicInvoiceLink")}
               </a>
             </p>
+          ) : (
+            // A table check paid later: whoever paid holds the printed ticket
+            // and its code, so this phone only says where to ask (LD-41).
+            view.order?.fiscal &&
+            view.kind === "table" && (
+              <p className="diner-invoice-hint">{t("publicInvoiceAskStaff")}</p>
+            )
           )}
           <ul className="diner-lines">
             {view.lines.map((l) => (

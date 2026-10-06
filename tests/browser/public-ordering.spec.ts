@@ -532,6 +532,15 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     await expect(customer.locator(".diner-money")).toHaveText(
       `Pagado · Folio ${folio}`,
     );
+    // LD-41 (PUBLIC-MONEY-1): staff collected this table check, so whoever
+    // paid holds the printed ticket; this phone gets no self-invoice link,
+    // only where to ask for the invoice.
+    await expect(customer.locator(".diner-invoice-hint")).toHaveText(
+      "Pide tu factura con tu ticket impreso o en caja.",
+    );
+    await expect(
+      customer.getByRole("link", { name: /Factura tu consumo/ }),
+    ).toHaveCount(0);
   });
 });
 

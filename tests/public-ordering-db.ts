@@ -21,6 +21,7 @@ import {
 } from "../server/db.js";
 import { makeRoute } from "../server/http.js";
 import {
+  addRound,
   catalog,
   createOrder,
   getOrder,
@@ -2451,7 +2452,7 @@ try {
     );
   });
 
-  await test("22 (030). self-invoice leg: a paid QR check and a pay-first kiosk order of a restaurant that offers self-invoicing show their ticket's code (the /f/{CODE} link); with self-invoicing off it is null again", async () => {
+  await test("22 (030). self-invoice leg: the code goes only to the diner known to be the payer (LD-41, PUBLIC-MONEY-1): a table check staff collect later shows its folio and no code; a pay-first table accept, a kiosk order paid at acceptance and a counter order paid later show their ticket's code (the /f/{CODE} link); with self-invoicing off it is null again", async () => {
     const t = await makeTenant("self-invoice");
     const restorePlatform = await cfdiReady(t);
     try {
@@ -2468,25 +2469,103 @@ try {
           selfInvoiceCode: row.self_invoice_code as string,
         };
       };
-      // A table QR: accepted, then paid at the counter.
+      // A table QR accepted without payment: the check may take other
+      // diners' and the waiter's rounds, and whoever pays it holds the
+      // printed ticket. Staff collect it later: this diner's status shows the
+      // folio, never the code (a bearer credential for the whole ticket).
       const mesa = await link(t, { kind: "table", tableId: t.tables[0].id });
       const b1 = await body(t, [{ productId: t.p.taco }]);
       await pub.submit(mesa.token, b1);
       const r1 = await accept(t, (await holdOf(t, b1)).id);
       const before = await pub.status(mesa.token, b1.statusKey);
       assert.equal(before.body.order!.fiscal, null, "no ticket before payment");
+      // The waiter adds another diner's drinks to the same check.
+      const withRound = await run(t.s.server, (tx) =>
+        addRound(tx, t.s.server, r1.order.id, {
+          operationId: op(),
+          lines: [
+            {
+              id: randomUUID(),
+              productId: t.p.taco,
+              quantity: 1,
+              options: [],
+              note: "",
+            },
+          ],
+          mode: "dine_in",
+          tableId: t.tables[0].id,
+          name: "",
+          expectedVersion: r1.order.version,
+        }),
+      );
       await run(t.s.cashier, (tx) =>
         recordPayment(tx, t.s.cashier, r1.order.id, {
           operationId: op(),
-          amount: r1.order.total,
-          received: r1.order.total,
+          amount: withRound.total,
+          received: withRound.total,
           method: "cash",
         }),
       );
       const paid = await pub.status(mesa.token, b1.statusKey);
       assert.equal(paid.status, 200);
       const ticket1 = await ticketOf(r1.order.id);
-      assert.deepEqual(paid.body.order!.fiscal, ticket1);
+      assert.deepEqual(paid.body.order!.fiscal, {
+        folio: ticket1.folio,
+        selfInvoiceCode: null,
+      });
+      assert.doesNotMatch(
+        JSON.stringify(paid.body),
+        new RegExp(ticket1.selfInvoiceCode),
+        "the code is nowhere in the table diner's status",
+      );
+      // A pay-first table: the accept collects this diner's own order, so
+      // this diner is the payer and gets the code.
+      const [settings] = await run(
+        t.s.manager,
+        (tx) => tx`select version from public_ordering_settings`,
+      );
+      await run(t.s.manager, (tx) =>
+        saveOrderingSettings(tx, t.s.manager, {
+          operationId: op(),
+          expectedVersion: settings?.version ?? 0,
+          tablePolicy: "pay_first",
+          counterPolicy: "accept",
+          holdMinutes: 30,
+          maxOrderTotal: 1_000_000,
+        }),
+      );
+      const mesa2 = await link(t, { kind: "table", tableId: t.tables[1].id });
+      const b3 = await body(t, [{ productId: t.p.taco }]);
+      await pub.submit(mesa2.token, b3);
+      const h3 = await holdOf(t, b3);
+      assert.equal(h3.policy, "pay_first");
+      const r3 = await accept(t, h3.id, {
+        payment: { amount: 4500, received: 5000, method: "cash" },
+      });
+      const ticket3 = await ticketOf(r3.order.id);
+      assert.deepEqual(
+        (await pub.status(mesa2.token, b3.statusKey)).body.order!.fiscal,
+        ticket3,
+      );
+      // A counter (takeaway) order accepted without payment and paid later:
+      // a one-diner check the diner pays at the counter, so the code shows.
+      const counter = await link(t, { kind: "counter", label: "Mostrador" });
+      const b4 = await body(t, [{ productId: t.p.taco }]);
+      await pub.submit(counter.token, b4);
+      const r4 = await accept(t, (await holdOf(t, b4)).id);
+      await run(t.s.cashier, (tx) =>
+        recordPayment(tx, t.s.cashier, r4.order.id, {
+          operationId: op(),
+          amount: r4.order.total,
+          received: r4.order.total,
+          method: "cash",
+        }),
+      );
+      const ticket4 = await ticketOf(r4.order.id);
+      assert.deepEqual(
+        (await pub.status(counter.token, b4.statusKey)).body.order!.fiscal,
+        ticket4,
+      );
       // A kiosk order paid at acceptance: its ticket is issued in the accept.
       const kiosk = await link(t, { kind: "kiosk", label: "Kiosco" });
       const b2 = await body(t, [{ productId: t.p.taco, quantity: 2 }]);
@@ -2516,6 +2595,10 @@ try {
       assert.deepEqual(
         (await pub.status(mesa.token, b1.statusKey)).body.order!.fiscal,
         { folio: ticket1.folio, selfInvoiceCode: null },
+      );
+      assert.deepEqual(
+        (await pub.status(mesa2.token, b3.statusKey)).body.order!.fiscal,
+        { folio: ticket3.folio, selfInvoiceCode: null },
       );
     } finally {
       await restorePlatform();
@@ -2764,7 +2847,7 @@ try {
     );
   });
 
-  await test("26. statement budgets: summary 1, an idle inbox 3, a busy inbox at most 5, holdStatus 3 before the ticket and 4 with it (fiscal's identity, cfdi's self-invoice offer; OQ-10 <= 5)", async () => {
+  await test("26. statement budgets: summary 1, an idle inbox 3, a busy inbox at most 5, holdStatus 3 before the ticket and for a table check paid later, 4 with the payer's ticket (fiscal's identity, cfdi's self-invoice offer; OQ-10 <= 5)", async () => {
     const t = await makeTenant("budget");
     let n = 0;
     const counted = postgres(url, {
@@ -2814,9 +2897,29 @@ try {
           method: "cash",
         }),
       );
-      // With the ticket, cfdi's selfInvoiceOffered (030) is one statement more.
+      // A table check paid later: this diner is not known to be the payer,
+      // so cfdi's offer is not asked either (LD-41, PUBLIC-MONEY-1).
+      assert.equal(
+        await cost((tx) => holdStatus(tx, h.link_id, b1.statusKey)),
+        3,
+        "no offer for a table check paid later",
+      );
+      // A counter order paid later: with the ticket, cfdi's
+      // selfInvoiceOffered (030) is one statement more.
+      const counter = await link(t, { kind: "counter", label: "Caja" });
+      const b2 = await body(t, [{ productId: t.p.taco }]);
+      await pub.submit(counter.token, b2);
+      const r2 = await accept(t, (await holdOf(t, b2)).id);
+      await run(t.s.cashier, (tx) =>
+        recordPayment(tx, t.s.cashier, r2.order.id, {
+          operationId: op(),
+          amount: r2.order.total,
+          received: r2.order.total,
+          method: "cash",
+        }),
+      );
       const ticketed = await cost((tx) =>
-        holdStatus(tx, h.link_id, b1.statusKey),
+        holdStatus(tx, counter.id, b2.statusKey),
       );
       assert.equal(ticketed, 4, "a ticket adds only cfdi's offer");
       assert(ticketed <= 5, "OQ-10 budget");

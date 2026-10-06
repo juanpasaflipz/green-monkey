@@ -159,6 +159,7 @@ type HoldRow = {
   order_id: string | null;
   order_round: number | null;
   excluded_line_ids: string[];
+  paid_at_accept: boolean;
   accepted_total: number | null;
   accepted_lines: { id: string; unitPrice: number; total: number }[] | null;
   expired: boolean;
@@ -178,9 +179,9 @@ const holdKind = (h: HoldRow): LinkKind =>
 /**
  * The diner's view of a hold; accepted holds add one order statement and,
  * for a new check, fiscal's ticket identity (one statement: the folio once
- * the check is paid, 027) and, once there is a ticket, cfdi's self-invoice
- * offer (one statement, 030): the printed ticket's /f/{CODE} link only while
- * the restaurant's portal would accept it. An accepted hold shows what
+ * the check is paid, 027) and, once there is a ticket whose payer is this
+ * diner, cfdi's self-invoice offer (one statement, 030): the printed
+ * ticket's /f/{CODE} link only while the restaurant's portal would accept it. An accepted hold shows what
  * acceptance charged (its accepted lines and total), never the submission
  * snapshot (PRIVACY-1).
  */
@@ -227,12 +228,22 @@ async function holdView(tx: Tx, h: HoldRow): Promise<DinerHoldView> {
   let fiscal: NonNullable<DinerHoldView["order"]>["fiscal"] = null;
   if (target === "new") {
     const ticket = await fiscalTicketIdentity(tx, h.order_id);
+    // The self-invoice code is a bearer credential for the whole ticket
+    // (portalSubmit needs only the code and a receptor), so it goes only to
+    // a diner known to be the payer (LD-41, D11 narrowed): a pay-first hold
+    // whose accept collected this diner's own order, or a takeaway hold (one
+    // diner's check, paid at the counter). A table check paid later may carry
+    // other diners' and the waiter's rounds and is paid by whoever settles
+    // it: the folio shows, the code stays on the printed ticket
+    // (PUBLIC-MONEY-1).
+    const payer = h.paid_at_accept || h.table_id === null;
     if (ticket)
       fiscal = {
         folio: ticket.folio,
-        selfInvoiceCode: (await selfInvoiceOffered(tx))
-          ? ticket.selfInvoiceCode
-          : null,
+        selfInvoiceCode:
+          payer && (await selfInvoiceOffered(tx))
+            ? ticket.selfInvoiceCode
+            : null,
       };
   }
   view.order = {

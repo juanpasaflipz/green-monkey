@@ -56,6 +56,7 @@ export default defineArea({
     publicPaid: "Pagado",
     publicFolio: "Folio {folio}",
     publicInvoiceLink: "¿Necesitas factura? Factura tu consumo",
+    publicInvoiceAskStaff: "Pide tu factura con tu ticket impreso o en caja.",
     publicExcluded: "No se incluyó: {items}",
     publicStatusRejected: "El personal no pudo aceptar tu pedido.",
     publicReasonUnavailableDiner: "Algún producto no está disponible.",
@@ -291,6 +292,8 @@ export default defineArea({
     publicPaid: "Paid",
     publicFolio: "Receipt {folio}",
     publicInvoiceLink: "Need an invoice? Invoice your purchase",
+    publicInvoiceAskStaff:
+      "Ask for your invoice with your printed receipt or at the counter.",
     publicExcluded: "Not included: {items}",
     publicStatusRejected: "The staff could not accept your order.",
     publicReasonUnavailableDiner: "An item is unavailable.",
