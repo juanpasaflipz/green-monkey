@@ -19,9 +19,12 @@ import {
   listInvitations,
 } from "../server/owner-management.js";
 import { authentication, sign } from "../server/auth.js";
+import { legalConfig } from "../server/legal.js";
 const { runtime, migration } = isolatedTarget(process.env),
   sql = postgres(runtime, { max: 5 }),
   admin = postgres(migration, { max: 1 });
+// Signup as CI's DB steps run it; the legal gate itself is covered by account-db.
+const legal = legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" });
 const accounts: string[] = [],
   tenants: string[] = [],
   subjects = [randomUUID(), randomUUID(), randomUUID()];
@@ -46,7 +49,7 @@ try {
   }
   const a = await withOwner(sql, cookies[0], undefined, async (_tx, a) => a);
   const first = await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-    createOwnerRestaurant(tx, a, input),
+    createOwnerRestaurant(tx, a, input, legal),
   );
   tenants.push(first.tenantId);
   const additional = {
@@ -90,7 +93,7 @@ try {
     /forbidden/,
   );
   const original = await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-    createOwnerRestaurant(tx, a, input),
+    createOwnerRestaurant(tx, a, input, legal),
   );
   assert.equal(
     original.tenantId,
@@ -208,7 +211,7 @@ try {
   assert.equal(employee.role, "manager");
   assert.equal(manager.session.tenantId, first.tenantId);
   const own = await withOwner(sql, cookies[1], undefined, (tx, a) =>
-    createOwnerRestaurant(tx, a, input),
+    createOwnerRestaurant(tx, a, input, legal),
   );
   tenants.push(own.tenantId);
   assert.notEqual(
