@@ -153,8 +153,21 @@ staying after a transfer) follows access's deactivation exactly
 personal devices retired through access's actor variant
 (`retirePersonalDevicesAs`), the membership is revoked, and the audit rows
 `access.employee_deactivated {name, sessions, pairingCodes, personalDevices}`
-and `account.owner_seat_revoked` are written. Its offline queued sales go to
-manager reconciliation.
+and `account.owner_seat_revoked {…, invitations}` are written. Its offline
+queued sales go to manager reconciliation.
+
+The departing account's **unaccepted invitations** (staff and co-owner, at
+every location) are revoked in the same transaction (ACC-15), and the
+`co_owner_removed` / `co_owner_left` / `transfer_completed` events record
+`invitationsRevoked`. A removed co-owner therefore cannot rejoin through a
+manager invitation they sent to themselves; only a current owner's invitation
+brings them back. Acceptance also checks the creator's standing (defence in
+depth): a staff invitation needs its creator to still hold an active owner
+seat at that location, a co-owner invitation needs its creator to still be the
+primary. Revocation and acceptance serialize on the organization's co-owner key
+(931): `acceptInvitation` takes it before it locks the invitation row, and every
+seat revocation holds it, so an acceptance either completes first or sees the
+revocation.
 
 **Ownership transfer**
 
@@ -171,7 +184,11 @@ pending ─ cancelled by the primary or the target, or expired ─▶ closed
 At completion the target becomes primary (`organizations.created_by_account`),
 gets owner seats everywhere, and the previous primary either stays as a
 co-owner ("Seguir como copropietario", unavailable when 3 co-owners exist) or
-loses every seat. The Stripe customer and saved payment method stay attached to
+loses every seat. Their pending invitations do not outlive the transfer
+(ACC-15): leaving revokes all of them with the seat; staying revokes their
+co-owner invitations (inviting co-owners is the primary's power) and keeps
+their staff invitations. Support and recovery-code transfers always have the
+previous owner leave, so all of that account's invitations are revoked. The Stripe customer and saved payment method stay attached to
 the organization until the new owner changes them; the console tells them to
 review linked devices, the Free selection and the billing email. Every step is
 an `account_events` row (owners see "Actividad de la cuenta"); a transfer

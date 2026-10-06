@@ -2192,6 +2192,239 @@ try {
       [d2.id, d3.id, g.id].sort(),
     );
   });
+  // ---- Departing owners' invitations (ACC-15) -----------------------------------
+  const revokedFlag = async (id: string) =>
+    (await admin`select revoked from restaurant_invitations where id=${id}`)[0]
+      .revoked as boolean;
+  const inviteCoOwner = (from: Owner, organizationId: string, email: string) =>
+    as(from, (tx, x) =>
+      createCoOwnerInvitation(
+        tx,
+        x,
+        { operationId: randomUUID(), organizationId, email },
+        PUBLISHED,
+      ),
+    );
+  const inviteStaff = (
+    from: Owner,
+    tenantId: string,
+    email: string,
+    role = "cashier",
+  ) =>
+    as(from, (tx, x) =>
+      createInvitation(
+        tx,
+        x.id,
+        { operationId: randomUUID(), tenantId, email, role },
+        PUBLISHED,
+      ),
+    );
+  const acceptInvite = (who: Owner, path: string) =>
+    as(who, (tx, x) =>
+      acceptInvitation(
+        tx,
+        x,
+        {
+          token: token(path, "invite"),
+          legalAccepted: { terms: V.terms, privacy: V.privacy },
+        },
+        PUBLISHED,
+      ),
+    );
+  await test("35 co-owner: removal and leaving revoke the departing co-owner's pending invitations; their own invitation cannot bring them back, even un-revoked (creator seat check) (ACC-15)", async () => {
+    const p = await owner("seat-inv-primary");
+    const S = await restaurant(p, `Invitaciones ${run}`);
+    const [c, c2, outsider] = [
+      await owner("seat-inv-co"),
+      await owner("seat-inv-co2"),
+      await owner("seat-inv-staff"),
+    ];
+    for (const who of [c, c2])
+      await acceptInvite(
+        who,
+        (await inviteCoOwner(p, S.organizationId, who.email)).path,
+      );
+    // The co-owner prepares a way back in (a manager invitation to their own
+    // Google email) and invites someone else; the primary invites staff too.
+    const self = await inviteStaff(c, S.tenantId, c.email, "manager");
+    const other = await inviteStaff(c, S.tenantId, outsider.email);
+    const kept = await inviteStaff(p, S.tenantId, `kept-${run}@example.com`);
+    await as(p, (tx, x) =>
+      removeCoOwner(
+        tx,
+        x,
+        { organizationId: S.organizationId, accountId: c.id },
+        PUBLISHED,
+      ),
+    );
+    assert.equal(await revokedFlag(self.id), true);
+    assert.equal(await revokedFlag(other.id), true);
+    assert.equal(
+      await revokedFlag(kept.id),
+      false,
+      "another owner's invitations stay valid",
+    );
+    const [event] =
+      await admin`select detail from account_events where organization_id=${S.organizationId}
+        and kind='co_owner_removed' and subject_account_id=${c.id}`;
+    assert.equal(event.detail.invitationsRevoked, 2);
+    const [audit] =
+      await admin`select detail from audit where tenant_id=${S.tenantId}
+        and operation='account.owner_seat_revoked' and detail->>'accountId'=${c.id}`;
+    assert.equal(audit.detail.invitations, 2);
+    // The removed co-owner signs in again and tries their own invitation.
+    const back = {
+      ...c,
+      cookie: await signInGoogleOwner(sql, {
+        issuer: "https://accounts.google.com",
+        subject: c.subject,
+        email: c.email,
+      }),
+    };
+    await rejects(acceptInvite(back, self.path), "invitation_unavailable");
+    // Defence in depth: even if a revocation were missed, the creator holds
+    // no owner seat any more.
+    await admin`update restaurant_invitations set revoked=false where id=${self.id}`;
+    await rejects(acceptInvite(back, self.path), "invitation_unavailable");
+    await admin`update restaurant_invitations set revoked=true where id=${self.id}`;
+    const s = await seat(c.id, S.tenantId);
+    assert.deepEqual(
+      [s.role, s.active, s.revoked_at !== null],
+      ["owner", false, true],
+      "the removed co-owner stays out",
+    );
+    // Leaving revokes the leaver's pending invitations as well.
+    const left = await inviteStaff(c2, S.tenantId, `left-${run}@example.com`);
+    await as(c2, (tx, x) =>
+      leaveCoOwnership(tx, x, { organizationId: S.organizationId }),
+    );
+    assert.equal(await revokedFlag(left.id), true);
+    const [leftEvent] =
+      await admin`select detail from account_events where organization_id=${S.organizationId}
+        and kind='co_owner_left' and subject_account_id=${c2.id}`;
+    assert.equal(leftEvent.detail.invitationsRevoked, 1);
+    assert.equal(await revokedFlag(kept.id), false);
+  });
+  await test("36 transfer: the previous primary's pending invitations do not outlive the transfer: all of them when they leave (owner-initiated and recovery-code), their co-owner invitations when they stay; a former primary's co-owner invitation is refused even un-revoked (ACC-15)", async () => {
+    // 1. Owner-initiated, the previous owner leaves: every pending invitation.
+    const seller = await owner("inv-seller");
+    const Sx = await restaurant(seller, `Venta ${run}`);
+    const [buyer, planted] = [
+      await owner("inv-buyer"),
+      await owner("inv-planted"),
+    ];
+    const coInv = await inviteCoOwner(seller, Sx.organizationId, planted.email);
+    const staffInv = await inviteStaff(
+      seller,
+      Sx.tenantId,
+      `inv-staff-${run}@example.com`,
+    );
+    const sale = await as(seller, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: Sx.organizationId,
+          email: buyer.email,
+          previousOwnerStays: false,
+          confirmName: `Venta ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(buyer, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(sale.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.deepEqual(
+      [await revokedFlag(coInv.id), await revokedFlag(staffInv.id)],
+      [true, true],
+    );
+    await rejects(acceptInvite(planted, coInv.path), "invitation_unavailable");
+    const [completed] =
+      await admin`select detail from account_events where organization_id=${Sx.organizationId}
+        and kind='transfer_completed'`;
+    assert.equal(completed.detail.invitationsRevoked, 2);
+    // 2. The previous owner stays as co-owner: their co-owner invitations only
+    // (a primary-only power); their staff invitations stay valid.
+    const stay = await owner("inv-stay-from");
+    const St = await restaurant(stay, `Sigue ${run}`);
+    const [heir, y, z] = [
+      await owner("inv-stay-to"),
+      await owner("inv-stay-co"),
+      await owner("inv-stay-staff"),
+    ];
+    const coStay = await inviteCoOwner(stay, St.organizationId, y.email);
+    const staffStay = await inviteStaff(stay, St.tenantId, z.email);
+    const keep = await as(stay, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: St.organizationId,
+          email: heir.email,
+          previousOwnerStays: true,
+          confirmName: `Sigue ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(heir, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(keep.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.deepEqual(
+      [await revokedFlag(coStay.id), await revokedFlag(staffStay.id)],
+      [true, false],
+    );
+    await rejects(acceptInvite(y, coStay.path), "invitation_unavailable");
+    // Defence in depth: un-revoked, the invitation's creator is no longer the
+    // primary, so it is still refused.
+    await admin`update restaurant_invitations set revoked=false where id=${coStay.id}`;
+    await rejects(acceptInvite(y, coStay.path), "invitation_unavailable");
+    await admin`update restaurant_invitations set revoked=true where id=${coStay.id}`;
+    assert.equal(
+      (
+        await admin`select 1 from organization_co_owners where organization_id=${St.organizationId}
+          and account_id=${y.id}`
+      ).length,
+      0,
+    );
+    // The staff invitation of the previous primary, now a co-owner, works.
+    assert.equal((await acceptInvite(z, staffStay.path)).tenantId, St.tenantId);
+    // 3. Recovery-code transfer: the old (possibly hijacked) account's
+    // invitations die with it.
+    const lost = await owner("inv-lost");
+    const Lo = await restaurant(lost, `Perdida ${run}`);
+    const w = await owner("inv-lost-co");
+    const coLost = await inviteCoOwner(lost, Lo.organizationId, w.email);
+    const { codes } = await as(lost, (tx, x) => generateRecoveryCodes(tx, x));
+    const recoverer = await owner("inv-recoverer");
+    const redeemed = await as(recoverer, (tx, x) =>
+      redeemRecoveryCode(tx, x, { code: codes[0] }),
+    );
+    await moveTransferAvailableAt(redeemed.transferId, "1 minute");
+    await as(recoverer, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { transferId: redeemed.transferId, legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.equal(await revokedFlag(coLost.id), true);
+    await rejects(acceptInvite(w, coLost.path), "invitation_unavailable");
+  });
   console.log(
     `Account DB passed (${checks} checks): legal acceptance and gating, co-owners on access's lifecycle, transfers, recovery codes, export, restaurant privacy and the 031 RLS paths. Fixtures retained (append-only evidence).`,
   );

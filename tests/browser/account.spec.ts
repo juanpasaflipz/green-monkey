@@ -322,7 +322,7 @@ test("ownership transfer: request, accept as target with DPA, previous owner see
     await axe(target);
     await accept.click();
     await expect(center(target)).toContainText(
-      "Ahora eres titular. Revisa dispositivos vinculados, la selección Free y el correo de facturación en Stripe.",
+      "Ahora eres titular. Se cancelaron las invitaciones pendientes de la persona titular anterior (si sigue como copropietaria, solo las de copropietario). Revisa dispositivos vinculados, la selección Free y el correo de facturación en Stripe.",
     );
     const [organization] =
       await admin`select o.created_by_account from organizations o join restaurants r on r.organization_id=o.id

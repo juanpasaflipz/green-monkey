@@ -8,6 +8,7 @@ import { signupInput } from "./owner-accounts.js";
 import { requirePro } from "./entitlements.js";
 import {
   acceptCoOwnerInvitation,
+  lockCoOwnerLimit,
   provisionCoOwnersForLocation,
   tenantOrganizationScope,
   type AccountCtx,
@@ -179,6 +180,18 @@ export async function acceptInvitation(
     .parse(value);
   await tx`select pg_advisory_xact_lock(hashtextextended(${account.id},918))`;
   await tx`select set_config('app.invitation_hash',${hash(token)},true)`;
+  // The organization's co-owner key (931) before the invitation row (ACC-15):
+  // owner-seat revocation holds it while it revokes the departing owner's
+  // invitations, so this acceptance either completes first or then sees the
+  // revocation and the creator's revoked seat.
+  const [target] =
+    await tx`select tenant_id from restaurant_invitations where token_hash=${hash(token)}`;
+  if (target) {
+    await tx`select set_config('app.tenant_id',${target.tenant_id},true)`;
+    const [r] =
+      await tx`select organization_id from restaurants where id=${target.tenant_id}`;
+    if (r) await lockCoOwnerLimit(tx, r.organization_id);
+  }
   const [i] =
     await tx`select *,expires_at>now() as valid from restaurant_invitations where token_hash=${hash(token)} for update`;
   if (
@@ -194,6 +207,17 @@ export async function acceptInvitation(
     return { tenantId: i.tenant_id };
   }
   if (!i.valid) throw new DomainError("invitation_unavailable", 403);
+  // Defence in depth (ACC-15): a staff invitation is only as good as its
+  // creator's standing: they must still hold an active owner seat at this
+  // location (a co-owner invitation's creator must still be the primary,
+  // checked in acceptCoOwnerInvitation).
+  if (i.role !== "co_owner") {
+    const [creator] = await tx`select 1 from owner_memberships m
+        join employees e on e.tenant_id=m.tenant_id and e.id=m.employee_id
+      where m.tenant_id=${i.tenant_id} and m.account_id=${i.created_by}
+        and m.revoked_at is null and e.role='owner' and e.active`;
+    if (!creator) throw new DomainError("invitation_unavailable", 403);
+  }
   // account (031): current terms and privacy notice before joining.
   const state = await legalState(tx, account.id, legal);
   if (legal.status === "published" && state.pending.length) {
@@ -246,7 +270,9 @@ export async function acceptInvitation(
     const slot = await employeeSlot(tx, employeeId, true, i.role);
     await tx`insert into employees(tenant_id,id,name,login,secret_hash,role,free_slot) values(${i.tenant_id},${employeeId},${account.name},${"account-" + account.id},${password(randomBytes(32).toString("hex"))},${i.role},${slot})`;
   } else if (existing.revoked_at) {
-    // A former owner seat (removed co-owner) rejoins as staff.
+    // A former owner seat (removed co-owner) rejoins as staff, through an
+    // invitation from a current owner only: the invitations they created
+    // themselves were revoked with their seat (ACC-15).
     const slot = await employeeSlot(tx, employeeId, true, i.role);
     await tx`update employees set role=${i.role},active=true,deactivated_at=null,free_slot=${slot} where id=${employeeId}`;
     await tx`update owner_memberships set revoked_at=null,revoked_by=null where account_id=${account.id} and tenant_id=${i.tenant_id}`;

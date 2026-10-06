@@ -117,10 +117,10 @@ export default defineArea({
       "Esta invitación es para otro correo. Entra con la cuenta de Google invitada.",
     accountCoOwnerRemove: "Quitar copropietario",
     accountCoOwnerRemoveConfirm:
-      "Se cerrarán sus sesiones y perderá acceso a todas las sucursales.",
+      "Se cerrarán sus sesiones, se cancelarán las invitaciones pendientes que creó y perderá acceso a todas las sucursales.",
     accountCoOwnerLeave: "Dejar de ser copropietario",
     accountCoOwnerLeaveConfirm:
-      "Perderás acceso a todas las sucursales de {org}.",
+      "Perderás acceso a todas las sucursales de {org} y se cancelarán las invitaciones pendientes que creaste.",
     accountCoOwnerBillingNote:
       "La facturación y nuevas sucursales las administra la persona titular.",
     accountRoleCoOwner: "Copropietario",
@@ -156,7 +156,7 @@ export default defineArea({
     accountTransferAccept: "Aceptar y convertirme en titular",
     accountTransferDecline: "Rechazar",
     accountTransferDone:
-      "Ahora eres titular. Revisa dispositivos vinculados, la selección Free y el correo de facturación en Stripe.",
+      "Ahora eres titular. Se cancelaron las invitaciones pendientes de la persona titular anterior (si sigue como copropietaria, solo las de copropietario). Revisa dispositivos vinculados, la selección Free y el correo de facturación en Stripe.",
     accountTransferEmailMismatch:
       "Esta transferencia es para otro correo. Entra con la cuenta de Google indicada.",
     accountRecoveryTitle: "Códigos de recuperación",
@@ -275,7 +275,8 @@ export default defineArea({
     accountOpCoOwnerAdded: "Copropietario agregado",
     accountOpOwnershipTransferred: "Propiedad transferida",
     accountOpDataExport: "Datos exportados",
-    accountOpRestaurantPrivacy: "Aviso de privacidad del restaurante actualizado",
+    accountOpRestaurantPrivacy:
+      "Aviso de privacidad del restaurante actualizado",
     accountOpFreeSelectionMode: "Selección Free en automático",
     accountOpFreeSlotAuto: "Selección Free movida automáticamente",
   },
@@ -386,10 +387,10 @@ export default defineArea({
       "This invitation is for another email. Sign in with the invited Google account.",
     accountCoOwnerRemove: "Remove co-owner",
     accountCoOwnerRemoveConfirm:
-      "Their sessions will be closed and they will lose access to every location.",
+      "Their sessions will be closed, the pending invitations they created will be canceled and they will lose access to every location.",
     accountCoOwnerLeave: "Leave co-ownership",
     accountCoOwnerLeaveConfirm:
-      "You will lose access to every location of {org}.",
+      "You will lose access to every location of {org}, and the pending invitations you created will be canceled.",
     accountCoOwnerBillingNote:
       "Billing and new locations are managed by the primary owner.",
     accountRoleCoOwner: "Co-owner",
@@ -424,7 +425,7 @@ export default defineArea({
     accountTransferAccept: "Accept and become primary owner",
     accountTransferDecline: "Decline",
     accountTransferDone:
-      "You are now the primary owner. Review paired devices, the Free selection and the billing email in Stripe.",
+      "You are now the primary owner. The previous primary owner's pending invitations were canceled (only their co-owner invitations if they stay as a co-owner). Review paired devices, the Free selection and the billing email in Stripe.",
     accountTransferEmailMismatch:
       "This transfer is for another email. Sign in with the indicated Google account.",
     accountRecoveryTitle: "Recovery codes",

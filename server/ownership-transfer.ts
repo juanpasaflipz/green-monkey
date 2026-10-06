@@ -371,17 +371,31 @@ export async function acceptTransfer(
   await tx`update organization_co_owners set removed_at=now(),removed_by=${a.id},removal='promoted'
     where organization_id=${organizationId} and account_id=${a.id} and removed_at is null`;
   const seats = await ensureOwnerSeat(tx, organizationId, a.id, a.name);
-  if (t.previous_owner_stays)
+  // ACC-15: the previous primary's pending invitations do not outlive the
+  // transfer. Leaving: all of them, with the seat (revokeOwnerSeat). Staying
+  // as co-owner: their co-owner invitations, a primary-only power (staff
+  // invitations stay valid: co-owners may invite staff). Under 931, which
+  // acceptInvitation takes before the invitation row.
+  let invitationsRevoked: number;
+  if (t.previous_owner_stays) {
     await tx`insert into organization_co_owners(id,organization_id,account_id,added_by,source,transfer_id)
       values(${randomUUID()},${organizationId},${t.from_account_id},${a.id},'transfer',${t.id})`;
-  else
-    await revokeOwnerSeat(
-      tx,
-      organizationId,
-      t.from_account_id,
-      a.id,
-      "transfer",
-    );
+    const revoked = await tx`update restaurant_invitations set revoked=true
+      where tenant_id in (select id from restaurants where organization_id=${organizationId})
+        and created_by=${t.from_account_id} and role='co_owner'
+        and accepted_by is null and not revoked
+      returning id`;
+    invitationsRevoked = revoked.length;
+  } else
+    invitationsRevoked = (
+      await revokeOwnerSeat(
+        tx,
+        organizationId,
+        t.from_account_id,
+        a.id,
+        "transfer",
+      )
+    ).invitations;
   await tx`update ownership_transfers set state='completed',completed_at=now() where id=${t.id}`;
   for (const [tenantId, employeeId] of Object.entries(seats)) {
     await tx`select set_config('app.tenant_id',${tenantId},true)`;
@@ -392,7 +406,11 @@ export async function acceptTransfer(
     actor: a.id,
     subject: t.from_account_id,
     kind: "transfer_completed",
-    detail: { transferId: t.id, initiatedBy: t.initiated_by },
+    detail: {
+      transferId: t.id,
+      initiatedBy: t.initiated_by,
+      invitationsRevoked,
+    },
   });
   return { organizationId, tenantIds: Object.keys(seats) };
 }

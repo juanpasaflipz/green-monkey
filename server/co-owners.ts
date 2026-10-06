@@ -173,6 +173,14 @@ export async function ensureOwnerSeat(
  * that entered them), then revoke the membership. The acting account's seat
  * in each tenant is the audit actor (the leaving person's own seat for
  * "left"; the new primary's seat, provisioned first, for "transfer").
+ *
+ * The departing account's unaccepted invitations (staff and co-owner, every
+ * location) are revoked with the seat (ACC-15): a removed co-owner cannot
+ * rejoin through an invitation they created, and a previous primary's
+ * co-owner invitations do not outlive the transfer. Callers hold the
+ * organization's co-owner key (931), which acceptInvitation takes before it
+ * locks an invitation row, so no acceptance is in flight; app.organization_id
+ * is set (invitation_org_scope).
  */
 export async function revokeOwnerSeat(
   tx: Tx,
@@ -180,7 +188,11 @@ export async function revokeOwnerSeat(
   accountId: string,
   byAccountId: string,
   reason: "removed" | "left" | "transfer",
-): Promise<void> {
+): Promise<{ invitations: number }> {
+  const invitations = await tx`update restaurant_invitations set revoked=true
+    where tenant_id in (select id from restaurants where organization_id=${organizationId})
+      and created_by=${accountId} and accepted_by is null and not revoked
+    returning tenant_id`;
   for (const tenantId of await orgTenants(tx, organizationId)) {
     await setTenant(tx, tenantId);
     const [seat] = await tx`select m.employee_id,e.name from owner_memberships m
@@ -211,8 +223,16 @@ export async function revokeOwnerSeat(
     await tx`update owner_memberships set revoked_at=now(),revoked_by=${byAccountId}
       where account_id=${accountId} and tenant_id=${tenantId}`;
     await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail) values(${tenantId},${randomUUID()},${actor},'access.employee_deactivated',${seat.employee_id},${tx.json({ name: seat.name, sessions, pairingCodes, personalDevices })})`;
-    await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail) values(${tenantId},${randomUUID()},${actor},'account.owner_seat_revoked',${seat.employee_id},${tx.json({ accountId, organizationId, reason })})`;
+    await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail) values(${tenantId},${randomUUID()},${actor},'account.owner_seat_revoked',${seat.employee_id},${tx.json(
+      {
+        accountId,
+        organizationId,
+        reason,
+        invitations: invitations.filter((i) => i.tenant_id === tenantId).length,
+      },
+    )})`;
   }
+  return { invitations: invitations.length };
 }
 
 /** Seats for the active co-owners at a location the primary just created. */
@@ -353,6 +373,11 @@ export async function acceptCoOwnerInvitation(
   await tx`select set_config('app.organization_id',${organizationId},true)`;
   if (await organizationRole(tx, account.id, organizationId))
     throw new DomainError("invitation_unavailable", 403);
+  // Inviting co-owners is the primary's power: an invitation whose creator is
+  // no longer the primary (transferred, recovered) is dead even if a
+  // revocation was missed (ACC-15, defence in depth; checked under 931).
+  if ((await organizationRole(tx, i.created_by, organizationId)) !== "primary")
+    throw new DomainError("invitation_unavailable", 403);
   if ((await coOwnerCount(tx, organizationId, false)) >= MAX_CO_OWNERS)
     throw new DomainError("co_owner_limit", 409);
   const [existing] =
@@ -404,7 +429,7 @@ export async function removeCoOwner(
     await tx`update organization_co_owners set removed_at=now(),removed_by=${account.id},removal='removed'
     where organization_id=${p.organizationId} and account_id=${p.accountId} and removed_at is null returning id`;
   if (!rows.length) throw new DomainError("co_owner_not_found", 404);
-  await revokeOwnerSeat(
+  const revoked = await revokeOwnerSeat(
     tx,
     p.organizationId,
     p.accountId,
@@ -416,6 +441,7 @@ export async function removeCoOwner(
     actor: account.id,
     subject: p.accountId,
     kind: "co_owner_removed",
+    detail: { invitationsRevoked: revoked.invitations },
   });
   return { ok: true };
 }
@@ -440,12 +466,19 @@ export async function leaveCoOwnership(
     await tx`update organization_co_owners set removed_at=now(),removed_by=${account.id},removal='left'
     where organization_id=${p.organizationId} and account_id=${account.id} and removed_at is null returning id`;
   if (!rows.length) throw new DomainError("co_owner_not_found", 404);
-  await revokeOwnerSeat(tx, p.organizationId, account.id, account.id, "left");
+  const revoked = await revokeOwnerSeat(
+    tx,
+    p.organizationId,
+    account.id,
+    account.id,
+    "left",
+  );
   await accountEvent(tx, {
     organizationId: p.organizationId,
     actor: account.id,
     subject: account.id,
     kind: "co_owner_left",
+    detail: { invitationsRevoked: revoked.invitations },
   });
   return { ok: true };
 }
