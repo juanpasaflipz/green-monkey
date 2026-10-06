@@ -30,7 +30,7 @@ export type RecoveryAction =
   | { kind: "cancel"; cancellationId: string }
   /** The stamped files (or the cancellation acuse) were never stored. */
   | { kind: "deliver"; acuse: boolean }
-  /** Worker only: invoices still waiting on a replacement global that already finished. */
+  /** Worker only: invoices still waiting on a replacement global (G') that already finished. */
   | { kind: "release"; dependencyId: string };
 
 type OpenCancellation = {
@@ -85,7 +85,13 @@ export async function recoveryAction(
     if (!dep) return null;
     const c = await openCancellation(tx, dep.id);
     if (c?.source === "reissue") return { kind: "reissue", globalId: dep.id };
-    return !c && (dep.status === "valid" || dep.status === "failed")
+    // Only behind a finished REPLACEMENT global (G'): the reissue already activated the waiter's
+    // claim, exactly as releaseDependents expects. A waiter behind an original global is never
+    // released here (its ticket may still be in that global).
+    return !c &&
+      dep.kind === "global" &&
+      dep.replacesDocumentId &&
+      (dep.status === "valid" || dep.status === "failed")
       ? { kind: "release", dependencyId: dep.id }
       : null;
   }

@@ -673,7 +673,11 @@ export async function listDocumentsRoute(
   if (q.to < q.from || daysBetween(q.from, q.to) > 92)
     throw new DomainError("cfdi_range_invalid", 400);
   await tx`select set_config('statement_timeout', '30s', true)`;
-  return listDocuments(tx, { ...q, timezone: s.restaurant.timezone });
+  return listDocuments(tx, {
+    ...q,
+    timezone: s.restaurant.timezone,
+    cutoff: s.restaurant.cutoff,
+  });
 }
 
 export async function getDocument(tx: Tx, s: Session, req: express.Request) {

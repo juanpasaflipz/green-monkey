@@ -10,7 +10,7 @@
  * The worker has no SELECT on employees: functions that join employees (documentView) are web-only
  * callers' (spec §3.1).
  */
-import { DomainError } from "../../shared/domain.js";
+import { boundaries, DomainError } from "../../shared/domain.js";
 import {
   docLabel,
   globalPeriodFor,
@@ -654,9 +654,15 @@ export type DocumentsQuery = {
   after?: string;
   limit: number;
   timezone: string;
+  /** The restaurant's business-day cutoff (minutes after midnight). */
+  cutoff: number;
 };
 
-/** The register (spec §2.11): created date range, filters, search and a keyset cursor. */
+/**
+ * The register (spec §2.11): created in the business days `from`..`to` (the restaurant's cutoff,
+ * like every other POS date: an invoice issued at 00:30 belongs to the day still open), filters,
+ * search and a keyset cursor.
+ */
 export async function listDocuments(
   tx: Tx,
   q: DocumentsQuery,
@@ -697,8 +703,8 @@ export async function listDocuments(
         })`;
   const rows = await summaryRows(
     tx,
-    tx`d.created_at >= (${q.from}::date)::timestamp at time zone ${q.timezone}
-      and d.created_at < ((${q.to}::date) + 1)::timestamp at time zone ${q.timezone}
+    tx`d.created_at >= ${boundaries(q.from, q.timezone, q.cutoff).start}::timestamptz
+      and d.created_at < ${boundaries(q.to, q.timezone, q.cutoff).end}::timestamptz
       ${q.kind ? tx`and d.kind = ${q.kind}` : tx``}
       ${q.status ? tx`and d.status = any(${statuses[q.status]}::text[])` : tx``}
       ${search} ${cursor}`,

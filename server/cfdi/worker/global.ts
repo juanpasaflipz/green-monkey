@@ -39,6 +39,7 @@ import {
   enqueueStamp,
   GLOBAL_MAX_ATTEMPTS,
   lastAttempt,
+  liveJob,
   retryOrExhaust,
 } from "../jobs.js";
 import {
@@ -457,6 +458,15 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
         payload: {},
         runAt,
       });
+      // That key may belong to a tick that already ran (one run ahead of its time); the chain
+      // still keeps one live tick.
+      if (!(await liveJob(tx, "cfdi_global", {}, { exceptId: ctx.job.id })))
+        await cfdiEnqueue(tx, tenantId, {
+          kind: "cfdi_global",
+          dedupeKey: `${dedupe.tick(runAt)}:${ctx.job.id.slice(0, 8)}`,
+          payload: {},
+          runAt,
+        });
       return {
         overdue: overdue.map((r) => r.period_key as string),
         csdSoon:
