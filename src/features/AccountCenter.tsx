@@ -4,6 +4,7 @@ import { Button, Field } from "../components/ui";
 import { strings, translateError, type Key } from "../i18n";
 import type { AccountConfig } from "./accountConfig";
 import { LegalAcceptance, type LegalAccepted } from "./LegalAcceptance";
+import { LEGAL_DOCUMENTS, type LegalDocumentKey } from "../../shared/legal";
 import {
   REGIMEN_FISCAL,
   USE_LABELS,
@@ -128,9 +129,15 @@ export function AccountCenter({
   const [error, setError] = useState("");
   const [reauth, setReauth] = useState(false);
   const [notice, setNotice] = useState("");
-  const [legalAccepted, setLegalAccepted] = useState<LegalAccepted | null>(
+  // One acceptance per panel (ACC-13): the re-acceptance boxes never enable
+  // a transfer, and each incoming transfer keeps its own boxes.
+  const [reaccepted, setReaccepted] = useState<LegalAccepted | null>(null);
+  const [previewAccepted, setPreviewAccepted] = useState<LegalAccepted | null>(
     null,
   );
+  const [incomingAccepted, setIncomingAccepted] = useState<
+    Record<string, LegalAccepted | null>
+  >({});
   const [codes, setCodes] = useState<string[] | null>(null);
   const [link, setLink] = useState<{
     kind: "invite" | "transfer";
@@ -216,6 +223,29 @@ export function AccountCenter({
     e.preventDefault();
     return new FormData(e.currentTarget);
   };
+  const documentTitle: Record<LegalDocumentKey, Key> = {
+    terms: "accountLegalTerms",
+    privacy: "accountLegalPrivacy",
+    dpa: "accountLegalDpa",
+  };
+  // Documents the re-acceptance panel asks for, each with its change list.
+  const pendingDocuments: LegalDocumentKey[] = [
+    ...overview.legal.pending,
+    ...(overview.legal.dpaPending.length ? (["dpa"] as const) : []),
+  ];
+  // A transfer contracts for the organization: terms, privacy and its DPA.
+  const transferReady = (accepted: LegalAccepted | null | undefined) =>
+    Boolean(accepted?.terms && accepted.privacy && accepted.dpa);
+  // The checkboxes need the published versions; without them (offline or a
+  // failed load) say so and offer a retry instead of a dead button.
+  const legalUnavailable = (
+    <div role="alert" className="row">
+      <span>{t("accountLegalUnavailable")}</span>
+      <Button disabled={busy} onClick={() => void refresh()}>
+        {t("retry")}
+      </Button>
+    </div>
+  );
   return (
     <section className="account-center" aria-labelledby="account-center-title">
       <h2 id="account-center-title">{t("accountConsoleTitle")}</h2>
@@ -233,41 +263,54 @@ export function AccountCenter({
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
-      {legalPending && config && (
+      {legalPending && (
         <div className="panel warning-panel">
           <h3>{t("accountLegalUpdatedTitle")}</h3>
           <p>{t("accountLegalUpdatedBody")}</p>
-          <p className="muted">
-            {t("accountLegalChanges")}:{" "}
-            {Object.values(config.legal.documents)
-              .map((d) => d.version)
-              .join(" · ")}
-          </p>
-          <LegalAcceptance
-            mode={overview.legal.dpaPending.length ? "signup" : "reacceptance"}
-            config={config}
-            locale={locale}
-            onChange={setLegalAccepted}
-          />
+          {pendingDocuments.map((d) => (
+            <div className="legal-changes" key={d}>
+              <h4>
+                {t(documentTitle[d])} · {LEGAL_DOCUMENTS[d].version}
+              </h4>
+              <p className="muted">{t("accountLegalChanges")}</p>
+              <ul>
+                {LEGAL_DOCUMENTS[d].changes[locale].map((c) => (
+                  <li key={c}>{c}</li>
+                ))}
+              </ul>
+            </div>
+          ))}
+          {config ? (
+            <LegalAcceptance
+              mode={
+                overview.legal.dpaPending.length ? "signup" : "reacceptance"
+              }
+              config={config}
+              locale={locale}
+              onChange={setReaccepted}
+            />
+          ) : (
+            legalUnavailable
+          )}
           <Button
             variant="primary"
-            disabled={busy || !legalAccepted}
+            disabled={busy || !config || !reaccepted}
             onClick={() =>
               void run(async () => {
                 await post("legal/accept", {
                   locale,
                   ...(overview.legal.pending.includes("terms")
-                    ? { terms: legalAccepted!.terms }
+                    ? { terms: reaccepted!.terms }
                     : {}),
                   ...(overview.legal.pending.includes("privacy")
-                    ? { privacy: legalAccepted!.privacy }
+                    ? { privacy: reaccepted!.privacy }
                     : {}),
                   ...(overview.legal.dpaPending.length
                     ? {
                         dpa: overview.legal.dpaPending.map(
                           (organizationId) => ({
                             organizationId,
-                            version: config.legal.documents.dpa.version,
+                            version: config!.legal.documents.dpa.version,
                           }),
                         ),
                       }
@@ -313,16 +356,16 @@ export function AccountCenter({
                 date(preview.availableAt),
               )}
             </p>
+          ) : config ? (
+            <LegalAcceptance
+              mode="transfer"
+              config={config}
+              locale={locale}
+              organizationName={preview.organizationName}
+              onChange={setPreviewAccepted}
+            />
           ) : (
-            config && (
-              <LegalAcceptance
-                mode="transfer"
-                config={config}
-                locale={locale}
-                organizationName={preview.organizationName}
-                onChange={setLegalAccepted}
-              />
-            )
+            legalUnavailable
           )}
           <div className="row">
             <Button
@@ -331,13 +374,13 @@ export function AccountCenter({
                 busy ||
                 preview.onHold ||
                 !preview.emailMatches ||
-                !legalAccepted
+                !transferReady(previewAccepted)
               }
               onClick={() =>
                 void run(async () => {
                   await post("transfers/accept", {
                     token: transferToken,
-                    legalAccepted,
+                    legalAccepted: previewAccepted,
                     locale,
                   });
                   clearTransferToken();
@@ -385,26 +428,33 @@ export function AccountCenter({
                   date(incoming.availableAt),
                 )}
               </p>
+            ) : config ? (
+              <LegalAcceptance
+                mode="transfer"
+                config={config}
+                locale={locale}
+                organizationName={incoming.organizationName}
+                onChange={(accepted) =>
+                  setIncomingAccepted((all) => ({
+                    ...all,
+                    [incoming.id]: accepted,
+                  }))
+                }
+              />
             ) : (
-              config && (
-                <LegalAcceptance
-                  mode="transfer"
-                  config={config}
-                  locale={locale}
-                  organizationName={incoming.organizationName}
-                  onChange={setLegalAccepted}
-                />
-              )
+              legalUnavailable
             )}
             <div className="row">
               <Button
                 variant="primary"
-                disabled={busy || held || !legalAccepted}
+                disabled={
+                  busy || held || !transferReady(incomingAccepted[incoming.id])
+                }
                 onClick={() =>
                   void run(async () => {
                     await post("transfers/accept", {
                       transferId: incoming.id,
-                      legalAccepted,
+                      legalAccepted: incomingAccepted[incoming.id],
                       locale,
                     });
                     setNotice(t("accountTransferDone"));

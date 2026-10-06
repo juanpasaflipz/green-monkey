@@ -6,6 +6,7 @@ import AxeBuilder from "@axe-core/playwright";
 import { legalContentHash } from "../../server/legal.js";
 import { ownerCookie } from "../../server/owner-accounts.js";
 import { LEGAL_CI_ENV } from "../fixtures/legal-ci.js";
+import { LEGAL_DOCUMENTS } from "../../shared/legal.js";
 import {
   PUBLISHED_LEGAL,
   deleteOwnerFixtures,
@@ -859,6 +860,21 @@ test("material change re-acceptance panel gates account commands but not POS ent
     await expect(panel).toContainText(
       "Revisa los cambios y acepta para seguir administrando tu cuenta. Tu restaurante sigue operando mientras tanto.",
     );
+    // Each pending document with its own change list (§2.4, ACC-4): only the
+    // terms are pending here, and the list is the document's, not versions.
+    await expect(
+      panel.getByRole("heading", {
+        name: `Términos del servicio · ${LEGAL_DOCUMENTS.terms.version}`,
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(
+      panel.getByRole("heading", { name: /^Aviso de privacidad · / }),
+    ).toHaveCount(0);
+    await expect(panel.getByRole("listitem")).toHaveText([
+      ...LEGAL_DOCUMENTS.terms.changes.es,
+    ]);
+    await expect(panel).not.toContainText(/Cambios en esta versión:/);
     await axe(page);
     // Account commands wait for the acceptance.
     await page

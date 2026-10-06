@@ -74,6 +74,13 @@
 .legal-acceptance p {
   margin: 0;
 }
+.legal-changes h4 {
+  margin: 12px 0 4px;
+}
+.legal-changes p,
+.legal-changes ul {
+  margin: 0 0 4px;
+}
 .signup-notice {
   overflow-wrap: anywhere;
 }

@@ -15,6 +15,8 @@ export default defineArea({
     accountLegalPendingField: "Dato pendiente de publicar",
     accountLegalVersion: "Versión {version}",
     accountLegalChanges: "Cambios en esta versión",
+    accountLegalUnavailable:
+      "No pudimos cargar los documentos legales. Revisa tu conexión e intenta de nuevo.",
     accountLegalSpanishPrevails:
       "En caso de diferencia, prevalece la versión en español.",
     accountLegalOffline:
@@ -288,6 +290,8 @@ export default defineArea({
     accountLegalPendingField: "Not yet published",
     accountLegalVersion: "Version {version}",
     accountLegalChanges: "Changes in this version",
+    accountLegalUnavailable:
+      "We couldn't load the legal documents. Check your connection and try again.",
     accountLegalSpanishPrevails:
       "If the versions differ, the Spanish version prevails.",
     accountLegalOffline: "Connect to see the current version of this document.",
