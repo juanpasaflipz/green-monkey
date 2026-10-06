@@ -480,12 +480,17 @@ invitation normally.
   Without it those 14 tests fail on the closed signup, not on a product bug.
   The DB, HTTP and drain suites do not need it (account-http starts its own
   servers with and without the set).
-- **Load smoke (LD-15 Q8).** The zero-`concurrent_update` assertion for
-  `/cash/open` under load belongs in `scripts/load/run-load.ts`, an ops file
-  account may not edit (LD-15 Q1): today the runner opens one drawer per tenant
-  before its load phase and its report lists every error by route and code.
-  Lead follow-up: open drawers during the load phase and fail the smoke on any
-  409 `concurrent_update` (ARCHITECTURE E7).
+- **Load smoke (LD-15 Q8, LD-32 OPS-3): done.** `scripts/load/seed-load.ts`
+  seeds every load restaurant as a Free location on Pro (automatic Free
+  slots) with cashiers allowed to close their drawers, three extra cashiers
+  and a second register; `scripts/load/run-load.ts` cycles drawers on that
+  register through the load phase while PIN sign-ins run, and fails the smoke
+  on any `409 concurrent_update` (`concurrentUpdates`, `drawersCycled` and,
+  with `LOAD_SERVER_LOG`, `dbRetries` in the evidence). A local smoke on the
+  merged tree: 57 drawers cycled, 59 slot evictions, 0 `concurrent_update`,
+  0 `db_retry`. ARCHITECTURE E7 lists the writers as built after the platform
+  hardening (every one that locks an employee or device row and needs 920
+  takes 920 first).
 - **Trial merge with integration (ACC-16).** A scratch merge of this track
   with release/v1 at e503521 (platform hardening, LD-20/LD-21) passes
   typecheck, lint and all unit tests, including the hardened lock-order

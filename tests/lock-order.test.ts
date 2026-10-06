@@ -86,6 +86,19 @@ const PERMANENT: Record<string, string> = {
 };
 const ALLOWLIST = { ...PERMANENT };
 
+// Sanctioned exceptions the ratchet cannot see (docs/ARCHITECTURE.md), each listed
+// with the guard that stands in for it. They need no ALLOWLIST entry because the
+// scanner reports nothing for them; the test below keeps that true and keeps the guard.
+const SANCTIONED_UNSEEN: Record<string, string> = {
+  // E7 (LD-15 account Q8): account's autoAssignFreeSlots writes devices.free_slot and
+  // employees.free_slot (authentication rows, LO-R7) after the Free-limits key 920
+  // (LO-3) and before the drawer; every slot writer that also locks those rows first
+  // takes 920 too (PLATFORM-LOCKS-6). Guard: the CI load smoke opens and closes drawers
+  // under rotating cashiers through the load phase and fails on any 409
+  // concurrent_update (scripts/load/run-load.ts, LD-32 OPS-3).
+  "server/index.ts#post /cash/open": "E7 (load smoke: zero concurrent_update)",
+};
+
 /** Scans in-memory sources (fixtures), with orders.ts's real once() exclusions. */
 const excluded = onceExclusions(readFileSync("server/orders.ts", "utf8"));
 const scan = (files: Record<string, string>) =>
@@ -118,6 +131,40 @@ describe("global lock order ratchet (platform §6.2, critic #9, PLATFORM-LOCKS-1
       expect(found.has(key), key).toBe(false);
       expect(Object.hasOwn(ALLOWLIST, key), key).toBe(false);
     }
+  });
+
+  it("sanctioned exceptions the ratchet cannot see stay unseen, documented and guarded (E7: /cash/open's Free-slot writes, zero concurrent_update in the load smoke)", () => {
+    const architecture = readFileSync("docs/ARCHITECTURE.md", "utf8");
+    const load = readFileSync("scripts/load/run-load.ts", "utf8");
+    for (const [unit, reason] of Object.entries(SANCTIONED_UNSEEN)) {
+      expect(reason, unit).toMatch(/^E\d/);
+      const exception = reason.split(" ")[0];
+      expect(architecture, unit).toContain(`**${exception} (`);
+      expect(
+        program.units.some((u) => `${u.file}#${u.name}` === unit),
+        unit,
+      ).toBe(true);
+      expect(
+        [...found.keys()].filter((k) => k.startsWith(`${unit}:`)),
+        unit,
+      ).toEqual([]);
+      expect(Object.hasOwn(ALLOWLIST, unit), unit).toBe(false);
+    }
+    // /cash/open: once (1, 2), then the Free-limits key (3), then the drawer.
+    const levels = flatten(
+      program.expand(
+        program.units.find(
+          (u) => `${u.file}#${u.name}` === "server/index.ts#post /cash/open",
+        )!,
+      ),
+    ).map((e) => levelLabel(e.level));
+    expect(levels.slice(0, 3)).toEqual(["1", "2", "3"]);
+    expect(architecture).toMatch(
+      /\*\*E7 \(LD-15 account Q8[^\n]*autoAssignFreeSlots/,
+    );
+    // The guard: the load smoke cycles drawers during the load and fails on 409.
+    expect(load).toContain("drawerCycle(t, register2)");
+    expect(load).toContain('"409 concurrent_update"');
   });
 
   it("no builtin lock function is imported or re-exported under another name", () => {

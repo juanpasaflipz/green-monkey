@@ -151,6 +151,9 @@ jobs:
           LOAD_DATABASE_URL: postgresql://gm_app:local-only-green-monkey@127.0.0.1:5432/green_monkey_test
           LOAD_BASE_URL: http://127.0.0.1:3006
           LOAD_ORIGIN_ALLOWLIST: http://127.0.0.1:3006
+          # load:run reports the server's db_retry lines; it fails on any 409
+          # concurrent_update (account E7, LD-15 account Q8, LD-32 OPS-3).
+          LOAD_SERVER_LOG: /tmp/green-monkey-load.log
         run: |
           npm run load:seed
           NODE_ENV=production PORT=3006 APP_URL=http://127.0.0.1:3006 DATABASE_URL="$LOAD_DATABASE_URL" \

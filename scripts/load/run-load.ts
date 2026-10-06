@@ -1,11 +1,16 @@
 // Load test runner (GAP-4). Simulates per restaurant: a cashier terminal
 // placing orders (Poisson arrivals, extra rounds, cash/card and split
-// payments), KDS screens polling /kitchen and advancing rounds, and a tables
-// view polling /orders. Reports p50/p95/p99 per route template, errors, KDS
-// appearance latency and throughput; exits 1 when a threshold fails.
+// payments), KDS screens polling /kitchen and advancing rounds, a tables
+// view polling /orders, and a second register that signs rotating cashiers
+// in by PIN and opens and closes drawers throughout the load phase, so
+// /cash/open's automatic Free slots (ARCHITECTURE E7) meet PIN sign-ins and
+// the rest of the load. Reports p50/p95/p99 per route template, errors, KDS
+// appearance latency and throughput; exits 1 when a threshold fails or any
+// request answers 409 concurrent_update (LD-15 account Q8, LD-32 OPS-3).
 //   LOAD_BASE_URL + LOAD_ORIGIN_ALLOWLIST (exact origin), LOAD_PROFILE,
 //   KDS_POLL_MS (optional), LOAD_FIXTURE (default work/load/fixture.json),
-//   LOAD_EVIDENCE_DIR (default docs/evidence/load).
+//   LOAD_EVIDENCE_DIR (default docs/evidence/load), LOAD_SERVER_LOG
+//   (optional: the server's JSON log, whose db_retry lines are counted).
 import http from "node:http";
 import https from "node:https";
 import { randomUUID } from "node:crypto";
@@ -24,7 +29,9 @@ interface TenantFixture {
   owner: Credentials;
   cashier: Credentials;
   kitchen: Credentials[];
-  /** Single-use: the register's, then one per KDS screen (load:seed). */
+  /** The second register's rotating cashiers (load:seed). */
+  drawerCashiers: Credentials[];
+  /** Single-use: the register's, one per KDS screen, then the second register's (load:seed). */
   pairingCodes: string[];
   products: { id: string; price: number; groups: { options: string[] }[] }[];
   tables: string[];
@@ -49,10 +56,14 @@ if (tenants.length < profile.tenants)
   );
 if (
   tenants.some(
-    (t) => (t.pairingCodes?.length ?? 0) < 1 + profile.kdsScreensPerTenant,
+    (t) =>
+      (t.pairingCodes?.length ?? 0) < 2 + profile.kdsScreensPerTenant ||
+      (t.drawerCashiers?.length ?? 0) < 3,
   )
 )
-  throw Error("fixture lacks pairing codes; re-run load:seed");
+  throw Error(
+    "fixture lacks pairing codes or drawer cashiers; re-run load:seed",
+  );
 
 // ---- measurement ----
 const samples = new Map<string, number[]>();
@@ -61,6 +72,8 @@ const kdsAppearance: number[] = [];
 let requests = 0,
   failures = 0,
   unexpected5xx = 0,
+  concurrentUpdates = 0,
+  drawersCycled = 0,
   ordersCompleted = 0;
 const record = (key: string, ms: number) => {
   const list = samples.get(key) ?? [];
@@ -158,6 +171,8 @@ class Device {
       errors.set(key, (errors.get(key) ?? 0) + 1);
       if (result.status >= 500 && !(result.status === 503 && result.retryAfter))
         unexpected5xx++;
+      if (result.status === 409 && data?.error === "concurrent_update")
+        concurrentUpdates++;
     }
     return { status: result.status, data };
   }
@@ -302,7 +317,7 @@ async function kds(device: Device, screen: number, screens: number) {
     const polled = await device.call("GET", "/kitchen", "/kitchen");
     const now = performance.now();
     if (polled.status === 200)
-      for (const round of polled.data as { id: string }[]) {
+      for (const round of polled.data as { id: string; state: string }[]) {
         const posted = pendingRounds.get(round.id);
         if (posted !== undefined) {
           kdsAppearance.push(now - posted);
@@ -310,7 +325,12 @@ async function kds(device: Device, screen: number, screens: number) {
         }
         // Each screen advances its share of rounds, one step per poll.
         if (parseInt(round.id.slice(-2), 16) % screens !== screen) continue;
-        const step = stage.get(round.id) ?? 0;
+        // A round already ready (another screen's, or one a previous run on
+        // the same fixture left behind) continues from its real state.
+        const step = Math.max(
+          stage.get(round.id) ?? 0,
+          round.state === "ready" ? 2 : 0,
+        );
         if (step < next.length) {
           const r = await device.call(
             "POST",
@@ -328,6 +348,41 @@ async function kds(device: Device, screen: number, screens: number) {
   }
 }
 
+/**
+ * The second register (LD-32 OPS-3): rotating cashiers sign in by PIN, open a
+ * drawer (autoAssignFreeSlots moves the device slot and, in automatic mode,
+ * evicts the employee slot of the oldest drawer), then close it, for the whole
+ * load phase.
+ */
+async function drawerCycle(t: TenantFixture, device: Device) {
+  let turn = 0;
+  let open = false;
+  while (running()) {
+    if (!open) {
+      const who = t.drawerCashiers[turn++ % t.drawerCashiers.length];
+      await device.signIn(who);
+      const opened = await device.call("POST", "/cash/open", "/cash/open", {
+        operationId: randomUUID(),
+        opening: 0,
+      });
+      open = opened.status === 200;
+    }
+    await delay(1500 + Math.random() * 1500);
+    if (open) {
+      const closed = await device.call("POST", "/cash/close", "/cash/close", {
+        operationId: randomUUID(),
+        counted: 0,
+        reason: "",
+      });
+      if (closed.status === 200) {
+        open = false;
+        drawersCycled++;
+      }
+    }
+    await delay(500 + Math.random() * 1000);
+  }
+}
+
 async function tablesView(device: Device) {
   while (running()) {
     await device.call("GET", "/orders", "/orders");
@@ -337,6 +392,7 @@ async function tablesView(device: Device) {
 
 async function tenant(t: TenantFixture) {
   const register = new Device();
+  const register2 = new Device();
   const screens = Array.from(
     { length: profile.kdsScreensPerTenant },
     () => new Device(),
@@ -349,6 +405,7 @@ async function tenant(t: TenantFixture) {
       await screen.pair(t.pairingCodes[1 + i]);
       await screen.signIn(t.kitchen[i % t.kitchen.length]);
     }
+    await register2.pair(t.pairingCodes[1 + screens.length]);
     await register.call("POST", "/cash/open", "/cash/open", {
       operationId: randomUUID(),
       opening: 0,
@@ -356,10 +413,12 @@ async function tenant(t: TenantFixture) {
     await Promise.all([
       cashier(t, register),
       tablesView(register),
+      drawerCycle(t, register2),
       ...screens.map((s, i) => kds(s, i, screens.length)),
     ]);
   } finally {
     register.close();
+    register2.close();
     for (const s of screens) s.close();
   }
 }
@@ -382,6 +441,17 @@ const reads = [...samples]
   .filter(([k]) => k.startsWith("GET ") && k !== "GET /session")
   .flatMap(([, v]) => v);
 const setup = new Set(["POST /access/pair", "POST /access/pin"]);
+// tenant()'s retried deadlocks and serialization failures in the server log
+// (RUNBOOK "Signals"): reported; E7 sanctions at most one retry per command.
+let dbRetries: number | null = null;
+if (process.env.LOAD_SERVER_LOG)
+  try {
+    dbRetries = readFileSync(process.env.LOAD_SERVER_LOG, "utf8")
+      .split("\n")
+      .filter((line) => line.includes('"message":"db_retry"')).length;
+  } catch {
+    dbRetries = null;
+  }
 const writes = [...samples]
   .filter(([k]) => k.startsWith("POST ") && !setup.has(k))
   .flatMap(([, v]) => v);
@@ -397,6 +467,9 @@ const summary = {
   ordersCompleted,
   errorRate: requests ? failures / requests : 0,
   unexpected5xx,
+  concurrentUpdates,
+  drawersCycled,
+  dbRetries,
   readP95Ms: pct(reads, 95),
   mutationP95Ms: pct(writes, 95),
   kdsAppearanceP95Ms: pct(kdsAppearance, 95),
@@ -413,6 +486,9 @@ const failed = [
   summary.errorRate >= thresholds.maxErrorRate && "error rate",
   summary.unexpected5xx > 0 && "5xx without Retry-After",
   summary.ordersCompleted === 0 && "no completed orders",
+  // LD-15 account Q8 / LD-32 OPS-3: E7 holds only with zero concurrent_update.
+  summary.concurrentUpdates > 0 && "409 concurrent_update",
+  summary.drawersCycled === 0 && "no drawer opened and closed during the load",
 ].filter(Boolean) as string[];
 const dir = process.env.LOAD_EVIDENCE_DIR ?? "docs/evidence/load";
 mkdirSync(dir, { recursive: true });
@@ -428,6 +504,7 @@ writeFileSync(
     "",
     `Started ${summary.startedAt}, ${summary.durationSec} s, ${summary.tenants} restaurants, KDS poll ${kdsPollMs} ms.`,
     `${summary.requests} requests (${summary.throughputRps} req/s), ${summary.ordersCompleted} orders paid, error rate ${(summary.errorRate * 100).toFixed(3)}%.`,
+    `${summary.drawersCycled} drawers opened and closed during the load, ${summary.concurrentUpdates} concurrent_update answers${summary.dbRetries === null ? "" : `, ${summary.dbRetries} db_retry log lines`}.`,
     "",
     "| Measure | p95 | Threshold |",
     "|---|---|---|",
