@@ -228,15 +228,17 @@ async function ticket(
   }[],
   issuedAt: string,
 ) {
+  // The admin login bypasses RLS (CI's superuser provisioner), so every counter statement names
+  // this suite's tenant: other suites' tenants keep their own series A counters in this database.
   await scoped(async (tx) => {
     const [c] =
-      await tx`select last_value from fiscal_folio_counters where series='A'`;
+      await tx`select last_value from fiscal_folio_counters where tenant_id=${T} and series='A'`;
     if (c)
-      await tx`update fiscal_folio_counters set last_value = last_value + 1 where series = 'A'`;
+      await tx`update fiscal_folio_counters set last_value = last_value + 1 where tenant_id = ${T} and series = 'A'`;
     else
       await tx`insert into fiscal_folio_counters(tenant_id,series,last_value) values(${T},'A',1)`;
     const [{ n }] =
-      await tx`select last_value::int as n from fiscal_folio_counters where series='A'`;
+      await tx`select last_value::int as n from fiscal_folio_counters where tenant_id=${T} and series='A'`;
     const tid = id();
     const s = (k: "gbd" | "discount" | "gross" | "base" | "tax") =>
       groups.reduce((a, g) => a + g[k], 0);
@@ -1586,7 +1588,7 @@ try {
   // by issue time, with the bar's folio as a gap and the old order's ticket included.
   const [{ folio: lastFolio }] = (await scoped(
     (tx) =>
-      tx`select last_value::int as folio from fiscal_folio_counters where series = 'A'`,
+      tx`select last_value::int as folio from fiscal_folio_counters where tenant_id = ${T} and series = 'A'`,
   )) as any;
   const old = await order({
     date: addDays(today, -10),
