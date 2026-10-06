@@ -7,6 +7,7 @@ import {
 import {
   provisionStripeSandboxCatalog,
   validateSandboxPrice,
+  validateSandboxTaxRate,
   proPriceKeys,
 } from "../server/stripe-catalog";
 
@@ -140,5 +141,35 @@ describe("Stripe sandbox catalog provisioning", () => {
       ([, init]) => init?.method === "POST",
     );
     expect(posts).toHaveLength(3);
+  });
+});
+
+describe("SaaS IVA tax rate (account 031, GAP-6)", () => {
+  const rate = {
+    id: "txr_iva16",
+    object: "tax_rate",
+    active: true,
+    livemode: false,
+    inclusive: false,
+    percentage: 16,
+    country: "MX",
+    display_name: "IVA",
+    jurisdiction: "MX",
+  };
+  it("validateSandboxTaxRate accepts MX 16% exclusive active sandbox rate; rejects inclusive, other percentage, inactive, livemode, other country", () => {
+    expect(validateSandboxTaxRate(rate).id).toBe("txr_iva16");
+    for (const override of [
+      { inclusive: true },
+      { percentage: 8 },
+      { active: false },
+      { livemode: true },
+      { country: "US" },
+      { display_name: "VAT" },
+      { id: "price_1" },
+      { object: "price" },
+    ])
+      expect(() => validateSandboxTaxRate({ ...rate, ...override })).toThrow(
+        "stripe_catalog_tax_rate_mismatch",
+      );
   });
 });

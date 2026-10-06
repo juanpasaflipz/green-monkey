@@ -717,3 +717,166 @@ describe("canonical Checkout completion", () => {
     ).rejects.toThrow("stripe_billing_response_mismatch");
   });
 });
+
+describe("SaaS tax parameters (account 031, GAP-6)", () => {
+  const taxRate = {
+    id: "txr_iva16",
+    object: "tax_rate",
+    active: true,
+    livemode: false,
+    inclusive: false,
+    percentage: 16,
+    country: "MX",
+    display_name: "IVA",
+  };
+  function taxed(
+    tax:
+      | { mode: "off"; taxRateId: null; collectTaxId: false }
+      | { mode: "tax_rate"; taxRateId: string; collectTaxId: boolean },
+    rate: unknown = taxRate,
+  ) {
+    const base = fixture();
+    const request = vi.fn<typeof fetch>(async (url, init) =>
+      new URL(String(url)).pathname.startsWith("/v1/tax_rates/")
+        ? Response.json(rate)
+        : base.request(url, init),
+    );
+    return {
+      request,
+      service: stripeSandboxBilling({ ...config, tax }, request),
+      form: (n = 0) =>
+        request.mock.calls.filter(([, init]) => init?.method === "POST")[n][1]
+          ?.body as URLSearchParams,
+    };
+  }
+  const trialing = () => ({
+    ...subscription(),
+    status: "trialing",
+    trial_end: now + 14 * 86400,
+  });
+
+  it("off mode trial/checkout forms are unchanged", async () => {
+    const off = taxed({ mode: "off", taxRateId: null, collectTaxId: false });
+    const plain = fixture({ subscription: trialing() });
+    const offTrial = taxed({
+      mode: "off",
+      taxRateId: null,
+      collectTaxId: false,
+    });
+    offTrial.request.mockImplementation(async (url, init) =>
+      plain.request(url, init),
+    );
+    await offTrial.service.createTrial(scope, "month", operationId);
+    await plain.service.createTrial(scope, "month", operationId);
+    expect(String(offTrial.form())).toBe(String(plain.posts()[0][1]?.body));
+    await off.service.createCheckout(scope, "month", 1, operationId);
+    const before = fixture();
+    await before.service.createCheckout(scope, "month", 1, operationId);
+    expect(String(off.form())).toBe(String(before.posts()[0][1]?.body));
+    expect(
+      off.request.mock.calls.some(([url]) => String(url).includes("tax_rates")),
+    ).toBe(false);
+  });
+
+  it("trial with tax_rate sends default_tax_rates[0]", async () => {
+    const t = taxed({
+      mode: "tax_rate",
+      taxRateId: "txr_iva16",
+      collectTaxId: true,
+    });
+    const plain = fixture({ subscription: trialing() });
+    t.request.mockImplementation(async (url, init) =>
+      new URL(String(url)).pathname.startsWith("/v1/tax_rates/")
+        ? Response.json(taxRate)
+        : plain.request(url, init),
+    );
+    await t.service.createTrial(scope, "month", operationId);
+    expect(t.form().get("default_tax_rates[0]")).toBe("txr_iva16");
+    expect(t.form().has("tax_id_collection[enabled]")).toBe(false);
+  });
+
+  it("checkout with tax_rate sends subscription_data default_tax_rates, tax_id_collection, customer_update name/address, billing_address_collection=required", async () => {
+    const t = taxed({
+      mode: "tax_rate",
+      taxRateId: "txr_iva16",
+      collectTaxId: true,
+    });
+    await t.service.createCheckout(scope, "month", 1, operationId);
+    const form = t.form();
+    expect(form.get("subscription_data[default_tax_rates][0]")).toBe(
+      "txr_iva16",
+    );
+    expect(form.get("tax_id_collection[enabled]")).toBe("true");
+    expect(form.get("customer_update[name]")).toBe("auto");
+    expect(form.get("customer_update[address]")).toBe("auto");
+    expect(form.get("billing_address_collection")).toBe("required");
+    const bare = taxed({
+      mode: "tax_rate",
+      taxRateId: "txr_iva16",
+      collectTaxId: false,
+    });
+    await bare.service.createCheckout(scope, "month", 1, operationId);
+    expect(bare.form().has("tax_id_collection[enabled]")).toBe(false);
+    expect(bare.form().get("subscription_data[default_tax_rates][0]")).toBe(
+      "txr_iva16",
+    );
+  });
+
+  it("validates the tax rate before creating anything", async () => {
+    for (const rate of [
+      { ...taxRate, inclusive: true },
+      { ...taxRate, percentage: 8 },
+      { ...taxRate, active: false },
+      { ...taxRate, livemode: true },
+      { ...taxRate, country: "US" },
+      { ...taxRate, id: "txr_other" },
+    ]) {
+      const t = taxed(
+        { mode: "tax_rate", taxRateId: "txr_iva16", collectTaxId: true },
+        rate,
+      );
+      await expect(
+        t.service.createCheckout(scope, "month", 1, operationId),
+      ).rejects.toThrow();
+      expect(
+        t.request.mock.calls.filter(([, init]) => init?.method === "POST"),
+      ).toHaveLength(0);
+    }
+    expect(() =>
+      stripeSandboxBilling({
+        ...config,
+        tax: { mode: "tax_rate", taxRateId: null, collectTaxId: true },
+      }),
+    ).toThrow("stripe_billing_sandbox_config_required");
+  });
+
+  it("canceled projection carries ended_at as accessUntil and still yields free", async () => {
+    const f = fixture({
+      subscription: {
+        ...subscription(),
+        status: "canceled",
+        ended_at: now - 3600,
+      },
+    });
+    const result = await f.service.readSubscription(binding);
+    expect(result).toEqual({
+      status: "canceled",
+      accessUntil: new Date((now - 3600) * 1000).toISOString(),
+      source: "stripe",
+    });
+    expect(accessPlan(result, (now - 7200) * 1000)).toBe("free");
+    const legacy = fixture({
+      subscription: { ...subscription(), status: "canceled" },
+    });
+    expect(
+      (await legacy.service.readSubscription(binding)).accessUntil,
+    ).toBeNull();
+  });
+
+  it("past_due still yields accessUntil=null (no grace)", async () => {
+    const f = fixture({
+      subscription: { ...subscription(), status: "past_due" },
+    });
+    expect((await f.service.readSubscription(binding)).accessUntil).toBeNull();
+  });
+});

@@ -45,6 +45,27 @@ export function validateSandboxPrice(
   return parsed.data;
 }
 
+/**
+ * The SaaS IVA rate (account 031, GAP-6): an active, exclusive 16 % Mexican
+ * sandbox Tax Rate. Its percentage and country are immutable in Stripe.
+ */
+export function validateSandboxTaxRate(value: unknown) {
+  const parsed = z
+    .object({
+      id: z.string().regex(/^txr_[A-Za-z0-9]+$/),
+      object: z.literal("tax_rate"),
+      active: z.literal(true),
+      livemode: z.literal(false),
+      inclusive: z.literal(false),
+      percentage: z.literal(16),
+      country: z.literal("MX"),
+      display_name: z.string().regex(/IVA/),
+    })
+    .safeParse(value);
+  if (!parsed.success) throw Error("stripe_catalog_tax_rate_mismatch");
+  return parsed.data;
+}
+
 /** Explicit sandbox provisioning command, not a web route or checkout service. */
 export async function provisionStripeSandboxCatalog(
   secret: string,
