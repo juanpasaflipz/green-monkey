@@ -117,12 +117,16 @@ export function CfdiOrderActions({
   if (!visible || !order.fiscal) return null;
   if (!ticket)
     return order.paid > 0 ? (
-      <p className={`muted tiny cfdi-order-actions ${variant}`}>
+      <p
+        className={`muted tiny cfdi-order-actions cfdi-order-actions-${variant}`}
+      >
         {t.cfdiNoTicket}
       </p>
     ) : null;
   return (
-    <div className={`cfdi-order-actions ${variant}`}>
+    // The variant is a prefixed class: a bare "receipt" would match every `.receipt` hook (the
+    // printed receipt's, which acceptance and the other areas' specs read).
+    <div className={`cfdi-order-actions cfdi-order-actions-${variant}`}>
       {view && <TicketChip view={view} locale={locale} />}
       {view?.mode === "test" && <Badge tone="amber">{t.cfdiTestBadge}</Badge>}
       <Button

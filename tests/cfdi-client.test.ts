@@ -472,6 +472,25 @@ describe("cfdi client: order actions (2.5)", () => {
     expect(render(order({ ticket: null }))).toContain("Sin ticket fiscal.");
     expect(render(order({ ticket: null }, { paid: 0 }))).toBe("");
   });
+  it("its variant never adds a bare class the receipt's `.receipt` hook would match", () => {
+    setCfdiStatus(status());
+    for (const variant of ["receipt", "detail"] as const)
+      for (const o of [order({ ticket }), order({ ticket: null })]) {
+        const markup = html(
+          createElement(CfdiOrderActions, {
+            order: o,
+            session,
+            locale: "es",
+            variant,
+          }),
+        );
+        const classes = /class="([^"]*cfdi-order-actions[^"]*)"/.exec(
+          markup,
+        )?.[1];
+        expect(classes?.split(" ")).not.toContain("receipt");
+        expect(classes?.split(" ")).toContain(`cfdi-order-actions-${variant}`);
+      }
+  });
   it("the chip's label is visually hidden text, never an aria-label on a generic span (CFDI-R2-7)", () => {
     const markup = html(
       createElement(TicketChip, {
