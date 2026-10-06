@@ -1089,6 +1089,63 @@ test("price change: the acknowledgement covers the total staff saw; a newer pric
   }
 });
 
+test("inbox details: a table's second order pre-selects the check the first one opened; a card another terminal handled keeps its outcome in the notice", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const [mesa] = await f.makeTables();
+    const link = await f.link({ kind: "table", tableId: mesa.id });
+    const labels: string[] = [];
+    for (const who of ["Uno", "Dos", "Tres"]) {
+      const customer = await diner(context, link.path);
+      await customer.getByRole("button", { name: /^Taco de hongos/ }).click();
+      await sendOrder(customer, `${who} ${f.id}`);
+      await expect(customer.locator(".diner-status-head")).toContainText(
+        "Esperando confirmación del personal",
+      );
+      labels.push((await customer.locator(".diner-code").innerText()).trim());
+      await customer.close();
+    }
+    const [first, second, third] = labels;
+    await goToOrders(page);
+    // No check is open yet: every card offers "Cuenta nueva".
+    await expect(holdCard(page, second).getByLabel("Enviar a")).toHaveValue(
+      "new",
+    );
+    await holdCard(page, first)
+      .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
+      .click();
+    await expect(inbox(page)).toContainText(acceptedNotice(first));
+    const order = await acceptedOrder(page, `Uno ${f.id}`);
+    expect(order).toBeTruthy();
+    f.orders.push(order!.id);
+    // MONEY-3: the next read finds the check the first order opened; the
+    // untouched second card now pre-selects it.
+    await expect(holdCard(page, second).getByLabel("Enviar a")).toHaveValue(
+      order!.id,
+    );
+    // UX-7: another terminal rejects the third order; this card's accept
+    // then meets "already handled", and the outcome outlives the card.
+    const listed = await call(page, "/ordering/inbox");
+    const hold = (listed.data.holds as { id: string; label: string }[]).find(
+      (h) => h.label === third,
+    )!;
+    await call(page, `/ordering/holds/${hold.id}/reject`, {
+      operationId: op(),
+      reason: "duplicate",
+    });
+    await holdCard(page, third)
+      .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
+      .click();
+    const notice = inbox(page).locator('.public-notice[aria-live="polite"]');
+    await expect(notice).toHaveText(`${third}: Este pedido ya fue atendido.`);
+    await expect(holdCard(page, third)).toHaveCount(0);
+    await expect(notice).toHaveText(`${third}: Este pedido ya fue atendido.`);
+  });
+});
+
 test("legacy signed links show the invalid-code page without calling the API", async ({
   context,
 }) => {
