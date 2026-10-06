@@ -1627,24 +1627,30 @@ async function updateWorker(page: Page) {
     const registration = await navigator.serviceWorker.getRegistration();
     if (!registration) return "no-registration";
     return new Promise<string>((resolve) => {
-      const timer = setTimeout(() => resolve("no-update"), 15_000);
+      const finish = (value: string) => {
+        clearTimeout(timer);
+        clearTimeout(retry);
+        resolve(value);
+      };
+      const timer = setTimeout(() => finish("no-update"), 30_000);
       registration.addEventListener(
         "updatefound",
         () => {
+          clearTimeout(retry);
           const worker = registration.installing!;
           worker.addEventListener("statechange", () => {
-            if (["installed", "redundant"].includes(worker.state)) {
-              clearTimeout(timer);
-              resolve(worker.state);
-            }
+            if (["installed", "redundant"].includes(worker.state))
+              finish(worker.state);
           });
         },
         { once: true },
       );
-      registration.update().catch(() => {
-        clearTimeout(timer);
-        resolve("update-failed");
-      });
+      const check = () =>
+        registration.update().catch(() => finish("update-failed"));
+      void check();
+      // On a slow runner one check can come back empty although the script
+      // changed (CI run 37397108279); a second check sees the new revision.
+      const retry = setTimeout(() => void check(), 10_000);
     });
   });
 }
