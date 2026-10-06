@@ -80,6 +80,7 @@ import * as discountsRoutes from "./routes/discounts.js";
 import * as reportsRoutes from "./routes/reports.js";
 import * as cfdiRoutes from "./routes/cfdi.js";
 import * as accountRoutes from "./routes/account.js";
+import * as publicOrderingRoutes from "./routes/public-ordering.js";
 import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
@@ -570,6 +571,7 @@ discountsRoutes.register({ app, sql, route });
 reportsRoutes.register({ app, sql, route });
 cfdiRoutes.register({ app, sql, route });
 accountRoutes.register({ app, sql, route });
+publicOrderingRoutes.register({ app, sql, route });
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {
   app.use(express.static(resolve("dist")));

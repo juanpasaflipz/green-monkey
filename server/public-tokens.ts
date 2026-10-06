@@ -2,6 +2,7 @@
 // lookup through the public_link_lookup policy. Web process only.
 import { createHash, randomBytes } from "node:crypto";
 import type postgres from "postgres";
+import type { Tx } from "./db.js";
 import { DomainError } from "../shared/domain.js";
 import { PUBLIC_TOKEN } from "../shared/public-ordering.js";
 
@@ -33,7 +34,8 @@ async function lookup(
   const h = linkHash(token);
   // set_config(..., true) is transaction-local: the pooled connection keeps
   // no lookup setting after this short read-only transaction.
-  const row = (await sql.begin(async (tx) => {
+  const row = (await sql.begin(async (raw) => {
+    const tx = raw as Tx;
     await tx`select set_config('app.public_link_hash', ${h}, true)`;
     const [r] = activeOnly
       ? await tx`select tenant_id, id from public_links where token_hash = ${h} and revoked_at is null`
