@@ -350,6 +350,12 @@ export type Order = {
   rounds: any[];
   tenders: any[];
   offline?: { provisionalNumber: string | null; soldAt: string } | null;
+  discount?: number; // discounts: effective discount (orders.discount)
+  discounts?: import("./discounts.js").OrderDiscount[]; // discounts
+  lineDiscounts?: Record<string, number>; // discounts: active, non-voided units
+  refundBatches?: import("./discounts.js").RefundBatchView[]; // discounts
+  refundedUnits?: import("./discounts.js").RefundedUnit[]; // discounts
+  tenderAllocations?: import("./discounts.js").TenderAllocation[]; // discounts
 };
 
 export function currencyExponent(currency: string): number {
