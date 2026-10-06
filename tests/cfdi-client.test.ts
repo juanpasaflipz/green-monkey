@@ -71,7 +71,7 @@ import {
 } from "../src/features/cfdi/CfdiDocuments";
 import { cfdiBadge, settling } from "../src/features/cfdi/CfdiSettings";
 import { CfdiCorteCoverage } from "../src/features/cfdi/CfdiCorteCoverage";
-import { base64Of } from "../src/features/cfdi/CsdUpload";
+import { base64Of, passwordLifetimeMs } from "../src/features/cfdi/CsdUpload";
 import {
   codeFromPath,
   portalMessage,
@@ -624,5 +624,12 @@ describe("cfdi client: helpers", () => {
       strings.es.cfdiPortalRequestFailed,
     );
     expect(portalMessage("cfdi_portal_code_not_found", "en")).toContain("12");
+  });
+  it("CFDI-R10: a typed CSD password never outlives the idle lock (at most 2 minutes untouched)", () => {
+    expect(passwordLifetimeMs(60)).toBe(60_000);
+    expect(passwordLifetimeMs(900)).toBe(120_000);
+    expect(passwordLifetimeMs(null)).toBe(120_000);
+    expect(passwordLifetimeMs(0)).toBe(120_000);
+    expect(passwordLifetimeMs(1)).toBe(5_000);
   });
 });

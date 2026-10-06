@@ -40,7 +40,11 @@ import {
   setCfdiRuntime,
   type CfdiRuntime,
 } from "../server/cfdi/worker/runtime.js";
-import { verifyAndPublish } from "../server/cfdi/worker/boot.js";
+import {
+  seedGlobalTicks,
+  verifyAndPublish,
+} from "../server/cfdi/worker/boot.js";
+import { nextHour } from "../server/cfdi/worker/global.js";
 import { cfdiEnqueue } from "../server/cfdi/jobs.js";
 import * as service from "../server/cfdi/service.js";
 import * as portal from "../server/cfdi/portal.js";
@@ -452,6 +456,43 @@ async function tick(t: Fixture, payload: Record<string, unknown> = {}) {
   );
   await settle(t.tenantId);
 }
+
+/** Polls `check` every 20 ms for up to `ms`. */
+async function waitFor(check: () => Promise<boolean>, ms = 10_000) {
+  const until = Date.now() + ms;
+  while (!(await check())) {
+    if (Date.now() > until) throw new Error("waitFor: timed out");
+    await sleep(20);
+  }
+}
+/** Advisory-lock requests waiting in this (isolated) test database. */
+const advisoryWaiters = async () =>
+  (
+    await admin`select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted`
+  )[0].n as number;
+/** LD-12 named-trigger pattern: moves a document's clocks back (the guard refuses every role). */
+async function age(documentIds: string[], minutes: number) {
+  await admin.begin(async (tx) => {
+    await tx`alter table cfdi_documents disable trigger cfdi_documents_guard`;
+    await tx`
+      update cfdi_documents set updated_at = updated_at - make_interval(mins => ${minutes}),
+        stamped_at = stamped_at - make_interval(mins => ${minutes})
+      where id = any(${documentIds}::uuid[])`;
+    await tx`alter table cfdi_documents enable trigger cfdi_documents_guard`;
+  });
+}
+const cancelAs = (t: Fixture, s: Session, id: string) =>
+  web(t, (tx) =>
+    service.cancelDocument(
+      tx,
+      s,
+      { operationId: op(), motive: "02", reason: "Datos equivocados" },
+      { params: { id } } as never,
+    ),
+  );
+const liveTicks = async (tenantId: string) =>
+  admin`select dedupe_key, next_at from jobs where tenant_id = ${tenantId} and kind = 'cfdi_global'
+    and state in ('queued','available','running') order by next_at`;
 
 let checks = 0;
 async function test(name: string, fn: () => Promise<void>) {
@@ -1941,6 +1982,403 @@ try {
     assert.deepEqual(
       orgs.map((o) => o.tenant_id),
       [A.tenantId],
+    );
+  });
+
+  await test("7b. CFDI-R1 reissue race: a late request that reaches the global's key after the worker's reissue step (G canceled, G' created) answers cfdi_global_in_progress, never a stranded waiting invoice; retried, it reissues G' and stamps", async () => {
+    const day = daysAgo(10);
+    const t1 = await makeTicket(A, { businessDate: day });
+    const t2 = await makeTicket(A, {
+      businessDate: day,
+      groups: [{ category: "iva16", gross: 23200 }],
+    });
+    const t3 = await makeTicket(A, { businessDate: day });
+    await tick(A);
+    const [g] =
+      await admin`select id from cfdi_documents where tenant_id = ${A.tenantId} and kind = 'global'
+        and period_key = ${"D" + day} and status = 'valid'`;
+    const first = await invoice(A, t1, { s: A.manager, reissueGlobal: true });
+    assert.equal(first.status, "waiting");
+    // Hold G's document key: the worker cancels G at the provider, then waits for the key at its
+    // step 3; the late request reads G (valid, holding t2) and waits behind the worker.
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let holding!: () => void;
+    const held = new Promise<void>((r) => (holding = r));
+    const holder = admin.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${A.tenantId + ":cfdi-doc:" + g.id}, 0))`;
+      holding();
+      await released;
+    });
+    await held;
+    const workerRun = settle(A.tenantId);
+    await waitFor(async () => (await advisoryWaiters()) >= 1);
+    const late = invoice(A, t2, { s: A.manager, reissueGlobal: true }).then(
+      (v) => ({ v, e: null as { code?: string } | null }),
+      (e: { code?: string }) => ({ v: null, e }),
+    );
+    await waitFor(async () => (await advisoryWaiters()) >= 2);
+    release();
+    await holder;
+    const outcome = await late;
+    await workerRun;
+    assert.equal(outcome.e?.code, "cfdi_global_in_progress");
+    const [replacement] =
+      await admin`select id, status from cfdi_documents where replaces_document_id = ${g.id} and kind = 'global'`;
+    assert.equal(replacement.status, "valid");
+    assert.equal((await docRow(first.id)).status, "valid");
+    const [{ stranded }] =
+      await admin`select count(*)::int as stranded from cfdi_documents where tenant_id = ${A.tenantId} and status = 'waiting'`;
+    assert.equal(stranded, 0, "no invoice waits on a canceled global");
+    const [{ extra }] =
+      await admin`select count(*)::int as extra from cfdi_cancellations where document_id = ${g.id}`;
+    assert.equal(
+      extra,
+      1,
+      "no second motive-04 cancellation of a canceled global",
+    );
+    // The retry lands on G' (valid, holding t2): one reissue of G', then the invoice stamps.
+    const retried = await invoice(A, t2, { s: A.manager, reissueGlobal: true });
+    assert.equal(retried.status, "waiting");
+    await settle(A.tenantId);
+    assert.equal((await docRow(retried.id)).status, "valid");
+    assert.deepEqual(
+      (await claims(t2.id))
+        .filter((c) => c.state === "active")
+        .map((c) => c.document_id),
+      [retried.id],
+    );
+    assert.equal(
+      (await claims(t3.id)).filter((c) => c.state === "active").length,
+      1,
+    );
+  });
+
+  await test("R2. CFDI unavailable in the worker for longer than every retry limit: no cfdi job dies or uses up attempts (each hands over to a fresh copy); restored, the pending stamp, the cancellation awaiting acceptance, the queued cancellation, the queued stamp and the tick chain resume", async () => {
+    const R = await makeTenant("unavailable");
+    await activate(R, { testFrom: daysAgo(40), periodicity: "day" });
+    const p = await invoice(R, await makeTicket(R), {
+      receptor: { legalName: "UNIVERSIDAD FAKE PENDING" },
+    });
+    const k = await invoice(R, await makeTicket(R), {
+      receptor: { legalName: "UNIVERSIDAD FAKE CANCEL PENDING" },
+    });
+    const q = await invoice(R, await makeTicket(R));
+    await settle(R.tenantId);
+    assert.equal((await docRow(p.id)).status, "pending");
+    await cancelAs(R, R.manager, k.id);
+    await settle(R.tenantId);
+    assert.equal((await docRow(k.id)).status, "canceling");
+    await cancelAs(R, R.manager, q.id);
+    const s = await invoice(R, await makeTicket(R));
+    const deadBefore = dead.length;
+    setCfdiRuntime(null);
+    try {
+      // More rounds than any cfdi kind allows attempts (20 is the highest).
+      for (let i = 0; i < 25; i++) {
+        await due(R.tenantId);
+        await settle(R.tenantId);
+      }
+    } finally {
+      setCfdiRuntime(runtime);
+    }
+    assert.equal(dead.length, deadBefore, "no cfdi job died");
+    const [{ most }] =
+      await admin`select max(attempts)::int as most from jobs where tenant_id = ${R.tenantId} and dedupe_key like '%:wait:%'`;
+    assert.equal(most, 1, "waiting never uses up attempts");
+    const waiting =
+      await admin`select kind from jobs where tenant_id = ${R.tenantId} and state = 'available' and dedupe_key like '%:wait:25'`;
+    for (const kind of [
+      "cfdi_reconcile",
+      "cfdi_cancel",
+      "cfdi_stamp",
+      "cfdi_global",
+    ])
+      assert.ok(
+        waiting.some((w) => w.kind === kind),
+        kind + " still waiting",
+      );
+    assert.equal((await docRow(p.id)).status, "pending");
+    assert.equal((await docRow(k.id)).status, "canceling");
+    assert.equal((await docRow(q.id)).status, "valid");
+    assert.equal((await docRow(s.id)).status, "queued");
+    // Restored.
+    for (let i = 0; i < 2; i++) {
+      await due(R.tenantId);
+      await settle(R.tenantId);
+    }
+    assert.equal((await docRow(p.id)).status, "valid");
+    assert.equal((await docRow(k.id)).status, "canceled");
+    assert.equal((await docRow(q.id)).status, "canceled");
+    assert.equal((await docRow(s.id)).status, "valid");
+    assert.ok(
+      (await liveTicks(R.tenantId)).length >= 1,
+      "the tick chain lives",
+    );
+  });
+
+  await test("R2b. recovery: with its job gone, a pending stamp, a staff cancellation never sent and files never stored are re-enqueued by the tick's sweep (once), a canceling document by Reintentar; a document with nothing stranded is not retryable", async () => {
+    const R = await makeTenant("recovery");
+    await activate(R, { testFrom: daysAgo(40), periodicity: "day" });
+    // Files: every download of the next invoice fails until its deliver job dies (8 attempts).
+    fake.fault({ op: "invoices.download", fault: "internal_error", times: 8 });
+    const f = await invoice(R, await makeTicket(R));
+    await settle(R.tenantId);
+    for (let i = 0; i < 8; i++) {
+      await due(R.tenantId, "cfdi_deliver");
+      await settle(R.tenantId);
+    }
+    const [deliver] =
+      await admin`select state from jobs where tenant_id = ${R.tenantId} and dedupe_key = ${"deliver:" + f.id}`;
+    assert.equal(deliver.state, "dead");
+    const p = await invoice(R, await makeTicket(R), {
+      receptor: { legalName: "UNIVERSIDAD FAKE PENDING" },
+    });
+    const k = await invoice(R, await makeTicket(R), {
+      receptor: { legalName: "UNIVERSIDAD FAKE CANCEL PENDING" },
+    });
+    const q = await invoice(R, await makeTicket(R));
+    await settle(R.tenantId);
+    await cancelAs(R, R.manager, k.id);
+    await settle(R.tenantId);
+    await cancelAs(R, R.manager, q.id);
+    assert.equal((await docRow(p.id)).status, "pending");
+    assert.equal((await docRow(k.id)).status, "canceling");
+    // Every job gone (as after dead jobs).
+    await admin`update jobs set state = 'dead' where tenant_id = ${R.tenantId}
+      and kind in ('cfdi_reconcile','cfdi_cancel') and state in ('queued','available')`;
+    await age([f.id, p.id, k.id, q.id], 31);
+    await admin.begin(async (tx) => {
+      await tx`alter table cfdi_cancellations disable trigger cfdi_cancellations_guard`;
+      await tx`update cfdi_cancellations set created_at = created_at - interval '31 minutes' where document_id = ${q.id}`;
+      await tx`alter table cfdi_cancellations enable trigger cfdi_cancellations_guard`;
+    });
+    const view = (id: string) =>
+      web(R, (tx) =>
+        service.getDocument(tx, R.manager, { params: { id } } as never),
+      );
+    for (const d of [f, p, k, q])
+      assert.equal((await view(d.id)).canRetry, true, "Reintentar offered");
+    await web(R, (tx) =>
+      service.retryDocument(tx, R.manager, { operationId: op() }, {
+        params: { id: k.id },
+      } as never),
+    );
+    await tick(R);
+    assert.equal((await docRow(p.id)).status, "valid");
+    assert.equal((await docRow(k.id)).status, "canceled");
+    assert.equal((await docRow(q.id)).status, "canceled");
+    const [{ files }] =
+      await admin`select count(*)::int as files from cfdi_files where document_id = ${f.id} and format in ('xml','pdf')`;
+    assert.equal(files, 2);
+    const swept = async () =>
+      (
+        await admin`select document_id, detail->>'action' as action from cfdi_events
+          where tenant_id = ${R.tenantId} and kind = 'recovery_queued' order by document_id`
+      ).map((r) => `${r.document_id}:${r.action}`);
+    assert.deepEqual(
+      (await swept()).sort(),
+      [`${f.id}:deliver`, `${p.id}:reconcile`, `${q.id}:cancel`].sort(),
+      "the canceling document was already served by Reintentar's poll",
+    );
+    await tick(R);
+    assert.equal((await swept()).length, 3, "nothing left to recover");
+    await rejects(
+      web(R, (tx) =>
+        service.retryDocument(tx, R.manager, { operationId: op() }, {
+          params: { id: f.id },
+        } as never),
+      ),
+      "cfdi_not_retryable",
+    );
+  });
+
+  await test("R3. the global tick chain never ends: a tick failing at its last attempt schedules the next one before it goes dead; GET /cfdi/status and the worker boot restart a chain with no live tick (enabled restaurants only)", async () => {
+    const T = await makeTenant("ticks");
+    await activate(T, { testFrom: daysAgo(40), periodicity: "day" });
+    const failing = "tick:test:" + randomUUID();
+    await web(T, (tx) =>
+      cfdiEnqueue(tx, T.tenantId, {
+        kind: "cfdi_global",
+        dedupeKey: failing,
+        payload: {},
+      }),
+    );
+    await admin`update jobs set state = 'done' where tenant_id = ${T.tenantId} and kind = 'cfdi_global'
+      and state in ('queued','available') and dedupe_key <> ${failing}`;
+    await admin`update jobs set attempts = 19 where tenant_id = ${T.tenantId} and dedupe_key = ${failing}`;
+    const config = runtime.config as { graceMinutes: number };
+    const grace = config.graceMinutes;
+    config.graceMinutes = Number.NaN; // every tick now throws
+    dead.length = 0;
+    const before = nextHour(new Date()).toISOString();
+    try {
+      await settle(T.tenantId);
+    } finally {
+      config.graceMinutes = grace;
+    }
+    const after = nextHour(new Date()).toISOString();
+    const [job] =
+      await admin`select state, error_code from jobs where tenant_id = ${T.tenantId} and dedupe_key = ${failing}`;
+    assert.deepEqual(
+      { ...job },
+      { state: "dead", error_code: "cfdi_attempts_exhausted" },
+    );
+    assert.deepEqual(dead, [
+      { kind: "cfdi_global", code: "cfdi_attempts_exhausted" },
+    ]);
+    const live = await liveTicks(T.tenantId);
+    assert.equal(live.length, 1);
+    assert.ok(
+      [`tick:${before}`, `tick:${after}`].includes(live[0].dedupe_key),
+      live[0].dedupe_key,
+    );
+    // Sign-in restarts a chain with no live tick.
+    await admin`update jobs set state = 'dead' where tenant_id = ${T.tenantId} and kind = 'cfdi_global' and state = 'available'`;
+    await web(T, (tx) => service.getStatus(tx, T.cashier));
+    assert.match(
+      (await liveTicks(T.tenantId))[0]?.dedupe_key ?? "",
+      /^tick:status:/,
+    );
+    await web(T, (tx) => service.getStatus(tx, T.cashier));
+    assert.equal(
+      (await liveTicks(T.tenantId)).length,
+      1,
+      "only when none is live",
+    );
+    // The worker boot does too, for enabled restaurants only.
+    await admin`update jobs set state = 'dead' where tenant_id = ${T.tenantId} and kind = 'cfdi_global' and state = 'available'`;
+    const P = await makeTenant("paused ticks");
+    await activate(P, { testFrom: daysAgo(40), periodicity: "day" });
+    await saveSettings(P, { enabled: false });
+    await admin`update jobs set state = 'dead' where tenant_id = ${P.tenantId} and kind = 'cfdi_global' and state = 'available'`;
+    assert.ok((await seedGlobalTicks(worker)) >= 1);
+    assert.match(
+      (await liveTicks(T.tenantId))[0]?.dedupe_key ?? "",
+      /^tick:boot:/,
+    );
+    assert.equal((await liveTicks(P.tenantId)).length, 0, "paused: no tick");
+    await settle(T.tenantId);
+    assert.ok((await liveTicks(T.tenantId)).length >= 1, "the chain continues");
+  });
+
+  await test("R4/R9. the staff ticket view carries the restaurant's card form (a card ticket invoiced with it stamps FormaPago 28); a cashier sees only the documents they created in the last 24 h and download links only for those", async () => {
+    await saveSettings(A, { cardPaymentForm: "28" });
+    try {
+      const tk = await makeTicket(A, {
+        payments: [{ method: "external", amount: 11600 }],
+      });
+      const ticketView = (s: Session, ticketId: string) =>
+        web(A, (tx) =>
+          service.getTicket(tx, s, { params: { ticketId } } as never),
+        );
+      const view = await ticketView(A.cashier, tk.id);
+      assert.equal(view.needsCardForm, true);
+      assert.equal(view.cardPaymentForm, "28");
+      const d = await invoice(A, tk, {
+        s: A.manager,
+        cardForm: view.cardPaymentForm,
+      });
+      await settle(A.tenantId);
+      assert.equal((await docRow(d.id)).payment_form, "28");
+      const cashier = await ticketView(A.cashier, tk.id);
+      assert.deepEqual(cashier.documents, []);
+      assert.equal(cashier.covering?.documentId, d.id);
+      assert.equal(cashier.covering?.canOpen, false);
+      const manager = await ticketView(A.manager, tk.id);
+      assert.deepEqual(
+        manager.documents.map((x) => x.id),
+        [d.id],
+      );
+      assert.equal(manager.covering?.canOpen, true);
+      const tk2 = await makeTicket(A);
+      const own = await invoice(A, tk2);
+      await settle(A.tenantId);
+      const mine = await ticketView(A.cashier, tk2.id);
+      assert.deepEqual(
+        mine.documents.map((x) => x.id),
+        [own.id],
+      );
+      assert.equal(mine.covering?.canOpen, true);
+    } finally {
+      await saveSettings(A, { cardPaymentForm: "04" });
+    }
+  });
+
+  await test("R7. a credit note the provider refuses is not re-created by the tick's refund sweep; Reintentar (force) issues a new one", async () => {
+    const tk = await makeTicket(A);
+    await invoice(A, tk);
+    await settle(A.tenantId);
+    fake.fault({
+      op: "invoices.create",
+      fault: "stamp_failed",
+      match: { type: "E" },
+    });
+    const r = await refund(A, tk, { iva16: 1160 });
+    await settle(A.tenantId);
+    const [failed] =
+      await admin`select id, status from cfdi_documents where refund_id = ${r}`;
+    assert.equal(failed.status, "failed");
+    await tick(A);
+    assert.equal(
+      (await admin`select id from cfdi_documents where refund_id = ${r}`)
+        .length,
+      1,
+      "the sweep leaves the failed credit note to Reintentar",
+    );
+    await web(A, (tx) =>
+      service.retryDocument(tx, A.manager, { operationId: op() }, {
+        params: { id: failed.id },
+      } as never),
+    );
+    await settle(A.tenantId);
+    assert.deepEqual(
+      (
+        await admin`select status from cfdi_documents where refund_id = ${r} order by created_at`
+      ).map((x) => x.status),
+      ["failed", "valid"],
+    );
+  });
+
+  await test("R12. two concurrent activations: one wins, the other answers cfdi_settings_changed (never a 500); the register cursor keeps microseconds and a malformed cursor is refused", async () => {
+    const T = await makeTenant("activation race");
+    const results = await Promise.allSettled(
+      [0, 1].map(() =>
+        web(T, (tx) =>
+          service.activate(tx, T.owner, {
+            operationId: op(),
+            expectedVersion: 0,
+          }),
+        ),
+      ),
+    );
+    assert.equal(results.filter((x) => x.status === "fulfilled").length, 1);
+    const lost = results.find(
+      (x) => x.status === "rejected",
+    ) as PromiseRejectedResult;
+    assert.equal(lost.reason.code, "cfdi_settings_changed");
+    await settle(T.tenantId);
+    const list = (query: Record<string, string>) =>
+      web(A, (tx) =>
+        service.listDocumentsRoute(tx, A.manager, {
+          query: { from: daysAgo(40), to: today(), ...query },
+        } as never),
+      );
+    const first = await list({ limit: "1" });
+    assert.match(
+      first.next ?? "",
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z\|[0-9a-f-]{36}$/,
+    );
+    const second = await list({ limit: "1", after: first.next! });
+    assert.notEqual(second.rows[0]?.id, first.rows[0].id);
+    const both = await list({ limit: "2" });
+    assert.deepEqual(
+      both.rows.map((x) => x.id),
+      [first.rows[0].id, second.rows[0].id],
+    );
+    await assert.rejects(
+      list({ after: "yesterday|" + randomUUID() }),
+      (e: Error) => e.name === "ZodError",
     );
   });
 

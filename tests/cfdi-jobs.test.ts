@@ -15,7 +15,20 @@ import {
   retryOrExhaust,
   tenMinuteBucket,
 } from "../server/cfdi/jobs";
-import { nextSixHours, periodsThrough } from "../server/cfdi/worker/global";
+import {
+  globalJob,
+  nextHour,
+  nextSixHours,
+  periodsThrough,
+} from "../server/cfdi/worker/global";
+import { stampJob } from "../server/cfdi/worker/stamp";
+import { waitStep } from "../server/cfdi/worker/common";
+import {
+  setCfdiRuntime,
+  type CfdiRuntime,
+} from "../server/cfdi/worker/runtime";
+import type { JobContext } from "../server/jobs";
+import type { Tx } from "../server/db";
 
 const files = (dir: string): string[] =>
   readdirSync(dir).flatMap((name) => {
@@ -154,6 +167,14 @@ describe("27. dedupe keys", () => {
       dedupe.refundForce(id, id),
       dedupe.refundSweep(id, "2026-12-31"),
       dedupe.reissue(id, id),
+      dedupe.cancelAfterSubstitute(id),
+      dedupe.reconcile(id, "cancel", 260, "s20261231"),
+      dedupe.reconcile(id, "stamp", 12, "r" + "f".repeat(12)),
+      dedupe.recovery(id, "s20261231a"),
+      dedupe.tickRestart("status", at),
+      dedupe.tickRestart("boot", at),
+      waitStep(dedupe.reconcile(id, "cancel", 260, "s20261231") + ":wait:9998")
+        .dedupeKey,
     ];
     for (const k of keys) expect(k.length, k).toBeLessThanOrEqual(200);
     expect(Math.max(...keys.map((k) => k.length))).toBeLessThan(100);
@@ -184,5 +205,140 @@ describe("global scheduler helpers", () => {
     expect(nextSixHours(new Date("2026-10-05T12:00:00Z")).toISOString()).toBe(
       "2026-10-05T18:00:00.000Z",
     );
+  });
+});
+
+/** A JobContext whose tenant() runs `fn` against a recording tx (no database). */
+function fakeContext(
+  job: { kind: string; dedupeKey: string; payload: unknown; attempts: number },
+  o: { failFirst?: boolean } = {},
+) {
+  const statements: { text: string; values: unknown[] }[] = [];
+  const tx = Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => {
+      statements.push({ text: strings.join("?"), values });
+      return Promise.resolve([]);
+    },
+    { json: (v: unknown) => v },
+  ) as unknown as Tx;
+  let calls = 0;
+  const ctx = {
+    job: {
+      tenantId: "00000000-0000-4000-8000-000000000001",
+      id: "00000000-0000-4000-8000-000000000002",
+      lease: "",
+      createdAt: new Date(),
+      ...job,
+    },
+    tenant: async <T>(fn: (t: Tx) => Promise<T>) => {
+      if (o.failFirst && calls++ === 0)
+        throw Object.assign(new Error("boom"), { code: "cfdi_test_failure" });
+      return fn(tx);
+    },
+    extendLease: async () => undefined,
+    signal: new AbortController().signal,
+    log: {
+      info() {},
+      warn() {},
+      error() {},
+      debug() {},
+      child() {
+        return this;
+      },
+    },
+  } as unknown as JobContext;
+  const inserted = () =>
+    statements
+      .filter((st) => st.text.includes("insert into jobs"))
+      .map((st) => ({
+        kind: st.values[2],
+        dedupeKey: st.values[3],
+        payload: st.values[4],
+        runAt: st.values[6] as Date | null,
+      }));
+  return { ctx, inserted };
+}
+
+describe("CFDI-R2: waiting while cfdi is unavailable never uses up attempts", () => {
+  it("waitStep: 15 minutes doubling to 6 hours, one suffix that counts", () => {
+    expect(waitStep("stamp:d")).toEqual({
+      dedupeKey: "stamp:d:wait:1",
+      afterMs: 15 * 60_000,
+    });
+    expect(waitStep("stamp:d:wait:1")).toEqual({
+      dedupeKey: "stamp:d:wait:2",
+      afterMs: 30 * 60_000,
+    });
+    expect(waitStep("stamp:d:wait:5").afterMs).toBe(6 * 3600_000);
+    expect(waitStep("stamp:d:wait:40")).toEqual({
+      dedupeKey: "stamp:d:wait:41",
+      afterMs: 6 * 3600_000,
+    });
+  });
+
+  it("a job claimed at its last attempt while cfdi is not booted hands over to a fresh copy and completes", async () => {
+    setCfdiRuntime(null);
+    const payload = { documentId: "d1", maxAttempts: 12 };
+    const { ctx, inserted } = fakeContext({
+      kind: "cfdi_stamp",
+      dedupeKey: "stamp:d1",
+      payload,
+      attempts: 12,
+    });
+    const started = Date.now();
+    expect(await stampJob(ctx)).toEqual({ status: "done" });
+    const [copy] = inserted();
+    expect(copy).toMatchObject({
+      kind: "cfdi_stamp",
+      dedupeKey: "stamp:d1:wait:1",
+      payload,
+    });
+    expect(copy.runAt!.getTime() - started).toBeGreaterThanOrEqual(
+      15 * 60_000 - 50,
+    );
+  });
+});
+
+describe("CFDI-R3: the global tick chain outlives a failing tick", () => {
+  it("nextHour is the top of the next UTC hour", () => {
+    expect(nextHour(new Date("2026-10-05T18:47:31Z")).toISOString()).toBe(
+      "2026-10-05T19:00:00.000Z",
+    );
+  });
+
+  it("a tick failing at its last attempt schedules the next tick, then goes dead (jobs_dead alerts)", async () => {
+    setCfdiRuntime({
+      config: { provider: "organizations", graceMinutes: 60 },
+      ring: null,
+      client: {},
+      alert: () => undefined,
+      providerOk: true,
+    } as unknown as CfdiRuntime);
+    try {
+      const last = fakeContext(
+        { kind: "cfdi_global", dedupeKey: "tick:x", payload: {}, attempts: 20 },
+        { failFirst: true },
+      );
+      expect(await globalJob(last.ctx)).toEqual({
+        status: "dead",
+        code: "cfdi_attempts_exhausted",
+      });
+      const [next] = last.inserted();
+      expect(next.kind).toBe("cfdi_global");
+      expect(next.dedupeKey).toBe(`tick:${next.runAt!.toISOString()}`);
+      expect(next.runAt!.getTime() % 3600_000).toBe(0);
+      const early = fakeContext(
+        { kind: "cfdi_global", dedupeKey: "tick:y", payload: {}, attempts: 3 },
+        { failFirst: true },
+      );
+      expect(await globalJob(early.ctx)).toEqual({
+        status: "retry",
+        code: "cfdi_test_failure",
+        afterMs: 5 * 60_000,
+      });
+      expect(early.inserted()).toEqual([]);
+    } finally {
+      setCfdiRuntime(null);
+    }
   });
 });
