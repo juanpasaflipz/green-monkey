@@ -1953,7 +1953,10 @@ try {
     const saved = await saveSettings(P, { globalPeriodicity: "month" });
     assert.equal(saved.settings?.globalPeriodicity, "day");
     assert.equal(saved.settings?.nextPeriodicity, "month");
-    assert.equal(saved.settings?.nextPeriodicityFrom, firstOfNextMonth(today()));
+    assert.equal(
+      saved.settings?.nextPeriodicityFrom,
+      firstOfNextMonth(today()),
+    );
     const fresh = await makeTenant("periodicity deferred with open rows");
     await activate(fresh);
     const [{ open, built }] = await admin`
@@ -2700,10 +2703,18 @@ try {
     const explaining = <S extends object>(sql: S): S =>
       new Proxy(sql, {
         apply(target, self, args: unknown[]) {
-          const [strings, ...values] = args as [TemplateStringsArray, ...unknown[]];
-          const raw = ["explain (format json) " + strings[0], ...strings.slice(1)];
+          const [strings, ...values] = args as [
+            TemplateStringsArray,
+            ...unknown[],
+          ];
+          const raw = [
+            "explain (format json) " + strings[0],
+            ...strings.slice(1),
+          ];
           const query = (
-            target as unknown as (...a: unknown[]) => Promise<Record<string, unknown>[]>
+            target as unknown as (
+              ...a: unknown[]
+            ) => Promise<Record<string, unknown>[]>
           )(Object.assign([...raw], { raw }), ...values);
           return query.then((rows) => {
             plans.push(rows[0]["QUERY PLAN"]);
@@ -2711,7 +2722,9 @@ try {
           });
         },
       });
-    const kinds = [...workerHandlers().keys()].filter((k) => k.startsWith("cfdi_"));
+    const kinds = [...workerHandlers().keys()].filter((k) =>
+      k.startsWith("cfdi_"),
+    );
     await discoverTenants(explaining(worker), kinds);
     await tenant(worker, X.tenantId, (tx) =>
       claimJobs(explaining(tx), kinds, 4, 60, 12),

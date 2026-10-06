@@ -349,7 +349,8 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
     let next: typeof before.nextPeriodicity = null;
     let nextFrom: string | null = null;
     if (p.globalPeriodicity !== before.globalPeriodicity) {
-      const [built] = await tx`select 1 as one from cfdi_global_periods limit 1`;
+      const [built] =
+        await tx`select 1 as one from cfdi_global_periods limit 1`;
       if (built) {
         next = p.globalPeriodicity;
         nextFrom = firstOfNextMonth(today(s));
