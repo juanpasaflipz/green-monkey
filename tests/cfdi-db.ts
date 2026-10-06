@@ -4137,6 +4137,7 @@ try {
     );
     // The certificate's end date has passed (no refresh marked it yet).
     const tk2 = await makeTicket(W);
+    assert.equal(await web(W, (tx) => selfInvoiceOffered(tx)), true);
     await asWorker(
       W,
       (tx) =>
@@ -4147,6 +4148,20 @@ try {
       "not_ready",
     );
     await rejects(portalRequest(tk2.code), "cfdi_portal_unavailable");
+    // INT-4: public ordering's status page offers no self-invoice link the portal would refuse.
+    assert.equal(await web(W, (tx) => selfInvoiceOffered(tx)), false);
+    await asWorker(
+      W,
+      (tx) =>
+        tx`update cfdi_organizations set csd_status = 'expired', csd_valid_until = now() + interval '1 day'`,
+    );
+    assert.equal(await web(W, (tx) => selfInvoiceOffered(tx)), false);
+    await asWorker(
+      W,
+      (tx) =>
+        tx`update cfdi_organizations set csd_status = 'valid', csd_valid_until = now() + interval '1 year'`,
+    );
+    assert.equal(await web(W, (tx) => selfInvoiceOffered(tx)), true);
   });
 
   await test("UX-3. a portal invoice that fails after the customer left is shown to the restaurant (attention, Hoy) until a newer request of that ticket, and to the customer who comes back (the ticket's latest request with its reason)", async () => {

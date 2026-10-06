@@ -380,14 +380,19 @@ export async function statusView(
 
 /**
  * Public ordering (wave 3, LD-18 / public-rebase): whether the restaurant offers self-invoicing on
- * its tickets (available && enabled && ready && self_invoice_enabled). One statement.
+ * its tickets (available && enabled && ready && self_invoice_enabled), and the certificate is
+ * usable as the portal requires it (csdUsable, CFDI-UX-2), so a QR diner is never offered a link
+ * the portal then refuses (CFDI-INT-4). One statement.
  */
 export async function selfInvoiceOffered(tx: Tx): Promise<boolean> {
   const [r] = await tx`
     select exists(
       select 1 from cfdi_platform p, cfdi_settings s, cfdi_organizations o
       where p.id = 1 and p.provider <> 'disabled' and s.enabled and s.self_invoice_enabled
-        and o.status = 'ready') as offered`;
+        and o.status = 'ready'
+        and (o.source <> 'own' or (o.csd_status <> 'expired'
+          and (o.csd_valid_until is null or o.csd_valid_until > now())
+          and (s.mode = 'test' or o.csd_status = 'valid')))) as offered`;
   return !!r?.offered;
 }
 

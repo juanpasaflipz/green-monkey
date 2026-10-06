@@ -43,8 +43,10 @@ export function CfdiReceiptBlock({
         <p>{t(PRINT, "cfdiReceiptOffline")}</p>
       </div>
     );
-  // The QR only where the portal offers self-invoicing: an organization that is ready, the same
-  // predicate as selfInvoiceOffered (CFDI-UX-12); otherwise "Pídela en caja".
+  // The QR only where the portal offers self-invoicing: an organization that is ready, as in
+  // selfInvoiceOffered (CFDI-UX-12); otherwise "Pídela en caja". selfInvoiceOffered also checks the
+  // certificate (CFDI-INT-4): it answers a live status page, while a printed ticket outlives a
+  // certificate renewal.
   if (!status.selfInvoice?.enabled || !status.ready)
     return (
       <div className="cfdi-receipt-block">
