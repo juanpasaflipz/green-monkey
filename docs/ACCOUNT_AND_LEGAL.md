@@ -280,8 +280,13 @@ public ordering) use.
 ## Plan lapse (GAP-1)
 
 - **Drawer continuation:** when Free rules would block selling but this device
-  has a drawer opened less than 16 hours ago, sales continue
-  (`basis='drawer_continuation'`) until the drawer closes or the 16 hours pass.
+  has a drawer opened **before Pro ended** and less than 16 hours ago, sales
+  continue (`basis='drawer_continuation'`) until the drawer closes or the 16
+  hours pass. A drawer opened on Free (never Pro, or after the lapse) gives no
+  continuation (ACC-14): the end of Pro is the entitlement's `access_until`
+  (trialing, active) or the earlier of `access_until` and its status write
+  (past_due, canceled, paused, and support's end-entitlement, which keeps the
+  grant's end); a Stripe `free` row gives none.
   A new drawer cannot open under continuation, and the offline window is not
   renewed under it (LD-15 Q5). Configuration saves that are selling-gated also
   pass for active employees on that device (still permission-gated).

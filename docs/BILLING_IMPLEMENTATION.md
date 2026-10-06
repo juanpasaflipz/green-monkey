@@ -56,8 +56,9 @@ launches without billing; pilots get Pro from the support CLI's
 - **Canceled subscriptions:** reconciliation uses the subscription's
   `ended_at` (when it actually ended) as `access_until` for canceled
   subscriptions, not `canceled_at`.
-- **Lapse:** when Pro ends, registers with a drawer opened in the last 16 hours
-  keep selling until they close it (drawer continuation); notices warn 7, 3 and
+- **Lapse:** when Pro ends, registers whose drawer opened during Pro, in the
+  last 16 hours, keep selling until they close it (drawer continuation; a drawer
+  opened on Free never continues); notices warn 7, 3 and
   1 days before a trial or support grant ends. See
   [account and legal](ACCOUNT_AND_LEGAL.md) and [Free limits](FREE_LIMITS.md).
 - **Deferred:** SaaS CFDI for the subscription (no flag exists; the optional

@@ -945,9 +945,10 @@ test("POS shell: trial-ending warning, then drawer continuation banner after lap
       });
       expect(opened.status, JSON.stringify(opened.body)).toBe(200);
     }
-    // 3. The trial lapsed (backdated past the 7-day "Pro ended" window): the
-    // first browser keeps selling until its drawer closes.
-    await admin`update restaurant_entitlements set access_until=now()-interval '8 days',
+    // 3. The trial ends now, after both drawers opened: the first browser keeps
+    // selling until its drawer closes (continuation covers only drawers opened
+    // before Pro ended, ACC-14).
+    await admin`update restaurant_entitlements set access_until=now(),
       version=version+1,updated_at=now() where tenant_id=${tenantId}`;
     await page.reload();
     const continuation = page.locator(".plan-notice.critical");
@@ -956,13 +957,22 @@ test("POS shell: trial-ending warning, then drawer continuation banner after lap
       /Esta caja sigue vendiendo hasta cerrarla o hasta las .+\. Después aplicarán los límites Free\./,
     );
     await axe(page);
-    // 4. After the close, Free limits apply to this browser.
+    // 4. After the close, Free limits apply to this browser: first "Pro ended"
+    // (within 7 days of the lapse)...
     const closed = await call(page, "/cash/close", {
       operationId: randomUUID(),
       counted: 0,
       reason: "",
     });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    await page.reload();
+    await expect(page.locator(".plan-notice.warning")).toContainText(
+      /Pro terminó el .+\. Aplican los límites Free: solo .+ y dos empleados pueden iniciar ventas\./,
+    );
+    await expect(page.locator(".plan-notice.critical")).toHaveCount(0);
+    // ...then, once the lapse is older than 7 days, "not selected".
+    await admin`update restaurant_entitlements set access_until=now()-interval '8 days',
+      version=version+1,updated_at=now() where tenant_id=${tenantId}`;
     await page.reload();
     await expect(page.locator(".plan-notice.warning")).toContainText(
       /Free: este dispositivo o empleado no está seleccionado para iniciar ventas\. Solo .+ puede hacerlo\./,
@@ -978,6 +988,111 @@ test("POS shell: trial-ending warning, then drawer continuation banner after lap
     expect(refused.body.error).toBe("free_selection_required");
   } finally {
     await second.close();
+    await sql.end();
+    await admin.end();
+  }
+});
+
+test("Free without Pro: an open drawer is no continuation; an unselected cashier on the selected register sees the blocked notice (ACC-14)", async ({
+  page,
+  context,
+  browser,
+  baseURL,
+}) => {
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const owner = await ownerFixture(sql, "freedrawer");
+  const terminalContext = await browser.newContext({ baseURL });
+  // The fixture restaurant keeps its drawer history (like the GAP-1 test).
+  try {
+    // Never Pro: no entitlement row.
+    const tenantId = await ownerRestaurant(sql, owner, "Libre fixture");
+    await useOwnerCookie(context, owner, baseURL);
+    await page.goto("/app");
+    await page
+      .locator(".row.between")
+      .filter({ hasText: "Libre fixture" })
+      .getByRole("button", { name: "Entrar", exact: true })
+      .click();
+    await expect(page.locator(".scope")).toContainText("Libre fixture");
+    const staff: Record<string, string> = {};
+    for (const name of ["Ana Libre", "Caro Libre"]) {
+      staff[name] = randomUUID();
+      const saved = await call(page, "/team/save", {
+        operationId: randomUUID(),
+        id: staff[name],
+        name,
+        login: `libre-${randomUUID()}`,
+        role: "cashier",
+        secret: "481516",
+        active: true,
+      });
+      expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    }
+    // The register "Caja libre" is paired and selected with Ana only.
+    const pairing = await call(page, "/access/pairing-codes", {
+      deviceName: "Caja libre",
+    });
+    expect(pairing.status, JSON.stringify(pairing.body)).toBe(200);
+    const terminal = await terminalContext.newPage();
+    await terminal.goto("/app");
+    await terminal.getByLabel("Código de vinculación").fill(pairing.body.code);
+    await terminal
+      .getByRole("button", { name: "Vincular", exact: true })
+      .click();
+    await expect(
+      terminal.getByRole("heading", { name: "¿Quién entra?", exact: true }),
+    ).toBeVisible();
+    const [register] =
+      await admin`select id from devices where tenant_id=${tenantId} and name='Caja libre'`;
+    const selected = await call(page, "/plan/selection", {
+      deviceId: register.id,
+      employeeIds: [staff["Ana Libre"]],
+    });
+    expect(selected.status, JSON.stringify(selected.body)).toBe(200);
+    // Ana's drawer is open on the register (opened on Free, never during Pro).
+    await admin`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening)
+      values(${tenantId},${randomUUID()},${register.id},${staff["Ana Libre"]},0)`;
+    // Caro, without a Free slot, signs in on that register.
+    await terminal.getByRole("button", { name: /^Caro Libre/ }).click();
+    await expect(terminal.getByLabel("PIN de Caro Libre")).toBeVisible();
+    for (const digit of "481516")
+      await terminal.getByRole("button", { name: digit, exact: true }).click();
+    await terminal.getByRole("button", { name: "Entrar", exact: true }).click();
+    await expect(terminal.locator(".scope")).toContainText("Caro Libre");
+    await expect(terminal.locator(".plan-notice.warning")).toContainText(
+      /Free: este dispositivo o empleado no está seleccionado para iniciar ventas\. Solo .+ puede hacerlo\./,
+    );
+    await expect(terminal.locator(".plan-notice.critical")).toHaveCount(0);
+    await expect(terminal.getByText(/Esta caja sigue vendiendo/)).toHaveCount(
+      0,
+    );
+    const shell = await call(terminal, "/account/shell");
+    expect(shell.body.selling).toMatchObject({
+      allowed: false,
+      basis: "none",
+    });
+    const refused = await call(terminal, "/orders", {
+      operationId: randomUUID(),
+      lines: [
+        {
+          id: randomUUID(),
+          productId: randomUUID(),
+          quantity: 1,
+          options: [],
+          note: "",
+        },
+      ],
+      mode: "takeaway",
+      tableId: null,
+      name: "No",
+      note: "",
+      channel: "pos",
+    });
+    expect(refused.status).toBe(403);
+    expect(refused.body.error).toBe("free_selection_required");
+    await axe(terminal);
+  } finally {
+    await terminalContext.close();
     await sql.end();
     await admin.end();
   }

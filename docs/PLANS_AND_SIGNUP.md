@@ -217,8 +217,8 @@ staging, and the legal text awaits counsel review.
   identity verification (held, default 72 h) or by recovery code (held 24 h).
 - **Recovery:** single-use recovery codes and support-assisted transfer;
   verified-email recovery remains pending.
-- **Lapse behaviour:** when Pro ends, registers with a drawer opened in the last
-  16 hours keep selling until it closes; POS notices warn 7, 3 and 1 days before
+- **Lapse behaviour:** when Pro ends, registers whose drawer opened during Pro,
+  in the last 16 hours, keep selling until it closes; POS notices warn 7, 3 and 1 days before
   a trial or grant ends, and explain Pro ended and "not selected" states. Free
   slots follow the most recent drawer openers automatically until the owner
   pins a manual selection ([Free limits](FREE_LIMITS.md)).

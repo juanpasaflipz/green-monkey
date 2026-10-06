@@ -90,13 +90,21 @@ four required viewports, downgrade transitions and the recovery-only UI states.
 Implemented locally (migration 031); not yet staging-qualified.
 
 - **Drawer continuation.** When Pro ends (trial, support grant, cancellation
-  or failed payment), a device whose drawer was opened less than 16 hours ago
-  keeps selling for any active employee until the drawer closes or the 16 hours
-  pass (`sellingAccess` basis `drawer_continuation`). A new drawer cannot be
-  opened under continuation, and the offline window is not renewed under it
-  (LD-15 Q5), so the existing four-hour lease runs out normally. Configuration
-  saves that are gated by selling also pass for active employees on that device
-  during continuation; they remain permission-gated as always.
+  or failed payment), a device whose drawer was opened **before Pro ended** and
+  less than 16 hours ago keeps selling for any active employee until the drawer
+  closes or the 16 hours pass (`sellingAccess` basis `drawer_continuation`). A
+  drawer opened on Free (a restaurant that never had Pro, or after the lapse)
+  never continues: an unselected employee or device cannot start sales there,
+  and switching the Free selection stops the previously selected register at
+  once. Pro ended at the entitlement's `access_until` (trialing, active), or at
+  the earlier of `access_until` and the status write for past_due, canceled,
+  paused and support's end-entitlement (which keeps the grant's end in
+  `access_until`); a Stripe `free` row (unpaid, incomplete) gives none. A new
+  drawer cannot be opened under continuation, and the offline window is not
+  renewed under it (LD-15 Q5), so the existing four-hour lease runs out
+  normally. Configuration saves that are gated by selling also pass for active
+  employees on that device during continuation; they remain permission-gated as
+  always.
 - **Automatic Free selection** (default per restaurant, `auto`): during Pro,
   every successful drawer open moves the Free device slot to that device, and
   a non-owner opener gets an employee slot (a free number first, otherwise the

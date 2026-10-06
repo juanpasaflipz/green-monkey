@@ -304,6 +304,43 @@ try {
     await run((tx) => sellingAllowed(tx, s.employeeId, s.deviceId)),
     false,
   );
+  // ACC-14: the drawer on otherDevice opened after Pro ended, so switching the
+  // Free selection away stops that register at once: continuation only covers
+  // drawers opened during Pro (no register-by-register selection juggling).
+  await run((tx) =>
+    saveFreeSelection(tx, s, {
+      deviceId: s.deviceId,
+      employeeIds: [staff[1].id, staff[2].id],
+    }),
+  );
+  const switched = await run((tx) =>
+    sellingAccess(tx, s.employeeId, otherDevice),
+  );
+  assert.equal(
+    switched.basis,
+    "none",
+    "a drawer opened on Free is no continuation once its device is unselected",
+  );
+  await assert.rejects(
+    run((tx) =>
+      createOrder(
+        tx,
+        { ...s, deviceId: otherDevice },
+        {
+          ...body,
+          operationId: randomUUID(),
+          lines: body.lines.map((l) => ({ ...l, id: randomUUID() })),
+        },
+      ),
+    ),
+    /free_selection_required/,
+  );
+  await run((tx) =>
+    saveFreeSelection(tx, s, {
+      deviceId: otherDevice,
+      employeeIds: [staff[1].id, staff[2].id],
+    }),
+  );
   await assert.rejects(
     run((tx) =>
       saveFreeSelection(
@@ -323,19 +360,15 @@ try {
   await withOwner(sql, cookie, undefined, (tx, a) =>
     selectFreeLocation(tx, a.id, location.tenantId, legal),
   );
-  // account (031, GAP-1): the drawer opened above on otherDevice keeps that
-  // register selling (drawer continuation) until it closes; without an open
-  // drawer only the selected Free location sells.
-  assert.equal(
-    (await run((tx) => sellingAccess(tx, s.employeeId, otherDevice))).basis,
-    "drawer_continuation",
-  );
-  await admin`update cash_sessions set closed_at=now(),counted=0,expected=0 where id=${drawerId}`;
+  // The drawer opened above on otherDevice (after the trial lapsed) is still
+  // open: it is no drawer continuation (ACC-14), so only the selected Free
+  // location sells.
   assert.equal(
     await run((tx) => sellingAllowed(tx, s.employeeId, otherDevice)),
     false,
     "only selected Free location sells",
   );
+  await admin`update cash_sessions set closed_at=now(),counted=0,expected=0 where id=${drawerId}`;
   assert.equal(
     (await run((tx) => freeSelection(tx, s))).employees.length,
     3,
@@ -471,6 +504,45 @@ async function planLapse() {
     /free_selection_required/,
   );
   assert.equal((await slots()).device, devices[0].id);
+  // ACC-14: this restaurant never had Pro (no entitlement row). The selected
+  // register's open drawer is no continuation: an employee without a Free
+  // slot (Caro) cannot start sales there, while Ana (slot holder) can.
+  const caroOnOne = session(staff.caro, devices[0].id, "server");
+  const neverPro = await run((tx) =>
+    sellingAccess(tx, staff.caro, devices[0].id),
+  );
+  assert.equal(
+    neverPro.basis,
+    "none",
+    "never-Pro Free restaurant: an open drawer is no continuation",
+  );
+  assert.equal(neverPro.allowed, false);
+  assert.equal(
+    (await run((tx) => sellingAccess(tx, staff.ana, devices[0].id))).basis,
+    "free_selection",
+  );
+  await assert.rejects(
+    run((tx) =>
+      createOrder(tx, caroOnOne, {
+        operationId: randomUUID(),
+        lines: [
+          {
+            id: randomUUID(),
+            productId: randomUUID(),
+            quantity: 1,
+            options: [],
+            note: "",
+          },
+        ],
+        mode: "takeaway",
+        tableId: null,
+        name: "No",
+        note: "",
+        channel: "pos",
+      }),
+    ),
+    /free_selection_required/,
+  );
   await admin`update cash_sessions set closed_at=now(),counted=0,expected=0 where id=${drawerOne}`;
 
   // During Pro the device slot follows the latest drawer opener, and openers
@@ -578,7 +650,10 @@ async function planLapse() {
   await authenticate();
   assert.equal(await renewals(), 2, "and keeps renewing it while in contact");
 
-  // The trial ends while drawer two is open.
+  // The trial ends while drawer two is open. The drawer opened an hour before
+  // the lapse (backdated so "opened during Pro" never depends on how fast the
+  // steps above ran).
+  await admin`update cash_sessions set opened_at=now()-interval '1 hour' where id=${drawerTwo}`;
   await admin`update restaurant_entitlements set access_until=now()-interval '1 second' where tenant_id=${tenantId}`;
   const lapsed = await authenticate();
   assert.equal(lapsed.sellingAllowed, true);
@@ -631,6 +706,66 @@ async function planLapse() {
     ),
     /free_selection_required/,
   );
+  // ACC-14: when Pro ended, per entitlement status (drawer two opened an hour
+  // ago). Canceled: its ended_at (access_until).
+  const continuationBasis = async () =>
+    (await run((tx) => sellingAccess(tx, staff.beto, devices[1].id))).basis;
+  await admin`update restaurant_entitlements set status='canceled',access_until=now()-interval '1 minute',
+    updated_at=now() where tenant_id=${tenantId}`;
+  assert.equal(
+    await continuationBasis(),
+    "drawer_continuation",
+    "canceled after the drawer opened",
+  );
+  await admin`update restaurant_entitlements set access_until=now()-interval '2 hours' where tenant_id=${tenantId}`;
+  assert.equal(
+    await continuationBasis(),
+    "none",
+    "canceled before the drawer opened",
+  );
+  // past_due and paused carry no end date: the worker's status write ends Pro.
+  for (const status of ["past_due", "paused"]) {
+    await admin`update restaurant_entitlements set status=${status},access_until=null,
+      updated_at=now() where tenant_id=${tenantId}`;
+    assert.equal(
+      await continuationBasis(),
+      "drawer_continuation",
+      `${status} written after the drawer opened`,
+    );
+    await admin`update restaurant_entitlements set updated_at=now()-interval '2 hours' where tenant_id=${tenantId}`;
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      `${status} written before the drawer opened`,
+    );
+  }
+  // Support's end-entitlement (status free) keeps the grant's end: a grant
+  // ended now continues; one that had already ended before the drawer opened
+  // does not.
+  await admin`update restaurant_entitlements set status='free',access_until=now(),source='support',
+    updated_at=now() where tenant_id=${tenantId}`;
+  assert.equal(
+    await continuationBasis(),
+    "drawer_continuation",
+    "support ended the grant after the drawer opened",
+  );
+  await admin`update restaurant_entitlements set access_until=now()-interval '2 hours' where tenant_id=${tenantId}`;
+  assert.equal(
+    await continuationBasis(),
+    "none",
+    "the support grant had ended before the drawer opened",
+  );
+  // Stripe's free (unpaid after past_due, or incomplete): no continuation.
+  await admin`update restaurant_entitlements set status='free',access_until=null,source='stripe',
+    updated_at=now() where tenant_id=${tenantId}`;
+  assert.equal(
+    await continuationBasis(),
+    "none",
+    "a Stripe free row: no continuation",
+  );
+  await admin`update restaurant_entitlements set status='trialing',access_until=now()-interval '1 second',
+    source='fixture',updated_at=now() where tenant_id=${tenantId}`;
+  assert.equal(await continuationBasis(), "drawer_continuation");
   // Continuation ends 16 h after the drawer opened...
   await admin`update cash_sessions set opened_at=now()-interval '17 hours' where id=${drawerTwo}`;
   assert.equal(

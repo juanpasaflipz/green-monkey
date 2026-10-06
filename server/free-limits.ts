@@ -50,10 +50,21 @@ export type SellingAccess = {
 /**
  * Why this employee may (or may not) start sales on this device. Pro allows
  * every active employee and device; Free allows the selected location, device
- * and employees (owners always). When neither applies, a drawer opened on this
- * device less than 16 h ago keeps selling until it closes (GAP-1): registers
- * that were open when Pro ended finish their shift. A new drawer cannot be
- * opened under continuation (requireDrawerOpenAllowed).
+ * and employees (owners always). When neither applies, a drawer that was
+ * opened on this device **before Pro ended** and less than 16 h ago keeps
+ * selling until it closes (GAP-1): registers that were open when Pro ended
+ * finish their shift. A restaurant that is simply on Free (never Pro, or a
+ * drawer opened after the lapse) gets no continuation (ACC-14). A new drawer
+ * cannot be opened under continuation (requireDrawerOpenAllowed).
+ *
+ * When Pro ended, from the entitlement row: `access_until` for trialing and
+ * active rows (a trial or grant that ran out); for past_due, canceled and
+ * paused rows the earlier of `access_until` (a canceled subscription's
+ * `ended_at`) and `updated_at`, the moment the billing worker wrote the
+ * status (past_due and paused rows carry no end date); support's
+ * end-entitlement writes `free` with the same rule (its `access_until` keeps
+ * the grant's end). No row (never Pro) or a Stripe `free` row (unpaid comes
+ * after past_due, incomplete before any Pro) gives none.
  */
 export async function sellingAccess(
   tx: Tx,
@@ -81,11 +92,18 @@ export async function sellingAccess(
     await tx`select free_location from restaurants where id=current_setting('app.tenant_id')::uuid`;
   if (r?.free_location && d.free_slot && (e.role === "owner" || e.free_slot))
     return result("free_selection");
-  // one_open_drawer makes this an index lookup of at most one row.
+  // one_open_drawer makes this an index lookup of at most one row, joined to
+  // the tenant's single entitlement row (primary key).
   const [c] =
-    await tx`select opened_at+make_interval(hours=>${LAPSE_DRAWER_CONTINUATION_HOURS}) as until
-    from cash_sessions where device_id=${deviceId} and closed_at is null
-      and opened_at>clock_timestamp()-make_interval(hours=>${LAPSE_DRAWER_CONTINUATION_HOURS})`;
+    await tx`select c.opened_at+make_interval(hours=>${LAPSE_DRAWER_CONTINUATION_HOURS}) as until
+    from cash_sessions c join restaurant_entitlements e on e.tenant_id=c.tenant_id
+    where c.device_id=${deviceId} and c.closed_at is null
+      and c.opened_at>clock_timestamp()-make_interval(hours=>${LAPSE_DRAWER_CONTINUATION_HOURS})
+      and c.opened_at<case
+        when e.status in ('trialing','active') then e.access_until
+        when e.status in ('past_due','canceled','paused')
+          or (e.status='free' and e.source='support') then least(e.access_until,e.updated_at)
+      end`;
   return c
     ? result("drawer_continuation", (c.until as Date).toISOString())
     : result("none");

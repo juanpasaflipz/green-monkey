@@ -100,7 +100,7 @@ provisioning owner when they leave.
 | `lookup --email <e> \| --tenant <id> \| --organization <id>` | Accounts, organizations, restaurants, owners, devices, entitlement, pending transfers. Read-only. |
 | `unlock-employee --tenant <id> --login <login>` | Clears a PIN lock exactly like a manager unlock, without spending the manager's daily unlock budget. Writes `access.employee_unlocked` with the ticket. |
 | `grant-entitlement --tenant <id> --until YYYY-MM-DD` | Pilot Pro (below). |
-| `end-entitlement --tenant <id>` | Ends a support grant now (the restaurant goes to Free; open drawers continue until closed or 16 h). |
+| `end-entitlement --tenant <id>` | Ends a support grant now (the restaurant goes to Free; drawers opened before the end continue until closed or 16 h; the row keeps the end time in `access_until`). |
 | `transfer-ownership --organization <id> --to-email <e> [--hold-hours 72]` | Support-assisted ownership transfer after identity verification (below). Hold 24 h minimum, 72 h default. |
 | `cancel-transfer --transfer <id>` | Cancels a pending transfer. |
 | `set-free-device --tenant <id> --device <id>` | Emergency Free device reassignment (the owner cannot reach Settings, for example a stolen laptop held the slot); the device ID must be retyped. The automatic/manual mode is unchanged, so in automatic mode a later drawer open can move the slot again: ask the owner to save a manual selection once they can. |

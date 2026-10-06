@@ -324,6 +324,15 @@ try {
       (await tenant(sql, tenantId, (tx) => entitlement(tx))).plan,
       "free",
     );
+    // The row keeps when Pro ended (now, for a live grant), so drawers opened
+    // before it finish their shift and none opened on Free continues (ACC-14).
+    const [ended] =
+      await admin`select status,source,access_until is not null and access_until<=now() as ended
+        from restaurant_entitlements where tenant_id=${tenantId}`;
+    assert.deepEqual(
+      { status: ended.status, source: ended.source, ended: ended.ended },
+      { status: "free", source: "support", ended: true },
+    );
   });
   await test("5 support: transfer-ownership creates a ≥24 h-hold pending transfer; support cannot complete it (no UPDATE on organizations); the target completes after the hold; the primary can cancel during the hold", async () => {
     const targetEmail = `support-target-${role}@example.com`;

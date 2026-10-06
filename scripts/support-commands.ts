@@ -464,17 +464,24 @@ export async function runSupportCommand(
         const t = await tenantRow(tx, r.tenant);
         const [before] =
           await tx`select status,access_until,source from restaurant_entitlements where tenant_id=${r.tenant}`;
+        // access_until keeps when Pro ended (now, or the grant's own earlier
+        // end): drawers opened before it finish their shift and no drawer
+        // opened on Free gains drawer continuation (GAP-1, ACC-14).
         const rows =
-          await tx`update restaurant_entitlements set status='free',access_until=null,source='support',
-            version=version+1,updated_at=now()
-          where tenant_id=${r.tenant} and source in ('support','fixture') returning status`;
+          await tx`update restaurant_entitlements set status='free',access_until=least(access_until,now()),
+            source='support',version=version+1,updated_at=now()
+          where tenant_id=${r.tenant} and source in ('support','fixture') returning status,access_until`;
         if (!rows.length) throw new SupportError("support_grant_not_found");
         const id = await logAction(tx, operator, "end_entitlement", {
           organizationId: t.organization_id,
           tenantId: t.id,
           target: {},
           before,
-          after: { status: "free", accessUntil: null, source: "support" },
+          after: {
+            status: "free",
+            accessUntil: (rows[0].access_until as Date).toISOString(),
+            source: "support",
+          },
         });
         return { supportActionId: id };
       });
