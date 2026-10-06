@@ -11,7 +11,7 @@ import { staffOnlineSql } from "./public-links.js";
 import { statusHash } from "./public-tokens.js";
 import { restaurantPrivacyUrl } from "./compat/public-account.js";
 import { fiscalTicketIdentity } from "./fiscal-read.js";
-import { selfInvoiceOffered } from "./compat/public-cfdi.js";
+import { selfInvoiceOffered } from "./cfdi/store.js";
 import {
   DomainError,
   businessDate,
@@ -178,8 +178,11 @@ const holdKind = (h: HoldRow): LinkKind =>
 /**
  * The diner's view of a hold; accepted holds add one order statement and,
  * for a new check, fiscal's ticket identity (one statement: the folio once
- * the check is paid, 027). An accepted hold shows what acceptance charged
- * (its accepted lines and total), never the submission snapshot (PRIVACY-1).
+ * the check is paid, 027) and, once there is a ticket, cfdi's self-invoice
+ * offer (one statement, 030): the printed ticket's /f/{CODE} link only while
+ * the restaurant's portal would accept it. An accepted hold shows what
+ * acceptance charged (its accepted lines and total), never the submission
+ * snapshot (PRIVACY-1).
  */
 async function holdView(tx: Tx, h: HoldRow): Promise<DinerHoldView> {
   const excluded = new Set(h.excluded_line_ids ?? []);
@@ -401,8 +404,9 @@ const holdByKey = (tx: Tx, linkId: string, statusKey: string, lock = false) =>
 /**
  * The diner's status page. Lookups go through the link the hold was sent
  * from, active or not, so a replaced QR keeps its pending orders readable.
- * At most 5 statements: the hold, the order, and (from 027/030) the ticket
- * identity and the self-invoice offer. Never calls getOrder.
+ * At most 5 statements (OQ-10; 4 today): the hold, the order, fiscal's
+ * ticket identity and, with a ticket, cfdi's self-invoice offer. Never calls
+ * getOrder.
  */
 export async function holdStatus(
   tx: Tx,

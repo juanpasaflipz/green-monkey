@@ -10,7 +10,14 @@ import express from "express";
 import postgres from "postgres";
 import { ZodError } from "zod";
 import { password } from "../server/auth.js";
-import { checkRole, connect, tenant, type Tx } from "../server/db.js";
+import {
+  checkRole,
+  checkWorkerRole,
+  connect,
+  connectWorker,
+  tenant,
+  type Tx,
+} from "../server/db.js";
 import { makeRoute } from "../server/http.js";
 import {
   catalog,
@@ -63,6 +70,7 @@ import {
 } from "../shared/domain.js";
 import {
   DEFAULT_FISCAL_CONTEXT,
+  SELF_INVOICE_CODE_PATTERN,
   formatFolio,
   type FiscalContext,
 } from "../shared/fiscal.js";
@@ -75,7 +83,7 @@ import {
   type InboxResponse,
   type PublicMenuView,
 } from "../shared/public-ordering.js";
-import { isolatedTarget } from "./isolated-target.js";
+import { isolatedTarget, requireWorker } from "./isolated-target.js";
 import { noRetries } from "./db-retries.js";
 import { setLogSink } from "../server/logging.js";
 
@@ -83,10 +91,14 @@ import { setLogSink } from "../server/logging.js";
 const logLines: string[] = [];
 setLogSink((line) => logLines.push(line));
 
-const { runtime: url, migration } = isolatedTarget(process.env);
+const target = isolatedTarget(process.env);
+const { runtime: url, migration } = target;
 const sql = connect(url),
   admin = postgres(migration, { max: 2, onnotice: () => {} });
 await checkRole(sql);
+// cfdi's jobs worker login (030): only it may mark an organization ready.
+const worker = connectWorker(requireWorker(target));
+await checkWorkerRole(worker);
 
 let checks = 0;
 async function test(name: string, fn: () => Promise<void>) {
@@ -542,6 +554,45 @@ async function insertHold(
     return h;
   });
   return { row, statusKey };
+}
+
+/**
+ * A restaurant that offers self-invoicing (030), as cfdi leaves one after
+ * activation: test-mode settings with self-invoicing on (the runtime role's
+ * insert) and a ready organization (the worker's), on a platform whose
+ * provider is not disabled. The platform row is global: the returned restore
+ * puts back what was there (no row reads as disabled for every reader).
+ */
+async function cfdiReady(f: Fixture): Promise<() => Promise<void>> {
+  const [before] =
+    await worker`select provider,live_enabled,upload_kid,upload_public_jwk,shared_org_id,worker_version
+      from cfdi_platform where id=1`;
+  const publish = !before || before.provider === "disabled";
+  if (publish)
+    await worker`insert into cfdi_platform(id,provider,shared_org_id,worker_version)
+      values(1,'sandbox_shared','org_public_db','public-ordering-db')
+      on conflict(id) do update set provider=excluded.provider,live_enabled=false,upload_kid=null,
+        upload_public_jwk=null,shared_org_id=excluded.shared_org_id,
+        worker_version=excluded.worker_version,updated_at=now()`;
+  await run(
+    f.s.owner,
+    (tx) =>
+      tx`insert into cfdi_settings(tenant_id,test_from,updated_by) values(${f.tenantId},current_date,${f.ids.owner})`,
+  );
+  await tenant(
+    worker,
+    f.tenantId,
+    (tx) =>
+      tx`insert into cfdi_organizations(tenant_id,source,status,provider_org_id)
+        values(${f.tenantId},'shared_sandbox','ready','org_public_db')`,
+  );
+  return async () => {
+    if (!publish) return;
+    await worker`update cfdi_platform set provider=${before?.provider ?? "disabled"},
+      live_enabled=${before?.live_enabled ?? false},upload_kid=${before?.upload_kid ?? null},
+      upload_public_jwk=${before?.upload_public_jwk ?? null},shared_org_id=${before?.shared_org_id ?? null},
+      worker_version=${before?.worker_version ?? "public-ordering-db"},updated_at=now() where id=1`;
+  };
 }
 
 const count = async (tenantId: string, table: string) => {
@@ -2052,8 +2103,8 @@ try {
     assert.equal(v.order!.progress, "served");
     assert.deepEqual(v.order!.money, { total: 4500, paid: 4500, balance: 0 });
     // The payment issued the check's fiscal ticket (027): the status shows its
-    // folio, as the printed ticket does; no self-invoice link while cfdi's
-    // offer is off (S3 until B2).
+    // folio, as the printed ticket does; no self-invoice link while the
+    // restaurant has no CFDI (030; the invoice leg is 22 (030) below).
     const [ticket] = await asAdmin(
       t.tenantId,
       (tx) =>
@@ -2129,6 +2180,77 @@ try {
       [bad.status, bad.body.error],
       [404, "public_hold_not_found"],
     );
+  });
+
+  await test("22 (030). self-invoice leg: a paid QR check and a pay-first kiosk order of a restaurant that offers self-invoicing show their ticket's code (the /f/{CODE} link); with self-invoicing off it is null again", async () => {
+    const t = await makeTenant("self-invoice");
+    const restorePlatform = await cfdiReady(t);
+    try {
+      const ticketOf = async (orderId: string) => {
+        const [row] = await asAdmin(
+          t.tenantId,
+          (tx) =>
+            tx`select series,number,self_invoice_code from fiscal_tickets where order_id=${orderId}`,
+        );
+        assert(row, "the payment issued the ticket");
+        assert.match(row.self_invoice_code, SELF_INVOICE_CODE_PATTERN);
+        return {
+          folio: formatFolio(row.series, Number(row.number)),
+          selfInvoiceCode: row.self_invoice_code as string,
+        };
+      };
+      // A table QR: accepted, then paid at the counter.
+      const mesa = await link(t, { kind: "table", tableId: t.tables[0].id });
+      const b1 = await body(t, [{ productId: t.p.taco }]);
+      await pub.submit(mesa.token, b1);
+      const r1 = await accept(t, (await holdOf(t, b1)).id);
+      const before = await pub.status(mesa.token, b1.statusKey);
+      assert.equal(before.body.order!.fiscal, null, "no ticket before payment");
+      await run(t.s.cashier, (tx) =>
+        recordPayment(tx, t.s.cashier, r1.order.id, {
+          operationId: op(),
+          amount: r1.order.total,
+          received: r1.order.total,
+          method: "cash",
+        }),
+      );
+      const paid = await pub.status(mesa.token, b1.statusKey);
+      assert.equal(paid.status, 200);
+      const ticket1 = await ticketOf(r1.order.id);
+      assert.deepEqual(paid.body.order!.fiscal, ticket1);
+      // A kiosk order paid at acceptance: its ticket is issued in the accept.
+      const kiosk = await link(t, { kind: "kiosk", label: "Kiosco" });
+      const b2 = await body(t, [{ productId: t.p.taco, quantity: 2 }]);
+      await pub.submit(kiosk.token, b2);
+      const r2 = await accept(t, (await holdOf(t, b2)).id, {
+        payment: { amount: 9000, received: 10000, method: "cash" },
+      });
+      assert.deepEqual(
+        [r2.order.checkState, r2.order.closeReason, r2.order.paid],
+        ["closed", "settled", 9000],
+      );
+      const ticket2 = await ticketOf(r2.order.id);
+      assert.notEqual(ticket2.selfInvoiceCode, ticket1.selfInvoiceCode);
+      assert.deepEqual(
+        (await pub.status(kiosk.token, b2.statusKey)).body.order!.fiscal,
+        ticket2,
+      );
+      // The owner switches self-invoicing off: the folio stays, the link goes.
+      await asAdmin(
+        t.tenantId,
+        (tx) => tx`update cfdi_settings set self_invoice_enabled=false`,
+      );
+      assert.deepEqual(
+        (await pub.status(kiosk.token, b2.statusKey)).body.order!.fiscal,
+        { folio: ticket2.folio, selfInvoiceCode: null },
+      );
+      assert.deepEqual(
+        (await pub.status(mesa.token, b1.statusKey)).body.order!.fiscal,
+        { folio: ticket1.folio, selfInvoiceCode: null },
+      );
+    } finally {
+      await restorePlatform();
+    }
   });
 
   await test("23. concurrency: two staff accepts make exactly one order; an accept racing the diner's cancel changes the hold once", async () => {
@@ -2373,7 +2495,7 @@ try {
     );
   });
 
-  await test("26. statement budgets: summary 1, an idle inbox 3, a busy inbox at most 5, holdStatus 3 with fiscal's ticket identity and the cfdi stub (<= 5 from 030)", async () => {
+  await test("26. statement budgets: summary 1, an idle inbox 3, a busy inbox at most 5, holdStatus 3 before the ticket and 4 with it (fiscal's identity, cfdi's self-invoice offer; OQ-10 <= 5)", async () => {
     const t = await makeTenant("budget");
     let n = 0;
     const counted = postgres(url, {
@@ -2409,8 +2531,8 @@ try {
         (tx) =>
           tx`select link_id from public_order_holds where order_id=${r.order.id}`,
       );
-      // The hold, the order and fiscalTicketIdentity (027); cfdi's offer is
-      // the S3 stub (0) until B2 makes it at most 2 more (OQ-10: <= 5).
+      // The hold, the order and fiscalTicketIdentity (027); no ticket yet, so
+      // cfdi's self-invoice offer (030) is not asked.
       assert.equal(
         await cost((tx) => holdStatus(tx, h.link_id, b1.statusKey)),
         3,
@@ -2423,11 +2545,12 @@ try {
           method: "cash",
         }),
       );
+      // With the ticket, cfdi's selfInvoiceOffered (030) is one statement more.
       const ticketed = await cost((tx) =>
         holdStatus(tx, h.link_id, b1.statusKey),
       );
-      assert.equal(ticketed, 3, "a ticket adds no statement");
-      assert(ticketed <= 5);
+      assert.equal(ticketed, 4, "a ticket adds only cfdi's offer");
+      assert(ticketed <= 5, "OQ-10 budget");
     } finally {
       await counted.end();
     }
@@ -3639,4 +3762,5 @@ try {
 } finally {
   await sql.end();
   await admin.end();
+  await worker.end();
 }
