@@ -122,49 +122,77 @@ class Fixture {
           reason: "other",
         });
   }
-  /** Pays (on this device's drawer) and releases every check this test opened. */
+  /**
+   * Pays (on this device's drawer) and releases every check this test opened.
+   * Each check is settled on its own; the first failure is rethrown after the
+   * rest (PUB-B3-L1).
+   */
   async settleOrders() {
     await call(this.page, "/cash/open", { operationId: op(), opening: 0 });
+    let first: { error: unknown } | null = null;
     for (const id of this.orders) {
-      const o = (await call(this.page, `/orders/${id}`)).data;
-      if (!o || o.checkState === "closed") continue;
-      const due = o.total - o.paid;
-      if (due > 0)
-        await call(this.page, `/orders/${id}/payments`, {
+      try {
+        const o = (await call(this.page, `/orders/${id}`)).data;
+        if (!o || o.checkState === "closed") continue;
+        const due = o.total - o.paid;
+        if (due > 0)
+          await call(this.page, `/orders/${id}/payments`, {
+            operationId: op(),
+            amount: due,
+            received: due,
+            method: "cash",
+          });
+        await call(this.page, `/service/orders/${id}/close`, {
           operationId: op(),
-          amount: due,
-          received: due,
-          method: "cash",
         });
-      await call(this.page, `/service/orders/${id}/close`, {
-        operationId: op(),
-      });
+      } catch (error) {
+        first ??= { error };
+      }
     }
+    if (first) throw first.error;
   }
   async cleanup() {
     if (this.done) return;
     this.done = true;
+    // Every LD-P9 step runs on its own: a step that throws is recorded and the
+    // next one still runs. The privacy restore (which asserts its status,
+    // PUB-B3-3) comes last, and the first failure is the one reported
+    // (PUB-B3-L1).
+    const errors: unknown[] = [];
+    const step = async (fn: () => Promise<unknown>) => {
+      try {
+        await fn();
+      } catch (e) {
+        errors.push(e);
+      }
+    };
     // A test may have switched this page to the cashier: clean up as the owner.
-    const who = await call(this.page, "/session").catch(() => null);
-    if (who?.data?.role !== "owner") {
-      await this.page.evaluate(() => fetch("/api/logout", { method: "POST" }));
-      await login(this.page);
-    }
-    // The LD-P9 steps run first and whatever happens to the privacy restore,
-    // which asserts its status (PUB-B3-3).
-    try {
-      await this.decideHolds();
-      for (const id of this.links)
-        await call(this.page, `/ordering/links/${id}/revoke`, {
+    await step(async () => {
+      const who = await call(this.page, "/session").catch(() => null);
+      if (who?.data?.role !== "owner") {
+        await this.page.evaluate(() =>
+          fetch("/api/logout", { method: "POST" }),
+        );
+        await login(this.page);
+      }
+    });
+    await step(() => this.decideHolds());
+    for (const id of this.links)
+      await step(() =>
+        call(this.page, `/ordering/links/${id}/revoke`, {
           operationId: op(),
-        });
+        }),
+      );
+    await step(async () => {
       const s = await call(this.page, "/ordering/settings");
       if (s.data?.paused)
         await call(this.page, "/ordering/pause", {
           operationId: op(),
           paused: false,
         });
-      if (this.policies) {
+    });
+    if (this.policies)
+      await step(async () => {
         const v = (await call(this.page, "/ordering/settings")).data;
         await call(this.page, "/ordering/settings", {
           operationId: op(),
@@ -174,20 +202,30 @@ class Fixture {
           holdMinutes: 30,
           maxOrderTotal: 1_000_000,
         });
-      }
-      await this.settleOrders();
+      });
+    await step(() => this.settleOrders());
+    await step(async () => {
       const floor = await call(this.page, "/floor");
       for (const t of floor.data.tables as (Table & { archived: boolean })[])
         if (t.name.startsWith(`QR ${this.id} `) && !t.archived)
-          await call(this.page, "/floor/tables/archive", {
-            operationId: op(),
-            id: t.id,
-            expectedVersion: t.version,
-            archived: true,
-          });
-    } finally {
-      await this.restorePrivacy();
-    }
+          await step(() =>
+            call(this.page, "/floor/tables/archive", {
+              operationId: op(),
+              id: t.id,
+              expectedVersion: t.version,
+              archived: true,
+            }),
+          );
+    });
+    await step(() => this.restorePrivacy());
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1)
+      throw new AggregateError(
+        errors,
+        `cleanup: ${errors.length} steps failed; first: ${String(
+          errors[0] instanceof Error ? errors[0].message : errors[0],
+        )}`,
+      );
   }
 }
 let open: Fixture | null = null;

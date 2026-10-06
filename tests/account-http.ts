@@ -447,34 +447,41 @@ try {
         });
         return { status: r.status, json: await r.json() };
       };
+      // The settings row is restored even when the first menu assertion
+      // fails, and the revoke's status is asserted only after both cleanups,
+      // so neither hides the original failure (PUB-B3-L2).
+      let revoked: Awaited<ReturnType<Browser["request"]>> | undefined;
       try {
-        const catalog = await menu();
-        assert.equal(catalog.status, 200, JSON.stringify(catalog.json));
-        assert.equal(
-          catalog.json.restaurant.privacyNoticeUrl,
-          "https://taqueria-demo.mx/privacidad",
-        );
-        await admin.begin(async (tx) => {
-          await tx`select set_config('app.tenant_id',${TENANT},true)`;
-          if (before)
-            await tx`update restaurant_account_settings set privacy_notice_url=${before.privacy_notice_url}
-            where tenant_id=${TENANT}`;
-          else
-            await tx`delete from restaurant_account_settings where tenant_id=${TENANT}`;
-        });
+        try {
+          const catalog = await menu();
+          assert.equal(catalog.status, 200, JSON.stringify(catalog.json));
+          assert.equal(
+            catalog.json.restaurant.privacyNoticeUrl,
+            "https://taqueria-demo.mx/privacidad",
+          );
+        } finally {
+          await admin.begin(async (tx) => {
+            await tx`select set_config('app.tenant_id',${TENANT},true)`;
+            if (before)
+              await tx`update restaurant_account_settings set privacy_notice_url=${before.privacy_notice_url}
+              where tenant_id=${TENANT}`;
+            else
+              await tx`delete from restaurant_account_settings where tenant_id=${TENANT}`;
+          });
+        }
         const restored = await menu();
         assert.equal(
           restored.json.restaurant.privacyNoticeUrl,
           before?.privacy_notice_url ?? null,
         );
       } finally {
-        const revoked = await device.browser.request(
+        revoked = await device.browser.request(
           "POST",
           `/api/ordering/links/${link.json.id}/revoke`,
           { operationId: randomUUID() },
         );
-        assert.equal(revoked.status, 200, JSON.stringify(revoked.json));
       }
+      assert.equal(revoked!.status, 200, JSON.stringify(revoked!.json));
       const config = await new Browser().request("GET", "/api/account-config");
       assert.deepEqual(config.json.publicOrdering, { enabled: true });
       assert.equal(config.json.legal.status, "unpublished");
