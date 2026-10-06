@@ -14,6 +14,7 @@ import { Badge, Button, Modal } from "../components/ui";
 import { printDocument, usePrintSettings, type PaperWidth } from "../print";
 import type { LocalReceipt } from "../offline-records";
 import { DocNote } from "./KitchenTicket";
+import { CfdiOrderActions } from "./cfdi/CfdiOrderActions";
 
 export function moneyFormatter(currency: string, locale: Locale) {
   const scale = 10 ** currencyExponent(currency);
@@ -498,6 +499,12 @@ export function ReceiptModal({
         )}
         {noteActions}
         {extraActions}
+        <CfdiOrderActions
+          order={order}
+          session={session}
+          locale={locale}
+          variant="receipt"
+        />
         <Button
           variant="primary"
           disabled={busy}

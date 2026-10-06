@@ -1,0 +1,628 @@
+/**
+ * cfdi client (spec §7.1 items 23, 28, 29 and the receipt slot): ReceptorFields and the printed
+ * block in Spanish and English, the Today alert mapping and text, the ticket-status hook and its
+ * coverage helper, the order actions, the footer slot returning null, and the pure helpers of
+ * the register, the settings panel and the portal. React renders through renderToStaticMarkup.
+ */
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Order, Session } from "../shared/domain";
+import type {
+  CfdiAlertsView,
+  CfdiDocumentSummary,
+  CfdiDocumentView,
+  CfdiSettingsView,
+  CfdiStatusView,
+  CfdiTicketView,
+  Receptor,
+} from "../shared/cfdi";
+import type { FiscalTicketView } from "../shared/fiscal";
+
+vi.mock("../src/offline", async () => ({
+  db: (await import("./offline-fake-db")).fakeDb,
+  scope: (s: { tenantId: string }) => s.tenantId,
+}));
+vi.mock("../src/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/api")>()),
+  api: vi.fn(),
+}));
+// useSyncExternalStore without a server snapshot cannot render on the server.
+vi.mock("../src/connectivity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/connectivity")>()),
+  useConnectivity: () => ({ canUseServer: true }),
+}));
+
+import { api } from "../src/api";
+import { strings } from "../src/i18n";
+import { cfdiReportAlerts } from "../server/cfdi/hooks";
+import {
+  cfdiReportAlertText,
+  issueOfError,
+  periodKeyLabel,
+  periodLabel,
+  withServerIssue,
+} from "../src/features/cfdi/format";
+import {
+  cfdiTicketCovered,
+  clearCfdiStatus,
+  getCfdiStatus,
+  loadCfdiTicketStatus,
+  prefetchCfdiStatus,
+  setCfdiStatus,
+  ticketStatusWanted,
+  useCfdiTicketStatus,
+} from "../src/features/cfdi/status";
+import {
+  emptyReceptor,
+  ReceptorFields,
+} from "../src/features/cfdi/ReceptorFields";
+import {
+  CfdiReceiptBlock,
+  cfdiReceiptExtra,
+} from "../src/features/cfdi/CfdiReceiptBlock";
+import {
+  CfdiOrderActions,
+  ticketChip,
+} from "../src/features/cfdi/CfdiOrderActions";
+import {
+  needsAcceptance,
+  ticketsLabel,
+} from "../src/features/cfdi/CfdiDocuments";
+import { cfdiBadge, settling } from "../src/features/cfdi/CfdiSettings";
+import { CfdiCorteCoverage } from "../src/features/cfdi/CfdiCorteCoverage";
+import { base64Of } from "../src/features/cfdi/CsdUpload";
+import {
+  codeFromPath,
+  portalMessage,
+} from "../src/features/cfdi/SelfInvoicePortal";
+
+const apiMock = vi.mocked(api);
+
+const session = {
+  id: "50000000-0000-4000-8000-000000000001",
+  tenantId: "10000000-0000-4000-8000-000000000001",
+  employeeId: "20000000-0000-4000-8000-000000000001",
+  deviceId: "30000000-0000-4000-8000-000000000001",
+  name: "Ana",
+  role: "cashier",
+  csrf: "csrf",
+  expiresAt: "",
+  offlineUntil: "",
+  restaurant: {
+    name: "Taquería Ficticia",
+    currency: "MXN",
+    timezone: "America/Mexico_City",
+    cutoff: 240,
+  },
+} as Session;
+
+const status = (over: Partial<CfdiStatusView> = {}): CfdiStatusView => ({
+  available: true,
+  provider: "organizations",
+  enabled: true,
+  mode: "live",
+  ready: true,
+  canInvoice: true,
+  selfInvoice: { enabled: true, policy: "month", days: 30 },
+  timezone: "America/Mexico_City",
+  version: 3,
+  ...over,
+});
+
+const ticket = {
+  id: "60000000-0000-4000-8000-000000000001",
+  orderId: "70000000-0000-4000-8000-000000000001",
+  folio: "A-000123",
+  businessDate: "2026-10-04",
+  selfInvoiceCode: "7K3M9QX2PA8D",
+} as FiscalTicketView;
+
+const order = (fiscal: unknown, over: Partial<Order> = {}): Order =>
+  ({
+    id: "70000000-0000-4000-8000-000000000001",
+    state: "closed",
+    paid: 11600,
+    total: 11600,
+    ...(fiscal === undefined ? {} : { fiscal }),
+    ...over,
+  }) as unknown as Order;
+
+const html = (node: Parameters<typeof renderToStaticMarkup>[0]) =>
+  renderToStaticMarkup(node);
+
+beforeEach(() => {
+  apiMock.mockReset();
+  clearCfdiStatus();
+});
+afterEach(() => clearCfdiStatus());
+
+describe("cfdi client: ReceptorFields (23)", () => {
+  const receptor: Receptor = {
+    ...emptyReceptor(),
+    rfc: "EKU9003173C9",
+    legalName: "ESCUELA KEMPER URGATE",
+    regime: "601",
+    postalCode: "42501",
+  };
+  it("renders the Spanish labels, the regimes for a moral RFC and the uses for the regime", () => {
+    const out = html(
+      createElement(ReceptorFields, {
+        value: receptor,
+        onChange: () => {},
+        issues: [],
+        locale: "es",
+        requireEmail: false,
+      }),
+    );
+    expect(out).toContain("Nombre o razón social");
+    expect(out).toContain("Código postal del domicilio fiscal");
+    expect(out).toContain("Correo electrónico (opcional)");
+    expect(out).toContain("G03 — Gastos en general");
+    expect(out).toContain('value="601"');
+    // 605 (sueldos) is a persona-física regime: not offered for a 12-character RFC.
+    expect(out).not.toContain('value="605"');
+  });
+  it("renders English labels, the required email and translated issues with warnings apart", () => {
+    const out = html(
+      createElement(ReceptorFields, {
+        value: { ...receptor, legalName: "ESCUELA KEMPER URGATE SA DE CV" },
+        onChange: () => {},
+        issues: [
+          { field: "rfc", code: "cfdi_invalid_rfc" },
+          { field: "legalName", code: "cfdiLegalNameSuffix", warning: true },
+        ],
+        locale: "en",
+        requireEmail: true,
+      }),
+    );
+    expect(out).toContain("Name or legal name");
+    expect(out).toContain("Email");
+    expect(out).not.toContain("(optional)");
+    expect(out).toContain('aria-invalid="true"');
+    expect(out).toContain('class="error" role="alert"');
+    expect(out).toContain('class="cfdi-warning"');
+    expect(out).toContain(strings.en.cfdiLegalNameSuffix);
+    expect(out).not.toContain("Nombre o razón social");
+  });
+});
+
+describe("cfdi client: printed block (23, 2.12)", () => {
+  const origin = "https://pos.example.com";
+  it("prints the QR, the grouped code, the URL and the deadline in Spanish", () => {
+    const out = html(
+      createElement(CfdiReceiptBlock, {
+        ticket,
+        status: status(),
+        kind: "receipt",
+        origin,
+      }),
+    );
+    expect(out).toContain("¿Necesitas factura?");
+    expect(out).toContain("Escanea o entra a pos.example.com/factura");
+    expect(out).toContain("Código: 7K3M-9QX2-PA8D");
+    expect(out).toContain("Disponible hasta el 31/10/2026");
+    expect(out).toContain("<svg");
+    expect(out).toContain("Código QR para facturar este ticket");
+    expect(out).not.toContain("(modo prueba)");
+  });
+  it("adds (modo prueba) in test mode and stays Spanish (fiscal D10)", () => {
+    const out = html(
+      createElement(CfdiReceiptBlock, {
+        ticket,
+        status: status({ mode: "test" }),
+        kind: "receipt",
+        origin,
+      }),
+    );
+    expect(out).toContain("(modo prueba)");
+    expect(out).not.toContain("Need an invoice");
+  });
+  it("self-invoicing off asks at the counter; a local receipt waits for its folio", () => {
+    expect(
+      html(
+        createElement(CfdiReceiptBlock, {
+          ticket,
+          status: status({
+            selfInvoice: { enabled: false, policy: "month", days: 30 },
+          }),
+          kind: "receipt",
+          origin,
+        }),
+      ),
+    ).toContain("Pídela en caja con el folio A-000123.");
+    expect(
+      html(
+        createElement(CfdiReceiptBlock, {
+          ticket: null,
+          status: status(),
+          kind: "local",
+          origin,
+        }),
+      ),
+    ).toContain("pide tu ticket con folio cuando se sincronice");
+  });
+  it("the footer slot returns null (never an empty element) when CFDI is off or for a pre-bill", () => {
+    const p = (kind: "receipt" | "check" | "local", o = order({ ticket })) => ({
+      order: o,
+      kind,
+      reprint: false,
+      locale: "es" as const,
+    });
+    expect(cfdiReceiptExtra(p("receipt"))).toBeNull();
+    setCfdiStatus(status({ available: false }));
+    expect(cfdiReceiptExtra(p("receipt"))).toBeNull();
+    setCfdiStatus(status({ enabled: false }));
+    expect(cfdiReceiptExtra(p("receipt"))).toBeNull();
+    setCfdiStatus(status());
+    expect(cfdiReceiptExtra(p("check"))).toBeNull();
+    expect(cfdiReceiptExtra(p("receipt", order({ ticket: null })))).toBeNull();
+    expect(cfdiReceiptExtra(p("receipt", order(undefined)))).toBeNull();
+    expect(cfdiReceiptExtra(p("receipt"))).not.toBeNull();
+    expect(cfdiReceiptExtra(p("local", order(undefined)))).not.toBeNull();
+  });
+});
+
+describe("cfdi client: Today alerts (28)", () => {
+  const zero: CfdiAlertsView = {
+    overdueGlobals: 0,
+    failedDocuments: 0,
+    stuckDocuments: 0,
+    rejectedSubstitutions: 0,
+    csdExpiresSoon: false,
+    mode: "live",
+  };
+  it("maps the attention counts to the four codes and omits zeros", () => {
+    expect(cfdiReportAlerts(zero)).toEqual([]);
+    expect(
+      cfdiReportAlerts({
+        overdueGlobals: 2,
+        failedDocuments: 1,
+        stuckDocuments: 3,
+        rejectedSubstitutions: 1,
+        csdExpiresSoon: true,
+        mode: "test",
+      }),
+    ).toEqual([
+      { code: "cfdi_global_overdue", count: 2 },
+      { code: "cfdi_documents_attention", count: 4 },
+      { code: "cfdi_substitution_rejected", count: 1 },
+      { code: "cfdi_csd_expiring", count: 1 },
+    ]);
+  });
+  it("returns [] when CFDI is not enabled (mode null)", () => {
+    expect(
+      cfdiReportAlerts({ ...zero, overdueGlobals: 5, mode: null }),
+    ).toEqual([]);
+  });
+  it("has Spanish and English text for each code and null for other codes", () => {
+    for (const code of [
+      "cfdi_global_overdue",
+      "cfdi_documents_attention",
+      "cfdi_substitution_rejected",
+      "cfdi_csd_expiring",
+    ]) {
+      const es = cfdiReportAlertText({ code, count: 3 }, "es");
+      const en = cfdiReportAlertText({ code, count: 3 }, "en");
+      expect(es).toBeTruthy();
+      expect(en).toBeTruthy();
+      expect(es).not.toBe(en);
+      expect(es).not.toContain("{n}");
+      expect(en).not.toContain("{n}");
+    }
+    expect(
+      cfdiReportAlertText({ code: "cfdi_global_overdue", count: 3 }, "es"),
+    ).toContain("3 facturas globales");
+    expect(
+      cfdiReportAlertText({ code: "missing_tickets", count: 1 }, "es"),
+    ).toBeNull();
+  });
+});
+
+describe("cfdi client: ticket status (29)", () => {
+  const view = (covering: CfdiTicketView["covering"]): CfdiTicketView =>
+    ({ ticketId: ticket.id, covering }) as CfdiTicketView;
+  it("asks nothing without an id or while CFDI is unavailable", () => {
+    expect(ticketStatusWanted(null, status())).toBe(false);
+    expect(ticketStatusWanted(ticket.id, null)).toBe(false);
+    expect(ticketStatusWanted(ticket.id, status({ available: false }))).toBe(
+      false,
+    );
+    expect(ticketStatusWanted(ticket.id, status())).toBe(true);
+    function Probe({ id }: { id: string | null }) {
+      return createElement("i", null, String(useCfdiTicketStatus(id)));
+    }
+    expect(html(createElement(Probe, { id: null }))).toBe("<i>null</i>");
+    setCfdiStatus(status({ available: false }));
+    expect(html(createElement(Probe, { id: ticket.id }))).toBe("<i>null</i>");
+    expect(apiMock).not.toHaveBeenCalled();
+  });
+  it("loads one view and returns null on any error", async () => {
+    const v = view(null);
+    apiMock.mockResolvedValueOnce(v);
+    await expect(loadCfdiTicketStatus(ticket.id)).resolves.toBe(v);
+    expect(apiMock).toHaveBeenCalledWith(
+      `/cfdi/tickets/${ticket.id}`,
+      undefined,
+      { signal: undefined },
+    );
+    apiMock.mockRejectedValueOnce(new Error("forbidden"));
+    await expect(loadCfdiTicketStatus(ticket.id)).resolves.toBeNull();
+    apiMock.mockRejectedValueOnce(new Error("network_unavailable"));
+    await expect(loadCfdiTicketStatus(ticket.id)).resolves.toBeNull();
+  });
+  it("a valid invoice or global covers the ticket; anything else does not", () => {
+    const c = (kind: "invoice" | "global", st: string) =>
+      view({
+        documentId: "d",
+        kind,
+        status: st,
+        label: "F-1",
+        periodKey: null,
+      });
+    expect(cfdiTicketCovered(c("invoice", "valid"))).toBe(true);
+    expect(cfdiTicketCovered(c("global", "valid"))).toBe(true);
+    expect(cfdiTicketCovered(c("invoice", "stamping"))).toBe(false);
+    expect(cfdiTicketCovered(c("global", "canceling"))).toBe(false);
+    expect(cfdiTicketCovered(view(null))).toBe(false);
+    expect(cfdiTicketCovered(null)).toBe(false);
+  });
+  it("prefetch stores the status and falls back to the cached copy; kitchen never asks", async () => {
+    apiMock.mockResolvedValueOnce(status({ version: 7 }));
+    await prefetchCfdiStatus(session);
+    expect(getCfdiStatus()?.version).toBe(7);
+    clearCfdiStatus();
+    apiMock.mockRejectedValueOnce(new Error("network_unavailable"));
+    await prefetchCfdiStatus(session);
+    expect(getCfdiStatus()?.version).toBe(7);
+    clearCfdiStatus();
+    await prefetchCfdiStatus(session, { cacheOnly: true });
+    expect(getCfdiStatus()?.version).toBe(7);
+    apiMock.mockClear();
+    await expect(
+      prefetchCfdiStatus({ ...session, role: "kitchen" }),
+    ).resolves.toBeNull();
+    expect(apiMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("cfdi client: order actions (2.5)", () => {
+  const render = (o: Order, online?: boolean) =>
+    html(
+      createElement(CfdiOrderActions, {
+        order: o,
+        session,
+        locale: "es",
+        variant: "detail",
+        online,
+      }),
+    );
+  it("renders nothing unless this employee can invoice and fiscal's view is present", () => {
+    expect(render(order({ ticket }))).toBe("");
+    setCfdiStatus(status({ canInvoice: false }));
+    expect(render(order({ ticket }))).toBe("");
+    setCfdiStatus(status());
+    expect(render(order(undefined))).toBe("");
+    expect(render(order({ ticket }, { state: "local" }))).toBe("");
+  });
+  it("shows Facturar, disabled with 'Requiere conexión.' offline, and the missing-ticket hint", () => {
+    setCfdiStatus(status());
+    expect(render(order({ ticket }))).toContain(">Facturar</button>");
+    const offline = render(order({ ticket }), false);
+    expect(offline).toContain("disabled");
+    expect(offline).toContain("Requiere conexión.");
+    expect(render(order({ ticket: null }))).toContain("Sin ticket fiscal.");
+    expect(render(order({ ticket: null }, { paid: 0 }))).toBe("");
+  });
+  it("chips follow the ticket view", () => {
+    const v = (over: Partial<CfdiTicketView>) =>
+      ({ eligibility: "available", covering: null, ...over }) as CfdiTicketView;
+    expect(ticketChip(v({}), "es").text).toBe("Sin facturar");
+    expect(ticketChip(v({ eligibility: "invoicing" }), "es").text).toBe(
+      "Facturando…",
+    );
+    expect(
+      ticketChip(
+        v({
+          eligibility: "invoiced",
+          covering: {
+            documentId: "d",
+            kind: "invoice",
+            status: "valid",
+            label: "F-12",
+            periodKey: null,
+          },
+        }),
+        "es",
+      ).text,
+    ).toBe("Facturado F-12");
+    expect(
+      ticketChip(
+        v({
+          eligibility: "in_global",
+          covering: {
+            documentId: "d",
+            kind: "global",
+            status: "valid",
+            label: "G-3",
+            periodKey: "M2026-10",
+          },
+        }),
+        "es",
+      ).text,
+    ).toBe("En factura global Octubre 2026");
+    expect(ticketChip(v({ eligibility: "fully_refunded" }), "en").text).toBe(
+      strings.en.cfdiChipRefunded,
+    );
+  });
+});
+
+describe("cfdi client: helpers", () => {
+  it("period labels", () => {
+    expect(
+      periodLabel(
+        { periodicity: "month", from: "2026-10-01", to: "2026-10-31" },
+        "es",
+      ),
+    ).toBe("Octubre 2026");
+    expect(
+      periodLabel(
+        { periodicity: "week", from: "2026-10-05", to: "2026-10-11" },
+        "es",
+      ),
+    ).toBe("Semana 5–11 oct 2026");
+    expect(
+      periodLabel(
+        { periodicity: "fortnight", from: "2026-10-01", to: "2026-10-15" },
+        "es",
+      ),
+    ).toBe("1ª quincena oct 2026");
+    expect(periodKeyLabel("D2026-10-04", "es")).toBe("4 oct 2026");
+    expect(periodKeyLabel("F2026-10-2", "es")).toBe("2ª quincena oct 2026");
+    expect(periodKeyLabel(null, "es")).toBe("");
+  });
+  it("a provider error path highlights its receptor field once", () => {
+    const issue = issueOfError({
+      code: "cfdi_receptor_name_mismatch",
+      path: "customer.legal_name",
+    });
+    expect(issue).toEqual({
+      field: "legalName",
+      code: "cfdi_receptor_name_mismatch",
+    });
+    expect(issueOfError({ code: "x", path: "items.0.product" })).toBeNull();
+    expect(issueOfError(null)).toBeNull();
+    expect(withServerIssue([], issue)).toEqual([issue]);
+    const own = {
+      field: "legalName" as const,
+      code: "cfdi_invalid_legal_name",
+    };
+    expect(withServerIssue([own], issue)).toEqual([own]);
+    const warn = {
+      field: "legalName" as const,
+      code: "cfdiLegalNameSuffix",
+      warning: true as const,
+    };
+    expect(withServerIssue([warn], issue)).toEqual([issue]);
+  });
+  it("register: ticket folios and the acceptance warning", () => {
+    const d = (over: Partial<CfdiDocumentSummary>) =>
+      ({ ticketFolios: [], ticketCount: 0, ...over }) as CfdiDocumentSummary;
+    expect(
+      ticketsLabel(d({ ticketFolios: ["A-000123"], ticketCount: 1 })),
+    ).toBe("A-000123");
+    expect(
+      ticketsLabel(
+        d({ ticketFolios: ["A-000101", "A-000187"], ticketCount: 87 }),
+      ),
+    ).toBe("A-000101 … A-000187 (87)");
+    expect(ticketsLabel(d({}))).toBe("");
+    const now = Date.parse("2026-10-05T12:00:00Z");
+    const doc = (total: number, stampedAt: string) =>
+      ({ kind: "invoice", total, stampedAt }) as CfdiDocumentView;
+    expect(needsAcceptance(doc(100_001, "2026-10-04T11:00:00Z"), now)).toBe(
+      true,
+    );
+    expect(needsAcceptance(doc(100_000, "2026-10-04T11:00:00Z"), now)).toBe(
+      false,
+    );
+    expect(needsAcceptance(doc(500_000, "2026-10-05T11:00:00Z"), now)).toBe(
+      false,
+    );
+  });
+  it("settings: badge and polling decisions", () => {
+    const view = (over: Partial<CfdiSettingsView>) =>
+      ({
+        prerequisites: {
+          platform: true,
+          fiscalComplete: true,
+          currency: true,
+          legalNameLength: true,
+          regime: "601",
+        },
+        settings: { enabled: true, mode: "test", liveRequested: null },
+        organization: {
+          status: "ready",
+          csd: { status: "valid", lastUpload: null },
+        },
+        attention: {
+          overdueGlobals: 0,
+          failedDocuments: 0,
+          stuckDocuments: 0,
+          rejectedSubstitutions: 0,
+          csdExpiresSoon: false,
+        },
+        ...over,
+      }) as unknown as CfdiSettingsView;
+    expect(cfdiBadge(view({})).key).toBe("cfdiBadgeTest");
+    expect(
+      cfdiBadge(
+        view({
+          prerequisites: {
+            platform: false,
+            fiscalComplete: true,
+            currency: true,
+            legalNameLength: true,
+            regime: null,
+          },
+        }),
+      ).key,
+    ).toBe("cfdiBadgeUnavailable");
+    expect(cfdiBadge(view({ settings: null })).key).toBe("cfdiBadgeOff");
+    expect(
+      cfdiBadge(
+        view({
+          attention: {
+            overdueGlobals: 1,
+            failedDocuments: 0,
+            stuckDocuments: 0,
+            rejectedSubstitutions: 0,
+            csdExpiresSoon: false,
+          },
+        }),
+      ),
+    ).toEqual({ key: "cfdiBadgeAttention", tone: "red" });
+    expect(settling(view({}))).toBe(false);
+    expect(
+      settling(
+        view({
+          organization: {
+            status: "provisioning",
+            csd: { status: "missing", lastUpload: null },
+          } as unknown as CfdiSettingsView["organization"],
+        }),
+      ),
+    ).toBe(true);
+    expect(settling(null)).toBe(false);
+  });
+  it("corte coverage renders the three lines", () => {
+    const out = html(
+      createElement(CfdiCorteCoverage, {
+        coverage: {
+          mode: "live",
+          tickets: 10,
+          invoiced: 2,
+          globalized: 7,
+          uncovered: 1,
+          invoicedTotal: 23200,
+          globalTotal: 81200,
+        },
+        locale: "es",
+      }),
+    );
+    expect(out).toContain("Facturación (CFDI)");
+    expect(out).toContain("Facturados a clientes: 2 tickets");
+    expect(out).toContain("En factura global: 7 tickets");
+    expect(out).toContain("Sin factura todavía: 1 tickets");
+  });
+  it("CSD files are sent as base64 and the portal reads its code from the path", () => {
+    const bytes = new Uint8Array(70_000).map((_, i) => i % 251);
+    expect(base64Of(bytes.buffer)).toBe(Buffer.from(bytes).toString("base64"));
+    expect(codeFromPath("/f/7K3M9QX2PA8D")).toBe("7K3M9QX2PA8D");
+    expect(codeFromPath("/factura")).toBeNull();
+    expect(portalMessage("request_failed", "es")).toBe(
+      strings.es.cfdiPortalRequestFailed,
+    );
+    expect(portalMessage("cfdi_portal_code_not_found", "en")).toContain("12");
+  });
+});

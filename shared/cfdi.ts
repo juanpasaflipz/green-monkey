@@ -745,6 +745,8 @@ export type PortalTicketView = Omit<
   privacyUrl: string | null;
   allowedUses: CfdiUse[];
   sandbox: boolean;
+  /** The restaurant's timezone, for the deadline date. */
+  timezone: string;
   /** Only status, masked; full data requires RFC access. */
   latest: PortalDocumentStatus | null;
 };

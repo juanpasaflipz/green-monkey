@@ -19,6 +19,7 @@ import {
   noteEditableOf,
 } from "./Receipt";
 import { KitchenTicketDocument, ticketsForOpenRounds } from "./KitchenTicket";
+import { CfdiOrderActions } from "./cfdi/CfdiOrderActions";
 
 const reasonKey: Record<string, Key> = {
   settled: "serviceCloseReasonSettled",
@@ -427,6 +428,12 @@ export function OrderDetail({
                 {t("serviceReprintReceipt")}
               </Button>
             )}
+            <CfdiOrderActions
+              order={order}
+              session={session}
+              locale={locale}
+              variant="detail"
+            />
           </div>
           <p className="muted tiny">{t("servicePrintUnconfirmed")}</p>
         </div>

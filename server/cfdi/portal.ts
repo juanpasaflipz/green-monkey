@@ -190,6 +190,7 @@ export async function portalTicket(
       privacyUrl,
       allowedUses: [...CFDI_USES],
       sandbox: state.organization?.source === "shared_sandbox",
+      timezone: facts.timezone,
       latest,
     };
   });
