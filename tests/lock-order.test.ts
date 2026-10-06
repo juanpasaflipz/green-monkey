@@ -82,6 +82,13 @@ const PERMANENT: Record<string, string> = {
     "LO-R5 financialRecovery re-takes the draft's order key reconcileSale took first",
   "server/offline-tables.ts#reconcilers.payment:5>1":
     "LO-R5 the order's key, only when paymentTarget locked nothing (unresolvable)",
+  // Public ordering (LD-24, docs/PUBLIC_ORDERING.md §6): accepting a held order.
+  "server/public-holds.ts#acceptHold:2b>1":
+    "LO-R5 the hold's own order key (createOrder/addRound(h.order_operation_id)), before LO-4",
+  "server/public-holds.ts#acceptHold:12>1":
+    "LO-R5 fresh key (recordPayment(randomUUID())) after createOrder's refresh (E5)",
+  "server/public-holds.ts#acceptHold:12>11":
+    "E5 (createOrder's refresh cannot issue at creation; then the drawer, as applySale)",
 };
 const ALLOWLIST = { ...FISCAL_REORDER, ...PERMANENT };
 
