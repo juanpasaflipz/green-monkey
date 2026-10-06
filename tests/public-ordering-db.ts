@@ -49,6 +49,8 @@ import {
   rejectHold,
 } from "../server/public-holds.js";
 import { holdStatus } from "../server/public-diner.js";
+import { saveRestaurantPrivacy } from "../server/account-settings.js";
+import { exportTables } from "../server/data-export.js";
 import {
   linkHash,
   newPublicToken,
@@ -2692,7 +2694,7 @@ try {
 
   // ------------------------------------------------------------------ HTTP
 
-  await test("28. the kill switch: diner routes answer public_ordering_disabled before any limiter; staff routes refuse and the summary is empty", async () => {
+  await test("28. the kill switch (account's publicOrderingGate and publicOrderingEnabled): every diner route answers public_ordering_disabled before any limiter; staff routes refuse and the summary is empty", async () => {
     const t = await makeTenant("gate");
     const l = await link(t, { kind: "counter", label: "Ventanilla" });
     const previous = process.env.PUBLIC_ORDERING_ENABLED;
@@ -2705,12 +2707,21 @@ try {
       next();
     });
     try {
-      const r = await off.menu(l.token);
-      assert.deepEqual(
-        [r.status, r.body.error],
-        [404, "public_ordering_disabled"],
-      );
-      assert.equal(r.headers.get("ratelimit-limit"), null);
+      const key = newPublicToken();
+      for (const r of [
+        await off.menu(l.token),
+        await off.revision(l.token),
+        await off.submit(l.token, await body(t, [{ productId: t.p.taco }])),
+        await off.status(l.token, key),
+        await off.cancel(l.token, key),
+      ]) {
+        assert.deepEqual(
+          [r.status, r.body.error],
+          [404, "public_ordering_disabled"],
+        );
+        assert.equal(r.headers.get("ratelimit-limit"), null);
+        assert.equal(r.headers.get("ratelimit-policy"), null);
+      }
       publicOrderingRoutes.register({
         app: staff,
         sql,
@@ -2930,7 +2941,7 @@ try {
     }
   });
 
-  await test("30. HTTP shape: no-store and noindex on every diner reply; old signed routes are gone; no internal fields leak", async () => {
+  await test("30. HTTP shape: no-store and noindex on every diner reply; old signed routes are gone; no internal fields leak; the menu carries account's restaurant privacy URL", async () => {
     const t = await makeTenant("shape");
     const l = await link(t, { kind: "table", tableId: t.tables[0].id });
     const replies = [
@@ -2963,6 +2974,20 @@ try {
       privacyNoticeUrl: null,
     });
     assert(!menu.catalog.some((p) => p.openAmount), "no open-price products");
+    // B3: account's restaurantPrivacyUrl (031) fills the field once the owner
+    // saves the restaurant's own notice.
+    await run(t.s.owner, (tx) =>
+      saveRestaurantPrivacy(tx, t.s.owner, {
+        operationId: op(),
+        expectedVersion: 0,
+        privacyNoticeUrl: "https://taqueria-prueba.mx/privacidad",
+      }),
+    );
+    const noticed = await pub.menu(l.token);
+    assert.equal(
+      noticed.body.restaurant.privacyNoticeUrl,
+      "https://taqueria-prueba.mx/privacidad",
+    );
     const b1 = await body(t, [{ productId: t.p.taco }]);
     await pub.submit(l.token, b1);
     await accept(t, (await holdOf(t, b1)).id);
@@ -2976,6 +3001,60 @@ try {
         t.tenantId,
       ])
         assert(!text.includes(field), field);
+  });
+
+  await test("31. export: account's column rule drops token_hash, status_key_hash and request_hash; no token, status key or hash reaches an owner's export of the public tables", async () => {
+    const t = await makeTenant("export");
+    const l = await link(t, { kind: "counter", label: "Exportación" });
+    const b1 = await body(t, [{ productId: t.p.taco }], { name: "Ana" });
+    const sent = await pub.submit(l.token, b1);
+    assert.equal(sent.status, 200, JSON.stringify(sent.body));
+    const h = await holdOf(t, b1);
+    const tables = new Map(
+      (await run(t.s.owner, (tx) => exportTables(tx))).map((x) => [x.name, x]),
+    );
+    const columns = (name: string) => {
+      const x = tables.get(name);
+      assert(x, `${name} is exported`);
+      for (const c of x.columns) assert(!/hash|token/.test(c), `${name}.${c}`);
+      return x.columns;
+    };
+    assert(!columns("public_links").includes("token_hash"));
+    assert(columns("public_links").includes("label"));
+    const holds = columns("public_order_holds");
+    for (const c of ["status_key_hash", "request_hash"])
+      assert(!holds.includes(c), c);
+    assert(holds.includes("name"), "the diner's own data is exported");
+    columns("public_ordering_settings");
+    columns("public_hold_numbers");
+    const secrets = [
+      l.token,
+      linkHash(l.token),
+      b1.statusKey,
+      statusHash(b1.statusKey),
+      h.request_hash as string,
+      h.status_key_hash as string,
+    ];
+    for (const name of [
+      "public_links",
+      "public_order_holds",
+      "public_ordering_settings",
+      "public_hold_numbers",
+    ]) {
+      const rows = await run(
+        t.s.owner,
+        (tx) => tx`select ${tx(tables.get(name)!.columns)} from ${tx(name)}`,
+      );
+      assert(rows.length > 0 || name === "public_ordering_settings", name);
+      const text = JSON.stringify(rows);
+      for (const secret of secrets)
+        assert(!text.includes(secret), `${name} leaks a token or hash`);
+    }
+    assert(
+      JSON.stringify(
+        await run(t.s.owner, (tx) => tx`select name from public_order_holds`),
+      ).includes("Ana"),
+    );
   });
 
   await test("32. a reused status key conflicts (no 500, no row); the same key in another restaurant is fine", async () => {

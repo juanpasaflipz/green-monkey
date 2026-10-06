@@ -62,6 +62,8 @@ class Fixture {
   tables: Table[] = [];
   orders: string[] = [];
   policies = false;
+  /** The restaurant's privacy notice URL before setPrivacy (account 031). */
+  privacyBefore: { url: string | null } | null = null;
   done = false;
   constructor(
     public page: Page,
@@ -89,6 +91,22 @@ class Fixture {
     expect(r.status, JSON.stringify(r.data)).toBe(200);
     this.links.push(r.data.id);
     return r.data;
+  }
+  /** Saves the restaurant's privacy notice URL (account 031); cleanup restores it. */
+  async setPrivacy(url: string | null) {
+    const v = (await call(this.page, "/account/restaurant-privacy")).data;
+    this.privacyBefore ??= { url: v.privacyNoticeUrl };
+    const r = await call(this.page, "/account/restaurant-privacy", {
+      operationId: op(),
+      expectedVersion: v.version,
+      privacyNoticeUrl: url,
+    });
+    expect(r.status, JSON.stringify(r.data)).toBe(200);
+  }
+  async restorePrivacy() {
+    if (!this.privacyBefore) return;
+    await this.setPrivacy(this.privacyBefore.url);
+    this.privacyBefore = null;
   }
   /** Rejects every pending hold of this test's links, by table or link name. */
   async decideHolds() {
@@ -132,6 +150,7 @@ class Fixture {
       await this.page.evaluate(() => fetch("/api/logout", { method: "POST" }));
       await login(this.page);
     }
+    await this.restorePrivacy();
     await this.decideHolds();
     for (const id of this.links)
       await call(this.page, `/ordering/links/${id}/revoke`, {
@@ -309,13 +328,34 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     await expect(
       customer.getByText("Precios en MXN con IVA incluido."),
     ).toBeVisible();
-    // PRIVACY-7: Phase A has no restaurant notice (account's copy says so),
-    // and the platform notice opens in a new tab on a phone.
-    await expect(
-      customer.getByText(
-        "Este restaurante aún no publicó un aviso de privacidad; no escribas datos personales.",
-      ),
-    ).toBeVisible();
+    // PRIVACY-7: without a restaurant notice account's copy says so, and the
+    // platform notice opens in a new tab on a phone.
+    const noNotice = customer.getByText(
+      "Este restaurante aún no publicó un aviso de privacidad; no escribas datos personales.",
+    );
+    await expect(noNotice).toBeVisible();
+    // B3: once the owner saves the restaurant's own notice (account 031), the
+    // diner sees it as a link that opens in a new tab; the value is restored.
+    await f.setPrivacy("https://casa-del-bosque.mx/privacidad");
+    await customer.reload();
+    const restaurantNotice = customer.getByRole("link", {
+      name: "Aviso de privacidad de Casa del Bosque · Demo",
+      exact: true,
+    });
+    await expect(restaurantNotice).toHaveAttribute(
+      "href",
+      "https://casa-del-bosque.mx/privacidad",
+    );
+    await expect(restaurantNotice).toHaveAttribute("target", "_blank");
+    await expect(restaurantNotice).toHaveAttribute(
+      "rel",
+      "noopener noreferrer",
+    );
+    await expect(noNotice).toHaveCount(0);
+    await f.restorePrivacy();
+    await customer.reload();
+    await expect(noNotice).toBeVisible();
+    await expect(restaurantNotice).toHaveCount(0);
     const platform = customer.getByRole("link", {
       name: "Pedido procesado con Green Monkey · Privacidad de la plataforma",
     });

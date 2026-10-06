@@ -7,6 +7,7 @@ import {
 } from "../server/account-settings";
 import { accountWebConfig } from "../server/account-config";
 import { loadConfig } from "../server/config-rules";
+import { LINK_HEADER } from "../shared/public-ordering";
 
 describe("PUBLIC_ORDERING_ENABLED interim switch (SEC-7 / FIT-11 / FOH-13)", () => {
   it("publicOrderingEnabled: unset is false when APP_ENV=production and true otherwise; explicit true/false win; other values throw public_ordering_flag_invalid", () => {
@@ -63,14 +64,19 @@ describe("PUBLIC_ORDERING_ENABLED interim switch (SEC-7 / FIT-11 / FOH-13)", () 
     const server = app.listen(0, "127.0.0.1");
     await new Promise((resolve) => server.once("listening", resolve));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    // Public ordering (032) routes: the link token travels in a header.
+    const headers = { [LINK_HEADER]: "A".repeat(22) };
     try {
-      const off = await fetch(base + "/off/token/catalog");
+      const off = await fetch(base + "/off/menu", { headers });
       expect(off.status).toBe(404);
       expect(await off.json()).toEqual({ error: "public_ordering_disabled" });
-      const post = await fetch(base + "/off/token/orders", { method: "POST" });
+      const post = await fetch(base + "/off/orders", {
+        method: "POST",
+        headers,
+      });
       expect(post.status).toBe(404);
       expect(reached).toBe(0);
-      const on = await fetch(base + "/on/token/catalog");
+      const on = await fetch(base + "/on/menu", { headers });
       expect(on.status).toBe(200);
       expect(reached).toBe(1);
     } finally {

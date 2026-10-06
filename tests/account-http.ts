@@ -11,7 +11,8 @@ import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { generatePairingCode, pairingHash } from "../server/access-pairing.js";
-import { sign } from "../server/auth.js";
+import { newPublicToken } from "../server/public-tokens.js";
+import { LINK_HEADER, STATUS_HEADER } from "../shared/public-ordering.js";
 import { LEGAL_CI_ENV } from "./fixtures/legal-ci.js";
 
 const target = new URL(process.env.DATABASE_URL ?? "");
@@ -152,17 +153,6 @@ async function paired(employeeId: string, secret: string) {
     deviceId: pair.json.device.id as string,
   };
 }
-const orderingToken = (deviceId: string) =>
-  sign({
-    purpose: "ordering",
-    id: randomUUID(),
-    tenantId: TENANT,
-    employeeId: OWNER,
-    deviceId,
-    tableId: null,
-    channel: "qr",
-    expiresAt: Date.now() + 3600_000,
-  });
 
 try {
   await start({ ...LEGAL_CI_ENV, PUBLIC_ORDERING_ENABLED: "false" });
@@ -188,22 +178,33 @@ try {
     },
   );
   await check(
-    "2 PUBLIC_ORDERING_ENABLED=false: /api/public catalog, revision and orders and POST /api/ordering-links → 404 public_ordering_disabled before any limiter; malformed JSON still → 400 invalid_json",
+    "2 PUBLIC_ORDERING_ENABLED=false: the diner routes (/api/public menu, revision, orders, status and status/cancel) and the staff /api/ordering/links routes → 404 public_ordering_disabled before any limiter; malformed JSON still → 400 invalid_json",
     async () => {
-      const token = orderingToken(owner.deviceId);
+      // Public ordering (032): opaque link and status tokens travel in
+      // headers, never in a path; well-formed ones so only the gate refuses.
+      const headers = {
+        "Content-Type": "application/json",
+        [LINK_HEADER]: newPublicToken(),
+        [STATUS_HEADER]: newPublicToken(),
+      };
       for (const [method, path] of [
-        ["GET", `/api/public/${token}/catalog`],
-        ["GET", `/api/public/${token}/revision`],
-        ["POST", `/api/public/${token}/orders`],
-        ["GET", `/api/public/receipt/${token}`],
+        ["GET", "/api/public/menu"],
+        ["GET", "/api/public/revision"],
+        ["POST", "/api/public/orders"],
+        ["GET", "/api/public/status"],
+        ["POST", "/api/public/status/cancel"],
       ] as const) {
-        const r = await new Browser().request(
+        const r = await fetch(origin + path, {
           method,
-          path,
-          method === "POST" ? {} : undefined,
-        );
+          headers,
+          ...(method === "POST" ? { body: "{}" } : {}),
+        });
         assert.equal(r.status, 404, path);
-        assert.deepEqual(r.json, { error: "public_ordering_disabled" }, path);
+        assert.deepEqual(
+          await r.json(),
+          { error: "public_ordering_disabled" },
+          path,
+        );
         assert.equal(
           r.headers.get("ratelimit-limit"),
           null,
@@ -211,12 +212,16 @@ try {
         );
         assert.equal(r.headers.get("ratelimit-policy"), null);
       }
-      const links = await owner.browser.request("POST", "/api/ordering-links", {
-        channel: "qr",
-        tableId: null,
-      });
-      assert.equal(links.status, 404);
-      assert.equal(links.json.error, "public_ordering_disabled");
+      const created = await owner.browser.request(
+        "POST",
+        "/api/ordering/links",
+        { kind: "counter", label: "Account HTTP" },
+      );
+      assert.equal(created.status, 404);
+      assert.equal(created.json.error, "public_ordering_disabled");
+      const listed = await owner.browser.request("GET", "/api/ordering/links");
+      assert.equal(listed.status, 404);
+      assert.equal(listed.json.error, "public_ordering_disabled");
       // The CD smoke (scripts/ops/smoke.mjs) posts malformed JSON here.
       const malformed = await new Browser().request(
         "POST",
@@ -416,7 +421,7 @@ try {
   // Without the legal set (CI sets it on this step): documents unpublished.
   await start({ PUBLIC_ORDERING_ENABLED: "true" }, Object.keys(LEGAL_CI_ENV));
   await check(
-    "3 PUBLIC_ORDERING_ENABLED=true: the catalog includes restaurant.privacyNoticeUrl; account-config reports enabled and unpublished documents",
+    "3 PUBLIC_ORDERING_ENABLED=true: the diner menu (/api/public/menu) includes restaurant.privacyNoticeUrl; account-config reports enabled and unpublished documents",
     async () => {
       const device = await paired(OWNER, "demo-green-monkey");
       // The fixture's own settings row (if any) is restored afterwards.
@@ -429,32 +434,47 @@ try {
         on conflict(tenant_id) do update set privacy_notice_url=excluded.privacy_notice_url`;
         return row as { privacy_notice_url: string | null } | undefined;
       });
-      const token = orderingToken(device.deviceId);
-      const catalog = await new Browser().request(
-        "GET",
-        `/api/public/${token}/catalog`,
-      );
-      assert.equal(catalog.status, 200, JSON.stringify(catalog.json));
-      assert.equal(
-        catalog.json.restaurant.privacyNoticeUrl,
-        "https://taqueria-demo.mx/privacidad",
-      );
-      await admin.begin(async (tx) => {
-        await tx`select set_config('app.tenant_id',${TENANT},true)`;
-        if (before)
-          await tx`update restaurant_account_settings set privacy_notice_url=${before.privacy_notice_url}
-          where tenant_id=${TENANT}`;
-        else
-          await tx`delete from restaurant_account_settings where tenant_id=${TENANT}`;
+      // Public ordering (032): a revocable counter code; the diner menu reads
+      // its token from a header. The code is deactivated afterwards (LD-P9).
+      const link = await device.browser.request("POST", "/api/ordering/links", {
+        kind: "counter",
+        label: "Account HTTP privacy",
       });
-      const restored = await new Browser().request(
-        "GET",
-        `/api/public/${token}/catalog`,
-      );
-      assert.equal(
-        restored.json.restaurant.privacyNoticeUrl,
-        before?.privacy_notice_url ?? null,
-      );
+      assert.equal(link.status, 200, JSON.stringify(link.json));
+      const menu = async () => {
+        const r = await fetch(origin + "/api/public/menu", {
+          headers: { [LINK_HEADER]: link.json.token },
+        });
+        return { status: r.status, json: await r.json() };
+      };
+      try {
+        const catalog = await menu();
+        assert.equal(catalog.status, 200, JSON.stringify(catalog.json));
+        assert.equal(
+          catalog.json.restaurant.privacyNoticeUrl,
+          "https://taqueria-demo.mx/privacidad",
+        );
+        await admin.begin(async (tx) => {
+          await tx`select set_config('app.tenant_id',${TENANT},true)`;
+          if (before)
+            await tx`update restaurant_account_settings set privacy_notice_url=${before.privacy_notice_url}
+            where tenant_id=${TENANT}`;
+          else
+            await tx`delete from restaurant_account_settings where tenant_id=${TENANT}`;
+        });
+        const restored = await menu();
+        assert.equal(
+          restored.json.restaurant.privacyNoticeUrl,
+          before?.privacy_notice_url ?? null,
+        );
+      } finally {
+        const revoked = await device.browser.request(
+          "POST",
+          `/api/ordering/links/${link.json.id}/revoke`,
+          { operationId: randomUUID() },
+        );
+        assert.equal(revoked.status, 200, JSON.stringify(revoked.json));
+      }
       const config = await new Browser().request("GET", "/api/account-config");
       assert.deepEqual(config.json.publicOrdering, { enabled: true });
       assert.equal(config.json.legal.status, "unpublished");

@@ -828,6 +828,9 @@ test("restaurant privacy URL appears on QR ordering; missing URL shows no-notice
     await tx`select set_config('app.tenant_id',${DEMO_TENANT},true)`;
     return tx`select privacy_notice_url from restaurant_account_settings where tenant_id=${DEMO_TENANT}`;
   });
+  // Public ordering (032): the diner page of a revocable counter code, which
+  // this test deactivates again in its finally (LD-P9).
+  let linkId: string | null = null;
   try {
     await demoOwnerLogin(page);
     const privacy = await settings(page);
@@ -848,11 +851,12 @@ test("restaurant privacy URL appears on QR ordering; missing URL shows no-notice
       .click();
     await expect(privacy.getByRole("status")).toHaveText("Enlace guardado");
     await axe(page);
-    const access = await call(page, "/ordering-links", {
-      channel: "qr",
-      tableId: null,
+    const access = await call(page, "/ordering/links", {
+      kind: "counter",
+      label: `Privacidad ${randomUUID().slice(0, 5)}`,
     });
-    expect(access.status).toBe(200);
+    expect(access.status, JSON.stringify(access.body)).toBe(200);
+    linkId = access.body.id;
     const customer = await context.newPage();
     await customer.goto(access.body.path);
     const notice = customer.getByRole("link", {
@@ -888,6 +892,14 @@ test("restaurant privacy URL appears on QR ordering; missing URL shows no-notice
     ).toBeVisible();
     await expect(notice).toHaveCount(0);
   } finally {
+    if (linkId)
+      expect(
+        (
+          await call(page, `/ordering/links/${linkId}/revoke`, {
+            operationId: randomUUID(),
+          })
+        ).status,
+      ).toBe(200);
     // The demo restaurant keeps the settings row it had before.
     await admin.begin(async (tx) => {
       await tx`select set_config('app.tenant_id',${DEMO_TENANT},true)`;
@@ -1695,47 +1707,111 @@ test("the Google button waits for the legal configuration, so no sign-in starts 
   );
 });
 
-test("an old QR link on a disabled deployment shows only the counter message", async ({
+test("a QR code on a disabled deployment shows only the counter message", async ({
   page,
 }) => {
   await page.route("**/api/public/**", (route) =>
     route.fulfill({ status: 404, json: { error: "public_ordering_disabled" } }),
   );
-  await page.goto(`/qr/${randomUUID()}`);
-  await expect(page.getByRole("alert")).toHaveText(
-    "Los pedidos en línea no están disponibles por ahora. Pide en el mostrador.",
-  );
+  // Public ordering (032): a code is a well-formed fragment token that the
+  // page sends to the API (a legacy signed path never reaches it and reads
+  // "Este código ya no funciona" instead).
+  const token = randomUUID().replace(/-/g, "").slice(0, 22);
+  await page.goto(`/qr#${token}`);
+  const message =
+    "Los pedidos en línea no están disponibles por ahora. Pide en el mostrador.";
   await expect(
-    page.getByRole("button", { name: "Enviar a cocina" }),
-  ).toHaveCount(0);
+    page.getByRole("heading", { name: message, exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("main")).toHaveText(message);
+  await expect(page.getByRole("button", { name: "Enviar pedido" })).toHaveCount(
+    0,
+  );
   await expect(page.getByLabel("Nombre (opcional)")).toHaveCount(0);
   await axe(page);
 });
 
-test("the ordering-link generator is hidden when publicOrdering.enabled=false", async ({
+test("the online-ordering settings and table QR codes are hidden when public ordering is disabled", async ({
   page,
   context,
 }) => {
   const real = await (await page.request.get("/api/account-config")).json();
+  // A deployment with PUBLIC_ORDERING_ENABLED=false: account's configuration
+  // says so, and public ordering's staff routes answer as its server does
+  // (server/routes/public-ordering.ts): settings and the inbox summary say
+  // "not available", every other /api/ordering route is 404
+  // public_ordering_disabled.
   await page.route("**/api/account-config", (route) =>
     route.fulfill({ json: { ...real, publicOrdering: { enabled: false } } }),
   );
+  await page.route("**/api/ordering/**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (
+      route.request().method() === "GET" &&
+      path === "/api/ordering/settings"
+    ) {
+      const response = await route.fetch();
+      return route.fulfill({
+        response,
+        json: {
+          ...(await response.json()),
+          available: false,
+          pro: false,
+          canEdit: false,
+          canPause: false,
+          acceptingNow: false,
+          reason: null,
+        },
+      });
+    }
+    if (
+      route.request().method() === "GET" &&
+      path === "/api/ordering/inbox/summary"
+    )
+      return route.fulfill({
+        json: { available: false, active: false, pending: 0, oldestAt: null },
+      });
+    return route.fulfill({
+      status: 404,
+      json: { error: "public_ordering_disabled" },
+    });
+  });
+  const settingsRead = (p: Page) =>
+    p.waitForResponse(
+      (r) =>
+        new URL(r.url()).pathname === "/api/ordering/settings" &&
+        r.request().method() === "GET",
+    );
   await demoOwnerLogin(page);
+  let read = settingsRead(page);
   await page
     .getByRole("button", { name: "Configuración", exact: true })
     .click();
+  await read;
   // PlanSettings reads the same configuration: once it says "próximamente"
   // the switch has been applied on this page.
   await expect(
     page.getByText("Kiosco y pedidos QR: próximamente.", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Crear enlace de pedido", exact: true }),
+    page.getByRole("region", { name: "Pedidos en línea (QR y kiosco)" }),
+  ).toHaveCount(0);
+  read = settingsRead(page);
+  await page
+    .getByRole("button", { name: "Menú e inventario", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Mesas", exact: true }).click();
+  await read;
+  await expect(
+    page.getByRole("button", { name: "Agregar varias mesas", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Códigos QR de mesas", exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByRole("combobox", { name: "Pedidos QR y kiosco" }),
+    page.getByRole("button", { name: /^Código QR de / }),
   ).toHaveCount(0);
-  // With the switch on, the generator is offered again.
+  // With ordering on, the panel and the table codes are offered again.
   const enabled = await context.newPage();
   await enabled.route("**/api/account-config", (route) =>
     route.fulfill({ json: { ...real, publicOrdering: { enabled: true } } }),
@@ -1745,10 +1821,14 @@ test("the ordering-link generator is hidden when publicOrdering.enabled=false", 
     .getByRole("button", { name: "Configuración", exact: true })
     .click();
   await expect(
-    enabled.getByRole("button", {
-      name: "Crear enlace de pedido",
-      exact: true,
-    }),
+    enabled.getByRole("region", { name: "Pedidos en línea (QR y kiosco)" }),
+  ).toBeVisible();
+  await enabled
+    .getByRole("button", { name: "Menú e inventario", exact: true })
+    .click();
+  await enabled.getByRole("button", { name: "Mesas", exact: true }).click();
+  await expect(
+    enabled.getByRole("button", { name: "Códigos QR de mesas", exact: true }),
   ).toBeVisible();
   await enabled.close();
 });
