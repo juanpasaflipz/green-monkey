@@ -51,7 +51,9 @@ runs:
     - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
       with:
         node-version-file: .nvmrc
-        cache: npm
+        # No npm cache restored from less-privileged jobs: it would also hold
+        # ~/.npm/_npx, where the Railway CLI below is installed (PLATFORM-CI-3).
+        package-manager-cache: false
     - name: Install and build
       shell: bash
       run: npm ci && npm run build

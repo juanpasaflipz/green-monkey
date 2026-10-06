@@ -256,14 +256,21 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     }
   });
 
-  it("retention.yml runs scripts/migrate.ts --retention-only with pinned actions and the environment secret, and its crons fall inside RETENTION_WINDOW and at least 90 minutes after backup.yml's production cron", () => {
+  it("retention.yml runs the compiled build/scripts/migrate.js --retention-only with pinned actions and the environment secret, and its crons fall inside RETENTION_WINDOW and at least 90 minutes after backup.yml's production cron", () => {
     const pass = steps(retention).find((s) => s.includes("--retention-only"))!;
-    expect(pass).toContain(
-      "npx --no-install tsx scripts/migrate.ts --retention-only",
-    );
+    // PLATFORM-CI-4: the secret-holding step runs compiled code only (no tsx, no npx).
+    expect(pass).toContain("node build/scripts/migrate.js --retention-only");
+    expect(pass).not.toMatch(/\btsx\b|\bnpx\b|npm (ci|install|run)/);
     expect(pass).toContain(
       "MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}",
     );
+    // Install and compile run before it, in a step without any secret.
+    const all = steps(retention);
+    const install = all.findIndex((s) => s.includes("npm ci"));
+    expect(install).toBeGreaterThan(-1);
+    expect(install).toBeLessThan(all.indexOf(pass));
+    expect(all[install]).toContain("npx tsc -p tsconfig.server.json");
+    expect(all[install]).not.toContain("secrets.");
     expect(pass).toContain("APP_ENV: ${{ env.RETENTION_ENV }}");
     expect(retention).toMatch(/\n {4}environment: \$\{\{ /);
     expect(retention).toContain("timeout-minutes: 50");
@@ -305,7 +312,7 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     }
   });
 
-  it("retention.yml retries exit 75 at most twice, 5 minutes apart, and passes 0 and 1 through", () => {
+  it("retention.yml retries exit 75 at most twice, 5 minutes apart, and passes 0 and 1 through; a scheduled run never starts outside RETENTION_WINDOW and stops retrying once it closes (PLATFORM-OPS-8)", () => {
     const pass = steps(retention).find((s) => s.includes("--retention-only"))!;
     const body = pass
       .split("run: |\n")[1]
@@ -314,10 +321,23 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
       .join("\n");
     const dir = mkdtempSync(join(tmpdir(), "gm-retention-yml-"));
     try {
-      // Stubs: npx exits with the next scripted code; sleep records its argument.
+      // Stubs: node runs either the window probe (answers from $WINDOWS, one line
+      // per call) or migrate.js (exits with the next scripted code); sleep records
+      // its argument.
       writeFileSync(
-        join(dir, "npx"),
-        '#!/usr/bin/env bash\necho "npx $*" >> "$CALLS"\nn=$(wc -l < "$CALLS")\ncode=$(sed -n "${n}p" "$CODES")\nexit "${code:-0}"\n',
+        join(dir, "node"),
+        [
+          "#!/usr/bin/env bash",
+          'if [[ "$*" == *inRetentionWindow* ]]; then',
+          '  echo w >> "$WINDOW_CALLS"; n=$(wc -l < "$WINDOW_CALLS")',
+          '  answer=$(sed -n "${n}p" "$WINDOWS"); [ "${answer:-in}" = in ]; exit $?',
+          "fi",
+          'echo "node $*" >> "$CALLS"',
+          'n=$(wc -l < "$CALLS")',
+          'code=$(sed -n "${n}p" "$CODES")',
+          'exit "${code:-0}"',
+          "",
+        ].join("\n"),
         { mode: 0o755 },
       );
       writeFileSync(
@@ -325,13 +345,22 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
         '#!/usr/bin/env bash\necho "sleep $*" >> "$SLEEPS"\n',
         { mode: 0o755 },
       );
-      const run = (codes: number[]) => {
-        const calls = join(dir, `calls-${codes.join("-")}`);
-        const sleeps = join(dir, `sleeps-${codes.join("-")}`);
-        const codesFile = join(dir, `codes-${codes.join("-")}`);
+      let runs = 0;
+      const run = (
+        codes: number[],
+        o: { event?: string; windows?: string[] } = {},
+      ) => {
+        const tag = String(runs++);
+        const calls = join(dir, `calls-${tag}`);
+        const sleeps = join(dir, `sleeps-${tag}`);
+        const codesFile = join(dir, `codes-${tag}`);
+        const windows = join(dir, `windows-${tag}`);
+        const windowCalls = join(dir, `window-calls-${tag}`);
         writeFileSync(calls, "");
         writeFileSync(sleeps, "");
+        writeFileSync(windowCalls, "");
         writeFileSync(codesFile, codes.join("\n") + "\n");
+        writeFileSync(windows, (o.windows ?? []).join("\n") + "\n");
         let status = 0;
         let out: string;
         try {
@@ -339,9 +368,12 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
             env: {
               PATH: `${dir}:${process.env.PATH ?? ""}`,
               MIGRATION_DATABASE_URL: "postgresql://m@h/d",
+              EVENT: o.event ?? "workflow_dispatch",
               CALLS: calls,
               SLEEPS: sleeps,
               CODES: codesFile,
+              WINDOWS: windows,
+              WINDOW_CALLS: windowCalls,
             },
             encoding: "utf8",
             stdio: ["ignore", "pipe", "pipe"],
@@ -356,16 +388,21 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
           out,
           calls: read(calls).trim().split("\n").filter(Boolean),
           sleeps: read(sleeps).trim().split("\n").filter(Boolean),
+          windowChecks: read(windowCalls).trim().split("\n").filter(Boolean)
+            .length,
         };
       };
       expect(run([0])).toMatchObject({ status: 0, sleeps: [] });
       expect(run([0]).calls).toEqual([
-        "npx --no-install tsx scripts/migrate.ts --retention-only",
+        "node build/scripts/migrate.js --retention-only",
       ]);
       expect(run([1])).toMatchObject({ status: 1, sleeps: [] });
       const retried = run([75, 0]);
       expect(retried).toMatchObject({ status: 0, sleeps: ["sleep 300"] });
       expect(retried.calls).toHaveLength(2);
+      expect(retried.windowChecks, "a dispatch never checks the window").toBe(
+        0,
+      );
       expect(run([75, 75, 1])).toMatchObject({
         status: 1,
         sleeps: ["sleep 300", "sleep 300"],
@@ -375,6 +412,22 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
       expect(red.calls).toHaveLength(3);
       expect(red.sleeps).toEqual(["sleep 300", "sleep 300"]);
       expect(red.out).toContain("::error::retention skipped three times");
+      // Scheduled: a delayed cron outside the window does nothing and is green.
+      const late = run([0], { event: "schedule", windows: ["out"] });
+      expect(late).toMatchObject({ status: 0, calls: [] });
+      expect(late.out).toContain("retention_outside_window");
+      // Scheduled: inside the window it runs and retries while the window is open…
+      expect(
+        run([75, 0], { event: "schedule", windows: ["in", "in"] }),
+      ).toMatchObject({ status: 0, sleeps: ["sleep 300"] });
+      // …and stops (red) once the window has closed after a skip.
+      const closed = run([75, 0], {
+        event: "schedule",
+        windows: ["in", "out"],
+      });
+      expect(closed.status).toBe(75);
+      expect(closed.calls).toHaveLength(1);
+      expect(closed.out).toContain("RETENTION_WINDOW has closed");
       // A missing secret fails before any attempt.
       const env = { PATH: `${dir}:${process.env.PATH ?? ""}` };
       let missing = "";
@@ -394,6 +447,213 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("retention.yml checks out the environment's live release, never the bare default branch, without persisted credentials or a shared npm cache (PLATFORM-ROLES-1, CI-3, CI-5)", () => {
+    const checkouts = steps(retention).filter((s) =>
+      s.includes("actions/checkout@"),
+    );
+    expect(checkouts).toHaveLength(1);
+    expect(checkouts[0]).toContain("ref: ${{ steps.live.outputs.sha }}");
+    expect(checkouts[0]).toContain("persist-credentials: false");
+    const all = steps(retention);
+    const live = all.findIndex((s) => /\n\s*id: live\n/.test(s));
+    expect(live).toBeGreaterThan(-1);
+    expect(live).toBeLessThan(all.indexOf(checkouts[0]));
+    expect(all[live]).not.toContain("secrets.");
+    // Privileged jobs never restore the npm cache Qualification saves.
+    for (const [name, text] of [
+      ["retention.yml", retention],
+      ["backup.yml", backup],
+      ["deploy action", action],
+    ] as const) {
+      expect(text, name).not.toMatch(/\n\s*cache: npm\n/);
+      expect(text, name).toContain("package-manager-cache: false");
+    }
+    for (const [name, text] of [
+      ["retention.yml", retention],
+      ["backup.yml", backup],
+      ["deploy.yml", deploy],
+    ] as const)
+      for (const step of steps(text).filter((s) =>
+        s.includes("actions/checkout@"),
+      ))
+        expect(step, name).toContain("persist-credentials: false");
+    // The release tag comes from gh release create alone (no git push with a
+    // persisted token).
+    expect(deploy).not.toMatch(/\bgit (tag|push)\b/);
+    expect(deploy).toContain(
+      'gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$SHA"',
+    );
+  });
+
+  it.skipIf(!hasJq)(
+    "retention's live release: production = the newest prod-* tag (staged, on main), staging = the newest main commit with deploy/staging success; it fails closed otherwise, and a production dispatch respects service hours (PLATFORM-ROLES-1, CI-6)",
+    () => {
+      const block = marked(retention, "retention-live-release");
+      const dir = mkdtempSync(join(tmpdir(), "gm-retention-live-"));
+      try {
+        const sha = (c: string) => c.repeat(40);
+        // gh stand-in: GET responses from $RESPONSES (path -> JSON), through jq.
+        writeFileSync(
+          join(dir, "gh"),
+          [
+            `#!${process.execPath}`,
+            'const { execFileSync } = require("node:child_process");',
+            'const { readFileSync } = require("node:fs");',
+            "const args = process.argv.slice(2).filter((a) => a !== '--paginate');",
+            'const jq = args.includes("--jq") ? args[args.indexOf("--jq") + 1] : ".";',
+            'const path = args.find((a) => a.startsWith("repos/"));',
+            'const responses = JSON.parse(readFileSync(process.env.RESPONSES, "utf8"));',
+            'if (!(path in responses)) { console.error("404 " + path); process.exit(1); }',
+            'process.stdout.write(execFileSync("jq", ["-r", jq], { input: JSON.stringify(responses[path]), encoding: "utf8" }));',
+            "",
+          ].join("\n"),
+          { mode: 0o755 },
+        );
+        writeFileSync(
+          join(dir, "date"),
+          '#!/usr/bin/env bash\necho "$FAKE_HOUR"\n',
+          { mode: 0o755 },
+        );
+        const repo = "repos/owner/repo";
+        const staged = (state = "success") => [
+          { context: "ci/other", state: "failure" },
+          { context: "deploy/staging", state },
+        ];
+        const base: Record<string, unknown> = {
+          [`${repo}/git/matching-refs/tags/prod-`]: [
+            { ref: "refs/tags/prod-20261001-0930-aaaaaaa" },
+            { ref: "refs/tags/prod-20261004-1015-bbbbbbb" },
+            { ref: "refs/tags/prod-20261003-2200-ccccccc" },
+            { ref: "refs/tags/prod-manual-zzz" },
+          ],
+          [`${repo}/commits/tags/prod-20261004-1015-bbbbbbb`]: {
+            sha: sha("b"),
+          },
+          [`${repo}/commits/${sha("b")}/statuses`]: staged(),
+          [`${repo}/compare/${sha("b")}...main`]: { status: "ahead" },
+          [`${repo}/commits?sha=main&per_page=30`]: [
+            { sha: sha("f") },
+            { sha: sha("e") },
+            { sha: sha("d") },
+          ],
+          [`${repo}/commits/${sha("f")}/statuses`]: [],
+          [`${repo}/commits/${sha("e")}/statuses`]: staged("failure"),
+          [`${repo}/commits/${sha("d")}/statuses`]: staged(),
+          [`${repo}/compare/${sha("d")}...main`]: { status: "ahead" },
+        };
+        let n = 0;
+        const resolve = (
+          env: string,
+          o: {
+            responses?: Record<string, unknown>;
+            event?: string;
+            hour?: string;
+            allow?: string;
+          } = {},
+        ) => {
+          const responses = join(dir, `responses-${n}.json`);
+          const output = join(dir, `output-${n++}`);
+          writeFileSync(responses, JSON.stringify({ ...base, ...o.responses }));
+          writeFileSync(output, "");
+          let status = 0;
+          let out: string;
+          try {
+            out = execFileSync("bash", ["-e", "-c", block], {
+              env: {
+                PATH: `${dir}:${process.env.PATH ?? ""}`,
+                RETENTION_ENV: env,
+                EVENT: o.event ?? "schedule",
+                ALLOW_SERVICE_HOURS: o.allow ?? "",
+                GITHUB_REPOSITORY: "owner/repo",
+                GITHUB_OUTPUT: output,
+                RESPONSES: responses,
+                FAKE_HOUR: o.hour ?? "05",
+              },
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "pipe"],
+            });
+          } catch (error) {
+            const e = error as { status: number; stdout: string };
+            status = e.status;
+            out = e.stdout;
+          }
+          return { status, out, output: read(output).trim() };
+        };
+        expect(resolve("production")).toMatchObject({
+          status: 0,
+          output: `sha=${sha("b")}`,
+        });
+        expect(resolve("staging")).toMatchObject({
+          status: 0,
+          output: `sha=${sha("d")}`,
+        });
+        // Fail closed: no tag, a tag that never reached staging, a commit off main,
+        // a tag whose name does not match its commit, nothing staged.
+        const failures: [string, Record<string, unknown>, string][] = [
+          [
+            "production",
+            { [`${repo}/git/matching-refs/tags/prod-`]: [] },
+            "no prod-* release tag",
+          ],
+          [
+            "production",
+            { [`${repo}/commits/${sha("b")}/statuses`]: staged("failure") },
+            "was never live on staging",
+          ],
+          [
+            "production",
+            { [`${repo}/compare/${sha("b")}...main`]: { status: "diverged" } },
+            "is not on main",
+          ],
+          [
+            "production",
+            {
+              [`${repo}/commits/tags/prod-20261004-1015-bbbbbbb`]: {
+                sha: sha("c"),
+              },
+            },
+            "does not point at its commit",
+          ],
+          [
+            "staging",
+            { [`${repo}/commits/${sha("d")}/statuses`]: [] },
+            "carries a successful deploy/staging status",
+          ],
+          [
+            "staging",
+            { [`${repo}/compare/${sha("d")}...main`]: { status: "behind" } },
+            "is not on main",
+          ],
+        ];
+        for (const [env, responses, message] of failures) {
+          const result = resolve(env, { responses });
+          expect(result.status, message).toBe(1);
+          expect(result.out, message).toContain(message);
+          expect(result.output, message).toBe("");
+        }
+        // CI-6: a manual production run at 12:00 or later needs allow_service_hours.
+        expect(
+          resolve("production", { event: "workflow_dispatch", hour: "13" }),
+        ).toMatchObject({ status: 1 });
+        expect(
+          resolve("production", {
+            event: "workflow_dispatch",
+            hour: "13",
+            allow: "true",
+          }),
+        ).toMatchObject({ status: 0, output: `sha=${sha("b")}` });
+        expect(
+          resolve("production", { event: "workflow_dispatch", hour: "06" }),
+        ).toMatchObject({ status: 0 });
+        expect(
+          resolve("staging", { event: "workflow_dispatch", hour: "13" }),
+        ).toMatchObject({ status: 0, output: `sha=${sha("d")}` });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("railway.ts: no preDeploy; the worker declares no MIGRATION_DATABASE_URL, PG_APP_USER, SIGNING_KEYS or JWT_SECRET; the web declares no WORKER_DATABASE_URL, FACTURAPI_*, CREDENTIAL_ENCRYPTION_KEY or CFDI_LIVE_ENABLED; DEMO_TENANT_ID only inside the non-production spread; every registered name is present", () => {
     // Code only: comments may name what is deliberately absent.

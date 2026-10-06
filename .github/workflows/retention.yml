@@ -9,6 +9,17 @@ run-name: Retention ${{ github.event_name == 'workflow_dispatch' && inputs.envir
 # a backlog remains (at most 10, never starting one after 07:00). Every deploy also runs one
 # pass. A lock-timeout skip (exit 75) retries twice, 5 minutes apart; a failure has already
 # alerted retention_failed and this run opens or updates the ops-alert issue.
+#
+# The code that runs is the environment's LIVE release, never main's head
+# (PLATFORM-ROLES-1): production checks out the newest prod-* release tag
+# (deploy.yml tags every production deploy, rollbacks included) and staging the
+# newest main commit with a successful deploy/staging status; either must be on
+# main. Nothing that holds the secret runs dev dependencies (PLATFORM-CI-4): the
+# release is installed and compiled first, then only build/scripts/migrate.js
+# runs with MIGRATION_DATABASE_URL. A scheduled run never starts a pass outside
+# RETENTION_WINDOW (a delayed cron does nothing) and stops retrying once it
+# closes (PLATFORM-OPS-8). A manual production dispatch is refused during
+# service hours unless allow_service_hours is set (PLATFORM-CI-6).
 on:
   schedule:
     - cron: "15 11 * * *"
@@ -20,8 +31,13 @@ on:
         type: choice
         options: [production, staging]
         default: staging
+      allow_service_hours:
+        description: Allow a production run 12:00-23:59 America/Mexico_City (restaurant service hours)
+        type: boolean
+        default: false
 permissions:
   contents: read
+  statuses: read
   issues: write
 concurrency:
   group: retention-${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
@@ -40,13 +56,61 @@ jobs:
     environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
     env:
       RETENTION_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
+      EVENT: ${{ github.event_name }}
     steps:
+      - name: Resolve the live release (and the service-hours guard)
+        id: live
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOW_SERVICE_HOURS: ${{ inputs.allow_service_hours }}
+        run: |
+          # >>> retention-live-release (executed by tests/workflows.test.ts)
+          repo="$GITHUB_REPOSITORY"
+          case "$RETENTION_ENV" in production|staging) ;; *) echo "::error::unknown environment"; exit 1 ;; esac
+          if [ "$EVENT" = workflow_dispatch ] && [ "$RETENTION_ENV" = production ]; then
+            # Mexico City has no DST since 2022 (UTC-6 year-round), as in deploy.yml.
+            hour=$(TZ=America/Mexico_City date +%H)
+            if [ "$hour" -ge 12 ] && [ "$ALLOW_SERVICE_HOURS" != "true" ]; then
+              echo "::error::refused during service hours (12:00-23:59 America/Mexico_City); dispatch again with allow_service_hours"
+              exit 1
+            fi
+          fi
+          staged() {
+            [ "$(gh api "repos/$repo/commits/$1/statuses" --jq '[.[] | select(.context == "deploy/staging")][0].state')" = success ]
+          }
+          sha=""
+          if [ "$RETENTION_ENV" = production ]; then
+            tag=$(gh api --paginate "repos/$repo/git/matching-refs/tags/prod-" --jq '.[].ref' \
+              | sed 's#^refs/tags/##' | grep -E '^prod-[0-9]{8}-[0-9]{4}-[0-9a-f]{7}$' | sort | tail -n 1 || true)
+            [ -n "$tag" ] || { echo "::error::no prod-* release tag: production has no live release to run retention from"; exit 1; }
+            sha=$(gh api "repos/$repo/commits/tags/$tag" --jq .sha)
+            [ "${sha:0:7}" = "${tag##*-}" ] || { echo "::error::release tag $tag does not point at its commit"; exit 1; }
+            staged "$sha" || { echo "::error::$tag was never live on staging"; exit 1; }
+          else
+            for candidate in $(gh api "repos/$repo/commits?sha=main&per_page=30" --jq '.[].sha'); do
+              if staged "$candidate"; then sha=$candidate; break; fi
+            done
+            [ -n "$sha" ] || { echo "::error::none of main's latest 30 commits carries a successful deploy/staging status"; exit 1; }
+          fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve the live release"; exit 1; }
+          case "$(gh api "repos/$repo/compare/$sha...main" --jq .status)" in
+            ahead|identical) ;;
+            *) echo "::error::$sha is not on main"; exit 1 ;;
+          esac
+          echo "Retention runs the live $RETENTION_ENV release $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          # <<< retention-live-release
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.live.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: npm
-      - run: npm ci
+          # No shared npm cache in a job that holds the schema-owner secret (PLATFORM-CI-3).
+          package-manager-cache: false
+      - name: Install and compile the release (no secrets in this step)
+        run: npm ci && npx tsc -p tsconfig.server.json
       - name: Retention pass
         env:
           MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
@@ -55,12 +119,27 @@ jobs:
           ALERT_WEBHOOK_KIND: ${{ vars.ALERT_WEBHOOK_KIND || 'ntfy' }}
         run: |
           [ -n "$MIGRATION_DATABASE_URL" ] || { echo "::error::environment secret MIGRATION_DATABASE_URL is not set"; exit 1; }
+          # RETENTION_WINDOW from the release's own code (server/ops/retention.ts).
+          in_window() {
+            node --input-type=module -e 'const { inRetentionWindow } = await import(process.cwd() + "/build/server/ops/retention.js"); process.exit(inRetentionWindow(Date.now()) ? 0 : 1)'
+          }
+          if [ "$EVENT" = schedule ] && ! in_window; then
+            echo "::notice::retention_outside_window: the scheduled run started after 07:00 America/Mexico_City; the next one runs tomorrow"
+            exit 0
+          fi
           for attempt in 1 2 3; do
             code=0
-            # tsx directly (not npm run) so the exit code (0, 1 or 75) reaches the shell unchanged.
-            npx --no-install tsx scripts/migrate.ts --retention-only || code=$?
+            # The compiled script itself, so the exit code (0, 1 or 75) reaches the shell unchanged.
+            node build/scripts/migrate.js --retention-only || code=$?
             [ "$code" -eq 75 ] || exit "$code"
-            if [ "$attempt" -lt 3 ]; then echo "retention skipped (lock timeout); retrying in 5 minutes"; sleep 300; fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "retention skipped (lock timeout); retrying in 5 minutes"
+              sleep 300
+              if [ "$EVENT" = schedule ] && ! in_window; then
+                echo "::error::retention skipped (lock timeout) and RETENTION_WINDOW has closed"
+                exit 75
+              fi
+            fi
           done
           echo "::error::retention skipped three times (lock timeout)"
           exit 75

@@ -39,10 +39,13 @@ jobs:
       BACKUP_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '30 9 * * *' && 'production' || 'staging') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+          # No shared npm cache in a job that holds environment secrets (PLATFORM-CI-3).
+          package-manager-cache: false
       - run: npm ci
       # pg_dump runs natively: the postgres:18 image purges ca-certificates,
       # so sslrootcert=system would find no trust store inside it (OPS-R5).
