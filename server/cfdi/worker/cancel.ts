@@ -67,6 +67,21 @@ async function waitingSubstitute(
 }
 
 /**
+ * The poll chain of one cancellation ("c" + 12 hex digits of its id). Reconcile dedupe keys are
+ * unique per tenant and kind in every job state, so a chain keyed by the document alone would
+ * drop the first poll of the document's second cancellation within job retention (CFDI-R3-3).
+ */
+export function cancelChain(cancellationId: string): string {
+  return (
+    "c" +
+    cancellationId
+      .replace(/[^0-9a-f]/gi, "")
+      .toLowerCase()
+      .slice(0, 12)
+  );
+}
+
+/**
  * The CFDI is canceled (spec §4.8.5 onCanceled): its claims are released, the acuse is fetched,
  * and a valid substitute's pending claims activate, on EVERY cancellation path of the original:
  * the motive-01 cancellation of a substitution, or a staff cancellation (02/03) requested after a
@@ -126,10 +141,11 @@ export async function onRequested(
   await tx`update cfdi_documents set status = 'canceling' where id = ${doc.id} and status = 'valid'`;
   await tx`update cfdi_cancellations set status = 'requested' where id = ${c.id} and status = 'queued'`;
   await event(tx, ctx, doc.id, "cancel_requested", { motive: c.motive });
+  const chain = cancelChain(c.id);
   await cfdiEnqueue(tx, ctx.job.tenantId, {
     kind: "cfdi_reconcile",
-    dedupeKey: dedupe.reconcile(doc.id, "cancel", 1),
-    payload: { documentId: doc.id, purpose: "cancel", n: 1 },
+    dedupeKey: dedupe.reconcile(doc.id, "cancel", 1, chain),
+    payload: { documentId: doc.id, purpose: "cancel", n: 1, chain },
     runAt: new Date(Date.now() + 30 * MINUTE),
   });
 }
