@@ -57,6 +57,8 @@ import {
 } from "../server/cfdi/hooks.js";
 import { selfInvoiceOffered } from "../server/cfdi/store.js";
 import { rekeyOrganizationSecrets } from "../server/cfdi/rekey.js";
+import { lockDocument } from "../server/cfdi/locks.js";
+import { noRetries } from "./db-retries.js";
 import { seal } from "../server/tokens.js";
 import { parseCfdiTotals } from "../server/cfdi/xml.js";
 import { businessDate, type Session } from "../shared/domain.js";
@@ -771,16 +773,18 @@ try {
 
   await test("3. one active invoice per ticket: concurrent staff and portal requests give exactly one document; the other is refused", async () => {
     const tk = await makeTicket(A);
-    const results = await Promise.allSettled([
-      invoice(A, tk),
-      portal.portalSubmit(app, tk.code, {
-        operationId: op(),
-        receptor: { ...MORAL, email: "otro@example.com" },
-        cardForm: null,
-        privacyAccepted: true,
-        locale: "es",
-      }),
-    ]);
+    const results = await noRetries("staff and portal invoice race", () =>
+      Promise.allSettled([
+        invoice(A, tk),
+        portal.portalSubmit(app, tk.code, {
+          operationId: op(),
+          receptor: { ...MORAL, email: "otro@example.com" },
+          cardForm: null,
+          privacyAccepted: true,
+          locale: "es",
+        }),
+      ]),
+    );
     const ok = results.filter((r) => r.status === "fulfilled");
     const failed = results.filter(
       (r) => r.status === "rejected",
@@ -2006,7 +2010,7 @@ try {
     let holding!: () => void;
     const held = new Promise<void>((r) => (holding = r));
     const holder = admin.begin(async (tx) => {
-      await tx`select pg_advisory_xact_lock(hashtextextended(${A.tenantId + ":cfdi-doc:" + g.id}, 0))`;
+      await lockDocument(tx as unknown as Tx, A.tenantId, g.id);
       holding();
       await released;
     });
@@ -2342,13 +2346,15 @@ try {
 
   await test("R12. two concurrent activations: one wins, the other answers cfdi_settings_changed (never a 500); the register cursor keeps microseconds and a malformed cursor is refused", async () => {
     const T = await makeTenant("activation race");
-    const results = await Promise.allSettled(
-      [0, 1].map(() =>
-        web(T, (tx) =>
-          service.activate(tx, T.owner, {
-            operationId: op(),
-            expectedVersion: 0,
-          }),
+    const results = await noRetries("concurrent activations", () =>
+      Promise.allSettled(
+        [0, 1].map(() =>
+          web(T, (tx) =>
+            service.activate(tx, T.owner, {
+              operationId: op(),
+              expectedVersion: 0,
+            }),
+          ),
         ),
       ),
     );

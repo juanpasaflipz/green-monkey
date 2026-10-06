@@ -33,6 +33,7 @@ import {
   type Periodicity,
 } from "../../../shared/cfdi.js";
 import { buildGlobalRequests } from "../build.js";
+import { lockPeriod } from "../locks.js";
 import {
   cfdiEnqueue,
   dedupe,
@@ -155,7 +156,7 @@ async function buildPeriod(
   let periodDue = "";
   await ctx.tenant(async (tx) => {
     await tx`select set_config('statement_timeout', '30s', true)`;
-    await tx`select pg_advisory_xact_lock(hashtextextended(${tenantId + ":cfdi-global:" + mode + ":" + key}, 0))`;
+    await lockPeriod(tx, tenantId, mode, key);
     const [row] = await tx`
       select *, date_from::text as from_date, date_to::text as to_date from cfdi_global_periods
       where mode = ${mode} and period_key = ${key} for update`;
