@@ -372,17 +372,33 @@ test("A13.8: Hoy and Finanzas say «Los reportes requieren conexión.» offline 
   context,
 }) => {
   await ownerLogin(page);
+  await expect(page.getByText("Venta de órdenes").first()).toBeVisible();
+  const notice = page.getByText("Los reportes requieren conexión.", {
+    exact: true,
+  });
+  // A report still in flight when the connection drops (held here) never replaces the notice.
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  await page.route(
+    "**/api/report",
+    async (route) => {
+      await held;
+      await route.continue().catch(() => {});
+    },
+    { times: 1 },
+  );
+  await page.getByRole("button", { name: "Actualizar", exact: true }).click();
+  await context.setOffline(true);
+  await expect(pill(page, /^Sin conexión/)).toBeVisible();
+  // The open Hoy view switches to the notice by itself.
+  await expect(notice).toBeVisible();
   const reportRequests: string[] = [];
   page.on("request", (r) => {
     const path = new URL(r.url()).pathname;
     if (/^\/api\/reports?(\/|$)/.test(path)) reportRequests.push(path);
   });
-  const notice = page.getByText("Los reportes requieren conexión.", {
-    exact: true,
-  });
-  await context.setOffline(true);
-  await expect(pill(page, /^Sin conexión/)).toBeVisible();
-  // The open Hoy view switches to the notice by itself.
+  release();
+  await page.waitForTimeout(1500);
   await expect(notice).toBeVisible();
   await page.getByRole("button", { name: "Finanzas", exact: true }).click();
   await expect(
@@ -398,6 +414,7 @@ test("A13.8: Hoy and Finanzas say «Los reportes requieren conexión.» offline 
   await context.setOffline(false);
   await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
   await expect(notice).toBeHidden();
+  await expect(page.getByText("Venta de órdenes").first()).toBeVisible();
   expect(reportRequests).toContain("/api/report");
 });
 

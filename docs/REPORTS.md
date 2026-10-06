@@ -213,8 +213,9 @@ setting. Reports and prints work on Free and while selling is blocked.
 2. `server/index.ts`: delete the old `/report` route and the `businessDate`, `boundaries`
    imports (wave2-cross-track C13); `registerReports` re-registers `/report`.
 3. `src/features/Operations.tsx`: add `"today"`, `"finance"` to the self-loading list, drop the
-   `today`/`finance` → `report` mapping, the phase-A offline guard and its `shownOnline`
-   reload effect (the views poll with `enabled: online` themselves), replace the old
+   `today`/`finance` → `report` mapping, the phase-A offline guard, its `shownOnline`
+   reload effect and the `loads` sequence check (the views poll with `enabled: online`
+   themselves), replace the old
    Today/Finance block with `<TodayDashboard … online={online} />` and
    `<ReportsView … online={online} />`, point the settings "Historial de auditoría" button at
    `openReports("audit"); navigate("finance")`, and drop the then unused `ArrowUpRight`,

@@ -58,14 +58,18 @@ export function Operations({
   /** Opening a dialog creates its operation id; closing it discards the id. */
   const setModal = (next: { kind: string; item?: any } | null) =>
     setModalState(next && { ...next, operationId: crypto.randomUUID() });
-  // reports (029): Hoy and Finanzas follow the connection (the offline guard in load()).
+  // reports (029): Hoy and Finanzas follow the connection (the offline guard in load()), and
+  // only the latest load applies its answer: a report still in flight when the connection
+  // drops never replaces the offline notice.
   const shownOnline = useRef(online);
+  const loads = useRef(0);
   useEffect(() => {
     if (shownOnline.current === online) return;
     shownOnline.current = online;
     if (view === "today" || view === "finance") void load();
   }, [online]);
   async function load() {
+    const seq = ++loads.current;
     try {
       // These views load and poll by themselves.
       if (["orders", "tables", "kitchen", "sync"].includes(view)) {
@@ -84,11 +88,14 @@ export function Operations({
           ({ today: "report", finance: "report" } as Record<string, string>)[
             view
           ] ?? view;
-        setData(await api("/" + endpoint));
+        const result = await api("/" + endpoint);
+        if (seq !== loads.current) return;
+        setData(result);
       }
       setError("");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      if (seq === loads.current)
+        setError(translateError((e as Error).message, locale));
     } finally {
       setLoading(false);
     }
