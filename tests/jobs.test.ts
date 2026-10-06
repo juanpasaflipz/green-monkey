@@ -468,11 +468,14 @@ describe("runner limits and liveness (PLATFORM-OPS-1, OPS-3, OPS-5, OPS-6)", () 
         jobRegistration(kind, handler(kind) as never, { concurrency: 2 }),
       ]),
     );
+    // debounceMs is how long a saturated drain waits when its slots are other drains'
+    // reservations; at 1 ms, 50 drains spun through ~500,000 timers and the test took
+    // 2-30 s on a loaded machine. 10 ms keeps every assertion and runs in ~2 s.
     const runner = createJobRunner(queueSql({ queues, claimDelayMs: 2 }), {
       handlers: () => registry,
       concurrency: 4,
       sweepMs: 1000,
-      debounceMs: 1,
+      debounceMs: 10,
     });
     // Every tenant drains at once (discovery notes them together); later
     // rounds stand in for the next sweeps, which pick up what a bounded drain
