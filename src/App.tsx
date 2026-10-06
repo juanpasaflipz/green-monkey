@@ -167,14 +167,9 @@ export default function App() {
     }
     try {
       const s = await api<Session>("/session");
-      setSession(s);
-      const c = await api<Product[]>("/catalog");
-      resumeLock(s);
-      setActiveSession(s);
-      setCatalog(c);
-      await cacheSession(s, c);
-      void requestPersistence();
-      void ensureDevicePrefix(s);
+      // The home view is set in the same render as the session, so an owner
+      // never mounts Selling for an instant (its effects would fetch tables,
+      // the drawer and the open-orders snapshot for a view nobody sees).
       if (resetView)
         setView(
           s.role === "kitchen"
@@ -183,6 +178,14 @@ export default function App() {
               ? "today"
               : "sell",
         );
+      setSession(s);
+      const c = await api<Product[]>("/catalog");
+      resumeLock(s);
+      setActiveSession(s);
+      setCatalog(c);
+      await cacheSession(s, c);
+      void requestPersistence();
+      void ensureDevicePrefix(s);
     } catch (e) {
       setActiveSession(null);
       setCatalog([]);
