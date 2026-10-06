@@ -331,6 +331,9 @@ the drawer is open.
   working on Windows; macOS and Android always show the print dialog. Verify on
   the target device; it has not been verified here.
 - Browser printing never confirms that paper came out.
+- Kitchen cancellation chits (reports 029): a KDS with auto-print and a selling device
+  that prints on send also print "CANCELACIÓN · NO PREPARAR" after a void, per round and
+  station ([REPORTS.md](REPORTS.md)).
 
 ## Per-device settings
 

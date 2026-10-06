@@ -17,7 +17,7 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | M4 selling/pricing/cash/kitchen | partial | Item voids with manager approval and kitchen deltas done locally (Sept 26); service lifecycle, notes, KDS and payment UX done locally (Oct 5: `test:db:service`, `tests/browser/service.spec.ts`, `tests/browser/kitchen.spec.ts`); combos, open-price items within a ceiling and one choice picker for the POS and QR/kiosk done locally (Oct 5: `test:db:menu`, `tests/browser/menu.spec.ts`); next: discounts/courtesies with approval, item-level refunds, saved drawer close, promotions, physical printer check |
 | M5 jobs/printing/merchant payments | incomplete | Jobs outbox runner done locally (Oct 5: dedupe, lease fencing, backoff, dead-job alerts, restart resume; `tests/jobs-db.ts`); Wave 2.0 (Oct 5, local with CI parity, staging cutover pending): worker-only jobs runner on the `gm_jobs_worker` login with tenant discovery, `runAt` and per-kind `maxAttempts`; next: printer, report/email and payment handlers once devices/providers are selected |
 | M6 inventory/procurement | partial | Stock item setup, recipe links on products and choices, cached balance and per-restaurant negative-stock policy done locally on `track/menu` (not staged); next: purchase orders, substitutions, lots, yields, saved counts |
-| M7 finance/imports/reports | partial | Complete metric contract, recurring expenses, settlement imports, PDF/schedules |
+| M7 finance/imports/reports | partial | Reports (029) built: metric contract, reports, cortes and exceptions (views wired after fiscal 027 and discounts 028 merge). Recurring expenses, settlement imports and schedules remain. |
 | M8 accounts/configured modules | partial | Linking/recovery, co-owner/transfer and explicitly configured providers; device pairing, PIN sign-in and staff offboarding delivered locally (access, migration 023) and await staging verification |
 | M9 migration/readiness | blocked in part | Approved source exports. Per-file migrations, schema readiness, encrypted backups and restore verification locally verified (Oct 5; `tests/migrate-db.ts`, `tests/ops-http.test.ts`, `tests/backup-db.ts`); Wave 2.0 moved migrations and retention to GitHub Actions as `gm_migrator` (local with CI parity, Oct 5); CI/CD and the Neon restore rehearsal are written but have not run; staging restore/rollback and operational evidence pending |
 | M10 final qualification | pending | Full exact-revision security/load/UX/recovery matrix |
@@ -126,7 +126,7 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | FIN-01 | pending | Historical summaries and settlement import not implemented. |
 | FIN-02 | partial | Basic order/tender/refund/tip source totals; full tax/fee/commission definitions pending. |
 | FIN-03 | partial | Pure forecast identity tested; editable historical scenarios not implemented. |
-| FIN-04 | partial | Business cutoff, DST and leap-day unit tests; report integration boundary suite pending. |
+| FIN-04 | partial | Business cutoff, DST and leap-day unit tests; `business_date_at()` equals `businessDate()` on 10,000 instants incl. Tijuana DST, the cutoff instant and settings history (`tests/reports-db.ts`, local). Full report boundary suite runs after 027/028 merge. |
 | MIG-01 | partial | Both normalized catalog fixtures dry-run; mapping rerun/no side effects DB-tested; historical mappings pending. |
 | MIG-02 | partial | Import transactionality implemented; kill-mid-import rehearsal pending. |
 

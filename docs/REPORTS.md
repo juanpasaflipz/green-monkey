@@ -1,230 +1,263 @@
 # Reports
 
-Status on October 5, 2026: **reports core only**. The pure modules for business-date
-ranges, the metric contract's arithmetic, the reconciliation checks and the corte X/Z/del
-día document model are implemented and unit tested. **Nothing in the running app calls
-them yet.** There is no reports migration (029), no `server/reports/*` module, no
-`/api/reports/*` route, no Finanzas or Hoy view, no CSV download button, no printed corte
-and no i18n strings. The app still serves the old `GET /report` (current business day,
-bucketed by `created_at`), so the audit findings FIT-7, MON-6, DB-7, OFF-9, GAP-3 and
-FIT-10 stay open until the integration wave wires this core in.
+Status on October 5, 2026: **reports FULL, phase A live, phase B built and waiting for
+fiscal (027) and discounts (028)**. Reports read fiscal's and discounts' tables and call
+their functions, which are not on this branch yet, so the work is split (wave2-cross-track
+§2):
 
-## Reports core
+- **Live on this branch (phase A).** Migration 029 (versioned business-day settings,
+  `business_date_at()`, corte print records). The read-only report snapshot. The routes
+  `GET /api/reports/audit` (the Bitácora), `/api/reports/filters` and
+  `/api/reports/tenders`. Printed **kitchen cancellation chits** on a KDS with auto-print
+  and on a selling device with "Imprimir comanda al enviar". Every `reports*` string and
+  error in Spanish and English. The `online` prop of Operations. Offline, Hoy and Finanzas
+  no longer fetch the old `/report` and say "Los reportes requieren conexión.".
+- **Built, not yet wired (phase B).** The statements S1–S5 and every other report query, the
+  Hoy dashboard, the eight Finanzas tabs, the corte X/Z and corte del día documents and
+  prints, CSV exports, the remote close of an orphaned drawer and the legacy `/report`
+  move. They are typed against fiscal's and discounts' documented signatures
+  (`server/reports/ports.ts`) and register once those modules merge ("Merge wiring" below).
+  Until then Hoy and Finanzas show the old view, and `/api/report` is still the old route in
+  `server/index.ts`.
 
-Every amount is an integer number of minor units (centavos). Prices include IVA. The core
-never computes IVA: it takes fiscal's `fiscalSummary` totals as input.
+Nothing here has been checked with a physical printer or by an accountant.
 
-| Module | Contents |
-| --- | --- |
-| `shared/reports.ts` | `LIMITS` (92-day aggregates, 31-day lists, 500 rows per page, 20,000 export rows); `parseRange`, `isBusinessDate`, `addDays`, `rangeDates`, `quickRange` (Hoy, Ayer, Esta semana, Semana pasada, Este mes, Mes pasado; weeks start Monday); `currentBusinessDate`, `wideWindow`, and `wallClockBusinessDate` / `wallClockHour` (the SQL day formula in JS); `BREAKDOWNS`, `EXCEPTION_KINDS`, `DIFFERENCE_KINDS`, `AUDIT_GROUPS`, `auditGroupPrefixes`, `parseExceptionKinds`; the query and command schemas; `encodeReportCursor` / `decodeReportCursor`; `averageTicket`, `bps`, `aggregateInt`; `composeSalesSummary` and `reconciliationChecks`; `hourRows`, `exceptionSummary`, `exceptionTotals`; `drawerRow`, `drawersUpTo`, `drawerSummary`, `corteAccess`, `buildCorteDocument`, `folioRanges`, `otherDayDrawerCollections`, `buildDayCorteDocument`; and the wire types (`SalesSummary`, `DrawerRow`, `CorteDocument`, `DayCorteDocument`, …). |
-| `shared/csv.ts` | `toCsv`, `csvCell`, `moneyCsv`, `percentCsv`, `dateTimeCsv`, `csvFileName`. |
+## Three date lenses
 
-Tests: `tests/reports.test.ts` (`npm test`), with the random sales world and reference
-aggregator in `tests/fixtures/reports.ts`.
+Each figure belongs to exactly one lens; labels and hints say which.
 
-### Three date lenses
+- **Ventas (sales).** Orders by their stored `orders.business_date` (offline orders carry the
+  sale day). Gross, discounts, total, orders, voids, outstanding, COGS and the product,
+  category, employee, hour, channel and service-type breakdowns.
+- **Reembolsos (refunds).** The refund batch's business date (discounts computes it once per
+  refund command and fiscal dates the IVA adjustment with the same value). A batchless
+  refund recorded before 028 uses `business_date_at(created_at)`.
+- **Cobros (collections).** Each tender on its collection day: an offline-synced tender on the
+  sale day from the offline ledger, a recovery order's tender on the recovery order's
+  business date, any other tender on `business_date_at(created_at)`. Paid-outs by movement
+  date. Drawers by opening date.
 
-Each figure belongs to exactly one lens.
+**Business date of an instant** = `((at AT TIME ZONE zone) − cutoff minutes)::date` with the
+settings **in force at that instant**. Migration 029 records every timezone or cutoff change
+in `business_day_settings` through an `AFTER UPDATE` trigger on `restaurants` (so the
+previous app revision is covered too), and `business_date_at(tenant, at)` is the single SQL
+definition. Report queries use the equivalent `cfg` join (`server/reports/days.ts`). A cutoff
+change therefore moves only records created after it; the DB suite checks that past days'
+collections and activity pages are identical before and after a change from 04:00 to 02:00,
+and that the formula equals `businessDate()` on 10,000 instants including the Tijuana DST
+changes. Changes made before 029 are not reconstructed (decision D4; only staging data
+predates it).
 
-- **Ventas (sales).** Orders by their stored `business_date`.
-- **Reembolsos (refunds).** Refunds by the refund's business date.
-- **Cobros (collections).** Tenders by collection date. Offline-synced tenders count on the
-  sale day, and recovery tenders count on the recovery order's date.
+**Contract for other areas:** any code path that updates `restaurants.timezone` or
+`restaurants.cutoff` must run inside the restaurant's tenant scope (`tenant()`), because the
+history trigger inserts under FORCE RLS. Outside it a non-superuser updates nothing.
 
-The business date of an instant is `((at AT TIME ZONE zone) − cutoff minutes)::date`, with
-the settings in force at that instant. `wallClockBusinessDate` is that formula in JS. A unit
-test checks it against `businessDate()` (the rule orders are stamped with) on 10,000 random
-instants and minute by minute across the 2026 DST changes in America/Tijuana. An event at
-exactly the cutoff instant belongs to the new day.
+## Metric contract and checks
 
-`wideWindow` widens the range by 3 days on each side under the current settings, so it holds
-every event of the range under any past settings. A deterministic test pins the worst cases
-(UTC+14 with cutoff 00:00 against UTC−12 with cutoff 23:59, in both directions): their edge
-instants fall outside a ±2-day window, so the margin cannot be narrowed.
+All amounts are integer centavos; prices include IVA. `shared/reports.ts`
+(`composeSalesSummary`) builds every figure from the per-day aggregates of S1–S5; the
+definitions are spec §2.2. Highlights:
 
-### Metric arithmetic and checks
+- Ventas brutas − Descuentos = Ventas totales, by construction.
+- IVA comes only from fiscal's `fiscalSummary` (`SalesSummary.tax`), read in ≤ 31-day chunks
+  and merged (`mergeFiscalSummaries`). It is never recomputed from orders or CFDI totals.
+  Fiscal splits refund IVA by complement extraction, so a day's net IVA equals the IVA cfdi
+  stamps on that day's global invoice; an egreso's IVA may differ from fiscal's adjustment
+  by ≤ 1 centavo per category (see docs/FISCAL.md and docs/CFDI.md). Without fiscal data
+  (non-MXN) the IVA card says so and the margin shows "—".
+- COGS counts remaining units of ticketed orders at the line's cost snapshot; voided units
+  not returned to stock are waste cost; restocked refunds return their cost.
+- Offline sales (`channel = 'offline'`) exclude manager recovery orders, which are disclosed
+  as "Ventas sin conexión conciliadas (sin detalle de productos)".
+- Amount refunds need a fully paid check (discounts' `refund_balance_due`).
 
-`composeSalesSummary` builds every summary figure from the per-day aggregates. The server
-statements S1–S5 (spec §4.5, next wave) produce those aggregates. The summary covers:
+Every summary computes six reconciliation checks (`lines_vs_orders`,
+`discounts_vs_allocations`, `tickets_vs_orders`, `paid_identity`, `methods_sum`,
+`refunds_vs_fiscal`). The UI shows "Todos los totales cuadran." or the failing codes with the
+request id; a failed check logs `report_check_failed` with that id and never throws. A
+batchless refund recorded by the previous revision during a deploy overlap has no fiscal
+adjustment and fails `refunds_vs_fiscal` for that day on purpose (a real IVA gap).
 
-- sales: gross, discounts and courtesies, total with IVA, average ticket, voids, outstanding,
-  tips on the checks, COGS and cost coverage. Ventas brutas is not an input: it is derived as
-  `total + discounts`, per day and for the range (spec §2.2 `grossSales = Σ(total + discount)`).
-  So `Ventas brutas − Descuentos = Ventas totales` holds by construction on the Resumen, on every
-  day row and on the corte del día. The S1 `gross` column is not read;
-- refunds, split into cash and terminal;
-- collections by method: count, amount, tips, refunds and `net = amount + tips − refunds`,
-  plus paid-outs and late offline collections;
-- the margin from fiscal's totals;
-- one row per business date of the range.
+Reports run in one `REPEATABLE READ, READ ONLY` transaction (`snapshotTenant`) whose first
+statement sets the tenant, `statement_timeout` 30 s, `lock_timeout` 8 s and the idle timeout
+15 s, so a payment committing half way never breaks a summary's checks. A statement timeout
+answers `reports_timeout` with **HTTP 422** (LD-15 Q1): a domain answer the client never
+retries. The client waits up to 40 s for report reads and prints, and report outcomes count
+as reachability only (`src/connectivity.ts`): a slow report never makes a device look
+offline.
 
-`reconciliationChecks` returns `lines_vs_orders`, `discounts_vs_allocations`,
-`tickets_vs_orders`, `paid_identity`, `methods_sum` and `refunds_vs_fiscal`. Without fiscal
-data (non-MXN), it skips the two fiscal checks.
+## Views (phase B)
 
-A property test over 400 random sales worlds compares the whole `SalesSummary` (every sales,
-refund, collection and margin figure, every day row and every check) with a summary computed
-straight from the world's records, to the centavo. The worlds include voids and waste, comps,
-recovery orders, open and partly paid checks, next-day and late offline collections, later
-refunds with restocked cost, and paid-outs. The test also counts, for figures that are easy to
-miswire (tips on the checks against offline tips, waste against COGS, COGS of all orders against
-ticketed COGS, recovery against cancelled orders, ticketed orders against orders, courtesies
-against discounts, late collections, restocked cost, paid-outs, open checks, voids, cancelled
-amounts), that they differ in more than 100 of the worlds, so the comparison cannot pass
-vacuously. The records only fix fiscal's input, `FiscalTotals`, and there are no drawers.
-The fixture gives each ticket the order's total, so these worlds cannot tell `ticketed.gross`
-(Σ ticket gross) from Σ total of the ticketed orders; the `tickets_vs_orders` unit tests and
-the drift property cover that difference.
+- **Hoy:** the current business date, refreshed every 60 s while visible: tiles (Ventas
+  totales with the same-weekday comparison, Órdenes, Ticket promedio, Efectivo cobrado,
+  Terminal cobrado, Propinas), alerts, checks with a balance ("cuentas con saldo": a paid
+  dine-in check waiting for Liberar mesa is not counted), open drawers with Corte X, top
+  sellers and today's exceptions. No forecast text.
+- **Finanzas:** a range picker (Hoy, Ayer, Esta semana, Semana pasada, Este mes, Mes pasado,
+  custom; weeks start Monday) and eight tabs: Resumen, Productos, Personal, Horas y canales,
+  Pagos, Cortes, Excepciones and Bitácora. Summaries and cortes read up to 92 days, row lists
+  up to 31. Each tab has Actualizar and Descargar CSV.
+- **Personal** attributes a check to its assigned server, else to whoever opened it. QR and
+  kiosk orders run under the link creator's session, so unassigned ones form a **"QR /
+  Kiosco"** row instead of crediting that employee (LD-15 Q4).
+- **Excepciones** (loss prevention): voids, discounts, discount removals, refunds, cash
+  paid-outs, drawer and terminal differences, receipt and corte Z reprints, open-price
+  lines, and archived or reconciled offline sales, each with actor, approver, amount, order,
+  reason and device, plus totals per kind and per employee. A self-approved row (a manager
+  acting alone) shows the approver's name, but only approvals given to someone else count in
+  "Autorizó" (LD-16 L3). Drawer shortages and overages never cancel out.
+- **Bitácora:** keyset paging past the old newest-100 limit, filters by employee, activity
+  group and order number, translated labels. Activity groups match by operation prefix
+  (`AUDIT_GROUPS`), including forward prefixes for cfdi (030), account (031) and public
+  ordering, and a unit test keeps every labelled operation in a group.
 
-**What the checks guard, and what they do not.** A one-centavo drift, up or down, in one of these
-aggregates fails its own check (a property test drifts each one by +1 and by −1). Lowering the S1
-`total` of a fully paid range also fails `paid_identity`, because `outstanding` turns negative,
-so that drift is reported by two checks:
+## Cortes
 
-| Check | Aggregates it compares |
-| --- | --- |
-| `lines_vs_orders` | S1 `total` and `recovery_total` against S2 `line_net` |
-| `discounts_vs_allocations` | S1 `discounts` against S2 `line_discounts` |
-| `tickets_vs_orders` | S1 `ticketed_order_total` and `ticketed_gross` against fiscal's `totals.gross` |
-| `paid_identity` | S1 `overpaid`, and the sign of `outstanding` (`paid ≤ total` over the range) |
-| `refunds_vs_fiscal` | S4 `fiscal_amount` against fiscal's `totals.refundGross` |
+- **Corte X** (open drawer): float, cash sales and tips, cash refunds, paid-outs (and pay-ins
+  when any), expected cash; the terminal section; payments; controls (discounts, refunds and
+  paid-outs on that device while the drawer was open) and the folio range issued there.
+- **Corte Z** (closed drawer): every figure as of close. Tenders recorded after the close
+  (offline late sync) are disclosed apart ("Registrado después del cierre"). Stored expected
+  and counted cash, the signed difference (faltante / sobrante / cuadra), the explanation,
+  the review, the terminal batch total and difference, and two signature lines.
+- **Count slip** (blind count): for a cashier or server who may not see expected cash: the
+  counted cash, the terminal section and the payment count only. The server never sends the
+  hidden figures.
+- **Corte del día:** the Resumen rows of one date (the same i18n keys, so an acceptance label
+  bound for one binds for both), the drawers, the controls and the cost line, on 58/80 mm or
+  as a letter/A4 sheet ("Imprimir o guardar PDF").
+- **Numbering.** The Z number is a drawer's position among this location's closed drawers by
+  `(closed_at, id)`: computed, gapless and stable. Every print is recorded in `report_prints`;
+  the second print of a document says "REIMPRESIÓN 2". Prints of one document serialize on
+  the advisory key `tenant:report-print:kind:subject` (lock level LO-3) before numbering, so
+  two prints at once get 1 and 2.
+- **Access** (spec §4.7, §2.12): owners and managers print any corte Z in full and a corte X
+  when they may see expected cash. Cashiers and servers print only their own device's
+  drawer: a corte X if they may see expected cash, and the corte Z or count slip of the
+  device's **last** drawer closed in the last 12 h, so the next shift on a shared device
+  cannot print the previous shift's count (LD-15 Q6).
+- **Blind count and Finanzas** (LD-15 Q5, option 2): the Cortes table hides an open drawer's
+  expected cash from viewers who may not see it, but only owners and managers reach
+  Finanzas, and they can work expected cash out from the tender figures anyway. Blind count
+  protects cashiers and servers, not managers.
+- **Remote close:** a manager, with the PIN step-up, closes a drawer whose device was
+  revoked or deactivated, or that is still open from an earlier business date ("Cerrar caja
+  desde aquí" in Cortes). It counts visibly with a required reason, goes through discounts'
+  `closeDrawerRow`, is audited `cash.close` with `remote: true`, and answers with the corte
+  Z. A same-day drawer of a healthy device is refused (`reports_drawer_not_orphaned`).
+  Unsynced offline sales left on a revoked device are archived or reconciled in Recuperación.
 
-The checks do **not** see a wrong value in the other aggregates. They are S1 `paid` (beyond the
-sign of `outstanding`), `tips`, the counts and the offline and unticketed figures; S2 voids,
-courtesies, COGS, coverage and waste; every S3 collection figure; the S4 amounts and counts
-(and all of S4 when there is no fiscal data); S4b restocked cost; and S5 paid-outs.
-`methods_sum` holds by construction here, because the core derives `collected` and `tips` from
-the same S3 rows as `byMethod`. A drift in any of those leaves every check green (the property
-test asserts this too). The 400-world property shows that the core turns correct aggregates into
-correct figures. Whether the S1–S5 statements produce correct aggregates from the database is
-for the next wave's DB suite (`tests/reports-db.ts`, spec §7.2) to show.
+Every document says "Documento interno; no es comprobante fiscal." Internal documents
+(cortes, corte del día, report sheets, kitchen tickets and cancellation chits) print in the
+device's UI language; customer comprobantes always print in Spanish (D17).
 
-### Cortes
+## Printing setup and kitchen cancellation chits
 
-- **Corte X** (open drawer): expected cash is `opening + cash sales + cash tips − cash
-  refunds − paid-outs + pay-ins`. No command records a pay-in today (`payIns` is 0), but the
-  cash section and `DrawerRow` carry `payIns`, so the printed figures always add up to expected
-  cash. The terminal section shows payments, tips, refunds and net.
-- **Corte Z** (closed drawer): every figure as of close. Cash and terminal tenders recorded
-  after the close (offline late sync, LD-7) are left out of sales, tips, the terminal net and
-  the payment count. They are shown separately as `lateCash` and `lateTerminal` ("Registrado
-  después del cierre"). The document uses the stored expected cash and the signed difference
-  (faltante / sobrante / cuadra). The terminal batch difference uses the stored external
-  expected, or the as-of-close terminal net for a legacy close without one. So the printed net,
-  the reported total and the difference agree on one document.
-- **Cortes table rows** (`DrawerRow`) cover every tender of the drawer, late ones included, and
-  disclose the late parts in `lateCash` / `lateTerminal`.
-- **Drawers of a past range.** `drawersUpTo(rows, to)` keeps the drawers opened on or before
-  `to`. `composeSalesSummary` (the Cajas card) and `buildDayCorteDocument` apply it, because
-  drawerList also returns every drawer that is open now. Without it, a corte del día for the 5th
-  printed on the 12th would list the 12th's open drawer and print "Hay cajas abiertas". A drawer
-  opened before the range and still open stays, since it may hold the range's collections.
-- **Blind count slip** (cashier or server who may not see expected cash): only the counted
-  cash, the terminal section (as of close, with `lateTerminal`) and the payment count. Expected
-  cash, cash sales, refunds, paid-outs, pay-ins, the difference, the controls, the folios, late
-  cash and the review note are never in the document.
-- `corteAccess` applies the spec §4.7 role rules, including the 12-hour own-device window
-  for cashiers and servers, plus the §2.12 condition "own device's **last** drawer": a cashier
-  or server may print a corte Z or count slip only when `drawer.latestOnDevice` is true. So on a
-  shared device, the next shift cannot print the previous shift's counted cash. Owners and
-  managers print any closed drawer.
+Service (024) prints kitchen tickets, receipts and pre-bills through the browser
+(docs/SERVICE.md "Printing"). Reports adds **cancellation chits** ("CANCELACIÓN · NO
+PREPARAR", or "REEMBOLSADO · NO PREPARAR" for refunds), one per round and station:
 
-### CSV
+- A KDS device with "Imprimir tickets nuevos automáticamente en esta pantalla" prints a chit
+  for each void it sees for the first time; its station filter applies, so a bar screen
+  prints bar cancellations only.
+- A selling device with "Imprimir comanda al enviar a cocina" prints the chits after a void
+  (and, once discounts is wired, after an item refund of unserved units).
+- Printing never blocks or fails the void; a print error shows "No se pudo imprimir la
+  cancelación.".
 
-- UTF-8 with BOM, comma separator, CRLF after every record.
-- A field with a comma, quote, CR or LF is quoted, with its quotes doubled.
-- Headers are in the UI language.
-- Money uses dot decimals with the currency exponent (MXN `1234.50`, JPY `1234`). Percents
-  have one decimal. Date-times are `AAAA-MM-DD HH:mm` in the restaurant zone.
-- Formula guard (OWASP): a text cell that starts with `= + - @`, TAB, CR, LF or the
-  full-width `＝＋－＠` is prefixed with `'` and quoted. Numeric cells are written as numbers
-  only when they have a number's shape. Anything else falls back to guarded text.
-- `csvCell` takes already formatted values. A raw number in a money (`m`) or percent (`p`)
-  column is a `TypeError("csv_unformatted")`, because writing `2000` for MXN 20.00 would be a
-  100× error. Format with `moneyCsv` / `percentCsv` first, or let `toCsv` do it.
+A restaurant uses one of two setups: one device per station with its KDS station filter and
+auto-print on, or one selling device with "comanda al enviar" printing every station's
+section on its own printer. Set the thermal printer's roll size and zero margins in the OS
+driver. Silent printing needs Chrome or Edge started with `--kiosk-printing` and the thermal
+printer as the OS default (described as working on Windows; macOS and Android always show the
+dialog); the kiosk flag is not verified on pilot hardware yet (LD-17). Browser printing never
+confirms that paper came out. Cash-drawer kick and auto-cut depend on the printer driver.
 
-### Choices the integration wave must keep
+## CSV
 
-- **Date bounds.** Business dates outside 2000-01-01..2999-12-31 are `reports_range_invalid`.
-  Temporal accepts year 0000 and PostgreSQL does not, so without the bounds a forged range
-  could reach SQL as a date error.
-- **Coverage denominator.** The S1 statement must also select `ticketedRecoveryGross` (Σ
-  total + discount of ticketed recovery orders). Spec §4.5 puts it in the cost-coverage
-  denominator, but the spec's S1 SQL does not select it.
-- **Open-price rows.** `ExceptionRow` carries `accountId` (the check's server) as well as
-  `accountName`, so `exceptionSummary` can group open-price lines by employee id.
-- **Drawer differences.** In `DrawerSummary` and in the per-employee exception summary,
-  `shortages` and `overages` are amounts, not counts. For the difference kinds
-  (`drawer_difference`, `terminal_difference`), the Excepciones tiles (`ExceptionTotals`, also
-  used by Hoy and the corte del día) and each employee's `acted` amount sum magnitudes. A tile
-  also carries `shortages` and `overages`. An approver's `approved.amount` sums absolute amounts.
-  So a $500 shortage and a $500 overage show as $1,000.00 (faltante $500.00 · sobrante $500.00),
-  never as $0.00.
-- **int8 aggregates.** The S1–S5 sums are `::int8`, and postgres.js returns `int8` (and
-  `numeric`) columns as strings: `server/db.ts` registers no BigInt type. The core refuses
-  non-numbers with `RangeError("invalid_amount")`, so passing raw rows would turn every summary
-  into a 500. `server/reports/*` maps every aggregate through `aggregateInt`, which accepts int8
-  text, `bigint` or a number and refuses anything that is not an exact safe integer. Do not cast
-  the sums to `::int`: a 92-day range can pass 2^31 centavos.
-- **Late drawer tenders.** The `drawerList` tender lateral must select, for cash and for
-  external separately, the count, amount and tip of the tenders with `created_at > closed_at`
-  (`DrawerFacts.cash.late*`, `DrawerFacts.external.late*`). Spec §4.5 lists only `lateCash`.
-- **CSV location.** The CSV builder lives in `shared/csv.ts`. The client's
-  `src/features/reports/csv.ts` adds `downloadCsv` and the dataset column lists on top of it.
-- **Settings argument.** `wideWindow` and `currentBusinessDate` take `{timezone, cutoff}`, not
-  a `Session`. The client range picker needs them too.
-- **Pay-ins.** The drawerList `cash_movements` lateral must select pay-ins (Σ positive amounts)
-  apart from paid-outs (−Σ negative amounts), into `DrawerFacts.payIns`. The printed corte shows
-  a pay-in row ("Entradas de efectivo", a new `reports*` key) only when `payIns ≠ 0`.
-- **Last drawer on the device.** `assertCorteAccess` passes `drawer.latestOnDevice = not exists
-  (select 1 from cash_sessions n where n.device_id = d.device_id and (n.opened_at, n.id) >
-  (d.opened_at, d.id))`.
-- **Past ranges.** The server may pass drawerList rows unchanged: `composeSalesSummary` and
-  `buildDayCorteDocument` drop the drawers opened after the range themselves.
-- **Refunds of orders without a ticket.** S4 `fiscal_amount` stays "every refund with
-  `created_at ≥ fiscal_epoch()`", ticketed order or not. Fiscal's `recordRefundTax` (fiscal
-  spec §4.7 step 4) also writes adjustments for refunds of orders without a ticket (kill switch,
-  pre-epoch order, pre-ticket item refund), from the order's provisional tax groups, and
-  `fiscalSummary` sums every adjustment. So `refunds_vs_fiscal` holds for them. The 400-world
-  property includes such refunds in more than 40 worlds. Only a batchless refund from a deploy
-  overlap, which has no adjustment, fails the check, on purpose (spec DB test 37).
+UTF-8 with BOM, comma separator, CRLF, quoted fields with doubled quotes, headers in the UI
+language, money as dot decimals with the currency exponent, dates `AAAA-MM-DD` and date-times
+`AAAA-MM-DD HH:mm` in the restaurant zone. A text cell that starts with `= + - @`, TAB, CR,
+LF or a full-width `＝＋－＠` is prefixed with `'` (OWASP formula injection). Files are
+`{dataset}_{from}_{to}.csv` (or `{dataset}_{date}.csv`); paged datasets export every page up
+to 20,000 rows and then say "La exportación se detuvo en 20,000 filas. Reduce el rango.". The
+writer is `shared/csv.ts` (cfdi and fiscal reuse it). For Excel set to another locale use
+"Datos → Desde texto/CSV".
 
-## Open questions for the lead (before the server wave)
+## Roles and plans
 
-**Blind count and the drawer row.** For an open drawer and a viewer who may not see expected
-cash during the shift, `drawerRow()` sets only `expected` to null, as spec §4.5 says. The same
-row still carries `opening`, `cashSales`, `cashTips`, `cashRefunds`, `paidOuts` and `payIns`
-(non-nullable in the spec's `DrawerRow`), so the viewer can add those up to the expected
-cash. `corteAccess` refuses that viewer the corte X (`reports_corte_hidden`), and discounts'
-`cashSummary` (discounts spec, not on this branch yet) nulls the cash figures, cash tenders, cash
-refunds and movements for blind viewers. Only owners and managers see the
-Cortes table, and managers can also read the tender list (with drawer and device) and Efectivo
-cobrado. So redacting the row alone would not hide expected cash. The two options:
+Hoy, Finanzas, CSV and the corte del día: owners and managers. Cortes: see "Access" above.
+Remote close: owners and managers with the step-up. Kitchen cancellation printing: a device
+setting. Reports and prints work on Free and while selling is blocked.
 
-1. Make the cash components of `DrawerRow` nullable and null them whenever the drawer is open
-   and `!canSeeExpected`. Redact the tender list's cash rows and the Resumen cash figures for
-   the same viewers too.
-2. Document that in reports, blind count applies to cashiers and servers only, and that a
-   manager under blind count can still work expected cash out from the tender figures.
+## Runbook
 
-The core implements neither yet. The code follows the spec as written.
+- **"Cambié la hora de corte."** Only records created after the change move. Past reports are
+  unchanged (the settings history is in `business_day_settings`).
+- **"Una caja quedó abierta."** Finanzas → Cortes → "Cerrar caja desde aquí" (manager, PIN).
+  Count the drawer's cash first; reconcile or archive unsynced offline sales in Recuperación.
+- **"Reimprimir un corte Z."** Finanzas → Cortes (or Caja → Historial de cajas) → Reimprimir
+  corte Z; it prints "REIMPRESIÓN n" and appears in Excepciones.
+- **"Los totales no cuadran."** Send support the codes and the request id shown under
+  Comprobaciones; the server log line `report_check_failed` carries the same id.
+- **"Exportar para el contador."** Finanzas → Resumen and the tabs → Descargar CSV, plus
+  fiscal's ticket register. Reports are internal documents, not comprobantes.
 
-**Last drawer rule (to confirm).** Spec §4.7 lets a cashier or server print a corte Z of their own
-device closed within 12 hours, while §2.12 says "own device's last drawer, closed ≤ 12 h ago". The
-core applies both, the stricter reading (see Cortes). If the lead decides that §4.7 alone binds,
-drop the `latestOnDevice` check in `corteAccess` and its unit test.
+## Merge wiring (phase B, after 027 and 028)
 
-## Pending (next wave)
+1. `server/routes/reports.ts`: `register(ctx)` passes the ports instead of `null`:
+   `{ fiscalSummary, missingTicketCount }` from `../fiscal.js`, `moneyControls` from
+   `../discounts.js`, `canSeeExpected` from `../../shared/discounts.js`, `closeDrawerRow` from
+   `../cash.js` (signatures in `server/reports/ports.ts`).
+2. `server/index.ts`: delete the old `/report` route and the `businessDate`, `boundaries`
+   imports (wave2-cross-track C13); `registerReports` re-registers `/report`.
+3. `src/features/Operations.tsx`: add `"today"`, `"finance"` to the self-loading list, drop the
+   `today`/`finance` → `report` mapping and the phase-A offline guard, replace the old
+   Today/Finance block with `<TodayDashboard … online={online} />` and
+   `<ReportsView … online={online} />`, point the settings "Historial de auditoría" button at
+   `openReports("audit"); navigate("finance")`, and drop the then unused `ArrowUpRight` and
+   `Empty` imports.
+4. Slots in discounts' components (C9, C10): `actions={<CortePrintButton … label="Corte X"
+   online={online} />}` on `DrawerPanel` for an open drawer the viewer may see; one
+   `CortePrintButton` (Imprimir corte Z / comprobante de conteo) in `DrawerCloseDialog`'s
+   result step; `rowActions` on `CashHistory` from Operations with a Corte Z button.
+5. `RefundDialog`: after an item refund, `printCancellations(cancellationsFromRefund(order,
+   batch, reason), …)` when "comanda al enviar" is on; confirm that discounts'
+   `RefundBatchView` has `lines[].lineId/units/kitchenPending`.
+6. `src/features/reports/exception-text.ts` `reasonLabel`: return discounts' discount-reason
+   and refund-reason labels (C18).
+7. `tests/browser/core.spec.ts` (Hoy drill-down): `.metric-grid` → `.report-tiles`, and
+   "Ver órdenes" instead of the first metric.
+8. Docs: docs/ACCESS.md (remote close replaces the support-SQL workaround), this file's
+   status, DELIVERY_STATUS and the ledgers.
 
-- Migration 029: `business_day_settings`, `business_date_at()`, `report_prints`, indexes and
-  grants.
-- `SalesSummary.tax` and `mergeFiscalSummaries`.
-- The `server/reports/*` modules, the read-only snapshot and `/api/reports/*`.
-- The `/report` move and the DB suite `tests/reports-db.ts`.
-- The Finanzas tabs, Hoy, the printed cortes, the shared print layout, kitchen cancellation
-  chits and `src/i18n/reports.ts`.
-- Browser tests.
-- The README, DELIVERY_STATUS, COMPLETION_LEDGER, ACCEPTANCE_STATUS, OPERATIONS,
-  ARCHITECTURE and SERVICE updates listed in spec §8.
+`tests/reports-phaseb-db.ts` (part of `test:db:reports`) skips until 027 and 028 are migrated
+and then runs against the real modules. Before the merge it was run against the 027/028 DDL
+as fiscal.md and discounts.md write it, with stand-in ports written from those specs: 12
+checks passed (S1–S7 with every reconciliation check, the breakdowns, order and tender lists,
+exceptions with keyset paging, drawer figures against `drawerTotals`, X/Z prints and
+reprints, two concurrent Z prints numbered 1 and 2, the corte del día, Hoy alerts, the remote
+close and the legacy `/report`). The phase B views were also rendered in that setup (axe
+clean on Hoy and every Finanzas tab, no horizontal scroll at 390 px, CSV and print flows);
+none of that setup is committed.
 
-Nothing here has been checked against a real database, printer or accountant workflow yet.
+## Limitations and decisions
+
+Deferred (spec §1.3): scheduled or emailed reports and server PDFs (no mail provider; print
+or "Guardar como PDF" instead), forecasts, per-option sales, organization-wide consolidated
+reports (RLS forbids cross-tenant reads), per-employee "collected by" (tenders carry no
+employee), tip distribution, inventory valuation, delivery-platform imports and ESC/POS
+printer SDKs. The integrations panel keeps "Impresión directa a impresora" disabled: browser
+printing works without it, and that label describes direct printer integration, which does
+not exist (spec D16 not applied). Decisions D1–D20 are in the spec; the binding lead decisions
+are LD-15 (reports Q1, Q4–Q7) and LD-16 (L3, L5, L7, L8).
+
+## Sources
+
+- Corte X vs Z practice: posretailsolutions.com.mx and docs.cofac.mx (spec §13).
+- Tips belong to workers (LFT arts. 346-347) and are outside the IVA base (SAT 33/IVA/N).
+- Refund adjustments in the refund period: LIVA art. 7. Five-year retention: CFF art. 30.
+- CSV: RFC 4180; formula injection: OWASP CSV Injection.
+- PostgreSQL (`AT TIME ZONE`, function volatility, repeatable read snapshots, advisory locks)
+  and postgres.js 3.4.8 (`sql.begin(options, fn)`, nested fragments, `sql.unsafe`
+  fragments), checked with Context7.

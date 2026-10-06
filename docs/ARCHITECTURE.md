@@ -104,6 +104,8 @@ Metric contracts must define inclusion by date, status, source, and tax basis:
 
 Each metric has one implementation and drill-down to its source. Materialized summaries are rebuildable projections, never a second authority on whether an order was paid.
 
+Implemented ([Reports](REPORTS.md), migration 029): the metric contract in `shared/reports.ts` with IVA taken only from fiscal's `fiscalSummary`; business dates of events use the settings in force at that instant (`business_day_settings`, written by a trigger on `restaurants`, and `business_date_at()`), so a cutoff or timezone change never moves past records; every report reads one `REPEATABLE READ, READ ONLY` snapshot (`server/reports/snapshot.ts`) so its reconciliation checks cannot fail on concurrent writes. The views and most routes are wired when fiscal (027) and discounts (028) merge.
+
 ## Stock policy
 
 Define deduction timing once per service policy and channel. For prepared portions, reserve at dispatch where appropriate and consume on the configured irreversible service event. For direct raw recipes, apply one recipe-based movement at the defined event. Prep transforms raw inputs into components; a later component sale does not consume the raw inputs again.
@@ -200,7 +202,7 @@ Every command that locks rows takes its locks **in this order**, skipping the le
 | 25 | discounts `applyDiscount` / `reverseDiscount` | 1 → 2 → 5 → 5a → 8 → [refresh → 12] / 1 → 2 → 5 → 5a → 8 | As specified in discounts' spec. |
 | 26 | discounts `recordRefund`: items / amount | 1 → 2 → 5 → 5a → 6 → 7 → 9 → 10 (kitchen cancel) → 11 / 1 → 2 → 5 → 6 → 11 | As specified; never calls `refresh`. |
 | 27 | discounts `saveMoneyControls`; `closeCash`/`closeDrawerRow`/`reviewDrawer` | 1 → 2 → 3 / 1 → 2 → 11 | As specified. |
-| 28 | reports `printDrawerCorte`, `printDayCorte`; remote drawer close | 1 → 2 → 3 (report-print key) / 1 → 2 → 11 | As specified. |
+| 28 | reports `printDrawerCorte`, `printDayCorte`; remote drawer close (`server/reports/cortes.ts`) | 1 → 2 → 3 (report-print key) / 1 → 2 → 11 | Implemented; passes the ratchet without an allowlist entry. Routes registered at reports' phase B wiring. |
 | 29 | cfdi `POST /cfdi/invoices`, settings; `cfdi_global` builder (worker) | 1 → 2 → 3 (per-ticket keys sorted, then document keys) → `cfdi_*` rows / 3 (per-period key) → `cfdi_*` rows | As specified; cfdi never locks orders, the drawer or the folio. |
 | 30 | account support CLI unlock, owner seat changes | Own transactions on `employees` and `pin_throttles` (LO-R7) | As specified. |
 
