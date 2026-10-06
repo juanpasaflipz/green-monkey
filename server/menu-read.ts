@@ -12,19 +12,22 @@ export async function catalog(tx: Tx): Promise<Product[]> {
   ).map((r) => r.data as Product);
 }
 
-/** QR/kiosk catalog: no open-price products and no recipes or costs. */
+/** QR/kiosk catalog: no open-price products and no recipes, costs or fiscal data. */
 export async function publicCatalog(tx: Tx) {
-  return (await catalog(tx))
-    .filter((p) => !p.openAmount)
-    .map(({ recipe: _recipe, cost: _cost, ...p }) => ({
-      ...p,
-      groups: p.groups.map((g) => ({
-        ...g,
-        options: g.options.map(
-          ({ recipe: _optionRecipe, cost: _optionCost, ...o }) => o,
-        ),
-      })),
-    }));
+  return (
+    (await catalog(tx))
+      .filter((p) => !p.openAmount)
+      // fiscal (027): a product's tax category and SAT keys stay off the diner payload.
+      .map(({ recipe: _recipe, cost: _cost, fiscal: _fiscal, ...p }) => ({
+        ...p,
+        groups: p.groups.map((g) => ({
+          ...g,
+          options: g.options.map(
+            ({ recipe: _optionRecipe, cost: _optionCost, ...o }) => o,
+          ),
+        })),
+      }))
+  );
 }
 
 /** Bumped by every menu write, including availability ("86") toggles. */

@@ -2246,10 +2246,12 @@ test("a counter check closed at payment still takes a note edit while its ticket
   ).toHaveCount(0);
 });
 
-test("a paid table check takes one more round from Mesas on the same bill", async ({
+test("a paid table check takes no more rounds: the items go out as a new order for the same table", async ({
   page,
 }) => {
-  // SERVICE-KITCHEN-10: "la última ronda" after paying stays on the check.
+  // fiscal 027 (LD-15 fiscal Q2): the check got its numbered ticket when it
+  // was paid, so "la última ronda" goes out as "Enviar como orden nueva" for
+  // the same table (a second check with its own ticket), not onto the bill.
   await login(page);
   await openDrawer(page);
   const [table] = await freeTables(page);
@@ -2258,13 +2260,14 @@ test("a paid table check takes one more round from Mesas on the same bill", asyn
     mode: "dine_in",
     tableId: table.id,
   });
-  await call(page, `/orders/${o.id}/payments`, {
+  const paid = await call(page, `/orders/${o.id}/payments`, {
     operationId: uuid(),
     amount: o.total,
     tip: 0,
     received: o.total,
     method: "cash",
   });
+  expect(paid.fiscal.ticket.folio).toBeTruthy();
   await page.getByRole("button", { name: "Mesas", exact: true }).click();
   const card = page.getByRole("article", { name: table.name, exact: true });
   await expect(card).toContainText(`#${o.number} · Pagada · por liberar`);
@@ -2280,14 +2283,29 @@ test("a paid table check takes one more round from Mesas on the same bill", asyn
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
     .click();
+  await expect(
+    page.getByText(
+      "Esta cuenta ya tiene ticket con folio. Envía lo nuevo como una orden nueva para la misma mesa.",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.locator(".order-line").filter({ hasText: "Agua de jamaica" }),
+  ).toBeVisible();
+  const before = await call(page, "/orders/" + o.id);
+  expect(before.checkState).toBe("paid");
+  expect(before.total).toBe(o.total);
+  await page
+    .getByRole("button", { name: "Enviar como orden nueva", exact: true })
+    .click();
   await expect(existing).toContainText("Agua de jamaica");
-  const water = await product(page, "Agua de jamaica");
-  const after = await call(page, "/orders/" + o.id);
-  expect(after.checkState).toBe("open");
-  expect(after.total - after.paid).toBe(water.price);
+  await expect(existing).not.toContainText("Taco de hongos");
   const tables = await call<any[]>(page, "/service/tables");
-  expect(
-    tables.find((t) => t.id === table.id)!.checks.map((c: any) => c.id),
-  ).toEqual([o.id]);
+  const checks = tables.find((t) => t.id === table.id)!.checks;
+  expect(checks.map((c: any) => c.id)).toContain(o.id);
+  expect(checks).toHaveLength(2);
+  const late = checks.find((c: any) => c.id !== o.id);
+  const water = await product(page, "Agua de jamaica");
+  expect(late.total).toBe(water.price);
+  await freeCheck(page, late.id);
   await freeCheck(page, o.id);
 });

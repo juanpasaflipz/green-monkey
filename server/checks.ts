@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { permit, operators } from "./auth.js";
 import { audit, getOrder, once, recordPayment } from "./orders.js";
 import { bumpKitchenFeed } from "./kitchen.js";
+import { issueDueTicket } from "./fiscal.js";
 import {
   DomainError,
   businessDate,
@@ -89,10 +90,13 @@ export async function refreshCheckState(
         o as { mode: string; table_id: string | null; channel: string },
       )
     ) {
-      if (o.check_state !== "paid")
+      if (o.check_state !== "paid") {
         await tx`update orders set check_state='paid' where id=${orderId}`;
+        await issueDueTicket(tx, s, orderId); // fiscal 027: open → paid issues the ticket
+      }
       return "paid";
     }
+    await issueDueTicket(tx, s, orderId); // fiscal 027: before close, so the ticket audit precedes check.closed
     await close(tx, s, orderId, "settled", money);
     return "closed";
   }
@@ -128,6 +132,9 @@ export async function closeCheck(
       const [m] =
         await tx`select coalesce(sum(amount),0)::int as paid from tenders where order_id=${orderId}`;
       if (o.total - m.paid > 0) throw new DomainError("balance_due", 409);
+      // fiscal 027: returns the existing ticket without locking the counter, or
+      // issues a missing one (kill switch, old revision); null for a zero total.
+      await issueDueTicket(tx, s, orderId);
       await close(tx, s, orderId, "released", { total: o.total, paid: m.paid });
       return getOrder(tx, orderId);
     },
@@ -382,7 +389,9 @@ export async function listOrders(
       ${
         term
           ? tx`and (o.name ilike ${term} escape '\\' or t.name ilike ${term} escape '\\'
-                    or e.name ilike ${term} escape '\\' ${num !== null ? tx`or o.number = ${num}` : tx``})`
+                    or e.name ilike ${term} escape '\\' ${num !== null ? tx`or o.number = ${num}` : tx``}
+                    or exists (select 1 from offline_sync_records r where r.tenant_id=o.tenant_id
+                               and r.order_id=o.id and r.provisional_number ilike ${term} escape '\\'))`
           : tx``
       }
       ${cursor ? tx`and (o.created_at, o.id) < (${cursor.t}::text::timestamptz, ${cursor.i}::uuid)` : tx``}

@@ -32,6 +32,7 @@ import {
   recordPayment,
 } from "../server/orders.js";
 import { openOrdersSnapshot } from "../server/offline-tables.js";
+import { closeCheck } from "../server/checks.js";
 import { resolvePaymentAttempt } from "../server/offline-attempts.js";
 import {
   paymentRecoveryStatus,
@@ -50,6 +51,14 @@ import {
 } from "../shared/domain.js";
 import { offlineRecord } from "../shared/offline-recovery.js";
 import { noRetries } from "./db-retries.js";
+
+/** fiscal (027) triggers a cleanup disables (in its own transaction) to delete fixture rows. */
+const FISCAL_TRIGGERS = [
+  ["fiscal_adjustments", "fiscal_adjustments_immutable"],
+  ["fiscal_ticket_taxes", "fiscal_ticket_taxes_immutable"],
+  ["fiscal_tickets", "fiscal_tickets_immutable"],
+  ["fiscal_folio_counters", "fiscal_folio_counters_guard"],
+] as const;
 
 const { runtime, migration } = isolatedTarget(process.env),
   sql = connect(runtime),
@@ -1784,19 +1793,39 @@ try {
     ),
     0,
   );
-  const stillServiceable = await run((tx) =>
-    addRoundOnline(tx, s4, tab.id, {
-      operationId: randomUUID(),
-      lines: [line(ids.drink)],
-      mode: "dine_in",
-      tableId: lateTable,
-      name: "Mesa del cajón cerrado",
-      note: "",
-      channel: "pos",
-      expectedVersion: paidLate.version,
-    }),
+  // fiscal 027 (LD-15 fiscal Q2): the reconciled payment settled the table's
+  // check, which got its ticket in this transaction; a paid ticketed check
+  // takes no more rounds (late items go out as a new order), and it is still
+  // a normal check that "Liberar mesa" closes.
+  assert.equal(paidLate.checkState, "paid");
+  assert.ok(
+    paidLate.fiscal?.ticket,
+    "the settling reconcile issued the ticket",
   );
-  assert.equal(stillServiceable.total, 150);
+  await expectCode(
+    run((tx) =>
+      addRoundOnline(tx, s4, tab.id, {
+        operationId: randomUUID(),
+        lines: [line(ids.drink)],
+        mode: "dine_in",
+        tableId: lateTable,
+        name: "Mesa del cajón cerrado",
+        note: "",
+        channel: "pos",
+        expectedVersion: paidLate.version,
+      }),
+    ),
+    "fiscal_ticket_issued",
+  );
+  const stillServiceable = await run((tx) =>
+    closeCheck(tx, s4, tab.id, { operationId: randomUUID() }),
+  );
+  assert.equal(stillServiceable.closeReason, "released");
+  assert.equal(
+    stillServiceable.fiscal?.ticket?.folio,
+    paidLate.fiscal!.ticket!.folio,
+    "releasing the table keeps the same ticket",
+  );
 
   // OFF-R27: a sale or order refused because its create had already
   // committed online (response lost) names that order in the manager review.
@@ -2575,7 +2604,19 @@ try {
   // cleanup rolls the switch back with the deletes.
   await admin.begin(async (tx) => {
     await tx`alter table stock_movements disable trigger stock_movements_immutable`;
+    // fiscal (027): fiscal records are immutable even for the owner, so this
+    // cleanup switches their named triggers off in the same transaction that
+    // deletes the fixture tenants (LD-12 pattern, LD-16 L5): no other session
+    // ever sees them disabled, and a failed cleanup rolls the switch back.
+    for (const [table, trigger] of FISCAL_TRIGGERS)
+      await tx.unsafe(`alter table ${table} disable trigger ${trigger}`);
     for (const table of [
+      // fiscal (027), first in FK order (LD-16 L5).
+      "fiscal_adjustments",
+      "fiscal_ticket_taxes",
+      "fiscal_tickets",
+      "fiscal_folio_counters",
+      "restaurant_fiscal_profiles",
       "offline_kitchen_reviews",
       "offline_sync_records",
       "offline_archives",
@@ -2619,6 +2660,8 @@ try {
     await tx`delete from restaurants where id in (${tenantId},${otherTenant})`;
     await tx`delete from organizations where id in (${organizationId},${otherOrganization})`;
     await tx`alter table stock_movements enable trigger stock_movements_immutable`;
+    for (const [table, trigger] of FISCAL_TRIGGERS)
+      await tx.unsafe(`alter table ${table} enable trigger ${trigger}`);
   });
   await sql.end();
   await admin.end();

@@ -142,12 +142,15 @@ export function useOfflineSelling({
    * replaces "#number" and reads "Número provisional B-07" (OFFLINE_RECOVERY
    * "Provisional numbers"), so the bare prefix is never taken for a folio.
    */
-  const localLabel = (receipt: LocalReceipt) => ({
+  const localLabel = (receipt: LocalReceipt, tr = t) => ({
     label: receipt.offline.provisionalNumber
-      ? t("offlineProvisional", { n: receipt.offline.provisionalNumber })
+      ? tr("offlineProvisional", { n: receipt.offline.provisionalNumber })
       : undefined,
-    labelHint: t("offlineProvisionalHint"),
+    labelHint: tr("offlineProvisionalHint"),
   });
+  /** fiscal (027): the printed receipt is a comprobante, in Spanish (D10). */
+  const printedLabel = (receipt: LocalReceipt) =>
+    localLabel(receipt, translator("es"));
   /** Prints the kitchen tickets of these records, and a receipt when given. */
   async function print(operationIds: string[], receipt: LocalReceipt | null) {
     const tickets = (await recentTickets(session, locale)).filter((item) =>
@@ -167,9 +170,9 @@ export function useOfflineSelling({
         createElement(ReceiptDocument, {
           order: receipt,
           session,
-          locale,
+          locale: "es",
           kind: "local",
-          ...localLabel(receipt),
+          ...printedLabel(receipt),
         }),
       );
     if (sections.length)
@@ -279,9 +282,14 @@ export function useOfflineSelling({
     isLocalOrder,
     /** Receipt props for service's ReceiptModal (§3.8). */
     receiptProps(order: Order) {
-      return isLocalReceipt(order)
-        ? { ...localLabel(order), kind: "local" as const }
-        : null;
+      if (!isLocalReceipt(order)) return null;
+      const printed = printedLabel(order);
+      return {
+        ...localLabel(order),
+        printLabel: printed.label,
+        printLabelHint: printed.labelHint,
+        kind: "local" as const,
+      };
     },
     printKitchen: (operationIds: string[]) => print(operationIds, null),
     /** Every kitchen ticket this device saved for the order on screen. */

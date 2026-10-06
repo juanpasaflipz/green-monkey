@@ -8,6 +8,7 @@ import { Orders } from "./Orders";
 import { Tables } from "./Tables";
 import { Kitchen } from "./Kitchen";
 import { RestaurantSettings } from "./RestaurantSettings";
+import { FiscalSettings } from "./fiscal/FiscalSettings";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
 import { useEffect, useState } from "react";
@@ -145,6 +146,7 @@ export function Operations({
       {view === "settings" && (
         <>
           <RestaurantSettings session={session} locale={locale} />
+          {manager && <FiscalSettings session={session} locale={locale} />}
           {session.role === "owner" && <FreeSelection locale={locale} />}
           {manager && <DeviceManagement session={session} locale={locale} />}
           <PlanSettings

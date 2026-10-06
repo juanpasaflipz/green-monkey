@@ -350,7 +350,14 @@ line), and keep where noted.
     ["How money changes affect tax"](FISCAL.md#how-money-changes-affect-tax)).
   - The 8 % border-region rate and its expiry date in code,
     `BORDER_STIMULUS_VALID_UNTIL = 2026-12-31`, for border pilots
-    ([FISCAL.md, "Verification record"](FISCAL.md#verification-record)).
+    ([FISCAL.md, "Verification record"](FISCAL.md#verification-record)). For each
+    border restaurant (lead decision LD-25): its place-of-issue postal code carries the
+    SAT `c_CodigoPostal` "Estímulo Franja Fronteriza" mark, and its RFC is in the LCO
+    with mark 2; the PAC rejects 8 % otherwise, and the app checks only that the postal
+    code is in a border state. If no DOF extension is published, border tenants switch
+    to 16 % on 2027-01-01 (dated check in [RUNBOOK.md](RUNBOOK.md#deploy-window)).
+  - Multi-branch RFCs: every ticket prints the issuing branch's address when "Este RFC
+    tiene más de una sucursal" is ticked (CFF art. 29-A fr. I).
   - Customer invoices, the daily global invoice (PUBLICO EN GENERAL) and credit notes
     for refunds ([CFDI.md, "Builders"](CFDI.md#builders-fiscal-027-stays-the-system-of-record)),
     including late offline sales that land in a supplementary global part for their
