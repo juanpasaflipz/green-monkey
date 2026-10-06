@@ -7,6 +7,7 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import http from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import postgres from "postgres";
@@ -321,6 +322,111 @@ try {
         `/api/account-data/export.json?tenant=${TENANT}`,
       );
       assert.equal(allowed.status, 200);
+    },
+  );
+  await check(
+    "FLK-1 an export (JSON or CSV) the client abandons while the server waits on drain for a table's final batch ends as export_aborted: the web process stays up and the next export completes",
+    async () => {
+      // 48 rows of 512 KiB: one table read in a single (final) cursor batch of
+      // 24 MiB, more than the loopback socket buffers hold, so the server
+      // meets backpressure once the client stops reading.
+      const source = `account-http-backpressure-${randomUUID()}`;
+      const tenantTx = <T>(fn: (tx: postgres.TransactionSql) => Promise<T>) =>
+        admin.begin(async (tx) => {
+          await tx`select set_config('app.tenant_id',${TENANT},true)`;
+          return fn(tx);
+        }) as Promise<T>;
+      await tenantTx(
+        (
+          tx,
+        ) => tx`insert into import_batches(tenant_id,id,source,file_hash,report)
+          select ${TENANT},gen_random_uuid(),${source},md5(n::text),
+            jsonb_build_object('pad',repeat('x',524288))
+          from generate_series(1,48) n`,
+      );
+      const cookie = [...owner.browser.cookies]
+        .map(([k, v]) => `${k}=${v}`)
+        .join("; ");
+      // Reads one chunk, stops reading, then drops the connection (a
+      // cancelled browser download or a closed tab).
+      const abandon = (path: string) =>
+        new Promise<{ status: number; bytes: number }>((resolve, reject) => {
+          const req = http.get(
+            origin + path,
+            { agent: false, headers: { cookie } },
+            (res) => {
+              res.on("error", () => {
+                /* the socket is destroyed below */
+              });
+              res.once("data", (chunk: Buffer) => {
+                res.pause();
+                setTimeout(() => {
+                  req.destroy();
+                  resolve({ status: res.statusCode ?? 0, bytes: chunk.length });
+                }, 1500);
+              });
+            },
+          );
+          req.on("error", (e) => {
+            if (!req.destroyed) reject(e);
+          });
+        });
+      // The abandoned export releases its slot (export_busy while it unwinds).
+      const idle = async () => {
+        let tables: Awaited<ReturnType<Browser["request"]>> | null = null;
+        for (let i = 0; i < 50; i++) {
+          tables = await owner.browser.request(
+            "GET",
+            "/api/account-data/tables",
+          );
+          if (tables.status !== 429 || tables.json?.error !== "export_busy")
+            break;
+          await delay(100);
+        }
+        assert.equal(tables?.status, 200, JSON.stringify(tables?.json));
+      };
+      try {
+        // Before the fix the JSON abort ended the process at once (later
+        // tables' final batches were still waiting on drain); the CSV one
+        // only when its unawaited drain wait timed out (DRAIN_TIMEOUT_MS).
+        for (const path of [
+          `/api/account-data/export.json?tenant=${TENANT}`,
+          `/api/account-data/export/csv/import_batches?tenant=${TENANT}`,
+        ]) {
+          const first = await abandon(path);
+          assert.equal(first.status, 200, path);
+          assert.ok(first.bytes > 0, path);
+          await delay(500);
+          assert.equal(
+            server?.exitCode,
+            null,
+            `the web process survives the abandoned export (${path})`,
+          );
+          assert.equal((await fetch(origin + "/api/health")).status, 200);
+          await idle();
+        }
+        const second = await owner.browser.request(
+          "GET",
+          `/api/account-data/export.json?tenant=${TENANT}`,
+        );
+        assert.equal(second.status, 200);
+        assert.equal(
+          second.json?.format,
+          "green-monkey-export",
+          "complete JSON",
+        );
+        assert.equal(
+          second.json.tables.import_batches.filter(
+            (r: { source: string }) => r.source === source,
+          ).length,
+          48,
+        );
+      } finally {
+        await tenantTx(
+          (tx) =>
+            tx`delete from import_batches where tenant_id=${TENANT} and source=${source}`,
+        );
+      }
     },
   );
   await check(

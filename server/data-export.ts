@@ -128,6 +128,31 @@ function localDate(timezone: string) {
 type Format = { format: "json" } | { format: "csv"; table: string };
 
 /**
+ * Reads one table in batches of 500 rows and hands each batch to `emit`.
+ * The async-iterator cursor awaits every batch, the table's final one
+ * included: postgres.js calls a `.cursor(n, fn)` callback for the final
+ * batch without awaiting or catching it, so a write refused after the client
+ * left became an unhandled rejection that ended the process, and that batch
+ * ignored backpressure. Here a throw reaches the caller and leaving the loop
+ * closes the portal.
+ */
+async function streamTable(
+  sql: postgres.Sql,
+  tx: Tx,
+  table: ExportTable,
+  signal: AbortSignal,
+  emit: (rows: Record<string, unknown>[]) => Promise<void>,
+) {
+  for await (const rows of tx`select ${sql(table.columns)} from ${sql(table.name)} order by ${sql(table.orderBy)}`.cursor(
+    500,
+  )) {
+    await emit(rows);
+    if (signal.aborted) break;
+  }
+  if (signal.aborted) throw new DomainError("export_aborted", 499);
+}
+
+/**
  * Streams the export. Errors before the first byte go to the caller (standard
  * JSON error); after it the response is ended early and the client's file is
  * truncated (a partial JSON never parses), logged as export_aborted.
@@ -157,7 +182,6 @@ async function streamExport(
           await tx`select ${sql([...EXPORT_RESTAURANT_COLUMNS])}
         from restaurants where id=${s.tenantId}`;
         const date = localDate(restaurant.timezone);
-        const close = () => (signal.aborted ? sql.CLOSE : undefined);
         if (f.format === "csv") {
           const table = tables.find((t) => t.name === f.table);
           if (!table) throw new DomainError("export_table_unknown", 404);
@@ -165,18 +189,12 @@ async function streamExport(
           res.set("Content-Type", "text/csv; charset=utf-8");
           res.set("Cache-Control", "no-store");
           await write(res, CSV_BOM + csvRow(table.columns), signal);
-          await tx`select ${sql(table.columns)} from ${sql(table.name)} order by ${sql(table.orderBy)}`.cursor(
-            500,
-            async (rows) => {
-              await write(
-                res,
-                rows
-                  .map((r) => csvRow(table.columns.map((c) => r[c])))
-                  .join(""),
-                signal,
-              );
-              return close();
-            },
+          await streamTable(sql, tx, table, signal, (rows) =>
+            write(
+              res,
+              rows.map((r) => csvRow(table.columns.map((c) => r[c]))).join(""),
+              signal,
+            ),
           );
           return;
         }
@@ -196,16 +214,11 @@ async function streamExport(
             signal,
           );
           let first = true;
-          await tx`select ${sql(table.columns)} from ${sql(table.name)} order by ${sql(table.orderBy)}`.cursor(
-            500,
-            async (rows) => {
-              const chunk = rows.map(rowJson).join(",");
-              await write(res, (first ? "" : ",") + chunk, signal);
-              first = false;
-              return close();
-            },
-          );
-          if (signal.aborted) throw new DomainError("export_aborted", 499);
+          await streamTable(sql, tx, table, signal, async (rows) => {
+            const chunk = rows.map(rowJson).join(",");
+            await write(res, (first ? "" : ",") + chunk, signal);
+            first = false;
+          });
         }
         await write(res, (tables.length ? "]" : "") + "}}", signal);
       },

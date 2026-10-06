@@ -1066,6 +1066,10 @@ test("a terminal export prompts for the PIN", async ({ page, baseURL }) => {
       /^green-monkey-casa-del-bosque-demo-\d{8}\.json$/,
     );
     await expect(stepUp).toBeHidden();
+    // Wait for the whole file: ending the test mid-download drops the
+    // connection while the server is still streaming (W3-2).
+    const exported = JSON.parse((await downloadBytes(download)).toString());
+    expect(exported.format).toBe("green-monkey-export");
   } finally {
     await sql.end();
     await admin.end();
