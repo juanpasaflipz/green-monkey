@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { api } from "../api";
 import { Button } from "../components/ui";
-import { translateError } from "../i18n";
+import { strings, translateError } from "../i18n";
+import { loadAccountConfig, type AccountConfig } from "./accountConfig";
 import { PRO_OFFER, PRO_ANNUAL_SAVING_MINOR } from "../../shared/plans";
 export function PlanSettings({
   locale,
@@ -19,8 +20,10 @@ export function PlanSettings({
     status: string;
     accessUntil: string | null;
     kiosk: boolean;
+    source?: "stripe" | "fixture" | "support" | null;
   } | null>(null);
   const [error, setError] = useState("");
+  const [config, setConfig] = useState<AccountConfig | null>(null);
   async function load() {
     try {
       setPlan(await api("/plan"));
@@ -31,7 +34,14 @@ export function PlanSettings({
   }
   useEffect(() => {
     void load();
+    void loadAccountConfig()
+      .then(setConfig)
+      .catch(() => undefined);
   }, []);
+  // Until the configuration loads, QR/kiosk ordering is not advertised (§2.15).
+  const ordering = config?.publicOrdering.enabled === true;
+  const taxed = config?.saasTax.mode === "tax_rate";
+  const withTax = (minor: number) => Math.round((minor * 116) / 100);
   const es = locale === "es";
   const formatPrice = (minor: number) =>
     new Intl.NumberFormat(es ? "es-MX" : "en-US", {
@@ -58,8 +68,19 @@ export function PlanSettings({
       </p>
       <p className="muted">
         {es
-          ? `El pago anual ahorra ${formatPrice(PRO_ANNUAL_SAVING_MINOR)}: dos meses gratis. Impuestos aplicables adicionales. Kiosco incluido; sin cargo por empleado.`
-          : `Annual billing saves ${formatPrice(PRO_ANNUAL_SAVING_MINOR)}: two months free. Applicable taxes are additional. Kiosk included; no per-employee fee.`}
+          ? `El pago anual ahorra ${formatPrice(PRO_ANNUAL_SAVING_MINOR)}: dos meses gratis. ${ordering ? "Kiosco incluido; s" : "S"}in cargo por empleado.`
+          : `Annual billing saves ${formatPrice(PRO_ANNUAL_SAVING_MINOR)}: two months free. ${ordering ? "Kiosk included; n" : "N"}o per-employee fee.`}
+      </p>
+      <p className="muted">
+        {taxed
+          ? [PRO_OFFER.monthlyMinor, PRO_OFFER.annualMinor]
+              .map((minor) =>
+                strings[locale].accountTaxIncluded
+                  .replace("{price}", formatPrice(minor))
+                  .replace("{total}", formatPrice(withTax(minor))),
+              )
+              .join(" · ")
+          : strings[locale].accountTaxNotConfigured}
       </p>
       {error ? (
         <>
@@ -74,16 +95,18 @@ export function PlanSettings({
         <>
           <h3>{plan.plan === "pro" ? "Pro" : "Free"}</h3>
           <p>
-            {plan.kiosk
-              ? es
-                ? "Kiosco y órdenes QR habilitados."
-                : "Kiosk and QR ordering enabled."
-              : es
-                ? "Kiosco y órdenes QR requieren Pro. Las ventas, cobros y recibos siguen disponibles."
-                : "Kiosk and QR ordering require Pro. Selling, payments and receipts remain available."}
+            {plan.plan !== "pro"
+              ? strings[locale].accountFreeLimitsSummary
+              : ordering && plan.kiosk
+                ? es
+                  ? "Kiosco y órdenes QR habilitados."
+                  : "Kiosk and QR ordering enabled."
+                : strings[locale].accountPublicOrderingSoon}
           </p>
           {plan.accessUntil && (
             <p>
+              {plan.source === "support" &&
+                strings[locale].accountSupportGrantPrefix + " · "}
               {es ? "Acceso hasta: " : "Access until: "}
               {new Intl.DateTimeFormat(es ? "es-MX" : "en-US", {
                 dateStyle: "medium",

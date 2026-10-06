@@ -21,11 +21,27 @@ import {
 } from "../../shared/domain";
 
 type PublicCatalog = {
-  restaurant: { name: string; currency: string };
+  restaurant: {
+    name: string;
+    currency: string;
+    /** account (031): the restaurant's own privacy notice for diners. */
+    privacyNoticeUrl?: string | null;
+  };
   /** Menu revision the catalog includes (read before it). */
   revision?: number;
   catalog: Product[];
 };
+/** Codes that mean "no online ordering here now" for a diner (account 031). */
+const ORDERING_UNAVAILABLE = new Set([
+  "pro_required",
+  "public_ordering_disabled",
+]);
+/** Diner-facing error text: never the staff wording about plans. */
+function guestError(code: string, locale: Locale) {
+  return ORDERING_UNAVAILABLE.has(code)
+    ? strings[locale].accountGuestOrderingUnavailable
+    : translateError(code, locale);
+}
 /** Refetch the catalog now (after a catalog error and on each kiosk reset). */
 const refreshCatalog = () =>
   window.dispatchEvent(new Event(MENU_REFRESH_EVENT));
@@ -48,6 +64,7 @@ export function PublicOrdering() {
   const [result, setResult] = useState<any>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [unavailable, setUnavailable] = useState(false);
   const baseline = useRef<number | null>(null);
   // MENU-R1: a page showing its sent order no longer polls.
   const sent = useRef(false);
@@ -60,7 +77,10 @@ export function PublicOrdering() {
         advanceBaseline(baseline, d.revision);
         setData(d);
       })
-      .catch((e) => setError(translateError(e.message, locale)));
+      .catch((e) => {
+        if (ORDERING_UNAVAILABLE.has(e.message)) setUnavailable(true);
+        setError(guestError(e.message, locale));
+      });
   }, [token]);
   // OWNER-2: a kiosk or a table's QR page stays open for hours. Poll the menu
   // revision about every minute and when the page becomes visible again, and
@@ -147,6 +167,22 @@ export function PublicOrdering() {
   }
   const remove = (id: string) =>
     setLines((current) => current.filter((x) => x.id !== id));
+  // Ordering is off (production default until wave 3) or the restaurant has no
+  // Pro: the diner sees only where to order instead (§2.15).
+  if (unavailable)
+    return (
+      <div className="public-ordering">
+        <header className="row between">
+          <div className="brand">
+            <BrandLogo />
+          </div>
+          <Button onClick={() => setLocale(locale === "es" ? "en" : "es")}>
+            {locale === "es" ? "English" : "Español"}
+          </Button>
+        </header>
+        <p role="alert">{t("accountGuestOrderingUnavailable")}</p>
+      </div>
+    );
   return (
     <div className="public-ordering">
       <header className="row between">
@@ -177,7 +213,7 @@ export function PublicOrdering() {
                   order: await api("/public/receipt/" + result.receiptToken),
                 });
               } catch (e) {
-                setError(translateError((e as Error).message, locale));
+                setError(guestError((e as Error).message, locale));
               }
             }}
           >
@@ -229,14 +265,32 @@ export function PublicOrdering() {
               locale={locale}
               onRemove={remove}
             />
-            <Field label={t("name")}>
+            <Field label={t("accountGuestNameLabel")}>
               <input
                 value={draft.name}
+                aria-describedby="guest-name-hint"
                 onChange={(e) =>
                   setDraft((d) => ({ ...d, name: e.target.value }))
                 }
               />
             </Field>
+            <p id="guest-name-hint" className="muted">
+              {t("accountGuestNameHint")}{" "}
+              {data?.restaurant.privacyNoticeUrl ? (
+                <a
+                  href={data.restaurant.privacyNoticeUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {t("accountGuestPrivacyLink").replace(
+                    "{restaurant}",
+                    data.restaurant.name,
+                  )}
+                </a>
+              ) : (
+                t("accountGuestNoNotice")
+              )}
+            </p>
             <div className="large-money">{m(total)}</div>
             <p>{t("payAtCounter")}</p>
             <Button
@@ -249,7 +303,7 @@ export function PublicOrdering() {
                   setResult(await api("/public/" + token + "/orders", draft));
                 } catch (e) {
                   const code = (e as Error).message;
-                  setError(translateError(code, locale));
+                  setError(guestError(code, locale));
                   // The menu changed under the order: refetch it so the
                   // stale line is marked with "Quitar".
                   if (CATALOG_ERRORS.has(code)) refreshCatalog();
@@ -273,6 +327,11 @@ export function PublicOrdering() {
           onClose={() => setPicker(null)}
         />
       )}
+      <footer className="public-ordering-footer">
+        <a href="/legal/privacidad#restaurantes">
+          {t("accountGuestPlatformPrivacy")}
+        </a>
+      </footer>
     </div>
   );
 }

@@ -498,6 +498,10 @@ function EditStaff({
         </Button>
       </form>
       <hr />
+      {/* A3 (account 031): another owner's PIN is theirs to set (owner_pin_self_only). */}
+      {ownerRow && !row.isSelf ? (
+        <p className="muted">{t.accessStaffOwnerPinSelf}</p>
+      ) : (
       <form
         aria-labelledby={`pin-${row.id}`}
         onSubmit={async (e) => {
@@ -532,6 +536,7 @@ function EditStaff({
           {t.accessStaffSetPin}
         </Button>
       </form>
+      )}
       {locked(row) && (
         <>
           <hr />

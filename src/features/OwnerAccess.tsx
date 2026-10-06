@@ -5,12 +5,16 @@ import { changeRestaurant, db } from "../offline";
 import { clearSessionScope } from "../api";
 import { OwnerManagement } from "./OwnerManagement";
 import { strings, translateError } from "../i18n";
+import { AccountCenter } from "./AccountCenter";
+import { LegalAcceptance, type LegalAccepted } from "./LegalAcceptance";
+import { loadAccountConfig, type AccountConfig } from "./accountConfig";
+import { legalText } from "../../shared/legal";
 
 type Account = {
   name: string;
   email: string;
   csrf: string;
-  organizations: { id: string; name: string }[];
+  organizations: { id: string; name: string; role: "primary" | "co_owner" }[];
   restaurants: {
     id: string;
     name: string;
@@ -20,6 +24,14 @@ type Account = {
     free_location: boolean;
     organization_id: string;
   }[];
+  legal?: { status: string; pending: Array<"terms" | "privacy"> };
+};
+type InvitationPreview = {
+  role: string;
+  restaurantName: string;
+  organizationName: string;
+  expiresAt: string;
+  emailMatches: boolean;
 };
 const copy = {
   es: {
@@ -125,11 +137,25 @@ export function OwnerAccess({
     }
     return token ?? sessionStorage.getItem("gm-invitation") ?? "";
   });
+  // account (031): an ownership transfer link (#transfer=…) waits for the
+  // target's Google sign-in like an invitation does.
+  const [transferToken, setTransferToken] = useState(() => {
+    const token = new URLSearchParams(location.hash.slice(1)).get("transfer");
+    if (token) {
+      sessionStorage.setItem("gm-transfer", token);
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    return token ?? sessionStorage.getItem("gm-transfer") ?? "";
+  });
+  const [config, setConfig] = useState<AccountConfig | null>(null);
+  const [preview, setPreview] = useState<InvitationPreview | null>(null);
+  const [inviteLegal, setInviteLegal] = useState<LegalAccepted | null>(null);
+  const [signupLegal, setSignupLegal] = useState<LegalAccepted | null>(null);
   const [wantsSignup] = useState(() =>
     new URLSearchParams(location.search).has("signup"),
   );
   const [authError] = useState(
-    new URLSearchParams(location.search).has("auth_error"),
+    new URLSearchParams(location.search).get("auth_error") ?? "",
   );
   async function refresh() {
     setLoading(true);
@@ -145,6 +171,7 @@ export function OwnerAccess({
       )
         throw Error();
       const providers = await providerResponse.json();
+      setConfig(await loadAccountConfig().catch(() => null));
       setGoogle(providers.google);
       if (providers.terminal) setTerminal(true);
       setBillingSandbox(providers.billingSandbox === true);
@@ -160,6 +187,19 @@ export function OwnerAccess({
   useEffect(() => {
     void refresh();
   }, []);
+  useEffect(() => {
+    if (!account || !invitation) return;
+    fetch("/api/auth/account-center/invitations/preview", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": account.csrf,
+      },
+      body: JSON.stringify({ token: invitation }),
+    })
+      .then(async (r) => (r.ok ? setPreview(await r.json()) : setPreview(null)))
+      .catch(() => setPreview(null));
+  }, [account?.csrf, invitation]);
   async function command(path: string, body: unknown) {
     const response = await fetch("/api/auth/account/" + path, {
       method: "POST",
@@ -216,9 +256,11 @@ export function OwnerAccess({
   if (loading && !account) return <p role="status">{t.loading}</p>;
   return (
     <section className="owner-access" aria-label={t.title}>
-      {authError && (
+      {authError && authError !== "terminal" && (
         <p role="alert" className="error">
-          {t.authError}
+          {authError === "signup_paused"
+            ? strings[locale].accountSignupPaused
+            : t.authError}
         </p>
       )}
       {failed && (
@@ -231,14 +273,43 @@ export function OwnerAccess({
       {!account && (google || wantsSignup) && (
         <div className="signup-cta">
           <h2>{t.signupTitle}</h2>
-          <p className="muted">{google ? t.signupHint : t.signupUnavailable}</p>
+          <p className="muted">
+            {!google
+              ? t.signupUnavailable
+              : config && !config.legal.signupOpen
+                ? strings[locale].accountSignupPaused
+                : t.signupHint}
+          </p>
           {google && (
             <a
               className={`button full ${wantsSignup ? "primary" : ""}`}
               href="/api/auth/google/start"
+              aria-describedby="signup-privacy-notice"
             >
-              {t.google}
+              {config && !config.legal.signupOpen
+                ? strings[locale].accountGoogleExisting
+                : t.google}
             </a>
+          )}
+          {google && config && config.legal.signupOpen && (
+            <p id="signup-privacy-notice" className="muted signup-notice">
+              {config.legal.status === "published" && config.legal.entity
+                ? legalText(
+                    strings[locale].accountSimplifiedNotice
+                      .replace("{entity}", "{{entity.name}}")
+                      .replace("{email}", "{{entity.privacyContactEmail}}"),
+                    config.legal.entity,
+                    locale,
+                  )
+                : strings[locale].accountSimplifiedNoticeDraft}{" "}
+              <a href={locale === "es" ? "/legal/privacidad" : "/legal/privacy"}>
+                {strings[locale].accountLegalPrivacy}
+              </a>
+              {" · "}
+              <a href={locale === "es" ? "/legal/terminos" : "/legal/terms"}>
+                {strings[locale].accountLegalTerms}
+              </a>
+            </p>
           )}
           <p className="signup-divider">
             <span>{t.or}</span>
@@ -252,21 +323,67 @@ export function OwnerAccess({
           {invitation && (
             <div className="panel">
               <p>
-                {locale === "es"
-                  ? "Tienes una invitación. Acéptala con la cuenta de Google que recibió el enlace."
-                  : "You have an invitation. Accept with the Google account the link was intended for."}
+                {preview
+                  ? preview.role === "co_owner"
+                    ? strings[locale].accountCoOwnerInvited.replace(
+                        "{org}",
+                        preview.organizationName,
+                      )
+                    : strings[locale].accountInvitedAs
+                        .replace(
+                          "{role}",
+                          strings[locale][
+                            preview.role as "manager" | "cashier" | "server" | "kitchen"
+                          ] ?? preview.role,
+                        )
+                        .replace("{restaurant}", preview.restaurantName)
+                  : locale === "es"
+                    ? "Tienes una invitación. Acéptala con la cuenta de Google que recibió el enlace."
+                    : "You have an invitation. Accept with the Google account the link was intended for."}
               </p>
+              {preview && !preview.emailMatches && (
+                <p role="alert">{strings[locale].accountInvitationEmailMismatch}</p>
+              )}
+              {config &&
+                config.legal.status === "published" &&
+                !!account.legal?.pending.length && (
+                  <LegalAcceptance
+                    mode="invitation"
+                    config={config}
+                    locale={locale}
+                    onChange={setInviteLegal}
+                  />
+                )}
               <Button
-                disabled={busy}
+                disabled={
+                  busy ||
+                  (config?.legal.status === "published" &&
+                    !!account.legal?.pending.length &&
+                    !inviteLegal)
+                }
                 onClick={async () => {
                   setBusy(true);
                   try {
-                    await command("invitations/accept", { token: invitation });
+                    await command("invitations/accept", {
+                      token: invitation,
+                      locale,
+                      ...(inviteLegal
+                        ? {
+                            legalAccepted: {
+                              terms: inviteLegal.terms,
+                              privacy: inviteLegal.privacy,
+                            },
+                          }
+                        : {}),
+                    });
                     sessionStorage.removeItem("gm-invitation");
                     setInvitation("");
+                    setPreview(null);
                     await refresh();
-                  } catch {
-                    setFailed(true);
+                  } catch (error) {
+                    setTransitionError(
+                      translateError((error as Error).message, locale),
+                    );
                   } finally {
                     setBusy(false);
                   }
@@ -304,11 +421,33 @@ export function OwnerAccess({
               restaurants={account.restaurants.filter((r) =>
                 account.organizations.some((o) => o.id === r.organization_id),
               )}
+              roles={Object.fromEntries(
+                account.organizations.map((o) => [o.id, o.role]),
+              )}
+              config={config}
               billingSandbox={billingSandbox}
               refresh={refresh}
             />
           )}
-          {!account.organizations?.length && (
+          <AccountCenter
+            locale={locale}
+            csrf={account.csrf}
+            config={config}
+            refresh={refresh}
+            transferToken={transferToken}
+            clearTransferToken={() => {
+              sessionStorage.removeItem("gm-transfer");
+              setTransferToken("");
+            }}
+          />
+          {config && !config.legal.signupOpen &&
+            !account.organizations?.some((o) => o.role === "primary") && (
+              <p role="status" className="muted">
+                {strings[locale].accountSignupPaused}
+              </p>
+            )}
+          {(!config || config.legal.signupOpen) &&
+            !account.organizations?.some((o) => o.role === "primary") && (
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
@@ -327,6 +466,8 @@ export function OwnerAccess({
                     timezone: f.get("timezone"),
                     cutoff: hours * 60 + minutes,
                     openingDays: f.getAll("openingDays").map(Number),
+                    locale,
+                    ...(signupLegal ? { legalAccepted: signupLegal } : {}),
                   });
                   await enter(result.tenantId);
                 } catch {
@@ -401,9 +542,17 @@ export function OwnerAccess({
               ) : (
                 <p className="muted">{t.free}</p>
               )}
+              {config && (
+                <LegalAcceptance
+                  mode="signup"
+                  config={config}
+                  locale={locale}
+                  onChange={setSignupLegal}
+                />
+              )}
               <Button
                 type="submit"
-                disabled={busy}
+                disabled={busy || !config || !signupLegal}
                 variant="primary"
                 className="full"
               >

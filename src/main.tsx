@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { lazy, Suspense } from "react";
 import Landing from "./marketing/Landing";
 const App = lazy(() => import("./App"));
+const LegalPage = lazy(() => import("./legal/LegalPage"));
 import { PublicOrdering } from "./features/PublicOrdering";
 import { PlatformGate } from "./features/offline/PlatformGate";
 import { registerServiceWorker } from "./service-worker";
@@ -11,7 +12,9 @@ import "./styles.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <Suspense fallback={<p role="status">Green Monkey…</p>}>
-      {/^\/(qr|kiosk)\//.test(location.pathname) ? (
+      {/^\/legal(\/|$)/.test(location.pathname) ? (
+        <LegalPage />
+      ) : /^\/(qr|kiosk)\//.test(location.pathname) ? (
         <PublicOrdering />
       ) : location.pathname === "/" &&
         !new URLSearchParams(location.search).has("account") &&
