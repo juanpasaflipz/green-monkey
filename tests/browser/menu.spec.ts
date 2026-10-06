@@ -1335,7 +1335,7 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
     await expect(send).toBeDisabled();
     await stale.getByRole("button", { name: `Quitar ${tostada}` }).click();
     await customer
-      .getByRole("textbox", { name: "Nombre para llamar" })
+      .getByRole("textbox", { name: "Nombre (opcional)" })
       .fill(`QR ${id}`);
     await send.click();
     await expect(

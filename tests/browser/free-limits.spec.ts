@@ -8,6 +8,7 @@ import {
   withOwner,
   createOwnerRestaurant,
 } from "../../server/owner-accounts.js";
+import { legalConfig } from "../../server/legal.js";
 
 test("Free register selection preserves access and permits one selling browser", async ({
   page,
@@ -31,13 +32,18 @@ test("Free register selection preserves access and permits one selling browser",
   });
   const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
   const r = await withOwner(sql, cookie, undefined, (tx, a) =>
-    createOwnerRestaurant(tx, a, {
-      restaurantName: "Free UI fixture",
-      currency: "MXN",
-      timezone: "America/Mexico_City",
-      cutoff: 240,
-      openingDays: [1, 2, 3, 4, 5],
-    }),
+    createOwnerRestaurant(
+      tx,
+      a,
+      {
+        restaurantName: "Free UI fixture",
+        currency: "MXN",
+        timezone: "America/Mexico_City",
+        cutoff: 240,
+        openingDays: [1, 2, 3, 4, 5],
+      },
+      legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" }),
+    ),
   );
   await sql.end();
   const other = await browser.newContext({ baseURL });
@@ -60,10 +66,25 @@ test("Free register selection preserves access and permits one selling browser",
     }
     const second = await other.newPage();
     await second.goto("/app");
-    await expect(second.getByText(/Free: esta sucursal/)).toBeVisible();
+    await expect(
+      second.getByText(/no está seleccionado para iniciar ventas/),
+    ).toBeVisible();
     await second
       .getByRole("button", { name: "Configuración", exact: true })
       .click();
+    // account (031): Free selection starts automatic; PlanSettings states the limits.
+    await expect(
+      second.getByText(
+        "Automático: el dispositivo y empleados que abrieron caja más recientemente.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      second.getByText(
+        "En Free solo el dispositivo y los dos empleados seleccionados pueden iniciar ventas. Los demás pueden cobrar órdenes abiertas y consultar registros.",
+        { exact: true },
+      ),
+    ).toBeVisible();
     const current = await second.evaluate(async () =>
       (await fetch("/api/session")).json(),
     );
@@ -76,7 +97,12 @@ test("Free register selection preserves access and permits one selling browser",
     await expect(
       second.getByText("Selección guardada.", { exact: true }),
     ).toBeVisible();
-    await expect(second.getByText(/Free: esta sucursal/)).toHaveCount(0);
+    await expect(
+      second.getByText(/no está seleccionado para iniciar ventas/),
+    ).toHaveCount(0);
+    await expect(
+      second.getByText("Manual: tu selección.", { exact: true }),
+    ).toBeVisible();
     const selectedSession = await second.evaluate(async () =>
       (await fetch("/api/session")).json(),
     );
@@ -128,7 +154,9 @@ test("Free register selection preserves access and permits one selling browser",
       second.getByText("Selección guardada.", { exact: true }),
     ).toBeVisible();
     await page.goto("/app");
-    await expect(page.getByText(/Free: esta sucursal/)).toBeVisible();
+    await expect(
+      page.getByText(/no está seleccionado para iniciar ventas/),
+    ).toBeVisible();
     const unselectedSession = await page.evaluate(async () =>
       (await fetch("/api/session")).json(),
     );
@@ -183,6 +211,22 @@ test("Free register selection preserves access and permits one selling browser",
         });
       }
     }
+    // Back to automatic keeps the current selection until a drawer opens.
+    await second
+      .getByRole("button", { name: "Back to automatic", exact: true })
+      .click();
+    await expect(
+      second.getByText(
+        "Automatic: the device and employees that most recently opened a drawer.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      second.getByRole("button", { name: "Back to automatic", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      second.getByRole("checkbox", { name: "Ana Free" }),
+    ).toBeChecked();
   } finally {
     await other.close();
   }

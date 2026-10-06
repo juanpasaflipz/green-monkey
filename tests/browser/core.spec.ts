@@ -342,7 +342,7 @@ test("QR shares authoritative order pricing and exposes a narrow receipt", async
   ).toBeVisible();
   await customer.getByRole("button", { name: /Taco de hongos/ }).click();
   await customer
-    .getByRole("textbox", { name: "Nombre para llamar" })
+    .getByRole("textbox", { name: "Nombre (opcional)" })
     .fill("QR acceptance");
   await customer
     .getByRole("button", { name: "Enviar a cocina", exact: true })

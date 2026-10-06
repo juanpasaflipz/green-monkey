@@ -101,7 +101,8 @@ export default defineArea({
     accountCoOwnerInvite: "Invitar copropietario",
     accountCoOwnerInviteHint:
       "Tendrá control total de sucursales, equipo y configuración. La facturación y la transferencia de propiedad quedan con el titular. Máximo {n}.",
-    accountCoOwnerEmail: "Correo de Google",
+    // Distinct from the staff invitation's "Correo de Google" on the same screen.
+    accountCoOwnerEmail: "Correo de Google del copropietario",
     accountCoOwnerCreate: "Crear invitación",
     accountCoOwnerLink:
       "Enlace de invitación — compártelo solo con esa persona. Caduca el {date}.",
@@ -364,7 +365,7 @@ export default defineArea({
     accountCoOwnerInvite: "Invite co-owner",
     accountCoOwnerInviteHint:
       "They get full control of locations, team and settings. Billing and ownership transfer stay with the primary owner. Up to {n}.",
-    accountCoOwnerEmail: "Google email",
+    accountCoOwnerEmail: "Co-owner's Google email",
     accountCoOwnerCreate: "Create invitation",
     accountCoOwnerLink:
       "Invitation link — share it only with that person. Expires {date}.",

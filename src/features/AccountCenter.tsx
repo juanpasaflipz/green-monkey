@@ -205,8 +205,12 @@ export function AccountCenter({
       <p role="status">{t("accountLoading")}</p>
     );
   const published = overview.legal.status === "published";
+  // An account that administers no organization yet accepts with its first
+  // command instead (signup, invitation or transfer each carry the boxes), so
+  // the re-acceptance panel never doubles the signup form's checkboxes.
   const legalPending =
     published &&
+    overview.organizations.length > 0 &&
     (overview.legal.pending.length > 0 || overview.legal.dpaPending.length > 0);
   const form = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
