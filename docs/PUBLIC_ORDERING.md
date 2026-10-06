@@ -59,6 +59,17 @@ round on the table's open check) as the staff member who accepts. For
 pay-first, it also runs `recordPayment`. Rejected, cancelled and expired holds
 leave no sales or fiscal trace.
 
+The diner knows the order only by its label, so the label travels with it:
+
+- A new check's call name is `Q-14 · Ana` (or `Q-14` without a name) and its
+  order note `Q-14 · sin cebolla`. The KDS and the kitchen ticket show the
+  call name; the receipt prints the order note (LD-1).
+- An appended round's note is `Q-14 · sin cebolla`, never the diner's name,
+  because round notes print on the shared check's receipt.
+- The hold records what acceptance charged (`accepted_total`,
+  `accepted_lines`: the inserted round's own `order_lines`). The diner's
+  status shows those prices, never the submission snapshot.
+
 **Policy.** Each restaurant sets one policy for table links and one for
 counter and kiosk links:
 
@@ -93,28 +104,53 @@ is closed.
   show "Este código ya no funciona" **without any API call**.
 - **Page.**
   - The restaurant name and "Pedido para Mesa 4" (or "Para llevar · Ventanilla").
-  - The policy line, then "Precios en MXN con IVA incluido".
+  - The policy line, then "Precios en {currency} con IVA incluido" (the
+    restaurant's currency).
+  - A diner who sent orders from this phone and went back to the menu gets
+    **Tus pedidos (Q-14)** in the header.
   - Products grouped by category, in es-MX money (`$1,234.50`).
   - A cart: a sticky "Ver pedido" bar on phones, a side panel from 768 px. It
     holds the lines and their options, the optional name (≤ 40) and kitchen
     note (≤ 200), the restaurant's privacy-notice link (or account's
-    no-notice warning), the total and **Enviar pedido**.
+    no-notice warning), the total and **Enviar pedido**. From 768 px the
+    panel fits the viewport and scrolls inside, with the total and **Enviar
+    pedido** pinned to its bottom (the header sits in the menu column).
+  - Links on a phone (the privacy notices, the self-invoice link) open in a
+    new tab with `rel="noopener noreferrer"`, so the order page stays open.
 - **Submit.**
   - The submit is idempotent: the diner's `operationId` and status key are
     kept across retries.
   - A status key already used by another order is `409 operation_conflict`.
     That holds even when two submits race with one key: the later insert
     loses on the unique key and gets the same 409, not a 500.
-  - A network failure locks the cart with "No sabemos si tu pedido llegó." and
-    **Reintentar**, which resends the identical body. Editing the cart starts
-    a new order.
+  - A network failure locks the cart (lines, name and note) with "No sabemos
+    si tu pedido llegó." and **Reintentar**, which resends the identical
+    body. **Editar pedido (se enviará como uno nuevo)** unlocks it; any send
+    after that is a new order (new keys).
+  - On success the page's persistent live region announces "Pedido Q-14
+    enviado. Esperando confirmación del personal." and focus moves to the
+    status heading ("Estado de tu pedido").
+  - A submit answered `404 public_link_invalid` (the code was replaced since
+    the menu loaded) keeps the menu and the cart; the cart says "Este código
+    ya no funciona…" next to **Ver mis pedidos**.
   - `public_price_changed`, `unavailable` and `invalid_modifier` refetch the
     menu and mark the line.
 - **Status page (QR).**
   - It shows: waiting, pay-first, confirmed (with progress "En preparación" /
     "Listo" / "Entregado"; for a new check also "Por pagar"/"Pagado"),
-    appended to the table's check (progress only, no money), rejected with a
-    reason, expired, or cancelled.
+    appended to the table's check (progress and the round's own total, never
+    the check's balance), rejected with a reason, expired, or cancelled.
+  - A confirmed order shows the prices acceptance charged. When they differ
+    from the ones sent: "El precio cambió al confirmar tu pedido; total
+    confirmado: $100.00."
+  - One `role="status"` region stays mounted from "Cargando…" to the loaded
+    state, so a screen reader hears each change.
+  - A just-expired hold reads as waiting for 60 s more
+    (`HOLD_EXPIRY_GRACE_SECONDS`): an accept that locked it in time may still
+    be committing. Staff decisions stop exactly at `expires_at`.
+  - A code found replaced on a menu poll switches the page to this phone's
+    orders with "Este código QR ya no funciona: se reemplazó o se desactivó.
+    …" above them.
   - Polling runs only while the page is visible: every 5 s for the first
     2 minutes of `pending`, then every 15 s, and every 20 s after acceptance.
     It stops once nothing can change, and after 3 h in any case.
@@ -129,6 +165,16 @@ is closed.
   - After two consecutive transient failures, a full-screen "Sin conexión.
     Pide en caja." overlay appears. It clears on the next successful poll.
   - The kiosk stores nothing on the device.
+  - The kiosk renders **no navigational link**: "Privacidad de la
+    plataforma" and the restaurant's notice open an in-page dialog with a QR
+    code per notice to read on the diner's own phone. The idle reset closes
+    it. A tap can therefore never leave `/kiosk#token`.
+  - The code renders at 120 px. The page's live region announces "Tu código
+    es K-14. …"; the code itself is a plain heading.
+  - If the first menu load fails (the tablet powered on before the network),
+    the kiosk retries every 20 s on its own.
+  - A new `#token` pasted into the same tab (a same-document navigation)
+    opens the new code at once; this holds for phones too.
 - **Online only.** The diner page has no offline queue and never registers the
   service worker. `src/main.tsx` uses
   `publicPage = /^\/(f|factura|qr|kiosk)(\/|$)/`, the same line cfdi writes
@@ -175,16 +221,17 @@ deactivation), pausing and plain accepting.
     can also replace existing ones, and it prints one card per table.
 - **Configuración → Pedidos en línea (QR y kiosco).**
   - The panel sits directly above FreeSelection (LD-P7).
-  - It shows the status ("Recibiendo pedidos" / "En pausa" / "En pausa: ningún
-    dispositivo del personal está conectado" / "Disponible en Pro") and the
-    pause switch.
+  - It shows the status ("Recibiendo pedidos" / "En pausa" / "En pausa:
+    ninguna terminal compartida (caja o mesero) está conectada" / "Disponible
+    en Pro") and the pause switch.
   - It holds the two policies, **Tiempo para confirmar** (10-120 min, default
     30) and **Importe máximo por pedido** (MXN 100.00-100,000.00, default
     10,000.00). The button is **Guardar pedidos en línea** (never "Guardar"),
     and the notice reads "Pedidos en línea guardados".
   - Kiosks and takeaway codes are listed with **Reemplazar** and
-    **Desactivar**. **Agregar kiosco** / **Agregar código para llevar** opens
-    the one-time reveal.
+    **Desactivar**. Both confirm in a dialog ("Sí, desactivar Ventanilla").
+    **Agregar kiosco** / **Agregar código para llevar** opens the one-time
+    reveal.
 - **Órdenes inbox.**
   - It appears at the top of Órdenes while a link is active or orders wait.
     It polls every 10 s while visible and online, and every 60 s otherwise.
@@ -193,7 +240,24 @@ deactivation), pausing and plain accepting.
   - The lines carry "Incluir" checkboxes and a re-quote against the current
     menu ("Ya no disponible", "Precio actual").
   - A changed total requires "El precio cambió desde que el cliente pidió. Ya
-    le avisé." before accepting.
+    le avisé." before accepting. The accept carries `acknowledgedTotal`, the
+    total the card showed. The server charges exactly that or answers `409
+    public_hold_price_changed`, and the card clears the tick whenever its
+    total changes (a later poll, an exclusion).
+  - The server also checks what the round actually charged: a menu change
+    committed between its price check and `createOrder`'s own read rolls the
+    whole accept back with the same 409.
+  - A hold whose code was deactivated as abuse is marked "Código desactivado
+    por abuso: verifica con el cliente antes de aceptar." Accepting it needs
+    "Lo verifiqué con el cliente; aceptar de todos modos." (`abuseAcknowledged`;
+    otherwise `409 public_hold_link_abuse`). Such holds are not rejected
+    automatically: a table code also carries real diners' orders.
+  - The target select pre-selects a table's only open check, also one opened
+    after the card appeared, until staff choose themselves.
+  - Accepting says "Q-14 → Orden #142 enviada a cocina." An accept that finds
+    the hold already handled or expired keeps that outcome in the notice.
+  - Codes whose diners cancelled many orders are named ("Mesa 7: muchos
+    pedidos cancelados desde el cliente. …").
   - Table orders can join an **open** check of their table, or start a new
     check.
   - **Cobrar y enviar a cocina** opens service's `PaymentDialog`. The payment
@@ -218,13 +282,14 @@ deactivation), pausing and plain accepting.
 
 | Layer | Rule | Answer |
 |---|---|---|
-| Format | Token and status key match `^[A-Za-z0-9_-]{22}$` before any database work | `404 public_link_invalid` / `public_hold_not_found` |
+| Format | Token and status key match `^[A-Za-z0-9_-]{22}$` before any database work; a missing or malformed one counts only in its own per-IP bucket (30/min) | `404 public_link_invalid` / `public_hold_not_found`; then `429 rate_limited` |
 | Per IP (in memory, per web replica) | Menu 60/min, submit 30/min, revision 240/min, status 240/min, cancel 30/min | `429 rate_limited` (with `requestId`) |
 | Per (IP, link) | Revision 20/min; submit and cancel 10/min together | `429 rate_limited` |
 | Per (IP, status key) | Status 30/min | `429 rate_limited` |
 | Per table (every link of it, across replacements) | ≤ 3 pending; ≤ 8 created per 15 min | `429 public_order_limit` |
 | Per counter link | ≤ 10 pending; ≤ 30 per 15 min | same |
 | Per kiosk link | ≤ 5 pending; ≤ 30 per 15 min | same |
+| Churn (same scopes) | Diner cancellations per 15 min: table ≤ 4, counter and kiosk ≤ 10 | `429 public_order_churn` |
 | Per restaurant | ≤ 40 pending (soft, counted without a lock) | `429 public_ordering_busy` |
 | Order shape | ≤ 40 lines; quantity ≤ 20; no open-price items, line notes or open amounts | `400 invalid_input` / `403 forbidden` |
 | Order value | ≤ the restaurant maximum | `409 public_order_too_large` |
@@ -232,15 +297,25 @@ deactivation), pausing and plain accepting.
 | Liveness | Paused, or no staff terminal seen for 5 min | `409 public_ordering_paused` |
 
 Limiter keys use `clientIp(req)` with IPv6 grouped per /56
-(`ipKeyGenerator(clientIp(req), 56)`, LD-11). A scoped key uses the header
-only when it is a well-formed token; anything else shares one `-` bucket per
-IP, so no client can mint buckets (MENU-R3). An unknown well-formed token costs
-one short lookup, bounded by the per-IP ceilings.
+(`ipKeyGenerator(clientIp(req), 56)`, LD-11). A request whose token is missing
+or malformed costs no database work, so it is refused first, counted only in
+its own per-IP bucket, and never drains the shared ceilings: a script on the
+guest Wi-Fi sending token-less requests cannot starve the diners behind the
+same address. A scoped key uses the header only when it is a well-formed
+token, so no client can mint buckets (MENU-R3). An unknown well-formed token
+costs one short lookup and still counts against the per-IP ceilings
+(MENU-R3's assertion: the ceiling is per IP, whatever the well-formed token).
 
 The durable caps are counted under an advisory key per table or link inside
 the submit transaction, so they hold across restarts and replicas. A cap hit
-is logged as `public_order_limited` with the code and `ipHash`, and no personal
-data.
+is logged as `public_order_limited` with the code, the link's reference
+(`ref`, the "Ref. 7A3F" staff see), its kind and `ipHash`.
+
+Diner cancellations have their own budget: a submit-and-cancel loop leaves
+nothing in the inbox, so without it a script could keep a table's window cap
+full while staff see nothing. The inbox names the code, and
+`PublicLinkView.recentCancelled` counts the cancellations of the last 15
+minutes.
 
 ## 5. Token design
 
@@ -306,6 +381,9 @@ at 027 never makes them false:
 | `createLink` / `createTableLinks` / `rotateLink` (not `once()`: tokens) | 3 (`public-links` key) → 3 (`dining_tables FOR SHARE`, sorted) → 3 (link rows) |
 | `revokeLink` | 1 → 2 → 3 (`public-links` key) → 3 (link row) |
 | `saveOrderingSettings`, `setPaused` | 1 → 2 → 3 (settings row) |
+
+`lockHold` judges expiry with `clock_timestamp()` in a second statement after
+the row lock, not with the transaction's start time; it takes no extra lock.
 
 **Why this cannot cycle.**
 
@@ -384,9 +462,16 @@ select count(*) from jobs where state not in ('queued','available','running','do
    so the parts that succeeded cost nothing.
 
 **Deploy window.** 032's `ADD CONSTRAINT … NOT VALID` briefly takes `ACCESS
-EXCLUSIVE` on `orders`, `rounds` and `jobs`. `lock_timeout` is 5 s, and the
-runner retries 55P03 with backoff. Once production has traffic, the deploy
-that first carries 032 runs before 07:00 Mexico City (the P-27 rule).
+EXCLUSIVE` on `orders`, `rounds` and `jobs`. They come first in 032, so the
+migration never upgrades a weaker lock it already holds on `orders` (the new
+foreign keys take `SHARE ROW EXCLUSIVE` on it). A deadlock with live traffic
+is still possible: the KDS feed reads `rounds` and then `orders`, the reverse
+of the migration's order. If 032 is the victim (40P01), the whole file rolls
+back and the deploy fails; re-running it is safe. `lock_timeout` is 5 s, and
+the runner retries 55P03 with backoff, not 40P01 (a retry of 40P01 for
+transactional files is an ops proposal, like PUB-R5). Once production has
+traffic, the deploy that first carries 032 runs before 07:00 Mexico City (the
+P-27 rule).
 
 **Runner fix shipped with 033.** `applyMigrations` called `reserved.begin()`
 for a no-transaction file that was the newest pending one. postgres.js
@@ -452,34 +537,61 @@ integration at B1.
 | "Este código ya no funciona" | The code was replaced or deactivated, the QR is a 24 h-era signed link, or the scanner dropped the URL fragment. Print a new code from Mesas or Configuración. |
 | "Esta mesa no está recibiendo pedidos en línea" | The table is archived. Restore it in Mesas, and its code works again. |
 | The QR order does not show in Órdenes | It expired (default 30 min; the inbox shows "{n} pedidos vencieron…"), or the restaurant is not on Pro. |
-| "Ya hay pedidos esperando confirmación aquí" | The table already has 3 pending orders (or 8 in 15 minutes). Accept or reject them. |
+| "Ya hay pedidos esperando confirmación aquí" | The table already has 3 pending orders (or 8 in 15 minutes). Accept or reject the pending ones in Órdenes. If the inbox shows none, the window is full of decided orders and frees itself within 15 minutes. |
+| "Se cancelaron muchos pedidos con este código" | Diners cancelled 4 orders at that table (10 at a counter or kiosk) in 15 minutes; the inbox names the code. If it is not a real guest, replace the code (Mesas) or deactivate it (Configuración). Logs: `public_order_limited` with `code: public_order_churn` and the code's `ref`. |
 
 ## 11. Abuse response (RUNBOOK, added at B3)
 
 1. **Reject as abuse.** In Órdenes, **Rechazar** → "Pedido falso o abuso".
    Managers tick "Desactivar también este código QR". The printed code stops
-   working at once; the diner sees "Pregunta al personal".
+   working at once, in every web process (each request re-reads the link,
+   whatever the cache holds); the diner sees "Pregunta al personal". The
+   code's other pending orders stay in the inbox, marked "Código desactivado
+   por abuso", and need an explicit check before anyone can accept them.
 2. **Pause** online ordering (any operator) while the source is unclear.
 3. **Replace** a table's code in Mesas (**Reemplazar e imprimir**) and stick
    the new card.
-4. **Logs.** `rate_limited` lines carry the limiter name and `ipHash`.
-   `public_order_limited` lines carry the code. Neither stores tokens, paths
-   or personal data. Durable caps bound the damage whatever the IP.
+4. **Churn.** Many orders sent and cancelled from one code show in the inbox
+   by name; replace or deactivate that code.
+5. **Logs.** `rate_limited` lines carry the limiter name and `ipHash`.
+   `public_order_limited` lines carry the code, the link's `ref` and kind,
+   and `ipHash` (pseudonymous personal data, §12). Neither stores tokens or
+   paths. Durable caps bound the damage whatever the IP.
 
 ## 12. Data and privacy
 
-- **Personal data.** The diner name and note are the only personal data. They
-  are stored on the hold and, after acceptance, on the order (`orders.name`,
-  `orders.note`) or the round note (`Q-14 · Ana · sin cebolla`). LD-1 prints
-  round notes on the customer receipt and the kitchen ticket. The name is
-  optional, and account's privacy copy applies.
-- **No IP storage.** No IP address is stored. Logs carry `ipHash` only.
+- **Personal data.** The diner name and note are the personal data diners
+  type. They are stored on the hold and, after acceptance, on a new check's
+  call name and order note (`Q-14 · Ana`, `Q-14 · sin cebolla`), which LD-1
+  prints on that diner's receipt. An appended round's note is `Q-14 · sin
+  cebolla` only: the name never prints on a shared check's receipt. The name
+  is optional, and account's privacy copy applies.
+- **IP addresses.** No IP address is stored in the database. Two log lines
+  (`rate_limited`, `public_order_limited`) carry `ipHash`, ops's 48-bit
+  unsalted SHA-256 prefix of the client address. For IPv4 it can be reversed
+  by enumeration, so it is pseudonymous **personal data**, not anonymous: it
+  belongs in the restaurant and platform privacy-notice inputs at B3, and log
+  access follows the log retention rules. A keyed hash (or hashing the /24
+  and /48 prefix) is an ops proposal.
+- **ARCO requests for holds.** Rejected, cancelled and expired holds never
+  become sales, so no fiscal rule requires keeping their name and note, yet
+  the runtime role cannot change or delete them (the transition trigger and
+  the grants). Until an ops retention rule redacts them (proposal: blank
+  `name` and `note` of holds that are not `accepted` after 30 days, as the
+  schema owner, with a redaction-only exception in the trigger), support
+  handles an ARCO cancellation request for a hold as the schema owner in a
+  logged session: find the hold by restaurant, label and date, and set `name`
+  and `note` to `''` with the transition trigger disabled inside one
+  transaction (the LD-12 named-trigger pattern), with an incident note. An
+  accepted hold's data also lives on the order, which follows account's
+  procedure at B3 (ACCOUNT_AND_LEGAL).
 - **Export and retention.** `token_hash`, `status_key_hash` and
   `request_hash` are excluded by account's export rule for `_hash` columns
   (B3, test 31). Retention never deletes the four `public_*` tables.
 - **Grants.** The runtime role has no DELETE. It updates only the decision
-  columns of holds, the revocation columns and label of links, the settings
-  columns and hold numbers. Transition triggers keep a hold's request and a
+  columns of holds (including `accepted_total` and `accepted_lines`), the
+  revocation columns and label of links, the settings columns and hold
+  numbers. Transition triggers keep a hold's request and a
   link's identity immutable.
 
 ## 13. Tests
@@ -492,9 +604,15 @@ integration at B1.
   - `tests/public-ordering-http.test.ts`: limiter keys on the real client
     address, with a database stub.
 - **DB and HTTP** (`npm run test:db:public`, in `test:db:qualification`):
-  `tests/public-ordering-db.ts`, 37 checks on fresh fictional restaurants. It
+  `tests/public-ordering-db.ts`, 43 checks on fresh fictional restaurants. It
   never deletes: accepted holds write append-only ledgers. Fiscal legs are
-  gated with `to_regclass('public.fiscal_tickets')` until B1.
+  gated with `to_regclass('public.fiscal_tickets')` until B1. Every
+  concurrency burst runs under `noRetries()` (LO-R9), so a single retried
+  deadlock fails it. Checks 37-42 cover the hardening: the abuse
+  acknowledgement, a link revoked or replaced by another process (the cache is
+  not told), a menu change between the accept's check and `createOrder`, a
+  target paid between the unlocked read and `addRound`, the expiry grace, and
+  churn.
 - **Menu suite.** `tests/menu-db.ts` MENU-R1/R6 and MENU-R3 run on the header
   routes and `PUBLIC_RATES`.
 - **Browser.**
@@ -511,7 +629,7 @@ integration at B1.
 
 | Step | When | Work |
 |---|---|---|
-| **B1** | fiscal 027 merged; merge `integration/v1` into `track/public`, reset the track DB | 1. Delete `server/compat/public-fiscal.ts`. Import `fiscalTicketIdentity` from `./fiscal-read.js` (or alias fiscal's reader) in `server/public-diner.ts`.<br>2. Refresh §6 against fiscal's reordered `createOrder` (feed before refresh, the ticket after `recordPayment`).<br>3. Un-gate the `fiscal_tickets` legs of DB tests 9, 18 and 33; add DB 22 `fiscal.folio` and DB 24 with fiscal DB 28's harness.<br>4. Check that `publicCatalog` strips `fiscal` (C29) and that totals do not depend on the fiscal context (X26).<br>5. Browser test 4 asserts "Folio" in `ReceiptModal`. |
+| **B1** | fiscal 027 merged; merge `integration/v1` into `track/public`, reset the track DB | 1. Delete `server/compat/public-fiscal.ts`. Import `fiscalTicketIdentity` from `./fiscal-read.js` (or alias fiscal's reader) in `server/public-diner.ts`.<br>2. Refresh §6 against fiscal's reordered `createOrder` (feed before refresh, the ticket after `recordPayment`).<br>3. Un-gate the `fiscal_tickets` legs of DB tests 9, 18 and 33; add DB 22 `fiscal.folio` and DB 24 with fiscal DB 28's harness.<br>4. Check that `publicCatalog` strips `fiscal` (C29) and that totals do not depend on the fiscal context (X26).<br>5. Browser test 4 asserts "Folio" in `ReceiptModal`.<br>6. `tests/lock-order.test.ts` keeps the three LD-24 `acceptHold` entries next to fiscal's edits (fiscal deletes only its own 12>10 entries); re-run the ratchet against fiscal's reorder.<br>7. With fiscal's ticket issued inside the accept, re-check that the round-total guard (MONEY-1) still compares the round's own lines. |
 | **B-028/029** (optional) | discounts / reports merged | Keep one copy of the `online` hunks (LD-P5). `AUDIT_GROUPS` gains the `public.` prefixes (LD-P4; else one sanctioned `shared/reports.ts` edit at B3). Re-run DB 24 with discounts' drawer close. Run `reports.spec` after `public-ordering.spec`. |
 | **B2** | cfdi 030 merged; merge and reset | 1. Delete `server/compat/public-cfdi.ts` and import `selfInvoiceOffered` from `./cfdi/store.js`.<br>2. One render chain in `src/main.tsx` (`/legal` → `/(f\|factura)` → `/(qr\|kiosk)`), with the shared `publicPage` line kept byte for byte.<br>3. DB 22 invoice leg; DB 26 `holdStatus` ≤ 5. |
 | **B3** | account 031 merged (mandatory); merge and reset | 1. Delete `server/compat/public-account.ts` and import `publicOrderingEnabled`, `publicOrderingGate` and `restaurantPrivacyUrl` from `./account-settings.js`. Remove the `public_ordering_disabled` row from `ownedElsewhere`.<br>2. Delete `src/compat/public-account.ts` and use `strings[locale].accountGuest*`.<br>3. Resolve account's hunks in favour of public's versions (`server/public-ordering.ts`, `server/index.ts` `/ordering-links`, `PublicOrdering.tsx`, `ManagementTools.tsx`).<br>4. Settings golden order: `… AccountPrivacy → PublicOrderingSettings → FreeSelection …`.<br>5. Rewrite account's QR tests (HTTP checks 2-3, `account.spec` QR legs) and export test 31.<br>6. Re-grep the DB-9 writers, including raw test fixtures. Keep the `-- 032` grants block last.<br>7. Shared docs in one commit: ARCHITECTURE (LO-2b text and §6 rows), OPERATIONS, RUNBOOK (§11 and §7 validation), MENU (`:88-136`), SERVICE, the ACCESS step-up list, RELEASE, ACCOUNT_AND_LEGAL, DELIVERY_STATUS and the ledgers.<br>8. LD-5 round 2 and full qualification. |
