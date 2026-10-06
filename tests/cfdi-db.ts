@@ -4682,6 +4682,49 @@ try {
     );
   });
 
+  await test("INT-3. a ticket whose route-III invoice failed after its note stamped returns to a supplementary part of its period, and a second route III, to that part, is a new note (one live note per ticket and global), never a 500", async () => {
+    const { W, tk, g } = await inOldGlobal("int-3");
+    const first = await invoice(W, tk, {
+      s: W.manager,
+      reissueGlobal: true,
+      receptor: { legalName: "UNIVERSIDAD FAKE NAME MISMATCH" },
+    });
+    await settle(W.tenantId);
+    const c1 = await routeIIINote(tk.id);
+    assert.equal(c1.status, "valid");
+    assert.equal((await docRow(first.id)).status, "failed");
+    // The ticket is in no CFDI now: the tick's late sweep puts it in a supplementary part.
+    await tick(W);
+    const [g2] =
+      await admin`select id from cfdi_documents where tenant_id = ${W.tenantId} and kind = 'global'
+        and status = 'valid' and id <> ${g}`;
+    assert.ok(g2, "a supplementary part takes the ticket");
+    assert.deepEqual(
+      (await claims(tk.id))
+        .filter((r) => r.state === "active")
+        .map((r) => r.document_id),
+      [g2.id],
+    );
+    await age([g2.id], 500 * 24 * 60);
+    const second = await invoice(W, tk, { s: W.manager, reissueGlobal: true });
+    await settle(W.tenantId);
+    const c2 = await routeIIINote(tk.id);
+    assert.notEqual(c2.id, c1.id);
+    assert.deepEqual(
+      {
+        parent: c2.parent_document_id,
+        status: c2.status,
+        total: c2.expected_total,
+      },
+      { parent: g2.id, status: "valid", total: 13600 },
+    );
+    assert.equal((await docRow(c1.id)).status, "valid");
+    assert.equal((await docRow(second.id)).status, "valid");
+    // Each global ends at zero for the ticket; the invoice declares it once.
+    assert.equal(c1.expected_total, await declaredFor(g, tk.folio));
+    assert.equal(c2.expected_total, await declaredFor(g2.id, tk.folio));
+  });
+
   console.log(`cfdi DB checks passed: ${checks}`);
 } finally {
   await runner.stop(2000);

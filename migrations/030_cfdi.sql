@@ -314,8 +314,10 @@ CREATE UNIQUE INDEX cfdi_documents_refund ON cfdi_documents(tenant_id, refund_id
   WHERE kind = 'egreso' AND status NOT IN ('failed','canceled') AND replaces_document_id IS NULL;
 CREATE UNIQUE INDEX cfdi_documents_egreso_substitute ON cfdi_documents(tenant_id, replaces_document_id)
   WHERE kind = 'egreso' AND status NOT IN ('failed','canceled');
--- One live route-III credit note per ticket and mode (its substitute aside).
-CREATE UNIQUE INDEX cfdi_documents_credit_ticket ON cfdi_documents(tenant_id, credit_ticket_id, mode)
+-- One live route-III credit note per global, ticket and mode (its substitute aside). A ticket whose
+-- route-III invoice failed returns to a supplementary part, which a second route III credits in
+-- turn (CFDI-INT-3).
+CREATE UNIQUE INDEX cfdi_documents_credit_ticket ON cfdi_documents(tenant_id, parent_document_id, credit_ticket_id, mode)
   WHERE kind = 'egreso' AND status NOT IN ('failed','canceled') AND credit_ticket_id IS NOT NULL
     AND replaces_document_id IS NULL;
 CREATE INDEX cfdi_documents_created ON cfdi_documents(tenant_id, created_at DESC, id);
