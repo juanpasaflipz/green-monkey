@@ -5,11 +5,14 @@ verified locally with `npm test` (`tests/discounts.test.ts`,
 `tests/service-receipt.test.ts`), `npm run test:db:discounts` and
 `tests/browser/discounts.spec.ts`. Not staged. Fiscal 027 is built in parallel:
 until it merges, the refund tax hook and the "ticket issued" guard are no-op
-shims (`server/compat/discounts-fiscal.ts`), and the six DB checks that need
-fiscal tickets (DB 7's ticket, DB 8's ticket case, DB 13, 21, 37 and 38) report
-SKIP. No card provider, terminal or printer was used: card refunds are recorded
-after the external terminal did them, and the refund slip was checked in
-Chromium print emulation only.
+shims (`server/compat/discounts-fiscal.ts`): the five DB checks that need
+fiscal tickets (DB 8's ticket case, DB 13, 21, 37 and 38) report SKIP, and the
+fiscal assertions inside three other checks (DB 7's ticket, the
+`refund_balance_due` check's remaining ticket IVA and the whole-check comp's
+"no ticket for a zero total") run only once fiscal 027 is present. No card
+provider, terminal or printer was used: card refunds are recorded after the
+external terminal did them, and the refund slip was checked in Chromium print
+emulation only.
 
 This area makes money corrections correct and controlled:
 
@@ -196,9 +199,10 @@ the previewed total and the units it refunds per line (`expectedAmount`,
 when any of them differs, and the dialog reloads the check and keeps the inputs.
 Comparing the units matters because identical units cost the same: when two
 devices refund the same cold taco, the second plan would move to the next taco
-at the same price, so a total-only check would refund twice. Caps per tender (Σ refunds ≤ tender
-amount) and per unit and tender (Σ unit refunds ≤ allocation), enforced in code
-under the tender keys and again by triggers 7e/7f; method must match the tender.
+at the same price, so a total-only check would refund twice. Caps per tender
+(Σ refunds ≤ tender amount) and per unit and tender (Σ unit refunds ≤
+allocation), enforced in code under the tender keys and again by triggers
+7e/7f; method must match the tender.
 
 **Kitchen cancellation.** Refunded units of a round that is not served
 (`not_started`, `active`, `ready`, or `offline_review`, LD-15 Q5) get

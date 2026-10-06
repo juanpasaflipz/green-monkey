@@ -5,10 +5,12 @@
 // are left in place (the isolated test database is disposable; refunds,
 // discounts and closed drawers refuse DELETE).
 //
-// Fiscal 027 is built in parallel (server/compat/discounts-fiscal.ts): DB 7's
-// ticket, DB 8's ticket case, DB 13, 21, 37 and 38 run only when the fiscal
-// tables exist and report SKIP otherwise; they are un-gated at discounts'
-// merge after fiscal (specs/wave2-cross-track.md §2).
+// Fiscal 027 is built in parallel (server/compat/discounts-fiscal.ts): DB 8's
+// ticket case, DB 13, 21, 37 and 38 (fiscalTest) run only when the fiscal
+// tables exist and report SKIP otherwise; the fiscal assertions inside DB 7,
+// the refund_balance_due check and the whole-check comp check run only then,
+// without a SKIP line. All are un-gated at discounts' merge after fiscal
+// (specs/wave2-cross-track.md §2).
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
