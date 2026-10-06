@@ -67,6 +67,7 @@ import {
   type PublicMenuView,
 } from "../shared/public-ordering.js";
 import { isolatedTarget } from "./isolated-target.js";
+import { noRetries } from "./db-retries.js";
 import { setLogSink } from "../server/logging.js";
 
 // The runner and the router log through the shared sink; keep the output to PASS lines.
@@ -1345,8 +1346,10 @@ try {
 
   await test("14. tables: an archived table blocks its link; a pending hold blocks archiving; an expired one does not; occupancy counts pending holds", async () => {
     const t = await makeTenant("tables");
-    const [m1, m2, m3] = await Promise.all(
-      t.tables.map((x) => link(t, { kind: "table", tableId: x.id })),
+    const [m1, m2, m3] = await noRetries("14. three table links", () =>
+      Promise.all(
+        t.tables.map((x) => link(t, { kind: "table", tableId: x.id })),
+      ),
     );
     const version = async (id: string) =>
       (
@@ -1977,10 +1980,12 @@ try {
     const l = await link(t, { kind: "counter", label: "Ventanilla" });
     for (let i = 0; i < 5; i++) {
       const h = await insertHold(t, { ...l, tableId: null });
-      const both = await Promise.allSettled([
-        accept(t, h.row.id),
-        accept(t, h.row.id, {}, t.s.server),
-      ]);
+      const both = await noRetries("23. two staff accepts", () =>
+        Promise.allSettled([
+          accept(t, h.row.id),
+          accept(t, h.row.id, {}, t.s.server),
+        ]),
+      );
       assert.equal(both.filter((x) => x.status === "fulfilled").length, 1);
       const lost = both.find((x) => x.status === "rejected") as
         PromiseRejectedResult | undefined;
@@ -1992,10 +1997,12 @@ try {
       );
       assert.equal(n.n, 1);
       const h2 = await insertHold(t, { ...l, tableId: null });
-      const raced = await Promise.allSettled([
-        accept(t, h2.row.id),
-        pub.cancel(l.token, h2.statusKey),
-      ]);
+      const raced = await noRetries("23. accept vs diner cancel", () =>
+        Promise.allSettled([
+          accept(t, h2.row.id),
+          pub.cancel(l.token, h2.statusKey),
+        ]),
+      );
       const [row] = await asAdmin(
         t.tenantId,
         (tx) => tx`select state from public_order_holds where id=${h2.row.id}`,
@@ -2067,63 +2074,65 @@ try {
       );
       const fresh = await run(t.s.owner, (tx) => getOrder(tx, target.id));
       const settled = await run(t.s.owner, (tx) => getOrder(tx, settle.id));
-      const results = await Promise.allSettled([
-        accept(t, pay.row.id, {
-          payment: { amount: 4500, received: 4500, method: "cash" },
-        }),
-        accept(t, append.row.id, {
-          target: {
-            kind: "append",
-            orderId: target.id,
-            expectedVersion: fresh.version,
-          },
-        }),
-        reject(
-          t,
-          abuse.row.id,
-          { reason: "abuse", revokeLink: true },
-          t.s.manager,
-        ),
-        run(t.s.manager, (tx) => rotateLink(tx, t.s.manager, mesa2.id)),
-        run(t.s.manager, (tx) =>
-          closeCash(tx, t.s.manager, {
-            operationId: op(),
-            counted: 0,
-            reason: "Cierre de prueba",
+      const results = await noRetries("24. lock-order burst", () =>
+        Promise.allSettled([
+          accept(t, pay.row.id, {
+            payment: { amount: 4500, received: 4500, method: "cash" },
           }),
-        ),
-        run(t.s.manager, (tx) =>
-          voidLines(
-            tx,
-            t.s.manager,
-            settle.id,
-            {
-              operationId: op(),
-              expectedVersion: settled.version,
-              lines: [{ lineId: settled.lines[0].id, quantity: 1 }],
-              reason: "Prueba de orden de bloqueos",
-              stockDisposition: "no_return",
+          accept(t, append.row.id, {
+            target: {
+              kind: "append",
+              orderId: target.id,
+              expectedVersion: fresh.version,
             },
-            t.ids.manager,
+          }),
+          reject(
+            t,
+            abuse.row.id,
+            { reason: "abuse", revokeLink: true },
+            t.s.manager,
           ),
-        ),
-        // Offline-style sale: createOrder then recordPayment in one transaction.
-        run(t.s.cashier, async (tx) => {
-          const o = await createOrder(tx, t.s.cashier, {
-            operationId: op(),
-            lines: posLine(),
-            mode: "takeaway",
-            name: "Sync",
-            channel: "pos",
-          });
-          return recordPayment(tx, t.s.cashier, o.id, {
-            operationId: op(),
-            amount: o.total,
-            received: o.total,
-            method: "cash",
-          });
-        }),
-      ]);
+          run(t.s.manager, (tx) => rotateLink(tx, t.s.manager, mesa2.id)),
+          run(t.s.manager, (tx) =>
+            closeCash(tx, t.s.manager, {
+              operationId: op(),
+              counted: 0,
+              reason: "Cierre de prueba",
+            }),
+          ),
+          run(t.s.manager, (tx) =>
+            voidLines(
+              tx,
+              t.s.manager,
+              settle.id,
+              {
+                operationId: op(),
+                expectedVersion: settled.version,
+                lines: [{ lineId: settled.lines[0].id, quantity: 1 }],
+                reason: "Prueba de orden de bloqueos",
+                stockDisposition: "no_return",
+              },
+              t.ids.manager,
+            ),
+          ),
+          // Offline-style sale: createOrder then recordPayment in one transaction.
+          run(t.s.cashier, async (tx) => {
+            const o = await createOrder(tx, t.s.cashier, {
+              operationId: op(),
+              lines: posLine(),
+              mode: "takeaway",
+              name: "Sync",
+              channel: "pos",
+            });
+            return recordPayment(tx, t.s.cashier, o.id, {
+              operationId: op(),
+              amount: o.total,
+              received: o.total,
+              method: "cash",
+            });
+          }),
+        ]),
+      );
       for (const [i, r] of results.entries())
         if (r.status === "rejected") {
           const code = (r.reason as { code?: string })?.code;
@@ -2633,7 +2642,9 @@ try {
       await gate;
     });
     await held;
-    const both = Promise.all(bodies.map((x) => pub.submit(racing.token, x)));
+    const both = noRetries("PUB-R4 status-key race", () =>
+      Promise.all(bodies.map((x) => pub.submit(racing.token, x))),
+    );
     let waiting = 0;
     for (let i = 0; i < 200 && waiting < 2; i++) {
       await new Promise((r) => setTimeout(r, 25));
