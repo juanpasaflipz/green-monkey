@@ -81,125 +81,143 @@ export function ReceptorFields({
       </span>
     );
   };
+  // Hints and issues sit after the label, not inside it: inside, they became part of the
+  // control's accessible name ("RFC El RFC no tiene…"); they are its description instead.
   const aria = (field: ReceptorField) => {
     const issue = issueFor(field);
-    return issue
-      ? {
-          "aria-invalid": issue.warning ? undefined : true,
-          "aria-describedby": `${id}-${field}-issue`,
-        }
-      : {};
+    const described = [
+      field === "legalName" ? `${id}-legalName-hint` : null,
+      issue ? `${id}-${field}-issue` : null,
+    ].filter(Boolean);
+    return {
+      ...(issue && !issue.warning ? { "aria-invalid": true as const } : {}),
+      ...(described.length ? { "aria-describedby": described.join(" ") } : {}),
+    };
   };
   return (
     <div className="cfdi-receptor">
-      <label className="field">
-        <span>{t.cfdiRfc}</span>
-        <input
-          value={value.rfc}
-          disabled={disabled}
-          autoComplete="off"
-          autoCapitalize="characters"
-          spellCheck={false}
-          maxLength={13}
-          onChange={(e) => {
-            const rfc = e.target.value.toUpperCase().replace(/\s/g, "");
-            const allowed = regimesFor(rfc);
-            set({
-              rfc,
-              regime: allowed.includes(value.regime) ? value.regime : "",
-            });
-          }}
-          {...aria("rfc")}
-        />
+      <div className="cfdi-receptor-field">
+        <label className="field">
+          <span>{t.cfdiRfc}</span>
+          <input
+            value={value.rfc}
+            disabled={disabled}
+            autoComplete="off"
+            autoCapitalize="characters"
+            spellCheck={false}
+            maxLength={13}
+            onChange={(e) => {
+              const rfc = e.target.value.toUpperCase().replace(/\s/g, "");
+              const allowed = regimesFor(rfc);
+              set({
+                rfc,
+                regime: allowed.includes(value.regime) ? value.regime : "",
+              });
+            }}
+            {...aria("rfc")}
+          />
+        </label>
         {message("rfc")}
-      </label>
-      <label className="field">
-        <span>{t.cfdiLegalName}</span>
-        <input
-          value={value.legalName}
-          disabled={disabled}
-          autoComplete="off"
-          maxLength={254}
-          onChange={(e) => set({ legalName: e.target.value })}
-          {...aria("legalName")}
-        />
-        <small className="muted">{t.cfdiLegalNameHint}</small>
+      </div>
+      <div className="cfdi-receptor-field">
+        <label className="field">
+          <span>{t.cfdiLegalName}</span>
+          <input
+            value={value.legalName}
+            disabled={disabled}
+            autoComplete="off"
+            maxLength={254}
+            onChange={(e) => set({ legalName: e.target.value })}
+            {...aria("legalName")}
+          />
+        </label>
+        <small id={`${id}-legalName-hint`} className="muted">
+          {t.cfdiLegalNameHint}
+        </small>
         {message("legalName")}
-      </label>
-      <label className="field">
-        <span>{t.cfdiRegime}</span>
-        <select
-          value={value.regime}
-          disabled={disabled}
-          onChange={(e) => {
-            const regime = e.target.value;
-            const allowed = Object.hasOwn(REGIMEN_FISCAL, regime)
-              ? usesFor(regime)
-              : [...CFDI_USES];
-            set({
-              regime,
-              use: allowed.includes(value.use)
-                ? value.use
-                : (allowed[0] ?? value.use),
-            });
-          }}
-          {...aria("regime")}
-        >
-          <option value="">{t.cfdiRegimeChoose}</option>
-          {regimes.map((code) => (
-            <option key={code} value={code}>
-              {code} — {REGIMEN_FISCAL[code][locale]}
-            </option>
-          ))}
-        </select>
+      </div>
+      <div className="cfdi-receptor-field">
+        <label className="field">
+          <span>{t.cfdiRegime}</span>
+          <select
+            value={value.regime}
+            disabled={disabled}
+            onChange={(e) => {
+              const regime = e.target.value;
+              const allowed = Object.hasOwn(REGIMEN_FISCAL, regime)
+                ? usesFor(regime)
+                : [...CFDI_USES];
+              set({
+                regime,
+                use: allowed.includes(value.use)
+                  ? value.use
+                  : (allowed[0] ?? value.use),
+              });
+            }}
+            {...aria("regime")}
+          >
+            <option value="">{t.cfdiRegimeChoose}</option>
+            {regimes.map((code) => (
+              <option key={code} value={code}>
+                {code} — {REGIMEN_FISCAL[code][locale]}
+              </option>
+            ))}
+          </select>
+        </label>
         {message("regime")}
-      </label>
-      <label className="field">
-        <span>{t.cfdiPostalCode}</span>
-        <input
-          value={value.postalCode}
-          disabled={disabled}
-          inputMode="numeric"
-          autoComplete={shared ? "off" : "postal-code"}
-          maxLength={5}
-          onChange={(e) =>
-            set({ postalCode: e.target.value.replace(/\D/g, "").slice(0, 5) })
-          }
-          {...aria("postalCode")}
-        />
+      </div>
+      <div className="cfdi-receptor-field">
+        <label className="field">
+          <span>{t.cfdiPostalCode}</span>
+          <input
+            value={value.postalCode}
+            disabled={disabled}
+            inputMode="numeric"
+            autoComplete={shared ? "off" : "postal-code"}
+            maxLength={5}
+            onChange={(e) =>
+              set({ postalCode: e.target.value.replace(/\D/g, "").slice(0, 5) })
+            }
+            {...aria("postalCode")}
+          />
+        </label>
         {message("postalCode")}
-      </label>
-      <label className="field">
-        <span>{t.cfdiUse}</span>
-        <select
-          value={value.use}
-          disabled={disabled}
-          onChange={(e) => set({ use: e.target.value as CfdiUse })}
-          {...aria("use")}
-        >
-          {uses.map((use) => (
-            <option key={use} value={use}>
-              {t[USE_KEYS[use]]}
-            </option>
-          ))}
-        </select>
+      </div>
+      <div className="cfdi-receptor-field">
+        <label className="field">
+          <span>{t.cfdiUse}</span>
+          <select
+            value={value.use}
+            disabled={disabled}
+            onChange={(e) => set({ use: e.target.value as CfdiUse })}
+            {...aria("use")}
+          >
+            {uses.map((use) => (
+              <option key={use} value={use}>
+                {t[USE_KEYS[use]]}
+              </option>
+            ))}
+          </select>
+        </label>
         {message("use")}
-      </label>
-      <label className="field">
-        <span>{requireEmail ? t.cfdiEmail : t.cfdiEmailOptional}</span>
-        <input
-          type="email"
-          value={value.email ?? ""}
-          disabled={disabled}
-          autoComplete={shared ? "off" : "email"}
-          maxLength={254}
-          onChange={(e) =>
-            set({ email: e.target.value.trim() ? e.target.value : null })
-          }
-          {...aria("email")}
-        />
+      </div>
+      <div className="cfdi-receptor-field">
+        <label className="field">
+          <span>{requireEmail ? t.cfdiEmail : t.cfdiEmailOptional}</span>
+          <input
+            type="email"
+            value={value.email ?? ""}
+            disabled={disabled}
+            autoComplete={shared ? "off" : "email"}
+            maxLength={254}
+            onChange={(e) =>
+              set({ email: e.target.value.trim() ? e.target.value : null })
+            }
+            {...aria("email")}
+          />
+        </label>
         {message("email")}
-      </label>
+      </div>
     </div>
   );
 }

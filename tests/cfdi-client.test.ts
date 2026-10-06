@@ -171,6 +171,24 @@ describe("cfdi client: ReceptorFields (23)", () => {
     // 605 (sueldos) is a persona-física regime: not offered for a 12-character RFC.
     expect(out).not.toContain('value="605"');
   });
+  it("a field's issue and hint describe the control instead of naming it: the label holds only its text and control", () => {
+    const out = html(
+      createElement(ReceptorFields, {
+        value: { ...receptor, rfc: "ABC" },
+        onChange: () => {},
+        issues: [{ field: "rfc", code: "cfdi_invalid_rfc" }],
+        locale: "es",
+        requireEmail: false,
+      }),
+    );
+    expect(out).toMatch(
+      /<label class="field"><span>RFC<\/span><input[^>]*><\/label>/,
+    );
+    expect(out).toMatch(/aria-describedby="[^"]*-rfc-issue"/);
+    expect(out).toMatch(
+      /<label class="field"><span>Nombre o razón social<\/span><input[^>]*aria-describedby="[^"]*-legalName-hint"[^>]*><\/label>/,
+    );
+  });
   it("CFDI-SECRETS-6: on a shared staff terminal the email and postal code keep no autofill history; the portal keeps the tokens", () => {
     const render = (shared: boolean) =>
       html(
