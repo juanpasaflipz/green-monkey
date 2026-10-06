@@ -217,8 +217,9 @@ export function requestIdOf(req: express.Request): string {
 }
 
 /**
- * Route template for logs, never the raw path: public ordering URLs carry
- * capability tokens (/api/public/:token/...) that must not reach log storage.
+ * Route template for logs, never the raw path. Public ordering (032) keeps
+ * its link and status tokens out of paths altogether (URL fragment and
+ * x-gm-*-token headers); templates still keep any other path data out of logs.
  */
 export function routeLabel(req: express.Request): string {
   const path = (req.route as { path?: unknown } | undefined)?.path;

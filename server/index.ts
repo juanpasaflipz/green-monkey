@@ -25,7 +25,6 @@ import { connect, tenant, waitForDatabase } from "./db.js";
 import {
   authentication,
   type AuthRequest,
-  sign,
   permit,
   operators,
   managers,
@@ -524,33 +523,6 @@ route("get", "/jobs", async (tx, s) => {
   permit(s, managers);
   return tx`select * from jobs order by created_at desc limit 100`;
 });
-route("post", "/ordering-links", async (tx, s, req) => {
-  permit(s, managers);
-  const p = z
-    .object({ channel: z.enum(["qr", "kiosk"]), tableId: id.nullable() })
-    .strict()
-    .parse(req.body);
-  if (p.tableId) {
-    const rows = await tx`select id from dining_tables where id=${p.tableId}`;
-    if (!rows.length) throw new DomainError("not_found", 404);
-  }
-  await requireSelling(tx, s);
-  await requirePro(tx);
-  const token = sign({
-    purpose: "ordering",
-    id: randomUUID(),
-    tenantId: s.tenantId,
-    employeeId: s.employeeId,
-    deviceId: s.deviceId,
-    tableId: p.tableId,
-    channel: p.channel,
-    expiresAt: Date.now() + 86400_000,
-  });
-  return {
-    path: "/" + p.channel + "/" + token,
-    expiresAt: new Date(Date.now() + 86400_000).toISOString(),
-  };
-});
 route("get", "/plan", async (tx) => entitlement(tx));
 route("get", "/capabilities", async () => ({
   cash: { enabled: true },
@@ -574,6 +546,13 @@ accountRoutes.register({ app, sql, route });
 publicOrderingRoutes.register({ app, sql, route });
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {
+  // Diner pages (public ordering 032) stay out of search indexes; helmet
+  // already sends Referrer-Policy: no-referrer on every response.
+  app.use((req, res, next) => {
+    if (/^\/(qr|kiosk)(\/|$)/.test(req.path))
+      res.set("X-Robots-Tag", "noindex");
+    next();
+  });
   app.use(express.static(resolve("dist")));
   app.get("/{*path}", (_req, res) => res.sendFile(resolve("dist/index.html")));
 }

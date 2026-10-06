@@ -67,16 +67,22 @@ async function lockFloor(tx: Tx) {
  * The single home of the "open check" rule (contract D10): the service
  * lifecycle's `o.check_state <> 'closed'`, written literally so the partial
  * index orders_table_open (024) serves it. A paid dine-in check still holds
- * its table until "Liberar mesa" closes it.
+ * its table until "Liberar mesa" closes it. A pending, unexpired QR order
+ * waiting for staff (public ordering 032) holds its table too.
  */
 export async function tablesWithOpenChecks(
   tx: Tx,
   tableIds?: string[],
 ): Promise<Set<string>> {
-  const rows = await tx`select distinct o.table_id from orders o
+  const rows = await tx`select o.table_id from orders o
     where o.table_id is not null
       ${tableIds ? tx`and o.table_id=any(${tx.array(tableIds)}::uuid[])` : tx``}
-      and o.check_state <> 'closed'`;
+      and o.check_state <> 'closed'
+    union
+    select h.table_id from public_order_holds h
+    where h.table_id is not null
+      ${tableIds ? tx`and h.table_id=any(${tx.array(tableIds)}::uuid[])` : tx``}
+      and h.state='pending' and h.expires_at>now()`;
   return new Set(rows.map((r) => r.table_id as string));
 }
 

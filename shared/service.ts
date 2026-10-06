@@ -61,7 +61,13 @@ export type TableCheck = {
   openRounds: number;
   readyRounds: number;
 };
-export type TableOccupancy = { id: string; name: string; checks: TableCheck[] };
+export type TableOccupancy = {
+  id: string;
+  name: string;
+  checks: TableCheck[];
+  /** Public ordering (032): pending QR orders for this table; absent in older replies. */
+  pendingHolds?: number;
+};
 export type KitchenLine = {
   id: string;
   quantity: number;
