@@ -33,8 +33,6 @@ export function ManagementTools({
   const [rawImport, setRawImport] = useState("");
   const [preview, setPreview] = useState<any>(null);
   const [records, setRecords] = useState<any[]>([]);
-  const [link, setLink] = useState("");
-  const [linkChannel, setLinkChannel] = useState("qr");
   useEffect(() => {
     if (mode) {
       setError("");
@@ -84,34 +82,6 @@ export function ManagementTools({
         {view === "settings" && (
           <>
             <Button onClick={() => setMode("import")}>{t("importMenu")}</Button>
-            <select
-              aria-label={t("orderingLinks")}
-              value={linkChannel}
-              onChange={(e) => setLinkChannel(e.target.value)}
-            >
-              <option value="qr">QR</option>
-              <option value="kiosk">Kiosco / Kiosk</option>
-            </select>
-            <Button
-              onClick={async () => {
-                try {
-                  const result = await api("/ordering-links", {
-                    channel: linkChannel,
-                    tableId: null,
-                  });
-                  setLink(location.origin + result.path);
-                } catch (e) {
-                  setError(translateError((e as Error).message, locale));
-                }
-              }}
-            >
-              {t("createLink")}
-            </Button>
-            {link && (
-              <a href={link} target="_blank" rel="noreferrer">
-                {t("orderingLinks")}
-              </a>
-            )}
           </>
         )}
         {view === "finance" && (
