@@ -31,11 +31,14 @@ acknowledged a critical alert within 15 minutes during service hours
 | --- | --- | --- |
 | `web_down` (critical) | ntfy, from the worker watchdog | `/api/health` failed 3 consecutive minutes |
 | `web_recovered` (info) | ntfy | the probe passes again |
-| `jobs_dead_<kind>` (warning) | ntfy, from the web jobs runner or the worker jobs runner (worker-only kinds) | a job exhausted its kind's `maxAttempts` (default 8); see `GET /api/jobs` as a manager |
+| `jobs_dead_<kind>` (warning) | ntfy, from the web jobs runner or the worker jobs runner (worker-only kinds) | a job exhausted its kind's `maxAttempts` (default 8), or its lease expired on its last allowed claim (`error_code` `lease_expired`: the process died mid-job, for example out of memory); see `GET /api/jobs` as a manager and "Jobs" below |
+| `job_lease_expired` (log, warn) | web or worker logs | a handler ignored its abort signal past its lease; the runner stopped counting it and the job is reclaimed (or goes dead on its last attempt). Repeated lines for one kind mean a provider call without the signal |
+| `db_retry` (log, warn) | web or worker logs | `tenant()` caught a deadlock (`40P01`) or serialization failure (`40001`); `retried:true` was retried once, `retried:false` became a 409 `concurrent_update`. Any steady rate is a lock-order bug ([ARCHITECTURE.md](ARCHITECTURE.md) "Global lock order", LO-R9): note the `requestId` and route and open an issue |
+| `signing_keys_active` (log, info) | web startup | the kid that signs and every kid that verifies (never key material); after a key rotation it must show only the intended kids |
 | `billing_review` / `billing_retrying` (warning) | ntfy, from the worker | billing operations need a person / keep failing |
 | `retention_failed` (warning) | ntfy, from the deploy job or the daily Retention workflow | deleting expired OAuth attempts or old done/dead jobs failed (`tables=` names which); lock-timeout skips do not alert. Check `retention_table_failed` in that GitHub Actions run's log: `reason:"statement_timeout"` means a batch hit its 1.5 s bound (see "Retention" below), anything else is an error; the next run retries |
 | Retention workflow failure | GitHub issue `ops-alert: <env>` | a table failed (it has also alerted `retention_failed`), the run was skipped on a lock timeout three times in a row, or `MIGRATION_DATABASE_URL` is missing |
-| Uptime workflow failure | ntfy + GitHub issue `ops-alert: production` | `/api/ops/status` not ok or degraded, or the last successful production backup run is older than 26 h |
+| Uptime workflow failure | ntfy + GitHub issue `ops-alert: production` | `/api/ops/status` not ok or degraded (database, schema, worker not ok, or the worker's jobs runner off), or the last successful production backup run is older than 26 h |
 | Backup workflow failure | ntfy + GitHub issue `ops-alert: <env>` | the nightly dump failed |
 | Railway deploy failed/crashed | ntfy (Railway webhook, manual setup below) | a deploy or a running instance failed |
 
@@ -68,10 +71,22 @@ Redeploy an older SHA: Actions → Deploy → Run workflow with that SHA, the ty
 phrase `deploy <sha7> to production` and, during service hours,
 `allow_service_hours`. The SHA must be on `main` and must once have been live on
 staging (the `deploy/staging` commit status). Production release tags
-(`prod-YYYYMMDD-HHMM-<sha7>`) list every SHA that was live.
+(`prod-YYYYMMDD-HHMM-<sha7>`) list every SHA that was live; the newest one is
+the live release, whose code the daily retention run uses.
 
-A rollback deploys the older **code** and keeps the live Railway **service
-configuration**. With the default `railway_config: auto`, the workflow
+**Never use the Railway dashboard's Rollback or Redeploy on an older
+deployment.** Railway restores that deployment's Docker image **and its
+custom variables** (Rollback), or rebuilds it with its original variables
+(Redeploy). Every variable changed since comes back: after a `SIGNING_KEYS`
+rotation the leaked key signs again and the new one is gone (everyone is
+logged out a second time and forged links work again); after a credential
+rotation the old password returns. The only rollback path is Actions →
+Deploy with the older SHA, which uploads the older code and keeps the live
+variables. (Restart of the *current* deployment is safe: same image, same
+variables.)
+
+A rollback through Actions → Deploy deploys the older **code** and keeps the
+live Railway **service configuration**. With the default `railway_config: auto`, the workflow
 applies `.railway/railway.ts` only when the SHA is the head of `main`; for any
 older SHA it skips `railway config apply` and says so in the run summary. The
 reason: an older file omits variables added since, Railway plans an omitted
@@ -143,14 +158,23 @@ environment secret `MIGRATION_DATABASE_URL`), never from a Railway service:
   run repeats bounded passes while the previous pass deleted a full batch
   (5,000 rows) from some table, at most 10 passes, and never starts a pass
   after 07:00. The schedules run only for environments listed in the
-  repository variable `OPS_LIVE_ENVIRONMENTS` and only from the default
-  branch; a manual dispatch (Actions → Retention → environment) always runs.
-  GitHub may delay or drop a scheduled run; a dropped day is caught up the
-  next day, and every deploy also runs a pass.
+  repository variable `OPS_LIVE_ENVIRONMENTS`; a manual dispatch (Actions →
+  Retention → environment) always runs, except production during service
+  hours (12:00–23:59) without `allow_service_hours`.
+  The workflow runs the environment's **live** release, never `main`'s
+  head: production the newest `prod-*` release tag, staging the newest
+  `main` commit with a successful `deploy/staging` status (either must be on
+  `main`, or the run fails). It installs and compiles that release without
+  the secret, then runs only `node build/scripts/migrate.js
+  --retention-only` with `MIGRATION_DATABASE_URL`.
+  GitHub may delay or drop a scheduled run: a run that starts after 07:00
+  does nothing (`retention_outside_window`, green), and a dropped day is
+  caught up the next day; every deploy also runs a pass.
 - **Skips and failures:** when a backup's `pg_dump` or another long
   transaction holds a lock on `jobs`, the pass is skipped (exit 75, logged,
   not alerted); the workflow retries twice, 5 minutes apart, and a third skip
-  makes the run red. A failed table exits 1 after alerting
+  makes the run red. A scheduled run also stops (red) when the window has
+  closed before a retry. A failed table exits 1 after alerting
   `retention_failed`. Either red run opens or updates the `ops-alert: <env>`
   issue.
 
@@ -175,6 +199,23 @@ migrations, grants or policy reconcile; inside the window it repeats passes
 while a backlog remains, outside it runs exactly one. It exits 1 when a table
 fails (after alerting) and 75 when a table was skipped on a lock timeout. Run
 it outside service hours for the same reason.
+
+## Jobs
+
+`GET /api/jobs` lists a restaurant's latest jobs for an owner or manager. Two
+controls, both for an owner or manager with a recent PIN or password
+(step-up), act on one job of their own restaurant:
+
+- `POST /api/jobs/<id>/requeue` retries a **dead** job (attempts reset);
+- `POST /api/jobs/<id>/cancel` stops a queued, available, blocked or running
+  job: it goes dead with `error_code` `cancelled`, a running holder loses its
+  lease (its later writes match no row) and nothing claims it again. Use it
+  for a job that keeps killing its process before its last attempt; requeue
+  it after the fix.
+
+A job whose process dies on its last allowed claim goes dead by itself
+(`lease_expired`) and alerts `jobs_dead_<kind>`; earlier crashes are retried
+after the lease (120–300 s per kind, at most 1 hour).
 
 ## Deploy window
 
@@ -244,8 +285,14 @@ Cookies and links are signed with the OPS-10 keyring (`server/keyring.ts`):
 `SIGNING_KEYS="<kid>:<base64url secret>[,…]"` on `web` only. The first entry
 signs; every listed entry verifies; each use gets its own HKDF-derived key,
 so a cookie never opens a sealed CFDI link and one sealed purpose never opens
-another. Production requires `SIGNING_KEYS`; a deployed worker refuses it and
-`JWT_SECRET`. Every step below edits only the `web` service's `SIGNING_KEYS`,
+another. Sealed tokens are signed, not encrypted: their payload is readable by
+whoever holds the link, so it carries opaque ids only (`server/tokens.ts`). A
+deployed `web` (staging and production) requires `SIGNING_KEYS` and refuses
+the committed CI keyring, fixture kids (`ci-`, `local-`, `test-`) and secrets
+that decode to printable text (`placeholder_signing_keys`), and the CI, local
+and documented placeholder `JWT_SECRET`s (`placeholder_jwt_secret`); a
+deployed worker refuses both variables. At startup `web` logs
+`signing_keys_active` with the signing kid and every verifying kid. Every step below edits only the `web` service's `SIGNING_KEYS`,
 from the private file read by `scripts/ops/railway-vars.sh` (never on a
 command line). `node scripts/ops/generate-signing-key.mjs` prints one new
 entry (`k<YYYYMMDD>-<4 hex>:<32 random bytes>`).
@@ -261,6 +308,13 @@ entry (`k<YYYYMMDD>-<4 hex>:<32 random bytes>`).
       and are re-signed on every sign-in; CFDI portal links live at most 7
       days), set `SIGNING_KEYS="<new>"` and redeploy.
 2. **Emergency** (a key leaked): set `SIGNING_KEYS="<new>"` only and redeploy.
+   From then on, **never** roll back or redeploy a `web` deployment created
+   before this one from the Railway dashboard: it restores the leaked key
+   ("Rollback" above). Roll back only with Actions → Deploy. After the
+   redeploy, record its deployment id in the incident log and confirm that
+   the new deployment's `signing_keys_active` line shows `signKid` and `kids`
+   equal to the new kid alone, and that a fresh `gm_session` cookie starts with
+   `v2.<new kid>.`.
    Before proceeding, where possible, have every device sync its offline
    queue: re-paired terminals are new devices, so an unsynced offline payment
    arriving from them lands in manager review (`offline_drawer_conflict`).
@@ -363,7 +417,7 @@ changes:
 | --- | --- |
 | 2 | `provision-roles.ts` also creates `gm_staging_worker` (a `gm_jobs_worker` member; 30 s/8 s/60 s; `CONNECT`) and writes `WORKER_DATABASE_URL` to `.env.provisioned-staging`; `globals.sql` creates `gm_jobs_worker` and `gm_support`. The `-- 2.0 jobs worker` grants block refuses to apply until `globals.sql` has run. |
 | 4 | Nothing new for `web`. The `worker` service is created by this cutover, so it has nothing to inventory. |
-| 5 | Expected for `worker`: no `preDeploy`, `WORKER_DATABASE_URL`, `DB_STATEMENT_TIMEOUT_MS`, and the cfdi and account `preserve()` names; for `web`: `SIGNING_KEYS` and the account, fiscal and cfdi `preserve()` names. If the plan rejects a `preserve()` of a never-set variable (Railway's docs only say `preserve()` keeps a value that is already set), set it empty with `railway variable set NAME= --service <svc> --skip-deploys`; every reader treats an empty value as unset. |
+| 5 | Expected for `worker`: no `preDeploy`, `WORKER_DATABASE_URL`, `DB_STATEMENT_TIMEOUT_MS`, and the cfdi and account `preserve()` names; for `web`: `SIGNING_KEYS` and the account, fiscal and cfdi `preserve()` names. If the plan rejects a `preserve()` of a never-set variable (Railway's docs only say `preserve()` keeps a value that is already set), set it empty with `railway variable set NAME= --service <svc> --skip-deploys`; every reader treats an empty value as unset. **Never** use that workaround for `SIGNING_KEYS` (web) or `WORKER_DATABASE_URL` (worker): a deployed web without real signing keys and a deployed worker without its jobs login refuse to start (`missing_signing_keys`, `missing_worker_database_url`); set them in step 7 first. |
 | 7 | `web`: add `SIGNING_KEYS` (`generate-signing-key.mjs` output). `worker`: set `WORKER_DATABASE_URL`; **do not** set `MIGRATION_DATABASE_URL` (the worker refuses it) or `PG_APP_USER`. |
 | 8 | Environment `staging`: `gh secret set MIGRATION_DATABASE_URL --env staging` (stdin, from `.env.provisioned-staging`); `gh variable set PG_APP_USER --env staging --body gm_staging_app`; `gh variable set ALERT_WEBHOOK_KIND --env staging --body ntfy`. |
 | 9 | The deploy job migrates from GitHub before Railway; `worker_ready` logs `jobs:true`; `/api/ops/status` shows `worker.status:"ok"`. |
@@ -399,6 +453,8 @@ Known gaps this release leaves open, with their owner:
 ```
 Date/time (America/Mexico_City):
 Detected by: (alert / restaurant call / uptime issue)
+Key or credential rotated: (name, new kid or login, Railway deployment id of the
+  rotation; confirmed with signing_keys_active / a fresh v2.<kid> cookie)
 Impact: (restaurants affected, what staff could not do, duration)
 Timeline: (detection, acknowledgement, mitigation, resolution)
 Root cause:

@@ -131,7 +131,8 @@ cached before the deploy keep working. A later contract change removes them.
   the fiscal folio counter last from 027. `createOrder`, `voidLines` and
   `assignService` still bump the feed after `refreshCheckState`; fiscal moves
   those three call sites in its merge commit (`tests/lock-order.test.ts`
-  allowlists them until then). DB test "kitchen feed and progress do not
+  allowlists `createOrder:12>10`, `voidLines:12>10` and
+  `assignService:12>10` until then). DB test "kitchen feed and progress do not
   deadlock" runs mixed concurrent bursts.
 - The feed is bounded to the 200 oldest open rounds and excludes rounds held
   for offline review. A truncated feed shows an alert that new tickets do not
