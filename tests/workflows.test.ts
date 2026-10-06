@@ -239,6 +239,31 @@ describe("third-party actions are pinned by full commit SHA (OPS-R8 regression)"
     expect(pinned).toBeGreaterThanOrEqual(9);
   });
 
+  it("every actions/* JavaScript action is pinned to a Node 24 release (GitHub retires Node 20)", () => {
+    // The first major whose action.yml declares runs.using: node24
+    // (verified against each release's action.yml, docs/RELEASE.md).
+    const firstNode24: Record<string, number> = {
+      "actions/checkout": 5,
+      "actions/setup-node": 5,
+      "actions/upload-artifact": 6,
+    };
+    let checked = 0;
+    for (const file of files)
+      for (const [, name, major] of read(file).matchAll(
+        /uses:\s*(actions\/[\w.-]+)@[0-9a-f]{40} # v(\d+)\./g,
+      )) {
+        expect(
+          firstNode24[name],
+          `${file}: ${name} needs its first node24 major recorded here`,
+        ).toBeDefined();
+        expect(Number(major), `${file}: ${name}`).toBeGreaterThanOrEqual(
+          firstNode24[name],
+        );
+        checked++;
+      }
+    expect(checked).toBeGreaterThanOrEqual(9);
+  });
+
   it("one action at one release resolves to one commit everywhere", () => {
     const seen = new Map<string, string>();
     for (const file of files)

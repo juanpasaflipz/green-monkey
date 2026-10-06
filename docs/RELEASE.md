@@ -36,13 +36,24 @@ Dockerfile is built with a stamped commit and the container must pass
 full history (`.gitleaks.toml` allowlists only synthetic local/CI values).
 
 Every third-party action in `.github/` is pinned by full commit SHA with the
-release in a trailing comment (`actions/checkout@<sha> # v4.4.0`); the deploy,
+release in a trailing comment (`actions/checkout@<sha> # v7.0.1`); the deploy,
 backup and uptime jobs hold production secrets, so a moved tag must not change
 what runs. `tests/workflows.test.ts` refuses a tag or branch reference. To
 update one, read the new tag's commit with
 `git ls-remote https://github.com/actions/<name> refs/tags/<tag>` (an
 annotated tag lists a second `^{}` line: use that commit), review the
-release, and replace every occurrence.
+release, confirm that its `action.yml` at that commit declares
+`runs.using: node24` (`gh api "repos/actions/<name>/contents/action.yml?ref=<sha>"`;
+GitHub retires the Node.js 20 runtime for JavaScript actions), and replace
+every occurrence. The pins were last moved on 2026-10-05: `actions/checkout`
+v7.0.1, `actions/setup-node` v7.0.0 and `actions/upload-artifact` v7.0.1, all
+`node24`. No input this repository passes was renamed (checkout v6 stores the
+persisted credentials in a separate file and v7 refuses fork pull-request code
+under `workflow_run`, which `deploy.yml` never checks out because it accepts
+only `push` runs; setup-node v5+ caches npm automatically, and the workflows
+keep `cache: npm` explicit; upload-artifact v7 adds `archive`, default `true`).
+`tests/workflows.test.ts` refuses a pin older than the first Node 24 major of
+each action.
 
 ## Continuous delivery (`.github/workflows/deploy.yml`)
 
