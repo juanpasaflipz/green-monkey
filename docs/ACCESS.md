@@ -63,7 +63,12 @@ a stolen device.
 **Step-up**: on a terminal, refunds, paid-outs, manager self-approved voids and
 every staff, device and pairing-code command (including the legacy
 `POST /api/team/save`) need a PIN entered within
-`ACCESS_STEP_UP_SECONDS` (default 120). The client asks "Confirma con tu PIN"
+`ACCESS_STEP_UP_SECONDS` (default 120). Discounts (028): a manager or owner
+applying or removing a discount or recording a refund alone gets the same
+step-up and is the approver of record; a cashier or server needs a manager's
+PIN in the dialog (`verifyApproval`), and that PIN is the only one asked (LD-2):
+the actor's own step-up applies only to a within-limit staff discount with no
+approver; saving the money controls (owner) needs the step-up. The client asks "Confirma con tu PIN"
 and retries the identical request (same `operationId`). Google-entered sessions
 on a personal device are exempt; PIN sessions are not, on any device. A pending
 prompt belongs to the session whose command asked for it:
@@ -344,9 +349,12 @@ area's remote close ("Cerrar caja desde aquí", wave 2) ships. Until then suppor
 closes it with the manager's count, through the migration role in one
 transaction with `app.tenant_id` set:
 `update cash_sessions set counted=<count>, expected=<expected>, reason='Cierre por soporte: dispositivo desvinculado', closed_at=clock_timestamp() where id=<drawer> and closed_at is null`,
-where `<expected>` is computed as `cashSummary` does (opening + cash tenders
-and tips − refunds + cash movements of that drawer), and records it in the
-support log.
+where `<expected>` is computed as `drawerTotals` does (opening + cash tenders
+and tips − cash refunds (`refunds.method = 'cash'`; terminal refunds never
+count, discounts 028) + cash movements of that drawer), and records it in the
+support log. Add `closed_by=<manager employee id>, count_mode='visible'` so the
+history shows who counted; 028's trigger refuses any later update of a closed
+drawer.
 
 **Lost or stolen phone or laptop (owner or invited member).** The owner opens
 Dispositivos from another device and **Desvincular**s it. Its POS sessions are
