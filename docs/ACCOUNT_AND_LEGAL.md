@@ -242,7 +242,11 @@ co-owners; works on Free, after a lapse and on unselected devices).
   succeeds does the download start, inside the step-up window. The download
   routes repeat both checks, so a stale or copied link answers
   `403 step_up_required`. Personal owner browsers (Google entry) never prompt.
-  A refused step-up does not spend the export budget.
+  A refused step-up does not spend the export budget. The same pre-check
+  answers `429 export_busy` while an export of the restaurant is running and
+  `429 rate_limited` once the hourly budget is spent, so the browser never
+  starts a download that would save an error body as the export file; a
+  download refused as `export_busy` does not spend the budget either.
 - `GET /api/account-data/export.json?tenant=<id>` streams one JSON document:
   `{"format":"green-monkey-export","version":1,"exportedAt",…,"restaurant":{…},
   "units":{"money":"minor (centavos)"},"tables":{"<table>":[rows…]}}`.

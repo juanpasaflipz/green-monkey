@@ -324,6 +324,42 @@ try {
     },
   );
   await check(
+    "ACC-9 once the hourly export budget is spent, the /account-data/tables pre-check refuses (429 rate_limited) before the client starts a download",
+    async () => {
+      const device = await paired(OWNER, "demo-green-monkey");
+      let exports = 0;
+      let refused: Awaited<ReturnType<Browser["request"]>> | null = null;
+      for (let i = 0; i <= 10 && !refused; i++) {
+        const tables = await device.browser.request(
+          "GET",
+          "/api/account-data/tables",
+        );
+        if (tables.status === 429) {
+          refused = tables;
+          break;
+        }
+        assert.equal(tables.status, 200, JSON.stringify(tables.json));
+        const download = await device.browser.request(
+          "GET",
+          `/api/account-data/export.json?tenant=${TENANT}`,
+        );
+        assert.equal(download.status, 200, `export ${i}`);
+        exports++;
+      }
+      assert.ok(refused, "the pre-check refuses once the budget is spent");
+      assert.equal(refused.json.error, "rate_limited");
+      assert.match(refused.json.requestId, /^[A-Za-z0-9_-]{8,128}$/);
+      // Earlier checks used part of the same tenant's 10 per hour.
+      assert.ok(exports >= 1 && exports <= 10, String(exports));
+      const blocked = await device.browser.request(
+        "GET",
+        `/api/account-data/export.json?tenant=${TENANT}`,
+      );
+      assert.equal(blocked.status, 429);
+      assert.equal(blocked.json.error, "rate_limited");
+    },
+  );
+  await check(
     "R-08 account rate limits answer 429 {error:'rate_limited', requestId} keyed on the client address",
     async () => {
       let last: Awaited<ReturnType<Browser["request"]>> | null = null;

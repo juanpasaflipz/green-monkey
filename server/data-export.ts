@@ -74,9 +74,12 @@ export async function exportScope(tx: Tx, tenantId: string) {
 /** At most one export per tenant and two per process (export_busy). */
 const running = new Set<string>();
 export const MAX_CONCURRENT_EXPORTS = 2;
+/** Whether an export for this tenant would be refused as export_busy now. */
+export function exportBusy(tenantId: string) {
+  return running.has(tenantId) || running.size >= MAX_CONCURRENT_EXPORTS;
+}
 function claim(tenantId: string) {
-  if (running.has(tenantId) || running.size >= MAX_CONCURRENT_EXPORTS)
-    throw new DomainError("export_busy", 429);
+  if (exportBusy(tenantId)) throw new DomainError("export_busy", 429);
   running.add(tenantId);
   return () => running.delete(tenantId);
 }

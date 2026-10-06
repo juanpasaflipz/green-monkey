@@ -43,6 +43,7 @@ import {
 } from "../account-center.js";
 import { getTaxProfile, saveTaxProfile } from "../tax-profile.js";
 import {
+  exportBusy,
   exportGuard,
   exportHandler,
   exportTables,
@@ -50,6 +51,7 @@ import {
 } from "../data-export.js";
 import type { Tx } from "../db.js";
 import { legalVersion } from "../../shared/legal.js";
+import { DomainError } from "../../shared/domain.js";
 
 /**
  * express-rate-limit with the platform 429 body ({error:"rate_limited",
@@ -61,6 +63,7 @@ function limiter(
   windowMs: number,
   key: (req: express.Request) => string = (req) =>
     ipKeyGenerator(clientIp(req), 56),
+  skip: (req: express.Request) => boolean = () => false,
 ) {
   return rateLimit({
     windowMs,
@@ -68,6 +71,7 @@ function limiter(
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: key,
+    skip,
     handler: (req, res) => {
       log.warn("rate_limited", {
         limiter: name,
@@ -80,6 +84,9 @@ function limiter(
     },
   });
 }
+
+/** Owner data exports per tenant per hour (spec §2.8). */
+const EXPORTS_PER_HOUR = 10;
 
 /** Web configuration, read once at startup (an invalid flag fails startup). */
 const legal = legalConfig(process.env);
@@ -308,20 +315,30 @@ export function register({ app, sql, route }: RouteContext) {
 
   // Owner data export: permit(owner) and the step-up run before the limiter,
   // so a step_up_required refusal is not counted (access R3); 10 per hour per
-  // tenant; on Free, after a lapse and on unselected devices too.
+  // tenant; on Free, after a lapse and on unselected devices too. A download
+  // refused as export_busy is not counted either (ACC-9).
+  const exportKey = (tenantId: string) => "tenant:" + tenantId;
+  const exportLimit = limiter(
+    "account_export",
+    EXPORTS_PER_HOUR,
+    3600_000,
+    (req) => exportKey((req as AuthRequest).session.tenantId),
+    (req) => exportBusy((req as AuthRequest).session.tenantId),
+  );
+  // The client calls this first (step-up, then the download link). It also
+  // refuses while an export is running or the hourly budget is spent, so the
+  // browser never starts a download that would save an error body (ACC-9).
   route("get", "/account-data/tables", async (tx, s) => {
     requireExportAccess(s);
+    if (exportBusy(s.tenantId)) throw new DomainError("export_busy", 429);
+    const used = await exportLimit.getKey(exportKey(s.tenantId));
+    if ((used?.totalHits ?? 0) >= EXPORTS_PER_HOUR)
+      throw new DomainError("rate_limited", 429);
     return (await exportTables(tx)).map((t) => ({
       name: t.name,
       columns: t.columns.length,
     }));
   });
-  const exportLimit = limiter(
-    "account_export",
-    10,
-    3600_000,
-    (req) => "tenant:" + (req as AuthRequest).session.tenantId,
-  );
   const guard = exportGuard();
   app.get(
     "/api/account-data/export.json",

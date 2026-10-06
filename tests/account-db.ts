@@ -9,6 +9,7 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Writable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { LEGAL_CI_ENV } from "./fixtures/legal-ci.js";
@@ -53,6 +54,7 @@ import {
 } from "../server/ownership-transfer.js";
 import { accountOverview, shellState } from "../server/account-center.js";
 import {
+  exportBusy,
   exportHandler,
   exportScope,
   exportTables,
@@ -1750,6 +1752,49 @@ try {
       console.log(
         "  (030 not applied: cfdi tables absent, denylist checked by unit test)",
       );
+  });
+  await test("29e export: while an export runs, exportBusy is true (the /account-data/tables pre-check refuses then) and a second one is export_busy; afterwards exports run again (ACC-9)", async () => {
+    /** A response whose client reads only when released (backpressure). */
+    class Held extends Capture {
+      held: Array<() => void> = [];
+      _write(chunk: Buffer, _e: BufferEncoding, cb: () => void) {
+        this.headersSent = true;
+        this.chunks.push(Buffer.from(chunk));
+        this.held.push(cb);
+      }
+      release() {
+        for (const cb of this.held.splice(0)) cb();
+      }
+    }
+    const res = new Held({ highWaterMark: 1 });
+    let error: unknown = null;
+    const first = exportHandler(sql, "json")(
+      {
+        session: ownerA,
+        query: { tenant: ownerA.tenantId },
+        params: {},
+      } as any,
+      res as any,
+      (e?: unknown) => {
+        error = e ?? null;
+      },
+    );
+    for (let i = 0; i < 200 && !exportBusy(ownerA.tenantId); i++)
+      await delay(10);
+    assert.equal(exportBusy(ownerA.tenantId), true);
+    const second = await exportRun(ownerA, "json");
+    assert.equal(second.error?.code, "export_busy");
+    let finished = false;
+    void Promise.resolve(first).then(() => (finished = true));
+    for (let i = 0; i < 10_000 && !finished; i++) {
+      res.release();
+      await delay(1);
+    }
+    assert.equal(finished, true);
+    assert.equal(error, null);
+    assert.equal(exportBusy(ownerA.tenantId), false);
+    assert.equal(JSON.parse(res.text()).restaurant.id, ownerA.tenantId);
+    assert.equal((await exportRun(ownerA, "csv", "orders")).error, null);
   });
   await test("29d export: the first statement sets statement_timeout 60s and idle_in_transaction_session_timeout 60s", async () => {
     const shown = await sql.begin(
