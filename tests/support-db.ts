@@ -316,6 +316,9 @@ try {
       /row-level security/,
     );
     await admin`delete from billing_locations where tenant_id=${tenantId}`;
+    // The binding existed only for this refusal: a retained subscription would
+    // make billing-db's reconcile scheduler pick this fixture on later runs.
+    await admin`delete from organization_billing where organization_id=${r.organization_id}`;
     await cli(support!, ["end-entitlement", "--tenant", tenantId]);
     assert.equal(
       (await tenant(sql, tenantId, (tx) => entitlement(tx))).plan,
