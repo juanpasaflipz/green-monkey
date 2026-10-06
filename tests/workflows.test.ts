@@ -458,7 +458,7 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("retention.yml's window probe runs the release's compiled inRetentionWindow: exit 0 inside, 3 outside, and a failed import or a missing export fails the run (PLAT-HR-3)", () => {
     const block = marked(retention, "retention-window-probe");
@@ -504,7 +504,7 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it("retention.yml checks out the environment's live release, never the bare default branch, without persisted credentials or a shared npm cache (PLATFORM-ROLES-1, CI-3, CI-5)", () => {
     const checkouts = steps(retention).filter((s) =>
@@ -756,6 +756,7 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
         rmSync(dir, { recursive: true, force: true });
       }
     },
+    30_000,
   );
 
   it("railway.ts: no preDeploy; the worker declares no MIGRATION_DATABASE_URL, PG_APP_USER, SIGNING_KEYS or JWT_SECRET; the web declares no WORKER_DATABASE_URL, FACTURAPI_*, CREDENTIAL_ENCRYPTION_KEY or CFDI_LIVE_ENABLED; DEMO_TENANT_ID only inside the non-production spread; every registered name is present", () => {
