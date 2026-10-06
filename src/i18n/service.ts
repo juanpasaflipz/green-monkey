@@ -687,5 +687,9 @@ export default defineArea({
       "La solicitud es demasiado grande. Reduce los datos e inténtalo de nuevo.",
       "The request is too large. Reduce the data and try again.",
     ],
+    request_aborted: [
+      "La conexión se cortó antes de enviar todos los datos. Inténtalo de nuevo.",
+      "The connection dropped before all the data was sent. Try again.",
+    ],
   },
 });

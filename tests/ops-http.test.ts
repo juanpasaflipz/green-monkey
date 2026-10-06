@@ -1,15 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import express from "express";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 import type http from "node:http";
 import { trustProxy } from "../server/http.js";
-import {
-  clientIp,
-  logRequestError,
-  requestIdOf,
-  requestLog,
-  setLogSink,
-} from "../server/logging.js";
+import { apiErrorHandler } from "../server/api-errors.js";
+import { clientIp, requestLog, setLogSink } from "../server/logging.js";
 import { opsLimiter } from "../server/routes/ops.js";
 import { DomainError } from "../shared/domain.js";
 
@@ -32,7 +27,7 @@ afterEach(async () => {
   server = null;
 });
 
-/** An app wired like server/index.ts: proxy trust, body parser, request log, error logging. */
+/** An app wired like server/index.ts: proxy trust, body parser, request log, its error handler. */
 async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
   const app = express();
   app.set("trust proxy", trustProxy(env));
@@ -63,28 +58,7 @@ async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
   app.post("/api/fails", () => {
     throw new DomainError("schema_not_ready", 503);
   });
-  app.use(
-    (
-      error: unknown,
-      req: express.Request,
-      res: express.Response,
-      _next: express.NextFunction,
-    ) => {
-      const requestId = requestIdOf(req);
-      if (!res.headersSent) res.setHeader("X-Request-Id", requestId);
-      const reply = (status: number, code: string) => {
-        logRequestError(error, req, { status, code });
-        return res.status(status).json({ error: code, requestId });
-      };
-      if (error instanceof DomainError) return reply(error.status, error.code);
-      const parse = (error as { type?: string }) ?? {};
-      if (parse.type === "entity.parse.failed")
-        return reply(400, "invalid_json");
-      if (parse.type === "entity.too.large")
-        return reply(413, "payload_too_large");
-      return reply(500, "internal_error");
-    },
-  );
+  app.use(apiErrorHandler);
   server = app.listen(0, "127.0.0.1");
   await new Promise((r) => server!.once("listening", r));
   return `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
@@ -157,6 +131,37 @@ describe("request log, client address and error logging", () => {
     });
     expect(big.status).toBe(413);
     expect((await big.json()).error).toBe("payload_too_large");
+  });
+
+  it("a client that disconnects mid-body is logged at info as request_aborted, never as a 500 error line (body-parser request.aborted)", async () => {
+    const origin = await start();
+    const { port } = new URL(origin);
+    // Headers promise 500 bytes; the client sends a few and hangs up.
+    await new Promise<void>((resolve, reject) => {
+      const socket = connect(Number(port), "127.0.0.1", () => {
+        socket.write(
+          "POST /api/public/abc/orders HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+            "Content-Type: application/json\r\nContent-Length: 500\r\n\r\n" +
+            '{"x":',
+          () => setTimeout(() => (socket.destroy(), resolve()), 50),
+        );
+      });
+      socket.on("error", reject);
+    });
+    const deadline = Date.now() + 2000;
+    while (!lines.some((l) => l.code) && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 10));
+    const rejected = lines.filter((l) => l.code === "request_aborted");
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({
+      level: "info",
+      message: "request_rejected",
+      method: "POST",
+      status: 400,
+    });
+    expect(rejected[0].requestId).toBeTruthy();
+    expect(lines.filter((l) => l.level === "error")).toEqual([]);
+    expect(lines.some((l) => l.code === "internal_error")).toBe(false);
   });
 
   it("500 logs name, message, stack and route template, never the token path", async () => {

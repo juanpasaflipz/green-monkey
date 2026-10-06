@@ -297,7 +297,8 @@ export function requestLog(
 /**
  * Logs an error the API answered (SEC-8): 5xx with name, message, stack,
  * route template and SQLSTATE through reportError; DomainError 5xx at warn;
- * malformed or oversized bodies at info; other 4xx at debug.
+ * malformed, oversized or aborted bodies (the client disconnected mid-body,
+ * nothing failed here) at info; other 4xx at debug.
  */
 export function logRequestError(
   error: unknown,
@@ -316,7 +317,8 @@ export function logRequestError(
   else if (response.status >= 500) log.warn("domain_error_5xx", attrs);
   else if (
     response.code === "invalid_json" ||
-    response.code === "payload_too_large"
+    response.code === "payload_too_large" ||
+    response.code === "request_aborted"
   )
     log.info("request_rejected", attrs);
   else log.debug("request_rejected", attrs);
