@@ -524,6 +524,10 @@ export default defineArea({
       "La cuenta ya tiene un descuento general. Quítalo antes de aplicar otro.",
       "The check already has a check discount. Remove it before applying another.",
     ],
+    discount_changed: [
+      "La orden cambió (otro cobro o cambio de servicio). Revisa la vista previa y confirma de nuevo.",
+      "The order changed (another payment or a service change). Review the preview and confirm again.",
+    ],
     discount_not_reversible: [
       "Este descuento ya no se puede quitar: ya se cobró algo de esos productos o hay un descuento más reciente sobre ellos.",
       "This discount can no longer be removed: part of those items was paid or a newer discount covers them.",

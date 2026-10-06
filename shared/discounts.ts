@@ -68,6 +68,26 @@ export const discountInput = z
     amount: money.optional(),
     reasonCode: z.enum(DISCOUNT_REASONS),
     note: z.string().trim().max(300).default(""),
+    // §2.2 (DSC-R13): what the preview showed (discountExpectation). Payments
+    // and service changes do not bump orders.version, so expectedVersion alone
+    // cannot tell that the check moved on before the confirm.
+    expectedAmount: money.refine((n) => n > 0),
+    expectedBase: money.refine((n) => n > 0),
+    expectedAllocations: z
+      .array(
+        z
+          .object({
+            lineId: id,
+            units: z.array(z.number().int().min(0).max(999)).min(1).max(99),
+            amounts: z.array(money).min(1).max(99),
+          })
+          .strict()
+          .refine((l) => l.units.length === l.amounts.length),
+      )
+      .min(1)
+      .max(1000),
+    expectedDue: money,
+    expectedCloses: z.boolean(),
     approval: approvalShape.optional(),
   })
   .strict();
@@ -395,6 +415,63 @@ export function discountClosesCheck(
       tableId: o.tableId,
       channel: o.channel ?? "pos",
     })
+  );
+}
+
+type DiscountCheck = Pick<
+  Order,
+  "total" | "paid" | "mode" | "tableId" | "channel"
+>;
+/**
+ * What a discount preview showed, as the client sends it (§2.2, DSC-R13): the
+ * plan (amount, base and, per line, the units and the part of each), the
+ * balance due it started from and whether it warned that the check closes.
+ */
+export function discountExpectation(o: DiscountCheck, plan: DiscountPlan) {
+  const lines: { lineId: string; units: number[]; amounts: number[] }[] = [];
+  for (const a of plan.allocations) {
+    let l = lines.find((x) => x.lineId === a.lineId);
+    if (!l) lines.push((l = { lineId: a.lineId, units: [], amounts: [] }));
+    l.units.push(a.unit);
+    l.amounts.push(a.amount);
+  }
+  return {
+    expectedAmount: plan.amount,
+    expectedBase: plan.base,
+    expectedAllocations: lines,
+    expectedDue: balanceDue(o),
+    expectedCloses: discountClosesCheck(o, plan),
+  };
+}
+export type DiscountExpectation = ReturnType<typeof discountExpectation>;
+
+/**
+ * Whether the server's plan, on the check as it is under the order lock, is
+ * the one the client previewed (DSC-R13): the same amount, base and part per
+ * unit, the same starting balance and the same closing outcome. A payment on
+ * another device (or a service change, which may release the table) leaves
+ * orders.version alone but changes one of them: a whole-check comp previewed at
+ * −$400 would otherwise record −$300 after one plate was paid elsewhere.
+ */
+export function discountPlanMatches(
+  o: DiscountCheck,
+  plan: DiscountPlan,
+  expected: DiscountExpectation,
+): boolean {
+  const now = discountExpectation(o, plan);
+  const key = (e: DiscountExpectation) =>
+    e.expectedAllocations
+      .flatMap((l) =>
+        l.units.map((u, i) => `${l.lineId.toLowerCase()}:${u}=${l.amounts[i]}`),
+      )
+      .sort()
+      .join("|");
+  return (
+    now.expectedAmount === expected.expectedAmount &&
+    now.expectedBase === expected.expectedBase &&
+    now.expectedDue === expected.expectedDue &&
+    now.expectedCloses === expected.expectedCloses &&
+    key(now) === key(expected)
   );
 }
 

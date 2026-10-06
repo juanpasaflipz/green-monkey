@@ -28,6 +28,27 @@ function fixtureAdmin(baseURL: string | undefined) {
 }
 const tag = () => "dsc" + Math.random().toString(36).slice(2, 7);
 const uuid = () => crypto.randomUUID();
+/**
+ * The preview fields DiscountDialog sends with a discount (DSC-R13:
+ * shared/discounts.ts discountExpectation), for direct API calls on one line.
+ */
+const previewed = (p: {
+  amount: number;
+  base: number;
+  lineId: string;
+  units: number[];
+  amounts: number[];
+  due: number;
+  closes?: boolean;
+}) => ({
+  expectedAmount: p.amount,
+  expectedBase: p.base,
+  expectedAllocations: [
+    { lineId: p.lineId, units: p.units, amounts: p.amounts },
+  ],
+  expectedDue: p.due,
+  expectedCloses: p.closes ?? false,
+});
 
 async function login(page: Page) {
   await page.goto("/app");
@@ -286,6 +307,14 @@ test("manager removes a discount before payment and the balance goes back up", a
     kind: "percent",
     percentBps: 1000,
     reasonCode: "regular_customer",
+    ...previewed({
+      amount: 900,
+      base: 9000,
+      lineId: o.lines[0].id,
+      units: [0, 1],
+      amounts: [450, 450],
+      due: 9000,
+    }),
   });
   await orders(page);
   await expect(row(page, name)).toContainText("$81.00");
@@ -327,6 +356,14 @@ test("DSC-R2: Quitar descuento recovers from stale_order: it reloads the check, 
     kind: "percent",
     percentBps: 1000,
     reasonCode: "regular_customer",
+    ...previewed({
+      amount: 450,
+      base: 4500,
+      lineId,
+      units: [0],
+      amounts: [450],
+      due: 9000,
+    }),
   });
   await orders(page);
   await row(page, name)
@@ -349,6 +386,14 @@ test("DSC-R2: Quitar descuento recovers from stale_order: it reloads the check, 
     quantity: 1,
     kind: "comp",
     reasonCode: "courtesy",
+    ...previewed({
+      amount: 4500,
+      base: 4500,
+      lineId,
+      units: [1],
+      amounts: [4500],
+      due: 8550,
+    }),
   });
   await remove
     .getByRole("button", { name: "Quitar y sumar $4.50", exact: true })
@@ -388,6 +433,14 @@ test("DSC-R10: in Vender, Quitar descuento reloads after another device charged 
     kind: "percent",
     percentBps: 1000,
     reasonCode: "regular_customer",
+    ...previewed({
+      amount: 900,
+      base: 9000,
+      lineId: o.lines[0].id,
+      units: [0, 1],
+      amounts: [450, 450],
+      due: 9000,
+    }),
   });
   await orders(page);
   await row(page, name)
@@ -652,6 +705,57 @@ test("DSC-R9: a refund confirmed on a stale check after another device refunded 
   await call(page, `/kitchen/${after.rounds[0].id}/voids/ack`, {
     operationId: uuid(),
   });
+});
+
+test("DSC-R13: a whole-check comp confirmed after another device charged one taco is refused; the dialog reloads, keeps its inputs and comps only what is still due on the next confirm", async ({
+  page,
+}) => {
+  const name = "Cobrada " + tag();
+  await login(page);
+  await openDrawer(page);
+  const o = await order(page, name, 2);
+  const lineId = o.lines[0].id;
+  await orders(page);
+  await row(page, name)
+    .getByRole("button", { name: "Descuento", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: /Descuento · Orden/ });
+  await dialog
+    .getByRole("button", { name: "Cortesía (100%)", exact: true })
+    .click();
+  await expect(dialog.getByRole("status")).toContainText(
+    "Descuento: −$90.00 · Saldo nuevo: $0.00",
+  );
+  const reason = dialog.getByRole("combobox", { name: "Motivo", exact: true });
+  await reason.selectOption({ label: "Queja o error del servicio" });
+  // Another terminal charges one taco by item split; orders.version stays.
+  await pay(page, o.id, 4500, { items: [`${lineId}:0`] });
+  await dialog
+    .getByRole("button", { name: "Aplicar descuento −$90.00", exact: true })
+    .click();
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "La orden cambió (otro cobro o cambio de servicio). Revisa la vista previa y confirma de nuevo.",
+  );
+  // Nothing was stored; the dialog shows the reloaded check with its inputs.
+  const unchanged = await call(page, "/orders/" + o.id);
+  expect(unchanged.discount).toBe(0);
+  expect(unchanged.discounts).toHaveLength(0);
+  await expect(dialog.getByRole("status")).toContainText(
+    "Descuento: −$45.00 · Saldo nuevo: $0.00",
+  );
+  await expect(reason).toHaveValue("complaint");
+  await expect(
+    dialog.getByRole("button", { name: "Cortesía (100%)", exact: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  // Confirmed again, knowingly, on the current check.
+  await dialog
+    .getByRole("button", { name: "Aplicar descuento −$45.00", exact: true })
+    .click();
+  await expect(dialog).toBeHidden();
+  const after = await call(page, "/orders/" + o.id);
+  expect(after.discount).toBe(4500);
+  expect(after.discounts).toHaveLength(1);
+  expect(after.checkState).toBe("closed");
 });
 
 test("MON-9/FIT-10: blind close — the cashier never sees expected cash; the manager sees the difference in history and reviews it", async ({

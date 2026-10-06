@@ -21,9 +21,11 @@ import {
   composeOrderAdjustments,
   DEFAULT_MONEY_CONTROLS,
   discountClosesCheck,
+  discountExpectation,
   discountInput,
   discountInputIssue,
   discountLimitCheck,
+  discountPlanMatches,
   formatPercentBps,
   itemRefundExpectation,
   itemRefundPlanMatches,
@@ -926,9 +928,38 @@ describe("inputs and helpers", () => {
       kind: "percent" as const,
       percentBps: 1000,
       reasonCode: "courtesy" as const,
+      // DSC-R13: the request carries what its preview showed.
+      expectedAmount: 900,
+      expectedBase: 9000,
+      expectedAllocations: [
+        { lineId: randomUUID(), units: [0, 1], amounts: [450, 450] },
+      ],
+      expectedDue: 9000,
+      expectedCloses: false,
     };
     const p = discountInput.parse(base);
     expect(p.note).toBe("");
+    for (const key of [
+      "expectedAmount",
+      "expectedBase",
+      "expectedAllocations",
+      "expectedDue",
+      "expectedCloses",
+    ] as const) {
+      const { [key]: _omitted, ...without } = base;
+      expect(discountInput.safeParse(without).success).toBe(false);
+    }
+    expect(
+      discountInput.safeParse({
+        ...base,
+        expectedAllocations: [
+          { lineId: randomUUID(), units: [0, 1], amounts: [900] },
+        ],
+      }).success,
+    ).toBe(false);
+    expect(
+      discountInput.safeParse({ ...base, expectedAllocations: [] }).success,
+    ).toBe(false);
     expect(discountInputIssue(p)).toBeNull();
     expect(discountInput.safeParse({ ...base, extra: 1 }).success).toBe(false);
     expect(discountInputIssue({ ...p, scope: "line" })).toBe("invalid_input");
@@ -1103,6 +1134,156 @@ describe("inputs and helpers", () => {
     expect(discountClosesCheck({ ...o, paid: 4500 }, { amount: 4500 })).toBe(
       true,
     );
+  });
+});
+
+describe("discount preview guard (DSC-R13)", () => {
+  // Four plates at $100 on a takeaway check.
+  const plates = line(40000, 4);
+  const open = view({ lines: [plates] });
+  const cash = tender("cash", 10000);
+  /** The same check after another terminal charged plate 0 by item split. */
+  const onePaid = view({
+    lines: [plates],
+    allocations: [
+      { tenderId: cash.id, lineId: plates.id, unit: 0, amount: 10000 },
+    ],
+    tenders: [cash],
+  });
+  const previewOn = (o: Order, r: Parameters<typeof planDiscount>[1]) =>
+    discountExpectation(o, planDiscount(o, r));
+  const matches = (
+    o: Order,
+    r: Parameters<typeof planDiscount>[1],
+    expected: ReturnType<typeof discountExpectation>,
+  ) => discountPlanMatches(o, planDiscount(o, r), expected);
+
+  it("discountExpectation groups the parts per line, with the starting balance and the closing outcome", () => {
+    const taco = line(9000, 2);
+    const cafe = line(12000, 1);
+    const o = view({ lines: [taco, cafe] });
+    expect(
+      previewOn(o, { scope: "order", kind: "percent", percentBps: 1000 }),
+    ).toEqual({
+      expectedAmount: 2100,
+      expectedBase: 21000,
+      expectedAllocations: [
+        { lineId: taco.id, units: [0, 1], amounts: [450, 450] },
+        { lineId: cafe.id, units: [0], amounts: [1200] },
+      ],
+      expectedDue: 21000,
+      expectedCloses: false,
+    });
+  });
+
+  it("a whole-check comp previewed at −$400 does not match the −$300 plan after one plate was paid elsewhere; the same check matches", () => {
+    const comp = { scope: "order" as const, kind: "comp" as const };
+    const expected = previewOn(open, comp);
+    expect(expected.expectedAmount).toBe(40000);
+    expect(matches(open, comp, expected)).toBe(true);
+    expect(planDiscount(onePaid, comp).amount).toBe(30000);
+    expect(matches(onePaid, comp, expected)).toBe(false);
+  });
+
+  it("a 10% discount previewed at −$40 does not match the −$30 plan after a payment in between", () => {
+    const pct = {
+      scope: "order" as const,
+      kind: "percent" as const,
+      percentBps: 1000,
+    };
+    const expected = previewOn(open, pct);
+    expect(expected.expectedAmount).toBe(4000);
+    expect(planDiscount(onePaid, pct).amount).toBe(3000);
+    expect(matches(onePaid, pct, expected)).toBe(false);
+  });
+
+  it("a fixed −$100 previewed with no closing warning does not match once $300 were paid in between (it would close the takeaway check)", () => {
+    const fixed = {
+      scope: "order" as const,
+      kind: "amount" as const,
+      amount: 10000,
+    };
+    const expected = previewOn(open, fixed);
+    expect(expected.expectedCloses).toBe(false);
+    const units = payableUnits([plates], []);
+    const paid300 = view({
+      lines: [plates],
+      allocations: allocatePayment(units, 30000).map((a) => ({
+        ...a,
+        tenderId: cash.id,
+      })),
+      tenders: [{ ...cash, amount: 30000 }],
+    });
+    expect(discountClosesCheck(paid300, planDiscount(paid300, fixed))).toBe(
+      true,
+    );
+    expect(matches(paid300, fixed, expected)).toBe(false);
+  });
+
+  it("the same plan with a different starting balance or closing outcome does not match: a payment of another line, or a table check moved to takeaway", () => {
+    const taco = line(4500, 1);
+    const bowl = line(12500, 1);
+    const card = tender("external", 12500);
+    const before = view({ lines: [taco, bowl] });
+    const tacoOff = {
+      scope: "line" as const,
+      lineId: taco.id,
+      quantity: 1,
+      kind: "amount" as const,
+      amount: 4500,
+    };
+    const expected = previewOn(before, tacoOff);
+    const bowlPaid = view({
+      lines: [taco, bowl],
+      allocations: [
+        { tenderId: card.id, lineId: bowl.id, unit: 0, amount: 12500 },
+      ],
+      tenders: [card],
+    });
+    expect(previewOn(bowlPaid, tacoOff).expectedAllocations).toEqual(
+      expected.expectedAllocations,
+    );
+    expect(matches(bowlPaid, tacoOff, expected)).toBe(false);
+    // Service change: assignService leaves orders.version alone.
+    const comp = { scope: "order" as const, kind: "comp" as const };
+    const atTable = {
+      ...open,
+      mode: "dine_in" as const,
+      tableId: randomUUID(),
+    };
+    const tableExpected = previewOn(atTable, comp);
+    expect(tableExpected.expectedCloses).toBe(false);
+    expect(matches(atTable, comp, tableExpected)).toBe(true);
+    expect(matches(open, comp, tableExpected)).toBe(false);
+  });
+
+  it("the comparison ignores the order of lines and the case of ids, but not which unit gets which part", () => {
+    const taco = line(9000, 2);
+    const cafe = line(12000, 1);
+    const o = view({ lines: [taco, cafe] });
+    const pct = {
+      scope: "order" as const,
+      kind: "percent" as const,
+      percentBps: 1000,
+    };
+    const expected = previewOn(o, pct);
+    expect(
+      matches(o, pct, {
+        ...expected,
+        expectedAllocations: [...expected.expectedAllocations]
+          .reverse()
+          .map((l) => ({ ...l, lineId: l.lineId.toUpperCase() })),
+      }),
+    ).toBe(true);
+    expect(
+      matches(o, pct, {
+        ...expected,
+        expectedAllocations: [
+          { lineId: taco.id, units: [0, 1], amounts: [400, 500] },
+          { lineId: cafe.id, units: [0], amounts: [1200] },
+        ],
+      }),
+    ).toBe(false);
   });
 });
 

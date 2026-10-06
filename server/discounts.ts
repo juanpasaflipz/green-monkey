@@ -22,6 +22,7 @@ import {
   discountInput,
   discountInputIssue,
   discountLimitCheck,
+  discountPlanMatches,
   discountReverseInput,
   moneyControlsInput,
   planDiscount,
@@ -217,6 +218,13 @@ export async function applyDiscount(
       if (!order.itemSplitAvailable)
         throw new DomainError("unallocated_history", 409);
       const plan = planDiscount(order, p);
+      // §2.2 (DSC-R13): the preview and the result are identical. Payments
+      // (online, offline sync, recovery) and service changes do not bump
+      // orders.version, so the request carries what its preview showed and a
+      // different plan, starting balance or closing outcome is refused here,
+      // under the order lock, before any approval or limit is evaluated.
+      if (!discountPlanMatches(order, plan, p))
+        throw new DomainError("discount_changed", 409);
       const check = discountLimitCheck(s.role, plan, controls);
       let approver: string | null;
       if (check === "self") approver = a.approverId ?? s.employeeId;

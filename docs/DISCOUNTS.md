@@ -72,8 +72,23 @@ receipt rows and the refund slip.
 The dialog chooses **Toda la cuenta** or **Un producto** (and how many units),
 the type (Porcentaje with 5/10/15/20/50 % chips or up to two decimals, Importe
 fijo, Cortesía 100 %), a reason (required) and a note (required for "Otro").
-The preview runs the server's `planDiscount`, so "Descuento: −$13.50 · Saldo
-nuevo: $121.50" is what gets recorded.
+The preview runs the server's `planDiscount`, and the request carries what it
+showed (`discountExpectation`): the amount, the base, per line the units and the
+part of each (`expectedAmount`, `expectedBase`, `expectedAllocations`), the
+balance due it started from (`expectedDue`) and whether it warned that the check
+closes (`expectedCloses`). `expectedVersion` alone cannot tell that the check
+moved on: payments (online, offline sync, recovery) and service changes such as
+moving a table check to takeaway do not bump `orders.version`. Under the order
+lock the server plans again and answers `discount_changed` (409, "La orden
+cambió (otro cobro o cambio de servicio). Revisa la vista previa y confirma de
+nuevo.") when any of them differs, before approvals or limits are evaluated;
+nothing is stored and the version stays. The dialog then reloads the check,
+keeps its inputs and operation id, and records only on a new confirm. So
+"Descuento: −$13.50 · Saldo nuevo: $121.50", and the closing warning or its
+absence, are what get recorded: a whole-check comp previewed at −$400 is never
+stored as −$300 because one plate was paid on another terminal meanwhile, and a
+discount shown without the warning never closes the check. A retry of a request
+that succeeded (same operation id, same body) still replays its stored result.
 
 Rules (server-enforced; `shared/discounts.ts`):
 

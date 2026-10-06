@@ -10,6 +10,7 @@ import {
   balanceDue,
   DISCOUNT_REASONS,
   discountClosesCheck,
+  discountExpectation,
   discountLimitCheck,
   formatPercentBps,
   PERCENT_CHIPS_BPS,
@@ -31,10 +32,16 @@ import { DISCOUNT_REASON_LABELS, fill, lineLabel } from "./format";
 import { loadMoneyControls, useMoneyControls } from "./useMoneyControls";
 import "./discounts.css";
 
+/** Codes after which the dialog reloads the check and keeps its inputs. */
+const RELOAD_CODES = ["stale_order", "discount_changed"];
+
 /**
  * "Descuento · Orden #N" (§2.2): a line or check discount, or a comp, on the
- * unpaid money of sent items. The preview runs the server's planDiscount, so
- * what it shows is what is recorded. Staff over their limit approve with a
+ * unpaid money of sent items. The preview runs the server's planDiscount and
+ * the request carries what it showed (discountExpectation): when another
+ * device paid or changed the check in between, the server answers
+ * discount_changed (or stale_order) instead of recording something else, and
+ * the dialog reloads the check. Staff over their limit approve with a
  * manager's PIN (the only PIN asked, LD-2); within it, or for a manager or
  * owner acting alone, the server may ask for the actor's own step-up PIN.
  */
@@ -163,6 +170,7 @@ export function DiscountDialog({
       ...(kind === "amount" ? { amount } : {}),
       reasonCode,
       note: note.trim(),
+      ...discountExpectation(order, plan),
       ...(overLimit
         ? {
             approval: {
@@ -185,7 +193,7 @@ export function DiscountDialog({
           ? t("discountsStaleOrder")
           : translateError(code, locale),
       );
-      if (code === "stale_order")
+      if (RELOAD_CODES.includes(code))
         try {
           setOrder(await api<Order>("/orders/" + order.id));
         } catch {

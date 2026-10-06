@@ -36,7 +36,7 @@ import {
   placeRoundsInOfflineReview,
 } from "../server/offline-kitchen.js";
 import { closeCheck, listOrders } from "../server/checks.js";
-import { progressPreparation } from "../server/service.js";
+import { assignService, progressPreparation } from "../server/service.js";
 import {
   adjustmentRows,
   applyDiscount,
@@ -56,7 +56,12 @@ import {
 } from "../server/cash.js";
 import { approvalFor } from "../server/routes/discounts.js";
 import { businessDate, type Order, type Session } from "../shared/domain.js";
-import { itemRefundExpectation, planItemRefund } from "../shared/discounts.js";
+import {
+  discountExpectation,
+  itemRefundExpectation,
+  planDiscount,
+  planItemRefund,
+} from "../shared/discounts.js";
 import { extractTax } from "../shared/tax.js";
 import type { SessionAccess } from "../shared/access.js";
 import { discountRemovable } from "../src/features/discounts/format.js";
@@ -279,8 +284,40 @@ async function openDrawer(deviceId: string, opening = 0) {
     return id;
   });
 }
-/** The route's two steps: the approval, then the command in its own transaction. */
+/**
+ * The discount preview a client shows (DSC-R13), as DiscountDialog sends it.
+ * When the client's own planning refuses the request, placeholders let the
+ * server's planning (or an earlier check) answer first.
+ */
+function discountPreviewOf(order: Order, body: any) {
+  try {
+    return discountExpectation(order, planDiscount(order, body));
+  } catch {
+    return {
+      expectedAmount: 1,
+      expectedBase: 1,
+      expectedAllocations: [
+        {
+          lineId: body.lineId ?? order.lines[0]?.id ?? randomUUID(),
+          units: [0],
+          amounts: [1],
+        },
+      ],
+      expectedDue: 0,
+      expectedCloses: false,
+    };
+  }
+}
+/**
+ * The route's two steps: the approval, then the command in its own
+ * transaction. Like a client that just loaded the order, a body without the
+ * preview fields gets them from the current order, written into the body so
+ * replaying the same body object sends the same request (same once()
+ * fingerprint). Stale-preview tests pass their own.
+ */
 async function discount(s: Session, orderId: string, body: any) {
+  if (body.expectedAmount === undefined)
+    Object.assign(body, discountPreviewOf(await orderOf(orderId, s), body));
   const a = await approvalFor(sql, s, body.approval, "conditional");
   return run(s, (tx) => applyDiscount(tx, s, orderId, body, a));
 }
@@ -661,6 +698,147 @@ try {
       ),
       "stale_order",
     );
+  });
+
+  await test("DSC-R13: a whole-check comp previewed before another device charged one taco answers discount_changed, stores nothing and keeps the version; confirmed again with the same operation id on the current check it comps only what is due; a replay after that success still replays", async () => {
+    const o = await newOrder([{ product: taco, quantity: 4 }]);
+    const line = o.lines[0].id;
+    const request = {
+      operationId: randomUUID(),
+      expectedVersion: o.version,
+      scope: "order",
+      kind: "comp",
+      reasonCode: "complaint",
+    };
+    // The dialog's preview: −$180.00 on four tacos, balance $0.00.
+    const preview = discountPreviewOf(o, request);
+    assert.equal(preview.expectedAmount, 18000);
+    assert.equal(preview.expectedCloses, true);
+    // Another terminal charges one taco by item split: orders.version stays.
+    const paid = await pay(o.id, 4500, { items: [`${line}:0`] });
+    assert.equal(paid.version, o.version, "payments do not bump the version");
+    await rejects(
+      discount(manager, o.id, { ...request, ...preview }),
+      "discount_changed",
+    );
+    const after = await orderOf(o.id);
+    assert.equal((await counts(o.id)).discounts, 0, "nothing is stored");
+    assert.equal(after.version, o.version);
+    assert.equal(after.total, 18000);
+    assert.equal(after.discount, 0);
+    assert.equal(after.checkState, "open");
+    // The dialog reloads, keeps its inputs and operation id, and the next
+    // confirm records exactly the new preview: −$135.00 on the three unpaid tacos.
+    const retry = { ...request, ...discountPreviewOf(after, request) };
+    assert.equal(retry.expectedAmount, 13500);
+    const comped = await discount(manager, o.id, retry);
+    assert.equal(comped.discounts![0].amount, 13500);
+    assert.deepEqual(
+      comped.discounts![0].allocations.map((a) => a.unit),
+      [1, 2, 3],
+    );
+    assert.equal(comped.total, 4500);
+    assert.equal(comped.checkState, "closed");
+    // A lost response retried with the same body replays the stored result.
+    assert.deepEqual(json(await discount(manager, o.id, retry)), json(comped));
+    assert.equal((await counts(o.id)).discounts, 1);
+  });
+
+  await test("DSC-R13: a 10% check discount previewed at −$18.00 answers discount_changed after another device collects $45.00 by amount; the current preview (−$13.50) succeeds", async () => {
+    const o = await newOrder([{ product: taco, quantity: 4 }]);
+    const request = percentBody(o, 1000);
+    const preview = discountPreviewOf(o, request);
+    assert.equal(preview.expectedAmount, 1800);
+    await pay(o.id, 4500);
+    await rejects(
+      discount(manager, o.id, { ...request, ...preview }),
+      "discount_changed",
+    );
+    assert.equal((await counts(o.id)).discounts, 0);
+    const current = await orderOf(o.id);
+    const done = await discount(manager, o.id, {
+      ...request,
+      ...discountPreviewOf(current, request),
+    });
+    assert.equal(done.discount, 1350);
+    assert.equal(done.total, 18000 - 1350);
+  });
+
+  await test("DSC-R13: a fixed-amount line discount previewed with no closing warning is refused when a payment of the other line in between would make it close the takeaway check (same plan, different outcome)", async () => {
+    const o = await newOrder([
+      { product: taco, quantity: 1 },
+      { product: bowl, quantity: 1 },
+    ]);
+    const tacoLine = lineOf(o, taco);
+    const bowlLine = lineOf(o, bowl);
+    const request = {
+      operationId: randomUUID(),
+      expectedVersion: o.version,
+      scope: "line",
+      lineId: tacoLine,
+      quantity: 1,
+      kind: "amount",
+      amount: 4500,
+      reasonCode: "regular_customer",
+    };
+    const preview = discountPreviewOf(o, request);
+    assert.equal(preview.expectedCloses, false, "the dialog shows no warning");
+    assert.equal(preview.expectedDue, 17000);
+    await pay(o.id, 12500, { items: [`${bowlLine}:0`] });
+    const now = await orderOf(o.id);
+    // The server's plan alone is unchanged: only the outcome moved.
+    assert.deepEqual(
+      discountPreviewOf(now, request).expectedAllocations,
+      preview.expectedAllocations,
+    );
+    assert.equal(discountPreviewOf(now, request).expectedCloses, true);
+    await rejects(
+      discount(manager, o.id, { ...request, ...preview }),
+      "discount_changed",
+    );
+    const after = await orderOf(o.id);
+    assert.equal((await counts(o.id)).discounts, 0);
+    assert.equal(after.checkState, "open", "the check did not close");
+    assert.equal(after.total, 17000);
+  });
+
+  await test("DSC-R13: a comp previewed on a table check (no closing warning) is refused after the check was moved to takeaway, which does not bump orders.version", async () => {
+    const table = tables[6].id as string;
+    const o = await newOrder([{ product: taco, quantity: 1 }], {
+      tableId: table,
+    });
+    const request = {
+      operationId: randomUUID(),
+      expectedVersion: o.version,
+      scope: "order",
+      kind: "comp",
+      reasonCode: "courtesy",
+    };
+    const preview = discountPreviewOf(o, request);
+    assert.equal(preview.expectedCloses, false);
+    const moved = await run(owner, (tx) =>
+      assignService(tx, owner, o.id, {
+        operationId: randomUUID(),
+        expectedVersion: o.serviceVersion,
+        tableId: null,
+        employeeId: ownerId,
+        mode: "takeaway",
+        reason: "Se lo lleva",
+      }),
+    );
+    assert.equal((moved as Order).version, o.version);
+    await rejects(
+      discount(manager, o.id, { ...request, ...preview }),
+      "discount_changed",
+    );
+    assert.equal((await counts(o.id)).discounts, 0);
+    // Confirmed on the current check (with its closing warning), it closes.
+    const current = await orderOf(o.id);
+    const closed = await discount(manager, o.id, {
+      ...request,
+      ...discountPreviewOf(current, request),
+    });
+    assert.equal(closed.checkState, "closed");
   });
 
   await test("reversal restores total and discount, is LIFO, and is refused once a unit was paid", async () => {
@@ -2010,9 +2188,17 @@ try {
     // A tenant-B session cannot apply a discount to tenant A's order.
     await rejects(
       run(foreign, (tx) =>
-        applyDiscount(tx, foreign, sample.id, percentBody(sample, 1000), {
-          approverId: otherOwnerId,
-        }),
+        applyDiscount(
+          tx,
+          foreign,
+          sample.id,
+          percentBody(
+            sample,
+            1000,
+            discountPreviewOf(sample, percentBody(sample, 1000)),
+          ),
+          { approverId: otherOwnerId },
+        ),
       ),
       "not_found",
     );
