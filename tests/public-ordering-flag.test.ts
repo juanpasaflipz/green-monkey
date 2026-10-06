@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   publicOrderingEnabled,
   publicOrderingGate,
+  publicOrderingSwitchedOff,
 } from "../server/account-settings";
 import { accountWebConfig } from "../server/account-config";
 import { loadConfig } from "../server/config-rules";
@@ -50,6 +51,29 @@ describe("PUBLIC_ORDERING_ENABLED interim switch (SEC-7 / FIT-11 / FOH-13)", () 
         "web",
       ),
     ).toThrow("public_ordering_flag_invalid");
+  });
+
+  it('publicOrderingSwitchedOff: only an explicit "false" is the kill switch; unset or "true" is not (PUBLIC-UX-4)', () => {
+    expect(
+      publicOrderingSwitchedOff({ PUBLIC_ORDERING_ENABLED: "false" }),
+    ).toBe(true);
+    expect(
+      publicOrderingSwitchedOff({
+        APP_ENV: "production",
+        PUBLIC_ORDERING_ENABLED: " false ",
+      }),
+    ).toBe(true);
+    expect(publicOrderingSwitchedOff({})).toBe(false);
+    expect(publicOrderingSwitchedOff({ APP_ENV: "production" })).toBe(false);
+    expect(
+      publicOrderingSwitchedOff({
+        APP_ENV: "production",
+        PUBLIC_ORDERING_ENABLED: "",
+      }),
+    ).toBe(false);
+    expect(publicOrderingSwitchedOff({ PUBLIC_ORDERING_ENABLED: "true" })).toBe(
+      false,
+    );
   });
 
   it("publicOrderingGate disabled answers 404 {error:'public_ordering_disabled'} and never calls next; enabled calls next", async () => {

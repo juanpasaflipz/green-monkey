@@ -234,7 +234,7 @@ try {
     },
   );
   await check(
-    "4 GET /api/account-config with the fictional CI legal set and NODE_ENV=production: published, no missing key; publicOrdering reflects the variable",
+    "4 GET /api/account-config with the fictional CI legal set and NODE_ENV=production: published, no missing key; publicOrdering reflects the variable (false is the kill switch: switchedOff)",
     async () => {
       const r = await new Browser().request("GET", "/api/account-config");
       assert.equal(r.status, 200);
@@ -247,7 +247,12 @@ try {
         "missing is never sent in production",
       );
       assert.equal(r.json.support.email, LEGAL_CI_ENV.SUPPORT_EMAIL);
-      assert.deepEqual(r.json.publicOrdering, { enabled: false });
+      // "false" is the operator's kill switch, not a deployment that never
+      // offered QR ordering (PUBLIC-UX-4).
+      assert.deepEqual(r.json.publicOrdering, {
+        enabled: false,
+        switchedOff: true,
+      });
       assert.deepEqual(r.json.saasTax, {
         mode: "off",
         ratePercent: null,
@@ -483,7 +488,10 @@ try {
       }
       assert.equal(revoked!.status, 200, JSON.stringify(revoked!.json));
       const config = await new Browser().request("GET", "/api/account-config");
-      assert.deepEqual(config.json.publicOrdering, { enabled: true });
+      assert.deepEqual(config.json.publicOrdering, {
+        enabled: true,
+        switchedOff: false,
+      });
       assert.equal(config.json.legal.status, "unpublished");
       assert.equal(config.json.legal.entity, null);
     },

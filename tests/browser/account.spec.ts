@@ -1715,7 +1715,7 @@ test("the Google button waits for the legal configuration, so no sign-in starts 
   );
 });
 
-test("a QR code on a disabled deployment shows only the counter message", async ({
+test("a QR code on a disabled deployment shows only the order-with-the-staff message", async ({
   page,
 }) => {
   await page.route("**/api/public/**", (route) =>
@@ -1726,8 +1726,9 @@ test("a QR code on a disabled deployment shows only the counter message", async 
   // "Este código ya no funciona" instead).
   const token = randomUUID().replace(/-/g, "").slice(0, 22);
   await page.goto(`/qr#${token}`);
+  // Neutral for table codes and takeaway codes alike (PUBLIC-UX-3).
   const message =
-    "Los pedidos en línea no están disponibles por ahora. Pide en el mostrador.";
+    "Los pedidos en línea no están disponibles por ahora. Pide al personal.";
   await expect(
     page.getByRole("heading", { name: message, exact: true }),
   ).toBeVisible();
@@ -1750,7 +1751,9 @@ test("the online-ordering settings and table QR codes are hidden when public ord
   // "not available", every other /api/ordering route is 404
   // public_ordering_disabled.
   await page.route("**/api/account-config", (route) =>
-    route.fulfill({ json: { ...real, publicOrdering: { enabled: false } } }),
+    route.fulfill({
+      json: { ...real, publicOrdering: { enabled: false, switchedOff: true } },
+    }),
   );
   await page.route("**/api/ordering/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -1796,11 +1799,18 @@ test("the online-ordering settings and table QR codes are hidden when public ord
     .getByRole("button", { name: "Configuración", exact: true })
     .click();
   await read;
-  // PlanSettings reads the same configuration: once it says "próximamente"
-  // the switch has been applied on this page.
+  // PlanSettings reads the same configuration: a Pro restaurant is told the
+  // kill switch turned ordering off for now, never "próximamente"
+  // (PUBLIC-UX-4); once it says so the switch has been applied on this page.
   await expect(
-    page.getByText("Kiosco y pedidos QR: próximamente.", { exact: true }),
+    page.getByText(
+      "Pedidos QR y kiosco desactivados temporalmente por Green Monkey.",
+      { exact: true },
+    ),
   ).toBeVisible();
+  await expect(
+    page.getByText("Kiosco y pedidos QR: próximamente."),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("region", { name: "Pedidos en línea (QR y kiosco)" }),
   ).toHaveCount(0);

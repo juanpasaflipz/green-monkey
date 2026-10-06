@@ -147,6 +147,18 @@ export function publicOrderingEnabled(
   throw Error("public_ordering_flag_invalid");
 }
 
+/**
+ * The operator turned QR/kiosk ordering off on purpose (PUBLIC_ORDERING_ENABLED
+ * is exactly "false", the kill switch), as opposed to a deployment that never
+ * offered it (unset under the interim default). Plan settings then say it is
+ * turned off for now, not "coming soon" (PUBLIC-UX-4, LD-41). Pure.
+ */
+export function publicOrderingSwitchedOff(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.PUBLIC_ORDERING_ENABLED?.trim() === "false";
+}
+
 /** First middleware of /api/public: answers 404 before any token or rate limit when disabled. */
 export function publicOrderingGate(
   env: NodeJS.ProcessEnv = process.env,

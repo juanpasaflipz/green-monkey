@@ -437,10 +437,15 @@ keeps it off until public ordering's flag-flip commit (B4) is deployed.
   writes, pause) answer the same, while `GET /api/ordering/settings` and the
   inbox summary say "not available", so Configuración hides the online
   ordering panel, Mesas hides the table QR actions and Órdenes shows no
-  inbox; PlanSettings says "Kiosco y pedidos QR: próximamente.", the landing
-  does not advertise QR/kiosk, and a QR or kiosk code shows only "Los pedidos
-  en línea no están disponibles por ahora. Pide en el mostrador." (a legacy
-  signed path shows "Este código ya no funciona" without calling the API).
+  inbox; `/api/account-config` reports `publicOrdering: { enabled: false,
+  switchedOff: true }` and PlanSettings tells a Pro restaurant "Pedidos QR y
+  kiosco desactivados temporalmente por Green Monkey." (only a deployment
+  that never offered it, unset under the interim default, reads "Kiosco y
+  pedidos QR: próximamente.", PUBLIC-UX-4), the landing does not advertise
+  QR/kiosk, and a QR or kiosk code shows only "Los pedidos en línea no están
+  disponibles por ahora. Pide al personal." (neutral for table and takeaway
+  codes, PUBLIC-UX-3; a legacy signed path shows "Este código ya no
+  funciona" without calling the API).
 - Owner: account owns the flag, `publicOrderingEnabled()`,
   `publicOrderingGate()` and the error code; public ordering imports them
   (`server/public-ordering.ts`, `server/routes/public-ordering.ts`) and keeps

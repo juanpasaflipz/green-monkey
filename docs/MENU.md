@@ -140,7 +140,7 @@ payment first). There is no online card payment. `PUBLIC_ORDERING_ENABLED`
 (account, 031) stays the kill switch: when it is false, `/api/public/*` and
 the staff ordering routes answer 404 `public_ordering_disabled` before any
 code or rate limit, staff screens hide the ordering panel, the table QR
-actions and the inbox, and a code shows diners only "Pide en el mostrador"
+actions and the inbox, and a code shows diners only "Pide al personal"
 ([account and legal](ACCOUNT_AND_LEGAL.md)). Unset, it is still false when
 `APP_ENV=production` and true elsewhere.
 

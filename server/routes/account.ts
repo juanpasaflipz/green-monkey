@@ -18,6 +18,7 @@ import {
 import { publicSaasTax, saasTaxConfig } from "../saas-tax.js";
 import {
   publicOrderingEnabled,
+  publicOrderingSwitchedOff,
   restaurantPrivacy,
   saveRestaurantPrivacy,
   setFreeSelectionMode,
@@ -91,7 +92,10 @@ const EXPORTS_PER_HOUR = 10;
 /** Web configuration, read once at startup (an invalid flag fails startup). */
 const legal = legalConfig(process.env);
 const saasTax = saasTaxConfig(process.env, "web");
-const publicOrdering = publicOrderingEnabled(process.env);
+const publicOrdering = {
+  enabled: publicOrderingEnabled(process.env),
+  switchedOff: publicOrderingSwitchedOff(process.env),
+};
 
 type OwnerFn<T> = (
   tx: Tx,
@@ -116,7 +120,7 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
       },
       support: legal.support,
       saasTax: publicSaasTax(saasTax),
-      publicOrdering: { enabled: publicOrdering },
+      publicOrdering,
     });
   });
 
