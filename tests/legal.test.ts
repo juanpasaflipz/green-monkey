@@ -322,6 +322,15 @@ describe("legal documents", () => {
         "announced",
       );
       expect(acceptancePending("terms", accepted, current, before)).toBe(false);
+      // Nothing shows before announcedAt.
+      expect(
+        acceptanceStatus(
+          "terms",
+          accepted,
+          current,
+          legalInstant("2027-03-01") - 1,
+        ),
+      ).toBe("accepted");
       expect(acceptanceStatus("terms", accepted, current, after)).toBe(
         "required",
       );

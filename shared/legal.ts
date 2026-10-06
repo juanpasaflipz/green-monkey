@@ -275,9 +275,10 @@ export function acceptanceStatus(
       meta.previousRequiresAcceptanceSince !== null &&
       compareLegalVersions(row.version, meta.previousRequiresAcceptanceSince) <
         0;
-    return missedEarlier || now >= legalInstant(meta.effectiveFrom)
-      ? "required"
-      : "announced";
+    if (missedEarlier || now >= legalInstant(meta.effectiveFrom))
+      return "required";
+    // The banner starts at announcedAt (LEGAL-3); before it nothing changes.
+    return now >= legalInstant(meta.announcedAt) ? "announced" : "accepted";
   }
   if (row.entityHash !== current.entityHash) return "entity_updated";
   if (compareLegalVersions(row.version, meta.version) < 0) return "updated";

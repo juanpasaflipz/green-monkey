@@ -2792,7 +2792,8 @@ try {
         requiresAcceptanceSince: "2099-01-01",
         previousVersion: original.version,
         previousRequiresAcceptanceSince: original.requiresAcceptanceSince,
-        announcedAt: day(0),
+        // Yesterday: robust to the UTC and Mexico City dates differing.
+        announcedAt: day(-1),
         effectiveFrom: day(20),
       });
       const before = await as(p, (tx) => legalState(tx, p.id, PUBLISHED));
