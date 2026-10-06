@@ -76,7 +76,7 @@ import {
   rfcKind,
 } from "../../shared/fiscal";
 import { conceptCentavos } from "../../server/cfdi/build";
-import { usoCfdiAllowed } from "../../server/cfdi/catalog";
+import { usoCfdiAllowed } from "../../shared/sat";
 import {
   cancelQuery,
   invoiceInput,

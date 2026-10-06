@@ -31,7 +31,7 @@ import {
   paymentFormFor,
   usoCfdiAllowed,
   type Receptor,
-} from "../server/cfdi/catalog";
+} from "../shared/cfdi";
 import { classifyFacturapiError } from "../server/cfdi/errors";
 import { FacturapiError } from "../server/cfdi/facturapi";
 import { invoiceInput } from "../server/cfdi/facturapi-schema";

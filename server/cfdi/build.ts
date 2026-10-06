@@ -40,7 +40,7 @@ import {
   usoCfdiAllowed,
   type CardForm,
   type Receptor,
-} from "./catalog.js";
+} from "../../shared/cfdi.js";
 import {
   invoiceInput,
   type FCustomerInput,
