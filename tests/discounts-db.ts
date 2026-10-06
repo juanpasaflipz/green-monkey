@@ -1198,7 +1198,7 @@ try {
   });
 
   await test("MON-4: item refund of an unserved unit appears on the KDS as cancelled, the station acknowledgement clears it and completes the round", async () => {
-    // On the second demo tenant: its KDS feed (oldest 200 open rounds) is not
+    // On the second demo tenant: its KDS feed (newest 200 open rounds) is not
     // crowded by the open rounds this suite leaves on the first one.
     const s2 = foreign;
     await run(s2, async (tx) => {

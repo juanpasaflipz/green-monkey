@@ -123,9 +123,13 @@ export type KitchenFeed =
       unchanged: false;
       serverTime: string;
       currentBusinessDate: string;
+      /** The newest KITCHEN_FEED_LIMIT open rounds, oldest first (LD-42). */
       rounds: KitchenRound[];
       recent: KitchenRecent[];
+      /** More open rounds exist than `rounds` carries; the oldest are left out. */
       truncated: boolean;
+      /** Open rounds of previous business days, hidden ones included (clear-stale). */
+      staleCount: number;
     };
 
 export const RECALL_WINDOW_MINUTES = 120;

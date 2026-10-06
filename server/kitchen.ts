@@ -67,7 +67,9 @@ export async function kitchenFeed(
   const station = q.station === "all" ? tx`` : tx`and r.station = ${q.station}`;
   // rounds_open serves this: the predicates stay literal. Rounds held for
   // offline review never reach the live KDS until a manager decides (offline 026).
-  const rounds =
+  // Past the cap the newest rounds stay (LD-42), so a restaurant that never
+  // bumps tickets still sees new orders; the screen lists them oldest first.
+  const newest =
     await tx`select r.id,r.order_id,r.number,r.station,r.state,r.seen_at,r.ready_at,r.created_at,r.note as round_note,
       o.number as order_number,o.name as call_name,o.mode,o.channel,o.note as order_note,
       o.created_at as order_created_at,o.business_date::text as business_date,o.service_version,
@@ -89,13 +91,27 @@ export async function kitchenFeed(
     join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id)
     left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id
     where r.state <> 'completed' and r.state <> 'offline_review' ${station}
-    order by r.created_at, r.id
+    order by r.created_at desc, r.id desc
     limit ${KITCHEN_FEED_LIMIT + 1}`;
+  const truncated = newest.length > KITCHEN_FEED_LIMIT;
+  const rounds = newest.slice(0, KITCHEN_FEED_LIMIT).reverse();
   const currentBusinessDate = businessDate(
     serverTime,
     s.restaurant.timezone,
     s.restaurant.cutoff,
   );
+  // Open rounds of previous business days (what clear-stale retires). A
+  // truncated feed hides the oldest ones, so they are counted apart.
+  const staleCount = truncated
+    ? Number(
+        (
+          await tx`select count(*)::int as n from rounds r
+            join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id
+            where r.state <> 'completed' and r.state <> 'offline_review'
+              and o.business_date < ${currentBusinessDate}::date ${station}`
+        )[0].n,
+      )
+    : rounds.filter((r) => r.business_date < currentBusinessDate).length;
   // rounds_recent_completed serves this; only rounds with items left recall.
   // Previous business days stay out, so tickets a manager retired with
   // clear-stale never come back.
@@ -116,8 +132,9 @@ export async function kitchenFeed(
     unchanged: false,
     serverTime,
     currentBusinessDate,
-    truncated: rounds.length > KITCHEN_FEED_LIMIT,
-    rounds: rounds.slice(0, KITCHEN_FEED_LIMIT).map((r): KitchenRound => ({
+    truncated,
+    staleCount,
+    rounds: rounds.map((r): KitchenRound => ({
       id: r.id,
       orderId: r.order_id,
       orderNumber: r.order_number,

@@ -374,9 +374,13 @@ export function Kitchen({
 
   const rounds = feed?.rounds ?? [];
   const recent = feed?.recent ?? [];
-  const stale = rounds.filter(
-    (r) => feed && r.businessDate < feed.currentBusinessDate,
-  ).length;
+  // A truncated feed leaves the oldest rounds out, so the server counts the
+  // previous-day ones it hides (LD-42); otherwise the screen counts its own.
+  const stale = !feed
+    ? 0
+    : feed.truncated
+      ? feed.staleCount
+      : rounds.filter((r) => r.businessDate < feed.currentBusinessDate).length;
   const lastSuccess = poll.lastSuccess;
   const staleFeed = lastSuccess ? now - lastSuccess > STALE_MS : poll.failing;
   const soundBlocked = sound === "on" && audioState !== "running";
@@ -487,7 +491,7 @@ export function Kitchen({
         </div>
       )}
       {feed?.truncated && (
-        // SVC-K7: new tickets fall outside a truncated feed, so say so loudly.
+        // SVC-K7 / LD-42: the newest tickets stay; older ones are hidden.
         <p className="warning-panel" role="alert">
           {t("serviceKdsTruncated")}
         </p>

@@ -40,6 +40,7 @@ import {
 } from "../server/offline-sync.js";
 import type { Order, Session } from "../shared/domain.js";
 import {
+  KITCHEN_FEED_LIMIT,
   reconcileLostSend,
   type KitchenFeed,
   type OrderListResponse,
@@ -975,7 +976,7 @@ try {
       assert.match(
         await plan(
           (tx) => tx`explain (format json) select id from rounds r
-          where r.state <> 'completed' and r.state <> 'offline_review' order by r.created_at, r.id limit 201`,
+          where r.state <> 'completed' and r.state <> 'offline_review' order by r.created_at desc, r.id desc limit 201`,
         ),
         /rounds_open/,
       );
@@ -1238,6 +1239,98 @@ try {
       kitchen: "completed",
       bar: "completed",
     });
+  });
+
+  await test("KDS cap (LD-42): past 200 open rounds the feed carries the newest 200, oldest first, flags truncated and counts the previous-day rounds it hides", async () => {
+    // A restaurant of its own, so the rounds other checks leave open do not count.
+    const capTenant = randomUUID();
+    const capIds = {
+      owner: randomUUID(),
+      manager: randomUUID(),
+      kitchen: randomUUID(),
+    };
+    await admin`insert into restaurants(id,organization_id,name,currency,timezone,cutoff) values(${capTenant},${organizationId},'Servicio tope · Prueba','MXN','America/Mexico_City',240)`;
+    await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source) values(${capTenant},'active',now()+interval '14 days','fixture')`;
+    for (const [role, id] of Object.entries(capIds))
+      await admin`insert into employees(tenant_id,id,name,login,secret_hash,role) values(${capTenant},${id},${role + " tope"},${role},'fixture',${role})`;
+    await admin`insert into devices(tenant_id,id,name,token_hash) values(${capTenant},${deviceId},'Caja tope','fixture')`;
+    const taco = randomUUID(),
+      water = randomUUID();
+    for (const p of [
+      product(taco, "Taco tope", 3000),
+      product(water, "Agua tope", 2000, { station: "bar" }),
+    ])
+      await admin`insert into catalog(tenant_id,id,data) values(${capTenant},${p.id},${admin.json(p as any)})`;
+    const capOwner = session("owner", capIds.owner, capTenant);
+    const capManager = session("manager", capIds.manager, capTenant);
+    const capKitchen = session("kitchen", capIds.kitchen, capTenant);
+    const order = (productId = taco) =>
+      newOrder({ s: capOwner, lines: [{ productId }] });
+    // Oldest first: a kitchen ticket from yesterday, a bar ticket, then 200
+    // kitchen tickets of today (202 open rounds, 201 in the kitchen).
+    const yesterday = await order();
+    await asAdmin(
+      (
+        tx,
+      ) => tx`update orders set business_date=business_date-1,number=${700000 + Math.floor(Math.random() * 90000)}
+        where tenant_id=${capTenant} and id=${yesterday.id}`,
+    );
+    const bar = await order(water);
+    const today: Order[] = [];
+    for (let i = 0; i < KITCHEN_FEED_LIMIT; i++) today.push(await order());
+    const newest = today.at(-1)!;
+    const ascending = (f: { rounds: { createdAt: string }[] }) =>
+      f.rounds.every(
+        (r, i) =>
+          !i ||
+          Date.parse(f.rounds[i - 1].createdAt) <= Date.parse(r.createdAt),
+      );
+
+    const all = await full(capKitchen);
+    assert.equal(all.truncated, true);
+    assert.equal(all.rounds.length, KITCHEN_FEED_LIMIT);
+    assert.equal(all.rounds.at(-1)!.orderId, newest.id, "newest is shown");
+    assert.equal(all.rounds[0].orderId, today[0].id);
+    assert.ok(ascending(all), "displayed oldest first");
+    assert.ok(
+      !all.rounds.some((r) => [yesterday.id, bar.id].includes(r.orderId)),
+      "the oldest rounds are the hidden ones",
+    );
+    assert.equal(all.staleCount, 1, "the hidden previous-day round counts");
+
+    const kitchenOnly = await full(capKitchen, { station: "kitchen" });
+    assert.equal(kitchenOnly.truncated, true);
+    assert.equal(kitchenOnly.rounds.at(-1)!.orderId, newest.id);
+    assert.equal(kitchenOnly.staleCount, 1);
+    const barOnly = await full(capKitchen, { station: "bar" });
+    assert.equal(barOnly.truncated, false);
+    assert.deepEqual(
+      barOnly.rounds.map((r) => r.orderId),
+      [bar.id],
+    );
+    assert.equal(barOnly.staleCount, 0);
+
+    // The alert's pointer: clear-stale retires the hidden previous-day round.
+    const cleared = await run(capManager, (tx) =>
+      clearStaleRounds(tx, capManager, { operationId: randomUUID() }),
+    );
+    assert.equal(cleared.cleared, 1);
+    const afterClear = await full(capKitchen);
+    assert.equal(afterClear.truncated, true, "201 rounds of today are open");
+    assert.equal(afterClear.staleCount, 0);
+    assert.equal(afterClear.rounds.at(-1)!.orderId, newest.id);
+
+    // One delivered ticket brings the feed back under the cap: all shown.
+    const first = kitchenRound(today[0]);
+    await progress(first.id, "ready", capKitchen);
+    await progress(first.id, "completed", capKitchen);
+    const under = await full(capKitchen);
+    assert.equal(under.truncated, false);
+    assert.equal(under.rounds.length, KITCHEN_FEED_LIMIT);
+    assert.equal(under.rounds[0].orderId, bar.id);
+    assert.equal(under.rounds.at(-1)!.orderId, newest.id);
+    assert.ok(ascending(under));
+    assert.equal(under.staleCount, 0);
   });
 
   await test("a ticket with an unacknowledged void is not delivered until the kitchen acknowledges it", async () => {

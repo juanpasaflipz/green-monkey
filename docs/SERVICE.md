@@ -141,10 +141,13 @@ cached before the deploy keep working. A later contract change removes them.
   `voidLines:9>7` stays, E3 / MENU-INT-5). DB test "kitchen feed and progress
   do not deadlock" runs mixed concurrent bursts, and fiscal DB test "lock
   order" adds offline sync, settling voids, reassignments and payments.
-- The feed is bounded to the 200 oldest open rounds and excludes rounds held
-  for offline review. A truncated feed shows an alert that new tickets do not
-  appear until tickets are delivered and that a manager can retire the ones
-  from previous days.
+- The feed is bounded to the 200 newest open rounds, listed oldest first, and
+  excludes rounds held for offline review (LD-42: before W3-2 it kept the 200
+  oldest, so a restaurant that never delivered tickets stopped seeing new
+  orders). A truncated feed shows an alert that older tickets are hidden and
+  that a manager can retire the ones from previous days with "Retirar tickets
+  de días anteriores"; the feed's `staleCount` counts every open previous-day
+  round, hidden ones included, so that action stays available at the cap.
 - Tickets show the order note, round note and line notes (allergy notes are
   emphasized), every modifier, voided quantities and pending cancellations.
 - New tickets get a highlight, an aria-live announcement and, after a tap on
