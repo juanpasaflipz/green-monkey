@@ -854,7 +854,15 @@ DB test 21 runs this block exactly as written, as `gm_migrator`:
     a `finally` (LD-P9). `public-ordering.spec` and `core.spec` also run that
     cleanup from an `afterEach`, for a test that times out before its
     `finally`.
-  - Evidence: `docs/evidence/public-*.png`.
+  - The table-QR end-to-end test (the diner at 390 px, the inbox accept)
+    and the pay-first kiosk test (the 1024 px kiosk, the inbox charge) are
+    tagged `@cross`, so CI also runs them on the `webkit-ipad` project:
+    iPad POS terminals and every iPhone diner run WebKit (PUBLIC-UX-7). As
+    in `offline.spec`, the WebKit project drops only CSP's
+    `upgrade-insecure-requests` and the login cookies' `Secure` attribute
+    against a plain-HTTP compiled server, and it reads the shown link
+    instead of the clipboard (WebKit has no clipboard permission to grant).
+  - Evidence: `docs/evidence/public-*.png`, from the Chromium run only.
 
 ## Phase B: what is still to do
 

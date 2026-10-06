@@ -49,6 +49,59 @@ async function axe(page: Page) {
 const noHorizontalScroll = (page: Page) =>
   page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
 
+// PUBLIC-UX-7: the table-QR and pay-first kiosk tests are tagged @cross, so CI
+// also runs them on the webkit-ipad project (iPad POS terminals and every
+// iPhone diner run WebKit). As in offline.spec: against a local plain-HTTP
+// compiled server, Chromium treats loopback as secure but WebKit does not (it
+// upgrades every subresource under CSP upgrade-insecure-requests and refuses
+// Secure cookies), so the WebKit project drops only that directive and the
+// Secure attribute of the login cookies; every other header is unchanged.
+test.beforeEach(async ({ context, browserName, baseURL }) => {
+  if (browserName !== "webkit" || !baseURL?.startsWith("http:")) return;
+  await context.route("**/*", async (route) => {
+    const request = route.request();
+    const login = new URL(request.url()).pathname === "/api/login";
+    if (request.resourceType() !== "document" && !login)
+      return route.fallback();
+    const response = await route.fetch();
+    const headers = response.headers();
+    if (headers["content-security-policy"])
+      headers["content-security-policy"] = headers["content-security-policy"]
+        .split(";")
+        .filter((part) => part.trim() !== "upgrade-insecure-requests")
+        .join(";");
+    const cookies = response
+      .headersArray()
+      .filter((header) => header.name.toLowerCase() === "set-cookie")
+      .map((header) => {
+        const [pair, ...attributes] = header.value.split(";");
+        const split = pair!.indexOf("=");
+        const maxAge = attributes
+          .map((a) => a.trim().match(/^max-age=(\d+)$/i)?.[1])
+          .find(Boolean);
+        return {
+          name: pair!.slice(0, split).trim(),
+          value: pair!.slice(split + 1).trim(),
+          url: new URL(request.url()).origin,
+          httpOnly: true,
+          sameSite: "Strict" as const,
+          expires: maxAge ? Math.floor(Date.now() / 1000) + Number(maxAge) : -1,
+        };
+      });
+    if (cookies.length) await context.addCookies(cookies);
+    delete headers["set-cookie"];
+    await route.fulfill({ response, headers });
+  });
+});
+/** docs/evidence comes from the Chromium run only (the @cross tests run twice). */
+async function evidence(
+  target: { screenshot(o: { path: string }): Promise<unknown> },
+  path: string,
+) {
+  if (test.info().project.name === "chromium")
+    await target.screenshot({ path });
+}
+
 type Table = { id: string; name: string; version: number };
 type Link = {
   id: string;
@@ -314,11 +367,14 @@ async function sendOrder(customer: Page, name: string) {
     .click();
 }
 
-test("table QR end to end: create and print the code, the diner orders, staff accept from Órdenes, the kitchen gets it and the diner follows it", async ({
+test("table QR end to end: create and print the code, the diner orders, staff accept from Órdenes, the kitchen gets it and the diner follows it @cross", async ({
   page,
   context,
+  browserName,
 }) => {
-  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  // WebKit has no clipboard permissions to grant: there the shown link is used.
+  if (browserName === "chromium")
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await login(page);
   await withFixture(page, async (f) => {
     const [mesa] = await f.makeTables();
@@ -348,7 +404,7 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     );
     await page.setViewportSize({ width: 1024, height: 768 });
     await axe(page);
-    await page.screenshot({ path: "docs/evidence/public-table-qr-1024.png" });
+    await evidence(page, "docs/evidence/public-table-qr-1024.png");
     await page.setViewportSize({ width: 1440, height: 900 });
     await stubPrint(page);
     await dialog.getByRole("button", { name: "Imprimir", exact: true }).click();
@@ -358,9 +414,14 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     expect(
       await page.evaluate(() => (window as any).__printed[0] as string),
     ).toContain("Escanea para ver el menú y pedir");
-    await dialog.getByRole("button", { name: "Copiar enlace" }).click();
-    const url = await page.evaluate(() => navigator.clipboard.readText());
+    const url = await dialog.getByLabel("Enlace").inputValue();
     expect(url).toMatch(/\/qr#[A-Za-z0-9_-]{22}$/);
+    if (browserName === "chromium") {
+      await dialog.getByRole("button", { name: "Copiar enlace" }).click();
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+        url,
+      );
+    }
     await dialog.getByRole("button", { name: "Cerrar" }).click();
     const links = await call(page, "/ordering/links");
     f.links.push(
@@ -426,9 +487,7 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     await customer.setViewportSize({ width: 390, height: 844 });
     expect(await noHorizontalScroll(customer)).toBe(true);
     await axe(customer);
-    await customer.screenshot({
-      path: "docs/evidence/public-diner-menu-390.png",
-    });
+    await evidence(customer, "docs/evidence/public-diner-menu-390.png");
     await customer.setViewportSize({ width: 768, height: 1024 });
     await axe(customer);
     await addTaco(customer);
@@ -452,7 +511,7 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     await expect(head).toHaveAttribute("role", "status");
     await customer.setViewportSize({ width: 390, height: 844 });
     await axe(customer);
-    await customer.screenshot({ path: "docs/evidence/public-status-390.png" });
+    await evidence(customer, "docs/evidence/public-status-390.png");
 
     // Nothing reached the kitchen.
     const kitchen = await call(page, "/kitchen");
@@ -484,7 +543,7 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     await expect(card).toContainText(`QR ${f.id}`);
     await page.setViewportSize({ width: 1024, height: 768 });
     await axe(page);
-    await page.screenshot({ path: "docs/evidence/public-inbox-1024.png" });
+    await evidence(page, "docs/evidence/public-inbox-1024.png");
     await page.setViewportSize({ width: 1440, height: 900 });
     await axe(page);
     await card
@@ -714,7 +773,7 @@ test("reject and restore: the diner sees the reason and gets the cart back", asy
   });
 });
 
-test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges before the kitchen gets it", async ({
+test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges before the kitchen gets it @cross", async ({
   page,
   context,
 }) => {
@@ -753,7 +812,7 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     f.links.push(...kioskIds);
     await page.setViewportSize({ width: 1440, height: 900 });
     await axe(page);
-    await panel.screenshot({ path: "docs/evidence/public-settings-1440.png" });
+    await evidence(panel, "docs/evidence/public-settings-1440.png");
 
     const kiosk = await context.newPage();
     await kiosk.clock.install();
@@ -815,9 +874,7 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     );
     expect(await kiosk.locator("a[href]").count()).toBe(0);
     await axe(kiosk);
-    await kiosk.screenshot({
-      path: "docs/evidence/public-kiosk-done-1024.png",
-    });
+    await evidence(kiosk, "docs/evidence/public-kiosk-done-1024.png");
     await kiosk.clock.fastForward(20_000);
     await expect(code).toHaveCount(0);
     await expect(
