@@ -34,9 +34,9 @@
  *   order: async … }` → appliers.order); class methods (Class.method); top-level
  *   `X.y = …function…` assignments; route registrations (top level and inside
  *   register/registerPreAuth bodies, named "<verb> <path>").
- * - Calls: an identifier resolved to a top-level function, const or import (aliases and
- *   re-exports followed; a namespace import's `ns.fn()`), expanded in place. A builtin
- *   imported under another name fails the ratchet.
+ * - Calls: an identifier resolved to a top-level function, const or import (aliases,
+ *   re-exports and default exports followed; a namespace import's `ns.fn()`), expanded
+ *   in place. A builtin imported under another name fails the ratchet.
  *
  * What it does NOT see (DB tests stay the dynamic guard, with tests/db-retries.ts):
  * calls through object properties or callbacks passed around (appliers[kind](…)), SQL
@@ -318,6 +318,8 @@ type FileInfo = {
   imports: Map<string, [string, string]>;
   reexports: { from: string; names: Map<string, string> | "*" }[];
   aliasedBuiltins: string[];
+  /** The local callable a named default export points at (`export default fn`). */
+  defaultExport?: string;
 };
 
 /** A relative import resolved within the scanned files ("./x.js" → "<dir>/x.ts"). */
@@ -547,6 +549,21 @@ export function scanFile(
               `${fileName}: ${exported} as ${el.name.text}`,
             );
         }
+    } else if (
+      ts.isExportDeclaration(statement) &&
+      !statement.moduleSpecifier &&
+      statement.exportClause &&
+      ts.isNamedExports(statement.exportClause)
+    ) {
+      // export { fn as default }
+      for (const el of statement.exportClause.elements)
+        if (el.name.text === "default")
+          info.defaultExport = (el.propertyName ?? el.name).text;
+    } else if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+      // export default fn; export default async (tx) => …
+      const e = statement.expression;
+      if (ts.isIdentifier(e)) info.defaultExport = e.text;
+      else if (containsFunction(e)) add("default", e, "default");
     } else if (ts.isExportDeclaration(statement) && statement.moduleSpecifier) {
       const target = resolveModule(
         fileName,
@@ -574,6 +591,14 @@ export function scanFile(
       }
     } else if (ts.isFunctionDeclaration(statement) && statement.body) {
       const name = statement.name?.text ?? "default";
+      // export default function fn(…): importers ask for "default".
+      if (
+        name !== "default" &&
+        statement.modifiers?.some(
+          (m) => m.kind === ts.SyntaxKind.DefaultKeyword,
+        )
+      )
+        info.defaultExport = name;
       // One unit per route registration in the body (every request is its own
       // transaction), the rest as the function's unit. register/registerPreAuth
       // bodies hold nothing but registrations.
@@ -656,6 +681,8 @@ export function program(
     if (own) return own;
     const info = infos.get(file);
     if (!info) return null;
+    if (name === "default" && info.defaultExport)
+      return exported(file, info.defaultExport, depth + 1);
     for (const r of info.reexports) {
       if (r.names === "*") {
         const hit = exported(r.from, name, depth + 1);

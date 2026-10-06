@@ -43,30 +43,33 @@ const PERMANENT: Record<string, string> = {
   "server/offline-sync.ts#applySale:12>7": "E4",
   "server/offline-tables.ts#appliers.order:12>7": "E4",
   "server/offline-tables.ts#appliers.round:12>7": "E4",
-  // E5: a refresh that cannot issue. createOrder's (nothing is paid at creation) and
+  // E5 (proposed by the platform hardening; awaiting the lead's record, PLAT-HR-2): a
+  // refresh that cannot issue. createOrder's (nothing is paid at creation) and
   // applyRound's (a check that takes rounds is not paid: LD-15 fiscal Q2) take no folio
   // lock; what follows them is the order row this transaction inserted (applySale), the
-  // drawer and the kitchen feed.
-  "server/orders.ts#addRound:12>10": "E5",
-  "server/offline-sync.ts#applySale:12>11": "E5",
+  // drawer and the kitchen feed. addRound keeps the feed after applyRound as fiscal's
+  // spec §4.4 sets it (moving it earlier would put the feed before stock).
+  "server/orders.ts#addRound:12>10": "E5 (proposed)",
+  "server/offline-sync.ts#applySale:12>11": "E5 (proposed)",
   "server/offline-sync.ts#applySale:12>5":
-    "E5 (and the row was inserted by this transaction)",
-  // E6: financial recovery after a target lookup. Recovery's new order takes an order
-  // number (LO-4) after the lookup locked a cancelled online order (reconcileSale) or
-  // nothing (an unresolvable target); no transaction locks order_numbers and then an
-  // existing order.
-  "server/offline-sync.ts#reconcileSale:5>4": "E6",
-  "server/offline-tables.ts#reconcilers.payment:5>4": "E6",
+    "E5 (proposed; the row was inserted by this transaction)",
+  // E6 (proposed, as E5): financial recovery after a target lookup. Recovery's new order
+  // takes an order number (LO-4) after the lookup locked a cancelled online order
+  // (reconcileSale) or nothing (an unresolvable target); no transaction locks
+  // order_numbers and then an existing order.
+  "server/offline-sync.ts#reconcileSale:5>4": "E6 (proposed)",
+  "server/offline-tables.ts#reconcilers.payment:5>4": "E6 (proposed)",
   // LO-R5: nested operation keys, fresh or the key of the record the command acts on.
   "server/checks.ts#recordSettlement:5>1":
     "LO-R5 fresh key (recordPayment(randomUUID()))",
   "server/offline-sync.ts#applySale:12>1": "LO-R5 fresh key (newTender)",
   "server/offline-tables.ts#appliers.payment:5>1":
     "LO-R5 fresh key (newTender)",
-  // The nested once() re-takes restaurants FOR SHARE, which the sync caller already
-  // holds (evaluateEvidence); the unit alone does not show that.
+  // LO-R1 (a free re-lock): the nested once() re-takes restaurants FOR SHARE, which the
+  // caller already holds (syncOfflineRecord's own once(), kind offline_sync); the unit
+  // alone does not show its caller.
   "server/offline-tables.ts#appliers.payment:5>2":
-    "LO-R5 (restaurants held by syncOfflineRecord)",
+    "LO-R1 re-lock (restaurants FOR SHARE held by syncOfflineRecord's once())",
   "server/offline-attempts.ts#resolvePaymentAttempt:2>1":
     "LO-R5 the attempt's own payment key",
   "server/offline-sync.ts#archiveOfflineRecord:2>1":
@@ -74,7 +77,7 @@ const PERMANENT: Record<string, string> = {
   "server/offline-sync.ts#resolveOrCreateOrder:3>1":
     "LO-R5 createOrder(order.operationId)",
   "server/offline-sync.ts#resolveOrCreateOrder:3>2":
-    "LO-R5 (restaurants held by syncOfflineRecord)",
+    "LO-R1 re-lock (restaurants FOR SHARE held by syncOfflineRecord's once())",
   "server/offline-sync.ts#reconcileSale:5>1":
     "LO-R5 financialRecovery re-takes the draft's order key reconcileSale took first",
   "server/offline-tables.ts#reconcilers.payment:5>1":
@@ -285,6 +288,48 @@ describe("the scanner finds what the rules forbid (fixtures)", () => {
       "server/commands.ts#viaBarrel:11>10",
       "server/commands.ts#viaNamespace:11>9",
       "server/commands.ts#wrapped:11>5",
+    ]);
+  });
+
+  it("calls through default imports are followed: export default function, export default <name>, export { fn as default } and an anonymous default", () => {
+    const found = scan({
+      "server/a.ts": `
+        export default async function closeIt(tx) {
+          await tx\`update cash_sessions set closed_at=now() where id=1\`;
+        }
+      `,
+      "server/b.ts": `
+        const run = async (tx, s) => { await drawer(tx, s); };
+        export default run;
+      `,
+      "server/c.ts": `
+        async function feedIt(tx, s) { await bumpKitchenFeed(tx, s); }
+        export { feedIt as default };
+      `,
+      "server/d.ts": `export default async (tx, s) => { await refreshCheckState(tx, s, 1); };`,
+      "server/e.ts": `export { default as closeAgain } from "./a.js";`,
+      "server/use.ts": `
+        import closeIt from "./a.js";
+        import run from "./b.js";
+        import feed from "./c.js";
+        import issue from "./d.js";
+        import { closeAgain } from "./e.js";
+        import { default as named } from "./b.js";
+        export async function viaDefault(tx, s) { await closeIt(tx); await bumpKitchenFeed(tx, s); }
+        export async function viaDefaultConst(tx, s) { await run(tx, s); await stock(tx, s, x); }
+        export async function viaExportAs(tx, s) { await feed(tx, s); await lockStockItems(tx, ids); }
+        export async function viaAnonymous(tx, s) { await issue(tx, s); await drawer(tx, s); }
+        export async function viaReexport(tx, s) { await closeAgain(tx); await bumpKitchenFeed(tx, s); }
+        export async function viaNamedDefault(tx, s) { await named(tx, s); await bumpKitchenFeed(tx, s); }
+      `,
+    });
+    expect(found).toEqual([
+      "server/use.ts#viaAnonymous:12>11",
+      "server/use.ts#viaDefault:11>10",
+      "server/use.ts#viaDefaultConst:11>9",
+      "server/use.ts#viaExportAs:10>9",
+      "server/use.ts#viaNamedDefault:11>10",
+      "server/use.ts#viaReexport:11>10",
     ]);
   });
 

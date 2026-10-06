@@ -368,8 +368,8 @@ and, from 027, the fiscal folio counter last.
 
 A sale takes order numbers → order → stock → rounds → feed inside `createOrder`,
 then `recordPayment` locks its own new order and the drawer, and the ledger row
-is written. Three sanctioned exceptions apply (ARCHITECTURE "Global lock
-order"). E4: sale, order and round sync then place the rounds they just created
+is written. One sanctioned and two proposed exceptions apply (ARCHITECTURE
+"Global lock order"; E5 and E6 await a lead decision). E4: sale, order and round sync then place the rounds they just created
 in kitchen review (`placeRoundsInOfflineReview`) after the drawer and, from
 027, after the folio counter. Only rows inserted by the same transaction are
 updated, so no other transaction can hold or wait for them; reordering is
