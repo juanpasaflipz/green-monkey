@@ -481,6 +481,35 @@ invitation normally.
   Without it those 14 tests fail on the closed signup, not on a product bug.
   The DB, HTTP and drain suites do not need it (account-http starts its own
   servers with and without the set).
+- **Acceptance rebind: signup has a third required box (LD-32 UX-3; for the
+  lead, `specs/acceptance.md` v1.1 A1.4, and B1.1 through it).** The v1.1
+  rebind (LD-34) predates UX-3, so A1.4 still expects "Crear restaurante
+  gratis" to enable after two boxes. Since UX-3 the express consent for
+  billing data is its own required checkbox wherever a person becomes the
+  primary owner (signup and transfer; `LegalAcceptance`, text
+  `BILLING_CONSENT` in `shared/legal/privacy.ts`), and the button stays
+  disabled until all three are checked. A1.4 becomes: assert "Crear
+  restaurante gratis" is disabled; check "Acepto los Términos del servicio y
+  el Contrato de encargo de datos de mi restaurante." and it stays disabled;
+  check "Leí el Aviso de privacidad." and it stays disabled; check "Consiento
+  expresamente el tratamiento de mis datos financieros y patrimoniales para
+  facturar la suscripción de mi restaurante, como explica el Aviso de
+  privacidad." and it becomes enabled; tap it. Find each box with
+  `getByRole("checkbox", { name, exact: true })`, as
+  `tests/browser/account.spec.ts` does. B1.1 repeats A1.2–A1.5 and inherits
+  the change. On the API, while the documents are published every signup
+  (`POST /api/auth/account/signup`) and every transfer acceptance
+  (`POST /api/auth/account-center/transfers/accept`) must carry
+  `legalAccepted.billingConsent` set to the privacy notice's version (the
+  `legal.documents.privacy.version` that `/api/account-config` serves).
+  Without it the server answers `428 legal_acceptance_required`; with it the
+  consent is recorded as its own `billing_consent` evidence row.
+  `tests/browser/account-fixtures.ts` (`CURRENT_ACCEPTANCE`),
+  `tests/staging-legal.ts` (`signupLegal`, which every staging runner
+  spreads) and account-db already send it. Any other harness or track
+  fixture that signs up or accepts a transfer under a published set must add
+  it. Invitations do not ask for the consent. `tests/legal-fixtures.test.ts`
+  keeps this note's three labels equal to what the signup form renders.
 - **Load smoke (LD-15 Q8, LD-32 OPS-3): done.** `scripts/load/seed-load.ts`
   seeds every load restaurant as a Free location on Pro (automatic Free
   slots) with cashiers allowed to close their drawers, three extra cashiers

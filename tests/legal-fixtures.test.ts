@@ -12,12 +12,24 @@
  *    a local .env with the published set cannot turn a draft-document fixture
  *    into legal_acceptance_required. A static scan with the TypeScript
  *    compiler API (parse only).
+ * 3. The acceptance hand-off (ACC-FIN-1): the merge note names the signup
+ *    form's three boxes exactly, and every HTTP signup fixture sends the
+ *    billing consent (UX-3) that a published set requires.
  */
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import ts from "typescript";
+import {
+  billingConsentEvidence,
+  legalConfig,
+  legalDocumentsSummary,
+  signupOpen,
+} from "../server/legal";
+import { BILLING_CONSENT } from "../shared/legal";
+import { strings } from "../src/i18n";
 import { LEGAL_CI_ENV } from "./fixtures/legal-ci";
+import { signupLegal } from "./staging-legal";
 
 const read = (path: string) => readFileSync(path, "utf8");
 const expected: Record<string, string> = { ...LEGAL_CI_ENV };
@@ -164,5 +176,63 @@ describe("fixtures pass an explicit legal configuration (ACC-2)", () => {
     }
     expect(calls).toBeGreaterThan(50);
     expect(implicit).toEqual([]);
+  });
+});
+
+describe("the acceptance hand-off for the billing consent (ACC-FIN-1, LD-32 UX-3)", () => {
+  const flat = (text: string) => text.replace(/\s+/g, " ");
+
+  it("the merge note names the signup form's three boxes exactly as it renders them", () => {
+    const notes = read("docs/ACCOUNT_AND_LEGAL.md")
+      .split("\n## Merge notes (integration)\n")[1]
+      .split("\n## ")[0];
+    const note = flat(notes)
+      .split(" - **")
+      .find((bullet) => bullet.startsWith("Acceptance rebind"));
+    expect(note, "Acceptance rebind merge note").toBeDefined();
+    // Signup renders terms+DPA, the privacy acknowledgment and the consent.
+    for (const label of [
+      strings.es.accountAcceptTermsDpa,
+      strings.es.accountAcknowledgePrivacy,
+      BILLING_CONSENT.es,
+    ])
+      expect(note).toContain(`"${label}"`);
+    expect(note).toContain("A1.4");
+    expect(note).toContain("legalAccepted.billingConsent");
+    expect(note).toContain("428 legal_acceptance_required");
+  });
+
+  it("signupLegal sends the consent a published set requires, and every HTTP signup fixture spreads it", async () => {
+    const published = legalConfig({ ...LEGAL_CI_ENV });
+    expect(published.status).toBe("published");
+    const documents = legalDocumentsSummary();
+    const fields = await signupLegal(async () => ({
+      legal: {
+        status: published.status,
+        signupOpen: signupOpen(published),
+        documents,
+      },
+    }));
+    expect(billingConsentEvidence(fields.legalAccepted, published)).toEqual({
+      document: "billing_consent",
+      version: documents.privacy.version,
+    });
+    const files = [
+      ...readdirSync("tests")
+        .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts"))
+        .map((f) => join("tests", f)),
+      ...readdirSync("tests/browser")
+        .filter((f) => f.endsWith(".ts"))
+        .map((f) => join("tests/browser", f)),
+      ...readdirSync("scripts", { recursive: true, encoding: "utf8" })
+        .filter((f) => /\.(ts|mjs)$/.test(f))
+        .map((f) => join("scripts", f)),
+    ];
+    const posting = files.filter((path) =>
+      read(path).includes("/api/auth/account/signup"),
+    );
+    expect(posting.length).toBeGreaterThanOrEqual(4);
+    for (const path of posting)
+      expect(read(path), path).toMatch(/\.\.\.\(await signupLegal\(/);
   });
 });
