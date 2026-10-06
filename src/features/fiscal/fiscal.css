@@ -1,0 +1,107 @@
+/* Fiscal (027): the fiscal blocks of the printed ticket and the Settings panels. No fixed
+   widths: text wraps at 48 mm (58 mm paper) and the print font comes from .print-doc. */
+.fiscal-header,
+.fiscal-footer {
+  text-align: center;
+  margin: 6px 0;
+}
+.fiscal-header p,
+.fiscal-footer p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.fiscal-folio {
+  font-weight: 700;
+  font-size: 1.1em;
+}
+.fiscal-strong {
+  font-weight: 700;
+}
+.fiscal-status {
+  font-style: italic;
+}
+.fiscal-taxes {
+  text-align: left;
+  border-top: 1px dashed currentColor;
+  padding-top: 4px;
+  margin-bottom: 4px;
+}
+.fiscal-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5em;
+}
+.fiscal-row > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.fiscal-amount {
+  white-space: nowrap;
+}
+@media print {
+  .fiscal-header,
+  .fiscal-footer,
+  .fiscal-taxes {
+    color: #000;
+  }
+}
+
+/* Settings: "Datos fiscales" and "Registro de tickets". */
+.fiscal-settings .fiscal-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.fiscal-settings fieldset {
+  min-width: 0;
+}
+.fiscal-settings .field input,
+.fiscal-settings .field select {
+  max-width: 100%;
+}
+.fiscal-field-hint {
+  margin: -4px 0 8px;
+}
+.fiscal-warning {
+  color: var(--warning);
+}
+.fiscal-register {
+  margin-top: 16px;
+}
+.fiscal-register summary {
+  cursor: pointer;
+  font-weight: 700;
+  padding: 8px 0;
+}
+.fiscal-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.fiscal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.fiscal-table th,
+.fiscal-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.fiscal-table .num {
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.fiscal-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: flex-end;
+}
+.fiscal-filters .field {
+  margin: 0;
+  min-width: 140px;
+}
