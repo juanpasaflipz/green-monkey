@@ -101,7 +101,10 @@ export function DrawerCorteDocument({
         name={doc.restaurant.name}
         title={title}
         flag={
-          doc.printNumber !== null && doc.printNumber > 1
+          // A corte Z or count slip describes a closed drawer, so its second print is a copy
+          // (spec §2.6.2). Every corte X is a new partial reading with new figures, never a
+          // reprint, even though its prints are numbered too (RPT-R20).
+          z && doc.printNumber !== null && doc.printNumber > 1
             ? fill(t.reportsDocReprint, { n: doc.printNumber })
             : undefined
         }

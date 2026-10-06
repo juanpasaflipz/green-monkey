@@ -136,8 +136,9 @@ offline.
   and a print in between. A stored, serialized Z counter would remove it (a later expand
   migration, not in 029). Every print is recorded in `report_prints`, one sequence per document: the corte X,
   the corte Z, the blind count slip (kind `count_slip`) and the corte del día. The second
-  print of a document says "REIMPRESIÓN 2". A cashier's count slip and the manager's corte Z
-  of the same drawer are different documents, so the manager's first Z is print 1, and only
+  print of a corte Z, count slip or corte del día says "REIMPRESIÓN 2"; a corte X never
+  does, because each one is a new partial reading with new figures (RPT-R20). A cashier's
+  count slip and the manager's corte Z of the same drawer are different documents, so the manager's first Z is print 1, and only
   reprints of the full Z are audited as `reports.corte_z.reprinted` and listed as
   `corte_reprint` exceptions (slips are audited as `reports.count_slip.printed`). Prints of
   one document serialize on the advisory key `tenant:report-print:kind:subject`, class 926

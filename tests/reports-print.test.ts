@@ -553,6 +553,44 @@ describe("corte documents (FIT-10)", () => {
     expect(x).toContain("Lectura parcial: la caja sigue abierta.");
     expect(x).not.toContain("Entrega");
   });
+
+  it("RPT-R20: a second corte X is a new reading, not a reprint; a second count slip is", () => {
+    const xDoc: CorteDocument = {
+      ...fullZ,
+      kind: "x",
+      zNumber: null,
+      printNumber: 2,
+      drawer: {
+        ...fullZ.drawer,
+        closedAt: null,
+        closedByName: null,
+        countMode: null,
+      },
+      cash: { ...fullZ.cash!, counted: null, difference: null, reason: null },
+      lateCash: 0,
+    };
+    for (const locale of ["es", "en"] as const) {
+      const out = render(
+        createElement(DrawerCorteDocument, {
+          doc: { ...xDoc, printNumber: 3 },
+          locale,
+        }),
+      );
+      expect(out).not.toContain("REIMPRESIÓN");
+      expect(out).not.toContain("REPRINT");
+    }
+    expect(
+      render(createElement(DrawerCorteDocument, { doc: xDoc, locale: "es" })),
+    ).not.toContain("REIMPRESIÓN");
+    const slip = render(
+      createElement(DrawerCorteDocument, {
+        doc: { ...blindZ, printNumber: 2 },
+        locale: "es",
+      }),
+    );
+    expect(slip).toContain("COMPROBANTE DE CONTEO (CORTE CIEGO)");
+    expect(slip).toContain("REIMPRESIÓN 2");
+  });
 });
 
 // ---------------------------------------------------------------------------------------------
