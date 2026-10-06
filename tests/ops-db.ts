@@ -149,6 +149,50 @@ try {
   });
 
   await check(
+    "neither the runtime nor gm_jobs_worker holds DELETE, TRUNCATE, REFERENCES or TRIGGER on any table; every table gm_jobs_worker reaches forces RLS; its policies on jobs are SELECT only (PLATFORM-ROLES-5)",
+    async () => {
+      // TRUNCATE ignores row-level security entirely; REFERENCES and TRIGGER
+      // let a login lock or observe other tenants' rows. A future exception is
+      // listed here explicitly, never granted silently.
+      const allowed: string[] = [];
+      const held = await admin`
+        select r.role || ' ' || p.priv || ' ' || c.relname as grant
+        from pg_class c join pg_namespace n on n.oid=c.relnamespace
+        cross join (values ('gm_app'), ('gm_jobs_worker')) r(role)
+        cross join (values ('DELETE'), ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) p(priv)
+        where n.nspname='public' and c.relkind in ('r','p')
+          and to_regrole(r.role) is not null
+          and has_table_privilege(r.role, c.oid, p.priv)
+        order by 1`;
+      assert.deepEqual(
+        held.map((r) => r.grant).filter((g) => !allowed.includes(g)),
+        [],
+      );
+      const reach = await admin`
+        select c.relname, c.relrowsecurity and c.relforcerowsecurity as forced
+        from pg_class c join pg_namespace n on n.oid=c.relnamespace
+        where n.nspname='public' and c.relkind in ('r','p')
+          and has_any_column_privilege('gm_jobs_worker', c.oid, 'SELECT, INSERT, UPDATE')
+        order by 1`;
+      assert.ok(
+        reach.some((r) => r.relname === "jobs"),
+        "the worker reaches jobs",
+      );
+      assert.deepEqual(
+        reach.filter((r) => !r.forced).map((r) => r.relname),
+        [],
+      );
+      const policies = await admin`
+        select policyname, cmd from pg_policies
+        where schemaname='public' and tablename='jobs' and 'gm_jobs_worker' = any(roles)`;
+      assert.deepEqual(
+        policies.filter((p) => p.cmd !== "SELECT").map((p) => p.policyname),
+        [],
+      );
+    },
+  );
+
+  await check(
     "tenant() sets the tenant and statement_timeout in one statement (OPS-7 regression)",
     async () => {
       const [inside] = await tenant(
@@ -350,6 +394,52 @@ try {
           checkRole(logins[name].sql),
           /Runtime role must not bypass RLS/,
         );
+    },
+  );
+
+  await check(
+    "checkRole and checkWorkerRole also refuse a login that can SET ROLE to a role with BYPASSRLS or SUPERUSER, or to a role that owns a table (PLATFORM-ROLES-2)",
+    async () => {
+      const tag = randomBytes(4).toString("hex");
+      const bypass = `gm_test_bypassing_${tag}`;
+      const owner = `gm_test_owning_${tag}`;
+      const table = `opstest_owned_by_role_${tag}`;
+      await admin.unsafe(`create role "${bypass}" nologin bypassrls`);
+      await admin.unsafe(`create role "${owner}" nologin`);
+      await admin.unsafe(`create table "${table}" (id int)`);
+      await admin.unsafe(`alter table "${table}" owner to "${owner}"`);
+      const reach = await disposableLogins(admin, runtime, {
+        viaBypass: [bypass],
+        viaOwner: [owner],
+        workerViaBypass: ["gm_jobs_worker", bypass],
+        workerViaOwner: ["gm_jobs_worker", owner],
+      });
+      try {
+        await rejects(
+          checkRole(reach.logins.viaBypass.sql),
+          /Runtime role must not bypass RLS/,
+        );
+        await rejects(
+          checkRole(reach.logins.viaOwner.sql),
+          /Runtime role must not own application tables/,
+        );
+        await rejects(
+          checkWorkerRole(reach.logins.workerViaBypass.sql),
+          /Worker role must be a gm_jobs_worker member without other privileges/,
+        );
+        await rejects(
+          checkWorkerRole(reach.logins.workerViaOwner.sql),
+          /Worker role must not own application tables/,
+        );
+        // The plain runtime and worker logins still pass.
+        await checkRole(logins.plain.sql);
+        await checkWorkerRole(logins.worker.sql);
+      } finally {
+        await reach.drop();
+        await admin.unsafe(`drop table if exists "${table}"`);
+        await admin.unsafe(`drop role if exists "${bypass}"`);
+        await admin.unsafe(`drop role if exists "${owner}"`);
+      }
     },
   );
 

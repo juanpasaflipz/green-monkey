@@ -80,16 +80,26 @@ type LoginFacts = {
   memberships: string[];
   owned: number;
 };
-/** Attributes, privileged memberships (direct or inherited) and owned tables of the connected login. */
+/**
+ * Attributes, privileged memberships (direct or inherited) and owned tables of the
+ * connected login. Attributes are not inherited, but a member can SET ROLE to any role it
+ * belongs to and use that role's SUPERUSER or BYPASSRLS, so the attribute flags cover every
+ * role the login is a member of, and owned tables count those of any such role
+ * (PLATFORM-ROLES-2).
+ */
 export async function loginFacts(
   sql: postgres.Sql,
 ): Promise<LoginFacts | undefined> {
   const [r] = await sql<LoginFacts[]>`
-    select rolsuper, rolbypassrls, rolcreaterole, rolcreatedb,
+    with reach as (
+      select * from pg_roles where pg_has_role(current_user, oid, 'member'))
+    select bool_or(rolsuper) as rolsuper, bool_or(rolbypassrls) as rolbypassrls,
+      bool_or(rolcreaterole) as rolcreaterole, bool_or(rolcreatedb) as rolcreatedb,
       coalesce((select array_agg(c order by c) from unnest(${PRIVILEGED_MEMBERSHIPS as string[]}::text[]) c
         where to_regrole(c) is not null and pg_has_role(current_user, to_regrole(c), 'member')), '{}') as memberships,
-      (select count(*)::int from pg_tables where schemaname='public' and tableowner=current_user) as owned
-    from pg_roles where rolname=current_user`;
+      (select count(*)::int from pg_tables where schemaname='public'
+        and pg_has_role(current_user, tableowner, 'member')) as owned
+    from reach having count(*) > 0`;
   return r;
 }
 
