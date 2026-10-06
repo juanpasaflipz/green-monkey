@@ -227,12 +227,37 @@ describe("kitchen cancellation chits (FIT-9)", () => {
     ...p,
   });
 
-  it("15. FIT-9: cancellationsFromVoid groups newly voided units by round and station", () => {
-    const before = order([
-      line({ id: "l1", round: 1, station: "kitchen", voidedUnits: [2] }),
-      line({ id: "l2", round: 1, station: "bar", name: L("Agua") }),
-      line({ id: "l3", round: 2, station: "kitchen", name: L("Pozole") }),
-    ]);
+  const lineVoid = (
+    p: Partial<NonNullable<Order["voids"]>[number]>,
+  ): NonNullable<Order["voids"]>[number] => ({
+    id: "v",
+    lineId: "l1",
+    quantity: 1,
+    amount: 4500,
+    reason: "Error de captura",
+    stockDisposition: "returned",
+    preparationState: "not_started",
+    actorName: "Ana",
+    approverName: "Mara",
+    createdAt: "2026-10-05T20:15:00.000Z",
+    kitchenPending: true,
+    ...p,
+  });
+
+  it("15. FIT-9: cancellationsFromVoid groups the command's kitchen-pending voids by round and station", () => {
+    // An earlier void of l1 (unit 2) is still pending in the kitchen: it is not reprinted.
+    const earlier = lineVoid({
+      id: "v0",
+      createdAt: "2026-10-05T20:00:00.000Z",
+    });
+    const before = order(
+      [
+        line({ id: "l1", round: 1, station: "kitchen", voidedUnits: [2] }),
+        line({ id: "l2", round: 1, station: "bar", name: L("Agua") }),
+        line({ id: "l3", round: 2, station: "kitchen", name: L("Pozole") }),
+      ],
+      { voids: [earlier] },
+    );
     const after = order(
       [
         line({
@@ -252,19 +277,13 @@ describe("kitchen cancellation chits (FIT-9)", () => {
       ],
       {
         voids: [
-          {
-            id: "v",
-            lineId: "l1",
-            quantity: 2,
-            amount: 9000,
-            reason: "Error de captura",
-            stockDisposition: "returned",
-            preparationState: "not_started",
-            actorName: "Ana",
-            approverName: "Mara",
-            createdAt: "2026-10-05T20:15:00.000Z",
-            kitchenPending: true,
-          },
+          earlier,
+          lineVoid({ id: "v1", lineId: "l1", quantity: 2, amount: 9000 }),
+          lineVoid({
+            id: "v2",
+            lineId: "l2",
+            createdAt: "2026-10-05T20:14:00.000Z",
+          }),
         ],
       },
     );
@@ -283,6 +302,50 @@ describe("kitchen cancellation chits (FIT-9)", () => {
       tableName: "M4",
     });
     expect(cancellationsFromVoid(after, after, "x")).toEqual([]);
+  });
+
+  it("15b. RPT-R12: a void of a completed (served) round prints no chit, as the KDS shows no pending void for it", () => {
+    const before = order([
+      line({ id: "l1", round: 1, station: "kitchen" }),
+      line({ id: "l2", round: 2, station: "bar", name: L("Agua") }),
+    ]);
+    const served = lineVoid({ id: "v1", lineId: "l1", kitchenPending: false });
+    const afterServed = order(
+      [
+        line({ id: "l1", round: 1, station: "kitchen", voidedUnits: [0] }),
+        line({ id: "l2", round: 2, station: "bar", name: L("Agua") }),
+      ],
+      { voids: [served] },
+    );
+    expect(cancellationsFromVoid(before, afterServed, "Ya servido")).toEqual(
+      [],
+    );
+    // One command voiding a served unit and an unserved one prints only the unserved one.
+    const afterMixed = order(
+      [
+        line({ id: "l1", round: 1, station: "kitchen", voidedUnits: [0] }),
+        line({
+          id: "l2",
+          round: 2,
+          station: "bar",
+          name: L("Agua"),
+          voidedUnits: [0, 1],
+        }),
+      ],
+      {
+        voids: [
+          served,
+          lineVoid({ id: "v2", lineId: "l2", quantity: 2, amount: 9000 }),
+        ],
+      },
+    );
+    expect(
+      cancellationsFromVoid(before, afterMixed, "Error").map((c) => [
+        c.round,
+        c.station,
+        c.lines.map((l) => [l.name.es, l.quantity]),
+      ]),
+    ).toEqual([[2, "bar", [["Agua", 2]]]]);
   });
 
   it("16. FIT-9: cancellationsFromRefund prints only kitchen-pending refund lines", () => {

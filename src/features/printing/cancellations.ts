@@ -81,8 +81,11 @@ function grouped<T extends LineGroup>(items: readonly T[]) {
 }
 
 /**
- * A selling device with "Imprimir comanda al enviar": after a void, the units newly voided on
- * each line (`after` minus `before`), one chit per (round, station).
+ * A selling device with "Imprimir comanda al enviar": after a void, the voids the command added
+ * (in `after.voids`, not in `before.voids`, on a line whose voided units grew) that the kitchen
+ * still has to cancel (`kitchenPending`), one chit per (round, station). A void of a completed
+ * round needs no kitchen acknowledgement (server/voids.ts), so it prints nothing, exactly as the
+ * KDS shows no pending void for it.
  */
 export function cancellationsFromVoid(
   before: Order,
@@ -92,24 +95,33 @@ export function cancellationsFromVoid(
   const voidedBefore = new Map(
     before.lines.map((l) => [l.id, l.voidedUnits?.length ?? 0]),
   );
-  const items = after.lines.flatMap((l) => {
-    const delta = (l.voidedUnits?.length ?? 0) - (voidedBefore.get(l.id) ?? 0);
-    return delta > 0
+  const grew = new Set(
+    after.lines
+      .filter(
+        (l) => (l.voidedUnits?.length ?? 0) > (voidedBefore.get(l.id) ?? 0),
+      )
+      .map((l) => l.id),
+  );
+  const known = new Set((before.voids ?? []).map((v) => v.id));
+  const fresh = (after.voids ?? []).filter(
+    (v) => !known.has(v.id) && grew.has(v.lineId),
+  );
+  const items = fresh.flatMap((v) => {
+    const line = after.lines.find((l) => l.id === v.lineId);
+    return v.kitchenPending && line && v.quantity > 0
       ? [
           {
-            round: l.round ?? 1,
-            station: l.station,
-            quantity: delta,
-            name: l.name,
-            optionNames: l.optionNames,
+            round: line.round ?? 1,
+            station: line.station,
+            quantity: v.quantity,
+            name: line.name,
+            optionNames: line.optionNames,
           },
         ]
       : [];
   });
-  const time =
-    (after.voids ?? []).map((v) => v.createdAt).filter(Boolean).length > 0
-      ? latest((after.voids ?? []).map((v) => v.createdAt).filter(Boolean))
-      : new Date().toISOString();
+  const times = fresh.map((v) => v.createdAt).filter(Boolean);
+  const time = times.length > 0 ? latest(times) : new Date().toISOString();
   return grouped(items).map((group) => ({
     kind: "void",
     label: "#" + after.number,
