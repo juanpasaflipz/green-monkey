@@ -1565,7 +1565,7 @@ try {
     assert.equal(auditRow.detail.count, repaired.issued);
   });
 
-  await test("fiscalSummary for a date range equals Σ ticket taxes − Σ refund adjustments per category", async () => {
+  await test("MON-6/FIT-7 (fiscal part): fiscalSummary for a date range equals Σ ticket taxes − Σ refund adjustments per category, by business date", async () => {
     const day = today();
     const summary = await run(managerA, (tx) =>
       fiscalSummary(tx, managerA, { from: day, to: day }),
