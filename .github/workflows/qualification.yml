@@ -46,6 +46,11 @@ jobs:
       DEMO_TENANT_ID: 10000000-0000-4000-8000-000000000001
       ACCESS_STEP_UP_SECONDS: "1800"
       ACCESS_IDLE_LOCK_DEFAULT_SECONDS: "0"
+      # account (031): DB suites and compiled servers without the legal set may
+      # still create restaurants (draft documents). Ignored when
+      # APP_ENV=production; the browser and account-http steps publish the
+      # fictional set below instead.
+      LEGAL_UNPUBLISHED_SIGNUP: allow
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -98,12 +103,37 @@ jobs:
         env:
           MIGRATION_DATABASE_URL: postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_dev
         run: npm run test:access-http
+      # Account's compiled-server checks (account-center terminal guard, the
+      # PUBLIC_ORDERING_ENABLED switch, /api/account-config, export headers and
+      # budget). The runner alone holds the fixture admin URL.
+      - name: Account HTTP checks
+        env:
+          MIGRATION_DATABASE_URL: postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_dev
+          # Fictional legal/support values (LD-3): plausible so the production-mode detector publishes them; never copied to Railway.
+          # Same literals as tests/fixtures/legal-ci.ts.
+          LEGAL_ENTITY_NAME: "Nopal Verde Software S.A. de C.V."
+          LEGAL_ENTITY_ADDRESS: "Calle Jacaranda 120, Col. Centro, 06000 Ciudad de México, CDMX"
+          LEGAL_PRIVACY_CONTACT_EMAIL: "privacidad@nopalverde.mx"
+          LEGAL_JURISDICTION: "Ciudad de México"
+          SUPPORT_EMAIL: "soporte@nopalverde.mx"
+          SUPPORT_PHONE: "+525512345678"
+          SUPPORT_HOURS: "Lun–Sáb 9:00–21:00 (hora del centro)"
+        run: npm run test:account-http
       - name: Graceful drain of the compiled web and worker
         run: npm run test:drain
       - run: npx playwright install --with-deps chromium webkit
       - name: Compiled browser acceptance (web + worker)
         env:
           WORKER_URL: http://127.0.0.1:3005
+          # Fictional legal/support values (LD-3): plausible so the production-mode detector publishes them; never copied to Railway.
+          # Same literals as tests/fixtures/legal-ci.ts.
+          LEGAL_ENTITY_NAME: "Nopal Verde Software S.A. de C.V."
+          LEGAL_ENTITY_ADDRESS: "Calle Jacaranda 120, Col. Centro, 06000 Ciudad de México, CDMX"
+          LEGAL_PRIVACY_CONTACT_EMAIL: "privacidad@nopalverde.mx"
+          LEGAL_JURISDICTION: "Ciudad de México"
+          SUPPORT_EMAIL: "soporte@nopalverde.mx"
+          SUPPORT_PHONE: "+525512345678"
+          SUPPORT_HOURS: "Lun–Sáb 9:00–21:00 (hora del centro)"
         run: |
           NODE_ENV=production node --import ./build/server/instrument.js build/server/index.js > /tmp/green-monkey-server.log 2>&1 &
           NODE_ENV=production WORKER_PORT=3005 DATABASE_URL= WORKER_DATABASE_URL=postgresql://gm_worker:local-only-worker@127.0.0.1:5432/green_monkey_dev npm run start:worker > /tmp/green-monkey-worker.log 2>&1 &
