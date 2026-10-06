@@ -2613,6 +2613,52 @@ try {
         tx`select count(*)::int as n from public_order_holds where tenant_id=${t.tenantId}`,
     );
     assert.equal(n.n, 1);
+    // Concurrent reuse (PUB-R4): two submits with one status key and
+    // different operationIds both pass the reuse check while this
+    // connection holds the link's cap lock (LO-3); the later insert loses on
+    // the unique key and answers 409, never a unique-violation 500.
+    const racing = await link(t, { kind: "counter", label: "Carrera" });
+    const key = newPublicToken();
+    const bodies = [
+      { ...(await body(t, [{ productId: t.p.taco }])), statusKey: key },
+      { ...(await body(t, [{ productId: t.p.taco }])), statusKey: key },
+    ];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const held = new Promise<void>((r) => (locked = r));
+    const holder = asAdmin(t.tenantId, async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-hold:'||${racing.id},0))`;
+      locked();
+      await gate;
+    });
+    await held;
+    const both = Promise.all(bodies.map((x) => pub.submit(racing.token, x)));
+    let waiting = 0;
+    for (let i = 0; i < 200 && waiting < 2; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      const [w] = await admin`select count(*)::int as n from pg_locks
+        where locktype='advisory' and not granted
+          and database=(select oid from pg_database where datname=current_database())`;
+      waiting = w.n;
+    }
+    release();
+    await holder;
+    const raced = await both;
+    assert.equal(waiting, 2, "both submits passed the reuse check");
+    assert.deepEqual(
+      raced.map((r) => [r.status, r.body.error ?? null]).sort(),
+      [
+        [200, null],
+        [409, "operation_conflict"],
+      ],
+    );
+    const [one] = await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`select count(*)::int as n from public_order_holds where status_key_hash=${statusHash(key)}`,
+    );
+    assert.equal(one.n, 1);
     const elsewhere = await link(b, { kind: "counter", label: "Otra" });
     const there = await pub.submit(elsewhere.token, {
       ...(await body(b, [{ productId: b.p.taco }])),

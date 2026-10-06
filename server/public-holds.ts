@@ -44,14 +44,20 @@ import {
 
 export { staffOnlineSql };
 
-/** Shell badge and banner: one indexed statement, no orders read (GAP-4). */
+/**
+ * Shell badge and banner: one indexed statement, no orders read (GAP-4).
+ * Expired holds stay 'pending', so live-hold queries also bound created_at to
+ * 2 hours: exact under public_order_holds_window (expires_at <= created_at +
+ * 2 h), and an index range however much history the tenant has.
+ */
 export async function inboxSummary(tx: Tx, s: Session): Promise<InboxSummary> {
   permit(s, operators);
   const [r] = await tx`select
       count(*) filter (where h.expires_at>now())::int as pending,
       min(h.created_at) filter (where h.expires_at>now()) as oldest_at,
       exists(select 1 from public_links where revoked_at is null) as active
-    from public_order_holds h where h.state='pending'`;
+    from public_order_holds h
+    where h.state='pending' and h.created_at>now()-interval '2 hours'`;
   return {
     available: true,
     active: r.active,
@@ -123,10 +129,11 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
     from public_order_holds h
     join public_links l on l.tenant_id=h.tenant_id and l.id=h.link_id
     left join dining_tables t on t.tenant_id=h.tenant_id and t.id=h.table_id
-    where h.state='pending' and h.expires_at>now()
+    where h.state='pending' and h.expires_at>now() and h.created_at>now()-interval '2 hours'
     order by h.created_at,h.id limit 100`;
   const [expired] = await tx`select count(*)::int as n from public_order_holds
-    where state='pending' and expires_at<=now() and expires_at>now()-interval '30 minutes'`;
+    where state='pending' and expires_at<=now() and expires_at>now()-interval '30 minutes'
+      and created_at>now()-interval '150 minutes'`;
   const tableIds = [
     ...new Set(rows.flatMap((r) => (r.table_id ? [r.table_id as string] : []))),
   ];

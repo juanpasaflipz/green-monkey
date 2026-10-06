@@ -96,7 +96,7 @@ const linkRows = (tx: Tx, where: ReturnType<Tx>) =>
       t.name as table_name,(t.archived_at is not null) as table_archived,e.name as created_by_name,
       (select max(h.created_at) from public_order_holds h where h.tenant_id=l.tenant_id and h.link_id=l.id) as last_hold_at,
       (select count(*)::int from public_order_holds h where h.tenant_id=l.tenant_id and h.link_id=l.id
-         and h.state='pending' and h.expires_at>now()) as pending_holds
+         and h.state='pending' and h.expires_at>now() and h.created_at>now()-interval '2 hours') as pending_holds
     from public_links l
     left join dining_tables t on t.tenant_id=l.tenant_id and t.id=l.table_id
     join employees e on e.tenant_id=l.tenant_id and e.id=l.created_by

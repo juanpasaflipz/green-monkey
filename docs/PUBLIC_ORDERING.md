@@ -49,6 +49,10 @@ Links never expire. Staff deactivate or replace them in one step.
 - Its states are `pending`, `accepted`, `rejected` and `cancelled`. A pending
   hold past `expires_at` reads as **expired**. That state is computed on
   read; no job sweeps holds.
+- Expired holds stay `pending` in the table, so every query for live holds
+  also filters `created_at > now() - 2 hours`. The `public_order_holds_window`
+  check (`expires_at <= created_at + 2 hours`) makes that filter exact, and it
+  keeps those queries to a bounded index range however much history builds up.
 
 Acceptance runs the unmodified `createOrder` (a new check) or `addRound` (a
 round on the table's open check) as the staff member who accepts. For
@@ -98,6 +102,9 @@ is closed.
 - **Submit.**
   - The submit is idempotent: the diner's `operationId` and status key are
     kept across retries.
+  - A status key already used by another order is `409 operation_conflict`.
+    That holds even when two submits race with one key: the later insert
+    loses on the unique key and gets the same 409, not a 500.
   - A network failure locks the cart with "No sabemos si tu pedido llegó." and
     **Reintentar**, which resends the identical body. Editing the cart starts
     a new order.

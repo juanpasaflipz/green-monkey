@@ -166,6 +166,9 @@ const restaurantOf = (tx: Tx) =>
   tx`(select json_build_object('name',r.name,'currency',r.currency,'timezone',r.timezone)
     from restaurants r where r.id=h.tenant_id) as restaurant`;
 
+/** 032's UNIQUE (tenant_id, status_key_hash), as Postgres names it. */
+const STATUS_KEY_UNIQUE = "public_order_holds_tenant_id_status_key_hash_key";
+
 const holdKind = (h: HoldRow): LinkKind =>
   h.table_id ? "table" : h.channel === "kiosk" ? "kiosk" : "counter";
 
@@ -295,7 +298,8 @@ export async function submitHold(
     throw new DomainError("public_order_limit", 429);
   // A soft restaurant cap, counted without a lock.
   const [tenantCount] =
-    await tx`select count(*)::int as n from public_order_holds where state='pending' and expires_at>now()`;
+    await tx`select count(*)::int as n from public_order_holds
+      where state='pending' and expires_at>now() and created_at>now()-interval '2 hours'`;
   if (tenantCount.n >= PUBLIC_LIMITS.tenantPending)
     throw new DomainError("public_ordering_busy", 429);
   if (c.table_id) {
@@ -336,7 +340,16 @@ export async function submitHold(
       ${date},${number.value},${c.channel},${c.table_id ? "dine_in" : "takeaway"},${c.table_id},${ordering.policy},
       ${p.name},${p.note},${tx.json(lines)},${tx.json(shown as never)},${total},${revision},${randomUUID()},
       now()+make_interval(mins=>${c.hold_minutes}))
-    returning *,false as expired`;
+    returning *,false as expired`.catch(
+    (e: { code?: string; constraint_name?: string }) => {
+      // Two submits with one status key but different operationIds both pass
+      // the reuse check above; the later insert loses on the unique key. That
+      // is the same reuse conflict, never a unique-violation 500 (§2.16).
+      if (e.code === "23505" && e.constraint_name === STATUS_KEY_UNIQUE)
+        throw new DomainError("operation_conflict", 409);
+      throw e;
+    },
+  );
   return holdView(tx, {
     ...hold,
     restaurant: { name: c.name, currency: c.currency, timezone: c.timezone },

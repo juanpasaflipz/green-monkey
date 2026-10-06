@@ -450,7 +450,7 @@ export async function tableOccupancy(
         'openRounds',k.open_rounds,'readyRounds',k.ready_rounds) order by o.created_at)
       filter (where o.id is not null),'[]'::jsonb) as checks,
       (select count(*)::int from public_order_holds h where h.tenant_id=t.tenant_id and h.table_id=t.id
-         and h.state='pending' and h.expires_at>now()) as pending_holds
+         and h.state='pending' and h.expires_at>now() and h.created_at>now()-interval '2 hours') as pending_holds
     from dining_tables t
     left join orders o on o.tenant_id=t.tenant_id and o.table_id=t.id and o.check_state <> 'closed'
     left join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id)

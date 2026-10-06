@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import {
   canonicalRequest,
@@ -299,5 +300,36 @@ describe("public ordering tokens and schemas (032)", () => {
     ]);
     publicOrderingGate({})({} as never, res as never, () => (passed = true));
     expect(passed).toBe(true);
+  });
+
+  it("14. every live-hold query bounds created_at to the 2-hour hold window", () => {
+    // Expired holds stay 'pending' forever (no sweeper, no DELETE), so a
+    // live-hold predicate without the created_at bound scans all history.
+    const files = [
+      "server/public-holds.ts",
+      "server/public-diner.ts",
+      "server/public-links.ts",
+      "server/checks.ts",
+      "server/floor.ts",
+    ];
+    let live = 0;
+    for (const file of files)
+      for (const chunk of readFileSync(file, "utf8").split("`")) {
+        const sql = chunk.replace(/\s+/g, "");
+        if (
+          !sql.includes("expires_at>now()") ||
+          !(
+            sql.includes("public_order_holds") ||
+            sql.includes("state='pending'")
+          )
+        )
+          continue;
+        live++;
+        expect(sql, `${file}: ${chunk.trim()}`).toMatch(
+          /created_at>now\(\)-interval'(2hours|150minutes)'/,
+        );
+      }
+    // summary, inbox and its expired count, submit's caps, links, occupancy, floor
+    expect(live).toBe(8);
   });
 });

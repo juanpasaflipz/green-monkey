@@ -82,7 +82,7 @@ export async function tablesWithOpenChecks(
     select h.table_id from public_order_holds h
     where h.table_id is not null
       ${tableIds ? tx`and h.table_id=any(${tx.array(tableIds)}::uuid[])` : tx``}
-      and h.state='pending' and h.expires_at>now()`;
+      and h.state='pending' and h.expires_at>now() and h.created_at>now()-interval '2 hours'`;
   return new Set(rows.map((r) => r.table_id as string));
 }
 
