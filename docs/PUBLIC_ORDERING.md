@@ -379,7 +379,12 @@ reserved connections have no `begin()`, so every deploy with 033 (and the
 grants hook) would have failed. The hook and the registry row now share one
 explicit `begin`/`commit` on the reserved connection
 (`server/ops/schema.ts`). DB test 1 runs the real runner with the grants hook
-on a scratch database.
+on a scratch database. `server/ops/schema.ts` belongs to ops and no spec
+sanctions this edit (PUB-R5). It needs the lead's and ops' sign-off. The
+proposal is to land it on `integration/v1` as its own small ops commit, with
+the same leg in `tests/migrate-db.ts`, so that any Wave 2 track whose newest
+migration is no-transaction gets it too. Public would then take it from
+integration at B1.
 
 ## 8. Fiscal, CFDI and the flag
 
