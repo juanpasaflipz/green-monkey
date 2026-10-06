@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { PRO_OFFER, type Entitlement } from "../shared/plans.js";
-import { validateSandboxPrice } from "./stripe-catalog.js";
+import {
+  validateSandboxPrice,
+  validateSandboxTaxRate,
+} from "./stripe-catalog.js";
+import { checkoutTaxParams, trialTaxParams } from "./saas-tax.js";
 
 export const STRIPE_BILLING_API_VERSION = "2026-08-26.dahlia";
 const providerId = (prefix: string) =>
@@ -49,9 +53,19 @@ const configSchema = z
             ["localhost", "127.0.0.1"].includes(url.hostname)))
       );
     }),
+    // account (031, GAP-6): SAAS_TAX_MODE in the worker. "off" leaves every
+    // Stripe request byte for byte unchanged.
+    tax: z
+      .object({
+        mode: z.enum(["off", "tax_rate"]),
+        taxRateId: providerId("txr").nullable(),
+        collectTaxId: z.boolean(),
+      })
+      .refine((t) => t.mode === "off" || t.taxRateId !== null)
+      .default({ mode: "off", taxRateId: null, collectTaxId: false }),
   })
   .refine((v) => v.monthlyPriceId !== v.annualPriceId);
-export type StripeBillingConfig = z.infer<typeof configSchema>;
+export type StripeBillingConfig = z.input<typeof configSchema>;
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
@@ -152,6 +166,16 @@ export function stripeSandboxBilling(
     );
     checkMetadata(value.metadata, scope.organizationId);
   }
+  const tax = { ...config.tax, taxProfileEnabled: false };
+  /** The configured IVA 16 % rate, checked before any taxed trial or checkout. */
+  async function taxRate() {
+    if (config.tax.mode !== "tax_rate") return;
+    const value = validateSandboxTaxRate(
+      await call(`/tax_rates/${config.tax.taxRateId}`),
+    );
+    if (value.id !== config.tax.taxRateId)
+      throw Error("stripe_billing_response_mismatch");
+  }
   async function price(interval: "month" | "year") {
     const value = validateSandboxPrice(
       await call(`/prices/${priceId(interval)}`),
@@ -195,6 +219,7 @@ export function stripeSandboxBilling(
         ]),
         trial_end: seconds.nullable(),
         cancel_at: seconds.nullable(),
+        ended_at: seconds.nullish(),
         pause_collection: z.null(),
         items: z.object({
           has_more: z.literal(false),
@@ -475,6 +500,7 @@ export function stripeSandboxBilling(
       const key = operationKey("trial", scope.organizationId, operationId);
       await checkScope(scope);
       await price(interval);
+      await taxRate();
       const form = new URLSearchParams({
         customer: scope.customerId,
         "items[0][price]": priceId(interval),
@@ -482,6 +508,7 @@ export function stripeSandboxBilling(
         trial_period_days: String(PRO_OFFER.trialDays),
         "trial_settings[end_behavior][missing_payment_method]": "cancel",
         "payment_settings[save_default_payment_method]": "off",
+        ...trialTaxParams(tax),
       });
       for (const [name, value] of Object.entries(
         metadata(scope.organizationId),
@@ -514,6 +541,7 @@ export function stripeSandboxBilling(
       const key = operationKey("checkout", scope.organizationId, operationId);
       await checkScope(scope);
       await price(interval);
+      await taxRate();
       const form = new URLSearchParams({
         mode: "subscription",
         customer: scope.customerId,
@@ -522,6 +550,7 @@ export function stripeSandboxBilling(
         "line_items[0][quantity]": String(locations),
         success_url: new URL("/app?billing=returned", config.appUrl).href,
         cancel_url: new URL("/app?billing=canceled", config.appUrl).href,
+        ...checkoutTaxParams(tax),
       });
       for (const [name, value] of Object.entries(
         metadata(scope.organizationId),
@@ -605,6 +634,9 @@ export function stripeSandboxBilling(
           : result.status;
       let until: number | null = null;
       if (status === "active") until = result.items.data[0].current_period_end;
+      // A canceled subscription keeps the date Pro ended ("Pro terminó el …",
+      // GAP-1); accessPlan still reads it as free.
+      if (status === "canceled") until = result.ended_at ?? null;
       if (status === "trialing") {
         if (result.trial_end === null)
           throw Error("stripe_billing_response_mismatch");

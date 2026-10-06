@@ -381,8 +381,10 @@ it, with its contact. A customer who comes back sees why their last request fail
 restaurant counts such failures in its attention badge and Hoy. An expired certificate (or a
 missing one in live mode) closes self-invoicing. Downloads appear once the PDF and XML are stored
 (`filesReady`), and each download asks for a fresh token. Downloads need the RFC used, through 15-minute download tokens;
-request links last `CFDI_INVOICE_LINK_EXPIRY_HOURS`. Account 031 fills the privacy-notice anchor
-in `server/cfdi/portal.ts`.
+request links last `CFDI_INVOICE_LINK_EXPIRY_HOURS`. The portal's privacy checkbox links the
+restaurant's own privacy notice (Configuración → Privacidad y datos; account 031's
+`restaurantPrivacyUrl`), as the QR and kiosk pages do; without one it shows the fallback line and
+the contact.
 
 ## Error codes (LD-15 cfdi Q2)
 

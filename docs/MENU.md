@@ -137,8 +137,11 @@ for production**:
 - all of this belongs to public-ordering (migration 032, wave 3), which brings
   stored, revocable links and held orders;
 - until then, production keeps QR/kiosk ordering off through
-  `PUBLIC_ORDERING_ENABLED` (account, migration 031): when it is false,
-  `/api/public/*` and link creation answer 404 `public_ordering_disabled`.
+  `PUBLIC_ORDERING_ENABLED` (account, migration 031; unset means false when
+  `APP_ENV=production`): when it is false, `/api/public/*` and link creation
+  answer 404 `public_ordering_disabled` before any token or rate limit, the
+  link generator is hidden and old links show diners "Pide en el mostrador"
+  ([account and legal](ACCOUNT_AND_LEGAL.md)).
 
 **Carts price line by line.** In the POS cart and the QR/kiosk order, each line
 is priced on its own by service's `priceCart()` (`shared/service.ts`; QR/kiosk

@@ -10,6 +10,12 @@ import {
 } from "lucide-react";
 import { PRO_OFFER, PRO_ANNUAL_SAVING_MINOR } from "../../shared/plans";
 import type { Locale } from "../../shared/domain";
+import { LANDING_CLAIMS } from "./claims";
+import {
+  loadAccountConfig,
+  supportHref,
+  type AccountConfig,
+} from "../features/accountConfig";
 import "./landing.css";
 
 export default function Landing() {
@@ -18,6 +24,16 @@ export default function Landing() {
   );
   const [annual, setAnnual] = useState(false);
   const [preview, setPreview] = useState(0);
+  // account (031): QR/kiosk are advertised only once the configuration says
+  // public ordering is enabled; the footer support link comes from it too.
+  const [config, setConfig] = useState<AccountConfig | null>(null);
+  useEffect(() => {
+    void loadAccountConfig()
+      .then(setConfig)
+      .catch(() => undefined);
+  }, []);
+  const ordering = config?.publicOrdering.enabled === true;
+  const notes = LANDING_CLAIMS.kitchenNotes;
   const es = locale === "es";
   const t = (spanish: string, english: string) => (es ? spanish : english);
   const money = (minor: number) =>
@@ -37,10 +53,10 @@ export default function Landing() {
       ?.setAttribute(
         "content",
         es
-          ? "Conoce Green Monkey: ventas, mesas, cocina y caja para tu restaurante. Plan Free y próximo plan Pro con kiosco. Precios en MXN."
-          : "Meet Green Monkey: sales, tables, kitchen and cash management for your restaurant. Free plan and upcoming Pro with kiosk. Pricing in MXN.",
+          ? `Conoce Green Monkey: ventas, mesas, cocina y caja para tu restaurante. Plan Free y próximo plan Pro${ordering ? " con kiosco" : ""}. Precios en MXN.`
+          : `Meet Green Monkey: sales, tables, kitchen and cash management for your restaurant. Free plan and upcoming Pro${ordering ? " with kiosk" : ""}. Pricing in MXN.`,
       );
-  }, [locale, es]);
+  }, [locale, es, ordering]);
   const workspaces = [
     t("Vender", "Sell"),
     t("Cocina", "Kitchen"),
@@ -51,10 +67,15 @@ export default function Landing() {
       icon: ShoppingBag,
       n: "01",
       title: t("Una orden. Todo el contexto.", "One order. All the context."),
-      body: t(
-        "De la primera ronda a la cuenta dividida. Mesas, notas y pagos juntos, para seguir el ritmo del servicio.",
-        "From the first round to a split bill. Tables, notes and payments together, keeping pace with service.",
-      ),
+      body: notes
+        ? t(
+            "De la primera ronda a la cuenta dividida. Mesas, notas y pagos juntos, para seguir el ritmo del servicio.",
+            "From the first round to a split bill. Tables, notes and payments together, keeping pace with service.",
+          )
+        : t(
+            "De la primera ronda a la cuenta dividida. Mesas, rondas y pagos juntos, para seguir el ritmo del servicio.",
+            "From the first round to a split bill. Tables, rounds and payments together, keeping pace with service.",
+          ),
     },
     {
       icon: ChefHat,
@@ -92,7 +113,7 @@ export default function Landing() {
   ];
   const proFeatures = [
     t("Todo lo incluido en Free", "Everything in Free"),
-    t("Kiosco y pedidos QR", "Kiosk and QR ordering"),
+    ...(ordering ? [t("Kiosco y pedidos QR", "Kiosk and QR ordering")] : []),
     t(
       "Inventario, recetas y compras avanzadas",
       "Advanced inventory, recipes and purchasing",
@@ -135,11 +156,29 @@ export default function Landing() {
         "An authorized session can keep selling without internet: it saves cash or external-terminal payments, prints kitchen tickets from the browser and syncs when the connection returns, within its allowed period. There are no integrated offline card charges.",
       ),
     ],
+    ...(ordering
+      ? [
+          [
+            t("¿El kiosco viene con Pro?", "Is kiosk included in Pro?"),
+            t(
+              "Sí. Kiosco y pedidos QR forman parte del plan Pro. El flujo web actual permite enviar pedidos para pagar en caja; el hardware y los pagos integrados requieren configuración y validación adicionales.",
+              "Yes. Kiosk and QR ordering are part of Pro. The current web flow supports orders paid at the counter; hardware and integrated payments require additional setup and validation.",
+            ),
+          ],
+        ]
+      : []),
     [
-      t("¿El kiosco viene con Pro?", "Is kiosk included in Pro?"),
+      t("¿De quién son mis datos?", "Who owns my data?"),
       t(
-        "Sí. Kiosco y pedidos QR forman parte del plan Pro. El flujo web actual permite enviar pedidos para pagar en caja; el hardware y los pagos integrados requieren configuración y validación adicionales.",
-        "Yes. Kiosk and QR ordering are part of Pro. The current web flow supports orders paid at the counter; hardware and integrated payments require additional setup and validation.",
+        "De tu restaurante. Puedes descargarlos en CSV o JSON desde Configuración en cualquier momento, también en Free.",
+        "Your restaurant. You can download it as CSV or JSON from Settings at any time, on Free too.",
+      ),
+    ],
+    [
+      t("¿Cómo obtengo ayuda?", "How do I get help?"),
+      t(
+        "Desde la app, en Ayuda, o por los canales de soporte que aparecen al pie de esta página.",
+        "In the app, under Help, or through the support channels at the bottom of this page.",
       ),
     ],
   ];
@@ -275,7 +314,7 @@ export default function Landing() {
                     </span>
                     <span>
                       {t("Tacos de hongos", "Mushroom tacos")}
-                      <small>{t("Sin cebolla", "No onion")}</small>
+                      {notes && <small>{t("Sin cebolla", "No onion")}</small>}
                     </span>
                     <strong>{money(9000)}</strong>
                   </div>
@@ -285,7 +324,7 @@ export default function Landing() {
                     </span>
                     <span>
                       {t("Agua de jamaica", "Hibiscus water")}
-                      <small>{t("Sin hielo", "No ice")}</small>
+                      {notes && <small>{t("Sin hielo", "No ice")}</small>}
                     </span>
                     <strong>{money(3500)}</strong>
                   </div>
@@ -319,11 +358,15 @@ export default function Landing() {
                           ? t("1 × Café americano", "1 × Americano")
                           : t("2 × Tacos de hongos", "2 × Mushroom tacos")}
                       </p>
-                      <small>
-                        {i
-                          ? t("Sin azúcar", "No sugar")
-                          : t("Sin cebolla · Ronda 1", "No onion · Round 1")}
-                      </small>
+                      {notes ? (
+                        <small>
+                          {i
+                            ? t("Sin azúcar", "No sugar")
+                            : t("Sin cebolla · Ronda 1", "No onion · Round 1")}
+                        </small>
+                      ) : (
+                        !i && <small>{t("Ronda 1", "Round 1")}</small>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -587,7 +630,22 @@ export default function Landing() {
             "Made for the people who feed us.",
           )}
         </p>
-        <a href="#pricing">{t("Planes y precios", "Plans and pricing")}</a>
+        <nav
+          className="gm-footer-links"
+          aria-label={t("Legal y soporte", "Legal and support")}
+        >
+          <a href={es ? "/legal/privacidad" : "/legal/privacy"}>
+            {t("Aviso de privacidad", "Privacy notice")}
+          </a>
+          <a href={es ? "/legal/terminos" : "/legal/terms"}>
+            {t("Términos", "Terms")}
+          </a>
+          <a href={es ? "/legal/encargo-de-datos" : "/legal/data-processing"}>
+            {t("Encargo de datos", "Data processing")}
+          </a>
+          <a href={supportHref(config)}>{t("Soporte", "Support")}</a>
+          <a href="#pricing">{t("Planes y precios", "Plans and pricing")}</a>
+        </nav>
       </footer>
     </div>
   );

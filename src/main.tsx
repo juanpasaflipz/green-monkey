@@ -6,6 +6,7 @@ const App = lazy(() => import("./App"));
 const SelfInvoicePortal = lazy(
   () => import("./features/cfdi/SelfInvoicePortal"),
 );
+const LegalPage = lazy(() => import("./legal/LegalPage"));
 import { PublicOrdering } from "./features/PublicOrdering";
 import { PlatformGate } from "./features/offline/PlatformGate";
 import { registerServiceWorker } from "./service-worker";
@@ -14,7 +15,9 @@ import "./styles.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <Suspense fallback={<p role="status">Green Monkey…</p>}>
-      {/^\/(f|factura)(\/|$)/.test(location.pathname) ? (
+      {/^\/legal(\/|$)/.test(location.pathname) ? (
+        <LegalPage />
+      ) : /^\/(f|factura)(\/|$)/.test(location.pathname) ? (
         <SelfInvoicePortal />
       ) : /^\/(qr|kiosk)\//.test(location.pathname) ? (
         <PublicOrdering />

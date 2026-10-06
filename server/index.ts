@@ -2,7 +2,10 @@ import {
   requireSelling,
   freeSelection,
   saveFreeSelection,
+  autoAssignFreeSlots,
+  requireDrawerOpenAllowed,
 } from "./free-limits.js";
+import { publicOrderingEnabled } from "./account-settings.js";
 import { billingRuntime } from "./billing-runtime.js";
 import { entitlement, requirePro } from "./entitlements.js";
 import { ownerRoutes } from "./owner-routes.js";
@@ -92,6 +95,8 @@ if (
   process.env.JWT_SECRET.length < 32
 )
   throw Error("DATABASE_URL and JWT_SECRET (32+ characters) required");
+// account (031): QR/kiosk ordering is off in production until wave 3; an invalid value fails startup.
+const PUBLIC_ORDERING = publicOrderingEnabled(process.env);
 const sql = connect(process.env.DATABASE_URL);
 await waitForDatabase(sql);
 const billing = await billingRuntime(sql, process.env);
@@ -157,6 +162,8 @@ reportsRoutes.registerPreAuth({ app, sql });
 cfdiRoutes.registerPreAuth({ app, sql });
 accountRoutes.registerPreAuth({ app, sql });
 app.use("/api", authentication(sql));
+// account (031): every /api/account-data/* path is owner-only with a recent step-up (C30).
+app.use("/api/account-data", accountRoutes.accountDataGuard);
 const route = makeRoute(app, sql);
 route("get", "/service/options", (tx, s) => serviceOptions(tx, s));
 route("post", "/orders/:id/service", (tx, s, req) =>
@@ -270,7 +277,8 @@ route("post", "/cash/open", async (tx, s, req) => {
     .strict()
     .parse(req.body);
   return once(tx, s, p.operationId, "cash.open", p, async () => {
-    await requireSelling(tx, s);
+    await autoAssignFreeSlots(tx, s);
+    await requireDrawerOpenAllowed(tx, s);
     await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening) values(${s.tenantId},${randomUUID()},${s.deviceId},${s.employeeId},${p.opening})`;
     await audit(tx, s, "cash.open", s.deviceId, p);
     return cashSummary(tx, s);
@@ -462,6 +470,7 @@ route("get", "/jobs", async (tx, s) => {
   return tx`select * from jobs order by created_at desc limit 100`;
 });
 route("post", "/ordering-links", async (tx, s, req) => {
+  if (!PUBLIC_ORDERING) throw new DomainError("public_ordering_disabled", 404);
   permit(s, managers);
   const p = z
     .object({ channel: z.enum(["qr", "kiosk"]), tableId: id.nullable() })

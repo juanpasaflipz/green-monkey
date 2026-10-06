@@ -118,6 +118,9 @@ export default defineArea({
       "Vinculó estas terminales compartidas, que seguirán vinculadas: {names}. Revísalas en Dispositivos y desvincula las que no reconozcas.",
     accessStaffReactivate: "Reactivar",
     accessStaffOwnerFixed: "El rol de propietario no se puede cambiar aquí.",
+    // account (031), access A3 (LD-8): owners set only their own PIN.
+    accessStaffOwnerPinSelf:
+      "Solo esta persona puede definir su PIN para terminales compartidas, desde su propia sesión.",
     accessStaffSaved: "Cambios guardados",
     accessStaffCreated: "{name} se agregó. Usuario: {login}.",
     accessStaffDeactivated: "{name} se desactivó y sus sesiones se cerraron.",
@@ -306,6 +309,8 @@ export default defineArea({
       "They paired these shared terminals, which stay paired: {names}. Review them in Devices and unpair any you do not recognize.",
     accessStaffReactivate: "Reactivate",
     accessStaffOwnerFixed: "The owner role cannot be changed here.",
+    accessStaffOwnerPinSelf:
+      "Only this person can set their PIN for shared terminals, from their own session.",
     accessStaffSaved: "Changes saved",
     accessStaffCreated: "{name} was added. Username: {login}.",
     accessStaffDeactivated:
@@ -492,6 +497,10 @@ export default defineArea({
     owner_role_locked: [
       "El rol de propietario no se puede asignar ni quitar desde aquí.",
       "The owner role cannot be assigned or removed here.",
+    ],
+    owner_pin_self_only: [
+      "Solo esa persona puede cambiar su propio PIN.",
+      "Only that person can change their own PIN.",
     ],
     owner_cannot_be_deactivated: [
       "El propietario no se puede desactivar.",

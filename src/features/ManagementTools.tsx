@@ -4,6 +4,7 @@ import { api } from "../api";
 import { strings, translateError, type Key } from "../i18n";
 import { Button, Field, Modal } from "../components/ui";
 import { minor, type Session, type Locale } from "../../shared/domain";
+import { loadAccountConfig } from "./accountConfig";
 export function ManagementTools({
   view,
   session,
@@ -35,6 +36,15 @@ export function ManagementTools({
   const [records, setRecords] = useState<any[]>([]);
   const [link, setLink] = useState("");
   const [linkChannel, setLinkChannel] = useState("qr");
+  // account (031): QR/kiosk links only while PUBLIC_ORDERING_ENABLED is on;
+  // hidden until the configuration says so.
+  const [ordering, setOrdering] = useState(false);
+  useEffect(() => {
+    if (view !== "settings") return;
+    void loadAccountConfig()
+      .then((c) => setOrdering(c.publicOrdering.enabled))
+      .catch(() => setOrdering(false));
+  }, [view]);
   useEffect(() => {
     if (mode) {
       setError("");
@@ -84,33 +94,37 @@ export function ManagementTools({
         {view === "settings" && (
           <>
             <Button onClick={() => setMode("import")}>{t("importMenu")}</Button>
-            <select
-              aria-label={t("orderingLinks")}
-              value={linkChannel}
-              onChange={(e) => setLinkChannel(e.target.value)}
-            >
-              <option value="qr">QR</option>
-              <option value="kiosk">Kiosco / Kiosk</option>
-            </select>
-            <Button
-              onClick={async () => {
-                try {
-                  const result = await api("/ordering-links", {
-                    channel: linkChannel,
-                    tableId: null,
-                  });
-                  setLink(location.origin + result.path);
-                } catch (e) {
-                  setError(translateError((e as Error).message, locale));
-                }
-              }}
-            >
-              {t("createLink")}
-            </Button>
-            {link && (
-              <a href={link} target="_blank" rel="noreferrer">
-                {t("orderingLinks")}
-              </a>
+            {ordering && (
+              <>
+                <select
+                  aria-label={t("orderingLinks")}
+                  value={linkChannel}
+                  onChange={(e) => setLinkChannel(e.target.value)}
+                >
+                  <option value="qr">QR</option>
+                  <option value="kiosk">Kiosco / Kiosk</option>
+                </select>
+                <Button
+                  onClick={async () => {
+                    try {
+                      const result = await api("/ordering-links", {
+                        channel: linkChannel,
+                        tableId: null,
+                      });
+                      setLink(location.origin + result.path);
+                    } catch (e) {
+                      setError(translateError((e as Error).message, locale));
+                    }
+                  }}
+                >
+                  {t("createLink")}
+                </Button>
+                {link && (
+                  <a href={link} target="_blank" rel="noreferrer">
+                    {t("orderingLinks")}
+                  </a>
+                )}
+              </>
             )}
           </>
         )}

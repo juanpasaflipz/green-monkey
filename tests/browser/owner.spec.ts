@@ -5,6 +5,7 @@ import postgres from "postgres";
 import { randomUUID } from "node:crypto";
 import { connect } from "../../server/db.js";
 import { signInGoogleOwner, ownerCookie } from "../../server/owner-accounts.js";
+import { deleteAccountRows } from "./account-fixtures.js";
 
 test("verified-identity fixture: owner signup, responsive forms, entry and logout", async ({
   page,
@@ -87,9 +88,35 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
     await expect(
       page.getByLabel("Business day starts at", { exact: true }),
     ).toHaveValue("04:00");
+    // account (031): the browser run publishes the fictional CI legal set, so
+    // the restaurant is created only after the acceptance boxes are checked.
+    const create = page.getByRole("button", {
+      name: "Create free restaurant",
+      exact: true,
+    });
+    await expect(create).toBeDisabled();
     await page
-      .getByRole("button", { name: "Create free restaurant", exact: true })
-      .focus();
+      .getByRole("checkbox", {
+        name: "I accept the Terms of service and my restaurant's Data processing agreement.",
+        exact: true,
+      })
+      .check();
+    await page
+      .getByRole("checkbox", {
+        name: "I have read the Privacy notice.",
+        exact: true,
+      })
+      .check();
+    // account (031, UX-3): the express billing consent is its own box.
+    await expect(create).toBeDisabled();
+    await page
+      .getByRole("checkbox", {
+        name: "I expressly consent to the processing of my financial and property data to bill my restaurant's subscription, as the Privacy notice explains.",
+        exact: true,
+      })
+      .check();
+    await expect(create).toBeEnabled();
+    await create.focus();
     await page.keyboard.press("Enter");
     await expect(page.locator(".scope")).toContainText("Restaurante de prueba");
     const account = await (await page.request.get("/api/auth/account")).json();
@@ -133,7 +160,8 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
       .selectOption("year");
     await page
       .getByRole("checkbox", {
-        name: "I agree to continue to Stripe with the selected interval; any paid subscription recurs per restaurant, plus applicable taxes.",
+        // account (031, SAAS_TAX_MODE=off): the tax line replaces "plus applicable taxes".
+        name: "I agree to continue to Stripe with the selected interval; any paid subscription recurs per restaurant. Price before taxes. VAT and the subscription invoice (CFDI) are not configured yet.",
         exact: true,
       })
       .check();
@@ -294,6 +322,7 @@ test("verified-identity fixture: owner signup, responsive forms, entry and logou
     expect((await page.request.get("/api/auth/account")).status()).toBe(401);
     expect((await page.request.get("/api/session")).status()).toBe(401);
   } finally {
+    await deleteAccountRows(admin, [accountId]);
     const tenants =
       await admin`select tenant_id from owner_memberships where account_id=${accountId}`;
     for (const { tenant_id } of tenants) {

@@ -5,6 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { checkRole, connect, tenant, type Tx } from "../server/db.js";
+import { legalConfig } from "../server/legal.js";
 import {
   authentication,
   hash,
@@ -2000,13 +2001,19 @@ try {
     const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
     accountIds.push(account.id);
     const signup = await withOwner(sql, cookie, account.csrf, (tx, a) =>
-      createOwnerRestaurant(tx, a, {
-        restaurantName: "Signup access fixture",
-        currency: "MXN",
-        timezone: "America/Mexico_City",
-        cutoff: 240,
-        openingDays: [1, 2, 3, 4, 5, 6, 7],
-      }),
+      createOwnerRestaurant(
+        tx,
+        a,
+        {
+          restaurantName: "Signup access fixture",
+          currency: "MXN",
+          timezone: "America/Mexico_City",
+          cutoff: 240,
+          openingDays: [1, 2, 3, 4, 5, 6, 7],
+        },
+        // As CI's DB steps run it (account 031): unpublished, signup allowed.
+        legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" }),
+      ),
     );
     signupTenants.push(signup.tenantId);
     // The owner enters from their own phone (personal device, Google session).
@@ -2153,6 +2160,79 @@ try {
     const ended = await sessionRow(first.sessionId);
     assert.equal(ended.end_reason, "ended_by_manager");
     assert.ok(ended.expires_at.getTime() <= Date.now());
+  });
+
+  await test("A3 (account 031, LD-8): an owner cannot set another owner's PIN (owner_pin_self_only) but sets their own; a manager unlocking an owner gets unlock_owner_only; the owner unlocks", async () => {
+    const owner = as(ownerId, "owner", terminalA.id, {});
+    const second = as(secondOwnerId, "owner", terminalA.id, {});
+    const manager = as(managerId, "manager", terminalA.id, {});
+    const [before] =
+      await admin`select secret_hash,pin_set_at from employees where id=${secondOwnerId}`;
+    await rejects(
+      run((tx) =>
+        resetStaffPin(tx, owner, secondOwnerId, {
+          operationId: randomUUID(),
+          pin: "731942",
+        }),
+      ),
+      "owner_pin_self_only",
+    );
+    const [unchanged] =
+      await admin`select secret_hash,pin_set_at from employees where id=${secondOwnerId}`;
+    assert.deepEqual({ ...unchanged }, { ...before });
+    // The second owner sets their own PIN (their "PIN para terminales compartidas").
+    await run((tx) =>
+      resetStaffPin(tx, second, secondOwnerId, {
+        operationId: randomUUID(),
+        pin: "731942",
+      }),
+    );
+    assert.equal(
+      (
+        await run((tx) =>
+          checkPin(
+            tx,
+            { employeeId: secondOwnerId },
+            "731942",
+            deviceScope(terminalA.id),
+          ),
+        )
+      ).outcome,
+      "ok",
+    );
+    // Unlocking stays as A5 hardened it: owners only, never a manager.
+    await rejects(
+      run((tx) =>
+        unlockStaff(tx, manager, secondOwnerId, { operationId: randomUUID() }),
+      ),
+      "unlock_owner_only",
+    );
+    await run((tx) =>
+      unlockStaff(tx, owner, secondOwnerId, { operationId: randomUUID() }),
+    );
+  });
+
+  await test("A3: the legacy team save refuses another owner's row with owner_pin_self_only before touching the secret", async () => {
+    const owner = as(ownerId, "owner", terminalA.id, {});
+    const [before] =
+      await admin`select secret_hash,role,active from employees where id=${secondOwnerId}`;
+    await rejects(
+      run((tx) =>
+        saveEmployee(tx, owner, {
+          operationId: randomUUID(),
+          id: secondOwnerId,
+          name: "Owner Two",
+          login: `own2-${secondOwnerId.slice(0, 8)}`,
+          role: "owner",
+          secret: "999999",
+          active: true,
+        }),
+      ),
+      "owner_pin_self_only",
+    );
+    const [after] =
+      await admin`select secret_hash,role,active from employees where id=${secondOwnerId}`;
+    assert.deepEqual({ ...after }, { ...before });
   });
 
   await test("migration 023 backfills legacy devices when applied by an owner without BYPASSRLS, and keeps FORCE RLS (OPS-R2/ACC-19)", async () => {

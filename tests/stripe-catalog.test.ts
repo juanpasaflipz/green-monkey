@@ -7,6 +7,8 @@ import {
 import {
   provisionStripeSandboxCatalog,
   validateSandboxPrice,
+  validateSandboxTaxRate,
+  provisionStripeSandboxTaxRate,
   proPriceKeys,
 } from "../server/stripe-catalog";
 
@@ -140,5 +142,89 @@ describe("Stripe sandbox catalog provisioning", () => {
       ([, init]) => init?.method === "POST",
     );
     expect(posts).toHaveLength(3);
+  });
+});
+
+describe("SaaS IVA tax rate (account 031, GAP-6)", () => {
+  const rate = {
+    id: "txr_iva16",
+    object: "tax_rate",
+    active: true,
+    livemode: false,
+    inclusive: false,
+    percentage: 16,
+    country: "MX",
+    display_name: "IVA",
+    jurisdiction: "MX",
+  };
+  it("validateSandboxTaxRate accepts MX 16% exclusive active sandbox rate; rejects inclusive, other percentage, inactive, livemode, other country", () => {
+    expect(validateSandboxTaxRate(rate).id).toBe("txr_iva16");
+    for (const override of [
+      { inclusive: true },
+      { percentage: 8 },
+      { active: false },
+      { livemode: true },
+      { country: "US" },
+      { display_name: "VAT" },
+      { id: "price_1" },
+      { object: "price" },
+    ])
+      expect(() => validateSandboxTaxRate({ ...rate, ...override })).toThrow(
+        "stripe_catalog_tax_rate_mismatch",
+      );
+  });
+});
+
+describe("SaaS IVA tax rate provisioning (account 031)", () => {
+  const rate = {
+    id: "txr_iva16",
+    object: "tax_rate",
+    active: true,
+    livemode: false,
+    inclusive: false,
+    percentage: 16,
+    country: "MX",
+    display_name: "IVA",
+    metadata: { green_monkey_tax: "iva16" },
+  };
+  const fake = (existing: unknown[]) =>
+    vi.fn<typeof fetch>(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/v1/account") return Response.json({ id: "acct_fixture" });
+      if (path === "/v1/tax_rates" && init?.method === "POST") {
+        const body = init.body as URLSearchParams;
+        expect(body.get("percentage")).toBe("16");
+        expect(body.get("inclusive")).toBe("false");
+        expect(body.get("country")).toBe("MX");
+        expect(body.get("metadata[green_monkey_tax]")).toBe("iva16");
+        expect(
+          (init.headers as Record<string, string>)["Idempotency-Key"],
+        ).toBe("gm-tax-rate-v1");
+        return Response.json(rate);
+      }
+      if (path === "/v1/tax_rates") return Response.json({ data: existing });
+      throw Error("unexpected " + path);
+    });
+  it("reuses the tagged rate, or creates it once with a fixed idempotency key", async () => {
+    const reuse = fake([rate]);
+    expect(
+      await provisionStripeSandboxTaxRate("sk_test_x", "acct_fixture", reuse),
+    ).toEqual({ accountId: "acct_fixture", taxRateId: "txr_iva16" });
+    expect(reuse.mock.calls.some(([, i]) => i?.method === "POST")).toBe(false);
+    const create = fake([]);
+    expect(
+      (await provisionStripeSandboxTaxRate("sk_test_x", "acct_fixture", create))
+        .taxRateId,
+    ).toBe("txr_iva16");
+    await expect(
+      provisionStripeSandboxTaxRate("sk_live_x", "acct_fixture", create),
+    ).rejects.toThrow("stripe_sandbox_key_required");
+    await expect(
+      provisionStripeSandboxTaxRate(
+        "sk_test_x",
+        "acct_fixture",
+        fake([{ ...rate, percentage: 8 }]),
+      ),
+    ).rejects.toThrow("stripe_catalog_tax_rate_mismatch");
   });
 });

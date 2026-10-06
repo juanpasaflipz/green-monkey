@@ -19,9 +19,12 @@ import {
   listInvitations,
 } from "../server/owner-management.js";
 import { authentication, sign } from "../server/auth.js";
+import { legalConfig } from "../server/legal.js";
 const { runtime, migration } = isolatedTarget(process.env),
   sql = postgres(runtime, { max: 5 }),
   admin = postgres(migration, { max: 1 });
+// Signup as CI's DB steps run it; the legal gate itself is covered by account-db.
+const legal = legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" });
 const accounts: string[] = [],
   tenants: string[] = [],
   subjects = [randomUUID(), randomUUID(), randomUUID()];
@@ -46,7 +49,7 @@ try {
   }
   const a = await withOwner(sql, cookies[0], undefined, async (_tx, a) => a);
   const first = await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-    createOwnerRestaurant(tx, a, input),
+    createOwnerRestaurant(tx, a, input, legal),
   );
   tenants.push(first.tenantId);
   const additional = {
@@ -57,7 +60,7 @@ try {
   };
   await assert.rejects(
     withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-      createAdditionalLocation(tx, a, additional),
+      createAdditionalLocation(tx, a, additional, legal),
     ),
     /pro_required/,
   );
@@ -65,7 +68,7 @@ try {
   const locations = await Promise.all(
     Array.from({ length: 4 }, () =>
       withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-        createAdditionalLocation(tx, a, additional),
+        createAdditionalLocation(tx, a, additional, legal),
       ),
     ),
   );
@@ -73,24 +76,34 @@ try {
   tenants.push(locations[0].tenantId);
   await assert.rejects(
     withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-      createAdditionalLocation(tx, a, {
-        ...additional,
-        restaurantName: "Changed",
-      }),
+      createAdditionalLocation(
+        tx,
+        a,
+        {
+          ...additional,
+          restaurantName: "Changed",
+        },
+        legal,
+      ),
     ),
     /operation_conflict/,
   );
   await assert.rejects(
     withOwner(sql, cookies[2], undefined, (tx, a) =>
-      createAdditionalLocation(tx, a, {
-        ...additional,
-        operationId: randomUUID(),
-      }),
+      createAdditionalLocation(
+        tx,
+        a,
+        {
+          ...additional,
+          operationId: randomUUID(),
+        },
+        legal,
+      ),
     ),
     /forbidden/,
   );
   const original = await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-    createOwnerRestaurant(tx, a, input),
+    createOwnerRestaurant(tx, a, input, legal),
   );
   assert.equal(
     original.tenantId,
@@ -149,13 +162,13 @@ try {
     role: "manager",
   };
   const invitation = await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-    createInvitation(tx, a.id, inviteBody),
+    createInvitation(tx, a.id, inviteBody, legal),
   );
   const token = invitation.path.split("#invite=")[1];
   assert.equal(
     (
       await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-        createInvitation(tx, a.id, inviteBody),
+        createInvitation(tx, a.id, inviteBody, legal),
       )
     ).path,
     invitation.path,
@@ -163,7 +176,7 @@ try {
   );
   await assert.rejects(
     withOwner(sql, cookies[2], undefined, (tx, a) =>
-      acceptInvitation(tx, a, { token }),
+      acceptInvitation(tx, a, { token }, legal),
     ),
     /invitation_unavailable/,
   );
@@ -181,7 +194,7 @@ try {
   });
   await assert.rejects(
     withOwner(sql, changed, undefined, (tx, a) =>
-      acceptInvitation(tx, a, { token }),
+      acceptInvitation(tx, a, { token }, legal),
     ),
     /invitation_unavailable/,
     "stored account email is not fresh provider proof",
@@ -189,7 +202,7 @@ try {
   const accepts = await Promise.all(
     Array.from({ length: 4 }, () =>
       withOwner(sql, cookies[1], undefined, (tx, a) =>
-        acceptInvitation(tx, a, { token }),
+        acceptInvitation(tx, a, { token }, legal),
       ),
     ),
   );
@@ -208,7 +221,7 @@ try {
   assert.equal(employee.role, "manager");
   assert.equal(manager.session.tenantId, first.tenantId);
   const own = await withOwner(sql, cookies[1], undefined, (tx, a) =>
-    createOwnerRestaurant(tx, a, input),
+    createOwnerRestaurant(tx, a, input, legal),
   );
   tenants.push(own.tenantId);
   assert.notEqual(
@@ -217,14 +230,24 @@ try {
     "invited account can create its own original restaurant",
   );
   const revoked = await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
-    createInvitation(tx, a.id, { ...inviteBody, operationId: randomUUID() }),
+    createInvitation(
+      tx,
+      a.id,
+      { ...inviteBody, operationId: randomUUID() },
+      legal,
+    ),
   );
   await withOwner(sql, cookies[0], a.csrf, (tx, a) =>
     revokeInvitation(tx, a.id, revoked.id),
   );
   await assert.rejects(
     withOwner(sql, cookies[1], undefined, (tx, a) =>
-      acceptInvitation(tx, a, { token: revoked.path.split("#invite=")[1] }),
+      acceptInvitation(
+        tx,
+        a,
+        { token: revoked.path.split("#invite=")[1] },
+        legal,
+      ),
     ),
     /invitation_unavailable/,
   );

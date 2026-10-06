@@ -8,6 +8,10 @@ import { createOrder, getOrder } from "./orders.js";
 import { menuRevision, publicCatalog } from "./menu-read.js";
 import { clientIp } from "./logging.js";
 import { DomainError, orderInput, type Session } from "../shared/domain.js";
+import {
+  publicOrderingGate,
+  restaurantPrivacyUrl,
+} from "./account-settings.js";
 function publicOrder(o: any) {
   return {
     id: o.id,
@@ -98,6 +102,10 @@ const limiter = (
   });
 export function publicOrdering(sql: postgres.Sql) {
   const router = express.Router();
+  // account (031): while PUBLIC_ORDERING_ENABLED is off (production default
+  // until wave 3) every /api/public request answers 404 public_ordering_disabled
+  // before any token is read or any rate limit is counted.
+  router.use(publicOrderingGate(process.env));
   // MENU-R1/R6: every open QR/kiosk page polls /:token/revision and refetches
   // the catalog after a menu change, and diners on one Wi-Fi share an IP. The
   // poll and order submissions therefore have their own budgets; everything
@@ -168,7 +176,10 @@ export function publicOrdering(sql: postgres.Sql) {
           // then only causes one extra refetch, never a missed one.
           const { revision } = await menuRevision(tx);
           return {
-            restaurant: s.restaurant,
+            restaurant: {
+              ...s.restaurant,
+              privacyNoticeUrl: await restaurantPrivacyUrl(tx),
+            },
             revision,
             catalog: await publicCatalog(tx),
           };

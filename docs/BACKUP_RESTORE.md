@@ -79,7 +79,11 @@ NEONCTL_VERSION=<x.y.z> REHEARSAL_SOURCE_ENV=staging … npx tsx scripts/ops/reh
    migration runner, then `tests/restore-verify-db.ts` checks: newest
    migration present, schema fingerprint equal, control totals equal, runtime
    role still sees one tenant at a time.
-3. RTO (start → verified) and RPO (dump snapshot age) are written to
+3. Before a restored database serves traffic, re-apply the ARCO cancellation
+   register ([OPERATIONS](OPERATIONS.md), Support): re-run every
+   `block-account`, `anonymize-account` and `redact-email` dated after the
+   restored snapshot, so blocked or anonymized accounts do not come back.
+4. RTO (start → verified) and RPO (dump snapshot age) are written to
    `docs/evidence/restore/<date>-<env>.json`. Review, then
    `--cleanup <that file>` deletes the branch and project after a typed
    confirmation.

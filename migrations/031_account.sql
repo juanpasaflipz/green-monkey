@@ -1,0 +1,651 @@
+-- 031_account.sql — legal acceptance, co-owners, ownership transfer, recovery codes,
+-- vendor support role grants, restaurant privacy URL / Free-selection mode and the
+-- SaaS billing (tax) profile.
+-- Expand-only: new tables, columns and policies, looser CHECKs, one same-name policy
+-- replacement (owner_restaurant_read now ignores revoked memberships) and one trigger
+-- that fills the new restaurant_entitlements.pro_ended_at on later writes. No data
+-- rewrite, no backfill (LD-6 does not apply) and no SECURITY DEFINER function.
+--
+-- RLS rule for the account and organization tables (docs/ACCOUNT_AND_LEGAL.md): their
+-- policies are sub-link-free "leaf" predicates over transaction-local GUCs
+-- (app.account_id, app.organization_id, app.transfer_id, app.transfer_hash,
+-- app.invitation_hash, app.recovery_lookup, app.recovery_account_id), which avoids the
+-- policy-rewrite recursion of migrations 009 and 017. The server sets app.organization_id
+-- only after organizationScope() verified a primary or active co-owner, or after a
+-- verified invitation or transfer token.
+-- NEVER add a sub-link-bearing SELECT policy to owner_memberships,
+-- organization_co_owners, ownership_transfers or account_recovery_codes, and NEVER
+-- reference owner_accounts from another table's policy (owner_accounts_org_read below
+-- has sub-links, so a reference back would form a cycle).
+SET LOCAL lock_timeout = '5s';
+
+-- gm_support is created by the owner-run scripts/ops/sql/globals.sql before migrations
+-- (gm_migrator is NOCREATEROLE). This block is a no-op there; it only helps local or CI
+-- clusters whose migrator may create roles (011_billing.sql pattern).
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'gm_support') THEN
+    CREATE ROLE gm_support NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+  END IF;
+END $$;
+
+CREATE FUNCTION account_append_only() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION '% is append-only', TG_TABLE_NAME;
+END $$;
+
+-- Session freshness for sensitive account commands; NULL (sessions issued before 031)
+-- counts as stale. Two statements so existing rows stay NULL instead of taking now().
+ALTER TABLE owner_sessions ADD COLUMN created_at timestamptz;
+ALTER TABLE owner_sessions ALTER COLUMN created_at SET DEFAULT now();
+
+-- Vendor support audit log (written only by gm_support logins) -----------------------
+CREATE TABLE support_actions (
+  id uuid PRIMARY KEY,
+  operator_login text NOT NULL,
+  operator_label text NOT NULL CHECK (length(operator_label) BETWEEN 2 AND 80),
+  ticket text NOT NULL CHECK (length(ticket) BETWEEN 3 AND 100),
+  reason text NOT NULL CHECK (length(reason) BETWEEN 10 AND 500),
+  action text NOT NULL CHECK (action IN ('lookup','unlock_employee','grant_entitlement',
+    'end_entitlement','transfer_ownership','cancel_transfer','set_free_device',
+    'rectify_account','block_account','anonymize_account','redact_email')),
+  organization_id uuid REFERENCES organizations(id),
+  tenant_id uuid REFERENCES restaurants(id),
+  target jsonb NOT NULL DEFAULT '{}'::jsonb,
+  before_state jsonb,
+  after_state jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX support_actions_organization ON support_actions(organization_id, created_at DESC);
+-- The operator is the database login and the time is the transaction's (the gm_support
+-- policies below match a write to the action row of the same transaction through
+-- created_at = now()). A tenant-scoped action always names that tenant's organization, so
+-- the restaurant's owners see it (support_action_owner_read; AUTHZ-2).
+CREATE FUNCTION support_action_operator() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.operator_login := session_user;
+  NEW.created_at := now();
+  IF NEW.tenant_id IS NOT NULL THEN
+    NEW.organization_id := (SELECT r.organization_id FROM restaurants r WHERE r.id = NEW.tenant_id);
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER support_action_operator BEFORE INSERT ON support_actions
+  FOR EACH ROW EXECUTE FUNCTION support_action_operator();
+CREATE TRIGGER support_actions_append_only BEFORE UPDATE OR DELETE ON support_actions
+  FOR EACH ROW EXECUTE FUNCTION account_append_only();
+
+-- Versioned legal acceptance (append-only evidence) -----------------------------------
+CREATE TABLE legal_acceptances (
+  id uuid PRIMARY KEY,
+  account_id uuid NOT NULL REFERENCES owner_accounts(id),
+  owner_session_id uuid NOT NULL,
+  -- billing_consent: the express consent for billing data (LFPDPPP Art. 7), its own
+  -- checkbox and its own row, versioned with the privacy notice (UX-3).
+  document text NOT NULL CHECK (document IN ('terms','privacy','dpa','billing_consent')),
+  version text NOT NULL CHECK (version ~ '^\d{4}-\d{2}-\d{2}(\.\d+)?$'),
+  content_hash text NOT NULL CHECK (content_hash ~ '^[a-f0-9]{64}$'),
+  entity_hash text NOT NULL CHECK (entity_hash ~ '^[a-f0-9]{64}$'),
+  published boolean NOT NULL,
+  locale text NOT NULL CHECK (locale IN ('es','en')),
+  context text NOT NULL CHECK (context IN ('signup','invitation','reacceptance','transfer')),
+  organization_id uuid REFERENCES organizations(id),
+  accepted_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (account_id, owner_session_id) REFERENCES owner_sessions(account_id, id),
+  CHECK ((document = 'dpa') = (organization_id IS NOT NULL))
+);
+CREATE INDEX legal_acceptances_account ON legal_acceptances(account_id, document, accepted_at DESC);
+CREATE INDEX legal_acceptances_organization ON legal_acceptances(organization_id, accepted_at DESC)
+  WHERE organization_id IS NOT NULL;
+CREATE TRIGGER legal_acceptances_append_only BEFORE UPDATE OR DELETE ON legal_acceptances
+  FOR EACH ROW EXECUTE FUNCTION account_append_only();
+-- Evidence time is the server's, never the caller's (LEGAL-8), and the table cannot be
+-- truncated (Código de Comercio Art. 49: kept whole and unaltered).
+CREATE FUNCTION legal_acceptance_time() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  NEW.accepted_at := now();
+  RETURN NEW;
+END $$;
+CREATE TRIGGER legal_acceptance_time BEFORE INSERT ON legal_acceptances
+  FOR EACH ROW EXECUTE FUNCTION legal_acceptance_time();
+CREATE TRIGGER legal_acceptances_no_truncate BEFORE TRUNCATE ON legal_acceptances
+  FOR EACH STATEMENT EXECUTE FUNCTION account_append_only();
+
+-- Ownership transfers (owner-, support- or recovery-initiated) ------------------------
+CREATE TABLE ownership_transfers (
+  id uuid PRIMARY KEY,
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  from_account_id uuid NOT NULL REFERENCES owner_accounts(id),
+  to_email text NOT NULL CHECK (to_email = lower(btrim(to_email)) AND length(to_email) BETWEEN 3 AND 254),
+  to_account_id uuid REFERENCES owner_accounts(id),
+  token_hash text NOT NULL UNIQUE CHECK (token_hash ~ '^[a-f0-9]{64}$'),
+  initiated_by text NOT NULL CHECK (initiated_by IN ('owner','support','recovery_code')),
+  support_action_id uuid REFERENCES support_actions(id),
+  previous_owner_stays boolean NOT NULL,
+  state text NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','completed','canceled')),
+  available_at timestamptz NOT NULL DEFAULT now(),
+  expires_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  completed_at timestamptz,
+  canceled_at timestamptz,
+  canceled_by text CHECK (canceled_by IN ('owner','target','support','expired')),
+  CHECK (expires_at > available_at),
+  CHECK ((state = 'completed') = (completed_at IS NOT NULL)),
+  CHECK ((state = 'canceled') = (canceled_at IS NOT NULL AND canceled_by IS NOT NULL)),
+  CHECK (state <> 'completed' OR to_account_id IS NOT NULL),
+  CHECK ((initiated_by = 'support') = (support_action_id IS NOT NULL)),
+  CHECK (initiated_by <> 'recovery_code' OR (to_account_id IS NOT NULL AND NOT previous_owner_stays)),
+  CHECK (to_account_id IS DISTINCT FROM from_account_id)
+);
+CREATE UNIQUE INDEX one_pending_transfer ON ownership_transfers(organization_id) WHERE state = 'pending';
+CREATE INDEX ownership_transfers_to ON ownership_transfers(to_account_id) WHERE state = 'pending';
+-- One transition (pending -> completed or canceled), plus filling to_account_id once.
+-- The one other change: ARCO cancellation (docs/OPERATIONS.md, support anonymize-account
+-- and redact-email) replaces a closed transfer's target email by its sha256 digest and
+-- touches nothing else.
+CREATE FUNCTION ownership_transfer_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'ownership_transfers is append-only'; END IF;
+  IF OLD.state <> 'pending' AND OLD.to_email NOT LIKE 'redacted:%'
+     AND NEW.to_email = 'redacted:' || encode(sha256(convert_to(OLD.to_email, 'UTF8')), 'hex')
+     AND (NEW.id, NEW.organization_id, NEW.from_account_id, NEW.to_account_id, NEW.token_hash,
+          NEW.initiated_by, NEW.support_action_id, NEW.previous_owner_stays, NEW.state,
+          NEW.available_at, NEW.expires_at, NEW.created_at, NEW.completed_at, NEW.canceled_at,
+          NEW.canceled_by)
+         IS NOT DISTINCT FROM
+         (OLD.id, OLD.organization_id, OLD.from_account_id, OLD.to_account_id, OLD.token_hash,
+          OLD.initiated_by, OLD.support_action_id, OLD.previous_owner_stays, OLD.state,
+          OLD.available_at, OLD.expires_at, OLD.created_at, OLD.completed_at, OLD.canceled_at,
+          OLD.canceled_by) THEN
+    RETURN NEW;
+  END IF;
+  IF OLD.state <> 'pending'
+     OR (NEW.id, NEW.organization_id, NEW.from_account_id, NEW.to_email, NEW.token_hash,
+         NEW.initiated_by, NEW.support_action_id, NEW.previous_owner_stays,
+         NEW.available_at, NEW.expires_at, NEW.created_at)
+        IS DISTINCT FROM
+        (OLD.id, OLD.organization_id, OLD.from_account_id, OLD.to_email, OLD.token_hash,
+         OLD.initiated_by, OLD.support_action_id, OLD.previous_owner_stays,
+         OLD.available_at, OLD.expires_at, OLD.created_at)
+     OR (OLD.to_account_id IS NOT NULL AND NEW.to_account_id IS DISTINCT FROM OLD.to_account_id) THEN
+    RAISE EXCEPTION 'ownership_transfer_immutable';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER ownership_transfer_guard BEFORE UPDATE OR DELETE ON ownership_transfers
+  FOR EACH ROW EXECUTE FUNCTION ownership_transfer_guard();
+
+-- Co-owners (organization level). The primary stays organizations.created_by_account.
+CREATE TABLE organization_co_owners (
+  id uuid PRIMARY KEY,
+  organization_id uuid NOT NULL REFERENCES organizations(id),
+  account_id uuid NOT NULL REFERENCES owner_accounts(id),
+  added_by uuid NOT NULL REFERENCES owner_accounts(id),
+  source text NOT NULL CHECK (source IN ('invitation','transfer')),
+  invitation_id uuid REFERENCES restaurant_invitations(id),
+  transfer_id uuid REFERENCES ownership_transfers(id),
+  added_at timestamptz NOT NULL DEFAULT now(),
+  removed_at timestamptz,
+  removed_by uuid REFERENCES owner_accounts(id),
+  removal text CHECK (removal IN ('removed','left','promoted')),
+  CHECK ((removed_at IS NULL) = (removed_by IS NULL)),
+  CHECK ((removed_at IS NULL) = (removal IS NULL)),
+  CHECK ((source = 'invitation') = (invitation_id IS NOT NULL)),
+  CHECK ((source = 'transfer') = (transfer_id IS NOT NULL))
+);
+CREATE UNIQUE INDEX one_active_co_owner ON organization_co_owners(organization_id, account_id)
+  WHERE removed_at IS NULL;
+CREATE INDEX co_owners_account ON organization_co_owners(account_id) WHERE removed_at IS NULL;
+CREATE FUNCTION co_owner_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'organization_co_owners is append-only'; END IF;
+  IF OLD.removed_at IS NOT NULL OR NEW.removed_at IS NULL
+     OR (NEW.id, NEW.organization_id, NEW.account_id, NEW.added_by, NEW.source,
+         NEW.invitation_id, NEW.transfer_id, NEW.added_at)
+        IS DISTINCT FROM
+        (OLD.id, OLD.organization_id, OLD.account_id, OLD.added_by, OLD.source,
+         OLD.invitation_id, OLD.transfer_id, OLD.added_at) THEN
+    RAISE EXCEPTION 'co_owner_immutable';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER co_owner_guard BEFORE UPDATE OR DELETE ON organization_co_owners
+  FOR EACH ROW EXECUTE FUNCTION co_owner_guard();
+
+-- Recovery codes: lookup in clear, 80-bit secret stored with scrypt (salt:key, the
+-- format of server/access.ts hashSecret()).
+CREATE TABLE account_recovery_codes (
+  account_id uuid NOT NULL REFERENCES owner_accounts(id),
+  lookup text NOT NULL UNIQUE CHECK (lookup ~ '^[0-9A-HJKMNP-TV-Z]{8}$'),
+  secret_hash text NOT NULL,
+  batch_id uuid NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  used_at timestamptz,
+  used_by_account uuid REFERENCES owner_accounts(id),
+  used_for_transfer uuid REFERENCES ownership_transfers(id) DEFERRABLE INITIALLY DEFERRED,
+  revoked_at timestamptz,
+  PRIMARY KEY (account_id, lookup),
+  CHECK ((used_at IS NULL) = (used_by_account IS NULL)),
+  CHECK ((used_at IS NULL) = (used_for_transfer IS NULL)),
+  CHECK (used_at IS NULL OR revoked_at IS NULL)
+);
+CREATE FUNCTION recovery_code_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'account_recovery_codes is append-only'; END IF;
+  IF (NEW.account_id, NEW.lookup, NEW.secret_hash, NEW.batch_id, NEW.created_at)
+       IS DISTINCT FROM (OLD.account_id, OLD.lookup, OLD.secret_hash, OLD.batch_id, OLD.created_at)
+     OR OLD.used_at IS NOT NULL OR OLD.revoked_at IS NOT NULL THEN
+    RAISE EXCEPTION 'recovery_code_immutable';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER recovery_code_guard BEFORE UPDATE OR DELETE ON account_recovery_codes
+  FOR EACH ROW EXECUTE FUNCTION recovery_code_guard();
+
+-- Organization/account-level audit trail (tenant audit.actor_id must be an employee).
+CREATE TABLE account_events (
+  id uuid PRIMARY KEY,
+  organization_id uuid REFERENCES organizations(id),
+  actor_account_id uuid NOT NULL REFERENCES owner_accounts(id),
+  subject_account_id uuid REFERENCES owner_accounts(id),
+  kind text NOT NULL CHECK (kind IN ('co_owner_invited','co_owner_added','co_owner_removed',
+    'co_owner_left','transfer_requested','transfer_canceled','transfer_completed',
+    'recovery_codes_generated','recovery_code_redeemed','tax_profile_updated')),
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX account_events_organization ON account_events(organization_id, created_at DESC);
+CREATE TRIGGER account_events_append_only BEFORE UPDATE OR DELETE ON account_events
+  FOR EACH ROW EXECUTE FUNCTION account_append_only();
+
+-- Tenant-level account settings (row absent = defaults) --------------------------------
+CREATE TABLE restaurant_account_settings (
+  tenant_id uuid PRIMARY KEY REFERENCES restaurants(id),
+  privacy_notice_url text CHECK (privacy_notice_url IS NULL OR
+    (privacy_notice_url ~ '^https://[^\s]+$' AND length(privacy_notice_url) <= 500)),
+  free_selection_mode text NOT NULL DEFAULT 'auto' CHECK (free_selection_mode IN ('auto','manual')),
+  version integer NOT NULL DEFAULT 1 CHECK (version > 0),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by uuid,
+  FOREIGN KEY (tenant_id, updated_by) REFERENCES employees(tenant_id, id)
+);
+
+-- SaaS billing receptor data (feature-gated; future SaaS CFDI) -------------------------
+CREATE TABLE organization_tax_profiles (
+  organization_id uuid PRIMARY KEY REFERENCES organizations(id),
+  rfc text NOT NULL CHECK (rfc ~ '^[A-ZÑ&]{3,4}[0-9]{6}[A-Z0-9]{3}$'),
+  legal_name text NOT NULL CHECK (length(btrim(legal_name)) BETWEEN 1 AND 254),
+  tax_regime text NOT NULL CHECK (tax_regime ~ '^[0-9]{3}$'),
+  postal_code text NOT NULL CHECK (postal_code ~ '^[0-9]{5}$'),
+  cfdi_use text NOT NULL DEFAULT 'G03' CHECK (cfdi_use ~ '^([A-Z][0-9]{2}|CP01|CN01|S01)$'),
+  invoice_email text CHECK (invoice_email IS NULL OR length(invoice_email) <= 254),
+  version integer NOT NULL DEFAULT 1 CHECK (version > 0),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  updated_by_account uuid NOT NULL REFERENCES owner_accounts(id)
+);
+
+-- Membership revocation (co-owner removal, previous owner leaving) ---------------------
+ALTER TABLE owner_memberships ADD COLUMN revoked_at timestamptz;
+ALTER TABLE owner_memberships ADD COLUMN revoked_by uuid REFERENCES owner_accounts(id);
+ALTER TABLE owner_memberships ADD CONSTRAINT membership_revocation_complete
+  CHECK ((revoked_at IS NULL) = (revoked_by IS NULL)) NOT VALID;
+ALTER TABLE owner_memberships VALIDATE CONSTRAINT membership_revocation_complete;
+
+-- Co-owner invitations reuse restaurant_invitations.
+ALTER TABLE restaurant_invitations DROP CONSTRAINT restaurant_invitations_role_check;
+ALTER TABLE restaurant_invitations ADD CONSTRAINT restaurant_invitations_role_check
+  CHECK (role IN ('manager','cashier','server','kitchen','co_owner')) NOT VALID;
+ALTER TABLE restaurant_invitations VALIDATE CONSTRAINT restaurant_invitations_role_check;
+
+-- Support-granted entitlements are a third, explicit source.
+ALTER TABLE restaurant_entitlements DROP CONSTRAINT restaurant_entitlements_source_check;
+ALTER TABLE restaurant_entitlements ADD CONSTRAINT restaurant_entitlements_source_check
+  CHECK (source IN ('stripe','fixture','support')) NOT VALID;
+ALTER TABLE restaurant_entitlements VALIDATE CONSTRAINT restaurant_entitlements_source_check;
+
+-- When Pro ended, for drawer continuation (GAP-1, ACC-21): the moment a write took the
+-- row out of Pro (trialing, active, or a past_due that still has an end date), bounded
+-- by the end date it had then. The trigger owns the column, so a write that keeps the
+-- row out of Pro never moves it: the billing worker's reconcile (every 15 minutes, it
+-- rewrites updated_at even when nothing changed), past_due -> canceled, a repeated
+-- support end-entitlement. A row inserted outside Pro never had Pro under it, and rows
+-- written before 031 carry none (fail closed: no backfill).
+ALTER TABLE restaurant_entitlements ADD COLUMN pro_ended_at timestamptz;
+CREATE FUNCTION entitlement_pro_ended() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' OR NEW.status IN ('trialing','active')
+     OR (NEW.status = 'past_due' AND NEW.access_until IS NOT NULL) THEN
+    NEW.pro_ended_at := NULL;
+  ELSIF OLD.status IN ('trialing','active')
+     OR (OLD.status = 'past_due' AND OLD.access_until IS NOT NULL) THEN
+    NEW.pro_ended_at := least(OLD.access_until, now());
+  ELSE
+    NEW.pro_ended_at := OLD.pro_ended_at;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER entitlement_pro_ended BEFORE INSERT OR UPDATE ON restaurant_entitlements
+  FOR EACH ROW EXECUTE FUNCTION entitlement_pro_ended();
+
+-- The primary owner pointer changes only through a valid pending transfer. Runs as the
+-- invoker (gm_app), which reads the transfer through transfer_read: the caller sets
+-- app.account_id, app.organization_id and app.transfer_id first.
+CREATE FUNCTION organization_owner_change_guard() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.created_by_account IS DISTINCT FROM OLD.created_by_account AND NOT EXISTS (
+    SELECT 1 FROM ownership_transfers t
+    WHERE t.id = nullif(current_setting('app.transfer_id', true), '')::uuid
+      AND t.organization_id = NEW.id
+      AND t.from_account_id = OLD.created_by_account
+      AND t.to_account_id = NEW.created_by_account
+      AND t.state = 'pending' AND t.available_at <= now() AND t.expires_at > now()
+  ) THEN
+    RAISE EXCEPTION 'organization_owner_change_requires_transfer';
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER organization_owner_change_guard BEFORE UPDATE OF created_by_account ON organizations
+  FOR EACH ROW EXECUTE FUNCTION organization_owner_change_guard();
+
+-- RLS ---------------------------------------------------------------------------------
+DO $$ DECLARE t text; BEGIN
+  FOREACH t IN ARRAY ARRAY['support_actions','legal_acceptances','ownership_transfers',
+    'organization_co_owners','account_recovery_codes','account_events',
+    'restaurant_account_settings','organization_tax_profiles'] LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
+  END LOOP;
+END $$;
+
+CREATE POLICY tenant_scope ON restaurant_account_settings
+  USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid)
+  WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+
+CREATE POLICY legal_acceptance_self ON legal_acceptances
+  USING (account_id = nullif(current_setting('app.account_id', true), '')::uuid)
+  WITH CHECK (account_id = nullif(current_setting('app.account_id', true), '')::uuid);
+CREATE POLICY legal_acceptance_org_read ON legal_acceptances FOR SELECT
+  USING (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+
+CREATE POLICY co_owner_read ON organization_co_owners FOR SELECT USING (
+  account_id = nullif(current_setting('app.account_id', true), '')::uuid
+  OR organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+CREATE POLICY co_owner_update ON organization_co_owners FOR UPDATE
+  USING (account_id = nullif(current_setting('app.account_id', true), '')::uuid
+    OR organization_id = nullif(current_setting('app.organization_id', true), '')::uuid)
+  WITH CHECK (account_id = nullif(current_setting('app.account_id', true), '')::uuid
+    OR organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+CREATE POLICY co_owner_invited_insert ON organization_co_owners FOR INSERT WITH CHECK (
+  source = 'invitation'
+  AND account_id = nullif(current_setting('app.account_id', true), '')::uuid
+  AND EXISTS (SELECT 1 FROM restaurant_invitations i JOIN restaurants r ON r.id = i.tenant_id
+    WHERE i.id = organization_co_owners.invitation_id
+      AND i.token_hash = nullif(current_setting('app.invitation_hash', true), '')
+      AND i.role = 'co_owner' AND i.accepted_by = organization_co_owners.account_id
+      AND NOT i.revoked AND i.expires_at > now()
+      AND r.organization_id = organization_co_owners.organization_id));
+CREATE POLICY co_owner_transfer_insert ON organization_co_owners FOR INSERT WITH CHECK (
+  source = 'transfer'
+  AND organization_id = nullif(current_setting('app.organization_id', true), '')::uuid
+  AND EXISTS (SELECT 1 FROM ownership_transfers t
+    WHERE t.id = organization_co_owners.transfer_id
+      AND t.id = nullif(current_setting('app.transfer_id', true), '')::uuid
+      AND t.organization_id = organization_co_owners.organization_id
+      AND t.from_account_id = organization_co_owners.account_id
+      AND t.previous_owner_stays AND t.state = 'pending'));
+
+CREATE POLICY transfer_read ON ownership_transfers FOR SELECT USING (
+  from_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+  OR to_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+  OR token_hash = nullif(current_setting('app.transfer_hash', true), '')
+  OR organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+CREATE POLICY transfer_update ON ownership_transfers FOR UPDATE
+  USING (from_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+    OR to_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+    OR token_hash = nullif(current_setting('app.transfer_hash', true), '')
+    OR organization_id = nullif(current_setting('app.organization_id', true), '')::uuid)
+  WITH CHECK (from_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+    OR to_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+    OR token_hash = nullif(current_setting('app.transfer_hash', true), '')
+    OR organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+CREATE POLICY transfer_owner_insert ON ownership_transfers FOR INSERT WITH CHECK (
+  initiated_by = 'owner'
+  AND from_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+  AND organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+CREATE POLICY transfer_recovery_insert ON ownership_transfers FOR INSERT WITH CHECK (
+  initiated_by = 'recovery_code'
+  AND to_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+  AND EXISTS (SELECT 1 FROM account_recovery_codes c
+    WHERE c.account_id = ownership_transfers.from_account_id
+      AND c.lookup = nullif(current_setting('app.recovery_lookup', true), '')
+      AND c.used_by_account = ownership_transfers.to_account_id
+      AND c.used_for_transfer = ownership_transfers.id));
+
+CREATE POLICY recovery_code_owner ON account_recovery_codes
+  USING (account_id = nullif(current_setting('app.account_id', true), '')::uuid)
+  WITH CHECK (account_id = nullif(current_setting('app.account_id', true), '')::uuid);
+CREATE POLICY recovery_code_lookup ON account_recovery_codes FOR SELECT
+  USING (lookup = nullif(current_setting('app.recovery_lookup', true), ''));
+CREATE POLICY recovery_code_redeem ON account_recovery_codes FOR UPDATE
+  USING (lookup = nullif(current_setting('app.recovery_lookup', true), ''))
+  WITH CHECK (lookup = nullif(current_setting('app.recovery_lookup', true), '')
+    AND used_by_account = nullif(current_setting('app.account_id', true), '')::uuid);
+
+CREATE POLICY account_event_read ON account_events FOR SELECT USING (
+  actor_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+  OR subject_account_id = nullif(current_setting('app.account_id', true), '')::uuid
+  OR organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+CREATE POLICY account_event_insert ON account_events FOR INSERT WITH CHECK (
+  actor_account_id = nullif(current_setting('app.account_id', true), '')::uuid);
+
+CREATE POLICY support_action_owner_read ON support_actions FOR SELECT
+  USING (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+
+CREATE POLICY tax_profile_owner ON organization_tax_profiles
+  USING (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid)
+  WITH CHECK (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid
+    AND updated_by_account = nullif(current_setting('app.account_id', true), '')::uuid);
+CREATE POLICY billing_worker_tax_profiles ON organization_tax_profiles FOR SELECT
+  TO gm_billing_worker USING (true);
+GRANT SELECT ON organization_tax_profiles TO gm_billing_worker;
+
+-- Verified organization scope (leaf predicates; set only after organizationScope()).
+CREATE POLICY organization_verified_scope_read ON organizations FOR SELECT
+  USING (id = nullif(current_setting('app.organization_id', true), '')::uuid);
+CREATE POLICY recovery_organization_read ON organizations FOR SELECT
+  USING (created_by_account = nullif(current_setting('app.recovery_account_id', true), '')::uuid);
+-- RESTRICTIVE (LD-15 account Q3): organization_scope is a permissive FOR ALL policy, and
+-- permissive policies are OR'ed, so a permissive policy here would not constrain the new
+-- UPDATE(created_by_account) grant. As a restrictive policy it applies to every UPDATE of
+-- organizations; gm_app has no other UPDATE there (scripts/grants.sql) and the billing
+-- worker has SELECT only. organization_owner_change_guard is the second guard.
+CREATE POLICY organization_transfer_update ON organizations AS RESTRICTIVE FOR UPDATE
+  USING (EXISTS (SELECT 1 FROM ownership_transfers t
+    WHERE t.id = nullif(current_setting('app.transfer_id', true), '')::uuid
+      AND t.organization_id = organizations.id AND t.state = 'pending'))
+  WITH CHECK (created_by_account = nullif(current_setting('app.account_id', true), '')::uuid);
+-- A verified transfer target or co-owner can see whether the organization has a
+-- subscription (transfer preview "Incluye la facturación"); billing writes stay with
+-- the billing worker and billing reads by the primary keep billing_owner_read.
+CREATE POLICY billing_verified_scope_read ON organization_billing FOR SELECT
+  USING (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+CREATE POLICY restaurant_verified_scope_read ON restaurants FOR SELECT
+  USING (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
+-- A removed co-owner or departed previous owner keeps a revoked membership row; it must
+-- no longer reveal the restaurant (or, through organization_scope, the organization).
+DROP POLICY owner_restaurant_read ON restaurants;
+CREATE POLICY owner_restaurant_read ON restaurants FOR SELECT USING (
+  EXISTS (SELECT 1 FROM owner_memberships m
+    WHERE m.tenant_id = restaurants.id AND m.revoked_at IS NULL));
+-- Verified owners of an organization can read the account rows (name, email) of its
+-- primary and active co-owners. owner_accounts is not referenced by any other policy,
+-- so this sub-link cannot form a rewrite cycle.
+CREATE POLICY owner_accounts_org_read ON owner_accounts FOR SELECT USING (
+  EXISTS (SELECT 1 FROM organization_co_owners c
+    WHERE c.account_id = owner_accounts.id AND c.removed_at IS NULL
+      AND c.organization_id = nullif(current_setting('app.organization_id', true), '')::uuid)
+  OR EXISTS (SELECT 1 FROM organizations o
+    WHERE o.created_by_account = owner_accounts.id
+      AND o.id = nullif(current_setting('app.organization_id', true), '')::uuid));
+
+-- Memberships: tenant-scoped read/revoke (leaf), co-owner provisioning insert.
+-- Deploy window (ACC-22): the pre-031 acceptInvitation reads memberships by tenant only,
+-- so an invitation it accepts after this policy exists is spent without a seat; see
+-- docs/ACCOUNT_AND_LEGAL.md, "Deploy note", for the query that finds them.
+CREATE POLICY membership_tenant_read ON owner_memberships FOR SELECT
+  USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid);
+CREATE POLICY membership_revoke ON owner_memberships FOR UPDATE
+  USING (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
+    OR account_id = nullif(current_setting('app.account_id', true), '')::uuid)
+  WITH CHECK (tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
+    OR account_id = nullif(current_setting('app.account_id', true), '')::uuid);
+CREATE POLICY co_owner_membership_insert ON owner_memberships FOR INSERT WITH CHECK (
+  EXISTS (SELECT 1 FROM organization_co_owners c JOIN restaurants r ON r.organization_id = c.organization_id
+    WHERE r.id = owner_memberships.tenant_id AND c.account_id = owner_memberships.account_id
+      AND c.removed_at IS NULL
+      AND c.organization_id = nullif(current_setting('app.organization_id', true), '')::uuid));
+
+-- Invitations: visible/revocable by any verified owner of the organization.
+CREATE POLICY invitation_org_scope ON restaurant_invitations
+  USING (EXISTS (SELECT 1 FROM restaurants r WHERE r.id = restaurant_invitations.tenant_id
+    AND r.organization_id = nullif(current_setting('app.organization_id', true), '')::uuid))
+  WITH CHECK (EXISTS (SELECT 1 FROM restaurants r WHERE r.id = restaurant_invitations.tenant_id
+    AND r.organization_id = nullif(current_setting('app.organization_id', true), '')::uuid));
+
+-- Vendor support capability role (least privilege, no DELETE, column-scoped) -----------
+-- AUTHZ-2 / OPS-2 (LD-32): every gm_support write is bound to a support_actions row the
+-- same login wrote in the same transaction (created_at = now(), forced by the trigger
+-- above), for that tenant or organization and that target, so a raw psql session with an
+-- operator's SUPPORT_DATABASE_URL cannot change anything the owners do not see in
+-- «Acciones de soporte». The restrictive policies also bound the values: an unlock only
+-- clears, an audit row is only the unlock's own row with server-set created_at, the Free
+-- slot moves only to the logged device, and an account row becomes exactly the logged
+-- after_state (compared as digests: support_actions is append-only, so it stores no
+-- plaintext email or name). The CLI (scripts/support-commands.ts) logs first, then writes.
+GRANT USAGE ON SCHEMA public TO gm_support;
+GRANT SELECT (id, organization_id, name, timezone, activation_pending, free_location) ON restaurants TO gm_support;
+GRANT SELECT (id, name, created_by_account) ON organizations TO gm_support;
+GRANT SELECT (id, email, name, active, created_at) ON owner_accounts TO gm_support;
+-- ARCO rectification, blocking and anonymization (LEGAL-5, DATA-1).
+GRANT UPDATE (email, name, active) ON owner_accounts TO gm_support;
+GRANT SELECT (account_id, tenant_id, employee_id, revoked_at) ON owner_memberships TO gm_support;
+GRANT SELECT (tenant_id, id, name, login, role, active, failed_attempts, locked_until, free_slot,
+  pin_set_at, deactivated_at) ON employees TO gm_support;
+GRANT UPDATE (failed_attempts, locked_until) ON employees TO gm_support;
+-- unlock-employee mirrors access clearLocks(): per-device throttles (access 023).
+GRANT SELECT ON pin_throttles TO gm_support;
+GRANT UPDATE (failures, lock_level, locked_until, last_failure_at) ON pin_throttles TO gm_support;
+-- unlock-employee writes the access.employee_unlocked audit row {by:"support"}; created_at
+-- is not grantable, so it always takes the server default.
+GRANT INSERT (tenant_id, id, actor_id, operation, entity_id, detail) ON audit TO gm_support;
+GRANT SELECT (tenant_id, id, name, active, free_slot) ON devices TO gm_support;
+GRANT UPDATE (free_slot) ON devices TO gm_support;
+GRANT SELECT (tenant_id, status, access_until, source, version, updated_at) ON restaurant_entitlements TO gm_support;
+GRANT INSERT (tenant_id, status, access_until, source) ON restaurant_entitlements TO gm_support;
+GRANT UPDATE (status, access_until, source, version, updated_at) ON restaurant_entitlements TO gm_support;
+GRANT SELECT (organization_id, subscription_id, trial_used, interval) ON organization_billing TO gm_support;
+GRANT SELECT ON billing_locations, organization_co_owners, legal_acceptances, account_events,
+  restaurant_account_settings TO gm_support;
+GRANT SELECT (id, organization_id, from_account_id, to_email, to_account_id, initiated_by,
+  support_action_id, previous_owner_stays, state, available_at, expires_at, created_at,
+  completed_at, canceled_at, canceled_by) ON ownership_transfers TO gm_support;
+GRANT INSERT ON ownership_transfers TO gm_support;
+GRANT UPDATE (state, canceled_at, canceled_by, to_email) ON ownership_transfers TO gm_support;
+GRANT SELECT, INSERT ON support_actions TO gm_support;
+
+CREATE POLICY support_read ON restaurants FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_read ON organizations FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_read ON owner_accounts FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_update ON owner_accounts FOR UPDATE TO gm_support USING (true) WITH CHECK (true);
+CREATE POLICY support_limit_update ON owner_accounts AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (true)
+  WITH CHECK (EXISTS (SELECT 1 FROM support_actions a
+    WHERE a.action IN ('rectify_account','block_account','anonymize_account')
+      AND a.operator_login = session_user AND a.created_at = now()
+      AND a.target->>'accountId' = owner_accounts.id::text
+      AND a.after_state->>'emailSha256' = encode(sha256(convert_to(owner_accounts.email, 'UTF8')), 'hex')
+      AND a.after_state->>'nameSha256' = encode(sha256(convert_to(owner_accounts.name, 'UTF8')), 'hex')
+      AND (a.after_state->>'active')::boolean = owner_accounts.active));
+CREATE POLICY support_read ON owner_memberships FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_read ON organization_billing FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_read ON billing_locations FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_read ON organization_co_owners FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_read ON legal_acceptances FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_read ON account_events FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_read ON ownership_transfers FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_insert ON ownership_transfers FOR INSERT TO gm_support WITH CHECK (true);
+CREATE POLICY support_cancel ON ownership_transfers FOR UPDATE TO gm_support USING (true) WITH CHECK (true);
+CREATE POLICY support_limit_insert ON ownership_transfers AS RESTRICTIVE FOR INSERT TO gm_support
+  WITH CHECK (initiated_by = 'support' AND NOT previous_owner_stays
+    AND available_at >= now() + interval '24 hours'
+    AND expires_at <= available_at + interval '7 days'
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.id = ownership_transfers.support_action_id AND a.action = 'transfer_ownership'
+        AND a.organization_id = ownership_transfers.organization_id
+        AND a.operator_login = session_user AND a.created_at = now()));
+-- A cancellation (cancel-transfer, or transfer-ownership closing an expired row) or the
+-- ARCO email redaction of a closed transfer (ownership_transfer_guard allows nothing else).
+CREATE POLICY support_limit_update ON ownership_transfers AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (true)
+  WITH CHECK (
+    (state = 'canceled' AND canceled_by = 'support' AND to_email NOT LIKE 'redacted:%'
+      AND EXISTS (SELECT 1 FROM support_actions a
+        WHERE a.action IN ('cancel_transfer','transfer_ownership','anonymize_account','redact_email')
+          AND a.organization_id = ownership_transfers.organization_id
+          AND a.operator_login = session_user AND a.created_at = now()))
+    OR (state <> 'pending' AND to_email LIKE 'redacted:%'
+      AND EXISTS (SELECT 1 FROM support_actions a
+        WHERE a.action IN ('anonymize_account','redact_email')
+          AND a.organization_id = ownership_transfers.organization_id
+          AND a.operator_login = session_user AND a.created_at = now()
+          AND (a.target->'emailSha256s') ? substr(ownership_transfers.to_email, 10))));
+CREATE POLICY support_read ON restaurant_entitlements FOR SELECT TO gm_support USING (true);
+CREATE POLICY support_insert ON restaurant_entitlements FOR INSERT TO gm_support WITH CHECK (true);
+CREATE POLICY support_update ON restaurant_entitlements FOR UPDATE TO gm_support USING (true) WITH CHECK (true);
+CREATE POLICY support_limit_insert ON restaurant_entitlements AS RESTRICTIVE FOR INSERT TO gm_support
+  WITH CHECK (source = 'support'
+    AND (access_until IS NULL OR access_until <= now() + interval '92 days')
+    AND NOT EXISTS (SELECT 1 FROM billing_locations l WHERE l.tenant_id = restaurant_entitlements.tenant_id)
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.action = 'grant_entitlement' AND a.tenant_id = restaurant_entitlements.tenant_id
+        AND a.operator_login = session_user AND a.created_at = now()));
+CREATE POLICY support_limit_update ON restaurant_entitlements AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (source IN ('support','fixture') OR status = 'free')
+  WITH CHECK (source = 'support'
+    AND (access_until IS NULL OR access_until <= now() + interval '92 days')
+    AND NOT EXISTS (SELECT 1 FROM billing_locations l WHERE l.tenant_id = restaurant_entitlements.tenant_id)
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.action IN ('grant_entitlement','end_entitlement')
+        AND a.tenant_id = restaurant_entitlements.tenant_id
+        AND a.operator_login = session_user AND a.created_at = now()));
+CREATE POLICY support_actions_insert ON support_actions FOR INSERT TO gm_support WITH CHECK (true);
+CREATE POLICY support_actions_read ON support_actions FOR SELECT TO gm_support USING (true);
+-- employees/devices/pin_throttles/audit/restaurant_account_settings: gm_support reaches
+-- rows through the existing tenant_scope policies (no TO clause, so they apply to every
+-- role) by setting app.tenant_id; these restrictive policies bound what it may write.
+CREATE POLICY support_unlock ON employees AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (true)
+  WITH CHECK (failed_attempts = 0 AND locked_until IS NULL
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.action = 'unlock_employee' AND a.tenant_id = employees.tenant_id
+        AND a.target->>'employeeId' = employees.id::text
+        AND a.operator_login = session_user AND a.created_at = now()));
+CREATE POLICY support_unlock ON pin_throttles AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (true)
+  WITH CHECK (failures = 0 AND lock_level = 0 AND locked_until IS NULL AND last_failure_at IS NULL
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.action = 'unlock_employee' AND a.tenant_id = pin_throttles.tenant_id
+        AND a.target->>'employeeId' = pin_throttles.employee_id::text
+        AND a.operator_login = session_user AND a.created_at = now()));
+CREATE POLICY support_unlock_audit ON audit AS RESTRICTIVE FOR INSERT TO gm_support
+  WITH CHECK (operation = 'access.employee_unlocked' AND entity_id = actor_id::text
+    AND detail->>'by' = 'support'
+    AND EXISTS (SELECT 1 FROM support_actions a
+      WHERE a.id::text = audit.detail->>'supportActionId' AND a.action = 'unlock_employee'
+        AND a.tenant_id = audit.tenant_id AND a.target->>'employeeId' = audit.entity_id
+        AND a.operator_login = session_user AND a.created_at = now()));
+CREATE POLICY support_free_device ON devices AS RESTRICTIVE FOR UPDATE TO gm_support
+  USING (true)
+  WITH CHECK (EXISTS (SELECT 1 FROM support_actions a
+    WHERE a.action = 'set_free_device' AND a.tenant_id = devices.tenant_id
+      AND (devices.free_slot IS NULL OR a.target->>'deviceId' = devices.id::text)
+      AND a.operator_login = session_user AND a.created_at = now()));

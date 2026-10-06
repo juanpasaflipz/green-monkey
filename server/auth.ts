@@ -1,4 +1,4 @@
-import { sellingAllowed } from "./free-limits.js";
+import { sellingAccess } from "./free-limits.js";
 import {
   randomBytes,
   scryptSync,
@@ -90,8 +90,15 @@ export function authentication(sql: postgres.Sql) {
               and not os.revoked and os.expires_at>now() and a.active`;
           if (!owner) return { failure: "unauthorized" };
         }
-        const selling = await sellingAllowed(tx, s.employee_id, s.device_id);
-        const touched = await touchSession(tx, s as AuthRow, selling);
+        const access = await sellingAccess(tx, s.employee_id, s.device_id);
+        const selling = access.allowed;
+        // Drawer continuation (account 031, LD-15 Q5) keeps a register selling
+        // but never renews its offline window.
+        const touched = await touchSession(
+          tx,
+          s as AuthRow,
+          selling && access.basis !== "drawer_continuation",
+        );
         return {
           session: {
             sellingAllowed: selling,

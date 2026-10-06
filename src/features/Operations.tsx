@@ -10,6 +10,7 @@ import { Kitchen } from "./Kitchen";
 import { RestaurantSettings } from "./RestaurantSettings";
 import { FiscalSettings } from "./fiscal/FiscalSettings";
 import { CfdiSettings } from "./cfdi/CfdiSettings";
+import { AccountPrivacy } from "./AccountPrivacy";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
 import { useEffect, useState } from "react";
@@ -165,6 +166,9 @@ export function Operations({
           {manager && <CfdiSettings session={session} locale={locale} />}
           {manager && (
             <MoneyControlsSettings session={session} locale={locale} />
+          )}
+          {["owner", "manager"].includes(session.role) && (
+            <AccountPrivacy session={session} locale={locale} />
           )}
           {session.role === "owner" && <FreeSelection locale={locale} />}
           {manager && <DeviceManagement session={session} locale={locale} />}

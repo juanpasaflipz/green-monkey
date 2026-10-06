@@ -306,37 +306,50 @@ line), and keep where noted.
 - **Why.** The platform privacy notice, terms and data-processing agreement read the
   legal entity, address and support contact from configuration; production values
   come from you, and CI uses fictional values flagged as such (lead decision LD-3).
-- **Where it goes.** Web variables, registered by Wave 2.0 (declared with
-  `preserve()` at `.railway/railway.ts:77-91`; placeholders at
-  `.env.example:156-171`) but read by no code until account (031) merges. Per the
-  031 spec (*proposed*): required `LEGAL_ENTITY_NAME`, `LEGAL_ENTITY_ADDRESS`,
-  `LEGAL_PRIVACY_CONTACT_EMAIL`, `LEGAL_JURISDICTION`; optional `LEGAL_ENTITY_RFC`,
-  `LEGAL_PRIVACY_CONTACT_NAME`, `SUPPORT_EMAIL`, `SUPPORT_PHONE`, `SUPPORT_WHATSAPP`,
-  `SUPPORT_HOURS`, `SUPPORT_HOURS_EN`, `SUPPORT_URL`. `LEGAL_UNPUBLISHED_SIGNUP`,
-  also registered, is meant to have no effect in production (`.env.example:164-165`);
-  leave it unset there. `docs/ACCOUNT_AND_LEGAL.md` (added by 031) will be the
-  authoritative list. Per the spec, a value that looks like a placeholder counts as
-  missing, and the pages stay unpublished.
-  Until 031 merges, [PROVISIONING.md §9](PROVISIONING.md#9-legal-entity-values-lead-decision-ld-3)
-  applies: confirm the values by hand.
-- **How to verify.** The web logs carry no line saying the legal documents are
-  unpublished (the 031 spec proposes the code `legal_documents_unpublished`, at error
-  level in production; no branch has it yet, so check the name in
-  `docs/ACCOUNT_AND_LEGAL.md` once 031 merges); the legal pages show your values;
-  owner signup is open.
+- **Where it goes.** Web variables, implemented by account (031): required
+  `LEGAL_ENTITY_NAME`, `LEGAL_ENTITY_ADDRESS`, `LEGAL_PRIVACY_CONTACT_EMAIL`,
+  `LEGAL_JURISDICTION`; optional `LEGAL_ENTITY_RFC`, `LEGAL_PRIVACY_CONTACT_NAME`,
+  `SUPPORT_EMAIL`, `SUPPORT_PHONE`, `SUPPORT_WHATSAPP`, `SUPPORT_HOURS`,
+  `SUPPORT_HOURS_EN`, `SUPPORT_URL`. [ACCOUNT_AND_LEGAL.md](ACCOUNT_AND_LEGAL.md) is
+  the authoritative list with each format. A missing, malformed or placeholder-looking
+  value (or a test/demo word in production) counts as missing, and the pages stay
+  unpublished. Leave `LEGAL_UNPUBLISHED_SIGNUP` unset in production (it is ignored
+  there anyway).
+- **Order.** Setting these values in production **publishes** the documents: do it
+  only after your counsel approved the text (1.12). Until then leave them unset; the
+  POS works and only new owner signups wait.
+- **How to verify.** `GET https://<domain>/api/account-config` reports
+  `"legal":{"status":"published",…}`; the web logs carry no
+  `legal_documents_unpublished` line (error level in production); the legal pages show
+  your values; owner signup is open. The go-live list is in
+  [RELEASE.md](RELEASE.md) ("Go-live checklist").
 
 ### 1.12 Privacy notice publication
 
 - **Why.** Mexican data-protection law (LFPDPPP) requires the notice where personal
-  data is collected; per the 031 spec, production refuses new Google accounts while no
-  notice is published.
-- **Where it goes.** Your counsel reviews the notice text (integral and simplified),
-  the terms and the data-processing agreement ("contrato de encargo") that 031
-  publishes from the 1.11 values, at the paths the spec plans: `/legal/privacidad`,
-  `/legal/terminos`, `/legal/encargo-de-datos`. Include your decision on Sentry (1.9).
+  data is collected; production refuses new Google accounts while no notice is
+  published.
+- **Where it goes.** **Before** the 1.11 values go to production, a Mexican
+  data-protection lawyer reviews the notice text (integral and simplified), the terms
+  and the data-processing agreement ("contrato de encargo") that 031 publishes from
+  those values at `/legal/privacidad`, `/legal/terminos` and `/legal/encargo-de-datos`
+  (English at `/legal/privacy`, `/legal/terms`, `/legal/data-processing`), including
+  the billing-data consent box, the processor list (Google, Stripe, Neon, Railway,
+  Cloudflare, GitHub, Facturapi) and the support-transfer and ARCO wording (LD-32).
+  The text is versioned code (`shared/legal.ts`); any change counsel asks for ships
+  as a new version (set its `version`, `announcedAt` and `effectiveFrom` to the
+  publication date: nothing is in force before it, so nothing needs 15 days' notice).
+  Include your decision on Sentry (1.9): if approved, it joins the processor lists in
+  that same version.
 - **How to verify.** The three pages open on the production domain with your
   values; the simplified notice appears next to the Google button and restaurant
   signup; a test signup records its acceptance.
+- **Pilot restaurants and Pro.** Billing stays disabled at launch, so pilot
+  restaurants get Pro from a support operator: provision one operator login
+  (`npm run support:provision`, kept on the operator's computer, never on Railway),
+  then `npm run support -- grant-entitlement --tenant <id> --until <date>` per pilot
+  (at most 90 days, renewable before the end date; every run is visible to the
+  owner). Runbook: [OPERATIONS.md](OPERATIONS.md) ("Support").
 
 ### 1.13 An accountant's confirmation of IVA, CFDI and RESICO behaviour
 
