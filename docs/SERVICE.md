@@ -337,7 +337,10 @@ the drawer is open.
 - **Silent printing** requires Chromium launched with `--kiosk-printing` and the
   thermal printer set as the OS default printer. Public sources describe this as
   working on Windows; macOS and Android always show the print dialog. Verify on
-  the target device; it has not been verified here.
+  the target device; it has not been verified here, and no official Chrome or
+  Chromium documentation confirms the flag, so the KDS "Impresión" dialog's hint
+  points staff to the pilot manual's print steps ([PILOT_SOP §1.3](PILOT_SOP.md))
+  instead of the flag (LD-17).
 - Browser printing never confirms that paper came out.
 - Kitchen cancellation chits (reports 029): a KDS with auto-print and a selling device
   that prints on send also print "CANCELACIÓN · NO PREPARAR" after a void, per round and

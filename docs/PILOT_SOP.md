@@ -98,13 +98,33 @@ opciones cambian según el fabricante y el sistema; consulta el manual del contr
 
 ### 1.3 Imprimir sin diálogo (modo kiosco) según el navegador
 
-En «Cocina», la ventana «Impresión» dice: «Para imprimir sin diálogo, abre Chrome con
-impresión de kiosco en este equipo (ver guía).» Esta es esa guía, y lo que podemos
-afirmar hoy es lo siguiente:
+En «Cocina», la ventana «Impresión» dice: «Para imprimir sin diálogo, sigue los pasos de
+impresión del manual del piloto.» (en inglés: «To print without a dialog, follow the
+printing steps in the pilot manual.»). El manual del piloto es esta guía y esos pasos son
+los de esta sección. La app ya no recomienda abrir Chrome con impresión de kiosco: ninguna
+documentación oficial que consultamos lo confirma (LD-17; se volvió a consultar la
+documentación de políticas de Chrome Enterprise y la de Chromium el 6 de octubre de 2026).
+
+**Pasos de impresión del piloto, en cada equipo que imprime:**
+
+1. Configura la impresora térmica en el sistema operativo (sección 1.2, pasos 1 a 9) y
+   déjala como impresora predeterminada del sistema.
+2. En Chrome administrado, activa la política `PrintPreviewUseSystemDefaultPrinter`
+   para que el diálogo proponga esa impresora (sección 1.2, paso 9).
+3. Cada impresión abre el diálogo del navegador: revisa que el destino sea la térmica y
+   confirma con «Imprimir». Cuenta con este paso en cada recibo, cuenta y comanda.
+4. Haz la prueba completa de la sección 1.2, paso 10, y revisa que salió papel (el
+   navegador nunca lo confirma).
+5. Si el propietario quiere probar la opción de inicio `--kiosk-printing` en Windows,
+   hazlo solo como prueba en ese equipo, con los pasos 1 a 4 ya hechos, y anota el
+   resultado: no está confirmada en documentación oficial (tabla siguiente) ni probada por
+   nosotros, así que el piloto no depende de ella.
+
+Lo que podemos afirmar hoy por navegador:
 
 | Navegador | Qué está confirmado en documentación oficial | Qué no está confirmado |
 | --- | --- | --- |
-| Chrome (Windows, macOS) | Las políticas administradas `PrintPreviewUseSystemDefaultPrinter` (destino predeterminado = impresora del sistema) y `DisablePrintPreview` (abre el diálogo del sistema en lugar de la vista previa de Chrome). Ninguna de las dos imprime sin diálogo. | La opción de inicio `--kiosk-printing`. No aparece en la documentación oficial que consultamos; [Service](SERVICE.md#printing-browseros) la cita de fuentes públicas como funcional en Windows. No se ha probado. |
+| Chrome (Windows, macOS) | Las políticas administradas `PrintPreviewUseSystemDefaultPrinter` (destino predeterminado = impresora del sistema) y `DisablePrintPreview` (abre el diálogo del sistema en lugar de la vista previa de Chrome). Ninguna de las dos imprime sin diálogo. | La opción de inicio `--kiosk-printing`. No aparece en la documentación oficial que consultamos (políticas de Chrome Enterprise y documentación de Chromium); [Service](SERVICE.md#printing-browseros) la cita de fuentes públicas como funcional en Windows. No se ha probado. |
 | Edge | — (no consultamos su documentación) | Impresión sin diálogo. |
 | Firefox | La opción `--kiosk` abre Firefox en pantalla completa. | Impresión sin diálogo. |
 | Safari en iPad o iPhone | — | Imprime con AirPrint ([limitaciones físicas](OFFLINE_RECOVERY.md#physical-limitations)); la mayoría de las impresoras térmicas no son compatibles con AirPrint. No lo verificamos en un iPad real. |

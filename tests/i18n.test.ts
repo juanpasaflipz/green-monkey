@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { areas, errorText, strings } from "../src/i18n";
 
@@ -41,5 +42,30 @@ describe("bilingual strings", () => {
       expect(es.trim(), code).not.toBe("");
       expect(en.trim(), code).not.toBe("");
     }
+  });
+});
+
+describe("copy that sends staff to the pilot manual (LD-17)", () => {
+  const pilotSop = readFileSync(
+    new URL("../docs/PILOT_SOP.md", import.meta.url),
+    "utf8",
+  ).replace(/\s+/g, " ");
+
+  it("the silent-print hint points to the pilot manual's print steps, not to an unconfirmed Chrome flag", () => {
+    expect(strings.es.servicePrintSilentHint).toBe(
+      "Para imprimir sin diálogo, sigue los pasos de impresión del manual del piloto.",
+    );
+    expect(strings.en.servicePrintSilentHint).toBe(
+      "To print without a dialog, follow the printing steps in the pilot manual.",
+    );
+    for (const locale of ["es", "en"] as const)
+      expect(strings[locale].servicePrintSilentHint).not.toMatch(
+        /kiosk|kiosco|chrome/i,
+      );
+  });
+
+  it("PILOT_SOP's printing section quotes the hint the app shows", () => {
+    expect(pilotSop).toContain(`«${strings.es.servicePrintSilentHint}»`);
+    expect(pilotSop).toContain(`«${strings.en.servicePrintSilentHint}»`);
   });
 });

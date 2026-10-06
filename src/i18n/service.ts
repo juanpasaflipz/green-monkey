@@ -131,7 +131,7 @@ export default defineArea({
     servicePrintKdsAuto:
       "Imprimir tickets nuevos automáticamente en esta pantalla",
     servicePrintSilentHint:
-      "Para imprimir sin diálogo, abre Chrome con impresión de kiosco en este equipo (ver guía).",
+      "Para imprimir sin diálogo, sigue los pasos de impresión del manual del piloto.",
     servicePrintUnconfirmed:
       "La impresión del navegador no confirma que salió papel.",
     // Selling
@@ -404,7 +404,7 @@ export default defineArea({
     servicePrintKitchenOnSend: "Print kitchen ticket when sending",
     servicePrintKdsAuto: "Print new tickets automatically on this screen",
     servicePrintSilentHint:
-      "To print without a dialog, launch Chrome with kiosk printing on this device (see guide).",
+      "To print without a dialog, follow the printing steps in the pilot manual.",
     servicePrintUnconfirmed:
       "Browser printing does not confirm that paper came out.",
     serviceLineNote: "Kitchen note",
