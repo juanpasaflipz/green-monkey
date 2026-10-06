@@ -1,6 +1,6 @@
 # Green Monkey
 
-Spanish-first restaurant POS built with React/TypeScript/Vite, Express/TypeScript and PostgreSQL. Neon is the target application database. Railway runs two services from one Docker image, declared in `.railway/railway.ts`: `web` (the compiled app, API and jobs runner) and `worker` (billing provider loop, watchdog alerts and the deploy-time migrations); see [infrastructure](docs/INFRASTRUCTURE.md).
+Spanish-first restaurant POS built with React/TypeScript/Vite, Express/TypeScript and PostgreSQL. Neon is the target application database. Railway runs two services from one Docker image, declared in `.railway/railway.ts`: `web` (the compiled app, API and the web jobs runner, on the runtime role and the signing keys) and `worker` (the jobs runner for worker-only kinds on its own jobs login, the billing provider loop and watchdog alerts). Neither holds the schema-owner credential: migrations, grants and the daily retention pass run in GitHub Actions as `gm_migrator`; see [infrastructure](docs/INFRASTRUCTURE.md) and [release process](docs/RELEASE.md).
 
 **Status: working local development application; required scope is still incomplete. Not production-ready.** See [delivery status](docs/DELIVERY_STATUS.md) for every source capability, [verification](docs/RELEASE_REPORT.md), [acceptance coverage](docs/ACCEPTANCE_STATUS.md), and [operator guide](docs/OPERATIONS.md). Release and operations: [release process](docs/RELEASE.md) (CI, CD and migrations), [runbook](docs/RUNBOOK.md), [provisioning](docs/PROVISIONING.md), [backups and restore](docs/BACKUP_RESTORE.md) and [load test](docs/LOAD_TEST.md). These are written and locally rehearsed; none has run against staging or production yet. The pinned source applications were inspected, not run or modified.
 
@@ -21,7 +21,7 @@ npm run db:migrate
 
 Apply reviewed runtime grants after migrations. `scripts/grants.sql` is the reviewed privilege manifest; `scripts/grant-runtime.ts` safely applies it to an explicit runtime role for Neon. Migrations use a checksum registry and an advisory lock, and run one transaction per file with a 5 s `lock_timeout` and retries; `npm run db:migrate -- --grants` commits the grants in the newest migration's transaction (deployed environments always do this). Rules and flags: [release process](docs/RELEASE.md#migrations).
 
-For a reproducible disposable local Mac fixture, run `npm run setup:local` after `npm ci`. It initializes/migrates/seeds both isolated databases, applies grants, and creates `.env` only if absent. An existing `.env` is preserved.
+For a reproducible disposable local Mac fixture, run `npm run setup:local` after `npm ci`. It initializes/migrates/seeds both isolated databases, creates the capability roles (`scripts/ops/sql/globals.sql`) and the local jobs login `gm_worker`, applies grants, and creates `.env` only if absent, with `WORKER_DATABASE_URL` and a local `SIGNING_KEYS` entry. An existing `.env` is preserved; add those two variables (see `.env.example`) by hand.
 
 The underlying `npm run db:local` creates a cluster under ignored `work/pgdata` on port **55439**, using Homebrew PostgreSQL 16. Set `PG_BIN` to override the executable location. `scripts/provision-local.sql` creates `green_monkey_dev`, `green_monkey_test`, and the fictional runtime role. These commands must only target that new local cluster.
 
@@ -154,7 +154,12 @@ With `BILLING_SANDBOX_ENABLED=true`, the web server only records billing
 requests; the Stripe provider loop runs in the worker. Locally, run
 `npm run worker` (or `npm run start:worker` after a build) alongside
 `npm run dev`, `npm start` or `scripts/compiled-local.sh`, or owner trial,
-checkout, portal and location requests stay pending. The worker's health port
+checkout, portal and location requests stay pending. The worker runs its jobs
+runner only when `WORKER_DATABASE_URL` is set (local login `gm_worker`,
+written by `setup:local`); without it `/healthz` reports `jobs: false` and
+worker-only jobs (cfdi, from 030) stay queued. `npm run ops:retention` runs
+`migrate.ts --retention-only`, the same retention-only mode as the daily
+GitHub workflow. The worker's health port
 defaults to 3002, the same port `compiled-local.sh` uses, so set `WORKER_PORT`
 to a free port when running both.
 

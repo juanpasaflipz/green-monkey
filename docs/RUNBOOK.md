@@ -31,9 +31,10 @@ acknowledged a critical alert within 15 minutes during service hours
 | --- | --- | --- |
 | `web_down` (critical) | ntfy, from the worker watchdog | `/api/health` failed 3 consecutive minutes |
 | `web_recovered` (info) | ntfy | the probe passes again |
-| `jobs_dead_<kind>` (warning) | ntfy, from the web jobs runner | a job exhausted 8 attempts; see `GET /api/jobs` as a manager |
+| `jobs_dead_<kind>` (warning) | ntfy, from the web jobs runner or the worker jobs runner (worker-only kinds) | a job exhausted its kind's `maxAttempts` (default 8); see `GET /api/jobs` as a manager |
 | `billing_review` / `billing_retrying` (warning) | ntfy, from the worker | billing operations need a person / keep failing |
-| `retention_failed` (warning) | ntfy, from the worker's off-hours retention or the deploy's preDeploy pass | deleting expired OAuth attempts or old done/dead jobs failed (`tables=` names which); lock-timeout skips do not alert. Check `@message:retention_table_failed` in the worker logs: `reason:"statement_timeout"` means a batch hit its 1.5 s bound (see "Retention" below), anything else is an error; the next run retries |
+| `retention_failed` (warning) | ntfy, from the deploy job or the daily Retention workflow | deleting expired OAuth attempts or old done/dead jobs failed (`tables=` names which); lock-timeout skips do not alert. Check `retention_table_failed` in that GitHub Actions run's log: `reason:"statement_timeout"` means a batch hit its 1.5 s bound (see "Retention" below), anything else is an error; the next run retries |
+| Retention workflow failure | GitHub issue `ops-alert: <env>` | a table failed (it has also alerted `retention_failed`), the run was skipped on a lock timeout three times in a row, or `MIGRATION_DATABASE_URL` is missing |
 | Uptime workflow failure | ntfy + GitHub issue `ops-alert: production` | `/api/ops/status` not ok or degraded, or the last successful production backup run is older than 26 h |
 | Backup workflow failure | ntfy + GitHub issue `ops-alert: <env>` | the nightly dump failed |
 | Railway deploy failed/crashed | ntfy (Railway webhook, manual setup below) | a deploy or a running instance failed |
@@ -90,7 +91,8 @@ One-way points (a rollback past them needs extra steps):
 | Point | Rolling back past it |
 | --- | --- |
 | A migration that a later revision depends on | Not a blocker: older revisions keep working on the newer schema (expand-only). Never revert a migration by hand. |
-| This ops release (worker service, preDeploy migrations) | **Not supported without manual steps (staging only; production has no pre-ops revision).** A rollback keeps the live service configuration (above), which starts `web` with `node --import ./build/server/instrument.js build/server/index.js` and the worker with `build/server/worker.js` and runs the worker preDeploy `migrate.js --grants --retention`; none of these exist in pre-ops builds, so both services would crash-loop. To go back that far, first restore the old start command on `web` and remove the worker's preDeploy and start command (or delete the worker service) in the dashboard, or dispatch with `railway_config: apply` after reviewing `config plan` for that older SHA; the previous revision expects migrations from Railway's old preDeploy on `web`. Prefer deploying a fix forward. |
+| This ops release (worker service, migrations outside `web`) | **Not supported without manual steps (staging only; production has no pre-ops revision).** A rollback keeps the live service configuration (above), which starts `web` with `node --import ./build/server/instrument.js build/server/index.js` and the worker with `build/server/worker.js`; neither exists in pre-ops builds, so both services would crash-loop. To go back that far, first restore the old start command on `web` and remove the worker's preDeploy and start command (or delete the worker service) in the dashboard, or dispatch with `railway_config: apply` after reviewing `config plan` for that older SHA; the previous revision expects migrations from Railway's old preDeploy on `web`. Prefer deploying a fix forward. |
+| Wave 2.0 (keyring, migrations in GitHub Actions) | **Staging only** (production is provisioned after 2.0, so it has no pre-2.0 revision). Under `railway_config: auto` the IaC sync is skipped for an older SHA, so the services keep 2.0's configuration: no worker `preDeploy`, no `MIGRATION_DATABASE_URL` on any service. `uses: ./.github/actions/deploy` resolves the action from the older checkout, which has no migrate step (GitHub warns about the unexpected `migration-database-url`, `pg-app-user`, `app-env` and alert inputs); nothing migrates, and the older schema needs nothing. The older worker finds no `MIGRATION_DATABASE_URL` and runs no retention schedule (the daily workflow keeps running from `main`). The older web cannot read `v2.` cookies or links: every staff member signs in again with their PIN, every terminal pairs again, owners sign in with Google again. Prefer a forward fix. |
 | `BILLING_SANDBOX_ENABLED=true` with a pre-ops revision | Older revisions run the Stripe provider loop in `web` and need `STRIPE_SECRET_KEY` there; set `BILLING_SANDBOX_ENABLED=false` while rolled back. |
 
 ## Restart
@@ -122,39 +124,71 @@ limiter store to Postgres or Redis. Size the database pool from
 ## Retention
 
 Retention deletes only expired OAuth login attempts and done/dead jobs older
-than 30 days (`server/ops/retention.ts`; every other table, blocked receipt
-jobs included, is kept). It runs as `gm_migrator` once per deploy (the
-worker's preDeploy) and from the worker every 15 minutes **only between
-04:00 and 07:00 America/Mexico_City** (12 passes a night), after the 03:30
-backup starts and before most restaurants open, breakfast service included;
-`lastRetentionAt` in the worker's `/healthz` shows the last pass. Each batch
-briefly turns off FORCE row-level security, which takes an ACCESS EXCLUSIVE
-lock on the table until it commits, and every order and payment inserts
-into `jobs`. So each batch waits at most 200 ms for that lock (a
-lock-timeout skip is logged, not alerted) and runs each statement at most
-1.5 s. Every batch, from a deploy or a scheduled pass, can therefore stall
-order and payment inserts for up to about 1.7 s; that matters during
-service (a deploy) and for a restaurant that already sells before 07:00.
-When `retention_failed` reports `reason:"statement_timeout"`, the jobs scan
-has outgrown that bound (no index serves the predicate): nothing was
-deleted, each such pass stalled inserts for up to that 1.7 s once per tick,
-and the table keeps growing until the follow-up below ships. Do not raise
-the bounds in service hours.
+than 30 days (`server/ops/retention.ts`). It never deletes sessions, any
+`offline_*` table, operations, audit, `device_pairing_codes`, any money,
+stock, cash or void table, `fiscal_*`, `cfdi_*`, `business_day_settings`,
+`report_prints`, `support_actions`, `legal_acceptances`, `account_events`,
+`ownership_transfers`, `billing_*`, or blocked receipt jobs
+(`tests/retention.test.ts` asserts the allow-list).
 
-To purge by hand (for example after a failed night), run one pass and
-nothing else, with `MIGRATION_DATABASE_URL` (`gm_migrator`, direct
-endpoint), `APP_ENV` and optionally `ALERT_WEBHOOK_URL` in a private 0600
-file, never on the command line:
+Both tables force row-level security and the runtime login has no DELETE, so
+retention runs as the schema owner `gm_migrator` from GitHub Actions (the
+environment secret `MIGRATION_DATABASE_URL`), never from a Railway service:
+
+- **Once per deploy:** the deploy job's `migrate.js --grants --retention`. A
+  failure alerts and never fails the deploy.
+- **Daily:** `.github/workflows/retention.yml`, production at 05:15 and
+  staging at 05:45 America/Mexico_City (11:15 and 11:45 UTC), after the
+  03:30 backup and inside the 04:00–07:00 window (`RETENTION_WINDOW`). One
+  run repeats bounded passes while the previous pass deleted a full batch
+  (5,000 rows) from some table, at most 10 passes, and never starts a pass
+  after 07:00. The schedules run only for environments listed in the
+  repository variable `OPS_LIVE_ENVIRONMENTS` and only from the default
+  branch; a manual dispatch (Actions → Retention → environment) always runs.
+  GitHub may delay or drop a scheduled run; a dropped day is caught up the
+  next day, and every deploy also runs a pass.
+- **Skips and failures:** when a backup's `pg_dump` or another long
+  transaction holds a lock on `jobs`, the pass is skipped (exit 75, logged,
+  not alerted); the workflow retries twice, 5 minutes apart, and a third skip
+  makes the run red. A failed table exits 1 after alerting
+  `retention_failed`. Either red run opens or updates the `ops-alert: <env>`
+  issue.
+
+Each batch briefly turns off FORCE row-level security, which takes an ACCESS
+EXCLUSIVE lock on the table until it commits, and every order and payment
+inserts into `jobs`. So each batch waits at most 200 ms for that lock and
+runs each statement at most 1.5 s. Every batch, from a deploy or the daily
+run, can therefore stall order and payment inserts for up to about 1.7 s;
+that matters during service (a deploy) and for a restaurant that already
+sells before 07:00. When `retention_failed` reports
+`reason:"statement_timeout"`, the jobs scan has outgrown that bound (no index
+serves the predicate): nothing was deleted, each such pass stalled inserts
+for up to that 1.7 s, and the table keeps growing until the follow-up below
+ships. Do not raise the bounds in service hours.
+
+To purge by hand (for example after a red run), with `MIGRATION_DATABASE_URL`
+(`gm_migrator`, direct endpoint), `APP_ENV` and optionally
+`ALERT_WEBHOOK_URL` in a private 0600 file, never on the command line:
 `node --env-file=<file> --import tsx scripts/migrate.ts --retention-only`
-(what `npm run ops:retention` runs). It applies no migrations, grants or
-policy reconcile and exits 1 when a table fails, after alerting. Run it
-outside service hours for the same reason.
+(what `npm run ops:retention` and the workflow run). It applies no
+migrations, grants or policy reconcile; inside the window it repeats passes
+while a backlog remains, outside it runs exactly one. It exits 1 when a table
+fails (after alerting) and 75 when a table was skipped on a lock timeout. Run
+it outside service hours for the same reason.
 
 ## Deploy window
 
 Production deploys are refused between 12:00 and 23:59 America/Mexico_City
 (UTC−6 year-round) unless `allow_service_hours` is ticked for an urgent fix.
 Prefer 06:00–11:00.
+
+The deploy job migrates before it uploads anything (`migrate.js --grants
+--retention` as `gm_migrator`), and a migration's locks last until it
+commits. A production deploy that first carries a migration locking a hot
+table runs **before 07:00** Mexico City, ahead of breakfast service: cfdi's
+030 ends with the `jobs` discovery policy and a non-concurrent index on
+`jobs`, and every order and payment inserts into `jobs`, so those inserts
+wait while the index builds (platform P-27, LD-8).
 
 ## Credential rotation
 
@@ -172,9 +206,12 @@ offline vault, direct endpoint):
    A rollback message naming missing privileges means the old login carries
    a manual grant the manifest lacks: add it to `scripts/grants.sql` through
    a PR or revoke it, then retry.
-2. Set `DATABASE_URL` and `PG_APP_USER` on `web` and `PG_APP_USER` on `worker`
-   (`scripts/ops/railway-vars.sh`), redeploy both. Do not merge a migration
-   between this step and step 3: the preDeploy grants only the new login.
+2. Set `DATABASE_URL` and `PG_APP_USER` on `web` (`scripts/ops/railway-vars.sh`)
+   and the GitHub environment variable `PG_APP_USER`
+   (`gh variable set PG_APP_USER --env <env> --body <new login>`), redeploy
+   `web`. Do not merge a migration between this step and step 3: the deploy
+   job grants only the login `PG_APP_USER` names. The worker holds no runtime
+   login.
 3. When the old login has no sessions:
    `… rotate-db-login.ts --env <env> --finalize --old gm_<env>_app`.
    It drops what the old login owns, revokes the database `CONNECT` and
@@ -182,23 +219,68 @@ offline vault, direct endpoint):
    role, since only the grantor can revoke them), and drops the login, in
    one transaction. A refusal naming a grantor the owner cannot `SET ROLE`
    to changed nothing: revoke that grant as its grantor, then retry.
-4. Same for `--kind billing` (both services) and `--kind backup` (GitHub
-   environment secret). `--kind migrator` sets a new `gm_migrator` password;
-   update `MIGRATION_DATABASE_URL` on `worker`.
+4. Same for `--kind billing` (both services), `--kind worker`
+   (`WORKER_DATABASE_URL` on `worker`, redeploy it, then `--finalize`; the new
+   login copies the `gm_jobs_worker` membership and the 30 s/8 s/60 s
+   defaults) and `--kind backup` (GitHub environment secret). `--kind migrator`
+   sets a new `gm_migrator` password; update the GitHub environment secret
+   with `gh secret set MIGRATION_DATABASE_URL --env <env> < <file>` (stdin,
+   never on the command line). No Railway service holds it.
 5. Record it in [STAGING.md](STAGING.md) "Credential rotation log" (no secrets).
 
 Other secrets:
 
-- `JWT_SECRET` signs sessions, device pairings, ordering links and
-  invitations; rotating it today unpairs every terminal. The keyring that makes
-  this routine (OPS-10) is a follow-up; until then rotate only on compromise,
-  outside service hours, and plan to re-pair devices.
+- Signing keys (`SIGNING_KEYS`) and `JWT_SECRET`: see "Signing keys" below.
 - Stripe webhook secret: roll in the Stripe dashboard (it keeps the old secret
   valid for a window), set `STRIPE_WEBHOOK_SECRET` on `web`, deploy.
 - Google OAuth client secret: add a new secret in Google Cloud, set
   `GOOGLE_CLIENT_SECRET`, deploy, then disable the old secret.
 - R2 token, Railway project token, ntfy topic: create the new one, update the
   GitHub environment secret/variable, delete the old one.
+
+## Signing keys
+
+Cookies and links are signed with the OPS-10 keyring (`server/keyring.ts`):
+`SIGNING_KEYS="<kid>:<base64url secret>[,…]"` on `web` only. The first entry
+signs; every listed entry verifies; each use gets its own HKDF-derived key,
+so a cookie never opens a sealed CFDI link and one sealed purpose never opens
+another. Production requires `SIGNING_KEYS`; a deployed worker refuses it and
+`JWT_SECRET`. Every step below edits only the `web` service's `SIGNING_KEYS`,
+from the private file read by `scripts/ops/railway-vars.sh` (never on a
+command line). `node scripts/ops/generate-signing-key.mjs` prints one new
+entry (`k<YYYYMMDD>-<4 hex>:<32 random bytes>`).
+
+1. **Routine** (yearly, or when someone with access leaves), in two steps so
+   the instance still serving during a deploy's overlap can verify what the
+   new one signs:
+   1. Generate `<new>`. Set `SIGNING_KEYS="<current>,<new>"` (still signed by
+      `<current>`; `<new>` only verifies) and redeploy `web`.
+   2. After that deploy is live, set `SIGNING_KEYS="<new>,<current>"` and
+      redeploy. `<new>` now signs.
+   3. After **31 days** (the `gm_device` and owner-browser cookies live 30 days
+      and are re-signed on every sign-in; CFDI portal links live at most 7
+      days), set `SIGNING_KEYS="<new>"` and redeploy.
+2. **Emergency** (a key leaked): set `SIGNING_KEYS="<new>"` only and redeploy.
+   Before proceeding, where possible, have every device sync its offline
+   queue: re-paired terminals are new devices, so an unsynced offline payment
+   arriving from them lands in manager review (`offline_drawer_conflict`).
+   The impact, which the operator accepts before proceeding and records in
+   the incident log:
+   - every staff member signs in again with their PIN;
+   - every terminal pairs again with a new code from Configuración →
+     Dispositivos (at most 5 open codes at a time; see
+     [ACCESS.md](ACCESS.md) "Signing-key rotation and terminals");
+   - owners sign in with Google again;
+   - QR/kiosk ordering links (off in production until wave 3) and CFDI
+     self-invoice links stop working and are issued again.
+3. **`JWT_SECRET`** stays required on `web` in v1: outside production it
+   still verifies pre-2.0 tokens (production refuses them; none were ever
+   issued there), and it keys the lookup digests. Rotate it only together
+   with an emergency rotation, because then outstanding pairing codes stop
+   working, an invitation re-created with the same operation id gets
+   `operation_conflict`, and an idempotent replay of a PIN-reset operation
+   from before the change is refused as a conflict. Keep it at 64+
+   characters.
 
 ## Staging cutover
 
@@ -251,11 +333,14 @@ consent; record each in [STAGING.md](STAGING.md)). Pin the CLI with
    from here on any undeclared variable stops the automatic staging deploy at
    the sync step until it is declared or deleted on purpose.
 7. Set variables with `scripts/ops/railway-vars.sh staging <private file>`:
-   `web` (`APP_ENV=staging`, `WORKER_URL`), `worker` (`MIGRATION_DATABASE_URL`
-   as `gm_migrator`, `PG_APP_USER`, `BILLING_DATABASE_URL`, Stripe sandbox
-   keys, `ALERT_WEBHOOK_URL`).
+   `web` (`APP_ENV=staging`, `WORKER_URL`, `SIGNING_KEYS`), `worker`
+   (`WORKER_DATABASE_URL`, `BILLING_DATABASE_URL`, Stripe sandbox keys,
+   `ALERT_WEBHOOK_URL`). Never `MIGRATION_DATABASE_URL` on any service: it is
+   the GitHub environment secret of step 8 (Wave 2.0 deltas below).
 8. GitHub: `scripts/ops/github-protect.sh` (after the first PR has run the
-   checks), environment secrets and variables.
+   checks), environment secrets (`RAILWAY_TOKEN`, `MIGRATION_DATABASE_URL`,
+   `ALERT_WEBHOOK_URL`, backup and R2 secrets) and variables (`APP_URL`,
+   `PG_APP_USER`, `ALERT_WEBHOOK_KIND`, the pinned CLI and IaC versions).
 9. Merge to `main`; CD deploys; the smoke must pass, including the client IP
    check.
 10. Railway deploy webhook → ntfy; check the manual settings above.
@@ -269,12 +354,33 @@ consent; record each in [STAGING.md](STAGING.md)). Pin the CLI with
 15. Load test `target` and `stress`; record the pool decision
     ([LOAD_TEST.md](LOAD_TEST.md)).
 
+**Wave 2.0 deltas to these steps.** Staging has not run this cutover yet, so
+it runs once, from the integrated code that already contains Wave 2.0
+(keyring, worker jobs login, migrations in GitHub Actions), with these
+changes:
+
+| Step | Delta |
+| --- | --- |
+| 2 | `provision-roles.ts` also creates `gm_staging_worker` (a `gm_jobs_worker` member; 30 s/8 s/60 s; `CONNECT`) and writes `WORKER_DATABASE_URL` to `.env.provisioned-staging`; `globals.sql` creates `gm_jobs_worker` and `gm_support`. The `-- 2.0 jobs worker` grants block refuses to apply until `globals.sql` has run. |
+| 4 | Nothing new for `web`. The `worker` service is created by this cutover, so it has nothing to inventory. |
+| 5 | Expected for `worker`: no `preDeploy`, `WORKER_DATABASE_URL`, `DB_STATEMENT_TIMEOUT_MS`, and the cfdi and account `preserve()` names; for `web`: `SIGNING_KEYS` and the account, fiscal and cfdi `preserve()` names. If the plan rejects a `preserve()` of a never-set variable (Railway's docs only say `preserve()` keeps a value that is already set), set it empty with `railway variable set NAME= --service <svc> --skip-deploys`; every reader treats an empty value as unset. |
+| 7 | `web`: add `SIGNING_KEYS` (`generate-signing-key.mjs` output). `worker`: set `WORKER_DATABASE_URL`; **do not** set `MIGRATION_DATABASE_URL` (the worker refuses it) or `PG_APP_USER`. |
+| 8 | Environment `staging`: `gh secret set MIGRATION_DATABASE_URL --env staging` (stdin, from `.env.provisioned-staging`); `gh variable set PG_APP_USER --env staging --body gm_staging_app`; `gh variable set ALERT_WEBHOOK_KIND --env staging --body ntfy`. |
+| 9 | The deploy job migrates from GitHub before Railway; `worker_ready` logs `jobs:true`; `/api/ops/status` shows `worker.status:"ok"`. |
+| After 9 | Confirm a `v2.` prefix on a freshly issued `gm_session` cookie (browser devtools; read the prefix only). If a terminal paired before the deploy still has a valid device row, confirm that it still signs in: its pre-2.0 cookie verifies on staging while `JWT_SECRET` is set. |
+| 14 | `OPS_LIVE_ENVIRONMENTS=staging` also turns on the daily retention workflow. Dispatch Actions → Retention → staging once by hand first; it must pass. |
+
+Record each delta in [STAGING.md](STAGING.md).
+
 **For every area (integration note):** a Railway variable that a service
 must keep has to be declared in `.railway/railway.ts` (a literal, or
-`preserve()` for a value set out of band), in the same change that starts
-reading it. An undeclared variable is planned as a deletion, and CD's
-non-destructive `config apply --yes` then stops every automatic staging
-deploy at the sync step.
+`preserve()` for a value set out of band). Wave 2.0 registered every wave-2
+variable; wave-2 areas never edit that file, and a missing name is reported
+to the lead, who adds it on `integration/v1` before that area merges. An
+undeclared variable is planned as a deletion, and CD's non-destructive
+`config apply --yes` then stops every automatic staging deploy at the sync
+step. Declare a variable before setting it: `TRUST_PROXY` is deliberately
+undeclared (its default is correct on Railway).
 
 ## Open follow-ups
 
@@ -282,11 +388,11 @@ Known gaps this release leaves open, with their owner:
 
 | Item | Today | Follow-up |
 | --- | --- | --- |
-| DB-1, billing credential in `web` | While billing is enabled, `web` holds `BILLING_DATABASE_URL` for owner billing commands and the webhook. That login is a member of `gm_billing_worker`, whose policies read restaurants, organizations, entitlements and billing tables across tenants. Production launches with `BILLING_SANDBOX_ENABLED=false`, and production `web` refuses to start with `BILLING_DATABASE_URL` set while billing is disabled (`server/config-rules.ts`), so the internet-facing process never holds it there. | Account area (migration 031): a `billing_requests` inbox written with the runtime role and drained by the worker, after which only `worker` holds the billing login. |
+| DB-1, billing credential in `web` | While billing is enabled, `web` holds `BILLING_DATABASE_URL` for owner billing commands and the webhook. That login is a member of `gm_billing_worker`, whose policies read restaurants, organizations, entitlements and billing tables across tenants. Production launches with `BILLING_SANDBOX_ENABLED=false`, and production `web` refuses to start with `BILLING_DATABASE_URL` set while billing is disabled (`server/config-rules.ts`), so the internet-facing process never holds it there. | No billing inbox is built in v1 (critic #0 dropped it). Production keeps billing disabled, so its `web` never holds the login; revisit before live billing is enabled. |
 | DB-6, grants hash in readiness | Grants are applied in the newest migration's transaction, so a new revision cannot pass `/api/health` before its tables are granted; readiness itself checks only `schema_migrations` (`server/readiness.ts` is frozen this wave). | Ops, next wave: a `schema_grants` registry and a readiness check of the manifest hash. |
-| OPS-R10, retention needs DDL | Each retention batch turns off FORCE row-level security (ACCESS EXCLUSIVE until commit) and scans `jobs` without an index, because only the owner may delete and FORCE applies to it. The worker therefore runs it only 04:00–07:00 Mexico City, with a 200 ms lock wait and a 1.5 s statement bound per batch; at a few million `jobs` rows (blocked receipt jobs are never deleted) the scan exceeds the bound and `retention_failed` reports `statement_timeout` every night. | Ops, next wave (a new migration; 022 is limited to the hot-path indexes): a partial index `jobs(created_at) WHERE state IN ('done','dead')` so each batch finds its rows in milliseconds, and a `gm_maintenance` login with DELETE on the two tables under policies limited to the retention predicates, so retention needs no DDL and no ACCESS EXCLUSIVE lock and can run at any hour. |
+| OPS-R10, retention needs DDL | Each retention batch turns off FORCE row-level security (ACCESS EXCLUSIVE until commit) and scans `jobs` without an index, because only the owner may delete and FORCE applies to it. The daily workflow therefore runs it only 04:00–07:00 Mexico City (and each deploy runs one pass), with a 200 ms lock wait and a 1.5 s statement bound per batch; at a few million `jobs` rows (blocked receipt jobs are never deleted) the scan exceeds the bound and `retention_failed` reports `statement_timeout` every night. | Ops, next wave (a new migration; 022 is limited to the hot-path indexes): a partial index `jobs(created_at) WHERE state IN ('done','dead')` so each batch finds its rows in milliseconds, and a `gm_maintenance` login with DELETE on the two tables under policies limited to the retention predicates, so retention needs no DDL and no ACCESS EXCLUSIVE lock and can run at any hour. |
 | OPS-R17, gitleaks image by tag | The qualification secret scan runs `ghcr.io/gitleaks/gitleaks:v8.21.2` by tag, while every action is pinned by commit SHA; a retagged image would run with the repository history mounted. The digest is not pinned yet: it could not be read from the registry in the environment that made this change, and a guessed digest would fail every run. | Ops: read the index digest (`docker buildx imagetools inspect ghcr.io/gitleaks/gitleaks:v8.21.2`), pin `…:v8.21.2@sha256:<digest>`, and make `tests/workflows.test.ts` refuse a `docker run` image without a digest. |
-| OPS-10, signing keyring; F2 in-transaction authentication | Tokens are still signed with `JWT_SECRET`; deferred while the access area rewrites `server/auth.ts`. | Ops, after the access merge. |
+| OPS-10 residual: lookup digests and legacy tokens | **Done in Wave 2.0:** the signing keyring (`SIGNING_KEYS`, named kids, HKDF per-use keys, purpose-bound sealed tokens, two-step rotation; "Signing keys" above). Production refuses pre-2.0 tokens. Still keyed by `JWT_SECRET`: the pairing-code, PIN-fingerprint, invitation and transfer digests, so `JWT_SECRET` stays required on `web`, and outside production pre-2.0 tokens verify while it is set. F2 (in-transaction authentication) is unchanged. | Wave 3 (D4): keyed digests (access A1) together with account's invitation and transfer HMACs; then production unsets `JWT_SECRET`. |
 
 ## Incident log template
 

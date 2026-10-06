@@ -58,11 +58,20 @@ each action.
 ## Continuous delivery (`.github/workflows/deploy.yml`)
 
 - **Staging:** after Qualification succeeds for a push to `main`, the composite
-  action `.github/actions/deploy` installs the pinned IaC package (no lockfile
-  change), runs `railway config plan` and `railway config apply --yes`
-  (destructive changes stop for review), stamps `build-info.json`, uploads the
-  `worker` (its preDeploy runs `migrate.js --grants --retention`) and then
-  `web`, and runs `scripts/ops/smoke.mjs --expect-commit <sha>`. Success marks
+  action `.github/actions/deploy` builds, then **migrates first**:
+  `node build/scripts/migrate.js --grants --retention` as `gm_migrator` on the
+  direct endpoint, from the GitHub environment secret `MIGRATION_DATABASE_URL`
+  (with the environment variable `PG_APP_USER` and `app-env`). Only then does
+  it install the pinned IaC package (no lockfile change), run
+  `railway config plan` and `railway config apply --yes` (destructive changes
+  stop for review), stamp `build-info.json`, upload the `worker` and then
+  `web`, and run `scripts/ops/smoke.mjs --expect-commit <sha>`. If the migrate
+  step fails (a missing secret fails it with
+  `::error::environment secret MIGRATION_DATABASE_URL is not set`), nothing on
+  Railway changes and the old revision keeps serving on the old schema; the
+  migrations are expand-only, so the old revision also keeps working on the
+  expanded schema while the new one uploads. No Railway service holds the
+  schema-owner credential, and the worker has no `preDeploy`. Success marks
   the commit with the `deploy/staging` status.
 - **Production:** only by Actions → Deploy → Run workflow with the full SHA and
   the typed phrase `deploy <sha7> to production`. The SHA must be on `main` and
@@ -82,7 +91,12 @@ the CI image build; `local` otherwise); nobody sets it by hand.
 ## Migrations
 
 Migrations live in `migrations/NNN_name.sql` and are applied by
-`scripts/migrate.ts` (compiled to `build/scripts/migrate.js`):
+`scripts/migrate.ts` (compiled to `build/scripts/migrate.js`), run by the
+GitHub Actions deploy job as `gm_migrator` before any service deploys; CI
+qualification migrates the same way. The capability roles the grants name
+come from `scripts/ops/sql/globals.sql`, never from a migration; a migration
+may only carry the `IF NOT EXISTS … CREATE ROLE … NOLOGIN` fallback that
+local and CI clusters need (contract C-11):
 
 - one transaction per file, `lock_timeout` 5 s and `statement_timeout` 10 min,
   retried 4 times on lock timeout (2/4/8/16 s), then the deploy fails and the
@@ -102,10 +116,12 @@ Migrations live in `migrations/NNN_name.sql` and are applied by
   pending, the manifest runs in its own transaction;
 - then the backup-reader policy reconciler (`scripts/db/post-migrate.sql`) and,
   with `--retention`, the retention pass (a failure alerts `retention_failed`
-  and never fails the deploy; the worker repeats it every 15 minutes between
-  04:00 and 07:00 America/Mexico_City; every batch is bounded by a 200 ms
-  lock wait and a 1.5 s statement timeout, [RUNBOOK.md](RUNBOOK.md)
-  "Retention");
+  and never fails the deploy; every batch is bounded by a 200 ms lock wait and
+  a 1.5 s statement timeout, [RUNBOOK.md](RUNBOOK.md) "Retention");
+- `--retention-only` runs retention and nothing else (no migrations, grants
+  or reconcile): up to 10 passes inside 04:00–07:00 America/Mexico_City while
+  a backlog remains, exit 1 when a table fails (after alerting) and 75 when a
+  table was skipped on a lock timeout;
 - `--check` exits 3 while migrations are pending; `--dry-run` lists them.
 
 Rules enforced by `tests/migrations-lint.test.ts` (the rules live in
@@ -145,3 +161,16 @@ Edit `.railway/railway.ts`, review `railway config plan` locally with a
 staging-scoped token, merge. CD applies non-destructive changes; a deletion
 (service or variable) must be applied by hand with `--confirm-destructive`
 after review.
+
+## Retention (`.github/workflows/retention.yml`)
+
+Daily, as `gm_migrator` from the environment secret, never from Railway:
+production at 05:15 and staging at 05:45 America/Mexico_City (11:15 and 11:45
+UTC), after the 03:30 backup and inside the 04:00–07:00 retention window. It
+runs `npx tsx scripts/migrate.ts --retention-only`, retries a lock-timeout
+skip (exit 75) twice, 5 minutes apart, and opens or updates the
+`ops-alert: <env>` issue when the run is red. Schedules run only for the
+environments listed in `OPS_LIVE_ENVIRONMENTS` and only from the default
+branch; a manual dispatch always runs. Only `deploy.yml` and `retention.yml`
+read the `MIGRATION_DATABASE_URL` secret (`tests/workflows.test.ts`). Details:
+[RUNBOOK.md](RUNBOOK.md) "Retention".

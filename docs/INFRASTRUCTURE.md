@@ -7,8 +7,8 @@ The requirement is to keep the same provider setup—Neon, Railway, and the usef
 | Concern | Inspected source | Green Monkey target |
 | --- | --- | --- |
 | Application DB | POS Lite: Neon/postgres.js; Luma: Supabase | Neon PostgreSQL only |
-| Runtime | POS Lite Dockerfile: Node 20; Express serves `dist` and `dist-kiosk` | Node 24.21.0 (`.nvmrc`, Dockerfile), TypeScript server build; `web` service (API + jobs runner) and `worker` service (billing provider loop, watchdog, deploy-time migrations) |
-| Railway config | `NIXPACKS`, `npm run build`, `node server/index.js`, retry count 5 | `.railway/railway.ts` infrastructure as code: Dockerfile build, worker preDeploy (migrate, grants, retention), readiness checks, draining |
+| Runtime | POS Lite Dockerfile: Node 20; Express serves `dist` and `dist-kiosk` | Node 24.21.0 (`.nvmrc`, Dockerfile), TypeScript server build; `web` service (API + web jobs runner) and `worker` service (worker-only jobs runner, billing provider loop, watchdog); migrations, grants and retention run in GitHub Actions |
+| Railway config | `NIXPACKS`, `npm run build`, `node server/index.js`, retry count 5 | `.railway/railway.ts` infrastructure as code: Dockerfile build, readiness checks, draining; no preDeploy (the GitHub Actions deploy job migrates before uploading) |
 | Luma scheduling | `0 15 * * 1` weekly; `0 8 1 * *` monthly in Vercel config | Railway scheduled jobs with deliberate restaurant timezone semantics |
 | DB auth | Owner connection plus app_user role and PG_APP_* credentials | Runtime app role; separately configured migration/provisioning privileges |
 | Assets | POS Lite R2 with local-disk fallback | R2 in production; local storage only for disposable development |
@@ -30,17 +30,26 @@ configuration before any application module (`server/config.ts`).
 
 | Service | Start | Health | Notes |
 | --- | --- | --- | --- |
-| `web` | `build/server/index.js` | `/api/health` (300 s) | Runtime role only (plus the billing login when billing is enabled). `replicas: 1` because rate limits are in memory. `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=20`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=10`. |
-| `worker` | `build/server/worker.js` | `/healthz` (300 s) | No public domain. `preDeploy: node build/scripts/migrate.js --grants --retention` runs as the non-superuser `gm_migrator`, so the owner credential never reaches `web`. The same credential runs retention every 15 minutes between 04:00 and 07:00 America/Mexico_City only (first tick 60 s after boot; each batch waits at most 200 ms for its lock and runs each statement at most 1.5 s; `retention_failed` alert on failure; [RUNBOOK.md](RUNBOOK.md) "Retention"). Draining 30 s. Holds the Stripe secret key. |
+| `web` | `build/server/index.js` | `/api/health` (300 s) | Runtime role only (plus the billing login when billing is enabled) and the signing keys (`SIGNING_KEYS`, `JWT_SECRET`). `replicas: 1` because rate limits are in memory. `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=20`, `RAILWAY_DEPLOYMENT_OVERLAP_SECONDS=10`. |
+| `worker` | `build/server/worker.js` | `/healthz` (300 s) | No public domain and no `preDeploy`. With `WORKER_DATABASE_URL` it runs the jobs runner for worker-only kinds on the jobs login (`gm_<env>_worker`, a member of `gm_jobs_worker`) and reports `jobs: true` and a `jobs` loop that must tick within 120 s on `/healthz`; without it, `jobs: false` and worker-only jobs stay queued. Holds the Stripe secret key and, from cfdi (030), the Facturapi keys and `CREDENTIAL_ENCRYPTION_KEY`; never the schema-owner credential or a signing key. `DB_STATEMENT_TIMEOUT_MS=30000`, draining 30 s. |
+
+Migrations, the runtime grants and retention run as the non-superuser
+`gm_migrator` from GitHub Actions, never in a Railway service: the deploy job
+runs `node build/scripts/migrate.js --grants --retention` before any Railway
+change, and `.github/workflows/retention.yml` runs a daily retention pass
+inside 04:00–07:00 America/Mexico_City (each batch waits at most 200 ms for its
+lock and runs each statement at most 1.5 s; `retention_failed` alert on
+failure; [RUNBOOK.md](RUNBOOK.md) "Retention").
 
 Every variable that holds a secret is `preserve()`d: IaC never writes secret
 values; `scripts/ops/railway-vars.sh` sets them from a private file via stdin.
 Railway plans any variable the file does not declare for a service as a
-deletion, so every area declares each Railway variable its code reads (a
-literal or `preserve()`) in `.railway/railway.ts` in the same change; the
-staging cutover inventories the live variables before the first apply
-([RUNBOOK.md](RUNBOOK.md) "Staging cutover").
-CD (`.github/workflows/deploy.yml`) runs `railway config apply --yes` without
+deletion, so every variable the code reads is declared (a literal or
+`preserve()`) in `.railway/railway.ts`. Wave 2.0 registered every wave-2
+variable; areas never edit the file, and a missing name goes to the lead
+(contract C-10). The staging cutover inventories the live variables before
+the first apply ([RUNBOOK.md](RUNBOOK.md) "Staging cutover").
+CD (`.github/workflows/deploy.yml`, through `.github/actions/deploy`) runs `railway config apply --yes` without
 `--confirm-destructive`, so a plan that would delete a service or variable
 stops for review. Domains are deliberately not in IaC. Settings IaC cannot
 express are manual and listed in [RUNBOOK.md](RUNBOOK.md): restart policy
@@ -66,9 +75,19 @@ Each role has one job ([PROVISIONING.md](PROVISIONING.md) creates them):
 | --- | --- | --- | --- |
 | `gm_<env>_app` (`DATABASE_URL`) | pooled (`-pooler`) | web | `statement_timeout` 10 s, `lock_timeout` 8 s, `idle_in_transaction_session_timeout` 15 s |
 | `gm_<env>_billing` (`BILLING_DATABASE_URL`) | pooled | web (owner billing commands, webhook; only while billing is enabled, refused by production web otherwise: open DB-1 follow-up in [RUNBOOK.md](RUNBOOK.md)), worker (provider loop); member of `gm_billing_worker` | 30 s / 8 s / 60 s |
-| `gm_migrator` (`MIGRATION_DATABASE_URL`) | direct | worker only: preDeploy (migrate, grants, retention) and the off-hours retention schedule (every 15 minutes, 04:00–07:00 Mexico City; one connection, closed when idle); owns the schema; no superuser, BYPASSRLS or CREATEROLE, so FORCE RLS applies to it (backfills use the owner pattern, [RELEASE.md](RELEASE.md)) | `lock_timeout` 5 s, `statement_timeout` 10 min |
+| `gm_<env>_worker` (`WORKER_DATABASE_URL`) | pooled | worker only (jobs runner for worker-only kinds); member of `gm_jobs_worker` and nothing more privileged (`checkWorkerRole`); claims, completes and enqueues jobs inside `tenant()` and discovers tenants through area `SELECT` policies | 30 s / 8 s / 60 s |
+| `gm_migrator` (`MIGRATION_DATABASE_URL`) | direct | GitHub Actions only (environment secret): the deploy job (migrate, grants, retention) and the daily retention workflow; no Railway service holds it. Owns the schema; no superuser, BYPASSRLS or CREATEROLE, so FORCE RLS applies to it (backfills use the owner pattern, [RELEASE.md](RELEASE.md)) | `lock_timeout` 5 s, `statement_timeout` 10 min |
 | `gm_<env>_backup` (`BACKUP_DATABASE_URL`) | direct | GitHub backup workflow; member of `gm_backup_reader` (reads through `ops_backup_read` policies) | no timeouts |
 | `neondb_owner` | direct | provisioning and rotation scripts only; password kept offline | — |
+| `gm_support_<name>` (`SUPPORT_DATABASE_URL`) | direct | operator workstation only (account's support CLI, 031); member of `gm_support`; both runtime processes refuse it | account's |
+
+Capability roles (NOLOGIN), created only by `scripts/ops/sql/globals.sql`,
+never by a migration: `gm_billing_worker` and `gm_backup_reader` (built),
+`gm_jobs_worker` (Wave 2.0: `jobs` grants in `scripts/grants.sql`, discovery
+policies in area migrations) and `gm_support` (grants and policies in 031).
+No runtime or worker login may hold another capability role or `gm_migrator`
+/ `neon_superuser` membership (`checkRole`, `checkWorkerRole`,
+`assertRuntimeRole`; one list in `server/roles.ts`).
 
 TLS: `connect()` passes `ssl: 'verify-full'` for every non-loopback host and
 drops URL query parameters, so `sslmode=require` can no longer downgrade to an
@@ -80,10 +99,14 @@ sets `app.tenant_id` and `statement_timeout` in one `set_config` statement
 (default 20) until the load test chooses a value ([LOAD_TEST.md](LOAD_TEST.md)).
 
 Deployed processes refuse credentials they must not hold
-(`server/config-rules.ts`): web refuses `MIGRATION_DATABASE_URL`,
-`BACKUP_DATABASE_URL`, `PROVISION_DATABASE_URL` and `STRIPE_SECRET_KEY`;
-the worker refuses `DATABASE_URL`, `BACKUP_DATABASE_URL` and
-`PROVISION_DATABASE_URL`. Tenant queries still require transaction-local
+(`server/config-rules.ts`, when `APP_ENV` is `staging` or `production`): web
+refuses `MIGRATION_DATABASE_URL`, `BACKUP_DATABASE_URL`,
+`PROVISION_DATABASE_URL`, `STRIPE_SECRET_KEY`, `WORKER_DATABASE_URL`,
+`SUPPORT_DATABASE_URL`, `FACTURAPI_API_KEY`, `FACTURAPI_TEST_KEY`,
+`CREDENTIAL_ENCRYPTION_KEY` and `CFDI_LIVE_ENABLED`; the worker refuses
+`DATABASE_URL`, `BACKUP_DATABASE_URL`, `PROVISION_DATABASE_URL`,
+`MIGRATION_DATABASE_URL`, `SUPPORT_DATABASE_URL`, `SIGNING_KEYS` and
+`JWT_SECRET`. Tenant queries still require transaction-local
 context; the runtime role has no DELETE anywhere.
 
 ## Environment mapping
@@ -101,7 +124,12 @@ context; the runtime role has no DELETE anywhere.
 | `BILLING_DATABASE_URL` | Billing capability login; web (commands, webhook) and worker (provider loop) |
 | `BACKUP_DATABASE_URL`, `PROVISION_DATABASE_URL` | Backup workflow and operator scripts only; refused by deployed services |
 | `TRUST_PROXY` | Express trust proxy; unset means `loopback, 100.0.0.0/8` in production (Railway edge) |
-| `JWT_SECRET` | Retain; generated per environment, rotated deliberately |
+| `JWT_SECRET` | Retain, `web` only; verifies pre-2.0 tokens outside production and keys the lookup digests; generated per environment, rotated only with an emergency key rotation ([RUNBOOK.md](RUNBOOK.md) "Signing keys") |
+| `SIGNING_KEYS` | New (Wave 2.0, OPS-10): `web` only, `kid:base64url(>=32 bytes)[,…]`, first entry signs; required when `APP_ENV=production`; a deployed worker refuses it |
+| `WORKER_DATABASE_URL` | New (Wave 2.0): jobs login of the `worker` only; a deployed web refuses it |
+| `FISCAL_TICKETS_ENABLED`, `CFDI_INVOICE_LINK_EXPIRY_HOURS`, `LEGAL_*`, `SUPPORT_EMAIL`/`_PHONE`/`_WHATSAPP`/`_URL`/`_HOURS`/`_HOURS_EN`, `SAAS_TAX_PROFILE_ENABLED`, `PUBLIC_ORDERING_ENABLED` | Registered by Wave 2.0 on `web` (`preserve()`) for fiscal, cfdi and account; each area validates its own values |
+| `SAAS_TAX_MODE`, `SAAS_COLLECT_TAX_ID` | Registered on both services (account) |
+| `STRIPE_TAX_RATE_ID`, `CFDI_LIVE_ENABLED`, `CFDI_GLOBAL_GRACE_MINUTES` | Registered on `worker` only (account, cfdi) |
 | `ACCESS_STEP_UP_SECONDS`, `ACCESS_IDLE_LOCK_DEFAULT_SECONDS` | New (access): step-up window (30..1800 s, default 120) and default terminal auto-lock (default 180 s); `preserve()` on `web` ([ACCESS.md](ACCESS.md) "Configuration") |
 | `DEMO_TENANT_ID` | New (access): fictional demo tenant for local and staging only; declared on staging's `web` only, and the server refuses to start with it when `RAILWAY_ENVIRONMENT_NAME` or `APP_ENV` is `production` |
 | `ADMIN_SECRET` | Legacy compatibility only; empty/disabled normally; no universal browser admin bypass |
@@ -113,7 +141,7 @@ context; the runtime role has no DELETE anywhere.
 | `STRIPE_PRICE_STARTER`, `STRIPE_PRICE_PRO`, `STRIPE_PRICE_FOUNDERS` | Compatibility candidates from POS Lite; map plans explicitly rather than assuming old prices |
 | Luma `STRIPE_PRICE_MONTHLY`, `*_ANNUAL`, `*_POS_MONTHLY`, `*_PRO_*` | Map existing subscriptions/products during migration; not a second billing engine |
 | `MP_*`, `GETNET_*`, `CLIP_*` | Preserve documented provider configuration where enabled; restaurant credentials remain tenant-scoped |
-| `FACTURAPI_API_KEY`, `FACTURAPI_TEST_KEY` | Canonical invoicing variables; verify sandbox/live separation |
+| `FACTURAPI_API_KEY`, `FACTURAPI_TEST_KEY` | Canonical invoicing variables, `worker` only (a deployed web refuses them); verify sandbox/live separation |
 | `R2_*`, `FEATURE_MENU_PHOTOS`, `VITE_FEATURE_MENU_PHOTOS` | Preserve asset capability and server/client flags |
 | `RESEND_API_KEY`, `ANTHROPIC_API_KEY` | Optional reports/email and reviewed import assistance |
 | `TYPESAFE_API_KEY` | New: optional, server-only key for the TypeSafe judgment-assist modules in the feature matrix; never expose to the browser; unset disables them and keeps the manual flow |
@@ -121,13 +149,13 @@ context; the runtime role has no DELETE anywhere.
 | Luma `NEXT_PUBLIC_SUPABASE_*`, `SUPABASE_SERVICE_ROLE_KEY` | Remove from target runtime; authorized read-only migration access belongs to a separate import process |
 | Luma `NEXT_PUBLIC_APP_URL` | Map to `APP_URL` and safe public configuration |
 | `ENABLE_BACKGROUND_EMAIL`, `ENABLE_BACKGROUND_SMS` | Default off in development/test; enable for an explicit environment/recipient policy |
-| `CREDENTIAL_ENCRYPTION_KEY` | New: server-only key for protected tenant integration secrets; rotation design required |
+| `CREDENTIAL_ENCRYPTION_KEY` | New: `worker`-only key for protected tenant integration secrets (a deployed web refuses it); rotation design required |
 
 Store tenant-specific provider credentials encrypted with access audit. Never treat another restaurant's or the platform's fallback merchant as an automatic payment destination. Missing merchant configuration disables that tenant's integration. Never expose raw credential values back to settings pages.
 
 ## Scheduling, printing, and providers
 
-Railway cron schedules use UTC and are for jobs that exit; they are unsuitable for continuous print/KDS loops. See [Railway scheduled jobs](https://docs.railway.com/cron-jobs). Background work uses the jobs outbox (`server/jobs.ts`): business code enqueues in its own tenant transaction, and the web process's runner claims per tenant with the runtime role (lease-fenced, retry with backoff, dead after 8 attempts, alert on dead). Handlers must be idempotent and must not hold a transaction across a network call. The runner keeps its tenant list in memory: after a restart or deploy a tenant's pending jobs and retries resume on its first authenticated request (a read is enough), and jobs enqueued by unauthenticated public ordering are claimed by the 30 s sweep or on that next request, so a handler must not assume a delivery deadline. Shutdown waits for running handlers within the drain window, then aborts them (`ctx.signal`) and the job is retried. Reconcile the source schedules rather than copying their offsets unquestioningly.
+Railway cron schedules use UTC and are for jobs that exit; they are unsuitable for continuous print/KDS loops. See [Railway scheduled jobs](https://docs.railway.com/cron-jobs). Background work uses the jobs outbox (`server/jobs.ts`): business code enqueues in its own tenant transaction, and the web process's runner claims per tenant with the runtime role (lease-fenced, retry with backoff, dead after the kind's `maxAttempts`, default 8, alert on dead). Worker-only kinds (cfdi, 030) run in the worker on its jobs login, which discovers due tenants every 5 s ([ARCHITECTURE.md](ARCHITECTURE.md) "Offline, jobs, and operational recovery"). Handlers must be idempotent and must not hold a transaction across a network call. The runner keeps its tenant list in memory: after a restart or deploy a tenant's pending jobs and retries resume on its first authenticated request (a read is enough), and jobs enqueued by unauthenticated public ordering are claimed by the 30 s sweep or on that next request, so a handler must not assume a delivery deadline. Shutdown waits for running handlers within the drain window, then aborts them (`ctx.signal`) and the job is retried. Reconcile the source schedules rather than copying their offsets unquestioningly.
 
 Printer bridge pairing needs short-lived setup credentials, a revocable device token, station routing, job acknowledgements, and an operator test-print step. The cloud web process must not try to access restaurant USB hardware. Do not carry over Luma's Supabase-dependent bridge directly.
 

@@ -15,11 +15,11 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | M2 recovery | local/Neon and deployed recovery HTTP passed; wave-1 offline track (026) locally verified | Staging proof of the 026 offline changes, real tablet and printer checks, combined billing cases |
 | M3 staging candidate | deployed; core flows passed | Finish remaining exact-candidate sandbox billing cases; see STAGING.md |
 | M4 selling/pricing/cash/kitchen | partial | Item voids with manager approval and kitchen deltas done locally (Sept 26); service lifecycle, notes, KDS and payment UX done locally (Oct 5: `test:db:service`, `tests/browser/service.spec.ts`, `tests/browser/kitchen.spec.ts`); combos, open-price items within a ceiling and one choice picker for the POS and QR/kiosk done locally (Oct 5: `test:db:menu`, `tests/browser/menu.spec.ts`); next: discounts/courtesies with approval, item-level refunds, saved drawer close, promotions, physical printer check |
-| M5 jobs/printing/merchant payments | incomplete | Jobs outbox runner done locally (Oct 5: dedupe, lease fencing, backoff, dead-job alerts, restart resume; `tests/jobs-db.ts`); next: printer, report/email and payment handlers once devices/providers are selected |
+| M5 jobs/printing/merchant payments | incomplete | Jobs outbox runner done locally (Oct 5: dedupe, lease fencing, backoff, dead-job alerts, restart resume; `tests/jobs-db.ts`); Wave 2.0 (Oct 5, local with CI parity, staging cutover pending): worker-only jobs runner on the `gm_jobs_worker` login with tenant discovery, `runAt` and per-kind `maxAttempts`; next: printer, report/email and payment handlers once devices/providers are selected |
 | M6 inventory/procurement | partial | Stock item setup, recipe links on products and choices, cached balance and per-restaurant negative-stock policy done locally on `track/menu` (not staged); next: purchase orders, substitutions, lots, yields, saved counts |
 | M7 finance/imports/reports | partial | Complete metric contract, recurring expenses, settlement imports, PDF/schedules |
 | M8 accounts/configured modules | partial | Linking/recovery, co-owner/transfer and explicitly configured providers; device pairing, PIN sign-in and staff offboarding delivered locally (access, migration 023) and await staging verification |
-| M9 migration/readiness | blocked in part | Approved source exports. Per-file migrations, schema readiness, encrypted backups and restore verification locally verified (Oct 5; `tests/migrate-db.ts`, `tests/ops-http.test.ts`, `tests/backup-db.ts`); CI/CD and the Neon restore rehearsal are written but have not run; staging restore/rollback and operational evidence pending |
+| M9 migration/readiness | blocked in part | Approved source exports. Per-file migrations, schema readiness, encrypted backups and restore verification locally verified (Oct 5; `tests/migrate-db.ts`, `tests/ops-http.test.ts`, `tests/backup-db.ts`); Wave 2.0 moved migrations and retention to GitHub Actions as `gm_migrator` (local with CI parity, Oct 5); CI/CD and the Neon restore rehearsal are written but have not run; staging restore/rollback and operational evidence pending |
 | M10 final qualification | pending | Full exact-revision security/load/UX/recovery matrix |
 | M11 production launch | not authorized by GitHub publishing | Named live target, enabled modules and cutover window after qualification |
 
@@ -118,7 +118,7 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | OFF-12 | partial | Fast device clock syncs; a device clock set back after a ping neither reopens the offline window nor backdates a record, and stops offline saves until the next ping (`offline-clock.test.ts`, `offline-store.test.ts`); out-of-window and unverifiable evidence archived with a reason unblocks drawer close (`offline.spec.ts`, `offline-sync-db.ts`). Locally verified. |
 | OPS-01 | pending | Printer jobs explicitly blocked; the jobs runner never touches blocked jobs and provides lease fencing, retries and restart resume for a future printer handler (`tests/jobs-db.ts`, 2026-10-05). Printer worker/hardware recovery pending. |
 | OPS-02 | partial | Persisted KDS rounds; versioned single-flight polling with backoff and a stale banner browser-tested locally (Oct 5); disconnect recovery on staging pending. |
-| OPS-03 | pending | Durable jobs outbox locally verified: one job per (tenant, kind, dedupe key), two runners never lease the same job, bounded retries then dead with an alert (`tests/jobs-db.ts`, 2026-10-05). Report/email handler not implemented. |
+| OPS-03 | pending | Durable jobs outbox locally verified: one job per (tenant, kind, dedupe key), two runners never lease the same job, bounded retries then dead with an alert (`tests/jobs-db.ts`, 2026-10-05). Wave 2.0 (2026-10-05, local with CI parity): per-kind retry limits, deferred jobs (`runAt`), and a worker runner whose login can claim only through tenant-scoped policies (cross-tenant claim and fence regressions in `tests/jobs-db.ts`). Report/email handler not implemented. |
 | INV-01 | partial | Receiving/preparation/sale/void return/count/waste ledger with a trigger-maintained cached balance that equals the ledger after every cause (`npm run test:db:menu`, local). Complete chained cost reconciliation pending. |
 | INV-02 | verified | Configured per restaurant. Under `block`, concurrent last-portion sales serialize and exactly one succeeds; under the default `allow`, the sale proceeds and the item is flagged; offline cash already collected is always recorded (`npm run test:db:core`, `npm run test:db:menu`, browser; local, not staged). |
 | INV-03 | partial | Causal movement deduplication (also enforced by the ledger trigger for repeated inserts), recipe versions per group edit and DB-5 global lock order tested. Substitutes and refund restoration pending. |
@@ -167,6 +167,27 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
   `sw-shell`. Shared contracts/readiness tests and all database suites run in the
   qualification workflow. CI results are recorded separately from local and Neon
   results.
+
+## Wave 2.0 platform evidence (2026-10-05, local with CI parity)
+
+Built on `track/platform` and qualified locally against databases migrated as
+the non-superuser `gm_migrator` under FORCE RLS, exactly as CI; the first CI run
+happens when the lead pushes, and the staging cutover (RUNBOOK "Staging
+cutover", Wave 2.0 deltas) is an operator step not yet run:
+
+- worker jobs runner on `WORKER_DATABASE_URL` (`checkWorkerRole`, discovery,
+  `jobs` health loop): `tests/jobs-db.ts`, `tests/ops-db.ts`,
+  `tests/drain-http.ts`, `tests/import-graph.test.ts`;
+- OPS-10 keyring and sealed tokens (production refuses pre-2.0 tokens):
+  `tests/keyring.test.ts`, `tests/tokens.test.ts`, access and menu DB suites
+  with a synthetic `SIGNING_KEYS`;
+- migrations, grants and retention in GitHub Actions (exit 75 retries):
+  `tests/migrate-db.ts`, `tests/retention.test.ts`, `tests/workflows.test.ts`;
+- capability roles from `globals.sql` and the worker login in provisioning:
+  `tests/provision-db.ts`;
+- the global lock order and its ratchet (`docs/ARCHITECTURE.md`,
+  `tests/lock-order.test.ts`), and the negative-stock policy deadlock fix
+  (`tests/menu-db.ts`).
 
 ## External prerequisites
 

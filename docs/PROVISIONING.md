@@ -48,13 +48,27 @@ node --env-file=.env.neon-owner-production --import tsx scripts/ops/provision-ro
 node --env-file=.env.neon-owner-production --import tsx scripts/ops/provision-roles.ts --env production
 ```
 
+It first runs `scripts/ops/sql/globals.sql`, which creates the capability
+roles `gm_billing_worker`, `gm_backup_reader`, `gm_jobs_worker` and
+`gm_support` (NOLOGIN) and `gm_migrator`. **`globals.sql` must have run on
+every cluster before its first deploy that contains Wave 2.0:** the
+`-- 2.0 jobs worker` block of `scripts/grants.sql` refuses to apply without
+`gm_jobs_worker` and `gm_support`, and the deploy then stops before Railway.
+Migrations never create these roles.
+
 Creates `gm_migrator` (schema owner, no superuser/BYPASSRLS/CREATEROLE),
-`gm_production_app`, `gm_production_billing` (member of `gm_billing_worker`)
-and `gm_production_backup` (member of `gm_backup_reader`), with role-level
-timeouts that Neon's pooler honours, revokes `CONNECT` from `PUBLIC`, and
-writes `.env.provisioned-production` with `MIGRATION_DATABASE_URL` (direct),
-`DATABASE_URL` and `BILLING_DATABASE_URL` (pooled), `BACKUP_DATABASE_URL`
-(direct) and `PG_APP_USER`. It asserts that no login is privileged and that
+`gm_production_app`, `gm_production_billing` (member of `gm_billing_worker`),
+`gm_production_worker` (member of `gm_jobs_worker` only; 30 s statement, 8 s
+lock and 60 s idle timeouts; `CONNECT`) and `gm_production_backup` (member of
+`gm_backup_reader`), with role-level timeouts that Neon's pooler honours,
+revokes `CONNECT` from `PUBLIC`, and writes `.env.provisioned-production` with
+`MIGRATION_DATABASE_URL` (direct), `DATABASE_URL`, `WORKER_DATABASE_URL` and
+`BILLING_DATABASE_URL` (pooled), `BACKUP_DATABASE_URL` (direct) and
+`PG_APP_USER`. On a re-run it appends any key missing from an existing file
+and never rewrites one; a login that already existed without a saved password
+is listed as "rotate it" (`rotate-db-login.ts --kind <kind>`).
+`MIGRATION_DATABASE_URL` goes to the GitHub environment secret (§7), never to
+Railway. It asserts that no login is privileged and that
 only `gm_migrator` owns tables. `neondb_owner` is not a superuser on Neon
 (it has CREATEROLE, CREATEDB and BYPASSRLS through `neon_superuser`), so the
 script changes only role attributes such an owner may change and grants it
@@ -80,14 +94,21 @@ rotate the
 4. Variables from a private file (never on the command line):
    `scripts/ops/railway-vars.sh production <file>` with `# service: web` /
    `# service: worker` sections — web: `APP_URL`, `DATABASE_URL`,
-   `PG_APP_USER`, `JWT_SECRET` (64+ random characters), Google OAuth,
+   `PG_APP_USER`, `JWT_SECRET` (64+ random characters), `SIGNING_KEYS`
+   (required in production: `node scripts/ops/generate-signing-key.mjs`;
+   [RUNBOOK.md](RUNBOOK.md) "Signing keys"), Google OAuth,
    `STRIPE_WEBHOOK_SECRET` and `BILLING_DATABASE_URL` only if billing is
-   enabled; worker: `MIGRATION_DATABASE_URL`, `PG_APP_USER`, `APP_URL`,
-   `ALERT_WEBHOOK_URL`, Stripe keys only if billing is enabled.
-   Production launches with `BILLING_SANDBOX_ENABLED=false` unless live-mode
-   billing has been qualified (account area); production `web` refuses to
-   start with `BILLING_DATABASE_URL` set while billing is disabled (DB-1
-   follow-up, [RUNBOOK.md](RUNBOOK.md) "Open follow-ups").
+   enabled; worker: `WORKER_DATABASE_URL`, `APP_URL`, `ALERT_WEBHOOK_URL`,
+   Stripe keys only if billing is enabled, and from cfdi (030) the Facturapi
+   keys and `CREDENTIAL_ENCRYPTION_KEY`. The worker **never** gets
+   `MIGRATION_DATABASE_URL`, `SIGNING_KEYS` or `JWT_SECRET`, and the web never
+   gets `WORKER_DATABASE_URL`, the Facturapi keys, `CREDENTIAL_ENCRYPTION_KEY`
+   or `CFDI_LIVE_ENABLED`: each deployed process refuses to start with the
+   other's credentials (`forbidden_credential_in_process`).
+   Production leaves `BILLING_SANDBOX_ENABLED` unset (billing disabled)
+   unless live-mode billing has been qualified (account area); production
+   `web` refuses to start with `BILLING_DATABASE_URL` set while billing is
+   disabled (DB-1 follow-up, [RUNBOOK.md](RUNBOOK.md) "Open follow-ups").
 5. Manual settings from [RUNBOOK.md](RUNBOOK.md): restart policy, region,
    serverless sleep off, deploy webhook to ntfy.
 
@@ -125,6 +146,15 @@ scripts/ops/github-protect.sh
 Then the environment secrets and variables it prints (`RAILWAY_TOKEN`,
 `BACKUP_DATABASE_URL`, `R2_*`, `ALERT_WEBHOOK_URL`, `APP_URL`) and the
 repository variables `RAILWAY_CLI_VERSION` and `RAILWAY_IAC_VERSION`. The
+deploy job and the retention workflow also need, per environment:
+
+- secret `MIGRATION_DATABASE_URL` (`gm_migrator`, direct endpoint), from
+  `.env.provisioned-<env>` on stdin:
+  `grep '^MIGRATION_DATABASE_URL=' .env.provisioned-production | cut -d= -f2- | gh secret set MIGRATION_DATABASE_URL --env production`
+  (never on the command line). It is the only copy of the schema-owner
+  credential outside the offline vault; no Railway service holds it;
+- variable `PG_APP_USER` (`gm_production_app`), the login the grants target;
+- variable `ALERT_WEBHOOK_KIND` (`ntfy`). The
 script also creates the `ops-alert` label the alert steps file issues with
 (they create it too if it is missing).
 
@@ -133,8 +163,10 @@ variable `OPS_LIVE_ENVIRONMENTS` lists the environment, so an unprovisioned
 environment does not fail every hour. For each environment, after its
 secrets are set: run Actions → Backup → Run workflow for it once by hand,
 then add it (`gh variable set OPS_LIVE_ENVIRONMENTS --body "staging"`, later
-`"staging production"`). Listing `production` also turns on the uptime
-check, whose backup-freshness step counts only runs named
+`"staging production"`). Listing an environment also turns on its daily
+retention workflow (production 05:15, staging 05:45 Mexico City); dispatch
+Actions → Retention for it once by hand first. Listing `production` also
+turns on the uptime check, whose backup-freshness step counts only runs named
 `Backup production`. It is a repository variable because a job-level
 condition cannot see environment-level variables.
 
@@ -157,10 +189,17 @@ account area (wave 2); until it lands, confirm the values by hand on
 ## 10. First deploy and rehearsal
 
 1. Dispatch Deploy for the SHA already live on staging, outside service hours.
-   The worker's preDeploy creates the schema on the empty database.
+   The deploy job creates the schema on the empty database (`migrate.js
+   --grants --retention` as `gm_migrator`, from the environment secret)
+   before it uploads either service.
 2. The smoke must pass (live commit, health, worker ok, client IP check,
    malformed JSON, session required).
 3. Run the backup workflow manually for production, then the restore
    rehearsal from that backup ([BACKUP_RESTORE.md](BACKUP_RESTORE.md)).
-4. Record evidence and dates in the completion ledger (M11 is the owner's
+4. Go-live checks (Wave 2.0): `WORKER_DATABASE_URL` is set on `worker` and
+   its log shows `worker_ready` with `jobs:true` (`/api/ops/status` reports
+   the worker `ok`); `SIGNING_KEYS` is set on `web` and a fresh `gm_session`
+   cookie starts with `v2.`; one Actions → Retention → production run is
+   green.
+5. Record evidence and dates in the completion ledger (M11 is the owner's
    launch decision).
