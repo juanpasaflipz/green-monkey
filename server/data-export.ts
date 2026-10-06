@@ -2,6 +2,8 @@ import { once } from "node:events";
 import type express from "express";
 import type postgres from "postgres";
 import { tenant, type Tx } from "./db.js";
+import { permit } from "./auth.js";
+import { requireRecentAuth } from "./access.js";
 import { audit } from "./orders.js";
 import { log } from "./logging.js";
 import { DomainError, type Session } from "../shared/domain.js";
@@ -63,7 +65,7 @@ export async function exportTables(tx: Tx): Promise<ExportTable[]> {
 }
 
 /** The export's first statement (heavy-read convention): 60 s limits and the tenant scope. */
-async function exportScope(tx: Tx, tenantId: string) {
+export async function exportScope(tx: Tx, tenantId: string) {
   await tx`select set_config('statement_timeout','60s',true),
                   set_config('idle_in_transaction_session_timeout','60s',true),
                   set_config('app.tenant_id',${tenantId},true)`;
@@ -210,14 +212,22 @@ async function streamExport(
   }
 }
 
-/** permit(owner) + recent PIN on terminals + the ?tenant guard, before the rate limiter (R-20). */
-export function exportGuard(
-  check: (s: Session) => void,
-): express.RequestHandler {
+/**
+ * Every /api/account-data route: owners (primary or co-owner) only, and on a
+ * shared terminal a PIN entered recently (access step-up). Personal owner
+ * browsers entered with Google always pass requireRecentAuth.
+ */
+export function requireExportAccess(s: Session) {
+  permit(s, ["owner"]);
+  requireRecentAuth(s);
+}
+
+/** requireExportAccess + the ?tenant guard, before the rate limiter (R-20). */
+export function exportGuard(): express.RequestHandler {
   return (req, _res, next) => {
     try {
       const s = (req as express.Request & { session: Session }).session;
-      check(s);
+      requireExportAccess(s);
       if (req.query.tenant !== undefined && req.query.tenant !== s.tenantId)
         throw new DomainError("session_changed", 409);
       next();

@@ -42,10 +42,14 @@ import {
   shellState,
 } from "../account-center.js";
 import { getTaxProfile, saveTaxProfile } from "../tax-profile.js";
-import { exportGuard, exportHandler, exportTables } from "../data-export.js";
+import {
+  exportGuard,
+  exportHandler,
+  exportTables,
+  requireExportAccess,
+} from "../data-export.js";
 import type { Tx } from "../db.js";
 import { legalVersion } from "../../shared/legal.js";
-import type { Session } from "../../shared/domain.js";
 
 /**
  * express-rate-limit with the platform 429 body ({error:"rate_limited",
@@ -305,12 +309,8 @@ export function register({ app, sql, route }: RouteContext) {
   // Owner data export: permit(owner) and the step-up run before the limiter,
   // so a step_up_required refusal is not counted (access R3); 10 per hour per
   // tenant; on Free, after a lapse and on unselected devices too.
-  const ownerExport = (s: Session) => {
-    permit(s, ["owner"]);
-    requireRecentAuth(s);
-  };
   route("get", "/account-data/tables", async (tx, s) => {
-    ownerExport(s);
+    requireExportAccess(s);
     return (await exportTables(tx)).map((t) => ({
       name: t.name,
       columns: t.columns.length,
@@ -322,7 +322,7 @@ export function register({ app, sql, route }: RouteContext) {
     3600_000,
     (req) => "tenant:" + (req as AuthRequest).session.tenantId,
   );
-  const guard = exportGuard(ownerExport);
+  const guard = exportGuard();
   app.get(
     "/api/account-data/export.json",
     guard,
