@@ -4,14 +4,11 @@ import type { AddressInfo } from "node:net";
 import type http from "node:http";
 import type postgres from "postgres";
 import { trustProxy } from "../server/http.js";
-import {
-  PUBLIC_ORDERS_PER_MINUTE,
-  PUBLIC_REQUESTS_PER_MINUTE,
-  REVISION_POLLS_PER_IP_PER_MINUTE,
-  REVISION_POLLS_PER_MINUTE,
-  publicOrdering,
-} from "../server/public-ordering.js";
+import { publicOrdering } from "../server/public-ordering.js";
+import { PUBLIC_RATES } from "../server/public-limits.js";
+import { newPublicToken } from "../server/public-tokens.js";
 import { DomainError } from "../shared/domain.js";
+import { LINK_HEADER } from "../shared/public-ordering.js";
 
 let server: http.Server | null = null;
 afterEach(async () => {
@@ -21,15 +18,21 @@ afterEach(async () => {
 
 /**
  * The real public ordering router behind proxy trust wired like
- * server/index.ts. Every request carries an unsigned token, so a request the
- * limits let through is refused with 401 before any database work: the
- * database handle is never touched.
+ * server/index.ts. The database handle is a stub that knows no links: a
+ * malformed token is refused before it is touched and a well-formed one is
+ * looked up and not found, so every request the limits let through answers
+ * 404 public_link_invalid.
  */
+const noLinks = {
+  begin: async (fn: (tx: unknown) => Promise<unknown>) =>
+    fn(() => Promise.resolve([])),
+} as unknown as postgres.Sql;
+
 async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
   const app = express();
   app.set("trust proxy", trustProxy(env));
   app.use(express.json({ limit: "1kb" }));
-  app.use("/api/public", publicOrdering({} as postgres.Sql));
+  app.use("/api/public", publicOrdering(noLinks));
   app.use(
     (
       error: unknown,
@@ -48,14 +51,23 @@ async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
     method: "GET" | "POST",
     path: string,
     headers: Record<string, string>,
+    token = "x",
   ) => {
     const r = await fetch(origin + path, {
       method,
-      headers: { "content-type": "application/json", ...headers },
+      headers: {
+        "content-type": "application/json",
+        [LINK_HEADER]: token,
+        ...headers,
+      },
       body: method === "POST" ? "{}" : undefined,
     });
-    await r.arrayBuffer();
-    return { status: r.status, limit: r.headers.get("ratelimit-limit") };
+    const body = await r.json();
+    return {
+      status: r.status,
+      error: body.error as string,
+      limit: r.headers.get("ratelimit-limit"),
+    };
   };
 }
 
@@ -66,84 +78,107 @@ async function burst(
   method: "GET" | "POST",
   path: string,
   headers: Record<string, string>,
+  token: () => string = () => "x",
 ) {
   const statuses: number[] = [];
   for (let i = 0; i < n; i++)
-    statuses.push((await send(method, path, headers)).status);
+    statuses.push((await send(method, path, headers, token())).status);
   return statuses;
 }
 
 const realIp = (ip: string) => ({ "X-Real-IP": ip });
 
 describe("public ordering limits key on the real client address (LD-11 MENU-INT-1)", () => {
-  it("catalog loads and receipts: clients the edge forwards with X-Real-IP get their own shared budget", async () => {
+  it("menu loads: clients the edge forwards with X-Real-IP get their own budget, whatever the token", async () => {
     const send = await start();
     const a = realIp("198.51.100.7");
     const statuses = await burst(
       send,
-      PUBLIC_REQUESTS_PER_MINUTE,
+      PUBLIC_RATES.menuPerIp,
       "GET",
-      "x/catalog",
+      "menu",
       a,
     );
-    expect(statuses.every((s) => s === 401)).toBe(true);
-    expect((await send("GET", "x/catalog", a)).status).toBe(429);
-    expect((await send("GET", "receipt/x", a)).status).toBe(429);
+    expect(statuses.every((s) => s === 404)).toBe(true);
+    const refused = await send("GET", "menu", a, newPublicToken());
+    expect([refused.status, refused.error]).toEqual([429, "rate_limited"]);
+    expect(refused.limit).toBe(String(PUBLIC_RATES.menuPerIp));
     // Another diner behind the same edge is a different client.
-    const b = realIp("198.51.100.8");
-    expect((await send("GET", "x/catalog", b)).status).toBe(401);
-    expect((await send("GET", "receipt/x", b)).status).toBe(401);
+    const b = await send("GET", "menu", realIp("198.51.100.8"));
+    expect([b.status, b.error]).toEqual([404, "public_link_invalid"]);
   });
 
-  it("order submissions: the order budget is per client, not per edge", async () => {
+  it("order submissions: the per-IP order budget holds across many links and is per client, not per edge", async () => {
     const send = await start();
     const a = realIp("198.51.100.7");
     const statuses = await burst(
       send,
-      PUBLIC_ORDERS_PER_MINUTE,
+      PUBLIC_RATES.submitPerIp,
       "POST",
-      "x/orders",
+      "orders",
       a,
+      newPublicToken,
     );
-    expect(statuses.every((s) => s === 401)).toBe(true);
-    const refused = await send("POST", "x/orders", a);
+    expect(statuses.every((s) => s === 404)).toBe(true);
+    const refused = await send("POST", "orders", a, newPublicToken());
     expect(refused.status).toBe(429);
-    expect(refused.limit).toBe(String(PUBLIC_ORDERS_PER_MINUTE));
+    expect(refused.limit).toBe(String(PUBLIC_RATES.submitPerIp));
     expect(
-      (await send("POST", "x/orders", realIp("198.51.100.8"))).status,
-    ).toBe(401);
+      (await send("POST", "orders", realIp("198.51.100.8"), newPublicToken()))
+        .status,
+    ).toBe(404);
+  });
+
+  it("submissions with a malformed token share one per-IP write bucket, so spellings mint no keys", async () => {
+    const send = await start();
+    const a = realIp("198.51.100.7");
+    const spellings = ["", "x", "eyJhbGciOi.payload.sig", "A".repeat(23)];
+    const statuses: number[] = [];
+    for (let i = 0; i < PUBLIC_RATES.writePerIpLink; i++)
+      statuses.push(
+        (await send("POST", "orders", a, spellings[i % spellings.length]))
+          .status,
+      );
+    expect(statuses.every((s) => s === 404)).toBe(true);
+    const refused = await send("POST", "orders", a, "y");
+    expect(refused.status).toBe(429);
+    expect(refused.limit).toBe(String(PUBLIC_RATES.writePerIpLink));
   });
 
   it("revision polls: the per-link budget and the per-IP ceiling both key on the client", async () => {
     const send = await start();
     const a = realIp("198.51.100.7");
     const b = realIp("198.51.100.8");
-    // Per link (an unsigned token shares the "-" link key per client).
+    const link = newPublicToken();
     const perLink = await burst(
       send,
-      REVISION_POLLS_PER_MINUTE,
+      PUBLIC_RATES.revisionPerIpLink,
       "GET",
-      "x/revision",
+      "revision",
       a,
+      () => link,
     );
-    expect(perLink.every((s) => s === 401)).toBe(true);
-    const linkRefusal = await send("GET", "x/revision", a);
+    expect(perLink.every((s) => s === 404)).toBe(true);
+    const linkRefusal = await send("GET", "revision", a, link);
     expect(linkRefusal.status).toBe(429);
-    expect(linkRefusal.limit).toBe(String(REVISION_POLLS_PER_MINUTE));
-    expect((await send("GET", "x/revision", b)).status).toBe(401);
+    expect(linkRefusal.limit).toBe(String(PUBLIC_RATES.revisionPerIpLink));
+    expect((await send("GET", "revision", b, link)).status).toBe(404);
     // The per-IP ceiling: every poll so far counted against client a.
-    const used = REVISION_POLLS_PER_MINUTE + 1;
+    const used = PUBLIC_RATES.revisionPerIpLink + 1;
     await burst(
       send,
-      REVISION_POLLS_PER_IP_PER_MINUTE - used,
+      PUBLIC_RATES.revisionPerIp - used,
       "GET",
-      "y/revision",
+      "revision",
       a,
+      newPublicToken,
     );
-    const ceiling = await send("GET", "z/revision", a);
+    const ceiling = await send("GET", "revision", a, newPublicToken());
     expect(ceiling.status).toBe(429);
-    expect(ceiling.limit).toBe(String(REVISION_POLLS_PER_IP_PER_MINUTE));
-    expect((await send("GET", "z/revision", b)).status).toBe(401);
+    expect(ceiling.limit).toBe(String(PUBLIC_RATES.revisionPerIp));
+    expect((await send("GET", "revision", b, newPublicToken())).status).toBe(
+      404,
+    );
   });
 
   it("X-Forwarded-For clients are separate; IPv6 clients group per /56; an untrusted peer's X-Real-IP mints no key", async () => {
@@ -151,45 +186,41 @@ describe("public ordering limits key on the real client address (LD-11 MENU-INT-
     const xff = (ip: string) => ({ "X-Forwarded-For": ip });
     await burst(
       send,
-      PUBLIC_REQUESTS_PER_MINUTE,
+      PUBLIC_RATES.menuPerIp,
       "GET",
-      "x/catalog",
+      "menu",
       xff("203.0.113.1"),
     );
-    expect((await send("GET", "x/catalog", xff("203.0.113.1"))).status).toBe(
-      429,
-    );
-    expect((await send("GET", "x/catalog", xff("203.0.113.2"))).status).toBe(
-      401,
-    );
+    expect((await send("GET", "menu", xff("203.0.113.1"))).status).toBe(429);
+    expect((await send("GET", "menu", xff("203.0.113.2"))).status).toBe(404);
     // One /56 is one client network: another address in it shares the bucket,
     // an address outside it does not.
     await burst(
       send,
-      PUBLIC_REQUESTS_PER_MINUTE,
+      PUBLIC_RATES.menuPerIp,
       "GET",
-      "x/catalog",
+      "menu",
       realIp("2001:db8:0:100::1"),
     );
     expect(
-      (await send("GET", "x/catalog", realIp("2001:db8:0:1ff::2"))).status,
+      (await send("GET", "menu", realIp("2001:db8:0:1ff::2"))).status,
     ).toBe(429);
     expect(
-      (await send("GET", "x/catalog", realIp("2001:db8:0:200::1"))).status,
-    ).toBe(401);
+      (await send("GET", "menu", realIp("2001:db8:0:200::1"))).status,
+    ).toBe(404);
     // Without proxy trust the header is the client's own claim and is ignored:
     // every spelling of it lands in the peer's one bucket.
     await new Promise<void>((r) => server!.close(() => r()));
     send = await start({ NODE_ENV: "development" });
     await burst(
       send,
-      PUBLIC_REQUESTS_PER_MINUTE,
+      PUBLIC_RATES.menuPerIp,
       "GET",
-      "x/catalog",
+      "menu",
       realIp("198.51.100.7"),
     );
-    expect(
-      (await send("GET", "x/catalog", realIp("198.51.100.9"))).status,
-    ).toBe(429);
+    expect((await send("GET", "menu", realIp("198.51.100.9"))).status).toBe(
+      429,
+    );
   });
 });
