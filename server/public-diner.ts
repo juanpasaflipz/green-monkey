@@ -10,7 +10,7 @@ import { catalog, menuRevision, publicCatalog } from "./menu-read.js";
 import { staffOnlineSql } from "./public-links.js";
 import { statusHash } from "./public-tokens.js";
 import { restaurantPrivacyUrl } from "./compat/public-account.js";
-import { fiscalTicketIdentity } from "./compat/public-fiscal.js";
+import { fiscalTicketIdentity } from "./fiscal-read.js";
 import { selfInvoiceOffered } from "./compat/public-cfdi.js";
 import {
   DomainError,
@@ -176,9 +176,10 @@ const holdKind = (h: HoldRow): LinkKind =>
   h.table_id ? "table" : h.channel === "kiosk" ? "kiosk" : "counter";
 
 /**
- * The diner's view of a hold; accepted holds add one order statement (plus
- * fiscal from 027). An accepted hold shows what acceptance charged (its
- * accepted lines and total), never the submission snapshot (PRIVACY-1).
+ * The diner's view of a hold; accepted holds add one order statement and,
+ * for a new check, fiscal's ticket identity (one statement: the folio once
+ * the check is paid, 027). An accepted hold shows what acceptance charged
+ * (its accepted lines and total), never the submission snapshot (PRIVACY-1).
  */
 async function holdView(tx: Tx, h: HoldRow): Promise<DinerHoldView> {
   const excluded = new Set(h.excluded_line_ids ?? []);

@@ -1,7 +1,8 @@
 // Staff side of held QR/kiosk orders (032): the Órdenes inbox, the shell
 // summary, and the accept/reject decisions. Accepting runs the unmodified
 // createOrder or addRound (and recordPayment for pay-first) as the staff
-// member: rounds, stock, the kitchen job and the feed bump happen only here.
+// member: rounds, stock, the kitchen job, the feed bump and, when the accept
+// pays the check, its fiscal ticket (027) happen only here.
 //
 // Lock order (docs/PUBLIC_ORDERING.md): every decision takes its once() key
 // (LO-1), restaurants FOR SHARE (LO-2), then the hold row FOR UPDATE (LO-2b)
@@ -333,8 +334,9 @@ export async function acceptHold(
       } else {
         const [o] =
           await tx`select id,table_id,check_state from orders where id=${p.target.orderId}`;
-        // Only an open check of the hold's own table (a paid check takes no
-        // rounds once fiscal tickets exist, 027).
+        // Only an open check of the hold's own table: a check gets its fiscal
+        // ticket when it is paid and takes no rounds afterwards (fiscal D1,
+        // LD-15 fiscal Q2; LD-P15 OQ-4).
         if (
           !h.table_id ||
           !o ||
@@ -345,16 +347,26 @@ export async function acceptHold(
         // The round note carries the label and the kitchen note, never the
         // diner's name: round notes print on the shared check's receipt
         // (PRIVACY-3, LD-1).
-        order = await addRound(tx, s, o.id, {
-          operationId: h.order_operation_id,
-          lines,
-          mode: "dine_in",
-          tableId: h.table_id,
-          name: "",
-          channel: h.channel,
-          expectedVersion: p.target.expectedVersion,
-          note: [label, h.note].filter(Boolean).join(" · ").slice(0, 500),
-        });
+        try {
+          order = await addRound(tx, s, o.id, {
+            operationId: h.order_operation_id,
+            lines,
+            mode: "dine_in",
+            tableId: h.table_id,
+            name: "",
+            channel: h.channel,
+            expectedVersion: p.target.expectedVersion,
+            note: [label, h.note].filter(Boolean).join(" · ").slice(0, 500),
+          });
+        } catch (e) {
+          // The check above read the target without a lock. A payment that
+          // settled it since issued its ticket, and addRound refuses a
+          // ticketed check under the order lock: the same answer as any
+          // target that is no longer open (the whole accept rolls back).
+          if (e instanceof DomainError && e.code === "fiscal_ticket_issued")
+            throw new DomainError("public_hold_target_invalid", 409);
+          throw e;
+        }
       }
       // The round this hold became: read, never derived from order.version
       // (a void bumps the version without inserting a round).
@@ -376,7 +388,9 @@ export async function acceptHold(
         throw new DomainError("public_hold_price_changed", 409);
       // CONCURRENCY-3: the target's state was read without a lock; a payment
       // that settled it in between leaves its version unchanged. A check that
-      // was fully paid before this round refuses it (rolled back).
+      // was fully paid before this round refuses it (rolled back). With
+      // fiscal tickets on, addRound already refused it above; this guard
+      // covers a check paid while issuance was off (FISCAL_TICKETS_ENABLED).
       if (p.target.kind === "append") {
         const before = order.total - roundTotal;
         if (before > 0 && order.paid >= before)
