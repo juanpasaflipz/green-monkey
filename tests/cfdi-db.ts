@@ -56,6 +56,9 @@ import {
 } from "../server/cfdi/hooks.js";
 import { selfInvoiceOffered } from "../server/cfdi/store.js";
 import { recordRefundTax } from "../server/fiscal.js";
+import { todaySummary } from "../server/reports/today.js";
+import { dayCorte } from "../server/reports/cortes.js";
+import { reportsPorts } from "../server/reports/ports.js";
 import { rekeyOrganizationSecrets } from "../server/cfdi/rekey.js";
 import { lockDocument, lockPeriod } from "../server/cfdi/locks.js";
 import { noRetries } from "./db-retries.js";
@@ -2650,11 +2653,29 @@ try {
     assert.equal((await docRow(d2.id)).expected_withholding, 0);
   });
 
-  await test("reports hooks: cfdiAlerts/cfdiReportAlerts map the attention counts; disabled CFDI gives none", async () => {
+  await test("reports hooks: cfdiAlerts/cfdiReportAlerts map the attention counts and Hoy (todaySummary) carries them; the corte del día (dayCorte) carries extra.cfdi; disabled CFDI gives neither", async () => {
     const a = await web(A, (tx) => cfdiAlerts(tx));
     assert.equal(a.mode, "test");
     const mapped = cfdiReportAlerts(a);
     assert.ok(mapped.every((m) => m.code.startsWith("cfdi_") && m.count > 0));
+    // Reports 029's anchors are filled: Hoy carries exactly these codes and the corte del día the
+    // coverage of its date (wave2-cross-track C31).
+    const hoy = await web(A, (tx) =>
+      todaySummary(tx, A.manager, "cfdi-db", reportsPorts),
+    );
+    assert.ok(mapped.length > 0, "tenant A has CFDI attention items here");
+    assert.deepEqual(
+      hoy.alerts.filter((x) => x.code.startsWith("cfdi_")),
+      mapped,
+    );
+    const corte = await web(A, (tx) =>
+      dayCorte(tx, A.manager, today(), "cfdi-db", reportsPorts),
+    );
+    assert.deepEqual(
+      corte.extra.cfdi,
+      await web(A, (tx) => cfdiCoverage(tx, { from: today(), to: today() })),
+    );
+    assert.ok((corte.extra.cfdi as { tickets: number }).tickets > 0);
     const fresh = await makeTenant("no-cfdi");
     assert.deepEqual(
       cfdiReportAlerts(await web(fresh, (tx) => cfdiAlerts(tx))),
@@ -2665,6 +2686,21 @@ try {
         cfdiCoverage(tx, { from: today(), to: today() }),
       ),
       null,
+    );
+    const freshHoy = await web(fresh, (tx) =>
+      todaySummary(tx, fresh.manager, "cfdi-db", reportsPorts),
+    );
+    assert.equal(
+      freshHoy.alerts.filter((x) => x.code.startsWith("cfdi_")).length,
+      0,
+    );
+    const freshCorte = await web(fresh, (tx) =>
+      dayCorte(tx, fresh.manager, today(), "cfdi-db", reportsPorts),
+    );
+    assert.equal(
+      "cfdi" in freshCorte.extra,
+      false,
+      "no CFDI section while off",
     );
     // 24 (negative half): no refund job while CFDI is not activated.
     const tk = await makeTicket(fresh);

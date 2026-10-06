@@ -168,16 +168,6 @@ span.cfdi-warning {
 .cfdi-portal-footer {
   margin-top: 32px;
 }
-.cfdi-corte {
-  margin: 8px 0;
-}
-.cfdi-corte h3 {
-  font-size: 1em;
-  margin: 4px 0;
-}
-.cfdi-corte p {
-  margin: 2px 0;
-}
 
 /* Printed ticket block (fiscal's footer `extra` slot). */
 .cfdi-receipt-block {

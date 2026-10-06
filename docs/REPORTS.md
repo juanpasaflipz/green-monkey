@@ -273,10 +273,12 @@ Wired at the merge on fiscal 027 and discounts 028 (wave2-cross-track §2 phase 
 
 For cfdi (030): the report-print key moved from advisory class 926 to **930** (cfdi's
 per-ticket key keeps 926; ARCHITECTURE LO-3), so `tests/lock-scan.ts` sees two distinct LO-3
-keys. The anchors stay: `collectAlerts()` (`// cfdi (030): alerts.push(...)` in
-`server/reports/today.ts`), `dayCorte()` (`extra.cfdi` in `server/reports/cortes.ts`) and
-`doc.extra.cfdi` rendering in the corte del día. Hoy's `AlertLine` shows no line for an alert
-code it cannot word, so cfdi maps its own codes there.
+keys. cfdi fills the anchors: `collectAlerts()` adds the four `cfdi_*` attention codes
+(`server/reports/today.ts`), `dayCorte()` sets `extra.cfdi` (`server/reports/cortes.ts`) and the
+corte del día prints `doc.extra.cfdi` as a "Facturación (CFDI)" section; all three are absent
+while CFDI is off. Hoy's `AlertLine` words the `cfdi_*` codes through cfdi's
+`cfdiReportAlertText` and sends them to Configuración, where the CFDI panel and register live;
+it still shows no line for a code it cannot word.
 
 Spec DB tests 12 (a 60-day summary in two fiscal chunks), 18 (no IVA and no margin without
 fiscal data) and 37 (a batchless refund fails `refunds_vs_fiscal`) run in the DB suites. Not

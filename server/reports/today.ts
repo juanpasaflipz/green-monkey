@@ -18,6 +18,7 @@ import { fiscalCurrency, type ReportsPorts } from "./ports.js";
 import { restaurantOf, type ReportRestaurant } from "./restaurant.js";
 import { summaryWithDrawers } from "./summary.js";
 import { windowOf } from "./days.js";
+import { cfdiAlerts, cfdiReportAlerts } from "../cfdi/hooks.js";
 
 type Row = Record<string, unknown>;
 const n = aggregateInt;
@@ -88,7 +89,8 @@ export async function collectAlerts(
       code: "offline_review_pending",
       count: n(counts.offline_pending),
     });
-  // cfdi (030): alerts.push(...cfdiAlerts mapped)
+  // cfdi (030): the four cfdi_* attention codes (none while CFDI is off).
+  alerts.push(...cfdiReportAlerts(await cfdiAlerts(tx)));
   return alerts;
 }
 

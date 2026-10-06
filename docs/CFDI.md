@@ -6,11 +6,11 @@ enabled. No Facturapi key was used and no request reached Facturapi. Only after
 `npm run test:facturapi:sandbox` passes with a real test key may a flow be called
 "sandbox-verified on <date>".
 
-**Branch status (track `cfdi`, migration 030).** Built on platform 2.0 **before** fiscal 027 and
-discounts 028 merged. Every worker path is DB-tested against a test-only stand-in of the 027
-tables (`tests/fixtures/cfdi/fiscal-027-standin.sql`) and the compat shims listed under
-"Rebase onto fiscal and discounts"; the stamping browser flows skip themselves until fiscal's
-`GET /api/fiscal/context` exists. Read that section before merging.
+**Integration status (migration 030).** Merged onto fiscal 027, discounts 028 and reports 029:
+the worker reads fiscal's tickets through `server/fiscal-read.ts`, credit notes come from
+fiscal's `recordRefundTax`, the egreso payment form from 028's `refunds.method`, and reports
+shows cfdi's alerts and corte coverage. Every worker path is DB-tested against the real
+027/028 tables; see "Integration with fiscal, discounts and reports".
 
 The design is the cfdi area spec (migration 030); this page is the operating and engineering
 reference.
@@ -446,9 +446,9 @@ redeclared.
 
 | Command | Covers |
 | --- | --- |
-| `npm test` | `tests/cfdi.test.ts` (builders, rounding proof, XML parser, error classifier), `tests/cfdi-facturapi-contract.test.ts` (documented API), `tests/cfdi-facturapi-fake.test.ts`, `tests/cfdi-shared.test.ts` (receptor rules, periods, deadlines, payment forms, settings), `tests/cfdi-resico.test.ts`, `tests/cfdi-secrets.test.ts` (vault, upload box, CSD inspection, config, redaction), `tests/cfdi-jobs.test.ts` (kinds, limits, retry, dedupe keys), `tests/cfdi-portal-http.test.ts` (portal limiters over HTTP), `tests/cfdi-client.test.ts` (receptor form, printed block, alerts, ticket status, order actions), `tests/import-graph.test.ts` (process boundary), `tests/cfdi-merge-gate.test.ts` (the fiscal rebase gate), `tests/cfdi-locks.test.ts` (advisory key classes and their order inside LO-3) |
-| `npm run test:db:cfdi` | checks through the worker login and the in-process fake: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos, substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, and the EXPLAINs of the running-lease index |
-| `npx playwright test tests/browser/cfdi.spec.ts` | the panel before activation and the portal (always); activation + CSD, staff invoice + cancel, portal self-invoice (skip until fiscal 027 and the worker with the fake run) |
+| `npm test` | `tests/cfdi.test.ts` (builders, rounding proof, XML parser, error classifier), `tests/cfdi-facturapi-contract.test.ts` (documented API), `tests/cfdi-facturapi-fake.test.ts`, `tests/cfdi-shared.test.ts` (receptor rules, periods, deadlines, payment forms, settings), `tests/cfdi-resico.test.ts`, `tests/cfdi-secrets.test.ts` (vault, upload box, CSD inspection, config, redaction), `tests/cfdi-jobs.test.ts` (kinds, limits, retry, dedupe keys), `tests/cfdi-portal-http.test.ts` (portal limiters over HTTP), `tests/cfdi-client.test.ts` (receptor form, printed block, alerts, ticket status, order actions), `tests/import-graph.test.ts` (process boundary), `tests/cfdi-merge-gate.test.ts` (no compat shim returns; the refund hook and `refunds.method`), `tests/cfdi-locks.test.ts` (advisory key classes and their order inside LO-3) |
+| `npm run test:db:cfdi` | checks through the worker login and the in-process fake, against the real 027/028 tables: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos (including fiscal's `recordRefundTax` hook and the card/cash FormaPago from `refunds.method`), substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, and the EXPLAINs of the running-lease index |
+| `npx playwright test tests/browser/cfdi.spec.ts` | the panel before activation and the portal (always); activation + CSD, staff invoice + cancel, portal self-invoice (they need the worker with the fake; CI starts both, a local run without the worker skips only these three) |
 | `npm run test:facturapi:sandbox` | opt-in, `FACTURAPI_TEST_KEY` only, official URL, test mode; `RECORD=1` rewrites fixtures as `recorded@<date>` (not run: no key) |
 
 Fixture provenance: `tests/fixtures/facturapi/README.md`. CI runs the fake on 127.0.0.1:4799 and
@@ -467,35 +467,27 @@ platform User key. A receptor name containing `FAKE NAME MISMATCH`, `FAKE RFC NO
 traslados − retenciones). Passing against the fake proves cfdi's logic, not Facturapi's
 behaviour.
 
-## Rebase onto fiscal and discounts (before merge)
+## Integration with fiscal, discounts and reports
 
-1. Rebase `track/cfdi` onto the integration branch with fiscal 027, discounts 028 (and reports
-   029 when merged), then reset the track databases (the 030 FK to `fiscal_tickets` and the
-   `cfdi_self_invoice_lookup` policy are guarded by `to_regclass` and are skipped on a database
-   migrated without 027; with 027 always first they can become unconditional).
-2. Server: replace `ticketForCfdi` imports from `server/compat/cfdi-fiscal.ts` with
-   `server/fiscal-read.ts`; `refundMethod` becomes a direct read of 028's `refunds.method`;
-   delete `fiscalTablesPresent()` and its call sites in `store.ts` and `portal.ts`, then the shim.
-3. Client: `orderTicket(order)` → `order.fiscal?.ticket ?? null`, `orderHasFiscal(order)` →
-   `!!order.fiscal`, and `setFiscalFooterExtra` from `src/features/fiscal/FiscalReceipt.tsx`;
-   delete `src/compat/cfdi-fiscal.ts`. In `Operations.tsx`, the `CfdiSettings` line moves to
-   right after `FiscalSettings` (golden order LD-18 LD-P7).
-4. Delete `tests/fixtures/cfdi/fiscal-027-standin.sql` and its loader in `tests/cfdi-db.ts`; run
-   `npm run test:db:cfdi` against the real 027/028 tables.
-5. Wire the cross-area anchors: fiscal's `recordRefundTax` step 9 calls `enqueueCfdiRefund`
-   (and discounts' unused anchor comment goes); discounts' `RefundDialog` notice uses
-   `useCfdiTicketStatus(order.fiscal?.ticket?.id ?? null)` and `cfdiTicketCovered`; reports'
-   `collectAlerts()` adds `cfdiReportAlerts(await cfdiAlerts(tx))`, `dayCorte()` sets
-   `extra.cfdi = await cfdiCoverage(tx, range)`, `TodayDashboard` renders
-   `cfdiReportAlertText`, and `documents.tsx` renders `CfdiCorteCoverage` unless it already does.
-6. Run the full qualification; the three stamping browser tests then run instead of skipping.
-   The merge gate enforces this: once `server/fiscal-read.ts` is in the tree,
-   `tests/cfdi-merge-gate.test.ts` fails until both compat shims and the stand-in are gone, no
-   file imports them, `recordRefundTax` calls `enqueueCfdiRefund`, the worker reads
-   `refunds.method`, the stamping tests no longer skip for a missing fiscal, and the CFDI status
-   lines (DELIVERY_STATUS, FEATURE_MATRIX, COMPLETION_LEDGER) were re-verified; the browser
-   stamping tests themselves fail (instead of skipping) without `GET /api/fiscal/context`, and in
-   CI without the worker and the fake.
+- **Fiscal 027.** `ticketForCfdi` comes from fiscal's leaf module `server/fiscal-read.ts` (it
+  imports only `db` and `shared`), so the worker never loads the web sales graph
+  (`tests/import-graph.test.ts`). The client reads `order.fiscal?.ticket`, and the printed block
+  registers once through fiscal's `setFiscalFooterExtra`. Migration 030's claims foreign key to
+  `fiscal_tickets` and the `cfdi_self_invoice_lookup` policy are unconditional (027 always runs
+  first).
+- **Refund hook.** Fiscal's `recordRefundTax` calls `enqueueCfdiRefund(tx, s, refundId)` after it
+  inserts the refund's tax rows (step 9; a no-op while CFDI is off). Every refund path reaches it:
+  discounts' `insertRefundBatch` and the legacy refund.
+- **Discounts 028.** A credit note's FormaPago follows `refunds.method`: a card (`external`)
+  refund takes the parent's card form (04/28) or the restaurant's, a cash refund 01. The refund
+  dialog shows "Esta venta ya tiene factura (CFDI)…" when `useCfdiTicketStatus` reports a valid
+  covering invoice or global.
+- **Reports 029.** `collectAlerts()` adds the four `cfdi_*` codes (`cfdiReportAlerts`), Hoy words
+  them (`cfdiReportAlertText`) and links them to Configuración; `dayCorte()` sets `extra.cfdi`
+  (`cfdiCoverage`) and the corte del día prints it as "Facturación (CFDI)". All are absent while
+  CFDI is off. The report-print key is class 930; cfdi keeps 926-928 (ARCHITECTURE LO-3).
+- **Gate.** `tests/cfdi-merge-gate.test.ts` keeps the pre-merge compat shims and the 027
+  stand-in out of the tree and checks the hook and `refunds.method` read.
 
 ## Limitations and decisions
 
@@ -520,7 +512,6 @@ supplies the test key. The accountant confirms D4, D5, D11 and the RESICO retent
   concepts (`tax_included: false`), the egreso to PUBLICO EN GENERAL (Facturapi's
   `InvoiceEgresoInput` has no `global` field), the undocumented `idempotency_key_in_use` status
   and the receptor test identity.
-- **Fiscal/discounts rebase** (above) and the reports anchors.
 - **Live qualification** with a real CSD and production approval.
 
 ## Sources
