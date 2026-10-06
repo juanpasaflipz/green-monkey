@@ -63,9 +63,11 @@ export async function refundJob(ctx: JobContext): Promise<JobOutcome> {
       select 1 as one from cfdi_cancellations
       where document_id = ${parent.id} and status in ('queued','requested')`;
     if (open) return { kind: "wait" as const, code: "cfdi_parent_cancel_open" };
-    // A route-III credit note for this ticket is on its way (CFDI-SAT-3): it credits the
-    // ticket's whole net in the global, then the nominative invoice takes the ticket. Crediting
-    // the refund against the global now would credit it twice.
+    // A route-III credit note for this ticket is on its way (CFDI-SAT-3): it credits everything
+    // the global still declares for the ticket, this refund included unless the global netted it
+    // or a live note credits it (CFDI-INT-2); then the nominative invoice takes the ticket and
+    // nets every refund. Crediting the refund against the global now would credit it twice; once
+    // the note is valid the claim is the invoice's and this decision finds the refund netted.
     const [crediting] = await tx`
       select 1 as one from cfdi_documents where parent_document_id = ${parent.id} and kind = 'egreso'
         and credit_ticket_id = ${refund.ticket_id} and status in ('queued','stamping','pending')`;
