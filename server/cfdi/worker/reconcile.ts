@@ -17,6 +17,7 @@ import {
   liveJob,
   retryOrExhaust,
 } from "../jobs.js";
+import { lockDocument } from "../locks.js";
 import { loadDocument } from "../store.js";
 import { classify, event, HOUR, MINUTE, runtimeOr } from "./common.js";
 import { cancellationOutcome, loadCancellation, onCanceled } from "./cancel.js";
@@ -119,7 +120,9 @@ export async function reconcileJob(ctx: JobContext): Promise<JobOutcome> {
     const result = cancellationOutcome(inv);
     if (result === "canceled" || result === "rejected") {
       let rejectedSubstitution = false;
+      // Under the document's key, like cfdi_cancel's completion and cfdi_refund's decision.
       await ctx.tenant(async (tx) => {
+        await lockDocument(tx, tenantId, documentId);
         const current = await loadDocument(tx, documentId, { forUpdate: true });
         const c = await loadCancellation(tx, { documentId, open: true });
         if (!current || current.status !== "canceling" || !c) return;

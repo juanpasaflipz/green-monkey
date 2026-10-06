@@ -254,9 +254,14 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
   // here would only use up attempts while the substitute is pending (CFDI-R2).
   if ("wait" in loaded) return { status: "done" };
   const { c, doc } = loaded;
-  /** Records what SAT says about the invoice: canceled, or waiting for the receptor. */
+  /**
+   * Records what SAT says about the invoice: canceled, or waiting for the receptor. Under the
+   * document's key (LO-3, class 927), the key cfdi_refund decides a credit note under: the
+   * decision never reads the invoice valid and its cancellation already accepted.
+   */
   const apply = (result: "canceled" | "pending") =>
     ctx.tenant(async (tx) => {
+      await lockDocument(tx, tenantId, doc.id);
       const current = await loadDocument(tx, doc.id, { forUpdate: true });
       if (!current) return;
       if (result === "canceled") await onCanceled(tx, ctx, current, c);

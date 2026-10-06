@@ -3690,6 +3690,48 @@ try {
     assert.equal(after.n, 1, "the freed ticket goes back to the globals");
   });
 
+  await test("R3-2c. a cancellation completes under its document key (the key cfdi_refund decides under): while a credit-note decision holds it, the completion waits, so the decision never reads the invoice valid and its cancellation already accepted", async () => {
+    const W = await makeTenant("cancel-key");
+    await activate(W);
+    const tk = await makeTicket(W);
+    const d = await invoice(W, tk);
+    await settle(W.tenantId);
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_pending",
+      match: { type: "I", global: false },
+    });
+    await cancelAs(W, W.manager, d.id);
+    await settle(W.tenantId);
+    assert.equal((await docRow(d.id)).status, "canceling");
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((r) => (locked = r));
+    const holder = tenant(app, W.tenantId, async (tx) => {
+      await lockDocument(tx, W.tenantId, d.id);
+      locked();
+      await held;
+    });
+    await lockTaken;
+    await due(W.tenantId, "cfdi_reconcile");
+    let finished = false;
+    const run = settle(W.tenantId).then(() => (finished = true));
+    try {
+      await waitFor(async () => finished || (await advisoryWaiters()) >= 1);
+      assert.equal(
+        (await docRow(d.id)).status,
+        "canceling",
+        "the completion waits for the document key",
+      );
+    } finally {
+      release();
+      await holder;
+      await run;
+    }
+    assert.equal((await docRow(d.id)).status, "canceled");
+  });
+
   console.log(`cfdi DB checks passed: ${checks}`);
 } finally {
   await runner.stop(2000);
