@@ -18,6 +18,7 @@ export async function entitlement(tx: Tx) {
     status: row?.status ?? "free",
     accessUntil: snapshot?.accessUntil ?? null,
     trialUsed: row?.trial_used ?? false,
+    source: (row?.source ?? null) as "stripe" | "fixture" | "support" | null,
     kiosk: plan === "pro",
     qrOrdering: plan === "pro",
   };

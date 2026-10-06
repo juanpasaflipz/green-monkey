@@ -3,7 +3,8 @@ export type BillingStatus =
 export interface Entitlement {
   status: BillingStatus;
   accessUntil: string | null;
-  source: "stripe" | "fixture";
+  /** "support": a ≤90-day pilot grant from the vendor support CLI (account 031). */
+  source: "stripe" | "fixture" | "support";
 }
 export function accessPlan(
   entitlement: Entitlement | null,
