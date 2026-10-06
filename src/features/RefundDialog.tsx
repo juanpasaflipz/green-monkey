@@ -59,10 +59,11 @@ const RELOAD_CODES = [
  * the dialog then shows only what to do instead (collect the payment or void
  * the unpaid lines), never the item tab or the terminal step. Cash leaves this
  * device's drawer; a terminal (card) portion is only recorded, after the
- * terminal approved it, with its reference. Staff need a manager's PIN (the only PIN asked, LD-2); a manager
- * or owner acting alone confirms with the standard "Confirma con tu PIN"
- * step-up when the server asks for it (LD-15 Q2). One operation id per opened
- * dialog, kept across retries until it succeeds (MON-3).
+ * terminal approved it, with its reference. Staff need a manager's PIN (the
+ * only PIN asked, LD-2); a manager or owner acting alone confirms with the
+ * standard "Confirma con tu PIN" step-up when the server asks for it (LD-15
+ * Q2). One operation id per opened dialog, kept across retries until it
+ * succeeds (MON-3).
  */
 export function RefundDialog({
   order: initial,

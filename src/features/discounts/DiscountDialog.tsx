@@ -478,7 +478,7 @@ export function DiscountDialog({
             )
           )}
         </div>
-        {plan && staffLimit && (
+        {plan && staffLimit && staffLimit.maxAmount > 0 && (
           <p className="muted tiny">
             {fill(t("discountsLimitUsed"), {
               used: money(unapprovedDiscounts(order).amount + plan.amount),
