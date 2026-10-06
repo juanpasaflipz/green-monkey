@@ -596,8 +596,16 @@ test("Owners turn offline table service on and off on the Sync screen, labelled 
     await page.reload();
     await pill(page, /^Conectado/).click();
     await expect(toggle).toBeChecked();
+    // The switch shows the new value while its save is in flight, so the read below waits
+    // for the save's response first (as the check above does).
+    const cleared = page.waitForResponse(
+      (r) =>
+        new URL(r.url()).pathname === "/api/offline/settings" &&
+        r.request().method() === "POST",
+    );
     await toggle.uncheck();
     await expect(toggle).not.toBeChecked();
+    expect((await (await cleared).json()).tableService).toBe(false);
     expect(
       await page.evaluate(
         async () =>
