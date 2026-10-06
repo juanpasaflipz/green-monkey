@@ -7,6 +7,7 @@ import {
   AUDIT_GROUP_KEYS,
   AUDIT_GROUPS,
   auditGroupPrefixes,
+  auditGroupsOf,
   auditQuery,
   averageTicket,
   bps,
@@ -16,6 +17,7 @@ import {
   composeSalesSummary,
   corteAccess,
   cortePrintInput,
+  cortePrintKind,
   currentBusinessDate,
   DATE_BOUNDS,
   decodeReportCursor,
@@ -31,17 +33,21 @@ import {
   exceptionSummary,
   exceptionTotals,
   failedCheckCodes,
+  FISCAL_CHUNK_DAYS,
+  fiscalTotals,
   folioRanges,
   hourRows,
   isBusinessDate,
   LIMITS,
   liveExpectedCash,
+  mergeFiscalSummaries,
   orderListQuery,
   otherDayDrawerCollections,
   parseExceptionKinds,
   parseRange,
   QUICK_RANGES,
   quickRange,
+  rangeChunks,
   rangeDates,
   rangeLength,
   reconciliationChecks,
@@ -72,6 +78,8 @@ import {
   toCsv,
   type CsvColumn,
 } from "../shared/csv";
+import type { CategoryTotals, FiscalSummary } from "../shared/fiscal";
+import { labelledOperations } from "../src/labels";
 import { fakeId, rng } from "./fixtures/fiscal";
 import {
   aggregateWorld,
@@ -668,7 +676,41 @@ describe("audit groups and exception kinds (GAP-3)", () => {
     expect(groupsOf("discount.controls.saved")).toEqual(["settings"]);
     expect(groupsOf("fiscal.profile.saved")).toEqual(["settings", "fiscal"]);
     expect(groupsOf("reports.corte_z.reprinted")).toEqual(["reports"]);
+    expect(groupsOf("reports.count_slip.printed")).toEqual(["reports"]);
     expect(groupsOf("offline.kitchen.review")).toEqual(["kitchen"]);
+    // Offline (026), menu floor (025) and forward entries (LD-16 L7, LD-18 LD-P4).
+    expect(groupsOf("offline.synced")).toEqual(["sales"]);
+    expect(groupsOf("offline.payment_attempt_recorded")).toEqual(["sales"]);
+    expect(groupsOf("offline.reconciled")).toEqual(["corrections"]);
+    expect(groupsOf("offline.payment_reconciled")).toEqual(["corrections"]);
+    expect(groupsOf("offline.archived")).toEqual(["corrections"]);
+    expect(groupsOf("offline.stock_reviewed")).toEqual(["menu"]);
+    expect(groupsOf("offline.settings_changed")).toEqual(["settings"]);
+    expect(groupsOf("floor.table.saved")).toEqual(["menu"]);
+    expect(groupsOf("cfdi.invoice.stamped")).toEqual(["fiscal"]);
+    expect(groupsOf("account.owner.transferred")).toEqual(["access"]);
+    expect(groupsOf("public.hold_decided")).toEqual(["sales"]);
+    for (const op of [
+      "public.link_created",
+      "public.settings_saved",
+      "public.paused",
+      "public.resumed",
+      // LD-21: the platform's job operator commands (POST /api/jobs/:id/cancel, /requeue).
+      "job.cancelled",
+      "job.requeued",
+    ])
+      expect(groupsOf(op)).toEqual(["settings"]);
+    // auditGroupsOf is the same matching in JS.
+    for (const op of ["payment.recorded", "fiscal.profile.saved", "x.y"])
+      expect(auditGroupsOf(op)).toEqual(groupsOf(op));
+  });
+
+  it("every operation src/labels.ts names belongs to an activity group, so the Bitácora filter reaches it", () => {
+    const ungrouped = labelledOperations.filter(
+      (op) => auditGroupsOf(op).length === 0,
+    );
+    expect(ungrouped).toEqual([]);
+    expect(labelledOperations.length).toBeGreaterThanOrEqual(80);
   });
 
   it("parseExceptionKinds: absent means all, known kinds in catalog order, unknown kinds are invalid_input", () => {
@@ -740,24 +782,48 @@ describe("query schemas (zod 4, strict)", () => {
     expect(cortePrintInput.safeParse({ operationId, kind: "y" }).success).toBe(
       false,
     );
+    const fingerprint = "10000.1.4500.0.0.0.0.0.0.0.0.0";
     expect(
       remoteCloseInput.parse({
         operationId,
+        fingerprint,
         counted: 1500,
         reason: "  dispositivo robado  ",
       }),
-    ).toEqual({ operationId, counted: 1500, reason: "dispositivo robado" });
+    ).toEqual({
+      operationId,
+      fingerprint,
+      counted: 1500,
+      reason: "dispositivo robado",
+    });
+    // REPORTS-CORTES-1: the close carries what the dialog showed; without it there is no close.
     expect(
-      remoteCloseInput.safeParse({ operationId, counted: 1500, reason: " ab " })
-        .success,
+      remoteCloseInput.safeParse({
+        operationId,
+        counted: 1500,
+        reason: "motivo",
+      }).success,
     ).toBe(false);
     expect(
-      remoteCloseInput.safeParse({ operationId, counted: -1, reason: "motivo" })
-        .success,
+      remoteCloseInput.safeParse({
+        operationId,
+        fingerprint,
+        counted: 1500,
+        reason: " ab ",
+      }).success,
+    ).toBe(false);
+    expect(
+      remoteCloseInput.safeParse({
+        operationId,
+        fingerprint,
+        counted: -1,
+        reason: "motivo",
+      }).success,
     ).toBe(false);
     expect(
       remoteCloseInput.parse({
         operationId,
+        fingerprint,
         counted: 0,
         reason: "motivo",
         externalReported: null,
@@ -1089,6 +1155,8 @@ function summaryFromRecords(world: World, range: DateRange): SalesSummary {
       paidOutCount: paidOuts.length,
       late: { count: late.length, amount: sum(late, (t) => t.amount) },
     },
+    // The worlds fix fiscal's totals only (SummaryInput.fiscal), never a full FiscalSummary.
+    tax: null,
     margin: {
       netSalesExTax: fiscal ? fiscal.base : null,
       netAfterRefundsExTax: fiscal ? fiscal.netBase : null,
@@ -2128,8 +2196,11 @@ describe("exceptionSummary (GAP-3)", () => {
         0,
       );
       expect(actedCount).toBe(acting.length);
+      // LD-16 L3: a self-approval (approver = the row's actor) is not an approval given.
+      const actorOf = (r: ExceptionRow) =>
+        r.kind === "open_price" ? r.accountId : r.actorId;
       expect(s.byEmployee.reduce((a, e) => a + e.approved.count, 0)).toBe(
-        list.filter((r) => r.approverId).length,
+        list.filter((r) => r.approverId && r.approverId !== actorOf(r)).length,
       );
       const diffs = acting.filter((r) => r.kind === "drawer_difference");
       expect(s.byEmployee.reduce((a, e) => a + e.shortages, 0)).toBe(
@@ -2836,6 +2907,22 @@ describe("corte access (§4.7, D7)", () => {
       });
     }
   });
+
+  it("RPT-R11: the blind count slip is its own printed document, numbered apart from the full corte Z", () => {
+    // A blind cashier closes and prints the slip; the manager then prints the official Z. They
+    // land in different report_prints sequences, so the manager's first Z is print 1.
+    const cashierSlip = access("cashier", closedAt(5), false);
+    const managerZ = access("manager", closedAt(5), false);
+    expect(cortePrintKind(cashierSlip)).toBe("count_slip");
+    expect(cortePrintKind(managerZ)).toBe("corte_z");
+    // A cashier allowed to see expected cash prints the full Z itself: the same document as the
+    // manager's, so the manager's print after it is a reprint.
+    expect(cortePrintKind(access("cashier", closedAt(5), true))).toBe(
+      "corte_z",
+    );
+    expect(cortePrintKind(access("manager", open, true))).toBe("corte_x");
+    expect(cortePrintKind({ kind: "x", visibility: "full" })).toBe("corte_x");
+  });
 });
 
 describe("corte del día", () => {
@@ -3176,5 +3263,318 @@ describe("CSV export (FIT-7, D10)", () => {
     expect(
       csvFileName("payments", { from: "2026-10-01", to: "2026-10-05" }),
     ).toBe("payments_2026-10-01_2026-10-05.csv");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Fiscal figures over long ranges (§4.5 fiscalForRange, unit test 6)
+// ---------------------------------------------------------------------------------------------
+
+describe("fiscal summaries over chunks", () => {
+  const cat = (
+    category: CategoryTotals["category"],
+    gross: number,
+    tax: number,
+    discount = 0,
+  ): CategoryTotals => ({
+    category,
+    rateBps:
+      category === "iva16"
+        ? 1600
+        : category === "iva8"
+          ? 800
+          : category === "iva0"
+            ? 0
+            : null,
+    grossBeforeDiscount: gross + discount,
+    discount,
+    gross,
+    base: gross - tax,
+    tax,
+  });
+  const minus = (a: CategoryTotals[], b: CategoryTotals[]) =>
+    a.map((x) => {
+      const y = b.find((r) => r.category === x.category);
+      return y
+        ? {
+            ...x,
+            grossBeforeDiscount: x.grossBeforeDiscount - y.grossBeforeDiscount,
+            discount: x.discount - y.discount,
+            gross: x.gross - y.gross,
+            base: x.base - y.base,
+            tax: x.tax - y.tax,
+          }
+        : x;
+    });
+  function summary(
+    from: string,
+    to: string,
+    sales: CategoryTotals[],
+    refunds: CategoryTotals[],
+    series: FiscalSummary["tickets"]["series"],
+    missingTickets = 0,
+  ): FiscalSummary {
+    const sum = (rows: CategoryTotals[], k: "gross" | "base" | "tax") =>
+      rows.reduce((a, r) => a + r[k], 0);
+    const net = minus(sales, refunds);
+    return {
+      from,
+      to,
+      tickets: { count: series.reduce((a, s) => a + s.count, 0), series },
+      sales,
+      refunds,
+      net,
+      totals: {
+        gross: sum(sales, "gross"),
+        base: sum(sales, "base"),
+        tax: sum(sales, "tax"),
+        tips: 1_000,
+        refundGross: sum(refunds, "gross"),
+        refundTax: sum(refunds, "tax"),
+        netGross: sum(sales, "gross") - sum(refunds, "gross"),
+        netBase: sum(sales, "base") - sum(refunds, "base"),
+        netTax: sum(sales, "tax") - sum(refunds, "tax"),
+      },
+      missingTickets,
+    };
+  }
+
+  it("6. mergeFiscalSummaries sums categories and keeps fiscal's contiguous folio runs: a run split at a chunk boundary joins, a gap stays a gap (REPORTS-SQL-1)", () => {
+    const range = { from: "2026-08-01", to: "2026-09-29" };
+    const chunks = rangeChunks(range);
+    expect(chunks).toEqual([
+      { from: "2026-08-01", to: "2026-08-31" },
+      { from: "2026-09-01", to: "2026-09-29" },
+    ]);
+    const a = summary(
+      "2026-08-01",
+      "2026-08-31",
+      [cat("iva16", 116_000, 16_000, 2_000), cat("iva0", 5_000, 0)],
+      [cat("iva16", 11_600, 1_600)],
+      [
+        // A late offline sync put folio A-000260 (issued in September) into August.
+        { series: "A", first: 101, last: 187, count: 87 },
+        { series: "A", first: 260, last: 260, count: 1 },
+        { series: "B", first: 1, last: 4, count: 4 },
+      ],
+      2,
+    );
+    const b = summary(
+      "2026-09-01",
+      "2026-09-29",
+      [
+        cat("iva16", 58_000, 8_000),
+        cat("iva8", 10_800, 800),
+        cat("exempt", 900, 0),
+      ],
+      [cat("iva8", 1_080, 80)],
+      [{ series: "A", first: 188, last: 250, count: 63 }],
+      1,
+    );
+    const m = mergeFiscalSummaries([a, b]);
+    expect(m.from).toBe("2026-08-01");
+    expect(m.to).toBe("2026-09-29");
+    // Fiscal order iva16, iva8, iva0, exempt, whatever order the chunks list them.
+    expect(m.sales.map((c) => c.category)).toEqual([
+      "iva16",
+      "iva8",
+      "iva0",
+      "exempt",
+    ]);
+    expect(m.sales[0]).toEqual({
+      category: "iva16",
+      rateBps: 1600,
+      grossBeforeDiscount: 176_000,
+      discount: 2_000,
+      gross: 174_000,
+      base: 150_000,
+      tax: 24_000,
+    });
+    expect(m.refunds.map((c) => [c.category, c.gross, c.tax])).toEqual([
+      ["iva16", 11_600, 1_600],
+      ["iva8", 1_080, 80],
+    ]);
+    expect(m.net.find((c) => c.category === "iva16")).toMatchObject({
+      gross: 174_000 - 11_600,
+      tax: 24_000 - 1_600,
+    });
+    // 188..250 continues 101..187 across the chunk boundary; 251..259 belong to other dates.
+    expect(m.tickets).toEqual({
+      count: 87 + 1 + 4 + 63,
+      series: [
+        { series: "A", first: 101, last: 250, count: 150 },
+        { series: "A", first: 260, last: 260, count: 1 },
+        { series: "B", first: 1, last: 4, count: 4 },
+      ],
+    });
+    // One chunk with two runs of a series keeps both: never one min..max range.
+    expect(mergeFiscalSummaries([a]).tickets.series).toEqual(a.tickets.series);
+    expect(m.missingTickets).toBe(3);
+    expect(m.totals).toEqual({
+      gross: a.totals.gross + b.totals.gross,
+      base: a.totals.base + b.totals.base,
+      tax: a.totals.tax + b.totals.tax,
+      tips: 2_000,
+      refundGross: 12_680,
+      refundTax: 1_680,
+      netGross: a.totals.netGross + b.totals.netGross,
+      netBase: a.totals.netBase + b.totals.netBase,
+      netTax: a.totals.netTax + b.totals.netTax,
+    });
+    // Net per category equals sales minus refunds after the merge too.
+    for (const n of m.net) {
+      const sale = m.sales.find((c) => c.category === n.category)!;
+      const refund = m.refunds.find((c) => c.category === n.category);
+      expect(n.gross).toBe(sale.gross - (refund?.gross ?? 0));
+      expect(n.tax).toBe(sale.tax - (refund?.tax ?? 0));
+    }
+    // One chunk merges to itself.
+    expect(mergeFiscalSummaries([a])).toEqual(a);
+  });
+
+  it("rangeChunks covers any range with consecutive chunks of at most 31 days", () => {
+    const random = rng(61);
+    for (let k = 0; k < 300; k++) {
+      const from = addDays("2026-01-01", random.int(0, 900));
+      const to = addDays(from, random.int(0, 200));
+      const chunks = rangeChunks({ from, to });
+      expect(chunks[0].from).toBe(from);
+      expect(chunks[chunks.length - 1].to).toBe(to);
+      for (let i = 0; i < chunks.length; i++) {
+        expect(rangeLength(chunks[i])).toBeLessThanOrEqual(FISCAL_CHUNK_DAYS);
+        if (i > 0) expect(chunks[i].from).toBe(addDays(chunks[i - 1].to, 1));
+      }
+      expect(chunks.reduce((a, c) => a + rangeLength(c), 0)).toBe(
+        rangeLength({ from, to }),
+      );
+    }
+    expect(rangeChunks({ from: "2026-10-05", to: "2026-10-05" })).toEqual([
+      { from: "2026-10-05", to: "2026-10-05" },
+    ]);
+    expect(() =>
+      rangeChunks({ from: "2026-10-05", to: "2026-10-05" }, 0),
+    ).toThrow("invalid_chunk_days");
+  });
+
+  it("mergeFiscalSummaries refuses an empty list, gaps or overlaps between chunks and conflicting rates", () => {
+    const a = summary(
+      "2026-08-01",
+      "2026-08-31",
+      [cat("iva16", 1_160, 160)],
+      [],
+      [],
+    );
+    const gap = summary("2026-09-02", "2026-09-10", [], [], []);
+    const overlap = summary("2026-08-31", "2026-09-10", [], [], []);
+    expect(() => mergeFiscalSummaries([])).toThrow("no_fiscal_parts");
+    expect(() => mergeFiscalSummaries([a, gap])).toThrow(
+      "fiscal_parts_not_consecutive",
+    );
+    expect(() => mergeFiscalSummaries([a, overlap])).toThrow(
+      "fiscal_parts_not_consecutive",
+    );
+    const odd = summary(
+      "2026-09-01",
+      "2026-09-02",
+      [{ ...cat("iva16", 1_160, 160), rateBps: 800 }],
+      [],
+      [],
+    );
+    expect(() => mergeFiscalSummaries([a, odd])).toThrow(
+      "fiscal_rate_mismatch",
+    );
+  });
+
+  it("the summary carries fiscal's figures as tax and takes the margin from them; totals given twice must agree", () => {
+    const tax = summary(
+      "2026-10-05",
+      "2026-10-05",
+      [cat("iva16", 11_600, 1_600)],
+      [cat("iva16", 1_160, 160)],
+      [{ series: "A", first: 1, last: 1, count: 1 }],
+    );
+    const base: SummaryInput = {
+      range: { from: "2026-10-05", to: "2026-10-05" },
+      currency: "MXN",
+      generatedAt: "2026-10-05T20:00:00.000Z",
+      currentBusinessDate: "2026-10-05",
+      sales: [],
+      lines: [],
+      collections: [],
+      refunds: [],
+      restocks: [],
+      paidOuts: [],
+      drawers: [],
+      tax,
+    };
+    const s = composeSalesSummary(base);
+    expect(s.tax).toEqual(tax);
+    expect(s.margin.netSalesExTax).toBe(10_000);
+    expect(s.margin.salesAfterRefunds).toBe(10_440);
+    expect(s.margin.netAfterRefundsExTax).toBe(9_000);
+    expect(s.checks.map((c) => c.code)).toContain("tickets_vs_orders");
+    expect(
+      composeSalesSummary({ ...base, fiscal: fiscalTotals(tax) }).tax,
+    ).toEqual(tax);
+    expect(() =>
+      composeSalesSummary({
+        ...base,
+        fiscal: { ...fiscalTotals(tax), gross: 1 },
+      }),
+    ).toThrow("fiscal_totals_mismatch");
+    expect(() => composeSalesSummary({ ...base, fiscal: null })).toThrow(
+      "fiscal_totals_mismatch",
+    );
+    const none = composeSalesSummary({ ...base, tax: null });
+    expect(none.tax).toBeNull();
+    expect(none.margin.estimatedMargin).toBeNull();
+    expect(none.checks.map((c) => c.code)).not.toContain("refunds_vs_fiscal");
+  });
+});
+
+describe("approvals (LD-16 L3)", () => {
+  it("a self-approved row keeps the approver's name but is not counted as an approval given", () => {
+    const mara = fakeId(9201);
+    const ana = fakeId(9202);
+    const row = (p: Partial<ExceptionRow>): ExceptionRow => ({
+      id: fakeId(9210 + Math.floor(Math.random() * 1000)),
+      kind: "void",
+      at: "2026-10-05 15:00:00+00",
+      businessDate: "2026-10-05",
+      actorId: null,
+      actorName: null,
+      approverId: null,
+      approverName: null,
+      accountId: null,
+      accountName: null,
+      amount: 4_500,
+      orderId: null,
+      orderNumber: null,
+      orderDate: null,
+      reasonCode: null,
+      note: "",
+      deviceName: null,
+      detail: {},
+      ...p,
+    });
+    const self = row({
+      actorId: mara,
+      actorName: "Marisol Vega",
+      approverId: mara,
+      approverName: "Marisol Vega",
+    });
+    const crossed = row({
+      kind: "refund",
+      amount: 9_000,
+      actorId: ana,
+      actorName: "Ana",
+      approverId: mara,
+      approverName: "Marisol Vega",
+    });
+    expect(self.approverName).toBe("Marisol Vega");
+    const s = exceptionSummary([self, crossed]);
+    const m = s.byEmployee.find((e) => e.employeeId === mara)!;
+    expect(m.acted).toEqual({ void: { count: 1, amount: 4_500 } });
+    expect(m.approved).toEqual({ count: 1, amount: 9_000 });
   });
 });

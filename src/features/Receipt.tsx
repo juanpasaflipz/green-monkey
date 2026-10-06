@@ -14,6 +14,12 @@ import { Badge, Button, Modal } from "../components/ui";
 import { printDocument, usePrintSettings, type PaperWidth } from "../print";
 import type { LocalReceipt } from "../offline-records";
 import { DocNote } from "./KitchenTicket";
+import {
+  LineDiscountRows,
+  OrderDiscountRows,
+  RefundDetailRows,
+} from "./discounts/ReceiptAdjustments";
+import { CfdiOrderActions } from "./cfdi/CfdiOrderActions";
 
 export function moneyFormatter(currency: string, locale: Locale) {
   const scale = 10 ** currencyExponent(currency);
@@ -213,10 +219,17 @@ export function ReceiptDocument({
                 </div>
               ))}
               {l.note && <div className="doc-line-note">{l.note}</div>}
+              <LineDiscountRows
+                order={order}
+                line={l}
+                locale={locale}
+                money={money}
+              />
             </div>
           ))}
       </div>
       <hr />
+      <OrderDiscountRows order={order} locale={locale} money={money} />
       <div className="row between doc-total">
         <span>{t.total}</span>
         <strong>{money(order.total)}</strong>
@@ -265,6 +278,7 @@ export function ReceiptDocument({
           <strong>−{money(order.refunded)}</strong>
         </div>
       )}
+      <RefundDetailRows order={order} locale={locale} money={money} />
       {kind === "local" && !order.tenders.length ? (
         // A local (offline) payment carries no tender until it syncs: print
         // what this device collected (LD-10 B4) and never print it as unpaid
@@ -506,6 +520,12 @@ export function ReceiptModal({
         )}
         {noteActions}
         {extraActions}
+        <CfdiOrderActions
+          order={order}
+          session={session}
+          locale={locale}
+          variant="receipt"
+        />
         <Button
           variant="primary"
           disabled={busy}

@@ -31,7 +31,7 @@ import {
   paymentFormFor,
   usoCfdiAllowed,
   type Receptor,
-} from "../server/cfdi/catalog";
+} from "../shared/cfdi";
 import { classifyFacturapiError } from "../server/cfdi/errors";
 import { FacturapiError } from "../server/cfdi/facturapi";
 import { invoiceInput } from "../server/cfdi/facturapi-schema";
@@ -182,7 +182,8 @@ describe("amount strategy", () => {
           throw new Error(`G=${g} r=${r}`);
       }
     }
-  });
+    // 800,000 expectations: alone about 2.5 s, past vitest's 5 s default on a loaded machine.
+  }, 60_000);
 
   it("pesos, taxFor and conceptCentavos are exact", () => {
     expect(pesos(10776)).toBe(107.76);
@@ -1202,6 +1203,22 @@ function egreso(over: Partial<EgresoBuildInput> = {}): EgresoBuildInput {
 }
 
 describe("buildEgresoRequest", () => {
+  it("CFDI-SAT-2: a substitute credit note relates 01 to the parent and 04 to the note it replaces, with the manager's FormaPago whatever the refund tender", () => {
+    const REPLACED = "0b1e2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+    const built = buildEgresoRequest(
+      egreso({ replaces: { uuid: REPLACED, paymentForm: "01" } }),
+    );
+    expect(invoiceInput.safeParse(built.body).success).toBe(true);
+    expect(built.body.related_documents).toEqual([
+      { relationship: "01", documents: [SUBSTITUTED] },
+      { relationship: "04", documents: [REPLACED] },
+    ]);
+    expect(built.body.payment_form).toBe("01");
+    // Amounts are the refund's, exactly as the replaced note's.
+    expect(built.expectedTotal).toBe(
+      buildEgresoRequest(egreso()).expectedTotal,
+    );
+  });
   it("14. type E, related 01 to the parent UUID, 84111506/ACT, G02 for business receptors, S01 for público en general and 616, payment form of the refund tender", () => {
     const built = buildEgresoRequest(egreso());
     expect(invoiceInput.safeParse(built.body).success).toBe(true);
@@ -1407,6 +1424,8 @@ describe("parseCfdiTotals", () => {
       discount: 0,
       total: 18600,
       taxTraslados: 1600,
+      taxRetenidos: 0,
+      retenciones: [],
       uuid: "39C85A3F-275B-4341-B259-E8971D9F8A94",
     });
     expect(t.concepts).toEqual([
@@ -1423,6 +1442,7 @@ describe("parseCfdiTotals", () => {
             importe: 1600,
           },
         ],
+        retenciones: [],
       },
       {
         noIdentificacion: "A-000123",
@@ -1437,6 +1457,7 @@ describe("parseCfdiTotals", () => {
             importe: 0,
           },
         ],
+        retenciones: [],
       },
       {
         noIdentificacion: "A-000124",
@@ -1451,6 +1472,7 @@ describe("parseCfdiTotals", () => {
             importe: null,
           },
         ],
+        retenciones: [],
       },
     ]);
     // Comprobante-level traslados only (the concept-level ones are not repeated here).

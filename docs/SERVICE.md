@@ -49,7 +49,8 @@ takes rounds and returns to `open`.
 | Record a payment | yes | `overpayment` | `check_closed` |
 | Move table or server | yes | yes (leaving a table settles it) | `check_closed` |
 | Edit the order note | yes | yes | only while kitchen tickets are open, else `check_closed` |
-| Refund (manager) | yes | yes | yes (post-close correction) |
+| Refund (any operator; staff with a manager's PIN, [discounts](DISCOUNTS.md) 028) | by item or by amount, only once the check is paid or ticketed (`refund_balance_due` otherwise, LD-25/LD-26) | yes | yes (post-close correction) |
+| Discount or comp unpaid sent units ([discounts](DISCOUNTS.md) 028) | yes | n/a (nothing due) | `check_closed`; its discounts are final (`discount_not_reversible`) |
 | Cerrar cuenta / Liberar mesa | only at balance 0, else `balance_due` | yes | returns the order |
 
 Recovery orders keep their historical `stale_order` code for every write. The
@@ -124,7 +125,8 @@ cached before the deploy keep working. A later contract change removes them.
   the screen is hidden. A full response is forced every 30 seconds.
 - **Version protocol.** `kitchen_feed_versions` holds one counter per tenant.
   KDS-affecting commands (orders, rounds, progress, voids and acknowledgements,
-  note edits, assignment, recall, clear-stale) bump it. The feed reads the
+  note edits, assignment, recall, clear-stale, and item refunds that cancel
+  units the kitchen has not served, discounts 028) bump it. The feed reads the
   version before the data, so a concurrent change is either included or seen on
   the next poll. A poll with the current version returns `unchanged` after one
   row read.
@@ -337,6 +339,9 @@ the drawer is open.
   working on Windows; macOS and Android always show the print dialog. Verify on
   the target device; it has not been verified here.
 - Browser printing never confirms that paper came out.
+- Kitchen cancellation chits (reports 029): a KDS with auto-print and a selling device
+  that prints on send also print "CANCELACIÓN · NO PREPARAR" after a void, per round and
+  station ([REPORTS.md](REPORTS.md)).
 
 ## Per-device settings
 

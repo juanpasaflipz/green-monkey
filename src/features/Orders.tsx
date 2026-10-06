@@ -23,6 +23,8 @@ import { SettlementDialog } from "./SettlementDialog";
 import { OrderDetail } from "./OrderDetail";
 import { moneyFormatter } from "./Receipt";
 import { useOnlineChargeBlocks } from "./offline/useOnlineChargeBlocks";
+import { DiscountDialog } from "./discounts/DiscountDialog";
+import { fill } from "./discounts/format";
 import { PublicOrderInbox } from "./public/PublicOrderInbox";
 
 type Tab = "current" | "open" | "closed";
@@ -42,11 +44,11 @@ export function Orders({
   locale: Locale;
   navigate: (view: string) => void;
   refreshKey: number;
+  /** Connectivity from App (contract §0.8): discounts and refunds need it. */
   online?: boolean;
 }) {
   const t = (k: Key) => strings[locale][k];
   const money = moneyFormatter(session.restaurant.currency, locale);
-  const manager = ["owner", "manager"].includes(session.role);
   const [tab, setTab] = useStoredState<Tab>("gm-orders-tab", "current", isTab);
   const [date, setDate] = useState("");
   const [today, setToday] = useState("");
@@ -61,7 +63,7 @@ export function Orders({
   const [tables, setTables] = useState<{ id: string; name: string }[]>([]);
   const [detailId, setDetailId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<{
-    kind: "void" | "service" | "refund";
+    kind: "void" | "service" | "refund" | "discount";
     order: Order;
   } | null>(null);
   const [settling, setSettling] = useState(false);
@@ -187,7 +189,10 @@ export function Orders({
       setError(translateError((e as Error).message, locale));
     }
   }
-  async function openDialog(kind: "void" | "service" | "refund", id: string) {
+  async function openDialog(
+    kind: "void" | "service" | "refund" | "discount",
+    id: string,
+  ) {
     setBusyId(id);
     try {
       setDialog({ kind, order: await api<Order>("/orders/" + id) });
@@ -398,6 +403,13 @@ export function Orders({
                     {o.voidAckPending && (
                       <Badge tone="amber">{t("serviceVoidAckPending")}</Badge>
                     )}
+                    {o.discount > 0 && (
+                      <Badge>
+                        {fill(t("discountsBadge"), {
+                          amount: money(o.discount),
+                        })}
+                      </Badge>
+                    )}
                     {today && o.businessDate < today && (
                       <Badge tone="amber">
                         {t("serviceOrdersFromDay").replace(
@@ -441,14 +453,45 @@ export function Orders({
                       {t("voidAction")}
                     </Button>
                   )}
-                  {manager && o.refundableCash > 0 && (
+                  {!closed && !o.recovery && o.balance > 0 && (
                     <Button
                       variant="ghost"
-                      disabled={busyId === o.id}
+                      disabled={busyId === o.id || !online}
+                      aria-describedby={
+                        online ? undefined : `discount-offline-${o.id}`
+                      }
+                      onClick={() => void openDialog("discount", o.id)}
+                    >
+                      {t("discountsAction")}
+                    </Button>
+                  )}
+                  {!online && !closed && !o.recovery && o.balance > 0 && (
+                    <small
+                      id={`discount-offline-${o.id}`}
+                      className="tiny muted discounts-offline-hint"
+                    >
+                      {t("discountsOffline")}
+                    </small>
+                  )}
+                  {o.refundable > 0 && (
+                    <Button
+                      variant="ghost"
+                      disabled={busyId === o.id || !online}
+                      aria-describedby={
+                        online ? undefined : `refund-offline-${o.id}`
+                      }
                       onClick={() => void openDialog("refund", o.id)}
                     >
                       {t("refund")}
                     </Button>
+                  )}
+                  {!online && o.refundable > 0 && (
+                    <small
+                      id={`refund-offline-${o.id}`}
+                      className="tiny muted discounts-offline-hint"
+                    >
+                      {t("discountsRefundOffline")}
+                    </small>
                   )}
                   {!closed && o.balance <= 0 && (
                     <Button
@@ -516,6 +559,18 @@ export function Orders({
           money={money}
           close={() => setDialog(null)}
           saved={saved}
+          online={online}
+        />
+      )}
+      {dialog?.kind === "discount" && (
+        <DiscountDialog
+          order={dialog.order}
+          session={session}
+          locale={locale}
+          money={money}
+          online={online}
+          close={() => setDialog(null)}
+          applied={saved}
         />
       )}
       {detailId && (
@@ -527,6 +582,7 @@ export function Orders({
           navigate={navigate}
           close={() => setDetailId(null)}
           changed={refresh}
+          online={online}
         />
       )}
     </div>

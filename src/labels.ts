@@ -97,6 +97,28 @@ const operations: Record<string, Key> = {
   "fiscal.profile.saved": "fiscalOpProfileSaved",
   "fiscal.tickets.repaired": "fiscalOpTicketsRepaired",
   "fiscal.ticket.unallocated_discount": "fiscalOpUnallocatedDiscount",
+  // discounts (028)
+  "discount.applied": "discountsOpApplied",
+  "discount.reversed": "discountsOpReversed",
+  "discount.controls.saved": "discountsOpControlsSaved",
+  "cash.reviewed": "discountsOpDrawerReviewed",
+  // reports (029)
+  "reports.corte_x.printed": "reportsOpCorteXPrinted",
+  "reports.corte_z.printed": "reportsOpCorteZPrinted",
+  "reports.corte_z.reprinted": "reportsOpCorteZReprinted",
+  "reports.count_slip.printed": "reportsOpCountSlipPrinted",
+  "reports.day_corte.printed": "reportsOpDayCortePrinted",
+  // cfdi (030)
+  "cfdi.activated": "cfdiOpActivated",
+  "cfdi.settings.saved": "cfdiOpSettingsSaved",
+  "cfdi.csd.uploaded": "cfdiOpCsdUploaded",
+  "cfdi.live.requested": "cfdiOpLiveRequested",
+  "cfdi.invoice.requested": "cfdiOpInvoiceRequested",
+  "cfdi.cancel.requested": "cfdiOpCancelRequested",
+  "cfdi.substitute.requested": "cfdiOpSubstituteRequested",
+  "cfdi.globals.run": "cfdiOpGlobalsRun",
+  "cfdi.document.retried": "cfdiOpRetried",
+  "cfdi.email.requested": "cfdiOpEmailRequested",
   // public (032)
   "public.link_created": "publicOpLinkCreated",
   "public.link_rotated": "publicOpLinkRotated",
@@ -115,6 +137,8 @@ const stockCauses: Record<string, Key> = {
   count_adjust: "serviceStockCount",
   prep_input: "serviceStockPrepInput",
   prep_output: "serviceStockPrepOutput",
+  // discounts (028)
+  refund: "discountsStockCauseRefund",
 };
 const channels: Record<string, Key> = {
   pos: "serviceChannelPos",

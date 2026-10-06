@@ -32,7 +32,7 @@ const levels: Record<Level, number> = {
 const SECRET_KEY =
   /pass(word)?|secret|token|cookie|authorization|csrf|pin|dsn|signature|api[-_]?key/i;
 const DATABASE_URL = /postgres(ql)?:\/\/[^@\s]+@/gi;
-const PROVIDER_SECRET = /\b(whsec|sk_live|sk_test|rk)_[A-Za-z0-9_]+/g;
+const PROVIDER_SECRET = /\b(whsec|sk_live|sk_test|sk_user|rk)_[A-Za-z0-9_]+/g;
 const MAX_STRING = 2000;
 const MAX_DEPTH = 6;
 

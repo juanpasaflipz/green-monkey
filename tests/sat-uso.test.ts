@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import {
   REGIMEN_FISCAL,
   USE_LABELS,
@@ -7,7 +7,7 @@ import {
   usoCfdiAllowed,
   type SatUse,
 } from "../shared/sat.js";
-import * as cfdiCatalog from "../server/cfdi/catalog.js";
+import * as cfdiShared from "../shared/cfdi.js";
 
 const BUSINESS = [
   "601",
@@ -90,11 +90,12 @@ describe("SAT c_UsoCFDI catalog (Wave 2.0 (j), contract C-15)", () => {
     });
   });
 
-  it("cfdi re-exports the one shared catalog (LD-14 OQ-4)", () => {
-    expect(cfdiCatalog.USE_LABELS).toBe(USE_LABELS);
-    expect(cfdiCatalog.USE_REGIMES).toBe(USE_REGIMES);
-    expect(cfdiCatalog.usoCfdiAllowed).toBe(usoCfdiAllowed);
-    const source = readFileSync("server/cfdi/catalog.ts", "utf8");
+  it("cfdi re-exports the one shared catalog (LD-14 OQ-4; cfdi full moved the core's temporary catalog into shared/cfdi.ts, wave2-cross-track C28)", () => {
+    expect(cfdiShared.USE_LABELS).toBe(USE_LABELS);
+    expect(cfdiShared.USE_REGIMES).toBe(USE_REGIMES);
+    expect(cfdiShared.usoCfdiAllowed).toBe(usoCfdiAllowed);
+    expect(existsSync("server/cfdi/catalog.ts")).toBe(false);
+    const source = readFileSync("shared/cfdi.ts", "utf8");
     expect(source).not.toMatch(/const (BUSINESS|S01_REGIMES)\b/);
     expect(source).not.toMatch(/export function usoCfdiAllowed/);
   });

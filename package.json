@@ -35,7 +35,7 @@
     "test:access-http": "tsx tests/access-http.ts",
     "access:pairing-code": "tsx scripts/pairing-code.ts",
     "test:db:recovery": "tsx tests/offline-recovery-db.ts",
-    "test:db:qualification": "npm run test:db:core && npm run test:db:identity && npm run test:db:owner && npm run test:db:entitlements && npm run test:db:billing && npm run test:db:free && npm run test:db:recovery && npm run test:db:voids && npm run test:db:ops && npm run test:db:access && npm run test:db:service && npm run test:db:menu && npm run test:db:offline && npm run test:db:fiscal && npm run test:db:public",
+    "test:db:qualification": "npm run test:db:core && npm run test:db:identity && npm run test:db:owner && npm run test:db:entitlements && npm run test:db:billing && npm run test:db:free && npm run test:db:recovery && npm run test:db:voids && npm run test:db:ops && npm run test:db:access && npm run test:db:service && npm run test:db:menu && npm run test:db:offline && npm run test:db:fiscal && npm run test:db:discounts && npm run test:db:reports && npm run test:db:cfdi && npm run test:db:public",
     "test:browser": "playwright test",
     "test:db:service": "tsx tests/service-db.ts",
     "db:migrate": "tsx scripts/migrate.ts",
@@ -47,10 +47,15 @@
     "import:dry-run": "tsx scripts/import.ts",
     "setup:local": "bash scripts/setup-local.sh",
     "test:db:offline": "tsx tests/offline-sync-db.ts",
+    "test:db:discounts": "tsx tests/discounts-db.ts",
     "test:restart": "tsx tests/restart-http.ts",
     "test:db:voids": "tsx tests/voids-db.ts",
     "test:db:fiscal": "tsx tests/fiscal-db.ts",
-    "dev:facturapi-fake": "tsx tests/fakes/facturapi-fake.ts"
+    "test:db:reports": "tsx tests/reports-db.ts && tsx tests/reports-phaseb-db.ts",
+    "dev:facturapi-fake": "tsx tests/fakes/facturapi-fake.ts",
+    "test:db:cfdi": "tsx tests/cfdi-db.ts",
+    "test:facturapi:sandbox": "tsx tests/cfdi-facturapi-sandbox.ts",
+    "cfdi:rekey": "tsx scripts/cfdi-rekey.ts"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",

@@ -53,8 +53,9 @@ const machineOnly = new Set(["stripe_webhook_invalid"]);
  * Codes another area translates in its own module (wave contracts 3.12).
  * Until that area merges they are skipped here; once its module declares
  * them they are checked like every other code. `rate_limited` (ops's public
- * /api/ops/* limiter) is offline's. Fiscal (027) translates its codes in
- * src/i18n/fiscal.ts, so they are checked like every other code.
+ * /api/ops/* limiter) is offline's. Fiscal (027), reports (029) and cfdi
+ * (030) translate their codes in src/i18n/fiscal.ts, src/i18n/reports.ts and
+ * src/i18n/cfdi.ts, so they are checked like every other code (LD-15).
  */
 const ownedElsewhere: Record<string, keyof typeof areas> = {
   unauthorized: "access",
@@ -70,19 +71,6 @@ const ownedElsewhere: Record<string, keyof typeof areas> = {
   invalid_unit: "menu",
   unavailable: "menu",
   rate_limited: "offline",
-  // CFDI and reports cores (pure modules); the full tracks own the wording.
-  cfdi_currency_unsupported: "cfdi",
-  cfdi_duplicate_ticket: "cfdi",
-  cfdi_generic_rfc: "cfdi",
-  cfdi_nothing_to_invoice: "cfdi",
-  cfdi_parent_receptor_missing: "cfdi",
-  cfdi_provider_unavailable: "cfdi",
-  cfdi_refund_netted_twice: "cfdi",
-  cfdi_request_invalid: "cfdi",
-  cfdi_stamping_rejected: "cfdi",
-  cfdi_use_not_allowed: "cfdi",
-  reports_corte_hidden: "reports",
-  reports_range_invalid: "reports",
 };
 const pendingElsewhere = (code: string) => {
   const owner = ownedElsewhere[code];

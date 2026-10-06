@@ -3,6 +3,9 @@ import { createRoot } from "react-dom/client";
 import { lazy, Suspense } from "react";
 import Landing from "./marketing/Landing";
 const App = lazy(() => import("./App"));
+const SelfInvoicePortal = lazy(
+  () => import("./features/cfdi/SelfInvoicePortal"),
+);
 const PublicOrdering = lazy(() => import("./features/PublicOrdering"));
 import { PlatformGate } from "./features/offline/PlatformGate";
 import { registerServiceWorker } from "./service-worker";
@@ -11,7 +14,9 @@ import "./styles.css";
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <Suspense fallback={<p role="status">Green Monkey…</p>}>
-      {/^\/(qr|kiosk)(\/|$)/.test(location.pathname) ? (
+      {/^\/(f|factura)(\/|$)/.test(location.pathname) ? (
+        <SelfInvoicePortal />
+      ) : /^\/(qr|kiosk)(\/|$)/.test(location.pathname) ? (
         <PublicOrdering />
       ) : location.pathname === "/" &&
         !new URLSearchParams(location.search).has("account") &&

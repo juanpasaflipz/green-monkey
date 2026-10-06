@@ -412,7 +412,10 @@ minutes; a sale that syncs later goes into a supplementary global part for its
 own period (never the next one), and a part created after the period's 24-hour
 deadline is flagged "Emitida fuera de plazo" and alerted. Reaching it needs no
 manager action beyond syncing or reconciling the record. The 20-hour warning on
-the device still leaves at least 4 hours for a daily period.
+the device still leaves at least 4 hours for a daily period. Built in cfdi 030: the
+worker's `cfdi_global` tick creates the part, the Facturas globales register
+shows it with "Emitida fuera de plazo" and the alert key is `cfdi_global_late`
+([CFDI](CFDI.md) "Global periods").
 
 ## Background requests and the GAP-4 gate
 

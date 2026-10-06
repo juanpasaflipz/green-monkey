@@ -65,6 +65,54 @@ GRANT UPDATE(state,attempts,next_at,lease_until,error_code) ON jobs TO gm_jobs_w
 GRANT SELECT,INSERT ON restaurant_fiscal_profiles,fiscal_folio_counters,fiscal_tickets,fiscal_ticket_taxes,fiscal_adjustments TO gm_app;
 GRANT UPDATE(rfc,legal_name,regime,postal_code,address,ticket_series,tax_region,default_tax_category,border_confirmed_at,border_confirmed_by,multiple_branches,version,updated_by,updated_at) ON restaurant_fiscal_profiles TO gm_app;
 GRANT UPDATE(last_value) ON fiscal_folio_counters TO gm_app;
+-- 028 discounts: money records are INSERT-only (no DELETE anywhere); discounts allow
+-- only the reversal columns, refund lines only the kitchen acknowledgement, and the
+-- reversal's SELECT ... FOR UPDATE needs that column-level UPDATE privilege.
+GRANT SELECT,INSERT ON money_controls,discounts,discount_allocations,refund_batches,refund_lines,refund_units,cash_count_reviews TO gm_app;
+GRANT UPDATE(cashier_max_percent_bps,cashier_max_amount,server_max_percent_bps,server_max_amount,blind_close,expected_roles,close_roles,version,updated_by,updated_at) ON money_controls TO gm_app;
+GRANT UPDATE(reversed_at,reversed_by,reversal_approver_id,reversal_note,reversed_amount) ON discounts TO gm_app;
+GRANT UPDATE(kitchen_acknowledged_at,kitchen_acknowledged_by) ON refund_lines TO gm_app;
+GRANT SELECT ON kitchen_removals TO gm_app;
+-- 029 reports: business-day settings history (written by the restaurants trigger as
+-- the runtime role) and corte print records; INSERT-only, no UPDATE or DELETE.
+GRANT SELECT,INSERT ON business_day_settings,report_prints TO gm_app;
+-- 030 cfdi: the runtime role inserts requests and settings; the worker (gm_jobs_worker, Wave 2.0)
+-- performs every transition. Worker privileges live here, never in the migration. It already has
+-- USAGE on the schema and SELECT, INSERT, UPDATE(state,attempts,next_at,lease_until,error_code) ON
+-- jobs from "-- 2.0 jobs worker"; tenant RLS still applies to every statement through ctx.tenant().
+-- No employees grant: foreign-key checks run as the referenced table's owner and no handler reads
+-- employee rows.
+GRANT SELECT ON restaurants, orders, tenders, refunds TO gm_jobs_worker;
+-- restaurants' owner_restaurant_read policy looks up owner_memberships, so reading restaurants
+-- needs SELECT there too; its FORCE RLS membership_read policy shows no row without app.account_id.
+GRANT SELECT ON owner_memberships TO gm_jobs_worker;
+-- Fiscal 027 and discounts 028 tables (wave2-cross-track C26): ticketForCfdi
+-- (server/fiscal-read.ts) reads the ticket, its taxes and the order's adjustments, fiscalFacts the
+-- profile, and the egreso payment form comes from 028's refunds.method (granted above). No worker
+-- statement reads refund_batches today; it is granted with refunds so a refund read that joins
+-- its batch never fails on a privilege.
+GRANT SELECT ON restaurant_fiscal_profiles, fiscal_tickets, fiscal_ticket_taxes, fiscal_adjustments,
+  refund_batches TO gm_jobs_worker;
+GRANT SELECT, INSERT, UPDATE ON cfdi_platform TO gm_jobs_worker;
+GRANT SELECT, UPDATE (mode, live_from, live_enabled_at, live_enabled_by, live_requested_at, live_requested_from,
+  live_requested_by, global_periodicity, next_periodicity, next_periodicity_from, version, updated_at)
+  ON cfdi_settings TO gm_jobs_worker;
+GRANT SELECT, INSERT, UPDATE ON cfdi_organizations, cfdi_csd_uploads, cfdi_documents, cfdi_document_tickets,
+  cfdi_cancellations, cfdi_global_periods TO gm_jobs_worker;
+GRANT SELECT, INSERT ON cfdi_files, cfdi_events TO gm_jobs_worker;
+GRANT SELECT, INSERT, UPDATE (kid, payload_secret, wiped_at) ON cfdi_secrets TO gm_jobs_worker;
+-- Runtime role: settings (no live switch columns), fresh requests, events; never a transition.
+GRANT SELECT, INSERT ON cfdi_settings TO gm_app;
+GRANT UPDATE (enabled, global_periodicity, next_periodicity, next_periodicity_from, global_auto, concept_mode,
+  concept_description, card_payment_form, default_use, self_invoice_enabled, self_invoice_policy, self_invoice_days,
+  portal_reissue_global, support_email, live_requested_at, live_requested_from, live_requested_by,
+  version, updated_by, updated_at) ON cfdi_settings TO gm_app;
+GRANT SELECT, INSERT ON cfdi_organizations, cfdi_csd_uploads, cfdi_documents, cfdi_document_tickets,
+  cfdi_cancellations, cfdi_events TO gm_app;
+GRANT INSERT (tenant_id, id, purpose, kid, payload_secret) ON cfdi_secrets TO gm_app;
+-- Must stay after the blanket "GRANT SELECT ON ALL TABLES" at the top of this file: the runtime
+-- role never reads sealed secrets (nor does account's export auto-discovery).
+REVOKE SELECT ON cfdi_secrets FROM gm_app;
 -- 032 public-ordering
 -- No DELETE on any of the four tables. A hold's diner request and a link's
 -- identity stay immutable (column grants plus the 032 transition triggers).

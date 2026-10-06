@@ -6,7 +6,8 @@
  * Structure (Anexo 20, CFDI 4.0): Comprobante@SubTotal/@Descuento/@Total; Comprobante/Conceptos/
  * Concepto@Importe/@NoIdentificacion with Impuestos/Traslados/Traslado@Base/@Importe; the
  * comprobante-level Impuestos@TotalImpuestosTrasladados is the Impuestos element that is a DIRECT
- * child of Comprobante (concept-level Impuestos are not); the TimbreFiscalDigital@UUID.
+ * child of Comprobante (concept-level Impuestos are not), with @TotalImpuestosRetenidos and the
+ * Retenciones/Retencion of the RESICO ISR retention (LD-16 L9); the TimbreFiscalDigital@UUID.
  *
  * Amounts are decimal strings (up to 6 decimals) converted exactly to integer centavos, rounding
  * half up at the third decimal. Not shared/domain.ts minor(): that caps at MXN 1,000,000 and a
@@ -25,11 +26,21 @@ export type CfdiTraslado = {
   /** Centavos; null for TipoFactor Exento (no Importe attribute). */
   importe: number | null;
 };
+/** A retention (Retencion@Impuesto/@Importe; concept-level ones also carry Base and TasaOCuota). */
+export type CfdiRetencion = {
+  impuesto: string | null;
+  rate: string | null;
+  /** Centavos; 0 at the comprobante level (no Base attribute there). */
+  base: number;
+  /** Centavos. */
+  importe: number;
+};
 export type CfdiConceptTotals = {
   noIdentificacion: string | null;
   importe: number;
   descuento: number;
   traslados: CfdiTraslado[];
+  retenciones: CfdiRetencion[];
 };
 export type CfdiTotals = {
   version: string | null;
@@ -44,6 +55,10 @@ export type CfdiTotals = {
   taxTraslados: number;
   /** Comprobante-level traslados (per tax and rate). */
   traslados: CfdiTraslado[];
+  /** Comprobante-level TotalImpuestosRetenidos; 0 when absent. Total = SubTotal − Descuento + traslados − this. */
+  taxRetenidos: number;
+  /** Comprobante-level retenciones (per tax). */
+  retenciones: CfdiRetencion[];
   concepts: CfdiConceptTotals[];
   /** TimbreFiscalDigital UUID, upper-cased; null if the document has no stamp. */
   uuid: string | null;
@@ -167,6 +182,15 @@ function amount(
   return decimalToCentavos(v, name);
 }
 
+function retencion(attrs: Map<string, string>): CfdiRetencion {
+  return {
+    impuesto: optional(attrs, "Impuesto"),
+    rate: optional(attrs, "TasaOCuota"),
+    base: amount(attrs, "Base", false),
+    importe: amount(attrs, "Importe", true),
+  };
+}
+
 function traslado(attrs: Map<string, string>): CfdiTraslado {
   const importe = attrs.get("Importe");
   return {
@@ -284,6 +308,8 @@ export function parseCfdiTotals(xml: string | Uint8Array): CfdiTotals {
         total: amount(tag.attrs, "Total", true),
         taxTraslados: 0,
         traslados: [],
+        taxRetenidos: 0,
+        retenciones: [],
         concepts: [],
         uuid: null,
       };
@@ -295,6 +321,7 @@ export function parseCfdiTotals(xml: string | Uint8Array): CfdiTotals {
           importe: amount(tag.attrs, "Importe", true),
           descuento: amount(tag.attrs, "Descuento", false),
           traslados: [],
+          retenciones: [],
         };
         result.concepts.push(concept);
       } else if (
@@ -305,6 +332,11 @@ export function parseCfdiTotals(xml: string | Uint8Array): CfdiTotals {
         result.taxTraslados = amount(
           tag.attrs,
           "TotalImpuestosTrasladados",
+          false,
+        );
+        result.taxRetenidos = amount(
+          tag.attrs,
+          "TotalImpuestosRetenidos",
           false,
         );
       } else if (isCfdi(element, "Traslado") && isCfdi(parent, "Traslados")) {
@@ -322,6 +354,24 @@ export function parseCfdiTotals(xml: string | Uint8Array): CfdiTotals {
           stack.length === 3
         )
           result.traslados.push(traslado(tag.attrs));
+      } else if (
+        isCfdi(element, "Retencion") &&
+        isCfdi(parent, "Retenciones")
+      ) {
+        const impuestos = stack[stack.length - 2];
+        const owner = stack[stack.length - 3];
+        if (
+          concept &&
+          isCfdi(impuestos, "Impuestos") &&
+          isCfdi(owner, "Concepto")
+        )
+          concept.retenciones.push(retencion(tag.attrs));
+        else if (
+          isCfdi(impuestos, "Impuestos") &&
+          isCfdi(owner, "Comprobante") &&
+          stack.length === 3
+        )
+          result.retenciones.push(retencion(tag.attrs));
       } else if (
         element.uri === TFD_NAMESPACE &&
         element.local === "TimbreFiscalDigital"

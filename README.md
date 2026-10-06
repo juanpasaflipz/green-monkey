@@ -40,6 +40,10 @@ Menus, choices, combos, open-price items, areas and tables, and ingredient stock
 
 Front-of-house service (orders and tables lists, check lifecycle with **Liberar mesa**, kitchen display, kitchen and order notes, receipts and browser printing on 80/58 mm) is described in [Service](docs/SERVICE.md).
 
+Discounts and courtesies by line or for the whole check (reason codes, per-role limits, one manager PIN for staff over their limit), refunds by item or by amount for cash and external-terminal payments with a kitchen cancellation and optional restock, and drawer controls (cash and terminal apart, blind counts, closer attribution and manager review of differences) are described in [Discounts, refunds and drawer controls](docs/DISCOUNTS.md).
+
+Reporting (migration 029) buckets every figure by stored or versioned business dates: sales, IVA from fiscal tickets, collections by cash and terminal, breakdowns, loss-prevention exceptions, a paged activity log, cortes X/Z/del día on 58/80 mm or letter/A4, and CSV exports. Hoy and Finanzas read fiscal (027) and discounts (028); cortes, kitchen cancellation chits and report sheets print through the browser/OS print path (checked in Chromium print emulation, not yet on a physical printer). See [Reports](docs/REPORTS.md).
+
 New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
 
 The seed is explicit, repeatable, and refuses non-local hosts. It is never run at boot. Seed prices/costs are fictional. Prices are tax-inclusive (Mexico): each product has a tax category (IVA 16%, IVA 8% in a registered border region, IVA 0% or exempt), every order line keeps an immutable tax snapshot, and every settled sale gets a ticket with a consecutive folio and the issuer's RFC, régimen and place of issue, from the owner's fiscal profile. CFDI invoicing is pending (cfdi 030); IEPS is out of scope. See [docs/FISCAL.md](docs/FISCAL.md).
@@ -200,7 +204,7 @@ Subscription flows and webhook verification passed in the dedicated sandbox. See
 - `tests/`: domain, isolated DB, and Playwright scenarios.
 - `work/reference-sources/`: ignored hash-verified source snapshots, never part of the deploy image.
 
-No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe, FacturAPI and other configured integrations are **not enabled or verified**. Cash POS does not require those credentials. The [isolated staging deployment](docs/STAGING.md) is running on Railway with Neon; a live cash/KDS/receipt smoke passed. Full release qualification remains incomplete; live cutover requires specific approval and reconciled migration.
+No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe and other configured integrations are **not enabled or verified**. CFDI: built on fiscal, discounts and reports, contract-tested against Facturapi's documented API (fixtures `docs@1c2e617`) and tested end to end against the Facturapi fake, not sandbox-verified; disabled until Facturapi keys are configured; live mode not enabled ([CFDI](docs/CFDI.md)). Cash POS does not require those credentials. The [isolated staging deployment](docs/STAGING.md) is running on Railway with Neon; a live cash/KDS/receipt smoke passed. Full release qualification remains incomplete; live cutover requires specific approval and reconciled migration.
 
 ## Marketing landing page
 

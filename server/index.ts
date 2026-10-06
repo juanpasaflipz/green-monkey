@@ -78,19 +78,14 @@ import * as fiscalRoutes from "./routes/fiscal.js";
 import * as discountsRoutes from "./routes/discounts.js";
 import * as reportsRoutes from "./routes/reports.js";
 import * as cfdiRoutes from "./routes/cfdi.js";
+import { cfdiCapability } from "./cfdi/hooks.js";
 import * as accountRoutes from "./routes/account.js";
 import * as publicOrderingRoutes from "./routes/public-ordering.js";
 import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
 } from "./payment-recovery.js";
-import {
-  DomainError,
-  id,
-  money,
-  businessDate,
-  boundaries,
-} from "../shared/domain.js";
+import { DomainError, id, money } from "../shared/domain.js";
 if (
   !process.env.DATABASE_URL ||
   !process.env.JWT_SECRET ||
@@ -243,7 +238,7 @@ route("get", "/operations/:id", async (tx, s, req) => {
 });
 route("get", "/kitchen", async (tx, s) => {
   permit(s, ["owner", "manager", "kitchen", "server", "cashier"]);
-  return tx`select r.*,o.number as order_number,o.name,o.mode,o.table_id,(select name from dining_tables t where t.id=o.table_id) as table_name,(select name from employees e where e.id=coalesce(o.assigned_employee_id,o.employee_id)) as waiter_name,o.service_version,(select jsonb_agg(l.data || jsonb_build_object('voidedQuantity',coalesce((select sum(cardinality(v.units)) from line_voids v where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) order by l.id) from order_lines l where l.order_id=o.id and l.round=r.number and l.data->>'station'=r.station) as lines,(select jsonb_agg(jsonb_build_object('id',v.id,'lineId',v.line_id,'quantity',cardinality(v.units),'name',l.data->'name','reason',v.reason,'createdAt',v.created_at) order by v.created_at) from line_voids v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id where v.order_id=o.id and l.round=r.number and l.data->>'station'=r.station and v.kitchen_ack_required and v.kitchen_acknowledged_at is null) as pending_voids from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id where r.state <> 'completed' and r.state <> 'offline_review' order by r.created_at`;
+  return tx`select r.*,o.number as order_number,o.name,o.mode,o.table_id,(select name from dining_tables t where t.id=o.table_id) as table_name,(select name from employees e where e.id=coalesce(o.assigned_employee_id,o.employee_id)) as waiter_name,o.service_version,(select jsonb_agg(l.data || jsonb_build_object('voidedQuantity',coalesce((select sum(cardinality(v.units)) from kitchen_removals v where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) order by l.id) from order_lines l where l.order_id=o.id and l.round=r.number and l.data->>'station'=r.station) as lines,(select jsonb_agg(jsonb_build_object('id',v.id,'lineId',v.line_id,'quantity',cardinality(v.units),'name',l.data->'name','reason',v.reason,'createdAt',v.created_at) order by v.created_at) from kitchen_removals v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id where v.order_id=o.id and l.round=r.number and l.data->>'station'=r.station and v.kitchen_ack_required and v.kitchen_acknowledged_at is null) as pending_voids from rounds r join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id where r.state <> 'completed' and r.state <> 'offline_review' order by r.created_at`;
 });
 route("post", "/kitchen/:id", (tx, s, req) =>
   progressPreparation(tx, s, id.parse(req.params.id), req.body),
@@ -375,63 +370,6 @@ route("post", "/inventory/prep", async (tx, s, req) => {
     return { ok: true };
   });
 });
-route("get", "/report", async (tx, s, req) => {
-  permit(s, managers);
-  const date = z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .parse(
-      req.query.date ??
-        businessDate(
-          new Date().toISOString(),
-          s.restaurant.timezone,
-          s.restaurant.cutoff,
-        ),
-    );
-  const period = boundaries(date, s.restaurant.timezone, s.restaurant.cutoff);
-  const orders =
-    await tx`select o.*,(select coalesce(sum(t.amount),0)::int from tenders t where t.order_id=o.id) as paid from orders o where o.created_at>=${period.start} and o.created_at<${period.end}`;
-  const tenders =
-    await tx`select * from tenders where created_at>=${period.start} and created_at<${period.end}`;
-  const refunds =
-    await tx`select * from refunds where created_at>=${period.start} and created_at<${period.end}`;
-  const costs =
-    await tx`select l.data from order_lines l join orders o on o.tenant_id=l.tenant_id and o.id=l.order_id where o.created_at>=${period.start} and o.created_at<${period.end}`;
-  const cash =
-    await tx`select * from cash_sessions where closed_at>=${period.start} and closed_at<${period.end}`;
-  const unallocatedRecoveries = orders.filter(
-    (o: any) =>
-      o.state === "recovery_pending" || o.state === "recovery_reviewed",
-  );
-  return {
-    date,
-    period,
-    source: "orders/tenders/refunds",
-    refreshedAt: new Date().toISOString(),
-    orders,
-    tenders,
-    refunds,
-    cash,
-    gross: orders.reduce((a: number, o: any) => a + o.total, 0),
-    collected: tenders.reduce((a: number, t: any) => a + t.amount, 0),
-    tips: tenders.reduce((a: number, t: any) => a + t.tip, 0),
-    refundTotal: refunds.reduce((a: number, r: any) => a + r.amount, 0),
-    cogs: costs.reduce(
-      (a: number, l: any) => a + (l.data.cost ?? 0) * l.data.quantity,
-      0,
-    ),
-    unallocatedRecoveryCount: unallocatedRecoveries.length,
-    unallocatedRecoveryTotal: unallocatedRecoveries.reduce(
-      (total: number, o: any) => total + o.total,
-      0,
-    ),
-    costCoverage:
-      costs.length + unallocatedRecoveries.length
-        ? costs.filter((l: any) => l.data.cost !== null).length /
-          (costs.length + unallocatedRecoveries.length)
-        : 0,
-  };
-});
 route("get", "/restaurant", (tx, s) => getSettings(tx, s));
 route("post", "/restaurant", (tx, s, req) => saveSettings(tx, s, req.body));
 route("post", "/catalog/save", async (tx, s, req) =>
@@ -524,12 +462,12 @@ route("get", "/jobs", async (tx, s) => {
   return tx`select * from jobs order by created_at desc limit 100`;
 });
 route("get", "/plan", async (tx) => entitlement(tx));
-route("get", "/capabilities", async () => ({
+route("get", "/capabilities", async (tx) => ({
   cash: { enabled: true },
   external: { enabled: true },
   clip: { enabled: false, reason: "provider_contract_and_hardware_unverified" },
   stripe: { enabled: false, reason: "sandbox_and_merchant_required" },
-  facturapi: { enabled: false, reason: "sandbox_required" },
+  facturapi: await cfdiCapability(tx),
   printer: { enabled: false, reason: "device_not_paired" },
   resend: { enabled: false, reason: "sender_and_sandbox_required" },
 }));

@@ -15,7 +15,7 @@ import {
   type TaxedLine,
 } from "../../shared/fiscal";
 import { lineRemaining } from "../../shared/settlement";
-import type { Receptor } from "../../server/cfdi/catalog";
+import type { Receptor } from "../../shared/cfdi";
 import type { FacturapiKey } from "../../server/cfdi/facturapi";
 import { fakeId, line } from "./fiscal";
 

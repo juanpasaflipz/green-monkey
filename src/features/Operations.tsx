@@ -10,10 +10,11 @@ import { Tables } from "./Tables";
 import { Kitchen } from "./Kitchen";
 import { RestaurantSettings } from "./RestaurantSettings";
 import { FiscalSettings } from "./fiscal/FiscalSettings";
+import { CfdiSettings } from "./cfdi/CfdiSettings";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
 import { useEffect, useState } from "react";
-import { ArrowUpRight, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { minor, type Session, type Locale } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
 import { integrationLabel, operationLabel, stockCauseLabel } from "../labels";
@@ -21,7 +22,15 @@ import { api } from "../api";
 import { db, isResolved } from "../offline";
 import { ArchivedDrawerNote } from "./offline/ArchivedDrawerNote";
 import { OfflineKitchenReview } from "./offline/OfflineKitchenReview";
-import { Button, Field, Empty, Modal, Badge } from "../components/ui";
+import { Button, Field, Modal, Badge } from "../components/ui";
+import { DrawerPanel } from "./cash/DrawerPanel";
+import { DrawerReviewDialog } from "./cash/DrawerReviewDialog";
+import { MoneyControlsSettings } from "./cash/MoneyControlsSettings";
+import type { CashHistoryRow } from "./CashHistory";
+import { TodayDashboard } from "./reports/TodayDashboard";
+import { ReportsView, openReports } from "./reports/ReportsView";
+import { CortePrintButton } from "./reports/CortePrintButton";
+import { CORTE_BLIND_WINDOW_HOURS } from "../../shared/reports";
 export function Operations({
   view,
   session,
@@ -33,6 +42,7 @@ export function Operations({
   session: Session;
   locale: Locale;
   navigate: (s: string) => void;
+  /** Connectivity from App (contract §0.8); discounts and refunds need it. */
   online?: boolean;
 }) {
   const t = (k: Key) => strings[locale][k];
@@ -61,19 +71,18 @@ export function Operations({
     setModalState(next && { ...next, operationId: crypto.randomUUID() });
   async function load() {
     try {
-      // These views load and poll by themselves.
-      if (["orders", "tables", "kitchen", "sync"].includes(view)) {
+      // These views load and poll by themselves (reports 029: Hoy and Finanzas follow the
+      // connection and the header's Actualizar through `online` and `refreshKey`).
+      if (
+        ["orders", "tables", "kitchen", "sync", "today", "finance"].includes(
+          view,
+        )
+      ) {
         setData(null);
         return;
       }
       if (view === "settings") setData(await api("/capabilities"));
-      else {
-        const endpoint =
-          ({ today: "report", finance: "report" } as Record<string, string>)[
-            view
-          ] ?? view;
-        setData(await api("/" + endpoint));
-      }
+      else setData(await api("/" + view));
       setError("");
     } catch (e) {
       setError(translateError((e as Error).message, locale));
@@ -87,21 +96,25 @@ export function Operations({
     setDetail(null);
     void load();
   }, [view]);
+  /**
+   * offline (026): this device's local sales must sync before its drawer is
+   * closed. Returns the translated reason, or null (discounts' close dialog
+   * shows it in place).
+   */
+  async function pendingCloseCheck(): Promise<string | null> {
+    const pending = await db.pending
+      .filter(
+        (p) =>
+          p.scope.startsWith(session.tenantId + ":" + session.deviceId + ":") &&
+          !isResolved(p),
+      )
+      .count();
+    return pending ? t("syncBeforeClose") : null;
+  }
+  // discounts (028): "Revisar diferencia" from the drawer history.
+  const [reviewing, setReviewing] = useState<CashHistoryRow | null>(null);
+  const [historyKey, setHistoryKey] = useState(0);
   async function action(path: string, body: unknown) {
-    if (path === "/cash/close") {
-      const pending = await db.pending
-        .filter(
-          (p) =>
-            p.scope.startsWith(
-              session.tenantId + ":" + session.deviceId + ":",
-            ) && !isResolved(p),
-        )
-        .count();
-      if (pending) {
-        setError(t("syncBeforeClose"));
-        return;
-      }
-    }
     setBusy(true);
     setError("");
     try {
@@ -150,6 +163,10 @@ export function Operations({
         <>
           <RestaurantSettings session={session} locale={locale} />
           {manager && <FiscalSettings session={session} locale={locale} />}
+          {manager && <CfdiSettings session={session} locale={locale} />}
+          {manager && (
+            <MoneyControlsSettings session={session} locale={locale} />
+          )}
           <PublicOrderingSettings
             session={session}
             locale={locale}
@@ -209,102 +226,114 @@ export function Operations({
           )}
           {view === "cash" && manager && (
             <CashHistory
+              key={historyKey}
               locale={locale}
               currency={session.restaurant.currency}
+              rowActions={(row) => (
+                <>
+                  {row.needs_review && (
+                    <Button onClick={() => setReviewing(row)}>
+                      {t("discountsReviewAction")}
+                    </Button>
+                  )}
+                  {/* reports (029): the corte Z of a closed drawer (LD-16 L6). */}
+                  <CortePrintButton
+                    session={session}
+                    locale={locale}
+                    drawerId={row.id}
+                    label={t("reportsPrintCorteZ")}
+                    online={online}
+                  />
+                </>
+              )}
             />
           )}
           {view === "cash" && (
-            <>
-              {!data || data.closed_at ? (
-                <div className="panel narrow">
-                  <Badge>{t("drawerClosed")}</Badge>
-                  <h2>{t("openDrawer")}</h2>
-                  <p>{t("noDrawer")}</p>
-                  <Button
-                    variant="primary"
-                    onClick={() => setModal({ kind: "open" })}
-                  >
-                    {t("openDrawer")}
-                  </Button>
-                  {data && (
-                    <p>
-                      {t("difference")}: {m(data.discrepancy)}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <>
-                  <div className="metric-grid">
-                    <div className="metric">
-                      <span>{t("opening")}</span>
-                      <strong>{m(data.opening)}</strong>
-                    </div>
-                    <div className="metric">
-                      <span>{t("expected")}</span>
-                      <strong>{m(data.expected)}</strong>
-                    </div>
-                    <div className="metric">
-                      <span>{t("tip")}</span>
-                      <strong>
-                        {m(
-                          data.tenders.reduce(
-                            (a: number, t: any) => a + t.tip,
-                            0,
-                          ),
-                        )}
-                      </strong>
-                    </div>
-                  </div>
-                  <div className="row">
-                    <Badge tone="green">{t("drawerOpen")}</Badge>
-                    {manager && (
-                      <>
-                        <Button onClick={() => setModal({ kind: "paidout" })}>
-                          {t("paidOut")}
-                        </Button>
-                        <Button
-                          variant="primary"
-                          onClick={() => setModal({ kind: "close" })}
-                        >
-                          {t("closeDrawer")}
-                        </Button>
-                      </>
+            <DrawerPanel
+              session={session}
+              locale={locale}
+              data={data}
+              money={m}
+              onOpenDrawer={() => setModal({ kind: "open" })}
+              onPaidOut={() => setModal({ kind: "paidout" })}
+              beforeClose={pendingCloseCheck}
+              // reports (029): Corte X of the open drawer for a viewer who may see expected cash;
+              // the closed drawer's corte Z or count slip (a cashier's own device, 12 h); and the
+              // close dialog's result step (wave2-cross-track C10).
+              actions={
+                data && !data.closed_at && data.visibility === "full" ? (
+                  <CortePrintButton
+                    session={session}
+                    locale={locale}
+                    drawerId={data.id}
+                    label={t("reportsCorteX")}
+                    online={online}
+                  />
+                ) : undefined
+              }
+              closedActions={
+                data?.closed_at &&
+                (manager ||
+                  Date.now() - Date.parse(data.closed_at) <
+                    CORTE_BLIND_WINDOW_HOURS * 3_600_000) ? (
+                  <CortePrintButton
+                    session={session}
+                    locale={locale}
+                    drawerId={data.id}
+                    label={t(
+                      data.visibility === "full"
+                        ? "reportsReprintCorteZ"
+                        : "reportsPrintCountSlip",
                     )}
-                  </div>
-                  <h2>{t("movements")}</h2>
-                  <div className="data-table">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>{t("date")}</th>
-                          <th>{t("method")}</th>
-                          <th>{t("amount")}</th>
-                          <th>{t("tip")}</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {data.tenders.map((r: any) => (
-                          <tr key={r.id}>
-                            <td>
-                              {new Date(r.created_at).toLocaleTimeString(
-                                locale,
-                              )}
-                            </td>
-                            <td>
-                              {t(
-                                r.method === "cash" ? "cashMethod" : "external",
-                              )}
-                            </td>
-                            <td>{m(r.amount)}</td>
-                            <td>{m(r.tip)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </>
+                    online={online}
+                  />
+                ) : undefined
+              }
+              closeResultActions={(result) => (
+                <CortePrintButton
+                  session={session}
+                  locale={locale}
+                  drawerId={result.id}
+                  label={t(
+                    result.visibility === "full"
+                      ? "reportsPrintCorteZ"
+                      : "reportsPrintCountSlip",
+                  )}
+                  online={online}
+                />
               )}
-            </>
+              notice={
+                data && (
+                  <ArchivedDrawerNote
+                    session={session}
+                    drawerId={data.id}
+                    locale={locale}
+                    money={m}
+                  />
+                )
+              }
+              onChanged={async () => {
+                setHistoryKey((n) => n + 1);
+                await load();
+              }}
+            />
+          )}
+          {reviewing && (
+            <DrawerReviewDialog
+              drawerId={reviewing.id}
+              session={session}
+              locale={locale}
+              money={m}
+              figures={{
+                expected: reviewing.expected,
+                counted: reviewing.counted,
+              }}
+              close={() => setReviewing(null)}
+              saved={() => {
+                setReviewing(null);
+                setHistoryKey((n) => n + 1);
+              }}
+            />
           )}
           {view === "inventory" && (
             <>
@@ -372,93 +401,23 @@ export function Operations({
               </div>
             </>
           )}
-          {(view === "today" || view === "finance") && data && (
-            <>
-              <p className="summary-copy">{t("reportHint")}</p>
-              <div className="metric-grid">
-                {[
-                  ["gross", data.gross],
-                  ["collected", data.collected],
-                  ["cogs", data.cogs],
-                  ["refunds", data.refundTotal],
-                ].map(([key, value]) => (
-                  <button
-                    className="metric"
-                    key={key}
-                    onClick={() => navigate("orders")}
-                  >
-                    <span>
-                      {t(key as Key)}
-                      <ArrowUpRight size={17} />
-                    </span>
-                    <strong>{m(value as number)}</strong>
-                    <small>{t("viewRecords")}</small>
-                  </button>
-                ))}
-              </div>
-              <div className="insight-grid">
-                <section className="panel">
-                  <div className="row between">
-                    <h2>{t("orders")}</h2>
-                    <Badge>{data.orders.length}</Badge>
-                  </div>
-                  {data.orders.length ? (
-                    data.orders.slice(0, 6).map((o: any) => (
-                      <button
-                        className="report-row"
-                        key={o.id}
-                        onClick={() => {
-                          localStorage.setItem("gm-resume", o.id);
-                          navigate("sell");
-                        }}
-                      >
-                        <span>
-                          #{o.number} · {o.name || t("order")}
-                        </span>
-                        <strong>{m(o.total)}</strong>
-                        <ArrowUpRight size={16} />
-                      </button>
-                    ))
-                  ) : (
-                    <Empty title={t("noOrders")} />
-                  )}
-                </section>
-                <section className="panel">
-                  <span className="eyebrow">{t("coverage")}</span>
-                  <h2>{Math.round(data.costCoverage * 100)}%</h2>
-                  {data.unallocatedRecoveryCount > 0 && (
-                    <p className="warning-panel">
-                      {locale === "es"
-                        ? `${data.unallocatedRecoveryCount} ventas recuperadas (${m(data.unallocatedRecoveryTotal)}) sin costo histórico por producto. El costo mostrado está incompleto.`
-                        : `${data.unallocatedRecoveryCount} recovered sales (${m(data.unallocatedRecoveryTotal)}) have no historical item costs. Displayed costs are incomplete.`}
-                    </p>
-                  )}
-                  <p>{t("forecastEmpty")}</p>
-                  <hr />
-                  <p>
-                    {t("tip")}: {m(data.tips)}
-                  </p>
-                  {data.cash.map((c: any) => (
-                    <Button
-                      key={c.id}
-                      className="full"
-                      onClick={() => navigate("cash")}
-                    >
-                      {t("difference")}: {m(c.counted - c.expected)}
-                    </Button>
-                  ))}
-                </section>
-              </div>
-              <p className="tiny muted">
-                {t("source")}: {data.source} · {data.date} ·{" "}
-                {session.restaurant.timezone}
-                <br />
-                {t("refresh")}:{" "}
-                {new Date(data.refreshedAt).toLocaleString(locale, {
-                  timeZone: session.restaurant.timezone,
-                })}
-              </p>
-            </>
+          {view === "today" && (
+            <TodayDashboard
+              session={session}
+              locale={locale}
+              navigate={navigate}
+              online={online}
+              refreshKey={refreshKey}
+            />
+          )}
+          {view === "finance" && (
+            <ReportsView
+              session={session}
+              locale={locale}
+              navigate={navigate}
+              online={online}
+              refreshKey={refreshKey}
+            />
           )}
           {view === "team" && (
             <StaffManagement session={session} locale={locale} />
@@ -487,10 +446,11 @@ export function Operations({
                   </div>
                 ))}
               </div>
+              {/* reports (029): the paged Bitácora replaces the newest-100 list. */}
               <Button
-                onClick={async () => {
-                  setDetail(await api("/audit"));
-                  setModal({ kind: "audit" });
+                onClick={() => {
+                  openReports("audit");
+                  navigate("finance");
                 }}
               >
                 {t("audit")}
@@ -508,7 +468,6 @@ export function Operations({
             (
               {
                 open: "openDrawer",
-                close: "closeDrawer",
                 paidout: "paidOut",
                 receipt: "receive",
                 count_adjust: "count",
@@ -562,12 +521,6 @@ export function Operations({
                       operationId,
                       opening: parseAmount(String(f.get("amount"))),
                     });
-                  else if (modal.kind === "close")
-                    await action("/cash/close", {
-                      operationId,
-                      counted: parseAmount(String(f.get("amount"))),
-                      reason: f.get("reason"),
-                    });
                   else if (modal.kind === "paidout")
                     await action("/cash/paid-out", {
                       operationId,
@@ -597,19 +550,6 @@ export function Operations({
                 }
               }}
             >
-              {modal.kind === "close" && (
-                <>
-                  <p>
-                    {t("expected")}: <strong>{m(data.expected)}</strong>
-                  </p>
-                  <ArchivedDrawerNote
-                    session={session}
-                    drawerId={data.id}
-                    locale={locale}
-                    money={m}
-                  />
-                </>
-              )}
               {modal.kind === "prep" ? (
                 <>
                   {["input", "output"].map((k) => (
@@ -635,15 +575,7 @@ export function Operations({
                   ))}
                 </>
               ) : (
-                <Field
-                  label={t(
-                    modal.kind === "close"
-                      ? "counted"
-                      : modal.item
-                        ? "quantity"
-                        : "amount",
-                  )}
-                >
+                <Field label={t(modal.item ? "quantity" : "amount")}>
                   <input
                     name="amount"
                     inputMode="decimal"
@@ -655,11 +587,7 @@ export function Operations({
               )}
               {modal.kind !== "open" && (
                 <Field label={t("reason")}>
-                  <textarea
-                    name="reason"
-                    required={modal.kind !== "close"}
-                    minLength={3}
-                  />
+                  <textarea name="reason" required minLength={3} />
                 </Field>
               )}
               {error && (

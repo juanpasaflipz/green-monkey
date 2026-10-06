@@ -533,6 +533,8 @@ type CachedOrder = {
   note?: string;
   total: number;
   paid: number;
+  /** discounts (028): the check's discount, shown read-only; absent in older copies. */
+  discount?: number;
   state: string;
   createdAt: string;
   serviceVersion?: number;
@@ -686,6 +688,7 @@ function cachedFrom(order: Order, receivedAt: number): CachedOrder {
     note: order.note,
     total: order.total,
     paid: order.paid,
+    discount: order.discount ?? 0,
     state: order.state,
     createdAt: order.createdAt,
     serviceVersion: order.serviceVersion,
@@ -995,6 +998,8 @@ export async function cachedServerOpenOrders(
       lines,
       total,
       paid,
+      // discounts (028): read-only on a cached check (Vender, local receipt).
+      discount: order.discount ?? 0,
       refunded: 0,
       state: order.state,
       createdAt: order.createdAt,

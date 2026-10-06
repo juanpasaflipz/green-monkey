@@ -353,7 +353,11 @@ test("HTML 502 from the proxy is treated as offline, not a generic error @cross"
     .getByRole("button", { name: "Confirmar cobro", exact: true })
     .click();
   const alert = page.getByRole("dialog").getByRole("alert");
-  await expect(alert).toContainText("El servidor no está disponible");
+  // The POST is retried once after 800 ms on a 502 (idempotent payments), so
+  // the alert can take longer than the default 5 s on a slow WebKit runner.
+  await expect(alert).toContainText("El servidor no está disponible", {
+    timeout: 15_000,
+  });
   await expect(alert).not.toContainText("No se pudo completar");
   await expect(pill(page, /^Sin conexión/)).toBeVisible();
   await page
@@ -596,8 +600,16 @@ test("Owners turn offline table service on and off on the Sync screen, labelled 
     await page.reload();
     await pill(page, /^Conectado/).click();
     await expect(toggle).toBeChecked();
+    // The switch shows the new value while its save is in flight, so the read below waits
+    // for the save's response first (as the check above does).
+    const cleared = page.waitForResponse(
+      (r) =>
+        new URL(r.url()).pathname === "/api/offline/settings" &&
+        r.request().method() === "POST",
+    );
     await toggle.uncheck();
     await expect(toggle).not.toBeChecked();
+    expect((await (await cleared).json()).tableService).toBe(false);
     expect(
       await page.evaluate(
         async () =>
@@ -1405,9 +1417,14 @@ test("Manager archives an unverifiable local record and drawer close unblocks", 
   await page.getByRole("button", { name: "Cerrar caja", exact: true }).click();
   await page.getByLabel("Efectivo contado").fill("0");
   await page.getByLabel("Explicación").fill("Cierre con registro pendiente");
+  // discounts (028): count → confirm; the pending-sales guard runs on save.
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "Guardar", exact: true })
+    .getByRole("button", { name: "Continuar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Guardar conteo y cerrar", exact: true })
     .click();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
     "Sincroniza las ventas pendientes",
@@ -1450,7 +1467,15 @@ test("Manager archives an unverifiable local record and drawer close unblocks", 
   await page.getByLabel("Explicación").fill("Cierre después de archivar");
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "Guardar", exact: true })
+    .getByRole("button", { name: "Continuar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Guardar conteo y cerrar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Corte registrado" })
+    .getByRole("button", { name: "Listo", exact: true })
     .click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
@@ -1712,32 +1737,46 @@ test("Service worker update keeps the old revision intact; the prompt applies on
     const assets = current![1].filter((path) => path.startsWith("/assets/"));
     const html = await (await page.request.get("/index.html")).text();
     const source = readFileSync("public/sw.js", "utf8");
-    const serve = async (buildId: string, extraAssets: string[]) => {
-      await context.unrouteAll({ behavior: "ignoreErrors" });
+    // The routes stay for the whole test and answer for the revision being served. Replacing them
+    // while one of Chromium's own update checks fetches through them can leave that fetch
+    // unanswered: its install never ends and every update() queued behind it comes back empty.
+    let revision: string | null = null;
+    await context.route("**/index.html", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body:
+          revision === null
+            ? html
+            : html.replace(
+                /<meta name="gm-build" content="[^"]*">/,
+                `<meta name="gm-build" content="${revision}">`,
+              ),
+      }),
+    );
+    await context.route("**/assets/missing-next.js", (route) =>
+      route.fulfill({ status: 404, body: "missing" }),
+    );
+    /** Serves a revision, or with null the deployed one again. */
+    const serve = (buildId: string | null, extraAssets: string[] = []) => {
       writeFileSync(
         "dist/sw.js",
-        transformServiceWorker(source, {
-          buildId,
-          assets: [...assets, ...extraAssets],
-        }),
+        buildId === null
+          ? deployed
+          : transformServiceWorker(source, {
+              buildId,
+              assets: [...assets, ...extraAssets],
+            }),
       );
-      await context.route("**/index.html", (route) =>
-        route.fulfill({
-          contentType: "text/html",
-          body: html.replace(
-            /<meta name="gm-build" content="[^"]*">/,
-            `<meta name="gm-build" content="${buildId}">`,
-          ),
-        }),
-      );
-      await context.route("**/assets/missing-next.js", (route) =>
-        route.fulfill({ status: 404, body: "missing" }),
-      );
+      revision = buildId;
     };
     // A new revision whose install fails leaves the old revision untouched.
-    await serve(`browser-failed-${Date.now()}`, ["/assets/missing-next.js"]);
+    serve(`browser-failed-${Date.now()}`, ["/assets/missing-next.js"]);
     expect(await updateWorker(page)).toBe("redundant");
     expect(await shellCaches(page)).toEqual(before);
+    // The failed release is withdrawn. Left in place, Chromium's own update check after the
+    // reloads below (a soft update once back online) installs it again, and that install was
+    // still running when the next revision was served (CI runs 37397108279, 37442666133).
+    serve(null);
     await context.setOffline(true);
     await page.reload();
     await expect(pill(page, /^Sin conexión/)).toBeVisible();
@@ -1748,7 +1787,7 @@ test("Service worker update keeps the old revision intact; the prompt applies on
     await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
     // A complete revision waits; the prompt stays disabled while a record is unsynced.
     const next = `browser-next-${Date.now()}`;
-    await serve(next, []);
+    serve(next);
     const s = await session(page);
     const row = queuedSale(s, {
       status: "conflict",

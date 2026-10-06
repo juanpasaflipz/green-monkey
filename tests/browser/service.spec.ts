@@ -1859,7 +1859,8 @@ test("operation dialogs keep one operation id across a lost response", async ({
     method: "cash",
   });
   let refunds = 0;
-  await page.route("**/api/refunds", async (route) => {
+  // discounts (028): the refund dialog posts to /orders/:id/refunds.
+  await page.route("**/api/orders/*/refunds", async (route) => {
     refunds++;
     if (refunds === 1) {
       await route.fetch();
@@ -1870,12 +1871,21 @@ test("operation dialogs keep one operation id across a lost response", async ({
   const row = page.locator(".order-summary").filter({ hasText: name });
   await row.getByRole("button", { name: "Reembolsar", exact: true }).click();
   const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "Por importe", exact: true }).click();
   await dialog.getByLabel("Importe", { exact: true }).fill("10");
+  await dialog
+    .getByLabel("Motivo del reembolso")
+    .selectOption({ label: "Otro (explica en la nota)" });
   await dialog.getByLabel("Explicación").fill("Devolución sin respuesta");
-  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "Reembolsar $10.00", exact: true })
+    .click();
   // The transport error text belongs to offline (wave contracts D1).
   await expect(dialog.getByRole("alert")).toBeVisible();
-  await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "Reembolsar $10.00", exact: true })
+    .click();
+  await dialog.getByRole("button", { name: "Listo", exact: true }).click();
   await expect(dialog).toBeHidden();
   expect(refunds).toBe(2);
   const refunded = await call(page, "/orders/" + order.id);
@@ -1973,10 +1983,13 @@ test("Spanish operator screens show labels instead of codes", async ({
   await page
     .getByRole("button", { name: "Historial de auditoría", exact: true })
     .click();
-  const audit = page.getByRole("dialog");
+  // reports (029): the button opens Finanzas → Bitácora, the paged activity log.
+  await expect(
+    page.getByRole("tab", { name: "Bitácora", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  const audit = page.getByRole("table", { name: "Bitácora" });
   await expect(audit).toContainText("Orden creada");
   await expect(audit).not.toContainText("order.created");
-  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Operación", exact: true }).click();
   await page.getByRole("button", { name: "Caja", exact: true }).click();
   await page.getByText("Historial de cajas").click();
