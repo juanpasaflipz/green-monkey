@@ -191,20 +191,20 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   - Rulesets on a private repository need a paid GitHub plan
     ([PROVISIONING.md §0](PROVISIONING.md#0-decisions-defaults-chosen-so-work-is-not-blocked)).
   - `scripts/ops/github-protect.sh`, then the production environment secrets and
-    variables it prints (`RAILWAY_TOKEN`, `BACKUP_DATABASE_URL`, `R2_*`,
-    `ALERT_WEBHOOK_URL`, `APP_URL`) and the repository variables
-    `RAILWAY_CLI_VERSION`, `RAILWAY_IAC_VERSION` ([§7](PROVISIONING.md#7-github)).
-  - Beyond what `github-protect.sh` prints (`scripts/ops/github-protect.sh:70-92`), the
-    production environment needs the secret `MIGRATION_DATABASE_URL` (`gm_migrator`,
-    direct endpoint, from `.env.provisioned-production` on stdin), the variable
-    `PG_APP_USER` (`gm_production_app`) and optionally the variable `ALERT_WEBHOOK_KIND`
-    (defaults to `ntfy`: `.github/workflows/deploy.yml:149`, `retention.yml:119`)
-    ([§7](PROVISIONING.md#7-github)). The production deploy job passes them to the
-    deploy action's migrate step (`.github/workflows/deploy.yml:145-149`,
-    `.github/actions/deploy/action.yml:63-75`), and the retention workflow reads the
-    secret too (`.github/workflows/retention.yml:114-119`). No Railway service holds
-    the migration credential: both processes refuse it
-    (`server/config-rules.ts:66`, `:81`).
+    variables it prints (`scripts/ops/github-protect.sh:70-92`): the secrets
+    `RAILWAY_TOKEN`, `MIGRATION_DATABASE_URL` (`gm_migrator`, direct endpoint, from
+    `.env.provisioned-production` on stdin), `BACKUP_DATABASE_URL`, `R2_ACCESS_KEY_ID`,
+    `R2_SECRET_ACCESS_KEY` and `ALERT_WEBHOOK_URL`; the variables `APP_URL`,
+    `PG_APP_USER` (`gm_production_app`), `ALERT_WEBHOOK_KIND` (optional, defaults to
+    `ntfy`: `.github/workflows/deploy.yml:149`, `retention.yml:132`), `R2_ACCOUNT_ID`
+    and `R2_BUCKET`; and the repository variables `RAILWAY_CLI_VERSION`,
+    `RAILWAY_IAC_VERSION` ([§7](PROVISIONING.md#7-github)).
+  - The production deploy job passes `MIGRATION_DATABASE_URL`, `PG_APP_USER` and the
+    alert settings to the deploy action's migrate step
+    (`.github/workflows/deploy.yml:145-149`, `.github/actions/deploy/action.yml:63-75`),
+    and the retention workflow reads the secret too
+    (`.github/workflows/retention.yml:127-132`). No Railway service holds the migration
+    credential: both processes refuse it (`server/config-rules.ts:66`, `:81`).
 - **How to verify.** `github-protect.sh --dry-run`, then the real run (a 403 means the
   plan lacks rulesets); `gh secret list --env production` lists the names, including
   `MIGRATION_DATABASE_URL`; `gh variable list --env production` shows `PG_APP_USER`;
