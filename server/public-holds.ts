@@ -392,6 +392,15 @@ export async function acceptHold(
           operationId: randomUUID(),
         });
       }
+      // ABUSE-1 again, as the last read before the decision: a sibling's
+      // abuse rejection locks only its own hold, so nothing above waited for
+      // it. Under READ COMMITTED this statement sees one that committed while
+      // createOrder/addRound ran, and the whole accept rolls back (PUB-HR-2).
+      const [linkNow] =
+        await tx`select revoke_reason from public_links where id=${h.link_id}`;
+      const abuseNow = abuse || linkNow?.revoke_reason === "abuse";
+      if (abuseNow && !p.abuseAcknowledged)
+        throw new DomainError("public_hold_link_abuse", 409);
       await tx`update public_order_holds set state='accepted',decided_at=clock_timestamp(),
           decided_by=${s.employeeId},order_id=${order.id},order_round=${round},
           excluded_line_ids=${tx.array([...excluded])}::uuid[],
@@ -409,7 +418,7 @@ export async function acceptHold(
         excluded: excluded.size,
         priceChanged: current !== quoted,
         total: roundTotal,
-        ...(abuse ? { abuseAcknowledged: true } : {}),
+        ...(abuseNow ? { abuseAcknowledged: true } : {}),
       });
       return {
         hold: { id: holdId, label, state: "accepted" as const },
