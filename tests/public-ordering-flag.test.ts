@@ -9,22 +9,15 @@ import { accountWebConfig } from "../server/account-config";
 import { loadConfig } from "../server/config-rules";
 import { LINK_HEADER } from "../shared/public-ordering";
 
-describe("PUBLIC_ORDERING_ENABLED kill switch (SEC-7 / FIT-11 / FOH-13)", () => {
-  it("publicOrderingEnabled: unset or empty is true in every environment (public ordering B4); explicit true/false win; other values throw public_ordering_flag_invalid", () => {
+describe("PUBLIC_ORDERING_ENABLED interim switch (SEC-7 / FIT-11 / FOH-13)", () => {
+  it("publicOrderingEnabled: unset is false when APP_ENV=production and true otherwise; explicit true/false win; other values throw public_ordering_flag_invalid", () => {
     expect(publicOrderingEnabled({})).toBe(true);
     expect(publicOrderingEnabled({ APP_ENV: "staging" })).toBe(true);
-    expect(publicOrderingEnabled({ APP_ENV: "production" })).toBe(true);
+    expect(publicOrderingEnabled({ APP_ENV: "production" })).toBe(false);
     expect(
       publicOrderingEnabled({
         APP_ENV: "production",
         PUBLIC_ORDERING_ENABLED: " ",
-      }),
-    ).toBe(true);
-    // "false" stays the kill switch, in production too.
-    expect(
-      publicOrderingEnabled({
-        APP_ENV: "production",
-        PUBLIC_ORDERING_ENABLED: "false",
       }),
     ).toBe(false);
     expect(

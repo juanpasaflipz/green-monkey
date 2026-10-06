@@ -90,7 +90,7 @@ export default defineRailway((ctx) => {
       SUPPORT_HOURS: preserve(),
       SUPPORT_HOURS_EN: preserve(),
       SAAS_TAX_PROFILE_ENABLED: preserve(),
-      // account (031): QR/kiosk ordering kill switch; since public ordering (032/033, B4) unset means on everywhere, "false" turns it off.
+      // account (031): QR/kiosk ordering gate; unset means off in production until wave 3.
       PUBLIC_ORDERING_ENABLED: preserve(),
       // The fictional demo tenant exists only on staging: production never
       // declares it, so a value set there is planned as a deletion and the

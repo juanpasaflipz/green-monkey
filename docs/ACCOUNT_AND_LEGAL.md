@@ -12,7 +12,7 @@ owner's account console (co-owners, ownership transfer, recovery codes, support
 actions, activity), the vendor support CLI, the owner data export, the
 restaurant's own privacy notice link for QR/kiosk diners, plan-lapse
 continuation and notices (GAP-1), the SaaS tax mode (GAP-6, off by default) and
-the public-ordering kill switch.
+the interim public-ordering switch.
 
 ## Documents and versions
 
@@ -424,12 +424,12 @@ Why it exists: before public ordering, QR/kiosk links were signed 24-hour
 bearer links without revocation, unpaid QR orders reached the kitchen, and
 tables were not bound (SEC-7, FIT-11, FOH-13). Public ordering (032/033)
 replaced them with revocable codes and held orders, and keeps this flag as the
-operator kill switch ([public ordering](PUBLIC_ORDERING.md) §8).
+operator kill switch ([public ordering](PUBLIC_ORDERING.md) §8). Production
+keeps it off until public ordering's flag-flip commit (B4) is deployed.
 
-- Values `true`/`false`; unset or empty means `true` in every environment
-  since public ordering's flag flip (B4, a separately revertible commit: until
-  it, unset meant `false` when `APP_ENV=production`); anything else stops the
-  web with `public_ordering_flag_invalid`. `false` is the kill switch.
+- Values `true`/`false`; unset means `false` when `APP_ENV=production` and
+  `true` elsewhere; anything else stops the web with
+  `public_ordering_flag_invalid`.
 - When `false`: every `/api/public/*` request (menu, revision, orders, status,
   cancel) answers `404 public_ordering_disabled` before any code is read or
   any limit is counted (malformed JSON still gets `400 invalid_json`); the

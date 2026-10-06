@@ -141,8 +141,8 @@ payment first). There is no online card payment. `PUBLIC_ORDERING_ENABLED`
 the staff ordering routes answer 404 `public_ordering_disabled` before any
 code or rate limit, staff screens hide the ordering panel, the table QR
 actions and the inbox, and a code shows diners only "Pide en el mostrador"
-([account and legal](ACCOUNT_AND_LEGAL.md)). Unset, it is on in every
-environment (public ordering's flag flip, B4).
+([account and legal](ACCOUNT_AND_LEGAL.md)). Unset, it is still false when
+`APP_ENV=production` and true elsewhere.
 
 **Carts price line by line.** In the POS cart and the QR/kiosk order, each line
 is priced on its own by service's `priceCart()` (`shared/service.ts`; QR/kiosk
