@@ -25,6 +25,7 @@ import {
   LineDiscountRows,
   OrderDiscountRows,
 } from "./discounts/ReceiptAdjustments";
+import { lineLabel } from "./discounts/format";
 
 const reasonKey: Record<string, Key> = {
   settled: "serviceCloseReasonSettled",
@@ -233,6 +234,9 @@ export function OrderDetail({
                       <button
                         type="button"
                         className="text-button"
+                        // Names its line (DSC-R11): every line has one, and
+                        // the main action is also "Descuento".
+                        aria-label={`${t("discountsLineLink")}: ${lineLabel(l, locale)}`}
                         onClick={() => {
                           setDiscountLine(l.id);
                           setDialog("discount");

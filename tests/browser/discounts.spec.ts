@@ -848,16 +848,23 @@ test("discount and refund actions are disabled offline", async ({
   ).toBeEnabled();
   await card.getByRole("button", { name: "Detalle", exact: true }).click();
   const detail = page.getByRole("dialog", { name: /Orden #/ });
-  // The action row's Descuento (the per-line links share the name and hide
-  // offline).
-  const discountAction = detail
-    .getByRole("button", { name: "Descuento", exact: true })
-    .last();
+  // DSC-R11: the per-line link names its line, so the action row's Descuento
+  // is the only button with that exact name; the per-line links hide offline.
+  const discountAction = detail.getByRole("button", {
+    name: "Descuento",
+    exact: true,
+  });
+  const lineLink = detail.getByRole("button", {
+    name: "Descuento: Taco de hongos",
+    exact: true,
+  });
+  await expect(discountAction).toHaveCount(1);
   await expect(discountAction).toBeEnabled();
+  await expect(lineLink).toBeVisible();
+  await expect(lineLink).toHaveText("Descuento");
   await context.setOffline(true);
-  await expect(
-    detail.getByRole("button", { name: "Descuento", exact: true }),
-  ).toHaveCount(1);
+  await expect(lineLink).toHaveCount(0);
+  await expect(discountAction).toHaveCount(1);
   await expect(discountAction).toBeDisabled();
   await expect(discountAction).toHaveAccessibleDescription(
     "Los descuentos requieren conexión.",
