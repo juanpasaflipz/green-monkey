@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inRetentionWindow } from "../server/ops/retention.js";
+import { forbiddenCredentials } from "../server/config-rules.js";
 
 /**
  * CI/CD workflow rules that the local suites cannot exercise end to end.
@@ -392,6 +393,164 @@ describe("migrations, grants and retention run in GitHub Actions as gm_migrator 
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("railway.ts: no preDeploy; the worker declares no MIGRATION_DATABASE_URL, PG_APP_USER, SIGNING_KEYS or JWT_SECRET; the web declares no WORKER_DATABASE_URL, FACTURAPI_*, CREDENTIAL_ENCRYPTION_KEY or CFDI_LIVE_ENABLED; DEMO_TENANT_ID only inside the non-production spread; every registered name is present", () => {
+    // Code only: comments may name what is deliberately absent.
+    const code = read(".railway/railway.ts")
+      .split("\n")
+      .map((l) => l.replace(/\s*\/\/.*$/, ""))
+      .join("\n");
+    const section = (from: string, to: string) => {
+      const start = code.indexOf(from);
+      const end = code.indexOf(to, start + from.length);
+      expect(start, from).toBeGreaterThan(-1);
+      expect(end, to).toBeGreaterThan(start);
+      return code.slice(start, end);
+    };
+    const common = section("const common = {", "};");
+    const web = section('const web = service("web"', "const worker");
+    const worker = section(
+      'const worker = service("worker"',
+      "return project(",
+    );
+    const names = (text: string) =>
+      new Set([...text.matchAll(/\b([A-Z][A-Z0-9_]+):/g)].map((m) => m[1]));
+    const commonNames = names(common);
+    const webNames = new Set([...commonNames, ...names(web)]);
+    const workerNames = new Set([...commonNames, ...names(worker)]);
+    expect(code).not.toMatch(/preDeploy/);
+    expect(web).toContain("...common");
+    expect(worker).toContain("...common");
+    for (const name of [
+      "MIGRATION_DATABASE_URL",
+      "PG_APP_USER",
+      "SIGNING_KEYS",
+      "JWT_SECRET",
+      ...forbiddenCredentials.worker,
+    ])
+      expect(workerNames.has(name), `worker declares ${name}`).toBe(false);
+    for (const name of [
+      "WORKER_DATABASE_URL",
+      "FACTURAPI_API_KEY",
+      "FACTURAPI_TEST_KEY",
+      "CREDENTIAL_ENCRYPTION_KEY",
+      "CFDI_LIVE_ENABLED",
+      ...forbiddenCredentials.web,
+    ])
+      expect(webNames.has(name), `web declares ${name}`).toBe(false);
+    expect([...webNames].filter((n) => n.startsWith("FACTURAPI_"))).toEqual([]);
+    // Never declared anywhere (code constant, development-only, operator-only).
+    for (const name of [
+      "LEGAL_DOCUMENTS",
+      "FACTURAPI_BASE_URL",
+      "SUPPORT_DATABASE_URL",
+      "TRUST_PROXY",
+    ])
+      expect(names(code).has(name), name).toBe(false);
+    // DEMO_TENANT_ID: staging only (access A2, contracts D22).
+    expect(code.match(/DEMO_TENANT_ID/g)).toHaveLength(1);
+    expect(web).toMatch(
+      /\.\.\.\(production \? \{\} : \{ DEMO_TENANT_ID: preserve\(\) \}\)/,
+    );
+    expect(code).toMatch(
+      /const production = ctx\.environment === "production";/,
+    );
+    const registered = {
+      common: [
+        "NODE_ENV",
+        "APP_ENV",
+        "LOG_LEVEL",
+        "APP_URL",
+        "SENTRY_DSN",
+        "ALERT_WEBHOOK_URL",
+        "ALERT_WEBHOOK_KIND",
+        "BILLING_SANDBOX_ENABLED",
+        "BILLING_DATABASE_URL",
+        "SAAS_TAX_MODE",
+        "SAAS_COLLECT_TAX_ID",
+      ],
+      web: [
+        "PROCESS_KIND",
+        "PORT",
+        "DB_POOL_MAX",
+        "DB_STATEMENT_TIMEOUT_MS",
+        "RAILWAY_DEPLOYMENT_DRAINING_SECONDS",
+        "RAILWAY_DEPLOYMENT_OVERLAP_SECONDS",
+        "WORKER_URL",
+        "DATABASE_URL",
+        "PG_APP_USER",
+        "JWT_SECRET",
+        "SIGNING_KEYS",
+        "GOOGLE_CLIENT_ID",
+        "GOOGLE_CLIENT_SECRET",
+        "GOOGLE_REDIRECT_URI",
+        "STRIPE_WEBHOOK_SECRET",
+        // LD-9 (3): access's variables stay declared, or CD stops on a planned deletion.
+        "ACCESS_STEP_UP_SECONDS",
+        "ACCESS_IDLE_LOCK_DEFAULT_SECONDS",
+        "FISCAL_TICKETS_ENABLED",
+        "CFDI_INVOICE_LINK_EXPIRY_HOURS",
+        "LEGAL_ENTITY_NAME",
+        "LEGAL_ENTITY_ADDRESS",
+        "LEGAL_ENTITY_RFC",
+        "LEGAL_JURISDICTION",
+        "LEGAL_PRIVACY_CONTACT_NAME",
+        "LEGAL_PRIVACY_CONTACT_EMAIL",
+        "LEGAL_UNPUBLISHED_SIGNUP",
+        "SUPPORT_EMAIL",
+        "SUPPORT_PHONE",
+        "SUPPORT_WHATSAPP",
+        "SUPPORT_URL",
+        "SUPPORT_HOURS",
+        "SUPPORT_HOURS_EN",
+        "SAAS_TAX_PROFILE_ENABLED",
+        "PUBLIC_ORDERING_ENABLED",
+        "DEMO_TENANT_ID",
+      ],
+      worker: [
+        "PROCESS_KIND",
+        "PORT",
+        "DB_POOL_MAX",
+        "DB_STATEMENT_TIMEOUT_MS",
+        "RAILWAY_DEPLOYMENT_DRAINING_SECONDS",
+        "WORKER_DATABASE_URL",
+        "STRIPE_SECRET_KEY",
+        "STRIPE_EXPECTED_ACCOUNT_ID",
+        "STRIPE_PRICE_PRO_MONTHLY",
+        "STRIPE_PRICE_PRO_ANNUAL",
+        "STRIPE_PORTAL_CONFIG_ID",
+        "STRIPE_TAX_RATE_ID",
+        "FACTURAPI_API_KEY",
+        "FACTURAPI_TEST_KEY",
+        "CREDENTIAL_ENCRYPTION_KEY",
+        "CFDI_LIVE_ENABLED",
+        "CFDI_GLOBAL_GRACE_MINUTES",
+      ],
+    };
+    for (const name of registered.common)
+      expect(commonNames.has(name), `common ${name}`).toBe(true);
+    for (const name of registered.web)
+      expect(names(web).has(name), `web ${name}`).toBe(true);
+    for (const name of registered.worker)
+      expect(names(worker).has(name), `worker ${name}`).toBe(true);
+    expect(worker).toMatch(/DB_STATEMENT_TIMEOUT_MS: "30000"/);
+    // Every name .env.example registers in the Wave 2.0 block is declared for a service.
+    const example = read(".env.example");
+    const block = example.slice(
+      example.indexOf("# ---- Wave 2.0 registered variables"),
+    );
+    const neverRailway = block.indexOf("# -- never Railway variables --");
+    expect(neverRailway).toBeGreaterThan(0);
+    const registeredInExample = [
+      ...block.slice(0, neverRailway).matchAll(/^([A-Z][A-Z0-9_]+)=/gm),
+    ].map((m) => m[1]);
+    expect(registeredInExample.length).toBeGreaterThanOrEqual(25);
+    for (const name of registeredInExample)
+      expect(
+        webNames.has(name) || workerNames.has(name),
+        `.env.example registers ${name}`,
+      ).toBe(true);
   });
 
   it("no workflow or action passes RD_* variables to a railway command (LD-3)", () => {
