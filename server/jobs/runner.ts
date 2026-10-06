@@ -138,6 +138,19 @@ export function createJobRunner(
   // with `active` so concurrent drains never claim the same free slots.
   let reserved = 0;
   const reservedByKind = new Map<string, number>();
+  // When each (tenant, kind) last ran expireLostJobs (PLAT-HR-7), bounded like `seen`.
+  const lastExpiry = new Map<string, number>();
+  const expiryDue = (tenantId: string, kind: string) => {
+    const key = `${tenantId}\u0000${kind}`;
+    const now = Date.now();
+    const last = lastExpiry.get(key);
+    if (last !== undefined && now - last < sweepMs) return false;
+    lastExpiry.delete(key);
+    lastExpiry.set(key, now);
+    if (lastExpiry.size > maxTenants * Math.max(1, getHandlers().size))
+      lastExpiry.delete(lastExpiry.keys().next().value!);
+    return true;
+  };
   let stopping = false;
   let sweepTimer: NodeJS.Timeout | null = null;
 
@@ -265,11 +278,19 @@ export function createJobRunner(
       // Reserve before the await: another tenant's drain computing its free
       // slots meanwhile must see these (PLATFORM-OPS-1).
       reserve(kind, free);
+      // Lost jobs come only from dead processes, and the expiry statement has no
+      // supporting index yet (RUNBOOK "Open follow-ups", OPS-10): run it at most
+      // once per sweepMs per tenant and kind, so a write-triggered drain costs one
+      // statement, not two (PLAT-HR-7). The claim itself still reclaims a lost job
+      // that has attempts left.
+      const expire = expiryDue(tenantId, kind);
       let jobs: ClaimedJob[];
       let expired: ClaimedJob[];
       try {
         ({ jobs, expired } = await tenant(sql, tenantId, async (tx) => ({
-          expired: await expireLostJobs(tx, kind, entry.maxAttempts),
+          expired: expire
+            ? await expireLostJobs(tx, kind, entry.maxAttempts)
+            : [],
           jobs: await claimJobs(
             tx,
             [kind],

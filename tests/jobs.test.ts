@@ -698,6 +698,38 @@ describe("runner limits and liveness (PLATFORM-OPS-1, OPS-3, OPS-5, OPS-6)", () 
     await runner.stop(10);
   });
 
+  it("the lease-expiry statement runs at most once per sweepMs per tenant and kind, not on every drain (PLAT-HR-7)", async () => {
+    vi.useFakeTimers();
+    try {
+      const statements: string[] = [];
+      const registry = new Map<string, RegisteredHandler>([
+        ["opsworker_probe", jobRegistration("opsworker_probe", noopHandler)],
+      ]);
+      const runner = createJobRunner(
+        queueSql({ queues: new Map(), statements }),
+        { handlers: () => registry, sweepMs: 1000 },
+      );
+      const expiries = () =>
+        statements.filter((t) => t.includes("error_code='lease_expired'"))
+          .length;
+      const claims = () =>
+        statements.filter((t) => t.includes("with c as (")).length;
+      await runner.drainTenant("t-1");
+      await runner.drainTenant("t-1");
+      await runner.drainTenant("t-2");
+      expect({ claims: claims(), expiries: expiries() }).toEqual({
+        claims: 3,
+        expiries: 2,
+      });
+      await vi.advanceTimersByTimeAsync(1000);
+      await runner.drainTenant("t-1");
+      expect(expiries(), "due again after sweepMs").toBe(3);
+      await runner.stop(10);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("leases are whole seconds from 10 to 3600, at registration and in ctx.extendLease (before any SQL)", async () => {
     expect(MAX_LEASE_SECONDS).toBe(3600);
     expect(
