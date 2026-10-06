@@ -292,6 +292,14 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
   app.use("/api/auth/account-center", router);
 }
 
+/**
+ * The /api/account-data prefix guard (cfdi.md §6.2, wave2-cross-track C30): server/index.ts
+ * mounts it right after authentication, before any area registers a route, so every path under
+ * the prefix (the export routes below, and any later one such as a CFDI file download) is
+ * owner-only with a recent step-up before a route or limiter runs. The routes repeat the check.
+ */
+export const accountDataGuard: express.RequestHandler = exportGuard();
+
 /** account area authenticated routes; use ctx.route for tenant-scoped handlers. */
 export function register({ app, sql, route }: RouteContext) {
   route("get", "/account/shell", (tx, s) => shellState(tx, s, legal));

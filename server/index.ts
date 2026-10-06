@@ -162,6 +162,8 @@ reportsRoutes.registerPreAuth({ app, sql });
 cfdiRoutes.registerPreAuth({ app, sql });
 accountRoutes.registerPreAuth({ app, sql });
 app.use("/api", authentication(sql));
+// account (031): every /api/account-data/* path is owner-only with a recent step-up (C30).
+app.use("/api/account-data", accountRoutes.accountDataGuard);
 const route = makeRoute(app, sql);
 route("get", "/service/options", (tx, s) => serviceOptions(tx, s));
 route("post", "/orders/:id/service", (tx, s, req) =>

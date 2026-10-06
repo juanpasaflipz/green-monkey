@@ -87,12 +87,10 @@ export async function saveRestaurantPrivacy(
 }
 
 /**
- * The diner-facing privacy URL (tenant-scoped transaction; public ordering, cfdi portal).
- *
- * MERGE NOTE (cfdi 030, LD-16): server/cfdi/portal.ts is not on this branch.
- * At the account merge, the portal's restaurant-privacy anchor returns
- * `await restaurantPrivacyUrl(tx)` inside its tenant transaction, so the
- * self-invoicing page links the restaurant's notice like QR/kiosk do.
+ * The diner-facing privacy URL (tenant-scoped transaction): public ordering's
+ * catalog and the cfdi self-invoicing portal (`portalTicket` in
+ * server/cfdi/portal.ts, inside its tenant transaction) link the restaurant's
+ * own notice with it.
  */
 export async function restaurantPrivacyUrl(tx: Tx): Promise<string | null> {
   const [row] =

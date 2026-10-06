@@ -539,53 +539,62 @@ invitation normally.
   `restaurantPrivacyUrl` and the six `accountGuest*` keys are as account.md
   states them. `AUDIT_GROUPS` already maps `account.` to access (reports,
   L7).
-- **PHASE 2 — cfdi 030 (to apply when the lead absorbs integration/v1 after
-  cfdi lands; this track was finished without cfdi, LD-32 / task phase 1 of
-  2).** Account's cfdi touchpoints (LD-16 missing items, wave2-cross-track
-  C30), each to verify or fill against cfdi's merged code:
-  1. **Privacy anchor:** in `server/cfdi/portal.ts`, fill the anchor
-     `// account (031): privacyUrl = await restaurantPrivacyUrl(tx);` with that
-     call (`server/account-settings.ts`, inside the portal's tenant
-     transaction), so the self-invoicing page links the restaurant's own
-     notice as the QR/kiosk pages do. Keep `restaurantPrivacyUrl(tx:
-     Tx): Promise<string | null>` unchanged (LD-P12).
-  2. **Export denylist:** `cfdi_secrets` and `cfdi_files` are already in
-     `EXPORT_TABLE_DENYLIST` (`shared/account-export.ts`); once 030's tables
-     exist, account-db check 29c must print its with-cfdi branch (today it
-     says "030 not applied") and prove discovery never lists them; add any
-     other cfdi table holding secrets or binaries (a column named
-     `*hash*`, `*secret*`, `*token*` is already dropped).
-  3. **Export guard:** every `/api/account-data/*` route requires
-     `permit(owner)` and `requireRecentAuth` (step-up) before its limiter
-     (R-20); confirm no cfdi file route was added under that prefix without
-     the same `exportGuard`.
-  4. **Shared files, in merge order:** `scripts/grants.sql` `-- 030 cfdi`
-     block before `-- 031 account`; `src/labels.ts` cfdi block before
+- **Merge of integration/v1 with cfdi 030 (phase 2 of the account finish,
+  done; wave2-cross-track C30, LD-16).** Account's cfdi touchpoints:
+  1. **Privacy anchor:** `portalTicket` (`server/cfdi/portal.ts`) returns
+     `privacyUrl: await restaurantPrivacyUrl(tx)` inside its tenant
+     transaction, so the self-invoicing page links the restaurant's own notice
+     as the QR/kiosk pages do, and shows cfdi's fallback line while none is
+     set. `restaurantPrivacyUrl(tx: Tx): Promise<string | null>` is unchanged
+     (LD-P12). cfdi-db check 2 covers both cases.
+  2. **Export denylist:** `cfdi_secrets` (ciphertext) and `cfdi_files`
+     (XML/PDF binaries, downloadable from the CFDI register) are in
+     `EXPORT_TABLE_DENYLIST`. account-db check 29c now runs on the real 030
+     tables: every denylisted table exists, `gm_app` reads `cfdi_files` but
+     never `cfdi_secrets`, discovery lists neither, and the rest of the CFDI
+     register (settings, organizations, CSD uploads, documents, claims,
+     cancellations, events, global periods) stays exportable without its
+     sealed-secret references (`test_secret_id`, `live_secret_id`,
+     `secret_id`, dropped by the column rule). No other cfdi table holds a
+     secret or a binary; `cfdi_platform` has no `tenant_id`.
+  3. **Export guard:** `server/index.ts` mounts `accountDataGuard`
+     (`permit(owner)` + `requireRecentAuth`, the `?tenant` check) on the
+     whole `/api/account-data` prefix right after authentication, before any
+     area registers a route, so a path added later under the prefix (a CFDI
+     file download, say) is guarded too; the export routes repeat the check.
+     cfdi registers no route under the prefix. account-http check C30 proves
+     a cashier gets `403 forbidden` and a stale terminal owner `403
+     step_up_required` on routed and unrouted paths before any limiter, and
+     that the CSV route answers `404 export_table_unknown` for `cfdi_files`
+     and `cfdi_secrets`.
+  4. **Shared files, in merge order:** `scripts/grants.sql` `-- 029 reports`
+     → `-- 030 cfdi` → `-- 031 account`; `src/labels.ts` cfdi block before
      account's; `test:db:qualification` `… reports → cfdi → account →
-     support`; Settings `… FiscalSettings → CfdiSettings →
-     MoneyControlsSettings → AccountPrivacy …`; `qualification.yml` union
-     (cfdi's fake and `FACTURAPI_*` on the worker line, account's legal set
-     and `LEGAL_UNPUBLISHED_SIGNUP`, the load smoke's `LOAD_SERVER_LOG`).
-     Code files both tracks edit (wave2-cross-track C11-C13):
-     `src/main.tsx` branch order `/legal` → `/(f|factura)` → `/(qr|kiosk)` →
-     landing → `PlatformGate`, and cfdi's service-worker exclusion
-     (`/^\/(f|factura|qr|kiosk)(\/|$)/`) never includes `/legal`, because the
-     offline legal page is served from the worker's shell (C12);
-     `src/App.tsx` union (fiscal, then cfdi's prefetch, hydrate, kitchen skip
-     and footer registration, then account's help buttons and `PlanNotice`,
-     C11); `server/config-rules.ts` web checks `fiscalWebConfig` → cfdi's →
-     `accountWebConfig`, with `accountWorkerConfig` kept on the worker side;
-     `server/index.ts` anchored by route string (cfdi's async `/capabilities`
-     keeps reports' `printer`; account's `autoAssignFreeSlots` and
-     `requireDrawerOpenAllowed` calls in `/cash/open` and the
-     `/ordering-links` gate stay, C13).
-  5. **Legal texts:** privacy §5/§6 and DPA §2/§6/§11 already name Facturapi
-     (CFDI stamping through a PAC and CFDI email), CFDI receptors' data and
-     the CSD (LD-32 LEGAL-2/UX-5). Check them against the providers cfdi's
-     `server/cfdi/config.ts` actually configures and extend
-     `tests/legal.test.ts` ("processor lists name every external provider")
-     to read that list; a new provider is a material DPA change (15 days'
-     notice, `docs` "How to publish a new version").
+     support`; `server/config-rules.ts` web `fiscalWebConfig` →
+     `cfdiWebConfig` → `accountWebConfig`, worker `cfdiWorkerConfig` →
+     `accountWorkerConfig`; Settings `RestaurantSettings → FiscalSettings →
+     CfdiSettings → MoneyControlsSettings → AccountPrivacy →
+     (PublicOrderingSettings, public's) → FreeSelection → DeviceManagement →
+     PlanSettings` (LD-18 LD-P7); `src/main.tsx` `/legal` → `/(f|factura)` →
+     `/(qr|kiosk)` → landing → `PlatformGate`, and cfdi's service-worker
+     exclusion (`/^\/(f|factura|qr|kiosk)(\/|$)/`) leaves `/legal` on the
+     worker's shell (C12); `src/App.tsx` and `server/index.ts` merged
+     without conflict (cfdi's async `/capabilities` keeps reports' `printer`;
+     `/cash/open` keeps `autoAssignFreeSlots` and `requireDrawerOpenAllowed`;
+     the `/ordering-links` gate stays); `qualification.yml` keeps the
+     fictional legal set on the browser step next to cfdi's Facturapi fake
+     and worker keys. ARCHITECTURE row 29 is cfdi's, row 30 account's.
+     `tests/browser/offline.spec.ts` keeps integration's service-worker
+     update test (5e3bd8e, the root-cause fix, LD-38), which supersedes this
+     track's earlier route workaround. No public-owned file changed.
+  5. **Legal texts:** privacy §5/§6 and DPA §2/§6/§11 name Facturapi (CFDI
+     stamping through a PAC and CFDI email), CFDI receptors' data and the
+     CSD. `tests/legal.test.ts` now reads the providers
+     `server/cfdi/config.ts` configures (every `<PROVIDER>_API_KEY`,
+     `_TEST_KEY` or `_BASE_URL` variable) and fails until each one is named
+     in both processor lists in both languages, and checks that the
+     official endpoint is Facturapi's domain; a new provider is a material
+     DPA change (15 days' notice, "How to publish a new version").
 - **Lock scanner units.** The account-center routes pass their handlers
   inline (`router.post(path, limiter, (req, res, next) => answer(…))`), so the
   scanner checks each request as its own unit; the earlier

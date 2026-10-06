@@ -696,7 +696,7 @@ try {
     );
   });
 
-  await test("2. portal: the code resolves the tenant only through the lookup policy; tenants stay apart; request and download tokens are purpose-bound and expire", async () => {
+  await test("2. portal: the code resolves the tenant only through the lookup policy; tenants stay apart; request and download tokens are purpose-bound and expire; the restaurant's privacy notice is linked (account 031)", async () => {
     const tk = await makeTicket(A, {
       groups: [{ category: "iva16", gross: 23200 }],
     });
@@ -724,6 +724,20 @@ try {
     assert.equal(view.total, 23200);
     assert.equal(view.folio, tk.folio);
     assert.equal("documents" in view, false);
+    // account (031): the portal links the restaurant's own privacy notice (restaurantPrivacyUrl),
+    // and none until the owner sets one.
+    assert.equal(view.privacyUrl, null);
+    await tenant(
+      app,
+      A.tenantId,
+      (tx) =>
+        tx`insert into restaurant_account_settings (tenant_id, privacy_notice_url)
+          values (${A.tenantId}, 'https://taqueria.example/privacidad')`,
+    );
+    assert.equal(
+      (await portal.portalTicket(app, tk.code)).privacyUrl,
+      "https://taqueria.example/privacidad",
+    );
     const submitted = await portal.portalSubmit(app, tk.code, {
       operationId: op(),
       receptor: { ...MORAL, email: "cliente@example.com" },

@@ -324,6 +324,43 @@ try {
     },
   );
   await check(
+    "C30 every /api/account-data/* path, routed or not (a CFDI file path included), refuses a cashier (403 forbidden) and a stale terminal owner (403 step_up_required) before any route or limiter; the CSV route never serves cfdi_files or cfdi_secrets",
+    async () => {
+      const paths = [
+        "/api/account-data/tables",
+        `/api/account-data/export.json?tenant=${TENANT}`,
+        `/api/account-data/export/csv/cfdi_files?tenant=${TENANT}`,
+        `/api/account-data/cfdi/files/${randomUUID()}/xml?tenant=${TENANT}`,
+      ];
+      const cashier = await paired(CASHIER, "123456");
+      const stale = await paired(OWNER, "demo-green-monkey");
+      await admin`update sessions set authenticated_at=now()-interval '2 hours' where id=${stale.session.id}`;
+      for (const path of paths) {
+        for (const [who, error] of [
+          [cashier, "forbidden"],
+          [stale, "step_up_required"],
+        ] as const) {
+          const r = await who.browser.request("GET", path);
+          assert.equal(r.status, 403, `${error} ${path}`);
+          assert.equal(r.json.error, error, path);
+          assert.equal(r.headers.get("ratelimit-limit"), null, path);
+        }
+      }
+      await admin`update sessions set authenticated_at=now() where id=${stale.session.id}`;
+      for (const table of ["cfdi_files", "cfdi_secrets"]) {
+        const r = await stale.browser.request(
+          "GET",
+          `/api/account-data/export/csv/${table}?tenant=${TENANT}`,
+        );
+        assert.equal(r.status, 404, table);
+        assert.equal(r.json.error, "export_table_unknown", table);
+      }
+      const unrouted = await stale.browser.request("GET", paths[3]);
+      assert.equal(unrouted.status, 404);
+      assert.equal(unrouted.json.error, "not_found");
+    },
+  );
+  await check(
     "ACC-9 once the hourly export budget is spent, the /account-data/tables pre-check refuses (429 rate_limited) before the client starts a download",
     async () => {
       const device = await paired(OWNER, "demo-green-monkey");

@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { FACTURAPI_BASE_URL } from "../server/cfdi/facturapi";
 import {
   billingConsentEvidence,
   legalConfig,
@@ -460,6 +462,42 @@ describe("legal documents", () => {
     expect(text("privacy", "conservacion", "es")).toContain("1,900 días");
     expect(text("privacy", "conservacion", "es")).toContain(
       "artículo 49 del Código de Comercio",
+    );
+  });
+
+  it("the processor lists name every provider server/cfdi/config.ts configures (account 031 phase 2: Facturapi)", () => {
+    // Each external CFDI provider the worker can be configured for appears in config.ts as a
+    // <PROVIDER>_API_KEY / _TEST_KEY / _BASE_URL variable. A new one is a material DPA change
+    // (15 days' notice, docs/ACCOUNT_AND_LEGAL.md "How to publish a new version"): name it here
+    // and in both processor lists before the code ships.
+    const DISPLAY: Record<string, string> = { FACTURAPI: "Facturapi" };
+    const source = readFileSync("server/cfdi/config.ts", "utf8");
+    const configured = new Set(
+      [
+        ...source.matchAll(/"([A-Z][A-Z0-9]*)_(?:API_KEY|TEST_KEY|BASE_URL)"/g),
+      ].map((m) => m[1]),
+    );
+    expect([...configured]).toContain("FACTURAPI");
+    const text = (doc: LegalDocumentKey, id: string, locale: "es" | "en") =>
+      LEGAL_CONTENT[doc][locale].sections
+        .find((x) => x.id === id)!
+        .paragraphs.join(" ");
+    for (const variable of configured) {
+      const name = DISPLAY[variable];
+      expect(
+        name,
+        `CFDI provider ${variable} has no processor name`,
+      ).toBeTruthy();
+      for (const locale of ["es", "en"] as const)
+        for (const [doc, id] of [
+          ["dpa", "subencargados"],
+          ["privacy", "encargados-transferencias"],
+        ] as const)
+          expect(text(doc, id, locale), `${doc} ${locale}`).toContain(name);
+    }
+    // The official endpoint belongs to the named provider.
+    expect(new URL(FACTURAPI_BASE_URL).hostname).toMatch(
+      /(^|\.)facturapi\.io$/,
     );
   });
 

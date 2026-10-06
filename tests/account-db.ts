@@ -74,6 +74,7 @@ import {
 } from "../server/access-staff.js";
 import { saasTaxConfig } from "../server/saas-tax.js";
 import { LEGAL_DOCUMENTS } from "../shared/legal.js";
+import { EXPORT_TABLE_DENYLIST } from "../shared/account-export.js";
 import type { Session } from "../shared/domain.js";
 
 const { runtime, migration } = isolatedTarget(process.env);
@@ -1834,16 +1835,52 @@ try {
     await admin`update sessions set authenticated_at=now()-interval '2 hours' where id=${ownerA.id}`;
     requireExportAccess(await sessionFor(await entry(a, A.tenantId)));
   });
-  await test("29c export: discovery never lists cfdi_secrets or cfdi_files even when gm_app can read them", async () => {
+  await test("29c export: discovery never lists cfdi_secrets or cfdi_files even when gm_app can read them; every denylisted table exists (030 applied)", async () => {
+    // Every denylist entry names a real table, so a rename never silently re-exports it; with
+    // 030 merged this includes cfdi_secrets and cfdi_files (account 031 phase 2).
+    for (const name of EXPORT_TABLE_DENYLIST) {
+      const [row] =
+        await admin`select to_regclass(${"public." + name}) is not null as present`;
+      assert.ok(row.present, `${name} exists`);
+    }
+    const [grants] = await inTenant(
+      A.tenantId,
+      (tx) =>
+        tx`select has_table_privilege('cfdi_files', 'select') as files,
+          has_table_privilege('cfdi_secrets', 'select') as secrets`,
+    );
+    // The runtime role reads cfdi_files (the register's downloads) and never cfdi_secrets.
+    assert.deepEqual(
+      { files: grants.files, secrets: grants.secrets },
+      { files: true, secrets: false },
+    );
     const tables = await inTenant(A.tenantId, (tx) => exportTables(tx));
     const names = tables.map((t) => t.name);
     assert.ok(!names.includes("cfdi_secrets") && !names.includes("cfdi_files"));
-    const [present] =
-      await admin`select to_regclass('public.cfdi_files') is not null as files`;
-    if (!present.files)
-      console.log(
-        "  (030 not applied: cfdi tables absent, denylist checked by unit test)",
-      );
+    for (const name of EXPORT_TABLE_DENYLIST)
+      assert.ok(!names.includes(name), name);
+    // The other cfdi tables are the restaurant's own register and stay exportable, minus the
+    // sealed-secret references (test_secret_id, secret_id) the column rule drops.
+    const cfdi = new Map(
+      tables.filter((t) => t.name.startsWith("cfdi_")).map((t) => [t.name, t]),
+    );
+    for (const name of [
+      "cfdi_settings",
+      "cfdi_organizations",
+      "cfdi_csd_uploads",
+      "cfdi_documents",
+      "cfdi_document_tickets",
+      "cfdi_cancellations",
+      "cfdi_events",
+      "cfdi_global_periods",
+    ])
+      assert.ok(cfdi.has(name), `${name} exported`);
+    assert.ok(
+      !cfdi.get("cfdi_organizations")!.columns.some((c) => /secret/.test(c)),
+    );
+    assert.ok(
+      !cfdi.get("cfdi_csd_uploads")!.columns.some((c) => /secret/.test(c)),
+    );
   });
   await test("29e export: while an export runs, exportBusy is true (the /account-data/tables pre-check refuses then) and a second one is export_busy; afterwards exports run again (ACC-9)", async () => {
     /** A response whose client reads only when released (backpressure). */
