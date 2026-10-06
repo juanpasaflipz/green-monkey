@@ -377,118 +377,116 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
   });
   if (!plan) return { status: "done" };
 
-  {
-    // 4-5. Due periods and late sweeps (oldest first), plus a forced period ("Emitir ahora").
-    const keys = [...plan.keys];
-    if (p.force && p.periodKey && !keys.includes(p.periodKey))
-      keys.push(p.periodKey);
-    for (const key of keys) {
-      await buildPeriod(rt, ctx, key, plan, {
-        force: !!p.force && p.periodKey === key,
-      });
-      await ctx.extendLease(300).catch(() => undefined);
-    }
-
-    // 5c. Recovery sweep (CFDI-R2): documents whose job is gone, at most once a day each.
-    await ctx.tenant(async (tx) => {
-      const tag = "s" + plan.today.replaceAll("-", "");
-      for (const id of await recoveryCandidates(tx)) {
-        const doc = await loadDocument(tx, id);
-        const action = doc ? await recoveryAction(tx, doc) : null;
-        if (!doc || !action) continue;
-        if (
-          await enqueueRecovery(tx, tenantId, doc, action, {
-            tag,
-            unlessLive: true,
-            worker: true,
-          })
-        )
-          await event(tx, ctx, doc.id, "recovery_queued", {
-            action: action.kind,
-            by: "sweep",
-          });
-      }
+  // 4-5. Due periods and late sweeps (oldest first), plus a forced period ("Emitir ahora").
+  const keys = [...plan.keys];
+  if (p.force && p.periodKey && !keys.includes(p.periodKey))
+    keys.push(p.periodKey);
+  for (const key of keys) {
+    await buildPeriod(rt, ctx, key, plan, {
+      force: !!p.force && p.periodKey === key,
     });
+    await ctx.extendLease(300).catch(() => undefined);
+  }
 
-    // 5b-8. Refund sweep, alerts and the next tick. A refund whose credit note failed is not
-    // re-created every day (CFDI-R7): only Reintentar (force) issues a new one.
-    const alerts = await ctx.tenant(async (tx) => {
-      const refunds = await tx`
-        select distinct a.refund_id from fiscal_adjustments a
-        join fiscal_tickets t on t.tenant_id = a.tenant_id and t.order_id = a.order_id
-        join cfdi_document_tickets c on c.tenant_id = t.tenant_id and c.ticket_id = t.id
-          and c.mode = ${plan.mode} and c.state = 'active'
-        join cfdi_documents d on d.tenant_id = c.tenant_id and d.id = c.document_id and d.status = 'valid'
-        where a.business_date >= (${plan.today}::date - 62)
-          and not (a.refund_id = any(d.netted_refund_ids))
-          and not exists (select 1 from cfdi_documents e where e.tenant_id = a.tenant_id and e.kind = 'egreso'
-            and e.refund_id = a.refund_id and e.mode = ${plan.mode})
-        limit 200`;
-      for (const r of refunds)
-        await cfdiEnqueue(tx, tenantId, {
-          kind: "cfdi_refund",
-          dedupeKey: dedupe.refundSweep(r.refund_id, plan.today),
-          payload: { refundId: r.refund_id },
+  // 5c. Recovery sweep (CFDI-R2): documents whose job is gone, at most once a day each.
+  await ctx.tenant(async (tx) => {
+    const tag = "s" + plan.today.replaceAll("-", "");
+    for (const id of await recoveryCandidates(tx)) {
+      const doc = await loadDocument(tx, id);
+      const action = doc ? await recoveryAction(tx, doc) : null;
+      if (!doc || !action) continue;
+      if (
+        await enqueueRecovery(tx, tenantId, doc, action, {
+          tag,
+          unlessLive: true,
+          worker: true,
+        })
+      )
+        await event(tx, ctx, doc.id, "recovery_queued", {
+          action: action.kind,
+          by: "sweep",
         });
-      const overdue = await tx`
-        update cfdi_global_periods g set alerted_at = now()
-        where g.mode = ${plan.mode} and g.alerted_at is null and g.due_at < now()
-          and ((g.status = 'open' and exists (select 1 from fiscal_tickets t
-                 where t.business_date between g.date_from and g.date_to and t.business_date >= ${plan.from}::date
-                   and not exists (select 1 from cfdi_document_tickets c where c.tenant_id = t.tenant_id
-                     and c.ticket_id = t.id and c.mode = g.mode and c.state <> 'released')))
-            or exists (select 1 from cfdi_documents d where d.tenant_id = g.tenant_id and d.mode = g.mode
-              and d.kind = 'global' and d.period_key = g.period_key
-              and d.status in ('failed','queued','stamping','pending')))
-        returning g.period_key`;
-      const org = await loadOrganization(tx);
-      const [next] = await tx`
-        select min(closes_at) as at from cfdi_global_periods
-        where mode = ${plan.mode} and status = 'open' and closes_at > ${new Date(now.getTime() - grace)}`;
-      const closeAt = next?.at
-        ? new Date(new Date(next.at).getTime() + grace)
-        : null;
-      const fallback = nextSixHours(now);
-      let runAt = closeAt && closeAt < fallback ? closeAt : fallback;
-      if (runAt.getTime() < now.getTime() + MINUTE)
-        runAt = new Date(now.getTime() + MINUTE);
+    }
+  });
+
+  // 5b-8. Refund sweep, alerts and the next tick. A refund whose credit note failed is not
+  // re-created every day (CFDI-R7): only Reintentar (force) issues a new one.
+  const alerts = await ctx.tenant(async (tx) => {
+    const refunds = await tx`
+      select distinct a.refund_id from fiscal_adjustments a
+      join fiscal_tickets t on t.tenant_id = a.tenant_id and t.order_id = a.order_id
+      join cfdi_document_tickets c on c.tenant_id = t.tenant_id and c.ticket_id = t.id
+        and c.mode = ${plan.mode} and c.state = 'active'
+      join cfdi_documents d on d.tenant_id = c.tenant_id and d.id = c.document_id and d.status = 'valid'
+      where a.business_date >= (${plan.today}::date - 62)
+        and not (a.refund_id = any(d.netted_refund_ids))
+        and not exists (select 1 from cfdi_documents e where e.tenant_id = a.tenant_id and e.kind = 'egreso'
+          and e.refund_id = a.refund_id and e.mode = ${plan.mode})
+      limit 200`;
+    for (const r of refunds)
+      await cfdiEnqueue(tx, tenantId, {
+        kind: "cfdi_refund",
+        dedupeKey: dedupe.refundSweep(r.refund_id, plan.today),
+        payload: { refundId: r.refund_id },
+      });
+    const overdue = await tx`
+      update cfdi_global_periods g set alerted_at = now()
+      where g.mode = ${plan.mode} and g.alerted_at is null and g.due_at < now()
+        and ((g.status = 'open' and exists (select 1 from fiscal_tickets t
+               where t.business_date between g.date_from and g.date_to and t.business_date >= ${plan.from}::date
+                 and not exists (select 1 from cfdi_document_tickets c where c.tenant_id = t.tenant_id
+                   and c.ticket_id = t.id and c.mode = g.mode and c.state <> 'released')))
+          or exists (select 1 from cfdi_documents d where d.tenant_id = g.tenant_id and d.mode = g.mode
+            and d.kind = 'global' and d.period_key = g.period_key
+            and d.status in ('failed','queued','stamping','pending')))
+      returning g.period_key`;
+    const org = await loadOrganization(tx);
+    const [next] = await tx`
+      select min(closes_at) as at from cfdi_global_periods
+      where mode = ${plan.mode} and status = 'open' and closes_at > ${new Date(now.getTime() - grace)}`;
+    const closeAt = next?.at
+      ? new Date(new Date(next.at).getTime() + grace)
+      : null;
+    const fallback = nextSixHours(now);
+    let runAt = closeAt && closeAt < fallback ? closeAt : fallback;
+    if (runAt.getTime() < now.getTime() + MINUTE)
+      runAt = new Date(now.getTime() + MINUTE);
+    await cfdiEnqueue(tx, tenantId, {
+      kind: "cfdi_global",
+      dedupeKey: dedupe.tick(runAt),
+      payload: {},
+      runAt,
+    });
+    // That key may belong to a tick that already ran (one run ahead of its time); the chain
+    // still keeps one live tick.
+    if (!(await liveJob(tx, "cfdi_global", {}, { exceptId: ctx.job.id })))
       await cfdiEnqueue(tx, tenantId, {
         kind: "cfdi_global",
-        dedupeKey: dedupe.tick(runAt),
+        dedupeKey: `${dedupe.tick(runAt)}:${ctx.job.id.slice(0, 8)}`,
         payload: {},
         runAt,
       });
-      // That key may belong to a tick that already ran (one run ahead of its time); the chain
-      // still keeps one live tick.
-      if (!(await liveJob(tx, "cfdi_global", {}, { exceptId: ctx.job.id })))
-        await cfdiEnqueue(tx, tenantId, {
-          kind: "cfdi_global",
-          dedupeKey: `${dedupe.tick(runAt)}:${ctx.job.id.slice(0, 8)}`,
-          payload: {},
-          runAt,
-        });
-      return {
-        overdue: overdue.map((r) => r.period_key as string),
-        csdSoon:
-          org?.csdStatus === "valid" &&
-          !!org.csdValidUntil &&
-          Date.parse(org.csdValidUntil) < Date.now() + 30 * 24 * HOUR,
-      };
+    return {
+      overdue: overdue.map((r) => r.period_key as string),
+      csdSoon:
+        org?.csdStatus === "valid" &&
+        !!org.csdValidUntil &&
+        Date.parse(org.csdValidUntil) < Date.now() + 30 * 24 * HOUR,
+    };
+  });
+  for (const key of alerts.overdue)
+    raise(rt, {
+      key: `cfdi_global_overdue:${tenantTag(tenantId)}:${plan.mode}:${key}`,
+      severity: "warning",
+      title: "CFDI global overdue",
+      body: `tenant ${tenantTag(tenantId)} period ${key}`,
     });
-    for (const key of alerts.overdue)
-      raise(rt, {
-        key: `cfdi_global_overdue:${tenantTag(tenantId)}:${plan.mode}:${key}`,
-        severity: "warning",
-        title: "CFDI global overdue",
-        body: `tenant ${tenantTag(tenantId)} period ${key}`,
-      });
-    if (alerts.csdSoon)
-      raise(rt, {
-        key: `cfdi_csd_expiring:${tenantTag(tenantId)}`,
-        severity: "info",
-        title: "CFDI certificate expires soon",
-        body: `tenant ${tenantTag(tenantId)} days<30`,
-      });
-    return { status: "done" };
-  }
+  if (alerts.csdSoon)
+    raise(rt, {
+      key: `cfdi_csd_expiring:${tenantTag(tenantId)}`,
+      severity: "info",
+      title: "CFDI certificate expires soon",
+      body: `tenant ${tenantTag(tenantId)} days<30`,
+    });
+  return { status: "done" };
 }
