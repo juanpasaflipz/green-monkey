@@ -256,14 +256,16 @@ export function PublicOrderInbox({
         <h2 id="public-inbox-title">
           {t("publicInboxTitle")} ({holds.length})
         </h2>
-        {data && (
-          <span
-            className={"public-pill" + (data.acceptingNow ? " open" : "")}
-            aria-live="polite"
-          >
-            {status}
-          </span>
-        )}
+        {/* Live regions stay mounted so their first text is announced. */}
+        <span aria-live="polite">
+          {data && (
+            <span
+              className={"public-pill" + (data.acceptingNow ? " open" : "")}
+            >
+              {status}
+            </span>
+          )}
+        </span>
         {data && online && (
           <Button
             disabled={pauseBusy}
@@ -274,11 +276,9 @@ export function PublicOrderInbox({
         )}
       </header>
       {!online && <p className="warning-panel">{t("publicInboxOffline")}</p>}
-      {notice && (
-        <p className="public-notice" aria-live="polite">
-          {notice}
-        </p>
-      )}
+      <p className="public-notice" aria-live="polite">
+        {notice}
+      </p>
       {data && data.recentlyExpired > 0 && (
         <p className="muted">
           {t("publicInboxExpired", { n: data.recentlyExpired })}

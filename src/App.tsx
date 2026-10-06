@@ -757,13 +757,11 @@ export default function App() {
           onOpenSync={() => setView("sync")}
           onOpenTickets={() => setTicketsOpen(true)}
         />
-        {inbox.pending > 0 && view !== "orders" && (
-          <PublicInboxBanner
-            count={inbox.pending}
-            locale={locale}
-            onView={() => setView("orders")}
-          />
-        )}
+        <PublicInboxBanner
+          count={view === "orders" ? 0 : inbox.pending}
+          locale={locale}
+          onView={() => setView("orders")}
+        />
         <UpdatePrompt locale={locale} session={session} />
         {expiring && (
           <div role="status" className="expiry-banner">

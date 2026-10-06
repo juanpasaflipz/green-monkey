@@ -364,11 +364,10 @@ export function PublicOrderingSettings({
           </p>
         </>
       )}
-      {notice && (
-        <p className="public-notice" aria-live="polite">
-          {notice}
-        </p>
-      )}
+      {/* Mounted while empty, so its first notice is announced. */}
+      <p className="public-notice" aria-live="polite">
+        {notice}
+      </p>
       {error && (
         <p className="error" role="alert">
           {error}

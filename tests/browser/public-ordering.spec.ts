@@ -333,6 +333,13 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     const banner = page.locator(".public-banner");
     await expect(banner).toContainText(/pedidos? en línea por confirmar/);
     await banner.getByRole("button", { name: "Ver", exact: true }).click();
+    // LD-P8: the live regions stay mounted while empty, so their next text is
+    // announced (the banner's region in Órdenes, the inbox notice).
+    await expect(
+      page.locator('.public-banner-live[aria-live="polite"]'),
+    ).toBeEmpty();
+    const notice = inbox(page).locator('.public-notice[aria-live="polite"]');
+    await expect(notice).toBeEmpty();
     const card = holdCard(page, label);
     await expect(card).toContainText(mesa.name);
     await expect(card).toContainText(`QR ${f.id}`);
@@ -345,6 +352,7 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
       .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
       .click();
     await expect(inbox(page)).toContainText(`${label} enviado a cocina.`);
+    await expect(notice).toHaveText(`${label} enviado a cocina.`);
     const order = await acceptedOrder(page, `QR ${f.id}`);
     expect(order).toBeTruthy();
     f.orders.push(order!.id);

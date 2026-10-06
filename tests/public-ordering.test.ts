@@ -29,6 +29,7 @@ import {
 } from "../server/compat/public-account";
 import { parseDinerLocation } from "../src/features/public/dinerRoute";
 import { HoldCard } from "../src/features/public/HoldCard";
+import { PublicInboxBanner } from "../src/features/public/PublicInboxBanner";
 import { moneyFormatter as menuMoney } from "../src/features/menu/format";
 
 // Receipt.tsx (service's staff money formatter) imports the offline store.
@@ -378,6 +379,26 @@ describe("public ordering tokens and schemas (032)", () => {
       expect(markup).toContain("<select");
       expect(markup).toContain("Cuenta #142");
     }
+  });
+
+  it("16. the shell banner's live region is mounted while empty (LD-P8)", () => {
+    const banner = (count: number) =>
+      renderToStaticMarkup(
+        createElement(PublicInboxBanner, {
+          count,
+          locale: "es",
+          onView: () => {},
+        }),
+      );
+    // Text inserted together with its live region is not announced, so the
+    // region is there, empty, before the first pending order arrives.
+    expect(banner(0)).toBe(
+      '<div class="public-banner-live" aria-live="polite"></div>',
+    );
+    const one = banner(1);
+    expect(one).toMatch(/^<div class="public-banner-live" aria-live="polite">/);
+    expect(one).toContain("1 pedido en línea por confirmar");
+    expect(one).not.toContain('role="status"');
   });
 
   it("14. every live-hold query bounds created_at to the 2-hour hold window", () => {
