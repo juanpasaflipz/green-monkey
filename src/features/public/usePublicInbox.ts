@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import type { Session } from "../../../shared/domain";
 import type { InboxSummary } from "../../../shared/public-ordering";
 import { api } from "../../api";
@@ -25,6 +25,15 @@ const subscribe = (l: () => void) => {
   return () => listeners.delete(l);
 };
 const snapshot = () => state;
+
+/**
+ * The inbox read "not available" (the kill switch): the badge and the banner
+ * go at once; the summary poll keeps its idle pace and brings them back when
+ * ordering returns (PUBLIC-OPS-1).
+ */
+export function setPublicInboxUnavailable() {
+  if (state.available || state.active || state.pending) emit(EMPTY);
+}
 
 /** The inbox's own reading wins between summary polls. */
 export function setPublicInboxPending(pending: number, active?: boolean) {
@@ -63,27 +72,26 @@ const QUIET = new Set([
 
 /**
  * GET /api/ordering/inbox/summary for operators every 20 s (5 min while no
- * link is active), only while visible and online; it stops when public
- * ordering is not available on this server and when the session ends.
+ * link is active), only while visible and online. "Not available" (the kill
+ * switch, a Free plan) never stops it for good: it keeps the 5-minute idle
+ * pace, so a terminal follows the switch back on without a reload
+ * (PUBLIC-OPS-1). The session answers in QUIET wait silently for the next
+ * session.
  */
 export function usePublicInbox(
   session: Session | null,
   online: boolean,
 ): InboxSummary {
   const operator = !!session && OPERATORS.includes(session.role);
-  const [stopped, setStopped] = useState(false);
   const scope = session ? session.tenantId + ":" + session.id : "";
   useEffect(() => {
     emit(EMPTY);
-    setStopped(false);
   }, [scope]);
   const current = useSyncExternalStore(subscribe, snapshot, () => EMPTY);
   const poll = usePoll(
     async () => {
       try {
-        const next = await api<InboxSummary>("/ordering/inbox/summary");
-        emit(next);
-        if (!next.available) setStopped(true);
+        emit(await api<InboxSummary>("/ordering/inbox/summary"));
       } catch (e) {
         if (QUIET.has((e as Error).message)) return;
         throw e;
@@ -92,7 +100,7 @@ export function usePublicInbox(
     {
       intervalMs: current.active || current.pending > 0 ? 20_000 : 300_000,
       maxBackoffMs: 300_000,
-      enabled: operator && online && !stopped,
+      enabled: operator && online,
     },
     [scope],
   );

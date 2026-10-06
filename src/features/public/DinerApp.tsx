@@ -136,11 +136,18 @@ export function DinerApp({
   const viewRef = useRef(view);
   viewRef.current = view;
 
+  const noticeRef = useRef(notice);
+  noticeRef.current = notice;
+
   /** Request outcomes drive the kiosk's offline overlay (never navigator.onLine). */
   const outcome = (e?: unknown) => {
     if (e === undefined) {
       failures.current = 0;
       setOffline(false);
+      // "Not available" (the kill switch, a Pro lapse) is recoverable: any
+      // successful call means ordering is back. "invalid" stays: a revoked
+      // or replaced code never returns (PUBLIC-UX-1).
+      setNotice((n) => (n === "unavailable" ? null : n));
       return;
     }
     if (isTransient(e)) {
@@ -183,6 +190,17 @@ export function DinerApp({
     );
     return () => clearTimeout(timer);
   }, [kiosk, menu, loadFailures]);
+  // A kiosk that booted while ordering was not available (the kill switch, a
+  // Pro lapse) has no menu and so no revision poll: it keeps asking for the
+  // menu until ordering is back (PUBLIC-UX-1).
+  useEffect(() => {
+    if (!kiosk || menu || notice !== "unavailable") return;
+    const timer = setInterval(
+      () => void loadMenu().catch(() => {}),
+      KIOSK_LOAD_RETRY_MS,
+    );
+    return () => clearInterval(timer);
+  }, [kiosk, menu, notice]);
 
   // MENU-R1: polls are spread, skipped while hidden or off the menu, and the
   // revision call also refreshes whether ordering is open.
@@ -193,8 +211,12 @@ export function DinerApp({
       revision: async () => {
         try {
           const r = await dinerApi.revision(token);
+          // Back from "not available": the notice clears and the catalog is
+          // fetched again, whatever the revision says (PUBLIC-UX-1).
+          const recovered = noticeRef.current === "unavailable";
           outcome();
           setOrdering(r.ordering);
+          if (recovered) window.dispatchEvent(new Event(MENU_REFRESH_EVENT));
           return r.revision;
         } catch (e) {
           outcome(e);

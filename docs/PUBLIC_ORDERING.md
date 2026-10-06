@@ -191,6 +191,13 @@ is closed.
     es K-14. …"; the code itself is a plain heading.
   - If the first menu load fails (the tablet powered on before the network),
     the kiosk retries every 20 s on its own.
+- **"Not available" recovers on its own** (PUBLIC-UX-1). The kill switch or a
+  Pro lapse shows "Los pedidos en línea no están disponibles por ahora. Pide
+  al personal." on a full page. The next successful call clears it: a page
+  whose menu loaded keeps its minute revision poll and fetches the catalog
+  again when ordering is back; a kiosk that booted while ordering was off
+  asks for the menu every 20 s. "Este código ya no funciona" stays, because
+  a replaced or deactivated code never returns.
   - A new `#token` pasted into the same tab (a same-document navigation)
     opens the new code at once; this holds for phones too.
 - **Online only.** The diner page has no offline queue and never registers the
@@ -315,8 +322,15 @@ deactivation), pausing and plain accepting.
     (LD-P8).
   - The summary poll (`GET /api/ordering/inbox/summary`) runs every 20 s while
     a link is active and every 5 min otherwise. It runs only for visible,
-    online operators. It stops when the server reports public ordering
-    unavailable or when the session ends.
+    online operators, and again whenever the terminal comes to the front.
+    "Not available" (the kill switch) never stops it: it keeps the 5-minute
+    pace, so a terminal follows the switch back on without a reload
+    (PUBLIC-OPS-1). A session answer (`session_locked`, `session_expired`, …)
+    waits silently for the next session.
+  - When the inbox reads `public_ordering_disabled` it drops its cards at
+    once (and the copy it keeps for a remount), and the badge and the banner
+    go with them. When the summary reads "available" again the inbox reads
+    again.
 - **Mesas cards** show "Pedido QR por confirmar" while a table hold waits.
   Tapping it opens Órdenes.
 

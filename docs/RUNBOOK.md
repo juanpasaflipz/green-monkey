@@ -511,6 +511,22 @@ kitchen, stock or a fiscal record on its own.
    be neither accepted nor rejected while it is off, so they stop counting
    on tables too: Mesas shows no "Pedido QR por confirmar" badge and a table
    held only by one can be archived. They expire on their own.
+   - Use exactly `false` (any other value except `true` or empty stops the
+     web with `public_ordering_flag_invalid`). After the redeploy, check that
+     `GET /api/account-config` reports `publicOrdering.enabled: false` and
+     `switchedOff: true`; a Pro restaurant's plan panel then says "Pedidos
+     QR y kiosco desactivados temporalmente por Green Monkey."
+   - Staff terminals that are open drop the waiting cards, the badge and the
+     banner at their next inbox or summary read.
+   - **To turn it back on,** unset the variable or set it to `true`,
+     redeploy, and check that `/api/account-config` reports
+     `publicOrdering.enabled: true`. No reload is needed anywhere: staff
+     terminals read the summary again within 5 minutes (at once when
+     brought to the front), diner pages that loaded their menu clear the
+     "no están disponibles" notice at their next minute poll, and a kiosk
+     that booted while ordering was off retries its menu every 20 s
+     (PUBLIC-UX-1, PUBLIC-OPS-1). The response is cacheable for 5 minutes,
+     so a browser may show the old `/api/account-config` that long.
 
 ## DB-9 validation
 

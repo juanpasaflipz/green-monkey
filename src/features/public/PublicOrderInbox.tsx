@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Locale, Order, Session } from "../../../shared/domain";
 import type { InboxHold, InboxResponse } from "../../../shared/public-ordering";
 import type { PaymentValues } from "../../../shared/service";
@@ -16,6 +16,7 @@ import { RejectDialog } from "./RejectDialog";
 import {
   refreshPublicInbox,
   setPublicInboxPending,
+  setPublicInboxUnavailable,
   usePublicInboxSnapshot,
 } from "./usePublicInbox";
 import "./public.css";
@@ -117,8 +118,14 @@ export function PublicOrderInbox({
         setPublicInboxPending(r.holds.length, r.active);
       } catch (e) {
         const code = (e as Error).message;
-        if (code === "public_ordering_disabled" || code === "forbidden")
+        if (code === "public_ordering_disabled" || code === "forbidden") {
+          // The cards go at once (Aceptar could only fail) and a remount does
+          // not bring them back from lastRead (PUBLIC-OPS-1).
+          lastRead = null;
+          setData(null);
+          if (code === "public_ordering_disabled") setPublicInboxUnavailable();
           return setDisabled(true);
+        }
         throw e;
       }
     },
@@ -128,6 +135,11 @@ export function PublicOrderInbox({
     },
     [busyInbox],
   );
+  // The shell's summary poll keeps running while ordering is off: once it
+  // reads "available" again, this inbox reads again too (PUBLIC-OPS-1).
+  useEffect(() => {
+    if (summary.available) setDisabled(false);
+  }, [summary.available]);
   const refresh = () => {
     poll.refresh();
     refreshPublicInbox();

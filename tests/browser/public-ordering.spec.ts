@@ -4,6 +4,7 @@ import {
   type Browser,
   type BrowserContext,
   type Page,
+  type Route,
 } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 
@@ -1126,6 +1127,123 @@ test("paused: the cashier pauses from the inbox; the diner keeps the menu with s
     // Back to the owner for the cleanup.
     await page.evaluate(() => fetch("/api/logout", { method: "POST" }));
     await login(page);
+  });
+});
+
+test("kill switch off and on: a diner page and a kiosk that said 'not available' come back on their own (PUBLIC-UX-1)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const disabled = (route: Route) =>
+      route.fulfill({
+        status: 404,
+        json: { error: "public_ordering_disabled" },
+      });
+    const unavailable = (p: Page) =>
+      p.getByRole("heading", {
+        name: "Los pedidos en línea no están disponibles por ahora. Pide al personal.",
+        exact: true,
+      });
+    // A QR page whose menu loaded: its next revision poll finds the switch
+    // off, and a later one finds it on again.
+    const counter = await f.link({ kind: "counter", label: `Vuelve ${f.id}` });
+    const customer = await context.newPage();
+    await customer.clock.install();
+    await customer.goto(counter.path);
+    const taco = customer.getByRole("button", { name: /^Taco de asada/ });
+    await expect(taco).toBeVisible();
+    await customer.route("**/api/public/**", disabled);
+    await customer.clock.fastForward(61_000);
+    await expect(unavailable(customer)).toBeVisible();
+    await expect(taco).toHaveCount(0);
+    await customer.unroute("**/api/public/**", disabled);
+    const menuRead = customer.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/public/menu" && r.ok(),
+    );
+    await customer.clock.fastForward(61_000);
+    await expect(taco).toBeVisible();
+    await expect(unavailable(customer)).toHaveCount(0);
+    // Back from "not available" the catalog is fetched again.
+    await menuRead;
+    // A kiosk that boots while ordering is off has no menu and no revision
+    // poll: it keeps asking for the menu and shows it once ordering is back.
+    const link = await f.link({ kind: "kiosk", label: `Arranque ${f.id}` });
+    const kiosk = await context.newPage();
+    await kiosk.clock.install();
+    await kiosk.route("**/api/public/**", disabled);
+    await kiosk.goto(link.path);
+    await expect(unavailable(kiosk)).toBeVisible();
+    await kiosk.clock.fastForward(21_000);
+    await expect(unavailable(kiosk)).toBeVisible();
+    await kiosk.unroute("**/api/public/**", disabled);
+    await kiosk.clock.fastForward(21_000);
+    await expect(
+      kiosk.getByRole("button", { name: /^Taco de asada/ }),
+    ).toBeVisible();
+    await expect(unavailable(kiosk)).toHaveCount(0);
+  });
+});
+
+test("kill switch off and on: a staff terminal drops the waiting cards and the badge, then shows them again without a reload (PUBLIC-OPS-1)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({
+      kind: "counter",
+      label: `Interruptor ${f.id}`,
+    });
+    const customer = await diner(context, link.path);
+    await addTaco(customer);
+    await sendOrder(customer, `Interruptor ${f.id}`);
+    await expect(customer.locator(".diner-status-head")).toContainText(
+      "Esperando confirmación del personal",
+    );
+    const label = (await customer.locator(".diner-code").innerText()).trim();
+    await customer.close();
+    await page.reload();
+    const badge = page
+      .locator(".rail")
+      .getByRole("button", { name: "Operación", exact: true });
+    await expect(badge).toContainText(/\d/);
+    await goToOrders(page);
+    const card = holdCard(page, label);
+    await expect(card).toBeVisible();
+    // The deployment switches ordering off (PUBLIC_ORDERING_ENABLED=false):
+    // the inbox answers 404 and the summary "not available".
+    const off = (route: Route) =>
+      route.fulfill({
+        status: 404,
+        json: { error: "public_ordering_disabled" },
+      });
+    const offSummary = (route: Route) =>
+      route.fulfill({
+        json: { available: false, active: false, pending: 0, oldestAt: null },
+      });
+    await page.route("**/api/ordering/inbox", off);
+    await page.route("**/api/ordering/inbox/summary", offSummary);
+    // The next inbox read (every 10 s) drops the cards and the badge.
+    await expect(card).toHaveCount(0, { timeout: 20_000 });
+    await expect(badge).not.toContainText(/\d/);
+    // A remount does not bring the stale cards back.
+    await page
+      .getByRole("button", { name: "Menú e inventario", exact: true })
+      .click();
+    await goToOrders(page);
+    await expect(card).toHaveCount(0);
+    // Ordering is back on the same session: the summary poll was never
+    // stopped, so the next run (here: the terminal comes to the front)
+    // brings the badge and the inbox back.
+    await page.unroute("**/api/ordering/inbox", off);
+    await page.unroute("**/api/ordering/inbox/summary", offSummary);
+    await page.evaluate(() =>
+      document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await expect(card).toBeVisible({ timeout: 20_000 });
+    await expect(badge).toContainText(/\d/);
   });
 });
 
