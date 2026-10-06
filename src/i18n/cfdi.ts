@@ -242,6 +242,15 @@ export default defineArea({
     cfdiConfirmSubstitute: "Emitir sustituta",
     cfdiSubstitutionRejected:
       "El cliente rechazó la cancelación de {doc}. Hay dos facturas vigentes para el ticket {folio}: cancela la nueva (motivo 02) o vuelve a solicitar la cancelación.",
+    cfdiSubstitutionIncomplete:
+      "La cancelación de {doc} no se completó. Hay dos facturas vigentes para el ticket {folio}: cancela la nueva (motivo 02) o vuelve a solicitar la cancelación.",
+    cfdiOpenSubstitute: "Abrir la factura sustituta",
+    cfdiCancelAgain: "Solicitar de nuevo la cancelación…",
+    cfdiCancelAgainTitle: "Solicitar de nuevo la cancelación de {doc}",
+    cfdiCancelAgainHint:
+      "Se pedirá cancelar {doc} con motivo 01, relacionada con la factura sustituta. Cuando se cancele, el ticket pasa a la sustituta.",
+    cfdiConfirmCancelAgain: "Solicitar cancelación",
+    cfdiCancelToSubstitute: "El ticket pasará a la factura sustituta.",
     cfdiCreditNoteOf: "Nota de crédito de {doc}",
     cfdiCreditNotes: "Notas de crédito",
     cfdiAmountDiffers: "El importe timbrado difiere del ticket en {amount}.",
@@ -326,7 +335,7 @@ export default defineArea({
     cfdiReportAlertDocuments:
       "{n} facturas con error o atascadas. Revisa Facturas emitidas.",
     cfdiReportAlertSubstitution:
-      "{n} sustituciones rechazadas por el cliente: hay facturas duplicadas vigentes.",
+      "{n} sustituciones sin completar: hay facturas duplicadas vigentes.",
     cfdiReportAlertCsd:
       "Tu certificado de sello digital (CSD) vence en menos de 30 días.",
     cfdiCorteTitle: "Facturación (CFDI)",
@@ -335,7 +344,7 @@ export default defineArea({
     cfdiCorteUncovered: "Sin factura todavía: {n} tickets",
     cfdiAttentionOverdue: "{n} facturas globales atrasadas o con error",
     cfdiAttentionDocuments: "{n} facturas con error o atascadas",
-    cfdiAttentionSubstitutions: "{n} sustituciones rechazadas",
+    cfdiAttentionSubstitutions: "{n} sustituciones sin completar",
     cfdiAttentionCsd: "El CSD vence en menos de 30 días",
     cfdiEventRequested: "Solicitada",
     cfdiEventFrozen: "Solicitud preparada",
@@ -591,6 +600,15 @@ export default defineArea({
     cfdiConfirmSubstitute: "Issue replacement",
     cfdiSubstitutionRejected:
       "The customer rejected the cancellation of {doc}. Two invoices are valid for ticket {folio}: cancel the new one (reason 02) or request the cancellation again.",
+    cfdiSubstitutionIncomplete:
+      "The cancellation of {doc} did not complete. Two invoices are valid for ticket {folio}: cancel the new one (reason 02) or request the cancellation again.",
+    cfdiOpenSubstitute: "Open the replacement invoice",
+    cfdiCancelAgain: "Request the cancellation again…",
+    cfdiCancelAgainTitle: "Request the cancellation of {doc} again",
+    cfdiCancelAgainHint:
+      "{doc} will be cancelled with reason 01, related to the replacement invoice. Once it is cancelled, the ticket moves to the replacement.",
+    cfdiConfirmCancelAgain: "Request cancellation",
+    cfdiCancelToSubstitute: "The ticket moves to the replacement invoice.",
     cfdiCreditNoteOf: "Credit note for {doc}",
     cfdiCreditNotes: "Credit notes",
     cfdiAmountDiffers:
@@ -676,7 +694,7 @@ export default defineArea({
     cfdiReportAlertDocuments:
       "{n} invoices failed or stuck. Check Issued invoices.",
     cfdiReportAlertSubstitution:
-      "{n} substitutions rejected by the customer: duplicate valid invoices exist.",
+      "{n} substitutions not completed: duplicate valid invoices exist.",
     cfdiReportAlertCsd:
       "Your digital seal certificate (CSD) expires in less than 30 days.",
     cfdiCorteTitle: "Invoicing (CFDI)",
@@ -685,7 +703,7 @@ export default defineArea({
     cfdiCorteUncovered: "Not invoiced yet: {n} tickets",
     cfdiAttentionOverdue: "{n} global invoices overdue or failed",
     cfdiAttentionDocuments: "{n} invoices failed or stuck",
-    cfdiAttentionSubstitutions: "{n} substitutions rejected",
+    cfdiAttentionSubstitutions: "{n} substitutions not completed",
     cfdiAttentionCsd: "The CSD expires in less than 30 days",
     cfdiEventRequested: "Requested",
     cfdiEventFrozen: "Request prepared",
@@ -1035,6 +1053,14 @@ export default defineArea({
     cfdi_has_credit_notes: [
       "Cancela primero las notas de crédito relacionadas.",
       "Cancel the related credit notes first.",
+    ],
+    cfdi_substitution_pending: [
+      "Esta factura ya tiene una sustituta que espera su cancelación: vuelve a solicitar la cancelación o cancela la sustituta (motivo 02) antes de sustituirla otra vez.",
+      "This invoice already has a replacement waiting for its cancellation: request the cancellation again or cancel the replacement (reason 02) before replacing it again.",
+    ],
+    cfdi_substitute_missing: [
+      "Esta factura no tiene una sustituta vigente; cancélala con el motivo 02 o 03.",
+      "This invoice has no valid replacement; cancel it with reason 02 or 03.",
     ],
     cfdi_not_substitutable: [
       "Solo las facturas a clientes se pueden sustituir.",

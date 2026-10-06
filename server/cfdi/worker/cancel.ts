@@ -1,8 +1,9 @@
 /**
  * cfdi_cancel (spec §4.8.5): DELETE /invoices/{id}?motive=&substitution= for staff cancellations
- * (02, 03) and substitutions (01, sent only after the substitute is valid). A cancellation that
- * needs the receptor's acceptance moves the document to `canceling` and is reconciled every 30
- * minutes (cfdi_reconcile). Motive 04 (invoice after a global) is cfdi_reissue's.
+ * (02, 03) and substitutions (01, sent only after the substitute is valid; also a manager's
+ * re-request with the waiting substitute). A cancellation that needs the receptor's acceptance
+ * moves the document to `canceling` and is reconciled every 30 minutes (cfdi_reconcile). Motive
+ * 04 (invoice after a global) is cfdi_reissue's.
  */
 import type { JobContext, JobOutcome } from "../../jobs.js";
 import type { Tx } from "../../db.js";
@@ -12,6 +13,7 @@ import {
   activatePendingClaims,
   loadDocument,
   releaseClaims,
+  waitingSubstitute,
   type DocumentRow,
 } from "../store.js";
 import { classify, event, MINUTE, runtimeOr } from "./common.js";
@@ -46,24 +48,6 @@ export async function loadCancellation(
         status: r.status,
       }
     : null;
-}
-
-/**
- * The valid substitute of a canceled document still waiting for its ticket (pending claims): the
- * newest one, since a second substitution after a rejected one leaves an older valid substitute
- * behind (the alert asks the manager to cancel it).
- */
-async function waitingSubstitute(
-  tx: Tx,
-  documentId: string,
-): Promise<string | null> {
-  const [r] = await tx`
-    select d.id from cfdi_documents d
-    where d.replaces_document_id = ${documentId} and d.status = 'valid'
-      and exists (select 1 from cfdi_document_tickets c where c.tenant_id = d.tenant_id
-        and c.document_id = d.id and c.state = 'pending')
-    order by d.created_at desc limit 1`;
-  return (r?.id as string | undefined) ?? null;
 }
 
 /**
@@ -113,6 +97,7 @@ export async function onCanceled(
   });
   if (c.source === "reissue") return;
   await releaseClaims(tx, doc.id, "canceled");
+  // A second substitute is refused while one is unfinished (CFDI-R3-1), so at most one waits.
   const substitute =
     c.source === "substitution" && c.substituteDocumentId
       ? c.substituteDocumentId

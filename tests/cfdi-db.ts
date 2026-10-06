@@ -1302,6 +1302,224 @@ try {
     ]);
   });
 
+  await test("R3-1. a substitute left waiting by a rejected cancellation blocks a second Sustituir (cfdi_substitution_pending) and keeps the attention count; the register asks again with motive 01 and that substitute, whose first poll is queued at once (CFDI-R3-3), and the ticket moves to it", async () => {
+    const S = await makeTenant("substitution asked again");
+    await activate(S);
+    const tk = await makeTicket(S);
+    const d1 = await invoice(S, tk);
+    await settle(S.tenantId);
+    const substitute = (reason: string) =>
+      web(S, (tx) =>
+        service.substituteDocument(
+          tx,
+          S.manager,
+          {
+            operationId: op(),
+            receptor: { ...MORAL, postalCode: "86990" },
+            cardForm: null,
+            reason,
+          },
+          { params: { id: d1.id } } as never,
+        ),
+      );
+    const view = (id: string) =>
+      web(S, (tx) =>
+        service.getDocument(tx, S.manager, { params: { id } } as never),
+      );
+    const attention = async () =>
+      (await web(S, (tx) => service.getAlerts(tx, S.manager)))
+        .rejectedSubstitutions;
+    const stateOf = async () =>
+      Object.fromEntries(
+        (await claims(tk.id)).map((r) => [r.document_id, r.state]),
+      );
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_rejected",
+      match: { type: "I", global: false },
+    });
+    const d2 = await substitute("CP equivocado");
+    await settle(S.tenantId);
+    await due(S.tenantId, "cfdi_reconcile");
+    await settle(S.tenantId);
+    assert.equal((await docRow(d1.id)).status, "valid");
+    assert.equal((await docRow(d2.id)).status, "valid");
+    assert.deepEqual(await stateOf(), {
+      [d1.id]: "active",
+      [d2.id]: "pending",
+    });
+    let v = await view(d1.id);
+    assert.equal(v.cancellation?.status, "rejected");
+    assert.equal(v.waitingSubstituteId, d2.id, "the register's alert");
+    assert.equal(v.canSubstitute, false);
+    assert.equal(v.canRequestAgain, true);
+    assert.equal(v.canCancel, true);
+    assert.equal(await attention(), 1);
+
+    // A second Sustituir would stamp D3 and leave D2 valid with a claim pending forever.
+    await rejects(substitute("Otra vez"), "cfdi_substitution_pending");
+    assert.deepEqual(
+      (
+        await admin`select id from cfdi_documents where replaces_document_id = ${d1.id}`
+      ).map((r) => r.id),
+      [d2.id],
+    );
+    assert.equal(await attention(), 1, "the alert stays");
+
+    // Motive 01 needs a waiting substitute.
+    const other = await invoice(S, await makeTicket(S));
+    await settle(S.tenantId);
+    await rejects(
+      web(S, (tx) =>
+        service.cancelDocument(
+          tx,
+          S.manager,
+          { operationId: op(), motive: "01", reason: "Sin sustituta" },
+          { params: { id: other.id } } as never,
+        ),
+      ),
+      "cfdi_substitute_missing",
+    );
+
+    // "Vuelve a solicitar la cancelación": motive 01 with D2. This time the receptor must
+    // accept, and this cancellation's own poll chain starts at once although the first
+    // cancellation's chain already used reconcile:<d1>:cancel:1 (CFDI-R3-3).
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_pending",
+      match: { type: "I", global: false },
+    });
+    v = await web(S, (tx) =>
+      service.cancelDocument(
+        tx,
+        S.manager,
+        { operationId: op(), motive: "01", reason: "El cliente aceptará" },
+        { params: { id: d1.id } } as never,
+      ),
+    );
+    assert.equal(v.waitingSubstituteId, null, "a cancellation is open");
+    assert.equal(v.canRequestAgain, false);
+    assert.equal(await attention(), 0, "resolving while the request is open");
+    await settle(S.tenantId);
+    assert.equal((await docRow(d1.id)).status, "canceling");
+    const [again] = await admin`
+      select id, motive, source, substitute_document_id, status from cfdi_cancellations
+      where document_id = ${d1.id} order by created_at desc limit 1`;
+    assert.deepEqual(
+      {
+        motive: again.motive,
+        source: again.source,
+        substitute: again.substitute_document_id,
+        status: again.status,
+      },
+      {
+        motive: "01",
+        source: "substitution",
+        substitute: d2.id,
+        status: "requested",
+      },
+    );
+    const polls = await admin`
+      select dedupe_key from jobs where tenant_id = ${S.tenantId} and kind = 'cfdi_reconcile'
+        and payload->>'documentId' = ${d1.id} and state in ('queued','available')`;
+    assert.deepEqual(
+      polls.map((r) => r.dedupe_key),
+      [
+        `reconcile:${d1.id}:cancel:c${again.id.replace(/-/g, "").slice(0, 12)}:1`,
+      ],
+      "the second cancellation's first poll is queued",
+    );
+    await due(S.tenantId, "cfdi_reconcile");
+    await settle(S.tenantId);
+    assert.equal((await docRow(d1.id)).status, "canceled");
+    assert.deepEqual(await stateOf(), {
+      [d1.id]: "released",
+      [d2.id]: "active",
+    });
+    const sent = fake.invoices.get((await docRow(d1.id)).provider_invoice_id);
+    assert.equal(
+      sent?.cancel?.substitution?.toLowerCase(),
+      String((await docRow(d2.id)).uuid).toLowerCase(),
+      "motive 01 carries the substitute's UUID",
+    );
+    assert.ok((await events(d2.id)).includes("substitution_completed"));
+    assert.equal(await attention(), 0);
+    assert.equal((await view(d1.id)).waitingSubstituteId, null);
+  });
+
+  await test("R3-1b. a motive-01 cancellation the provider refuses leaves the substitute waiting: the attention count and the original's alert show it until the substitute is canceled", async () => {
+    const S = await makeTenant("substitution refused by the provider");
+    await activate(S);
+    const tk = await makeTicket(S);
+    const d1 = await invoice(S, tk);
+    await settle(S.tenantId);
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_refused",
+      match: { type: "I", global: false },
+    });
+    alerts.length = 0;
+    const d2 = await web(S, (tx) =>
+      service.substituteDocument(
+        tx,
+        S.manager,
+        {
+          operationId: op(),
+          receptor: { ...MORAL, postalCode: "86990" },
+          cardForm: null,
+          reason: "CP equivocado",
+        },
+        { params: { id: d1.id } } as never,
+      ),
+    );
+    await settle(S.tenantId);
+    const [c] =
+      await admin`select status, error_code from cfdi_cancellations where document_id = ${d1.id}`;
+    assert.deepEqual(
+      { ...c },
+      { status: "failed", error_code: "cfdi_cancel_rejected_provider" },
+    );
+    assert.equal((await docRow(d1.id)).status, "valid");
+    assert.equal((await docRow(d2.id)).status, "valid");
+    assert.deepEqual(
+      Object.fromEntries(
+        (await claims(tk.id)).map((r) => [r.document_id, r.state]),
+      ),
+      { [d1.id]: "active", [d2.id]: "pending" },
+    );
+    assert.ok(alerts.some((a) => a.key.startsWith("cfdi_cancel_failed:")));
+    const attention = async () =>
+      (await web(S, (tx) => service.getAlerts(tx, S.manager)))
+        .rejectedSubstitutions;
+    assert.equal(await attention(), 1, "refused, not only rejected, counts");
+    const view = () =>
+      web(S, (tx) =>
+        service.getDocument(tx, S.manager, {
+          params: { id: d1.id },
+        } as never),
+      );
+    let v = await view();
+    assert.equal(v.cancellation?.status, "failed");
+    assert.equal(v.waitingSubstituteId, d2.id);
+    assert.equal(v.canRequestAgain, true);
+    assert.equal(v.canSubstitute, false);
+
+    // The other way out: cancel the substitute (02); the original keeps the ticket.
+    await cancelAs(S, S.manager, d2.id);
+    await settle(S.tenantId);
+    assert.equal((await docRow(d2.id)).status, "canceled");
+    assert.deepEqual(
+      Object.fromEntries(
+        (await claims(tk.id)).map((r) => [r.document_id, r.state]),
+      ),
+      { [d1.id]: "active", [d2.id]: "released" },
+    );
+    assert.equal(await attention(), 0);
+    v = await view();
+    assert.equal(v.waitingSubstituteId, null);
+    assert.equal(v.canSubstitute, true);
+  });
+
   await test("11. a stamping timeout retries with the same idempotency key, adopts the invoice by external_id and never creates two provider invoices", async () => {
     const tk = await makeTicket(A);
     const d = await invoice(A, tk, {

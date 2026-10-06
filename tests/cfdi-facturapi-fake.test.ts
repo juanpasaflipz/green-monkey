@@ -751,6 +751,36 @@ describe("Facturapi fake: invoices", () => {
     expect(
       await s.client.cancelInvoice(test, global.id, { motive: "02" }),
     ).toMatchObject({ status: "canceled" });
+
+    // Queued cancellation faults: a transient outage leaves the invoice untouched (retried), a
+    // refusal is final (CFDI-R3 DB checks).
+    const later = (await s.client.createInvoice(test, invoiceBody())).invoice;
+    s.fake.fault({ op: "invoices.cancel", fault: "unavailable" });
+    const outage = await failure(
+      s.client.cancelInvoice(test, later.id, { motive: "02" }),
+    );
+    expect(outage.code).toBe("invoice_cancellation_service_unavailable");
+    expect(classifyFacturapiError(outage)).toMatchObject({
+      retry: true,
+      code: "cfdi_provider_unavailable",
+    });
+    expect(await s.client.getInvoice(test, later.id)).toMatchObject({
+      status: "valid",
+      cancellation_status: "none",
+    });
+    s.fake.fault({ op: "invoices.cancel", fault: "cancel_refused" });
+    const refused = await failure(
+      s.client.cancelInvoice(test, later.id, { motive: "02" }),
+    );
+    expect(refused.code).toBe("invoice_not_cancelable_by_sat");
+    expect(classifyFacturapiError(refused)).toMatchObject({
+      retry: false,
+      code: "cfdi_cancel_rejected_provider",
+      unknownOutcome: false,
+    });
+    expect(
+      await s.client.cancelInvoice(test, later.id, { motive: "02" }),
+    ).toMatchObject({ status: "canceled" });
   });
 
   it("email: delivered and recorded, bounces fail, a pending invoice cannot be sent", async () => {

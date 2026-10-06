@@ -420,10 +420,14 @@ export const portalInvoiceInput = z
 export const portalAccessInput = z
   .object({ rfc: z.string().trim().toUpperCase().max(13) })
   .strict();
+/**
+ * Motive 01 is only the re-request of a substitution's cancellation: the document must have a
+ * valid substitute still waiting for its ticket (CFDI-R3-1), which is sent as the substitution.
+ */
 export const cancelInput = z
   .object({
     operationId: id,
-    motive: z.enum(["02", "03"]),
+    motive: z.enum(["01", "02", "03"]),
     reason: z.string().trim().min(1).max(300),
   })
   .strict();
@@ -661,8 +665,16 @@ export type CfdiDocumentView = CfdiDocumentSummary & {
   files: CfdiDocumentFile[];
   events: { kind: string; at: string; detail: Record<string, unknown> }[];
   createdByName: string | null;
+  /**
+   * A valid substitute of this document still waiting for its ticket while no cancellation of
+   * this document is open (rejected, expired or refused): two valid CFDIs for one sale.
+   */
+  waitingSubstituteId: string | null;
   canCancel: boolean;
+  /** Not while a substitute is still unfinished (cfdi_substitution_pending). */
   canSubstitute: boolean;
+  /** Request this document's cancellation again with motive 01 and the waiting substitute. */
+  canRequestAgain: boolean;
   canRetry: boolean;
   canEmail: boolean;
 };

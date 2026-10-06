@@ -70,6 +70,8 @@ import {
   ticketFacts,
   ticketIdByFolio,
   ticketView,
+  UNFINISHED_SUBSTITUTE,
+  waitingSubstitute,
   type CfdiState,
   type DocumentRow,
   type Viewer,
@@ -807,10 +809,19 @@ export async function cancelDocument(
     { ...p, documentId: doc.id },
     async () => {
       await cancellable(tx, s, doc);
+      // Motive 01 asks again for a substitution's cancellation (the register's "vuelve a
+      // solicitar la cancelación", CFDI-R3-1): the substitute is already valid, so cfdi_cancel
+      // sends it at once, and onCanceled hands it the ticket.
+      const substitute =
+        p.motive === "01" ? await waitingSubstitute(tx, doc.id) : null;
+      if (p.motive === "01" && !substitute)
+        throw new DomainError("cfdi_substitute_missing", 409);
       const cancellationId = randomUUID();
       await tx`
-      insert into cfdi_cancellations(tenant_id, id, document_id, motive, source, reason, requested_by)
-      values (${s.tenantId}, ${cancellationId}, ${doc.id}, ${p.motive}, 'staff', ${p.reason}, ${s.employeeId})`;
+      insert into cfdi_cancellations(tenant_id, id, document_id, motive, substitute_document_id, source,
+        reason, requested_by)
+      values (${s.tenantId}, ${cancellationId}, ${doc.id}, ${p.motive}, ${substitute},
+        ${substitute ? "substitution" : "staff"}, ${p.reason}, ${s.employeeId})`;
       await cfdiEnqueue(tx, s.tenantId, {
         kind: "cfdi_cancel",
         dedupeKey: dedupe.cancel(cancellationId),
@@ -821,7 +832,7 @@ export async function cancelDocument(
         s.tenantId,
         doc.id,
         "cancel_queued",
-        { motive: p.motive },
+        substitute ? { motive: p.motive, substitute } : { motive: p.motive },
         s.employeeId,
       );
       await audit(tx, s, "cfdi.cancel.requested", doc.id, {
@@ -858,6 +869,12 @@ export async function substituteDocument(
       const state = await cfdiState(tx);
       requireCfdi(state, { needEnabled: true, needReady: true });
       const current = await cancellable(tx, s, doc);
+      // A substitute that is still unfinished (typically valid after a rejected, expired or
+      // refused motive-01 cancellation) keeps this one: a second substitute would leave two valid
+      // CFDIs for the sale and the first one's claim pending forever (CFDI-R3-1). The way out is
+      // asking again (motive 01 with that substitute) or canceling the substitute.
+      if (await waitingSubstitute(tx, doc.id, UNFINISHED_SUBSTITUTE))
+        throw new DomainError("cfdi_substitution_pending", 409);
       const [claim] = await tx`
         select ticket_id from cfdi_document_tickets where document_id = ${doc.id} and state = 'active'`;
       if (!claim) throw new DomainError("cfdi_not_valid", 409);

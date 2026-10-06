@@ -1,8 +1,9 @@
 /**
  * "Facturas emitidas" (spec §2.11): the documents register with filters and paging, a ticket
  * search by folio that opens the invoice dialog, and the detail modal with its actions (§2.8):
- * downloads, resend by email, cancel, substitute and retry. Each action dialog keeps its own
- * operationId until it succeeds (MON-3); step-up is asked by api().
+ * downloads, resend by email, cancel, substitute, request a substitution's cancellation again
+ * and retry. Each action dialog keeps its own operationId until it succeeds (MON-3); step-up is
+ * asked by api().
  */
 import { useCallback, useEffect, useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
@@ -366,7 +367,9 @@ export function DocumentDetail({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [dialog, setDialog] = useState<"cancel" | "substitute" | null>(null);
+  const [dialog, setDialog] = useState<
+    "cancel" | "again" | "substitute" | null
+  >(null);
   const [email, setEmail] = useState("");
   const [emailOperation, setEmailOperation] = useState(() =>
     crypto.randomUUID(),
@@ -413,9 +416,6 @@ export function DocumentDetail({
         doc: label,
       })
     : t.cfdiDetails;
-  const rejected =
-    doc?.cancellation?.motive === "01" &&
-    ["rejected", "expired"].includes(doc.cancellation.status);
   const acuse = doc?.files.includes("cancel_pdf")
     ? "cancel_pdf"
     : doc?.files.includes("cancel_xml")
@@ -437,14 +437,13 @@ export function DocumentDetail({
             {doc.late && <Badge tone="amber">{t.cfdiPeriodLate}</Badge>}
           </div>
           {doc.stuck && <p className="cfdi-warning">{t.cfdiStuckHint}</p>}
-          {rejected && (
-            <p className="error" role="alert">
-              {tr(locale, "cfdiSubstitutionRejected", {
-                doc: label,
-                folio: doc.ticketFolios[0] ?? "",
-              })}
-            </p>
-          )}
+          <SubstitutionAlert
+            doc={doc}
+            locale={locale}
+            busy={busy}
+            open={open}
+            requestAgain={() => setDialog("again")}
+          />
           <dl className="cfdi-facts">
             {doc.uuid && (
               <>
@@ -723,9 +722,10 @@ export function DocumentDetail({
           {error}
         </p>
       )}
-      {doc && dialog === "cancel" && (
+      {doc && (dialog === "cancel" || dialog === "again") && (
         <CancelDialog
           doc={doc}
+          again={dialog === "again"}
           locale={locale}
           close={() => setDialog(null)}
           done={(v) => {
@@ -751,6 +751,54 @@ export function DocumentDetail({
   );
 }
 
+/**
+ * Two valid CFDIs for one sale (§2.8, CFDI-R3-1): a valid substitute still waits for the ticket
+ * while no cancellation of this invoice is open (the receptor rejected it or let it expire, or the
+ * provider refused it). The ways out: open the substitute to cancel it (motive 02), or request
+ * this invoice's cancellation again (motive 01 with that substitute).
+ */
+export function SubstitutionAlert({
+  doc,
+  locale,
+  busy,
+  open,
+  requestAgain,
+}: {
+  doc: CfdiDocumentView;
+  locale: Locale;
+  busy: boolean;
+  open: (id: string) => void;
+  requestAgain: () => void;
+}) {
+  const substitute = doc.waitingSubstituteId;
+  if (!substitute) return null;
+  const t = strings[locale];
+  const rejected = ["rejected", "expired"].includes(
+    doc.cancellation?.status ?? "",
+  );
+  return (
+    <div className="cfdi-failed" role="alert">
+      <p className="error">
+        {tr(
+          locale,
+          rejected ? "cfdiSubstitutionRejected" : "cfdiSubstitutionIncomplete",
+          { doc: documentLabel(doc), folio: doc.ticketFolios[0] ?? "" },
+        )}
+      </p>
+      <div className="row wrap">
+        <button type="button" className="link" onClick={() => open(substitute)}>
+          {t.cfdiOpenSubstitute}
+        </button>
+        {doc.canRequestAgain && (
+          <Button disabled={busy} onClick={requestAgain}>
+            {t.cfdiCancelAgain}
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** Nominative invoice over $1,000 stamped more than 24 h ago: the receptor must accept (§2.8). */
 export function needsAcceptance(doc: CfdiDocumentView, now = Date.now()) {
   return (
@@ -761,19 +809,26 @@ export function needsAcceptance(doc: CfdiDocumentView, now = Date.now()) {
   );
 }
 
+/**
+ * Cancelar… (motive 02 or 03), or with `again` the re-request of a substitution's cancellation:
+ * motive 01, related to the waiting substitute (the server sends its UUID).
+ */
 function CancelDialog({
   doc,
+  again,
   locale,
   close,
   done,
 }: {
   doc: CfdiDocumentView;
+  again: boolean;
   locale: Locale;
   close: () => void;
   done: (v: CfdiDocumentView) => void;
 }) {
   const t = strings[locale];
-  const [motive, setMotive] = useState<"02" | "03">("02");
+  const [chosen, setMotive] = useState<"02" | "03">("02");
+  const motive = again ? "01" : chosen;
   const [reason, setReason] = useState("");
   const [operationId, setOperationId] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
@@ -800,7 +855,9 @@ function CancelDialog({
   }
   return (
     <Modal
-      title={tr(locale, "cfdiCancelTitle", { doc: documentLabel(doc) })}
+      title={tr(locale, again ? "cfdiCancelAgainTitle" : "cfdiCancelTitle", {
+        doc: documentLabel(doc),
+      })}
       close={close}
       closeLabel={t.cfdiClose}
     >
@@ -811,18 +868,24 @@ function CancelDialog({
           void submit();
         }}
       >
-        <Field label={t.cfdiMotive}>
-          <select
-            value={motive}
-            onChange={(e) => {
-              setMotive(e.target.value as "02" | "03");
-              setOperationId(crypto.randomUUID());
-            }}
-          >
-            <option value="02">{t.cfdiMotive02}</option>
-            {!global && <option value="03">{t.cfdiMotive03}</option>}
-          </select>
-        </Field>
+        {again ? (
+          <p className="muted">
+            {tr(locale, "cfdiCancelAgainHint", { doc: documentLabel(doc) })}
+          </p>
+        ) : (
+          <Field label={t.cfdiMotive}>
+            <select
+              value={chosen}
+              onChange={(e) => {
+                setMotive(e.target.value as "02" | "03");
+                setOperationId(crypto.randomUUID());
+              }}
+            >
+              <option value="02">{t.cfdiMotive02}</option>
+              {!global && <option value="03">{t.cfdiMotive03}</option>}
+            </select>
+          </Field>
+        )}
         <Field label={t.cfdiCancelReason}>
           <textarea
             value={reason}
@@ -834,8 +897,12 @@ function CancelDialog({
             }}
           />
         </Field>
-        {doc.kind === "invoice" && (
-          <p className="muted">{t.cfdiCancelBackToGlobal}</p>
+        {doc.kind === "invoice" && !again && (
+          <p className="muted">
+            {doc.waitingSubstituteId
+              ? t.cfdiCancelToSubstitute
+              : t.cfdiCancelBackToGlobal}
+          </p>
         )}
         {motive === "03" && <p className="muted">{t.cfdiCancelRefundHint}</p>}
         {needsAcceptance(doc) && (
@@ -852,7 +919,7 @@ function CancelDialog({
             variant="danger"
             disabled={busy || !reason.trim()}
           >
-            {t.cfdiConfirmCancel}
+            {again ? t.cfdiConfirmCancelAgain : t.cfdiConfirmCancel}
           </Button>
         </div>
       </form>

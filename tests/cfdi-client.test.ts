@@ -69,6 +69,7 @@ import {
 } from "../src/features/cfdi/CfdiOrderActions";
 import {
   needsAcceptance,
+  SubstitutionAlert,
   ticketsLabel,
 } from "../src/features/cfdi/CfdiDocuments";
 import { cfdiBadge, settling } from "../src/features/cfdi/CfdiSettings";
@@ -544,6 +545,56 @@ describe("cfdi client: helpers", () => {
     expect(needsAcceptance(doc(500_000, "2026-10-05T11:00:00Z"), now)).toBe(
       false,
     );
+  });
+  it("register: two valid invoices for one sale show the alert with its ways out (CFDI-R3-1)", () => {
+    const doc = (over: Partial<CfdiDocumentView>) =>
+      ({
+        id: "0b8c4a2e-0000-4000-8000-000000000001",
+        kind: "invoice",
+        series: "F",
+        folioNumber: 12,
+        ticketFolios: ["A-000123"],
+        cancellation: null,
+        waitingSubstituteId: "0b8c4a2e-0000-4000-8000-000000000002",
+        canRequestAgain: true,
+        ...over,
+      }) as CfdiDocumentView;
+    const html = (d: CfdiDocumentView, locale: "es" | "en" = "es") =>
+      renderToStaticMarkup(
+        createElement(SubstitutionAlert, {
+          doc: d,
+          locale,
+          busy: false,
+          open: () => {},
+          requestAgain: () => {},
+        }),
+      );
+    const cancellation = (status: string) =>
+      ({
+        motive: "01",
+        status,
+        reason: "CP",
+        requestedAt: "2026-10-05T12:00:00Z",
+        processedAt: "2026-10-05T12:30:00Z",
+        substituteDocumentId: "0b8c4a2e-0000-4000-8000-000000000002",
+        errorCode: status === "failed" ? "cfdi_cancel_rejected_provider" : null,
+      }) as CfdiDocumentView["cancellation"];
+    const rejected = html(doc({ cancellation: cancellation("expired") }));
+    expect(rejected).toContain('role="alert"');
+    expect(rejected).toContain(
+      "El cliente rechazó la cancelación de F-12. Hay dos facturas vigentes para el ticket A-000123",
+    );
+    expect(rejected).toContain(strings.es.cfdiOpenSubstitute);
+    expect(rejected).toContain(strings.es.cfdiCancelAgain);
+    // Refused by the provider: the same two ways out, without blaming the customer.
+    const refused = html(
+      doc({ cancellation: cancellation("failed"), canRequestAgain: false }),
+      "en",
+    );
+    expect(refused).toContain("The cancellation of F-12 did not complete.");
+    expect(refused).toContain(strings.en.cfdiOpenSubstitute);
+    expect(refused).not.toContain(strings.en.cfdiCancelAgain);
+    expect(html(doc({ waitingSubstituteId: null }))).toBe("");
   });
   it("settings: badge and polling decisions", () => {
     const view = (over: Partial<CfdiSettingsView>) =>

@@ -458,6 +458,36 @@ export async function releaseClaims(
   return rows.length;
 }
 
+/**
+ * The newest substitute of `documentId` that still waits for its ticket (pending claims), among
+ * the given statuses. `valid` alone: the substitute a cancellation of the original hands the
+ * ticket to (onCanceled, the motive-01 re-request). Every unfinished status: the substitute that
+ * makes a second substitution refuse (CFDI-R3-1), so one sale never gets two valid substitutes.
+ */
+export async function waitingSubstitute(
+  tx: Tx,
+  documentId: string,
+  statuses: readonly string[] = ["valid"],
+): Promise<string | null> {
+  const [r] = await tx`
+    select d.id from cfdi_documents d
+    where d.replaces_document_id = ${documentId} and d.status = any(${[...statuses]}::text[])
+      and exists (select 1 from cfdi_document_tickets c where c.tenant_id = d.tenant_id
+        and c.document_id = d.id and c.state = 'pending')
+    order by d.created_at desc limit 1`;
+  return (r?.id as string | undefined) ?? null;
+}
+
+/** Substitute statuses that are not final: the substitute may still become (or is) valid. */
+export const UNFINISHED_SUBSTITUTE = [
+  "waiting",
+  "queued",
+  "stamping",
+  "pending",
+  "valid",
+  "canceling",
+] as const;
+
 /** Worker: pending claims of a document become active (substitution or reissue completed). */
 export async function activatePendingClaims(
   tx: Tx,
@@ -743,6 +773,14 @@ export async function documentView(
         where c.parent_document_id = ${id} and c.kind = 'egreso'), '[]') as credit_notes,
       coalesce((select jsonb_agg(c.id) from cfdi_documents c
         where c.parent_document_id = ${id} and c.kind = 'egreso' and c.status in ('queued','stamping','pending','valid')), '[]') as active_credit_notes,
+      (select s.id from cfdi_documents s where s.replaces_document_id = ${id} and s.status = 'valid'
+        and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
+          and c.document_id = s.id and c.state = 'pending')
+        order by s.created_at desc limit 1) as waiting_substitute,
+      exists (select 1 from cfdi_documents s where s.replaces_document_id = ${id}
+        and s.status = any(${[...UNFINISHED_SUBSTITUTE]}::text[])
+        and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
+          and c.document_id = s.id and c.state = 'pending')) as substitute_unfinished,
       (select to_jsonb(x) from (select motive, status, reason, created_at, processed_at, substitute_document_id, error_code
         from cfdi_cancellations where document_id = ${id} order by created_at desc limit 1) x) as cancellation,
       coalesce((select jsonb_agg(f.format order by f.format) from cfdi_files f where f.document_id = ${id}), '[]') as files,
@@ -772,6 +810,12 @@ export async function documentView(
     !openCancellation &&
     (d.kind === "global" ? owner : manager) &&
     (extra.active_credit_notes as string[]).length === 0;
+  // A valid substitute still waiting for the ticket while no cancellation of this document is open
+  // (rejected, expired or refused by the provider): two valid CFDIs for one sale (CFDI-R3-1). The
+  // same condition as attention()'s count.
+  const waitingSubstituteId: string | null = openCancellation
+    ? null
+    : (extra.waiting_substitute ?? null);
   return {
     ...summary,
     receptor: d.receptor,
@@ -813,8 +857,11 @@ export async function documentView(
       }[]
     ).map((e) => ({ kind: e.kind, at: iso(e.at)!, detail: e.detail })),
     createdByName: extra.created_by_name ?? null,
+    waitingSubstituteId,
     canCancel,
-    canSubstitute: canCancel && d.kind === "invoice",
+    canSubstitute:
+      canCancel && d.kind === "invoice" && !extra.substitute_unfinished,
+    canRequestAgain: canCancel && d.kind === "invoice" && !!waitingSubstituteId,
     canRetry:
       manager &&
       (summary.stuck ||
@@ -1071,10 +1118,15 @@ export async function attention(tx: Tx): Promise<CfdiAlertsView> {
             or (d.kind = 'egreso' and n.kind = 'egreso' and n.refund_id = d.refund_id and n.created_at > d.created_at)))) as failed,
       (select count(*) from cfdi_documents d where d.status in ('queued','stamping')
         and d.updated_at < now() - interval '30 minutes') as stuck,
-      (select count(*) from cfdi_cancellations c where c.source = 'substitution'
-        and c.status in ('rejected','expired')
-        and not exists (select 1 from cfdi_cancellations n where n.tenant_id = c.tenant_id and n.document_id = c.document_id
-          and n.created_at > c.created_at)) as rejected,
+      -- Valid substitutes still waiting for their ticket while the original has no open
+      -- cancellation: rejected, expired or refused by the provider, whatever came after
+      -- (CFDI-R3-1). Never clears while two valid CFDIs exist for one sale.
+      (select count(*) from cfdi_documents s where s.kind = 'invoice' and s.status = 'valid'
+        and s.replaces_document_id is not null
+        and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
+          and c.document_id = s.id and c.state = 'pending')
+        and not exists (select 1 from cfdi_cancellations x where x.tenant_id = s.tenant_id
+          and x.document_id = s.replaces_document_id and x.status in ('queued','requested'))) as rejected,
       exists (select 1 from cfdi_organizations o where o.csd_status = 'valid'
         and o.csd_valid_until < now() + interval '30 days') as csd_soon
     from cfdi_settings s`;

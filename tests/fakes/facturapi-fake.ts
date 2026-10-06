@@ -51,7 +51,10 @@
  * (globals are always PUBLICO EN GENERAL) are queued with `fault()` or POST /__fake/faults. The
  * queued-only fault "conflict" answers POST /invoices with 409 `conflict` (CommonErrorCode) BEFORE
  * the idempotency lookup, as a retry colliding with a first request still in process would; the
- * next request with the same key gets the invoice.
+ * next request with the same key gets the invoice. On DELETE /invoices/{id}, the queued faults
+ * "unavailable" (503 invoice_cancellation_service_unavailable) and "internal_error" (500) leave the
+ * invoice untouched, and "cancel_refused" answers 409 invoice_not_cancelable_by_sat (a final
+ * refusal).
  *
  * Control API (loopback CLI only, also methods on the fake): POST /__fake/reset,
  * POST /__fake/faults {op, fault, times?, match?}, POST /__fake/organizations/{id}/manifesto,
@@ -118,6 +121,7 @@ export type FakeFault =
   | "conflict"
   | "cancel_pending"
   | "cancel_rejected"
+  | "cancel_refused"
   | "email_failed";
 export type FaultRule = {
   op: FakeOp;
@@ -154,6 +158,7 @@ const faultRule = z
       "conflict",
       "cancel_pending",
       "cancel_rejected",
+      "cancel_refused",
       "email_failed",
     ]),
     times: z.number().int().min(1).max(10_000).optional(),
@@ -355,6 +360,14 @@ const MESSAGES: Record<string, [string, string]> = {
   invoice_cancellation_in_progress: [
     "La factura ya tiene una solicitud de cancelación pendiente.",
     "The invoice already has a pending cancellation request.",
+  ],
+  invoice_not_cancelable_by_sat: [
+    "El SAT no permite cancelar esta factura.",
+    "SAT does not allow this invoice to be canceled.",
+  ],
+  invoice_cancellation_service_unavailable: [
+    "El servicio de cancelación no está disponible.",
+    "The cancellation service is unavailable.",
   ],
   invoice_cancellation_receipt_unavailable: [
     "El acuse de cancelación no está disponible.",
@@ -1520,6 +1533,11 @@ export function createFacturapiFake(
     const fault =
       takeFault("invoices.cancel", inv.body) ??
       marker(inv.body.customer.legal_name);
+    if (fault === "unavailable")
+      return error(503, "invoice_cancellation_service_unavailable");
+    if (fault === "internal_error") return error(500, "internal_error");
+    if (fault === "cancel_refused")
+      return error(409, "invoice_not_cancelable_by_sat");
     // SAT (FAQ cancelación 2026, Q12): no acceptance for público en general, totals up to
     // $1,000.00, egresos, or within 24 h of issuance.
     const needsAcceptance =
