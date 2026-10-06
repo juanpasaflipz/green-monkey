@@ -305,14 +305,20 @@ const snapshotOf = (f: Fixture, lines: ReturnType<typeof lineInput>[]) => ({
   lines: lines.map((l) => ({ ...l, productVersion: 1 })),
   restaurant: restaurantOf(f),
 });
-function offlineSale(f: Fixture, s: Session, specs: LineSpec[], drawer = 0) {
-  const lines = specs.map(lineInput);
+function offlineSale(
+  f: Fixture,
+  s: Session,
+  specs: LineSpec[],
+  drawer = 0,
+  draft?: { operationId: string; lines: ReturnType<typeof lineInput>[] },
+) {
+  const lines = draft?.lines ?? specs.map(lineInput);
   const total = totalOf(lines);
   return v3(f, s, "sale", {
     provisionalNumber: "F-01",
     cashSessionId: f.drawers[drawer],
     order: {
-      operationId: randomUUID(),
+      operationId: draft?.operationId ?? randomUUID(),
       lines,
       mode: "takeaway",
       tableId: null,
@@ -1052,6 +1058,37 @@ try {
       }),
     );
     assert.equal((await tickets(B.id, `order_id='${recovered.id}'`)).length, 1);
+    // OFF-R31: the sale's online create committed and its order was cancelled
+    // since; the money becomes a financial-only recovery, with its own ticket.
+    const draft = {
+      operationId: randomUUID(),
+      lines: [lineInput({ product: P.fronteraDefault, quantity: 2 })],
+    };
+    const online = await run(cashierB, (tx) =>
+      createOrder(tx, cashierB, {
+        ...draft,
+        mode: "takeaway",
+        tableId: null,
+        name: "Venta sin conexión",
+        note: "",
+        channel: "pos",
+      }),
+    );
+    await admin`update orders set state='cancelled',total=0 where tenant_id=${B.id} and id=${online.id}`;
+    const cancelledSale = offlineSale(B, offlineB, [], 0, draft);
+    const recoveredCancelled = await run(ownerB, (tx) =>
+      reconcileOfflineRecord(tx, ownerB, {
+        record: cancelledSale,
+        reason: "Efectivo de una orden anulada en línea",
+        confirmed: true,
+      }),
+    );
+    assert.notEqual(recoveredCancelled.id, online.id);
+    assert.equal(recoveredCancelled.state, "recovery_pending");
+    const cancelledTicket = await ticketOf(B.id, recoveredCancelled.id);
+    assert.equal(cancelledTicket.source, "recovery");
+    assert.equal(cancelledTicket.gross, 2000);
+    assert.equal(await ticketOf(B.id, online.id), undefined);
   });
 
   await test("manager reconcile into an order (reconcileIntoOrder) issues the ticket in the original drawer's transaction and does not advance the folio on replay", async () => {
