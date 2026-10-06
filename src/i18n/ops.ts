@@ -1,8 +1,14 @@
 import { defineArea } from "./define";
 
 export default defineArea({
-  es: {},
-  en: {},
+  es: {
+    opsOpJobRequeued: "Tarea reintentada",
+    opsOpJobCancelled: "Tarea cancelada",
+  },
+  en: {
+    opsOpJobRequeued: "Task retried",
+    opsOpJobCancelled: "Task cancelled",
+  },
   errors: {
     server_draining: [
       "El servicio se está actualizando. Intenta de nuevo en unos segundos; no se perdió nada.",
