@@ -494,11 +494,20 @@ export async function waitingSubstitute(
   documentId: string,
   statuses: readonly string[] = ["valid"],
 ): Promise<string | null> {
+  // A valid substitute that is itself being canceled (an open cancellation of its own) is never
+  // handed the ticket nor offered to a motive-01 re-request (CFDI-R4-1).
+  const handOver = statuses.length === 1 && statuses[0] === "valid";
   const [r] = await tx`
     select d.id from cfdi_documents d
     where d.replaces_document_id = ${documentId} and d.status = any(${[...statuses]}::text[])
       and exists (select 1 from cfdi_document_tickets c where c.tenant_id = d.tenant_id
         and c.document_id = d.id and c.state = 'pending')
+      ${
+        handOver
+          ? tx`and not exists (select 1 from cfdi_cancellations x where x.tenant_id = d.tenant_id
+              and x.document_id = d.id and x.status in ('queued','requested'))`
+          : tx``
+      }
     order by d.created_at desc limit 1`;
   return (r?.id as string | undefined) ?? null;
 }
@@ -793,7 +802,11 @@ export async function documentView(
       (select s.id from cfdi_documents s where s.replaces_document_id = ${id} and s.status = 'valid'
         and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
           and c.document_id = s.id and c.state = 'pending')
+        and not exists (select 1 from cfdi_cancellations x where x.tenant_id = s.tenant_id
+          and x.document_id = s.id and x.status in ('queued','requested'))
         order by s.created_at desc limit 1) as waiting_substitute,
+      exists (select 1 from cfdi_cancellations x where x.substitute_document_id = ${id}
+        and x.status in ('queued','requested')) as substitution_open,
       exists (select 1 from cfdi_documents s where s.replaces_document_id = ${id}
         and s.status = any(${[...UNFINISHED_SUBSTITUTE]}::text[])
         and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
@@ -822,9 +835,12 @@ export async function documentView(
     d.createdBy === viewer.employeeId &&
     Date.parse(d.createdAt) > Date.now() - 24 * 3600_000;
   const valid = d.status === "valid";
+  // A substitute named by its original's open motive-01 cancellation waits for that to end
+  // (CFDI-R4-1): canceling it would leave the original's cancellation without a substitute.
   const canCancel =
     valid &&
     !openCancellation &&
+    !extra.substitution_open &&
     (d.kind === "global" ? owner : manager) &&
     (extra.active_credit_notes as string[]).length === 0;
   // A valid substitute still waiting for the ticket while no cancellation of this document is open

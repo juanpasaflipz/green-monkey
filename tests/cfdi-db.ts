@@ -60,6 +60,8 @@ import { todaySummary } from "../server/reports/today.js";
 import { dayCorte } from "../server/reports/cortes.js";
 import { reportsPorts } from "../server/reports/ports.js";
 import { rekeyOrganizationSecrets } from "../server/cfdi/rekey.js";
+import { recoveryAction } from "../server/cfdi/recovery.js";
+import { loadDocument } from "../server/cfdi/store.js";
 import { lockDocument, lockPeriod } from "../server/cfdi/locks.js";
 import { noRetries } from "./db-retries.js";
 import { seal } from "../server/tokens.js";
@@ -3323,6 +3325,80 @@ try {
   // Second-opinion hardening (LD-5, LD-33)
   // -------------------------------------------------------------------------------------------
 
+  /** The owner's CSD upload of the synthetic test certificate. */
+  const uploadTestCsd = (t: Fixture) =>
+    web(t, (tx) =>
+      service.uploadCsd(tx, t.owner, {
+        operationId: op(),
+        cer: TEST_CSD.cer,
+        key: TEST_CSD.key,
+        password: TEST_CSD_PASSWORD,
+      }),
+    );
+  /** Activation without running the organization's provisioning (it stays without an org id). */
+  async function activateUnprovisioned(t: Fixture) {
+    await web(t, (tx) =>
+      service.activate(tx, t.owner, { operationId: op(), expectedVersion: 0 }),
+    );
+    await admin`update jobs set next_at = now() + interval '1 day'
+      where tenant_id = ${t.tenantId} and kind = 'cfdi_org'`;
+  }
+  const uploadRow = async (t: Fixture) =>
+    (
+      await admin`select u.status, u.error_code, s.payload_secret is null as wiped, s.wiped_at is not null as wiped_at
+        from cfdi_csd_uploads u join cfdi_secrets s on s.tenant_id = u.tenant_id and s.id = u.secret_id
+        where u.tenant_id = ${t.tenantId} order by u.created_at desc limit 1`
+    )[0];
+
+  /** An invoice whose substitution's motive-01 cancellation the receptor rejected (D1, D2 valid). */
+  async function rejectedSubstitution(t: Fixture) {
+    const tk = await makeTicket(t);
+    const d1 = await invoice(t, tk);
+    await settle(t.tenantId);
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_rejected",
+      match: { type: "I", global: false },
+    });
+    const d2 = await substitute(t, d1.id);
+    await settle(t.tenantId);
+    await due(t.tenantId, "cfdi_reconcile");
+    await settle(t.tenantId);
+    assert.equal((await docRow(d1.id)).status, "valid");
+    assert.equal((await docRow(d2.id)).status, "valid");
+    return { tk, d1, d2 };
+  }
+  const substitute = (t: Fixture, id: string) =>
+    web(t, (tx) =>
+      service.substituteDocument(
+        tx,
+        t.manager,
+        {
+          operationId: op(),
+          receptor: { ...MORAL, postalCode: "86990" },
+          cardForm: null,
+          reason: "CP equivocado",
+        },
+        { params: { id } } as never,
+      ),
+    );
+  const requestAgain = (t: Fixture, id: string) =>
+    web(t, (tx) =>
+      service.cancelDocument(
+        tx,
+        t.manager,
+        { operationId: op(), motive: "01", reason: "Otra vez" },
+        { params: { id } } as never,
+      ),
+    );
+  const viewOf = (t: Fixture, id: string) =>
+    web(t, (tx) =>
+      service.getDocument(tx, t.manager, { params: { id } } as never),
+    );
+  /** The worker's own transitions, as an earlier release (or a race) could have left them. */
+  const asWorker = <T>(t: Fixture, fn: (tx: Tx) => Promise<T>) =>
+    tenant(worker, t.tenantId, fn);
+
   await test("WORKER-1a. a staff cancellation whose DELETE reached SAT but whose answer was lost is read back on the retry: the invoice ends canceled with its ticket released, never failed by a second DELETE", async () => {
     const W = await makeTenant("worker-1a");
     await activate(W);
@@ -3413,31 +3489,6 @@ try {
     );
   });
 
-  /** The owner's CSD upload of the synthetic test certificate. */
-  const uploadTestCsd = (t: Fixture) =>
-    web(t, (tx) =>
-      service.uploadCsd(tx, t.owner, {
-        operationId: op(),
-        cer: TEST_CSD.cer,
-        key: TEST_CSD.key,
-        password: TEST_CSD_PASSWORD,
-      }),
-    );
-  /** Activation without running the organization's provisioning (it stays without an org id). */
-  async function activateUnprovisioned(t: Fixture) {
-    await web(t, (tx) =>
-      service.activate(tx, t.owner, { operationId: op(), expectedVersion: 0 }),
-    );
-    await admin`update jobs set next_at = now() + interval '1 day'
-      where tenant_id = ${t.tenantId} and kind = 'cfdi_org'`;
-  }
-  const uploadRow = async (t: Fixture) =>
-    (
-      await admin`select u.status, u.error_code, s.payload_secret is null as wiped, s.wiped_at is not null as wiped_at
-        from cfdi_csd_uploads u join cfdi_secrets s on s.tenant_id = u.tenant_id and s.id = u.secret_id
-        where u.tenant_id = ${t.tenantId} order by u.created_at desc limit 1`
-    )[0];
-
   await test("SECRETS-1a. a CSD upload is refused until the restaurant's organization exists at Facturapi (cfdi_not_ready): no sealed box is stored for a job that cannot use it", async () => {
     const W = await makeTenant("secrets-1a");
     await activateUnprovisioned(W);
@@ -3504,6 +3555,139 @@ try {
     const [org] =
       await admin`select csd_status from cfdi_organizations where tenant_id = ${W.tenantId}`;
     assert.notEqual(org.csd_status, "processing");
+  });
+
+  await test("R4-1a. a substitute with an open cancellation is never handed a motive-01 re-request, and a document named by an open motive-01 cancellation cannot be canceled itself (cfdi_substitution_in_progress)", async () => {
+    const W = await makeTenant("r4-1a");
+    await activate(W);
+    const { tk, d1, d2 } = await rejectedSubstitution(W);
+    // The manager cancels the substitute (02): while that is open, D1 offers no re-request.
+    await cancelAs(W, W.manager, d2.id);
+    const v = await viewOf(W, d1.id);
+    assert.equal(v.waitingSubstituteId, null);
+    assert.equal(v.canRequestAgain, false);
+    await rejects(requestAgain(W, d1.id), "cfdi_substitute_missing");
+    await settle(W.tenantId);
+    assert.equal((await docRow(d2.id)).status, "canceled");
+    const after = await viewOf(W, d1.id);
+    assert.equal(after.canCancel, true, "D1 is usable again");
+    assert.deepEqual(
+      (await claims(tk.id)).map((r) => [r.document_id, r.state]),
+      [
+        [d1.id, "active"],
+        [d2.id, "released"],
+      ],
+    );
+    // During an outage the substitution's own cancellation is retrying: its substitute (valid,
+    // named by that open 01) cannot be canceled meanwhile.
+    const tk2 = await makeTicket(W);
+    const e1 = await invoice(W, tk2);
+    await settle(W.tenantId);
+    fake.fault({ op: "invoices.cancel", fault: "unavailable" });
+    const e2 = await substitute(W, e1.id);
+    await settle(W.tenantId);
+    assert.equal((await docRow(e2.id)).status, "valid");
+    await rejects(
+      cancelAs(W, W.manager, e2.id),
+      "cfdi_substitution_in_progress",
+    );
+    await due(W.tenantId, "cfdi_cancel");
+    await settle(W.tenantId);
+    assert.equal((await docRow(e1.id)).status, "canceled");
+    assert.deepEqual(
+      (await claims(tk2.id)).map((r) => [r.document_id, r.state]),
+      [
+        [e1.id, "released"],
+        [e2.id, "active"],
+      ],
+    );
+  });
+
+  await test("R4-1b. a motive-01 cancellation whose substitute ended (canceled) before it was sent fails with cfdi_substitute_failed instead of waiting forever, and recovery fails one left queued: the original can be canceled again", async () => {
+    const W = await makeTenant("r4-1b");
+    await activate(W);
+    const { tk, d1, d2 } = await rejectedSubstitution(W);
+    await requestAgain(W, d1.id);
+    const [c1] =
+      await admin`select id from cfdi_cancellations where document_id = ${d1.id} and status = 'queued'`;
+    // The substitute is canceled first (a state an earlier release allowed): its claim released.
+    await asWorker(W, async (tx) => {
+      await tx`update cfdi_documents set status = 'canceled' where id = ${d2.id}`;
+      await tx`update cfdi_document_tickets set state = 'released', released_reason = 'canceled', released_at = now()
+        where document_id = ${d2.id} and state <> 'released'`;
+    });
+    await settle(W.tenantId);
+    const [c] =
+      await admin`select status, error_code from cfdi_cancellations where id = ${c1.id}`;
+    assert.deepEqual(
+      { ...c },
+      {
+        status: "failed",
+        error_code: "cfdi_substitute_failed",
+      },
+    );
+    assert.ok((await events(d1.id)).includes("cancel_failed"));
+    await cancelAs(W, W.manager, d1.id);
+    await settle(W.tenantId);
+    assert.equal((await docRow(d1.id)).status, "canceled");
+    assert.deepEqual(
+      (await claims(tk.id)).map((r) => r.state),
+      ["released", "released"],
+    );
+    // Recovery: a queued motive-01 cancellation whose substitute is final is a fixable state.
+    const { d1: f1, d2: f2 } = await rejectedSubstitution(W);
+    await requestAgain(W, f1.id);
+    const [q] =
+      await admin`select id from cfdi_cancellations where document_id = ${f1.id} and status = 'queued'`;
+    await admin`update jobs set state = 'dead', error_code = 'cancelled' where tenant_id = ${W.tenantId}
+      and kind = 'cfdi_cancel' and payload->>'cancellationId' = ${q.id}`;
+    await asWorker(W, async (tx) => {
+      await tx`update cfdi_documents set status = 'canceled' where id = ${f2.id}`;
+      await tx`update cfdi_document_tickets set state = 'released', released_reason = 'canceled', released_at = now()
+        where document_id = ${f2.id} and state <> 'released'`;
+    });
+    const action = await web(W, async (tx) =>
+      recoveryAction(
+        tx,
+        (await loadDocument(tx, f1.id))!,
+        Date.now() + 3_600_000,
+      ),
+    );
+    assert.deepEqual(action, { kind: "cancel", cancellationId: q.id });
+  });
+
+  await test("R4-1c. while the original's motive-01 cancellation waits for the receptor, its substitute cannot be canceled; a substitute that ended anyway is never handed the ticket (no substitution_completed on a canceled document) and the ticket goes back to the globals", async () => {
+    const W = await makeTenant("r4-1c");
+    await activate(W);
+    const tk = await makeTicket(W);
+    const d1 = await invoice(W, tk);
+    await settle(W.tenantId);
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_pending",
+      match: { type: "I", global: false },
+    });
+    const d2 = await substitute(W, d1.id);
+    await settle(W.tenantId);
+    assert.equal((await docRow(d1.id)).status, "canceling");
+    await rejects(
+      cancelAs(W, W.manager, d2.id),
+      "cfdi_substitution_in_progress",
+    );
+    // The substitute ended anyway (an earlier release): the receptor then accepts D1.
+    await asWorker(W, async (tx) => {
+      await tx`update cfdi_documents set status = 'canceled' where id = ${d2.id}`;
+      await tx`update cfdi_document_tickets set state = 'released', released_reason = 'canceled', released_at = now()
+        where document_id = ${d2.id} and state <> 'released'`;
+    });
+    await due(W.tenantId, "cfdi_reconcile");
+    await settle(W.tenantId);
+    assert.equal((await docRow(d1.id)).status, "canceled");
+    assert.ok(!(await events(d2.id)).includes("substitution_completed"));
+    const [after] =
+      await admin`select count(*)::int as n from jobs where tenant_id = ${W.tenantId} and kind = 'cfdi_global'
+        and dedupe_key like ${"tick:after-cancel:" + d1.id + "%"}`;
+    assert.equal(after.n, 1, "the freed ticket goes back to the globals");
   });
 
   console.log(`cfdi DB checks passed: ${checks}`);

@@ -100,10 +100,9 @@ export async function onCanceled(
   if (c.source === "reissue") return;
   await releaseClaims(tx, doc.id, "canceled");
   // A second substitute is refused while one is unfinished (CFDI-R3-1), so at most one waits.
-  const substitute =
-    c.source === "substitution" && c.substituteDocumentId
-      ? c.substituteDocumentId
-      : await waitingSubstitute(tx, doc.id);
+  // It takes the ticket only while it is still valid with no cancellation of its own, whatever
+  // the cancellation named (CFDI-R4-1); otherwise the freed ticket goes back to the globals.
+  const substitute = await waitingSubstitute(tx, doc.id);
   if (substitute) {
     await activatePendingClaims(tx, substitute);
     await event(tx, ctx, substitute, "substitution_completed", {
@@ -197,13 +196,25 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
       const sub = c.substituteDocumentId
         ? await loadDocument(tx, c.substituteDocumentId)
         : null;
-      if (!sub || sub.status === "failed") {
+      // The substitute ended (failed, or canceled or being canceled itself): this cancellation
+      // can never be sent, so it fails and the original is usable again (CFDI-R4-1). It waits
+      // only while the substitute may still become valid.
+      if (
+        !sub ||
+        ["failed", "canceling", "canceled"].includes(sub.status) ||
+        (sub.status === "valid" && !sub.uuid)
+      ) {
         await tx`
           update cfdi_cancellations set status = 'failed', error_code = 'cfdi_substitute_failed', processed_at = now()
           where id = ${c.id} and status = 'queued'`;
-        return null;
+        await event(tx, ctx, doc.id, "cancel_failed", {
+          motive: "01",
+          code: "cfdi_substitute_failed",
+          substitute: sub?.id ?? null,
+        });
+        return { refused: doc.id, code: "cfdi_substitute_failed" };
       }
-      if (sub.status !== "valid" || !sub.uuid) return { wait: true as const };
+      if (sub.status !== "valid") return { wait: true as const };
       substituteUuid = sub.uuid;
     }
     // SAT refuses to cancel a CFDI that a valid credit note relates to. The request checked it,
@@ -218,7 +229,7 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
         code: "cfdi_has_credit_notes",
         providerCode: null,
       });
-      return { refused: doc.id };
+      return { refused: doc.id, code: "cfdi_has_credit_notes" };
     }
     return {
       c,
@@ -234,7 +245,7 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
       key: `cfdi_cancel_failed:${tenantTag(tenantId)}:${loaded.refused}`,
       severity: "warning",
       title: "CFDI cancellation refused",
-      body: `tenant ${tenantTag(tenantId)} document ${loaded.refused} code cfdi_has_credit_notes`,
+      body: `tenant ${tenantTag(tenantId)} document ${loaded.refused} code ${loaded.code}`,
     });
     return { status: "done" };
   }

@@ -1076,6 +1076,10 @@ export default defineArea({
       "Esta factura no tiene una sustituta vigente; cancélala con el motivo 02 o 03.",
       "This invoice has no valid replacement; cancel it with reason 02 or 03.",
     ],
+    cfdi_substitution_in_progress: [
+      "Esta factura sustituye a otra cuya cancelación sigue en proceso; espera a que termine antes de cancelarla.",
+      "This invoice replaces another one whose cancellation is still in progress; wait for it to finish before canceling this one.",
+    ],
     cfdi_not_substitutable: [
       "Solo las facturas a clientes se pueden sustituir.",
       "Only customer invoices can be replaced.",

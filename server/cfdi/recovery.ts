@@ -104,7 +104,12 @@ export async function recoveryAction(
       const sub = c.substituteDocumentId
         ? await loadDocument(tx, c.substituteDocumentId)
         : null;
-      if (sub?.status === "valid")
+      // Sent once the substitute is valid; failed by cfdi_cancel when the substitute ended
+      // (CFDI-R4-1). Only a substitute still on its way leaves it waiting.
+      if (
+        !sub ||
+        ["valid", "failed", "canceling", "canceled"].includes(sub.status)
+      )
         return { kind: "cancel", cancellationId: c.id };
     }
   }

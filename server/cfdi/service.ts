@@ -790,6 +790,12 @@ async function cancellable(tx: Tx, s: Session, doc: DocumentRow) {
     select 1 as one from cfdi_cancellations
     where document_id = ${doc.id} and status in ('queued','requested')`;
   if (open) throw new DomainError("cfdi_cancel_in_progress", 409);
+  // The substitute named by an open motive-01 cancellation of its original: canceling it first
+  // would leave that cancellation waiting forever (CFDI-R4-1).
+  const [named] = await tx`
+    select 1 as one from cfdi_cancellations
+    where substitute_document_id = ${doc.id} and status in ('queued','requested')`;
+  if (named) throw new DomainError("cfdi_substitution_in_progress", 409);
   if (await hasCreditNotes(tx, doc.id))
     throw new DomainError("cfdi_has_credit_notes", 409);
   return current;
