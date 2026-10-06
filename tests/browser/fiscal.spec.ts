@@ -779,6 +779,10 @@ test("FISCAL-OFFLINE-1: a synced offline sale is found in Órdenes by the provis
     number = ((await receipt.textContent()) ?? "").match(
       /[A-Z][A-Z0-9]{0,2}-\d{2,4}/,
     )![0];
+    await page
+      .getByRole("button", { name: "Siguiente venta", exact: true })
+      .click();
+    await expect(receipt).toHaveCount(0);
   } finally {
     await context.unroute("**/api/**");
   }
