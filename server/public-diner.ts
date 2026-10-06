@@ -251,11 +251,15 @@ export async function submitHold(
     throw new DomainError("public_ordering_paused", 409);
 
   const { revision } = await menuRevision(tx);
+  const menu = await catalog(tx);
+  // Open-price items are POS only (publicCatalog never lists them).
+  if (p.lines.some((l) => menu.find((x) => x.id === l.productId)?.openAmount))
+    throw new DomainError("forbidden", 403);
   let priced: PricedLine[];
   try {
     priced = quote(
       p.lines.map((l) => ({ ...l, note: "" })),
-      await catalog(tx),
+      menu,
       false,
     );
   } catch (e) {
