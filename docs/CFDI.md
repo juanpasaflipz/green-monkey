@@ -125,7 +125,10 @@ CSD files are never kept, so nothing else is lost.
 - The **web** process seals CSD uploads to the published X25519 key (`ECDH-ES`) and reads
   documents, files and settings under `gm_app` with RLS.
 - Discovery: the policy `jobs_worker_discover` lets the worker login see due `cfdi_%` jobs of
-  every tenant (ids and flags only in payloads); claims and writes stay tenant-fenced.
+  every tenant (ids and flags only in payloads); claims and writes stay tenant-fenced. Running
+  jobs whose lease expired are found by discovery, the claim and `expireLostJobs` through
+  `jobs_running_lease_until (tenant_id, kind, lease_until) WHERE state = 'running'` (LD-21,
+  RUNBOOK PLATFORM-OPS-10), not by scanning a tenant's done jobs; DB check 17e EXPLAINs all three.
 - `tests/import-graph.test.ts` asserts the boundary: `server/index.ts` never reaches the worker
   registry, `server/cfdi/worker/*`, the vault or the Facturapi client; the worker never reaches
   `server/tokens.ts`, `server/orders.ts`, `server/fiscal.ts`, `server/index.ts`,

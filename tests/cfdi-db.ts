@@ -25,7 +25,7 @@ import { password } from "../server/auth.js";
 import { setLogSink } from "../server/logging.js";
 import type { Alert } from "../server/ops/alerts.js";
 import { createJobRunner } from "../server/jobs/runner.js";
-import { claimJobs } from "../server/jobs/queue.js";
+import { claimJobs, expireLostJobs } from "../server/jobs/queue.js";
 import {
   discoverTenants,
   workerHandlers,
@@ -2615,6 +2615,82 @@ try {
       list({ after: "yesterday|" + randomUUID() }),
       (e: Error) => e.name === "ZodError",
     );
+  });
+
+  await test("17e. LD-21 / PLATFORM-OPS-10: worker discovery, the claim and expireLostJobs find running jobs with expired leases through jobs_running_lease_until (tenant_id, kind, lease_until), not by scanning a tenant's done jobs", async () => {
+    const [def] = await admin`
+      select indexdef from pg_indexes where tablename = 'jobs' and indexname = 'jobs_running_lease_until'`;
+    assert.match(
+      def?.indexdef ?? "",
+      /\(tenant_id, kind, lease_until\) WHERE \(state = 'running'::text\)$/,
+    );
+    // 30 days of done rows of one kind for one tenant, as kitchen_dispatch leaves them.
+    const X = await makeTenant("jobs explain");
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${X.tenantId}, true)`;
+      await tx`
+        insert into jobs(tenant_id, id, kind, dedupe_key, payload, state, attempts, next_at, created_at)
+        select ${X.tenantId}, gen_random_uuid(), 'cfdi_deliver', 'explain:' || n, '{}', 'done', 1,
+          now() - make_interval(mins => n), now() - make_interval(mins => n)
+        from generate_series(1, 4000) n`;
+    });
+    await admin`analyze jobs`;
+    // Runs the real statement of each function with EXPLAIN in front (same text, same
+    // parameters), as the worker login: outside a tenant for discovery, inside one otherwise.
+    const plans: unknown[] = [];
+    const explaining = <S extends object>(sql: S): S =>
+      new Proxy(sql, {
+        apply(target, self, args: unknown[]) {
+          const [strings, ...values] = args as [TemplateStringsArray, ...unknown[]];
+          const raw = ["explain (format json) " + strings[0], ...strings.slice(1)];
+          const query = (
+            target as unknown as (...a: unknown[]) => Promise<Record<string, unknown>[]>
+          )(Object.assign([...raw], { raw }), ...values);
+          return query.then((rows) => {
+            plans.push(rows[0]["QUERY PLAN"]);
+            return [];
+          });
+        },
+      });
+    const kinds = [...workerHandlers().keys()].filter((k) => k.startsWith("cfdi_"));
+    await discoverTenants(explaining(worker), kinds);
+    await tenant(worker, X.tenantId, (tx) =>
+      claimJobs(explaining(tx), kinds, 4, 60, 12),
+    );
+    await tenant(worker, X.tenantId, (tx) =>
+      expireLostJobs(explaining(tx), "cfdi_deliver", 12),
+    );
+    assert.equal(plans.length, 3);
+    const scans = (plan: unknown) => {
+      const out: { index: string; cond: string }[] = [];
+      const walk = (n: unknown) => {
+        if (Array.isArray(n)) return n.forEach(walk);
+        if (!n || typeof n !== "object") return;
+        const o = n as Record<string, unknown>;
+        if (typeof o["Index Name"] === "string")
+          out.push({
+            index: o["Index Name"],
+            cond: String(o["Index Cond"] ?? ""),
+          });
+        Object.values(o).forEach(walk);
+      };
+      walk(plan);
+      return out;
+    };
+    const [discovery, claim, expiry] = plans.map(scans);
+    const uses = (list: { index: string; cond: string }[], label: string) => {
+      const hit = list.find((x) => x.index === "jobs_running_lease_until");
+      assert.ok(hit, `${label}: ${JSON.stringify(list)}`);
+      return hit!;
+    };
+    assert.match(uses(discovery, "discovery").cond, /lease_until < now\(\)/);
+    const c = uses(claim, "claim").cond;
+    assert.match(c, /tenant_id = /);
+    assert.match(c, /kind = ANY/);
+    const e = uses(expiry, "expireLostJobs").cond;
+    assert.match(e, /tenant_id = /);
+    assert.match(e, /kind = /);
+    assert.match(e, /lease_until < now\(\)/);
   });
 
   await test("17c. the -- 030 cfdi grants block is idempotent (applied twice)", async () => {

@@ -4,11 +4,11 @@
 --
 -- Expand-only: new tables, triggers and indexes on new tables; one SELECT policy on fiscal's
 -- fiscal_tickets (self-invoice code lookup), one SELECT policy on ops' jobs (worker discovery,
--- Wave 2.0 `discover`) and one partial index on jobs (lease_until of running jobs, LD-8 P-27),
--- all three LAST, because CREATE POLICY / CREATE INDEX hold a strong lock on a busy table until
--- commit (the 030 production deploy runs before 07:00 Mexico City, docs/RUNBOOK.md). No backfill
--- and no DML, so the LD-6 NO FORCE / FORCE wrapper is not needed. No change to existing columns:
--- the previous app revision never reads these tables.
+-- Wave 2.0 `discover`) and one partial index on jobs ((tenant_id, kind, lease_until) of running
+-- jobs, LD-8 P-27 and LD-21), all three LAST, because CREATE POLICY / CREATE INDEX hold a strong
+-- lock on a busy table until commit (the 030 production deploy runs before 07:00 Mexico City,
+-- docs/RUNBOOK.md). No backfill and no DML, so the LD-6 NO FORCE / FORCE wrapper is not needed. No
+-- change to existing columns: the previous app revision never reads these tables.
 --
 -- Grants to gm_jobs_worker live in scripts/grants.sql ("-- 030 cfdi"), never here. The capability
 -- role comes from scripts/ops/sql/globals.sql (owner, Wave 2.0); the create-if-missing block below
@@ -559,6 +559,9 @@ END $$;
 -- A's transaction can never lock or change tenant B's job.
 CREATE POLICY jobs_worker_discover ON jobs FOR SELECT TO gm_jobs_worker USING (kind LIKE 'cfdi\_%');
 
--- 13c. Stale running jobs (lease expired) are found by discovery and claimJobs without a scan
--- (LD-8, platform P-27). Built normally: 030 deploys before 07:00 Mexico City on a small table.
-CREATE INDEX jobs_running_lease_until ON jobs (lease_until) WHERE state = 'running';
+-- 13c. Running jobs whose lease expired are found by worker discovery, the claim's running branch
+-- and expireLostJobs (state = 'running' and lease_until < now(), per tenant and kind) without
+-- scanning the tenant's done rows of that kind (LD-8, platform P-27; LD-21, RUNBOOK
+-- PLATFORM-OPS-10 / PLAT-HR-7; the cfdi DB suite EXPLAINs all three). Built normally (not
+-- CONCURRENTLY): 030 deploys before 07:00 Mexico City on a small table.
+CREATE INDEX jobs_running_lease_until ON jobs (tenant_id, kind, lease_until) WHERE state = 'running';
