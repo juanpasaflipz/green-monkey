@@ -345,8 +345,10 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
     if (before.version !== p.expectedVersion)
       throw new DomainError("cfdi_settings_changed", 409);
     const facts = await fiscalFacts(tx);
-    if (facts.regime === "626" && p.globalPeriodicity !== "month")
-      throw new DomainError("cfdi_resico_monthly", 400);
+    // RESICO (626) issues monthly globals (decision D4): the periodicity is coerced, never refused,
+    // so a restaurant that became RESICO can still save its other settings (CFDI-SAT-4, UX-1).
+    const wanted =
+      facts.regime === "626" ? ("month" as const) : p.globalPeriodicity;
     // Once any period row exists (built or not; the global tick adds the current period's row
     // right after activation), a periodicity change applies from the first day of next month:
     // the rows already there keep theirs and the tick never re-derives a past date, so a period
@@ -355,13 +357,13 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
     let periodicity = before.globalPeriodicity;
     let next: typeof before.nextPeriodicity = null;
     let nextFrom: string | null = null;
-    if (p.globalPeriodicity !== before.globalPeriodicity) {
+    if (wanted !== before.globalPeriodicity) {
       const [built] =
         await tx`select 1 as one from cfdi_global_periods limit 1`;
       if (built) {
-        next = p.globalPeriodicity;
+        next = wanted;
         nextFrom = firstOfNextMonth(today(s));
-      } else periodicity = p.globalPeriodicity;
+      } else periodicity = wanted;
     }
     await tx`
       update cfdi_settings set enabled = ${p.enabled}, global_periodicity = ${periodicity},

@@ -2313,9 +2313,12 @@ try {
     });
     const view = await activate(R);
     assert.equal(view.settings?.resicoMonthly, true);
-    await rejects(
-      saveSettings(R, { globalPeriodicity: "day" }),
-      "cfdi_resico_monthly",
+    // LD-33 SAT-4: a RESICO save is coerced to monthly (never refused, which locked the owner
+    // out of every other setting); a "day" from an older client stores "month".
+    const coerced = await saveSettings(R, { globalPeriodicity: "day" });
+    assert.equal(
+      coerced.settings?.nextPeriodicity ?? coerced.settings?.globalPeriodicity,
+      "month",
     );
     const [audit] =
       await admin`select detail from audit where tenant_id = ${A.tenantId} and operation = 'cfdi.settings.saved' order by id desc limit 1`;
@@ -4053,6 +4056,43 @@ try {
       (await claims(t2.id)).map((r) => [r.document_id, r.state]),
       [[g.id, "active"]],
     );
+  });
+
+  await test('SAT-4 / UX-1. a restaurant that becomes RESICO (626) after choosing daily globals moves to monthly from the first of next month (the tick stores the pending change), and every later save, an older client\'s "day" included, keeps monthly instead of failing', async () => {
+    const W = await makeTenant("sat-4", {
+      rfc: "XIQB891116QE4",
+      legalName: "BERENICE XIMO QUEZADA",
+      regime: "612",
+    });
+    await activate(W, { periodicity: "day" });
+    const before = await web(W, (tx) => service.getSettings(tx, W.owner));
+    assert.equal(before.settings?.globalPeriodicity, "day");
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${W.tenantId}, true)`;
+      await tx`update restaurant_fiscal_profiles set regime = '626', version = version + 1`;
+    });
+    await tick(W);
+    const after = await web(W, (tx) => service.getSettings(tx, W.owner));
+    assert.deepEqual(
+      {
+        resico: after.settings?.resicoMonthly,
+        now: after.settings?.globalPeriodicity,
+        next: after.settings?.nextPeriodicity,
+        from: after.settings?.nextPeriodicityFrom,
+      },
+      {
+        resico: true,
+        now: "day",
+        next: "month",
+        from: firstOfNextMonth(today()),
+      },
+    );
+    const saved = await saveSettings(W, {
+      globalPeriodicity: "day",
+      selfInvoiceEnabled: false,
+    });
+    assert.equal(saved.settings?.selfInvoiceEnabled, false);
+    assert.equal(saved.settings?.nextPeriodicity, "month");
   });
 
   console.log(`cfdi DB checks passed: ${checks}`);

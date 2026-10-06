@@ -27,6 +27,7 @@ import type { Tx } from "../../db.js";
 import { Temporal } from "@js-temporal/polyfill";
 import { businessDate } from "../../../shared/domain.js";
 import {
+  firstOfNextMonth,
   globalPeriodFor,
   periodClosesAt,
   periodicityOn,
@@ -342,6 +343,18 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
     const facts = await fiscalFacts(tx);
     const today = businessDate(now.toISOString(), facts.timezone, facts.cutoff);
     const mode = settings.mode;
+    // A restaurant that became RESICO (626) after choosing another periodicity moves to monthly
+    // globals from the first of next month (decision D4; CFDI-SAT-4): past periods keep theirs.
+    if (
+      facts.regime === "626" &&
+      (settings.nextPeriodicity ?? settings.globalPeriodicity) !== "month"
+    ) {
+      await tx`
+        update cfdi_settings set next_periodicity = 'month',
+          next_periodicity_from = ${firstOfNextMonth(today)}::date, version = version + 1,
+          updated_at = now()`;
+      settings = (await loadSettings(tx))!;
+    }
     const from = modeFrom(settings);
     // New rows only, after the last one of this mode, with the settings as they are BEFORE the
     // promotion: a pending change still applies only from its first-of-month date, even when

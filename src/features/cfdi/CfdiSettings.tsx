@@ -56,7 +56,10 @@ type Form = Omit<CfdiSettingsInput, "operationId" | "expectedVersion">;
 function formOf(s: NonNullable<CfdiSettingsView["settings"]>): Form {
   return {
     enabled: s.enabled,
-    globalPeriodicity: s.nextPeriodicity ?? s.globalPeriodicity,
+    // RESICO issues monthly globals: the form always carries month (CFDI-UX-1, SAT-4).
+    globalPeriodicity: s.resicoMonthly
+      ? "month"
+      : (s.nextPeriodicity ?? s.globalPeriodicity),
     globalAuto: s.globalAuto,
     conceptMode: s.conceptMode,
     conceptDescription: s.conceptDescription,
@@ -459,6 +462,9 @@ export function CfdiSettings({
                 operationId: formOperation,
                 expectedVersion: settings.version,
                 ...form,
+                globalPeriodicity: settings.resicoMonthly
+                  ? "month"
+                  : form.globalPeriodicity,
                 conceptDescription: form.conceptDescription.trim(),
                 supportEmail: form.supportEmail?.trim() || null,
               },
