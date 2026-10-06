@@ -28,7 +28,8 @@ read only this compiled, self-contained document:
 - `groupIds` (ordered links) and the compiled `groups` (each with its `version`,
   rules and choices; choices may carry `cost` and `recipe`);
 - `recipe`, `cost` and `version`;
-- `fiscal`, reserved for the fiscal wave: menu writes preserve it and never set it.
+- `fiscal` (fiscal 027): `{ taxCategory, satProductKey, satUnitKey }`, set by the
+  editor's Impuestos section; every other menu write preserves it.
 
 **Version semantics.** `version` increments when priced or structural content
 changes: name, price, open price or ceiling, kind, station, category, linked
@@ -357,23 +358,28 @@ would make the drift check fail.
 - Product photos (no storage provider configured).
 - Time-scheduled menus and price reductions on choices (discounts area).
 - Substitutions, yields, lots and purchase orders.
-- The "Impuestos" section of the product editor: `ProductEditor` exposes a
-  `renderFiscal` slot that the fiscal wave fills; no tax logic exists here.
 
-**Fiscal extension points.** Product tax is configured by fiscal's wave-2
-wiring (027); menu only leaves the extension points:
+**Product tax (fiscal 027, [FISCAL.md](FISCAL.md)).** Fiscal wired menu's
+extension points:
 
-- `Product.fiscal` (`shared/domain.ts`). Every menu write keeps a stored value
-  and none sets one: editor and legacy saves spread the stored document, group
-  recompiles and unlinks spread it too, and availability, category rename and
-  reorder, product reorder, archive and restore merge into it. DB test "menu
-  writes keep a stored product fiscal value (reserved for 027)" guards this.
-- The reserved comment on the strict `productInput` (`shared/menu-schema.ts`).
-- The inert `ProductEditor.renderFiscal` slot.
-- The `quote()` anchor comment `// fiscal (027): append line tax snapshot here`.
-
-Until fiscal merges, the editor has no Impuestos section and every product uses
-the restaurant default.
+- `Product.fiscal` (`shared/domain.ts`). The editor's **Impuestos** section
+  (`ProductEditor.renderFiscal`, filled by `MenuWorkspace` with
+  `ProductFiscalFields`) sets the tax category ("Predeterminado del
+  restaurante", IVA 16%, IVA 8% only in a border region, IVA 0%, exento) and
+  the optional SAT keys, and the editor save sends them. Every other menu write
+  keeps a stored value: legacy saves and imports spread the stored document,
+  group recompiles and unlinks spread it too, and availability, category rename
+  and reorder, product reorder, archive and restore merge into it. DB test
+  "menu writes keep a stored product fiscal value" guards this.
+- `productInput` (`shared/menu-schema.ts`) takes an optional strict `fiscal`;
+  `saveMenuProduct` refuses IVA 8% outside a border region
+  (`fiscal_border_rate_not_allowed`). `legacyProductInput` is unchanged.
+- `quote()` takes the server's fiscal context as its fourth parameter and
+  stores each line's immutable tax snapshot (`PricedLine.tax`).
+- A tax change bumps the product `version`, like any priced change. Lines
+  already sent keep their snapshot, and queued offline sales of that product
+  go to manager review as `offline_catalog_changed`.
+- `publicCatalog` (QR/kiosk) never sends a product's `fiscal` to diners.
 
 ## Integration notes (menu's merge)
 

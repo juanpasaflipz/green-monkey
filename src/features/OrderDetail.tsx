@@ -163,6 +163,28 @@ export function OrderDetail({
                   )}
               </>
             )}
+            {order.fiscal?.ticket && (
+              <>
+                <br />
+                {t("fiscalReceiptFolio").replace(
+                  "{folio}",
+                  order.fiscal.ticket.folio,
+                )}
+              </>
+            )}
+            {order.offline?.provisionalNumber && (
+              <>
+                <br />
+                {t("fiscalOfflineSale")
+                  .replace("{number}", order.offline.provisionalNumber)
+                  .replace(
+                    "{date}",
+                    new Date(order.offline.soldAt).toLocaleString(locale, {
+                      timeZone: zone,
+                    }),
+                  )}
+              </>
+            )}
           </p>
           <div className="row wrap">
             <Badge
@@ -396,7 +418,7 @@ export function OrderDetail({
                     <ReceiptDocument
                       order={order}
                       session={session}
-                      locale={locale}
+                      locale="es"
                       kind="check"
                     />,
                     settings.paper,
@@ -415,7 +437,7 @@ export function OrderDetail({
                     <ReceiptDocument
                       order={order}
                       session={session}
-                      locale={locale}
+                      locale="es"
                       kind="receipt"
                       reprint
                     />,

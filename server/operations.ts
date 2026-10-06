@@ -6,6 +6,7 @@ import { once, audit, drawer, getOrder } from "./orders.js";
 import { permit, managers } from "./auth.js";
 import { requireRecentAuth } from "./access.js";
 import { requireSelling } from "./free-limits.js";
+import { assertRefundAllowed, recordRefundTax } from "./fiscal.js";
 export async function cashSummary(tx: Tx, s: Session, drawerId?: string) {
   if (drawerId) permit(s, managers);
   const [d] = drawerId
@@ -64,6 +65,15 @@ export async function refund(tx: Tx, s: Session, raw: unknown) {
     .strict()
     .parse(raw);
   return once(tx, s, p.operationId, "refund", p, async () => {
+    // Lock order 1 → 2 → 5 → 6 → 11 (LD-15 fiscal Q3): the order row before the
+    // tender key, so concurrent refunds of two tenders of one order read the
+    // same earlier tax adjustments in turn (P1 stays exact).
+    const [owner] =
+      await tx`select order_id from tenders where id=${p.tenderId}`;
+    if (!owner) throw new DomainError("not_found", 404);
+    await tx`select id from orders where id=${owner.order_id} for update`;
+    // MONEY-1 (LD-25): no refund on an unticketed order with a balance due.
+    await assertRefundAllowed(tx, owner.order_id);
     await tx`select pg_advisory_xact_lock(hashtextextended(${s.tenantId + p.tenderId},0))`;
     const [t] = await tx`select * from tenders where id=${p.tenderId}`;
     if (!t) throw new DomainError("not_found", 404);
@@ -74,7 +84,10 @@ export async function refund(tx: Tx, s: Session, raw: unknown) {
     if (t.method === "external")
       throw new DomainError("external_refund_unverified", 409);
     const d = await drawer(tx, s);
-    await tx`insert into refunds(tenant_id,id,tender_id,session_id,amount,reason,disposition,actor_id) values(${s.tenantId},${randomUUID()},${t.id},${d.id},${p.amount},${p.reason},${p.disposition},${s.employeeId})`;
+    const refundId = randomUUID();
+    await tx`insert into refunds(tenant_id,id,tender_id,session_id,amount,reason,disposition,actor_id) values(${s.tenantId},${refundId},${t.id},${d.id},${p.amount},${p.reason},${p.disposition},${s.employeeId})`;
+    // fiscal 027: the refund's IVA adjustments (tender-level refund, no scope).
+    await recordRefundTax(tx, s, refundId);
     await audit(tx, s, "refund.recorded", t.order_id, p);
     return getOrder(tx, t.order_id);
   });

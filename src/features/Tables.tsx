@@ -148,8 +148,11 @@ export function Tables({
                       )}
                     </span>
                     <div className="row wrap">
-                      {/* A paid check still takes rounds ("la última ronda"),
-                          which reopen it on the same bill (SVC-K10). */}
+                      {/* A paid check has its fiscal ticket (folio) since it
+                          was paid, so it takes no more rounds: late items go
+                          out as "Enviar como orden nueva" for the same table
+                          (LD-15 fiscal Q2). Opening it still shows the check;
+                          one paid without a ticket (kill switch) takes rounds. */}
                       <Button
                         aria-label={`${t("resume")} #${c.number}`}
                         onClick={() => resume(c)}

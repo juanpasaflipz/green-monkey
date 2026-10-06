@@ -90,6 +90,13 @@ const operations: Record<string, Key> = {
   "offline.settings_changed": "offlineOpSettingsChanged",
   "offline.payment_attempt_recorded": "offlineOpAttemptRecorded",
   "offline.payment_attempt_discarded": "offlineOpAttemptDiscarded",
+  "job.requeued": "opsOpJobRequeued",
+  "job.cancelled": "opsOpJobCancelled",
+  // fiscal (027)
+  "fiscal.ticket.issued": "fiscalOpTicketIssued",
+  "fiscal.profile.saved": "fiscalOpProfileSaved",
+  "fiscal.tickets.repaired": "fiscalOpTicketsRepaired",
+  "fiscal.ticket.unallocated_discount": "fiscalOpUnallocatedDiscount",
   // public (032)
   "public.link_created": "publicOpLinkCreated",
   "public.link_rotated": "publicOpLinkRotated",
@@ -99,8 +106,6 @@ const operations: Record<string, Key> = {
   "public.resumed": "publicOpResumed",
   "public.hold_accepted": "publicOpHoldAccepted",
   "public.hold_rejected": "publicOpHoldRejected",
-  "job.requeued": "opsOpJobRequeued",
-  "job.cancelled": "opsOpJobCancelled",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",

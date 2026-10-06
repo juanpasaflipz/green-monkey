@@ -23,13 +23,14 @@ import {
   sqlEvents,
 } from "./lock-scan.js";
 
-// Fiscal (027) reorders these call sites (feed before refresh: platform §6.2 rows 1, 6
-// and 8) and deletes these three entries in the same commit.
-const FISCAL_REORDER: Record<string, string> = {
-  "server/orders.ts#createOrder:12>10": "row 1: refresh before the feed",
-  "server/voids.ts#voidLines:12>10": "row 6: refresh before the feed",
-  "server/service.ts#assignService:12>10": "row 8: refresh before the feed",
-};
+// Fiscal (027) reordered these call sites (feed before refresh, LO-R3: platform §6.2 rows
+// 1, 6 and 8) and deleted their entries (LD-21) when it absorbed this scanner. They must
+// stay out of the allowlist and out of the scan.
+const FISCAL_REORDERED = [
+  "server/orders.ts#createOrder:12>10",
+  "server/voids.ts#voidLines:12>10",
+  "server/service.ts#assignService:12>10",
+];
 
 // Permanent, sanctioned exceptions (docs/ARCHITECTURE.md "Global lock order"); none can
 // close a cycle, for the reason given.
@@ -90,7 +91,7 @@ const PERMANENT: Record<string, string> = {
   "server/public-holds.ts#acceptHold:12>11":
     "E5 (createOrder's refresh cannot issue at creation; then the drawer, as applySale)",
 };
-const ALLOWLIST = { ...FISCAL_REORDER, ...PERMANENT };
+const ALLOWLIST = { ...PERMANENT };
 
 /** Scans in-memory sources (fixtures), with orders.ts's real once() exclusions. */
 const excluded = onceExclusions(readFileSync("server/orders.ts", "utf8"));
@@ -118,7 +119,12 @@ describe("global lock order ratchet (platform §6.2, critic #9, PLATFORM-LOCKS-1
     ).toEqual([]);
     // Every entry names its reason.
     for (const [key, reason] of Object.entries(ALLOWLIST))
-      expect(reason, key).toMatch(/^(E\d|LO-R\d|row \d)/);
+      expect(reason, key).toMatch(/^(E\d|LO-R\d)/);
+    // Fiscal's reorder (LO-R3) holds in the real server code.
+    for (const key of FISCAL_REORDERED) {
+      expect(found.has(key), key).toBe(false);
+      expect(Object.hasOwn(ALLOWLIST, key), key).toBe(false);
+    }
   });
 
   it("no builtin lock function is imported or re-exported under another name", () => {
@@ -552,7 +558,9 @@ describe("the scanner finds what the rules forbid (fixtures)", () => {
       "server/voids.ts#voidLines:9>7",
     ]);
     for (const key of found) expect(Object.keys(PERMANENT)).toContain(key);
-    for (const key of Object.keys(FISCAL_REORDER))
+    for (const key of FISCAL_REORDERED) {
       expect(found, key).not.toContain(key);
+      expect(Object.keys(ALLOWLIST), key).not.toContain(key);
+    }
   });
 });

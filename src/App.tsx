@@ -79,6 +79,13 @@ import {
   NavBadge,
   PublicInboxBanner,
 } from "./features/public/PublicInboxBanner";
+import { installFiscalReceipt } from "./features/fiscal/FiscalReceipt";
+import {
+  clearFiscalContext,
+  prefetchFiscalContext,
+} from "./features/fiscal/context";
+// fiscal (027): the fiscal header and footer of every receipt (service's slots).
+installFiscalReceipt();
 type StepUpRequest = {
   sessionId: string;
   resolve: () => void;
@@ -149,6 +156,8 @@ export default function App() {
       resumeLock(cached);
       setActiveSession(cached);
       setSession(cached);
+      // fiscal (027): the issuer data of offline receipts (Dexie copy offline).
+      if (cached.role !== "kitchen") void prefetchFiscalContext(cached);
       setCatalog((await db.cache.get(scope(cached) + ":catalog"))?.value ?? []);
     }
   }
@@ -190,6 +199,9 @@ export default function App() {
       setActiveSession(s);
       setCatalog(c);
       await cacheSession(s, c);
+      // fiscal (027): receipts and the product editor read the fiscal context.
+      clearFiscalContext();
+      if (s.role !== "kitchen") void prefetchFiscalContext(s);
       void requestPersistence();
       void ensureDevicePrefix(s);
     } catch (e) {

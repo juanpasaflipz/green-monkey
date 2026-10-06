@@ -70,9 +70,11 @@ export async function assignService(
         after: { employeeId: p.employeeId, tableId: p.tableId, mode: p.mode },
         reason: p.reason,
       });
-      // A paid check moved off its table settles; the feed bump stays last.
-      await refreshCheckState(tx, s, orderId);
+      // LO-R3: the kitchen feed (LO-10) after the order, assignee and table locks
+      // and before refreshCheckState: a paid check moved off its table settles and
+      // may issue its ticket, which takes the folio counter (LO-12) last.
       await bumpKitchenFeed(tx, s);
+      await refreshCheckState(tx, s, orderId);
       return getOrder(tx, orderId);
     },
   );

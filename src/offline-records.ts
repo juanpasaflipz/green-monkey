@@ -155,6 +155,15 @@ async function allocateSequence(session: Session) {
   return next;
 }
 
+/**
+ * Receipt snapshot lines without the device's tax snapshot (fiscal 027): a
+ * record carries no tax fields (wave contracts §7), the server snapshots tax
+ * with its own fiscal context at sync, and the evidence kept for 5 years must
+ * not show the device's default IVA for a border restaurant.
+ */
+function snapshotLines(priced: PricedLine[]) {
+  return priced.map(({ tax: _tax, ...line }) => line);
+}
 function restaurantSnapshot(session: Session) {
   const { name, currency, timezone, cutoff, configVersion } =
     session.restaurant;
@@ -346,7 +355,7 @@ export async function saveOfflineSale(
   checkPayment(input.payment, input.total);
   const prefix = await devicePrefix(ctx.session);
   const snapshot = {
-    lines: input.priced,
+    lines: snapshotLines(input.priced),
     restaurant: restaurantSnapshot(ctx.session),
   };
   const record = await write(async () => {
@@ -1080,7 +1089,7 @@ export async function saveOfflineOrder(
   checkLines(input.draft.lines, input.priced);
   const prefix = await devicePrefix(ctx.session);
   const snapshot = {
-    lines: input.priced,
+    lines: snapshotLines(input.priced),
     restaurant: restaurantSnapshot(ctx.session),
   };
   await write(async () => {
@@ -1127,7 +1136,7 @@ async function roundBody(
   number: string | null,
 ) {
   const snapshot = {
-    lines: input.priced,
+    lines: snapshotLines(input.priced),
     restaurant: restaurantSnapshot(ctx.session),
   };
   const body = validated({
@@ -1320,7 +1329,7 @@ export async function saveOfflinePartial(
   checkPayment(input.payment, input.total);
   const prefix = await devicePrefix(ctx.session);
   const snapshot = {
-    lines: input.priced,
+    lines: snapshotLines(input.priced),
     restaurant: restaurantSnapshot(ctx.session),
   };
   await write(async () => {

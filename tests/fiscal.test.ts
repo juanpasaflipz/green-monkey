@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { allocate, DomainError } from "../shared/domain";
+import { allocate, DomainError, quote, type Product } from "../shared/domain";
+import { legacyProductInput, productInput } from "../shared/menu-schema";
 import * as taxModule from "../shared/tax";
 import * as satModule from "../shared/sat";
 import * as fiscalModule from "../shared/fiscal";
@@ -19,11 +20,13 @@ import {
   groupSelfInvoiceCode,
   lineSnapshot,
   lineTax,
+  netCategoryTax,
   normalizeSelfInvoiceCode,
   orderTaxBreakdown,
   orderTaxSummary,
   parseFolio,
   RECOVERY_LINE_NAME,
+  refundScopeCategories,
   refundScopeGross,
   refundTaxSplit,
   satTaxWithinTolerance,
@@ -1100,7 +1103,7 @@ describe("refundTaxSplit", () => {
           expect(r.base + r.tax).toBe(r.gross);
           expect(r.base).toBeGreaterThanOrEqual(0);
           expect(r.tax).toBeGreaterThanOrEqual(0);
-          // Cumulative extraction differs from this refund's own extraction by at most 1 centavo.
+          // Complement extraction differs from this refund's own extraction by at most 1 centavo (P4).
           expect(
             Math.abs(r.tax - extractTax(r.gross, r.rateBps).tax),
           ).toBeLessThanOrEqual(1);
@@ -1335,6 +1338,486 @@ describe("refundScopeGross", () => {
         s.groups.filter((g) => g.gross > 0).map((g) => g.tax),
       );
     }
+  });
+
+  it("is a fallback only: refundScopeCategories refuses it on a discounted line", () => {
+    const l = line({ total: 3000, quantity: 3 });
+    // Without gross on a discounted line the even spread would be wrong: refused (a 500).
+    expect(() =>
+      refundScopeCategories({
+        lines: [l],
+        lineDiscounts: { [l.id]: 300 },
+        scope: [{ lineId: l.id, units: [0] }],
+        ctx: general,
+      }),
+    ).toThrow(new RangeError("refund_scope_gross_required"));
+    // On an undiscounted line it is exactly refundScopeGross.
+    expect(
+      refundScopeCategories({
+        lines: [l],
+        scope: [{ lineId: l.id, units: [0, 2] }],
+        ctx: general,
+      }),
+    ).toEqual(
+      refundScopeGross({
+        lines: [l],
+        scope: [{ lineId: l.id, units: [0, 2] }],
+        ctx: general,
+      }),
+    );
+  });
+});
+
+/**
+ * Applies a sequence of post-ticket refunds to one category with refundTaxSplit, returning the
+ * adjustment rows it would store.
+ */
+function refundSequence(
+  category: TaxCategory,
+  sale: number,
+  amounts: number[],
+): { category: TaxCategory; gross: number; tax: number }[] {
+  const previous: { category: TaxCategory; gross: number; tax: number }[] = [];
+  for (const refundGross of amounts) {
+    const rows = refundTaxSplit({
+      refundGross,
+      saleGroups: [{ category, rateBps: rate(category), gross: sale }],
+      previous,
+    });
+    for (const r of rows)
+      previous.push({ category: r.category, gross: r.gross, tax: r.tax });
+  }
+  return previous;
+}
+/** 1–5 random refund amounts that add up to at most `sale` (all of it when `whole`). */
+function randomRefunds(
+  random: ReturnType<typeof rng>,
+  sale: number,
+  whole = false,
+): number[] {
+  const n = random.int(1, 5);
+  const cuts = Array.from({ length: n - 1 }, () => random.int(0, sale)).sort(
+    (a, b) => a - b,
+  );
+  const end = whole ? sale : random.int(cuts.at(-1) ?? 0, sale);
+  const points = [0, ...cuts, end];
+  return points
+    .slice(1)
+    .map((p, i) => p - points[i])
+    .filter((x) => x > 0);
+}
+
+describe("complement refund extraction", () => {
+  const vat = ["iva16", "iva8"] as const;
+
+  it("refundTaxSplit P1: after any sequence of post-ticket refunds, ticket tax − Σ adjustment tax = extractTax(G − R) exactly (property, 5,000 random sequences of 1–5 refunds at 16% and 8%)", () => {
+    const random = rng(2701);
+    for (let i = 0; i < 5000; i++) {
+      const category = random.pick(vat);
+      const sale = random.int(1, random.pick([500, 50_000, 2_000_000]));
+      const rows = refundSequence(category, sale, randomRefunds(random, sale));
+      const refunded = rows.reduce((a, r) => a + r.gross, 0);
+      const refundedTax = rows.reduce((a, r) => a + r.tax, 0);
+      expect(extractTax(sale, rate(category)).tax - refundedTax).toBe(
+        extractTax(sale - refunded, rate(category)).tax,
+      );
+    }
+  });
+
+  it("refundTaxSplit P2: refunding the whole sale in any number of refunds nets the category IVA to exactly 0 (property)", () => {
+    const random = rng(2702);
+    for (let i = 0; i < 3000; i++) {
+      const category = random.pick(vat);
+      const sale = random.int(1, 1_000_000);
+      const rows = refundSequence(
+        category,
+        sale,
+        randomRefunds(random, sale, true),
+      );
+      expect(rows.reduce((a, r) => a + r.gross, 0)).toBe(sale);
+      expect(rows.reduce((a, r) => a + r.tax, 0)).toBe(
+        extractTax(sale, rate(category)).tax,
+      );
+    }
+  });
+
+  it("refundTaxSplit P3: every row has 0 ≤ tax ≤ gross and base + tax = gross (property)", () => {
+    const random = rng(2703);
+    for (let i = 0; i < 3000; i++) {
+      const groups = TAX_CATEGORIES.filter(() => random.next() < 0.7).map(
+        (category) => ({
+          category,
+          rateBps: rate(category),
+          gross: random.int(1, 300_000),
+        }),
+      );
+      if (!groups.length) continue;
+      const sale = groups.reduce((a, g) => a + g.gross, 0);
+      const previous: { category: TaxCategory; gross: number; tax: number }[] =
+        [];
+      for (const refundGross of randomRefunds(random, sale)) {
+        for (const r of refundTaxSplit({
+          refundGross,
+          saleGroups: groups,
+          previous,
+        })) {
+          expect(r.tax).toBeGreaterThanOrEqual(0);
+          expect(r.tax).toBeLessThanOrEqual(r.gross);
+          expect(r.base + r.tax).toBe(r.gross);
+          expect(r.rateBps).toBe(rate(r.category));
+          if (!r.rateBps) expect(r.tax).toBe(0);
+          previous.push({ category: r.category, gross: r.gross, tax: r.tax });
+        }
+      }
+    }
+  });
+
+  it("refundTaxSplit P4: each refund's IVA is within 1 centavo of extractTax(refund gross) (property)", () => {
+    const random = rng(2704);
+    for (let i = 0; i < 5000; i++) {
+      const category = random.pick(vat);
+      const sale = random.int(1, 2_000_000);
+      for (const r of refundSequence(
+        category,
+        sale,
+        randomRefunds(random, sale),
+      ))
+        expect(
+          Math.abs(r.tax - extractTax(r.gross, rate(category)).tax),
+        ).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("refundTaxSplit P5: refunds recorded against a provisional gross that later changes deviate from extractTax(S_final − R) by at most the number of gross changes (property, 100,000 sequences)", () => {
+    const random = rng(2705);
+    let worst = 0;
+    for (let i = 0; i < 100_000; i++) {
+      const category = random.pick(vat);
+      const r = rate(category);
+      let sale = random.int(1, 200_000);
+      let refunded = 0;
+      let changes = 0;
+      let refundedAny = false;
+      const previous: { category: TaxCategory; gross: number; tax: number }[] =
+        [];
+      for (let step = random.int(1, 6); step > 0; step--) {
+        if (random.next() < 0.5) {
+          // A pre-ticket item refund against the provisional gross.
+          if (sale - refunded <= 0) continue;
+          const amount = random.int(1, sale - refunded);
+          for (const row of refundTaxSplit({
+            refundGross: amount,
+            saleGroups: [{ category, rateBps: r, gross: sale }],
+            previous,
+          }))
+            previous.push({ category, gross: row.gross, tax: row.tax });
+          refunded += amount;
+          refundedAny = true;
+        } else {
+          // A new round grows the gross, or a void of other units shrinks it (never below R).
+          const next =
+            random.next() < 0.6
+              ? sale + random.int(1, 50_000)
+              : random.int(refunded, sale);
+          if (next !== sale && refundedAny) changes++;
+          sale = next;
+        }
+      }
+      const deviation = Math.abs(
+        extractTax(sale, r).tax -
+          previous.reduce((a, p) => a + p.tax, 0) -
+          extractTax(sale - refunded, r).tax,
+      );
+      expect(deviation).toBeLessThanOrEqual(changes);
+      worst = Math.max(worst, deviation);
+    }
+    expect(worst).toBeGreaterThan(0);
+  });
+
+  it("regression (review): partial refund then global netting — fiscal's net IVA equals extractTax(net gross), where the cumulative form was 1 centavo off", () => {
+    // Sale 10000 at 16% (IVA 1379), refund 4: the cumulative row had IVA extract(4) = 1,
+    // leaving 1378, while extract(9996) = 1379. The complement row has IVA 0.
+    expect(extractTax(10000, 1600).tax).toBe(1379);
+    expect(extractTax(4, 1600).tax).toBe(1);
+    expect(extractTax(9996, 1600).tax).toBe(1379);
+    const [a] = refundSequence("iva16", 10000, [4]);
+    expect(a).toMatchObject({ gross: 4, tax: 0 });
+    expect(
+      netCategoryTax(
+        [{ category: "iva16", rateBps: 1600, gross: 10000, tax: 1379 }],
+        [a],
+      ),
+    ).toEqual([
+      { category: "iva16", rateBps: 1600, gross: 9996, base: 8617, tax: 1379 },
+    ]);
+    // Sale 12345, refund 6789: cumulative 936 (net 767), canonical extract(5556) = 766,
+    // complement 937 (net 766).
+    expect(extractTax(6789, 1600).tax).toBe(936);
+    expect(extractTax(12345, 1600).tax).toBe(1703);
+    expect(extractTax(5556, 1600).tax).toBe(766);
+    const [b] = refundSequence("iva16", 12345, [6789]);
+    expect(b).toEqual({ category: "iva16", gross: 6789, tax: 937 });
+    expect(1703 - b.tax).toBe(766);
+  });
+});
+
+describe("refundScopeCategories", () => {
+  it("MONEY-4: a line the ticket froze under the issuance default is refunded in that category after the default changed", () => {
+    // Priced before 027 (no snapshot), ticketed under IVA 16%; the default is now IVA 8%.
+    const l = line({ total: 3000, quantity: 3, legacy: true });
+    const scope = [{ lineId: l.id, units: [0], gross: 1000 }];
+    expect(
+      refundScopeCategories({
+        lines: [l],
+        scope,
+        ctx: border,
+        categories: { [l.id]: "iva16" },
+      }),
+    ).toEqual([{ category: "iva16", gross: 1000 }]);
+    // Without a ticket (provisional) the current default still applies.
+    expect(refundScopeCategories({ lines: [l], scope, ctx: border })).toEqual([
+      { category: "iva8", gross: 1000 },
+    ]);
+  });
+
+  it("scope gross is used verbatim", () => {
+    // 3 units of 1000 at IVA 16%; discounts 028 discounted units 0 and 1 by 150 each, and
+    // unit 0 was paid half by cash (425) and half by card (425). One scope call per refund row.
+    const l = line({ total: 3000, quantity: 3 });
+    const lineDiscounts = { [l.id]: 300 };
+    const cash = refundScopeCategories({
+      lines: [l],
+      lineDiscounts,
+      scope: [{ lineId: l.id, units: [0], gross: 425 }],
+      ctx: general,
+    });
+    const card = refundScopeCategories({
+      lines: [l],
+      lineDiscounts,
+      scope: [{ lineId: l.id, units: [0], gross: 425 }],
+      ctx: general,
+    });
+    expect(cash).toEqual([{ category: "iva16", gross: 425 }]);
+    expect(card).toEqual([{ category: "iva16", gross: 425 }]);
+    // refundScopeGross spreads the line discount evenly (100 per unit) and would claim 900.
+    expect(
+      refundScopeGross({
+        lines: [l],
+        lineDiscounts,
+        scope: [{ lineId: l.id, units: [0] }],
+        ctx: general,
+      }),
+    ).toEqual([{ category: "iva16", gross: 900 }]);
+    // Unit 2 (undiscounted) refunded in full by one row, unit 1 (discounted) by another.
+    expect(
+      refundScopeCategories({
+        lines: [l],
+        lineDiscounts,
+        scope: [
+          { lineId: l.id, units: [2], gross: 1000 },
+          { lineId: l.id, units: [1], gross: 850 },
+        ],
+        ctx: general,
+      }),
+    ).toEqual([{ category: "iva16", gross: 1850 }]);
+  });
+
+  it("groups gross by the line's snapshot category and legacy lines by the restaurant default", () => {
+    const taco = line({ total: 2000, quantity: 2 });
+    const beans = line({
+      total: 900,
+      quantity: 3,
+      fiscal: { taxCategory: "iva0" },
+    });
+    const legacy = line({ total: 500, legacy: true });
+    const scope = [
+      { lineId: taco.id, units: [1], gross: 1000 },
+      { lineId: beans.id, units: [0, 1], gross: 600 },
+      { lineId: legacy.id, units: [0], gross: 500 },
+    ];
+    expect(
+      refundScopeCategories({
+        lines: [taco, beans, legacy],
+        scope,
+        ctx: general,
+      }),
+    ).toEqual([
+      { category: "iva16", gross: 1500 },
+      { category: "iva0", gross: 600 },
+    ]);
+    // In a border restaurant whose default is IVA 8%, the legacy line follows the default;
+    // snapshot lines keep the category they were sold with.
+    expect(
+      refundScopeCategories({
+        lines: [taco, beans, legacy],
+        scope,
+        ctx: border,
+      }),
+    ).toEqual([
+      { category: "iva16", gross: 1000 },
+      { category: "iva8", gross: 500 },
+      { category: "iva0", gross: 600 },
+    ]);
+  });
+
+  it("rejects unknown lines, voided, repeated or out-of-range units, negative gross, and gross above the units' gross", () => {
+    const l = line({ total: 100, quantity: 3, voidedUnits: [1] }); // units 34, 33, 33
+    const call =
+      (scope: { lineId: string; units: number[]; gross?: number }[]) => () =>
+        refundScopeCategories({ lines: [l], scope, ctx: general });
+    for (const scope of [
+      [{ lineId: randomUUID(), units: [0], gross: 1 }],
+      [{ lineId: l.id, units: [1], gross: 1 }],
+      [{ lineId: l.id, units: [0, 0], gross: 1 }],
+      [
+        { lineId: l.id, units: [0], gross: 1 },
+        { lineId: l.id, units: [0], gross: 1 },
+      ],
+      [{ lineId: l.id, units: [3], gross: 1 }],
+      [{ lineId: l.id, units: [-1], gross: 1 }],
+      [{ lineId: l.id, units: [0.5], gross: 1 }],
+    ])
+      expectDomain(call(scope), "invalid_allocation", 409);
+    expectDomain(
+      call([{ lineId: l.id, units: [0], gross: -1 }]),
+      "fiscal_total_mismatch",
+      409,
+    );
+    expectDomain(
+      call([{ lineId: l.id, units: [0], gross: 1.5 }]),
+      "fiscal_total_mismatch",
+      409,
+    );
+    expectDomain(
+      call([{ lineId: l.id, units: [0], gross: 35 }]),
+      "fiscal_refund_exceeds",
+      409,
+    );
+    expectDomain(
+      call([{ lineId: l.id, units: [0, 2], gross: 68 }]),
+      "fiscal_refund_exceeds",
+      409,
+    );
+    expect(call([{ lineId: l.id, units: [0, 2], gross: 67 }])()).toEqual([
+      { category: "iva16", gross: 67 },
+    ]);
+    // A refund row can return less than its units' gross (two tenders, discounts).
+    expect(call([{ lineId: l.id, units: [0], gross: 0 }])()).toEqual([]);
+  });
+
+  it("an entry without gross on a discounted line throws refund_scope_gross_required; on an undiscounted line it uses the unit gross", () => {
+    const discounted = line({ total: 900, quantity: 3 });
+    const plain = line({ total: 100, quantity: 3 });
+    expect(() =>
+      refundScopeCategories({
+        lines: [discounted, plain],
+        lineDiscounts: { [discounted.id]: 1 },
+        scope: [{ lineId: discounted.id, units: [0] }],
+        ctx: general,
+      }),
+    ).toThrow(RangeError);
+    expect(
+      refundScopeCategories({
+        lines: [discounted, plain],
+        lineDiscounts: { [discounted.id]: 1 },
+        scope: [{ lineId: plain.id, units: [0, 1] }],
+        ctx: general,
+      }),
+    ).toEqual([{ category: "iva16", gross: 67 }]);
+  });
+});
+
+describe("netCategoryTax", () => {
+  it("sale groups minus post-ticket adjustments give extractTax(net gross) per category; negative nets throw fiscal_total_mismatch", () => {
+    const random = rng(2713);
+    for (let i = 0; i < 2000; i++) {
+      const sale = TAX_CATEGORIES.filter(() => random.next() < 0.7).map(
+        (category) => {
+          const gross = random.int(1, 400_000);
+          return {
+            category,
+            rateBps: rate(category),
+            gross,
+            tax: extractTax(gross, rate(category)).tax,
+          };
+        },
+      );
+      if (!sale.length) continue;
+      const total = sale.reduce((a, g) => a + g.gross, 0);
+      const previous: { category: TaxCategory; gross: number; tax: number }[] =
+        [];
+      for (const refundGross of randomRefunds(random, total))
+        for (const r of refundTaxSplit({
+          refundGross,
+          saleGroups: sale,
+          previous,
+        }))
+          previous.push({ category: r.category, gross: r.gross, tax: r.tax });
+      const net = netCategoryTax(sale, previous);
+      for (const g of sale) {
+        const left =
+          g.gross -
+          previous
+            .filter((p) => p.category === g.category)
+            .reduce((a, p) => a + p.gross, 0);
+        const row = net.find((n) => n.category === g.category);
+        if (left === 0) expect(row).toBeUndefined();
+        else
+          expect(row).toEqual({
+            category: g.category,
+            rateBps: g.rateBps,
+            gross: left,
+            ...extractTax(left, g.rateBps),
+          });
+      }
+      expect(net.map((n) => n.category)).toEqual(
+        TAX_CATEGORIES.filter((c) => net.some((n) => n.category === c)),
+      );
+    }
+    const sale = [
+      { category: "iva16" as const, rateBps: 1600, gross: 1000, tax: 138 },
+    ];
+    expectDomain(
+      () =>
+        netCategoryTax(sale, [{ category: "iva16", gross: 1001, tax: 138 }]),
+      "fiscal_total_mismatch",
+      409,
+    );
+    expectDomain(
+      () => netCategoryTax(sale, [{ category: "iva16", gross: 100, tax: 139 }]),
+      "fiscal_total_mismatch",
+      409,
+    );
+    // A refund of a category the sale never had, and IVA left on a zero net.
+    expectDomain(
+      () => netCategoryTax(sale, [{ category: "iva0", gross: 1, tax: 0 }]),
+      "fiscal_total_mismatch",
+      409,
+    );
+    expectDomain(
+      () =>
+        netCategoryTax(sale, [{ category: "iva16", gross: 1000, tax: 137 }]),
+      "fiscal_total_mismatch",
+      409,
+    );
+    expectDomain(
+      () =>
+        netCategoryTax(
+          [{ category: "iva0", rateBps: 0, gross: 100, tax: 1 }],
+          [],
+        ),
+      "fiscal_total_mismatch",
+      409,
+    );
+    expect(() =>
+      netCategoryTax(
+        [{ category: "iva16", rateBps: 800, gross: 1, tax: 0 }],
+        [],
+      ),
+    ).toThrow(RangeError);
+    expect(
+      netCategoryTax(sale, [{ category: "iva16", gross: 1000, tax: 138 }]),
+    ).toEqual([]);
   });
 });
 
@@ -1665,18 +2148,110 @@ describe("fiscal profile", () => {
       ["defaultTaxCategory:fiscal_border_rate_not_allowed"],
     ],
     [
-      "a border region without the attestation",
-      { taxRegion: "border_south" },
+      "a border region without the attestation (Tapachula, Chiapas)",
+      {
+        taxRegion: "border_south",
+        identity: identity({ postalCode: "30700" }),
+      },
       ["borderConfirmed:fiscal_border_confirmation_required"],
     ],
     [
-      "a confirmed border region with IVA 8% as the default",
+      "a confirmed border region with IVA 8% as the default (Tijuana)",
+      {
+        taxRegion: "border_north",
+        identity: identity({ postalCode: "22000" }),
+        defaultTaxCategory: "iva8",
+        borderConfirmed: true,
+      },
+      [],
+    ],
+    [
+      "SAT-1: a confirmed border region without any issuer identity",
+      {
+        taxRegion: "border_north",
+        identity: null,
+        defaultTaxCategory: "iva8",
+        borderConfirmed: true,
+      },
+      [
+        "rfc:fiscal_border_identity_required",
+        "postalCode:fiscal_border_identity_required",
+      ],
+    ],
+    [
+      "SAT-1: the northern border region with a CDMX postal code",
       {
         taxRegion: "border_north",
         defaultTaxCategory: "iva8",
         borderConfirmed: true,
       },
+      ["postalCode:fiscal_border_postal_code"],
+    ],
+    [
+      "SAT-1: the southern border region with a Tijuana postal code (a northern state)",
+      {
+        taxRegion: "border_south",
+        identity: identity({ postalCode: "22000" }),
+        borderConfirmed: true,
+      },
+      ["postalCode:fiscal_border_postal_code"],
+    ],
+    [
+      "SAT-1: an incomplete identity in a border region reports the identity, not the region",
+      {
+        taxRegion: "border_north",
+        identity: identity({ rfc: "", postalCode: "22000" }),
+        borderConfirmed: true,
+      },
+      ["rfc:fiscal_identity_incomplete"],
+    ],
+    [
+      "SAT-2: more than one branch without the branch address",
+      { multipleBranches: true },
+      [
+        "street:fiscal_address_required",
+        "municipality:fiscal_address_required",
+        "state:fiscal_address_required",
+      ],
+    ],
+    [
+      "SAT-2: more than one branch with only the street",
+      {
+        multipleBranches: true,
+        identity: identity({
+          address: {
+            street: "Av. Revolución 1234",
+            neighborhood: "",
+            municipality: " ",
+            state: "",
+          },
+        }),
+      },
+      ["municipality:fiscal_address_required", "state:fiscal_address_required"],
+    ],
+    [
+      "SAT-2: more than one branch with street, municipality and state",
+      {
+        multipleBranches: true,
+        identity: identity({
+          address: {
+            street: "Av. Revolución 1234",
+            neighborhood: "",
+            municipality: "Tijuana",
+            state: "Baja California",
+          },
+        }),
+      },
       [],
+    ],
+    [
+      "SAT-2: more than one branch and no identity at all",
+      { multipleBranches: true, identity: null },
+      [
+        "street:fiscal_address_required",
+        "municipality:fiscal_address_required",
+        "state:fiscal_address_required",
+      ],
     ],
   ] as [string, Partial<FiscalProfileInput>, string[]][])(
     "fiscalProfileIssues: %s",
@@ -1714,13 +2289,55 @@ describe("fiscal profile", () => {
       fiscalProfileIssues(
         base({
           taxRegion: "border_north",
-          identity: identity({ rfc: "EKU9003173C8" }),
+          identity: identity({ rfc: "EKU9003173C8", postalCode: "22000" }),
         }),
       ).find((i) => !i.warning),
     ).toEqual({
       field: "borderConfirmed",
       code: "fiscal_border_confirmation_required",
     });
+  });
+
+  it("SAT-1: border postal codes by state prefix (SAT Catálogo de códigos postales)", () => {
+    const { BORDER_POSTAL_PREFIXES, borderPostalCodeAllowed } = fiscalModule;
+    for (const cp of [
+      "22000", // Tijuana, Baja California
+      "21100", // Mexicali, Baja California
+      "83000", // Hermosillo, Sonora
+      "84000", // Nogales, Sonora
+      "32000", // Ciudad Juárez, Chihuahua
+      "26000", // Piedras Negras, Coahuila
+      "64000", // Monterrey, Nuevo León
+      "88500", // Reynosa, Tamaulipas
+    ])
+      expect(borderPostalCodeAllowed("border_north", cp), cp).toBe(true);
+    for (const cp of [
+      "24000", // Campeche
+      "30700", // Tapachula, Chiapas
+      "77000", // Chetumal, Quintana Roo
+      "86900", // Tenosique, Tabasco
+    ])
+      expect(borderPostalCodeAllowed("border_south", cp), cp).toBe(true);
+    for (const [region, cp] of [
+      ["border_north", "06700"], // CDMX
+      ["border_north", "23000"], // La Paz, Baja California Sur
+      ["border_north", "34000"], // Durango
+      ["border_north", "77000"], // a southern state
+      ["border_south", "22000"], // a northern state
+      ["border_south", "97000"], // Mérida, Yucatán
+      ["border_north", "2200"],
+      ["border_north", "22OOO"],
+      ["border_south", ""],
+    ] as const)
+      expect(borderPostalCodeAllowed(region, cp), `${region} ${cp}`).toBe(
+        false,
+      );
+    // Ten states, no prefix in both regions.
+    const north = new Set(BORDER_POSTAL_PREFIXES.border_north);
+    expect(north.size).toBe(18);
+    expect(
+      BORDER_POSTAL_PREFIXES.border_south.filter((p) => north.has(p)),
+    ).toEqual([]);
   });
 
   it("validates raw client form state the same way as the parsed input", () => {
@@ -1755,5 +2372,181 @@ describe("allocate() assumptions this module relies on", () => {
       const parts = allocate(random.int(0, W), weights);
       parts.forEach((p, k) => expect(p).toBeLessThanOrEqual(weights[k]));
     }
+  });
+});
+
+describe("quote tax snapshot", () => {
+  const product = (
+    price: number,
+    fiscal?: unknown,
+    extra: Partial<Product> = {},
+  ): Product => ({
+    id: randomUUID(),
+    name: { es: "Producto", en: "Product" },
+    category: { es: "Pruebas", en: "Tests" },
+    price,
+    available: true,
+    station: "kitchen",
+    groups: [],
+    cost: null,
+    version: 1,
+    ...(fiscal === undefined ? {} : { fiscal }),
+    ...extra,
+  });
+  const lineOf = (p: Product, quantity = 1, options: string[] = []) => ({
+    id: randomUUID(),
+    productId: p.id,
+    quantity,
+    options,
+    note: "",
+  });
+
+  it('quote with a border fiscal context snapshots iva8 for an iva8 product and the restaurant default for "default" products', () => {
+    const burrito = product(2000, { taxCategory: "iva8" });
+    const soda = product(1000);
+    const beans = product(5000, {
+      taxCategory: "iva0",
+      satProductKey: "50201708",
+      satUnitKey: "KGM",
+    });
+    const lines = quote(
+      [lineOf(burrito, 2), lineOf(soda), lineOf(beans)],
+      [burrito, soda, beans],
+      false,
+      border,
+    );
+    expect(lines.map((l) => [l.tax!.category, l.tax!.basis])).toEqual([
+      ["iva8", "product"],
+      ["iva8", "default"],
+      ["iva0", "product"],
+    ]);
+    expect(lines[0].tax).toEqual({
+      v: 1,
+      category: "iva8",
+      rateBps: 800,
+      basis: "product",
+      satProductKey: "90101501",
+      satUnitKey: "E48",
+      ...extractTax(4000, 800),
+    });
+    expect([lines[2].tax!.satProductKey, lines[2].tax!.satUnitKey]).toEqual([
+      "50201708",
+      "KGM",
+    ]);
+    // The default context (client previews): general region, IVA 16%; an iva8 product falls back.
+    expect(
+      quote([lineOf(burrito)], [burrito]).map((l) => [
+        l.tax!.category,
+        l.tax!.basis,
+      ]),
+    ).toEqual([["iva16", "fallback"]]);
+  });
+
+  it("quote: every line's snapshot base + tax equals its total and the snapshot is computed from the same total (property over random catalogs)", () => {
+    const random = rng(2714);
+    for (let i = 0; i < 500; i++) {
+      const region = random.pick(taxModule.TAX_REGIONS);
+      const ctx: FiscalContext = {
+        region,
+        defaultCategory: random.pick(taxModule.allowedCategories(region)),
+      };
+      const option = {
+        id: randomUUID(),
+        name: { es: "Extra", en: "Extra" },
+        price: random.int(0, 3000),
+        available: true,
+      };
+      const catalog = Array.from({ length: random.int(1, 6) }, () =>
+        product(
+          random.int(0, 60_000),
+          random.next() < 0.3
+            ? undefined
+            : {
+                taxCategory: random.pick([
+                  "default",
+                  ...TAX_CATEGORIES,
+                ] as const),
+              },
+          random.next() < 0.3
+            ? {
+                groups: [
+                  {
+                    id: randomUUID(),
+                    name: { es: "Extras", en: "Extras" },
+                    min: 0,
+                    max: 1,
+                    options: [option],
+                  },
+                ],
+              }
+            : {},
+        ),
+      );
+      const lines = quote(
+        catalog.map((p) =>
+          lineOf(
+            p,
+            random.int(1, 9),
+            p.groups.length && random.next() < 0.5 ? [option.id] : [],
+          ),
+        ),
+        catalog,
+        false,
+        ctx,
+      );
+      for (const l of lines) {
+        const t = l.tax!;
+        expect(t.base + t.tax).toBe(l.total);
+        expect({ base: t.base, tax: t.tax }).toEqual(
+          extractTax(l.total, t.rateBps),
+        );
+        expect(t.rateBps).toBe(rate(t.category));
+        expect(taxModule.allowedCategories(region)).toContain(t.category);
+      }
+    }
+  });
+
+  it("menu-schema: productInput accepts an optional strict fiscal object, rejects unknown fiscal keys and bad SAT keys; legacyProductInput is unchanged", () => {
+    const base = {
+      operationId: randomUUID(),
+      id: randomUUID(),
+      expectedVersion: 0,
+      name: { es: "Café", en: "" },
+      categoryId: randomUUID(),
+      price: 1000,
+      station: "kitchen",
+    };
+    expect(productInput.safeParse(base).success).toBe(true);
+    expect(productInput.parse(base).fiscal).toBeUndefined();
+    expect(
+      productInput.parse({ ...base, fiscal: { taxCategory: "iva0" } }).fiscal,
+    ).toEqual({ taxCategory: "iva0", satProductKey: null, satUnitKey: null });
+    for (const fiscal of [
+      { taxCategory: "iva0", extra: 1 },
+      { taxCategory: "iva21" },
+      { satProductKey: "1234567" },
+      { satUnitKey: "e48" },
+      { satUnitKey: "ABCD" },
+    ])
+      expect(productInput.safeParse({ ...base, fiscal }).success).toBe(false);
+    const legacy = {
+      operationId: randomUUID(),
+      id: randomUUID(),
+      name: { es: "Café", en: "Coffee" },
+      category: { es: "Bebidas", en: "Drinks" },
+      price: 1000,
+      available: true,
+      station: "bar",
+      expectedVersion: 0,
+      cost: null,
+      recipe: [],
+    };
+    expect(legacyProductInput.safeParse(legacy).success).toBe(true);
+    expect(
+      legacyProductInput.safeParse({
+        ...legacy,
+        fiscal: { taxCategory: "iva0" },
+      }).success,
+    ).toBe(false);
   });
 });

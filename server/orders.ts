@@ -18,6 +18,12 @@ import { recipeStockIds } from "../shared/menu.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
 import { bumpKitchenFeed } from "./kitchen.js";
 import {
+  assertNoFiscalTicket,
+  composeOrderFiscal,
+  fiscalContext,
+  fiscalRows,
+} from "./fiscal-read.js";
+import {
   DomainError,
   orderInput,
   quote,
@@ -99,6 +105,7 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
     allocationRows,
     recoveryRows,
     offlineRows,
+    fiscalMap,
   ] = await Promise.all([
     tx`select o.*,o.business_date::text as business_day,e.name as waiter_name,
           opener.name as opened_by,t.name as table_name
@@ -134,6 +141,8 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
         from offline_sync_records
         where order_id=any(${list}::uuid[]) and kind in ('sale','order')
         order by order_id,sold_at`,
+    // fiscal (027): ticket, tax groups and refund adjustments, one statement.
+    fiscalRows(tx, ids),
   ]);
   const linesBy = byOrder(
     lineRows as unknown as {
@@ -254,6 +263,10 @@ export async function getOrders(tx: Tx, ids: string[]): Promise<Order[]> {
               soldAt: offline.sold_at.toISOString(),
             }
           : null,
+        fiscal: composeOrderFiscal(fiscalMap.get(orderId), {
+          total: o.total,
+          lines: lines.map((l) => l.data),
+        }),
       } as Order,
     ];
   });
@@ -314,6 +327,7 @@ export async function createOrder(
       input.lines,
       await catalog(tx),
       !["qr", "kiosk"].includes(input.channel),
+      await fiscalContext(tx),
     );
     if (input.tableId) {
       const [t] =
@@ -339,9 +353,12 @@ export async function createOrder(
       deviceId: s.deviceId,
       capabilityId: s.id,
     });
-    // A zero-total takeaway closes at once; the kitchen feed bump stays last.
-    await refreshCheckState(tx, s, orderId);
+    // LO-R3: the kitchen feed (LO-10) after every order, round and stock lock of
+    // this command and before refreshCheckState, whose issuance takes the folio
+    // counter (LO-12) last. A zero-total takeaway closes at once; it never issues
+    // here (nothing is paid at creation, E5).
     await bumpKitchenFeed(tx, s);
+    await refreshCheckState(tx, s, orderId);
     return getOrder(tx, orderId);
   });
 }
@@ -363,6 +380,8 @@ export async function applyRound(
   opts: AppendOptions & { detail?: Record<string, unknown> } = {},
 ): Promise<number> {
   assertCheckWritable(order);
+  // fiscal (027): a ticketed check takes no rounds; late items go out as a new order.
+  await assertNoFiscalTicket(tx, order.id);
   const n = order.version + 1;
   await append(tx, s, order.id, lines, n, opts);
   await tx`update orders set total=total+${sum(lines.map((l) => l.total))},version=version+1,state='active' where id=${order.id}`;
@@ -394,7 +413,12 @@ export async function addRound(
       if (o.version !== input.expectedVersion)
         throw new DomainError("stale_order", 409);
       assertCheckWritable(o as { check_state: string; state: string });
-      const lines = quote(input.lines, await catalog(tx), true);
+      const lines = quote(
+        input.lines,
+        await catalog(tx),
+        true,
+        await fiscalContext(tx),
+      );
       await applyRound(tx, s, o as RoundTarget, lines, { note: input.note });
       await bumpKitchenFeed(tx, s);
       return getOrder(tx, orderId);
@@ -467,8 +491,10 @@ export async function recordPayment(
       amount: p.amount,
       tip: p.tip,
     });
-    // Settle the check before the receipt is read. Payments never bump the
-    // kitchen feed: it is LO-10, below the drawer this command holds (LO-11, LO-R3).
+    // Settle the check before the receipt is read; a settling payment issues
+    // the fiscal ticket there (folio counter, LO-12, last). Payments never bump
+    // the kitchen feed: it is LO-10, below the drawer this command holds
+    // (LO-11, LO-R3).
     await refreshCheckState(tx, s, orderId);
     const receipt = await getOrder(tx, orderId);
     await tx`insert into jobs(tenant_id,id,kind,dedupe_key,payload,state,error_code) values(${s.tenantId},${randomUUID()},'receipt',${p.operationId},${tx.json({ orderId, receipt })},'blocked','printer_not_paired')`;

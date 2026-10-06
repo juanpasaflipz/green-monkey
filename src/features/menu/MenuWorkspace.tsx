@@ -12,6 +12,10 @@ import { Badge, Button, Empty, Modal } from "../../components/ui";
 import { CategoryDialog } from "./CategoryDialog";
 import { GroupEditor } from "./GroupEditor";
 import { ProductEditor, type ProductPreset } from "./ProductEditor";
+import {
+  fiscalDraft,
+  ProductFiscalFields,
+} from "../fiscal/ProductFiscalFields";
 import { withOptionAvailable, withProductAvailable } from "./availability";
 import { groupRuleText, moneyFormatter, translator } from "./format";
 
@@ -678,6 +682,14 @@ export function MenuWorkspace({
           locale={locale}
           session={session}
           online={online}
+          renderFiscal={(p) => (
+            <ProductFiscalFields
+              value={fiscalDraft(p.value)}
+              onChange={p.onChange}
+              locale={locale}
+              disabled={p.disabled}
+            />
+          )}
           onClose={() => setEditor(null)}
           onReload={() => {
             setEditor(null);

@@ -60,9 +60,11 @@ a stolen device.
   `unauthorized`. The client shows the lock screen (session codes) or the
   pairing screen (device codes) instead of a generic error.
 
-**Step-up**: on a terminal, refunds, paid-outs, manager self-approved voids and
+**Step-up**: on a terminal, refunds, paid-outs, manager self-approved voids,
 every staff, device and pairing-code command (including the legacy
-`POST /api/team/save`) need a PIN entered within
+`POST /api/team/save`), and fiscal's profile save (`POST /api/fiscal/profile`,
+owner) and missing-ticket repair (`POST /api/fiscal/tickets/repair`, managers;
+LD-15 fiscal Q5) need a PIN entered within
 `ACCESS_STEP_UP_SECONDS` (default 120). The client asks "Confirma con tu PIN"
 and retries the identical request (same `operationId`). Google-entered sessions
 on a personal device are exempt; PIN sessions are not, on any device. A pending
