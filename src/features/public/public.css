@@ -80,9 +80,19 @@
   background: var(--positive-bg);
   color: var(--positive);
 }
+.public-notice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+.public-notice-row > .button {
+  margin-top: 12px;
+}
 .public-notice {
   margin: 12px 0 0;
   font-weight: 600;
+  flex: 1 1 auto;
 }
 /* Empty live regions stay in the accessibility tree but take no space. */
 .public-notice:empty {

@@ -132,7 +132,11 @@ export function PublicOrderInbox({
     poll.refresh();
     refreshPublicInbox();
   };
-  if (!shown) return null;
+  // Handling the last hold while no code is active empties the next read:
+  // the section stays while it still owns an outcome (the notice, UX-7 and
+  // MONEY-2), a pay-first receipt or an open dialog (PUB-HR-1).
+  const owned = !!notice || !!receipt || !!paying || !!rejecting;
+  if (!shown && !owned) return null;
   const manager = ["owner", "manager"].includes(session.role);
 
   function printKitchen(r: AcceptResult) {
@@ -292,9 +296,16 @@ export function PublicOrderInbox({
         )}
       </header>
       {!online && <p className="warning-panel">{t("publicInboxOffline")}</p>}
-      <p className="public-notice" aria-live="polite">
-        {notice}
-      </p>
+      <div className="public-notice-row">
+        <p className="public-notice" aria-live="polite">
+          {notice}
+        </p>
+        {notice && (
+          <Button variant="ghost" onClick={() => setNotice("")}>
+            {t("publicNoticeDismiss")}
+          </Button>
+        )}
+      </div>
       {data && data.recentlyExpired > 0 && (
         <p className="muted">
           {data.recentlyExpired === 1

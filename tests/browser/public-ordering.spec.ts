@@ -208,6 +208,22 @@ async function goToOrders(page: Page) {
   await page.getByRole("button", { name: "Órdenes", exact: true }).click();
 }
 const inbox = (page: Page) => page.locator(".public-inbox");
+const inboxTitle = (page: Page) => page.locator("#public-inbox-title");
+/**
+ * PUB-HR-1: the next inbox read that finds no active code and nothing
+ * pending, the read after which the section used to unmount. Register it
+ * before the action that handles the last hold.
+ */
+const emptyInboxRead = (page: Page) =>
+  page.waitForResponse(async (r) => {
+    if (
+      !r.url().endsWith("/api/ordering/inbox") ||
+      r.request().method() !== "GET"
+    )
+      return false;
+    const body = await r.json().catch(() => null);
+    return body?.active === false && body.holds?.length === 0;
+  });
 const holdCard = (page: Page, label: string) =>
   page.locator(".hold-card").filter({ hasText: label });
 /** A diner page with its own clock-free context (cookies shared with staff). */
@@ -552,11 +568,11 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     expect(url).toMatch(/\/kiosk#[A-Za-z0-9_-]{22}$/);
     await reveal.getByRole("button", { name: "Cerrar" }).click();
     const listed = await call(page, "/ordering/links");
-    f.links.push(
-      ...(listed.data.links as { id: string; label: string }[])
-        .filter((l) => l.label === `Entrada ${f.id}`)
-        .map((l) => l.id),
-    );
+    const kioskIds = (listed.data.links as { id: string; label: string }[])
+      .filter((l) => l.label === `Entrada ${f.id}`)
+      .map((l) => l.id);
+    expect(kioskIds).toHaveLength(1);
+    f.links.push(...kioskIds);
     await page.setViewportSize({ width: 1440, height: 900 });
     await axe(page);
     await panel.screenshot({ path: "docs/evidence/public-settings-1440.png" });
@@ -633,6 +649,17 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     await expect(name).toHaveValue("");
     await expect(note).toHaveValue("");
 
+    // PUB-HR-1: a manager deactivates the only code while its order waits;
+    // the cashier still charges it and the receipt outlives the next inbox
+    // read, which finds nothing active and nothing pending.
+    const revoked = await call(page, `/ordering/links/${kioskIds[0]}/revoke`, {
+      operationId: op(),
+    });
+    expect(revoked.status, JSON.stringify(revoked.data)).toBe(200);
+    const before = await call(page, "/ordering/inbox");
+    expect(before.data.active).toBe(false);
+    expect(before.data.holds).toHaveLength(1);
+
     await goToOrders(page);
     const card = holdCard(page, label);
     await expect(card).toContainText("Se cobra antes de cocina");
@@ -645,10 +672,16 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     await card
       .getByRole("button", { name: "Cobrar y enviar a cocina", exact: true })
       .click();
+    const emptied = emptyInboxRead(page);
     await page
       .getByRole("button", { name: "Confirmar cobro", exact: true })
       .click();
     await expect(page.locator(".receipt")).toContainText("Cobrado");
+    await emptied;
+    await expect(inboxTitle(page)).toHaveText(
+      "Pedidos en línea por confirmar (0)",
+    );
+    await expect(page.locator(".receipt")).toBeVisible();
     // MONEY-2: the receipt carries the code the diner holds (order note).
     await expect(page.locator(".receipt")).toContainText(label);
     await expect(inbox(page)).toContainText(acceptedNotice(label));
@@ -656,6 +689,10 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
       .getByRole("button", { name: /Siguiente|Listo/ })
       .first()
       .click();
+    await expect(page.locator(".receipt")).toHaveCount(0);
+    await expect(inbox(page).locator(".public-notice")).toHaveText(
+      acceptedNotice(label),
+    );
     const rounds = (await call(page, "/kitchen")).data as { name: string }[];
     expect(rounds.some((r) => r.name === `${label} · Kiosco ${f.id}`)).toBe(
       true,
@@ -982,6 +1019,11 @@ test("abuse: deactivating a code as abuse flags its other orders; accepting one 
       .check();
     await dialog.getByRole("button", { name: "Rechazar pedido" }).click();
     await expect(inbox(page)).toContainText(`${fake} rechazado.`);
+    // PUB-HR-1: the abused code was the only active one, so accepting its
+    // last hold empties the next inbox read.
+    const before = await call(page, "/ordering/inbox");
+    expect(before.data.active).toBe(false);
+    expect(before.data.holds).toHaveLength(1);
     // ABUSE-1: the code's other order is flagged and needs a deliberate check.
     const card = holdCard(page, other);
     await expect(card).toContainText(
@@ -996,8 +1038,22 @@ test("abuse: deactivating a code as abuse flags its other orders; accepting one 
       .getByLabel("Lo verifiqué con el cliente; aceptar de todos modos.")
       .check();
     await axe(page);
+    const emptied = emptyInboxRead(page);
     await acceptButton.click();
-    await expect(inbox(page)).toContainText(acceptedNotice(other));
+    await emptied;
+    // The empty read rendered and the outcome is still announced (MONEY-2).
+    await expect(inboxTitle(page)).toHaveText(
+      "Pedidos en línea por confirmar (0)",
+    );
+    const notice = inbox(page).locator('.public-notice[aria-live="polite"]');
+    await expect(notice).toHaveText(acceptedNotice(other));
+    await expect(holdCard(page, other)).toHaveCount(0);
+    await axe(page);
+    // Dismissing the notice lets the empty inbox go.
+    await inbox(page)
+      .getByRole("button", { name: "Ocultar aviso", exact: true })
+      .click();
+    await expect(inbox(page)).toHaveCount(0);
     const order = await acceptedOrder(page, `Dos ${f.id}`);
     expect(order).toBeTruthy();
     f.orders.push(order!.id);
