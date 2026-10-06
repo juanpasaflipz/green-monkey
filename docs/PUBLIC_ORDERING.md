@@ -133,6 +133,11 @@ is closed.
   - A status key already used by another order is `409 operation_conflict`.
     That holds even when two submits race with one key: the later insert
     loses on the unique key and gets the same 409, not a 500.
+  - The name and note refuse C0 and C1 controls, DEL and the bidi overrides
+    and isolates (U+202A-U+202E, U+2066-U+2069) with `400 invalid_input`,
+    before any lock or row; the note keeps line feeds and tabs (it is a
+    textarea). A NUL used to reach Postgres as a 500, and an override could
+    make the call name read as another diner's label (PUBLIC-SECURITY-1).
   - A network failure locks the cart (lines, name and note) with "No sabemos
     si tu pedido llegó." and **Reintentar**, which resends the identical
     body. **Editar pedido (se enviará como uno nuevo)** unlocks it; any send

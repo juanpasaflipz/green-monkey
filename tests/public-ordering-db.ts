@@ -4269,6 +4269,46 @@ try {
     });
   });
 
+  await test("46. diner name and note: a NUL, other controls and bidi overrides are refused with 400 invalid_input before any lock or row (never a 500); a note keeps its line breaks and tabs (PUBLIC-SECURITY-1)", async () => {
+    const t = await makeTenant("controls");
+    const l = await link(t, { kind: "counter", label: "Ventanilla" });
+    const holds = () => count(t.tenantId, "public_order_holds");
+    const before = await holds();
+    for (const over of [
+      { name: "\u0000" },
+      { note: "sin cebolla\u0000" },
+      { name: "Ana\u0007" },
+      { name: "Ana\nLópez" },
+      { name: "\u202eQ-3" },
+      { name: "Luis\u2066" },
+      { note: "\u202dsin sal" },
+      { note: "sin\rsal" },
+      { name: "\u0085" },
+    ]) {
+      const r = await pub.submit(
+        l.token,
+        await body(t, [{ productId: t.p.taco }], over),
+      );
+      assert.deepEqual(
+        [r.status, r.body.error],
+        [400, "invalid_input"],
+        JSON.stringify(over),
+      );
+    }
+    assert.equal(await holds(), before, "no row for a refused submit");
+    const fine = await body(t, [{ productId: t.p.taco }], {
+      name: "José Ñúñez",
+      note: "sin cebolla\n\tsalsa aparte",
+    });
+    const ok = await pub.submit(l.token, fine);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const h = await holdOf(t, fine);
+    assert.deepEqual(
+      [h.name, h.note],
+      ["José Ñúñez", "sin cebolla\n\tsalsa aparte"],
+    );
+  });
+
   console.log(`${checks} public ordering checks passed`);
   await pub.close();
 } finally {

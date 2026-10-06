@@ -88,13 +88,37 @@ export const publicLineInput = z
   })
   .strict();
 export type PublicLine = z.infer<typeof publicLineInput>;
+/**
+ * Characters a diner's name never carries: C0 controls, DEL, C1 controls and
+ * the bidi overrides and isolates (U+202A-U+202E, U+2066-U+2069). A NUL would
+ * reach Postgres as a 500 (22021), and an override can make the call name
+ * "Q-14 · …" read as another diner's label on the KDS and the receipt
+ * (PUBLIC-SECURITY-1; cfdi's portal rejects the same controls).
+ */
+/* eslint-disable no-control-regex */
+export const DINER_NAME_FORBIDDEN =
+  /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/;
+/** The note is a textarea: the same set, except line feed and tab. */
+export const DINER_NOTE_FORBIDDEN =
+  /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/;
+/* eslint-enable no-control-regex */
 export const publicOrderInput = z
   .object({
     operationId: id,
     statusKey: z.string().regex(PUBLIC_TOKEN),
     lines: z.array(publicLineInput).min(1).max(PUBLIC_LIMITS.maxLines),
-    name: z.string().trim().max(40).default(""),
-    note: z.string().trim().max(200).default(""),
+    name: z
+      .string()
+      .trim()
+      .max(40)
+      .refine((v) => !DINER_NAME_FORBIDDEN.test(v))
+      .default(""),
+    note: z
+      .string()
+      .trim()
+      .max(200)
+      .refine((v) => !DINER_NOTE_FORBIDDEN.test(v))
+      .default(""),
     expectedTotal: money,
   })
   .strict();

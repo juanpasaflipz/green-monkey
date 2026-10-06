@@ -118,6 +118,48 @@ describe("public ordering tokens and schemas (032)", () => {
     expect(ok.note).toBe("sin cebolla");
   });
 
+  it("3b. name and note refuse C0/C1 controls, DEL and bidi overrides; the note keeps line feeds and tabs (PUBLIC-SECURITY-1)", () => {
+    for (const c of ["\u0000", "\u0007", "\u001b", "\u007f", "\u0085"]) {
+      expect(
+        publicOrderInput.safeParse(order({ name: `A${c}B` })).success,
+      ).toBe(false);
+      expect(
+        publicOrderInput.safeParse(order({ note: `A${c}B` })).success,
+      ).toBe(false);
+    }
+    for (const c of [
+      "\u202a",
+      "\u202b",
+      "\u202c",
+      "\u202d",
+      "\u202e",
+      "\u2066",
+      "\u2067",
+      "\u2068",
+      "\u2069",
+    ]) {
+      expect(
+        publicOrderInput.safeParse(order({ name: `Q${c}3` })).success,
+      ).toBe(false);
+      expect(
+        publicOrderInput.safeParse(order({ note: `Q${c}3` })).success,
+      ).toBe(false);
+    }
+    expect(
+      publicOrderInput.safeParse(order({ name: "Ana\nLópez" })).success,
+    ).toBe(false);
+    expect(
+      publicOrderInput.safeParse(order({ note: "sin\rsal" })).success,
+    ).toBe(false);
+    const note = publicOrderInput.parse(
+      order({ name: "José Ñúñez", note: "sin cebolla\n\tsalsa aparte" }),
+    );
+    expect([note.name, note.note]).toEqual([
+      "José Ñúñez",
+      "sin cebolla\n\tsalsa aparte",
+    ]);
+  });
+
   it("4. canonicalRequest is stable across key order", () => {
     const p = publicOrderInput.parse(order({ name: "Ana" }));
     const shuffled = Object.fromEntries(Object.entries(p).reverse());
