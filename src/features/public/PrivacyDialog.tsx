@@ -3,7 +3,7 @@ import type { Locale } from "../../../shared/domain";
 import { strings } from "../../i18n";
 import { Modal } from "../../components/ui";
 import { fill } from "../menu/format";
-import { guestCopy, PLATFORM_PRIVACY_PATH } from "../../compat/public-account";
+import { PLATFORM_PRIVACY_PATH } from "./dinerRoute";
 
 /**
  * The kiosk's privacy notices in an in-page dialog (PRIVACY-2, UX-5): a
@@ -22,22 +22,21 @@ export function PrivacyDialog({
   onClose: () => void;
 }) {
   const t = strings[locale];
-  const guest = guestCopy(locale);
   const platformUrl = new URL(PLATFORM_PRIVACY_PATH, location.origin).href;
   const notices = [
     ...(privacyNoticeUrl
       ? [
           {
-            title: fill(guest.privacyLink, { restaurant }),
+            title: fill(t.accountGuestPrivacyLink, { restaurant }),
             url: privacyNoticeUrl,
           },
         ]
       : []),
-    { title: guest.platformPrivacy, url: platformUrl },
+    { title: t.accountGuestPlatformPrivacy, url: platformUrl },
   ];
   return (
     <Modal title={t.publicPrivacy} close={onClose} closeLabel={t.close}>
-      {!privacyNoticeUrl && <p>{guest.noNotice}</p>}
+      {!privacyNoticeUrl && <p>{t.accountGuestNoNotice}</p>}
       <p className="muted">{t.publicPrivacyScan}</p>
       <div className="diner-privacy-codes">
         {notices.map((n) => (

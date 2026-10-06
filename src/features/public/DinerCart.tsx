@@ -10,7 +10,6 @@ import { useMediaQuery } from "../../serviceHooks";
 import { fill, moneyFormatter } from "../menu/format";
 import type { CartLine } from "../menu/cart";
 import { UnavailableLines } from "../menu/UnavailableLines";
-import { guestCopy } from "../../compat/public-account";
 import type { Draft } from "./DinerApp";
 
 /**
@@ -104,7 +103,6 @@ function CartBody({
   onEditAnyway,
 }: Parameters<typeof DinerCart>[0]) {
   const t = strings[locale];
-  const guest = guestCopy(locale);
   const money = moneyFormatter(locale, menu.restaurant.currency);
   const priced = cart.lines.flatMap((l) =>
     l.priced ? [{ input: l.input, line: l.priced }] : [],
@@ -173,7 +171,7 @@ function CartBody({
         onRemove={(id) => onQuantity(id, 0)}
       />
       <label className="field">
-        <span>{guest.nameLabel}</span>
+        <span>{t.accountGuestNameLabel}</span>
         <input
           value={draft.name}
           disabled={locked}
@@ -183,7 +181,7 @@ function CartBody({
           onChange={(e) => onName(e.target.value)}
         />
         <small id="diner-name-hint" className="muted">
-          {guest.nameHint}
+          {t.accountGuestNameHint}
         </small>
       </label>
       <label className="field">
@@ -202,10 +200,12 @@ function CartBody({
       </label>
       <p className="diner-privacy tiny">
         {!menu.restaurant.privacyNoticeUrl ? (
-          guest.noNotice
+          t.accountGuestNoNotice
         ) : kiosk ? (
           <button type="button" className="diner-link" onClick={onPrivacy}>
-            {fill(guest.privacyLink, { restaurant: menu.restaurant.name })}
+            {fill(t.accountGuestPrivacyLink, {
+              restaurant: menu.restaurant.name,
+            })}
           </button>
         ) : (
           <a
@@ -213,7 +213,9 @@ function CartBody({
             target="_blank"
             rel="noopener noreferrer"
           >
-            {fill(guest.privacyLink, { restaurant: menu.restaurant.name })}
+            {fill(t.accountGuestPrivacyLink, {
+              restaurant: menu.restaurant.name,
+            })}
           </a>
         )}
       </p>

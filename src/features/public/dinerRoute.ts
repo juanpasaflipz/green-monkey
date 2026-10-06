@@ -1,5 +1,8 @@
 import { PUBLIC_TOKEN } from "../../../shared/public-ordering";
 
+/** Account's platform privacy notice, diners' section (shared/legal/privacy.ts #restaurantes). */
+export const PLATFORM_PRIVACY_PATH = "/legal/privacidad#restaurantes";
+
 export type DinerLocation = {
   channel: "qr" | "kiosk";
   /** null when the fragment is missing or not a well-formed token. */

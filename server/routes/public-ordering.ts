@@ -1,7 +1,7 @@
 // Staff routes of public QR/kiosk ordering (032), under /api/ordering/*, so
 // they never share a prefix with the pre-auth diner router (/api/public).
 import type { RouteContext } from "../http.js";
-import { publicOrderingEnabled } from "../compat/public-account.js";
+import { publicOrderingEnabled } from "../account-settings.js";
 import {
   createLink,
   createTableLinks,

@@ -34,7 +34,7 @@ import { DinerNotice } from "./DinerNotice";
 import { KioskDone } from "./KioskDone";
 import { PrivacyDialog } from "./PrivacyDialog";
 import { Button, Modal } from "../../components/ui";
-import { guestCopy, PLATFORM_PRIVACY_PATH } from "../../compat/public-account";
+import { PLATFORM_PRIVACY_PATH } from "./dinerRoute";
 import "./diner.css";
 
 export type DraftLine = {
@@ -596,7 +596,7 @@ export function DinerApp({
             className="diner-link"
             onClick={() => setPrivacy(true)}
           >
-            {guestCopy(locale).platformPrivacy}
+            {strings[locale].accountGuestPlatformPrivacy}
           </button>
         ) : (
           <a
@@ -604,7 +604,7 @@ export function DinerApp({
             target="_blank"
             rel="noopener noreferrer"
           >
-            {guestCopy(locale).platformPrivacy}
+            {strings[locale].accountGuestPlatformPrivacy}
           </a>
         )}
       </footer>

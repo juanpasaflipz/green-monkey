@@ -9,7 +9,7 @@ import { requirePro } from "./entitlements.js";
 import { catalog, menuRevision, publicCatalog } from "./menu-read.js";
 import { staffOnlineSql } from "./public-links.js";
 import { statusHash } from "./public-tokens.js";
-import { restaurantPrivacyUrl } from "./compat/public-account.js";
+import { restaurantPrivacyUrl } from "./account-settings.js";
 import { fiscalTicketIdentity } from "./fiscal-read.js";
 import { selfInvoiceOffered } from "./cfdi/store.js";
 import {

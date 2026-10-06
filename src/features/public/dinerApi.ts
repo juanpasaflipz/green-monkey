@@ -11,7 +11,6 @@ import {
   type OrderingState,
   type PublicMenuView,
 } from "../../../shared/public-ordering";
-import { guestCopy } from "../../compat/public-account";
 
 export type DinerOrderBody = {
   operationId: string;
@@ -87,7 +86,7 @@ export const isTransient = (e: unknown) => e instanceof ApiError && e.transient;
 /** Diner wording for an error code (account's guest copy for "not available"). */
 export function guestError(code: string, locale: Locale): string {
   if (code === "pro_required" || code === "public_ordering_disabled")
-    return guestCopy(locale).orderingUnavailable;
+    return strings[locale].accountGuestOrderingUnavailable;
   if (code === "rate_limited") return strings[locale].publicRateLimited;
   if (
     code === "network_unavailable" ||

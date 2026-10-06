@@ -1,6 +1,5 @@
 import type { Locale } from "../../../shared/domain";
 import { strings } from "../../i18n";
-import { guestCopy } from "../../compat/public-account";
 import { Button } from "../../components/ui";
 import "./diner.css";
 
@@ -33,7 +32,7 @@ export function DinerNotice({
           )}
         </>
       ) : (
-        <h1>{guestCopy(locale).orderingUnavailable}</h1>
+        <h1>{t.accountGuestOrderingUnavailable}</h1>
       )}
     </main>
   );

@@ -62,9 +62,6 @@ const ownedElsewhere: Record<string, keyof typeof areas> = {
   session_changed: "access",
   missing_tenant: "access",
   self_disable: "access",
-  // Account's kill-switch code (031); public's compat gate (server/compat/
-  // public-account.ts) answers it until B3 swaps in account's module.
-  public_ordering_disabled: "account",
   invalid_modifier: "menu",
   invalid_quantity: "menu",
   invalid_recipe: "menu",

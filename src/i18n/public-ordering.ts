@@ -1,8 +1,8 @@
 import { defineArea } from "./define";
 
 // Public QR/kiosk ordering (032). Registered as `publicOrdering` (`public` is
-// a reserved word). Guest privacy copy is account's (031) and comes from
-// src/compat/public-account.ts until B3.
+// a reserved word). Guest privacy copy is account's (031): the six
+// accountGuest* keys of src/i18n/account.ts.
 export default defineArea({
   es: {
     // Diner page

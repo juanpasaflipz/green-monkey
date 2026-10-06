@@ -7,7 +7,7 @@ import express from "express";
 import type postgres from "postgres";
 import { tenant } from "./db.js";
 import { clientIp, ipHash, log } from "./logging.js";
-import { publicOrderingGate } from "./compat/public-account.js";
+import { publicOrderingGate } from "./account-settings.js";
 import {
   linkHash,
   linkRef,

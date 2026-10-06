@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -24,10 +25,6 @@ import {
   statusHash,
 } from "../server/public-tokens";
 import { publicKey, scopeKey } from "../server/public-limits";
-import {
-  publicOrderingEnabled,
-  publicOrderingGate,
-} from "../server/compat/public-account";
 import { parseDinerLocation } from "../src/features/public/dinerRoute";
 import { HoldCard } from "../src/features/public/HoldCard";
 import { PublicInboxBanner } from "../src/features/public/PublicInboxBanner";
@@ -268,47 +265,6 @@ describe("public ordering tokens and schemas (032)", () => {
     expect(
       settingsInput.safeParse({ ...base, maxOrderTotal: 10_000_001 }).success,
     ).toBe(false);
-  });
-
-  it("the interim flag (compat S1) follows account's contract", () => {
-    expect(publicOrderingEnabled({})).toBe(true);
-    expect(publicOrderingEnabled({ APP_ENV: "production" })).toBe(false);
-    expect(
-      publicOrderingEnabled({
-        APP_ENV: "production",
-        PUBLIC_ORDERING_ENABLED: "true",
-      }),
-    ).toBe(true);
-    expect(publicOrderingEnabled({ PUBLIC_ORDERING_ENABLED: " false " })).toBe(
-      false,
-    );
-    expect(() =>
-      publicOrderingEnabled({ PUBLIC_ORDERING_ENABLED: "yes" }),
-    ).toThrow("public_ordering_flag_invalid");
-    let status = 0,
-      body: unknown = null,
-      passed = false;
-    const res = {
-      status(n: number) {
-        status = n;
-        return this;
-      },
-      json(b: unknown) {
-        body = b;
-      },
-    };
-    publicOrderingGate({ PUBLIC_ORDERING_ENABLED: "false" })(
-      {} as never,
-      res as never,
-      () => (passed = true),
-    );
-    expect([status, body, passed]).toEqual([
-      404,
-      { error: "public_ordering_disabled" },
-      false,
-    ]);
-    publicOrderingGate({})({} as never, res as never, () => (passed = true));
-    expect(passed).toBe(true);
   });
 
   it("15. a table hold offers the target check only with an action that uses it", () => {
@@ -556,5 +512,77 @@ describe("public ordering tokens and schemas (032)", () => {
       }
     // summary, inbox and its expired count, submit's caps, links, occupancy, floor
     expect(live).toBe(8);
+  });
+});
+
+// B3 merge gate (LD-P2, public-rebase §3.3): account (031) is merged, so no
+// public compat shim or shim import may come back, the diner and staff routers
+// use account's real kill switch and privacy URL, and the base keys the old
+// link generator used stay deleted. Pure: reads files only.
+describe("public ordering merge gate (B3)", () => {
+  const read = (path: string) => readFileSync(path, "utf8");
+  const files = (dir: string): string[] =>
+    readdirSync(dir).flatMap((name) => {
+      const path = join(dir, name);
+      return statSync(path).isDirectory()
+        ? name === "node_modules"
+          ? []
+          : files(path)
+        : /\.(ts|tsx)$/.test(name)
+          ? [path]
+          : [];
+    });
+
+  it("no public compat shim or shim import remains", () => {
+    for (const dir of ["server/compat", "src/compat"])
+      if (existsSync(dir))
+        expect(
+          readdirSync(dir).filter((f) => f.startsWith("public-")),
+          dir,
+        ).toEqual([]);
+    const importers = [...files("server"), ...files("src"), ...files("tests")]
+      .filter((f) => f !== join("tests", "public-ordering.test.ts"))
+      .filter((f) => /compat\/public-/.test(read(f)));
+    expect(importers).toEqual([]);
+  });
+
+  it("the routers use account's publicOrderingGate, publicOrderingEnabled and restaurantPrivacyUrl", () => {
+    expect(read("server/public-ordering.ts")).toContain(
+      'import { publicOrderingGate } from "./account-settings.js";',
+    );
+    expect(read("server/routes/public-ordering.ts")).toContain(
+      'import { publicOrderingEnabled } from "../account-settings.js";',
+    );
+    expect(read("server/public-diner.ts")).toContain(
+      'import { restaurantPrivacyUrl } from "./account-settings.js";',
+    );
+  });
+
+  it("Configuración keeps the settings golden order with PublicOrderingSettings after AccountPrivacy (LD-P7)", () => {
+    const ops = read("src/features/Operations.tsx");
+    const order = [
+      "<RestaurantSettings ",
+      "<FiscalSettings ",
+      "<CfdiSettings ",
+      "<MoneyControlsSettings ",
+      "<AccountPrivacy ",
+      "<PublicOrderingSettings",
+      "<FreeSelection ",
+      "<DeviceManagement ",
+      "<PlanSettings",
+    ].map((tag) => {
+      const at = ops.indexOf(tag);
+      expect(at, tag).toBeGreaterThan(-1);
+      expect(ops.indexOf(tag, at + 1), `${tag} once`).toBe(-1);
+      return at;
+    });
+    expect(order).toEqual([...order].sort((x, y) => x - y));
+  });
+
+  it("the deleted base keys of the old link generator stay deleted", () => {
+    const users = [...files("src"), ...files("shared")].filter((f) =>
+      /\b(payAtCounter|orderingLinks|createLink)\b/.test(read(f)),
+    );
+    expect(users).toEqual([]);
   });
 });
