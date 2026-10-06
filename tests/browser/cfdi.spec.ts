@@ -10,6 +10,8 @@
  *    facturapi disabled, and leaves CFDI paused (settings `enabled: false`) in a finally so the
  *    other specs never see Facturar buttons or the printed block.
  */
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { TEST_CSD, TEST_CSD_PASSWORD } from "../fixtures/cfdi/test-csd";
@@ -180,9 +182,24 @@ test("self-invoicing portal: /f/{code} pre-fills the grouped code and looks it u
 // ---------------------------------------------------------------------------------------------
 
 /** Fiscal tickets exist and the worker published a Facturapi provider. */
+/**
+ * Merge gate (review CFDI-R5): the stamping flows skip only while fiscal 027 is absent from this
+ * tree. Once server/fiscal-read.ts exists, a missing GET /api/fiscal/context fails the test, and
+ * in CI (which starts the worker with the Facturapi fake) so does a disabled provider; only a
+ * local run without the worker may still skip.
+ */
+const FISCAL_MERGED = existsSync(join(process.cwd(), "server/fiscal-read.ts"));
 async function stampingReady(page: Page) {
   const fiscal = await call(page, "/fiscal/context");
   const caps = await call(page, "/capabilities");
+  if (FISCAL_MERGED) {
+    expect(fiscal.status, "fiscal 027 is merged").toBe(200);
+    if (process.env.CI)
+      expect(
+        caps.body?.facturapi?.enabled,
+        "CI runs the worker with the Facturapi fake",
+      ).toBe(true);
+  }
   return fiscal.status === 200 && caps.body?.facturapi?.enabled === true;
 }
 
