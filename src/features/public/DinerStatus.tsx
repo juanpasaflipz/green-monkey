@@ -60,7 +60,8 @@ export function DinerStatus({
 }: {
   token: string;
   locale: Locale;
-  menu: PublicMenuView;
+  /** null when the page's code no longer opens the menu (replaced). */
+  menu: PublicMenuView | null;
   statusKey: string;
   holds: StoredHold[];
   onSelect: (key: string) => void;
@@ -70,8 +71,9 @@ export function DinerStatus({
 }) {
   const t = (k: Key, values?: Record<string, string | number>) =>
     values ? fill(strings[locale][k], values) : strings[locale][k];
-  const money = moneyFormatter(locale, menu.restaurant.currency);
   const [view, setView] = useState<DinerHoldView | null>(null);
+  const restaurant = view?.restaurant ?? menu?.restaurant;
+  const money = moneyFormatter(locale, restaurant?.currency ?? "MXN");
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -145,7 +147,7 @@ export function DinerStatus({
 
   const time = (iso: string) =>
     new Intl.DateTimeFormat(locale === "es" ? "es-MX" : "en-US", {
-      timeZone: menu.restaurant.timezone,
+      timeZone: restaurant?.timezone,
       hour: "2-digit",
       minute: "2-digit",
       // 21:42 in Spanish (es-MX), 9:42 PM in English.

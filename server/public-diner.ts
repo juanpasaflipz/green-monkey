@@ -159,7 +159,12 @@ type HoldRow = {
   order_round: number | null;
   excluded_line_ids: string[];
   expired: boolean;
+  restaurant: DinerHoldView["restaurant"];
 };
+/** The restaurant fields of a hold row, inside the same statement. */
+const restaurantOf = (tx: Tx) =>
+  tx`(select json_build_object('name',r.name,'currency',r.currency,'timezone',r.timezone)
+    from restaurants r where r.id=h.tenant_id) as restaurant`;
 
 const holdKind = (h: HoldRow): LinkKind =>
   h.table_id ? "table" : h.channel === "kiosk" ? "kiosk" : "counter";
@@ -169,6 +174,7 @@ async function holdView(tx: Tx, h: HoldRow): Promise<DinerHoldView> {
   const excluded = new Set(h.excluded_line_ids ?? []);
   const lines = h.priced.map((l) => ({ ...l, excluded: excluded.has(l.id) }));
   const view: DinerHoldView = {
+    restaurant: h.restaurant,
     label: holdLabel(h.channel, h.number),
     state: h.state === "pending" && h.expired ? "expired" : h.state,
     kind: holdKind(h),
@@ -232,7 +238,8 @@ export async function submitHold(
   await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-op:'||${p.operationId},0))`;
   const [prior] = await tx<
     HoldRow[]
-  >`select *,(state='pending' and expires_at<=now()) as expired from public_order_holds where operation_id=${p.operationId}`;
+  >`select h.*,(h.state='pending' and h.expires_at<=now()) as expired,${restaurantOf(tx)}
+    from public_order_holds h where h.operation_id=${p.operationId}`;
   if (prior) {
     if (prior.link_id !== linkId || prior.request_hash !== requestHash)
       throw new DomainError("operation_conflict", 409);
@@ -330,15 +337,19 @@ export async function submitHold(
       ${p.name},${p.note},${tx.json(lines)},${tx.json(shown as never)},${total},${revision},${randomUUID()},
       now()+make_interval(mins=>${c.hold_minutes}))
     returning *,false as expired`;
-  return holdView(tx, hold);
+  return holdView(tx, {
+    ...hold,
+    restaurant: { name: c.name, currency: c.currency, timezone: c.timezone },
+  });
 }
 
 const holdByKey = (tx: Tx, linkId: string, statusKey: string, lock = false) =>
   tx<
     HoldRow[]
-  >`select *,(state='pending' and expires_at<=now()) as expired from public_order_holds
-    where status_key_hash=${statusHash(statusKey)} and link_id=${linkId}
-    ${lock ? tx`for update` : tx``}`;
+  >`select h.*,(h.state='pending' and h.expires_at<=now()) as expired,${restaurantOf(tx)}
+    from public_order_holds h
+    where h.status_key_hash=${statusHash(statusKey)} and h.link_id=${linkId}
+    ${lock ? tx`for update of h` : tx``}`;
 
 /**
  * The diner's status page. Lookups go through the link the hold was sent
@@ -375,5 +386,5 @@ export async function cancelHold(
     HoldRow[]
   >`update public_order_holds set state='cancelled',decided_at=clock_timestamp()
     where id=${h.id} returning *,false as expired`;
-  return holdView(tx, done);
+  return holdView(tx, { ...done, restaurant: h.restaurant });
 }

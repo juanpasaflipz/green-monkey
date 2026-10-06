@@ -107,7 +107,10 @@ export function DinerApp({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [picker, setPicker] = useState<Product | null>(null);
-  const [view, setView] = useState<"menu" | "status" | "kiosk-done">("menu");
+  // A reload of a QR page returns to this phone's latest order.
+  const [view, setView] = useState<"menu" | "status" | "kiosk-done">(() =>
+    !kiosk && readStored(token).length ? "status" : "menu",
+  );
   const [holds, setHolds] = useState<StoredHold[]>(() =>
     kiosk ? [] : readStored(token),
   );
@@ -122,10 +125,6 @@ export function DinerApp({
   const baseline = useRef<number | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
-
-  useEffect(() => {
-    if (!kiosk && current) setView("status");
-  }, []);
 
   /** Request outcomes drive the kiosk's offline overlay (never navigator.onLine). */
   const outcome = (e?: unknown) => {
@@ -366,7 +365,33 @@ export function DinerApp({
     setView("menu");
   }
 
-  if (notice) return <DinerNotice kind={notice} locale={locale} />;
+  // A replaced or deactivated QR still shows this phone's orders (status
+  // lookups accept the old code); its menu is gone.
+  const statusOnly =
+    !menu && notice === "invalid" && !kiosk && !!current && view === "status";
+  if (notice && !statusOnly)
+    return <DinerNotice kind={notice} locale={locale} />;
+  if (statusOnly)
+    return (
+      <main className="diner" lang={locale}>
+        <DinerStatus
+          token={token}
+          locale={locale}
+          menu={null}
+          statusKey={current!}
+          holds={holds}
+          onSelect={setCurrent}
+          onForget={(k) => {
+            const next = holds.filter((h) => h.key !== k);
+            writeStored(token, next);
+            setHolds(next);
+            setCurrent(next[0]?.key ?? null);
+          }}
+          onNewOrder={() => setView("menu")}
+          onRestore={() => setView("menu")}
+        />
+      </main>
+    );
   if (!menu)
     return (
       <main className="diner" lang={locale}>

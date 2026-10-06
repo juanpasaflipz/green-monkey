@@ -199,6 +199,8 @@ export type PublicMenuView = {
   catalog: Product[];
 };
 export type DinerHoldView = {
+  /** Lets the status page render even when its link was replaced since. */
+  restaurant: { name: string; currency: string; timezone: string };
   label: string;
   state: HoldState;
   kind: LinkKind;

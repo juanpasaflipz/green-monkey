@@ -629,6 +629,13 @@ test("revoke and rotate: a deactivated code and a replaced table code stop worki
     const table = await f.link({ kind: "table", tableId: mesa.id });
     const old = await diner(context, table.path);
     await expect(old.getByText(`Pedido para ${mesa.name}`)).toBeVisible();
+    // A phone that ordered with the old code keeps following its order.
+    const ordered = await diner(context, table.path);
+    await addTaco(ordered);
+    await sendOrder(ordered, `Rota ${f.id}`);
+    await expect(ordered.locator(".diner-status-head")).toContainText(
+      "Esperando confirmación del personal",
+    );
     const rotated = await call(page, `/ordering/links/${table.id}/rotate`, {});
     expect(rotated.status).toBe(200);
     f.links.push(rotated.data.id);
@@ -636,6 +643,10 @@ test("revoke and rotate: a deactivated code and a replaced table code stop worki
     await expect(
       old.getByRole("heading", { name: "Este código ya no funciona" }),
     ).toBeVisible();
+    await ordered.reload();
+    await expect(ordered.locator(".diner-status-head")).toContainText(
+      "Esperando confirmación del personal",
+    );
     const fresh = await diner(context, rotated.data.path);
     await expect(fresh.getByText(`Pedido para ${mesa.name}`)).toBeVisible();
   });
