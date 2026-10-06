@@ -94,14 +94,17 @@ const used = (u: Usage | undefined) =>
 async function lockStockSetup(tx: Tx) {
   await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':stock-items',0))`;
 }
-async function loadItem(tx: Tx, stockId: string, lock = false) {
-  const [row] = lock
-    ? await tx<
-        ItemRow[]
-      >`select ${itemColumns(tx)} from stock_items i where i.id=${stockId} for update of i`
-    : await tx<
-        ItemRow[]
-      >`select ${itemColumns(tx)} from stock_items i where i.id=${stockId}`;
+async function loadItem(tx: Tx, stockId: string) {
+  const [row] = await tx<
+    ItemRow[]
+  >`select ${itemColumns(tx)} from stock_items i where i.id=${stockId}`;
+  return row as ItemRow | undefined;
+}
+/** loadItem under the row lock (LO-9); a separate function so the lock-order scan sees exactly where it is taken. */
+async function lockItem(tx: Tx, stockId: string) {
+  const [row] = await tx<
+    ItemRow[]
+  >`select ${itemColumns(tx)} from stock_items i where i.id=${stockId} for update of i`;
   return row as ItemRow | undefined;
 }
 async function duplicateName(tx: Tx, name: string, except: string) {
@@ -140,7 +143,7 @@ export async function saveStockItem(tx: Tx, s: Session, raw: unknown) {
     // saves serialize on lockStockSetup, so the unit peeked here is stable.
     const current = await loadItem(tx, p.id);
     if (current && current.unit !== p.unit) await bumpMenuRevision(tx);
-    const old = await loadItem(tx, p.id, true);
+    const old = await lockItem(tx, p.id);
     if ((old?.settings_version ?? 0) !== p.expectedVersion)
       throw new DomainError("menu_changed", 409);
     if (old && p.openingQuantity !== null)
@@ -204,7 +207,7 @@ export async function archiveStockItem(tx: Tx, s: Session, raw: unknown) {
     // Menu writes that add recipe links serialize on menu_state; take it too so
     // a recipe cannot link this item while it is being archived.
     await bumpMenuRevision(tx);
-    const old = await loadItem(tx, p.id, true);
+    const old = await lockItem(tx, p.id);
     if (!old || old.settings_version !== p.expectedVersion)
       throw new DomainError("menu_changed", 409);
     const usage = await recipeUsage(tx, true);
