@@ -541,6 +541,9 @@ and interruption do not alter accepted totals; PDF values match on-screen values
    enabled module scope with actual FacturAPI sandbox configuration and current
    official requirements. Protect fiscal/customer data and signed links; reconcile
    provider state and prevent duplicate invoices. No invented fiscal success.
+   **Status:** built (migration 030) against Facturapi's documented API with contract
+   tests and a deterministic fake ([CFDI](CFDI.md)); sandbox verification awaits a
+   Facturapi test key; live awaits production approval.
 9. Delivery connections follow import-first reconciliation from M7. Implement live
    Uber Eats/Rappi/DiDi only where authorized contracts and sandbox access exist;
    preserve order/channel/fee identities and credential isolation.

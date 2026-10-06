@@ -19,6 +19,7 @@ import {
   OrderDiscountRows,
   RefundDetailRows,
 } from "./discounts/ReceiptAdjustments";
+import { CfdiOrderActions } from "./cfdi/CfdiOrderActions";
 
 export function moneyFormatter(currency: string, locale: Locale) {
   const scale = 10 ** currencyExponent(currency);
@@ -519,6 +520,12 @@ export function ReceiptModal({
         )}
         {noteActions}
         {extraActions}
+        <CfdiOrderActions
+          order={order}
+          session={session}
+          locale={locale}
+          variant="receipt"
+        />
         <Button
           variant="primary"
           disabled={busy}

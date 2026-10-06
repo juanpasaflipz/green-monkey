@@ -14,6 +14,7 @@ import { managers, operators, permit } from "./auth.js";
 import { requireRecentAuth } from "./access.js";
 import { audit, once } from "./orders.js";
 import { discountsByLine } from "./discounts.js";
+import { enqueueCfdiRefund } from "./cfdi/hooks.js";
 import {
   businessDate,
   DomainError,
@@ -716,7 +717,8 @@ export async function recordRefundTax(
     "business_date",
     "created_by",
   )} returning refund_id,category,rate_bps,gross,base,tax,business_date::text as business_date,created_at`) as unknown as AdjustmentRecord[];
-  // cfdi (030): enqueueCfdiRefund(tx, s, refundId) here, only when rows were inserted.
+  // cfdi (030): the credit-note decision, only when rows were inserted (no-op while CFDI is off).
+  if (inserted.length) await enqueueCfdiRefund(tx, s, refundId);
   return refundViews(inserted)[0];
 }
 

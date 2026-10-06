@@ -26,6 +26,7 @@ import {
   OrderDiscountRows,
 } from "./discounts/ReceiptAdjustments";
 import { lineLabel } from "./discounts/format";
+import { CfdiOrderActions } from "./cfdi/CfdiOrderActions";
 
 const reasonKey: Record<string, Key> = {
   settled: "serviceCloseReasonSettled",
@@ -516,6 +517,12 @@ export function OrderDetail({
                 {t("serviceReprintReceipt")}
               </Button>
             )}
+            <CfdiOrderActions
+              order={order}
+              session={session}
+              locale={locale}
+              variant="detail"
+            />
           </div>
           {!online && (discountable || refundable) && (
             <p className="muted tiny">

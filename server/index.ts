@@ -79,6 +79,7 @@ import * as fiscalRoutes from "./routes/fiscal.js";
 import * as discountsRoutes from "./routes/discounts.js";
 import * as reportsRoutes from "./routes/reports.js";
 import * as cfdiRoutes from "./routes/cfdi.js";
+import { cfdiCapability } from "./cfdi/hooks.js";
 import * as accountRoutes from "./routes/account.js";
 import {
   paymentRecoveryStatus,
@@ -488,12 +489,12 @@ route("post", "/ordering-links", async (tx, s, req) => {
   };
 });
 route("get", "/plan", async (tx) => entitlement(tx));
-route("get", "/capabilities", async () => ({
+route("get", "/capabilities", async (tx) => ({
   cash: { enabled: true },
   external: { enabled: true },
   clip: { enabled: false, reason: "provider_contract_and_hardware_unverified" },
   stripe: { enabled: false, reason: "sandbox_and_merchant_required" },
-  facturapi: { enabled: false, reason: "sandbox_required" },
+  facturapi: await cfdiCapability(tx),
   printer: { enabled: false, reason: "device_not_paired" },
   resend: { enabled: false, reason: "sender_and_sandbox_required" },
 }));

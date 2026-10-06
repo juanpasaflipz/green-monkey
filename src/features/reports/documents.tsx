@@ -24,6 +24,7 @@ import {
   pct,
 } from "./format";
 import { summarySections } from "./summary-rows";
+import { CfdiCorteCoverage, corteCoverageOf } from "../cfdi/CfdiCorteCoverage";
 import "./reports.css";
 
 /** A deduction printed with a leading minus ("−$90.00"); zero prints plain. */
@@ -291,6 +292,7 @@ export function DayCorteDocument({
   const c = summary.collections;
   const exception = (kind: ExceptionKind) =>
     doc.exceptions.find((e) => e.kind === kind) ?? { count: 0, amount: 0 };
+  const cfdiCoverage = corteCoverageOf(doc.extra);
   const negative = new Set([
     "discounts",
     "courtesies",
@@ -444,7 +446,13 @@ export function DayCorteDocument({
           })}
         </p>
       </DocSection>
-      {/* cfdi (030): render doc.extra.cfdi (CFDI coverage of the day) here when present. */}
+      {/* cfdi (030): the day's CFDI coverage (doc.extra.cfdi) when CFDI is on. */}
+      {cfdiCoverage && (
+        <>
+          <DocRule />
+          <CfdiCorteCoverage coverage={cfdiCoverage} locale={locale} />
+        </>
+      )}
       <DocFooter>{t.reportsDocNotFiscal}</DocFooter>
     </div>
   );

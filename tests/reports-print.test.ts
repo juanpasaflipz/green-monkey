@@ -846,6 +846,35 @@ describe("Resumen rows, summary CSV and the corte del día", () => {
     expect(flagged).toContain("REIMPRESIÓN 3");
   });
 
+  it("cfdi (030): doc.extra.cfdi prints a Facturación (CFDI) section before the footer; without it the corte has none", () => {
+    const coverage = {
+      mode: "test" as const,
+      tickets: 96,
+      invoiced: 3,
+      globalized: 92,
+      uncovered: 1,
+      invoicedTotal: 34_800,
+      globalTotal: 2_400_000,
+    };
+    const out = render(
+      createElement(DayCorteDocument, {
+        doc: dayDoc(fiscal(), { extra: { cfdi: coverage } }),
+        locale: "es",
+      }),
+    );
+    expect(out).toContain("Facturación (CFDI) (modo prueba)");
+    expect(out).toContain("Facturados a clientes: 3 tickets · $348.00");
+    expect(out).toContain("En factura global: 92 tickets · $24,000.00");
+    expect(out).toContain("Sin factura todavía: 1 tickets");
+    expect(out.indexOf("Facturación (CFDI)")).toBeLessThan(
+      out.indexOf("Documento interno; no es comprobante fiscal."),
+    );
+    const none = render(
+      createElement(DayCorteDocument, { doc: dayDoc(fiscal()), locale: "es" }),
+    );
+    expect(none).not.toContain("Facturación (CFDI)");
+  });
+
   it('22. A13.8: CortePrintButton with online=false renders a disabled button described by "Los reportes requieren conexión."', () => {
     const html = renderToStaticMarkup(
       createElement(CortePrintButton, {

@@ -62,9 +62,11 @@ a stolen device.
 
 **Step-up**: on a terminal, refunds, paid-outs, manager self-approved voids,
 every staff, device and pairing-code command (including the legacy
-`POST /api/team/save`), and fiscal's profile save (`POST /api/fiscal/profile`,
+`POST /api/team/save`), fiscal's profile save (`POST /api/fiscal/profile`,
 owner) and missing-ticket repair (`POST /api/fiscal/tickets/repair`, managers;
-LD-15 fiscal Q5) need a PIN entered within
+LD-15 fiscal Q5), and the CFDI commands (activate, settings, CSD upload, live
+mode, cancel, substitute and "Sustituir global y facturar", cfdi 030) need a PIN
+entered within
 `ACCESS_STEP_UP_SECONDS` (default 120). Discounts (028): a manager or owner
 applying or removing a discount or recording a refund alone gets the same
 step-up and is the approver of record; a cashier or server needs a manager's

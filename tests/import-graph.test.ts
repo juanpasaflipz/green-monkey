@@ -87,6 +87,45 @@ describe("process boundaries", () => {
     );
   });
 
+  it("cfdi (030): the web never reaches the worker registry, cfdi's worker modules, its vault or the Facturapi client; the worker reaches cfdi's register and boot modules, never its web service, portal, routes or the token module", () => {
+    const web = reachable("server/index.ts");
+    for (const forbidden of [
+      "server/jobs/worker-registry.ts",
+      "server/cfdi/vault.ts",
+      "server/cfdi/facturapi.ts",
+      "server/cfdi/errors.ts",
+    ])
+      expect(web.has(forbidden), forbidden).toBe(false);
+    expect([...web].filter((f) => f.startsWith("server/cfdi/worker/"))).toEqual(
+      [],
+    );
+    expect(web.has("server/routes/cfdi.ts")).toBe(true);
+    expect(web.has("server/cfdi/service.ts")).toBe(true);
+    expect(web.has("server/cfdi/portal.ts")).toBe(true);
+    const worker = reachable("server/worker.ts");
+    expect(worker.has("server/cfdi/worker/register.ts")).toBe(true);
+    expect(worker.has("server/cfdi/worker/boot.ts")).toBe(true);
+    // Fiscal's ticket readers come from the leaf module (LD-15 EXTRA, wave2-cross-track C4).
+    expect(worker.has("server/fiscal-read.ts")).toBe(true);
+    // LD-16 L4 (amended LD-15 cfdi Q1): never tokens.ts, orders.ts, fiscal.ts, index.ts, any
+    // route module, or cfdi's web service and portal (CFDI-R2-6).
+    for (const forbidden of [
+      "server/tokens.ts",
+      "server/index.ts",
+      "server/routes/cfdi.ts",
+      "server/cfdi/service.ts",
+      "server/cfdi/portal.ts",
+      "server/cfdi/hooks.ts",
+      "server/cfdi/csd.ts",
+      "server/orders.ts",
+      "server/fiscal.ts",
+    ])
+      expect(worker.has(forbidden), forbidden).toBe(false);
+    expect([...worker].filter((f) => f.startsWith("server/routes/"))).toEqual(
+      [],
+    );
+  });
+
   it("the instrument preload loads configuration before anything else", () => {
     const source = readFileSync("server/instrument.ts", "utf8");
     const firstImport = source.match(/^import\s+["'][^"']+["'];/m)?.[0];
