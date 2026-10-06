@@ -3071,8 +3071,14 @@ try {
     ]);
     const live = await liveTicks(T.tenantId);
     assert.equal(live.length, 1);
+    // The next hour's tick; when that hour's key already belongs to a tick that ran (the
+    // setup above marks the activation's tick done), armNextTick suffixes it with this job's id.
     assert.ok(
-      [`tick:${before}`, `tick:${after}`].includes(live[0].dedupe_key),
+      [`tick:${before}`, `tick:${after}`].some(
+        (key) =>
+          live[0].dedupe_key === key ||
+          live[0].dedupe_key.startsWith(`${key}:`),
+      ),
       live[0].dedupe_key,
     );
     // Sign-in restarts a chain with no live tick.
