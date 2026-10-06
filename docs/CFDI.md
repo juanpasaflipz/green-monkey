@@ -212,7 +212,9 @@ Recovery (`server/cfdi/recovery.ts`):
   of the global (LO-3). The request re-reads the global and the ticket's claim under the key; if
   the reissue already canceled the global it answers `cfdi_global_in_progress`, and the retry
   lands on the replacement global once it is valid. A motive-04 cancellation is only inserted
-  for a valid global.
+  for a valid global. The replacement's part number is taken under the period key, after the
+  global's document key, as the builder numbers its parts; `cfdi_documents_period` is unique per
+  (mode, period, part) (CFDI-R2-5).
 
 ## Global periods
 

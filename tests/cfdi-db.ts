@@ -57,7 +57,7 @@ import {
 } from "../server/cfdi/hooks.js";
 import { selfInvoiceOffered } from "../server/cfdi/store.js";
 import { rekeyOrganizationSecrets } from "../server/cfdi/rekey.js";
-import { lockDocument } from "../server/cfdi/locks.js";
+import { lockDocument, lockPeriod } from "../server/cfdi/locks.js";
 import { noRetries } from "./db-retries.js";
 import { seal } from "../server/tokens.js";
 import { parseCfdiTotals } from "../server/cfdi/xml.js";
@@ -2284,6 +2284,65 @@ try {
     assert.equal(
       (await claims(t3.id)).filter((c) => c.state === "active").length,
       1,
+    );
+  });
+
+  await test("R2-5. the replacement global takes its part number under the period key, after the global's key: a reissue waits while the builder holds the period, then numbers the next part; a duplicate part is refused", async () => {
+    const [idx] = await admin`
+      select indexdef from pg_indexes where tablename = 'cfdi_documents' and indexname = 'cfdi_documents_period'`;
+    assert.match(idx.indexdef, /^CREATE UNIQUE INDEX/);
+    const day = daysAgo(11);
+    const t1 = await makeTicket(A, { businessDate: day });
+    const t2 = await makeTicket(A, { businessDate: day });
+    await tick(A);
+    const [g] = await admin`
+      select id, part, period_key from cfdi_documents where tenant_id = ${A.tenantId} and kind = 'global'
+        and period_key = ${"D" + day} and status = 'valid'`;
+    // Hold the period's key as a late or supplementary build would: the reissue cancels G at
+    // the provider, takes G's key, then waits for the period key before numbering G'.
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let holding!: () => void;
+    const held = new Promise<void>((r) => (holding = r));
+    const holder = admin.begin(async (tx) => {
+      await lockPeriod(tx as unknown as Tx, A.tenantId, "test", g.period_key);
+      holding();
+      await released;
+    });
+    await held;
+    const late = await invoice(A, t1, { s: A.manager, reissueGlobal: true });
+    assert.equal(late.status, "waiting");
+    const workerRun = settle(A.tenantId);
+    await waitFor(async () => (await advisoryWaiters()) >= 1);
+    const [{ created }] = await admin`
+      select count(*)::int as created from cfdi_documents where replaces_document_id = ${g.id}`;
+    assert.equal(created, 0, "G' is not numbered while the period key is held");
+    release();
+    await holder;
+    await workerRun;
+    const [replacement] = await admin`
+      select part, status from cfdi_documents where replaces_document_id = ${g.id} and kind = 'global'`;
+    assert.equal(replacement.status, "valid");
+    const [{ max }] = await admin`
+      select max(part)::int as max from cfdi_documents where tenant_id = ${A.tenantId} and kind = 'global'
+        and mode = 'test' and period_key = ${g.period_key}`;
+    assert.equal(replacement.part, max);
+    assert.ok(replacement.part > g.part);
+    assert.equal((await docRow(late.id)).status, "valid");
+    assert.equal(
+      (await claims(t2.id)).filter((c) => c.state === "active").length,
+      1,
+    );
+    // The index backs the key: a second document with an existing part number is refused.
+    await assert.rejects(
+      admin.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${A.tenantId}, true)`;
+        await tx`
+          insert into cfdi_documents(tenant_id, id, kind, source, mode, status, period_key, global_info, part)
+          values (${A.tenantId}, ${randomUUID()}, 'global', 'scheduler', 'test', 'queued', ${g.period_key},
+            '{"periodicity":"day","months":"01","year":2026}', ${g.part})`;
+      }),
+      (e: { code?: string }) => e.code === "23505",
     );
   });
 

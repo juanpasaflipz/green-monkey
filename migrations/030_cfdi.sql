@@ -306,7 +306,9 @@ CREATE UNIQUE INDEX cfdi_documents_refund ON cfdi_documents(tenant_id, refund_id
 CREATE INDEX cfdi_documents_created ON cfdi_documents(tenant_id, created_at DESC, id);
 CREATE INDEX cfdi_documents_open ON cfdi_documents(tenant_id, status, updated_at)
   WHERE status IN ('waiting','queued','stamping','pending','canceling');
-CREATE INDEX cfdi_documents_period ON cfdi_documents(tenant_id, mode, period_key, part) WHERE kind = 'global';
+-- One document per global part (CFDI-R2-5): the builder and cfdi_reissue number parts under the
+-- period key; this backs it.
+CREATE UNIQUE INDEX cfdi_documents_period ON cfdi_documents(tenant_id, mode, period_key, part) WHERE kind = 'global';
 CREATE INDEX cfdi_documents_depends ON cfdi_documents(tenant_id, depends_on) WHERE depends_on IS NOT NULL;
 CREATE INDEX cfdi_documents_parent ON cfdi_documents(tenant_id, parent_document_id) WHERE parent_document_id IS NOT NULL;
 CREATE INDEX cfdi_documents_replaces ON cfdi_documents(tenant_id, replaces_document_id) WHERE replaces_document_id IS NOT NULL;
