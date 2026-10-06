@@ -1407,6 +1407,8 @@ describe("parseCfdiTotals", () => {
       discount: 0,
       total: 18600,
       taxTraslados: 1600,
+      taxRetenidos: 0,
+      retenciones: [],
       uuid: "39C85A3F-275B-4341-B259-E8971D9F8A94",
     });
     expect(t.concepts).toEqual([
@@ -1423,6 +1425,7 @@ describe("parseCfdiTotals", () => {
             importe: 1600,
           },
         ],
+        retenciones: [],
       },
       {
         noIdentificacion: "A-000123",
@@ -1437,6 +1440,7 @@ describe("parseCfdiTotals", () => {
             importe: 0,
           },
         ],
+        retenciones: [],
       },
       {
         noIdentificacion: "A-000124",
@@ -1451,6 +1455,7 @@ describe("parseCfdiTotals", () => {
             importe: null,
           },
         ],
+        retenciones: [],
       },
     ]);
     // Comprobante-level traslados only (the concept-level ones are not repeated here).

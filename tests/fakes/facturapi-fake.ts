@@ -41,6 +41,10 @@
  *                        reading of Facturapi's rounding (decision D18); the stamped totals can then
  *                        differ from cfdi's expected figures by a centavo
  *   FAKE CANCEL PENDING → a cancellation needs receptor acceptance, accepted at the next read
+ * Concepts priced at their base (`tax_included: false`, the RESICO ISR retention of LD-16 L9) are
+ * stamped as Base = price, IVA = Base × rate and ISR retained = Base × 1.25 %, each rounded half up
+ * per concept; the comprobante carries TotalImpuestosRetenidos and Total = SubTotal + traslados −
+ * retenciones.
  *   FAKE REJECT CANCEL  → a cancellation needs acceptance and is rejected at the next read
  * An organization name containing FAKE LOST RESPONSE is created and its response dropped; an
  * email whose local part starts with "bounce" fails delivery. Faults that data cannot carry
@@ -189,6 +193,8 @@ type Concept = {
   base: number;
   tax: number | null; // null: exento
   rate: string | null;
+  /** ISR retained (RESICO, base-priced concepts); 0 otherwise. */
+  withheld: number;
   /** six_decimals mode: Base and Importe kept in micro-pesos (6 decimals) in the XML. */
   micro?: { base: bigint; tax: bigint | null };
 };
@@ -210,6 +216,8 @@ type Invoice = {
   concepts: Concept[];
   subtotal: number;
   tax: number;
+  /** TotalImpuestosRetenidos (RESICO ISR). */
+  withheld: number;
   total: number;
   issuer: { rfc: string; name: string; regime: string };
   /** Reads left before a pending stamp or cancellation resolves. */
@@ -861,7 +869,17 @@ export function createFacturapiFake(
             amount(c.base, m.base),
             c.tax === null || m.tax === null ? null : amount(c.tax, m.tax),
             c.rate,
-          )}</cfdi:Traslados></cfdi:Impuestos></cfdi:Concepto>`
+          )}</cfdi:Traslados>${
+            c.withheld
+              ? `<cfdi:Retenciones><cfdi:Retencion ${attrs([
+                  ["Base", pesos(c.base)],
+                  ["Impuesto", "001"],
+                  ["TipoFactor", "Tasa"],
+                  ["TasaOCuota", "0.012500"],
+                  ["Importe", pesos(c.withheld)],
+                ])}/></cfdi:Retenciones>`
+              : ""
+          }</cfdi:Impuestos></cfdi:Concepto>`
         );
       })
       .join("");
@@ -916,9 +934,11 @@ export function createFacturapiFake(
         ["UsoCFDI", b.use],
       ])}/>` +
       `<cfdi:Conceptos>${concepts}</cfdi:Conceptos>` +
-      `<cfdi:Impuestos${anyTaxed ? ` TotalImpuestosTrasladados="${pesos(inv.tax)}"` : ""}><cfdi:Traslados>${rateGroups(
-        inv.concepts,
-      )
+      `<cfdi:Impuestos${inv.withheld ? ` TotalImpuestosRetenidos="${pesos(inv.withheld)}"` : ""}${anyTaxed ? ` TotalImpuestosTrasladados="${pesos(inv.tax)}"` : ""}>${
+        inv.withheld
+          ? `<cfdi:Retenciones><cfdi:Retencion Impuesto="001" Importe="${pesos(inv.withheld)}"/></cfdi:Retenciones>`
+          : ""
+      }<cfdi:Traslados>${rateGroups(inv.concepts)
         .map((g) =>
           traslado(pesos(g.base), g.tax === null ? null : pesos(g.tax), g.rate),
         )
@@ -1189,8 +1209,30 @@ export function createFacturapiFake(
     b: FInvoiceInput,
     mode: "half_up" | "truncate" | "six_decimals",
   ): Concept[] {
+    const halfUp = (centavos: number, bps: number) =>
+      Math.floor((centavos * bps * 2 + 10000) / 20000);
     return b.items.map((item) => {
       const t = item.product.taxes[0];
+      const isr = item.product.taxes[1];
+      if (!item.product.tax_included) {
+        // Base-priced concept (RESICO retention): Base = price, IVA and ISR on the base.
+        const base = conceptCentavos(item);
+        const rate = t.factor === "Exento" ? null : Math.round(t.rate * 10000);
+        const tax =
+          rate === null
+            ? null
+            : mode === "truncate"
+              ? Math.floor((base * rate) / 10000)
+              : halfUp(base, rate);
+        return {
+          item,
+          gross: base + (tax ?? 0),
+          base,
+          tax,
+          rate: rate === null ? null : t.rate.toFixed(6),
+          withheld: isr ? halfUp(base, 125) : 0,
+        };
+      }
       const gross = conceptCentavos(item);
       if (t.factor === "Exento")
         return {
@@ -1199,6 +1241,7 @@ export function createFacturapiFake(
           base: gross,
           tax: null,
           rate: null,
+          withheld: 0,
           ...(mode === "six_decimals"
             ? { micro: { base: BigInt(gross) * 10_000n, tax: null } }
             : {}),
@@ -1214,6 +1257,7 @@ export function createFacturapiFake(
           base: microToCentavos(base6),
           tax: microToCentavos(tax6),
           rate: t.rate.toFixed(6),
+          withheld: 0,
           micro: { base: base6, tax: tax6 },
         };
       }
@@ -1221,7 +1265,14 @@ export function createFacturapiFake(
         mode === "truncate"
           ? Math.floor((gross * rate) / (10000 + rate))
           : extractTax(gross, rate).tax;
-      return { item, gross, base: gross - tax, tax, rate: t.rate.toFixed(6) };
+      return {
+        item,
+        gross,
+        base: gross - tax,
+        tax,
+        rate: t.rate.toFixed(6),
+        withheld: 0,
+      };
     });
   }
 
@@ -1331,6 +1382,7 @@ export function createFacturapiFake(
       lines.reduce((s, c) => s + microOf(c).base, 0n),
     );
     const tax = rateGroups(lines).reduce((s, g) => s + (g.tax ?? 0), 0);
+    const withheld = lines.reduce((s, c) => s + c.withheld, 0);
     const folioKey = `${org.id}:${live}:${b.series}`;
     const folio = (folios.get(folioKey) ?? 0) + 1;
     folios.set(folioKey, folio);
@@ -1352,7 +1404,8 @@ export function createFacturapiFake(
       concepts: lines,
       subtotal,
       tax,
-      total: subtotal + tax,
+      withheld,
+      total: subtotal + tax - withheld,
       issuer: {
         rfc: org.certificate?.rfc ?? org.legal.tax_id ?? TEST_ISSUER.tax_id,
         name: org.legal.legal_name,

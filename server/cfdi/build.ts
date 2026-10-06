@@ -37,6 +37,8 @@ import {
 } from "../../shared/fiscal.js";
 import {
   paymentFormFor,
+  resicoWithholds,
+  RESICO_ISR_RATE_BPS,
   usoCfdiAllowed,
   type CardForm,
   type Receptor,
@@ -46,6 +48,7 @@ import {
   type FCustomerInput,
   type FInvoiceInput,
   type FItemInput,
+  type FIvaTaxInput,
   type FTaxInput,
 } from "./facturapi-schema.js";
 
@@ -92,13 +95,13 @@ export function pesos(centavos: number): number {
 }
 
 /** IVA traslado for a fiscal category (TAX_RULES in shared/tax.ts). */
-export function taxFor(category: TaxCategory): FTaxInput {
+export function taxFor(category: TaxCategory): FIvaTaxInput {
   const rule = TAX_RULES[category];
   if (rule.rateBps === null)
     return { type: "IVA", rate: 0, factor: "Exento", withholding: false };
   return {
     type: "IVA",
-    rate: (rule.rateBps / 10000) as FTaxInput["rate"],
+    rate: (rule.rateBps / 10000) as FIvaTaxInput["rate"],
     factor: "Tasa",
     withholding: false,
   };
@@ -113,8 +116,22 @@ export function categorySuffix(category: TaxCategory): string {
       : "";
 }
 
+/** The RESICO ISR retention (LISR 113-J): 1.25 % of the concept base. */
+export const ISR_WITHHOLDING: FTaxInput = {
+  type: "ISR",
+  rate: 0.0125, // RESICO_ISR_RATE_BPS / 10000
+  factor: "Tasa",
+  withholding: true,
+};
+
 function rateBpsOf(tax: FTaxInput): number | null {
   return tax.factor === "Exento" ? null : Math.round(tax.rate * 10000);
+}
+
+/** centavos × bps / 10000, rounded half up (exact integers). */
+function bpsOf(centavos: number, bps: number | null): number {
+  if (!bps) return 0;
+  return Math.floor((centavos * bps * 2 + 10000) / 20000);
 }
 
 function micros(n: number): bigint {
@@ -135,18 +152,57 @@ export function conceptCentavos(
 }
 
 /**
- * Σ extractTax(concept gross, rate) over the request: the IVA Facturapi must stamp when it rounds
- * each concept half-up to 2 decimals (spec §4.3; verified by the opt-in sandbox run, decision D18).
- * Concepts are quantity 1 except itemized lines whose unit price is exact at 6 decimals.
+ * What the provider must stamp for one concept, in centavos, assuming it rounds each concept half
+ * up to 2 decimals (spec §4.3; verified by the opt-in sandbox run, decision D18):
+ *   - tax-inclusive (`tax_included: true`): gross = quantity × price, IVA = extractTax(gross);
+ *   - base price (`tax_included: false`, concepts with the RESICO retention): base = quantity ×
+ *     price, IVA = base × rate, ISR retained = base × 1.25 %.
+ * `total` is before the retention (SubTotal + traslados of the concept).
+ */
+export function conceptAmounts(item: FItemInput): {
+  base: number;
+  tax: number;
+  withheld: number;
+  total: number;
+} {
+  const iva = item.product.taxes[0];
+  const isr = item.product.taxes[1];
+  if (!iva || iva.type !== "IVA") throw new RangeError("invalid_tax");
+  const amount = conceptCentavos(item);
+  if (item.product.tax_included) {
+    const { tax } = extractTax(amount, rateBpsOf(iva));
+    return { base: amount - tax, tax, withheld: 0, total: amount };
+  }
+  const tax = bpsOf(amount, rateBpsOf(iva));
+  const withheld = isr ? bpsOf(amount, RESICO_ISR_RATE_BPS) : 0;
+  return { base: amount, tax, withheld, total: amount + tax };
+}
+
+/** Σ of conceptAmounts over a request: the canonical totals the stamped XML is checked against. */
+export function canonicalAmounts(body: Pick<FInvoiceInput, "items">): {
+  total: number;
+  tax: number;
+  withheld: number;
+} {
+  let total = 0,
+    tax = 0,
+    withheld = 0;
+  for (const item of body.items) {
+    const a = conceptAmounts(item);
+    total += a.total;
+    tax += a.tax;
+    withheld += a.withheld;
+  }
+  return { total, tax, withheld };
+}
+
+/**
+ * Σ concept IVA over the request: the IVA Facturapi must stamp when it rounds each concept half-up
+ * to 2 decimals (spec §4.3). Tax-inclusive concepts give Σ extractTax(gross) (= fiscal's figure,
+ * no ties at 16 % and 8 %); base-priced concepts (RESICO retention) give Σ base × rate.
  */
 export function canonicalTax(body: Pick<FInvoiceInput, "items">): number {
-  let tax = 0;
-  for (const item of body.items) {
-    const t = item.product.taxes[0];
-    if (!t) throw new RangeError("invalid_tax");
-    tax += extractTax(conceptCentavos(item), rateBpsOf(t)).tax;
-  }
-  return tax;
+  return canonicalAmounts(body).tax;
 }
 
 /** One category figure from fiscal: a known category, integer centavos, IVA ≤ gross, no IVA at 0 % or exempt. */
@@ -294,6 +350,7 @@ function groupItem(
   g: NetGroup,
   product: { description: string; key: string; unit: string; unitName: string },
   sku: string | null,
+  withhold = false,
 ): FItemInput {
   return {
     quantity: 1,
@@ -302,17 +359,24 @@ function groupItem(
       product_key: product.key,
       unit_key: product.unit,
       unit_name: product.unitName,
-      price: pesos(g.gross),
-      tax_included: true,
+      // With the RESICO retention the price is fiscal's base (gross − IVA), see productInput.
+      price: pesos(withhold ? g.gross - g.tax : g.gross),
+      tax_included: !withhold,
       taxability: "02",
-      taxes: [taxFor(g.category)],
+      taxes: withhold
+        ? [taxFor(g.category), ISR_WITHHOLDING]
+        : [taxFor(g.category)],
       ...(sku ? { sku } : {}),
     },
   };
 }
 
 export type ItemizedFallback =
-  "refunds" | "lines_invalid" | "tax_mismatch" | "too_many_lines";
+  | "refunds"
+  | "lines_invalid"
+  | "tax_mismatch"
+  | "too_many_lines"
+  | "withholding";
 
 /** Per-line concepts, or why the ticket must be invoiced grouped. */
 function itemizedItems(
@@ -393,11 +457,19 @@ export type InvoiceBuildInput = {
   nettedRefunds?: readonly RefundTaxView[];
   /** Substitution (cancellation motive 01): the UUID this invoice replaces, related with 04. */
   replacesUuid?: string | null;
+  /**
+   * The issuer's current régimen and RFC (fiscal profile): a persona física in RESICO (626)
+   * invoicing a persona moral adds the 1.25 % ISR retention per concept (LD-16 L9).
+   */
+  issuer?: { regime: string | null; rfc: string | null };
 };
 export type InvoiceBuild = {
   body: FInvoiceInput;
+  /** Before any retention: fiscal's net gross. */
   expectedTotal: number;
   expectedTax: number;
+  /** ISR retained (RESICO), canonical: Σ round(base × 1.25 %); 0 without retention. */
+  expectedWithholding: number;
   conceptCount: number;
   nettedRefundIds: string[];
   /** Concepts actually used, and why itemized was not possible when it was asked for. */
@@ -437,10 +509,15 @@ export function buildInvoiceRequest(i: InvoiceBuildInput): InvoiceBuild {
   const folio = payload.ticket.folio;
   const description =
     settings.conceptDescription.trim() || "Consumo de alimentos y bebidas";
+  const withhold = i.issuer ? resicoWithholds(i.issuer, receptor.rfc) : false;
 
   let items: FItemInput[] | null = null;
   let itemizedFallback: ItemizedFallback | null = null;
-  if (settings.conceptMode === "itemized") {
+  // Itemized concepts are tax-inclusive per line; with a retention every concept is priced at
+  // fiscal's base, which only the grouped figures carry.
+  if (settings.conceptMode === "itemized" && withhold)
+    itemizedFallback = "withholding";
+  else if (settings.conceptMode === "itemized") {
     const itemized = itemizedItems(
       payload,
       groups,
@@ -461,6 +538,7 @@ export function buildInvoiceRequest(i: InvoiceBuildInput): InvoiceBuild {
         unitName: UNIT_NAMES[SAT_DEFAULT_UNIT_KEY],
       },
       folio,
+      withhold,
     ),
   );
 
@@ -493,6 +571,7 @@ export function buildInvoiceRequest(i: InvoiceBuildInput): InvoiceBuild {
     body,
     expectedTotal: net.gross,
     expectedTax: net.tax,
+    expectedWithholding: canonicalAmounts(body).withheld,
     conceptCount: body.items.length,
     nettedRefundIds: refunds.map((r) => r.refundId),
     conceptMode,
@@ -645,6 +724,8 @@ export type EgresoBuildInput = {
     uuid: string;
     receptor: Receptor | null;
     paymentForm: string | null;
+    /** The parent carried the RESICO ISR retention: the credit note reverses it too. */
+    withholding?: boolean;
   };
   /** The refund's fiscal_adjustments rows and its tender method. */
   refund: {
@@ -657,9 +738,15 @@ export type EgresoBuildInput = {
 };
 export type EgresoBuild = {
   body: FInvoiceInput;
+  /** Before any retention. */
   expectedTotal: number;
-  /** Canonical: Σ extractTax(adj.gross) per category, what Facturapi stamps. */
+  /**
+   * Canonical: what Facturapi stamps. Σ extractTax(adj.gross) per category for tax-inclusive
+   * concepts; Σ base × rate when the parent carried the RESICO retention (base-priced concepts).
+   */
   expectedTax: number;
+  /** ISR retained (RESICO), canonical; 0 without retention. */
+  expectedWithholding: number;
   /**
    * Σ adj.tax as fiscal recorded it. fiscal's refundTaxSplit is cumulative
    * (extract(before + amount) − extract(before)), so this may differ from expectedTax by ≤ 1
@@ -696,6 +783,8 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
   if (!groups.length) throw nothingToInvoice();
 
   const receptor = parent.kind === "invoice" ? parent.receptor : null;
+  // Only a nominative parent can carry the retention (globals go to PUBLICO EN GENERAL).
+  const withhold = !!receptor && !!parent.withholding;
   const use =
     receptor && usoCfdiAllowed(receptor.regime, "G02") ? "G02" : "S01";
   const cardForms = ["04", "28"];
@@ -721,6 +810,7 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
         },
         // InvoiceEgresoInput products have no sku: the folio is in the description.
         null,
+        withhold,
       ),
     ),
     payment_form: paymentForm,
@@ -733,13 +823,17 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
     external_id: i.docId,
     idempotency_key: i.docId,
   });
+  const canonical = canonicalAmounts(body);
   return {
     body,
     expectedTotal: groups.reduce((s, g) => s + g.gross, 0),
-    expectedTax: groups.reduce(
-      (s, g) => s + extractTax(g.gross, TAX_RULES[g.category].rateBps).tax,
-      0,
-    ),
+    expectedTax: withhold
+      ? canonical.tax
+      : groups.reduce(
+          (s, g) => s + extractTax(g.gross, TAX_RULES[g.category].rateBps).tax,
+          0,
+        ),
+    expectedWithholding: canonical.withheld,
     fiscalTax: groups.reduce((s, g) => s + g.tax, 0),
     conceptCount: body.items.length,
   };
