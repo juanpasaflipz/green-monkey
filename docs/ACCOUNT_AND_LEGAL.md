@@ -566,6 +566,19 @@ invitation normally.
      MoneyControlsSettings → AccountPrivacy …`; `qualification.yml` union
      (cfdi's fake and `FACTURAPI_*` on the worker line, account's legal set
      and `LEGAL_UNPUBLISHED_SIGNUP`, the load smoke's `LOAD_SERVER_LOG`).
+     Code files both tracks edit (wave2-cross-track C11-C13):
+     `src/main.tsx` branch order `/legal` → `/(f|factura)` → `/(qr|kiosk)` →
+     landing → `PlatformGate`, and cfdi's service-worker exclusion
+     (`/^\/(f|factura|qr|kiosk)(\/|$)/`) never includes `/legal`, because the
+     offline legal page is served from the worker's shell (C12);
+     `src/App.tsx` union (fiscal, then cfdi's prefetch, hydrate, kitchen skip
+     and footer registration, then account's help buttons and `PlanNotice`,
+     C11); `server/config-rules.ts` web checks `fiscalWebConfig` → cfdi's →
+     `accountWebConfig`, with `accountWorkerConfig` kept on the worker side;
+     `server/index.ts` anchored by route string (cfdi's async `/capabilities`
+     keeps reports' `printer`; account's `autoAssignFreeSlots` and
+     `requireDrawerOpenAllowed` calls in `/cash/open` and the
+     `/ordering-links` gate stay, C13).
   5. **Legal texts:** privacy §5/§6 and DPA §2/§6/§11 already name Facturapi
      (CFDI stamping through a PAC and CFDI email), CFDI receptors' data and
      the CSD (LD-32 LEGAL-2/UX-5). Check them against the providers cfdi's
