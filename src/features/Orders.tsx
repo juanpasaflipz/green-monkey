@@ -522,6 +522,7 @@ export function Orders({
           session={session}
           locale={locale}
           money={money}
+          today={today}
           close={() => setSettling(false)}
           saved={async () => {
             setSelected([]);
@@ -535,6 +536,7 @@ export function Orders({
           session={session}
           locale={locale}
           money={money}
+          today={today}
           close={() => setDialog(null)}
           saved={saved}
         />
@@ -543,6 +545,7 @@ export function Orders({
         <ServiceAssignment
           order={dialog.order}
           locale={locale}
+          today={today}
           close={() => setDialog(null)}
           saved={saved}
         />
@@ -553,6 +556,7 @@ export function Orders({
           session={session}
           locale={locale}
           money={money}
+          today={today}
           close={() => setDialog(null)}
           saved={saved}
           online={online}

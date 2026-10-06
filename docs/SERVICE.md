@@ -117,14 +117,24 @@ already settled check fails with a server error instead of `check_closed`.
 **Order numbers across the business-day rollover (LD-29).** Numbers restart
 every business day (the restaurant's timezone and cutoff, `businessDate()` in
 `shared/domain.ts`), so after the cutoff an open order from the day before and a
-new one can both be #10. Every screen that names an open order adds the business
-date when it is not the current business day: "#10 · 5 oct" (English UI
-"#10 · Oct 5") on the Órdenes cards and their checkboxes, the Mesas check cards,
-the cart heading in Vender, the payment dialog title ("Cobrar #10 · 5 oct"),
-the order detail title and the kitchen tickets. The current business date comes
-from the server where the response carries it (Órdenes list, kitchen feed) and
-otherwise from the session's restaurant settings with the same helper
-(`currentBusinessDate` in `src/labels.ts`). Printed documents keep "#10".
+new one can both be #10. These screens add the business date to an order that is
+not from the current business day: "#10 · 5 oct" (English UI "#10 · Oct 5"):
+the Órdenes cards and their checkboxes, **Cobrar juntas** (each check's line,
+the "still owes" and "balance changed" notices and the lines after the payment),
+the Mesas check cards, the cart heading in Vender, the payment dialog title
+("Cobrar #10 · 5 oct"), the order detail title, the headers of the void, refund
+and service-assignment dialogs, and the kitchen tickets on screen. The current
+business date comes from the server where the response carries it (Órdenes
+list, kitchen feed) and otherwise from the session's restaurant settings with
+the same helper (`currentBusinessDate` in `src/labels.ts`) on the corrected
+server clock (`src/clock.ts`), so a tablet whose clock is a few minutes off
+agrees with Órdenes around the cutoff. Short notices in Vender (for example "La
+orden #10 llegó a cocina mientras cambiabas de cuenta") keep the plain number.
+
+Printed documents keep "#10", including kitchen paper: a comanda or cancellation
+chit for a round added after the cutoff to yesterday's open #10 prints "#10"
+next to today's #10 (known limitation; the chit's call name, table and time tell
+them apart, and the KDS screen shows the date).
 
 **Legacy endpoints scheduled for removal.** `GET /api/orders` (now batched) and
 `GET /api/kitchen` keep their response shapes for one release so PWA bundles

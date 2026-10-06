@@ -10,6 +10,11 @@ import { parseMoneyInput, type OrderSummary } from "../../shared/service";
 import { api } from "../api";
 import { Button, Field, Modal } from "../components/ui";
 import { strings, errorNotice, translateError, type Key } from "../i18n";
+import {
+  currentBusinessDate,
+  orderNumberLabel,
+  orderNumberText,
+} from "../labels";
 import { printDocument, usePrintSettings } from "../print";
 import { ReceiptDocument, auditPrint } from "./Receipt";
 import { onlineChargeRefusal } from "./offline/useOnlineChargeBlocks";
@@ -21,6 +26,8 @@ import { onlineChargeRefusal } from "./offline/useOnlineChargeBlocks";
  * under the same operation id so the server replays it. A check whose balance
  * changes behind the dialog is announced, and after the payment each check's
  * remaining balance is shown with its receipts ready to print (SVC-REV-3).
+ * A check from another business day than `today` names its date next to its
+ * number ("#10 · 5 oct", LD-29), so two "#10" around the rollover stay apart.
  */
 export function SettlementDialog({
   orders,
@@ -29,6 +36,7 @@ export function SettlementDialog({
   money,
   close,
   saved,
+  today,
 }: {
   orders: OrderSummary[];
   session: Session;
@@ -36,13 +44,36 @@ export function SettlementDialog({
   money: (n: number) => string;
   close: () => void;
   saved: () => Promise<void> | void;
+  /** The current business date (Órdenes: the list's, from the server). */
+  today?: string | null;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
   const [operationId] = useState(() => crypto.randomUUID());
   const [checks] = useState(() =>
-    orders.map((o) => ({ id: o.id, number: o.number, balance: o.balance })),
+    orders.map((o) => ({
+      id: o.id,
+      number: o.number,
+      businessDate: o.businessDate,
+      balance: o.balance,
+    })),
   );
+  // LD-29: a check from another business day names its date.
+  const day = today || currentBusinessDate(session.restaurant);
+  const numberOf = (o: {
+    id: string;
+    number: number;
+    businessDate?: string | null;
+  }) =>
+    orderNumberText(
+      {
+        number: o.number,
+        businessDate:
+          o.businessDate ?? checks.find((c) => c.id === o.id)?.businessDate,
+      },
+      day,
+      locale,
+    );
   const total = checks.reduce((a, o) => a + o.balance, 0);
   const [receivedText, setReceivedText] = useState(() =>
     (total / 10 ** exponent).toFixed(exponent),
@@ -82,14 +113,14 @@ export function SettlementDialog({
             <div key={o.id}>
               <p>
                 {t("serviceSettleLine")
-                  .replace("{n}", String(o.number))
+                  .replace("{n}", numberOf(o))
                   .replace("{paid}", money(o.paid))
                   .replace("{balance}", money(Math.max(0, o.total - o.paid)))}
               </p>
               {o.total > o.paid && (
                 <p className="warning-panel">
                   {t("serviceSettleStillOwes")
-                    .replace("{n}", String(o.number))
+                    .replace("{n}", numberOf(o))
                     .replace("{balance}", money(o.total - o.paid))}
                 </p>
               )}
@@ -166,13 +197,13 @@ export function SettlementDialog({
       >
         {checks.map((o) => (
           <p key={o.id}>
-            #{o.number} · {money(o.balance)}
+            {orderNumberLabel(o, day, locale)} · {money(o.balance)}
           </p>
         ))}
         {changed.map((c) => (
           <p key={c.id} className="warning-panel" role="status">
             {t("serviceSettleBalanceChanged")
-              .replace("{n}", String(c.number))
+              .replace("{n}", numberOf(c))
               .replace("{now}", money(c.now))
               .replace("{fixed}", money(c.balance))}
           </p>

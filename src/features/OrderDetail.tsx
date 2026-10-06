@@ -566,6 +566,7 @@ export function OrderDetail({
         <ServiceAssignment
           order={order}
           locale={locale}
+          today={currentBusinessDate(session.restaurant)}
           close={() => setDialog(null)}
           saved={saved}
         />

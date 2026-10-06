@@ -24,7 +24,11 @@ import {
   type ApprovalValue,
 } from "../components/ManagerApproval";
 import { strings, errorNotice, translateError, type Key } from "../i18n";
-import { tenderMethodLabel } from "../labels";
+import {
+  currentBusinessDate,
+  orderNumberLabel,
+  tenderMethodLabel,
+} from "../labels";
 import { printDocument, readPrintSettings } from "../print";
 import { RefundSlip } from "./discounts/RefundSlip";
 import {
@@ -80,6 +84,7 @@ export function RefundDialog({
   close,
   saved,
   online = true,
+  today,
 }: {
   order: Order;
   session: Session;
@@ -88,6 +93,8 @@ export function RefundDialog({
   close: () => void;
   saved: () => Promise<void> | void;
   online?: boolean;
+  /** The current business date (Órdenes: the list's); else the session's (LD-29). */
+  today?: string | null;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
@@ -428,7 +435,12 @@ export function RefundDialog({
   return (
     <Modal title={title} close={leave} closeLabel={t("close")} wide>
       <p>
-        #{order.number} · {order.name || t("order")}
+        {orderNumberLabel(
+          order,
+          today || currentBusinessDate(session.restaurant),
+          locale,
+        )}{" "}
+        · {order.name || t("order")}
       </p>
       {!online && (
         <p className="warning-panel" role="status">

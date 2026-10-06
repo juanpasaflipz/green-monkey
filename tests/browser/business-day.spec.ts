@@ -7,6 +7,8 @@ import postgres from "postgres";
 // business date of an order that is not from the current business day: "#10 · 5 oct".
 // The demo owner runs it on the isolated local fixture database; the restaurant's
 // cutoff is moved as the owner would (app.tenant_id set, LD-16) and restored after.
+// LD-42 hygiene: the test pays both of its checks and completes their kitchen rounds
+// itself; it never clears other tests' tickets.
 const tenantId = "10000000-0000-4000-8000-000000000001";
 const uuid = () => crypto.randomUUID();
 
@@ -123,7 +125,10 @@ test("LD-29: an open order from the previous business day shows its date next to
     return h * 60 + m;
   };
   // With the cutoff at 23:59 an order belongs to the day before (unless it is 23:59
-  // already: wait for midnight); with the cutoff at 00:00 the business day is today.
+  // already: wait for midnight). Today's order is created under the restaurant's own
+  // cutoff once it has passed, so it belongs to the real current business day and
+  // nothing stays dated ahead of it after the restore; before the cutoff (early
+  // morning) only 00:00 makes the calendar day the business day.
   if (minuteOfDay() >= 1438) await page.waitForTimeout(150_000);
   const run = uuid().slice(0, 6);
   const oldName = "Ayer " + run,
@@ -134,7 +139,7 @@ test("LD-29: an open order from the previous business day shows its date next to
     await login(page);
     await setCutoff(1439);
     old = await takeawayOrder(page, oldName);
-    await setCutoff(0);
+    await setCutoff(minuteOfDay() >= restaurant.cutoff ? restaurant.cutoff : 0);
     fresh = await takeawayOrder(page, freshName);
     expect(old.businessDate < fresh.businessDate).toBe(true);
     // A fresh session reads the moved cutoff.
@@ -205,9 +210,47 @@ test("LD-29: an open order from the previous business day shows its date next to
     await expect(freshCard.locator(".eyebrow")).toContainText(
       `#${fresh.number} · Takeaway`,
     );
+
+    // Órdenes › Cobrar juntas with both checks: each line names its order as the
+    // cards do, before and after the payment (POL-1).
+    await page.getByRole("button", { name: "EN", exact: true }).click();
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    const cash = await call(page, "/cash");
+    if (!cash || cash.closed_at)
+      await call(page, "/cash/open", { operationId: uuid(), opening: 50000 });
+    await oldCard
+      .getByRole("checkbox", { name: `Seleccionar orden ${oldLabel}` })
+      .check();
+    await freshCard
+      .getByRole("checkbox", { name: `Seleccionar orden #${fresh.number}` })
+      .check();
+    await page
+      .getByRole("button", { name: "Cobrar juntas (2)", exact: true })
+      .click();
+    const settle = page.getByRole("dialog", {
+      name: "Cobrar juntas",
+      exact: true,
+    });
+    const money = (n: number) => "$" + (n / 100).toFixed(2);
+    await expect(
+      settle.getByText(`${oldLabel} · ${money(old.total)}`, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      settle.getByText(`#${fresh.number} · ${money(fresh.total)}`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await settle.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(settle).toContainText(
+      `${oldLabel} · Cobrado ${money(old.total)} · Saldo $0.00`,
+    );
+    await expect(settle).toContainText(
+      `#${fresh.number} · Cobrado ${money(fresh.total)} · Saldo $0.00`,
+    );
+    await settle.getByRole("button", { name: "Listo", exact: true }).click();
   } finally {
-    // Settle both checks and retire the day-old tickets while the cutoff still makes
-    // them "previous day", then restore the restaurant's cutoff.
+    // Pay what is still due and complete both checks' kitchen rounds (only this
+    // test's), then restore the restaurant's cutoff.
     try {
       const cash = await call(page, "/cash");
       if (!cash || cash.closed_at)
@@ -222,10 +265,19 @@ test("LD-29: an open order from the previous business day shows its date next to
             received: current.total - current.paid,
             method: "cash",
           });
+        for (const round of current.rounds ?? []) {
+          if (round.state === "active")
+            await call(page, "/kitchen/" + round.id, {
+              operationId: uuid(),
+              state: "ready",
+            });
+          if (round.state === "active" || round.state === "ready")
+            await call(page, "/kitchen/" + round.id, {
+              operationId: uuid(),
+              state: "completed",
+            });
+        }
       }
-      await call(page, "/service/kitchen/clear-stale", {
-        operationId: uuid(),
-      });
     } finally {
       await setCutoff(restaurant.cutoff);
       await admin.end();
