@@ -90,6 +90,11 @@ const operations: Record<string, Key> = {
   "offline.settings_changed": "offlineOpSettingsChanged",
   "offline.payment_attempt_recorded": "offlineOpAttemptRecorded",
   "offline.payment_attempt_discarded": "offlineOpAttemptDiscarded",
+  // reports (029)
+  "reports.corte_x.printed": "reportsOpCorteXPrinted",
+  "reports.corte_z.printed": "reportsOpCorteZPrinted",
+  "reports.corte_z.reprinted": "reportsOpCorteZReprinted",
+  "reports.day_corte.printed": "reportsOpDayCortePrinted",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",

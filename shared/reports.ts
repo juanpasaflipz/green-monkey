@@ -704,8 +704,14 @@ export type CategoryRow = {
   cost: number | null;
   margin: number | null;
 };
+/**
+ * One Personal row: sales attributed to the check's assigned server, else to whoever opened it.
+ * QR and kiosk orders run under the link creator's session, so an unassigned QR/kiosk order is
+ * not that employee's sale: those orders form one pseudo-row with `employeeId: null` ("QR /
+ * Kiosco", LD-15 reports Q4); an assigned one goes to the assignee.
+ */
 export type EmployeeRow = {
-  employeeId: string;
+  employeeId: string | null;
   name: string;
   role: string;
   active: boolean;

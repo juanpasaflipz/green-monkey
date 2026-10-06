@@ -60,3 +60,6 @@ END $$;
 GRANT USAGE ON SCHEMA public TO gm_jobs_worker;
 GRANT SELECT,INSERT ON jobs TO gm_jobs_worker;
 GRANT UPDATE(state,attempts,next_at,lease_until,error_code) ON jobs TO gm_jobs_worker;
+-- 029 reports: business-day settings history (written by the restaurants trigger as
+-- the runtime role) and corte print records; INSERT-only, no UPDATE or DELETE.
+GRANT SELECT,INSERT ON business_day_settings,report_prints TO gm_app;
