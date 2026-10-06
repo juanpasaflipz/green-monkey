@@ -3289,6 +3289,65 @@ try {
     );
   });
 
+  await test("43. an abuse rejection of a sibling that commits while an accept runs rolls the accept back unless acknowledged (PUB-HR-2)", async () => {
+    const t = await makeTenant("abuserace");
+    const l = await link(t, { kind: "counter", label: "Ventanilla" });
+    const b1 = await body(t, [{ productId: t.p.taco }]);
+    const b2 = await body(t, [{ productId: t.p.taco }]);
+    for (const b of [b1, b2]) await pub.submit(l.token, b);
+    const [fake, real] = [await holdOf(t, b1), await holdOf(t, b2)];
+    const before = await salesRows(t.tenantId);
+    // Hold the real hold's order key so its accept stops after the first
+    // revoke_reason read (null) and before createOrder.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const held = new Promise<void>((r) => (locked = r));
+    const holder = admin.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${t.tenantId + real.order_operation_id},0))`;
+      locked();
+      await gate;
+    });
+    await held;
+    const racing = accept(t, real.id).then(
+      () => "accepted",
+      (e: { code?: string }) => e.code ?? String(e),
+    );
+    let waiting = 0;
+    for (let i = 0; i < 200 && waiting < 1; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      const [w] = await admin`select count(*)::int as n from pg_locks
+        where locktype='advisory' and not granted
+          and database=(select oid from pg_database where datname=current_database())`;
+      waiting = w.n;
+    }
+    assert.equal(waiting, 1, "the accept read the code and waits");
+    // The sibling's abuse rejection waits on nothing the accept holds.
+    await reject(
+      t,
+      fake.id,
+      { reason: "abuse", revokeLink: true },
+      t.s.manager,
+    );
+    release();
+    await holder;
+    assert.equal(await racing, "public_hold_link_abuse");
+    assert.deepEqual(await salesRows(t.tenantId), before, "nothing written");
+    const [row] = await asAdmin(
+      t.tenantId,
+      (tx) => tx`select state from public_order_holds where id=${real.id}`,
+    );
+    assert.equal(row.state, "pending");
+    const ok = await accept(t, real.id, { abuseAcknowledged: true });
+    assert.equal(ok.hold.state, "accepted");
+    const [audited] = await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`select detail from audit where operation='public.hold_accepted' and entity_id=${real.id}`,
+    );
+    assert.equal(audited.detail.abuseAcknowledged, true);
+  });
+
   console.log(`${checks} public ordering checks passed`);
   await pub.close();
 } finally {
