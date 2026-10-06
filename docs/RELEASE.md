@@ -70,10 +70,12 @@ Before production accepts its first restaurant (see also
    ([RUNBOOK.md](RUNBOOK.md)) return 0 on production before the first deploy
    that carries 032 and 033, that deploy runs before 07:00 Mexico City once
    production has traffic (RUNBOOK "Deploy window"), and the LD-5 delta review
-   of B1-B4 is done. `PUBLIC_ORDERING_ENABLED` stays unset or `false` in
-   production (`/api/account-config` reports `publicOrdering.enabled: false`)
-   until the flag-flip commit (public B4) is deployed; `false` is the kill
-   switch afterwards.
+   of B1-B4 is done. `PUBLIC_ORDERING_ENABLED` is unset or `true` on
+   production (`/api/account-config` reports `publicOrdering.enabled: true`;
+   since public ordering's flag flip, B4, unset means on everywhere), and a
+   staging browser run passed on the same revision. To turn QR and kiosk
+   ordering off (roll back), set it to `false` on `web`; reverting the B4
+   commit restores the old default (off in production when unset).
 6. At least one support operator is provisioned (`npm run support:provision`,
    [operations](OPERATIONS.md), Support) and can run `lookup`; pilot
    restaurants get Pro with `grant-entitlement`.
