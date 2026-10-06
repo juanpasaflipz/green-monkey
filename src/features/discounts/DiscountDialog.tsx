@@ -27,7 +27,7 @@ import {
   type ApprovalValue,
 } from "../../components/ManagerApproval";
 import { strings, translateError, type Key } from "../../i18n";
-import { DISCOUNT_REASON_LABELS, fill } from "./format";
+import { DISCOUNT_REASON_LABELS, fill, lineLabel } from "./format";
 import { loadMoneyControls, useMoneyControls } from "./useMoneyControls";
 import "./discounts.css";
 
@@ -257,11 +257,7 @@ export function DiscountDialog({
                   <option key={l.line.id} value={l.line.id}>
                     {fill(t("discountsLineOption"), {
                       q: l.eligible,
-                      name:
-                        l.line.name[locale] +
-                        (l.line.optionNames.length
-                          ? ` (${l.line.optionNames.map((o) => o[locale]).join(", ")})`
-                          : ""),
+                      name: lineLabel(l.line, locale),
                       due: money(l.due),
                     })}
                   </option>

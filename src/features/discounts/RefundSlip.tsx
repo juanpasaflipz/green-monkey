@@ -3,7 +3,7 @@ import type { RefundBatchView } from "../../../shared/discounts";
 import type { OrderFiscal } from "../../../shared/fiscal";
 import { strings } from "../../i18n";
 import { moneyFormatter } from "../Receipt";
-import { fill, reasonLabel } from "./format";
+import { fill, lineLabel, reasonLabel } from "./format";
 
 /**
  * "Comprobante de reembolso" (§2.5), printed through printDocument at 58/80 mm.
@@ -68,7 +68,7 @@ export function RefundSlip({
             <span>
               {fill(t.discountsRefundUnits, {
                 n: l.units.length,
-                name: line?.name[locale] ?? "",
+                name: lineLabel(line, locale),
               })}
             </span>
             <span>{money(l.amount)}</span>

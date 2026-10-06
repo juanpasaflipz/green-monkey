@@ -2,7 +2,7 @@ import type { Locale, Order, PricedLine } from "../../../shared/domain";
 import { lineRemaining } from "../../../shared/settlement";
 import { formatPercentBps } from "../../../shared/discounts";
 import { strings } from "../../i18n";
-import { discountRowLabel, fill, reasonLabel } from "./format";
+import { discountRowLabel, fill, lineLabel, reasonLabel } from "./format";
 import "./discounts.css";
 
 /**
@@ -138,7 +138,7 @@ export function RefundDetailRows({
               <span>
                 {fill(t.discountsRefundUnits, {
                   n: l.units.length,
-                  name: line?.name[locale] ?? "",
+                  name: lineLabel(line, locale),
                 })}
               </span>
               <span>−{money(l.amount)}</span>

@@ -650,4 +650,154 @@ describe("discount and refund rows (discounts 028, T-06)", () => {
     expect(fiscal).toContain("Ticket original: A-000123");
     expect(fiscal).toContain("Importe sin IVA $34.91 · IVA reembolsado $5.59");
   });
+
+  // Rebase I-08: two lines of one product can differ only by options, so every
+  // place that names a refunded or discounted line carries its option names.
+  describe("option names (I-08)", () => {
+    const queso = line({
+      id: "lq",
+      optionNames: [
+        { es: "Salsa verde", en: "Green salsa" },
+        { es: "Queso", en: "Cheese" },
+      ],
+    });
+    const sinCebolla = line({
+      id: "ls",
+      optionNames: [{ es: "Sin cebolla", en: "No onion" }],
+    });
+    const at = "2026-10-05T18:05:00.000Z";
+    const twin: Order = {
+      ...order,
+      note: "",
+      rounds: [],
+      lines: [queso, sinCebolla],
+      total: 9000,
+      paid: 9000,
+      refunded: 9000,
+      discount: 0,
+      tenders: [
+        {
+          id: "t1",
+          method: "cash",
+          amount: 9000,
+          tip: 0,
+          received: 9000,
+          refunded: 9000,
+          external_reference: null,
+        },
+      ],
+      discounts: [
+        {
+          id: "d1",
+          scope: "line",
+          lineId: "ls",
+          kind: "comp",
+          percentBps: null,
+          base: 4500,
+          amount: 4500,
+          units: 1,
+          activeAmount: 4500,
+          releasedAmount: 0,
+          allocations: [{ lineId: "ls", unit: 0, amount: 4500, voided: false }],
+          reasonCode: "courtesy",
+          note: "",
+          actorName: "Ana",
+          approverName: null,
+          createdAt: at,
+          reversal: null,
+        },
+      ],
+      refundBatches: [
+        {
+          id: "b1",
+          mode: "items",
+          amount: 9000,
+          cashAmount: 9000,
+          externalAmount: 0,
+          reasonCode: "wrong_item",
+          note: "",
+          restock: false,
+          actorName: "Ana",
+          approverName: "Ana",
+          createdAt: at,
+          businessDate: "2026-10-05",
+          legacy: false,
+          rows: [
+            {
+              refundId: "r1",
+              tenderId: "t1",
+              method: "cash",
+              amount: 9000,
+              reference: null,
+            },
+          ],
+          lines: ["lq", "ls"].map((lineId) => ({
+            id: "rl-" + lineId,
+            lineId,
+            units: [0],
+            amount: 4500,
+            restocked: false,
+            preparationState: "completed",
+            kitchenPending: false,
+          })),
+        },
+      ],
+    } as Order;
+    const QUESO = "1 × Taco de asada (Salsa verde, Queso)";
+    const SIN = "1 × Taco de asada (Sin cebolla)";
+
+    it("lineLabel appends the option names; a line without options keeps its name", async () => {
+      const { lineLabel } = await import("../src/features/discounts/format");
+      expect(lineLabel(queso, "es")).toBe("Taco de asada (Salsa verde, Queso)");
+      expect(lineLabel(queso, "en")).toBe("Steak taco (Green salsa, Cheese)");
+      expect(lineLabel(line({}), "es")).toBe("Taco de asada");
+      expect(lineLabel(undefined, "es")).toBe("");
+    });
+
+    it("the receipt's refund rows tell the two tacos apart", () => {
+      const text = plain(render({ order: twin }));
+      expect(text).toContain(`${QUESO} −$45.00`);
+      expect(text).toContain(`${SIN} −$45.00`);
+    });
+
+    it("the refund slip tells the two tacos apart", async () => {
+      const { RefundSlip } =
+        await import("../src/features/discounts/RefundSlip");
+      const text = plain(
+        renderToStaticMarkup(
+          createElement(RefundSlip, {
+            order: twin,
+            batch: twin.refundBatches![0],
+            session,
+            locale: "es",
+          }),
+        ),
+      );
+      expect(text).toContain(`${QUESO} $45.00`);
+      expect(text).toContain(`${SIN} $45.00`);
+    });
+
+    it("Detalle de orden's Descuentos and Reembolsos and Vender's summary name the line with its options", async () => {
+      const { OrderAdjustments, CheckDiscountSummary } =
+        await import("../src/features/discounts/OrderAdjustments");
+      const props = {
+        order: twin,
+        session,
+        locale: "es" as const,
+        money: (n: number) => "$" + (n / 100).toFixed(2),
+        online: true,
+        changed: () => {},
+      };
+      const detail = plain(
+        renderToStaticMarkup(createElement(OrderAdjustments, props)),
+      );
+      expect(detail).toContain("Cortesía · Taco de asada (Sin cebolla)");
+      expect(detail).toContain(`${QUESO} · $45.00`);
+      expect(detail).toContain(`${SIN} · $45.00`);
+      const summary = plain(
+        renderToStaticMarkup(createElement(CheckDiscountSummary, props)),
+      );
+      expect(summary).toContain("Cortesía · Taco de asada (Sin cebolla)");
+    });
+  });
 });

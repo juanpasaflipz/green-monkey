@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   currencyExponent,
   type Locale,
@@ -25,7 +25,7 @@ import { strings, translateError, type Key } from "../i18n";
 import { tenderMethodLabel } from "../labels";
 import { printDocument, readPrintSettings } from "../print";
 import { RefundSlip } from "./discounts/RefundSlip";
-import { REFUND_REASON_LABELS, fill } from "./discounts/format";
+import { REFUND_REASON_LABELS, fill, lineLabel } from "./discounts/format";
 import "./discounts/discounts.css";
 
 type Tender = {
@@ -87,6 +87,8 @@ export function RefundDialog({
   });
   const [drawerOpen, setDrawerOpen] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
+  const [finishing, setFinishing] = useState(false);
+  const finished = useRef(false);
   const [error, setError] = useState("");
   const [result, setResult] = useState<{
     order: Order;
@@ -251,9 +253,24 @@ export function RefundDialog({
   }
 
   const title = fill(t("discountsRefundTitle"), { n: order.number });
+  /**
+   * Leaving the result view (Listo, the X button or Escape) always refreshes
+   * the screen behind it: the money has already moved, so the parent must not
+   * keep showing the pre-refund check (DSC-R1).
+   */
+  async function finish() {
+    if (finished.current) return;
+    finished.current = true;
+    setFinishing(true);
+    try {
+      await saved();
+    } finally {
+      close();
+    }
+  }
   if (result)
     return (
-      <Modal title={title} close={close} closeLabel={t("close")}>
+      <Modal title={title} close={() => void finish()} closeLabel={t("close")}>
         <p className="notice" role="status">
           {fill(t("discountsRefundDone"), {
             amount: money(result.batch.amount),
@@ -278,10 +295,8 @@ export function RefundDialog({
           </Button>
           <Button
             variant="primary"
-            onClick={async () => {
-              await saved();
-              close();
-            }}
+            disabled={finishing}
+            onClick={() => void finish()}
           >
             {t("discountsRefundDoneClose")}
           </Button>
@@ -359,15 +374,11 @@ export function RefundDialog({
                 const one = planItemRefund(order, [
                   { lineId: line.id, quantity: 1 },
                 ]).total;
-                const options = line.optionNames
-                  .map((o) => o[locale])
-                  .join(", ");
                 return (
                   <div className="refund-line" key={line.id}>
                     <Field
                       label={fill(t("discountsRefundLine"), {
-                        name:
-                          line.name[locale] + (options ? ` (${options})` : ""),
+                        name: lineLabel(line, locale),
                         amount: money(one),
                       })}
                     >

@@ -1,41 +1,21 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { Locale, Order, Session } from "../../../shared/domain";
 import type { OrderDiscount } from "../../../shared/discounts";
 import { Button } from "../../components/ui";
 import { strings, type Key } from "../../i18n";
 import { tenderMethodLabel } from "../../labels";
-import { discountRowLabel, fill, reasonLabel } from "./format";
+import {
+  discountRemovable,
+  discountRowLabel,
+  fill,
+  lineLabel,
+  reasonLabel,
+} from "./format";
 import { RemoveDiscountDialog } from "./RemoveDiscountDialog";
 import "./discounts.css";
 
-/**
- * Whether "Quitar descuento" is offered: the check is not closed, the discount
- * is active, none of its units is paid and no later active discount covers
- * them (the server re-checks all of it: discount_not_reversible).
- */
-export function discountRemovable(order: Order, d: OrderDiscount): boolean {
-  if (order.checkState === "closed" || d.reversal || d.activeAmount <= 0)
-    return false;
-  const units = new Set(
-    d.allocations.filter((a) => !a.voided).map((a) => `${a.lineId}:${a.unit}`),
-  );
-  if (
-    (order.paymentUnits ?? []).some(
-      (u) => units.has(`${u.lineId}:${u.unit}`) && u.paid > 0,
-    )
-  )
-    return false;
-  const later = (order.discounts ?? []).filter(
-    (x) =>
-      x.id !== d.id &&
-      !x.reversal &&
-      (x.createdAt > d.createdAt ||
-        (x.createdAt === d.createdAt && x.id > d.id)),
-  );
-  return !later.some((x) =>
-    x.allocations.some((a) => units.has(`${a.lineId}:${a.unit}`)),
-  );
-}
+/** Re-exported: the rule lives in format.ts so the dialogs share it. */
+export { discountRemovable };
 
 /** One discount: "Descuento 10 % · −$13.50 · Adulto mayor (INAPAM)" plus who and when. */
 function DiscountItem({
@@ -63,9 +43,12 @@ function DiscountItem({
     });
   const line =
     d.scope === "line"
-      ? order.lines.find((l) => l.id === d.lineId)?.name[locale]
+      ? lineLabel(
+          order.lines.find((l) => l.id === d.lineId),
+          locale,
+        )
       : t("discountsRowOrder");
-  const label = `${discountRowLabel(d, locale)} · ${line ?? ""}`;
+  const label = `${discountRowLabel(d, locale)} · ${line}`;
   return (
     <li className={d.reversal ? "discount-item reversed" : "discount-item"}>
       <div className="row between">
@@ -180,7 +163,7 @@ export function OrderAdjustments({
                       <span key={l.id} className="block">
                         {fill(t("discountsRefundUnits"), {
                           n: l.units.length,
-                          name: line?.name[locale] ?? "",
+                          name: lineLabel(line, locale),
                         })}{" "}
                         · {money(l.amount)}
                         {l.kitchenPending &&
@@ -219,6 +202,7 @@ export function OrderAdjustments({
           money={money}
           close={() => setRemoving(null)}
           removed={changed}
+          refreshed={changed}
         />
       )}
     </>
@@ -250,53 +234,65 @@ export function CheckDiscountSummary({
   const active = (order.discounts ?? []).filter(
     (d) => !d.reversal && d.activeAmount > 0,
   );
+  // The dialog stays mounted (same tree position) while open, even when a
+  // refresh leaves no active discount to list (DSC-R2).
+  const dialog = removing && (
+    <RemoveDiscountDialog
+      order={order}
+      discount={removing}
+      session={session}
+      locale={locale}
+      money={money}
+      close={() => setRemoving(null)}
+      removed={changed}
+      refreshed={changed}
+    />
+  );
+  let rows: ReactNode = null;
   if (!order.discounts) {
-    if (!order.discount) return null;
-    return (
-      <p className="check-discounts tiny">
-        {t("discountsCachedRow")} · −{money(order.discount)}
-      </p>
+    if (order.discount)
+      rows = (
+        <p className="check-discounts tiny">
+          {t("discountsCachedRow")} · −{money(order.discount)}
+        </p>
+      );
+  } else if (active.length)
+    rows = (
+      <div className="check-discounts" aria-label={t("discountsCheckSummary")}>
+        {active.map((d) => {
+          const line =
+            d.scope === "line"
+              ? lineLabel(
+                  order.lines.find((l) => l.id === d.lineId),
+                  locale,
+                )
+              : t("discountsRowOrder");
+          return (
+            <div className="row between tiny" key={d.id}>
+              <span>
+                {discountRowLabel(d, locale)} · {line}
+              </span>
+              <span className="row">
+                −{money(d.activeAmount)}
+                {online && discountRemovable(order, d) && (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => setRemoving(d)}
+                  >
+                    {t("discountsRemove")}
+                  </button>
+                )}
+              </span>
+            </div>
+          );
+        })}
+      </div>
     );
-  }
-  if (!active.length) return null;
   return (
-    <div className="check-discounts" aria-label={t("discountsCheckSummary")}>
-      {active.map((d) => {
-        const line =
-          d.scope === "line"
-            ? order.lines.find((l) => l.id === d.lineId)?.name[locale]
-            : t("discountsRowOrder");
-        return (
-          <div className="row between tiny" key={d.id}>
-            <span>
-              {discountRowLabel(d, locale)} · {line}
-            </span>
-            <span className="row">
-              −{money(d.activeAmount)}
-              {online && discountRemovable(order, d) && (
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={() => setRemoving(d)}
-                >
-                  {t("discountsRemove")}
-                </button>
-              )}
-            </span>
-          </div>
-        );
-      })}
-      {removing && (
-        <RemoveDiscountDialog
-          order={order}
-          discount={removing}
-          session={session}
-          locale={locale}
-          money={money}
-          close={() => setRemoving(null)}
-          removed={changed}
-        />
-      )}
-    </div>
+    <>
+      {rows}
+      {dialog}
+    </>
   );
 }
