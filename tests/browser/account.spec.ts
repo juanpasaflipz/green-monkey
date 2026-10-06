@@ -174,11 +174,9 @@ test("signup with a stale document version says the documents changed, reloads t
     await privacy.check();
     await create.click();
     await expect(
-      page
-        .getByRole("alert")
-        .filter({
-          hasText: "Los documentos cambiaron. Recarga y vuelve a aceptar.",
-        }),
+      page.getByRole("alert").filter({
+        hasText: "Los documentos cambiaron. Recarga y vuelve a aceptar.",
+      }),
     ).toBeVisible();
     await expect(page.getByText(/Revisa tu conexión/)).toHaveCount(0);
     // The current versions were read again and the boxes start unchecked.
@@ -1085,6 +1083,14 @@ test("POS shell: trial-ending warning, then drawer continuation banner after lap
     });
     expect(refused.status).toBe(403);
     expect(refused.body.error).toBe("free_selection_required");
+    // 5. Settings › Plan says when Pro ended, never "Acceso hasta" a past
+    // date (ACC-19).
+    await page
+      .getByRole("button", { name: "Configuración", exact: true })
+      .click();
+    const planPanel = page.getByRole("region", { name: "Plan y suscripción" });
+    await expect(planPanel).toContainText(/Pro terminó el .+\./);
+    await expect(planPanel).not.toContainText("Acceso hasta");
   } finally {
     await second.close();
     await sql.end();

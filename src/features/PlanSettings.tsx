@@ -43,6 +43,12 @@ export function PlanSettings({
   const taxed = config?.saasTax.mode === "tax_rate";
   const withTax = (minor: number) => Math.round((minor * 116) / 100);
   const es = locale === "es";
+  const formatDate = (iso: string) =>
+    new Intl.DateTimeFormat(es ? "es-MX" : "en-US", {
+      dateStyle: "medium",
+      timeZone: timezone,
+      timeStyle: "short",
+    }).format(new Date(iso));
   const formatPrice = (minor: number) =>
     new Intl.NumberFormat(es ? "es-MX" : "en-US", {
       style: "currency",
@@ -103,18 +109,27 @@ export function PlanSettings({
                   : "Kiosk and QR ordering enabled."
                 : strings[locale].accountPublicOrderingSoon}
           </p>
-          {plan.accessUntil && (
+          {plan.accessUntil && plan.plan === "pro" && (
             <p>
               {plan.source === "support" &&
                 strings[locale].accountSupportGrantPrefix + " · "}
               {es ? "Acceso hasta: " : "Access until: "}
-              {new Intl.DateTimeFormat(es ? "es-MX" : "en-US", {
-                dateStyle: "medium",
-                timeZone: timezone,
-                timeStyle: "short",
-              }).format(new Date(plan.accessUntil))}
+              {formatDate(plan.accessUntil)}
             </p>
           )}
+          {/* On Free a past date is when Pro ended (a lapsed trial or grant,
+              a canceled subscription's ended_at), never "access until"
+              (ACC-19); a future date on Free (no access) is not shown. */}
+          {plan.accessUntil &&
+            plan.plan !== "pro" &&
+            Date.parse(plan.accessUntil) <= Date.now() && (
+              <p>
+                {strings[locale].accountPlanProEnded.replace(
+                  "{date}",
+                  formatDate(plan.accessUntil),
+                )}
+              </p>
+            )}
           <BillingControls key={tenantId} tenantId={tenantId} locale={locale} />
         </>
       )}

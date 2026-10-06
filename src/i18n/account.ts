@@ -249,6 +249,7 @@ export default defineArea({
     accountFreeLimitsSummary:
       "En Free solo el dispositivo y los dos empleados seleccionados pueden iniciar ventas. Los demás pueden cobrar órdenes abiertas y consultar registros.",
     accountSupportGrantPrefix: "Pro otorgado por soporte",
+    accountPlanProEnded: "Pro terminó el {date}.",
     accountPublicOrderingSoon: "Kiosco y pedidos QR: próximamente.",
     // Diner-facing public ordering copy (key names pinned for wave 3, LD-P12)
     accountGuestNameLabel: "Nombre (opcional)",
@@ -514,6 +515,7 @@ export default defineArea({
     accountFreeLimitsSummary:
       "On Free only the selected device and two employees can start sales. Others can collect open orders and view records.",
     accountSupportGrantPrefix: "Pro granted by support",
+    accountPlanProEnded: "Pro ended on {date}.",
     accountPublicOrderingSoon: "Kiosk and QR ordering: coming soon.",
     accountGuestNameLabel: "Name (optional)",
     accountGuestNameHint:
