@@ -90,6 +90,15 @@ const operations: Record<string, Key> = {
   "offline.settings_changed": "offlineOpSettingsChanged",
   "offline.payment_attempt_recorded": "offlineOpAttemptRecorded",
   "offline.payment_attempt_discarded": "offlineOpAttemptDiscarded",
+  // public (032)
+  "public.link_created": "publicOpLinkCreated",
+  "public.link_rotated": "publicOpLinkRotated",
+  "public.link_revoked": "publicOpLinkRevoked",
+  "public.settings_saved": "publicOpSettings",
+  "public.paused": "publicOpPaused",
+  "public.resumed": "publicOpResumed",
+  "public.hold_accepted": "publicOpHoldAccepted",
+  "public.hold_rejected": "publicOpHoldRejected",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",
