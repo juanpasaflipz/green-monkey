@@ -106,7 +106,8 @@ rotate the
    or `CFDI_LIVE_ENABLED`: each deployed process refuses to start with the
    other's credentials (`forbidden_credential_in_process`).
    Production leaves `BILLING_SANDBOX_ENABLED` unset (billing disabled)
-   unless live-mode billing has been qualified (account area); production
+   unless live-mode billing has been qualified (post-launch billing area,
+   LD-15 account Q7; its live adapter must pass `assertSaasTaxReady`); production
    `web` refuses to start with `BILLING_DATABASE_URL` set while billing is
    disabled (DB-1 follow-up, [RUNBOOK.md](RUNBOOK.md) "Open follow-ups").
 5. Manual settings from [RUNBOOK.md](RUNBOOK.md): restart policy, region,
@@ -179,12 +180,24 @@ condition cannot see environment-level variables.
 
 ## 9. Legal entity values (lead decision LD-3)
 
-The platform privacy notice and terms read the legal entity name, address and
-support contact from configuration. The owner supplies the production values at
-launch; CI and staging use clearly fictional values flagged as such. The
-production readiness check that refuses placeholder legal values belongs to the
-account area (wave 2); until it lands, confirm the values by hand on
-`https://<domain>` before inviting restaurants.
+The platform privacy notice, terms and data processing agreement read the legal
+entity (`LEGAL_ENTITY_NAME`, `LEGAL_ENTITY_ADDRESS`,
+`LEGAL_PRIVACY_CONTACT_EMAIL`, `LEGAL_JURISDICTION`, optional
+`LEGAL_ENTITY_RFC` and `LEGAL_PRIVACY_CONTACT_NAME`) and the support contact
+(`SUPPORT_*`) from the `web` service's variables. The owner supplies the
+production values at launch, after counsel has reviewed the text. CI publishes
+a clearly fictional set on its browser and account-http steps only; staging
+uses its own values or stays unpublished (it may set
+`LEGAL_UNPUBLISHED_SIGNUP=allow`; production ignores that variable).
+
+The account area's detector (`legalConfig()` in `server/legal.ts`) refuses
+missing, malformed and placeholder values (and test/demo words under
+`NODE_ENV=production`). While anything required is refused, the documents stay
+unpublished, signup is paused, and startup logs `legal_documents_unpublished`
+with the variable names (error level in production). Before inviting
+restaurants, confirm `GET https://<domain>/api/account-config` reports
+`"legal":{"status":"published",…}` and read the pages at `/legal`. Checklist:
+[account and legal](ACCOUNT_AND_LEGAL.md).
 
 ## 10. First deploy and rehearsal
 

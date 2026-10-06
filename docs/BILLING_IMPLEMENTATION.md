@@ -21,6 +21,49 @@ a fresh creation key to bypass review. No live customers were charged.
 The continuation is now item 2: multi-location creation, invitations and switching.
 The implementation checkpoint below is historical.
 
+## SaaS tax mode and lapse handling (account 031, implemented locally)
+
+Status: implemented and unit-tested with synthetic Stripe responses; **not**
+run against the Stripe sandbox, and live billing stays disabled (v1 production
+launches without billing; pilots get Pro from the support CLI's
+`grant-entitlement`, see [operations](OPERATIONS.md)).
+
+- `SAAS_TAX_MODE=off` (default): provider requests are byte-for-byte unchanged.
+  Plan settings, the billing consent and the location quotes say "Precio antes
+  de impuestos. El IVA y la factura (CFDI) de la suscripción aún no están
+  configurados." instead of "más impuestos aplicables".
+- `SAAS_TAX_MODE=tax_rate`: the **worker** (which runs the provider loop)
+  requires `STRIPE_TAX_RATE_ID=txr_…` and validates it on first use (active,
+  exclusive, 16 %, country MX, test mode in the sandbox). Trials send
+  `default_tax_rates[0]`; Checkout sends `subscription_data[default_tax_rates][0]`
+  and, with `SAAS_COLLECT_TAX_ID` (default true in this mode),
+  `tax_id_collection[enabled]=true`, `customer_update[name]=auto`,
+  `customer_update[address]=auto` and `billing_address_collection=required`.
+  Location quotes include the tax through the subscription's default rates. The
+  UI shows "MXN 799 + IVA 16 % = MXN 926.84". The web reads only the display
+  variables (`SAAS_TAX_MODE`, `SAAS_COLLECT_TAX_ID`, `SAAS_TAX_PROFILE_ENABLED`).
+- `npm run stripe:tax-rate:sandbox` creates or reconciles the sandbox IVA rate
+  (Tax Rates are immutable in percentage and country) and writes
+  `.env.stripe-tax-rate` (mode 0600) for the worker. It creates no customer,
+  subscription or charge. Stripe Tax is not used (Mexico border rates are not
+  supported there).
+- **Live-billing tax guard:** `assertSaasTaxReady(env, legal)`
+  (`server/saas-tax.ts`) refuses (`saas_tax_required_for_live_billing`) unless
+  the worker runs `SAAS_TAX_MODE=tax_rate` and the published legal entity has an
+  RFC. Live keys are still rejected everywhere today; the post-launch live
+  adapter must call this guard before accepting one. The accountant's
+  confirmation of IVA treatment is on the launch hand-off list.
+- **Canceled subscriptions:** reconciliation uses the subscription's
+  `ended_at` (when it actually ended) as `access_until` for canceled
+  subscriptions, not `canceled_at`.
+- **Lapse:** when Pro ends, registers with a drawer opened in the last 16 hours
+  keep selling until they close it (drawer continuation); notices warn 7, 3 and
+  1 days before a trial or support grant ends. See
+  [account and legal](ACCOUNT_AND_LEGAL.md) and [Free limits](FREE_LIMITS.md).
+- **Deferred:** SaaS CFDI for the subscription (no flag exists; the optional
+  tax profile, `SAAS_TAX_PROFILE_ENABLED`, only stores receptor data) and the
+  `billing_requests` inbox (DB-1), reassigned to the post-launch billing area.
+
 ## Earlier implementation checkpoint
 
 Item 1 is in progress. New local implementation includes migrations 011–013,

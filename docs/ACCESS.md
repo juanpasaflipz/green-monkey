@@ -505,13 +505,23 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
   unlock block lets another owner be unlocked (§5.4). Access-db test 28 in
   §7.9 must expect `unlock_owner_only` (403) for a manager unlocking an owner
   and a successful unlock by the owner; the owner-PIN self-only part of A3 is
-  unaffected.
+  unaffected. **Done in account (031):** an owner's PIN can be reset only by
+  that owner (`owner_pin_self_only`, in `resetStaffPin` and the legacy
+  `POST /employees` save, which also refuses owner role changes and owner
+  deactivation); access-db covers the A3 self-only reset and the A5 unlock
+  rule.
 - **Retiring a departed owner's devices (account, decision 17).** Deactivation
   now unpairs the employee's personal devices through
   `retirePersonalDevices(tx, s, employeeId)` in `server/access-devices.ts`
-  (ACC-R6-2). Account's `revokeOwnerSeat` should call it with the acting
-  owner's session, or mirror its statements and audit row, instead of the
-  §6.3 item 7 sketch.
+  (ACC-R6-2). **Done in account (031, LD-15 Q4):** `revokeOwnerSeat`
+  (co-owner removal or leaving, a previous owner leaving at transfer) mirrors
+  `setStaffActive`: it deactivates the seat and clears its Free slot, ends and
+  revokes its sessions, cancels its open pairing codes and retires its personal
+  devices through the access-owned actor variant
+  `retirePersonalDevicesAs(tx, actor, employeeId)` (an account actor instead of
+  a POS session), and writes `access.employee_deactivated {name, sessions,
+  pairingCodes, personalDevices}`. `revokeOwnerSessions` now restores the
+  caller's `app.account_id` after its scoped statements.
 - **"Descartar intento" (offline or RecoveryQueue).** A manager-only discard,
   with step-up and an audit row, for attempts in state `missing` with
   `retryAllowed=false`, so a missing attempt that can no longer be retried

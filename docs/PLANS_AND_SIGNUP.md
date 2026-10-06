@@ -56,7 +56,7 @@ Signup sequence:
 
 1. Authenticate and verify the owner's identity.
 2. Create a global identity and explicit organization membership. Match provider issuer/subject, not display names. Apple relay email must not merge accounts automatically. Link another provider only after authenticated proof of both accounts.
-3. Ask for restaurant name, locale/currency/timezone and operating settings, defaulting to Spanish/MXN/America/Mexico_City; create tenant and owner membership transactionally. Generate tenant IDs server-side.
+3. Ask for restaurant name, locale/currency/timezone and operating settings, defaulting to Spanish/MXN/America/Mexico_City; create tenant and owner membership transactionally. Generate tenant IDs server-side. **Implemented (account 031):** the simplified privacy notice sits next to the Google button, and the restaurant is created only after the owner accepts the Terms and the organization's data processing agreement and acknowledges the privacy notice, all recorded with their versions in `legal_acceptances`. While the legal documents are unpublished, new accounts are refused (`signup_paused`) unless the non-production `LEGAL_UNPUBLISHED_SIGNUP=allow` override applies. See [account and legal](ACCOUNT_AND_LEGAL.md).
 4. Activate Free or initiate the Pro trial with the durable Stripe provisioning operation.
 5. Import/add menu, pair the first register and open a drawer. Show account scope and trial state clearly.
 
@@ -194,3 +194,39 @@ No Stripe API provisioning has been verified yet: the Chrome dashboard timed out
 and a dedicated sandbox key/target account is still required. Trial activation,
 Checkout, Customer Portal, signed webhook reconciliation and real sandbox flows
 remain pending. New restaurant signup continues to grant Free only.
+
+
+## Account 031 checkpoint — October 5, 2026
+
+Implemented locally on `track/account` (migration 031) and qualified with the
+local unit, database, compiled HTTP and browser suites; nothing here has run on
+staging, and the legal text awaits counsel review.
+
+- **Launch posture:** v1 production launches with Stripe billing disabled.
+  Pilot restaurants get Pro from the support CLI (`grant-entitlement`, at most
+  90 days per grant, renewable, never on Stripe-bound restaurants), shown to
+  owners as "Pro otorgado por soporte" with its end date
+  ([operations](OPERATIONS.md), Support).
+- **Acceptance step** in signup, invitation acceptance (terms and privacy) and
+  ownership transfer (terms, privacy and the organization's DPA); material
+  document changes ask again and gate account commands, never the POS.
+- **Co-owners:** up to 3 per organization with full POS and management control;
+  billing, new locations, transfers and the tax profile stay with the primary
+  owner. Co-owners do not use Free employee slots.
+- **Ownership transfer** by the owner (email-bound link, 72 h), by support after
+  identity verification (held, default 72 h) or by recovery code (held 24 h).
+- **Recovery:** single-use recovery codes and support-assisted transfer;
+  verified-email recovery remains pending.
+- **Lapse behaviour:** when Pro ends, registers with a drawer opened in the last
+  16 hours keep selling until it closes; POS notices warn 7, 3 and 1 days before
+  a trial or grant ends, and explain Pro ended and "not selected" states. Free
+  slots follow the most recent drawer openers automatically until the owner
+  pins a manual selection ([Free limits](FREE_LIMITS.md)).
+- **Grace:** the proposed seven-day failed-renewal grace above remains
+  **unapproved**; a failed payment applies Free limits at once (with drawer
+  continuation).
+- **Data export:** owners download all restaurant records (JSON, or one table as
+  CSV) from Settings, on Free too.
+- **QR and kiosk** stay off in production (`PUBLIC_ORDERING_ENABLED` unset)
+  until the public-ordering area (032) ships; the landing and plan copy say
+  "próximamente".

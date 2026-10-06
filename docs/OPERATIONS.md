@@ -65,3 +65,97 @@ From Órdenes, **Mesa y mesero** changes the current assignment with a reason. I
 A lost cash-payment response keeps its original operation and target order. **Recuperar pago** retries that exact request, and reload automatically attempts recovery. An uncertain result never authorizes a second payment against another order. Authentication/permission conflicts remain retained for authorized recovery.
 
 `bash scripts/rehearse-restore.sh --verify` creates a separate local restore database, compares control totals including item allocations, and runs the database checks against the restored target. This is local qualification, not a Neon restore or production cutover rehearsal.
+
+## Support (vendor support CLI, account 031)
+
+Green Monkey staff act on customer accounts only through the support CLI, from
+an operator workstation. Every command needs `--operator "<name>" --ticket
+<ref> --reason "<10–500 characters>"`, is written to `support_actions`
+(append-only; the operator login is forced to the database session user) and is
+shown to the restaurant's owners in their account console ("Acciones de
+soporte") and, for 7 days, in the POS shell. Mutating commands ask for the
+restaurant or organization name (`--yes` skips it, never for
+`transfer-ownership`). Design and data model: [account and legal](ACCOUNT_AND_LEGAL.md).
+
+**Provisioning an operator** (once per person and environment):
+
+```sh
+PROVISION_DATABASE_URL=<CREATEROLE owner, direct endpoint> \
+SUPPORT_PROVISION_TARGET=<host:port/database> \
+npm run support:provision -- --name <alnum>
+```
+
+It creates `gm_support_<name>` (LOGIN, member of `gm_support`, no superuser,
+CREATEDB, CREATEROLE or BYPASSRLS) and writes the connection URL once to
+`.env.support-<name>` (mode 0600). Keep that file on the operator's
+workstation as `SUPPORT_DATABASE_URL`. It is **never** a Railway or GitHub
+variable; the web refuses to start with it. `scripts/ops/sql/globals.sql` must
+have created `gm_support` first. Remove an operator with `DROP ROLE` from the
+provisioning owner when they leave.
+
+**Commands** (`npm run support -- <command> …`):
+
+| Command | Use |
+| --- | --- |
+| `lookup --email <e> \| --tenant <id> \| --organization <id>` | Accounts, organizations, restaurants, owners, devices, entitlement, pending transfers. Read-only. |
+| `unlock-employee --tenant <id> --login <login>` | Clears a PIN lock exactly like a manager unlock, without spending the manager's daily unlock budget. Writes `access.employee_unlocked` with the ticket. |
+| `grant-entitlement --tenant <id> --until YYYY-MM-DD` | Pilot Pro (below). |
+| `end-entitlement --tenant <id>` | Ends a support grant now (the restaurant goes to Free; open drawers continue until closed or 16 h). |
+| `transfer-ownership --organization <id> --to-email <e> [--hold-hours 72]` | Support-assisted ownership transfer after identity verification (below). Hold 24 h minimum, 72 h default. |
+| `cancel-transfer --transfer <id>` | Cancels a pending transfer. |
+| `set-free-device --tenant <id> --device <id>` | Emergency Free device reassignment (the owner cannot reach Settings, for example a stolen laptop held the slot); the device ID must be retyped. The automatic/manual mode is unchanged, so in automatic mode a later drawer open can move the slot again: ask the owner to save a manual selection once they can. |
+| `actions --organization <id> [--limit 50]` | Support history for an organization. |
+
+**Pilot grants (v1 production path to Pro).** Production launches with Stripe
+billing disabled; pilot restaurants get Pro from `grant-entitlement`:
+
+- at most **90 days** per grant (`support_grant_too_long`); renew by running it
+  again **before** the end date with a new `--until` (each run is audited);
+- ends at 04:00 restaurant time on the `--until` date;
+- never on a restaurant bound to Stripe billing (`support_grant_stripe_bound`);
+- owners see "Pro otorgado por soporte" with the end date in Settings › Plan,
+  and the POS warns 7, 3 and 1 days before it ends;
+- record the pilot agreement reference as the `--ticket`.
+
+**Identity verification for a support-assisted transfer** (lost Google account
+without recovery codes, a founder leaving, a sale of the business). All of:
+
+1. The requester's INE (both sides) and a selfie or live comparison.
+2. A constancia de situación fiscal whose RFC matches the restaurant's, or an
+   acta constitutiva / poder notarial showing authority over the business.
+3. A live video call with the requester holding the INE.
+4. Proof that the new Google email is controlled by the requester: they open
+   the console with it and read back the transfer notice.
+5. A ticket reference holding the evidence (never in the CLI reason text).
+6. A second operator reviews the evidence before the command runs
+   (recommended; mandatory when the current primary is unreachable).
+
+The current primary sees the critical banner during the hold and can cancel. Do
+not shorten the hold below 72 h unless the current primary confirms in writing.
+
+**Unlock.** Prefer the restaurant's own owner or manager; use
+`unlock-employee` only when nobody with that permission can sign in, after
+confirming the caller is the owner or a manager listed in `lookup`.
+
+**ARCO requests** (access, rectification, cancellation, opposition, LFPDPPP
+Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
+
+- answer within **20 business days** and make the decision effective within
+  **15 business days** after answering; free of charge;
+- verify identity as above (INE; for a restaurant's diners or staff, refer
+  them to the restaurant, which is the responsable; Green Monkey assists as
+  encargado under the DPA);
+- account data: the owner's data export covers restaurant records; account
+  rectification is by support ticket; cancellation follows offboarding below.
+
+**Breach notification.** On a security incident affecting personal data:
+contain it, record what happened, which data and which restaurants, and notify
+the affected owners (responsables) without delay so they can inform their data
+subjects (LFPDPPP Art. 19–20); notify individual account holders directly for
+account data. Follow the incident steps in [runbook](RUNBOOK.md).
+
+**Offboarding.** When a restaurant leaves: tell the owner to download the JSON
+export (Settings › Privacidad y datos) during an agreed window (30 days by
+default); end any support grant; keep fiscal records the law requires (CFF
+Art. 30, 5 years). Blocking and deletion are manual operator steps until
+deletion tooling exists (deferred): record each step in the ticket.

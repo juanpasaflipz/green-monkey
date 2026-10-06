@@ -55,6 +55,7 @@ npm run test:db:qualification
 npm run build
 npm run test:restart # isolated local dev fixture; starts its own server on 3003
 npm run test:access-http # access checks against the compiled server; same fixture and port
+npm run test:account-http # account checks (public-ordering switch, account-config, exports); same fixture and port
 npm run test:drain # compiled web and worker exit cleanly on SIGTERM; same fixture and port
 NODE_ENV=production npm start
 npm run start:worker # compiled worker; `npm run worker` runs it from source
@@ -66,9 +67,11 @@ offline-recovery, item-void, ops (roles, migrations, jobs, backups,
 provisioning), access (`npm run test:db:access`: pairing codes, PIN
 throttling, sessions, step-up, staff and devices), service
 (`npm run test:db:service`: check lifecycle, kitchen feed, notes, print audit),
-menu (`npm run test:db:menu`: catalog, floor, stock ledger and policy) and
-offline (`npm run test:db:offline`: sync, reconcile, archive, review lane)
-suites in a fixed order.
+menu (`npm run test:db:menu`: catalog, floor, stock ledger and policy),
+offline (`npm run test:db:offline`: sync, reconcile, archive, review lane),
+account (`npm run test:db:account`: legal acceptance, co-owners, transfers,
+recovery, export, 031 RLS) and support (`npm run test:db:support`: the
+vendor support CLI as `gm_support`) suites in a fixed order.
 `npm run test:db:recovery` runs the recovery database slice directly. All database runners require both
 `TEST_DATABASE_URL` and `TEST_MIGRATION_DATABASE_URL`; the runtime target must end
 in `_test`, and both local or Neon endpoints must satisfy the exact allowlists
@@ -80,6 +83,11 @@ needs `DEMO_TENANT_ID=10000000-0000-4000-8000-000000000001`,
 `ACCESS_STEP_UP_SECONDS=1800` and `ACCESS_IDLE_LOCK_DEFAULT_SECONDS=0` (the
 suites sign in through the demo form and fast-forward the clock past the
 default auto-lock); `scripts/compiled-local.sh` sets them:
+
+The legal and account browser suites expect published legal documents: start
+the server with the fictional CI set of `tests/fixtures/legal-ci.ts` (the
+`LEGAL_*` and `SUPPORT_*` values, as `qualification.yml` does on its browser
+step). Never use those values outside tests.
 
 ```sh
 npx playwright install chromium
@@ -116,7 +124,13 @@ Google owner signup now has a server authorization-code callback, persistent
 one-time login attempts, issuer/subject identities, account sessions, and explicit
 restaurant memberships. New accounts create one Free restaurant with an empty
 catalog and configurable currency, timezone, business cutoff and opening days.
-The signup form is available in Spanish and English. This does not activate a
+The signup form is available in Spanish and English. Next to the Google button
+the page shows the simplified privacy notice, and the restaurant is created only
+after the owner accepts the Terms and the data processing agreement and
+acknowledges the privacy notice (recorded in `legal_acceptances`; see
+[account and legal](docs/ACCOUNT_AND_LEGAL.md)). While the legal documents are
+unpublished, new accounts get `signup_paused` unless `LEGAL_UNPUBLISHED_SIGNUP=allow`
+(never honored with `APP_ENV=production`). This does not activate a
 Stripe trial or link an existing restaurant by matching email addresses.
 
 The backend enables the Google button only when `GOOGLE_CLIENT_ID`,
@@ -137,9 +151,55 @@ verified-identity fixture. It does not automate or claim Google's external login
 Real Google signup, POS entry and returning login now pass on staging; see
 [tenancy qualification](docs/TENANCY_QUALIFICATION.md).
 Invitations and multiple locations are implemented and have prior staging proof;
-Free device/team/location limits are implemented and tested. Deliberate account
-linking, verified email recovery and Apple sign-in remain pending. See the latest
+Free device/team/location limits are implemented and tested. Co-owners,
+ownership transfer and recovery codes (migration 031) are implemented locally
+and not yet staging-qualified. Deliberate account linking, verified email
+recovery and Apple sign-in remain pending. See the latest
 handoff and completion ledger rather than older dated staging checkpoints.
+
+## Legal configuration (privacy notice, terms, DPA)
+
+The platform's privacy notice (`/legal/privacidad`), terms (`/legal/terminos`)
+and data processing agreement (`/legal/encargo-de-datos`) are versioned code in
+`shared/legal.ts`; the legal entity comes only from web environment variables
+(`LEGAL_ENTITY_NAME`, `LEGAL_ENTITY_ADDRESS`, `LEGAL_PRIVACY_CONTACT_EMAIL`,
+`LEGAL_JURISDICTION`, optional `LEGAL_ENTITY_RFC` and
+`LEGAL_PRIVACY_CONTACT_NAME`) and support channels from `SUPPORT_*`. Missing,
+malformed or placeholder values (and, with `NODE_ENV=production`, test/demo
+words) keep the documents **unpublished**: the pages show a draft banner and
+`noindex`, startup logs `legal_documents_unpublished`, and new signups are
+paused. `GET /api/account-config` reports the state. The text is a draft
+pending counsel review and no deployed environment has the real values yet.
+Checklist, versioning and material-change procedure:
+[account and legal](docs/ACCOUNT_AND_LEGAL.md).
+
+## Support CLI
+
+Vendor support acts only through `npm run support -- <command>` from an
+operator workstation with `SUPPORT_DATABASE_URL` (a `gm_support` member login
+created by `npm run support:provision`). Never set that URL on Railway or
+GitHub; the web refuses to start with it. Every command needs an operator name,
+a ticket and a reason, is logged in `support_actions` and is visible to the
+restaurant's owners. Pilot Pro grants (≤ 90 days, renewable), unlocks,
+support-assisted transfers and emergency Free device reassignment are
+described in [operations](docs/OPERATIONS.md) (Support).
+
+## Owner data export
+
+Owners download every restaurant record as JSON or one table as CSV from
+Configuración › Privacidad y datos (also on Free). Shared terminals ask for the
+owner's PIN first; secrets, credentials and CFDI binaries are excluded. Format
+and limits: [account and legal](docs/ACCOUNT_AND_LEGAL.md).
+
+## SaaS tax mode
+
+`SAAS_TAX_MODE=off` (default) leaves Stripe requests unchanged and the UI says
+prices are before taxes and the subscription IVA/CFDI is not configured.
+`SAAS_TAX_MODE=tax_rate` (sandbox only for now) makes the worker add a Stripe
+IVA 16 % Tax Rate (`STRIPE_TAX_RATE_ID`, created with
+`npm run stripe:tax-rate:sandbox`) to trials, Checkout and location quotes, and
+collects the customer's tax ID. SaaS CFDI is not built. See
+[billing implementation](docs/BILLING_IMPLEMENTATION.md).
 
 ## Billing implementation in progress
 

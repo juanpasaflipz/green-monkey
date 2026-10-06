@@ -84,3 +84,37 @@ accepted replays after downgrade, collection of an existing order, concurrent
 selection/team limits, invitation capacity, owner-role bypass denial, tenant scope
 and one Free location. Browser qualification must still cover both languages, all
 four required viewports, downgrade transitions and the recovery-only UI states.
+
+## Lapse continuation, automatic selection and co-owners (account 031)
+
+Implemented locally (migration 031); not yet staging-qualified.
+
+- **Drawer continuation.** When Pro ends (trial, support grant, cancellation
+  or failed payment), a device whose drawer was opened less than 16 hours ago
+  keeps selling for any active employee until the drawer closes or the 16 hours
+  pass (`sellingAccess` basis `drawer_continuation`). A new drawer cannot be
+  opened under continuation, and the offline window is not renewed under it
+  (LD-15 Q5), so the existing four-hour lease runs out normally. Configuration
+  saves that are gated by selling also pass for active employees on that device
+  during continuation; they remain permission-gated as always.
+- **Automatic Free selection** (default per restaurant, `auto`): during Pro,
+  every successful drawer open moves the Free device slot to that device, and
+  a non-owner opener gets an employee slot (a free number first, otherwise the
+  holder with the oldest last drawer open, kitchen-role holders first). On
+  Free, a slot device that has never opened a drawer (for example the owner's
+  signup laptop) yields to the first device that opens one. Each move writes
+  `plan.free_slot_auto`. Saving a selection in Settings switches the restaurant
+  to `manual`; FreeSelection shows the mode and "Volver a automático". The
+  slot write runs inside `/cash/open` after the Free-limits lock (lock order
+  exception E5 in [architecture](ARCHITECTURE.md)) and only when a slot
+  actually changes.
+- **Co-owners** are owners: they never consume the two Free employee slots and
+  can sell only on the selected Free device, like the primary owner.
+- **Notices** in the POS shell explain each state: trial or support grant
+  ending, drawer continuation, Pro ended (first 7 days) and "Free: este
+  dispositivo o empleado no está seleccionado para iniciar ventas. Solo
+  {dispositivo} puede hacerlo." PlanSettings states the Free limits: "En Free
+  solo el dispositivo y los dos empleados seleccionados pueden iniciar ventas.
+  Los demás pueden cobrar órdenes abiertas y consultar registros."
+- Support can reassign the Free device in an emergency (`set-free-device`,
+  [operations](OPERATIONS.md)); the mode is unchanged.

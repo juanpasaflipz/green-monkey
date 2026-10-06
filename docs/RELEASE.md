@@ -25,8 +25,9 @@ Provisions the global roles, migrates both databases as the non-superuser
 `gm_migrator` with `APP_ENV=staging` (migrate, then grants, then retention),
 seeds fixtures, then: typecheck, lint, unit tests (including the migrations
 lint), every DB suite (`npm run test:db:qualification`, which includes
-`test:db:ops` and `test:db:access`), build, restart test, access HTTP checks
-(`npm run test:access-http`), drain test, the compiled browser suite
+`test:db:ops`, `test:db:access`, `test:db:account` and `test:db:support`),
+build, restart test, access HTTP checks (`npm run test:access-http`), account
+HTTP checks (`npm run test:account-http`), drain test, the compiled browser suite
 with web and worker running, a 60 s load smoke, and an image smoke: the
 Dockerfile is built with a stamped commit and the container must pass
 `/api/health`, report the commit on `/api/version`, start the worker
@@ -34,6 +35,37 @@ Dockerfile is built with a stamped commit and the container must pass
 
 `security`: `npm audit --omit=dev --audit-level=high` and gitleaks over the
 full history (`.gitleaks.toml` allowlists only synthetic local/CI values).
+
+Legal values in CI (account 031): the job sets `LEGAL_UNPUBLISHED_SIGNUP=allow`,
+and only the account-http and compiled browser steps carry the fictional,
+plausible legal and support set of `tests/fixtures/legal-ci.ts` ("Nopal Verde
+Software S.A. de C.V."), so those servers publish the documents under
+`NODE_ENV=production`. These values, and the `RD_LEGAL_*` / `RD_SUPPORT_*`
+repository variables an acceptance workflow may hold, are **fictional** and
+never reach Railway.
+
+## Go-live checklist (account and legal)
+
+Before production accepts its first restaurant (see also
+[provisioning](PROVISIONING.md) §9 and [launch hand-off](LAUNCH_HANDOFF.md)):
+
+1. Counsel has reviewed the privacy notice, terms and data processing agreement
+   (D1, D2), and any text change is published as a new version
+   ([account and legal](ACCOUNT_AND_LEGAL.md), "How to publish a new version").
+2. The production `web` variables hold the real `LEGAL_ENTITY_NAME`,
+   `LEGAL_ENTITY_ADDRESS`, `LEGAL_PRIVACY_CONTACT_EMAIL`,
+   `LEGAL_JURISDICTION` (and the optional `LEGAL_ENTITY_RFC`) and the
+   `SUPPORT_*` channels.
+3. `GET /api/account-config` reports `legal.status: "published"`, and the
+   startup log has no `legal_documents_unpublished`.
+4. `LEGAL_UNPUBLISHED_SIGNUP` is unset (startup logs
+   `legal_unpublished_signup_ignored` otherwise).
+5. `PUBLIC_ORDERING_ENABLED` is unset or `false` until public ordering (032)
+   ships; `/api/account-config` reports `publicOrdering.enabled: false`.
+6. At least one support operator is provisioned (`npm run support:provision`,
+   [operations](OPERATIONS.md), Support) and can run `lookup`; pilot
+   restaurants get Pro with `grant-entitlement`.
+7. `SAAS_TAX_MODE` stays `off` while billing is disabled.
 
 Every third-party action in `.github/` is pinned by full commit SHA with the
 release in a trailing comment (`actions/checkout@<sha> # v7.0.1`); the deploy,

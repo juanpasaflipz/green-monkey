@@ -555,6 +555,21 @@ and interruption do not alter accepted totals; PDF values match on-screen values
 provider evidence and an accurate capability inventory. External blockers remain
 named with prerequisites; mocks do not satisfy them.
 
+**Account 031 status (October 5, 2026, local only).** M8.1 ownership transfer
+and last-owner protection (owner-seat changes only through the account console;
+the team screen refuses owner role changes and deactivation), co-owners and
+access revocation: **implemented locally**. M8.2 recovery: **partial**
+(single-use recovery codes and support-assisted transfer; verified email
+recovery, account linking and the password fallback pending). M8.6 in-app
+reminders (trial and support grant ending, failed payment, Pro ended, drawer
+continuation): **implemented locally**; email reminders pending a verified
+sender. M8.11 landing truth pass (QR/kiosk claims follow
+`PUBLIC_ORDERING_ENABLED`, kitchen-note examples hidden until verified):
+**implemented locally**. Platform legal documents with versioned acceptance,
+owner data export and the vendor support CLI are new and documented in
+[account and legal](ACCOUNT_AND_LEGAL.md). None of it is staging-qualified;
+the legal entity values and counsel review are user hand-off items.
+
 ## M9. Data migration, restore and operational readiness
 
 ### Source migration
