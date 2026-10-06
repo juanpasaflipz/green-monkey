@@ -554,9 +554,12 @@ test("customer self-invoices from /f/{code}: inline receptor errors, then succes
     ).toBeVisible({
       timeout: 30_000,
     });
+    // The links wait for cfdi_deliver to store the files (CFDI-UX-4): "Preparando los
+    // archivos…" until the worker's next sweep (5 s) runs it and the portal's next poll (2 s)
+    // sees filesReady.
     await expect(
       customer.getByRole("link", { name: "Descargar PDF" }),
-    ).toBeVisible();
+    ).toBeVisible({ timeout: 15_000 });
     await expect(
       customer.getByRole("link", { name: "Descargar XML" }),
     ).toBeVisible();
