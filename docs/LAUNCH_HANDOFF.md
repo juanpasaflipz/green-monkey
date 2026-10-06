@@ -453,7 +453,10 @@ line), and keep where noted.
 - **How to verify.** The full test print in [PILOT_SOP.md §1.2](PILOT_SOP.md#12-configurar-la-impresora-térmica-58-u-80-mm-en-el-sistema-operativo)
   step 10 passes on each device, and one deliberate outage (router unplugged) is sold
   through and synced, as [PILOT_SOP.md §3](PILOT_SOP.md#3-conexión-y-venta-sin-conexión)
-  describes.
+  describes. If the pilot uses QR or kiosk ordering, also run the field checks in
+  [PUBLIC_ORDERING.md](PUBLIC_ORDERING.md#field-checks-before-printing-at-scale):
+  a printed table card scanned by the diners' phone cameras keeps its `#` code, and
+  a kiosk tablet uses its own browser profile.
 
 ### 1.17 Contacts, escalation and the go-live decision
 
@@ -574,3 +577,7 @@ pilot devices have not passed the PILOT_SOP test print and outage drill.
   [STAGING.md](STAGING.md#wave-20-cutover-record),
   [BACKUP_RESTORE.md](BACKUP_RESTORE.md)).
 - Physical printers, tablets, silent printing and a real outage: not checked (1.16).
+- Public QR/kiosk ordering (032/033): built on `track/public` and verified locally
+  only. Its first production deploy runs the DB-9 validation queries first and goes
+  before 07:00 Mexico City ([RUNBOOK.md](RUNBOOK.md), "DB-9 validation" and "Deploy
+  window"); QR scanners and printed cards are field checks (1.16).

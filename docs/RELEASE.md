@@ -66,8 +66,14 @@ Before production accepts its first restaurant (see also
    startup log has no `legal_documents_unpublished`.
 4. `LEGAL_UNPUBLISHED_SIGNUP` is unset (startup logs
    `legal_unpublished_signup_ignored` otherwise).
-5. `PUBLIC_ORDERING_ENABLED` is unset or `false` until public ordering (032)
-   ships; `/api/account-config` reports `publicOrdering.enabled: false`.
+5. Public ordering (032/033): the "DB-9 validation" queries
+   ([RUNBOOK.md](RUNBOOK.md)) return 0 on production before the first deploy
+   that carries 032 and 033, that deploy runs before 07:00 Mexico City once
+   production has traffic (RUNBOOK "Deploy window"), and the LD-5 delta review
+   of B1-B4 is done. `PUBLIC_ORDERING_ENABLED` stays unset or `false` in
+   production (`/api/account-config` reports `publicOrdering.enabled: false`)
+   until the flag-flip commit (public B4) is deployed; `false` is the kill
+   switch afterwards.
 6. At least one support operator is provisioned (`npm run support:provision`,
    [operations](OPERATIONS.md), Support) and can run `lookup`; pilot
    restaurants get Pro with `grant-entitlement`.
@@ -160,7 +166,10 @@ local and CI clusters need (contract C-11):
   `PG_APP_USER` commits in the **same transaction as the newest pending
   migration**, before its `schema_migrations` row. Readiness keys on that row,
   so a new revision never passes `/api/health` before its tables are granted,
-  and a failing manifest rolls the newest migration back with it. With nothing
+  and a failing manifest rolls the newest migration back with it. When the
+  newest pending file is a no-transaction file (033), the manifest and that
+  file's registry row commit together in one explicit transaction on the
+  runner's reserved connection after its last statement. With nothing
   pending, the manifest runs in its own transaction;
 - then the backup-reader policy reconciler (`scripts/db/post-migrate.sql`) and,
   with `--retention`, the retention pass (a failure alerts `retention_failed`

@@ -55,7 +55,7 @@ unverified unless a dated checkpoint explicitly records it.
 | Split by items/amount; grouped settlement | 3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Amount/item splits and grouped settlement API/UI; immutable per-unit allocations, partial-unit balances and concurrent selection checks verified. Pre-allocation history remains explicitly unallocated. |
 | Full/partial refunds, cancellations, history | 2–3, required | See DELIVERY_STATUS.md and DISCOUNTS.md | Refunds by item (fully paid units returned to the tenders that paid them, kitchen cancellation for unserved units, optional restock) or by amount (paid checks only), cash and recorded external-terminal refunds with reference and confirmation, refund reasons, approver and business date per batch, refund slip; locally verified on `track/discounts` (migration 028); not staged. Integrated provider refunds pending (no provider). |
 | Offline cash, menu cache, refresh recovery | 3, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Reachability heartbeat and request outcomes (not navigator.onLine), manual offline mode, request timeouts, cached-session restore on any transient failure, v3 offline sales by cash or external terminal with provisional numbers, kitchen tickets (print and device list), KDS review lane, exactly-once sync with authenticity/eligibility split, manager reconcile and archive, retries that never exhaust, clock offset, atomic service-worker revisions with an update prompt, persistence, manifest and browser gate (offline track, migration 026; locally verified). Real tablet, printer, ISP-outage and staging update proof pending; see OFFLINE_RECOVERY.md. |
-| QR customer ordering and kiosk | 3, required web flows | See DELIVERY_STATUS.md and corresponding M1–M9 section | Signed scoped ordering links; QR/kiosk frontend shares service; unpaid kitchen dispatch and public receipt. Idle reset implemented. Provider checkout and held-order policy pending. Kiosk is required Pro; local server entitlement gates are implemented and tested for tenant isolation, expiry and accepted-order retries. Stripe reconciliation and live entitlement provisioning remain pending. |
+| QR customer ordering and kiosk | 3, required web flows | See DELIVERY_STATUS.md and corresponding M1–M9 section | Public ordering (032/033, locally verified on `track/public` with CI parity, October 6, 2026; not staged): revocable per-table, takeaway and kiosk codes (opaque 128-bit tokens kept in the URL fragment and sent in a header, stored only as hashes; replacing or deactivating a code stops it at once), held orders that reach the kitchen only when staff accept them in the Órdenes inbox or collect payment first (pay-first, with a manager's PIN-confirmed exception), DB-enforced caps per table, code and restaurant with a churn budget, per-IP limits, printable table QR cards (Mesas), pause and automatic pause when no shared terminal is online, abuse rejection that deactivates a code, and the DB-9 value constraints (032 `NOT VALID`, 033 `VALIDATE`). No online card payment: diners pay staff. Kill switch `PUBLIC_ORDERING_ENABLED` (account 031). Tests: `tests/public-ordering.test.ts`, `tests/public-kiosk.test.ts`, `tests/public-ordering-http.test.ts`, `npm run test:db:public`, `tests/browser/public-ordering.spec.ts` and the QR legs of `menu.spec`, `core.spec`, `security.spec` and `account.spec`. Pending: staging run, QR scanners of real phones and card printing on thermal printers (field checks in PUBLIC_ORDERING.md). |
 | Native iOS/Android wrappers | Optional follow-on | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Ingredients, recipe links, substitutions, costs | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Stock item setup (g, kg, ml, l, pieces; raw or prepared; reorder point, par level, opening stock, unit lock, archive), product and choice recipes with g↔kg and ml↔l entry, line cost including choice costs, append-only recipe versions and historical line cost snapshots. Locally verified on `track/menu` (`npm run test:db:menu`, browser); not staged. Substitutes and automatic costing pending. |
 | Suppliers, purchase orders, receiving | 4, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Supplier creation and merchandise receipt/expiry metadata. Purchase orders and lot depletion pending. |
@@ -110,7 +110,7 @@ mark full scenarios complete. Each ID remains a release gate from ACCEPTANCE.md.
 | CORE-06 | partial | Money/remainder/unit arithmetic and partial item units tested; full and partial discounts as unit allocations that never exceed a unit's due (property-tested) and item splits charging the discounted due tested locally (discounts 028). Live taxes (fiscal 027): tax-inclusive IVA extracted per category with SAT-valid rounding, tickets reconcile to the order total (DB-checked), refund IVA by complement extraction (`tests/fiscal.test.ts`, `tests/fiscal-db.ts`). Promotions, IEPS and CFDI pending. |
 | CORE-07 | partial | Recipe/price edits retain historical snapshots; new orders retain restaurant configuration. Tax snapshots (fiscal 027): every line keeps an immutable tax snapshot from the server's fiscal context, including offline sync; a tax edit bumps the product version and sends queued offline sales to review. Acceptance run pending. |
 | CORE-08 | partial | Device PIN, CSRF and cashier management denial tested. Access (locally verified October 5, 2026): manager approval by chosen manager and PIN with per-device throttling, step-up on terminals for refunds/paid-outs/self-approved voids, staff deactivation revoking sessions, unpairing the employee's personal devices and blocking Google re-entry, device unpairing, pairing codes, void retries after a lost response. Pending: staging run; invited-member removal and co-owner lifecycle (account area). |
-| CORE-09 | partial | Two-tenant RLS/FK and public QR tamper checks; invoice/webhook/print/upload/org routes pending. |
+| CORE-09 | partial | Two-tenant RLS/FK and public QR tamper checks; public ordering (032): a code resolves only through its hash's lookup policy, malformed codes are refused before the database, and a status key or hold of another restaurant is not found (`tests/public-ordering-db.ts` 4, 22, 29, 30, 32). Invoice/webhook/print/upload/org routes pending. |
 | CORE-10 | partial | Missing context, rollback reuse and least-privileged role tested locally; tenant transactions set `statement_timeout` with the tenant in one statement, role defaults via `ALTER ROLE` and verified TLS off-host (`tests/ops-db.ts`, `tests/provision-db.ts`, 2026-10-05); Neon pooled/direct pending. |
 | CORE-11 | partial | Refund caps per tender and per unit (code and triggers, 20 concurrent refunds), reason and approver validation, item refunds of paid units, recorded terminal refunds and amount refunds only on paid checks tested locally (discounts 028); integrated provider refunds pending. |
 | OFF-01 | partial | Compiled offline refresh/reconnect, reload during an API outage and exactly-once replay pass locally (`offline.spec.ts`, `offline-sync-db.ts`); staging and real-device close/reopen remain. |
@@ -221,6 +221,34 @@ Built on `track/account` and qualified locally on databases migrated as
   `tests/account-http.ts`, browser diner and generator checks;
 - the restaurant privacy URL, 031 RLS and grants: `tests/account-db.ts` (30–32),
   `tests/support-db.ts`.
+
+## Public ordering 032/033 evidence (2026-10-06, local with CI parity)
+
+Built on `track/public` (Phase A plus B1-B4 on fiscal 027, discounts 028,
+reports 029, cfdi 030 and account 031) and qualified locally on databases
+migrated as `gm_migrator` under FORCE RLS; nothing has run on staging. Audit
+findings SEC-7 (bearer links without revocation), FIT-11 (unpaid QR orders
+reaching the kitchen), FOH-13 (tables not bound) and the DB-9 remainder:
+
+- SEC-7, revocable opaque codes: `tests/public-ordering.test.ts` (tokens,
+  hashes, limiter keys), `tests/public-ordering-db.ts` 4-8 (lookup policy,
+  table links, rotation, revocation, caps), 38 (a code revoked by another
+  process stops at once), `tests/public-ordering-http.test.ts`, browser
+  "revoke and rotate";
+- FIT-11, held orders and pay-first: DB 9-12 (a hold creates nothing on the
+  sales side; idempotency; pricing; durable caps), 15-21 (accept, append,
+  atomicity, pay-first with a manager's exception, exclusions, reject,
+  cancel), 23-24 (concurrency and the lock order under `noRetries`), 33,
+  36-45; browser "table QR end to end", "append", "reject and restore",
+  "pay-first kiosk", "price change", "abuse";
+- FOH-13, tables bound: DB 5 and 14 (one active code per table; an archived
+  table blocks its code; a pending hold blocks archiving and counts as
+  occupancy), browser "inbox details";
+- DB-9: DB 1+3, 1b and 2 (032/033 as a non-superuser owner, validation of
+  another tenant's row, every allowed value writable and nothing else);
+- account integration (B3): DB 28 (account's gate before any limiter), 30
+  (account's privacy URL on the diner menu), 31 (the export drops the three
+  hash columns), `tests/account-http.ts` checks 2-3, `account.spec` QR legs.
 
 ## External prerequisites
 

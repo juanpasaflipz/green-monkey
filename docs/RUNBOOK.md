@@ -45,6 +45,8 @@ acknowledged a critical alert within 15 minutes during service hours
 | `cfdi_global_overdue:*`, `cfdi_global_late:*`, `cfdi_global_failed:*` (warning) | ntfy, from the worker | a global invoice missed its 24 h deadline, a late supplementary part was issued after it, or a part failed: Facturas globales → **Emitir ahora** / **Reintentar** |
 | `cfdi_stamp_unresolved:*`, `cfdi_cancel_unresolved:*`, `cfdi_cancel_failed:*`, `cfdi_substitution_rejected:*`, `cfdi_reissue_failed:*`, `cfdi_refund_unresolved:*`, `cfdi_ticket_excluded:*`, `cfdi_amount_mismatch:*` (warning) | ntfy, from the worker | one restaurant's document needs a person (`<tenant>` = first 8 hex characters of the tenant id): see the action per key in [CFDI](CFDI.md) "Operations" |
 | `cfdi_csd_expiring:*` (info) | ntfy, from the worker | a restaurant's CSD expires within 30 days: the owner uploads a new one |
+| `public_order_limited` (log, warn) | web logs | a public QR/kiosk order hit a durable cap (`code`: `public_order_limit`, `public_ordering_busy` or `public_order_churn`); the line names the code's `ref` (the "Ref. 7A3F" staff see in Mesas or Configuración), its kind and the client's `ipHash`, never a token or a path. Repeated lines for one `ref` from one `ipHash`: "Online ordering abuse" below |
+| `rate_limited` with `limiter: public-*` (log, warn) | web logs | a client hit a public ordering per-IP or per-link limit (in memory, per replica); one diner retrying is normal, a steady stream from one `ipHash` is abuse |
 | `jobs_dead_cfdi_*` (warning) | ntfy, from the worker | a cfdi job used up its attempts. The global tick's recovery sweep re-enqueues what the document needs within a day (or a manager presses **Reintentar** on it); a dead `cfdi_global` tick already scheduled the next one, and the chain also restarts at the next worker deploy and operator sign-in ([CFDI](CFDI.md) "Jobs") |
 
 Alerts carry codes and counts only, never personal or tenant data. Logs are
@@ -247,7 +249,13 @@ wait while the index builds (platform P-27, LD-8). Fiscal's 027 belongs in
 the same window: its foreign keys to `orders`, `restaurants`, `employees`,
 `devices` and `refunds` and its `BEFORE INSERT` trigger on `order_lines` take
 `SHARE ROW EXCLUSIVE` on those tables until 027 commits, so sales wait for it
-(bounded by its `SET LOCAL lock_timeout = '5s'`). The fiscal operations
+(bounded by its `SET LOCAL lock_timeout = '5s'`). Public ordering's 032 belongs
+in the same window once production has traffic (P-27, LD-P15 OQ-14): its
+`ADD CONSTRAINT … NOT VALID` statements take a brief `ACCESS EXCLUSIVE` on
+`orders`, `rounds` and `jobs` (first in the file, `lock_timeout` 5 s, retried
+on 55P03), and a deadlock with live KDS reads rolls the whole file back and
+fails the deploy (re-running it is safe). Run "DB-9 validation" below before
+the first deploy that carries 032 and 033. The fiscal operations
 (missing tickets, kill switch, series, border incentive) are in
 [FISCAL.md](FISCAL.md#runbook).
 
@@ -359,8 +367,9 @@ entry (`k<YYYYMMDD>-<4 hex>:<32 random bytes>`).
      Dispositivos (at most 5 open codes at a time; see
      [ACCESS.md](ACCESS.md) "Signing-key rotation and terminals");
    - owners sign in with Google again;
-   - QR/kiosk ordering links (off in production until wave 3) and CFDI
-     self-invoice links stop working and are issued again.
+   - CFDI self-invoice links stop working and are issued again. Public
+     ordering's QR and kiosk codes (032) are database rows, not signed
+     tokens: a key rotation leaves them working.
 3. **`JWT_SECRET`** stays required on `web` in v1: outside production it
    still verifies pre-2.0 tokens (production refuses them; none were ever
    issued there), and it keys the lookup digests. Rotate it only together
@@ -469,6 +478,63 @@ undeclared variable is planned as a deletion, and CD's non-destructive
 `config apply --yes` then stops every automatic staging deploy at the sync
 step. Declare a variable before setting it: `TRUST_PROXY` is deliberately
 undeclared (its default is correct on Railway).
+
+## Online ordering abuse
+
+Public QR and kiosk ordering (032, [PUBLIC_ORDERING](PUBLIC_ORDERING.md) §11).
+A diner's order is only a hold until staff accept it: nothing reaches the
+kitchen, stock or a fiscal record on its own.
+
+1. **Reject as abuse.** In Órdenes, **Rechazar** → "Pedido falso o abuso". A
+   manager ticks "Desactivar también este código QR". The printed code stops
+   working at once in every web process (each request re-reads the link);
+   the diner sees "Pregunta al personal". The code's other pending orders stay
+   in the inbox, marked "Código desactivado por abuso", and need an explicit
+   tick before anyone accepts them.
+2. **Pause** online ordering (any operator, from the inbox or Configuración)
+   while the source is unclear.
+3. **Replace** a table's code in Mesas (**Reemplazar e imprimir**) and stick
+   the new card; deactivate a kiosk or takeaway code in Configuración.
+4. **Churn.** Many orders sent and cancelled from one code show in the inbox
+   by name ("muchos pedidos cancelados desde el cliente"); replace or
+   deactivate that code.
+5. **Logs.** `rate_limited` lines carry the limiter name and `ipHash`;
+   `public_order_limited` lines carry the code, the link's `ref` and kind, and
+   `ipHash` (pseudonymous personal data: log access follows the log retention
+   rules). Neither stores tokens or paths. The durable caps (3 pending per
+   table, 5 per kiosk, 10 per takeaway code, 40 per restaurant; windows per
+   15 minutes) bound the damage whatever the IP.
+6. **Kill switch.** `PUBLIC_ORDERING_ENABLED=false` on `web` (a redeploy)
+   turns QR and kiosk ordering off for every restaurant: diner and staff
+   ordering routes answer `404 public_ordering_disabled`, and staff screens
+   hide the panel, the table QR actions and the inbox.
+
+## DB-9 validation
+
+032 adds CHECK constraints `NOT VALID` on `orders.state`, `orders.channel`,
+`orders.mode`, `rounds.state` and `jobs.state` (enforced for every new write
+at once); 033 (`-- gm:no-transaction`, one `VALIDATE` per part, `SHARE UPDATE
+EXCLUSIVE`) validates existing rows. **Before the first deploy that carries
+them,** run read-only as `gm_migrator` on staging and on production; each
+query must return 0:
+
+```sql
+select count(*) from orders where state not in ('active','ready','completed','cancelled','recovery_pending','recovery_reviewed');
+select count(*) from orders where channel not in ('pos','qr','kiosk','offline');
+select count(*) from orders where mode not in ('takeaway','dine_in','delivery');
+select count(*) from rounds where state not in ('active','ready','completed','offline_review');
+select count(*) from jobs where state not in ('queued','available','running','done','blocked','dead');
+```
+
+If 033 fails anyway (a row outside a set): nothing is lost, because 032
+committed and its constraints already block new bad writes, and the new
+revision never passes readiness (033's registry row is written only after
+every part succeeds). Find the row with the queries above, repair it to the
+value the current code would write (for example a legacy `state`) with a note
+in the incident log, and re-run the deploy: `VALIDATE` of an already valid
+constraint is a no-op. A new value in any of these columns needs a migration
+that drops and re-adds its constraint (`-- gm:contract-approved`), tests that
+write it, and a note to public ordering (LD-P13).
 
 ## Open follow-ups
 
