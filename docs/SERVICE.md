@@ -22,25 +22,29 @@ Every order has two independent states.
   `recovery`).
 
 ```
-           addRound (total ↑)
-     ┌──────────────────────────┐
-     ▼                          │
-  [open] ── balance reaches 0 ──┼──► holds table? ── yes ──► [paid] ── Liberar mesa ──► [closed: released]
-     │                          │                     no ──► [closed: settled]
-     │                          └─────────────────────────── (paid + addRound → open)
+  [open] ── balance reaches 0 ──► fiscal ticket (folio) ──► holds table? ── yes ──► [paid] ── Liberar mesa ──► [closed: released]
+     │                                                                     no ──► [closed: settled]
+     │      (paid + addRound → fiscal_ticket_issued: the items go out as a new order)
      ├── every line voided and nothing paid ─────────────────► [closed: voided]
      └── offline cash reconciliation (insert) ───────────────► [closed: recovery]
 ```
 
 A check **holds its table** when `mode = 'dine_in'`, it has a table and
 `channel <> 'offline'`. Takeaway, delivery, tableless and synced offline sales
-close automatically when settled. In Mesas a paid check shows **Abrir orden**
-next to **Liberar mesa**, so "la última ronda" goes onto the same bill (the
-check reopens) instead of a second check.
+close automatically when settled. Since fiscal (027), the balance reaching zero
+also issues the check's fiscal ticket with its consecutive folio, in the same
+transaction (RMF 2.7.1.21: the folio is on the comprobante given at payment;
+[FISCAL.md](FISCAL.md)). A ticketed check takes no more rounds (LD-15 fiscal
+Q2): "la última ronda" after paying goes out with **Enviar como orden nueva**
+for the same table, a second check with its own ticket. In Mesas a paid check
+still shows **Abrir orden** next to **Liberar mesa**; sending items from it
+answers `fiscal_ticket_issued` and offers the new order. A paid check without a
+ticket (zero total, or the `FISCAL_TICKETS_ENABLED=false` kill switch) still
+takes rounds and returns to `open`.
 
 | Action | open | paid | closed |
 | --- | --- | --- | --- |
-| Add a round (Enviar a cocina) | yes | yes (becomes open) | `check_closed` |
+| Add a round (Enviar a cocina) | yes | `fiscal_ticket_issued` (send as a new order; without a ticket: becomes open) | `check_closed` |
 | Void unpaid units | yes | n/a (no unpaid units) | `check_closed` |
 | Record a payment | yes | `overpayment` | `check_closed` |
 | Move table or server | yes | yes (leaving a table settles it) | `check_closed` |
@@ -128,11 +132,12 @@ cached before the deploy keep working. A later contract change removes them.
   [global lock order](ARCHITECTURE.md#global-lock-order-binding) (Wave 2.0):
   order rows (several sorted by id), rounds, line voids, stock items, then the
   feed row (level LO-10), then the drawer and `refreshCheckState`, which takes
-  the fiscal folio counter last from 027. `createOrder`, `voidLines` and
-  `assignService` still bump the feed after `refreshCheckState`; fiscal moves
-  those three call sites in its merge commit (`tests/lock-order.test.ts`
-  allowlists them until then). DB test "kitchen feed and progress do not
-  deadlock" runs mixed concurrent bursts.
+  the fiscal folio counter (LO-12) last. `createOrder`, `voidLines` and
+  `assignService` bump the feed before `refreshCheckState` since fiscal's merge
+  (their `tests/lock-order.test.ts` allowlist entries are gone; `voidLines:D`
+  stays, MENU-INT-5). DB test "kitchen feed and progress do not deadlock" runs
+  mixed concurrent bursts, and fiscal DB test "lock order" adds offline sync,
+  settling voids, reassignments and payments.
 - The feed is bounded to the 200 oldest open rounds and excludes rounds held
   for offline review. A truncated feed shows an alert that new tickets do not
   appear until tickets are delivered and that a manager can retire the ones
@@ -351,20 +356,25 @@ the drawer is open.
 - `bumpKitchenFeed(tx, s)` runs after every order, round, void and stock lock of
   a KDS-affecting command and before the drawer and `refreshCheckState`
   ([global lock order](ARCHITECTURE.md#global-lock-order-binding), LO-10).
-- "Sale concluded" for fiscal/CFDI: `check_state = 'closed'` and
-  `close_reason in ('settled','released','recovery')`; `closed_at` is the
-  conclusion time and `business_date` the fiscal day.
+- "Sale concluded" for fiscal/CFDI: the check has a fiscal ticket
+  (`fiscal_tickets`), issued when its balance first reached zero, whether it is
+  still `paid` (table not released) or `closed`. The ticket's `business_date`
+  (the order's) is the fiscal day; `issued_at` is the date of issue. This
+  supersedes the wave-1 "closed only" definition.
 - `src/labels.ts` turns stored codes (audit operations, stock causes, tender
   methods, channels, integrations) into operator labels; new views must use it.
 - Printing: `printDocument`, `readPrintSettings`, `ReceiptDocument` (with
   `header`/`footer`) and `KitchenTicketDocument`/`ticketsFromLines`.
-- Receipt content from fiscal (027) and CFDI (030): call
+- Receipt content from fiscal (027) and CFDI (030): fiscal calls
   `setReceiptSlots({ header, footer })` from `src/features/Receipt.tsx` once at
-  startup. Each slot is a function of `{ order, kind, reprint, locale }`, and
-  every receipt render uses it: the receipt modal and its print, and the
-  pre-bill and reprint printed from order detail. React context cannot do this,
-  because `printDocument` renders into its own root. `ReceiptModal` also
-  forwards explicit `header`/`footer` props.
+  startup (`installFiscalReceipt()`, the only caller); CFDI adds its block with
+  fiscal's `setFiscalFooterExtra`. Each slot is a function of
+  `{ order, kind, reprint, locale }`, and every receipt render uses it: the
+  receipt modal and its print, and the pre-bill and reprint printed from order
+  detail. React context cannot do this, because `printDocument` renders into
+  its own root. `ReceiptModal` also forwards explicit `header`/`footer` props.
+  Printed comprobantes use `locale="es"` (D10); `ReceiptModal` takes
+  `printLabel`/`printLabelHint` for a Spanish twin of a UI-language label.
 - `tenderMethodLabel` labels only `cash` and `external`; any other method shows
   "Otro método de pago" until its area adds a label.
 - Component slots: `Kitchen.beforeTickets`, `Tables.onEditTables`,

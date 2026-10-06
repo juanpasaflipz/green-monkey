@@ -13,6 +13,7 @@ This application is under implementation and is not approved for live service.
 9. Owners/managers can refund recorded cash from order history, with a reason and disposition. This initial workflow never automatically returns prepared food to inventory.
 10. Receive stock, log preparation or waste, and review movements under inventory. A count uses a stock version; concurrent movements require refreshing the count before adjustment.
 11. Closing cash records expected amount, counted amount, and discrepancy explanation. Refunds, tips and paid-outs are included.
+12. Fiscal (Mexico): the owner fills **Configuración → Datos fiscales** (RFC, razón social, régimen, C.P.; the fictional SAT test RFC `EKU9003173C9` locally). Every settled sale then gets a ticket with a consecutive folio, printed in Spanish with the IVA breakdown; **Registro de tickets** lists them, shows the IVA summary and downloads the accountant's CSV. Missing tickets, the `FISCAL_TICKETS_ENABLED` kill switch, series changes and the border-incentive expiry are in the [fiscal runbook](FISCAL.md#runbook).
 
 ## Offline
 

@@ -169,7 +169,7 @@ What this does and does not guarantee about charging twice, or too little:
 #### Rounds on paid or ticketed checks
 
 A check with no balance left (dine-in "Pagada · por liberar", a closed check, and
-after fiscal merges, a check with a numbered ticket) takes no offline round. The
+since fiscal 027 any check with a numbered ticket) takes no offline round. The
 device refuses it with "Esta cuenta ya está pagada. Envía lo nuevo como orden nueva
 para la misma mesa." (`offline_check_paid`) and offers **Enviar como orden nueva**,
 which saves the items as a new local order for the same table, mode and name. The
@@ -212,6 +212,18 @@ asigna al sincronizar."; once the server has numbered it, receipts, the cart
 heading, the open-orders list and the Sync screen show "B-07 → #142" and never the
 provisional hint, and `Order.offline` keeps the provisional number and the sale
 time for reprints.
+
+A provisional number is never a fiscal folio (LD-12). The local receipt prints the
+issuer data from the fiscal context cached on the device (Dexie
+`{tenantId}:fiscal-context`, refreshed at every sign-in) and "Folio fiscal
+pendiente: se asigna al sincronizar." The server assigns the consecutive folio
+when the sale syncs (or when a manager reconciles it), with the sale's business
+date; order history and reprints then show "Folio …" ([FISCAL.md](FISCAL.md)).
+Printed receipts are always in Spanish, including the "Número provisional" label,
+whatever the device language. Records never carry tax: the device's tax snapshot
+is dropped from the receipt snapshot, and the server re-prices lines with its own
+fiscal context at sync. Changing a product's tax bumps its version, so queued
+offline sales of that product go to manager review (`offline_catalog_changed`).
 
 ## Kitchen during and after an outage
 
@@ -360,14 +372,14 @@ offline prefix and archive advisory locks, which are config paths only, and the
 catalog `FOR SHARE` of `verifyLines`), `order_numbers`, `orders` (several sorted
 by id), `rounds`, `line_voids`, `stock_items` (all at once through
 `lockStockItems`), `kitchen_feed_versions`, then the drawer (`cash_sessions`)
-and, from 027, the fiscal folio counter last.
+and the fiscal folio counter (027) last.
 
 A sale takes order numbers → order → stock → rounds → feed inside `createOrder`,
 then `recordPayment` locks its own new order and the drawer, and the ledger row
 is written. One sanctioned exception remains (ARCHITECTURE E4): sale, order and
 round sync then place the rounds they just created in kitchen review
-(`placeRoundsInOfflineReview`) after the drawer and, from 027, after the folio
-counter. Only rows inserted by the same transaction are updated, so no other
+(`placeRoundsInOfflineReview`) after the drawer and after the fiscal folio
+counter (027; LD-15 fiscal Q4). Only rows inserted by the same transaction are updated, so no other
 transaction can hold or wait for them; reordering is blocked by the foreign key
 to `offline_sync_records`, whose ledger row needs the tender id first. Every
 other offline path follows the order: a payment takes the order, then the
@@ -432,7 +444,9 @@ On the Sync screen a manager can:
   **Marcar como registrado** instead of reconcile or archive.
 - **Conciliar** authentic cash or terminal sales: the money is recorded once in the
   original drawer (even if closed) as a financial-only recovery order, with kitchen
-  and stock follow-up tasks. A reconciled payment of a table check goes into its
+  and stock follow-up tasks, and gets a fiscal ticket (source `recovery`: one line
+  "Venta sin conexión conciliada" at the restaurant's default tax, issued by the
+  reconciling manager). A reconciled payment of a table check goes into its
   order (see "Table service offline"); the device stores the tender the reconcile
   made, so offline balances count it once.
 - A sale whose online create had already committed (its response was lost) and

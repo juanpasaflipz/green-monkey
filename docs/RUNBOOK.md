@@ -188,7 +188,13 @@ commits. A production deploy that first carries a migration locking a hot
 table runs **before 07:00** Mexico City, ahead of breakfast service: cfdi's
 030 ends with the `jobs` discovery policy and a non-concurrent index on
 `jobs`, and every order and payment inserts into `jobs`, so those inserts
-wait while the index builds (platform P-27, LD-8).
+wait while the index builds (platform P-27, LD-8). Fiscal's 027 belongs in
+the same window: its foreign keys to `orders`, `restaurants`, `employees`,
+`devices` and `refunds` and its `BEFORE INSERT` trigger on `order_lines` take
+`SHARE ROW EXCLUSIVE` on those tables until 027 commits, so sales wait for it
+(bounded by its `SET LOCAL lock_timeout = '5s'`). The fiscal operations
+(missing tickets, kill switch, series, border incentive) are in
+[FISCAL.md](FISCAL.md#runbook).
 
 ## Credential rotation
 

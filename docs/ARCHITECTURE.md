@@ -51,7 +51,7 @@ Keep transactions short. Authenticate and resolve necessary context, then open t
 | Owner insight | report projections/views, targets, scenario assumptions, alerts and resolutions, report runs |
 | Supporting | jobs/outbox, print jobs, audit events, source mappings, import batches/rows/reconciliation, integration credentials |
 
-Choose IDs consistently; UUIDs are a good new-domain default, with source IDs preserved separately. Orders/lines/tenders need immutable identities independent of receipt numbers. Daily receipt/order numbering is generated atomically per restaurant/business date, never from an unlocked `MAX + 1`. Do not promise legally gapless numbering without an established requirement.
+Choose IDs consistently; UUIDs are a good new-domain default, with source IDs preserved separately. Orders/lines/tenders need immutable identities independent of receipt numbers. Daily receipt/order numbering is generated atomically per restaurant/business date, never from an unlocked `MAX + 1`; the daily call number ("#42") keeps resetting each business day and keeps its kitchen role. The fiscal folio is a separate scheme (fiscal 027, [FISCAL.md](FISCAL.md)): tenant-wide per optional series, consecutive and gapless by design because RMF rule 2.7.1.21 requires a consecutive folio on the comprobante simplificado. It comes from a row-locked counter (`fiscal_folio_counters`, not a sequence, so a rollback restores it), a deferred trigger refuses to commit a counter value without its ticket, and `UNIQUE(tenant_id, series, number)` blocks duplicates.
 
 ## Separate state machines
 
@@ -89,7 +89,7 @@ Lock the order/split balance while applying successful money movements. Tips, fe
 
 ## Money, tax, and reporting definitions
 
-Store payable values in integer minor units with a currency field and safe-range checks. Parse decimal inputs deliberately. Recipe quantities/yields use explicit decimal precision and unit conversions. Calculate tax according to verified configured rules; preserve tax-inclusive/exclusive settings and line snapshots. Do not scatter a fixed tax rate through UI components.
+Store payable values in integer minor units with a currency field and safe-range checks. Parse decimal inputs deliberately. Recipe quantities/yields use explicit decimal precision and unit conversions. Calculate tax according to verified configured rules; preserve tax-inclusive/exclusive settings and line snapshots. Do not scatter a fixed tax rate through UI components. As built (fiscal 027): every menu price includes IVA; `shared/tax.ts` holds the categories, SAT codes and the exact integer extraction, `quote()` stores an immutable per-line snapshot with the server's fiscal context, and `shared/fiscal.ts` builds each ticket's per-category base and IVA, which reconcile to `orders.total` (checked by the database).
 
 Tax/invoice requirements must be verified with current provider and applicable official documentation before live use. A source README is not compliance evidence.
 
@@ -169,34 +169,34 @@ Every command that locks rows takes its locks **in this order**, skipping the le
 - **E3 (LD-11 MENU-INT-5).** `voidLines` with stock return locks stock rows (LO-9) before each line's round row (LO-7). Rounds are only ever locked under their order's LO-5 lock, which the void already holds. Permanent ratchet entry `voidLines:D`.
 - **E4 (LD-14 OQ-3, LD-15 fiscal Q4).** Offline sale, order and round sync (`applySale`, `appliers.order`, `appliers.round`) update `rounds` (`placeRoundsInOfflineReview`) after the drawer and, from 027, after the folio counter. Only rows inserted by the same transaction are touched, so no other transaction can hold or wait for them; the reorder is blocked by the foreign key to `offline_sync_records`, whose ledger row needs the tender id first.
 
-**Per-command sequences** (`[12]` means "only once 027 adds issuance"; `refresh` is `refreshCheckState`):
+**Per-command sequences** (`[12]` means "only when the command settles the check and issues its fiscal ticket" (027); `refresh` is `refreshCheckState`):
 
 | # | Command (file) | Sequence | Status |
 | --- | --- | --- | --- |
-| 1 | `createOrder` (`server/orders.ts`) | 1 → 2 → 3 (tables, E1) → 4 → 5 (new row) → 9 (`append`) → 7 (new rounds) → jobs insert → refresh → 10 | **Reordered at fiscal's merge** to `… 9 → 7 → 10 → refresh` (it can never issue: nothing is paid). Ratchet entries `createOrder:A`, `createOrder:C` until then. |
+| 1 | `createOrder` (`server/orders.ts`) | 1 → 2 → 3 (tables, E1) → 4 → 5 (new row) → 9 (`append`) → 7 (new rounds) → jobs insert → 10 → refresh | Conforms since fiscal's merge (feed before refresh; it can never issue: nothing is paid). |
 | 2 | `addRound`; offline `appliers.round` (`server/offline-tables.ts`) | 1 → 2 → 5 → 9 → 7 (new) → refresh (cannot issue) → 10 / 1 → 2 → 3 (catalog) → 5 → 9 → 7 (new) → refresh → 7 (review, E4), no feed | Conforms. A check gets its ticket at open→paid and takes no rounds afterwards (LD-15 fiscal Q2). |
 | 3 | `recordPayment` | 1 → 2 → 5 → 11 → refresh [12] | Conforms. |
 | 4 | `recordSettlement` (`server/checks.ts`) | 1 → 2 → 5 (all, sorted) → per order: 1′ (fresh key) → 11 → [12] | Conforms (LO-R5). |
-| 5 | `closeCheck` | 1 → 2 → 5 → `close()` [12] | Conforms. Fiscal adds issuance before the close. |
-| 6 | `voidLines` (`server/voids.ts`) | 1 → 2 → 5 → 5a → 9 (stock return only) → per line 7 → 8 → 9 (re-lock) → refresh → 10 | **Reordered at fiscal's merge** to `… → 10 → refresh [12]`. Ratchet entries `voidLines:A`, `voidLines:C` until then; `voidLines:D` is E3 (permanent). |
+| 5 | `closeCheck` | 1 → 2 → 5 → 12 (`issueDueTicket`: returns the existing ticket without the counter, or issues a missing one) → `close()` | Conforms. |
+| 6 | `voidLines` (`server/voids.ts`) | 1 → 2 → 5 → 5a → 9 (stock return only) → per line 7 → 8 → 9 (re-lock) → 10 → refresh [12] | Conforms since fiscal's merge (the golden tail); `voidLines:D` is E3 (permanent). |
 | 7 | `acknowledgeVoids` | 1 → 2 → 5 → 7 → 10 | Conforms. |
-| 8 | `assignService` (`server/service.ts`) | 1 → 2 → 5 → 5a → 3 (tables, E2) → refresh → 10 | **Reordered at fiscal's merge** to `… → 10 → refresh [12]`. Ratchet entries `assignService:A`, `assignService:C` until then. |
+| 8 | `assignService` (`server/service.ts`) | 1 → 2 → 5 → 5a → 3 (tables, E2) → 10 → refresh [12] | Conforms since fiscal's merge. |
 | 9 | `progressPreparation` (`server/service.ts`); `recallRound` (`server/kitchen.ts`) | 1 → 2 → 5 → 7 → 10 | Conforms. |
 | 10 | `clearStaleRounds` | 1 → 2 → 5 (sorted) → 7 → 10 | Conforms. |
 | 11 | `updateOrderNote` | 1 → 2 → 5 → 10 | Conforms. |
-| 12 | Legacy `refund` (`server/operations.ts`) | 1 → 2 → 6 → 11 (+ fiscal `recordRefundTax` inserts) | Conforms. Replaced by discounts' `recordRefund` at 028. |
+| 12 | Legacy `refund` (`server/operations.ts`) | 1 → 2 → 5 (the tender's order, LD-15 fiscal Q3) → 6 → 11 → fiscal `recordRefundTax` inserts | Conforms. Replaced by discounts' `recordRefund` at 028, which keeps the order lock. |
 | 13 | `closeCash`, `recordPaidOut`, `/cash/open` | 1 → 2 → (3: account's `autoAssignFreeSlots`) → 11 | Conforms. |
 | 14 | Stock adjust, prep, receiving | 1 → 2 → 9 | Conforms. |
 | 15 | Offline sale sync (`syncOfflineRecord` → `applySale`; `appliers.order`) | 1 (record) → 2 → 3 (catalog) → `createOrder`: 1′ (order key) → 3 (tables, E1) → 4 → 5 → 9 → 7 → refresh → 10 → `newTender`: 1″ (fresh) → 11 → refresh [12] → ledger insert → 7 (review, E4) | Conforms with E1 and E4 (LO-R5, LO-R6). |
 | 16 | Offline payment: `appliers.payment`; `reconcilers.payment` → `reconcileIntoOrder`; `reconcileSale` (`server/offline-tables.ts`, `server/offline-sync.ts`) | 1 → 2 → 5 (`moneyTarget`) → 1′ (fresh, `newTender`) → 11 → refresh [12] → refresh / 1 → 2 → 5 → 11 → refresh [12] / 1 → 2 → 1′ (draft's order key) → 5 → 11 → refresh [12] | Conforms. |
-| 17 | `financialRecovery` (`server/offline-sync.ts`) | 1 → 2 → 1′ (order key, when the record has an order) → 4 → 5 (new) → 11; [12] only when fiscal adds "recovery" issuance | Conforms. |
+| 17 | `financialRecovery` (`server/offline-sync.ts`) | 1 → 2 → 1′ (order key, when the record has an order) → 4 → 5 (new) → 11 → 12 (`issueDueTicket(…, "recovery")`) | Conforms. |
 | 18 | Offline kitchen decision (`server/offline-kitchen.ts`) | 1 → 2 → 5 → 7 (round + review) → 10 | Conforms. |
 | 19 | `saveSettings` (`server/restaurant.ts`); `saveOfflineSettings` (`server/offline-settings.ts`) | 1 (`once()` skips `FOR SHARE`) → 2 `FOR UPDATE` / 2 `FOR UPDATE` without `once()` (deliberate, LD-7) | Conforms. |
 | 20 | Menu, floor and stock-item configuration saves | 1 → 2 → 3 (internal order as in LO-3) → (9 for stock items) | Conforms. |
 | 21 | `saveNegativeStockPolicy` (`server/stock-items.ts`) | 1 (`once()` skips `FOR SHARE`) → 2 `FOR UPDATE` → update | Conforms since Wave 2.0 (it used to upgrade SHARE→UPDATE: D20, P-18). |
 | 22 | `resolvePaymentAttempt` (`server/offline-attempts.ts`) | 1 → 2 → 1′ (the attempt's payment key) → 5 → 11 → refresh [12] | Conforms (LO-R5). |
 | 23 | `resolveOfflineRecoveryTask` (`server/offline-sync.ts`); `recordPrint` (`server/checks.ts`) | 1 → 2 → 5 → task row / no locks | Conforms. |
-| 24 | fiscal `saveFiscalProfile` / `repairMissingTickets` | 1 → 2 → 3 (`fiscal.profile`, then the profile row) / 1 → 2 → 5 (sorted) → 12 | As specified in fiscal's spec. |
+| 24 | fiscal `saveFiscalProfile` / `repairMissingTickets` (`server/fiscal.ts`) | 1 → 2 → 3 (`fiscal.profile`, then the profile row) / 1 → 2 → 5 (all candidates, one statement sorted by id) → 12 per ticket | Conforms (fiscal DB "lock order", "repair"). |
 | 25 | discounts `applyDiscount` / `reverseDiscount` | 1 → 2 → 5 → 5a → 8 → [refresh → 12] / 1 → 2 → 5 → 5a → 8 | As specified in discounts' spec. |
 | 26 | discounts `recordRefund`: items / amount | 1 → 2 → 5 → 5a → 6 → 7 → 9 → 10 (kitchen cancel) → 11 / 1 → 2 → 5 → 6 → 11 | As specified; never calls `refresh`. |
 | 27 | discounts `saveMoneyControls`; `closeCash`/`closeDrawerRow`/`reviewDrawer` | 1 → 2 → 3 / 1 → 2 → 11 | As specified. |
@@ -204,4 +204,4 @@ Every command that locks rows takes its locks **in this order**, skipping the le
 | 29 | cfdi `POST /cfdi/invoices`, settings; `cfdi_global` builder (worker) | 1 → 2 → 3 (per-ticket keys sorted, then document keys) → `cfdi_*` rows / 3 (per-period key) → `cfdi_*` rows | As specified; cfdi never locks orders, the drawer or the folio. |
 | 30 | account support CLI unlock, owner seat changes | Own transactions on `employees` and `pin_throttles` (LO-R7) | As specified. |
 
-**Verification.** `tests/lock-order.test.ts` parses every `server/**/*.ts` with the TypeScript compiler API and checks four rules per command (top-level functions, `X.y = <function>` appliers and route registrations): A, every refresh/issue after the first feed; B, the first drawer lock after the last feed; C, no feed, drawer or stock after the first refresh/issue; D, no `rounds … FOR UPDATE` after the first stock lock. Its allowlist is keyed by (command, rule): `createOrder`, `voidLines` and `assignService` A and C, which fiscal deletes in the commit that reorders them, and the permanent `voidLines:D` (E3). An entry that no longer violates fails the test. The scan sees direct calls only; indirect sequences such as offline sync through `createOrder` and `recordPayment` are covered by fiscal DB test 28 and discounts DB test 22.
+**Verification.** `tests/lock-order.test.ts` parses every `server/**/*.ts` with the TypeScript compiler API and checks four rules per command (top-level functions, `X.y = <function>` appliers and route registrations): A, every refresh/issue after the first feed; B, the first drawer lock after the last feed; C, no feed, drawer or stock after the first refresh/issue; D, no `rounds … FOR UPDATE` after the first stock lock. Its allowlist is keyed by (command, rule) and holds only the permanent `voidLines:D` (E3); fiscal deleted the `createOrder`, `voidLines` and `assignService` A and C entries in the commit that reordered them. An entry that no longer violates fails the test. The scan sees direct calls only; indirect sequences such as offline sync through `createOrder` and `recordPayment` are covered by fiscal DB test "lock order" (`tests/fiscal-db.ts`, 50 rounds of offline sync, a settling void, a settling reassignment, a payment and a void with stock return) and discounts DB test 22.
