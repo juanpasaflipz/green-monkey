@@ -22,6 +22,11 @@ import { fill } from "../menu/format";
 import { LinkRevealDialog } from "./LinkRevealDialog";
 import { shortDate, shortDateTime } from "./TableQrDialog";
 import { refreshPublicInbox } from "./usePublicInbox";
+import {
+  PrivacyNoticeWarning,
+  focusRestaurantPrivacy,
+  useRestaurantPrivacyMissing,
+} from "./PrivacyNoticeWarning";
 import "./public.css";
 
 const OPERATORS = ["owner", "manager", "cashier", "server"];
@@ -89,6 +94,9 @@ export function PublicOrderingSettings({
   useEffect(() => {
     void load();
   }, []);
+  const privacyMissing = useRestaurantPrivacyMissing(
+    !!view?.available && !!view.pro && !!view.canEdit,
+  );
   if (!operator || !view || !view.available) return null;
 
   async function run(fn: () => Promise<void>) {
@@ -350,6 +358,12 @@ export function PublicOrderingSettings({
           )}
           {view.canEdit && (
             <>
+              {privacyMissing && (
+                <PrivacyNoticeWarning
+                  locale={locale}
+                  onOpen={() => focusRestaurantPrivacy()}
+                />
+              )}
               {linkList("kiosk")}
               {linkList("counter")}
             </>

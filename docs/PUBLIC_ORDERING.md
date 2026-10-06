@@ -259,6 +259,19 @@ deactivation), pausing and plain accepting.
     **Desactivar**. Both confirm in a dialog ("Sí, desactivar Ventanilla").
     **Agregar kiosco** / **Agregar código para llevar** opens the one-time
     reveal.
+- **The restaurant's privacy notice** (PUBLIC-SECURITY-4, LD-41). Under
+  LFPDPPP the restaurant is the controller and must make its notice available
+  before diners type a name, and since B4 QR and kiosk ordering is on for
+  every Pro restaurant. While account's restaurant privacy URL is empty
+  (managers can read it), the settings panel (above the code lists) and the
+  **Código QR** and **Códigos QR de mesas** dialogs warn: "Tu restaurante aún
+  no tiene un aviso de privacidad. Los clientes pueden escribir su nombre al
+  pedir: agrega el enlace a tu aviso antes de imprimir o compartir códigos."
+  **Agregar aviso de privacidad** focuses account's URL field in
+  Configuración → Privacidad y datos (from Mesas it opens Configuración
+  first). Saving or removing the URL updates the warnings at once
+  (`gm-restaurant-privacy`). It only warns: hiding the diner's name field
+  without a notice is the lead's call (account.md).
 - **Órdenes inbox.**
   - It appears at the top of Órdenes while a link is active or orders wait.
     It also stays while it still owns something: an outcome notice, a

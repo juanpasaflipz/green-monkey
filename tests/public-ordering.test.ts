@@ -30,6 +30,11 @@ import { HoldCard } from "../src/features/public/HoldCard";
 import { PublicInboxBanner } from "../src/features/public/PublicInboxBanner";
 import { KioskDone } from "../src/features/public/KioskDone";
 import { DinerStatus } from "../src/features/public/DinerStatus";
+import {
+  PrivacyNoticeWarning,
+  RESTAURANT_PRIVACY_EVENT,
+  RESTAURANT_PRIVACY_FIELD,
+} from "../src/features/public/PrivacyNoticeWarning";
 import { moneyFormatter as menuMoney } from "../src/features/menu/format";
 
 // Receipt.tsx (service's staff money formatter) imports the offline store.
@@ -554,6 +559,43 @@ describe("public ordering tokens and schemas (032)", () => {
       }
     // summary, inbox and its expired count, submit's caps, links, occupancy, floor
     expect(live).toBe(8);
+  });
+});
+
+describe("restaurant privacy notice warning (PUBLIC-SECURITY-4, LD-41)", () => {
+  const warning =
+    "Tu restaurante aún no tiene un aviso de privacidad. Los clientes pueden escribir su nombre al pedir: agrega el enlace a tu aviso antes de imprimir o compartir códigos.";
+  it("the warning says what to do and offers the way to the privacy panel when there is one", () => {
+    const html = renderToStaticMarkup(
+      createElement(PrivacyNoticeWarning, { locale: "es", onOpen: () => {} }),
+    );
+    expect(html).toContain(warning);
+    expect(html).toContain('role="note"');
+    expect(html).toContain("Agregar aviso de privacidad");
+    expect(
+      renderToStaticMarkup(
+        createElement(PrivacyNoticeWarning, { locale: "es" }),
+      ),
+    ).not.toContain("Agregar aviso de privacidad");
+    expect(
+      renderToStaticMarkup(
+        createElement(PrivacyNoticeWarning, { locale: "en" }),
+      ),
+    ).toContain("Your restaurant has no privacy notice yet.");
+  });
+  it("the settings panel and both table QR dialogs render it; account's privacy panel fires the event and carries the field id", () => {
+    const read = (path: string) => readFileSync(path, "utf8");
+    for (const file of [
+      "src/features/public/PublicOrderingSettings.tsx",
+      "src/features/public/TableQrDialog.tsx",
+      "src/features/public/TableQrBulkDialog.tsx",
+    ])
+      expect(read(file), file).toMatch(
+        /privacyMissing && \(\s*<PrivacyNoticeWarning/,
+      );
+    const panel = read("src/features/AccountPrivacy.tsx");
+    expect(panel).toContain(`new Event("${RESTAURANT_PRIVACY_EVENT}")`);
+    expect(panel).toContain(`id="${RESTAURANT_PRIVACY_FIELD}"`);
   });
 });
 

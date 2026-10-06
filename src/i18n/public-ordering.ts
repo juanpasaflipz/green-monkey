@@ -57,6 +57,9 @@ export default defineArea({
     publicFolio: "Folio {folio}",
     publicInvoiceLink: "¿Necesitas factura? Factura tu consumo",
     publicInvoiceAskStaff: "Pide tu factura con tu ticket impreso o en caja.",
+    publicPrivacyMissing:
+      "Tu restaurante aún no tiene un aviso de privacidad. Los clientes pueden escribir su nombre al pedir: agrega el enlace a tu aviso antes de imprimir o compartir códigos.",
+    publicPrivacyMissingAction: "Agregar aviso de privacidad",
     publicExcluded: "No se incluyó: {items}",
     publicStatusRejected: "El personal no pudo aceptar tu pedido.",
     publicReasonUnavailableDiner: "Algún producto no está disponible.",
@@ -296,6 +299,9 @@ export default defineArea({
     publicInvoiceLink: "Need an invoice? Invoice your purchase",
     publicInvoiceAskStaff:
       "Ask for your invoice with your printed receipt or at the counter.",
+    publicPrivacyMissing:
+      "Your restaurant has no privacy notice yet. Diners can type their name when ordering: add the link to your notice before printing or sharing codes.",
+    publicPrivacyMissingAction: "Add privacy notice",
     publicExcluded: "Not included: {items}",
     publicStatusRejected: "The staff could not accept your order.",
     publicReasonUnavailableDiner: "An item is unavailable.",

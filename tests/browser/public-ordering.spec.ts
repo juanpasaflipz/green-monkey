@@ -167,6 +167,9 @@ class Fixture {
         errors.push(e);
       }
     };
+    // A test that failed while it routed the API must not route its own
+    // cleanup (a mocked inbox read would leave its holds pending).
+    await step(() => this.page.unrouteAll({ behavior: "ignoreErrors" }));
     // A test may have switched this page to the cashier: clean up as the owner.
     await step(async () => {
       const who = await call(this.page, "/session").catch(() => null);
@@ -329,6 +332,11 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     const dialog = page.getByRole("dialog", {
       name: `Código QR de ${mesa.name}`,
     });
+    // PUBLIC-SECURITY-4: no restaurant notice yet, so the dialog warns
+    // before the code is created.
+    await expect(dialog.getByRole("note")).toContainText(
+      "Tu restaurante aún no tiene un aviso de privacidad.",
+    );
     await dialog.getByRole("button", { name: "Crear código QR" }).click();
     const qr = dialog.locator('svg[role="img"]');
     await expect(qr).toBeVisible();
@@ -542,6 +550,64 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     await expect(
       customer.getByRole("link", { name: /Factura tu consumo/ }),
     ).toHaveCount(0);
+  });
+});
+
+test("privacy notice warning: without the restaurant's notice the settings panel and the table QR dialog warn before codes are made and lead to the privacy field; saving a notice clears it (PUBLIC-SECURITY-4)", async ({
+  page,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const [mesa] = await f.makeTables(1);
+    await f.setPrivacy(null);
+    const warning = "Tu restaurante aún no tiene un aviso de privacidad.";
+    const field = page.getByLabel(
+      "Enlace al aviso de privacidad de tu restaurante",
+      { exact: true },
+    );
+    await page
+      .getByRole("button", { name: "Configuración", exact: true })
+      .click();
+    const panel = page.locator(".public-settings");
+    await expect(panel.getByRole("note")).toContainText(warning);
+    await panel
+      .getByRole("button", { name: "Agregar aviso de privacidad", exact: true })
+      .click();
+    await expect(field).toBeFocused();
+    await axe(page);
+    await field.fill("https://casa-del-bosque.mx/privacidad");
+    await page
+      .getByRole("button", { name: "Guardar enlace", exact: true })
+      .click();
+    await expect(panel.getByRole("note")).toHaveCount(0);
+    const openQr = async () => {
+      await page
+        .getByRole("button", { name: "Menú e inventario", exact: true })
+        .click();
+      await page.getByRole("button", { name: "Mesas", exact: true }).click();
+      await page
+        .getByRole("button", { name: `Código QR de ${mesa.name}`, exact: true })
+        .click();
+      return page.getByRole("dialog", { name: `Código QR de ${mesa.name}` });
+    };
+    let dialog = await openQr();
+    await expect(
+      dialog.getByRole("button", { name: "Crear código QR" }),
+    ).toBeVisible();
+    await expect(dialog.getByRole("note")).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Cerrar" }).click();
+    // The notice is removed again: Mesas warns and leads to Configuración.
+    await f.setPrivacy(null);
+    await page
+      .getByRole("button", { name: "Configuración", exact: true })
+      .click();
+    dialog = await openQr();
+    await expect(dialog.getByRole("note")).toContainText(warning);
+    await dialog
+      .getByRole("button", { name: "Agregar aviso de privacidad", exact: true })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    await expect(field).toBeFocused();
   });
 });
 

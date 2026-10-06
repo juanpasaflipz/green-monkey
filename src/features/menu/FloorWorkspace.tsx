@@ -22,6 +22,10 @@ import type {
 } from "../../../shared/public-ordering";
 import { TableQrDialog, shortDate } from "../public/TableQrDialog";
 import { TableQrBulkDialog } from "../public/TableQrBulkDialog";
+import {
+  focusRestaurantPrivacy,
+  useRestaurantPrivacyMissing,
+} from "../public/PrivacyNoticeWarning";
 
 type Floor = { areas: DiningArea[]; tables: DiningTable[] };
 type Dialog =
@@ -45,10 +49,13 @@ export function FloorWorkspace({
   session,
   locale,
   online,
+  navigate,
 }: {
   session: Session;
   locale: Locale;
   online: boolean;
+  /** Opens another view (Configuración for the privacy notice, PUBLIC-SECURITY-4). */
+  navigate?: (view: string) => void;
 }) {
   const t = translator(locale);
   const [floor, setFloor] = useState<Floor | null>(null);
@@ -62,6 +69,15 @@ export function FloorWorkspace({
   const [qr, setQr] = useState<PublicLinkView[] | null>(null);
   const [qrTable, setQrTable] = useState<DiningTable | null>(null);
   const [qrBulk, setQrBulk] = useState(false);
+  const privacyMissing = useRestaurantPrivacyMissing(qr !== null);
+  const openPrivacy = navigate
+    ? () => {
+        setQrTable(null);
+        setQrBulk(false);
+        navigate("settings");
+        focusRestaurantPrivacy();
+      }
+    : undefined;
 
   async function loadQr() {
     try {
@@ -392,6 +408,8 @@ export function FloorWorkspace({
           restaurant={session.restaurant.name}
           timezone={session.restaurant.timezone}
           locale={locale}
+          privacyMissing={privacyMissing}
+          onOpenPrivacy={openPrivacy}
           onClose={() => setQrTable(null)}
           onChanged={() => void loadQr()}
         />
@@ -402,6 +420,8 @@ export function FloorWorkspace({
           links={qr}
           restaurant={session.restaurant.name}
           locale={locale}
+          privacyMissing={privacyMissing}
+          onOpenPrivacy={openPrivacy}
           onClose={() => setQrBulk(false)}
           onChanged={() => void loadQr()}
         />

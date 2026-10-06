@@ -11,6 +11,7 @@ import { fill } from "../menu/format";
 import { QrCard } from "./QrCard";
 import { RevealControls, linkUrl } from "./LinkRevealDialog";
 import { refreshPublicInbox } from "./usePublicInbox";
+import { PrivacyNoticeWarning } from "./PrivacyNoticeWarning";
 
 export function shortDate(iso: string, locale: Locale, timezone: string) {
   return new Intl.DateTimeFormat(locale === "es" ? "es-MX" : "en-US", {
@@ -40,6 +41,8 @@ export function TableQrDialog({
   restaurant,
   timezone,
   locale,
+  privacyMissing = false,
+  onOpenPrivacy,
   onClose,
   onChanged,
 }: {
@@ -48,6 +51,9 @@ export function TableQrDialog({
   restaurant: string;
   timezone: string;
   locale: Locale;
+  /** The restaurant has no privacy notice yet (PUBLIC-SECURITY-4). */
+  privacyMissing?: boolean;
+  onOpenPrivacy?: () => void;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -102,6 +108,9 @@ export function TableQrDialog({
       closeLabel={t("close")}
       wide
     >
+      {privacyMissing && (
+        <PrivacyNoticeWarning locale={locale} onOpen={onOpenPrivacy} />
+      )}
       {revealed ? (
         <>
           <p className="warning-panel">{t("publicRevealOnce")}</p>

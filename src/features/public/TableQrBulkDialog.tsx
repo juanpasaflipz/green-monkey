@@ -11,6 +11,7 @@ import { Button, Modal } from "../../components/ui";
 import { fill } from "../menu/format";
 import { printCards } from "./LinkRevealDialog";
 import { refreshPublicInbox } from "./usePublicInbox";
+import { PrivacyNoticeWarning } from "./PrivacyNoticeWarning";
 
 /**
  * "Códigos QR de mesas": create (and with the option, replace) the codes of
@@ -21,6 +22,8 @@ export function TableQrBulkDialog({
   links,
   restaurant,
   locale,
+  privacyMissing = false,
+  onOpenPrivacy,
   onClose,
   onChanged,
 }: {
@@ -28,6 +31,9 @@ export function TableQrBulkDialog({
   links: PublicLinkView[];
   restaurant: string;
   locale: Locale;
+  /** The restaurant has no privacy notice yet (PUBLIC-SECURITY-4). */
+  privacyMissing?: boolean;
+  onOpenPrivacy?: () => void;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -101,6 +107,9 @@ export function TableQrBulkDialog({
         )
       }
     >
+      {privacyMissing && (
+        <PrivacyNoticeWarning locale={locale} onOpen={onOpenPrivacy} />
+      )}
       {result ? (
         <>
           <p className="warning-panel">{t("publicRevealOnce")}</p>
