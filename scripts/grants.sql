@@ -86,9 +86,11 @@ GRANT SELECT ON restaurants, orders, tenders, refunds TO gm_jobs_worker;
 -- restaurants' owner_restaurant_read policy looks up owner_memberships, so reading restaurants
 -- needs SELECT there too; its FORCE RLS membership_read policy shows no row without app.account_id.
 GRANT SELECT ON owner_memberships TO gm_jobs_worker;
--- Fiscal 027 and discounts 028 tables the worker reads (wave2-cross-track C26): ticketForCfdi
--- (server/fiscal-read.ts) reads the ticket, its taxes and the order's adjustments; the egreso
--- payment form comes from 028's refunds.method and the refund day from refund_batches.
+-- Fiscal 027 and discounts 028 tables (wave2-cross-track C26): ticketForCfdi
+-- (server/fiscal-read.ts) reads the ticket, its taxes and the order's adjustments, fiscalFacts the
+-- profile, and the egreso payment form comes from 028's refunds.method (granted above). No worker
+-- statement reads refund_batches today; it is granted with refunds so a refund read that joins
+-- its batch never fails on a privilege.
 GRANT SELECT ON restaurant_fiscal_profiles, fiscal_tickets, fiscal_ticket_taxes, fiscal_adjustments,
   refund_batches TO gm_jobs_worker;
 GRANT SELECT, INSERT, UPDATE ON cfdi_platform TO gm_jobs_worker;
