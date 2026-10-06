@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 // Fiscal (027) browser checks. Every spec shares the demo tenant and its fiscal profile is
 // tenant-wide: this spec only ever saves the general region (IVA 16%), an empty series and the
@@ -147,6 +148,9 @@ async function sell(page: Page) {
   await page.getByRole("button", { name: "Operación", exact: true }).click();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test("owner completes the fiscal profile: invalid RFC and regime mismatch show inline errors, then saves (FIT-6)", async ({
   page,

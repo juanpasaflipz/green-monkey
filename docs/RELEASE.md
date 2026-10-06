@@ -39,10 +39,10 @@ Dockerfile is built with a stamped commit and the container must pass
 
 The browser suite is written to run again on a database it already ran
 against (W3-2, LD-42): `tests/browser/kitchen-hygiene.ts` delivers, as the
-demo owner, every kitchen round a test in the KDS-heavy specs (kitchen,
-reports, service, voids, core, discounts, menu) opened, and
-`tests/browser/global-setup.ts` delivers the rounds earlier runs left open on
-the demo restaurants before a run, only on the isolated local fixture
+demo owner, every kitchen round a test in the order-heavy specs (kitchen,
+reports, service, voids, core, discounts, menu, fiscal, cfdi, finance) opened,
+and `tests/browser/global-setup.ts` delivers the rounds earlier runs left open
+on the demo restaurants before a run, only on the isolated local fixture
 database. Tests find their own records by unique names or by searching (no
 "last" ticket or first register page). A reused staging database still
 accumulates the open checks, and the rounds of specs outside that list.

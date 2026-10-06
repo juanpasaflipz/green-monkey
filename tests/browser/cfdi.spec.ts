@@ -14,6 +14,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { TEST_CSD, TEST_CSD_PASSWORD } from "../fixtures/cfdi/test-csd";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21aa"];
 const RECEPTOR = {
@@ -73,6 +74,9 @@ async function noHorizontalScroll(page: Page) {
     ),
   ).toBe(true);
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test("Configuración shows the CFDI panel before activation: badge, prerequisites and intro, no button named Guardar, axe-clean at 390 px", async ({
   page,
