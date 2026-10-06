@@ -22,6 +22,7 @@ import { voidLines } from "../server/voids.js";
 import { kitchenFeed } from "../server/kitchen.js";
 import { closeCash } from "../server/operations.js";
 import { closeCheck, tableOccupancy } from "../server/checks.js";
+import { saveFiscalProfile } from "../server/fiscal.js";
 import { archiveTable, tablesWithOpenChecks } from "../server/floor.js";
 import { publicOrdering } from "../server/public-ordering.js";
 import {
@@ -60,6 +61,11 @@ import {
   sum,
   type Session,
 } from "../shared/domain.js";
+import {
+  DEFAULT_FISCAL_CONTEXT,
+  formatFolio,
+  type FiscalContext,
+} from "../shared/fiscal.js";
 import {
   HOLD_EXPIRY_GRACE_SECONDS,
   LINK_HEADER,
@@ -567,10 +573,7 @@ async function salesRows(tenantId: string) {
   ])
     out[t] = await count(tenantId, t);
   out.feed = await feedVersion(tenantId);
-  const [fiscal] =
-    await admin`select to_regclass('public.fiscal_tickets') is not null as present`;
-  if (fiscal.present)
-    out.fiscal_tickets = await count(tenantId, "fiscal_tickets");
+  out.fiscal_tickets = await count(tenantId, "fiscal_tickets");
   return out;
 }
 
@@ -1465,6 +1468,8 @@ try {
     assert.equal(after.rounds, before.rounds + 1);
     assert.equal(after.stock_movements, before.stock_movements + 1);
     assert.equal(after.feed, before.feed + 1);
+    // Nothing is paid: the check gets its fiscal ticket only when it is (027).
+    assert.equal(after.fiscal_tickets, before.fiscal_tickets);
     const [o] = await asAdmin(
       t.tenantId,
       (tx) =>
@@ -1583,6 +1588,13 @@ try {
     );
     const foreign = await pos(t.tables[1].id);
     const h2 = await insertHold(t, l);
+    // Fiscal D1 (LD-15 fiscal Q2): the paid check got its ticket when it was
+    // paid and takes no more rounds; neither does the closed one.
+    const ticketed = await run(t.s.owner, (tx) => getOrder(tx, paid.id));
+    assert.equal(ticketed.checkState, "paid");
+    assert(ticketed.fiscal?.ticket?.folio, "the paid check has its folio");
+    const ticketsBefore = await count(t.tenantId, "fiscal_tickets");
+    assert.equal(ticketsBefore, 2, "the paid and the closed check");
     for (const target of [paid, closed, foreign]) {
       const fresh = await run(t.s.owner, (tx) => getOrder(tx, target.id));
       await rejects(
@@ -1596,6 +1608,16 @@ try {
         "public_hold_target_invalid",
       );
     }
+    const unchanged = await run(t.s.owner, (tx) => getOrder(tx, paid.id));
+    assert.deepEqual(
+      [
+        unchanged.total,
+        unchanged.rounds.length,
+        unchanged.fiscal?.ticket?.folio,
+      ],
+      [ticketed.total, ticketed.rounds.length, ticketed.fiscal!.ticket!.folio],
+    );
+    assert.equal(await count(t.tenantId, "fiscal_tickets"), ticketsBefore);
     const counter = await link(t, { kind: "counter", label: "Ventanilla" });
     const h3 = await insertHold(t, { ...counter, tableId: null });
     await rejects(
@@ -1696,6 +1718,8 @@ try {
     assert.equal(noOp.n, 0);
     const override = await accept(t, holds[0].id, {}, t.s.manager);
     assert.equal(override.order.checkState, "open");
+    // Nothing is paid, so the exception issues no fiscal ticket.
+    assert.equal(override.order.fiscal?.ticket ?? null, null);
     const [o] = await asAdmin(
       t.tenantId,
       (tx) =>
@@ -1762,16 +1786,29 @@ try {
       ).length,
       1,
     );
-    const [fiscal] =
-      await admin`select to_regclass('public.fiscal_tickets') is not null as present`;
-    if (fiscal.present) {
-      const tickets = await asAdmin(
-        t.tenantId,
-        (tx) =>
-          tx`select id from fiscal_tickets where order_id=${paid.order.id}`,
-      );
-      assert.equal(tickets.length, 1, "one ticket in the accept transaction");
-    }
+    // Fiscal 027: the accept's payment settles the check, so its ticket is
+    // issued inside the accept transaction; the replay issues no second one.
+    const tickets = await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`select series,number,gross from fiscal_tickets where order_id=${paid.order.id}`,
+    );
+    assert.equal(tickets.length, 1, "one ticket in the accept transaction");
+    assert.equal(
+      paid.order.fiscal?.ticket?.folio,
+      formatFolio(tickets[0].series, Number(tickets[0].number)),
+    );
+    // B1 totals: the charged total is the ticket's gross (X26).
+    const [charged] = await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`select quoted_total,accepted_total from public_order_holds where id=${holds[1].id}`,
+    );
+    assert.deepEqual(
+      [charged.quoted_total, charged.accepted_total, tickets[0].gross],
+      [4500, 4500, 4500],
+    );
+    assert.equal(await count(t.tenantId, "fiscal_tickets"), 1);
   });
 
   await test("19. exclusions and price changes: excluded lines stay out; all or unknown exclusions refused; a new price needs the acknowledgement", async () => {
@@ -2014,6 +2051,19 @@ try {
     v = await view();
     assert.equal(v.order!.progress, "served");
     assert.deepEqual(v.order!.money, { total: 4500, paid: 4500, balance: 0 });
+    // The payment issued the check's fiscal ticket (027): the status shows its
+    // folio, as the printed ticket does; no self-invoice link while cfdi's
+    // offer is off (S3 until B2).
+    const [ticket] = await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`select series,number from fiscal_tickets where order_id=${r.order.id}`,
+    );
+    assert(ticket, "the payment issued the ticket");
+    assert.deepEqual(v.order!.fiscal, {
+      folio: formatFolio(ticket.series, Number(ticket.number)),
+      selfInvoiceCode: null,
+    });
     const b2 = await body(t, [{ productId: t.p.taco }]);
     await pub.submit(l.token, b2);
     const check = await run(t.s.server, (tx) =>
@@ -2051,8 +2101,13 @@ try {
     });
     const appended = await view(b2.statusKey);
     assert.deepEqual(
-      [appended.order!.target, appended.order!.money, appended.order!.progress],
-      ["append", null, "preparing"],
+      [
+        appended.order!.target,
+        appended.order!.money,
+        appended.order!.progress,
+        appended.order!.fiscal,
+      ],
+      ["append", null, "preparing", null],
     );
     assert.deepEqual(
       [appended.total, appended.priceChanged, appended.lines[0].total],
@@ -2194,12 +2249,19 @@ try {
             t.s.manager,
           ),
           run(t.s.manager, (tx) => rotateLink(tx, t.s.manager, mesa2.id)),
-          run(t.s.manager, (tx) =>
-            closeCash(tx, t.s.manager, {
-              operationId: op(),
-              counted: 0,
-              reason: "Cierre de prueba",
-            }),
+          // A staggered start (0-135 ms). Started with the others, the short
+          // close always closed the drawer before the pay-first accept and
+          // the sale reached it, so neither ever committed: later starts let
+          // them take the drawer and the folio counter (LO-11, LO-12) first,
+          // or meet the close on the drawer row.
+          new Promise((r) => setTimeout(r, (round % 10) * 15)).then(() =>
+            run(t.s.manager, (tx) =>
+              closeCash(tx, t.s.manager, {
+                operationId: op(),
+                counted: 0,
+                reason: "Cierre de prueba",
+              }),
+            ),
           ),
           run(t.s.manager, (tx) =>
             voidLines(
@@ -2265,9 +2327,53 @@ try {
       { ...inv },
       { overpaid: 0, lost_rounds: 0, wrong_paid: 0 },
     );
+    // Fiscal DB 28's harness (027): the folio counter advanced once per ticket
+    // and never skipped; a settled order has exactly one ticket at its total,
+    // an order with a balance due has none; and every pay-first accept's
+    // ticket is the total the accept charged (B1, X26).
+    const [folios] = await asAdmin(
+      t.tenantId,
+      (tx) => tx`select
+        (select coalesce(sum(last_value),0)::int from fiscal_folio_counters where tenant_id=${t.tenantId}) as counter,
+        (select count(*)::int from fiscal_tickets where tenant_id=${t.tenantId}) as tickets,
+        (select count(distinct (series,number))::int from fiscal_tickets where tenant_id=${t.tenantId}) as distinct_folios,
+        (select coalesce(max(number),0)::int from fiscal_tickets where tenant_id=${t.tenantId}) as top`,
+    );
+    assert(folios.tickets > 0, "the burst issued tickets");
+    assert.deepEqual(
+      [folios.counter, folios.distinct_folios, folios.top],
+      [folios.tickets, folios.tickets, folios.tickets],
+      "gapless, unique folios in the one series",
+    );
+    const [money] = await asAdmin(
+      t.tenantId,
+      (tx) => tx`select
+        (select count(*)::int from fiscal_tickets f join orders o on o.tenant_id=f.tenant_id and o.id=f.order_id
+           where f.tenant_id=${t.tenantId} and f.gross<>o.total) as wrong_gross,
+        (select count(*)::int from orders o where o.tenant_id=${t.tenantId} and o.total>0
+           and (select coalesce(sum(amount),0) from tenders x where x.order_id=o.id) >= o.total
+           and (select count(*) from fiscal_tickets f where f.order_id=o.id) <> 1) as settled_without_one,
+        (select count(*)::int from orders o where o.tenant_id=${t.tenantId}
+           and (select coalesce(sum(amount),0) from tenders x where x.order_id=o.id) < o.total
+           and exists(select 1 from fiscal_tickets f where f.order_id=o.id)) as ticketed_with_balance,
+        (select count(*)::int from public_order_holds h where h.tenant_id=${t.tenantId} and h.paid_at_accept
+           and (select count(*) from fiscal_tickets f where f.order_id=h.order_id
+                and f.gross=h.accepted_total and f.gross=h.quoted_total) <> 1) as accept_gross_mismatch,
+        (select count(*)::int from public_order_holds h where h.tenant_id=${t.tenantId} and h.paid_at_accept) as paid_accepts`,
+    );
+    assert(money.paid_accepts > 0, "some pay-first accepts committed");
+    assert.deepEqual(
+      [
+        money.wrong_gross,
+        money.settled_without_one,
+        money.ticketed_with_balance,
+        money.accept_gross_mismatch,
+      ],
+      [0, 0, 0, 0],
+    );
   });
 
-  await test("26. statement budgets: summary 1, an idle inbox 3, a busy inbox at most 5, holdStatus 2 with the Phase A stubs (<= 5 from 030)", async () => {
+  await test("26. statement budgets: summary 1, an idle inbox 3, a busy inbox at most 5, holdStatus 3 with fiscal's ticket identity and the cfdi stub (<= 5 from 030)", async () => {
     const t = await makeTenant("budget");
     let n = 0;
     const counted = postgres(url, {
@@ -2303,10 +2409,25 @@ try {
         (tx) =>
           tx`select link_id from public_order_holds where order_id=${r.order.id}`,
       );
+      // The hold, the order and fiscalTicketIdentity (027); cfdi's offer is
+      // the S3 stub (0) until B2 makes it at most 2 more (OQ-10: <= 5).
       assert.equal(
         await cost((tx) => holdStatus(tx, h.link_id, b1.statusKey)),
-        2,
+        3,
       );
+      await run(t.s.cashier, (tx) =>
+        recordPayment(tx, t.s.cashier, r.order.id, {
+          operationId: op(),
+          amount: r.order.total,
+          received: r.order.total,
+          method: "cash",
+        }),
+      );
+      const ticketed = await cost((tx) =>
+        holdStatus(tx, h.link_id, b1.statusKey),
+      );
+      assert.equal(ticketed, 3, "a ticket adds no statement");
+      assert(ticketed <= 5);
     } finally {
       await counted.end();
     }
@@ -2843,20 +2964,20 @@ try {
         tx`select policy_override,paid_at_accept from public_order_holds where operation_id=${b1.operationId}`,
     );
     assert.deepEqual([h.policy_override, h.paid_at_accept], [false, false]);
-    const [fiscal] =
-      await admin`select to_regclass('public.fiscal_tickets') is not null as present`;
-    if (fiscal.present)
-      assert.equal(
-        (
-          await asAdmin(
-            t.tenantId,
-            (tx) =>
-              tx`select id from fiscal_tickets where order_id=${r.order.id}`,
-          )
-        ).length,
-        0,
-        "a $0 order gets no fiscal ticket",
-      );
+    // M9: fiscal 027 tickets only orders.total > 0, so the closing refresh of
+    // a $0 accept never reaches LO-12.
+    assert.equal(
+      (
+        await asAdmin(
+          t.tenantId,
+          (tx) =>
+            tx`select id from fiscal_tickets where order_id=${r.order.id}`,
+        )
+      ).length,
+      0,
+      "a $0 order gets no fiscal ticket",
+    );
+    assert.equal(await count(t.tenantId, "fiscal_tickets"), 0);
   });
 
   await test("34. step-up: creating or replacing links and saving policies need a fresh PIN on terminals (Google owners on their own device pass); revoking, rejecting, pausing and accepting never ask", async () => {
@@ -3146,85 +3267,107 @@ try {
     assert.equal(ok.order.total, 5000);
   });
 
-  await test("40. an append whose target was fully paid between the unlocked read and addRound's lock is refused and rolled back (CONCURRENCY-3)", async () => {
-    const t = await makeTenant("paidrace");
-    const l = await link(t, { kind: "table", tableId: t.tables[0].id });
-    const check = await run(t.s.server, (tx) =>
-      createOrder(tx, t.s.server, {
-        operationId: op(),
-        lines: [
-          {
-            id: randomUUID(),
-            productId: t.p.taco,
-            quantity: 1,
-            options: [],
-            note: "",
-          },
-        ],
-        mode: "dine_in",
-        tableId: t.tables[0].id,
-        name: "Mesa",
-        channel: "pos",
-      }),
-    );
-    const b1 = await body(t, [{ productId: t.p.taco }]);
-    await pub.submit(l.token, b1);
-    const h = await holdOf(t, b1);
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
-    let locked!: () => void;
-    const held = new Promise<void>((r) => (locked = r));
-    const holder = admin.begin(async (tx) => {
-      await tx`select pg_advisory_xact_lock(hashtextextended(${t.tenantId + h.order_operation_id},0))`;
-      locked();
-      await gate;
-    });
-    await held;
-    const racing = accept(t, h.id, {
-      target: {
-        kind: "append",
-        orderId: check.id,
-        expectedVersion: check.version,
-      },
-    }).then(
-      () => "accepted",
-      (e: { code?: string }) => e.code ?? String(e),
-    );
-    let waiting = 0;
-    for (let i = 0; i < 200 && waiting < 1; i++) {
-      await new Promise((r) => setTimeout(r, 25));
-      const [w] = await admin`select count(*)::int as n from pg_locks
-        where locktype='advisory' and not granted
-          and database=(select oid from pg_database where datname=current_database())`;
-      waiting = w.n;
+  await test("40. an append whose target was fully paid between the unlocked read and addRound's lock is refused and rolled back, with fiscal tickets on (D1) and off (CONCURRENCY-3)", async () => {
+    // With tickets on, the payment issues the check's ticket and addRound
+    // refuses the ticketed check (fiscal D1); with the kill switch it stays
+    // unticketed and acceptHold's own guard refuses it. Same answer both ways.
+    for (const ticketsOn of [true, false]) {
+      const t = await makeTenant(ticketsOn ? "paidrace" : "paidrace-off");
+      const l = await link(t, { kind: "table", tableId: t.tables[0].id });
+      const check = await run(t.s.server, (tx) =>
+        createOrder(tx, t.s.server, {
+          operationId: op(),
+          lines: [
+            {
+              id: randomUUID(),
+              productId: t.p.taco,
+              quantity: 1,
+              options: [],
+              note: "",
+            },
+          ],
+          mode: "dine_in",
+          tableId: t.tables[0].id,
+          name: "Mesa",
+          channel: "pos",
+        }),
+      );
+      const b1 = await body(t, [{ productId: t.p.taco }]);
+      await pub.submit(l.token, b1);
+      const h = await holdOf(t, b1);
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let locked!: () => void;
+      const held = new Promise<void>((r) => (locked = r));
+      const holder = admin.begin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtextextended(${t.tenantId + h.order_operation_id},0))`;
+        locked();
+        await gate;
+      });
+      await held;
+      const racing = accept(t, h.id, {
+        target: {
+          kind: "append",
+          orderId: check.id,
+          expectedVersion: check.version,
+        },
+      }).then(
+        () => "accepted",
+        (e: { code?: string }) => e.code ?? String(e),
+      );
+      let waiting = 0;
+      for (let i = 0; i < 200 && waiting < 1; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+        const [w] = await admin`select count(*)::int as n from pg_locks
+          where locktype='advisory' and not granted
+            and database=(select oid from pg_database where datname=current_database())`;
+        waiting = w.n;
+      }
+      assert.equal(
+        waiting,
+        1,
+        "the accept read 'open' and waits before addRound",
+      );
+      const previous = process.env.FISCAL_TICKETS_ENABLED;
+      if (!ticketsOn) process.env.FISCAL_TICKETS_ENABLED = "false";
+      let paid: Awaited<ReturnType<typeof recordPayment>>;
+      try {
+        paid = await run(t.s.cashier, (tx) =>
+          recordPayment(tx, t.s.cashier, check.id, {
+            operationId: op(),
+            amount: check.total,
+            received: check.total,
+            method: "cash",
+          }),
+        );
+      } finally {
+        if (previous === undefined) delete process.env.FISCAL_TICKETS_ENABLED;
+        else process.env.FISCAL_TICKETS_ENABLED = previous;
+      }
+      assert.equal(paid.version, check.version, "a payment keeps the version");
+      assert.equal(
+        await count(t.tenantId, "fiscal_tickets"),
+        ticketsOn ? 1 : 0,
+        ticketsOn ? "the payment issued the ticket" : "the kill switch",
+      );
+      release();
+      await holder;
+      assert.equal(await racing, "public_hold_target_invalid");
+      const after = await run(t.s.owner, (tx) => getOrder(tx, check.id));
+      assert.deepEqual(
+        [after.total, after.rounds.length, after.checkState],
+        [check.total, check.rounds.length, "paid"],
+      );
+      assert.equal(
+        await count(t.tenantId, "fiscal_tickets"),
+        ticketsOn ? 1 : 0,
+      );
+      const [row] = await asAdmin(
+        t.tenantId,
+        (tx) => tx`select state from public_order_holds where id=${h.id}`,
+      );
+      assert.equal(row.state, "pending");
     }
-    assert.equal(
-      waiting,
-      1,
-      "the accept read 'open' and waits before addRound",
-    );
-    const paid = await run(t.s.cashier, (tx) =>
-      recordPayment(tx, t.s.cashier, check.id, {
-        operationId: op(),
-        amount: check.total,
-        received: check.total,
-        method: "cash",
-      }),
-    );
-    assert.equal(paid.version, check.version, "a payment keeps the version");
-    release();
-    await holder;
-    assert.equal(await racing, "public_hold_target_invalid");
-    const after = await run(t.s.owner, (tx) => getOrder(tx, check.id));
-    assert.deepEqual(
-      [after.total, after.rounds.length, after.checkState],
-      [check.total, check.rounds.length, "paid"],
-    );
-    const [row] = await asAdmin(
-      t.tenantId,
-      (tx) => tx`select state from public_order_holds where id=${h.id}`,
-    );
-    assert.equal(row.state, "pending");
   });
 
   await test("41. expiry: staff decisions stop at expires_at; the diner keeps seeing a just-expired hold as waiting for the grace (CONCURRENCY-2)", async () => {
@@ -3366,6 +3509,129 @@ try {
       .map((r: any) => r["QUERY PLAN"])
       .join("\n");
     assert.match(plan, /public_order_holds_cancelled_recent/, plan);
+  });
+
+  await test("45. B1 totals: a border restaurant with a full fiscal identity; the fiscal context never changes a hold's total, a pay-first accept's ticket gross is the total it charged, the status shows the folio, and the diner menu carries no fiscal fields (X26, C29)", async () => {
+    const t = await makeTenant("border");
+    // A complete border identity (LD-25 SAT-1: RFC, name, regime, a postal
+    // code of a border state and the branch address), as fiscal's own suite.
+    await run(t.s.owner, (tx) =>
+      saveFiscalProfile(tx, t.s.owner, {
+        operationId: op(),
+        expectedVersion: 0,
+        identity: {
+          rfc: "EKU9003173C9",
+          legalName: "ALIMENTOS FRONTERIZOS DE PRUEBA",
+          regime: "601",
+          postalCode: "22000",
+          address: {
+            street: "Av. Revolución 1234",
+            neighborhood: "Zona Centro",
+            municipality: "Tijuana",
+            state: "Baja California",
+          },
+        },
+        ticketSeries: "QR",
+        taxRegion: "border_north",
+        defaultTaxCategory: "iva8",
+        borderConfirmed: true,
+      }),
+    );
+    // One product at the profile default (IVA 8% here), one pinned to 16%.
+    await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{fiscal}',${tx.json({ taxCategory: "iva16", satProductKey: "90101501", satUnitKey: "H87" })}) where id=${t.p.salsa}`,
+    );
+    await run(t.s.manager, (tx) =>
+      saveOrderingSettings(tx, t.s.manager, {
+        operationId: op(),
+        expectedVersion: 0,
+        tablePolicy: "pay_first",
+        counterPolicy: "pay_first",
+        holdMinutes: 30,
+        maxOrderTotal: 1_000_000,
+      }),
+    );
+    const l = await link(t, { kind: "table", tableId: t.tables[0].id });
+    // C29: the diner menu never carries a product's tax category or SAT keys.
+    const menu = await pub.menu(l.token);
+    assert.equal(menu.status, 200);
+    for (const field of ['"fiscal"', '"taxCategory"', '"satProductKey"'])
+      assert(!JSON.stringify(menu.body).includes(field), field);
+    // X26: prices include IVA, so the context changes the tax split, never a
+    // line total: the diner's quote, the inbox re-quote and acceptHold's
+    // check (default context) match createOrder's (the restaurant's).
+    const b1 = await body(t, [
+      { productId: t.p.taco, quantity: 2 },
+      { productId: t.p.salsa, options: [t.p.verde, t.p.queso] },
+    ]);
+    const catalogNow = await run(t.s.owner, (tx) => catalog(tx));
+    const border: FiscalContext = {
+      region: "border_north",
+      defaultCategory: "iva8",
+    };
+    const lines = b1.lines.map((x) => ({ ...x, note: "" }));
+    const plain = quote(lines, catalogNow, false, DEFAULT_FISCAL_CONTEXT);
+    const real = quote(lines, catalogNow, false, border);
+    assert.deepEqual(
+      real.map((x) => x.total),
+      plain.map((x) => x.total),
+    );
+    assert.deepEqual(
+      real.map((x) => x.tax.category),
+      ["iva8", "iva16"],
+      "the border context really applies",
+    );
+    assert.equal(b1.expectedTotal, 15000);
+    assert.equal((await pub.submit(l.token, b1)).status, 200);
+    const h = await holdOf(t, b1);
+    const r = await accept(t, h.id, {
+      payment: { amount: 15000, received: 20000, method: "cash" },
+    });
+    assert.equal(r.order.checkState, "paid");
+    const [ticket] = await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`select f.series,f.number,f.gross,f.issuer->>'rfc' as rfc,
+            (select coalesce(sum(x.gross),0)::int from fiscal_ticket_taxes x
+              where x.tenant_id=f.tenant_id and x.ticket_id=f.id) as groups_gross,
+            (select array_agg(x.category order by x.category) from fiscal_ticket_taxes x
+              where x.tenant_id=f.tenant_id and x.ticket_id=f.id) as categories
+          from fiscal_tickets f where f.order_id=${r.order.id}`,
+    );
+    assert(ticket, "the accept's payment issued the ticket");
+    const [held] = await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`select quoted_total,accepted_total from public_order_holds where id=${h.id}`,
+    );
+    assert.deepEqual(
+      [
+        held.quoted_total,
+        held.accepted_total,
+        r.order.total,
+        ticket.gross,
+        ticket.groups_gross,
+      ],
+      [15000, 15000, 15000, 15000, 15000],
+    );
+    assert.deepEqual(ticket.categories, ["iva16", "iva8"]);
+    assert.equal(ticket.rfc, "EKU9003173C9", "the full identity is on it");
+    const folio = formatFolio(ticket.series, Number(ticket.number));
+    assert.equal(folio, "QR-000001");
+    assert.equal(r.order.fiscal?.ticket?.folio, folio);
+    // The diner follows the order to its folio, as the printed ticket shows.
+    const status = await pub.status(l.token, b1.statusKey);
+    assert.deepEqual(status.body.order!.money, {
+      total: 15000,
+      paid: 15000,
+      balance: 0,
+    });
+    assert.deepEqual(status.body.order!.fiscal, {
+      folio,
+      selfInvoiceCode: null,
+    });
   });
 
   console.log(`${checks} public ordering checks passed`);
