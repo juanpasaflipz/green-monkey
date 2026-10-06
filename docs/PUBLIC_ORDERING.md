@@ -667,9 +667,9 @@ grants hook on a scratch database.
   strips each product's tax category and SAT keys (C29).
 - **`PUBLIC_ORDERING_ENABLED`** belongs to account (031).
   - Public ordering imports account's `publicOrderingEnabled` and
-    `publicOrderingGate` (`server/account-settings.ts`, since B3): `"true"` →
-    on; `"false"` → off; unset or empty → on unless `APP_ENV=production`;
-    anything else refuses to start (`public_ordering_flag_invalid`).
+    `publicOrderingGate` (`server/account-settings.ts`, since B3): `"true"`
+    or unset/empty → on; `"false"` → off (the kill switch); anything else
+    refuses to start (`public_ordering_flag_invalid`) (PUBLIC-UX-5).
   - Off: `/api/public/*` answers `404 public_ordering_disabled` before any
     limiter. The staff link, decision and inbox routes answer the same code.
     The settings panel, the table QR actions and the inbox stay hidden.
@@ -680,8 +680,11 @@ grants hook on a scratch database.
     held only by a pending QR order refuses archiving with
     `table_pending_qr` ("Esta mesa tiene un pedido QR por confirmar…")
     instead of the open-check wording.
-  - B4 flips "unset" to on in every environment, as a separately revertible
-    commit; `false` stays the kill switch.
+  - Since B4 (a separately revertible commit), unset or empty means on in
+    every environment; `false` stays the kill switch. Reverting that commit
+    restores the interim default (off in production when unset); in
+    production the rollback is `false`, not a revert ("Rolling back QR and
+    kiosk ordering" below).
 
 ## 9. Offline
 
@@ -902,7 +905,7 @@ DB test 21 runs this block exactly as written, as `gm_migrator`:
 | **B-028/029** (absorbed with B2) | discounts / reports merged | Absorbed by B2's merge of `integration/v1` (`407154e`). One copy of the `online` hunks, with discounts' merged text (LD-P5). Reports' `AUDIT_GROUPS` already carries the `public.` prefixes (LD-P4), so `shared/reports.ts` needs no public edit. DB 24 closes its drawers with discounts' `closeCash` (`server/cash.ts`). Unions in merge order: `src/labels.ts` (`// public (032)` after cfdi's block), `scripts/grants.sql` (`-- 032` after `-- 030 cfdi`), `test:db:qualification` (`… cfdi → public`), and the settings order `RestaurantSettings → Fiscal → Cfdi → MoneyControls → PublicOrderingSettings → FreeSelection` (LD-P7). |
 | **B2** (done) | cfdi 030 merged (`integration/v1` `407154e` merged into `track/public`, track DBs reset as `gm_migrator`) | 1. `server/compat/public-cfdi.ts` deleted; `server/public-diner.ts` imports cfdi's `selfInvoiceOffered` from `./cfdi/store.js` (exact S3 signature, one statement).<br>2. One render chain in `src/main.tsx`: `/(f\|factura)` → `/(qr\|kiosk)(\/\|$)` → landing → `PlatformGate` (`/legal` arrives with account at B3), with the shared `publicPage` line byte-identical to cfdi's.<br>3. DB 22 (030): a paid table QR check and a kiosk order paid at acceptance of a cfdi-ready restaurant show their ticket's code; with self-invoicing off the code is `null` and the folio stays. DB 26: `holdStatus` 3 statements before the ticket, 4 with it (≤ 5).<br>4. `tests/lock-order.test.ts`: discounts, reports and cfdi left `createOrder`, `addRound` and `recordPayment`'s lock sequence unchanged, and the scanner still reports exactly the three LD-24 `acceptHold` pairs, so their entries and reasons stay as B1 wrote them. |
 | **B3** (done) | account 031 merged (`integration/v1` `e267ef5` merged into `track/public`, track DBs reset as `gm_migrator`) | 1. `server/compat/public-account.ts` deleted; `server/public-ordering.ts`, `server/routes/public-ordering.ts` and `server/public-diner.ts` import account's `publicOrderingGate`, `publicOrderingEnabled` and `restaurantPrivacyUrl` (exact S1 signatures); the `public_ordering_disabled` row left `ownedElsewhere`.<br>2. `src/compat/public-account.ts` deleted; the diner reads the six `accountGuest*` keys, and the platform privacy path lives in `dinerRoute.ts`.<br>3. Account's hunks resolved in public's favour (LD-P12): `/ordering-links` stays deleted with its gate line and `server/index.ts` drops account's unused constant; public's `server/public-ordering.ts`; the thin `PublicOrdering.tsx` (account's `.public-ordering-footer` style removed); `ManagementTools.tsx` without the generator and its gating.<br>4. Settings: `… MoneyControls → AccountPrivacy → PublicOrderingSettings → FreeSelection …` (LD-P7, unit-checked); `src/main.tsx`: `/legal` → `/(f\|factura)` → `/(qr\|kiosk)(\/\|$)` → landing → `PlatformGate`.<br>5. Account's QR tests rewritten (account-http 2-3, the flag test's gate legs, three `account.spec` legs); DB 28 on account's gate, DB 30 with account's privacy URL, new DB 31 (export); browser 1 checks the restaurant's privacy link.<br>6. DB-9 writers re-grepped in `server/`, `scripts/` and the raw fixtures of `tests/*-db.ts`: no Wave 2 value outside the five sets. The `-- 032` grants block is last, after `-- 031 account`; the deleted base keys (`payAtCounter`, `orderingLinks`, `createLink`) have no reader (unit-checked).<br>7. Shared docs in one commit (LD-P10): ARCHITECTURE (LO-2b, LO-3 keys, rows 34-40, the router and the DB-9 contract), the ACCESS step-up list, SERVICE, OPERATIONS, RUNBOOK (signals, "Online ordering abuse", "DB-9 validation", the 032 deploy window, signing-key rotation), MENU, RELEASE, ACCOUNT_AND_LEGAL, DELIVERY_STATUS and the ledgers.<br>8. Full qualification; the LD-5 delta review of B1-B4 follows before the merge. |
-| **B4** | after B3, a separate revertible commit | Account's flag: unset means on everywhere. Update `tests/public-ordering-flag.test.ts`, the `.railway/railway.ts` and `.env.example` comments, and the RELEASE and ACCOUNT_AND_LEGAL lines. Then a staging browser run, and production per RELEASE. |
+| **B4** (done) | after B3, a separate revertible commit | 1. Account's `publicOrderingEnabled`: unset or empty → on in every environment; `"false"` stays the kill switch.<br>2. `tests/public-ordering-flag.test.ts`: "unset or empty is true in every environment", plus a production `"false"` leg.<br>3. The `.railway/railway.ts` and `.env.example` comments, RELEASE's go-live line, ACCOUNT_AND_LEGAL, MENU and PLANS_AND_SIGNUP.<br>4. Still to do outside the track: a staging browser run, then production per RELEASE. CI keeps `APP_ENV` non-production on the browser and DB steps. |
 
 **Commits that do not build (for `git bisect`).** B1's first commit `4019641`
 carries only the deletion of the S2 shim, while `server/public-diner.ts` still
