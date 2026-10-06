@@ -404,6 +404,19 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     f.orders.push(order!.id);
     // MONEY-2: the diner knows only the label; it leads the call name.
     expect(order!.name).toBe(`${label} · QR ${f.id}`);
+    // B1: staff collect the check at the table while the kitchen works; the
+    // payment issues its fiscal ticket (027).
+    await call(page, "/cash/open", { operationId: op(), opening: 0 });
+    const due = (await call(page, `/orders/${order!.id}`)).data;
+    const paid = await call(page, `/orders/${order!.id}/payments`, {
+      operationId: op(),
+      amount: due.total - due.paid,
+      received: due.total - due.paid,
+      method: "cash",
+    });
+    expect(paid.status, JSON.stringify(paid.data)).toBe(200);
+    const folio = paid.data.fiscal?.ticket?.folio as string;
+    expect(folio).toMatch(/^(?:[A-Z0-9]{1,10}-)?\d{6}$/);
 
     // The kitchen has it now; the diner follows the round.
     await page
@@ -430,23 +443,11 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
         state: "ready",
       });
     await expect(head).toContainText("Listo", { timeout: 30000 });
-
-    // B1: once staff collect the check, its fiscal ticket exists and the
-    // diner's status shows the folio, as the printed ticket does (027).
-    await call(page, "/cash/open", { operationId: op(), opening: 0 });
-    const due = (await call(page, `/orders/${order!.id}`)).data;
-    const paid = await call(page, `/orders/${order!.id}/payments`, {
-      operationId: op(),
-      amount: due.total - due.paid,
-      received: due.total - due.paid,
-      method: "cash",
-    });
-    expect(paid.status, JSON.stringify(paid.data)).toBe(200);
-    const folio = paid.data.fiscal?.ticket?.folio as string;
-    expect(folio).toMatch(/^(?:[A-Z0-9]{1,10}-)?\d{6}$/);
+    // B1: the poll that shows "Listo" also carries the payment made above:
+    // the check's fiscal ticket exists, and the diner sees its folio as the
+    // printed ticket shows it (027).
     await expect(customer.locator(".diner-money")).toHaveText(
       `Pagado · Folio ${folio}`,
-      { timeout: 30000 },
     );
   });
 });
