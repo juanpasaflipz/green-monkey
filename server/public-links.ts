@@ -50,9 +50,13 @@ export function staffOnlineSql(tx: Tx) {
       and d.active and coalesce(d.kind, case when d.name='Owner browser' then 'personal' else 'terminal' end)='terminal')`;
 }
 
-/** LO-3: serializes every link write of the tenant (caps, one active link per table). */
+/**
+ * LO-3: serializes every link write of the tenant (caps, one active link per
+ * table). Class 924 makes it an LO-3 area key for the lock-order ratchet
+ * (class 0 would read as an LO-1 operation key).
+ */
 export async function lockLinks(tx: Tx) {
-  await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-links',0))`;
+  await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-links',924))`;
 }
 
 type LinkRow = {

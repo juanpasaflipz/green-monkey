@@ -284,9 +284,10 @@ export async function submitHold(
   if (total > c.max_order_total)
     throw new DomainError("public_order_too_large", 409);
 
-  // LO-3: exact durable caps per table (every link of it) or per link.
+  // LO-3: exact durable caps per table (every link of it) or per link. Class
+  // 925 makes it an LO-3 area key for the lock-order ratchet.
   const scope = c.table_id ?? c.id;
-  await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-hold:'||${scope},0))`;
+  await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-hold:'||${scope},925))`;
   const [counts] = await tx`select
       count(*) filter (where state='pending' and expires_at>now())::int as pending,
       count(*) filter (where created_at>now()-make_interval(mins=>${PUBLIC_LIMITS.windowMinutes}))::int as recent

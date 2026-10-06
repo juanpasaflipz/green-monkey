@@ -2628,7 +2628,7 @@ try {
     let locked!: () => void;
     const held = new Promise<void>((r) => (locked = r));
     const holder = asAdmin(t.tenantId, async (tx) => {
-      await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-hold:'||${racing.id},0))`;
+      await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-hold:'||${racing.id},925))`;
       locked();
       await gate;
     });
