@@ -49,7 +49,7 @@ takes rounds and returns to `open`.
 | Record a payment | yes | `overpayment` | `check_closed` |
 | Move table or server | yes | yes (leaving a table settles it) | `check_closed` |
 | Edit the order note | yes | yes | only while kitchen tickets are open, else `check_closed` |
-| Refund (any operator; staff with a manager's PIN, [discounts](DISCOUNTS.md) 028) | by item; by amount only without a balance due (`refund_balance_due`) | yes | yes (post-close correction) |
+| Refund (any operator; staff with a manager's PIN, [discounts](DISCOUNTS.md) 028) | by item or by amount, only once the check is paid or ticketed (`refund_balance_due` otherwise, LD-25/LD-26) | yes | yes (post-close correction) |
 | Discount or comp unpaid sent units ([discounts](DISCOUNTS.md) 028) | yes | n/a (nothing due) | `check_closed`; its discounts are final (`discount_not_reversible`) |
 | Cerrar cuenta / Liberar mesa | only at balance 0, else `balance_due` | yes | returns the order |
 

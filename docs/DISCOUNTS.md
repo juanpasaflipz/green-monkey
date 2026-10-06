@@ -43,13 +43,27 @@ DB-9, the closer attribution of GAP-3, the receipt rows of MON-7).
 - **Refunds never change** `orders.total`, `orders.discount` or the check state.
   The sale stands; the refund is its own immutable money movement with its own
   business date.
-- **Amount refunds need a paid check** (`Σ tenders ≥ orders.total`), otherwise
-  `refund_balance_due` (409). Item refunds are allowed in every check state:
-  they cover only fully paid units, and a paid unit can never be voided.
-- **A discount that closes a takeaway or tableless check is final.** Its balance
-  reaches zero, `refreshCheckState` closes it (`settled`) and closed checks are
-  never reopened: removing it answers `discount_not_reversible`. A dine-in table
-  check becomes "paid" instead and stays correctable until it is released.
+- **No refund while an unticketed check has a balance due** (LD-25 MONEY-1,
+  LD-26): by amount or by item, every refund goes through fiscal's
+  `assertRefundAllowed` right after the order lock, before any planning, and a
+  check without a fiscal ticket whose `Σ tenders < orders.total` answers
+  `refund_balance_due` (409). Staff collect the payment or void the unpaid
+  lines instead; the refund dialog then shows only that guidance, never the
+  item tab or the terminal step, so no card is refunded on a terminal for a
+  refund the POS cannot record. Under fiscal D1 a ticketed check never has a
+  balance due.
+- **A discount that settles a check is final.** A takeaway or tableless check
+  closes (`settled`) and closed checks are never reopened: removing it answers
+  `discount_not_reversible`. A dine-in table check becomes "paid" and, when its
+  total stays above 0, fiscal issues its ticket in the same transaction (fiscal
+  D1, LD-26 FISCAL-2): the discount is frozen on the ticket (removing it answers
+  `fiscal_ticket_issued`), the check takes no more rounds or discount changes
+  (new items go out as "Enviar como orden nueva") and corrections are refunds.
+  The dialog warns before applying ("La cuenta quedará pagada y se emitirá su
+  ticket…"), and the preview's `expectedCloses` carries that warning, so a
+  confirm whose outcome changed answers `discount_changed`. Only a table check
+  discounted to a zero total gets no ticket and stays correctable until it is
+  released.
 
 ## Discounts and courtesies
 
@@ -103,18 +117,24 @@ Rules (server-enforced; `shared/discounts.ts`):
 4. A check discount applies after line discounts, to what is still due.
 5. One transaction: discount row, allocations, `total −= amount`,
    `discount += amount`, `version + 1`, audit `discount.applied`, then
-   `refreshCheckState` (a zero balance settles the check; with fiscal 027 the
-   ticket is issued in the same transaction when the total is above 0).
+   `refreshCheckState` (a zero balance settles the check; fiscal 027 issues the
+   ticket in the same transaction when the total is above 0).
 6. Paid units are never discounted ("Lo ya cobrado no se descuenta; usa un
    reembolso.").
 
 **Removing a discount** ("Quitar descuento", Detalle de orden and the Vender
-check block): allowed while the check is open (or "paid" at a table), with no
-fiscal ticket, no payment on any of its units and no later active discount on
-them (last in, first out; an overlap on a unit voided since does not count, on
-the server and in the client's `discountRemovable` alike); otherwise
-`discount_not_reversible`. A reason (3–300 characters) is required. The reversal
-restores the active amount and is the discount's single, immutable reversal. On
+check block): allowed while the check is open (or "paid" at a table with a zero
+total), with no fiscal ticket (`fiscal_ticket_issued` otherwise: the client
+never offers it, and the dialog says the discounts of a ticketed check no
+longer change and reloads), no payment on any of its units and no later active
+discount on them (last in, first out; an overlap on a unit voided since does
+not count, on the server and in the client's `discountRemovable` alike);
+otherwise `discount_not_reversible`. A check discount whose units were all
+voided (active $0) can still be removed, which frees the check's single
+check-discount slot. A reason (3–300 characters) is required. The reversal
+restores the active amount and is the discount's single, immutable reversal.
+Detalle shows "Quitado por {actor} · autorizó {approver} · {nota}", the approver
+even when it is the actor (LD-16 L3). On
 `stale_order` the dialog reloads the check, hands it to the screen behind it,
 keeps the reason and its operation id, and asks to confirm again; from then on
 the reloaded check decides the amount shown and whether the confirm is enabled,
@@ -123,7 +143,9 @@ in Vender as in Detalle de orden.
 **Voids of discounted units** pick undiscounted units first, then the highest
 index. The balance drops by the unit's net and its discount is released
 ("Liberado por anulación"); `line_voids.amount` stays gross. The void dialog
-previews the net.
+previews the net. Once the check has its fiscal ticket, its discounted (comped)
+units are frozen on it and are not voidable (`void_exceeds_unpaid`), so
+`orders.discount` never drifts from the ticket (FISCAL-4).
 
 ### Limits, approval and step-up (LD-2, LD-15 Q2)
 
@@ -132,9 +154,21 @@ previews the net.
 | Owner, manager | no limit | — |
 | Cashier, server | allowed; their own recent PIN on a terminal | a manager approves with their PIN in the dialog |
 
-- Limits are per role: "Hasta (%)" **and** "Y hasta (importe)" must both hold
-  (a comp counts as 100 %). Default 0 % / $0: every staff discount needs a
-  manager until the owner raises it.
+- Limits are per role and **per check** (LD-26 MONEY-2, MONEY-3/APPROVALS-1):
+  - the discount itself: a percentage compares the requested percentage with
+    "Hasta (% por cuenta)" (so 10 % is within a 10 % limit on any base, whatever
+    the half-up rounding of the amount); a fixed amount compares with
+    `discount(base, limit)`, the same rounding; a comp needs a 100 % limit;
+  - the check: this discount plus the check's active discounts recorded without
+    an approver must stay within "Y hasta (importe por cuenta)" and within the
+    limit's percentage of the check's gross (line totals after voids, before
+    discounts), allowing each of those discounts its half centavo of rounding.
+    Splitting a comp into several small ones, or stacking a check discount on
+    line discounts, adds up. The server sums them under the order lock; the
+    dialog runs the same figure ("Descuentos sin autorización en esta cuenta: $X
+    de $Y.") and shows the manager's PIN field up front.
+  Default 0 % / $0: every staff discount needs a manager until the owner raises
+  it. Discounts approved by a manager never count toward a staff limit.
 - **One PIN.** A manager's PIN typed in the dialog is the authorization; the
   cashier is not asked for their own step-up as well. `approval_required` is
   answered before any step-up, so staff over their limit are asked for the
@@ -147,7 +181,9 @@ previews the net.
   manager's PIN, managers themselves (step-up).
 - Approvals are verified in their own transaction (failed PINs count even when
   the command is refused), per device, with the per-session ceiling of 10
-  rejected approvals a minute (`too_many_attempts`).
+  rejected approvals a minute (`too_many_attempts`). A role that may never
+  discount or refund (kitchen) gets `forbidden` before any PIN is checked or
+  counted, so a guess cannot be told right from wrong (APPROVALS-4).
 
 ## Reason codes
 
@@ -169,12 +205,16 @@ previews the net.
 | `wrong_item` | Producto equivocado | Wrong item |
 | `long_wait` | Demora en el servicio | Long wait |
 | `charge_error` | Cobro equivocado | Charging error |
-| `duplicate_terminal_charge` | Cobro duplicado en terminal | Duplicate terminal charge |
 | `other` | Otro (explica en la nota) | Other (explain in the note) |
 
 The same code reads differently per kind (`quality`); reports look labels up by
 (kind, code) through `DISCOUNT_REASON_LABELS` and `REFUND_REASON_LABELS`
-(`src/features/discounts/format.ts`). INAPAM discounts are voluntary for
+(`src/features/discounts/format.ts`). "(explica en la nota)" is an instruction
+for the dialogs' selects only: receipts, the refund slip, Detalle de orden and
+reports print `reasonLabel`, which reads "Otro" / "Other". There is no
+"duplicate terminal charge" refund (MONEY-8): a terminal that charged twice left
+one tender in the POS, so the duplicate is reversed on the terminal only and
+never recorded as a refund of a sale that stood. INAPAM discounts are voluntary for
 businesses without an agreement with the institute; the code only lets a
 restaurant that offers one report it. Refunds recorded before 028 show as
 reason "Otro" with their original text.
@@ -184,17 +224,30 @@ reason "Otro" with their original text.
 **Who:** any operator; cashiers and servers with a manager's approval (before
 028 only managers refunded).
 
-**Por productos** (default when a line has refundable units): one row per line
-with its refundable units ("{name} · {amount} c/u"), the breakdown by original
-tender (cash and/or "Terminal · pago original Ref. …"), a kitchen notice when a
-unit's round is not served, and the stock choice (no restock by default; a
-warning when the kitchen already saw or prepared it). Units are refundable when
-fully paid and not refunded yet. The server takes the highest-index units and
-returns each unit in full to every tender that paid it (`planItemRefund`).
+**Refunds need a paid (or ticketed) check.** While a check without a ticket has
+a balance due the dialog shows only "Esta cuenta tiene saldo pendiente y aún no
+tiene ticket: cobra el saldo o anula las líneas en lugar de reembolsar." and
+Cancelar (MONEY-1).
 
-**Por importe** (only on a paid check): one tender, up to what it has left
-(tips are never refunded here). While a balance is due the tab is hidden and the
-dialog says "El reembolso por importe se habilita cuando la cuenta está pagada."
+**Por productos** (default when a line has refundable units): one row per line
+with its refundable units ("{name} · {amount} c/u" when every refundable unit
+returns the same amount; otherwise the name, and "Seleccionado: $X" for the
+units chosen), the breakdown by original tender (cash and/or "Terminal · pago
+original Ref. …"), a kitchen notice when a unit's round is not served, and the
+stock choice (no restock by default; a warning when the kitchen already saw or
+prepared it). Units are refundable when fully paid and not refunded yet. The
+server takes the highest-index units and returns each unit in full to every
+tender that paid it (`planItemRefund`). After an amount refund, a check whose
+lines span more than one tax category takes no item refunds
+(`refund_items_after_amount`, FISCAL-3): fiscal split the amount refund across
+the categories, so an item could exceed what its own category has left; such a
+check is refunded by amount, and the dialog hides the item tab and says so.
+
+**Por importe**: one tender, up to what it has left (tips are never refunded
+here). The first refundable payment is chosen by default and never swapped
+silently: when a reload leaves it with nothing to refund, the select asks for a
+payment again ("Ese pago ya no tiene saldo reembolsable…") and Reembolsar stays
+disabled until staff pick one (UI-2).
 
 **Terminal (card) portions** are recorded, never moved: the operator refunds on
 the terminal first, then types its reference and confirms ("Confirmo que la
@@ -202,10 +255,20 @@ terminal aprobó el reembolso de …"). Missing → `refund_external_confirmatio
 Card money never touches drawer cash. **Cash portions** leave this device's
 open drawer (`drawer_required` otherwise; a terminal-only refund needs none).
 The entry points are disabled offline with the visible hint "Los reembolsos
-requieren conexión.". The result view ("Reembolso registrado: …", **Imprimir
-comprobante**, **Listo**) refreshes the screen behind it however it is left
-(Listo, the close button or Escape), so Órdenes and Detalle de orden never keep
-showing the pre-refund check after money moved.
+requieren conexión.". The result view says what to hand over: "Entrega $X en
+efectivo" (prominent, only with a cash part) and "Terminal: $Y, ya reembolsado
+en la terminal (Ref. …)", then "Reembolso registrado: $X+Y", **Imprimir
+comprobante** and **Listo** (UI-4). It refreshes the screen behind it however it
+is left (Listo, the close button or Escape), so Órdenes and Detalle de orden
+never keep showing the pre-refund check after money moved. Detalle de orden's
+Reembolsos list can print each comprobante again (UI-6).
+
+**Lost responses.** The money dialogs keep one operation id until a confirm
+succeeds and never retry on their own. When a retry by hand answers
+`operation_conflict` (the earlier attempt with that id was recorded, and the
+request changed since), the dialog says so, reloads the check, starts a new
+operation for any further confirm and, for refunds, refreshes the screen
+behind it when it is left (CONCURRENCY-4).
 
 Server rules: the client sends the refund state its preview was built on: the
 order's refunded total (`expectedRefunded`, both modes) and, for item refunds,
@@ -245,6 +308,17 @@ fingerprint and step-up; it now locks the order before the tender key, refuses
 `refund_balance_due` through fiscal's `assertRefundAllowed` and writes a batch
 like every post-028 refund. Only pre-028 refunds are batchless.
 
+## Receipt and pre-bill rows
+
+Lines print their gross after voids, line discounts under their line
+("Descuento 10 % (1 de 3) −$4.50"), then "Subtotal antes de descuentos", the
+line discounts' total and the check discount with the base its rate applied to
+("Descuento en la cuenta · Adulto mayor (INAPAM) 10 % de $135.00 −$13.50": a
+check discount covers only what was due when it was applied, MONEY-5), and the
+Total (`orders.total`). Under "Reembolso −$X" the refunded items and terminal
+references print unsigned, as its breakdown, so each refunded peso carries one
+signed figure (UI-7).
+
 ## Refund slip ("Comprobante de reembolso")
 
 Printed from the refund result through `printDocument` at 58/80 mm. It is a
@@ -264,7 +338,8 @@ close result) keep the device language.
 ## Drawer (Caja)
 
 - Header: "Caja abierta", who opened it and when, the opening float, payments.
-- **Efectivo** (roles allowed to see expected cash): cash sales, cash tips,
+- **Efectivo** (roles allowed to see expected cash): the opening float ("Fondo
+  inicial", so the rows add up to the bold total, UI-10), cash sales, cash tips,
   cash refunds, paid-outs and **Efectivo esperado** = opening + cash sales and
   tips − cash refunds + movements, plus the cash movements. Only cash refunds
   reduce cash (before 028 every refund did; all of them were cash).
@@ -311,7 +386,7 @@ deleted.
 
 | Control | Default |
 | --- | --- |
-| Cajero / Mesero: "Hasta (%)" and "Y hasta (importe por descuento)" | 0 % / $0 |
+| Cajero / Mesero: "Hasta (% por cuenta)" and "Y hasta (importe por cuenta)" (per check, see Limits) | 0 % / $0 |
 | "Corte ciego: el conteo se captura sin ver el efectivo esperado" | on |
 | "Pueden ver el efectivo esperado durante el turno": Gerente, Cajero, Mesero | Gerente (the owner always) |
 | "Pueden cerrar caja (además de gerentes)": Cajero, Mesero | none |
@@ -379,8 +454,9 @@ paid check, untranslated until the service worker updates.
 - **Refund scope.** `insertRefundBatch` is the single writer of refunds and the
   single caller of `recordRefundTax`, once per money row (tender), with
   `scope = [{ lineId, units, gross }]` where gross = Σ `refund_units.amount` of
-  that row and line (`refundTaxScopes`). Amount refunds pass no scope (fiscal
-  splits proportionally; they exist only on paid checks).
+  that row and line (`refundTaxScopes`, typed with fiscal's `RefundTaxScope`).
+  Amount refunds pass no scope (fiscal splits proportionally; like every
+  refund they exist only on paid or ticketed checks).
 - **Complement extraction.** Fiscal splits each category's IVA as
   `extract(S − refunded) − extract(S − refunded − split)`, so the ticket's
   remaining IVA is exactly `extract(G − R)` and a full refund nets it to 0.
@@ -389,9 +465,10 @@ paid check, untranslated until the service worker updates.
   cash row of 2025 (IVA `extract(12600) − extract(10575)` = 279) and a card row
   of 6525 (IVA 1459 − 559 = 900).
 - **Differences by design.** A CFDI de egreso stamps `extractTax(adj.gross)` per
-  category, at most 1 centavo from the adjustment's IVA (fiscal P4); item
-  refunds recorded before the ticket on a check that later changes keep
-  fiscal's ≤ 1 centavo bound per change (P5). See [FISCAL.md](FISCAL.md) and
+  category, at most 1 centavo from the adjustment's IVA (fiscal P4). Fiscal's
+  P5 bound (item refunds recorded before the ticket on a check that later
+  changes) is no longer reachable: no refund is recorded on an unticketed check
+  with a balance due (MONEY-1). See [FISCAL.md](FISCAL.md) and
   [CFDI.md](CFDI.md). The slip always shows fiscal's figure.
 - **CFDI.** Discounts are impossible once a ticket exists, so never after a
   CFDI. Refunds are never blocked by a CFDI; cfdi 030 adds the egreso inside
@@ -438,12 +515,14 @@ units, and an overpayment becomes `offline_payment_exceeds_due`.
 - **Reembolso de terminal hecho sin registrar.** Open the order → Reembolsar →
   pick the units (or Por importe on a paid check) → type the terminal's refund
   reference and confirm. Card money never changes the drawer.
-- **El cliente quiere reembolso por importe y la cuenta tiene saldo.** Refund
-  the paid items by item, or settle or adjust the check first (void what was not
-  served, or apply a discount), then refund by amount.
+- **El cliente quiere un reembolso y la cuenta tiene saldo.** No refund is
+  possible yet, by amount or by item: collect the balance, or void the lines
+  that were not paid (or apply a discount), and refund once the check is paid.
 - **Se aplicó un descuento por error.** Detalle de orden → Descuentos → Quitar
-  descuento, while nothing of those units is paid. On a takeaway check the
-  discount that closed it is final: correct it with a refund.
+  descuento, while nothing of those units is paid and the check has no ticket.
+  A discount that closed a takeaway check, or that settled a table check and
+  issued its ticket, is final: correct what was paid with a refund (a comp of
+  an unpaid item cannot be undone, which is why the dialog warns first).
 
 ## Limitations (deferred)
 
@@ -466,7 +545,7 @@ units, and an overpayment becomes `offline_payment_exceeds_due`.
 | D4 | Discounts after the fiscal ticket | Not allowed; corrections are refunds. |
 | D5 | Who refunds | Any operator with a manager's approval. |
 | D6 | Card refunds | Recorded only after the terminal approved them, with its reference and an explicit confirmation; never touch drawer cash. |
-| D7 | Item refunds | Only fully paid units; anything else by amount once the check is paid. |
+| D7 | Item refunds | Only fully paid units on a paid or ticketed check; anything else by amount; after an amount refund, mixed-rate checks by amount only (FISCAL-3). |
 | D8 | Kitchen and stock on refunds | Unserved units are cancelled in the kitchen automatically; restock is a choice, with a warning once the kitchen saw the ticket. |
 | D9 | Tips | Not refundable through the POS. |
 | D10 | Blind count | On by default; owner and manager see expected cash; only owner and manager close. |
@@ -476,8 +555,9 @@ units, and an overpayment becomes `offline_payment_exceeds_due`.
 | D14 | Reason codes | Fixed, translated lists. |
 | D15 | Plans | Discounts on every plan (selling rules apply); refunds, reversals, closes and reviews stay available when selling is blocked. |
 | D16 | Refund business date | The day of the refund, computed once per command, shared by batches, fiscal adjustments and reports. |
-| D17 | Amount refunds with a balance due | Refused (`refund_balance_due`). |
-| D18 | Removing a discount that closed a takeaway check | Not possible; the dialog warns before applying. |
+| D17 | Refunds with a balance due | Refused by amount and by item on an unticketed check (`refund_balance_due`, LD-25/LD-26); collect or void first. |
+| D18 | Removing a discount that closed a takeaway check, or that settled a table check and issued its ticket | Not possible; the dialog warns before applying (LD-26 FISCAL-2). |
+| D19 | Staff limits | Per check for discounts without an approver; percentage by the requested rate, fixed amounts by `discount(base, limit)`, comps need 100 % (LD-26 MONEY-2/MONEY-3). |
 
 ## Sources
 
