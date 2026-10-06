@@ -74,6 +74,19 @@ async function call(page: Page, path: string, body?: unknown) {
 }
 const center = (page: Page) =>
   page.getByRole("region", { name: "Cuenta y propietarios" });
+/**
+ * Test isolation: every owner-console load spends /api/auth reads from the
+ * per-IP owner budget (owner-routes.ts, 120 per minute) that every test in
+ * this run shares from 127.0.0.1. Start each test with room for its own
+ * loads, waiting out the window when the earlier tests used it up.
+ */
+test.beforeEach(async ({ page }) => {
+  const r = await page.request.get("/api/auth/providers");
+  const remaining = Number(r.headers()["ratelimit-remaining"] ?? 1000);
+  const reset = Number(r.headers()["ratelimit-reset"] ?? 0);
+  if (remaining < 40)
+    await new Promise((done) => setTimeout(done, (reset + 1) * 1000));
+});
 async function settings(page: Page) {
   await page
     .getByRole("button", { name: "Configuración", exact: true })
@@ -286,7 +299,7 @@ test("simplified privacy notice is shown next to Google sign-up (FOH-14)", async
   ).toHaveAttribute("aria-describedby", "signup-privacy-notice");
   await page.getByRole("button", { name: "English", exact: true }).click();
   await expect(notice).toContainText(
-    `${LEGAL_CI_ENV.LEGAL_ENTITY_NAME} is the controller of your personal data.`,
+    `${LEGAL_CI_ENV.LEGAL_ENTITY_NAME}, with its address at ${LEGAL_CI_ENV.LEGAL_ENTITY_ADDRESS}, is the controller of your personal data.`,
   );
   await expect(
     notice.getByRole("link", { name: "Privacy notice", exact: true }),

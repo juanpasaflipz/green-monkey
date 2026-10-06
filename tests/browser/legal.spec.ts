@@ -1,6 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { LEGAL_CI_ENV } from "../fixtures/legal-ci.js";
+import { LEGAL_DOCUMENTS } from "../../shared/legal.js";
 
 // account (031, FIT-12/FOH-14): the platform legal pages. The compiled browser
 // run publishes the fictional CI legal set (qualification.yml, LD-3).
@@ -47,8 +48,12 @@ test("legal pages render the configured entity in es/en and pass axe", async ({
   await expect(main).toContainText(LEGAL_CI_ENV.LEGAL_ENTITY_NAME);
   await expect(main).toContainText(LEGAL_CI_ENV.LEGAL_ENTITY_ADDRESS);
   await expect(main).toContainText(LEGAL_CI_ENV.LEGAL_PRIVACY_CONTACT_EMAIL);
+  // The version and the day it took effect (LEGAL-3).
   await expect(
-    page.getByText("Versión 2026-10-05", { exact: true }),
+    page.getByText(
+      `Versión ${LEGAL_DOCUMENTS.privacy.version} · Vigente desde el ${new Intl.DateTimeFormat("es-MX", { dateStyle: "long" }).format(new Date(`${LEGAL_DOCUMENTS.privacy.effectiveFrom}T12:00:00-06:00`))}`,
+      { exact: true },
+    ),
   ).toBeVisible();
   // Published: no draft banner, no missing-field chips, indexable.
   await expect(page.locator(".legal-missing")).toHaveCount(0);
