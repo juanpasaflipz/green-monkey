@@ -1012,7 +1012,10 @@ describe("MENU-R1: QR/kiosk polls spare the venue's shared request budget", () =
   });
 });
 
-describe("LD-28: restoring an archived product reuses fiscal's product rate rule", () => {
+// The rule only: that archiveProduct applies it when (and only when) an archived product is
+// restored is covered on the real path by menu-db "LD-28: restoring an archived IVA 8%
+// product needs a border region…" (border allowed, general refused and still archived).
+describe("LD-28: the fiscal product rate rule a restore reuses (restore wiring: menu-db LD-28 leg)", () => {
   /** A transaction whose only statement reads the fiscal profile (fiscalContext). */
   const profile = (region: string | null) =>
     (async () =>
