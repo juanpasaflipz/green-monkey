@@ -9,6 +9,7 @@ import {
   stripeSandboxBilling,
   STRIPE_BILLING_API_VERSION,
 } from "../server/stripe-billing.js";
+import { signupLegal } from "./staging-legal.js";
 const origin = "https://green-monkey-staging.up.railway.app";
 const target = new URL(process.env.DATABASE_URL!);
 if (
@@ -97,6 +98,7 @@ try {
         cutoff: 240,
         openingDays: [1, 2, 3, 4, 5, 6, 7],
         trialRequested: true,
+        ...(await signupLegal(api)),
       },
       account.csrf,
     );

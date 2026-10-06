@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { connect, checkRole } from "../server/db.js";
 import { signInGoogleOwner } from "../server/owner-accounts.js";
+import { signupLegal } from "./staging-legal.js";
 
 // Explicit synthetic identities test deployed HTTP authorization, not Google.
 // Fixtures are retained for audit; no provider payments or outbound jobs run.
@@ -75,6 +76,7 @@ try {
       timezone: "America/Mexico_City",
       cutoff: 240,
       openingDays: [1, 2, 3, 4, 5, 6, 7],
+      ...(await signupLegal(a)),
     },
     account.csrf,
   );
