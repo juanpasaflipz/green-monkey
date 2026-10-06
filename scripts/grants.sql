@@ -60,3 +60,39 @@ END $$;
 GRANT USAGE ON SCHEMA public TO gm_jobs_worker;
 GRANT SELECT,INSERT ON jobs TO gm_jobs_worker;
 GRANT UPDATE(state,attempts,next_at,lease_until,error_code) ON jobs TO gm_jobs_worker;
+-- 030 cfdi: the runtime role inserts requests and settings; the worker (gm_jobs_worker, Wave 2.0)
+-- performs every transition. Worker privileges live here, never in the migration. It already has
+-- USAGE on the schema and SELECT, INSERT, UPDATE(state,attempts,next_at,lease_until,error_code) ON
+-- jobs from "-- 2.0 jobs worker"; tenant RLS still applies to every statement through ctx.tenant().
+-- No employees grant: foreign-key checks run as the referenced table's owner and no handler reads
+-- employee rows.
+GRANT SELECT ON restaurants, orders, tenders, refunds TO gm_jobs_worker;
+-- Fiscal 027 and discounts 028 tables the worker reads (wave2-cross-track C26). Guarded only so the
+-- block applies on a branch database migrated before 027/028; on integration every table exists.
+DO $$ DECLARE t text; BEGIN
+ FOREACH t IN ARRAY ARRAY['restaurant_fiscal_profiles','fiscal_tickets','fiscal_ticket_taxes','fiscal_adjustments','refund_batches'] LOOP
+  IF to_regclass('public.' || t) IS NOT NULL THEN
+   EXECUTE format('GRANT SELECT ON %I TO gm_jobs_worker', t);
+  END IF;
+ END LOOP;
+END $$;
+GRANT SELECT, INSERT, UPDATE ON cfdi_platform TO gm_jobs_worker;
+GRANT SELECT, UPDATE (mode, live_from, live_enabled_at, live_enabled_by, live_requested_at, live_requested_from,
+  live_requested_by, global_periodicity, next_periodicity, next_periodicity_from, version, updated_at)
+  ON cfdi_settings TO gm_jobs_worker;
+GRANT SELECT, INSERT, UPDATE ON cfdi_organizations, cfdi_csd_uploads, cfdi_documents, cfdi_document_tickets,
+  cfdi_cancellations, cfdi_global_periods TO gm_jobs_worker;
+GRANT SELECT, INSERT ON cfdi_files, cfdi_events TO gm_jobs_worker;
+GRANT SELECT, INSERT, UPDATE (kid, payload_secret, wiped_at) ON cfdi_secrets TO gm_jobs_worker;
+-- Runtime role: settings (no live switch columns), fresh requests, events; never a transition.
+GRANT SELECT, INSERT ON cfdi_settings TO gm_app;
+GRANT UPDATE (enabled, global_periodicity, next_periodicity, next_periodicity_from, global_auto, concept_mode,
+  concept_description, card_payment_form, default_use, self_invoice_enabled, self_invoice_policy, self_invoice_days,
+  portal_reissue_global, support_email, live_requested_at, live_requested_from, live_requested_by,
+  version, updated_by, updated_at) ON cfdi_settings TO gm_app;
+GRANT SELECT, INSERT ON cfdi_organizations, cfdi_csd_uploads, cfdi_documents, cfdi_document_tickets,
+  cfdi_cancellations, cfdi_events TO gm_app;
+GRANT INSERT (tenant_id, id, purpose, kid, payload_secret) ON cfdi_secrets TO gm_app;
+-- Must stay after the blanket "GRANT SELECT ON ALL TABLES" at the top of this file: the runtime
+-- role never reads sealed secrets (nor does account's export auto-discovery).
+REVOKE SELECT ON cfdi_secrets FROM gm_app;
