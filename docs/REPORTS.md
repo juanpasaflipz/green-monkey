@@ -162,8 +162,9 @@ PREPARAR", or "REEMBOLSADO · NO PREPARAR" for refunds), one per round and stati
   prints bar cancellations only.
 - A selling device with "Imprimir comanda al enviar a cocina" prints the chits after a void
   (and, once discounts is wired, after an item refund of unserved units).
-- Printing never blocks or fails the void; a print error shows "No se pudo imprimir la
-  cancelación.".
+- Printing never blocks or fails the void. If the chit does not print, the void dialog says
+  "La anulación quedó registrada." and "No se pudo imprimir la cancelación." and offers only
+  "Reintentar impresión" or Cerrar (no second void from the same dialog).
 
 A restaurant uses one of two setups: one device per station with its KDS station filter and
 auto-print on, or one selling device with "comanda al enviar" printing every station's
@@ -212,11 +213,12 @@ setting. Reports and prints work on Free and while selling is blocked.
 2. `server/index.ts`: delete the old `/report` route and the `businessDate`, `boundaries`
    imports (wave2-cross-track C13); `registerReports` re-registers `/report`.
 3. `src/features/Operations.tsx`: add `"today"`, `"finance"` to the self-loading list, drop the
-   `today`/`finance` → `report` mapping and the phase-A offline guard, replace the old
+   `today`/`finance` → `report` mapping, the phase-A offline guard and its `shownOnline`
+   reload effect (the views poll with `enabled: online` themselves), replace the old
    Today/Finance block with `<TodayDashboard … online={online} />` and
    `<ReportsView … online={online} />`, point the settings "Historial de auditoría" button at
-   `openReports("audit"); navigate("finance")`, and drop the then unused `ArrowUpRight` and
-   `Empty` imports.
+   `openReports("audit"); navigate("finance")`, and drop the then unused `ArrowUpRight`,
+   `Empty` and `useRef` imports.
 4. Slots in discounts' components (C9, C10): `actions={<CortePrintButton … label="Corte X"
    online={online} />}` on `DrawerPanel` for an open drawer the viewer may see; one
    `CortePrintButton` (Imprimir corte Z / comprobante de conteo) in `DrawerCloseDialog`'s
@@ -230,16 +232,48 @@ setting. Reports and prints work on Free and while selling is blocked.
    "Ver órdenes" instead of the first metric.
 8. Docs: docs/ACCESS.md (remote close replaces the support-SQL workaround), this file's
    status, DELIVERY_STATUS and the ledgers.
+9. Shared cleanups (wave2-cross-track C16, LD-16 L5): after fiscal converts
+   `tests/access-db.ts`, `tests/offline-sync-db.ts` and `tests/offline-recovery-db.ts` to
+   the named-trigger transaction, append `report_prints` and `business_day_settings` (and
+   their triggers `report_prints_immutable`, `business_day_settings_immutable`) after the
+   discounts tables, as `tests/fixtures/reports-cleanup.ts` orders them.
+10. `scripts/grants.sql` and `package.json` (C23): the `-- 029 reports` grants block and the
+    `test:db:reports` entry and qualification suffix go after discounts' (merge order).
+11. The `online` prop (LD-18 LD-P5): keep one copy; this branch already carries discounts'
+    exact text, doc comment included.
+12. `tests/reports-phaseb-db.ts` moves to the real commands (spec §7.2): payments that issue
+    fiscal tickets, `applyDiscount`/`reverseDiscount`, `recordRefund` in items and amount
+    modes and the legacy refund, `closeCash`/`reviewDrawer`, `recordPaidOut` and offline
+    sync/reconcile. Hand-inserted rows stay only for clock-dependent cases. It also gains
+    spec DB tests 3 (past summaries, breakdowns and exceptions unchanged after a cutoff
+    change), 12 (a 60-day summary merges two fiscal chunks), 18 (a non-MXN restaurant has
+    null tax and margin), 33 (performance), 35 (complement extraction), 37 (a refund at the
+    cutoff instant; a batchless refund fails refunds_vs_fiscal) and 38 (acceptance rows).
+    Until then the reconciliation checks are proven only against self-consistent hand rows.
+13. Browser tests (spec §7.3) in `tests/browser/reports.spec.ts`, required with the views:
+    1 (ranges, Efectivo/Terminal split, axe on Finanzas), 2 (Productos, Personal, Horas and
+    their CSVs), 3 (Resumen rows and "Todos los totales cuadran."), 4 (Excepciones with the
+    employee filter and CSV), 5 (Bitácora paging and filters), 6 (corte X, close, corte Z and
+    REIMPRESIÓN 2), 7 (the blind count slip), 8 (58 and 80 mm fit), 9 (Hoy and its
+    previous-day drawer alert resolved by the remote close), 13 (the disabled Caja "Corte X"
+    with its reason) and 14 (390 and 768 px without page-wide scroll, axe on Hoy and the
+    corte preview). Add the phase B GETs to the HTTP check (no-store, cashier forbidden)
+    and check that a print or remote-close POST without the CSRF token is refused.
 
 `tests/reports-phaseb-db.ts` (part of `test:db:reports`) skips until 027 and 028 are migrated
-and then runs against the real modules. Before the merge it was run against the 027/028 DDL
-as fiscal.md and discounts.md write it, with stand-in ports written from those specs: 12
-checks passed (S1–S7 with every reconciliation check, the breakdowns, order and tender lists,
-exceptions with keyset paging, drawer figures against `drawerTotals`, X/Z prints and
-reprints, two concurrent Z prints numbered 1 and 2, the corte del día, Hoy alerts, the remote
-close and the legacy `/report`). The phase B views were also rendered in that setup (axe
-clean on Hoy and every Finanzas tab, no horizontal scroll at 390 px, CSV and print flows);
-none of that setup is committed.
+and then runs against the real modules. Before the merge it ran twice outside the repository:
+first against the 027/028 DDL as fiscal.md and discounts.md write it, with stand-in ports;
+then (14 checks) in a scratch copy of this branch with fiscal's and discounts' current
+migrations and modules on a CI-parity database. The 14 checks cover S1–S7 with every
+reconciliation check, the breakdowns, order and tender lists, all twelve exception kinds with
+their summary, drawer figures against `drawerTotals`, X/Z prints and reprints, two
+concurrent Z prints numbered 1 and 2, the corte del día, Hoy alerts, the role refusals, the
+remote close with its step-up and both orphan reasons, and the legacy `/report`. The phase A
+suite (`tests/reports-db.ts`) also refuses cashier, server and kitchen on every phase B
+function and checks the remote-close step-up before any 027/028 statement runs, so those
+checks already run in qualification. The phase B views were rendered only in an uncommitted
+setup (axe on Hoy and the Finanzas tabs, 390 px, CSV and print flows); item 13 re-proves that
+with committed tests at the merge.
 
 ## Limitations and decisions
 
