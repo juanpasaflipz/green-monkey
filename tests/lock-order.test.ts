@@ -43,22 +43,22 @@ const PERMANENT: Record<string, string> = {
   "server/offline-sync.ts#applySale:12>7": "E4",
   "server/offline-tables.ts#appliers.order:12>7": "E4",
   "server/offline-tables.ts#appliers.round:12>7": "E4",
-  // E5 (proposed by the platform hardening; awaiting the lead's record, PLAT-HR-2): a
+  // E5 (sanctioned by lead decision LD-21; PLAT-HR-2): a
   // refresh that cannot issue. createOrder's (nothing is paid at creation) and
   // applyRound's (a check that takes rounds is not paid: LD-15 fiscal Q2) take no folio
   // lock; what follows them is the order row this transaction inserted (applySale), the
   // drawer and the kitchen feed. addRound keeps the feed after applyRound as fiscal's
   // spec §4.4 sets it (moving it earlier would put the feed before stock).
-  "server/orders.ts#addRound:12>10": "E5 (proposed)",
-  "server/offline-sync.ts#applySale:12>11": "E5 (proposed)",
+  "server/orders.ts#addRound:12>10": "E5",
+  "server/offline-sync.ts#applySale:12>11": "E5",
   "server/offline-sync.ts#applySale:12>5":
-    "E5 (proposed; the row was inserted by this transaction)",
-  // E6 (proposed, as E5): financial recovery after a target lookup. Recovery's new order
+    "E5 (the row was inserted by this transaction)",
+  // E6 (sanctioned by LD-21): financial recovery after a target lookup. Recovery's new order
   // takes an order number (LO-4) after the lookup locked a cancelled online order
   // (reconcileSale) or nothing (an unresolvable target); no transaction locks
   // order_numbers and then an existing order.
-  "server/offline-sync.ts#reconcileSale:5>4": "E6 (proposed)",
-  "server/offline-tables.ts#reconcilers.payment:5>4": "E6 (proposed)",
+  "server/offline-sync.ts#reconcileSale:5>4": "E6",
+  "server/offline-tables.ts#reconcilers.payment:5>4": "E6",
   // LO-R5: nested operation keys, fresh or the key of the record the command acts on.
   "server/checks.ts#recordSettlement:5>1":
     "LO-R5 fresh key (recordPayment(randomUUID()))",
