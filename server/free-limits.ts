@@ -143,7 +143,7 @@ export async function freeSelectionMode(tx: Tx): Promise<"auto" | "manual"> {
  * device that never opened a drawer (the owner's sign-up laptop) yields the
  * slot to the first device that opens one. Writes only on a real change
  * (lock order: LO-3 key 920, then devices/employees rows; ARCHITECTURE
- * exception E5, LD-15 account Q8).
+ * exception E7, LD-15 account Q8).
  */
 export async function autoAssignFreeSlots(tx: Tx, s: Session): Promise<void> {
   await lockFreeLimits(tx);

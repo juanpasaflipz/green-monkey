@@ -131,43 +131,37 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
   });
   const reads = limiter("account_center_read", 60, 60_000);
   const writes = limiter("account_center_write", 30, 60_000);
-  const read =
-    <T>(fn: (req: express.Request) => OwnerFn<T>): express.RequestHandler =>
-    async (req, res, next) => {
-      try {
-        res.json(
-          await withOwner(
-            sql,
-            req.cookies?.gm_account ?? "",
-            undefined,
-            fn(req),
-          ),
-        );
-      } catch (e) {
-        next(e);
-      }
-    };
-  const command =
-    <T>(fn: (req: express.Request) => OwnerFn<T>): express.RequestHandler =>
-    async (req, res, next) => {
-      try {
-        res.json(
-          await withOwner(
-            sql,
-            req.cookies?.gm_account ?? "",
-            req.get("x-csrf-token") ?? "",
-            fn(req),
-          ),
-        );
-      } catch (e) {
-        next(e);
-      }
-    };
+  /**
+   * Runs fn as the signed-in owner account (commands also check the CSRF
+   * header). Every registration below passes its own handler inline, so the
+   * lock-order scanner (tests/lock-scan.ts) checks each account-center request
+   * as its own transaction (ACC-16).
+   */
+  const answer = async <T>(
+    req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+    kind: "read" | "command",
+    fn: OwnerFn<T>,
+  ) => {
+    try {
+      res.json(
+        await withOwner(
+          sql,
+          req.cookies?.gm_account ?? "",
+          kind === "command" ? (req.get("x-csrf-token") ?? "") : undefined,
+          fn,
+        ),
+      );
+    } catch (e) {
+      next(e);
+    }
+  };
 
-  router.get(
-    "/",
-    reads,
-    read(() => (tx, a) => accountOverview(tx, a, legal, saasTax)),
+  router.get("/", reads, (req, res, next) =>
+    answer(req, res, next, "read", (tx, a) =>
+      accountOverview(tx, a, legal, saasTax),
+    ),
   );
   const acceptInput = z
     .object({
@@ -185,10 +179,8 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
     })
     .strict()
     .refine((v) => Boolean(v.terms || v.privacy || v.dpa?.length));
-  router.post(
-    "/legal/accept",
-    writes,
-    command((req) => async (tx, a) => {
+  router.post("/legal/accept", writes, (req, res, next) =>
+    answer(req, res, next, "command", async (tx, a) => {
       const p = acceptInput.parse(req.body);
       await recordAcceptances(
         tx,
@@ -215,52 +207,48 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
       return { legal: await legalState(tx, a.id, legal) };
     }),
   );
-  router.post(
-    "/invitations/preview",
-    writes,
-    command((req) => (tx, a) => previewInvitation(tx, a, req.body)),
-  );
-  router.post(
-    "/co-owners/invite",
-    writes,
-    command(
-      (req) => (tx, a) => createCoOwnerInvitation(tx, a, req.body, legal),
+  router.post("/invitations/preview", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) =>
+      previewInvitation(tx, a, req.body),
     ),
   );
-  router.post(
-    "/co-owners/remove",
-    writes,
-    command((req) => (tx, a) => removeCoOwner(tx, a, req.body, legal)),
+  router.post("/co-owners/invite", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) =>
+      createCoOwnerInvitation(tx, a, req.body, legal),
+    ),
   );
-  router.post(
-    "/co-owners/leave",
-    writes,
-    command((req) => (tx, a) => leaveCoOwnership(tx, a, req.body)),
+  router.post("/co-owners/remove", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) =>
+      removeCoOwner(tx, a, req.body, legal),
+    ),
   );
-  router.post(
-    "/transfers",
-    writes,
-    command((req) => (tx, a) => requestTransfer(tx, a, req.body, legal)),
+  router.post("/co-owners/leave", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) =>
+      leaveCoOwnership(tx, a, req.body),
+    ),
   );
-  router.post(
-    "/transfers/preview",
-    writes,
-    command((req) => (tx, a) => previewTransfer(tx, a, req.body, legal)),
+  router.post("/transfers", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) =>
+      requestTransfer(tx, a, req.body, legal),
+    ),
   );
-  router.post(
-    "/transfers/accept",
-    writes,
-    command((req) => (tx, a) => acceptTransfer(tx, a, req.body, legal)),
+  router.post("/transfers/preview", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) =>
+      previewTransfer(tx, a, req.body, legal),
+    ),
   );
-  router.post(
-    "/transfers/cancel",
-    writes,
-    command((req) => (tx, a) => cancelTransfer(tx, a, req.body)),
+  router.post("/transfers/accept", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) =>
+      acceptTransfer(tx, a, req.body, legal),
+    ),
   );
-  router.post(
-    "/recovery-codes",
-    writes,
-    command(() => (tx, a) => generateRecoveryCodes(tx, a)),
+  router.post("/transfers/cancel", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) =>
+      cancelTransfer(tx, a, req.body),
+    ),
+  );
+  router.post("/recovery-codes", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) => generateRecoveryCodes(tx, a)),
   );
   // Redemption: 5 per hour per IP and 5 per hour per Google sign-in, both
   // before withOwner, so a refused attempt costs no transaction.
@@ -274,21 +262,19 @@ export function registerPreAuth({ app, sql }: PreAuthContext) {
     limiter("recovery_redeem_ip", 5, 3600_000),
     limiter("recovery_redeem_account", 5, 3600_000, signInKey),
     writes,
-    command((req) => (tx, a) => redeemRecoveryCode(tx, a, req.body)),
+    (req, res, next) =>
+      answer(req, res, next, "command", (tx, a) =>
+        redeemRecoveryCode(tx, a, req.body),
+      ),
   );
-  router.get(
-    "/tax-profile",
-    reads,
-    read(
-      (req) => (tx, a) =>
-        getTaxProfile(tx, a, z.uuid().parse(req.query.organizationId), saasTax),
+  router.get("/tax-profile", reads, (req, res, next) =>
+    answer(req, res, next, "read", (tx, a) =>
+      getTaxProfile(tx, a, z.uuid().parse(req.query.organizationId), saasTax),
     ),
   );
-  router.post(
-    "/tax-profile",
-    writes,
-    command(
-      (req) => (tx, a) => saveTaxProfile(tx, a, req.body, saasTax, legal),
+  router.post("/tax-profile", writes, (req, res, next) =>
+    answer(req, res, next, "command", (tx, a) =>
+      saveTaxProfile(tx, a, req.body, saasTax, legal),
     ),
   );
   app.use("/api/auth/account-center", router);

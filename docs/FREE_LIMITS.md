@@ -114,7 +114,7 @@ Implemented locally (migration 031); not yet staging-qualified.
   `plan.free_slot_auto`. Saving a selection in Settings switches the restaurant
   to `manual`; FreeSelection shows the mode and "Volver a automático". The
   slot write runs inside `/cash/open` after the Free-limits lock (lock order
-  exception E5 in [architecture](ARCHITECTURE.md)) and only when a slot
+  exception E7 in [architecture](ARCHITECTURE.md)) and only when a slot
   actually changes.
 - **Co-owners** are owners: they never consume the two Free employee slots and
   can sell only on the selected Free device, like the primary owner.

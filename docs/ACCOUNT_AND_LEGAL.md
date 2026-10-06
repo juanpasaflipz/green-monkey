@@ -313,7 +313,7 @@ public ordering) use.
   first device that opens one. An explicit owner selection switches to `manual`;
   "Volver a automático" switches back. Moves write `plan.free_slot_auto`. This
   write happens inside `/cash/open` under the Free-limits lock (documented lock
-  order exception E5, docs/ARCHITECTURE.md).
+  order exception E7, docs/ARCHITECTURE.md).
 - **Notices** (`GET /api/account/shell`, every 5 minutes): drawer continuation,
   failed payment, trial or support grant ending (7/3/1 days), Pro ended (7
   days), and "not selected" on Free; plus the owner's account notices.
@@ -367,7 +367,40 @@ terminal. Without an owner Google session the console answers
   account may not edit (LD-15 Q1): today the runner opens one drawer per tenant
   before its load phase and its report lists every error by route and code.
   Lead follow-up: open drawers during the load phase and fail the smoke on any
-  409 `concurrent_update` (ARCHITECTURE E5).
+  409 `concurrent_update` (ARCHITECTURE E7).
+- **Trial merge with integration (ACC-16).** A scratch merge of this track
+  with release/v1 at e503521 (platform hardening, LD-20/LD-21) passes
+  typecheck, lint and all unit tests, including the hardened lock-order
+  ratchet (`tests/lock-scan.ts`) and `tests/db-retries.test.ts`, with these
+  resolutions:
+  1. `docs/ARCHITECTURE.md`: keep integration's E5 and E6 (LD-21), then
+     account's exception, already numbered **E7** on this track (rows 13 and
+     30 cite E7); row 30 takes account's text, rows 31 to 33 integration's.
+  2. `tests/account-db.ts`: wrap the two concurrent bursts (`results` in
+     checks 11 and 22) in `noRetries("…", () => Promise.allSettled(…))` and
+     import `noRetries` from `./db-retries.js`, which exists only on
+     integration.
+  3. `src/labels.ts`: union integration's `job.requeued` / `job.cancelled`
+     rows with account's `account.*` and `plan.free_slot_auto` rows.
+  4. `tests/free-limits-db.ts`: union the imports (integration's `pinSignIn`
+     and `noRetries`; account's `sellingAccess`, `autoAssignFreeSlots`,
+     `freeSelectionMode`, `requireDrawerOpenAllowed`, `setFreeSelectionMode`,
+     `addRound`, `createSession`, `authentication`, `legalConfig`) and keep
+     integration's PLATFORM-LOCKS-6 / PLAT-HR-9 bursts before account's ACC-14
+     selection-switch check (both leave the other device selected).
+  5. `docs/LAUNCH_HANDOFF.md` legal-values bullets: take account's text (031
+     is implemented).
+- **Lock scanner units.** The account-center routes pass their handlers
+  inline (`router.post(path, limiter, (req, res, next) => answer(…))`), so the
+  scanner checks each request as its own unit; the earlier
+  `registerPreAuth:11>3` report (every handler of `registerPreAuth` read as
+  one transaction) is gone without an allowlist entry. The scanner classifies
+  the organization keys 931 (co-owner limit) and 932 (transfers) as LO-3 area
+  keys. They are organization-scoped (`hashtextextended(organizationId, …)`)
+  and always taken before any tenant lock, like 711, 918, 919 and 921, so
+  listing them as LO-0 organization classes in `tests/lock-scan.ts` would be
+  more accurate; the ratchet passes either way (lead decision for the
+  platform-owned scanner).
 
 ## Merge notes (cfdi 030)
 
