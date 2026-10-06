@@ -302,29 +302,39 @@ export function Selling({
     return new HandledError(code);
   }
   /**
+   * SVC-R10: the cart a send came from was parked under the same operation id
+   * when the screen moved to another order. The lines that landed in `order`
+   * leave that copy: it is removed when nothing is left, otherwise the rest
+   * stays parked, as a round of `parkAs` (or as a new order when null).
+   * Returns whether lines stay parked. Used online and offline (LD-12 R6).
+   */
+  async function trimParkedCopy(
+    sent: OrderInput,
+    order: Order,
+    parkAs: Order | null,
+  ) {
+    const copy = await db.drafts.get(sent.operationId);
+    if (!copy || copy.scope !== scope(session)) return false;
+    const ids = idSequence();
+    const next = reconcileLostSend(
+      copy.order,
+      order,
+      crypto.randomUUID(),
+      ids(),
+    );
+    await db.drafts.delete(copy.id);
+    await db.cache.delete(parkedOrderId(copy.id));
+    if (!next.draft.lines.length) return false;
+    await parkDraft(next.draft, parkAs);
+    return true;
+  }
+  /**
    * SVC-R10: a send that answers after the cart moved to another order. The
-   * cart it came from was parked under the same operation id, so the lines
-   * that landed leave that copy (removed when nothing is left, otherwise kept
-   * as a round of the order they reached) and the cart on screen is left alone.
+   * lines that landed leave the parked copy of its cart (the rest stays as a
+   * round of the order they reached) and the cart on screen is left alone.
    */
   async function settleParkedCopy(sent: OrderInput, order: Order) {
-    const copy = await db.drafts.get(sent.operationId);
-    let remaining = false;
-    if (copy && copy.scope === scope(session)) {
-      const ids = idSequence();
-      const next = reconcileLostSend(
-        copy.order,
-        order,
-        crypto.randomUUID(),
-        ids(),
-      );
-      await db.drafts.delete(copy.id);
-      await db.cache.delete(parkedOrderId(copy.id));
-      if (next.draft.lines.length) {
-        await parkDraft(next.draft, order);
-        remaining = true;
-      }
-    }
+    const remaining = await trimParkedCopy(sent, order, order);
     // The same check may be on screen again (resumed meanwhile).
     const shown = currentRef.current;
     if (shown && shown.id === order.id && order.version > shown.version)
@@ -663,15 +673,40 @@ export function Selling({
         });
         landed = true;
         offline.afterSave([operationId]);
-        // SVC-R10: a record saved for a cart the screen left is never written
-        // into the cart now on screen.
-        if (moved()) throw new HandledError("context_changed");
+        if (moved()) {
+          // SVC-R10: a record saved for a cart the screen left is never
+          // written into the cart now on screen. LD-12 R6: as online, what the
+          // record holds leaves the parked copy of that cart, so restoring it
+          // never saves those lines twice. The rest stays parked as a round of
+          // a cached server order; a local order cannot be resumed from
+          // Borradores (it has no server id), so then it stays as a new order.
+          const remaining = await trimParkedCopy(
+            d,
+            view,
+            offline.isLocalOrder(view) ? null : view,
+          );
+          setNotice(
+            [
+              t("offlineSentToDevice"),
+              ...(remaining ? [t("serviceDraftParked")] : []),
+            ].join(" "),
+          );
+          throw new HandledError("context_changed");
+        }
+        // SVC-R7 (OFF-INT-5): as online, lines tapped while the record was
+        // being saved stay in the cart under a new operation id; only what the
+        // record holds leaves, and a note it delivered (the order note, or this
+        // round's note) leaves the note field. The order and the cart change
+        // in one render, before any await (SVC-R8).
+        const nextId = crypto.randomUUID();
+        const ids = idSequence();
+        const next = reconcileLostSend(draftRef.current, view, nextId, ids());
+        draftRef.current = next.draft;
+        sendingRef.current = null;
+        setSending(null);
         setCurrent(view);
-        setDraft((x) => ({
-          ...x,
-          operationId: crypto.randomUUID(),
-          lines: [],
-        }));
+        setDraft((x) => reconcileLostSend(x, view, nextId, ids()).draft);
+        if (next.changed) setNotice(t("serviceSendChanged"));
         if (offline.printSetting === "ask") setSentOffline([operationId]);
         return view as Order;
       }

@@ -197,6 +197,15 @@ the cart change in the same render, so the balance is never counted twice; the
 payment dialog compares the balance only after a collect settles, so
 **Cobrar** sending the cart first never announces "El saldo pendiente cambió".
 
+**Enviar (sin conexión)** (offline table service) follows the same rules while
+the device saves its record (OFF-INT-5): the cart is compared with the local
+order view the save returns, so a product tapped during the save stays, and the
+order note, or the round note, leaves once the record holds it. If the cart
+moved meanwhile (the backstop below), the record's lines leave the copy parked
+in Borradores as they do online (LD-12 R6); what is left stays parked as a
+round of a cached server order, or as a new order when the save went to a
+local order, which Borradores cannot resume.
+
 ### Switching checks while a send or payment is in flight
 
 **Nueva cuenta** and **Abrir orden** in Mesas, and **Abrir orden** in Órdenes

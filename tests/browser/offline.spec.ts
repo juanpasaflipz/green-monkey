@@ -202,6 +202,37 @@ const allRows = (page: Page) =>
         };
       }),
   );
+/**
+ * Holds the record and cache stores in one readwrite transaction from a
+ * second connection, kept alive by back-to-back reads, so an offline save
+ * waits on IndexedDB (as on a slow device) until the returned release runs.
+ */
+async function holdRecordStores(page: Page) {
+  await page.evaluate(
+    () =>
+      new Promise<void>((held, reject) => {
+        const request = indexedDB.open("green-monkey-v1");
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result,
+            tx = db.transaction(["pending", "cache"], "readwrite"),
+            store = tx.objectStore("cache"),
+            w = window as unknown as { __holdRecords?: boolean };
+          w.__holdRecords = true;
+          const spin = () => {
+            if (w.__holdRecords) store.get("hold").onsuccess = spin;
+          };
+          spin();
+          tx.oncomplete = () => db.close();
+          held();
+        };
+      }),
+  );
+  return () =>
+    page.evaluate(() => {
+      (window as unknown as { __holdRecords?: boolean }).__holdRecords = false;
+    });
+}
 
 /** A legacy v1 cash sale row in this session's queue (server-unverifiable fixture). */
 function queuedSale(
@@ -2040,6 +2071,74 @@ test.describe("offline table service (Beta) turned on", () => {
     await expect(page.locator(".workspace")).toContainText(
       new RegExp(`${number} → #${synced.number}`),
     );
+  });
+
+  test("Items tapped while an offline Enviar is being saved stay in the cart; the sent lines and delivered notes leave it", async ({
+    page,
+    context,
+  }) => {
+    // OFF-INT-5 (SVC-R7 offline): the cart used to be emptied after the save,
+    // so a product tapped during the IndexedDB write never reached the kitchen.
+    await page.addInitScript(() => {
+      window.print = () => {};
+    });
+    await login(page);
+    await openDrawer(page);
+    await goOffline(context, page);
+    const send = page.getByRole("button", {
+      name: "Enviar (sin conexión)",
+      exact: true,
+    });
+    const cart = page.locator(".order-line");
+    const inFlight = cart.filter({ hasText: "Enviando a cocina…" });
+    const existing = page.locator(".existing");
+    await product(page, "Taco de hongos").click();
+    await page.getByLabel("Nota de la orden (cocina)").fill("Sin prisa");
+    const release = await holdRecordStores(page);
+    await send.click();
+    await expect(inFlight).toHaveCount(1);
+    // The guest adds a drink while the device is still saving the order.
+    await product(page, "Agua de jamaica").click();
+    await expect(cart).toHaveCount(2);
+    await release();
+    const heading = page.locator(".cart-heading .eyebrow").first();
+    await expect(heading).toHaveText(PROVISIONAL);
+    await expect(existing).toContainText("Taco de hongos");
+    await expect(existing).not.toContainText("Agua de jamaica");
+    await expect(cart).toHaveCount(1);
+    await expect(cart).toContainText("Agua de jamaica");
+    await expect(inFlight).toHaveCount(0);
+    // The order note reached the order, so it left the cart's note field.
+    await expect(existing).toContainText("Sin prisa");
+    const roundNote = page.getByLabel("Nota para esta ronda");
+    await expect(roundNote).toHaveValue("");
+    // The drink goes as round 2 with its own note, which then leaves too.
+    await roundNote.fill("Sin hielo");
+    await send.click();
+    await expect(existing).toContainText("Agua de jamaica");
+    await expect(cart).toHaveCount(0);
+    await expect(roundNote).toHaveValue("");
+    await page
+      .getByRole("button", { name: "Comandas (2)", exact: true })
+      .click();
+    const tickets = page
+      .getByRole("dialog", { name: "Comandas sin conexión" })
+      .locator(".offline-ticket");
+    await expect(tickets).toHaveCount(2);
+    await expect(tickets.filter({ hasText: "Ronda 2" })).toContainText(
+      "Agua de jamaica",
+    );
+    await expect(tickets.filter({ hasText: "Ronda 2" })).not.toContainText(
+      "Taco de hongos",
+    );
+    await expect(tickets.filter({ hasNotText: "Ronda 2" })).not.toContainText(
+      "Agua de jamaica",
+    );
+    await page.keyboard.press("Escape");
+    // Settle the check so it leaves no open order behind.
+    await saveOfflineSale(page);
+    await nextSale(page);
+    await context.setOffline(false);
   });
 
   test("The order on screen when the connection drops is payable offline at its full balance", async ({
