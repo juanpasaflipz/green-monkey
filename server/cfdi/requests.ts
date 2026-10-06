@@ -11,7 +11,6 @@
 import { randomUUID } from "node:crypto";
 import { DomainError } from "../../shared/domain.js";
 import {
-  cancellationAllowed,
   needsCardForm,
   RECEPTOR_FIXABLE_CODES,
   RECEPTOR_FIXABLE_PREFIXES,
@@ -30,9 +29,8 @@ import {
   cfdiState,
   csdUsable,
   fiscalFacts,
-  hasCreditNotes,
+  globalRoute,
   insertEvent,
-  loadDocument,
   modeFrom,
   requireCfdi,
   ticketDeadline,
@@ -175,12 +173,21 @@ export async function createInvoiceRequest(
     throw new DomainError("cfdi_global_in_progress", 409);
   if (!open && current.status !== "valid")
     throw new DomainError("cfdi_global_in_progress", 409);
-  // Past the global's CFF art. 29-A deadline SAT no longer cancels it (CFDI-SAT-3): the route is a
-  // credit note to the global for this ticket's net amount (Guía de llenado del CFDI global,
-  // Apéndice 2, III), then the nominative invoice, which takes the ticket once the note is valid.
-  const g = (await loadDocument(tx, global.documentId))!;
-  const issuer = await fiscalFacts(tx);
-  if (!cancellationAllowed(g.stampedAt, issuer.rfc, issuer.timezone)) {
+  // When SAT would refuse the motive-04 cancellation, the route is a credit note to the global for
+  // this ticket's net amount (Guía de llenado del CFDI global, Apéndice 2, III), then the
+  // nominative invoice, which takes the ticket once the note is valid: past the global's CFF
+  // art. 29-A deadline (CFDI-SAT-3), or while a credit note relates to the global. SAT refuses to
+  // cancel a CFDI that a valid CFDI relates to and credit notes are never canceled on their own
+  // (LD-33 MONEY-1), so one refund credited against a global must not stop every other ticket of
+  // its period from being invoiced, for staff or the portal (CFDI-INT-1). cfdi_refund creates
+  // credit notes only under this same key with no cancellation open (CFDI-R3-2): a request that
+  // joins an open motive-04 cancellation never meets one.
+  const { route } = await globalRoute(
+    tx,
+    global.documentId,
+    await fiscalFacts(tx),
+  );
+  if (route === "credit_note") {
     if (open || current.status !== "valid")
       throw new DomainError("cfdi_global_in_progress", 409);
     const creditId = randomUUID();
@@ -218,14 +225,6 @@ export async function createInvoiceRequest(
     });
     return { documentId, waiting: true, ticketId: r.ticketId };
   }
-  // SAT refuses to cancel a global that a valid credit note relates to; cfdi_refund creates one
-  // only under this same key with no cancellation open (CFDI-R3-2). The portal tells the
-  // customer to ask the restaurant, as it does for a global it may not replace.
-  if (!open && (await hasCreditNotes(tx, global.documentId)))
-    throw new DomainError(
-      portal ? "cfdi_ticket_in_global" : "cfdi_global_has_credit_notes",
-      409,
-    );
   const cancellationId: string = open?.id ?? randomUUID();
   if (!open)
     await tx`

@@ -880,10 +880,11 @@ export async function documentView(
     (d.kind === "global" ? owner : manager);
   // A credit note is never canceled with motive 02/03 (CFDI-MONEY-1, SAT-2): it is corrected by a
   // substitute credit note (relation 04) and then canceled with motive 01.
-  const canCancel =
+  const creditNotesBlock =
     actionable &&
     d.kind !== "egreso" &&
-    (extra.active_credit_notes as string[]).length === 0;
+    (extra.active_credit_notes as string[]).length > 0;
+  const canCancel = actionable && d.kind !== "egreso" && !creditNotesBlock;
   // A valid substitute still waiting for the ticket (a credit note's: still live next to it)
   // while no cancellation of this document is open (rejected, expired or refused by the
   // provider): two valid CFDIs for one sale (CFDI-R3-1). The same condition as attention()'s.
@@ -933,6 +934,7 @@ export async function documentView(
     waitingSubstituteId,
     preStart: !!extra.pre_start,
     cancelDeadline,
+    creditNotesBlock,
     canCancel,
     canSubstitute:
       (d.kind === "invoice" && canCancel && !extra.substitute_unfinished) ||
@@ -1174,6 +1176,7 @@ export async function ticketView(
         ).map((r) => r.id as string),
       );
   const issuer = t.payload.ticket.issuer;
+  const reissue = await reissueRoute(tx, t, facts);
   return {
     ticketId: t.payload.ticket.id,
     orderId: t.payload.ticket.orderId,
@@ -1217,29 +1220,54 @@ export async function ticketView(
     reissueAllowed: o.portal
       ? !!settings?.portalReissueGlobal
       : !!o.viewer && ["owner", "manager"].includes(o.viewer.role),
-    reissueRoute: await reissueRoute(tx, t, facts),
+    reissueRoute: reissue?.route ?? null,
+    reissueReason: reissue?.reason ?? null,
     documents,
   };
 }
 
 /**
- * How a ticket in a valid global gets its nominative invoice (CFDI-SAT-3): cancel the global with
- * motive 04 and replace it, or, once the global's CFF 29-A deadline has passed, a credit note to the
- * global for the ticket (Guía global Apéndice 2 III). Null when the ticket is in no valid global.
+ * How a ticket in a global gets its nominative invoice. "cancel": the global is canceled with
+ * motive 04 and replaced without the ticket (SAT cancellation FAQ Q10). "credit_note": a credit
+ * note to the global for the ticket's net amount, then the invoice (Guía de llenado del CFDI
+ * global, Apéndice 2, III), whenever SAT would refuse that cancellation: past the global's CFF
+ * art. 29-A deadline (`deadline`, CFDI-SAT-3), or while a credit note relates to the global and no
+ * cancellation of it is open (`credit_notes`): SAT refuses to cancel a CFDI that a valid CFDI
+ * relates to, and a credit note is never canceled on its own (LD-33 MONEY-1), so a refund
+ * credited against a global must not stop the other tickets of its period from being invoiced
+ * (CFDI-INT-1). createInvoiceRequest decides with this under the global's document key, the key
+ * cfdi_refund creates credit notes under; the ticket view shows the same answer.
  */
+export async function globalRoute(
+  tx: Tx,
+  globalId: string,
+  facts: Pick<FiscalFacts, "rfc" | "timezone">,
+): Promise<{
+  route: "cancel" | "credit_note";
+  reason: "deadline" | "credit_notes" | null;
+}> {
+  const [g] = await tx`
+    select d.stamped_at,
+      exists (select 1 from cfdi_cancellations x where x.tenant_id = d.tenant_id
+        and x.document_id = d.id and x.status in ('queued','requested')) as canceling
+    from cfdi_documents d where d.id = ${globalId}`;
+  const stampedAt = g?.stamped_at ? iso(g.stamped_at) : null;
+  if (!cancellationAllowed(stampedAt, facts.rfc, facts.timezone))
+    return { route: "credit_note", reason: "deadline" };
+  if (g && !g.canceling && (await hasCreditNotes(tx, globalId)))
+    return { route: "credit_note", reason: "credit_notes" };
+  return { route: "cancel", reason: null };
+}
+
+/** globalRoute for the ticket's valid global; null when the ticket is in no valid global. */
 export async function reissueRoute(
   tx: Tx,
   t: TicketFacts,
   facts: Pick<FiscalFacts, "rfc" | "timezone">,
-): Promise<"cancel" | "credit_note" | null> {
+): Promise<Awaited<ReturnType<typeof globalRoute>> | null> {
   const g = t.coverage.find((c) => c.kind === "global" && c.state === "active");
   if (!g || !["valid", "canceling"].includes(g.status)) return null;
-  const [r] =
-    await tx`select stamped_at from cfdi_documents where id = ${g.documentId}`;
-  const stampedAt = r?.stamped_at ? iso(r.stamped_at) : null;
-  return cancellationAllowed(stampedAt, facts.rfc, facts.timezone)
-    ? "cancel"
-    : "credit_note";
+  return globalRoute(tx, g.documentId, facts);
 }
 
 // ---------------------------------------------------------------------------------------------

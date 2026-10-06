@@ -748,6 +748,12 @@ export type CfdiDocumentView = CfdiDocumentSummary & {
   preStart: boolean;
   /** CFF art. 29-A: the first instant it can no longer be canceled (null before it is stamped). */
   cancelDeadline: string | null;
+  /**
+   * Cancelar/Sustituir would otherwise be offered to this viewer, but a credit note relates to this
+   * document: SAT refuses the cancellation and credit notes are never canceled on their own
+   * (LD-33 MONEY-1), so the register says why the actions are missing (CFDI-INT-1).
+   */
+  creditNotesBlock: boolean;
   /** Request this document's cancellation again with motive 01 and the waiting substitute. */
   canRequestAgain: boolean;
   canRetry: boolean;
@@ -795,8 +801,16 @@ export type CfdiTicketView = {
   } | null;
   /** Staff: manager/owner; portal: settings.portalReissueGlobal. */
   reissueAllowed: boolean;
-  /** In a valid global: replace it (cancel 04), or credit it past its 29-A deadline (SAT-3). */
+  /**
+   * In a valid global: replace it (cancel 04), or credit it (Guía global Apéndice 2 III) when SAT
+   * would refuse that cancellation (server globalRoute).
+   */
   reissueRoute: "cancel" | "credit_note" | null;
+  /**
+   * Why the route is a credit note: the global's CFF 29-A deadline passed (SAT-3), or a credit
+   * note relates to the global (CFDI-INT-1). Null for "cancel" or outside a global.
+   */
+  reissueReason: "deadline" | "credit_notes" | null;
   /** Staff view only (a cashier: own documents of the last 24 h, spec §2.13); [] in the portal. */
   documents: CfdiDocumentSummary[];
 };

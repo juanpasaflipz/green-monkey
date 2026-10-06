@@ -1662,7 +1662,7 @@ try {
     assert.equal(finished.state, "done");
   });
 
-  await test("R3-2b. credit notes block every cancellation: the staff request (cfdi_has_credit_notes), the late invoice's reissue request (cfdi_global_has_credit_notes), and cfdi_cancel and cfdi_reissue re-check under the document key without calling the provider", async () => {
+  await test("R3-2b. credit notes block every cancellation: the staff request (cfdi_has_credit_notes), the late invoice's request (route III instead of a motive-04 cancellation, CFDI-INT-1), and cfdi_cancel and cfdi_reissue re-check under the document key without calling the provider", async () => {
     const N = await makeTenant("credit notes block cancellations");
     await activate(N, { testFrom: daysAgo(40), periodicity: "day" });
     const tk = await makeTicket(N);
@@ -1734,10 +1734,12 @@ try {
     assert.equal(deletes(), before, "the provider is never asked");
     assert.ok(alerts.some((a) => a.key.startsWith("cfdi_cancel_failed:")));
 
-    // A global with a credit note: a late invoice cannot replace it.
+    // A global with a credit note: a late invoice never asks for its cancellation; it credits
+    // the global for the ticket instead (route III, CFDI-INT-1).
     const day = daysAgo(2);
     const t1 = await makeTicket(N, { businessDate: day });
     const t2 = await makeTicket(N, { businessDate: day });
+    const t3 = await makeTicket(N, { businessDate: day });
     await tick(N);
     const [g] =
       await admin`select id from cfdi_documents where tenant_id = ${N.tenantId} and kind = 'global'
@@ -1747,16 +1749,21 @@ try {
     const [note] =
       await admin`select status from cfdi_documents where parent_document_id = ${g.id} and kind = 'egreso'`;
     assert.equal(note.status, "valid");
-    await rejects(
-      invoice(N, t2, { s: N.manager, reissueGlobal: true }),
-      "cfdi_global_has_credit_notes",
-    );
+    const late = await invoice(N, t2, { s: N.manager, reissueGlobal: true });
+    assert.equal(late.status, "waiting");
+    const [credit] =
+      await admin`select id, parent_document_id from cfdi_documents where tenant_id = ${N.tenantId}
+        and credit_ticket_id = ${t2.id}`;
+    assert.equal(credit.parent_document_id, g.id);
+    assert.equal((await docRow(late.id)).depends_on, credit.id);
     assert.equal(
       (
         await admin`select 1 from cfdi_cancellations where document_id = ${g.id}`
       ).length,
       0,
     );
+    await settle(N.tenantId);
+    assert.equal((await docRow(late.id)).status, "valid");
 
     // The same race on the reissue: refused under G's key, waiting invoices fail, no provider call.
     const waiter = randomUUID();
@@ -1768,7 +1775,7 @@ try {
           ${tx.json(MORAL as never)}, ${MORAL.rfc}, ${N.manager.employeeId})`;
       await tx`
         insert into cfdi_document_tickets(tenant_id, document_id, ticket_id, mode, state)
-        values (${N.tenantId}, ${waiter}, ${t2.id}, 'test', 'pending')`;
+        values (${N.tenantId}, ${waiter}, ${t3.id}, 'test', 'pending')`;
     });
     before = deletes();
     alerts.length = 0;
@@ -1785,7 +1792,7 @@ try {
     assert.equal(w.status, "failed");
     assert.equal(w.error_code, "cfdi_global_has_credit_notes");
     assert.deepEqual(
-      (await claims(t2.id)).map((r) => [r.document_id, r.state]),
+      (await claims(t3.id)).map((r) => [r.document_id, r.state]),
       [
         [g.id, "active"],
         [waiter, "released"],
@@ -4293,6 +4300,176 @@ try {
         error_code: "cfdi_csd_abandoned",
       },
     );
+  });
+
+  await test("INT-1a. a refund credited against a valid global never blocks the other tickets of its period: the staff request and the portal's (portal_reissue_global on) take route III, a credit note related 01 to the global for each ticket's net, then a stamped invoice; the global is never canceled, the ticket view says why, and its owner is told why Cancelar is missing", async () => {
+    const W = await makeTenant("int-1a");
+    await activate(W, { testFrom: daysAgo(40), periodicity: "day" });
+    await saveSettings(W, {
+      portalReissueGlobal: true,
+      selfInvoicePolicy: "days",
+      selfInvoiceDays: 30,
+    });
+    const day = daysAgo(2);
+    const refunded = await makeTicket(W, { businessDate: day });
+    const t1 = await makeTicket(W, {
+      businessDate: day,
+      groups: [{ category: "iva16", gross: 23200 }],
+    });
+    const t2 = await makeTicket(W, {
+      businessDate: day,
+      groups: [
+        { category: "iva16", gross: 5800 },
+        { category: "iva0", gross: 1500 },
+      ],
+    });
+    const t3 = await makeTicket(W, { businessDate: day });
+    await tick(W);
+    const [g] =
+      await admin`select id, uuid from cfdi_documents where tenant_id = ${W.tenantId} and kind = 'global'
+        and period_key = ${"D" + day} and status = 'valid'`;
+    // The routine next-day refund, credited against the global (route I).
+    await refund(W, refunded, { iva16: 2320 });
+    await settle(W.tenantId);
+    const [routeI] =
+      await admin`select status from cfdi_documents where parent_document_id = ${g.id} and refund_id is not null`;
+    assert.equal(routeI.status, "valid");
+    const staffView = await web(W, (tx) =>
+      service.getTicket(tx, W.manager, {
+        params: { ticketId: t1.id },
+      } as never),
+    );
+    assert.deepEqual(
+      {
+        eligibility: staffView.eligibility,
+        route: staffView.reissueRoute,
+        reason: staffView.reissueReason,
+      },
+      { eligibility: "in_global", route: "credit_note", reason: "credit_notes" },
+    );
+    const owner = await web(W, (tx) =>
+      service.getDocument(tx, W.owner, { params: { id: g.id } } as never),
+    );
+    assert.deepEqual(
+      { canCancel: owner.canCancel, creditNotesBlock: owner.creditNotesBlock },
+      { canCancel: false, creditNotesBlock: true },
+    );
+    // A cashier still asks a manager; the manager's request credits the global.
+    await rejects(invoice(W, t1), "cfdi_ticket_in_global");
+    const staff = await invoice(W, t1, { s: W.manager, reissueGlobal: true });
+    assert.equal(staff.status, "waiting");
+    // The customer, through the portal (the owner's portal_reissue_global is on).
+    const portalView = await portal.portalTicket(app, t2.code);
+    assert.deepEqual(
+      {
+        eligibility: portalView.eligibility,
+        route: portalView.reissueRoute,
+        reason: portalView.reissueReason,
+        allowed: portalView.reissueAllowed,
+      },
+      {
+        eligibility: "in_global",
+        route: "credit_note",
+        reason: "credit_notes",
+        allowed: true,
+      },
+    );
+    const customer = await portalRequest(t2.code);
+    assert.equal(customer.document.status, "queued");
+    assert.equal(
+      (
+        await admin`select 1 from cfdi_cancellations where document_id = ${g.id}`
+      ).length,
+      0,
+      "no motive-04 cancellation is ever asked for",
+    );
+    await settle(W.tenantId);
+    for (const [tk, net] of [
+      [t1, 23200],
+      [t2, 5800 + 1500],
+    ] as const) {
+      const [note] =
+        await admin`select * from cfdi_documents where tenant_id = ${W.tenantId} and credit_ticket_id = ${tk.id}`;
+      assert.deepEqual(
+        {
+          kind: note.kind,
+          status: note.status,
+          parent: note.parent_document_id,
+          total: note.expected_total,
+        },
+        { kind: "egreso", status: "valid", parent: g.id, total: net },
+      );
+      assert.deepEqual(note.request.related_documents, [
+        { relationship: "01", documents: [g.uuid] },
+      ]);
+      const [inv] =
+        await admin`select * from cfdi_documents where depends_on = ${note.id} and kind = 'invoice'`;
+      assert.deepEqual(
+        { status: inv.status, total: inv.expected_total },
+        { status: "valid", total: net },
+      );
+      assert.deepEqual(
+        (await claims(tk.id)).map((r) => [
+          r.document_id,
+          r.state,
+          r.released_reason,
+        ]),
+        [
+          [g.id, "released", "superseded"],
+          [inv.id, "active", null],
+        ],
+      );
+    }
+    assert.equal(
+      (await portal.portalRequestStatus(app, customer.requestToken)).status,
+      "valid",
+    );
+    assert.equal((await docRow(g.id)).status, "valid", "the global stays");
+    assert.equal(
+      (
+        await admin`select 1 from cfdi_cancellations where document_id = ${g.id}`
+      ).length,
+      0,
+    );
+    assert.deepEqual(
+      (await claims(t3.id)).map((r) => [r.document_id, r.state]),
+      [[g.id, "active"]],
+    );
+    // Without the owner's setting the portal still sends the customer to the restaurant.
+    await saveSettings(W, { portalReissueGlobal: false });
+    await rejects(portalRequest(t3.code), "cfdi_ticket_in_global");
+  });
+
+  await test("INT-1b. an invoice that a credit note relates to has a defined outcome, never an impossible instruction: cancel and substitute answer cfdi_has_credit_notes, the register hides Cancelar and Sustituir for a manager and says why (creditNotesBlock), and the credit note itself can still be corrected", async () => {
+    const W = await makeTenant("int-1b");
+    await activate(W);
+    const { d, e } = await creditedInvoice(W);
+    await rejects(cancelAs(W, W.manager, d.id), "cfdi_has_credit_notes");
+    await rejects(substitute(W, d.id), "cfdi_has_credit_notes");
+    const v = await viewOf(W, d.id);
+    assert.deepEqual(
+      {
+        canCancel: v.canCancel,
+        canSubstitute: v.canSubstitute,
+        creditNotesBlock: v.creditNotesBlock,
+      },
+      { canCancel: false, canSubstitute: false, creditNotesBlock: true },
+    );
+    // The cashier who requested it is offered neither action, so nothing is explained.
+    const cashier = await web(W, (tx) =>
+      service.getDocument(tx, W.cashier, { params: { id: d.id } } as never),
+    );
+    assert.equal(cashier.creditNotesBlock, false);
+    const note = await viewOf(W, e.id);
+    assert.deepEqual(
+      {
+        canCancel: note.canCancel,
+        canSubstitute: note.canSubstitute,
+        creditNotesBlock: note.creditNotesBlock,
+      },
+      { canCancel: false, canSubstitute: true, creditNotesBlock: false },
+    );
+    assert.equal((await docRow(d.id)).status, "valid");
   });
 
   console.log(`cfdi DB checks passed: ${checks}`);

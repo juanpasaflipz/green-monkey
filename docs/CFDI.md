@@ -225,11 +225,19 @@ Recovery (`server/cfdi/recovery.ts`):
 - **Credit notes and cancellations never overlap** (CFDI-R3-2). SAT refuses to cancel a CFDI that
   a valid credit note relates to. Every path that starts a cancellation checks for credit notes
   (queued, stamping, pending, valid or canceling egresos) under the document's key: the staff
-  request (`cfdi_has_credit_notes`), the late invoice's reissue request
-  (`cfdi_global_has_credit_notes`; the portal answers `cfdi_ticket_in_global`), and `cfdi_cancel`
-  and `cfdi_reissue` again right before they call the provider (the cancellation fails with
+  request (`cfdi_has_credit_notes`), the late invoice's request, and `cfdi_cancel` and
+  `cfdi_reissue` again right before they call the provider (the cancellation fails with
   `cfdi_has_credit_notes`, the reissue's waiting invoices with `cfdi_global_has_credit_notes`,
-  with the usual alerts). `cfdi_refund` decides under the same key and waits
+  with the usual alerts). A late invoice for a ticket in a global that credit notes relate to
+  never asks for that cancellation: it takes **route III** (below), for staff and for the portal
+  when `portal_reissue_global` is on, so one refund credited against a daily or monthly global
+  never stops the other tickets of its period from being invoiced (CFDI-INT-1). A credit note is
+  never canceled on its own (LD-33), so an invoice or global with live credit notes cannot be
+  canceled or substituted in the app: the register says so instead of offering Cancelar or
+  Sustituir (`creditNotesBlock`), and the messages never tell staff to cancel the notes; an
+  invoice with an error after a credited refund is corrected with support (correcting it in the
+  app would mean substituting it and re-issuing each credit note against the substitute, which
+  is not built). `cfdi_refund` decides under the same key and waits
   (`cfdi_parent_cancel_open`) while any cancellation of the covering document is queued or
   requested, whatever its source; once it ends, the claim has moved to the substitute, the
   replacement global or back to the globals, and the refund is netted or credited there.
@@ -262,7 +270,11 @@ Recovery (`server/cfdi/recovery.ts`):
   S01, the ticket's FormaPago; `credit_ticket_id`), then the waiting nominative invoice, which
   takes the ticket from the global once the note is valid ("Nota de crédito a la global y
   facturar"). A failed note fails the invoice (`cfdi_global_credit_failed`); a refund decided
-  meanwhile waits (`cfdi_parent_credit_open`).
+  meanwhile waits (`cfdi_parent_credit_open`). Route III is also taken, whatever the deadline,
+  while a credit note relates to the global and no cancellation of it is open (CFDI-INT-1):
+  `globalRoute` (server/cfdi/store.ts) decides for the request under the global's document key
+  and for the ticket view (`reissueRoute`, `reissueReason: "deadline" | "credit_notes"`), so the
+  dialog explains which applies.
 - **Credit notes are corrected, never just canceled** (MONEY-1, SAT-2). Staff cannot cancel an
   egreso with 02/03 (`cfdi_not_cancellable`). **Sustituir…** on a credit note (managers,
   step-up) issues a new one for the same refund and parent with the chosen FormaPago, related 01
@@ -408,9 +420,9 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_generic_rfc` | Para público en general no se emite factura individual: el ticket se incluye en la factura global. |
 | `cfdi_global_credit_failed` | No se pudo emitir la nota de crédito a la factura global; la factura del cliente no se emitió. Intenta de nuevo. |
 | `cfdi_global_error` | No se pudo preparar la factura global. Lo reintentaremos automáticamente. |
-| `cfdi_global_has_credit_notes` | La factura global de este ticket tiene notas de crédito vigentes; cancélalas antes de sustituirla. |
+| `cfdi_global_has_credit_notes` | La factura global de este ticket tiene notas de crédito vigentes y el SAT no permite cancelarla. Solicita la factura de nuevo: se emitirá una nota de crédito a la global por este ticket y después la factura. |
 | `cfdi_global_in_progress` | La factura global de este periodo se está emitiendo. Intenta en unos minutos. |
-| `cfdi_has_credit_notes` | Cancela primero las notas de crédito relacionadas. |
+| `cfdi_has_credit_notes` | Tiene notas de crédito vigentes y el SAT no permite cancelarla ni sustituirla mientras existan; una nota de crédito solo se corrige con Sustituir. Si tiene un error, avisa a soporte. |
 | `cfdi_invalid_email` | Escribe un correo electrónico válido. |
 | `cfdi_invalid_legal_name` | Escribe el nombre o razón social (hasta 254 caracteres). |
 | `cfdi_invalid_motive` | Las facturas globales solo se cancelan con el motivo 02. |
@@ -508,7 +520,7 @@ redeclared.
 | Command | Covers |
 | --- | --- |
 | `npm test` | `tests/cfdi.test.ts` (builders, rounding proof, XML parser, error classifier), `tests/cfdi-facturapi-contract.test.ts` (documented API), `tests/cfdi-facturapi-fake.test.ts`, `tests/cfdi-shared.test.ts` (receptor rules, periods, deadlines, payment forms, settings), `tests/cfdi-resico.test.ts`, `tests/cfdi-secrets.test.ts` (vault, upload box, CSD inspection, config, redaction), `tests/cfdi-jobs.test.ts` (kinds, limits, retry, dedupe keys), `tests/cfdi-portal-http.test.ts` (portal limiters over HTTP), `tests/cfdi-client.test.ts` (receptor form, printed block, alerts, ticket status, order actions), `tests/import-graph.test.ts` (process boundary), `tests/cfdi-merge-gate.test.ts` (no compat shim returns; the refund hook and `refunds.method`), `tests/cfdi-locks.test.ts` (advisory key classes and their order inside LO-3) |
-| `npm run test:db:cfdi` | checks through the worker login and the in-process fake, against the real 027/028 tables: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos (including fiscal's `recordRefundTax` hook and the card/cash FormaPago from `refunds.method`), substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, the EXPLAINs of the running-lease index, and the second-opinion checks (lost cancel/reissue/stamp answers read back, CSD boxes always wiped, motive-01 cancellations whose substitute ended, a cancellation completing under its document key, credit-note corrections, refunds re-decided on hand-over, re-globalization after old cancellations and overdue periods, the CFF 29-A deadline and route III, RESICO coercion, portal failures and file readiness, and the cheap lows) |
+| `npm run test:db:cfdi` | checks through the worker login and the in-process fake, against the real 027/028 tables: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos (including fiscal's `recordRefundTax` hook and the card/cash FormaPago from `refunds.method`), substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, the EXPLAINs of the running-lease index, and the second-opinion checks (lost cancel/reissue/stamp answers read back, CSD boxes always wiped, motive-01 cancellations whose substitute ended, a cancellation completing under its document key, credit-note corrections, refunds re-decided on hand-over, re-globalization after old cancellations and overdue periods, the CFF 29-A deadline and route III, RESICO coercion, portal failures and file readiness, and the cheap lows), and route III for a global that credit notes relate to (staff and portal) with the register's explanation for an invoice that has them (CFDI-INT-1) |
 | `npx playwright test tests/browser/cfdi.spec.ts` | the panel before activation and the portal (always); activation + CSD, staff invoice + cancel, portal self-invoice (they need the worker with the fake; CI starts both, a local run without the worker skips only these three) |
 | `npm run test:facturapi:sandbox` | opt-in, `FACTURAPI_TEST_KEY` only, official URL, test mode; `RECORD=1` rewrites fixtures as `recorded@<date>` (not run: no key) |
 

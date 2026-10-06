@@ -675,6 +675,7 @@ export function DocumentDetail({
               </Button>
             )}
           </div>
+          <CreditNotesBlockNote doc={doc} locale={locale} />
           {doc.status === "valid" &&
             doc.cancelDeadline &&
             Date.parse(doc.cancelDeadline) <= Date.now() && (
@@ -832,6 +833,33 @@ export function SubstitutionAlert({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Why Cancelar/Sustituir are missing on a valid invoice or global that credit notes relate to:
+ * SAT refuses the cancellation while they exist, and a credit note is only corrected, never
+ * canceled on its own (LD-33 MONEY-1). A global's tickets are still invoiced through a credit
+ * note to the global (CFDI-INT-1).
+ */
+export function CreditNotesBlockNote({
+  doc,
+  locale,
+}: {
+  doc: CfdiDocumentView;
+  locale: Locale;
+}) {
+  if (!doc.creditNotesBlock) return null;
+  return (
+    <p className="muted">
+      {
+        strings[locale][
+          doc.kind === "global"
+            ? "cfdiCreditNotesBlockGlobal"
+            : "cfdiCreditNotesBlockInvoice"
+        ]
+      }
+    </p>
   );
 }
 

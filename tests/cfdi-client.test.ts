@@ -34,7 +34,7 @@ vi.mock("../src/connectivity", async (importOriginal) => ({
 }));
 
 import { api } from "../src/api";
-import { strings } from "../src/i18n";
+import { strings, translateError } from "../src/i18n";
 import { cfdiReportAlerts } from "../server/cfdi/hooks";
 import {
   cfdiReportAlertText,
@@ -69,6 +69,7 @@ import {
   ticketChip,
 } from "../src/features/cfdi/CfdiOrderActions";
 import {
+  CreditNotesBlockNote,
   needsAcceptance,
   SubstitutionAlert,
   ticketsLabel,
@@ -81,7 +82,10 @@ import {
   portalFailure,
   portalMessage,
 } from "../src/features/cfdi/SelfInvoicePortal";
-import { awaitingFiles } from "../src/features/cfdi/InvoiceDialog";
+import {
+  awaitingFiles,
+  inGlobalNotice,
+} from "../src/features/cfdi/InvoiceDialog";
 import { FiscalReceiptFooter } from "../src/features/fiscal/FiscalReceipt";
 import { receptorFixable } from "../shared/cfdi";
 
@@ -690,6 +694,49 @@ describe("cfdi client: helpers", () => {
     expect(refused).toContain(strings.en.cfdiOpenSubstitute);
     expect(refused).not.toContain(strings.en.cfdiCancelAgain);
     expect(html(doc({ waitingSubstituteId: null }))).toBe("");
+  });
+  it("credit notes: the register says why Cancelar and Sustituir are missing, the dialog says how a credited global is invoiced, and no message tells staff to cancel credit notes (CFDI-INT-1)", () => {
+    const html = (over: Partial<CfdiDocumentView>, locale: "es" | "en" = "es") =>
+      renderToStaticMarkup(
+        createElement(CreditNotesBlockNote, {
+          doc: {
+            kind: "invoice",
+            creditNotesBlock: true,
+            ...over,
+          } as CfdiDocumentView,
+          locale,
+        }),
+      );
+    expect(html({})).toContain(strings.es.cfdiCreditNotesBlockInvoice);
+    expect(html({}, "en")).toContain(strings.en.cfdiCreditNotesBlockInvoice);
+    expect(html({ kind: "global" })).toContain(
+      strings.es.cfdiCreditNotesBlockGlobal,
+    );
+    expect(html({ creditNotesBlock: false })).toBe("");
+    expect(
+      inGlobalNotice({ reissueRoute: "cancel", reissueReason: null }),
+    ).toBe("cfdiInGlobalManager");
+    expect(
+      inGlobalNotice({ reissueRoute: "credit_note", reissueReason: "deadline" }),
+    ).toBe("cfdiInGlobalCreditNote");
+    expect(
+      inGlobalNotice({
+        reissueRoute: "credit_note",
+        reissueReason: "credit_notes",
+      }),
+    ).toBe("cfdiInGlobalHasCreditNotes");
+    // A credit note is never canceled on its own (LD-33): no text may ask for it.
+    const impossible =
+      /cancela(las)? primero|canc[eé]lalas|cancel (them|the related credit notes)/i;
+    for (const locale of ["es", "en"] as const)
+      for (const text of [
+        translateError("cfdi_has_credit_notes", locale),
+        translateError("cfdi_global_has_credit_notes", locale),
+        strings[locale].cfdiCreditNotesBlockInvoice,
+        strings[locale].cfdiCreditNotesBlockGlobal,
+        strings[locale].cfdiInGlobalHasCreditNotes,
+      ])
+        expect(text).not.toMatch(impossible);
   });
   it("settings: badge and polling decisions", () => {
     const view = (over: Partial<CfdiSettingsView>) =>

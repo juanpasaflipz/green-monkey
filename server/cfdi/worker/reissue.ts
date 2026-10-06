@@ -94,7 +94,8 @@ export async function reissueJob(ctx: JobContext): Promise<JobOutcome> {
     // Not sent yet: SAT refuses to cancel a global that a valid credit note relates to. The
     // request checked it under G's key, and cfdi_refund waits while this cancellation is open, but
     // a credit note created before either took the key may exist: refuse without calling the
-    // provider, under G's key, failing the waiting invoices (CFDI-R3-2).
+    // provider, under G's key, failing the waiting invoices (CFDI-R3-2). Requested again, their
+    // tickets take route III, a credit note to G (globalRoute, CFDI-INT-1).
     if (g.status === "valid" && c.status === "queued") {
       const refused = await ctx.tenant(async (tx) => {
         await lockDocument(tx, tenantId, globalId);

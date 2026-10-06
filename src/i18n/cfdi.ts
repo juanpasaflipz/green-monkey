@@ -173,8 +173,14 @@ export default defineArea({
     cfdiInGlobalCreditNote:
       "La factura global de {period} ya no se puede cancelar (artículo 29-A del CFF): se emitirá una nota de crédito a la global por este ticket y después la factura del cliente.",
     cfdiCreditAndInvoice: "Nota de crédito a la global y facturar",
+    cfdiInGlobalHasCreditNotes:
+      "La factura global de {period} tiene notas de crédito y el SAT no permite cancelarla mientras existan: se emitirá una nota de crédito a la global por este ticket y después la factura del cliente.",
     cfdiCancelDeadlinePassed:
       "Ya no se puede cancelar ni sustituir: el plazo del artículo 29-A del CFF terminó el {date}.",
+    cfdiCreditNotesBlockInvoice:
+      "No se puede cancelar ni sustituir: tiene notas de crédito vigentes y el SAT no cancela una factura mientras una nota de crédito se relacione con ella. Una nota de crédito solo se corrige con Sustituir. Si esta factura tiene un error, avisa a soporte.",
+    cfdiCreditNotesBlockGlobal:
+      "No se puede cancelar: tiene notas de crédito vigentes y el SAT no cancela una factura mientras una nota de crédito se relacione con ella. Un ticket de esta global se factura con una nota de crédito a la global.",
     cfdiGlobalInProgress:
       "La factura global de este periodo se está emitiendo. Intenta en unos minutos.",
     cfdiBeforeStart:
@@ -559,8 +565,14 @@ export default defineArea({
     cfdiInGlobalCreditNote:
       "The global invoice for {period} can no longer be canceled (CFF article 29-A): a credit note to the global is issued for this ticket, then the customer's invoice.",
     cfdiCreditAndInvoice: "Credit the global and invoice",
+    cfdiInGlobalHasCreditNotes:
+      "The global invoice for {period} has credit notes, and SAT does not allow canceling it while they exist: a credit note to the global is issued for this ticket, then the customer's invoice.",
     cfdiCancelDeadlinePassed:
       "It can no longer be canceled or replaced: the CFF article 29-A deadline ended on {date}.",
+    cfdiCreditNotesBlockInvoice:
+      "It cannot be canceled or replaced: it has valid credit notes, and SAT does not cancel an invoice while a credit note relates to it. A credit note can only be corrected with Replace. If this invoice has an error, contact support.",
+    cfdiCreditNotesBlockGlobal:
+      "It cannot be canceled: it has valid credit notes, and SAT does not cancel an invoice while a credit note relates to it. A ticket in this global is invoiced through a credit note to the global.",
     cfdiGlobalInProgress:
       "The global invoice for this period is being issued. Try again in a few minutes.",
     cfdiBeforeStart: "This ticket predates invoicing in Green Monkey.",
@@ -1108,12 +1120,12 @@ export default defineArea({
       "A cancellation is already in progress for this invoice.",
     ],
     cfdi_has_credit_notes: [
-      "Cancela primero las notas de crédito relacionadas.",
-      "Cancel the related credit notes first.",
+      "Tiene notas de crédito vigentes y el SAT no permite cancelarla ni sustituirla mientras existan; una nota de crédito solo se corrige con Sustituir. Si tiene un error, avisa a soporte.",
+      "It has valid credit notes, and SAT does not allow canceling or replacing it while they exist; a credit note can only be corrected with Replace. If it has an error, contact support.",
     ],
     cfdi_global_has_credit_notes: [
-      "La factura global de este ticket tiene notas de crédito vigentes; cancélalas antes de sustituirla.",
-      "This ticket's global invoice has valid credit notes; cancel them before replacing it.",
+      "La factura global de este ticket tiene notas de crédito vigentes y el SAT no permite cancelarla. Solicita la factura de nuevo: se emitirá una nota de crédito a la global por este ticket y después la factura.",
+      "This ticket's global invoice has valid credit notes, and SAT does not allow canceling it. Request the invoice again: a credit note to the global is issued for this ticket, then the invoice.",
     ],
     cfdi_substitution_pending: [
       "Esta factura ya tiene una sustituta que espera su cancelación: vuelve a solicitar la cancelación o cancela la sustituta (motivo 02) antes de sustituirla otra vez.",

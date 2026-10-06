@@ -44,6 +44,21 @@ export function awaitingFiles(doc: CfdiDocumentView): boolean {
   );
 }
 
+/**
+ * A manager's notice for a ticket in a valid global: the global is replaced (motive 04), or,
+ * when SAT would refuse that cancellation, credited for the ticket (route III) because its CFF
+ * 29-A deadline passed or because credit notes relate to it (CFDI-INT-1).
+ */
+export function inGlobalNotice(
+  ticket: Pick<CfdiTicketView, "reissueRoute" | "reissueReason">,
+) {
+  if (ticket.reissueRoute !== "credit_note")
+    return "cfdiInGlobalManager" as const;
+  return ticket.reissueReason === "credit_notes"
+    ? ("cfdiInGlobalHasCreditNotes" as const)
+    : ("cfdiInGlobalCreditNote" as const);
+}
+
 export function InvoiceDialog({
   ticketId,
   session,
@@ -300,13 +315,7 @@ export function InvoiceDialog({
         )}
         {ticket?.eligibility === "in_global" && manager && !doc && (
           <p className="cfdi-warning">
-            {tr(
-              locale,
-              ticket.reissueRoute === "credit_note"
-                ? "cfdiInGlobalCreditNote"
-                : "cfdiInGlobalManager",
-              { period },
-            )}
+            {tr(locale, inGlobalNotice(ticket), { period })}
           </p>
         )}
         {showForm && (
