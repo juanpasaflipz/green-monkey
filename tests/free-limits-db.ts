@@ -711,8 +711,9 @@ async function planLapse() {
   // ACC-14 / ACC-21: when Pro ended, per entitlement status (drawer two opened
   // an hour ago). Migration 031's trigger stamps pro_ended_at when a write
   // takes the row out of Pro, bounded by the end date the row had then, and
-  // keeps it on every later write. backInPro(ago) puts the row back in Pro
-  // with an end date `ago` in the past (a period that ran out).
+  // keeps it on every later write. backInPro(ago) makes the row active again
+  // with a period that ran out `ago` (the worker's later status write then
+  // takes it out of Pro).
   const continuationBasis = async () =>
     (await run((tx) => sellingAccess(tx, staff.beto, devices[1].id))).basis;
   const entitlementRow = async () =>
@@ -725,7 +726,7 @@ async function planLapse() {
     assert.equal(
       (await entitlementRow()).pro_ended_at,
       null,
-      "a row in Pro carries no pro_ended_at",
+      "an active row carries no pro_ended_at",
     );
   };
   // Canceled: the earlier of its ended_at (access_until) and leaving Pro.
