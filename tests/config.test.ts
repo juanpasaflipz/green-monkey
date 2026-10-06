@@ -35,6 +35,9 @@ const deployedWorker = {
 };
 const workerDatabaseUrl =
   "postgresql://gm_production_worker:pw@ep-x-pooler.us-east-1.aws.neon.tech/green_monkey_production";
+// A synthetic keyring entry built at runtime (no key material is committed).
+const signingKeys = (kid = "k1", fill = 7, bytes = 32) =>
+  `${kid}:${Buffer.alloc(bytes, fill).toString("base64url")}`;
 const billingWorker = {
   ...deployedWorker,
   BILLING_SANDBOX_ENABLED: "true",
@@ -224,6 +227,77 @@ describe("process configuration", () => {
     ).toBeNull();
   });
 
+  it("production web requires SIGNING_KEYS; staging and development do not", () => {
+    const production = {
+      ...deployedWeb,
+      APP_ENV: "production",
+      APP_URL: "https://app.example.com",
+    };
+    expect(() => loadConfig(production, "web")).toThrow("missing_signing_keys");
+    expect(() =>
+      loadConfig({ ...production, SIGNING_KEYS: "" }, "web"),
+    ).toThrow("missing_signing_keys");
+    expect(
+      loadConfig({ ...production, SIGNING_KEYS: signingKeys() }, "web").appEnv,
+    ).toBe("production");
+    expect(loadConfig(deployedWeb, "web").appEnv).toBe("staging");
+    expect(loadConfig(web, "web").appEnv).toBe("development");
+    // JWT_SECRET stays required next to SIGNING_KEYS (legacy tokens, lookup digests).
+    const { JWT_SECRET: _jwt, ...noJwt } = production;
+    expect(() =>
+      loadConfig({ ...noJwt, SIGNING_KEYS: signingKeys() }, "web"),
+    ).toThrow("missing_jwt_secret");
+  });
+
+  it("malformed SIGNING_KEYS → invalid_signing_keys: a short secret, a bad kid, a duplicate kid, the reserved kid jwt, six entries, a non-base64url secret", () => {
+    for (const [label, value] of [
+      ["short secret", signingKeys("k1", 7, 31)],
+      ["bad kid", signingKeys("K_1")],
+      ["kid too long", signingKeys("k".repeat(33))],
+      ["duplicate kid", `${signingKeys("k1", 1)},${signingKeys("k1", 2)}`],
+      ["reserved kid", signingKeys("jwt")],
+      [
+        "six entries",
+        [1, 2, 3, 4, 5, 6].map((n) => signingKeys(`k${n}`, n)).join(","),
+      ],
+      ["non-base64url secret", `k1:${"a".repeat(43)}=`],
+      ["no kid", Buffer.alloc(32, 7).toString("base64url")],
+    ])
+      for (const appEnv of ["development", "staging", "production"])
+        expect(
+          () =>
+            loadConfig(
+              {
+                ...(appEnv === "development" ? web : deployedWeb),
+                APP_ENV: appEnv,
+                SIGNING_KEYS: value,
+              },
+              "web",
+            ),
+          `${appEnv} ${label}`,
+        ).toThrow("invalid_signing_keys");
+    expect(
+      loadConfig(
+        {
+          ...deployedWeb,
+          SIGNING_KEYS: [1, 2, 3, 4, 5]
+            .map((n) => signingKeys(`k${n}`, n))
+            .join(","),
+        },
+        "web",
+      ).appEnv,
+      "five entries are allowed",
+    ).toBe("staging");
+    // The error names the variable, never its value.
+    try {
+      loadConfig({ ...deployedWeb, SIGNING_KEYS: signingKeys("jwt") }, "web");
+    } catch (error) {
+      expect(String((error as Error).message)).not.toContain(
+        Buffer.alloc(32, 7).toString("base64url"),
+      );
+    }
+  });
+
   it("ConfigError from config-rules.ts is the class from config-error.ts", () => {
     expect(ConfigError).toBe(PureConfigError);
     let thrown: unknown;
@@ -270,6 +344,8 @@ describe("process configuration", () => {
       ...deployedWeb,
       APP_ENV: "production",
       APP_URL: "https://app.example.com",
+      // Wave 2.0 (P-26): a production web requires SIGNING_KEYS.
+      SIGNING_KEYS: signingKeys(),
       BILLING_DATABASE_URL: billingWorker.BILLING_DATABASE_URL,
     };
     for (const disabled of [undefined, "false", ""])

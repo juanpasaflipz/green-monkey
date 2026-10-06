@@ -59,23 +59,13 @@ const isRevisionPoll = (req: express.Request) =>
 const isOrderSubmission = (req: express.Request) =>
   req.method === "POST" && /^\/[^/]+\/orders$/.test(req.path);
 /**
- * The claims of a token spelled exactly as sign() writes it, or null.
- * verify() decodes leniently: it ignores anything after a second ".", and the
- * base64url decoder skips "=", "!", whitespace and the unused low bits of the
- * last character. One signed link would otherwise have endless spellings,
- * each a fresh rate-limit key (MENU-R3).
+ * The claims of a valid signed token, or null. verify() (server/keyring.ts) accepts exactly the spelling
+ * sign() wrote, so one signed link has one rate-limit key and other spellings are refused before the
+ * database (MENU-R3).
  */
 export function signedClaims(token: string): Record<string, any> | null {
-  const [body, signature, ...extra] = token.split(".");
-  if (
-    extra.length ||
-    !body ||
-    !signature ||
-    Buffer.from(signature, "base64url").toString("base64url") !== signature
-  )
-    return null;
   try {
-    return verify(token);
+    return verify(token) as Record<string, any>;
   } catch {
     return null;
   }

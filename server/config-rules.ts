@@ -22,6 +22,7 @@
  * (contract C-9), throwing ConfigError from server/config-error.ts.
  */
 import { ConfigError } from "./config-error.js";
+import { parseSigningKeys } from "./keyring.js";
 
 export { ConfigError };
 
@@ -243,6 +244,17 @@ export function loadConfig(
     const url = databaseUrl(env.DATABASE_URL, "DATABASE_URL");
     if (!env.JWT_SECRET || env.JWT_SECRET.length < 32)
       throw new ConfigError("missing_jwt_secret");
+    // JWT_SECRET stays required: it verifies legacy-format tokens and keys the lookup
+    // digests (pairing codes, PIN fingerprints, invitation and transfer tokens); wave 3
+    // retires it (access A1 with account's HMACs).
+    if (env.SIGNING_KEYS) {
+      try {
+        parseSigningKeys(env.SIGNING_KEYS);
+      } catch {
+        throw new ConfigError("invalid_signing_keys");
+      }
+    } else if (appEnv === "production")
+      throw new ConfigError("missing_signing_keys");
     if (billingEnabled && !env.STRIPE_WEBHOOK_SECRET)
       throw new ConfigError("missing_stripe_webhook_secret");
     // >>> area config checks: web (one pure call per area: fn(env, appEnv), throws ConfigError)

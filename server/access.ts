@@ -9,6 +9,7 @@ import { selectFirstDevice, sellingAllowed } from "./free-limits.js";
 import { issueOfflineLease, renewOfflineLease } from "./offline-leases.js";
 import { googleConfig } from "./google-identity.js";
 import { log } from "./logging.js";
+import { isProductionEnv } from "./production.js";
 import { DomainError, type Session } from "../shared/domain.js";
 import {
   ACCESS,
@@ -56,11 +57,7 @@ export function idleLockDefault(env: NodeJS.ProcessEnv = process.env): number {
  * APP_ENV=production (server/config-rules.ts), whichever says so.
  */
 export function assertDemoAccessAllowed(env: NodeJS.ProcessEnv = process.env) {
-  if (
-    env.DEMO_TENANT_ID?.trim() &&
-    (env.RAILWAY_ENVIRONMENT_NAME?.trim().toLowerCase() === "production" ||
-      env.APP_ENV?.trim().toLowerCase() === "production")
-  )
+  if (env.DEMO_TENANT_ID?.trim() && isProductionEnv(env))
     throw Error("DEMO_TENANT_ID must not be set in production");
 }
 

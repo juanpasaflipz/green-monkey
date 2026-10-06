@@ -2702,7 +2702,8 @@ try {
       },
     }) as postgres.Sql;
     const qr = orderingLink("qr");
-    const [, signature] = qr.split(".");
+    // The signature is the last part in both the v2 and the legacy format.
+    const signature = qr.split(".").at(-1)!;
     const alphabet =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     const sameBytes = [...alphabet].find(

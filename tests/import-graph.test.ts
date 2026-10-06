@@ -69,10 +69,17 @@ describe("process boundaries", () => {
     // P-15 defense: the worker holds no signing key and never mints a sealed
     // token (it reaches server/auth.ts through server/jobs/queue.ts, but never
     // the seal/unseal module), nor the retention schedule or the migrator.
+    // LD-16 L4: nor the web sales graph (orders, fiscal issuance) or cfdi's web
+    // service and portal; auth.ts and access.ts stay reachable (the keyring
+    // loads lazily and is never invoked there; splitting them is a wave-3 item).
     for (const forbidden of [
       "server/tokens.ts",
       "server/ops/retention.ts",
       "server/ops/schema.ts",
+      "server/orders.ts",
+      "server/fiscal.ts",
+      "server/cfdi/service.ts",
+      "server/cfdi/portal.ts",
     ])
       expect(worker.has(forbidden), forbidden).toBe(false);
     expect([...worker].filter((f) => f.startsWith("server/routes/"))).toEqual(

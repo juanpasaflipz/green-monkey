@@ -3,7 +3,6 @@ import {
   randomBytes,
   scryptSync,
   timingSafeEqual,
-  createHmac,
   createHash,
 } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
@@ -11,6 +10,7 @@ import type postgres from "postgres";
 import { tenant } from "./db.js";
 import { DomainError, type Session } from "../shared/domain.js";
 import { effectiveIdleLock } from "../shared/access.js";
+import { signToken, verifyToken } from "./keyring.js";
 import {
   idleLockDefault,
   readDeviceCookie,
@@ -30,23 +30,19 @@ export function matches(s: string, stored: string) {
   const expected = Buffer.from(key, "hex");
   return expected.length === actual.length && timingSafeEqual(actual, expected);
 }
+/** Cookies and links: "v2.<kid>.<body>.<mac>" under the keyring's first key (server/keyring.ts). */
 export function sign(data: unknown) {
-  const body = Buffer.from(JSON.stringify(data)).toString("base64url");
-  return `${body}.${createHmac("sha256", process.env.JWT_SECRET!).update(body).digest("base64url")}`;
+  return signToken("sign", data);
 }
-export function verify(value: string) {
-  const [body, signature] = value.split(".");
-  if (!body || !signature) throw new DomainError("unauthorized", 401);
-  const expected = createHmac("sha256", process.env.JWT_SECRET!)
-    .update(body)
-    .digest();
-  const supplied = Buffer.from(signature, "base64url");
-  if (
-    expected.length !== supplied.length ||
-    !timingSafeEqual(expected, supplied)
-  )
-    throw new DomainError("unauthorized", 401);
-  return JSON.parse(Buffer.from(body, "base64url").toString());
+/**
+ * The signed data, or DomainError("unauthorized", 401). Accepts listed kids and,
+ * outside production while JWT_SECRET is set, the legacy formats; exactly one
+ * spelling per token (server/keyring.ts).
+ */
+export function verify(value: string): any {
+  const data = verifyToken("sign", value, { legacy: true });
+  if (data === null) throw new DomainError("unauthorized", 401);
+  return data;
 }
 export type AuthRequest = Request & { session: Session };
 export const cookieOptions = {

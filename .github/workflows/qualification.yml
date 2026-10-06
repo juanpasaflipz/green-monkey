@@ -34,6 +34,11 @@ jobs:
       TEST_DATABASE_HOST_ALLOWLIST: 127.0.0.1:5432/green_monkey_test
       ALLOW_DEMO_SEED: green-monkey-local
       JWT_SECRET: synthetic-ci-only-never-use-outside-disposable-tests-123456789
+      # OPS-10 keyring (Wave 2.0): every web, DB and browser test runs on the real
+      # keyring. Synthetic: base64url of "synthetic-ci-only-never-use-outside-tests"
+      # (41 bytes). APP_ENV is unset in this job, so the compiled worker's refusal
+      # of SIGNING_KEYS and JWT_SECRET (deployed environments only) does not trip.
+      SIGNING_KEYS: ci-20261005:c3ludGhldGljLWNpLW9ubHktbmV2ZXItdXNlLW91dHNpZGUtdGVzdHM
       APP_URL: http://127.0.0.1:3002
       PORT: 3002
       RESTART_TEST_PORT: 3003

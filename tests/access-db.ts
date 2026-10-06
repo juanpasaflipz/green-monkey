@@ -5,7 +5,13 @@ import { readdirSync, readFileSync } from "node:fs";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { checkRole, connect, tenant, type Tx } from "../server/db.js";
-import { authentication, hash, password, sign } from "../server/auth.js";
+import {
+  authentication,
+  hash,
+  password,
+  sign,
+  verify,
+} from "../server/auth.js";
 import {
   checkPin,
   createSession,
@@ -165,7 +171,7 @@ function req(cookies: Record<string, string>, body: unknown = {}) {
   return { cookies, body, headers: {}, method: "POST" } as any;
 }
 function parseSigned(value: string): Cookie {
-  return JSON.parse(Buffer.from(value.split(".")[0], "base64url").toString());
+  return verify(value) as Cookie;
 }
 /** Runs authentication() with stub request/response; resolves the Session or rejects with its error. */
 function authenticate(cookies: Record<string, string>) {
