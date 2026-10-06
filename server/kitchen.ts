@@ -20,11 +20,11 @@ import {
 /**
  * Bumps the tenant kitchen feed version so polling screens refetch.
  *
- * Lock ordering: this MUST be the last lock-taking statement of a command
- * (order rows, then rounds, stock and voids, then this tenant row). Never call
- * it from recordPayment, settlements, refunds or cash commands: they lock
- * several orders and the drawer one after another, and holding the feed row
- * while waiting on another order would deadlock with any KDS command.
+ * Global lock order (docs/ARCHITECTURE.md, level 10; platform §6.2): call it only after the
+ * command has locked every order, round, void or discount row and stock item it will touch,
+ * and before the drawer (cash_sessions) and before refreshCheckState, which may take the
+ * fiscal folio counter last. Holding this tenant row while waiting on an order would
+ * deadlock with every KDS command.
  */
 export async function bumpKitchenFeed(tx: Tx, s: Session): Promise<void> {
   await tx`insert into kitchen_feed_versions(tenant_id,version,updated_at)

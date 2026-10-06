@@ -931,9 +931,10 @@ try {
           page.items.map((o) => o.id),
         ),
       );
-      // Constant for any n; at most 8 (offline adds one batched lookup).
+      // Constant for any n; at most 10: service's 7 statements, plus one batched lookup each
+      // from offline (Order.offline), fiscal (fiscalRows) and discounts (adjustmentRows).
       assert.equal(one, ten);
-      assert.ok(one <= 8, `getOrders used ${one} statements`);
+      assert.ok(one <= 10, `getOrders used ${one} statements`);
       const f = await full(kitchen);
       assert.equal(
         await count((tx) =>
