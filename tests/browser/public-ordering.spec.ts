@@ -638,12 +638,22 @@ test("revoke and rotate: a deactivated code and a replaced table code stop worki
     const old = await diner(context, table.path);
     await expect(old.getByText(`Pedido para ${mesa.name}`)).toBeVisible();
     // A phone that ordered with the old code keeps following its order.
-    const ordered = await diner(context, table.path);
+    const ordered = await context.newPage();
+    await ordered.clock.install();
+    await ordered.goto(table.path);
     await addTaco(ordered);
     await sendOrder(ordered, `Rota ${f.id}`);
-    await expect(ordered.locator(".diner-status-head")).toContainText(
+    const orderedHead = ordered.locator(".diner-status-head");
+    await expect(orderedHead).toContainText(
       "Esperando confirmación del personal",
     );
+    // It goes back to the menu (loaded) before the code is replaced.
+    await ordered
+      .getByRole("button", { name: "Hacer otro pedido", exact: true })
+      .click();
+    await expect(
+      ordered.getByRole("button", { name: /^Taco de asada/ }),
+    ).toBeVisible();
     const rotated = await call(page, `/ordering/links/${table.id}/rotate`, {});
     expect(rotated.status).toBe(200);
     f.links.push(rotated.data.id);
@@ -651,6 +661,25 @@ test("revoke and rotate: a deactivated code and a replaced table code stop worki
     await expect(
       old.getByRole("heading", { name: "Este código ya no funciona" }),
     ).toBeVisible();
+    // Its next menu poll learns the code was replaced: the page falls back to
+    // its pending order instead of a dead end, and the notice it reaches
+    // from "Hacer otro pedido" leads back to the order.
+    await ordered.clock.fastForward(61_000);
+    await expect(orderedHead).toContainText(
+      "Esperando confirmación del personal",
+    );
+    await ordered
+      .getByRole("button", { name: "Hacer otro pedido", exact: true })
+      .click();
+    await expect(
+      ordered.getByRole("heading", { name: "Este código ya no funciona" }),
+    ).toBeVisible();
+    await ordered
+      .getByRole("button", { name: "Ver mis pedidos", exact: true })
+      .click();
+    await expect(orderedHead).toContainText(
+      "Esperando confirmación del personal",
+    );
     await ordered.reload();
     await expect(ordered.locator(".diner-status-head")).toContainText(
       "Esperando confirmación del personal",

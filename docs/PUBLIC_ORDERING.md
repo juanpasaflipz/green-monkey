@@ -259,7 +259,10 @@ data.
   - Replacing or deactivating a link evicts its hash from this process's
     cache.
 - **Status lookups** (status and cancel) accept revoked links, so a replaced
-  QR's pending orders stay readable.
+  QR's pending orders stay readable. A phone that ordered with the code
+  switches to its own orders when it learns the code was replaced (on load,
+  or on a menu poll after it went back to the menu). The "Este código ya no
+  funciona" page then offers **Ver mis pedidos**.
 - **Staff replies.** Link replies carry the plaintext token once. They are
   never stored in `operations.result`: link creation is not `once()`. Every
   `/api/ordering` response is `Cache-Control: no-store`. Diner responses are

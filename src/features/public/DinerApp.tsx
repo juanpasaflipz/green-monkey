@@ -366,11 +366,21 @@ export function DinerApp({
   }
 
   // A replaced or deactivated QR still shows this phone's orders (status
-  // lookups accept the old code); its menu is gone.
-  const statusOnly =
-    !menu && notice === "invalid" && !kiosk && !!current && view === "status";
+  // lookups accept the old code); its menu is gone, also when this page had
+  // loaded it before the code was replaced (a later poll says so).
+  const ownOrders = notice === "invalid" && !kiosk && !!current;
+  useEffect(() => {
+    if (ownOrders) setView("status");
+  }, [ownOrders]);
+  const statusOnly = ownOrders && view === "status";
   if (notice && !statusOnly)
-    return <DinerNotice kind={notice} locale={locale} />;
+    return (
+      <DinerNotice
+        kind={notice}
+        locale={locale}
+        onShowOrders={ownOrders ? () => setView("status") : undefined}
+      />
+    );
   if (statusOnly)
     return (
       <main className="diner" lang={locale}>

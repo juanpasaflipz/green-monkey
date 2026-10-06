@@ -72,6 +72,7 @@ export default defineArea({
     publicYourOrders: "Tus pedidos",
     publicInvalidTitle: "Este código ya no funciona",
     publicInvalidBody: "Pide al personal un código nuevo.",
+    publicShowMyOrders: "Ver mis pedidos",
     publicCode: "Tu código",
     publicKioskPayAtCounter:
       "Paga en caja con este código para que preparemos tu pedido.",
@@ -281,6 +282,7 @@ export default defineArea({
     publicYourOrders: "Your orders",
     publicInvalidTitle: "This code no longer works",
     publicInvalidBody: "Ask the staff for a new one.",
+    publicShowMyOrders: "See my orders",
     publicCode: "Your code",
     publicKioskPayAtCounter:
       "Pay at the counter with this code so we can prepare your order.",
