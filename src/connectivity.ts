@@ -259,6 +259,13 @@ function reschedule() {
   );
 }
 
+/**
+ * Reports (029, LD-15 reports Q1): report reads and prints are heavy (up to 30 s on the server),
+ * so their outcome proves reachability only: an answer counts as contact without a latency
+ * sample, and a slow or failed report never counts toward going offline.
+ */
+export const REACHABILITY_ONLY_PATHS = /^\/reports?(?:[/?]|$)/;
+
 /** Starts the heartbeat, browser listeners and the api() observer once. */
 export function startConnectivity() {
   if (started || typeof window === "undefined") return;
@@ -266,6 +273,11 @@ export function startConnectivity() {
   setRetryGate(() => snapshot.serverReachable);
   setTransportObserver((outcome) => {
     if (outcome.path.startsWith("/offline/ping")) return;
+    if (REACHABILITY_ONLY_PATHS.test(outcome.path)) {
+      if (outcome.ok || outcome.kind === "domain" || outcome.kind === "auth")
+        dispatch({ type: "probe_ok", at: Date.now(), latencyMs: 0 });
+      return;
+    }
     // A domain or auth answer still proves the server is reachable.
     if (outcome.ok || outcome.kind === "domain" || outcome.kind === "auth") {
       dispatch({

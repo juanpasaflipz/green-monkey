@@ -1,11 +1,11 @@
-// shared/reports.ts — pure reports core (area 029, "reports core" step): business-date ranges and
-// quick ranges, the SQL business-day formula mirrored in JS, query schemas, keyset cursors, the
-// metric contract's arithmetic (sales, refunds, collections, margin, per-day rows, reconciliation
-// checks), the hour and exception helpers, and the corte X/Z/del día document model.
-// No database access: server/reports/* (next wave) loads aggregates and calls these.
+// shared/reports.ts — pure reports core (area 029): business-date ranges and quick ranges, the SQL
+// business-day formula mirrored in JS, query schemas, keyset cursors, the metric contract's
+// arithmetic (sales, refunds, collections, margin, per-day rows, reconciliation checks), the hour
+// and exception helpers, and the corte X/Z/del día document model.
+// No database access: server/reports/* loads aggregates and calls these.
 // Every amount is an integer number of minor units (centavos); every price is tax-inclusive
-// (LFPC art. 7 Bis). IVA is never computed here: it comes only from fiscal's fiscalSummary, and
-// SalesSummary.tax plus mergeFiscalSummaries arrive with the next wave.
+// (LFPC art. 7 Bis). IVA is never computed here: it comes only from fiscal's fiscalSummary
+// (SalesSummary.tax), merged over ≤ 31-day chunks by mergeFiscalSummaries.
 import { z } from "zod";
 import { Temporal } from "@js-temporal/polyfill";
 import {
@@ -16,7 +16,12 @@ import {
   money,
   type Label,
 } from "./domain.js";
-import { formatFolio, type FiscalSummary } from "./fiscal.js";
+import {
+  formatFolio,
+  type CategoryTotals,
+  type FiscalSummary,
+} from "./fiscal.js";
+import { TAX_CATEGORIES } from "./tax.js";
 
 // ---------------------------------------------------------------------------------------------
 // Limits, business dates and ranges
@@ -233,6 +238,15 @@ export const EXCEPTION_KINDS = [
   "offline_reconcile",
 ] as const;
 export type ExceptionKind = (typeof EXCEPTION_KINDS)[number];
+/**
+ * Bitácora activity groups: prefixes of `audit.operation`. Every operation src/labels.ts names
+ * belongs to at least one group (unit test). Some prefixes are forward entries for areas that
+ * merge later, so their labels need no edit here: `cfdi.` (030) under Fiscal, `account.` (031)
+ * under Accesos (LD-16 L7), and public ordering's `public.hold_` under Ventas and
+ * `public.link_` / `public.settings` / `public.paused` / `public.resumed` under Configuración
+ * (LD-18 LD-P4), and the platform's `job.` operator commands (job.cancelled, job.requeued,
+ * labelled on integration) under Configuración (LD-21). A prefix may sit in two groups (`fiscal.profile` is fiscal and a setting).
+ */
 export const AUDIT_GROUPS = {
   sales: [
     "order.created",
@@ -243,6 +257,9 @@ export const AUDIT_GROUPS = {
     "check.",
     "receipt.",
     "service.",
+    "offline.synced",
+    "offline.payment_attempt_",
+    "public.hold_",
   ],
   kitchen: ["kitchen.", "offline.kitchen"],
   cash: ["cash."],
@@ -251,11 +268,34 @@ export const AUDIT_GROUPS = {
     "refund.",
     "discount.applied",
     "discount.reversed",
+    "offline.reconciled",
+    "offline.payment_reconciled",
+    "offline.archived",
   ],
-  menu: ["catalog.", "menu.", "stock.", "prep", "import.", "expense"],
-  access: ["access.", "employee.", "invitation.", "shift."],
-  settings: ["restaurant.", "plan.", "discount.controls", "fiscal.profile"],
-  fiscal: ["fiscal."],
+  menu: [
+    "catalog.",
+    "menu.",
+    "stock.",
+    "prep",
+    "import.",
+    "expense",
+    "floor.",
+    "offline.stock_reviewed",
+  ],
+  access: ["access.", "employee.", "invitation.", "shift.", "account."],
+  settings: [
+    "restaurant.",
+    "plan.",
+    "discount.controls",
+    "fiscal.profile",
+    "offline.settings_changed",
+    "public.link_",
+    "public.settings",
+    "public.paused",
+    "public.resumed",
+    "job.",
+  ],
+  fiscal: ["fiscal.", "cfdi."],
   reports: ["reports."],
 } as const;
 export type AuditGroup = keyof typeof AUDIT_GROUPS;
@@ -267,6 +307,13 @@ export const AUDIT_GROUP_KEYS = Object.keys(AUDIT_GROUPS) as [
 /** Escapes LIKE's wildcards (`_`, `%`) and its default escape character (`\`). */
 export function escapeLike(text: string): string {
   return text.replace(/[\\_%]/g, (c) => "\\" + c);
+}
+
+/** The activity groups whose prefixes match `operation` (none for an unknown operation). */
+export function auditGroupsOf(operation: string): AuditGroup[] {
+  return AUDIT_GROUP_KEYS.filter((g) =>
+    AUDIT_GROUPS[g].some((p) => operation.startsWith(p)),
+  );
 }
 
 /** LIKE patterns: each prefix escaped for _ and % and suffixed with %. */
@@ -352,6 +399,8 @@ export const dayCortePrintInput = z.object({ operationId: id }).strict();
 export const remoteCloseInput = z
   .object({
     operationId: id,
+    /** The fingerprint of the corte X the dialog showed (CorteDocument.fingerprint). */
+    fingerprint: z.string().min(1).max(200),
     counted: money,
     reason: z.string().trim().min(3).max(300),
     externalReported: money.nullable().optional(),
@@ -608,9 +657,9 @@ export type DrawerSummary = {
   openFromEarlierDays: number;
 };
 /**
- * The summary of a business-date range. The next wave adds `tax: FiscalSummary | null` (fiscal's
- * figures, merged over ≤ 31-day chunks by mergeFiscalSummaries); the margin and the fiscal checks
- * below already take fiscal's totals as input.
+ * The summary of a business-date range. `tax` is fiscal's fiscalSummary for the range (merged over
+ * ≤ 31-day chunks by mergeFiscalSummaries), or null when the restaurant issues no fiscal tickets
+ * (non-MXN); the margin and the fiscal checks read its totals.
  */
 export type SalesSummary = {
   range: DateRange;
@@ -622,6 +671,7 @@ export type SalesSummary = {
   sales: SalesMetrics;
   refunds: RefundMetrics;
   collections: CollectionMetrics;
+  tax: FiscalSummary | null;
   margin: MarginMetrics;
   drawers: DrawerSummary;
   /** One row per business date of the range; [] when from === to. */
@@ -658,8 +708,14 @@ export type CategoryRow = {
   cost: number | null;
   margin: number | null;
 };
+/**
+ * One Personal row: sales attributed to the check's assigned server, else to whoever opened it.
+ * QR and kiosk orders run under the link creator's session, so an unassigned QR/kiosk order is
+ * not that employee's sale: those orders form one pseudo-row with `employeeId: null` ("QR /
+ * Kiosco", LD-15 reports Q4); an assigned one goes to the assignee.
+ */
 export type EmployeeRow = {
-  employeeId: string;
+  employeeId: string | null;
   name: string;
   role: string;
   active: boolean;
@@ -735,6 +791,11 @@ export type TenderReportRow = {
   deviceName: string | null;
   refunded: number;
   offline: boolean;
+  /**
+   * tenders.source: "normal" or "offline_recovery" (a manager-reconciled offline payment), so
+   * the Pagos list labels it with tenderMethodLabel(method, source) ("Recuperado").
+   */
+  source: string;
 };
 /**
  * One loss-prevention row. `accountId`/`accountName` are the check's server (assigned waiter,
@@ -794,7 +855,15 @@ export type AuditRow = {
   entityId: string;
   orderNumber: number | null;
   orderDate: string | null;
-  summary: { amount: number | null; reason: string | null };
+  /**
+   * `reason` is free text (detail.reason or .note); `reasonCode` a discount or refund reason code
+   * (detail.reasonCode), which the client labels with discounts' labels, never shown raw.
+   */
+  summary: {
+    amount: number | null;
+    reason: string | null;
+    reasonCode: string | null;
+  };
   detail: unknown;
 };
 export type Page<T> = { rows: T[]; next: string | null };
@@ -861,11 +930,17 @@ export type RestaurantHeader = {
   currency: string;
   timezone: string;
 };
+/**
+ * One contiguous folio run (first … last, count = last − first + 1), or, on a corte X/Z, the
+ * runs of one series that did not fit on paper summarized as first … last with `runs` > 1: the
+ * folios in between were issued by other devices (folioRanges).
+ */
 export type FolioRange = {
   series: string;
   first: string;
   last: string;
   count: number;
+  runs?: number;
 };
 export type CountAmount = { count: number; amount: number };
 export type CorteControls = {
@@ -931,6 +1006,12 @@ export type CorteDocument = {
    */
   lateTerminal: number;
   review: DrawerReview | null;
+  /**
+   * The open drawer's money as this document read it (drawerFingerprint; null on a corte Z or a
+   * blind document). A remote close sends it back, and the server refuses the close when the
+   * drawer changed since (reports_drawer_changed, review REPORTS-CORTES-1).
+   */
+  fingerprint: string | null;
 };
 export type DayCorteDocument = {
   date: string;
@@ -1106,13 +1187,16 @@ export type LineDayAggregate = {
   cancelledAmount: number;
   lineDiscounts: number;
   courtesies: number;
-  /** Σ unit cost × remaining units, ticketed orders, lines with a cost. */
+  /**
+   * Σ unit cost × remaining units over the margin basis (orders with a fiscal ticket, and orders
+   * comped to zero, which fiscal never tickets), lines with a cost.
+   */
   cogs: number;
   /** The same over all orders. */
   cogsAll: number;
-  /** Σ remaining gross of ticketed lines with a cost. */
+  /** Σ remaining gross of margin-basis lines with a cost. */
   coveredGross: number;
-  /** Σ remaining gross of ticketed lines. */
+  /** Σ remaining gross of margin-basis lines. */
   ticketedLineGross: number;
   /** Σ unit cost × voided units not returned to stock. */
   wasteCost: number;
@@ -1163,8 +1247,42 @@ export type SummaryInput = {
   restocks: readonly RestockDayAggregate[];
   paidOuts: readonly PaidOutDayAggregate[];
   drawers: readonly DrawerRow[];
-  fiscal: FiscalTotals | null;
+  /**
+   * fiscalSummary for the range (null: no fiscal tickets, non-MXN). It becomes SalesSummary.tax,
+   * and its totals drive the margin and the fiscal checks.
+   */
+  tax?: FiscalSummary | null;
+  /**
+   * Only the totals, for callers that have no full FiscalSummary (unit fixtures). When `tax` is
+   * given too, both must agree (RangeError("fiscal_totals_mismatch")).
+   */
+  fiscal?: FiscalTotals | null;
 };
+
+/** The fiscalSummary totals the margin and the fiscal checks read. */
+export function fiscalTotals(tax: FiscalSummary): FiscalTotals {
+  const t = tax.totals;
+  return {
+    gross: t.gross,
+    base: t.base,
+    refundGross: t.refundGross,
+    netGross: t.netGross,
+    netBase: t.netBase,
+  };
+}
+function summaryFiscal(input: SummaryInput): FiscalTotals | null {
+  const fromTax = input.tax ? fiscalTotals(input.tax) : null;
+  if (input.fiscal === undefined) return fromTax;
+  if (input.tax === undefined) return input.fiscal;
+  const same =
+    fromTax === null || input.fiscal === null
+      ? fromTax === input.fiscal
+      : (Object.keys(fromTax) as (keyof FiscalTotals)[]).every(
+          (k) => fromTax[k] === input.fiscal![k],
+        );
+  if (!same) throw new RangeError("fiscal_totals_mismatch");
+  return fromTax;
+}
 
 function assertInRange(range: DateRange, rows: readonly { date: string }[]) {
   for (const row of rows)
@@ -1272,7 +1390,7 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
     },
   };
 
-  const f = input.fiscal;
+  const f = summaryFiscal(input);
   const margin: MarginMetrics = {
     netSalesExTax: f ? f.base : null,
     netAfterRefundsExTax: f ? f.netBase : null,
@@ -1339,10 +1457,121 @@ export function composeSalesSummary(input: SummaryInput): SalesSummary {
     sales,
     refunds,
     collections,
+    tax: input.tax ?? null,
     margin,
     drawers: drawerSummary(drawersUpTo(input.drawers, range.to)),
     days,
     checks,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Fiscal figures over long ranges (§4.5 fiscalForRange)
+// ---------------------------------------------------------------------------------------------
+
+/** fiscalSummary accepts ranges of at most 31 days; reports reads longer ranges in chunks. */
+export const FISCAL_CHUNK_DAYS = 31;
+
+/** Consecutive, non-overlapping sub-ranges of at most `days` days that cover `range` in order. */
+export function rangeChunks(
+  range: DateRange,
+  days: number = FISCAL_CHUNK_DAYS,
+): DateRange[] {
+  if (!Number.isSafeInteger(days) || days < 1)
+    throw new RangeError("invalid_chunk_days");
+  const { from, to } = parseRange(range, Number.MAX_SAFE_INTEGER);
+  const chunks: DateRange[] = [];
+  for (let start = from; start <= to; start = addDays(start, days)) {
+    const end = addDays(start, days - 1);
+    chunks.push({ from: start, to: end < to ? end : to });
+  }
+  return chunks;
+}
+
+function mergeCategories(lists: readonly (readonly CategoryTotals[])[]) {
+  return TAX_CATEGORIES.flatMap((category): CategoryTotals[] => {
+    const rows = lists.flatMap((list) =>
+      list.filter((c) => c.category === category),
+    );
+    if (!rows.length) return [];
+    const rates = new Set(rows.map((r) => r.rateBps));
+    if (rates.size !== 1) throw new RangeError("fiscal_rate_mismatch");
+    return [
+      {
+        category,
+        rateBps: rows[0].rateBps,
+        grossBeforeDiscount: sumBy(rows, (r) => r.grossBeforeDiscount),
+        discount: sumBy(rows, (r) => r.discount),
+        gross: sumBy(rows, (r) => r.gross),
+        base: sumBy(rows, (r) => r.base),
+        tax: sumBy(rows, (r) => r.tax),
+      },
+    ];
+  });
+}
+
+/**
+ * One FiscalSummary from the summaries of consecutive chunks (fiscalForRange calls fiscalSummary
+ * per ≤ 31-day chunk). Categories sum per category in fiscal order (iva16, iva8, iva0, exempt);
+ * folio runs stay runs, as fiscal returns them (contiguous, last − first + 1 = count, several per
+ * series when later folios belong to other dates, FISCAL-SAT-3): the parts' runs are sorted by
+ * (series, first) and two runs join only when one continues the other (a run split at a chunk
+ * boundary), so a gap is never printed as part of a range (review REPORTS-SQL-1); totals, ticket
+ * counts and missing tickets sum (the chunks' dates are disjoint); from/to are the outer bounds.
+ * The parts must be in date order, each starting the day after the previous one ends.
+ */
+export function mergeFiscalSummaries(
+  parts: readonly FiscalSummary[],
+): FiscalSummary {
+  if (!parts.length) throw new RangeError("no_fiscal_parts");
+  for (let i = 0; i < parts.length; i++) {
+    parseRange(parts[i], Number.MAX_SAFE_INTEGER);
+    if (i > 0 && parts[i].from !== addDays(parts[i - 1].to, 1))
+      throw new RangeError("fiscal_parts_not_consecutive");
+  }
+  const runs = parts
+    .flatMap((p) => p.tickets.series)
+    .map((r) => {
+      if (
+        !Number.isSafeInteger(r.first) ||
+        !Number.isSafeInteger(r.last) ||
+        r.first > r.last
+      )
+        throw new RangeError("invalid_folio_run");
+      return { ...r };
+    })
+    .sort((a, b) =>
+      a.series < b.series ? -1 : a.series > b.series ? 1 : a.first - b.first,
+    );
+  const series: FiscalSummary["tickets"]["series"] = [];
+  for (const r of runs) {
+    const prev = series[series.length - 1];
+    if (prev && prev.series === r.series && r.first === prev.last + 1) {
+      prev.last = r.last;
+      prev.count = add(prev.count, r.count);
+    } else series.push(r);
+  }
+  const total = (k: keyof FiscalSummary["totals"]) =>
+    sumBy(parts, (p) => p.totals[k]);
+  return {
+    from: parts[0].from,
+    to: parts[parts.length - 1].to,
+    tickets: { count: sumBy(parts, (p) => p.tickets.count), series },
+    sales: mergeCategories(parts.map((p) => p.sales)),
+    refunds: mergeCategories(parts.map((p) => p.refunds)),
+    net: mergeCategories(parts.map((p) => p.net)),
+    totals: {
+      gross: total("gross"),
+      base: total("base"),
+      tax: total("tax"),
+      tips: total("tips"),
+      refundGross: total("refundGross"),
+      refundTax: total("refundTax"),
+      netGross: total("netGross"),
+      netBase: total("netBase"),
+      netTax: total("netTax"),
+    },
+    missingTickets: sumBy(parts, (p) => p.missingTickets),
   };
 }
 
@@ -1434,7 +1663,9 @@ export function exceptionTotals(
  * actor), by the check's server; its amounts follow exceptionTotals (difference kinds by
  * magnitude), and drawer differences also split into shortage and overage amounts. `approved`
  * groups by the approver (a drawer difference's approver is its reviewer) and sums absolute
- * amounts, so a reviewed shortage and overage never cancel out.
+ * amounts, so a reviewed shortage and overage never cancel out. A self-approval (approver = the
+ * row's actor, e.g. a manager voiding on their own recent PIN) keeps its approver on the row but
+ * is not counted as an approval given (LD-16 L3).
  */
 export function exceptionSummary(
   rows: readonly ExceptionRow[],
@@ -1473,7 +1704,9 @@ export function exceptionSummary(
         else e.overages = add(e.overages, row.amount);
       }
     }
-    if (row.approverId) {
+    // LD-16 L3: a self-approved row (a manager acting alone) shows the approver's name, but only
+    // cross-person approvals count in the per-approver "Autorizó" summary.
+    if (row.approverId && row.approverId !== actorId) {
       const e = entry(row.approverId, row.approverName);
       e.approved = {
         count: e.approved.count + 1,
@@ -1563,6 +1796,28 @@ export type DrawerFacts = {
   review: DrawerReview | null;
   zPrints: number;
 };
+
+/**
+ * Every figure a drawer's expected cash and terminal net come from, as one string: a tender,
+ * refund or cash movement recorded since changes it (each adds to a count or a positive sum). The
+ * remote close compares it under the drawer lock with what the manager's dialog showed.
+ */
+export function drawerFingerprint(f: DrawerFacts): string {
+  return [
+    f.opening,
+    f.cash.count,
+    f.cash.amount,
+    f.cash.tips,
+    f.cash.refunds,
+    f.external.count,
+    f.external.amount,
+    f.external.tips,
+    f.external.refunds,
+    f.paidOuts.count,
+    f.paidOuts.amount,
+    f.payIns,
+  ].join(".");
+}
 
 /** The live expected cash of a drawer (discounts' drawerTotals formula). */
 export function liveExpectedCash(f: DrawerFacts): number {
@@ -1742,7 +1997,32 @@ export function corteAccess(i: {
   return { kind: "z", visibility: seesExpected ? "full" : "blind" };
 }
 
-/** Folio runs of fiscal_tickets per series, formatted with fiscal's formatFolio. */
+/** The documents a `report_prints` row numbers (the 029 kind CHECK). */
+export type ReportPrintKind =
+  "corte_x" | "corte_z" | "count_slip" | "day_corte";
+
+/**
+ * The printed document a drawer corte is, which owns its print sequence: the corte X, the full
+ * corte Z, or the blind count slip ("COMPROBANTE DE CONTEO"). The slip and the Z of one drawer
+ * are different documents, so a cashier's slip never makes the manager's first Z a reprint, and
+ * only reprints of the full Z are corte_reprint exceptions.
+ */
+export function cortePrintKind(
+  doc: Pick<CorteDocument, "kind" | "visibility">,
+): Exclude<ReportPrintKind, "day_corte"> {
+  if (doc.kind === "x") return "corte_x";
+  return doc.visibility === "blind" ? "count_slip" : "corte_z";
+}
+
+/** At most this many folio runs per series print on a corte X/Z (two devices interleave). */
+export const CORTE_FOLIO_RUNS = 4;
+
+/**
+ * Contiguous folio runs per series, in (series, first) order, formatted with fiscal's
+ * formatFolio. With `maxRuns`, a series with more runs than that becomes one summary entry
+ * (first … last, Σ count, `runs`), so a busy two-register drawer never prints dozens of lines
+ * and a range never reads as contiguous.
+ */
 export function folioRanges(
   runs: readonly {
     series: string;
@@ -1750,15 +2030,32 @@ export function folioRanges(
     last: number;
     count: number;
   }[],
+  maxRuns = Number.MAX_SAFE_INTEGER,
 ): FolioRange[] {
-  return [...runs]
-    .sort((a, b) => (a.series < b.series ? -1 : a.series > b.series ? 1 : 0))
-    .map((r) => ({
-      series: r.series,
-      first: formatFolio(r.series, r.first),
-      last: formatFolio(r.series, r.last),
-      count: r.count,
-    }));
+  const sorted = [...runs].sort((a, b) =>
+    a.series < b.series ? -1 : a.series > b.series ? 1 : a.first - b.first,
+  );
+  const out: FolioRange[] = [];
+  for (const name of [...new Set(sorted.map((r) => r.series))]) {
+    const own = sorted.filter((r) => r.series === name);
+    if (own.length > maxRuns)
+      out.push({
+        series: name,
+        first: formatFolio(name, own[0].first),
+        last: formatFolio(name, Math.max(...own.map((r) => r.last))),
+        count: sumBy(own, (r) => r.count),
+        runs: own.length,
+      });
+    else
+      for (const r of own)
+        out.push({
+          series: name,
+          first: formatFolio(name, r.first),
+          last: formatFolio(name, r.last),
+          count: r.count,
+        });
+  }
+  return out;
 }
 
 /**
@@ -1851,10 +2148,11 @@ export function buildCorteDocument(
     },
     payments: add(f.cash.count, f.external.count) - lateCount,
     controls: blind ? null : ctx.controls,
-    folios: blind ? [] : folioRanges(ctx.folios),
+    folios: blind ? [] : folioRanges(ctx.folios, CORTE_FOLIO_RUNS),
     lateCash: blind || !closed ? 0 : add(f.cash.lateAmount, f.cash.lateTips),
     lateTerminal: lateTerminal(f),
     review: blind ? null : f.review,
+    fingerprint: closed || blind ? null : drawerFingerprint(f),
   };
 }
 

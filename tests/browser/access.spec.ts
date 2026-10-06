@@ -101,6 +101,19 @@ async function enterSecret(
   }
   await scope.getByRole("button", { name: submit, exact: true }).click();
 }
+/**
+ * The next server call after a session was ended in the database. A background
+ * poll may meet the 401 first and raise the lock before this click lands (the
+ * lock dialog then intercepts it), so the click is best-effort; callers assert
+ * the lock itself.
+ */
+async function nextServerCall(page: Page) {
+  await page
+    .getByRole("button", { name: "Órdenes", exact: true })
+    .click({ timeout: 5_000 })
+    .catch(() => {});
+}
+
 async function sessionOf(page: Page) {
   return page.evaluate(async () => (await fetch("/api/session")).json());
 }
@@ -744,7 +757,7 @@ test("a session the server revoked stays locked offline: Salir offers no manual 
     await admin`update sessions set revoked=true, ended_at=now(),
       end_reason='employee_deactivated', expires_at=least(expires_at,now())
       where id=${s.id}`;
-    await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await nextServerCall(tablet);
     const lock = tablet.getByRole("dialog", {
       name: "Un responsable cerró esta sesión o desactivó al empleado.",
     });
@@ -880,10 +893,17 @@ test("a pending PIN confirmation never passes to the next employee after an idle
       await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
       const card = tablet.locator(".order-summary").filter({ hasText: name }).first();
       await card.getByRole("button", { name: "Reembolsar", exact: true }).click();
+      // discounts (028): the refund dialog's amount tab, reason and submit label.
       const refund = tablet.getByRole("dialog").first();
+      await refund.getByRole("button", { name: "Por importe", exact: true }).click();
       await refund.getByLabel("Importe", { exact: true }).fill("10");
+      await refund
+        .getByLabel("Motivo del reembolso")
+        .selectOption({ label: "Otro (explica en la nota)" });
       await refund.getByLabel("Explicación").fill("Devolución sin confirmar");
-      await refund.getByRole("button", { name: "Guardar", exact: true }).click();
+      await refund
+        .getByRole("button", { name: "Reembolsar $10.00", exact: true })
+        .click();
       await expect(stepUp).toContainText(
         `Esta acción necesita que confirmes que eres ${who}.`,
       );
@@ -983,7 +1003,7 @@ test("an expired session shows the PIN lock with its reason, not a generic error
     const s = await sessionOf(tablet);
     await admin`update sessions set expires_at=now()-interval '1 second',
       absolute_expires_at=now()-interval '1 second' where id=${s.id}`;
-    await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await nextServerCall(tablet);
     const lock = tablet.getByRole("dialog", {
       name: "Tu sesión terminó. Ingresa tu PIN para continuar.",
     });
@@ -1380,10 +1400,17 @@ test("step-up: a refund on a terminal after the window asks for the PIN and reco
     await page.getByRole("button", { name: "Órdenes", exact: true }).click();
     const card = page.locator(".order-summary").filter({ hasText: name }).first();
     await card.getByRole("button", { name: "Reembolsar", exact: true }).click();
+    // discounts (028): the refund dialog's amount tab, reason and submit label.
     const refund = page.getByRole("dialog").first();
+    await refund.getByRole("button", { name: "Por importe", exact: true }).click();
     await refund.getByLabel("Importe", { exact: true }).fill("10");
+    await refund
+      .getByLabel("Motivo del reembolso")
+      .selectOption({ label: "Otro (explica en la nota)" });
     await refund.getByLabel("Explicación").fill("Devolución con confirmación");
-    await refund.getByRole("button", { name: "Guardar", exact: true }).click();
+    await refund
+      .getByRole("button", { name: "Reembolsar $10.00", exact: true })
+      .click();
     const stepUp = page.getByRole("dialog", { name: "Confirma con tu PIN" });
     await expect(stepUp).toContainText(
       "Esta acción necesita que confirmes que eres Alex Demo.",
@@ -1391,6 +1418,7 @@ test("step-up: a refund on a terminal after the window asks for the PIN and reco
     await page.screenshot({ path: "docs/evidence/access-step-up-1440.png" });
     await enterSecret(stepUp, "Alex Demo", OWNER_PASSWORD, true, "Confirmar");
     await expect(stepUp).toBeHidden();
+    await refund.getByRole("button", { name: "Listo", exact: true }).click();
     await expect(card).toContainText("Reembolsado");
     const [refunds] =
       await admin`select count(*)::int as n from refunds r join tenders t on t.tenant_id=r.tenant_id and t.id=r.tender_id
@@ -1808,10 +1836,17 @@ test("a session ended while the PIN confirmation is open shows its lock instead 
     await page.getByRole("button", { name: "Órdenes", exact: true }).click();
     const card = page.locator(".order-summary").filter({ hasText: name }).first();
     await card.getByRole("button", { name: "Reembolsar", exact: true }).click();
+    // discounts (028): the refund dialog's amount tab, reason and submit label.
     const refund = page.getByRole("dialog").first();
+    await refund.getByRole("button", { name: "Por importe", exact: true }).click();
     await refund.getByLabel("Importe", { exact: true }).fill("10");
+    await refund
+      .getByLabel("Motivo del reembolso")
+      .selectOption({ label: "Otro (explica en la nota)" });
     await refund.getByLabel("Explicación").fill("Devolución interrumpida");
-    await refund.getByRole("button", { name: "Guardar", exact: true }).click();
+    await refund
+      .getByRole("button", { name: "Reembolsar $10.00", exact: true })
+      .click();
     const stepUp = page.getByRole("dialog", { name: "Confirma con tu PIN" });
     await expect(stepUp).toBeVisible();
     // A manager closes this session from another device meanwhile.

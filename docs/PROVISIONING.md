@@ -144,10 +144,18 @@ scripts/ops/github-protect.sh --dry-run
 scripts/ops/github-protect.sh
 ```
 
+The script limits both environments to deployments from the branch `main`
+(a custom deployment branch policy, read back; it fails otherwise). If the
+GitHub plan offers no environment branch policies on a private repository
+(a 403 here), **do not set `MIGRATION_DATABASE_URL` as an environment
+secret**: any branch could then dispatch a workflow that reads it. Upgrade the
+plan or make the repository public first.
+
 Then the environment secrets and variables it prints (`RAILWAY_TOKEN`,
-`BACKUP_DATABASE_URL`, `R2_*`, `ALERT_WEBHOOK_URL`, `APP_URL`) and the
-repository variables `RAILWAY_CLI_VERSION` and `RAILWAY_IAC_VERSION`. The
-deploy job and the retention workflow also need, per environment:
+`MIGRATION_DATABASE_URL`, `BACKUP_DATABASE_URL`, `R2_*`, `ALERT_WEBHOOK_URL`,
+`APP_URL`, `PG_APP_USER`, `ALERT_WEBHOOK_KIND`) and the repository variables
+`RAILWAY_CLI_VERSION` and `RAILWAY_IAC_VERSION`. The deploy job and the
+retention workflow need, per environment:
 
 - secret `MIGRATION_DATABASE_URL` (`gm_migrator`, direct endpoint), from
   `.env.provisioned-<env>` on stdin:
@@ -206,11 +214,13 @@ restaurants, confirm `GET https://<domain>/api/account-config` reports
    The deploy job creates the schema on the empty database (`migrate.js
    --grants --retention` as `gm_migrator`, from the environment secret)
    before it uploads either service.
-2. The smoke must pass (live commit, health, worker ok, client IP check,
-   malformed JSON, session required).
+2. The smoke must pass (live commit, health, worker ok on the same commit
+   with its jobs runner on, client IP check, malformed JSON, session
+   required).
 3. Run the backup workflow manually for production, then the restore
    rehearsal from that backup ([BACKUP_RESTORE.md](BACKUP_RESTORE.md)).
-4. Go-live checks (Wave 2.0): `WORKER_DATABASE_URL` is set on `worker` and
+4. Go-live checks (Wave 2.0; the worker and web now refuse to start without
+   these, and the smoke checks the worker): `WORKER_DATABASE_URL` is set on `worker` and
    its log shows `worker_ready` with `jobs:true` (`/api/ops/status` reports
    the worker `ok`); `SIGNING_KEYS` is set on `web` and a fresh `gm_session`
    cookie starts with `v2.`; one Actions → Retention → production run is

@@ -315,7 +315,13 @@ export function PaymentDialog({
                   {unit.paid ? `${t("paid")}: ${money(unit.paid)}` : ""}
                 </small>
               </span>
-              <strong>{unit.due ? money(unit.due) : t("paid")}</strong>
+              <strong>
+                {unit.due
+                  ? money(unit.due)
+                  : unit.paid
+                    ? t("paid")
+                    : t("discountsRowComp")}
+              </strong>
             </label>
           ))}
         </fieldset>

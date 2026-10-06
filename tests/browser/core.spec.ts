@@ -153,26 +153,42 @@ test("additional round, partial payment reload, refund and drawer close", async 
     .filter({ hasText: "Split browser" })
     .first();
   await order.getByRole("button", { name: "Reembolsar", exact: true }).click();
-  await page
-    .getByRole("dialog")
-    .getByLabel("Importe", { exact: true })
-    .fill("10");
-  await page
-    .getByRole("dialog")
-    .getByLabel("Explicación")
-    .fill("Devolución de prueba");
-  await page
-    .getByRole("dialog")
-    .getByRole("button", { name: "Guardar", exact: true })
+  // discounts (028): the paid check offers "Por importe"; a reason is required
+  // and the result view stays until "Listo".
+  const refund = page.getByRole("dialog", { name: /Reembolso · Orden/ });
+  await refund
+    .getByRole("button", { name: "Por importe", exact: true })
     .click();
+  await refund.getByLabel("Importe", { exact: true }).fill("10");
+  await refund
+    .getByLabel("Motivo del reembolso")
+    .selectOption({ label: "Otro (explica en la nota)" });
+  await refund.getByLabel("Explicación").fill("Devolución de prueba");
+  await refund
+    .getByRole("button", { name: "Reembolsar $10.00", exact: true })
+    .click();
+  await expect(refund.getByText("Reembolso registrado: $10.00")).toBeVisible();
+  await refund.getByRole("button", { name: "Listo", exact: true }).click();
   await expect(order).toContainText("Reembolsado");
   await page.getByRole("button", { name: "Caja", exact: true }).click();
   await page.getByRole("button", { name: "Cerrar caja", exact: true }).click();
+  // discounts (028): blind count → confirm → result.
   await page.getByLabel("Efectivo contado").fill("570");
   await page.getByLabel("Explicación").fill("Conciliación de prueba");
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "Guardar", exact: true })
+    .getByRole("button", { name: "Continuar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Guardar conteo y cerrar", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "Corte registrado" }),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Listo", exact: true })
     .click();
   await expect(page.getByText("Caja cerrada", { exact: true })).toBeVisible();
 });
@@ -232,9 +248,10 @@ test("inventory receipt, count conflict-safe adjustment and owner drilldown", as
   await movements.getByRole("button", { name: "Cerrar", exact: true }).click();
   await expect(movements).not.toBeVisible();
   await page.getByRole("button", { name: "Hoy", exact: true }).click();
-  await expect(page.locator(".metric-grid")).toBeVisible();
+  // reports (029): Hoy's tiles, then its drill-down to the orders.
+  await expect(page.locator(".report-tiles")).toBeVisible();
   await page.screenshot({ path: "docs/evidence/today-1440.png" });
-  await page.locator(".metric").first().click();
+  await page.getByRole("button", { name: "Ver órdenes", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Órdenes", exact: true }),
   ).toBeVisible();

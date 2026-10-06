@@ -13,6 +13,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { LEGAL_CI_ENV } from "./fixtures/legal-ci.js";
+import { noRetries } from "./db-retries.js";
 import { tenant, type Tx } from "../server/db.js";
 import { authentication, hash, password, sign } from "../server/auth.js";
 import { checkPin, createSession, deviceScope } from "../server/access.js";
@@ -755,17 +756,19 @@ try {
     const invitees = [];
     for (let i = 0; i < 5; i++) invitees.push(await owner(`limit${i}`));
     const tokens = [...invites.map((i) => token(i.path, "invite")), ...extra];
-    const results = await Promise.allSettled(
-      invitees.map((o, i) =>
-        as(o, (tx, x) =>
-          acceptInvitation(
-            tx,
-            x,
-            {
-              token: tokens[i],
-              legalAccepted: { terms: V.terms, privacy: V.privacy },
-            },
-            PUBLISHED,
+    const results = await noRetries("co-owner acceptances at the limit", () =>
+      Promise.allSettled(
+        invitees.map((o, i) =>
+          as(o, (tx, x) =>
+            acceptInvitation(
+              tx,
+              x,
+              {
+                token: tokens[i],
+                legalAccepted: { terms: V.terms, privacy: V.privacy },
+              },
+              PUBLISHED,
+            ),
           ),
         ),
       ),
@@ -1403,14 +1406,16 @@ try {
         PUBLISHED,
       ),
     );
-    const results = await Promise.allSettled(
-      [0, 1].map(() =>
-        as(k2, (tx, x) =>
-          acceptTransfer(
-            tx,
-            x,
-            { token: token(transfer.path, "transfer"), legalAccepted: V },
-            PUBLISHED,
+    const results = await noRetries("racing transfer acceptances", () =>
+      Promise.allSettled(
+        [0, 1].map(() =>
+          as(k2, (tx, x) =>
+            acceptTransfer(
+              tx,
+              x,
+              { token: token(transfer.path, "transfer"), legalAccepted: V },
+              PUBLISHED,
+            ),
           ),
         ),
       ),

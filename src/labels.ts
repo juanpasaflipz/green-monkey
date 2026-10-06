@@ -90,6 +90,24 @@ const operations: Record<string, Key> = {
   "offline.settings_changed": "offlineOpSettingsChanged",
   "offline.payment_attempt_recorded": "offlineOpAttemptRecorded",
   "offline.payment_attempt_discarded": "offlineOpAttemptDiscarded",
+  "job.requeued": "opsOpJobRequeued",
+  "job.cancelled": "opsOpJobCancelled",
+  // fiscal (027)
+  "fiscal.ticket.issued": "fiscalOpTicketIssued",
+  "fiscal.profile.saved": "fiscalOpProfileSaved",
+  "fiscal.tickets.repaired": "fiscalOpTicketsRepaired",
+  "fiscal.ticket.unallocated_discount": "fiscalOpUnallocatedDiscount",
+  // discounts (028)
+  "discount.applied": "discountsOpApplied",
+  "discount.reversed": "discountsOpReversed",
+  "discount.controls.saved": "discountsOpControlsSaved",
+  "cash.reviewed": "discountsOpDrawerReviewed",
+  // reports (029)
+  "reports.corte_x.printed": "reportsOpCorteXPrinted",
+  "reports.corte_z.printed": "reportsOpCorteZPrinted",
+  "reports.corte_z.reprinted": "reportsOpCorteZReprinted",
+  "reports.count_slip.printed": "reportsOpCountSlipPrinted",
+  "reports.day_corte.printed": "reportsOpDayCortePrinted",
   // account (031), added at account's merge (contracts 3.13)
   "account.owner_seat": "accountOpOwnerSeat",
   "account.owner_seat_revoked": "accountOpOwnerSeatRevoked",
@@ -108,6 +126,8 @@ const stockCauses: Record<string, Key> = {
   count_adjust: "serviceStockCount",
   prep_input: "serviceStockPrepInput",
   prep_output: "serviceStockPrepOutput",
+  // discounts (028)
+  refund: "discountsStockCauseRefund",
 };
 const channels: Record<string, Key> = {
   pos: "serviceChannelPos",

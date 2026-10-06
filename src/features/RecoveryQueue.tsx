@@ -302,6 +302,13 @@ export function RecoveryQueue({
     (row.body as { payment?: { method?: string } }).payment?.method ?? "cash";
   const provisional = (row: Pending) =>
     "provisionalNumber" in row.body ? row.body.provisionalNumber : null;
+  /** The synced order's fiscal folio (fiscal 027), when its ticket was issued at sync. */
+  const folioOf = (row: Pending) =>
+    (
+      row.result as
+        | { order?: { fiscal?: { ticket?: { folio?: string } | null } } }
+        | undefined
+    )?.order?.fiscal?.ticket?.folio ?? null;
   const serverNumber = (row: Pending) =>
     (row.result as { orderNumber?: number } | undefined)?.orderNumber ??
     (row.result as { number?: number } | undefined)?.number ??
@@ -494,6 +501,9 @@ export function RecoveryQueue({
               <span className="offline-row-status">{statusLabel(row)}</span>
               {row.status === "synced" && number && mapped
                 ? ` · ${t("offlineMapped", { provisional: number, number: mapped })}`
+                : ""}
+              {row.status === "synced" && folioOf(row)
+                ? ` · ${t("fiscalOrderFolio", { folio: folioOf(row)! })}`
                 : ""}
             </p>
             <p>

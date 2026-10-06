@@ -1,0 +1,100 @@
+/* Shared print layout (reports 029). Rules are scoped under the documents that use them
+   (.report-doc cortes, .cancel-doc kitchen chits, .report-sheet letter/A4 pages) so the
+   kitchen ticket and receipt markup of service (024) keeps its own look. The 72/48 mm width
+   comes only from .print-doc.paper-* (src/styles.css). */
+.report-doc .doc-header,
+.cancel-doc .doc-header {
+  text-align: center;
+}
+.report-doc .doc-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5em;
+  margin: 0;
+}
+.report-doc .doc-row .doc-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.report-doc .doc-row .doc-amount {
+  white-space: nowrap;
+  text-align: right;
+}
+.report-doc .doc-row.strong {
+  font-weight: 700;
+}
+.report-doc .doc-row.indent .doc-label {
+  padding-left: 1em;
+}
+.report-doc .doc-section-title {
+  font-size: 1em;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin: 1.5mm 0 0.5mm;
+}
+.report-doc .doc-meta,
+.report-doc .doc-footer,
+.cancel-doc .doc-meta {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.report-doc .doc-flag,
+.cancel-doc .doc-flag {
+  font-weight: 700;
+  margin: 0.5mm 0;
+}
+.report-doc .doc-rule,
+.cancel-doc .doc-rule {
+  border: 0;
+  border-top: 1px dashed currentColor;
+  margin: 1.5mm 0;
+}
+.report-doc .doc-signature {
+  margin-top: 8mm;
+  border-top: 1px solid currentColor;
+  padding-top: 1mm;
+}
+.cancel-doc .doc-title {
+  font-size: 18px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.cancel-doc .cancel-line {
+  font-size: 16px;
+  font-weight: 800;
+}
+.report-sheet table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.report-sheet th,
+.report-sheet td {
+  border-bottom: 1px solid #000;
+  padding: 1mm 2mm;
+  text-align: left;
+}
+.report-sheet td.num,
+.report-sheet th.num {
+  text-align: right;
+  white-space: nowrap;
+}
+@media print {
+  .print-doc:has(> .report-sheet) {
+    width: auto;
+    padding: 12mm;
+    font-size: 11pt;
+  }
+  .report-sheet tr {
+    break-inside: avoid;
+  }
+  .report-doc,
+  .cancel-doc,
+  .report-sheet {
+    color: #000;
+  }
+  .report-doc .doc-rule,
+  .report-doc .doc-signature,
+  .cancel-doc .doc-rule {
+    border-color: #000;
+  }
+}

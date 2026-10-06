@@ -1,21 +1,54 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { Locale } from "../../shared/domain";
 import { currencyExponent } from "../../shared/domain";
 import { api } from "../api";
-import { translateError } from "../i18n";
+import { strings, translateError } from "../i18n";
 import { tenderMethodLabel } from "../labels";
-import { Button } from "../components/ui";
+import { Badge, Button } from "../components/ui";
+import { fill } from "./discounts/format";
+import "./cash/cash.css";
+
+/** One closed drawer as GET /cash/history lists it (discounts 028 columns included). */
+export type CashHistoryRow = {
+  id: string;
+  opened_at: string;
+  closed_at: string;
+  device_name: string;
+  expected: number;
+  counted: number;
+  reason: string | null;
+  late_recovery: number;
+  late_external: number;
+  currencies: string[] | null;
+  opened_by_name: string;
+  closed_by_name: string | null;
+  count_mode: "blind" | "visible" | null;
+  external_expected: number | null;
+  external_reported: number | null;
+  review_note: string | null;
+  reviewer_name: string | null;
+  reviewed_at: string | null;
+  needs_review: boolean;
+};
 
 export function CashHistory({
   locale,
   currency,
+  rowActions,
 }: {
   locale: Locale;
   /** Restaurant currency, used when a drawer has no tender currency evidence. */
   currency: string;
+  /**
+   * Actions per closed drawer, rendered after "Ver movimientos": discounts'
+   * "Revisar diferencia" (028); reports adds its corte print in the same
+   * Operations-side function (LD-16 L6).
+   */
+  rowActions?: (row: CashHistoryRow) => ReactNode;
 }) {
   const es = locale === "es";
-  const [rows, setRows] = useState<any[]>([]),
+  const t = strings[locale];
+  const [rows, setRows] = useState<CashHistoryRow[]>([]),
     [offset, setOffset] = useState(0),
     [detail, setDetail] = useState<any>(null),
     [error, setError] = useState("");
@@ -32,7 +65,7 @@ export function CashHistory({
       live = false;
     };
   }, [offset, locale]);
-  const format = (value: number, row: any) => {
+  const format = (value: number, row: Pick<CashHistoryRow, "currencies">) => {
     const code =
       row.currencies?.length === 1 && row.currencies[0]
         ? row.currencies[0]
@@ -51,6 +84,19 @@ export function CashHistory({
           <h3>
             {row.device_name} · {new Date(row.closed_at).toLocaleString(locale)}
           </h3>
+          <div className="cash-history-meta">
+            {row.closed_by_name && (
+              <span>
+                {fill(t.discountsHistoryClosedBy, { name: row.closed_by_name })}
+              </span>
+            )}
+            {row.count_mode === "blind" && (
+              <Badge>{t.discountsHistoryBlind}</Badge>
+            )}
+            {row.needs_review && (
+              <Badge tone="amber">{t.discountsReviewPending}</Badge>
+            )}
+          </div>
           <p>
             {es ? "Esperado al cerrar" : "Expected at close"}:{" "}
             {format(row.expected, row)}
@@ -71,25 +117,74 @@ export function CashHistory({
             {es ? "Esperado ajustado" : "Adjusted expected"}:{" "}
             {format(row.expected + row.late_recovery, row)}
           </p>
+          {row.external_expected !== null && (
+            <p>
+              {row.external_reported !== null
+                ? fill(t.discountsHistoryTerminal, {
+                    net: format(row.external_expected, row),
+                    reported: format(row.external_reported, row),
+                    difference: format(
+                      row.external_reported - row.external_expected,
+                      row,
+                    ),
+                  })
+                : fill(t.discountsHistoryTerminalNet, {
+                    net: format(row.external_expected, row),
+                  })}
+            </p>
+          )}
+          {row.late_external > 0 && (
+            <p className="muted">
+              {fill(t.discountsHistoryLateTerminal, {
+                amount: format(row.late_external, row),
+              })}
+            </p>
+          )}
           {row.reason && <p>{row.reason}</p>}
-          <Button
-            onClick={() =>
-              void api(`/cash/history/${row.id}`)
-                .then(setDetail)
-                .catch((e: Error) =>
-                  setError(translateError(e.message, locale)),
-                )
-            }
-          >
-            {es ? "Ver movimientos" : "View movements"}
-          </Button>
+          {row.review_note && row.reviewer_name && (
+            <p className="muted">
+              {fill(t.discountsReviewDone, {
+                name: row.reviewer_name,
+                note: row.review_note,
+              })}
+            </p>
+          )}
+          <div className="row wrap">
+            <Button
+              onClick={() =>
+                void api(`/cash/history/${row.id}`)
+                  .then(setDetail)
+                  .catch((e: Error) =>
+                    setError(translateError(e.message, locale)),
+                  )
+              }
+            >
+              {es ? "Ver movimientos" : "View movements"}
+            </Button>
+            {rowActions?.(row)}
+          </div>
           {detail?.id === row.id && (
             <ul>
-              {detail.tenders.map((t: any) => (
-                <li key={t.id}>
-                  {tenderMethodLabel(t.method, t.source, locale)} ·{" "}
-                  {format(t.amount + t.tip, row)} ·{" "}
-                  {new Date(t.created_at).toLocaleTimeString(locale)}
+              {detail.tenders.map((x: any) => (
+                <li key={x.id}>
+                  {tenderMethodLabel(x.method, x.source, locale)} ·{" "}
+                  {format(x.amount + x.tip, row)} ·{" "}
+                  {new Date(x.created_at).toLocaleTimeString(locale)}
+                </li>
+              ))}
+              {(detail.refunds ?? []).map((x: any) => (
+                <li key={x.id}>
+                  {t.discountsHistoryRefunds} ·{" "}
+                  {tenderMethodLabel(x.method ?? "cash", undefined, locale)} · −
+                  {format(x.amount, row)} ·{" "}
+                  {new Date(x.created_at).toLocaleTimeString(locale)}
+                </li>
+              ))}
+              {(detail.movements ?? []).map((x: any) => (
+                <li key={x.id}>
+                  {t.discountsHistoryPaidOuts} · {format(x.amount, row)}
+                  {x.reason ? ` · ${x.reason}` : ""} ·{" "}
+                  {new Date(x.created_at).toLocaleTimeString(locale)}
                 </li>
               ))}
             </ul>

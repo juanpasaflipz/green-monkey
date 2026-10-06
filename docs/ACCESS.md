@@ -60,10 +60,19 @@ a stolen device.
   `unauthorized`. The client shows the lock screen (session codes) or the
   pairing screen (device codes) instead of a generic error.
 
-**Step-up**: on a terminal, refunds, paid-outs, manager self-approved voids and
+**Step-up**: on a terminal, refunds, paid-outs, manager self-approved voids,
 every staff, device and pairing-code command (including the legacy
-`POST /api/team/save`) need a PIN entered within
-`ACCESS_STEP_UP_SECONDS` (default 120). The client asks "Confirma con tu PIN"
+`POST /api/team/save`), and fiscal's profile save (`POST /api/fiscal/profile`,
+owner) and missing-ticket repair (`POST /api/fiscal/tickets/repair`, managers;
+LD-15 fiscal Q5) need a PIN entered within
+`ACCESS_STEP_UP_SECONDS` (default 120). Discounts (028): a manager or owner
+applying or removing a discount or recording a refund alone gets the same
+step-up and is the approver of record; a cashier or server needs a manager's
+PIN in the dialog (`verifyApproval`), and that PIN is the only one asked (LD-2):
+the actor's own step-up applies only to a within-limit staff discount with no
+approver; saving the money controls (owner) needs the step-up. Reports (029):
+the remote close of an orphaned drawer (`POST /api/reports/drawers/:id/close`,
+owners and managers) needs the step-up. The client asks "Confirma con tu PIN"
 and retries the identical request (same `operationId`). Google-entered sessions
 on a personal device are exempt; PIN sessions are not, on any device. A pending
 prompt belongs to the session whose command asked for it:
@@ -312,8 +321,9 @@ so its attempt is cleared at once.
   personal device is used by several employees. Rename, auto-lock, end the live
   session, unpair. Unpairing a device with an open drawer needs an explicit
   acknowledgement, also when the drawer was opened after the list loaded. The
-  drawer then stays open and no device can close it until the reports area's
-  remote close ships (see the runbook below). Unpairing a personal device also
+  drawer then stays open until a manager closes it remotely from Finanzas →
+  Cortes ("Cerrar caja desde aquí", reports 029; see the runbook below).
+  Unpairing a personal device also
   ends the Google sign-ins (`owner_sessions`) that entered it.
 - **Free selling slot**: the first device that signs in takes the Free selling
   slot, and in a new restaurant that is usually the owner's phone (Google
@@ -338,15 +348,18 @@ Sincronización. Pair a replacement with a new code. If PINs may have been
 observed, reset the PINs of everyone who used it (Equipo → Editar → PIN).
 
 If its drawer was open: close it on the tablet first if the tablet still works
-(Caja → Cerrar caja). Otherwise count the drawer's cash now, keep the count,
-then unpair. No device can close that drawer afterwards until the reports
-area's remote close ("Cerrar caja desde aquí", wave 2) ships. Until then support
-closes it with the manager's count, through the migration role in one
-transaction with `app.tenant_id` set:
-`update cash_sessions set counted=<count>, expected=<expected>, reason='Cierre por soporte: dispositivo desvinculado', closed_at=clock_timestamp() where id=<drawer> and closed_at is null`,
-where `<expected>` is computed as `cashSummary` does (opening + cash tenders
-and tips − refunds + cash movements of that drawer), and records it in the
-support log.
+(Caja → Cerrar caja). Otherwise count the drawer's cash and unpair; then a
+manager closes it from Finanzas → Cortes → **Cerrar caja desde aquí** (reports
+029; owners and managers, with the PIN step-up): the dialog shows the drawer's
+live expected cash, the count is visible and needs a reason, the close goes
+through discounts' `closeDrawerRow` and is audited `cash.close` with
+`remote: true`, and the corte Z prints from the result. If money reached the
+drawer after the dialog read it (for example an offline sale reconciled in
+Sincronización), the close is refused with "La caja cambió…" and the dialog asks
+for a recount. A drawer left open from an earlier business day on a device that
+still works is closed on that device; the remote close refuses it while the
+device was seen or took a payment in the last 10 minutes (docs/REPORTS.md
+"Remote close"). The support SQL step is no longer needed.
 
 **Lost or stolen phone or laptop (owner or invited member).** The owner opens
 Dispositivos from another device and **Desvincular**s it. Its POS sessions are
@@ -421,9 +434,9 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
   the remembered lock applies again when the page comes back.
 - Insider PIN guessing on a paired terminal is bounded (about 50 attempts per
   12 h per device) but not impossible against legacy 4-digit secrets.
-- Revoking a device with an open drawer leaves that drawer open with no device
-  to close it until the reports area's remote close ships; the acknowledgement
-  is audited, the dialog says so, and the runbook gives the support step.
+- Revoking a device with an open drawer leaves that drawer open until a manager
+  closes it remotely (Finanzas → Cortes, reports 029); the acknowledgement is
+  audited and the dialog says so.
 - Offline sales cite a session's lease windows, which are not capped at the
   session's end (`leaseCovers`), so evidence may be dated after a logout within
   the window. Accepted for v1 (review A12): a cap would refuse genuine sales

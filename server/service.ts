@@ -70,9 +70,11 @@ export async function assignService(
         after: { employeeId: p.employeeId, tableId: p.tableId, mode: p.mode },
         reason: p.reason,
       });
-      // A paid check moved off its table settles; the feed bump stays last.
-      await refreshCheckState(tx, s, orderId);
+      // LO-R3: the kitchen feed (LO-10) after the order, assignee and table locks
+      // and before refreshCheckState: a paid check moved off its table settles and
+      // may issue its ticket, which takes the folio counter (LO-12) last.
       await bumpKitchenFeed(tx, s);
+      await refreshCheckState(tx, s, orderId);
       return getOrder(tx, orderId);
     },
   );
@@ -106,8 +108,9 @@ export async function progressPreparation(
       const [r] = await tx`select * from rounds where id=${roundId} for update`;
       if (p.state === "completed") {
         // SVC-K6: a delivered round leaves the KDS, and with it the only place
-        // its void can be acknowledged. The kitchen confirms the void first.
-        const [pending] = await tx`select 1 from line_voids v
+        // its void (or refund cancellation, discounts 028) can be acknowledged.
+        // The kitchen confirms it first.
+        const [pending] = await tx`select 1 from kitchen_removals v
           join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id
           where v.tenant_id=${r.tenant_id} and v.order_id=${r.order_id}
             and l.round=${r.number} and l.data->>'station'=${r.station}

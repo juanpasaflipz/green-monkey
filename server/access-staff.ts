@@ -3,7 +3,7 @@ import { z, ZodError } from "zod";
 import type { Tx } from "./db.js";
 import { managers, operators, permit } from "./auth.js";
 import { audit, once } from "./orders.js";
-import { employeeSlot } from "./free-limits.js";
+import { employeeSlot, lockFreeLimits } from "./free-limits.js";
 import {
   endEmployeeSessions,
   hashSecret,
@@ -280,6 +280,10 @@ export async function setStaffActive(
     "access.employee_active",
     { employeeId, ...p },
     async () => {
+      // The Free-limits key (LO-3) before the employee row: reactivation takes
+      // it in employeeSlot, and saveFreeSelection holds it while updating
+      // employees (PLATFORM-LOCKS-6).
+      await lockFreeLimits(tx);
       const e = await target(tx, employeeId);
       if (!p.active) {
         if (employeeId === s.employeeId)
