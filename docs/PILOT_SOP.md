@@ -68,6 +68,11 @@ opciones cambian según el fabricante y el sistema; consulta el manual del contr
 4. **Escala: 100 %.** No uses la opción de ajustar a la página: encoge el texto.
 5. **Encabezados y pies de página del navegador:** desactívalos si en el ticket salen la
    fecha o la dirección de la página.
+
+   **Pasos 3 a 5 sin verificar.** Son una guía general del navegador y no se han
+   probado en un equipo real. Los nombres y opciones del diálogo cambian según el
+   navegador; confírmalos en la prueba del paso 10. Lo único fijo es lo que pide Green
+   Monkey: `@page { margin: 0 }` y ningún tamaño de página (sección 1.1).
 6. **Ancho en Green Monkey:** «Ancho de papel» igual al rollo instalado.
 7. **Corte automático:** es una función del controlador o de la impresora (por ejemplo,
    cortar al final de cada documento o de cada página). Green Monkey no envía la orden
@@ -145,7 +150,7 @@ El procedimiento completo y sus reglas están en
   toca «Activar sonido» después de cada recarga (el navegador bloquea el sonido hasta
   que alguien toca la pantalla).
 - **Hora automática:** deja activada la hora automática del sistema. Si la hora de la
-  tablet se desvía, la app avisa «La hora de este dispositivo difiere … de la del
+  tablet se desvía, la app avisa «La hora de este dispositivo difiere N min de la del
   servidor. Activa la hora automática.»
 - **No borres los datos del navegador** de una tablet vinculada: eso la desvincula y
   borra las ventas que no se hayan sincronizado.
@@ -159,9 +164,11 @@ Todo el comportamiento está en [recuperación sin conexión](OFFLINE_RECOVERY.m
 
 - **Qué ve el cajero.** Arriba siempre hay un indicador de conexión: «Conectado»,
   «Conexión lenta», «Sin conexión» o «Sin conexión (manual)», más «N por sincronizar»
-  cuando hay ventas guardadas en el dispositivo. Sin conexión aparece el aviso «Sin conexión con el
-  servidor. Las ventas se guardan en este dispositivo y se envían al volver la
-  conexión.» y la línea «Puedes vender sin conexión hasta las HH:mm».
+  cuando la persona que inició sesión tiene ventas guardadas en este dispositivo que
+  aún no se sincronizan. Las ventas de otras personas en la misma tablet no se cuentan
+  en ese indicador. Sin conexión aparece el aviso «Sin conexión con el servidor. Las
+  ventas se guardan en este dispositivo y se envían al volver la conexión.» y la línea
+  «Puedes vender sin conexión hasta las HH:mm.»
 - **Prepárate con conexión.** Abre caja mientras hay conexión: abrir y cerrar caja, las
   salidas de efectivo, anulaciones, reembolsos, dividir por productos y «Cobrar juntas»
   no funcionan sin conexión.
@@ -198,8 +205,9 @@ Todo el comportamiento está en [recuperación sin conexión](OFFLINE_RECOVERY.m
   papel y captúralas después.» Anota en papel cada venta (hora, productos, total, forma
   de pago); al capturarlas después quedan con la fecha y hora de captura, así que
   conserva la hoja con el corte del día.
-- **Al volver la conexión**, las ventas se envían solas. En «Cocina» aparece «Ventas
-  sin conexión por revisar (N)»: toca «Ya se preparó» si la cocina ya la hizo con la
+- **Al volver la conexión**, las ventas se envían solas mientras la persona que las
+  guardó tenga la sesión abierta en ese dispositivo (o cuando vuelva a entrar en él).
+  En «Cocina» aparece «Ventas sin conexión por revisar (N)»: toca «Ya se preparó» si la cocina ya la hizo con la
   comanda, o «Preparar ahora» si falta. Las filas «Requiere revisión» en
   «Sincronización» las resuelve un gerente
   ([revisión y archivo](OFFLINE_RECOVERY.md#authenticity-eligibility-review-and-archive)).
@@ -231,9 +239,13 @@ cambio de turno y el siguiente cajero abre otra.
    caja en este dispositivo antes de cobrar.» con el botón «Ir a Caja».
 7. En la cocina, la persona de cocina entra con su PIN, elige la «Estación» («Todas»,
    «Cocina» o «Barra») y toca «Activar sonido».
-8. Si el indicador de conexión muestra ventas por sincronizar del día anterior,
-   abre «Sincronización» y toca «Reintentar sincronización»; lo que quede en
-   «Requiere revisión» lo resuelve un gerente.
+8. En cada dispositivo que cobra, un gerente abre «Sincronización»: ahí ve las ventas
+   pendientes de todas las personas en ese dispositivo (el indicador de conexión solo
+   cuenta las de quien tiene la sesión abierta). «Reintentar sincronización» solo envía
+   las de quien tiene la sesión abierta. Las ventas de cada persona se envían cuando
+   esa persona vuelve a entrar en este dispositivo; si no puede regresar, el gerente
+   las revisa (concilia o archiva). Lo que quede en «Requiere revisión» también lo
+   resuelve un gerente.
 
 ### 4.2 Durante el turno
 
@@ -255,7 +267,10 @@ cambio de turno y el siguiente cajero abre otra.
 2. **Sincroniza.** El indicador de conexión no debe mostrar «N por sincronizar». Si
    lo muestra, abre «Sincronización» → «Reintentar sincronización». Mientras haya
    ventas pendientes en el dispositivo, cerrar caja se niega con «Sincroniza las
-   ventas pendientes de este dispositivo antes de cerrar caja.»
+   ventas pendientes de este dispositivo antes de cerrar caja.» Si tu indicador ya no
+   muestra pendientes y aun así cerrar caja se niega, las ventas pendientes son de otra
+   persona en este dispositivo: que esa persona entre y sincronice, o un gerente las
+   revisa en «Sincronización».
 3. **Cuenta el efectivo** antes de abrir la ventana de cierre y anota el conteo en
    papel (la ventana muestra el esperado; contar primero evita dejarse llevar por él).
 4. **Cierra en el mismo dispositivo.** El cajero no ve «Cerrar caja»: lo hace el

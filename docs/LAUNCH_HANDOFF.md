@@ -16,9 +16,22 @@ cutover has not happened yet ([STAGING.md](STAGING.md#deployment)).
 | Tag | Meaning |
 | --- | --- |
 | **Now** | Possible today with the code on `integration/v1`. |
-| **Wave 2.0** | Platform prep (jobs worker login, signing keyring, process rules, every Wave 2 variable registered in `.railway/railway.ts` and `.env.example`, migrations moved to GitHub Actions). Not merged. |
+| **Wave 2.0** | Platform prep (jobs worker login, signing keyring, process rules, migrations moved to GitHub Actions). Not merged. |
 | **027 / 028 / 029 / 030 / 031** | Wave 2 areas in merge order: fiscal, discounts, reports, cfdi, account. Not merged. |
 | **Wave 3** | Acceptance suite and staging qualification after the last Wave 2 merge. Not started. |
+
+**Proposed names.** Variables and log codes marked *proposed* come from the Wave 2
+specs (Wave 2.0, 030, 031). Those specs are working documents kept outside the
+repository, and none of these names is in `.railway/railway.ts`,
+`server/config-rules.ts` or `.env.example` on `integration/v1`, so they can still
+change. Where an unmerged branch already has one, the item says where. Once an area
+merges, its own document is the authority.
+
+**Lead decision LD-16.** It is recorded with the Wave 2 specs, outside the repository,
+so this page states inline what it takes from it: the merge order Wave 2.0 → 027 →
+028 → 029 → 030 → 031 (section 2, step 0); item L9, which puts the accountant's
+review on your list (1.13); and, among its "Missing items", the `FACTURAPI_TEST_KEY`
+for the staging rehearsal of the daily global invoice (1.14).
 
 The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Spanish).
 
@@ -36,7 +49,7 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 | 1.8 | Backup encryption key (age) and off-platform storage (R2) | Now |
 | 1.9 | Error tracking (Sentry DSN): approve or decline | Now (decision); a dependency change follows |
 | 1.10 | Production secrets you generate | Now; more after Wave 2.0 and 030 |
-| 1.11 | Legal entity data (LD-3) | 031 (and Wave 2.0 for the variables) |
+| 1.11 | Legal entity data (LD-3) | 031 |
 | 1.12 | Privacy notice publication | 031 |
 | 1.13 | An accountant's confirmation of IVA, CFDI and RESICO behaviour | Review now; test against 027 and 030 |
 | 1.14 | Facturapi keys and each restaurant's CSD | Wave 2.0 and 030 |
@@ -111,8 +124,10 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
     `CREATE` on the schema revoked from `PUBLIC`), creates the logins and writes
     `.env.provisioned-production` (0600).
   - **Wave 2.0** adds `gm_jobs_worker` and `gm_support` to `globals.sql` and a worker
-    login (`WORKER_DATABASE_URL`); run the provisioning again after it merges and
-    before the first production deploy.
+    login (`WORKER_DATABASE_URL`, *proposed* by the Wave 2.0 spec; not in code on
+    `integration/v1`, present in `server/config-rules.ts` and
+    `scripts/ops/provision-roles.ts` on the unmerged `track/platform`); run the
+    provisioning again after it merges and before the first production deploy.
   - Then reset the `neondb_owner` password and keep it offline. Neon's documentation:
     a reset from the console's Roles page, the API or `ALTER ROLE ... WITH PASSWORD`
     takes effect on the next connection.
@@ -236,9 +251,12 @@ line), and keep where noted.
   (`server/config-rules.ts:220-221`); [PROVISIONING.md §3](PROVISIONING.md#3-railway)
   asks for 64+ random characters. Rotating it today unpairs every terminal
   ([RUNBOOK.md, "Credential rotation"](RUNBOOK.md#credential-rotation)). **Now.**
-- `SIGNING_KEYS` on `web`, one entry from the generator script Wave 2.0 adds; per the
-  Wave 2.0 spec, production web refuses to start without it and the worker refuses
-  it. `JWT_SECRET` stays required. **Wave 2.0.**
+- `SIGNING_KEYS` on `web` (*proposed* by the Wave 2.0 spec; not in code on
+  `integration/v1`), one entry from the generator script Wave 2.0 adds. On the
+  unmerged `track/platform`, `scripts/ops/generate-signing-key.mjs` prints the entry
+  and `server/config-rules.ts` refuses to start production web without it
+  (`missing_signing_keys`) and refuses it on the worker. `JWT_SECRET` stays required.
+  **Wave 2.0.**
 - `CREDENTIAL_ENCRYPTION_KEY` on `worker` (`kid:secret` list) seals each restaurant's
   Facturapi keys. Keep an offline copy: restoring those keys from a backup needs it.
   **030** (placeholder today at `.env.example:55`).
@@ -250,18 +268,21 @@ line), and keep where noted.
 - **Why.** The platform privacy notice, terms and data-processing agreement read the
   legal entity, address and support contact from configuration; production values
   come from you, and CI uses fictional values flagged as such (lead decision LD-3).
-- **Where it goes.** Web variables, per the account (031) spec: required
-  `LEGAL_ENTITY_NAME`, `LEGAL_ENTITY_ADDRESS`, `LEGAL_PRIVACY_CONTACT_EMAIL`,
-  `LEGAL_JURISDICTION`; optional `LEGAL_ENTITY_RFC`, `LEGAL_PRIVACY_CONTACT_NAME`,
-  `SUPPORT_EMAIL`, `SUPPORT_PHONE`, `SUPPORT_WHATSAPP`, `SUPPORT_HOURS`,
-  `SUPPORT_HOURS_EN`, `SUPPORT_URL`. Wave 2.0 registers them in `.railway/railway.ts`
-  and `.env.example`; `docs/ACCOUNT_AND_LEGAL.md`, which 031 adds, will be the
-  authoritative list. A value that looks like a placeholder counts as missing, and the
-  pages stay unpublished.
+- **Where it goes.** Web variables, all *proposed* by the account (031) spec and not
+  in code on `integration/v1`: required `LEGAL_ENTITY_NAME`, `LEGAL_ENTITY_ADDRESS`,
+  `LEGAL_PRIVACY_CONTACT_EMAIL`, `LEGAL_JURISDICTION`; optional `LEGAL_ENTITY_RFC`,
+  `LEGAL_PRIVACY_CONTACT_NAME`, `SUPPORT_EMAIL`, `SUPPORT_PHONE`, `SUPPORT_WHATSAPP`,
+  `SUPPORT_HOURS`, `SUPPORT_HOURS_EN`, `SUPPORT_URL`. No branch defines these yet;
+  `docs/ACCOUNT_AND_LEGAL.md` (added by 031) will be the authoritative list. Per the
+  spec, a value that looks like a placeholder counts as missing, and the pages stay
+  unpublished.
   Until 031 merges, [PROVISIONING.md §9](PROVISIONING.md#9-legal-entity-values-lead-decision-ld-3)
   applies: confirm the values by hand.
-- **How to verify.** The web logs carry no `legal_documents_unpublished` line (error
-  level in production); the legal pages show your values; owner signup is open.
+- **How to verify.** The web logs carry no line saying the legal documents are
+  unpublished (the 031 spec proposes the code `legal_documents_unpublished`, at error
+  level in production; no branch has it yet, so check the name in
+  `docs/ACCOUNT_AND_LEGAL.md` once 031 merges); the legal pages show your values;
+  owner signup is open.
 
 ### 1.12 Privacy notice publication
 
@@ -279,8 +300,9 @@ line), and keep where noted.
 ### 1.13 An accountant's confirmation of IVA, CFDI and RESICO behaviour
 
 - **Why.** Fiscal tickets (027) and CFDI (030) issue documents in the restaurant's
-  name; their rules must be confirmed by a Mexican accountant before a pilot. LD-16
-  L9 adds this to your hand-off list explicitly.
+  name; their rules must be confirmed by a Mexican accountant before a pilot. Lead
+  decision LD-16 (item L9, see the dependency tags) puts this on your hand-off list
+  explicitly.
 - **What to confirm** (with the references to show the accountant):
   - IVA is always extracted from tax-inclusive prices, once per category, with the
     documented rounding ([FISCAL.md, "Rounding rule"](FISCAL.md#rounding-rule) and
@@ -292,32 +314,40 @@ line), and keep where noted.
     for refunds ([CFDI.md, "Builders"](CFDI.md#builders-fiscal-027-stays-the-system-of-record)),
     including late offline sales that land in a supplementary global part for their
     own day ([OFFLINE_RECOVERY.md, "Late sales and the global invoice"](OFFLINE_RECOVERY.md#late-sales-and-the-global-invoice)).
-  - **RESICO ISR withholding** (LD-16 L9): a nominative invoice from a RESICO persona
-    física (régimen 626) to a persona moral (12-character RFC) carries a 1.25 % ISR
-    retention (LISR art. 113-J); globals are unaffected.
+  - **RESICO ISR withholding is not modelled (open gap).** The CFDI core sends IVA
+    traslado only and refuses withholdings (`server/cfdi/facturapi-schema.ts:32-38`,
+    which marks them out of scope; `server/cfdi/build.ts` always sets
+    `withholding: false`). Ask the accountant whether a pilot restaurant in régimen
+    626 will invoice personas morales; if so, 030 needs a change before live CFDI.
   - The USD cash procedure for border restaurants
     ([PILOT_SOP.md §5.1](PILOT_SOP.md#51-dólares-en-efectivo-restaurantes-de-la-frontera)):
     which exchange rate to use and how to keep the paper log.
 - **How to verify.** A written sign-off (email is enough) kept with the launch
   records, then the accountant's review of the staging test invoices from the Wave 3
-  rehearsal (section 2, step 0). The behaviour exists only after **027** and **030**
-  merge; the rules can be reviewed now.
+  rehearsal (section 2, step 0). The IVA and CFDI behaviour above exists only after
+  **027** and **030** merge, and RESICO withholding is in neither (see above); the
+  rules can be reviewed now.
 
 ### 1.14 Facturapi keys and each restaurant's CSD
 
 - **Why.** CFDI stamping goes through Facturapi. Today nothing calls it and live mode
   is not enabled ([CFDI.md](CFDI.md)).
-- **Where it goes** (per the 030 spec: worker variables registered by Wave 2.0, which
-  the deployed web refuses; placeholders today at `.env.example:55` and
-  `.env.example:102-103`):
+- **Where it goes** (per the 030 spec, worker variables. `FACTURAPI_API_KEY`,
+  `FACTURAPI_TEST_KEY` and `CREDENTIAL_ENCRYPTION_KEY` have placeholders today at
+  `.env.example:102-103` and `.env.example:55`; `CFDI_LIVE_ENABLED` is *proposed* and
+  not in code on `integration/v1`. None of the four is in `.railway/railway.ts` yet.
+  On the unmerged `track/platform`, `server/config-rules.ts` refuses all four on the
+  web):
   - Your Facturapi account and its **User key** (`sk_user_…`) as `FACTURAPI_API_KEY`
     on the production worker, with `CREDENTIAL_ENCRYPTION_KEY` (1.10): one Facturapi
     organization per restaurant, each starting in test mode.
   - A **test key** (`sk_test_…`) as `FACTURAPI_TEST_KEY` on the **staging** worker:
     the shared sandbox needed for the Wave 3 staging rehearsal of the daily global
-    invoice (LD-16 "Missing items"). Production refuses a test key on its own.
-  - `CFDI_LIVE_ENABLED=true` on the production worker only when you decide to go
-    live; it is refused anywhere else.
+    invoice (a "Missing items" entry of LD-16, see the dependency tags). Per the 030
+    spec, production refuses a test key on its own.
+  - `CFDI_LIVE_ENABLED=true` (*proposed* by the 030 spec) on the production worker
+    only when you decide to go live; per the spec it is refused anywhere else (on
+    `track/platform` today, only the web refuses it).
   - **Each restaurant's CSD** (Certificado de Sello Digital: the `.cer`, the `.key` and
     the key's password; not the e.firma, which is what the restaurant uses to request
     the CSD from SAT). The restaurant owner uploads it in the app's CFDI settings
@@ -338,9 +368,12 @@ line), and keep where noted.
 - **Where it goes.** In the Stripe Dashboard, complete account activation: business
   type, tax and business details, the representative's identity verification,
   customer-facing information, a bank account for payouts and two-step
-  authentication (Stripe's "Go live" documentation). The live keys go to the worker
-  (`STRIPE_*`, `.railway/railway.ts:85-89`) only when a post-launch billing area adds
-  live mode.
+  authentication (Stripe's "Go live" documentation). The live secret key, account id,
+  prices and portal configuration go to the worker (`.railway/railway.ts:85-89`), and
+  the live webhook signing secret goes to web (`STRIPE_WEBHOOK_SECRET`,
+  `.railway/railway.ts:54`), only when a post-launch billing area adds live mode.
+  Stripe issues separate test and live signing secrets for a webhook endpoint, so the
+  test-mode value cannot be reused.
 - **How to verify.** The Dashboard shows the account activated for live payments
   with a verified payout bank account; its account id is the one you will set as
   `STRIPE_EXPECTED_ACCOUNT_ID`.
@@ -375,7 +408,8 @@ Each step names the runbook section that holds the commands. Do not start a step
 before the previous one is verified.
 
 0. **Preconditions.** Wave 2.0, then 027, 028, 029, 030 and 031 merged in that order
-   (LD-16), Wave 3 acceptance green, and `release/v1` on `main`. Staging cut over
+   (lead decision LD-16, see the dependency tags), Wave 3 acceptance green, and
+   `release/v1` on `main`. Staging cut over
    ([RUNBOOK.md, "Staging cutover"](RUNBOOK.md#staging-cutover)), including the
    rotations (1.4), the first staging backup and restore rehearsal (step 14) and the
    load test (step 15). The Wave 3 staging rehearsal of the daily global CFDI passed
@@ -394,12 +428,15 @@ before the previous one is verified.
    [PROVISIONING.md §6](PROVISIONING.md#6-backups), [§7](PROVISIONING.md#7-github),
    [§8](PROVISIONING.md#8-monitoring), [§9](PROVISIONING.md#9-legal-entity-values-lead-decision-ld-3)
    (1.6–1.8, 1.11). Do not add `production` to `OPS_LIVE_ENVIRONMENTS` yet.
-5. **Migrate as `gm_migrator`, with grants.** Today the worker's preDeploy runs
-   `node build/scripts/migrate.js --grants --retention` on the first deploy
-   (`.railway/railway.ts:73`); after **Wave 2.0** the Deploy job runs the same command
-   from GitHub Actions with the `MIGRATION_DATABASE_URL` environment secret, before
-   any Railway change. Either way it refuses a privileged login and commits the runtime
-   grants (`scripts/grants.sql`) with the newest migration
+5. **Migrate as `gm_migrator`, with grants.** Today this is not a separate step: the
+   worker's preDeploy runs `node build/scripts/migrate.js --grants --retention` on
+   every deploy (`.railway/railway.ts:73`), so on the first production deploy (step 6)
+   it creates the schema, and web's health check answers `schema_not_ready` until
+   that migration is applied (`server/readiness.ts:22-26`). After **Wave 2.0** the
+   Deploy job runs the same command from GitHub Actions with the
+   `MIGRATION_DATABASE_URL` environment secret, before any Railway change. Either way
+   it refuses a privileged login and commits the runtime grants (`scripts/grants.sql`)
+   with the newest migration
    ([RELEASE.md, "Migrations"](RELEASE.md#migrations)).
 6. **Deploy.** Actions → Deploy → Run workflow with the full SHA that is live on
    staging, the phrase `deploy <sha7> to production`, outside 12:00–23:59
@@ -423,9 +460,10 @@ before the previous one is verified.
    ([PILOT_SOP.md §1–§2](PILOT_SOP.md#1-impresión-y-equipo)); fiscal profile (**027**)
    and CSD upload with CFDI in test mode (**030**, 1.14); the accountant reviews test
    documents (1.13).
-10. **Go-live.** Turn on live CFDI (`CFDI_LIVE_ENABLED=true` and the restaurant's own
-    go-live in its CFDI settings) when the accountant agrees. Run the first service
-    day with the first responder on call ([RUNBOOK.md, "Signals"](RUNBOOK.md#signals),
+10. **Go-live.** Turn on live CFDI (`CFDI_LIVE_ENABLED=true`, a *proposed* name,
+    see 1.14, and the restaurant's own go-live in its CFDI settings) when the
+    accountant agrees. Run the first service day with the first responder on call
+    ([RUNBOOK.md, "Signals"](RUNBOOK.md#signals),
     ["The POS is down" playbook](RUNBOOK.md#the-pos-is-down-playbook)), and record the
     M11 decision and evidence ([PROVISIONING.md §10](PROVISIONING.md#10-first-deploy-and-rehearsal)
     step 4).
