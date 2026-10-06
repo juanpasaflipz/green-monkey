@@ -150,39 +150,44 @@ class Fixture {
       await this.page.evaluate(() => fetch("/api/logout", { method: "POST" }));
       await login(this.page);
     }
-    await this.restorePrivacy();
-    await this.decideHolds();
-    for (const id of this.links)
-      await call(this.page, `/ordering/links/${id}/revoke`, {
-        operationId: op(),
-      });
-    const s = await call(this.page, "/ordering/settings");
-    if (s.data?.paused)
-      await call(this.page, "/ordering/pause", {
-        operationId: op(),
-        paused: false,
-      });
-    if (this.policies) {
-      const v = (await call(this.page, "/ordering/settings")).data;
-      await call(this.page, "/ordering/settings", {
-        operationId: op(),
-        expectedVersion: v.version,
-        tablePolicy: "accept",
-        counterPolicy: "accept",
-        holdMinutes: 30,
-        maxOrderTotal: 1_000_000,
-      });
-    }
-    await this.settleOrders();
-    const floor = await call(this.page, "/floor");
-    for (const t of floor.data.tables as (Table & { archived: boolean })[])
-      if (t.name.startsWith(`QR ${this.id} `) && !t.archived)
-        await call(this.page, "/floor/tables/archive", {
+    // The LD-P9 steps run first and whatever happens to the privacy restore,
+    // which asserts its status (PUB-B3-3).
+    try {
+      await this.decideHolds();
+      for (const id of this.links)
+        await call(this.page, `/ordering/links/${id}/revoke`, {
           operationId: op(),
-          id: t.id,
-          expectedVersion: t.version,
-          archived: true,
         });
+      const s = await call(this.page, "/ordering/settings");
+      if (s.data?.paused)
+        await call(this.page, "/ordering/pause", {
+          operationId: op(),
+          paused: false,
+        });
+      if (this.policies) {
+        const v = (await call(this.page, "/ordering/settings")).data;
+        await call(this.page, "/ordering/settings", {
+          operationId: op(),
+          expectedVersion: v.version,
+          tablePolicy: "accept",
+          counterPolicy: "accept",
+          holdMinutes: 30,
+          maxOrderTotal: 1_000_000,
+        });
+      }
+      await this.settleOrders();
+      const floor = await call(this.page, "/floor");
+      for (const t of floor.data.tables as (Table & { archived: boolean })[])
+        if (t.name.startsWith(`QR ${this.id} `) && !t.archived)
+          await call(this.page, "/floor/tables/archive", {
+            operationId: op(),
+            id: t.id,
+            expectedVersion: t.version,
+            archived: true,
+          });
+    } finally {
+      await this.restorePrivacy();
+    }
   }
 }
 let open: Fixture | null = null;

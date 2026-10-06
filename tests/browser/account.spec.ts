@@ -892,25 +892,33 @@ test("restaurant privacy URL appears on QR ordering; missing URL shows no-notice
     ).toBeVisible();
     await expect(notice).toHaveCount(0);
   } finally {
-    if (linkId)
-      expect(
-        (
+    // The restore and the connection cleanup run whatever the revoke
+    // answers; its status is asserted last (PUB-B3-4).
+    let revoked: number | null = null;
+    try {
+      if (linkId)
+        revoked = (
           await call(page, `/ordering/links/${linkId}/revoke`, {
             operationId: randomUUID(),
           })
-        ).status,
-      ).toBe(200);
-    // The demo restaurant keeps the settings row it had before.
-    await admin.begin(async (tx) => {
-      await tx`select set_config('app.tenant_id',${DEMO_TENANT},true)`;
-      if (before)
-        await tx`update restaurant_account_settings set privacy_notice_url=${before.privacy_notice_url}
-          where tenant_id=${DEMO_TENANT}`;
-      else
-        await tx`delete from restaurant_account_settings where tenant_id=${DEMO_TENANT}`;
-    });
-    await sql.end();
-    await admin.end();
+        ).status;
+    } finally {
+      try {
+        // The demo restaurant keeps the settings row it had before.
+        await admin.begin(async (tx) => {
+          await tx`select set_config('app.tenant_id',${DEMO_TENANT},true)`;
+          if (before)
+            await tx`update restaurant_account_settings set privacy_notice_url=${before.privacy_notice_url}
+              where tenant_id=${DEMO_TENANT}`;
+          else
+            await tx`delete from restaurant_account_settings where tenant_id=${DEMO_TENANT}`;
+        });
+      } finally {
+        await sql.end();
+        await admin.end();
+      }
+    }
+    if (linkId) expect(revoked).toBe(200);
   }
 });
 
