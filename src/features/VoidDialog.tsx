@@ -5,7 +5,10 @@ import { strings, translateError, type Key } from "../i18n";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { stepUpExempt } from "../../shared/access";
 import { readPrintSettings } from "../print";
-import { cancellationsFromVoid } from "./printing/cancellations";
+import {
+  cancellationsFromVoid,
+  type KitchenCancellationModel,
+} from "./printing/cancellations";
 import { printCancellations } from "./printing/KitchenCancellationDocument";
 import {
   ManagerApproval,
@@ -47,6 +50,13 @@ export function VoidDialog({
   const [busy, setBusy] = useState(false);
   // One id per dialog: a retried submit after a lost response replays safely.
   const [operationId] = useState(() => crypto.randomUUID());
+  // reports (029): the void is saved but its cancellation chit did not print. The dialog then
+  // offers only a print retry or Cerrar, never a second void with this operation id.
+  const [unprinted, setUnprinted] = useState<KitchenCancellationModel[] | null>(
+    null,
+  );
+  const print = (chits: KitchenCancellationModel[]) =>
+    printCancellations(chits, locale, session.restaurant.timezone);
 
   const units = order.paymentUnits ?? [];
   const lines = order.lines.map((line) => {
@@ -79,7 +89,29 @@ export function VoidDialog({
       <p>
         #{order.number} · {order.name || t("order")}
       </p>
-      {!order.itemSplitAvailable ? (
+      {unprinted ? (
+        <>
+          <p role="status">{t("reportsKitchenCancelVoidDone")}</p>
+          <p className="error" role="alert">
+            {t("reportsKitchenCancelPrintFailed")}
+          </p>
+          <div className="row">
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                const printed = await print(unprinted);
+                setBusy(false);
+                if (printed) close();
+              }}
+            >
+              {t("reportsKitchenCancelRetry")}
+            </Button>
+            <Button onClick={close}>{t("close")}</Button>
+          </div>
+        </>
+      ) : !order.itemSplitAvailable ? (
         <p className="error" role="alert">
           {translateError("unallocated_history", locale)}
         </p>
@@ -117,16 +149,13 @@ export function VoidDialog({
               });
               // reports (029): with "Imprimir comanda al enviar" the kitchen gets a
               // cancellation chit; printing never fails the void.
-              const printed = readPrintSettings().kitchenOnSend
-                ? await printCancellations(
-                    cancellationsFromVoid(order, after, reason),
-                    locale,
-                    session.restaurant.timezone,
-                  )
-                : true;
+              const chits = readPrintSettings().kitchenOnSend
+                ? cancellationsFromVoid(order, after, reason)
+                : [];
+              const printed = await print(chits);
               await saved();
               if (!printed) {
-                setError(t("reportsKitchenCancelPrintFailed"));
+                setUnprinted(chits);
                 return;
               }
               close();

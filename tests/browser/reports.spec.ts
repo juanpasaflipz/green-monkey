@@ -1,5 +1,8 @@
 // Reports (029) browser tests. FIT-9 (spec §7.3 tests 10–12): per-station KDS auto-print, the
-// kitchen cancellation chits on a KDS and on a selling device, and the new-ticket tone.
+// kitchen cancellation chits on a KDS and on a selling device (and a failed chit after a void),
+// and the new-ticket tone. Phase A also checks the offline notice of Hoy and Finanzas (A13.8)
+// and the live report routes over HTTP; the Finanzas views (spec §7.3 tests 1–9, 13, 14) are
+// mounted and tested at the phase B merge (docs/REPORTS.md "Merge wiring").
 import { test, expect, type Browser, type Page } from "@playwright/test";
 
 const tenantId =
@@ -17,6 +20,28 @@ async function ownerLogin(page: Page) {
     page.getByRole("heading", { name: "Hoy", exact: true }),
   ).toBeVisible();
 }
+/** Signs another demo employee in on this browser (the device cookie stays). */
+async function switchEmployee(page: Page, login: string, secret: string) {
+  const status = await page.evaluate(
+    async ({ tenantId, login, secret }) => {
+      const s = await (await fetch("/api/session")).json();
+      await fetch("/api/logout", {
+        method: "POST",
+        headers: { "x-csrf-token": s.csrf },
+      });
+      const r = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tenantId, login, secret }),
+      });
+      return r.status;
+    },
+    { tenantId, login, secret },
+  );
+  expect(status).toBe(200);
+}
+const pill = (page: Page, name: RegExp) =>
+  page.locator(".top-actions").getByRole("button", { name });
 /** Calls the API from the page with the session's CSRF token. */
 async function call<T = any>(
   page: Page,
@@ -41,20 +66,7 @@ async function call<T = any>(
 /** Pairs this browser as an owner device, then signs the kitchen employee in. */
 async function kitchenScreen(page: Page) {
   await ownerLogin(page);
-  const status = await page.evaluate(async (tenantId) => {
-    const s = await (await fetch("/api/session")).json();
-    await fetch("/api/logout", {
-      method: "POST",
-      headers: { "x-csrf-token": s.csrf },
-    });
-    const r = await fetch("/api/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tenantId, login: "kitchen", secret: "654321" }),
-    });
-    return r.status;
-  }, tenantId);
-  expect(status).toBe(200);
+  await switchEmployee(page, "kitchen", "654321");
   await page.goto("/app");
   await expect(page.getByRole("group", { name: "Estación" })).toBeVisible();
 }
@@ -102,6 +114,39 @@ async function twoStationOrder(page: Page, name: string) {
     note: "",
     channel: "pos",
   });
+}
+/** Turns on "Imprimir comanda al enviar a cocina" on this device (Vender → Impresión). */
+async function printOnSend(page: Page) {
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await page.getByRole("button", { name: "Impresión", exact: true }).click();
+  await page
+    .getByRole("dialog")
+    .getByLabel("Imprimir comanda al enviar a cocina")
+    .check();
+  await page.keyboard.press("Escape");
+}
+/** Opens Órdenes and voids one unit of «Agua de jamaica» of the named order in the dialog. */
+async function voidAguaFromOrders(page: Page, name: string, reason: string) {
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+  const card = page.locator(".order-summary").filter({ hasText: name });
+  await card.getByRole("button", { name: "Anular", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel(/Agua de jamaica/).fill("1");
+  await dialog.getByLabel("Motivo de la anulación").fill(reason);
+  // The owner on a shared terminal approves with their own PIN ("Confirma con tu PIN").
+  const approval = dialog.getByRole("group", {
+    name: "Autorización de gerente",
+  });
+  if (await approval.isVisible()) {
+    await approval
+      .getByLabel("Gerente que autoriza")
+      .selectOption({ label: "Alex Demo" });
+    await approval.getByLabel(/PIN/).fill("demo-green-monkey");
+  }
+  await dialog.getByRole("button", { name: /Anular 1 productos/ }).click();
+  return dialog;
 }
 /** Voids one unit of the order's bar line through the API (an owner with recent PIN). */
 async function voidBarUnit(page: Page, order: any, reason: string) {
@@ -187,14 +232,7 @@ test("FIT-9: with «Imprimir comanda al enviar», Vender prints one section per 
   if (!current || current.closed_at)
     await call(page, "/cash/open", { operationId: uuid(), opening: 50000 });
   const name = "Envío " + tag();
-  await page.getByRole("button", { name: "Operación", exact: true }).click();
-  await page.getByRole("button", { name: "Vender", exact: true }).click();
-  await page.getByRole("button", { name: "Impresión", exact: true }).click();
-  await page
-    .getByRole("dialog")
-    .getByLabel("Imprimir comanda al enviar a cocina")
-    .check();
-  await page.keyboard.press("Escape");
+  await printOnSend(page);
   await stubPrint(page);
   const tile = (product: string) =>
     page
@@ -221,24 +259,7 @@ test("FIT-9: with «Imprimir comanda al enviar», Vender prints one section per 
   try {
     // The void from Órdenes (a manager on a shared terminal confirms with a PIN).
     await stubPrint(page);
-    await page.getByRole("button", { name: "Operación", exact: true }).click();
-    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
-    const card = page.locator(".order-summary").filter({ hasText: name });
-    await card.getByRole("button", { name: "Anular", exact: true }).click();
-    const dialog = page.getByRole("dialog");
-    await dialog.getByLabel(/Agua de jamaica/).fill("1");
-    await dialog.getByLabel("Motivo de la anulación").fill("Error de captura");
-    // The owner on a shared terminal approves with their own PIN ("Confirma con tu PIN").
-    const approval = dialog.getByRole("group", {
-      name: "Autorización de gerente",
-    });
-    if (await approval.isVisible()) {
-      await approval
-        .getByLabel("Gerente que autoriza")
-        .selectOption({ label: "Alex Demo" });
-      await approval.getByLabel(/PIN/).fill("demo-green-monkey");
-    }
-    await dialog.getByRole("button", { name: /Anular 1 productos/ }).click();
+    const dialog = await voidAguaFromOrders(page, name, "Error de captura");
     await expect(dialog).toBeHidden();
     await expect
       .poll(async () => (await printed(page)).map((j) => j.text).join("\n"))
@@ -300,4 +321,113 @@ test("FIT-9: the KDS plays the new-ticket tone when sound is on", async ({
     if (orderId) await settle(owner, orderId);
     await owner.close();
   }
+});
+
+test("FIT-9: when the cancellation chit fails to print, the void dialog says the void was recorded and offers only Reintentar impresión or Cerrar", async ({
+  page,
+}) => {
+  await ownerLogin(page);
+  const name = "Falla " + tag();
+  const order = await twoStationOrder(page, name);
+  const agua = order.lines.find((l: any) => l.station === "bar");
+  try {
+    await printOnSend(page);
+    // The printer fails once (window.print throws), then works.
+    await page.evaluate(() => {
+      window.print = () => {
+        throw new Error("Impresora desconectada");
+      };
+    });
+    const dialog = await voidAguaFromOrders(page, name, "Cliente se fue");
+    await expect(
+      dialog.getByText("La anulación quedó registrada.", { exact: true }),
+    ).toBeVisible();
+    await expect(dialog.getByRole("alert")).toHaveText(
+      "No se pudo imprimir la cancelación.",
+    );
+    // No second void from this dialog: the form and its submit button are gone.
+    await expect(
+      dialog.getByRole("button", { name: /Anular \d+ productos/ }),
+    ).toHaveCount(0);
+    await expect(dialog.getByLabel("Motivo de la anulación")).toHaveCount(0);
+    const after = await call(page, "/orders/" + order.id);
+    expect(after.total).toBe(order.total - agua.unitPrice);
+    await stubPrint(page);
+    await dialog
+      .getByRole("button", { name: "Reintentar impresión", exact: true })
+      .click();
+    await expect(dialog).toBeHidden();
+    const chit = (await printed(page)).find((j) =>
+      j.text.includes("CANCELACIÓN"),
+    )!;
+    expect(chit.text).toContain("− 1 × Agua de jamaica");
+    expect(chit.text).toContain("Motivo: Cliente se fue");
+  } finally {
+    await settle(page, order.id);
+  }
+});
+
+test("A13.8: Hoy and Finanzas say «Los reportes requieren conexión.» offline without requesting a report, and load again when the connection returns", async ({
+  page,
+  context,
+}) => {
+  await ownerLogin(page);
+  const reportRequests: string[] = [];
+  page.on("request", (r) => {
+    const path = new URL(r.url()).pathname;
+    if (/^\/api\/reports?(\/|$)/.test(path)) reportRequests.push(path);
+  });
+  const notice = page.getByText("Los reportes requieren conexión.", {
+    exact: true,
+  });
+  await context.setOffline(true);
+  await expect(pill(page, /^Sin conexión/)).toBeVisible();
+  // The open Hoy view switches to the notice by itself.
+  await expect(notice).toBeVisible();
+  await page.getByRole("button", { name: "Finanzas", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Finanzas", exact: true }),
+  ).toBeVisible();
+  await expect(notice).toBeVisible();
+  await page.getByRole("button", { name: "Hoy", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Hoy", exact: true }),
+  ).toBeVisible();
+  await expect(notice).toBeVisible();
+  expect(reportRequests).toEqual([]);
+  await context.setOffline(false);
+  await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  await expect(notice).toBeHidden();
+  expect(reportRequests).toContain("/api/report");
+});
+
+test("the live report routes answer over HTTP without caching, and refuse a cashier", async ({
+  page,
+}) => {
+  await ownerLogin(page);
+  /** A GET from the page (its session cookies and fetch metadata): status, cache header, body. */
+  const get = (path: string) =>
+    page.evaluate(async (path) => {
+      const r = await fetch(path);
+      return {
+        status: r.status,
+        cache: r.headers.get("cache-control"),
+        body: await r.json(),
+      };
+    }, path);
+  const range = "from=2026-01-05&to=2026-01-05";
+  for (const path of [
+    "/api/reports/audit?" + range,
+    "/api/reports/tenders?" + range,
+    "/api/reports/filters",
+  ]) {
+    const r = await get(path);
+    expect(r.status, path).toBe(200);
+    expect(r.cache, path).toBe("no-store");
+  }
+  const bad = await get("/api/reports/audit?from=2026-01-05");
+  expect([bad.status, bad.body.error]).toEqual([400, "invalid_input"]);
+  await switchEmployee(page, "cashier", "123456");
+  const refused = await get("/api/reports/audit?" + range);
+  expect([refused.status, refused.body.error]).toEqual([403, "forbidden"]);
 });

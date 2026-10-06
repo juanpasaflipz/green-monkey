@@ -10,7 +10,7 @@ import { Kitchen } from "./Kitchen";
 import { RestaurantSettings } from "./RestaurantSettings";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { minor, type Session, type Locale } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
@@ -31,6 +31,7 @@ export function Operations({
   session: Session;
   locale: Locale;
   navigate: (s: string) => void;
+  /** Connectivity from App (contract §0.8); discounts and refunds need it. */
   online?: boolean;
 }) {
   const t = (k: Key) => strings[locale][k];
@@ -57,6 +58,13 @@ export function Operations({
   /** Opening a dialog creates its operation id; closing it discards the id. */
   const setModal = (next: { kind: string; item?: any } | null) =>
     setModalState(next && { ...next, operationId: crypto.randomUUID() });
+  // reports (029): Hoy and Finanzas follow the connection (the offline guard in load()).
+  const shownOnline = useRef(online);
+  useEffect(() => {
+    if (shownOnline.current === online) return;
+    shownOnline.current = online;
+    if (view === "today" || view === "finance") void load();
+  }, [online]);
   async function load() {
     try {
       // These views load and poll by themselves.
