@@ -531,6 +531,14 @@ test("DSC-R1: leaving the refund result with Escape or the X button refreshes Ó
   await expect(
     detail.getByRole("button", { name: "Reembolsar", exact: true }),
   ).toHaveCount(0);
+  // Both tacos were cancelled before the kitchen served them: the station
+  // acknowledges, so the fully removed ticket leaves the KDS (as the MON-4
+  // card test does) instead of waiting there for later specs.
+  const round = (await call(page, "/orders/" + o.id)).rounds[0];
+  await call(page, `/kitchen/${round.id}/voids/ack`, { operationId: uuid() });
+  expect((await call(page, "/orders/" + o.id)).rounds[0].state).toBe(
+    "completed",
+  );
 });
 
 test("MON-9/FIT-10: blind close — the cashier never sees expected cash; the manager sees the difference in history and reviews it", async ({
