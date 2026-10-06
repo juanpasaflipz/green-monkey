@@ -20,7 +20,11 @@ export const statusHash = (key: string) => sha("gm-public-status-v1:" + key);
 export const linkRef = (tokenHash: string) =>
   tokenHash.slice(0, 4).toUpperCase();
 
-export type ResolvedLink = { tenantId: string; linkId: string };
+export type ResolvedLink = {
+  tenantId: string;
+  linkId: string;
+  kind: "table" | "counter" | "kiosk";
+};
 const CACHE_MAX = 5000,
   CACHE_TTL_MS = 5 * 60_000;
 const cache = new Map<string, ResolvedLink & { at: number }>();
@@ -38,11 +42,14 @@ async function lookup(
     const tx = raw as Tx;
     await tx`select set_config('app.public_link_hash', ${h}, true)`;
     const [r] = activeOnly
-      ? await tx`select tenant_id, id from public_links where token_hash = ${h} and revoked_at is null`
-      : await tx`select tenant_id, id from public_links where token_hash = ${h}`;
+      ? await tx`select tenant_id, id, kind from public_links where token_hash = ${h} and revoked_at is null`
+      : await tx`select tenant_id, id, kind from public_links where token_hash = ${h}`;
     return r;
-  })) as { tenant_id: string; id: string } | undefined;
-  return row ? { tenantId: row.tenant_id, linkId: row.id } : null;
+  })) as
+    { tenant_id: string; id: string; kind: ResolvedLink["kind"] } | undefined;
+  return row
+    ? { tenantId: row.tenant_id, linkId: row.id, kind: row.kind }
+    : null;
 }
 
 /**
@@ -61,7 +68,7 @@ export async function resolveLink(
   const h = linkHash(token);
   const hit = cache.get(h);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS)
-    return { tenantId: hit.tenantId, linkId: hit.linkId };
+    return { tenantId: hit.tenantId, linkId: hit.linkId, kind: hit.kind };
   const found = await lookup(sql, token, true);
   if (!found) throw new DomainError("public_link_invalid", 404);
   cache.delete(h);

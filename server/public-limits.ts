@@ -11,6 +11,8 @@ import { PUBLIC_TOKEN } from "../shared/public-ordering.js";
 export const PUBLIC_RATES = {
   /** Menu loads per IP (raised from menu's 30: a full room on one Wi-Fi refetches together). */
   menuPerIp: 60,
+  /** Requests with a missing or malformed token: their own bucket (ABUSE-3). */
+  malformedPerIp: 30,
   /** Order submissions per IP (MENU-R6's own order budget). */
   submitPerIp: 30,
   cancelPerIp: 30,
@@ -52,6 +54,8 @@ export function publicLimiter(
     limit: number;
     windowMs?: number;
     scope?: (req: express.Request) => string;
+    /** Requests that do not count towards this limiter (express-rate-limit `skip`). */
+    skip?: (req: express.Request, res: express.Response) => boolean;
   },
 ) {
   return rateLimit({
@@ -60,6 +64,7 @@ export function publicLimiter(
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => publicKey(clientIp(req), o.scope?.(req)),
+    skip: o.skip ?? (() => false),
     handler: (req, res) => {
       log.warn("rate_limited", {
         limiter: name,

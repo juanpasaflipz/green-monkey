@@ -30,6 +30,7 @@ import {
   type Session,
 } from "../shared/domain.js";
 import {
+  PUBLIC_LIMITS,
   acceptInput,
   holdLabel,
   rejectInput,
@@ -125,15 +126,31 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
   const rows =
     await tx`select h.id,h.number,h.channel,h.table_id,h.policy,h.name,h.note,
       h.lines,h.priced,h.quoted_total,h.created_at,h.expires_at,
-      l.kind,l.label as link_label,t.name as table_name
+      l.kind,l.label as link_label,l.revoke_reason as link_revoked,t.name as table_name
     from public_order_holds h
     join public_links l on l.tenant_id=h.tenant_id and l.id=h.link_id
     left join dining_tables t on t.tenant_id=h.tenant_id and t.id=h.table_id
     where h.state='pending' and h.expires_at>now() and h.created_at>now()-interval '2 hours'
     order by h.created_at,h.id limit 100`;
-  const [expired] = await tx`select count(*)::int as n from public_order_holds
-    where state='pending' and expires_at<=now() and expires_at>now()-interval '30 minutes'
-      and created_at>now()-interval '150 minutes'`;
+  // The recently expired count and the churning codes (ABUSE-2): diner
+  // cancellations per scope (a table across its links, or a link) in the
+  // window that reached the kind's budget. One statement.
+  const [expired] = await tx`select
+      (select count(*)::int from public_order_holds
+        where state='pending' and expires_at<=now() and expires_at>now()-interval '30 minutes'
+          and created_at>now()-interval '150 minutes') as n,
+      (select coalesce(json_agg(json_build_object('kind',c.kind,'name',c.name) order by c.name),'[]'::json)
+        from (select min(l.kind) as kind,coalesce(min(t.name),min(l.label)) as name,
+            count(*)::int as cancelled
+          from public_order_holds h
+          join public_links l on l.tenant_id=h.tenant_id and l.id=h.link_id
+          left join dining_tables t on t.tenant_id=h.tenant_id and t.id=h.table_id
+          where h.state='cancelled'
+            and h.created_at>now()-make_interval(mins=>${PUBLIC_LIMITS.windowMinutes})
+          group by coalesce(h.table_id,h.link_id)) c
+        where c.cancelled>=case c.kind when 'table' then ${PUBLIC_LIMITS.table.cancelsPerWindow}::int
+          when 'counter' then ${PUBLIC_LIMITS.counter.cancelsPerWindow}::int
+          else ${PUBLIC_LIMITS.kiosk.cancelsPerWindow}::int end) as churning`;
   const tableIds = [
     ...new Set(rows.flatMap((r) => (r.table_id ? [r.table_id as string] : []))),
   ];
@@ -158,6 +175,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
     reason,
     paused: settings.paused,
     recentlyExpired: expired.n,
+    churning: expired.churning as InboxResponse["churning"],
     serverTime: (settings.server_time as Date).toISOString(),
     holds: rows.map((r) => ({
       id: r.id,
@@ -167,6 +185,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
       tableId: r.table_id,
       tableName: r.table_name ?? null,
       linkLabel: r.link_label,
+      linkRevoked: (r.link_revoked ?? null) as InboxHold["linkRevoked"],
       name: r.name,
       note: r.note,
       policy: r.policy as HoldPolicy,
@@ -203,18 +222,27 @@ type HoldDecisionRow = {
   priced: PricedHoldLine[];
   order_operation_id: string;
   state: string;
-  expired: boolean;
 };
 
-/** LO-2b: the hold row, always the first row lock of a decision. */
+/**
+ * LO-2b: the hold row, always the first row lock of a decision. Expiry is
+ * judged by the clock once the row is locked (not the transaction start), so
+ * a decision that waited for the row cannot start after expires_at; the
+ * diner's status gives an accept that commits a moment later a grace
+ * (HOLD_EXPIRY_GRACE_SECONDS, CONCURRENCY-2).
+ */
 async function lockHold(tx: Tx, holdId: string): Promise<HoldDecisionRow> {
   const [h] = await tx<
     HoldDecisionRow[]
-  >`select *,expires_at<=now() as expired from public_order_holds where id=${holdId} for update`;
+  >`select * from public_order_holds where id=${holdId} for update`;
   if (!h) throw new DomainError("not_found", 404);
   if (h.state !== "pending")
     throw new DomainError("public_order_not_pending", 409);
-  if (h.expired) throw new DomainError("public_order_expired", 409);
+  // A second statement: the lock statement's own expressions may be computed
+  // before it waited for the row.
+  const [clock] =
+    await tx`select expires_at<=clock_timestamp() as expired from public_order_holds where id=${holdId}`;
+  if (clock.expired) throw new DomainError("public_order_expired", 409);
   return h;
 }
 
@@ -250,6 +278,13 @@ export async function acceptHold(
       await requirePro(tx);
       if (p.payment && p.target.kind !== "new")
         throw new DomainError("invalid_input");
+      // ABUSE-1: a code deactivated as abuse may still carry real diners'
+      // orders, so its holds are accepted only after staff verified them.
+      const [link] =
+        await tx`select revoke_reason from public_links where id=${h.link_id}`;
+      const abuse = link?.revoke_reason === "abuse";
+      if (abuse && !p.abuseAcknowledged)
+        throw new DomainError("public_hold_link_abuse", 409);
       const ids = new Set(h.lines.map((l) => l.id));
       const excluded = new Set(p.excludeLineIds);
       if ([...excluded].some((x) => !ids.has(x)) || excluded.size >= ids.size)
@@ -264,7 +299,12 @@ export async function acceptHold(
       const current = sum(
         quote(lines, await catalog(tx), false).map((l) => l.total),
       );
-      if (current !== quoted && !p.priceChangeAcknowledged)
+      // MONEY-1: the total staff saw. A changed price needs the exact new
+      // total acknowledged; any acknowledged total must be the current one.
+      if (
+        (current !== quoted || p.acknowledgedTotal !== null) &&
+        p.acknowledgedTotal !== current
+      )
         throw new DomainError("public_hold_price_changed", 409);
       // Nothing to collect on a free order.
       if (p.payment && current === 0) throw new DomainError("invalid_input");
@@ -275,15 +315,19 @@ export async function acceptHold(
         // LD-2: a manager acting alone on a shared terminal confirms with a fresh PIN.
         requireRecentAuth(s);
       }
+      const label = holdLabel(h.channel, h.number);
       let order: Order;
       if (p.target.kind === "new") {
+        // MONEY-2: the diner knows the order only by its label (Q-14/K-14),
+        // so the label leads the call name (KDS, kitchen ticket, Órdenes) and
+        // the order note (the receipt prints it, LD-1).
         order = await createOrder(tx, s, {
           operationId: h.order_operation_id,
           lines,
           mode: h.mode,
           tableId: h.table_id,
-          name: h.name,
-          note: h.note,
+          name: [label, h.name].filter(Boolean).join(" · "),
+          note: [label, h.note].filter(Boolean).join(" · "),
           channel: h.channel,
         });
       } else {
@@ -298,6 +342,9 @@ export async function acceptHold(
           o.check_state !== "open"
         )
           throw new DomainError("public_hold_target_invalid", 409);
+        // The round note carries the label and the kitchen note, never the
+        // diner's name: round notes print on the shared check's receipt
+        // (PRIVACY-3, LD-1).
         order = await addRound(tx, s, o.id, {
           operationId: h.order_operation_id,
           lines,
@@ -306,16 +353,35 @@ export async function acceptHold(
           name: "",
           channel: h.channel,
           expectedVersion: p.target.expectedVersion,
-          note: [holdLabel(h.channel, h.number), h.name, h.note]
-            .filter(Boolean)
-            .join(" · ")
-            .slice(0, 500),
+          note: [label, h.note].filter(Boolean).join(" · ").slice(0, 500),
         });
       }
       // The round this hold became: read, never derived from order.version
       // (a void bumps the version without inserting a round).
       const [{ round }] =
         await tx`select max(number)::int as round from rounds where order_id=${order.id}`;
+      // What the round actually charged: createOrder/addRound re-read the
+      // menu, so a change committed since the check above is caught here and
+      // rolls everything back (MONEY-1).
+      const charged = await tx<
+        { id: string; unit_price: number; total: number }[]
+      >`select id,(data->>'unitPrice')::int as unit_price,(data->>'total')::int as total
+        from order_lines where order_id=${order.id} and round=${round} order by id`;
+      const roundTotal = sum(charged.map((l) => l.total));
+      if (
+        roundTotal !== current ||
+        charged.length !== lines.length ||
+        charged.some((l) => !ids.has(l.id) || excluded.has(l.id))
+      )
+        throw new DomainError("public_hold_price_changed", 409);
+      // CONCURRENCY-3: the target's state was read without a lock; a payment
+      // that settled it in between leaves its version unchanged. A check that
+      // was fully paid before this round refuses it (rolled back).
+      if (p.target.kind === "append") {
+        const before = order.total - roundTotal;
+        if (before > 0 && order.paid >= before)
+          throw new DomainError("public_hold_target_invalid", 409);
+      }
       if (p.payment) {
         if (p.payment.amount !== order.total - order.paid)
           throw new DomainError("public_payment_must_cover_total", 409);
@@ -329,9 +395,10 @@ export async function acceptHold(
       await tx`update public_order_holds set state='accepted',decided_at=clock_timestamp(),
           decided_by=${s.employeeId},order_id=${order.id},order_round=${round},
           excluded_line_ids=${tx.array([...excluded])}::uuid[],
-          paid_at_accept=${!!p.payment},policy_override=${override}
+          paid_at_accept=${!!p.payment},policy_override=${override},
+          accepted_total=${roundTotal},
+          accepted_lines=${tx.json(charged.map((l) => ({ id: l.id, unitPrice: l.unit_price, total: l.total })))}
         where id=${holdId}`;
-      const label = holdLabel(h.channel, h.number);
       await audit(tx, s, "public.hold_accepted", holdId, {
         orderId: order.id,
         label,
@@ -341,6 +408,8 @@ export async function acceptHold(
         override,
         excluded: excluded.size,
         priceChanged: current !== quoted,
+        total: roundTotal,
+        ...(abuse ? { abuseAcknowledged: true } : {}),
       });
       return {
         hold: { id: holdId, label, state: "accepted" as const },

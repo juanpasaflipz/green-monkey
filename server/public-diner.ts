@@ -21,6 +21,7 @@ import {
   type Product,
 } from "../shared/domain.js";
 import {
+  HOLD_EXPIRY_GRACE_SECONDS,
   PUBLIC_LIMITS,
   PUBLIC_TOKEN,
   canonicalRequest,
@@ -158,6 +159,8 @@ type HoldRow = {
   order_id: string | null;
   order_round: number | null;
   excluded_line_ids: string[];
+  accepted_total: number | null;
+  accepted_lines: { id: string; unitPrice: number; total: number }[] | null;
   expired: boolean;
   restaurant: DinerHoldView["restaurant"];
 };
@@ -172,10 +175,26 @@ const STATUS_KEY_UNIQUE = "public_order_holds_tenant_id_status_key_hash_key";
 const holdKind = (h: HoldRow): LinkKind =>
   h.table_id ? "table" : h.channel === "kiosk" ? "kiosk" : "counter";
 
-/** The diner's view of a hold; accepted holds add one order statement (plus fiscal from 027). */
+/**
+ * The diner's view of a hold; accepted holds add one order statement (plus
+ * fiscal from 027). An accepted hold shows what acceptance charged (its
+ * accepted lines and total), never the submission snapshot (PRIVACY-1).
+ */
 async function holdView(tx: Tx, h: HoldRow): Promise<DinerHoldView> {
   const excluded = new Set(h.excluded_line_ids ?? []);
-  const lines = h.priced.map((l) => ({ ...l, excluded: excluded.has(l.id) }));
+  const charged = new Map((h.accepted_lines ?? []).map((l) => [l.id, l]));
+  const lines = h.priced.map((l) => {
+    const a = excluded.has(l.id) ? undefined : charged.get(l.id);
+    return {
+      ...l,
+      ...(a ? { unitPrice: a.unitPrice, total: a.total } : {}),
+      excluded: excluded.has(l.id),
+    };
+  });
+  const sent = sum(
+    h.priced.filter((l) => !excluded.has(l.id)).map((l) => l.total),
+  );
+  const accepted = h.state === "accepted" && h.accepted_total !== null;
   const view: DinerHoldView = {
     restaurant: h.restaurant,
     label: holdLabel(h.channel, h.number),
@@ -185,7 +204,10 @@ async function holdView(tx: Tx, h: HoldRow): Promise<DinerHoldView> {
     createdAt: h.created_at.toISOString(),
     expiresAt: h.expires_at.toISOString(),
     lines,
-    total: sum(lines.filter((l) => !l.excluded).map((l) => l.total)),
+    total: accepted
+      ? h.accepted_total!
+      : sum(lines.filter((l) => !l.excluded).map((l) => l.total)),
+    priceChanged: accepted && h.accepted_total !== sent,
     rejectReason: dinerRejectReason(h.reject_reason),
     order: null,
   };
@@ -290,13 +312,18 @@ export async function submitHold(
   await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':public-hold:'||${scope},925))`;
   const [counts] = await tx`select
       count(*) filter (where state='pending' and expires_at>now())::int as pending,
-      count(*) filter (where created_at>now()-make_interval(mins=>${PUBLIC_LIMITS.windowMinutes}))::int as recent
+      count(*) filter (where created_at>now()-make_interval(mins=>${PUBLIC_LIMITS.windowMinutes}))::int as recent,
+      count(*) filter (where state='cancelled' and created_at>now()-make_interval(mins=>${PUBLIC_LIMITS.windowMinutes}))::int as cancelled
     from public_order_holds
     where created_at>now()-interval '2 hours'
       and ${c.table_id ? tx`table_id=${c.table_id}` : tx`link_id=${c.id}`}`;
   const cap = PUBLIC_LIMITS[c.kind];
   if (counts.pending >= cap.pending || counts.recent >= cap.perWindow)
     throw new DomainError("public_order_limit", 429);
+  // Churn (ABUSE-2): submit-and-cancel loops leave nothing in the inbox, so
+  // diner cancellations have their own budget; the inbox names the code.
+  if (counts.cancelled >= cap.cancelsPerWindow)
+    throw new DomainError("public_order_churn", 429);
   // A soft restaurant cap, counted without a lock.
   const [tenantCount] =
     await tx`select count(*)::int as n from public_order_holds
@@ -357,10 +384,15 @@ export async function submitHold(
   });
 }
 
+/**
+ * A hold by its status key. The status read gives a just-expired hold its
+ * grace (an accept that locked it in time may still be committing,
+ * CONCURRENCY-2); the cancel takes the row lock and uses the exact expiry.
+ */
 const holdByKey = (tx: Tx, linkId: string, statusKey: string, lock = false) =>
   tx<
     HoldRow[]
-  >`select h.*,(h.state='pending' and h.expires_at<=now()) as expired,${restaurantOf(tx)}
+  >`select h.*,(h.state='pending' and h.expires_at<=${lock ? tx`now()` : tx`now()-make_interval(secs=>${HOLD_EXPIRY_GRACE_SECONDS})`}) as expired,${restaurantOf(tx)}
     from public_order_holds h
     where h.status_key_hash=${statusHash(statusKey)} and h.link_id=${linkId}
     ${lock ? tx`for update of h` : tx``}`;

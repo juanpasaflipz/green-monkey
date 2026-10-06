@@ -482,5 +482,13 @@ export default defineArea({
       "Esa cuenta ya no está disponible para este pedido. Elige otra opción.",
       "That check is no longer available for this order. Choose another option.",
     ],
+    public_hold_link_abuse: [
+      "El código de este pedido se desactivó por abuso. Verifica con el cliente y confírmalo para aceptarlo.",
+      "This order's code was deactivated for abuse. Check with the guest and confirm it to accept.",
+    ],
+    public_order_churn: [
+      "Se cancelaron muchos pedidos con este código. Pide al personal.",
+      "Many orders were cancelled with this code. Please ask the staff.",
+    ],
   },
 });

@@ -19,6 +19,7 @@ import {
   recordPayment,
 } from "../server/orders.js";
 import { voidLines } from "../server/voids.js";
+import { kitchenFeed } from "../server/kitchen.js";
 import { closeCash } from "../server/operations.js";
 import { closeCheck, tableOccupancy } from "../server/checks.js";
 import { archiveTable, tablesWithOpenChecks } from "../server/floor.js";
@@ -60,7 +61,9 @@ import {
   type Session,
 } from "../shared/domain.js";
 import {
+  HOLD_EXPIRY_GRACE_SECONDS,
   LINK_HEADER,
+  PUBLIC_LIMITS,
   STATUS_HEADER,
   type DinerHoldView,
   type InboxResponse,
@@ -497,6 +500,8 @@ async function insertHold(
   l: { id: string; tableId: string | null; channel: "qr" | "kiosk" },
   o: {
     expired?: boolean;
+    /** Created 30 minutes ago and expired this many seconds ago. */
+    expiredSecondsAgo?: number;
     policy?: "accept" | "pay_first";
     productId?: string;
     price?: number;
@@ -525,8 +530,8 @@ async function insertHold(
         ${tx.json([{ id: lineId, productId: o.productId ?? f.p.taco, quantity: 1, options: [] }])},
         ${tx.json([{ id: lineId, quantity: 1, name: { es: "Taco de prueba", en: "Taco de prueba" }, optionNames: [], unitPrice: price, total: price }])},
         ${price},0,${randomUUID()},
-        ${o.expired ? tx`now()-interval '40 minutes'` : tx`now()`},
-        ${o.expired ? tx`now()-interval '10 minutes'` : tx`now()+interval '30 minutes'`})
+        ${o.expired ? tx`now()-interval '40 minutes'` : o.expiredSecondsAgo !== undefined ? tx`now()-interval '30 minutes'` : tx`now()`},
+        ${o.expired ? tx`now()-interval '10 minutes'` : o.expiredSecondsAgo !== undefined ? tx`now()-make_interval(secs=>${o.expiredSecondsAgo})` : tx`now()+interval '30 minutes'`})
       returning *`;
     return h;
   });
@@ -1243,10 +1248,13 @@ try {
     // Old link's status keys still cancel (status lookups accept revoked links).
     for (const key of keys)
       assert.equal((await pub.cancel(mesa.token, key)).body.state, "cancelled");
+    // Staff rejections free the pending slots: diner cancellations have
+    // their own, smaller budget since ABUSE-2 (test 42), so the window cap is
+    // reached through decided holds here (deliberate change).
     for (let i = 3; i < 8; i++) {
       const bi = await body(t, [{ productId: t.p.taco }]);
       assert.equal((await pub.submit(fresh.token, bi)).status, 200, `#${i}`);
-      assert.equal((await pub.cancel(fresh.token, bi.statusKey)).status, 200);
+      await reject(t, (await holdOf(t, bi)).id);
     }
     const ninth = await pub.submit(
       fresh.token,
@@ -1431,7 +1439,26 @@ try {
         r.order.checkState,
         r.order.total,
       ],
-      ["qr", "dine_in", t.tables[0].id, "Ana", "sin cebolla", "open", 15000],
+      // MONEY-2: the hold label leads the call name (KDS, kitchen ticket)
+      // and the order note (receipt): the diner knows the order only as Q-1.
+      [
+        "qr",
+        "dine_in",
+        t.tables[0].id,
+        "Q-1 · Ana",
+        "Q-1 · sin cebolla",
+        "open",
+        15000,
+      ],
+    );
+    const feed = await run(t.s.cashier, (tx) =>
+      kitchenFeed(tx, t.s.cashier, {}),
+    );
+    assert(!feed.unchanged);
+    const ticket = feed.rounds.find((x) => x.orderId === r.order.id);
+    assert.deepEqual(
+      [ticket?.callName, ticket?.orderNote],
+      ["Q-1 · Ana", "Q-1 · sin cebolla"],
     );
     const after = await salesRows(t.tenantId);
     assert.equal(after.orders, before.orders + 1);
@@ -1451,6 +1478,14 @@ try {
     assert.deepEqual(
       [held.state, held.order_id, held.order_round, held.decided_by],
       ["accepted", r.order.id, 1, t.ids.cashier],
+    );
+    // PRIVACY-1: what acceptance charged, per line, from the inserted round.
+    assert.equal(held.accepted_total, 15000);
+    assert.deepEqual(
+      held.accepted_lines
+        .map((x: { id: string; total: number }) => [x.id, x.total])
+        .sort(),
+      r.order.lines.map((x) => [x.id, x.total]).sort(),
     );
     const [audit] = await asAdmin(
       t.tenantId,
@@ -1516,7 +1551,9 @@ try {
     });
     assert.equal(r.round, 2);
     const round = r.order.rounds.find((x) => x.number === 2);
-    assert.equal(round.note, "Q-1 · Ana · sin cebolla");
+    // PRIVACY-3: the round note prints on the shared check's receipt (LD-1),
+    // so it carries the label and the kitchen note, never the diner's name.
+    assert.equal(round.note, "Q-1 · sin cebolla");
     const [held] = await asAdmin(
       t.tenantId,
       (tx) => tx`select order_round from public_order_holds where id=${h.id}`,
@@ -1781,8 +1818,59 @@ try {
         tx`update catalog set data=jsonb_set(data,'{price}','5000') where id=${t.p.taco}`,
     );
     await rejects(accept(t, h2.id), "public_hold_price_changed");
-    const ack = await accept(t, h2.id, { priceChangeAcknowledged: true });
+    // MONEY-1: the acknowledgement is the exact total staff saw. Staff saw
+    // $50.00 and told the diner; the price moved again to $65.00: refused,
+    // and nothing is written.
+    await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{price}','6500') where id=${t.p.taco}`,
+    );
+    const before = await salesRows(t.tenantId);
+    await rejects(
+      accept(t, h2.id, { acknowledgedTotal: 5000 }),
+      "public_hold_price_changed",
+    );
+    assert.deepEqual(await salesRows(t.tenantId), before);
+    // An acknowledged total is checked even when the price went back.
+    await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{price}','4500') where id=${t.p.taco}`,
+    );
+    await rejects(
+      accept(t, h2.id, { acknowledgedTotal: 5000 }),
+      "public_hold_price_changed",
+    );
+    await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{price}','5000') where id=${t.p.taco}`,
+    );
+    const ack = await accept(t, h2.id, { acknowledgedTotal: 5000 });
     assert.equal(ack.order.total, 5000);
+    const [audited] = await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`select detail from audit where operation='public.hold_accepted' and entity_id=${h2.id}`,
+    );
+    assert.deepEqual(
+      [audited.detail.priceChanged, audited.detail.total],
+      [true, 5000],
+    );
+    // PRIVACY-1: the diner's status shows the accepted price, not the sent one.
+    const confirmed = await pub.status(l.token, b2.statusKey);
+    assert.deepEqual(
+      [
+        confirmed.body.state,
+        confirmed.body.total,
+        confirmed.body.priceChanged,
+        confirmed.body.lines[0].unitPrice,
+        confirmed.body.lines[0].total,
+      ],
+      ["accepted", 5000, true, 5000, 5000],
+    );
+    assert.equal(confirmed.body.order?.money?.total, 5000);
   });
 
   await test("20. reject: decided once; an expired hold refused; only managers deactivate the link with an abuse rejection", async () => {
@@ -1946,18 +2034,31 @@ try {
         channel: "pos",
       }),
     );
+    // PRIVACY-1: the price moved and staff acknowledged it; the appended
+    // order shows its own round at the accepted price, never the sent one.
+    await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{price}','5000') where id=${t.p.taco}`,
+    );
     await accept(t, (await holdOf(t, b2)).id, {
       target: {
         kind: "append",
         orderId: check.id,
         expectedVersion: check.version,
       },
+      acknowledgedTotal: 5000,
     });
     const appended = await view(b2.statusKey);
     assert.deepEqual(
       [appended.order!.target, appended.order!.money, appended.order!.progress],
       ["append", null, "preparing"],
     );
+    assert.deepEqual(
+      [appended.total, appended.priceChanged, appended.lines[0].total],
+      [5000, true, 5000],
+    );
+    assert.equal((await view()).priceChanged, false);
     const unknown = await pub.status(l.token, newPublicToken());
     assert.deepEqual(
       [unknown.status, unknown.body.error],
@@ -2479,6 +2580,36 @@ try {
             token,
           );
       assert.equal(transactions, 0, "refused before the database");
+      // ABUSE-3: cost-free requests (missing or malformed tokens) have their
+      // own small bucket and never drain the shared per-IP ceilings, so a
+      // guest-Wi-Fi script cannot starve the diners behind the same address.
+      const wifi = randomIp();
+      const junk = [];
+      for (let i = 0; i < PUBLIC_RATES.menuPerIp + 5; i++)
+        junk.push(await h.menu("", wifi));
+      assert.equal(
+        junk.filter((r) => r.status === 404).length,
+        PUBLIC_RATES.malformedPerIp,
+      );
+      assert.deepEqual(
+        [junk.at(-1)!.status, junk.at(-1)!.body.error],
+        [429, "rate_limited"],
+      );
+      assert.equal(
+        (await h.submit("", await body(t, [{ productId: t.p.taco }]), wifi))
+          .status,
+        429,
+        "every malformed request shares that bucket",
+      );
+      assert.equal(transactions, 0, "still no database work");
+      assert.equal((await h.menu(qr.token, wifi)).status, 200);
+      assert.equal((await h.revision(qr.token, wifi)).status, 200);
+      const diner = await h.submit(
+        qr.token,
+        await body(t, [{ productId: t.p.taco }]),
+        wifi,
+      );
+      assert.equal(diner.status, 200, JSON.stringify(diner.body));
     } finally {
       await h.close();
     }
@@ -2883,6 +3014,279 @@ try {
     );
     const v = (await pub.status(l.token, b1.statusKey)).body;
     assert.deepEqual([v.order!.target, v.order!.progress], ["append", "ready"]);
+  });
+
+  await test("37. abuse: holds from a code deactivated as abuse are flagged in the inbox and need an explicit acknowledgement to accept (ABUSE-1)", async () => {
+    const t = await makeTenant("abuse");
+    const l = await link(t, { kind: "table", tableId: t.tables[0].id });
+    const b1 = await body(t, [{ productId: t.p.taco }]);
+    const b2 = await body(t, [{ productId: t.p.taco }]);
+    const b3 = await body(t, [{ productId: t.p.taco }]);
+    for (const b of [b1, b2, b3]) await pub.submit(l.token, b);
+    const [h1, h2, h3] = [
+      await holdOf(t, b1),
+      await holdOf(t, b2),
+      await holdOf(t, b3),
+    ];
+    await reject(t, h1.id, { reason: "abuse", revokeLink: true }, t.s.manager);
+    const flagged = await run(t.s.cashier, (tx) => inbox(tx, t.s.cashier));
+    assert.deepEqual(
+      flagged.holds.map((x) => [x.id, x.linkRevoked]).sort(),
+      [
+        [h2.id, "abuse"],
+        [h3.id, "abuse"],
+      ].sort(),
+    );
+    const before = await salesRows(t.tenantId);
+    await rejects(accept(t, h2.id), "public_hold_link_abuse");
+    assert.deepEqual(await salesRows(t.tenantId), before, "nothing written");
+    const ok = await accept(t, h2.id, { abuseAcknowledged: true });
+    assert.equal(ok.hold.state, "accepted");
+    const [audited] = await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`select detail from audit where operation='public.hold_accepted' and entity_id=${h2.id}`,
+    );
+    assert.equal(audited.detail.abuseAcknowledged, true);
+    // Rejecting a flagged hold needs no acknowledgement.
+    await reject(t, h3.id, { reason: "abuse" });
+    // A plain deactivation or a replacement is not abuse: no flag needed.
+    const counter = await link(t, { kind: "counter", label: "Ventanilla" });
+    const b4 = await body(t, [{ productId: t.p.taco }]);
+    await pub.submit(counter.token, b4);
+    await run(t.s.manager, (tx) =>
+      revokeLink(tx, t.s.manager, counter.id, { operationId: op() }),
+    );
+    const plain = await run(t.s.cashier, (tx) => inbox(tx, t.s.cashier));
+    assert.deepEqual(
+      plain.holds.map((x) => x.linkRevoked),
+      ["revoked"],
+    );
+    await accept(t, (await holdOf(t, b4)).id);
+  });
+
+  await test("38. a code revoked or replaced by another process stops at once, although this process cached it; status keeps answering (ABUSE-4)", async () => {
+    const t = await makeTenant("crossproc");
+    for (const reason of ["revoked", "rotated"] as const) {
+      const l = await link(t, { kind: "counter", label: "Cruzado " + reason });
+      const b1 = await body(t, [{ productId: t.p.taco }]);
+      assert.equal((await pub.submit(l.token, b1)).status, 200);
+      // Warm this process's positive cache.
+      assert.equal((await pub.menu(l.token)).status, 200);
+      // Another web process revokes it: a direct update, so this process's
+      // cache is NOT told (no forgetLinkHash).
+      await asAdmin(
+        t.tenantId,
+        (tx) =>
+          tx`update public_links set revoked_at=now(),revoked_by=${t.ids.manager},revoke_reason=${reason} where id=${l.id}`,
+      );
+      for (const r of [
+        await pub.menu(l.token),
+        await pub.revision(l.token),
+        await pub.submit(l.token, await body(t, [{ productId: t.p.taco }])),
+      ])
+        assert.deepEqual(
+          [r.status, r.body.error],
+          [404, "public_link_invalid"],
+          reason,
+        );
+      const status = await pub.status(l.token, b1.statusKey);
+      assert.deepEqual([status.status, status.body.state], [200, "pending"]);
+    }
+  });
+
+  await test("39. a menu change committed between the accept's price check and createOrder's own read rolls the accept back (MONEY-1)", async () => {
+    const t = await makeTenant("pricerace");
+    const l = await link(t, { kind: "counter", label: "Ventanilla" });
+    const b1 = await body(t, [{ productId: t.p.taco }]);
+    await pub.submit(l.token, b1);
+    const h = await holdOf(t, b1);
+    const before = await salesRows(t.tenantId);
+    // Hold the hold's own order key (createOrder's once()) so the accept
+    // stops after its price check and before createOrder reads the menu.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const held = new Promise<void>((r) => (locked = r));
+    const holder = admin.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${t.tenantId + h.order_operation_id},0))`;
+      locked();
+      await gate;
+    });
+    await held;
+    const racing = accept(t, h.id).then(
+      () => "accepted",
+      (e: { code?: string }) => e.code ?? String(e),
+    );
+    let waiting = 0;
+    for (let i = 0; i < 200 && waiting < 1; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      const [w] = await admin`select count(*)::int as n from pg_locks
+        where locktype='advisory' and not granted
+          and database=(select oid from pg_database where datname=current_database())`;
+      waiting = w.n;
+    }
+    assert.equal(waiting, 1, "the accept waits on the hold's order key");
+    await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`update catalog set data=jsonb_set(data,'{price}','5000') where id=${t.p.taco}`,
+    );
+    release();
+    await holder;
+    assert.equal(await racing, "public_hold_price_changed");
+    assert.deepEqual(await salesRows(t.tenantId), before, "nothing written");
+    const [row] = await asAdmin(
+      t.tenantId,
+      (tx) => tx`select state from public_order_holds where id=${h.id}`,
+    );
+    assert.equal(row.state, "pending");
+    // The inbox now shows the new price; acknowledging it accepts at $50.00.
+    const ok = await accept(t, h.id, { acknowledgedTotal: 5000 });
+    assert.equal(ok.order.total, 5000);
+  });
+
+  await test("40. an append whose target was fully paid between the unlocked read and addRound's lock is refused and rolled back (CONCURRENCY-3)", async () => {
+    const t = await makeTenant("paidrace");
+    const l = await link(t, { kind: "table", tableId: t.tables[0].id });
+    const check = await run(t.s.server, (tx) =>
+      createOrder(tx, t.s.server, {
+        operationId: op(),
+        lines: [
+          {
+            id: randomUUID(),
+            productId: t.p.taco,
+            quantity: 1,
+            options: [],
+            note: "",
+          },
+        ],
+        mode: "dine_in",
+        tableId: t.tables[0].id,
+        name: "Mesa",
+        channel: "pos",
+      }),
+    );
+    const b1 = await body(t, [{ productId: t.p.taco }]);
+    await pub.submit(l.token, b1);
+    const h = await holdOf(t, b1);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let locked!: () => void;
+    const held = new Promise<void>((r) => (locked = r));
+    const holder = admin.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${t.tenantId + h.order_operation_id},0))`;
+      locked();
+      await gate;
+    });
+    await held;
+    const racing = accept(t, h.id, {
+      target: {
+        kind: "append",
+        orderId: check.id,
+        expectedVersion: check.version,
+      },
+    }).then(
+      () => "accepted",
+      (e: { code?: string }) => e.code ?? String(e),
+    );
+    let waiting = 0;
+    for (let i = 0; i < 200 && waiting < 1; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      const [w] = await admin`select count(*)::int as n from pg_locks
+        where locktype='advisory' and not granted
+          and database=(select oid from pg_database where datname=current_database())`;
+      waiting = w.n;
+    }
+    assert.equal(
+      waiting,
+      1,
+      "the accept read 'open' and waits before addRound",
+    );
+    const paid = await run(t.s.cashier, (tx) =>
+      recordPayment(tx, t.s.cashier, check.id, {
+        operationId: op(),
+        amount: check.total,
+        received: check.total,
+        method: "cash",
+      }),
+    );
+    assert.equal(paid.version, check.version, "a payment keeps the version");
+    release();
+    await holder;
+    assert.equal(await racing, "public_hold_target_invalid");
+    const after = await run(t.s.owner, (tx) => getOrder(tx, check.id));
+    assert.deepEqual(
+      [after.total, after.rounds.length, after.checkState],
+      [check.total, check.rounds.length, "paid"],
+    );
+    const [row] = await asAdmin(
+      t.tenantId,
+      (tx) => tx`select state from public_order_holds where id=${h.id}`,
+    );
+    assert.equal(row.state, "pending");
+  });
+
+  await test("41. expiry: staff decisions stop at expires_at; the diner keeps seeing a just-expired hold as waiting for the grace (CONCURRENCY-2)", async () => {
+    const t = await makeTenant("grace");
+    const l = await link(t, { kind: "counter", label: "Ventanilla" });
+    const recent = await insertHold(
+      t,
+      { ...l, tableId: null },
+      { expiredSecondsAgo: 5 },
+    );
+    await rejects(accept(t, recent.row.id), "public_order_expired");
+    await rejects(reject(t, recent.row.id), "public_order_expired");
+    const seen = await pub.status(l.token, recent.statusKey);
+    assert.equal(seen.body.state, "pending", "inside the grace");
+    assert.equal(
+      (await pub.cancel(l.token, recent.statusKey)).body.error,
+      "public_order_expired",
+      "the cancel uses the exact expiry",
+    );
+    const old = await insertHold(
+      t,
+      { ...l, tableId: null },
+      { expiredSecondsAgo: HOLD_EXPIRY_GRACE_SECONDS + 5 },
+    );
+    assert.equal(
+      (await pub.status(l.token, old.statusKey)).body.state,
+      "expired",
+    );
+  });
+
+  await test("42. churn: diner cancellations have their own budget per table; the inbox names the code, the links list counts them, and the log line says which code (ABUSE-2)", async () => {
+    const t = await makeTenant("churn");
+    const l = await link(t, { kind: "table", tableId: t.tables[1].id });
+    for (let i = 0; i < PUBLIC_LIMITS.table.cancelsPerWindow; i++) {
+      const bi = await body(t, [{ productId: t.p.taco }]);
+      assert.equal((await pub.submit(l.token, bi)).status, 200);
+      assert.equal((await pub.cancel(l.token, bi.statusKey)).status, 200);
+    }
+    logLines.length = 0;
+    const next = await pub.submit(
+      l.token,
+      await body(t, [{ productId: t.p.taco }]),
+    );
+    assert.deepEqual(
+      [next.status, next.body.error],
+      [429, "public_order_churn"],
+    );
+    const logged = logLines
+      .map((x) => JSON.parse(x))
+      .find((x) => x.message === "public_order_limited");
+    assert(logged, logLines.join("\n"));
+    assert.deepEqual(
+      [logged.code, logged.kind, logged.ref, typeof logged.ipHash],
+      ["public_order_churn", "table", l.ref, "string"],
+    );
+    const read = await run(t.s.cashier, (tx) => inbox(tx, t.s.cashier));
+    assert.deepEqual(read.churning, [{ kind: "table", name: "Mesa 02" }]);
+    const links = await run(t.s.manager, (tx) => listLinks(tx, t.s.manager));
+    assert.equal(
+      links.links.find((x) => x.id === l.id)?.recentCancelled,
+      PUBLIC_LIMITS.table.cancelsPerWindow,
+    );
   });
 
   console.log(`${checks} public ordering checks passed`);

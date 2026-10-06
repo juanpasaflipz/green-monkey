@@ -10,10 +10,19 @@ export const PUBLIC_TOKEN = /^[A-Za-z0-9_-]{22}$/;
 export const LINK_HEADER = "x-gm-link-token";
 export const STATUS_HEADER = "x-gm-status-token";
 export const HOLD_MINUTES = [10, 15, 20, 30, 45, 60, 90, 120] as const;
+/**
+ * A pending hold reads as expired to its diner only this long after
+ * expires_at: an accept that locked the hold just before expiry may commit a
+ * moment after it, and the diner must not see "expired" in between
+ * (CONCURRENCY-2). Staff decisions still stop at expires_at.
+ */
+export const HOLD_EXPIRY_GRACE_SECONDS = 60;
 export const PUBLIC_LIMITS = {
-  table: { pending: 3, perWindow: 8 },
-  counter: { pending: 10, perWindow: 30 },
-  kiosk: { pending: 5, perWindow: 30 },
+  /** Per scope (a table across its links, or a link): pending holds, holds
+   * created per window, and diner cancellations per window (churn). */
+  table: { pending: 3, perWindow: 8, cancelsPerWindow: 4 },
+  counter: { pending: 10, perWindow: 30, cancelsPerWindow: 10 },
+  kiosk: { pending: 5, perWindow: 30, cancelsPerWindow: 10 },
   windowMinutes: 15,
   tenantPending: 40,
   maxLines: 40,
@@ -151,7 +160,15 @@ export const acceptInput = z
         .strict(),
     ]),
     excludeLineIds: z.array(id).max(PUBLIC_LIMITS.maxLines).default([]),
-    priceChangeAcknowledged: z.boolean().default(false),
+    /**
+     * The current total of the included lines that the card showed (MONEY-1).
+     * The server refuses with public_hold_price_changed when it differs from
+     * the total it would charge; it is required when that total differs from
+     * the diner's.
+     */
+    acknowledgedTotal: money.nullable().default(null),
+    /** Staff verified a hold whose code was deactivated for abuse (ABUSE-1). */
+    abuseAcknowledged: z.boolean().default(false),
     payment: holdPaymentInput.optional(),
   })
   .strict();
@@ -207,8 +224,11 @@ export type DinerHoldView = {
   policy: HoldPolicy;
   createdAt: string;
   expiresAt: string;
+  /** Accepted: the prices acceptance charged (PRIVACY-1); otherwise the submitted ones. */
   lines: (PricedHoldLine & { excluded: boolean })[];
   total: number;
+  /** Accepted at a total that differs from the one the diner sent. */
+  priceChanged: boolean;
   rejectReason: Exclude<RejectReason, "abuse"> | null;
   order: null | {
     number: number;
@@ -233,6 +253,8 @@ export type PublicLinkView = {
   revokedAt: string | null;
   lastHoldAt: string | null;
   pendingHolds: number;
+  /** Diner cancellations in the last window (churn, ABUSE-2). */
+  recentCancelled: number;
 };
 export type RevealedLink = PublicLinkView & {
   token: string;
@@ -272,6 +294,8 @@ export type InboxHold = {
   tableId: string | null;
   tableName: string | null;
   linkLabel: string;
+  /** Why the hold's code is no longer active; "abuse" needs an acknowledgement to accept. */
+  linkRevoked: null | "revoked" | "rotated" | "abuse";
   name: string;
   note: string;
   policy: HoldPolicy;
@@ -303,6 +327,8 @@ export type InboxResponse = {
   paused: boolean;
   holds: InboxHold[];
   recentlyExpired: number;
+  /** Codes whose diner cancellations reached the churn budget (ABUSE-2). */
+  churning: { kind: LinkKind; name: string }[];
   serverTime: string;
 };
 export type InboxSummary = {
