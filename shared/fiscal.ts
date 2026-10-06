@@ -462,6 +462,9 @@ export function allocationOrder<L extends { id: string; round?: number }>(
  * Allocates an order-level tax-inclusive amount (an order discount or comp) to lines with
  * allocate(amount, remaining net per line) in (round, id) order, and returns the merged
  * per-line discounts. No line's discount ever exceeds its remaining total.
+ *
+ * For previews and tests only. Persisted ticket data always uses discounts 028's
+ * `discountsByLine` (per-unit allocation by due); no server code calls this.
  */
 export function allocateOrderDiscount(input: {
   lines: TaxedLine[];
@@ -490,6 +493,10 @@ export function allocateOrderDiscount(input: {
  * The tax-inclusive category amounts of an item-scoped refund: each refunded unit's amount
  * (units from allocate(line.total, quantity), as for voids and item splits) minus its share of
  * the line discount, which is allocated over the line's remaining (non-voided) units.
+ *
+ * Fallback only for scope entries without `gross` (refundScopeCategories step 3). Never use it
+ * on an order that has discount allocations: it spreads a line's discount evenly over the
+ * remaining units, while discounts 028 allocates per unit by due.
  */
 export function refundScopeGross(input: {
   lines: TaxedLine[];
@@ -535,7 +542,74 @@ export function refundScopeGross(input: {
   });
 }
 
-/** Tax split of one refund, cumulative so that refunds of a whole sale net its IVA to exactly zero. */
+/** The contract type of recordRefundTax's item scope: one entry per refund money row and line. */
+export type RefundTaxScope = { lineId: string; units: number[]; gross: number };
+
+/**
+ * Category amounts of an item refund. An entry's `gross` (discounts 028: Σ refund_units.amount
+ * of that refund row for that line) is used verbatim and grouped by the line's category; unit
+ * discounts are never recomputed. Entries without `gross` (legacy callers only) fall back to
+ * refundScopeGross(), which is refused on a discounted line.
+ */
+export function refundScopeCategories(input: {
+  lines: TaxedLine[];
+  scope: (Omit<RefundTaxScope, "gross"> & { gross?: number })[];
+  lineDiscounts?: Readonly<Record<string, number>>;
+  ctx: FiscalContext;
+}): { category: TaxCategory; gross: number }[] {
+  const byId = new Map(input.lines.map((l) => [l.id, l]));
+  const seen = new Set<string>();
+  const sums = new Map<TaxCategory, number>();
+  for (const entry of input.scope) {
+    const line = byId.get(entry.lineId);
+    if (!line) throw new DomainError("invalid_allocation", 409);
+    const voided = new Set(line.voidedUnits ?? []);
+    for (const unit of entry.units) {
+      const key = `${line.id}:${unit}`;
+      if (
+        !Number.isInteger(unit) ||
+        unit < 0 ||
+        unit >= line.quantity ||
+        voided.has(unit) ||
+        seen.has(key)
+      )
+        throw new DomainError("invalid_allocation", 409);
+      seen.add(key);
+    }
+    let category: TaxCategory;
+    let gross: number;
+    if (entry.gross !== undefined) {
+      if (!isAmount(entry.gross)) throw fiscalMismatch();
+      const unitGross = allocate(line.total, Array(line.quantity).fill(1));
+      if (entry.gross > total(entry.units.map((u) => unitGross[u])))
+        throw refundExceeds();
+      category = lineSnapshot(line)?.category ?? input.ctx.defaultCategory;
+      gross = entry.gross;
+    } else {
+      if ((own(input.lineDiscounts, line.id) ?? 0) > 0)
+        throw new RangeError("refund_scope_gross_required");
+      const rows = refundScopeGross({
+        lines: [line],
+        scope: [{ lineId: line.id, units: entry.units }],
+        ctx: input.ctx,
+      });
+      category = lineSnapshot(line)?.category ?? input.ctx.defaultCategory;
+      gross = total(rows.map((r) => r.gross));
+    }
+    sums.set(category, add(sums.get(category) ?? 0, gross));
+  }
+  return TAX_CATEGORIES.flatMap((category) => {
+    const gross = sums.get(category) ?? 0;
+    return gross > 0 ? [{ category, gross }] : [];
+  });
+}
+
+/**
+ * Tax split of one refund, by complement extraction so that the ticket's remaining IVA is
+ * always extract(net): per category, tax = extract(S − refunded).tax − extract(S − refunded −
+ * amount).tax, where S is the category's sale gross. After any sequence of refunds against the
+ * same S the remaining IVA is exactly extract(S − R), and a full refund nets it to zero.
+ */
 export function refundTaxSplit(input: {
   refundGross: number;
   /** Ticket groups, or the provisional summary's groups when the order has no ticket. */
@@ -546,7 +620,7 @@ export function refundTaxSplit(input: {
   }[];
   /** Earlier adjustments of this order. */
   previous: { category: TaxCategory; gross: number; tax: number }[];
-  /** Item-scoped refund (discounts 028), from refundScopeGross(). */
+  /** Item-scoped refund (discounts 028), from refundScopeCategories(). */
   scope?: { category: TaxCategory; gross: number }[];
 }): CategoryTax[] {
   if (!isAmount(input.refundGross)) throw new DomainError("invalid_amount");
@@ -589,11 +663,63 @@ export function refundTaxSplit(input: {
     const amount = split[i];
     if (amount === 0) return [];
     const rateBps = TAX_RULES[category].rateBps;
-    const before = refunded.get(category) ?? 0;
+    // Step 2 guarantees amount ≤ remaining[i], so both arguments are ≥ 0.
+    const left = remaining[i];
     const tax =
-      extractTax(before + amount, rateBps).tax -
-      extractTax(before, rateBps).tax;
+      extractTax(left, rateBps).tax - extractTax(left - amount, rateBps).tax;
     return [{ category, rateBps, gross: amount, base: amount - tax, tax }];
+  });
+}
+
+/**
+ * A sale's per-category amounts net of refund adjustments: tax = Σ sale.tax − Σ refund.tax, so
+ * for post-ticket refunds it equals extractTax(net gross).tax exactly (P1). Canonical category
+ * order; categories netted to gross 0 are omitted; base = gross − tax. A negative net gross or
+ * IVA, IVA above the net gross, a refund of a category the sale lacks, or IVA left on a zero net
+ * throws fiscal_total_mismatch. cfdi's netGroups may delegate to it.
+ */
+export function netCategoryTax(
+  sale: {
+    category: TaxCategory;
+    rateBps: number | null;
+    gross: number;
+    tax: number;
+  }[],
+  refunds: { category: TaxCategory; gross: number; tax: number }[],
+): CategoryTax[] {
+  const sums = new Map<TaxCategory, { gross: number; tax: number }>();
+  for (const g of sale) {
+    if (!isCategory(g.category)) throw new RangeError("invalid_tax_category");
+    if (g.rateBps !== TAX_RULES[g.category].rateBps)
+      throw new RangeError("invalid_tax_rate");
+    if (!isAmount(g.gross) || !isAmount(g.tax) || g.tax > g.gross)
+      throw fiscalMismatch();
+    const s = sums.get(g.category) ?? { gross: 0, tax: 0 };
+    sums.set(g.category, {
+      gross: add(s.gross, g.gross),
+      tax: add(s.tax, g.tax),
+    });
+  }
+  for (const r of refunds) {
+    if (!isCategory(r.category)) throw new RangeError("invalid_tax_category");
+    if (!isAmount(r.gross) || !isAmount(r.tax)) throw fiscalMismatch();
+    const s = sums.get(r.category);
+    if (!s) throw fiscalMismatch();
+    sums.set(r.category, {
+      gross: add(s.gross, -r.gross),
+      tax: add(s.tax, -r.tax),
+    });
+  }
+  return TAX_CATEGORIES.flatMap((category) => {
+    const s = sums.get(category);
+    if (!s) return [];
+    if (s.gross < 0 || s.tax < 0 || s.tax > s.gross) throw fiscalMismatch();
+    const rateBps = TAX_RULES[category].rateBps;
+    if (!rateBps && s.tax !== 0) throw fiscalMismatch();
+    if (s.gross === 0) return [];
+    return [
+      { category, rateBps, gross: s.gross, base: s.gross - s.tax, tax: s.tax },
+    ];
   });
 }
 
