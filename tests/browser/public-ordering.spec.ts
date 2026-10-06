@@ -824,6 +824,77 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
   });
 });
 
+test("pay-first refusal after a terminal charge: the cashier is told to record the charge on a manual order or refund it (LD-41, PUBLIC-MONEY-2)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    f.policies = true;
+    await call(page, "/cash/open", { operationId: op(), opening: 0 });
+    const v = (await call(page, "/ordering/settings")).data;
+    const saved = await call(page, "/ordering/settings", {
+      operationId: op(),
+      expectedVersion: v.version,
+      tablePolicy: "accept",
+      counterPolicy: "pay_first",
+      holdMinutes: 30,
+      maxOrderTotal: 1_000_000,
+    });
+    expect(saved.status, JSON.stringify(saved.data)).toBe(200);
+    const counter = await f.link({ kind: "counter", label: `Caja ${f.id}` });
+    const customer = await diner(context, counter.path);
+    await addTaco(customer);
+    await sendOrder(customer, `Terminal ${f.id}`);
+    await expect(customer.locator(".diner-status-head")).toContainText(/Q-\d+/);
+    const label = (await customer.locator(".diner-code").innerText()).trim();
+    await goToOrders(page);
+    const card = holdCard(page, label);
+    await card
+      .getByRole("button", { name: "Cobrar y enviar a cocina", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog
+      .getByRole("button", { name: "Terminal externa", exact: true })
+      .click();
+    await dialog.getByLabel("Referencia de aprobación").fill("APR-123456");
+    await dialog
+      .getByLabel("Confirmo que la terminal aprobó este pago")
+      .check();
+    // The hold expired while the terminal approved the charge, past the
+    // paid-accept grace: the server refuses and records nothing.
+    await page.route("**/api/ordering/holds/*/accept", (route) =>
+      route.fulfill({ status: 409, json: { error: "public_order_expired" } }),
+    );
+    await dialog
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(inbox(page).locator(".public-notice")).toContainText(
+      new RegExp(
+        `${label}: .+ La terminal ya cobró \\$\\d+\\.\\d{2} y ${label} no se registró: registra el cobro en una orden manual o reembólsalo\\.`,
+      ),
+    );
+    await page.unroute("**/api/ordering/holds/*/accept");
+    // A cash payment needs no such copy: nothing was charged outside.
+    await page.route("**/api/ordering/holds/*/accept", (route) =>
+      route.fulfill({ status: 409, json: { error: "public_order_expired" } }),
+    );
+    await card
+      .getByRole("button", { name: "Cobrar y enviar a cocina", exact: true })
+      .click();
+    await dialog
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(inbox(page).locator(".public-notice")).toContainText(
+      `${label}: `,
+    );
+    await expect(inbox(page).locator(".public-notice")).not.toContainText(
+      "La terminal ya cobró",
+    );
+    await page.unroute("**/api/ordering/holds/*/accept");
+  });
+});
+
 test("kiosk idle: a warning at 75 s keeps the cart; at 90 s idle the kiosk clears it and returns to Spanish", async ({
   page,
   context,

@@ -155,9 +155,12 @@ is closed.
     confirmado: $100.00."
   - One `role="status"` region stays mounted from "Cargando…" to the loaded
     state, so a screen reader hears each change.
-  - A just-expired hold reads as waiting for 60 s more
-    (`HOLD_EXPIRY_GRACE_SECONDS`): an accept that locked it in time may still
-    be committing. Staff decisions stop exactly at `expires_at`.
+  - A just-expired hold reads as waiting for 5 minutes more
+    (`HOLD_EXPIRY_GRACE_SECONDS`, equal to `PAID_ACCEPT_GRACE_SECONDS`): an
+    accept that locked it in time may still be committing, and staff may
+    still collect a pay-first hold (below), so the diner never sees
+    "vencido" while staff can still accept it. The diner's cancel and every
+    other staff decision stop exactly at `expires_at`.
   - A code found replaced on a menu poll switches the page to this phone's
     orders with "Este código QR ya no funciona: se reemplazó o se desactivó.
     …" above them.
@@ -287,6 +290,17 @@ deactivation), pausing and plain accepting.
     carries no client key, because the accept's own key covers it. The flow
     ends on `ReceiptModal`, which offers "Liberar mesa" for a paid table
     check.
+  - The cashier charges an external terminal before the accept is sent, and
+    nothing reserves the hold while the dialog is open. An accept that
+    carries the payment of a pay-first hold therefore passes up to
+    `PAID_ACCEPT_GRACE_SECONDS` (5 minutes) after `expires_at` (LD-41,
+    PUBLIC-MONEY-2, option a); without a payment, a manager's exception and
+    a rejection still stop at `expires_at`. Any refusal that arrives after
+    the cashier confirmed an external terminal charge adds "La terminal ya
+    cobró $45.00 y Q-14 no se registró: registra el cobro en una orden
+    manual o reembólsalo." to the dialog's error and to the inbox notice. A
+    network failure is not a refusal: the accept's key is kept and the retry
+    is idempotent.
   - Kitchen tickets print on accept when the device prints them on send.
 - **Shell.**
   - The rail ("Órdenes" or "Operación") and the "Órdenes" tab show the pending

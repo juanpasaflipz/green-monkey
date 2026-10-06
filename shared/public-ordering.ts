@@ -11,12 +11,22 @@ export const LINK_HEADER = "x-gm-link-token";
 export const STATUS_HEADER = "x-gm-status-token";
 export const HOLD_MINUTES = [10, 15, 20, 30, 45, 60, 90, 120] as const;
 /**
+ * How long after expires_at a pay-first hold can still be accepted with its
+ * payment ("Cobrar y enviar a cocina", target "new"). The cashier charges an
+ * external terminal before the accept is sent, so a hold that expires while
+ * the payment dialog is open must not leave a charged diner with no order
+ * (LD-41, PUBLIC-MONEY-2 option a). Every other decision, and the diner's
+ * cancel, still stops at expires_at.
+ */
+export const PAID_ACCEPT_GRACE_SECONDS = 300;
+/**
  * A pending hold reads as expired to its diner only this long after
  * expires_at: an accept that locked the hold just before expiry may commit a
- * moment after it, and the diner must not see "expired" in between
- * (CONCURRENCY-2). Staff decisions still stop at expires_at.
+ * moment after it (CONCURRENCY-2), and a pay-first hold can still be collected
+ * for PAID_ACCEPT_GRACE_SECONDS, so the diner must not see "vencido" while
+ * staff can still accept it (LD-41).
  */
-export const HOLD_EXPIRY_GRACE_SECONDS = 60;
+export const HOLD_EXPIRY_GRACE_SECONDS = PAID_ACCEPT_GRACE_SECONDS;
 export const PUBLIC_LIMITS = {
   /** Per scope (a table across its links, or a link): pending holds, holds
    * created per window, and diner cancellations per window (churn). */

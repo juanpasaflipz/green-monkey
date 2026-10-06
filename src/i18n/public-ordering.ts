@@ -225,6 +225,8 @@ export default defineArea({
     publicRejectAndRevoke:
       "Desactivar también este código QR (dejará de funcionar el impreso)",
     publicAcceptedNotice: "{label} → Orden #{number} enviada a cocina.",
+    publicExternalChargeRefused:
+      "La terminal ya cobró {amount} y {label} no se registró: registra el cobro en una orden manual o reembólsalo.",
     publicRejectedNotice: "{label} rechazado.",
     publicNoticeDismiss: "Ocultar aviso",
     publicBannerOne: "1 pedido en línea por confirmar",
@@ -454,6 +456,8 @@ export default defineArea({
     publicRejectAndRevoke:
       "Also deactivate this QR code (the printed one will stop working)",
     publicAcceptedNotice: "{label} → Order #{number} sent to the kitchen.",
+    publicExternalChargeRefused:
+      "The terminal already charged {amount} and {label} was not recorded: record the charge on a manual order or refund it.",
     publicRejectedNotice: "{label} rejected.",
     publicNoticeDismiss: "Dismiss notice",
     publicBannerOne: "1 online order to confirm",

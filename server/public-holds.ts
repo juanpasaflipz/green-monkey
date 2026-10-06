@@ -31,6 +31,7 @@ import {
   type Session,
 } from "../shared/domain.js";
 import {
+  PAID_ACCEPT_GRACE_SECONDS,
   PUBLIC_LIMITS,
   acceptInput,
   holdLabel,
@@ -230,19 +231,29 @@ type HoldDecisionRow = {
  * judged by the clock once the row is locked (not the transaction start), so
  * a decision that waited for the row cannot start after expires_at; the
  * diner's status gives an accept that commits a moment later a grace
- * (HOLD_EXPIRY_GRACE_SECONDS, CONCURRENCY-2).
+ * (HOLD_EXPIRY_GRACE_SECONDS, CONCURRENCY-2). An accept that carries the
+ * payment of a pay-first hold passes up to PAID_ACCEPT_GRACE_SECONDS after
+ * expires_at: the cashier already charged the terminal when it arrives
+ * (LD-41, PUBLIC-MONEY-2).
  */
-async function lockHold(tx: Tx, holdId: string): Promise<HoldDecisionRow> {
+async function lockHold(
+  tx: Tx,
+  holdId: string,
+  o: { withPayment?: boolean } = {},
+): Promise<HoldDecisionRow> {
   const [h] = await tx<
     HoldDecisionRow[]
   >`select * from public_order_holds where id=${holdId} for update`;
   if (!h) throw new DomainError("not_found", 404);
   if (h.state !== "pending")
     throw new DomainError("public_order_not_pending", 409);
+  const grace =
+    o.withPayment && h.policy === "pay_first" ? PAID_ACCEPT_GRACE_SECONDS : 0;
   // A second statement: the lock statement's own expressions may be computed
   // before it waited for the row.
   const [clock] =
-    await tx`select expires_at<=clock_timestamp() as expired from public_order_holds where id=${holdId}`;
+    await tx`select expires_at+make_interval(secs=>${grace})<=clock_timestamp() as expired
+      from public_order_holds where id=${holdId}`;
   if (clock.expired) throw new DomainError("public_order_expired", 409);
   return h;
 }
@@ -274,7 +285,7 @@ export async function acceptHold(
     "public.hold.accept",
     { holdId, ...p },
     async () => {
-      const h = await lockHold(tx, holdId);
+      const h = await lockHold(tx, holdId, { withPayment: !!p.payment });
       // Both targets: addRound alone would only check requireSelling.
       await requirePro(tx);
       if (p.payment && p.target.kind !== "new")

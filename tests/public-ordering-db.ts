@@ -80,6 +80,7 @@ import {
 } from "../shared/fiscal.js";
 import {
   HOLD_EXPIRY_GRACE_SECONDS,
+  PAID_ACCEPT_GRACE_SECONDS,
   LINK_HEADER,
   PUBLIC_LIMITS,
   STATUS_HEADER,
@@ -3942,7 +3943,7 @@ try {
     }
   });
 
-  await test("41. expiry: staff decisions stop at expires_at; the diner keeps seeing a just-expired hold as waiting for the grace (CONCURRENCY-2)", async () => {
+  await test("41. expiry: staff decisions stop at expires_at; the diner keeps seeing a just-expired hold as waiting for the grace (CONCURRENCY-2); a pay-first accept that carries its payment passes up to PAID_ACCEPT_GRACE_SECONDS after expiry, nothing else does (LD-41, PUBLIC-MONEY-2)", async () => {
     const t = await makeTenant("grace");
     const l = await link(t, { kind: "counter", label: "Ventanilla" });
     const recent = await insertHold(
@@ -3966,6 +3967,68 @@ try {
     );
     assert.equal(
       (await pub.status(l.token, old.statusKey)).body.state,
+      "expired",
+    );
+
+    // PUBLIC-MONEY-2: the cashier charged the terminal while the hold
+    // expired. Only the pay-first accept that carries the payment still
+    // passes, for PAID_ACCEPT_GRACE_SECONDS; the diner sees it as waiting
+    // until then and cannot cancel it.
+    assert.equal(HOLD_EXPIRY_GRACE_SECONDS, PAID_ACCEPT_GRACE_SECONDS);
+    assert.equal(PAID_ACCEPT_GRACE_SECONDS, 300);
+    const pay = { amount: 4500, received: 5000, method: "cash" };
+    const late = await insertHold(
+      t,
+      { ...l, tableId: null },
+      { expiredSecondsAgo: 60, policy: "pay_first" },
+    );
+    assert.equal(
+      (await pub.status(l.token, late.statusKey)).body.state,
+      "pending",
+      "the diner does not see vencido while staff can still collect",
+    );
+    assert.equal(
+      (await pub.cancel(l.token, late.statusKey)).body.error,
+      "public_order_expired",
+      "the diner cannot cancel what staff may be collecting",
+    );
+    await rejects(reject(t, late.row.id), "public_order_expired");
+    // A manager's exception without payment gets no grace.
+    await rejects(
+      accept(t, late.row.id, {}, t.s.manager),
+      "public_order_expired",
+    );
+    const collected = await accept(t, late.row.id, { payment: pay });
+    assert.deepEqual(
+      [collected.hold.state, collected.order.paid],
+      ["accepted", 4500],
+    );
+    const seen2 = await pub.status(l.token, late.statusKey);
+    assert.equal(seen2.body.state, "accepted");
+    // An accept-policy hold gets no payment grace.
+    const acceptPolicy = await insertHold(
+      t,
+      { ...l, tableId: null },
+      { expiredSecondsAgo: 60, policy: "accept" },
+    );
+    await rejects(
+      accept(t, acceptPolicy.row.id, { payment: pay }),
+      "public_order_expired",
+    );
+    // Past the grace even the paid accept is refused, and nothing was sold.
+    const tooLate = await insertHold(
+      t,
+      { ...l, tableId: null },
+      { expiredSecondsAgo: PAID_ACCEPT_GRACE_SECONDS + 5, policy: "pay_first" },
+    );
+    const sales = await salesRows(t.tenantId);
+    await rejects(
+      accept(t, tooLate.row.id, { payment: pay }),
+      "public_order_expired",
+    );
+    assert.deepEqual(await salesRows(t.tenantId), sales);
+    assert.equal(
+      (await pub.status(l.token, tooLate.statusKey)).body.state,
       "expired",
     );
   });

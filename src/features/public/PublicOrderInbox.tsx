@@ -3,11 +3,11 @@ import type { Locale, Order, Session } from "../../../shared/domain";
 import type { InboxHold, InboxResponse } from "../../../shared/public-ordering";
 import type { PaymentValues } from "../../../shared/service";
 import { strings, translateError, type Key } from "../../i18n";
-import { api } from "../../api";
+import { api, ApiError } from "../../api";
 import { usePoll } from "../../serviceHooks";
 import { Button } from "../../components/ui";
 import { PaymentDialog } from "../PaymentDialog";
-import { ReceiptModal, checkStateOf } from "../Receipt";
+import { ReceiptModal, checkStateOf, moneyFormatter } from "../Receipt";
 import { KitchenTicketDocument, ticketsFromOrderRound } from "../KitchenTicket";
 import { printDocument, readPrintSettings } from "../../print";
 import { fill } from "../menu/format";
@@ -230,10 +230,29 @@ export function PublicOrderInbox({
       const code = (e as Error).message;
       if (code === "step_up_cancelled") return;
       if (code === "operation_conflict") keys.current.delete(hold.id);
-      setPaying((p) => p && { ...p, error: translateError(code, locale) });
+      // The cashier already charged the terminal: a refusal recorded
+      // nothing, so say what to do with the charge (LD-41, PUBLIC-MONEY-2).
+      // A transient failure is not a refusal: the same key retries it.
+      const charged =
+        values.method === "external" &&
+        values.confirmed &&
+        !(e instanceof ApiError && e.transient);
+      const message =
+        translateError(code, locale) +
+        (charged
+          ? " " +
+            t("publicExternalChargeRefused", {
+              label: hold.label,
+              amount: moneyFormatter(
+                session.restaurant.currency,
+                locale,
+              )(values.amount + values.tip),
+            })
+          : "");
+      setPaying((p) => p && { ...p, error: message });
       if (GONE.has(code)) {
         setPaying(null);
-        setNotice(`${hold.label}: ${translateError(code, locale)}`);
+        setNotice(`${hold.label}: ${message}`);
       }
       if (REFRESH.has(code)) refresh();
     } finally {
