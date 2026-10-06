@@ -297,7 +297,8 @@ panel. Saving checks the loaded version (`money_controls_changed`), is audited
 Every new table has FORCE row-level security (`tenant_scope`), composite tenant
 foreign keys and no DELETE grant. Triggers: immutability (`money_immutable`,
 also on `refunds`; `cash_sessions_closed_immutable` refuses updates of closed
-drawers and any delete — LD-15 Q4 (A)); 7a discount allocations within the unit
+drawers and any delete, and `cash_sessions_no_truncate` any truncate — LD-15
+Q4 (A)); 7a discount allocations within the unit
 due; 7b allocations add up (deferred); 7c discounted orders reconcile (deferred,
 only when a discount is or was present); 7d payment allocations within a
 discounted unit's due; 7e refund method and tender cap; 7f unit refund cap; 7g

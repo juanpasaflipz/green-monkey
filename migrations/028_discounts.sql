@@ -294,6 +294,8 @@ BEGIN
 END $$;
 CREATE TRIGGER cash_sessions_closed_immutable BEFORE UPDATE OR DELETE ON cash_sessions
   FOR EACH ROW EXECUTE FUNCTION cash_sessions_closed_immutable();
+CREATE TRIGGER cash_sessions_no_truncate BEFORE TRUNCATE ON cash_sessions
+  FOR EACH STATEMENT EXECUTE FUNCTION money_immutable();
 
 -- 7. Consistency.
 -- 7a. A discount allocation targets a real, non-voided unit and never exceeds its due.

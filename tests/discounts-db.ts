@@ -773,6 +773,27 @@ try {
       (tx: postgres.TransactionSql) => tx`truncate discount_allocations`,
     ])
       await rejects(asAdmin(statement), /immutable/);
+    // Money records are never deleted (LD-15 Q4 (A)): refunds and cash_sessions
+    // carry row DELETE and statement TRUNCATE triggers, like every 028 table.
+    const guards = await admin`select c.relname as table,
+        bool_or((t.tgtype & 8) <> 0) as on_delete, bool_or((t.tgtype & 32) <> 0) as on_truncate
+      from pg_trigger t join pg_class c on c.oid=t.tgrelid
+      where not t.tgisinternal and c.relname in ('refunds','cash_sessions','refund_batches',
+        'refund_units','refund_lines','discounts','discount_allocations','cash_count_reviews')
+      group by c.relname order by c.relname`;
+    assert.deepEqual(
+      guards.map((g) => [g.table, g.on_delete, g.on_truncate]),
+      [
+        ["cash_count_reviews", true, true],
+        ["cash_sessions", true, true],
+        ["discount_allocations", true, true],
+        ["discounts", true, true],
+        ["refund_batches", true, true],
+        ["refund_lines", true, true],
+        ["refund_units", true, true],
+        ["refunds", true, true],
+      ],
+    );
     // A refund line takes exactly one kitchen acknowledgement, nothing else.
     await rejects(
       asAdmin(
