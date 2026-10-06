@@ -31,7 +31,6 @@ import { clientIp, ipHash, log, requestIdOf, routeLabel } from "../logging.js";
 import { once } from "../orders.js";
 import { seal, unseal } from "../tokens.js";
 import { cfdiWebConfig } from "./config.js";
-import { fiscalTablesPresent } from "../compat/cfdi-fiscal.js";
 import { createInvoiceRequest } from "./requests.js";
 import {
   cfdiState,
@@ -88,7 +87,6 @@ export async function resolveTicketCode(
   if (!code) return null;
   return sql.begin(async (raw) => {
     const tx = raw as Tx;
-    if (!(await fiscalTablesPresent(tx))) return null;
     await tx`select set_config('app.self_invoice_code', ${code}, true)`;
     const [r] =
       await tx`select tenant_id, id from fiscal_tickets where self_invoice_code = ${code}`;

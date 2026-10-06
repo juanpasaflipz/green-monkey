@@ -14,7 +14,6 @@ import {
 } from "../../../shared/cfdi";
 import type { FiscalTicketView } from "../../../shared/fiscal";
 import type { ReceiptKind } from "../Receipt";
-import { orderTicket } from "../../compat/cfdi-fiscal";
 import { getCfdiStatus } from "./status";
 import { shortDate, t } from "./format";
 import { SelfInvoiceQr } from "./SelfInvoiceQr";
@@ -99,7 +98,7 @@ export function cfdiReceiptExtra(p: {
 }): ReactNode {
   const status = getCfdiStatus();
   if (!status?.available || !status.enabled || p.kind === "check") return null;
-  const ticket = orderTicket(p.order);
+  const ticket = p.order.fiscal?.ticket ?? null;
   if (p.kind !== "local" && !ticket) return null;
   const origin =
     typeof location === "undefined"

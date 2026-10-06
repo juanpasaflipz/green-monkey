@@ -4,14 +4,13 @@
  * Two groups:
  *  - always: the Configuración panel before activation and the public self-invoicing portal
  *    (no fiscal ticket needed);
- *  - stamping flows: they need fiscal 027 tickets and the worker with the Facturapi fake
+ *  - stamping flows: fiscal 027 tickets and the worker with the Facturapi fake
  *    (`npm run dev:facturapi-fake` and the worker with FACTURAPI_BASE_URL, as CI starts them).
- *    Each test skips itself when GET /api/fiscal/context is missing or /api/capabilities reports
- *    facturapi disabled, and leaves CFDI paused (settings `enabled: false`) in a finally so the
- *    other specs never see Facturar buttons or the printed block.
+ *    GET /api/fiscal/context must answer; only a local run without the worker (/api/capabilities
+ *    reports facturapi disabled) skips them, never CI. Each leaves CFDI paused (settings
+ *    `enabled: false`) in a finally so the other specs never see Facturar buttons or the printed
+ *    block.
  */
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { TEST_CSD, TEST_CSD_PASSWORD } from "../fixtures/cfdi/test-csd";
@@ -181,25 +180,20 @@ test("self-invoicing portal: /f/{code} pre-fills the grouped code and looks it u
 // Stamping flows (fiscal 027 tickets + worker + Facturapi fake)
 // ---------------------------------------------------------------------------------------------
 
-/** Fiscal tickets exist and the worker published a Facturapi provider. */
 /**
- * Merge gate (review CFDI-R5): the stamping flows skip only while fiscal 027 is absent from this
- * tree. Once server/fiscal-read.ts exists, a missing GET /api/fiscal/context fails the test, and
- * in CI (which starts the worker with the Facturapi fake) so does a disabled provider; only a
- * local run without the worker may still skip.
+ * Fiscal 027 is merged, so GET /api/fiscal/context must answer. In CI (which starts the worker
+ * with the Facturapi fake, qualification.yml) a disabled provider fails the test; only a local run
+ * without the worker may skip the stamping flows (review CFDI-R5).
  */
-const FISCAL_MERGED = existsSync(join(process.cwd(), "server/fiscal-read.ts"));
 async function stampingReady(page: Page) {
   const fiscal = await call(page, "/fiscal/context");
   const caps = await call(page, "/capabilities");
-  if (FISCAL_MERGED) {
-    expect(fiscal.status, "fiscal 027 is merged").toBe(200);
-    if (process.env.CI)
-      expect(
-        caps.body?.facturapi?.enabled,
-        "CI runs the worker with the Facturapi fake",
-      ).toBe(true);
-  }
+  expect(fiscal.status, "fiscal 027 is merged").toBe(200);
+  if (process.env.CI)
+    expect(
+      caps.body?.facturapi?.enabled,
+      "CI runs the worker with the Facturapi fake",
+    ).toBe(true);
   return fiscal.status === 200 && caps.body?.facturapi?.enabled === true;
 }
 
@@ -350,7 +344,10 @@ test("FIT-6: owner activates CFDI in test mode, a wrong CSD password is refused 
   page,
 }) => {
   await login(page);
-  test.skip(!(await stampingReady(page)), "needs fiscal 027 and the worker");
+  test.skip(
+    !(await stampingReady(page)),
+    "needs the cfdi worker with the Facturapi fake",
+  );
   const previous = await ensureFiscalIdentity(page);
   try {
     await openSettings(page);
@@ -424,7 +421,10 @@ test("MON-1/FIT-6: a paid ticket is invoiced from Órdenes (régimen and uso fil
 }) => {
   test.setTimeout(120_000);
   await login(page);
-  test.skip(!(await stampingReady(page)), "needs fiscal 027 and the worker");
+  test.skip(
+    !(await stampingReady(page)),
+    "needs the cfdi worker with the Facturapi fake",
+  );
   await ensureFiscalIdentity(page);
   await ensureCfdiOn(page);
   try {
@@ -507,7 +507,10 @@ test("customer self-invoices from /f/{code}: inline receptor errors, then succes
 }) => {
   test.setTimeout(120_000);
   await login(page);
-  test.skip(!(await stampingReady(page)), "needs fiscal 027 and the worker");
+  test.skip(
+    !(await stampingReady(page)),
+    "needs the cfdi worker with the Facturapi fake",
+  );
   await ensureFiscalIdentity(page);
   await ensureCfdiOn(page);
   const customer = await browser.newPage();

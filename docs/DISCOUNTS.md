@@ -473,8 +473,8 @@ paid check, untranslated until the service worker updates.
 - **CFDI.** Discounts are impossible once a ticket exists, so never after a
   CFDI. Refunds are never blocked by a CFDI; cfdi 030 adds the egreso inside
   `recordRefundTax`. `refunds.method` gives the egreso payment form. The refund
-  dialog carries the notice "Esta venta ya tiene factura (CFDI)…" behind a
-  condition that stays false until cfdi wires it.
+  dialog carries the notice "Esta venta ya tiene factura (CFDI)…" when cfdi
+  reports a valid invoice or global for the ticket (`useCfdiTicketStatus`).
 
 ## Lock order
 

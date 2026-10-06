@@ -40,6 +40,7 @@ import {
   type KitchenCancellationModel,
 } from "./printing/cancellations";
 import { printCancellations } from "./printing/KitchenCancellationDocument";
+import { cfdiTicketCovered, useCfdiTicketStatus } from "./cfdi/status";
 
 type Tender = {
   id: string;
@@ -147,6 +148,10 @@ export function RefundDialog({
       live = false;
     };
   }, []);
+  // cfdi (030): a ticket with a valid CFDI (an invoice or a global) gets a credit-note notice.
+  const cfdiCovered = cfdiTicketCovered(
+    useCfdiTicketStatus(order.fiscal?.ticket?.id ?? null),
+  );
 
   const tenders = (order.tenders ?? []) as Tender[];
   // MONEY-1: fiscal's rule (assertRefundAllowed), as the server applies it.
@@ -420,8 +425,6 @@ export function RefundDialog({
       </Modal>
     );
 
-  // cfdi (030): cfdiTicketCovered(useCfdiTicketStatus(order.fiscal?.ticket?.id ?? null))
-  const cfdiCovered = false as boolean;
   return (
     <Modal title={title} close={leave} closeLabel={t("close")} wide>
       <p>

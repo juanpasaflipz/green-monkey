@@ -37,7 +37,7 @@ import {
 } from "../../shared/cfdi.js";
 import { formatFolio, type CfdiTicketPayload } from "../../shared/fiscal.js";
 import type { Tx } from "../db.js";
-import { fiscalTablesPresent, ticketForCfdi } from "../compat/cfdi-fiscal.js";
+import { ticketForCfdi } from "../fiscal-read.js";
 
 // ---------------------------------------------------------------------------------------------
 // Rows
@@ -262,17 +262,11 @@ export async function loadOrganization(
 
 /** The restaurant row and its fiscal profile; profile fields are null without one. */
 export async function fiscalFacts(tx: Tx): Promise<FiscalFacts> {
-  const present = await fiscalTablesPresent(tx);
-  const [r] = present
-    ? await tx`
-        select r.name, r.currency, r.timezone, r.cutoff, p.version, p.rfc, p.legal_name, p.regime,
-          p.postal_code, p.address
-        from restaurants r left join restaurant_fiscal_profiles p on p.tenant_id = r.id
-        where r.id = nullif(current_setting('app.tenant_id', true), '')::uuid`
-    : await tx`
-        select r.name, r.currency, r.timezone, r.cutoff, null::int as version, null as rfc,
-          null as legal_name, null as regime, null as postal_code, null::jsonb as address
-        from restaurants r where r.id = nullif(current_setting('app.tenant_id', true), '')::uuid`;
+  const [r] = await tx`
+    select r.name, r.currency, r.timezone, r.cutoff, p.version, p.rfc, p.legal_name, p.regime,
+      p.postal_code, p.address
+    from restaurants r left join restaurant_fiscal_profiles p on p.tenant_id = r.id
+    where r.id = nullif(current_setting('app.tenant_id', true), '')::uuid`;
   if (!r) throw new DomainError("missing_tenant", 403);
   return {
     tradeName: r.name,
@@ -663,9 +657,7 @@ async function summaryRows(
   where: ReturnType<Tx>,
   tail: ReturnType<Tx> = tx``,
 ): Promise<SummaryRow[]> {
-  const fiscal = await fiscalTablesPresent(tx);
-  const folios = fiscal
-    ? tx`
+  const folios = tx`
       (select t.series from cfdi_document_tickets c join fiscal_tickets t on t.tenant_id = c.tenant_id and t.id = c.ticket_id
         where c.tenant_id = d.tenant_id and c.document_id = coalesce(d.parent_document_id, d.id)
         order by t.series, t.number limit 1) as first_series,
@@ -677,8 +669,7 @@ async function summaryRows(
         order by t.series desc, t.number desc limit 1) as last_series,
       (select t.number from cfdi_document_tickets c join fiscal_tickets t on t.tenant_id = c.tenant_id and t.id = c.ticket_id
         where c.tenant_id = d.tenant_id and c.document_id = coalesce(d.parent_document_id, d.id)
-        order by t.series desc, t.number desc limit 1) as last_number,`
-    : tx`null as first_series, null as first_number, null as last_series, null as last_number,`;
+        order by t.series desc, t.number desc limit 1) as last_number,`;
   return tx`
     select d.*, ${folios}
       to_char(d.created_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as created_cursor,
@@ -741,27 +732,22 @@ export async function listDocuments(
       : tx``;
   const term = q.q?.trim() ?? "";
   const folioParts = /^([A-Z0-9]{1,10})-(\d{1,16})$/.exec(term.toUpperCase());
-  const fiscal = await fiscalTablesPresent(tx);
   const search = !term
     ? tx``
     : tx`and (
         d.receptor_rfc = ${term.toUpperCase()}
         or d.uuid::text = ${term.toLowerCase()}
         or (d.series || '-' || d.folio_number::text) = ${term.toUpperCase()}
-        ${
-          fiscal
-            ? tx`or exists (select 1 from cfdi_document_tickets c join fiscal_tickets t
-                on t.tenant_id = c.tenant_id and t.id = c.ticket_id
-                where c.tenant_id = d.tenant_id and c.document_id = coalesce(d.parent_document_id, d.id)
-                  and ${
-                    folioParts
-                      ? tx`t.series = ${folioParts[1]} and t.number = ${Number(folioParts[2])}`
-                      : /^\d{1,16}$/.test(term)
-                        ? tx`t.series = '' and t.number = ${Number(term)}`
-                        : tx`false`
-                  })`
-            : tx``
-        })`;
+        or exists (select 1 from cfdi_document_tickets c join fiscal_tickets t
+          on t.tenant_id = c.tenant_id and t.id = c.ticket_id
+          where c.tenant_id = d.tenant_id and c.document_id = coalesce(d.parent_document_id, d.id)
+            and ${
+              folioParts
+                ? tx`t.series = ${folioParts[1]} and t.number = ${Number(folioParts[2])}`
+                : /^\d{1,16}$/.test(term)
+                  ? tx`t.series = '' and t.number = ${Number(term)}`
+                  : tx`false`
+            }))`;
   const rows = await summaryRows(
     tx,
     tx`d.created_at >= ${boundaries(q.from, q.timezone, q.cutoff).start}::timestamptz
@@ -945,7 +931,6 @@ export type TicketFacts = {
 
 /** Whether a ticket exists in this tenant (before calling fiscal's reader). */
 export async function ticketExists(tx: Tx, ticketId: string): Promise<boolean> {
-  if (!(await fiscalTablesPresent(tx))) return false;
   const [r] =
     await tx`select 1 as one from fiscal_tickets where id = ${ticketId}`;
   return !!r;
@@ -976,7 +961,6 @@ export async function ticketIdByFolio(
   tx: Tx,
   folio: { series: string; number: number },
 ): Promise<string | null> {
-  if (!(await fiscalTablesPresent(tx))) return null;
   const [r] = await tx`
     select id from fiscal_tickets where series = ${folio.series} and number = ${folio.number}`;
   return r?.id ?? null;

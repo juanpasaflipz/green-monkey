@@ -4,9 +4,8 @@
 //
 // Fixtures: every run creates fresh fictional restaurants and LEAVES its rows in the disposable
 // test database (cfdi_* and fiscal records reject DELETE/TRUNCATE; LD-12, cfdi-rebase §2 item 7).
-// Until fiscal 027 merges into this branch, fiscal's tables come from a TEST-ONLY stand-in
-// (tests/fixtures/cfdi/fiscal-027-standin.sql), applied only when fiscal_tickets is absent; tickets
-// and refund adjustments are inserted with fiscal's figures (extractTax, complement extraction).
+// Fiscal 027 and discounts 028 are the real tables; tickets and refund adjustments are inserted
+// with fiscal's figures (extractTax, complement extraction) under their constraints and triggers.
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -56,6 +55,7 @@ import {
   enqueueCfdiRefund,
 } from "../server/cfdi/hooks.js";
 import { selfInvoiceOffered } from "../server/cfdi/store.js";
+import { recordRefundTax } from "../server/fiscal.js";
 import { rekeyOrganizationSecrets } from "../server/cfdi/rekey.js";
 import { lockDocument, lockPeriod } from "../server/cfdi/locks.js";
 import { noRetries } from "./db-retries.js";
@@ -84,16 +84,6 @@ const app = connect(target.runtime);
 await checkRole(app);
 const worker = connectWorker(requireWorker(target));
 await checkWorkerRole(worker);
-
-// Fiscal 027 stand-in (test database only, until the fiscal rebase).
-const [{ present }] =
-  await admin`select to_regclass('public.fiscal_tickets') is not null as present`;
-if (!present)
-  await admin.begin((tx) =>
-    tx.unsafe(
-      readFileSync("tests/fixtures/cfdi/fiscal-027-standin.sql", "utf8"),
-    ),
-  );
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const keyring = "t1:" + Buffer.alloc(32, 3).toString("base64url");
@@ -165,6 +155,8 @@ type Fixture = {
   manager: Session;
   cashier: Session;
   rfc: string;
+  /** The device's open drawer: cash tenders and cash refunds belong to it (028). */
+  drawerId: string;
   folio: number;
   tickets: Map<string, Ticket>;
 };
@@ -203,6 +195,7 @@ async function makeTenant(
   const organizationId = randomUUID();
   const tenantId = randomUUID();
   const deviceId = randomUUID();
+  const drawerId = randomUUID();
   const ids = {
     owner: randomUUID(),
     manager: randomUUID(),
@@ -222,7 +215,9 @@ async function makeTenant(
       values(${tenantId},'active',now()+interval '1 day','fixture')`;
     await tx`insert into restaurant_fiscal_profiles(tenant_id,rfc,legal_name,regime,postal_code,ticket_series,updated_by)
       values(${tenantId},${rfc},${o.legalName ?? "ESCUELA KEMPER URGATE"},${o.regime ?? "601"},'42501','A',${ids.owner})`;
-    await tx`insert into fiscal_folio_counters(tenant_id,series,last_value) values(${tenantId},'A',1)`;
+    // Folio counters are written with their first ticket (027's gapless constraint trigger).
+    await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening)
+      values(${tenantId},${drawerId},${deviceId},${ids.cashier},0)`;
   });
   const session = (role: keyof typeof ids): Session => ({
     id: randomUUID(),
@@ -242,9 +237,19 @@ async function makeTenant(
     manager: session("manager"),
     cashier: session("cashier"),
     rfc,
+    drawerId,
     folio: 0,
     tickets: new Map(),
   };
+}
+
+/** The next folio of series A, taken as fiscal takes it: the counter advances by one. */
+async function nextFolio(tx: postgres.TransactionSql, tenantId: string) {
+  const [c] = await tx<{ last_value: string }[]>`
+    insert into fiscal_folio_counters(tenant_id,series,last_value) values(${tenantId},'A',1)
+    on conflict (tenant_id,series) do update set last_value = fiscal_folio_counters.last_value + 1
+    returning last_value`;
+  return Number(c.last_value);
 }
 
 /** A paid order and its fiscal ticket with fiscal's figures (one row per tax category). */
@@ -259,7 +264,7 @@ async function makeTicket(
   const groups = o.groups ?? [{ category: "iva16", gross: 11600 }];
   const total = groups.reduce((s, g) => s + g.gross, 0);
   const payments = o.payments ?? [{ method: "cash" as const, amount: total }];
-  const number = ++t.folio;
+  let number = 0;
   const id = randomUUID();
   const orderId = randomUUID();
   const code = selfInvoiceCodeFromBytes(randomBytes(12));
@@ -276,13 +281,16 @@ async function makeTicket(
   });
   await admin.begin(async (tx) => {
     await tx`select set_config('app.tenant_id',${t.tenantId},true)`;
+    number = await nextFolio(tx, t.tenantId);
+    t.folio = number;
     await tx`insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,total)
       values(${t.tenantId},${orderId},${number},${date},${t.cashier.employeeId},'takeaway','','','pos',${total})`;
     for (const p of payments) {
       const tenderId = randomUUID();
       tenderIds.push(tenderId);
-      await tx`insert into tenders(tenant_id,id,order_id,method,amount,received)
-        values(${t.tenantId},${tenderId},${orderId},${p.method},${p.amount},${p.amount})`;
+      await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,received,external_reference)
+        values(${t.tenantId},${tenderId},${orderId},${p.method === "cash" ? t.drawerId : null},${p.method},${p.amount},${p.amount},
+          ${p.method === "external" ? "CFDI-TERM-" + number : null})`;
     }
     await tx`insert into fiscal_tickets(tenant_id,id,order_id,series,number,self_invoice_code,business_date,
         issued_by,source,currency,gross_before_discount,discount,gross,base,tax,tax_basis,issuer,lines,payments)
@@ -325,8 +333,9 @@ async function refund(
   const total = Object.values(amounts).reduce((s, n) => s + (n ?? 0), 0);
   await admin.begin(async (tx) => {
     await tx`select set_config('app.tenant_id',${t.tenantId},true)`;
-    await tx`insert into refunds(tenant_id,id,tender_id,amount,reason,disposition,actor_id,method)
-      values(${t.tenantId},${refundId},${tk.tenderIds[0]},${total},'cfdi fixture','discard',${t.owner.employeeId},${method})`;
+    await tx`insert into refunds(tenant_id,id,tender_id,session_id,amount,reason,disposition,actor_id,method,external_reference)
+      values(${t.tenantId},${refundId},${tk.tenderIds[0]},${method === "cash" ? t.drawerId : null},${total},'cfdi fixture','discard',
+        ${t.owner.employeeId},${method},${method === "external" ? "CFDI-REFUND" : null})`;
     for (const [category, gross] of Object.entries(amounts) as [
       TaxCategory,
       number,
@@ -870,21 +879,29 @@ try {
     const C = await makeTenant("parts");
     await activate(C, { testFrom: daysAgo(40), periodicity: "day" });
     const day = daysAgo(5);
-    // 2,001 tickets × 2 categories = 4,002 concepts → 2 parts (a ticket is never split).
+    // 2,001 tickets × 2 categories = 4,002 concepts → 2 parts (a ticket is never split). Each
+    // ticket takes the next folio as fiscal issues it (027's counter guard and gapless check), in
+    // one transaction; upper-case hex codes are valid self-invoice codes.
     await admin.begin(async (tx) => {
       await tx`select set_config('app.tenant_id',${C.tenantId},true)`;
       await tx`
         insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,total)
         select ${C.tenantId}, gen_random_uuid(), n, ${day}::date, ${C.cashier.employeeId}, 'takeaway','','','pos', 1580
         from generate_series(1, 2001) n`;
-      await tx`
-        insert into fiscal_tickets(tenant_id,id,order_id,series,number,self_invoice_code,business_date,issued_by,source,
-          currency,gross_before_discount,discount,gross,base,tax,tax_basis,lines,payments)
-        select o.tenant_id, gen_random_uuid(), o.id, 'A', o.number,
-          upper(substr(md5(random()::text || o.id::text), 1, 12)),
-          o.business_date, o.employee_id, 'sale', 'MXN', 1580, 0, 1580, 1442, 138, 'line_snapshot', '[]',
-          jsonb_build_array(jsonb_build_object('method','cash','amount',1580,'tip',0,'reference',null,'at',now()))
-        from orders o where o.tenant_id = ${C.tenantId} and o.business_date = ${day}::date`;
+      await tx.unsafe(`
+        DO $$ DECLARE o record; BEGIN
+          FOR o IN SELECT id, number, business_date, employee_id FROM orders
+            WHERE tenant_id = '${C.tenantId}'::uuid AND business_date = '${day}'::date ORDER BY number LOOP
+            INSERT INTO fiscal_folio_counters(tenant_id, series, last_value) VALUES ('${C.tenantId}'::uuid, 'A', 1)
+              ON CONFLICT (tenant_id, series) DO UPDATE SET last_value = fiscal_folio_counters.last_value + 1;
+            INSERT INTO fiscal_tickets(tenant_id, id, order_id, series, number, self_invoice_code, business_date,
+              issued_by, source, currency, gross_before_discount, discount, gross, base, tax, tax_basis, lines, payments)
+            VALUES ('${C.tenantId}'::uuid, gen_random_uuid(), o.id, 'A', o.number,
+              upper(substr(md5(random()::text || o.id::text), 1, 12)),
+              o.business_date, o.employee_id, 'sale', 'MXN', 1580, 0, 1580, 1442, 138, 'line_snapshot', '[]',
+              jsonb_build_array(jsonb_build_object('method','cash','amount',1580,'tip',0,'reference',null,'at',now())));
+          END LOOP;
+        END $$`);
       await tx`
         insert into fiscal_ticket_taxes(tenant_id,ticket_id,category,rate_bps,gross_before_discount,discount,gross,
           base_before_discount,discount_base,base,tax)
@@ -1096,6 +1113,62 @@ try {
     await rejects(invoice(A, tk3), "cfdi_ticket_fully_refunded");
     await tick(A);
     assert.equal((await claims(tk3.id)).length, 0);
+  });
+
+  await test("8b. fiscal 027 / discounts 028 wiring: refunds recorded through fiscal's recordRefundTax (step 9) enqueue cfdi_refund; the credit note's FormaPago follows refunds.method (the card tender's refund takes the card form, the cash tender's 01), never the parent's", async () => {
+    await saveSettings(A, { cardPaymentForm: "28" });
+    try {
+      const tk = await makeTicket(A, {
+        groups: [{ category: "iva16", gross: 11600 }],
+        payments: [
+          { method: "cash", amount: 7600 },
+          { method: "external", amount: 4000 },
+        ],
+      });
+      const inv = await invoice(A, tk);
+      await settle(A.tenantId);
+      assert.equal((await docRow(inv.id)).payment_form, "01");
+      // The runtime role's refund transaction, as discounts' insertRefundBatch and the legacy
+      // refund run it: the money row, then fiscal's tax rows, whose step 9 calls cfdi's hook.
+      const fiscalRefund = (tenderIndex: number, amount: number) =>
+        web(A, async (tx) => {
+          const id = randomUUID();
+          const external = tenderIndex === 1;
+          await tx`insert into refunds(tenant_id,id,tender_id,session_id,amount,reason,disposition,actor_id,method,external_reference)
+            values(${A.tenantId},${id},${tk.tenderIds[tenderIndex]},${external ? null : A.drawerId},${amount},'cfdi wiring',
+              'discard',${A.manager.employeeId},${external ? "external" : "cash"},${external ? "TERM-REFUND" : null})`;
+          const view = await recordRefundTax(tx, A.manager, id);
+          assert.ok(
+            view.groups.length > 0,
+            "fiscal wrote the refund's tax rows",
+          );
+          return id;
+        });
+      const card = await fiscalRefund(1, 3000);
+      const cash = await fiscalRefund(0, 1000);
+      const [{ jobs }] =
+        await admin`select count(*)::int as jobs from jobs where tenant_id = ${A.tenantId} and kind = 'cfdi_refund'
+          and dedupe_key in (${"refund:" + card}, ${"refund:" + cash})`;
+      assert.equal(
+        jobs,
+        2,
+        "recordRefundTax enqueued one cfdi_refund per refund",
+      );
+      await settle(A.tenantId);
+      const notes = await admin`
+        select refund_id, status, payment_form, amount_check, expected_total from cfdi_documents
+        where tenant_id = ${A.tenantId} and kind = 'egreso' and refund_id in (${card}, ${cash})`;
+      const byRefund = new Map(notes.map((n) => [n.refund_id as string, n]));
+      assert.equal(byRefund.get(card)?.status, "valid");
+      assert.equal(byRefund.get(card)?.payment_form, "28");
+      assert.equal(byRefund.get(card)?.expected_total, 3000);
+      assert.equal(byRefund.get(card)?.amount_check, "exact");
+      assert.equal(byRefund.get(cash)?.status, "valid");
+      assert.equal(byRefund.get(cash)?.payment_form, "01");
+      assert.equal(byRefund.get(cash)?.expected_total, 1000);
+    } finally {
+      await saveSettings(A, { cardPaymentForm: "04" });
+    }
   });
 
   await test("9. substitution: the replacement (relation 04) stamps first, the old invoice is canceled with 01 and the claim moves; a rejected cancellation leaves both valid, the new claim pending, and alerts", async () => {

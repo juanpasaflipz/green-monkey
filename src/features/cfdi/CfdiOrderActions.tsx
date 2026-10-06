@@ -13,7 +13,6 @@ import { api } from "../../api";
 import { useConnectivity } from "../../connectivity";
 import { strings } from "../../i18n";
 import { Badge, Button } from "../../components/ui";
-import { orderHasFiscal, orderTicket } from "../../compat/cfdi-fiscal";
 import { useCfdiStatus } from "./status";
 import { InvoiceDialog } from "./InvoiceDialog";
 import { periodKeyLabel, t as tr } from "./format";
@@ -81,7 +80,7 @@ export function CfdiOrderActions({
   const status = useCfdiStatus();
   const connectivity = useConnectivity();
   const canUseServer = online ?? connectivity.canUseServer;
-  const ticket = orderTicket(order);
+  const ticket = order.fiscal?.ticket ?? null;
   const visible = !!status?.canInvoice && order.state !== "local";
   const ticketId = visible ? (ticket?.id ?? null) : null;
   const [view, setView] = useState<CfdiTicketView | null>(null);
@@ -115,7 +114,7 @@ export function CfdiOrderActions({
     return () => abort.abort();
   }, [ticketId, canUseServer, load]);
 
-  if (!visible || !orderHasFiscal(order)) return null;
+  if (!visible || !order.fiscal) return null;
   if (!ticket)
     return order.paid > 0 ? (
       <p className={`muted tiny cfdi-order-actions ${variant}`}>

@@ -14,11 +14,9 @@
 -- role comes from scripts/ops/sql/globals.sql (owner, Wave 2.0); the create-if-missing block below
 -- is a no-op there and only creates it where the migrator may (the 011_billing.sql pattern).
 --
--- Fiscal 027 (fiscal_tickets) normally exists when this runs (the sorted runner applies 027
--- first). The two statements that reference it (the claims foreign key and the lookup policy) are
--- guarded with to_regclass so a branch database migrated before 027 still applies 030; such a
--- database must be reset after 027 lands (wave2-cross-track §2, cfdi). Immutable cfdi records use
--- cfdi's own cfdi_immutable() so 030 does not depend on fiscal's trigger function.
+-- Fiscal 027 (fiscal_tickets) and discounts 028 (refunds.method) always exist when this runs: the
+-- sorted runner applies 027 and 028 first. Immutable cfdi records use cfdi's own cfdi_immutable()
+-- so 030 does not depend on fiscal's trigger function.
 SET LOCAL lock_timeout = '5s';
 
 DO $$ BEGIN
@@ -546,14 +544,10 @@ END $$;
 -- 13a. Claims reference fiscal's tickets, and a caller that sets app.self_invoice_code to a
 -- 12-character code sees exactly that one ticket of any tenant (a 60-bit bearer secret printed on
 -- the ticket; the self-invoicing portal resolves its tenant this way, never with a definer function).
-DO $$ BEGIN
-  IF to_regclass('public.fiscal_tickets') IS NOT NULL THEN
-    ALTER TABLE cfdi_document_tickets ADD CONSTRAINT cfdi_document_tickets_ticket
-      FOREIGN KEY (tenant_id, ticket_id) REFERENCES fiscal_tickets(tenant_id, id);
-    CREATE POLICY cfdi_self_invoice_lookup ON fiscal_tickets FOR SELECT
-      USING (self_invoice_code = nullif(current_setting('app.self_invoice_code', true), ''));
-  END IF;
-END $$;
+ALTER TABLE cfdi_document_tickets ADD CONSTRAINT cfdi_document_tickets_ticket
+  FOREIGN KEY (tenant_id, ticket_id) REFERENCES fiscal_tickets(tenant_id, id);
+CREATE POLICY cfdi_self_invoice_lookup ON fiscal_tickets FOR SELECT
+  USING (self_invoice_code = nullif(current_setting('app.self_invoice_code', true), ''));
 
 -- 13b. Worker discovery (Wave 2.0 runner `discover`): the worker login may SEE cfdi jobs of every
 -- tenant, to learn which tenants have due work. SELECT only: claimJobs (SELECT … FOR UPDATE, then

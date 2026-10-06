@@ -14,7 +14,7 @@ import {
   type GlobalInfo,
 } from "../build.js";
 import type { FInvoiceInput } from "../facturapi-schema.js";
-import { refundMethod, ticketForCfdi } from "../../compat/cfdi-fiscal.js";
+import { ticketForCfdi } from "../../fiscal-read.js";
 import {
   loadDocument,
   releaseClaims,
@@ -157,7 +157,11 @@ async function freezeEgreso(
     join fiscal_tickets t on t.tenant_id = a.tenant_id and t.order_id = a.order_id
     where a.refund_id = ${doc.refundId} limit 1`;
   if (!groups.length || !ticket) throw nothing();
-  const method = (await refundMethod(tx, doc.refundId)) ?? "cash";
+  // 028's refunds.method ('cash' | 'external', NOT NULL DEFAULT 'cash'): the egreso payment form
+  // (wave2-cross-track C26).
+  const [refund] = await tx<{ method: "cash" | "external" }[]>`
+    select method from refunds where id = ${doc.refundId}`;
+  const method = refund?.method ?? "cash";
   const built = buildEgresoRequest({
     docId: doc.id,
     folio: formatFolio(ticket.series, Number(ticket.number)),

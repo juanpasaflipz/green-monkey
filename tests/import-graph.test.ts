@@ -105,6 +105,8 @@ describe("process boundaries", () => {
     const worker = reachable("server/worker.ts");
     expect(worker.has("server/cfdi/worker/register.ts")).toBe(true);
     expect(worker.has("server/cfdi/worker/boot.ts")).toBe(true);
+    // Fiscal's ticket readers come from the leaf module (LD-15 EXTRA, wave2-cross-track C4).
+    expect(worker.has("server/fiscal-read.ts")).toBe(true);
     // LD-16 L4 (amended LD-15 cfdi Q1): never tokens.ts, orders.ts, fiscal.ts, index.ts, any
     // route module, or cfdi's web service and portal (CFDI-R2-6).
     for (const forbidden of [

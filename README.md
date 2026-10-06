@@ -204,7 +204,7 @@ Subscription flows and webhook verification passed in the dedicated sandbox. See
 - `tests/`: domain, isolated DB, and Playwright scenarios.
 - `work/reference-sources/`: ignored hash-verified source snapshots, never part of the deploy image.
 
-No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe and other configured integrations are **not enabled or verified**. CFDI: built on its track and contract-tested against Facturapi's documented API, verified end to end only after the fiscal/discounts rebase (fixtures `docs@1c2e617`), not sandbox-verified; disabled until Facturapi keys are configured; live mode not enabled ([CFDI](docs/CFDI.md)). Cash POS does not require those credentials. The [isolated staging deployment](docs/STAGING.md) is running on Railway with Neon; a live cash/KDS/receipt smoke passed. Full release qualification remains incomplete; live cutover requires specific approval and reconciled migration.
+No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe and other configured integrations are **not enabled or verified**. CFDI: built on fiscal, discounts and reports, contract-tested against Facturapi's documented API (fixtures `docs@1c2e617`) and tested end to end against the Facturapi fake, not sandbox-verified; disabled until Facturapi keys are configured; live mode not enabled ([CFDI](docs/CFDI.md)). Cash POS does not require those credentials. The [isolated staging deployment](docs/STAGING.md) is running on Railway with Neon; a live cash/KDS/receipt smoke passed. Full release qualification remains incomplete; live cutover requires specific approval and reconciled migration.
 
 ## Marketing landing page
 
