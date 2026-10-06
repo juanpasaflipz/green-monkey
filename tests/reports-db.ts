@@ -28,6 +28,7 @@ import { windowOf } from "../server/reports/days.js";
 import { businessDate, type Session } from "../shared/domain.js";
 import { addDays, wallClockBusinessDate } from "../shared/reports.js";
 import { isolatedTarget } from "./isolated-target.js";
+import { removeTenants } from "./fixtures/reports-cleanup.js";
 
 const { runtime: url, migration } = isolatedTarget(process.env);
 const sql = connect(url),
@@ -1045,43 +1046,9 @@ try {
 
   console.log(`Reports DB passed (${checks} checks)`);
 } finally {
-  // Append-only history (029 business_day_settings, report_prints): its named triggers are
-  // switched off by the owner inside the one transaction that deletes the fixture tenants
-  // (LD-12 pattern, LD-16 L5 order), so no other session ever sees them disabled.
-  await admin.begin(async (tx) => {
-    await tx`alter table business_day_settings disable trigger business_day_settings_immutable`;
-    await tx`alter table report_prints disable trigger report_prints_immutable`;
-    for (const table of [
-      "report_prints",
-      "business_day_settings",
-      "offline_sync_records",
-      "refunds",
-      "tender_allocations",
-      "tenders",
-      "rounds",
-      "order_lines",
-      "jobs",
-      "operations",
-      "audit",
-      "orders",
-      "order_numbers",
-      "cash_movements",
-      "cash_sessions",
-      "kitchen_feed_versions",
-      "catalog",
-      "menu_state",
-      "sessions",
-      "devices",
-      "employees",
-      "restaurant_entitlements",
-    ])
-      for (const id of [A, B, C])
-        await tx.unsafe(`delete from ${table} where tenant_id=$1`, [id]);
-    await tx`delete from restaurants where id in (${A},${B},${C})`;
-    await tx`delete from organizations where id = ${organizationId}`;
-    await tx`alter table business_day_settings enable trigger business_day_settings_immutable`;
-    await tx`alter table report_prints enable trigger report_prints_immutable`;
-  });
+  // Append-only history (029, and 027/028 once merged): LD-12 named-trigger cleanup in the
+  // LD-16 L5 order (tests/fixtures/reports-cleanup.ts).
+  await removeTenants(admin, [A, B, C], [organizationId]);
   await sql.end();
   await admin.end();
 }
