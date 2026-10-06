@@ -42,6 +42,8 @@ import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
 import { fmt, orderLabel } from "./offline/format";
 import { isServerOrder, type LocalOrderView } from "../offline-records";
+import { DiscountButton } from "./discounts/DiscountButton";
+import { CheckDiscountSummary } from "./discounts/OrderAdjustments";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
 import { useMediaQuery } from "../serviceHooks";
 import {
@@ -767,9 +769,16 @@ export function Selling({
         }
         throw new HandledError(code);
       }
-      if (code === "check_closed") {
+      // fiscal (027, LD-15 fiscal Q2): a ticketed check takes no more rounds;
+      // like a closed one, the cart keeps its items and is offered "Enviar
+      // como orden nueva" for the same table.
+      if (code === "check_closed" || code === "fiscal_ticket_issued") {
         setClosedCheck("server");
-        setError(t("serviceCheckClosedKeep"));
+        setError(
+          code === "fiscal_ticket_issued"
+            ? translateError(code, locale)
+            : t("serviceCheckClosedKeep"),
+        );
         throw new HandledError(code, true);
       }
       if (code === "operation_conflict") {
@@ -1245,6 +1254,16 @@ export function Selling({
             <span>
               {money(current.total)} · {t("paid")}: {money(current.paid)}
             </span>
+            <CheckDiscountSummary
+              order={current}
+              session={session}
+              locale={locale}
+              money={money}
+              online={online && isServerOrder(current)}
+              changed={(o) => {
+                if (currentRef.current?.id === o.id) setCurrent(o);
+              }}
+            />
             {current.note && (
               <p className="line-note">
                 {t("serviceOrderNoteLabel").replace("{note}", current.note)}
@@ -1432,6 +1451,35 @@ export function Selling({
             <Pause size={14} />
             {t("park")}
           </button>
+          <DiscountButton
+            order={current && isServerOrder(current) ? current : null}
+            hasDraftLines={
+              draft.lines.length > 0 && (!current || isServerOrder(current))
+            }
+            send={async () => {
+              try {
+                const o = await send();
+                return isServerOrder(o) ? o : null;
+              } catch (e) {
+                // Selling already showed what happened (SVC-R10).
+                if (!(e instanceof HandledError)) throw e;
+                return null;
+              }
+            }}
+            session={session}
+            locale={locale}
+            online={online}
+            blocked={cart.blocked}
+            money={money}
+            onApplied={(o) => {
+              // SVC-R10: only the order still on screen is replaced. A check
+              // the discount closed (takeaway or tableless) is final: its
+              // receipt opens, as after a payment (LD-15 discounts Q7).
+              if (currentRef.current?.id !== o.id) return;
+              setCurrent(o);
+              if (o.checkState === "closed") setReceipt(o);
+            }}
+          />
           <span className="tiny muted" aria-live="polite">
             {saved ? t("saved") : ""}
           </span>
@@ -1651,6 +1699,8 @@ export function Selling({
           onBack={() => setReceipt(null)}
           label={offline.receiptProps(receipt)?.label}
           labelHint={offline.receiptProps(receipt)?.labelHint}
+          printLabel={offline.receiptProps(receipt)?.printLabel}
+          printLabelHint={offline.receiptProps(receipt)?.printLabelHint}
           extraActions={
             receipt.state === "local" &&
             receiptOps.length > 0 && (

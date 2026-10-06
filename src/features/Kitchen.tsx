@@ -20,6 +20,8 @@ import { Badge, Button, Empty, Modal } from "../components/ui";
 import { usePoll, useStoredState } from "../serviceHooks";
 import { PrintSettingsDialog, printDocument, usePrintSettings } from "../print";
 import { KitchenTicketDocument, ticketFromKitchenRound } from "./KitchenTicket";
+import { cancellationsFromKitchenRounds } from "./printing/cancellations";
+import { printCancellations } from "./printing/KitchenCancellationDocument";
 
 export type Station = "all" | "kitchen" | "bar";
 type FullFeed = Extract<KitchenFeed, { unchanged: false }>;
@@ -176,6 +178,10 @@ export function Kitchen({
     const voided = r.rounds.filter((x) =>
       x.pendingVoids.some((v) => !seenVoids.current.has(v.id)),
     );
+    // reports (029): the voids first seen in this load, for the cancellation chits.
+    const newVoidIds = new Set(
+      voidIds.filter((id) => !seenVoids.current.has(id)),
+    );
     for (const x of fresh) seenRounds.current.add(x.id);
     for (const id of voidIds) seenVoids.current.add(id);
     for (const x of r.rounds) seenNotes.current.set(x.id, notesOf(x));
@@ -218,6 +224,16 @@ export function Kitchen({
         );
     } else if (voided.length && soundRef.current === "on")
       beep(audio.current, 440, 2);
+    // reports (029): a cook working from paper gets a cancellation chit per round.
+    if (settingsRef.current.kdsAutoPrint && voided.length)
+      void printCancellations(
+        cancellationsFromKitchenRounds(voided, newVoidIds),
+        locale,
+        zone,
+        settingsRef.current.paper,
+      ).then((ok) => {
+        if (!ok) setActionError(t("reportsKitchenCancelPrintFailed"));
+      });
   }
 
   const poll = usePoll(load, { intervalMs: 3000 }, [station, refreshKey]);
@@ -605,7 +621,10 @@ export function Kitchen({
                   <strong>{t("kitchenVoided")}</strong>
                   {r.pendingVoids.map((v) => (
                     <p key={v.id}>
-                      {v.quantity} × {v.name[locale]} · {v.reason}
+                      {v.kind === "refund" &&
+                        `${t("discountsKdsRefundCancel")} · `}
+                      {v.quantity} × {v.name[locale]}
+                      {v.reason && ` · ${v.reason}`}
                     </p>
                   ))}
                   {canAckVoids && (

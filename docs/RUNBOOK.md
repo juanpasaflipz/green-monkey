@@ -243,7 +243,22 @@ commits. A production deploy that first carries a migration locking a hot
 table runs **before 07:00** Mexico City, ahead of breakfast service: cfdi's
 030 ends with the `jobs` discovery policy and a non-concurrent index on
 `jobs`, and every order and payment inserts into `jobs`, so those inserts
-wait while the index builds (platform P-27, LD-8).
+wait while the index builds (platform P-27, LD-8). Fiscal's 027 belongs in
+the same window: its foreign keys to `orders`, `restaurants`, `employees`,
+`devices` and `refunds` and its `BEFORE INSERT` trigger on `order_lines` take
+`SHARE ROW EXCLUSIVE` on those tables until 027 commits, so sales wait for it
+(bounded by its `SET LOCAL lock_timeout = '5s'`). The fiscal operations
+(missing tickets, kill switch, series, border incentive) are in
+[FISCAL.md](FISCAL.md#runbook).
+
+**Dated operator check, 2026-12-31 (border tenants, lead decision LD-25).** The
+IVA 8% border incentive runs until 31-12-2026 (DOF decree of 31-12-2025). In
+the last week of December, look for a DOF extension. If none is published, on
+2027-01-01, before the first sale, each border restaurant's owner moves IVA 8%
+products and the default product tax to IVA 16% and switches Datos fiscales to
+the general region, after every device has synced its offline sales (queued
+sales are taxed with the settings in force at sync). If one is published,
+update `BORDER_STIMULUS_VALID_UNTIL` in `shared/tax.ts` and deploy.
 
 ## Credential rotation
 

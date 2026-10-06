@@ -27,6 +27,7 @@ import { ConfigError } from "./config-error.js";
 import { parseSigningKeys } from "./keyring.js";
 import { cfdiWebConfig, cfdiWorkerConfig } from "./cfdi/config.js";
 import { isProductionEnv } from "./production.js";
+import { fiscalWebConfig } from "./fiscal-config.js";
 
 export { ConfigError };
 
@@ -274,6 +275,7 @@ export function loadConfig(
     if (billingEnabled && !env.STRIPE_WEBHOOK_SECRET)
       throw new ConfigError("missing_stripe_webhook_secret");
     // >>> area config checks: web (one pure call per area: fn(env, appEnv), throws ConfigError)
+    fiscalWebConfig(env, appEnv);
     cfdiWebConfig(env, appEnv);
     // <<< area config checks: web
     return Object.freeze({

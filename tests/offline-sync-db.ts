@@ -32,6 +32,7 @@ import {
   recordPayment,
 } from "../server/orders.js";
 import { openOrdersSnapshot } from "../server/offline-tables.js";
+import { closeCheck } from "../server/checks.js";
 import { resolvePaymentAttempt } from "../server/offline-attempts.js";
 import {
   paymentRecoveryStatus,
@@ -50,6 +51,14 @@ import {
 } from "../shared/domain.js";
 import { offlineRecord } from "../shared/offline-recovery.js";
 import { noRetries } from "./db-retries.js";
+
+/** fiscal (027) triggers a cleanup disables (in its own transaction) to delete fixture rows. */
+const FISCAL_TRIGGERS = [
+  ["fiscal_adjustments", "fiscal_adjustments_immutable"],
+  ["fiscal_ticket_taxes", "fiscal_ticket_taxes_immutable"],
+  ["fiscal_tickets", "fiscal_tickets_immutable"],
+  ["fiscal_folio_counters", "fiscal_folio_counters_guard"],
+] as const;
 
 const { runtime, migration } = isolatedTarget(process.env),
   sql = connect(runtime),
@@ -1784,19 +1793,39 @@ try {
     ),
     0,
   );
-  const stillServiceable = await run((tx) =>
-    addRoundOnline(tx, s4, tab.id, {
-      operationId: randomUUID(),
-      lines: [line(ids.drink)],
-      mode: "dine_in",
-      tableId: lateTable,
-      name: "Mesa del cajón cerrado",
-      note: "",
-      channel: "pos",
-      expectedVersion: paidLate.version,
-    }),
+  // fiscal 027 (LD-15 fiscal Q2): the reconciled payment settled the table's
+  // check, which got its ticket in this transaction; a paid ticketed check
+  // takes no more rounds (late items go out as a new order), and it is still
+  // a normal check that "Liberar mesa" closes.
+  assert.equal(paidLate.checkState, "paid");
+  assert.ok(
+    paidLate.fiscal?.ticket,
+    "the settling reconcile issued the ticket",
   );
-  assert.equal(stillServiceable.total, 150);
+  await expectCode(
+    run((tx) =>
+      addRoundOnline(tx, s4, tab.id, {
+        operationId: randomUUID(),
+        lines: [line(ids.drink)],
+        mode: "dine_in",
+        tableId: lateTable,
+        name: "Mesa del cajón cerrado",
+        note: "",
+        channel: "pos",
+        expectedVersion: paidLate.version,
+      }),
+    ),
+    "fiscal_ticket_issued",
+  );
+  const stillServiceable = await run((tx) =>
+    closeCheck(tx, s4, tab.id, { operationId: randomUUID() }),
+  );
+  assert.equal(stillServiceable.closeReason, "released");
+  assert.equal(
+    stillServiceable.fiscal?.ticket?.folio,
+    paidLate.fiscal!.ticket!.folio,
+    "releasing the table keeps the same ticket",
+  );
 
   // OFF-R27: a sale or order refused because its create had already
   // committed online (response lost) names that order in the manager review.
@@ -2573,9 +2602,49 @@ try {
   // (contracts §5.2 rule 3) in the same transaction that deletes the
   // fixture tenants: no other session ever sees it disabled, and a failed
   // cleanup rolls the switch back with the deletes.
+  // discounts (028): refunds and cash_sessions refuse DELETE for every role
+  // too (LD-15 Q4 (A)); the same transaction disables those named triggers
+  // and deletes the discounts tables first, in FK order (LD-16 L5).
+  const moneyTriggers = [
+    ["refund_units", "refund_units_immutable"],
+    ["refund_lines", "refund_lines_no_delete"],
+    ["refunds", "refunds_immutable"],
+    ["refund_batches", "refund_batches_immutable"],
+    ["discount_allocations", "discount_allocations_immutable"],
+    ["discounts", "discounts_no_delete"],
+    ["cash_count_reviews", "cash_count_reviews_immutable"],
+    ["cash_sessions", "cash_sessions_closed_immutable"],
+    // reports (029): print records and the business-day settings history are
+    // immutable too; they follow discounts in the delete order (LD-16 L5).
+    ["report_prints", "report_prints_immutable"],
+    ["business_day_settings", "business_day_settings_immutable"],
+  ];
   await admin.begin(async (tx) => {
     await tx`alter table stock_movements disable trigger stock_movements_immutable`;
+    // fiscal (027): fiscal records are immutable even for the owner, so this
+    // cleanup switches their named triggers off in the same transaction that
+    // deletes the fixture tenants (LD-12 pattern, LD-16 L5): no other session
+    // ever sees them disabled, and a failed cleanup rolls the switch back.
+    for (const [table, trigger] of [...FISCAL_TRIGGERS, ...moneyTriggers])
+      await tx.unsafe(`alter table ${table} disable trigger ${trigger}`);
     for (const table of [
+      // fiscal (027), first in FK order (LD-16 L5).
+      "fiscal_adjustments",
+      "fiscal_ticket_taxes",
+      "fiscal_tickets",
+      "fiscal_folio_counters",
+      "restaurant_fiscal_profiles",
+      // discounts (028), next in FK order (LD-16 L5).
+      "refund_units",
+      "refund_lines",
+      "refunds",
+      "refund_batches",
+      "discount_allocations",
+      "discounts",
+      "cash_count_reviews",
+      // reports (029), after discounts (LD-16 L5).
+      "report_prints",
+      "business_day_settings",
       "offline_kitchen_reviews",
       "offline_sync_records",
       "offline_archives",
@@ -2619,6 +2688,8 @@ try {
     await tx`delete from restaurants where id in (${tenantId},${otherTenant})`;
     await tx`delete from organizations where id in (${organizationId},${otherOrganization})`;
     await tx`alter table stock_movements enable trigger stock_movements_immutable`;
+    for (const [table, trigger] of [...FISCAL_TRIGGERS, ...moneyTriggers])
+      await tx.unsafe(`alter table ${table} enable trigger ${trigger}`);
   });
   await sql.end();
   await admin.end();

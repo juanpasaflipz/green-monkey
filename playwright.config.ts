@@ -13,6 +13,8 @@ const webkitInstalled = (() => {
 
 export default defineConfig({
   testDir: "tests/browser",
+  // Keeps the demo restaurants' business day from rolling over mid-run.
+  globalSetup: "./tests/browser/global-setup.ts",
   workers: 1,
   retries: 0,
   timeout: 60000,

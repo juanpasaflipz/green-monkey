@@ -74,9 +74,16 @@ import {
   restoredLock,
 } from "./access/lock";
 import "./access/access.css";
+import { installFiscalReceipt } from "./features/fiscal/FiscalReceipt";
+import {
+  clearFiscalContext,
+  prefetchFiscalContext,
+} from "./features/fiscal/context";
+// fiscal (027): the fiscal header and footer of every receipt (service's slots).
+installFiscalReceipt();
 import { clearCfdiStatus, prefetchCfdiStatus } from "./features/cfdi/status";
 import { cfdiReceiptExtra } from "./features/cfdi/CfdiReceiptBlock";
-import { setFiscalFooterExtra } from "./compat/cfdi-fiscal";
+import { setFiscalFooterExtra } from "./features/fiscal/FiscalReceipt";
 // cfdi (030): the printed self-invoicing block in fiscal's footer `extra` slot.
 setFiscalFooterExtra((p) => cfdiReceiptExtra(p));
 type StepUpRequest = {
@@ -148,6 +155,8 @@ export default function App() {
       resumeLock(cached);
       setActiveSession(cached);
       setSession(cached);
+      // fiscal (027): the issuer data of offline receipts (Dexie copy offline).
+      if (cached.role !== "kitchen") void prefetchFiscalContext(cached);
       clearCfdiStatus();
       void prefetchCfdiStatus(cached, { cacheOnly: true });
       setCatalog((await db.cache.get(scope(cached) + ":catalog"))?.value ?? []);
@@ -191,6 +200,9 @@ export default function App() {
       setActiveSession(s);
       setCatalog(c);
       await cacheSession(s, c);
+      // fiscal (027): receipts and the product editor read the fiscal context.
+      clearFiscalContext();
+      if (s.role !== "kitchen") void prefetchFiscalContext(s);
       clearCfdiStatus();
       void prefetchCfdiStatus(s);
       void requestPersistence();
@@ -815,6 +827,7 @@ export default function App() {
               view={view}
               session={session}
               locale={locale}
+              online={online}
               navigate={setView}
             />
           ))}

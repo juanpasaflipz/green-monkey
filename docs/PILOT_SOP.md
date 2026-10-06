@@ -223,6 +223,12 @@ cambio de turno y el siguiente cajero abre otra.
 
 ### 4.1 Abrir turno
 
+Antes del primer día del piloto, el propietario llena «Configuración» → «Datos
+fiscales» (con su PIN) exactamente como en su Constancia de Situación Fiscal y revisa
+que diga «Completo». Si el mismo RFC tiene otros locales, marca «Este RFC tiene más de
+una sucursal» y escribe el domicilio de este local. Sin esos datos, cada ticket dice
+«Ticket sin datos fiscales del emisor.».
+
 1. Enciende el módem, la impresora (con papel) y las tablets.
 2. En la caja, toca tu nombre en «¿Quién entra?» y escribe tu PIN.
 3. Revisa que el indicador de conexión diga «Conectado». Si dice «Sin conexión»,
@@ -253,12 +259,19 @@ cambio de turno y el siguiente cajero abre otra.
   propina, y resta los reembolsos hechos desde esa caja y las salidas de efectivo.
 - **Reembolsos:** solo de cobros en efectivo. Un gerente o el propietario los hace
   desde el detalle de la orden («Reembolsar», con «Motivo del reembolso») en un
-  dispositivo con caja abierta; el dinero sale de esa caja.
+  dispositivo con caja abierta; el dinero sale de esa caja. Una cuenta con saldo
+  pendiente y sin ticket no se reembolsa: antes de cobrarla, anula las líneas.
 - **Salidas de efectivo** (pago a un proveedor, retiro de propinas): un gerente toca
   «Registrar salida» en «Caja», escribe el importe y el motivo y, si la app lo pide
   («Confirma con tu PIN»), confirma con su PIN.
 - **Mesas pagadas:** una cuenta en mesa pagada queda «Pagada · por liberar» hasta que
-  alguien toca «Liberar mesa».
+  alguien toca «Liberar mesa». Al pagarse recibe su ticket con folio, así que ya no
+  admite más productos: si la mesa pide algo más, envíalo con «Enviar como orden
+  nueva» para la misma mesa (otra cuenta con su propio ticket).
+- **Ticket de una venta sin conexión:** el cliente se lleva un recibo con «Número
+  provisional» (por ejemplo B-07). Cuando la venta se sincroniza, búscala en «Órdenes»
+  escribiendo ese número; el detalle muestra el folio y «Reimprimir recibo» imprime el
+  ticket con folio.
 
 ### 4.3 Cerrar turno
 
@@ -283,10 +296,12 @@ cambio de turno y el siguiente cajero abre otra.
 5. **Ventas archivadas.** Si en este dispositivo un gerente archivó ventas sin
    conexión, la ventana lo avisa («Este dispositivo archivó … de ventas locales de esta
    caja. Ese efectivo puede aparecer como sobrante.»). Explícalo en «Explicación».
-6. **Corte.** El corte formal por forma de pago está **pendiente** (sección 6). Hoy el
-   propietario o un gerente ve las cajas cerradas en «Historial de cajas» (en «Caja»).
-   Guarda la hoja del conteo, la bitácora de dólares (sección 5) y cualquier venta en
-   papel con el corte del día.
+6. **Corte.** Al cerrar la caja, imprime el corte Z (o el comprobante de conteo si tu rol
+   no ve el efectivo esperado) desde la ventana del cierre. El propietario o un gerente
+   imprime el corte del día en «Finanzas → Resumen → Corte del día» y reimprime cortes Z
+   en «Historial de cajas» (en «Caja») o en «Finanzas → Cortes». Guarda la hoja del
+   conteo, la bitácora de dólares (sección 5) y cualquier venta en papel con el corte del
+   día.
 7. **Cocina.** Marca como entregados los tickets servidos («Marcar entregado»). Si
    quedan tickets de días anteriores, un gerente ve «Retirar tickets de días
    anteriores (N)».
@@ -340,11 +355,11 @@ cómo conservar la bitácora.
 
 | Función | Estado | Mientras tanto | Dónde se documentará |
 | --- | --- | --- | --- |
-| Ticket fiscal (folio consecutivo, RFC, régimen, desglose de IVA en el recibo) | Pendiente (ola 2, fiscal) | El recibo actual no es un comprobante fiscal. | [Fiscal](FISCAL.md#pending-integration-next-wave) |
+| Ticket fiscal (folio consecutivo, RFC, régimen, desglose de IVA en el recibo) | Disponible (fiscal, migración 027) | Cada venta cobrada imprime su ticket con folio; llena «Datos fiscales» antes del piloto (sección 4.1). | [Fiscal](FISCAL.md#the-printed-ticket) |
 | Factura electrónica (CFDI) para el cliente y factura global del día | Pendiente (ola 2, CFDI) | Si un cliente pide factura, usa el proceso que el restaurante ya tenga con su contador. | [CFDI](CFDI.md#pending-spec-implementation-steps) |
 | Descuentos y cortesías | Pendiente (ola 2, descuentos) | No hay descuentos en la app. No cambies precios del menú para simularlos. | `docs/DISCOUNTS.md`, que agrega esa ola |
-| Reportes y cortes por forma de pago | Pendiente (ola 2, reportes) | «Historial de cajas» y la pantalla «Hoy» del propietario y los gerentes. | [Reports](REPORTS.md#pending-next-wave) |
-| Cerrar una caja desde otro dispositivo | Pendiente (ola 2, reportes) | Cierra la caja en su propia tablet ([runbook](ACCESS.md#runbooks)). | [Access](ACCESS.md#runbooks) |
+| Reportes y cortes por forma de pago | Disponible (reportes, migración 029) | «Hoy» y «Finanzas» (propietario y gerentes); corte X, corte Z y corte del día impresos desde «Caja» o «Finanzas → Cortes». | [Reports](REPORTS.md#cortes) |
+| Cerrar una caja desde otro dispositivo | Disponible (reportes, migración 029) | «Finanzas → Cortes → Cerrar caja desde aquí» (gerente, con PIN) para una caja de un dispositivo desvinculado o que quedó abierta de un día anterior; si su tablet funciona, ciérrala ahí. | [Reports](REPORTS.md#cortes) |
 | Acceso Pro del piloto otorgado por soporte, aviso de privacidad, contacto de soporte dentro de la app | Pendiente (ola 2, cuenta) | En Free, un solo dispositivo vende (sección 2). | `docs/ACCOUNT_AND_LEGAL.md`, que agrega esa ola |
 | Cobro con tarjeta integrado | No incluido | «Terminal externa»: cobras en la terminal del banco y registras su referencia. | [Service](SERVICE.md#payment-dialog) |
 | Impresión directa, corte de papel y apertura del cajón desde la app | No incluido | El controlador de la impresora (sección 1.2). | [Service](SERVICE.md#printing-browseros) |

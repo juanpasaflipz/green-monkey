@@ -29,13 +29,15 @@ const causeKeys: Record<string, Key> = {
   void: "menuCauseVoid",
   prep_input: "menuCausePrepInput",
   prep_output: "menuCausePrepOutput",
+  // discounts (028): an item refund that returned its ingredients.
+  refund: "discountsStockCauseRefund",
 };
 /**
  * Causes written by the system carry an internal reason ("dispatch",
  * "void_return", "Existencia inicial"); the translated cause says it all.
  * Receipts, waste, counts and prep keep the reason the person typed.
  */
-const systemCauses = new Set(["sale", "void", "opening"]);
+const systemCauses = new Set(["sale", "void", "opening", "refund"]);
 const negative = (i: StockItem) => new Decimal(i.onHand).isNegative();
 const low = (i: StockItem) =>
   new Decimal(i.onHand).lte(new Decimal(i.threshold));

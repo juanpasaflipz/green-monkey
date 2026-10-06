@@ -60,6 +60,22 @@ END $$;
 GRANT USAGE ON SCHEMA public TO gm_jobs_worker;
 GRANT SELECT,INSERT ON jobs TO gm_jobs_worker;
 GRANT UPDATE(state,attempts,next_at,lease_until,error_code) ON jobs TO gm_jobs_worker;
+-- 027 fiscal: tickets, ticket taxes and refund adjustments are INSERT-only (CFF art. 30,
+-- immutable by trigger); the profile and the folio counter take column UPDATEs only. No DELETE.
+GRANT SELECT,INSERT ON restaurant_fiscal_profiles,fiscal_folio_counters,fiscal_tickets,fiscal_ticket_taxes,fiscal_adjustments TO gm_app;
+GRANT UPDATE(rfc,legal_name,regime,postal_code,address,ticket_series,tax_region,default_tax_category,border_confirmed_at,border_confirmed_by,multiple_branches,version,updated_by,updated_at) ON restaurant_fiscal_profiles TO gm_app;
+GRANT UPDATE(last_value) ON fiscal_folio_counters TO gm_app;
+-- 028 discounts: money records are INSERT-only (no DELETE anywhere); discounts allow
+-- only the reversal columns, refund lines only the kitchen acknowledgement, and the
+-- reversal's SELECT ... FOR UPDATE needs that column-level UPDATE privilege.
+GRANT SELECT,INSERT ON money_controls,discounts,discount_allocations,refund_batches,refund_lines,refund_units,cash_count_reviews TO gm_app;
+GRANT UPDATE(cashier_max_percent_bps,cashier_max_amount,server_max_percent_bps,server_max_amount,blind_close,expected_roles,close_roles,version,updated_by,updated_at) ON money_controls TO gm_app;
+GRANT UPDATE(reversed_at,reversed_by,reversal_approver_id,reversal_note,reversed_amount) ON discounts TO gm_app;
+GRANT UPDATE(kitchen_acknowledged_at,kitchen_acknowledged_by) ON refund_lines TO gm_app;
+GRANT SELECT ON kitchen_removals TO gm_app;
+-- 029 reports: business-day settings history (written by the restaurants trigger as
+-- the runtime role) and corte print records; INSERT-only, no UPDATE or DELETE.
+GRANT SELECT,INSERT ON business_day_settings,report_prints TO gm_app;
 -- 030 cfdi: the runtime role inserts requests and settings; the worker (gm_jobs_worker, Wave 2.0)
 -- performs every transition. Worker privileges live here, never in the migration. It already has
 -- USAGE on the schema and SELECT, INSERT, UPDATE(state,attempts,next_at,lease_until,error_code) ON
@@ -70,15 +86,11 @@ GRANT SELECT ON restaurants, orders, tenders, refunds TO gm_jobs_worker;
 -- restaurants' owner_restaurant_read policy looks up owner_memberships, so reading restaurants
 -- needs SELECT there too; its FORCE RLS membership_read policy shows no row without app.account_id.
 GRANT SELECT ON owner_memberships TO gm_jobs_worker;
--- Fiscal 027 and discounts 028 tables the worker reads (wave2-cross-track C26). Guarded only so the
--- block applies on a branch database migrated before 027/028; on integration every table exists.
-DO $$ DECLARE t text; BEGIN
- FOREACH t IN ARRAY ARRAY['restaurant_fiscal_profiles','fiscal_tickets','fiscal_ticket_taxes','fiscal_adjustments','refund_batches'] LOOP
-  IF to_regclass('public.' || t) IS NOT NULL THEN
-   EXECUTE format('GRANT SELECT ON %I TO gm_jobs_worker', t);
-  END IF;
- END LOOP;
-END $$;
+-- Fiscal 027 and discounts 028 tables the worker reads (wave2-cross-track C26): ticketForCfdi
+-- (server/fiscal-read.ts) reads the ticket, its taxes and the order's adjustments; the egreso
+-- payment form comes from 028's refunds.method and the refund day from refund_batches.
+GRANT SELECT ON restaurant_fiscal_profiles, fiscal_tickets, fiscal_ticket_taxes, fiscal_adjustments,
+  refund_batches TO gm_jobs_worker;
 GRANT SELECT, INSERT, UPDATE ON cfdi_platform TO gm_jobs_worker;
 GRANT SELECT, UPDATE (mode, live_from, live_enabled_at, live_enabled_by, live_requested_at, live_requested_from,
   live_requested_by, global_periodicity, next_periodicity, next_periodicity_from, version, updated_at)

@@ -232,15 +232,21 @@ test("manager reconciles offline cash and resolves kitchen and stock follow-ups"
     await recoveredCard
       .getByRole("button", { name: "Reembolsar", exact: true })
       .click();
+    // discounts (028): a recovery order has no item allocations, so the
+    // dialog opens on "Por importe"; amount refunds have no stock
+    // disposition, a reason is required and the result stays until "Listo".
     const refund = page.getByRole("dialog");
     await refund.getByLabel("Importe", { exact: true }).fill("1.00");
+    await refund
+      .getByLabel("Motivo del reembolso")
+      .selectOption({ label: "Otro (explica en la nota)" });
     await refund
       .getByLabel("Explicación")
       .fill("Reembolso del efectivo recuperado verificado");
     await refund
-      .locator('select[name="disposition"]')
-      .selectOption("no_stock_return");
-    await refund.getByRole("button", { name: "Guardar", exact: true }).click();
+      .getByRole("button", { name: "Reembolsar $1.00", exact: true })
+      .click();
+    await refund.getByRole("button", { name: "Listo", exact: true }).click();
     await expect(recoveredCard).toContainText("Reembolsado");
     const refunded = await (
       await api.get(`/api/orders/${recoveredOrder.id}`)
