@@ -289,6 +289,8 @@ export async function exceptionRows(
     kinds: parseExceptionKinds(q.kinds),
     employee: q.employee,
   };
+  // The cursor time reaches SQL as text (::text::timestamptz): a parameter Postgres types as
+  // timestamptz is sent by postgres.js as a JS Date, which drops the microseconds.
   const cursor = q.cursor ? decodeReportCursor(q.cursor) : null;
   const restaurant = await restaurantOf(tx, s);
   const w = windowOf(range, restaurant);
@@ -308,7 +310,7 @@ export async function exceptionRows(
        where ${filtered(tx, range, f)}
          ${
            cursor
-             ? tx`and (ex.at, ex.kind, ex.id) < (${cursor.t}::timestamptz, ${cursor.k ?? ""}::text, ${cursor.i}::uuid)`
+             ? tx`and (ex.at, ex.kind, ex.id) < (${cursor.t}::text::timestamptz, ${cursor.k ?? ""}::text, ${cursor.i}::uuid)`
              : tx``
          }
        order by ex.at desc, ex.kind desc, ex.id desc

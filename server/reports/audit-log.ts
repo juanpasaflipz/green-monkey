@@ -49,6 +49,8 @@ export async function auditLog(
   permit(s, managers);
   const q = auditQuery.parse(raw);
   const range = parseRange(q, LIMITS.listDays);
+  // The cursor time reaches SQL as text (::text::timestamptz): a parameter Postgres types as
+  // timestamptz is sent by postgres.js as a JS Date, which drops the microseconds.
   const cursor = q.cursor ? decodeReportCursor(q.cursor) : null;
   const restaurant = await restaurantOf(tx, s);
   let orderIds: string[] | null = null;
@@ -77,7 +79,7 @@ export async function auditLog(
       ${q.employee ? tx`and a.actor_id = ${q.employee}` : tx``}
       ${q.group ? tx`and a.operation like any (${tx.array(auditGroupPrefixes(q.group))}::text[])` : tx``}
       ${orderIds ? tx`and a.entity_id = any (${tx.array(orderIds)}::text[])` : tx``}
-      ${cursor ? tx`and (a.created_at, a.id) < (${cursor.t}::timestamptz, ${cursor.i}::uuid)` : tx``}
+      ${cursor ? tx`and (a.created_at, a.id) < (${cursor.t}::text::timestamptz, ${cursor.i}::uuid)` : tx``}
     order by a.created_at desc, a.id desc
     limit ${q.limit + 1}`;
   const page = rows.slice(0, q.limit);

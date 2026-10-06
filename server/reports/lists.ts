@@ -35,6 +35,8 @@ export async function orderRows(
   permit(s, managers);
   const q = orderListQuery.parse(raw);
   const range = parseRange(q, LIMITS.listDays);
+  // The cursor time reaches SQL as text (::text::timestamptz): a parameter Postgres types as
+  // timestamptz is sent by postgres.js as a JS Date, which drops the microseconds.
   const cursor = q.cursor ? decodeReportCursor(q.cursor) : null;
   const rows = await tx<Row[]>`
     select o.id, o.number, o.business_date::text as business_date, o.created_at, o.created_at::text as at_text,
@@ -53,7 +55,7 @@ export async function orderRows(
       ${q.state ? tx`and o.check_state = ${q.state}` : tx``}
       ${q.employee ? tx`and coalesce(o.assigned_employee_id, o.employee_id) = ${q.employee}` : tx``}
       ${q.channel ? tx`and o.channel = ${q.channel}` : tx``}
-      ${cursor ? tx`and (o.created_at, o.id) < (${cursor.t}::timestamptz, ${cursor.i}::uuid)` : tx``}
+      ${cursor ? tx`and (o.created_at, o.id) < (${cursor.t}::text::timestamptz, ${cursor.i}::uuid)` : tx``}
     order by o.created_at desc, o.id desc
     limit ${q.limit + 1}`;
   const page = rows.slice(0, q.limit);
@@ -108,6 +110,8 @@ export async function tenderRows(
   permit(s, managers);
   const q = tenderListQuery.parse(raw);
   const range = parseRange(q, LIMITS.listDays);
+  // The cursor time reaches SQL as text (::text::timestamptz): a parameter Postgres types as
+  // timestamptz is sent by postgres.js as a JS Date, which drops the microseconds.
   const cursor = q.cursor ? decodeReportCursor(q.cursor) : null;
   const restaurant = await restaurantOf(tx, s);
   const w = windowOf(range, restaurant);
@@ -124,7 +128,7 @@ export async function tenderRows(
     where x.day between ${range.from}::date and ${range.to}::date
       ${q.method ? tx`and x.method = ${q.method}` : tx``}
       ${q.drawer ? tx`and x.session_id = ${q.drawer}` : tx``}
-      ${cursor ? tx`and (x.created_at, x.id) < (${cursor.t}::timestamptz, ${cursor.i}::uuid)` : tx``}
+      ${cursor ? tx`and (x.created_at, x.id) < (${cursor.t}::text::timestamptz, ${cursor.i}::uuid)` : tx``}
     order by x.created_at desc, x.id desc
     limit ${q.limit + 1}`;
   const page = rows.slice(0, q.limit);

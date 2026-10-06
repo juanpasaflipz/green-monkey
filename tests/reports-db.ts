@@ -769,12 +769,14 @@ try {
   });
 
   await test("20/22. GAP-3: the activity log reaches events older than the newest 100 with keyset paging (rows sharing a timestamp each once, newest first) and filters by employee, activity group and order number", async () => {
-    const instant = new Date().toISOString();
+    // One instant with microseconds (sent as text: postgres.js would round a timestamptz
+    // parameter to milliseconds), so the page boundary falls inside rows that share it.
+    const instant = new Date().toISOString().replace("Z", "417Z");
     await asOwner(A, async (tx) => {
       for (let i = 0; i < 130; i++)
         await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail,created_at)
           values(${A},${randomUUID()},${i % 2 ? ids.manager : ids.cashier},${i % 3 ? "kitchen.seen" : "cash.paidout"},${i % 5 ? ids.drawer1 : o1.id},
-                 ${tx.json({ amount: i, reason: "Evento " + i })},${instant})`;
+                 ${tx.json({ amount: i, reason: "Evento " + i })},${instant}::text::timestamptz)`;
     });
     const all: string[] = [];
     let cursor: string | undefined;
@@ -1176,6 +1178,36 @@ try {
       remote(onTerminal(new Date().toISOString())),
       "not_found",
     );
+  });
+
+  await test("keyset cursors keep microseconds: tenders that share one instant page each once (tenant C)", async () => {
+    // Same cursor code as the order, audit and exceptions lists: the cursor time is passed as
+    // text, so rows in the same millisecond as the page boundary are not skipped.
+    const instant = new Date().toISOString().replace("Z", "731Z");
+    const order = randomUUID();
+    const tenders = [randomUUID(), randomUUID(), randomUUID()];
+    await asOwner(C, async (tx) => {
+      await tx`insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,state,total,created_at)
+        values(${C},${order},1,${today},${ids.ownerC},'takeaway','Micro','','pos','completed',3000,${instant}::text::timestamptz)`;
+      for (const t of tenders)
+        await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,created_at)
+          values(${C},${t},${order},null,'cash',1000,0,1000,${instant}::text::timestamptz)`;
+    });
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await read(ownerC, (tx) =>
+        tenderRows(tx, ownerC, {
+          from: today,
+          to: today,
+          limit: "1",
+          ...(cursor ? { cursor } : {}),
+        }),
+      );
+      seen.push(...page.rows.map((r) => r.id));
+      cursor = page.next ?? undefined;
+    } while (cursor);
+    assert.deepEqual(seen, [...tenders].sort().reverse());
   });
 
   console.log(`Reports DB passed (${checks} checks)`);
