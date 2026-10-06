@@ -4,8 +4,12 @@
 // legacy /report). It skips until 027 and 028 are migrated (reports phase B, wave2-cross-track
 // §2), then runs against the real fiscal and discounts modules. REPORTS_PHASEB_PORTS may name a
 // module exporting stand-ins with the same signatures (used to verify this suite before the
-// merge, against the spec'd 027/028 DDL). Fixture rows that need an exact clock are inserted by
-// the owner connection inside the tenant scope, as tests/offline-recovery-db.ts does.
+// merge, against the spec'd 027/028 DDL). Until that merge most fixture rows (orders, tickets,
+// discounts, refunds, recoveries) are inserted by the owner connection inside the tenant scope,
+// as tests/offline-recovery-db.ts does; drawer closes, offline archives and the report commands
+// go through the real functions. At the merge the fixture moves to the real commands and the
+// suite gains spec DB tests 3, 12, 18, 33, 35, 37 and 38 (docs/REPORTS.md "Merge wiring"),
+// keeping hand rows only for clock-dependent cases.
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -23,8 +27,13 @@ import { todaySummary } from "../server/reports/today.js";
 import { legacyDailyReport } from "../server/reports/legacy.js";
 import { restaurantOf } from "../server/reports/restaurant.js";
 import type { ReportsPorts } from "../server/reports/ports.js";
+import { archiveOfflineRecord } from "../server/offline-sync.js";
 import { businessDate } from "../shared/domain.js";
-import { addDays } from "../shared/reports.js";
+import {
+  addDays,
+  EXCEPTION_KINDS,
+  exceptionSummary,
+} from "../shared/reports.js";
 import { isolatedTarget } from "./isolated-target.js";
 import { removeTenants } from "./fixtures/reports-cleanup.js";
 
@@ -83,9 +92,22 @@ const zone = "America/Mexico_City";
 const today = businessDate(new Date().toISOString(), zone, 240);
 const yesterday = addDays(today, -1);
 const id = () => randomUUID();
-const E = { owner: id(), manager: id(), cashier: id(), server: id() };
-const D = { d1: id(), d2: id() };
-const DR = { open1: id(), orphan: id(), closedY: id(), legacyY: id() };
+const E = {
+  owner: id(),
+  manager: id(),
+  cashier: id(),
+  server: id(),
+  kitchen: id(),
+};
+const D = { d1: id(), d2: id(), d3: id(), d4: id() };
+const DR = {
+  open1: id(),
+  orphan: id(),
+  closedY: id(),
+  legacyY: id(),
+  prevDay: id(),
+  revokedToday: id(),
+};
 const P = { taco: id(), agua: id(), open: id() };
 const restaurant = {
   name: "Fixture " + T.slice(0, 6),
@@ -114,14 +136,34 @@ const session = (
 const owner = session(E.owner, "owner", D.d1),
   manager = session(E.manager, "manager", D.d1);
 const cashier = session(E.cashier, "cashier", D.d1),
-  server = session(E.server, "server", D.d2);
+  server = session(E.server, "server", D.d2),
+  kitchen = session(E.kitchen, "kitchen", D.d2);
+/** A manager on a shared terminal whose PIN was entered at `authenticatedAt` (SEC-6 step-up). */
+const onTerminal = (authenticatedAt: string | null) =>
+  session(E.manager, "manager", D.d1, {
+    absoluteExpiresAt: null,
+    authenticatedAt,
+    deviceName: "Caja mostrador",
+    deviceKind: "terminal",
+    idleLockSeconds: null,
+    ownerAccount: false,
+  });
+const freshPin = () => onTerminal(new Date().toISOString());
 const at = (date: string, time: string) =>
   Temporal.PlainDateTime.from(`${date}T${time}`)
     .toZonedDateTime(zone)
     .toInstant()
     .toString();
+// Today's fixture instants stay inside today's business day (it starts at 04:00 local): right
+// after the cutoff the 120-minute history is compressed, keeping its order.
+const startedAt = Date.now();
+const dayStart = Date.parse(at(today, "04:00:00"));
+const scale = Math.max(
+  0,
+  Math.min(1, (startedAt - dayStart - 1000) / (121 * 60_000)),
+);
 const nowMinus = (minutes: number) =>
-  new Date(Date.now() - minutes * 60_000).toISOString();
+  new Date(startedAt - minutes * 60_000 * scale).toISOString();
 async function scoped(fn: (tx: Tx) => Promise<unknown>) {
   return admin.begin(async (tx) => {
     await tx`select set_config('app.tenant_id', ${T}, true)`;
@@ -262,9 +304,11 @@ try {
       [E.manager, "manager", "Marisol Vega"],
       [E.cashier, "cashier", "Carlos"],
       [E.server, "server", "Sara"],
+      [E.kitchen, "kitchen", "Kiko"],
     ])
       await tx`insert into employees(tenant_id,id,name,login,secret_hash,role) values(${T},${e},${name},${"pb" + id().slice(0, 10)},'x',${role})`;
-    await tx`insert into devices(tenant_id,id,name,token_hash) values(${T},${D.d1},'Caja mostrador','x'),(${T},${D.d2},'Barra','x')`;
+    await tx`insert into devices(tenant_id,id,name,token_hash) values(${T},${D.d1},'Caja mostrador','x'),(${T},${D.d2},'Barra','x'),
+      (${T},${D.d3},'Terraza','x'),(${T},${D.d4},'Patio','x')`;
     await tx`insert into restaurant_fiscal_profiles(tenant_id,updated_by) values(${T},${E.owner})`;
     for (const [pid, name] of [
       [P.taco, "Taco"],
@@ -279,7 +323,8 @@ try {
     await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at,counted,expected,reason,closed_at)
       values (${T},${DR.legacyY},${D.d1},${E.cashier},20000,${at(yesterday, "09:00:00")},20000,20500,'Legacy',${at(yesterday, "22:00:00")})`;
   });
-  // Yesterday: closed drawers. closedY closes with a shortage through the spec'd closeDrawerRow; legacyY the pre-028 way.
+  // Yesterday: closed drawers. closedY closes through closeDrawerRow with a cash shortage and a
+  // terminal report of 1200 against no terminal sales; legacyY closed the pre-028 way.
   const oy = await order({
     date: yesterday,
     created: at(yesterday, "13:00:00"),
@@ -308,7 +353,7 @@ try {
       tx,
       manager,
       { id: DR.closedY },
-      { counted: 58000, reason: "Faltó cambio", externalReported: null },
+      { counted: 58000, reason: "Faltó cambio", externalReported: 1200 },
       "visible",
     ),
   );
@@ -321,6 +366,58 @@ try {
     (tx) =>
       tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at) values(${T},${DR.orphan},${D.d2},${E.server},30000,${at(yesterday, "23:00:00")})`,
   );
+
+  // Yesterday's corrections (exceptions kinds that parse audit JSON). A discount removed with a
+  // manager's approval, written as discounts' reverseDiscount writes it (the order back to its
+  // full total, the reversal columns, audit discount.reversed with discountId and restored).
+  const oRev = await order({
+    date: yesterday,
+    created: at(yesterday, "19:50:00"),
+    discount: 4500,
+    lines: [{ product: P.taco, qty: 2, unit: 4500, cost: 1500 }],
+  });
+  const reversed = id(),
+    reversal = id();
+  await scoped(async (tx) => {
+    await tx`insert into discounts(tenant_id,id,order_id,scope,line_id,kind,requested_amount,base,amount,units,reason_code,note,actor_id,approver_id,device_id,created_at)
+      values(${T},${reversed},${oRev.id},'order',null,'amount',4500,9000,4500,2,'promotion','Promo de la tarde',${E.cashier},null,${D.d1},${at(yesterday, "20:00:00")})`;
+    for (const unit of [0, 1])
+      await tx`insert into discount_allocations(tenant_id,discount_id,order_id,line_id,unit_index,amount) values(${T},${reversed},${oRev.id},${oRev.lines[0].id},${unit},2250)`;
+  });
+  await scoped(async (tx) => {
+    await tx`update discounts set reversed_at=${at(yesterday, "20:10:00")}, reversed_by=${E.cashier}, reversal_approver_id=${E.manager},
+      reversal_note='Cliente sin cupón', reversed_amount=4500 where id=${reversed}`;
+    await tx`update orders set total=total+4500, discount=discount-4500, version=version+1 where id=${oRev.id}`;
+    await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail,created_at) values(${T},${reversal},${E.cashier},'discount.reversed',${oRev.id},
+      ${tx.json({ discountId: reversed, restored: 4500, note: "Cliente sin cupón", approverId: E.manager })},${at(yesterday, "20:10:00")})`;
+  });
+  // Both offline reconcile paths (offline-sync.ts): a cash recovery whose amount is read through
+  // offline_recoveries.tender_id, and a manager-reconciled payment whose audit carries amount and tip.
+  const recSession = id(),
+    recOrder = id(),
+    recTender = id(),
+    recovery = id(),
+    recOperation = id(),
+    reconciled = id(),
+    paymentReconciled = id();
+  await scoped(async (tx) => {
+    await tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,offline_until,selling_authorized)
+      values(${T},${recSession},${E.cashier},${D.d1},${"fixture-" + recSession},'fixture',now()+interval '1 hour',now()+interval '1 hour',true)`;
+    await tx`insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,state,total,discount,created_at)
+      values(${T},${recOrder},${++number},${yesterday},${E.cashier},'takeaway','','Offline cash reconciliation: Venta sin conexión','offline','recovery_pending',5000,0,${at(yesterday, "23:30:00")})`;
+    await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,source,source_id,created_at)
+      values(${T},${recTender},${recOrder},${DR.legacyY},'cash',5000,300,5300,'offline_recovery',${recOperation},${at(yesterday, "23:30:00")})`;
+    await tx`insert into offline_recoveries(tenant_id,id,operation_id,order_operation_id,original_session_id,original_employee_id,original_device_id,
+        original_drawer_id,actor_id,reason,evidence_version,evidence,order_id,tender_id,original_sold_at,recognized_at)
+      values(${T},${recovery},${recOperation},${id()},${recSession},${E.cashier},${D.d1},${DR.legacyY},${E.manager},'Venta sin conexión',2,'{}',
+        ${recOrder},${recTender},${at(yesterday, "21:00:00")},${at(yesterday, "23:30:00")})`;
+    await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail,created_at) values(${T},${reconciled},${E.manager},'offline.reconciled',${recOrder},
+      ${tx.json({ reason: "Venta sin conexión", kind: "sale", method: "cash", recoveryId: recovery })},${at(yesterday, "23:31:00")})`;
+    await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,tip,received,external_reference,source,source_id,created_at)
+      values(${T},${id()},${oRev.id},${null},'external',2000,100,2100,'AUT-9','offline_recovery',${id()},${at(yesterday, "23:40:00")})`;
+    await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail,created_at) values(${T},${paymentReconciled},${E.manager},'offline.payment_reconciled',${oRev.id},
+      ${tx.json({ reason: "Pago con terminal sin conexión", kind: "payment", amount: 2000, tip: 100, method: "external" })},${at(yesterday, "23:40:00")})`;
+  });
 
   // Today.
   const o1 = await order({
@@ -466,7 +563,6 @@ try {
     await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail,created_at) values(${T},${id()},${E.manager},'cash.paidout',${DR.open1},${tx.json({ operationId: id(), amount: 1500, reason: "Hielo" })},${nowMinus(30)})`;
     await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail,created_at) values(${T},${id()},${E.cashier},'receipt.reprinted',${o2.id},${tx.json({ document: "receipt", reprint: true })},${nowMinus(20)})`;
   });
-  void o5;
 
   const read = (s: any, fn: (tx: Tx) => Promise<any>) =>
     snapshotTenant(sql, T, fn);
@@ -646,7 +742,9 @@ try {
     (r: any) => r.kind === "drawer_difference" && r.id === DR.closedY,
   );
   assert.equal(diff2.actorName, "Marisol Vega");
-  const disc = ex.rows.find((r: any) => r.kind === "discount");
+  const disc = ex.rows.find(
+    (r: any) => r.kind === "discount" && r.id === discount,
+  );
   assert.deepEqual(
     {
       actor: disc.actorName,
@@ -851,6 +949,281 @@ try {
     "34. two concurrent prints of one corte Z get print numbers 1 and 2 (no unique or check violation)",
   );
 
+  // ---- exceptions: every kind with its amount, actor, approver, order and device (spec DB test
+  // 19, reports-rebase test 11), and the summary equals the listed rows (test 21). The archive
+  // goes through offline-sync's real command; the corte Z reprints are the prints above.
+  const record = id();
+  await tenant(sql, T, (tx: Tx) =>
+    archiveOfflineRecord(tx, freshPin(), {
+      operationId: id(),
+      record: {
+        operationId: record,
+        kind: "sale",
+        deviceId: D.d1,
+        employeeId: E.cashier,
+        currency: "MXN",
+        recordedAt: nowMinus(40),
+        payment: { amount: 3500, tip: 200 },
+      },
+      localError: "offline_catalog_changed",
+      reason: "Venta registrada dos veces en el dispositivo",
+      confirmed: true,
+    }),
+  );
+  const every = await read(owner, (tx: Tx) =>
+    exceptionRows(tx, owner, { from: yesterday, to: today, limit: "500" }),
+  );
+  assert.equal(every.next, null);
+  assert.deepEqual(
+    [...new Set(every.rows.map((r: any) => r.kind))].sort(),
+    [...EXCEPTION_KINDS].sort(),
+    "all twelve kinds",
+  );
+  const view = (r: any) => ({
+    kind: r.kind,
+    amount: r.amount,
+    actor: r.actorName,
+    approver: r.approverName,
+    account: r.accountName,
+    order: r.orderId,
+    device: r.deviceName,
+  });
+  const only = (kind: string, pick: (r: any) => boolean = () => true) => {
+    const rows = every.rows.filter((r: any) => r.kind === kind && pick(r));
+    assert.equal(rows.length, 1, kind);
+    return rows[0];
+  };
+  const row = (kind: string, pick?: (r: any) => boolean) =>
+    view(only(kind, pick));
+  const expected = (
+    kind: string,
+    amount: number,
+    actor: string | null,
+    approver: string | null,
+    order: string | null,
+    device: string | null,
+    account: string | null = null,
+  ) => ({ kind, amount, actor, approver, account, order, device });
+  assert.deepEqual(
+    every.rows
+      .filter((r: any) => r.kind === "void")
+      .map(view)
+      .sort((a: any, b: any) => (a.order < b.order ? -1 : 1)),
+    [
+      expected("void", 4500, "Carlos", "Marisol Vega", o3.id, null),
+      expected("void", 4500, "Carlos", "Marisol Vega", o5.id, null),
+    ].sort((a, b) => (a.order! < b.order! ? -1 : 1)),
+  );
+  assert.deepEqual(
+    row("discount", (r) => r.id === discount),
+    expected(
+      "discount",
+      3000,
+      "Carlos",
+      "Marisol Vega",
+      o1.id,
+      "Caja mostrador",
+    ),
+  );
+  const removed = only("discount", (r) => r.id === reversed);
+  assert.deepEqual(
+    { ...view(removed), reversed: removed.detail.reversed },
+    {
+      ...expected("discount", 4500, "Carlos", null, oRev.id, "Caja mostrador"),
+      reversed: true,
+    },
+  );
+  const reversalRow = only("discount_reversal");
+  assert.deepEqual(
+    {
+      ...view(reversalRow),
+      id: reversalRow.id,
+      discountId: reversalRow.detail.discountId,
+      code: reversalRow.reasonCode,
+      note: reversalRow.note,
+    },
+    {
+      ...expected(
+        "discount_reversal",
+        4500,
+        "Carlos",
+        "Marisol Vega",
+        oRev.id,
+        "Caja mostrador",
+      ),
+      id: reversal,
+      discountId: reversed,
+      code: "promotion",
+      note: "Cliente sin cupón",
+    },
+  );
+  assert.deepEqual(
+    row("refund"),
+    expected("refund", 4500, "Carlos", "Marisol Vega", o1.id, "Caja mostrador"),
+  );
+  assert.deepEqual(
+    row("paid_out"),
+    expected("paid_out", 1500, "Marisol Vega", null, null, "Caja mostrador"),
+  );
+  assert.deepEqual(
+    row("drawer_difference", (r) => r.id === DR.legacyY),
+    expected(
+      "drawer_difference",
+      -500,
+      "Carlos",
+      "Marisol Vega",
+      null,
+      "Caja mostrador",
+    ),
+  );
+  assert.deepEqual(
+    row("drawer_difference", (r) => r.id === DR.closedY),
+    expected("drawer_difference", -1000, "Marisol Vega", null, null, "Barra"),
+  );
+  assert.deepEqual(
+    row("terminal_difference"),
+    expected("terminal_difference", 1200, "Marisol Vega", null, null, "Barra"),
+  );
+  assert.equal(only("terminal_difference").id, DR.closedY);
+  assert.deepEqual(
+    row("reprint"),
+    expected("reprint", 0, "Carlos", null, o2.id, null),
+  );
+  const zReprint = only(
+    "corte_reprint",
+    (r) => r.detail.drawerId === DR.closedY,
+  );
+  assert.deepEqual(
+    {
+      ...view(zReprint),
+      print: zReprint.detail.printNumber,
+      z: zReprint.detail.zNumber,
+    },
+    {
+      ...expected(
+        "corte_reprint",
+        0,
+        "Marisol Vega",
+        null,
+        null,
+        "Caja mostrador",
+      ),
+      print: 2,
+      z: all.find((d) => d.id === DR.closedY).zNumber,
+    },
+  );
+  const raceReprint = only(
+    "corte_reprint",
+    (r) => r.detail.drawerId === DR.legacyY,
+  );
+  assert.equal(raceReprint.detail.printNumber, 2);
+  assert.ok(["Olga", "Marisol Vega"].includes(raceReprint.actorName));
+  assert.deepEqual(
+    row("open_price"),
+    expected("open_price", 2500, null, null, o6.id, null, "Sara"),
+  );
+  const archived = only("offline_archive");
+  assert.deepEqual(
+    {
+      ...view(archived),
+      note: archived.note,
+      recordKind: archived.detail.recordKind,
+      localError: archived.detail.localError,
+    },
+    {
+      ...expected(
+        "offline_archive",
+        3500 + 200,
+        "Marisol Vega",
+        null,
+        null,
+        "Caja mostrador",
+      ),
+      note: "Venta registrada dos veces en el dispositivo",
+      recordKind: "sale",
+      localError: "offline_catalog_changed",
+    },
+  );
+  const recon = (path: string) =>
+    only("offline_reconcile", (r) => r.detail.path === path);
+  assert.deepEqual(
+    {
+      ...view(recon("offline.reconciled")),
+      id: recon("offline.reconciled").id,
+      method: recon("offline.reconciled").detail.method,
+    },
+    {
+      ...expected(
+        "offline_reconcile",
+        5000 + 300,
+        "Marisol Vega",
+        null,
+        recOrder,
+        null,
+      ),
+      id: reconciled,
+      method: "cash",
+    },
+  );
+  assert.deepEqual(
+    {
+      ...view(recon("offline.payment_reconciled")),
+      id: recon("offline.payment_reconciled").id,
+      method: recon("offline.payment_reconciled").detail.method,
+    },
+    {
+      ...expected(
+        "offline_reconcile",
+        2000 + 100,
+        "Marisol Vega",
+        null,
+        oRev.id,
+        null,
+      ),
+      id: paymentReconciled,
+      method: "external",
+    },
+  );
+  // The summary is exactly the listed rows' summary; spot-check the per-kind and per-employee figures.
+  assert.deepEqual(every.summary, exceptionSummary(every.rows));
+  const byKind = Object.fromEntries(
+    every.summary.byKind.map((k: any) => [k.kind, k]),
+  );
+  for (const kind of EXCEPTION_KINDS)
+    assert.equal(
+      byKind[kind].count,
+      every.rows.filter((r: any) => r.kind === kind).length,
+      kind,
+    );
+  assert.deepEqual(
+    {
+      shortages: byKind.drawer_difference.shortages,
+      overages: byKind.drawer_difference.overages,
+    },
+    { shortages: 1500, overages: 0 },
+  );
+  const carlos = every.summary.byEmployee.find(
+    (e: any) => e.employeeId === E.cashier,
+  );
+  assert.deepEqual(carlos.acted.discount_reversal, { count: 1, amount: 4500 });
+  assert.equal(carlos.shortages, 500);
+  const marisol = every.summary.byEmployee.find(
+    (e: any) => e.employeeId === E.manager,
+  );
+  assert.deepEqual(marisol.acted.offline_reconcile, { count: 2, amount: 7400 });
+  assert.deepEqual(marisol.acted.terminal_difference, {
+    count: 1,
+    amount: 1200,
+  });
+  // Approved by Marisol: two voids, the comp, the refund, the reversal and the reviewed shortage.
+  assert.deepEqual(marisol.approved, {
+    count: 6,
+    amount: 4500 + 4500 + 3000 + 4500 + 4500 + 500,
+  });
+  ok(
+    "19/21. exceptions: all twelve kinds (void, discount and its reversal, refund, paid-out, drawer and terminal differences, receipt and corte Z reprints, open price, offline archive, both offline reconcile paths) with amount, actor, approver, order and device; the summary equals the listed rows",
+  );
+
   // ---- corte del día and its print.
   const day = await read(manager, (tx: Tx) =>
     C.dayCorte(tx, manager, today, "req", ports),
@@ -890,12 +1263,108 @@ try {
     "Hoy: open drawers, top products, drawer_open_long then drawer_revoked_device after revocation",
   );
 
-  // ---- remote close (manager with step-up; healthy same-day drawer refused).
+  // ---- authorization (spec DB test 32, against the real 027/028 modules): cashier, server and
+  // kitchen are refused by every manager report and command; kitchen gets no corte.
+  const todayRange = { from: today, to: today };
+  const reads: [string, (tx: Tx, s: any) => Promise<unknown>][] = [
+    [
+      "salesSummary",
+      (tx, s) => S.salesSummary(tx, s, todayRange, "req", ports),
+    ],
+    [
+      "breakdown",
+      (tx, s) => breakdown(tx, s, { ...todayRange, by: "product" }),
+    ],
+    ["orderRows", (tx, s) => orderRows(tx, s, todayRange)],
+    ["exceptionRows", (tx, s) => exceptionRows(tx, s, todayRange)],
+    ["drawerList", (tx, s) => drawerList(tx, s, todayRange, ports)],
+    ["todaySummary", (tx, s) => todaySummary(tx, s, "req", ports)],
+    ["dayCorte", (tx, s) => C.dayCorte(tx, s, today, "req", ports)],
+    ["legacyDailyReport", (tx, s) => legacyDailyReport(tx, s, { date: today })],
+  ];
+  const commands: [string, (tx: Tx, s: any) => Promise<unknown>][] = [
+    [
+      "printDayCorte",
+      (tx, s) => C.printDayCorte(tx, s, today, { operationId: id() }, ports),
+    ],
+    [
+      "closeDrawerRemotely",
+      (tx, s) =>
+        C.closeDrawerRemotely(
+          tx,
+          s,
+          DR.orphan,
+          { operationId: id(), counted: 30000, reason: "Sin permiso" },
+          ports,
+        ),
+    ],
+  ];
+  const forbidden = (label: string, p: Promise<unknown>) =>
+    assert.rejects(p, (e: any) => {
+      assert.equal(e.code ?? e.message, "forbidden", `${label}: ${e.message}`);
+      return true;
+    });
+  for (const s of [cashier, server, kitchen]) {
+    for (const [label, fn] of reads)
+      await forbidden(
+        `${s.role} ${label}`,
+        read(s, (tx: Tx) => fn(tx, s)),
+      );
+    for (const [label, fn] of commands)
+      await forbidden(
+        `${s.role} ${label}`,
+        tenant(sql, T, (tx: Tx) => fn(tx, s)),
+      );
+  }
+  await forbidden(
+    "kitchen drawerCorte",
+    read(kitchen, (tx: Tx) => C.drawerCorte(tx, kitchen, DR.open1, ports)),
+  );
+  await forbidden(
+    "kitchen printDrawerCorte",
+    tenant(sql, T, (tx: Tx) =>
+      C.printDrawerCorte(
+        tx,
+        kitchen,
+        DR.open1,
+        { operationId: id(), kind: "x" },
+        ports,
+      ),
+    ),
+  );
+  ok(
+    "32. cashier, server and kitchen get forbidden on every manager report and command (summary, breakdowns, lists, exceptions, drawers, Hoy, corte del día and its print, legacy /report, remote close); kitchen gets no corte X",
+  );
+
+  // Two more orphans, one per reason: an active device's drawer from the previous business day,
+  // and a drawer opened today on a device revoked since.
+  await scoped(async (tx) => {
+    await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening,opened_at) values
+      (${T},${DR.prevDay},${D.d3},${E.cashier},10000,${at(yesterday, "21:00:00")}),
+      (${T},${DR.revokedToday},${D.d4},${E.cashier},20000,${nowMinus(30)})`;
+    await tx`update devices set active=false, revoked_at=now(), revoked_by=${E.owner}, revoked_reason='revoked' where id=${D.d4}`;
+  });
+
+  // ---- remote close (manager with a recent PIN; healthy same-day drawer refused).
+  // A shared terminal without a PIN, or with one entered a day ago, is refused (SEC-6).
+  for (const stale of [null, new Date(Date.now() - 86_400_000).toISOString()])
+    await assert.rejects(
+      tenant(sql, T, (tx: Tx) =>
+        C.closeDrawerRemotely(
+          tx,
+          onTerminal(stale),
+          DR.orphan,
+          { operationId: id(), counted: 30000, reason: "Sin PIN" },
+          ports,
+        ),
+      ),
+      (e: any) => e.code === "step_up_required",
+    );
   await assert.rejects(
     tenant(sql, T, (tx: Tx) =>
       C.closeDrawerRemotely(
         tx,
-        manager,
+        freshPin(),
         DR.open1,
         { operationId: id(), counted: 1000, reason: "Prueba" },
         ports,
@@ -903,10 +1372,34 @@ try {
     ),
     (e: any) => e.code === "reports_drawer_not_orphaned",
   );
+  for (const [drawer, counted] of [
+    [DR.prevDay, 10000],
+    [DR.revokedToday, 19000],
+  ] as const) {
+    const z = await tenant(sql, T, (tx: Tx) =>
+      C.closeDrawerRemotely(
+        tx,
+        freshPin(),
+        drawer,
+        {
+          operationId: id(),
+          counted,
+          reason: "Cierre remoto",
+          externalReported: null,
+        },
+        ports,
+      ),
+    );
+    assert.deepEqual(
+      { kind: z.kind, counted: z.cash.counted },
+      { kind: "z", counted },
+      drawer,
+    );
+  }
   const remote = await tenant(sql, T, (tx: Tx) =>
     C.closeDrawerRemotely(
       tx,
-      manager,
+      freshPin(),
       DR.orphan,
       {
         operationId: id(),
@@ -926,16 +1419,31 @@ try {
     { ...closed },
     { closed_by: E.manager, count_mode: "visible" },
   );
-  const [aud] = (await scoped(
+  const closes = (await scoped(
     (tx) =>
-      tx`select detail from audit where operation='cash.close' and entity_id=${DR.orphan}`,
+      tx`select entity_id, actor_id, detail from audit where operation='cash.close'
+          and entity_id = any (${[DR.orphan, DR.prevDay, DR.revokedToday]}::text[]) order by entity_id`,
+  )) as any[];
+  assert.equal(closes.length, 3);
+  for (const c of closes)
+    assert.deepEqual(
+      { actor: c.actor_id, remote: c.detail.remote, mode: c.detail.countMode },
+      { actor: E.manager, remote: true, mode: "visible" },
+      c.entity_id,
+    );
+  const [shortage] = (await scoped(
+    (tx) =>
+      tx`select closed_by, count_mode, counted - expected as difference from cash_sessions where id=${DR.revokedToday}`,
   )) as any;
-  assert.equal(aud.detail.remote, true);
+  assert.deepEqual(
+    { ...shortage },
+    { closed_by: E.manager, count_mode: "visible", difference: -1000 },
+  );
   await assert.rejects(
     tenant(sql, T, (tx: Tx) =>
       C.closeDrawerRemotely(
         tx,
-        manager,
+        freshPin(),
         DR.orphan,
         { operationId: id(), counted: 30000, reason: "Otra vez" },
         ports,
@@ -944,7 +1452,7 @@ try {
     (e: any) => e.code === "reports_drawer_closed",
   );
   ok(
-    "remote close: refused for a healthy same-day drawer; closes the orphan with closed_by, visible count and audit remote:true; a second close is reports_drawer_closed",
+    "27. remote close: step_up_required without a recent PIN on a shared terminal; refused for a healthy same-day drawer; with a fresh PIN closes a previous-day drawer on an active device, a revoked device's drawer and the orphan with closed_by, visible count and audit remote:true; a second close is reports_drawer_closed",
   );
 
   // ---- legacy /report.
