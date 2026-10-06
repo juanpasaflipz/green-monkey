@@ -63,7 +63,7 @@ Staging is running at https://green-monkey-staging.up.railway.app. It is a devel
 
 ## Targets
 
-- Railway project: `9bd572ca-7c0b-41f8-8553-e69253e8e9e8` (`proactive-upliftment`).
+- Railway project: `9bd572ca-7c0b-41f8-8553-e69253e8e9e8` (`green-monkey`).
 - New staging environment: `9e87eafe-e620-40ad-98c2-2c541e1afaf7`.
 - Web service: `cf91a7f0-e533-4354-baea-d5d56df6d3d9`.
 - Initial successful deployment: `3a9fab03-b4af-449f-8a3f-31bcf543f664`.
