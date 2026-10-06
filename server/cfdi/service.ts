@@ -214,6 +214,7 @@ async function settingsView(
       ? {
           source: org.source,
           status: org.status,
+          provisioned: !!org.providerOrgId,
           errorCode: org.errorCode,
           taxId: org.legalTaxId ?? facts.rfc,
           legalSyncedVersion: org.legalSyncedVersion,
@@ -448,6 +449,10 @@ export async function uploadCsd(tx: Tx, s: Session, raw: unknown) {
       state.organization?.source !== "own"
     )
       throw new DomainError("cfdi_csd_not_supported", 409);
+    // The box is useful only to an organization that exists at Facturapi: before that, its job
+    // could only wait and the sealed key would sit in cfdi_secrets (CFDI-SECRETS-1).
+    if (!state.organization.providerOrgId)
+      throw new DomainError("cfdi_not_ready", 409);
     const [busy] = await tx`
       select 1 as one from cfdi_csd_uploads where status in ('queued','processing') limit 1`;
     if (busy) throw new DomainError("cfdi_csd_upload_in_progress", 409);

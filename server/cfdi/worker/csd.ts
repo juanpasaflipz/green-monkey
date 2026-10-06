@@ -5,7 +5,8 @@
  */
 import type { JobContext, JobOutcome } from "../../jobs.js";
 import type { Tx } from "../../db.js";
-import { lastAttempt, retryOrExhaust } from "../jobs.js";
+import { lastAttempt, liveJob, retryOrExhaust } from "../jobs.js";
+import { RECOVERY_MINUTES } from "../recovery.js";
 import { fiscalFacts, loadOrganization } from "../store.js";
 import { openUploadBox } from "../vault.js";
 import { classify, event, MINUTE, runtimeOr } from "./common.js";
@@ -93,11 +94,15 @@ export async function csdJob(ctx: JobContext): Promise<JobOutcome> {
       .then((): JobOutcome => ({ status: "done" }));
   if (!loaded.box) return reject("cfdi_csd_invalid");
   if (!org || org.source !== "own") return reject("cfdi_csd_not_supported");
-  if (!org.providerOrgId)
+  // No organization at Facturapi yet: wait a little, but the job always ends in terminal(),
+  // which wipes the box (CFDI-WORKER-3): its last attempt rejects the upload.
+  if (!org.providerOrgId) {
+    if (lastAttempt(ctx.job)) return reject("cfdi_not_ready");
     return retryOrExhaust(ctx.job, {
       code: "cfdi_org_not_ready",
       afterMs: MINUTE,
     });
+  }
   if (!rt.ring) return reject("cfdi_unavailable");
 
   try {
@@ -146,4 +151,41 @@ export async function csdJob(ctx: JobContext): Promise<JobOutcome> {
       afterMs: failure.afterMs,
     });
   }
+}
+
+/**
+ * The global tick's sweep (CFDI-SECRETS-1, WORKER-3): an upload still queued or processing
+ * RECOVERY_MINUTES after it was made, with no live cfdi_csd job for it (a manager cancelled the
+ * job, or its lease expired on the last attempt), is rejected with cfdi_csd_abandoned and its
+ * sealed box wiped. Returns how many uploads it closed.
+ */
+export async function rejectAbandonedUploads(
+  tx: Tx,
+  ctx: JobContext,
+): Promise<number> {
+  const stale = await tx`
+    select id, secret_id from cfdi_csd_uploads
+    where status in ('queued','processing')
+      and created_at < now() - make_interval(mins => ${RECOVERY_MINUTES})
+    order by created_at`;
+  if (!stale.length) return 0;
+  const org = await loadOrganization(tx);
+  const previous =
+    org?.csdSerial &&
+    org.csdValidUntil &&
+    Date.parse(org.csdValidUntil) > Date.now()
+      ? ("valid" as const)
+      : null;
+  let closed = 0;
+  for (const u of stale) {
+    if (await liveJob(tx, "cfdi_csd", { uploadId: u.id as string })) continue;
+    await terminal(
+      tx,
+      ctx,
+      { id: u.id as string, secretId: u.secret_id as string },
+      { accepted: false, code: "cfdi_csd_abandoned", previous },
+    );
+    closed++;
+  }
+  return closed;
 }

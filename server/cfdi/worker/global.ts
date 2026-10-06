@@ -61,6 +61,7 @@ import {
 import { event, HOUR, MINUTE, runtimeOr } from "./common.js";
 import { raise, tenantTag, type CfdiRuntime } from "./runtime.js";
 import { loadTickets } from "./tickets.js";
+import { rejectAbandonedUploads } from "./csd.js";
 
 type Payload = { periodKey?: string; force?: boolean };
 type PeriodRow = {
@@ -328,6 +329,9 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
   const tenantId = ctx.job.tenantId;
   const grace = rt.config.graceMinutes * MINUTE;
   const now = new Date();
+
+  // 0. CSD uploads whose job is gone never keep their sealed box (CFDI-SECRETS-1), paused or not.
+  await ctx.tenant((tx) => rejectAbandonedUploads(tx, ctx));
 
   // 1-3. Settings, period rows, then the periodicity promotion. The settings row is locked so a
   // periodicity save (which checks for period rows under the same lock) and this tick serialize.

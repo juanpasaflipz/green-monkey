@@ -47,6 +47,8 @@ export default defineArea({
       "Los datos fiscales actualizados se enviarán antes de la próxima factura.",
     cfdiCsdTitle: "Certificado de sello digital (CSD)",
     cfdiCsdMissing: "Sin certificado",
+    cfdiCsdAfterOrg:
+      "Podrás subir el CSD cuando la organización emisora esté configurada en Facturapi.",
     cfdiCsdProcessing: "Procesando…",
     cfdiCsdValidUntil: "Vigente hasta el {date}",
     cfdiCsdExpired: "Vencido",
@@ -409,6 +411,8 @@ export default defineArea({
       "Updated tax details will be sent before the next invoice.",
     cfdiCsdTitle: "Digital seal certificate (CSD)",
     cfdiCsdMissing: "No certificate",
+    cfdiCsdAfterOrg:
+      "You can upload the CSD once the issuing organization is set up at Facturapi.",
     cfdiCsdProcessing: "Processing…",
     cfdiCsdValidUntil: "Valid until {date}",
     cfdiCsdExpired: "Expired",
@@ -803,6 +807,10 @@ export default defineArea({
     cfdi_csd_upload_in_progress: [
       "Ya hay un certificado en proceso. Espera a que termine.",
       "A certificate is already being processed. Wait for it to finish.",
+    ],
+    cfdi_csd_abandoned: [
+      "El certificado no se llegó a procesar y se borró. Súbelo de nuevo.",
+      "The certificate was never processed and was deleted. Upload it again.",
     ],
     cfdi_live_not_enabled: [
       "El modo real no está habilitado en la plataforma.",

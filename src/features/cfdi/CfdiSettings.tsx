@@ -435,12 +435,15 @@ export function CfdiSettings({
                 })}
               </p>
             )}
-          {owner && !uploadBusy && (
+          {owner && !uploadBusy && org.provisioned && (
             <CsdUpload
               session={session}
               locale={locale}
               onDone={() => void load(false)}
             />
+          )}
+          {owner && !org.provisioned && (
+            <p className="muted">{t.cfdiCsdAfterOrg}</p>
           )}
         </div>
       )}

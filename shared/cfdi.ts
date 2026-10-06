@@ -528,6 +528,8 @@ export type CfdiStatusView = {
 export type CfdiOrganizationView = {
   source: "own" | "shared_sandbox";
   status: "provisioning" | "ready" | "error";
+  /** The organization exists at Facturapi (it has an id): a CSD can be uploaded to it. */
+  provisioned: boolean;
   errorCode: string | null;
   taxId: string | null;
   legalSyncedVersion: number | null;

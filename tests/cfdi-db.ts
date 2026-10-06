@@ -24,7 +24,7 @@ import { password } from "../server/auth.js";
 import { setLogSink } from "../server/logging.js";
 import type { Alert } from "../server/ops/alerts.js";
 import { createJobRunner } from "../server/jobs/runner.js";
-import { claimJobs, expireLostJobs } from "../server/jobs/queue.js";
+import { cancelJob, claimJobs, expireLostJobs } from "../server/jobs/queue.js";
 import {
   discoverTenants,
   workerHandlers,
@@ -3411,6 +3411,99 @@ try {
       { status: doc2.status, code: doc2.error_code },
       { status: "failed", code: "cfdi_org_tax_info_invalid" },
     );
+  });
+
+  /** The owner's CSD upload of the synthetic test certificate. */
+  const uploadTestCsd = (t: Fixture) =>
+    web(t, (tx) =>
+      service.uploadCsd(tx, t.owner, {
+        operationId: op(),
+        cer: TEST_CSD.cer,
+        key: TEST_CSD.key,
+        password: TEST_CSD_PASSWORD,
+      }),
+    );
+  /** Activation without running the organization's provisioning (it stays without an org id). */
+  async function activateUnprovisioned(t: Fixture) {
+    await web(t, (tx) =>
+      service.activate(tx, t.owner, { operationId: op(), expectedVersion: 0 }),
+    );
+    await admin`update jobs set next_at = now() + interval '1 day'
+      where tenant_id = ${t.tenantId} and kind = 'cfdi_org'`;
+  }
+  const uploadRow = async (t: Fixture) =>
+    (
+      await admin`select u.status, u.error_code, s.payload_secret is null as wiped, s.wiped_at is not null as wiped_at
+        from cfdi_csd_uploads u join cfdi_secrets s on s.tenant_id = u.tenant_id and s.id = u.secret_id
+        where u.tenant_id = ${t.tenantId} order by u.created_at desc limit 1`
+    )[0];
+
+  await test("SECRETS-1a. a CSD upload is refused until the restaurant's organization exists at Facturapi (cfdi_not_ready): no sealed box is stored for a job that cannot use it", async () => {
+    const W = await makeTenant("secrets-1a");
+    await activateUnprovisioned(W);
+    await rejects(uploadTestCsd(W), "cfdi_not_ready");
+    const [{ n }] =
+      await admin`select count(*)::int as n from cfdi_secrets where tenant_id = ${W.tenantId} and purpose = 'csd_upload'`;
+    assert.equal(n, 0);
+    const view = await web(W, (tx) => service.getSettings(tx, W.owner));
+    assert.equal(view.organization?.provisioned, false);
+  });
+
+  await test("WORKER-3 / SECRETS-1b. a CSD job whose organization never gets its Facturapi id rejects the upload and wipes the sealed box on its last attempt, so a new upload is possible", async () => {
+    const W = await makeTenant("secrets-1b");
+    await activateUnprovisioned(W);
+    // An upload stored before this release's web check (or by any other path): its job runs.
+    const secretId = randomUUID();
+    const uploadId = randomUUID();
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${W.tenantId}, true)`;
+      await tx`insert into cfdi_secrets(tenant_id, id, purpose, kid, payload_secret)
+        values (${W.tenantId}, ${secretId}, 'csd_upload', 'k1', 'sealed-box-fixture')`;
+      await tx`insert into cfdi_csd_uploads(tenant_id, id, secret_id, status, requested_by)
+        values (${W.tenantId}, ${uploadId}, ${secretId}, 'queued', ${W.owner.employeeId})`;
+    });
+    await web(W, (tx) =>
+      cfdiEnqueue(tx, W.tenantId, {
+        kind: "cfdi_csd",
+        dedupeKey: "csd:" + uploadId,
+        payload: { uploadId },
+      }),
+    );
+    for (let i = 0; i < 4; i++) {
+      await due(W.tenantId, "cfdi_csd");
+      await settle(W.tenantId);
+    }
+    const row = await uploadRow(W);
+    assert.deepEqual(
+      { status: row.status, code: row.error_code, wiped: row.wiped },
+      { status: "rejected", code: "cfdi_not_ready", wiped: true },
+    );
+  });
+
+  await test("WORKER-3 / SECRETS-1c. an upload whose job a manager cancelled (or whose lease expired on its last attempt) is rejected by the tick's sweep with cfdi_csd_abandoned and its sealed box wiped", async () => {
+    const W = await makeTenant("secrets-1c");
+    await activate(W);
+    await uploadTestCsd(W);
+    const [job] =
+      await admin`select id from jobs where tenant_id = ${W.tenantId} and kind = 'cfdi_csd' and state in ('queued','available')`;
+    await web(W, (tx) => cancelJob(tx, W.manager, job.id));
+    // The sweep leaves recent uploads alone (their job may still be on its way).
+    await tick(W);
+    assert.equal((await uploadRow(W)).status, "queued");
+    await admin.begin(async (tx) => {
+      await tx`alter table cfdi_csd_uploads disable trigger cfdi_csd_uploads_guard`;
+      await tx`update cfdi_csd_uploads set created_at = created_at - interval '31 minutes' where tenant_id = ${W.tenantId}`;
+      await tx`alter table cfdi_csd_uploads enable trigger cfdi_csd_uploads_guard`;
+    });
+    await tick(W);
+    const row = await uploadRow(W);
+    assert.deepEqual(
+      { status: row.status, code: row.error_code, wiped: row.wiped },
+      { status: "rejected", code: "cfdi_csd_abandoned", wiped: true },
+    );
+    const [org] =
+      await admin`select csd_status from cfdi_organizations where tenant_id = ${W.tenantId}`;
+    assert.notEqual(org.csd_status, "processing");
   });
 
   console.log(`cfdi DB checks passed: ${checks}`);
