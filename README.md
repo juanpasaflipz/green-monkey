@@ -40,7 +40,7 @@ Menus, choices, combos, open-price items, areas and tables, and ingredient stock
 
 Front-of-house service (orders and tables lists, check lifecycle with **Liberar mesa**, kitchen display, kitchen and order notes, receipts and browser printing on 80/58 mm) is described in [Service](docs/SERVICE.md).
 
-Reporting (migration 029) buckets every figure by stored or versioned business dates: sales, IVA from fiscal tickets, collections by cash and terminal, breakdowns, loss-prevention exceptions, a paged activity log, cortes X/Z/del día on 58/80 mm or letter/A4, and CSV exports. Kitchen cancellation chits print on paper today; the report views are wired when fiscal (027) and discounts (028) merge. See [Reports](docs/REPORTS.md).
+Reporting (migration 029) buckets every figure by stored or versioned business dates: sales, IVA from fiscal tickets, collections by cash and terminal, breakdowns, loss-prevention exceptions, a paged activity log, cortes X/Z/del día on 58/80 mm or letter/A4, and CSV exports. Kitchen cancellation chits print today through the browser/OS print path (checked in Chromium print emulation, not yet on a physical printer); the report views are wired when fiscal (027) and discounts (028) merge. See [Reports](docs/REPORTS.md).
 
 New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
 
