@@ -1790,6 +1790,65 @@ try {
     }
   });
 
+  await test("D20 (P-18, LO-R6): concurrent negative-stock policy saves never deadlock or surface concurrent_update", async () => {
+    // once() used to hold restaurants FOR SHARE and the save then UPDATEd the
+    // row: two saves upgraded SHARE->UPDATE against each other (40P01). The
+    // save now takes the row FOR UPDATE first and once() skips its FOR SHARE.
+    const deadlocks = async () =>
+      Number(
+        (
+          await admin`select deadlocks from pg_stat_database where datname=current_database()`
+        )[0].deadlocks,
+      );
+    const before = await deadlocks();
+    try {
+      for (let i = 0; i < 15; i++) {
+        const results = await Promise.allSettled(
+          (["block", "allow", "block"] as const).map((policy) =>
+            run(manager, (tx) =>
+              saveNegativeStockPolicy(tx, manager, {
+                operationId: op(),
+                policy,
+              }),
+            ),
+          ),
+        );
+        for (const r of results)
+          assert.equal(
+            r.status,
+            "fulfilled",
+            r.status === "rejected"
+              ? `${(r.reason as any).code ?? ""} ${String(r.reason)}`
+              : "",
+          );
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      assert.equal(
+        await deadlocks(),
+        before,
+        "no deadlock was resolved by a retry",
+      );
+      // The row-locking save still audits each change and replays by operation id.
+      const id = op();
+      const save = () =>
+        run(manager, (tx) =>
+          saveNegativeStockPolicy(tx, manager, {
+            operationId: id,
+            policy: "block",
+          }),
+        );
+      assert.deepEqual(await save(), { policy: "block" });
+      assert.deepEqual(await save(), { policy: "block" });
+    } finally {
+      await run(manager, (tx) =>
+        saveNegativeStockPolicy(tx, manager, {
+          operationId: op(),
+          policy: "allow",
+        }),
+      );
+    }
+  });
+
   await test("count adjustment uses the cached balance and still detects concurrent movement (count_changed)", async () => {
     const stockId = await newStock(manager, "Conteo", "piece", "20");
     const product = await newProduct(manager, tacos.id, {
