@@ -36,6 +36,8 @@ import { authentication, hash, sign } from "../server/auth.js";
 import { legalConfig } from "../server/legal.js";
 import { randomBytes } from "node:crypto";
 import type { Session } from "../shared/domain.js";
+import { billingStore } from "../server/billing-store.js";
+import type { Entitlement } from "../shared/plans.js";
 // Legal gating is not under test here (account-db covers it): restaurants are
 // created as in CI's DB steps, documents unpublished with signup allowed.
 const legal = legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" });
@@ -706,12 +708,31 @@ async function planLapse() {
     ),
     /free_selection_required/,
   );
-  // ACC-14: when Pro ended, per entitlement status (drawer two opened an hour
-  // ago). Canceled: its ended_at (access_until).
+  // ACC-14 / ACC-21: when Pro ended, per entitlement status (drawer two opened
+  // an hour ago). Migration 031's trigger stamps pro_ended_at when a write
+  // takes the row out of Pro, bounded by the end date the row had then, and
+  // keeps it on every later write. backInPro(ago) puts the row back in Pro
+  // with an end date `ago` in the past (a period that ran out).
   const continuationBasis = async () =>
     (await run((tx) => sellingAccess(tx, staff.beto, devices[1].id))).basis;
-  await admin`update restaurant_entitlements set status='canceled',access_until=now()-interval '1 minute',
-    updated_at=now() where tenant_id=${tenantId}`;
+  const entitlementRow = async () =>
+    (
+      await admin`select status,access_until,pro_ended_at,updated_at from restaurant_entitlements where tenant_id=${tenantId}`
+    )[0];
+  const backInPro = async (ago: string, source = "fixture") => {
+    await admin`update restaurant_entitlements set status='active',
+      access_until=now()-${ago}::interval,source=${source} where tenant_id=${tenantId}`;
+    assert.equal(
+      (await entitlementRow()).pro_ended_at,
+      null,
+      "a row in Pro carries no pro_ended_at",
+    );
+  };
+  // Canceled: the earlier of its ended_at (access_until) and leaving Pro.
+  await backInPro("1 second");
+  await admin`update restaurant_entitlements set status='canceled',access_until=now()-interval '1 minute' where tenant_id=${tenantId}`;
+  const canceled = await entitlementRow();
+  assert.ok(canceled.pro_ended_at, "leaving Pro stamps pro_ended_at");
   assert.equal(
     await continuationBasis(),
     "drawer_continuation",
@@ -723,48 +744,174 @@ async function planLapse() {
     "none",
     "canceled before the drawer opened",
   );
-  // past_due and paused carry no end date: the worker's status write ends Pro.
+  assert.equal(
+    (await entitlementRow()).pro_ended_at.getTime(),
+    canceled.pro_ended_at.getTime(),
+    "a write that stays out of Pro keeps pro_ended_at",
+  );
+  // past_due and paused from Stripe carry no end date: leaving Pro ends it.
   for (const status of ["past_due", "paused"]) {
-    await admin`update restaurant_entitlements set status=${status},access_until=null,
-      updated_at=now() where tenant_id=${tenantId}`;
+    await backInPro("1 second");
+    await admin`update restaurant_entitlements set status=${status},access_until=null where tenant_id=${tenantId}`;
     assert.equal(
       await continuationBasis(),
       "drawer_continuation",
-      `${status} written after the drawer opened`,
+      `${status}: Pro ended after the drawer opened`,
     );
-    await admin`update restaurant_entitlements set updated_at=now()-interval '2 hours' where tenant_id=${tenantId}`;
+    await backInPro("2 hours");
+    await admin`update restaurant_entitlements set status=${status},access_until=null where tenant_id=${tenantId}`;
     assert.equal(
       await continuationBasis(),
       "none",
-      `${status} written before the drawer opened`,
+      `${status}: Pro ended before the drawer opened`,
     );
+    // The trigger owns the column: a writer cannot move it.
+    await admin`update restaurant_entitlements set pro_ended_at=now(),updated_at=now() where tenant_id=${tenantId}`;
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      `${status}: an explicit pro_ended_at write is ignored`,
+    );
+  }
+  // A row inserted outside Pro never had Pro under it (rolled back).
+  await admin
+    .begin(async (tx) => {
+      await tx`delete from restaurant_entitlements where tenant_id=${tenantId}`;
+      const [row] =
+        await tx`insert into restaurant_entitlements(tenant_id,status,access_until,source,pro_ended_at)
+          values(${tenantId},'past_due',null,'stripe',now()) returning pro_ended_at`;
+      assert.equal(row.pro_ended_at, null, "an inserted past_due row");
+      throw new Error("rollback");
+    })
+    .catch((error: Error) => {
+      if (error.message !== "rollback") throw error;
+    });
+  // ACC-21: a drawer opened on Free during dunning (past_due since Pro ended
+  // 2 h ago; the drawer opened 1 h ago) never gains continuation, however
+  // often the billing worker reconciles the unchanged subscription: every
+  // reconcile (at least every 15 minutes) upserts the row with
+  // updated_at=now(). Nor when dunning ends in a cancellation.
+  await backInPro("2 hours", "stripe");
+  const [{ organization_id: organizationId }] =
+    await admin`select organization_id from restaurants where id=${tenantId}`;
+  const workerRole = "gm_billing_test_" + randomBytes(6).toString("hex");
+  const workerPassword = randomBytes(32).toString("hex");
+  const database = new URL(migration).pathname.slice(1);
+  await admin.unsafe(
+    `create role "${workerRole}" login password '${workerPassword}' nosuperuser nobypassrls`,
+  );
+  let worker: postgres.Sql | undefined;
+  try {
+    await admin.unsafe(`grant gm_billing_worker to "${workerRole}"`);
+    await admin.unsafe(
+      `grant connect on database "${database}" to "${workerRole}"`,
+    );
+    const u = new URL(runtime);
+    u.username = workerRole;
+    u.password = workerPassword;
+    worker = postgres(u.href, { max: 1 });
+    const store = billingStore(worker);
+    await admin`insert into organization_billing(organization_id,subscription_id,trial_used)
+      values(${organizationId},${"sub_FreeLimits" + randomBytes(6).toString("hex")},true)`;
+    await admin`insert into billing_locations(organization_id,tenant_id) values(${organizationId},${tenantId})`;
+    /** One leased reconcile completed by the real billing store (billing-store.ts complete()). */
+    const reconcile = async (entitlement: Entitlement) => {
+      const id = randomUUID(),
+        token = randomUUID();
+      await admin`insert into billing_operations(id,organization_id,kind,payload,state,lease_token,lease_until,fetch_started_at)
+        values(${id},${organizationId},'reconcile','{}','running',${token},now()+interval '2 minutes',now())`;
+      assert.equal(await store.complete(id, token, {}, entitlement), true);
+    };
+    const pastDue: Entitlement = {
+      status: "past_due",
+      accessUntil: null,
+      source: "stripe",
+    };
+    await reconcile(pastDue);
+    const dunning = await entitlementRow();
+    assert.equal(dunning.status, "past_due");
+    assert.ok(dunning.pro_ended_at);
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      "a drawer opened on Free during dunning",
+    );
+    for (let i = 0; i < 3; i++) await reconcile(pastDue);
+    const after = await entitlementRow();
+    const [drawer] =
+      await admin`select updated_at>opened_at as rewritten from restaurant_entitlements e
+        join cash_sessions c on c.tenant_id=e.tenant_id where c.id=${drawerTwo}`;
+    assert.ok(
+      drawer.rewritten,
+      "the worker rewrote updated_at after the drawer opened",
+    );
+    assert.equal(
+      after.pro_ended_at.getTime(),
+      dunning.pro_ended_at.getTime(),
+      "unchanged reconciles keep pro_ended_at",
+    );
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      "ACC-21: still no continuation after unchanged reconciles",
+    );
+    await reconcile({
+      status: "canceled",
+      accessUntil: new Date().toISOString(),
+      source: "stripe",
+    });
+    assert.equal(
+      (await entitlementRow()).pro_ended_at.getTime(),
+      dunning.pro_ended_at.getTime(),
+      "past_due -> canceled keeps pro_ended_at",
+    );
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      "dunning that ends in a cancellation gives no continuation",
+    );
+  } finally {
+    await admin`delete from billing_operations where organization_id=${organizationId}`;
+    await admin`delete from billing_locations where organization_id=${organizationId}`;
+    await admin`delete from organization_billing where organization_id=${organizationId}`;
+    await worker?.end();
+    await admin.unsafe(
+      `revoke connect on database "${database}" from "${workerRole}"`,
+    );
+    await admin.unsafe(`revoke gm_billing_worker from "${workerRole}"`);
+    await admin.unsafe(`drop role "${workerRole}"`);
   }
   // Support's end-entitlement (status free) keeps the grant's end: a grant
   // ended now continues; one that had already ended before the drawer opened
   // does not.
-  await admin`update restaurant_entitlements set status='free',access_until=now(),source='support',
-    updated_at=now() where tenant_id=${tenantId}`;
+  const endGrant = () =>
+    admin`update restaurant_entitlements set status='free',access_until=least(access_until,now()),
+      source='support',version=version+1,updated_at=now() where tenant_id=${tenantId}`;
+  await admin`update restaurant_entitlements set status='active',access_until=now()+interval '30 days',
+    source='support' where tenant_id=${tenantId}`;
+  await endGrant();
   assert.equal(
     await continuationBasis(),
     "drawer_continuation",
     "support ended the grant after the drawer opened",
   );
-  await admin`update restaurant_entitlements set access_until=now()-interval '2 hours' where tenant_id=${tenantId}`;
+  await backInPro("2 hours", "support");
+  await endGrant();
   assert.equal(
     await continuationBasis(),
     "none",
     "the support grant had ended before the drawer opened",
   );
   // Stripe's free (unpaid after past_due, or incomplete): no continuation.
-  await admin`update restaurant_entitlements set status='free',access_until=null,source='stripe',
-    updated_at=now() where tenant_id=${tenantId}`;
+  await backInPro("1 second", "stripe");
+  await admin`update restaurant_entitlements set status='free',access_until=null where tenant_id=${tenantId}`;
   assert.equal(
     await continuationBasis(),
     "none",
     "a Stripe free row: no continuation",
   );
   await admin`update restaurant_entitlements set status='trialing',access_until=now()-interval '1 second',
-    source='fixture',updated_at=now() where tenant_id=${tenantId}`;
+    source='fixture' where tenant_id=${tenantId}`;
   assert.equal(await continuationBasis(), "drawer_continuation");
   // Continuation ends 16 h after the drawer opened...
   await admin`update cash_sessions set opened_at=now()-interval '17 hours' where id=${drawerTwo}`;

@@ -232,8 +232,9 @@ Migration `031_account.sql`: `legal_acceptances`, `organization_co_owners`,
 `support_actions` (append-only, operator forced to `session_user`),
 `restaurant_account_settings` (tenant-scoped: privacy URL, Free selection mode),
 `organization_tax_profiles`, plus `owner_sessions.created_at`,
-`owner_memberships.revoked_at/revoked_by` and the `co_owner` invitation role and
-`support` entitlement source.
+`owner_memberships.revoked_at/revoked_by`, `restaurant_entitlements.pro_ended_at`
+(trigger-owned, see Plan lapse) and the `co_owner` invitation role and `support`
+entitlement source.
 
 Account tables are scoped by transaction-local settings, never by `app.tenant_id`
 alone: `app.account_id` (the signed-in owner account), `app.organization_id`
@@ -306,9 +307,15 @@ public ordering) use.
   continue (`basis='drawer_continuation'`) until the drawer closes or the 16
   hours pass. A drawer opened on Free (never Pro, or after the lapse) gives no
   continuation (ACC-14): the end of Pro is the entitlement's `access_until`
-  (trialing, active) or the earlier of `access_until` and its status write
+  (trialing, active) or the earlier of `access_until` and `pro_ended_at`
   (past_due, canceled, paused, and support's end-entitlement, which keeps the
-  grant's end); a Stripe `free` row gives none.
+  grant's end); a Stripe `free` row gives none. `pro_ended_at` is the moment a
+  write took the row out of Pro, bounded by its end date then; 031's
+  `entitlement_pro_ended` trigger owns it, so the billing worker's reconcile
+  (it rewrites `updated_at` at least every 15 minutes even when nothing
+  changed), past_due → canceled and a repeated end-entitlement never move it,
+  and a drawer opened on Free during dunning never continues (ACC-21). Rows
+  last written before 031 carry none (fail closed).
   A new drawer cannot open under continuation, and the offline window is not
   renewed under it (LD-15 Q5). Configuration saves that are selling-gated also
   pass for active employees on that device (still permission-gated).

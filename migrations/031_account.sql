@@ -1,9 +1,10 @@
 -- 031_account.sql — legal acceptance, co-owners, ownership transfer, recovery codes,
 -- vendor support role grants, restaurant privacy URL / Free-selection mode and the
 -- SaaS billing (tax) profile.
--- Expand-only: new tables, columns and policies, looser CHECKs and one same-name policy
--- replacement (owner_restaurant_read now ignores revoked memberships). No data rewrite,
--- no backfill (LD-6 does not apply) and no SECURITY DEFINER function.
+-- Expand-only: new tables, columns and policies, looser CHECKs, one same-name policy
+-- replacement (owner_restaurant_read now ignores revoked memberships) and one trigger
+-- that fills the new restaurant_entitlements.pro_ended_at on later writes. No data
+-- rewrite, no backfill (LD-6 does not apply) and no SECURITY DEFINER function.
 --
 -- RLS rule for the account and organization tables (docs/ACCOUNT_AND_LEGAL.md): their
 -- policies are sub-link-free "leaf" predicates over transaction-local GUCs
@@ -263,6 +264,30 @@ ALTER TABLE restaurant_entitlements DROP CONSTRAINT restaurant_entitlements_sour
 ALTER TABLE restaurant_entitlements ADD CONSTRAINT restaurant_entitlements_source_check
   CHECK (source IN ('stripe','fixture','support')) NOT VALID;
 ALTER TABLE restaurant_entitlements VALIDATE CONSTRAINT restaurant_entitlements_source_check;
+
+-- When Pro ended, for drawer continuation (GAP-1, ACC-21): the moment a write took the
+-- row out of Pro (trialing, active, or a past_due that still has an end date), bounded
+-- by the end date it had then. The trigger owns the column, so a write that keeps the
+-- row out of Pro never moves it: the billing worker's reconcile (every 15 minutes, it
+-- rewrites updated_at even when nothing changed), past_due -> canceled, a repeated
+-- support end-entitlement. A row inserted outside Pro never had Pro under it, and rows
+-- written before 031 carry none (fail closed: no backfill).
+ALTER TABLE restaurant_entitlements ADD COLUMN pro_ended_at timestamptz;
+CREATE FUNCTION entitlement_pro_ended() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF TG_OP = 'INSERT' OR NEW.status IN ('trialing','active')
+     OR (NEW.status = 'past_due' AND NEW.access_until IS NOT NULL) THEN
+    NEW.pro_ended_at := NULL;
+  ELSIF OLD.status IN ('trialing','active')
+     OR (OLD.status = 'past_due' AND OLD.access_until IS NOT NULL) THEN
+    NEW.pro_ended_at := least(OLD.access_until, now());
+  ELSE
+    NEW.pro_ended_at := OLD.pro_ended_at;
+  END IF;
+  RETURN NEW;
+END $$;
+CREATE TRIGGER entitlement_pro_ended BEFORE INSERT OR UPDATE ON restaurant_entitlements
+  FOR EACH ROW EXECUTE FUNCTION entitlement_pro_ended();
 
 -- The primary owner pointer changes only through a valid pending transfer. Runs as the
 -- invoker (gm_app), which reads the transfer through transfer_read: the caller sets

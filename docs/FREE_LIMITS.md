@@ -96,10 +96,18 @@ Implemented locally (migration 031); not yet staging-qualified.
   drawer opened on Free (a restaurant that never had Pro, or after the lapse)
   never continues: an unselected employee or device cannot start sales there,
   and switching the Free selection stops the previously selected register at
-  once. Pro ended at the entitlement's `access_until` (trialing, active), or at
-  the earlier of `access_until` and the status write for past_due, canceled,
-  paused and support's end-entitlement (which keeps the grant's end in
-  `access_until`); a Stripe `free` row (unpaid, incomplete) gives none. A new
+  once. Pro ended at the entitlement's `access_until` (trialing, active), or,
+  for past_due, canceled, paused and support's end-entitlement (which keeps
+  the grant's end in `access_until`), at the earlier of `access_until` and
+  `pro_ended_at`: the moment a write took the row out of Pro, bounded by the
+  end date the row had then. A trigger (migration 031) owns `pro_ended_at`, so
+  writes that keep the row out of Pro never move it: the billing worker's
+  reconcile, which rewrites `updated_at` at least every 15 minutes even when
+  nothing changed, past_due → canceled, a repeated end-entitlement (ACC-21). A
+  drawer opened on Free during dunning therefore never continues. Rows last
+  written before 031 carry no `pro_ended_at` (fail closed: their past_due and
+  paused rows give no continuation). A Stripe `free` row (unpaid, incomplete)
+  gives none. A new
   drawer cannot be opened under continuation, and the offline window is not
   renewed under it (LD-15 Q5), so the existing four-hour lease runs out
   normally. Configuration saves that are gated by selling also pass for active

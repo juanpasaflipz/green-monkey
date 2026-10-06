@@ -60,11 +60,14 @@ export type SellingAccess = {
  * When Pro ended, from the entitlement row: `access_until` for trialing and
  * active rows (a trial or grant that ran out); for past_due, canceled and
  * paused rows the earlier of `access_until` (a canceled subscription's
- * `ended_at`) and `updated_at`, the moment the billing worker wrote the
- * status (past_due and paused rows carry no end date); support's
+ * `ended_at`) and `pro_ended_at`, the moment a write took the row out of Pro
+ * (past_due and paused rows from Stripe carry no end date); support's
  * end-entitlement writes `free` with the same rule (its `access_until` keeps
- * the grant's end). No row (never Pro) or a Stripe `free` row (unpaid comes
- * after past_due, incomplete before any Pro) gives none.
+ * the grant's end). Migration 031's trigger owns `pro_ended_at`: writes that
+ * keep the row out of Pro (the billing worker's 15-minute reconcile rewrites
+ * `updated_at` even when nothing changed, past_due → canceled) never move it
+ * (ACC-21). No row (never Pro) or a Stripe `free` row (unpaid comes after
+ * past_due, incomplete before any Pro) gives none.
  */
 export async function sellingAccess(
   tx: Tx,
@@ -102,7 +105,7 @@ export async function sellingAccess(
       and c.opened_at<case
         when e.status in ('trialing','active') then e.access_until
         when e.status in ('past_due','canceled','paused')
-          or (e.status='free' and e.source='support') then least(e.access_until,e.updated_at)
+          or (e.status='free' and e.source='support') then least(e.access_until,e.pro_ended_at)
       end`;
   return c
     ? result("drawer_continuation", (c.until as Date).toISOString())
