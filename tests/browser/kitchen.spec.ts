@@ -46,9 +46,10 @@ async function createOrder(
   owner: Page,
   name: string,
   productName = "Taco de asada",
+  lineCount = 1,
 ) {
   return owner.evaluate(
-    async ({ name, productName }) => {
+    async ({ name, productName, lineCount }) => {
       const s = await (await fetch("/api/session")).json();
       const catalog = await (await fetch("/api/catalog")).json();
       const p = catalog.find((x: any) => x.name.es === productName);
@@ -58,15 +59,13 @@ async function createOrder(
         headers: { "Content-Type": "application/json", "x-csrf-token": s.csrf },
         body: JSON.stringify({
           operationId: crypto.randomUUID(),
-          lines: [
-            {
-              id: crypto.randomUUID(),
-              productId: p.id,
-              quantity: 2,
-              options,
-              note: "Sin cebolla",
-            },
-          ],
+          lines: Array.from({ length: lineCount }, () => ({
+            id: crypto.randomUUID(),
+            productId: p.id,
+            quantity: 2,
+            options,
+            note: "Sin cebolla",
+          })),
           mode: "takeaway",
           tableId: null,
           name,
@@ -77,7 +76,29 @@ async function createOrder(
       if (!r.ok) throw new Error("order " + r.status);
       return r.json();
     },
-    { name, productName },
+    { name, productName, lineCount },
+  );
+}
+/** Voids every unit of one line through the API (an owner with a recent sign-in). */
+async function voidWholeLine(owner: Page, order: any, line: any) {
+  return owner.evaluate(
+    async ({ order, line }) => {
+      const s = await (await fetch("/api/session")).json();
+      const r = await fetch(`/api/orders/${order.id}/voids`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-csrf-token": s.csrf },
+        body: JSON.stringify({
+          operationId: crypto.randomUUID(),
+          expectedVersion: order.version,
+          lines: [{ lineId: line.id, quantity: line.quantity }],
+          reason: "Cliente cambió de opinión",
+          stockDisposition: "no_return",
+        }),
+      });
+      if (!r.ok) throw new Error("void " + r.status + " " + (await r.text()));
+      return r.json();
+    },
+    { order, line },
   );
 }
 const tag = () =>
@@ -357,11 +378,31 @@ test("manager clears previous-day tickets", async () => {
   );
 });
 
-test("kitchen display has no accessibility violations", async ({ page }) => {
+test("kitchen display has no accessibility violations", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
   await kitchenScreen(page);
   await expect(page.getByText(/Última actualización/)).toBeVisible();
-  const axe = await new AxeBuilder({ page })
-    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
-    .analyze();
-  expect(axe.violations).toEqual([]);
+  const owner = await ownerPage(browser, baseURL!);
+  try {
+    // W3-2: the scan always covers a fully voided line (struck through, with
+    // its pending cancellation) on a ticket of its own, whatever earlier
+    // tests left on the screen.
+    const name = "Accesible " + tag();
+    const order = await createOrder(owner, name, "Taco de asada", 2);
+    await voidWholeLine(owner, order, order.lines[0]);
+    const ticket = page.locator(".kitchen-ticket").filter({ hasText: name });
+    await expect(ticket.locator(".ticket-lines > div.voided")).toHaveCount(1, {
+      timeout: 15000,
+    });
+    await expect(ticket.locator(".void-alert")).toContainText("Cancelado");
+    const axe = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(axe.violations).toEqual([]);
+  } finally {
+    await owner.close();
+  }
 });
