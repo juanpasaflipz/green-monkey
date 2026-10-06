@@ -72,7 +72,7 @@ export const dedupe = {
   tick: (at: Date) => `tick:${at.toISOString()}`,
   tickEnsure: (at: Date) => `tick:ensure:${tenMinuteBucket(at)}`,
   /** A chain restarted because no tick was live (ensureTick): at sign-in or at the worker boot. */
-  tickRestart: (reason: "status" | "boot", at: Date) =>
+  tickRestart: (reason: "status" | "boot" | "csd", at: Date) =>
     `tick:${reason}:${tenMinuteBucket(at)}`,
   tickActivate: () => "tick:activate",
   tickLive: () => "tick:live",
@@ -144,12 +144,13 @@ export async function liveJob(
  * cfdi_global job is queued, available or running. The chain normally continues itself; this
  * restarts it after a dead tick. Called by GET /cfdi/status (every operator sign-in) and the
  * worker boot, each with its own key per 10-minute bucket (one insert per bucket at most, and
- * never a no-op against the settings panel's tick:ensure key).
+ * never a no-op against the settings panel's tick:ensure key), and by a CSD upload while CFDI is
+ * paused, so the abandoned-upload sweep runs for it (CFDI-INT-7).
  */
 export async function ensureTick(
   tx: Tx,
   tenantId: string,
-  reason: "status" | "boot",
+  reason: "status" | "boot" | "csd",
   now = new Date(),
 ): Promise<boolean> {
   if (await liveJob(tx, "cfdi_global", {})) return false;

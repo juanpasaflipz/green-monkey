@@ -4740,6 +4740,44 @@ try {
     assert.equal(c2.expected_total, await declaredFor(g2.id, tk.folio));
   });
 
+  await test("INT-7. a CSD upload made while CFDI is paused, whose job a manager cancelled, is still rejected by the tick's sweep (cfdi_csd_abandoned, box wiped): a paused restaurant keeps an hourly tick only while an upload is open", async () => {
+    const W = await makeTenant("int-7");
+    await activate(W);
+    await saveSettings(W, { enabled: false });
+    await due(W.tenantId, "cfdi_global");
+    await settle(W.tenantId);
+    assert.equal((await liveTicks(W.tenantId)).length, 0, "paused: no tick");
+    await uploadTestCsd(W);
+    const [job] =
+      await admin`select id from jobs where tenant_id = ${W.tenantId} and kind = 'cfdi_csd' and state in ('queued','available')`;
+    await web(W, (tx) => cancelJob(tx, W.manager, job.id));
+    // The upload's tick runs now: the upload is recent, so the sweep leaves it and re-arms.
+    await settle(W.tenantId);
+    assert.equal((await uploadRow(W)).status, "queued");
+    assert.equal(
+      (await liveTicks(W.tenantId)).length,
+      1,
+      "an hourly tick while the upload is open",
+    );
+    await admin.begin(async (tx) => {
+      await tx`alter table cfdi_csd_uploads disable trigger cfdi_csd_uploads_guard`;
+      await tx`update cfdi_csd_uploads set created_at = created_at - interval '31 minutes' where tenant_id = ${W.tenantId}`;
+      await tx`alter table cfdi_csd_uploads enable trigger cfdi_csd_uploads_guard`;
+    });
+    await due(W.tenantId, "cfdi_global");
+    await settle(W.tenantId);
+    const row = await uploadRow(W);
+    assert.deepEqual(
+      { status: row.status, code: row.error_code, wiped: row.wiped },
+      { status: "rejected", code: "cfdi_csd_abandoned", wiped: true },
+    );
+    assert.equal(
+      (await liveTicks(W.tenantId)).length,
+      0,
+      "the paused chain ends with the last open upload",
+    );
+  });
+
   console.log(`cfdi DB checks passed: ${checks}`);
 } finally {
   await runner.stop(2000);

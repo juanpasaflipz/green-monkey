@@ -424,7 +424,25 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
       keys: [...new Set([...due.map((r) => r.period_key as string), ...late])],
     };
   });
-  if (!plan) return { status: "done" };
+  if (!plan) {
+    // Paused (or not activated): the chain ends, unless a CSD upload is still open. Its sweep
+    // (step 0) must run once the upload's job is gone, so the next hour's tick looks again
+    // (CFDI-INT-7); the chain ends with the last open upload.
+    await ctx.tenant(async (tx) => {
+      const [open] = await tx`
+        select 1 as one from cfdi_csd_uploads
+        where tenant_id = ${tenantId} and status in ('queued','processing') limit 1`;
+      if (!open) return;
+      const runAt = nextHour(now);
+      await cfdiEnqueue(tx, tenantId, {
+        kind: "cfdi_global",
+        dedupeKey: dedupe.tick(runAt),
+        payload: {},
+        runAt,
+      });
+    });
+    return { status: "done" };
+  }
 
   // 4-5. Due periods and late sweeps (oldest first), plus a forced period ("Emitir ahora").
   const keys = [...plan.keys];

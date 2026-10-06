@@ -506,6 +506,10 @@ export async function uploadCsd(tx: Tx, s: Session, raw: unknown) {
       dedupeKey: dedupe.csd(uploadId),
       payload: { uploadId },
     });
+    // A paused restaurant has no tick chain; the tick's abandoned-upload sweep must still close
+    // this upload if its job is cancelled or lost (CFDI-INT-7): a paused tick re-arms hourly
+    // while an upload is open.
+    if (!state.settings.enabled) await ensureTick(tx, s.tenantId, "csd");
     await insertEvent(
       tx,
       s.tenantId,
