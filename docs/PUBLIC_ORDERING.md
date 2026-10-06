@@ -53,6 +53,10 @@ Links never expire. Staff deactivate or replace them in one step.
   also filters `created_at > now() - 2 hours`. The `public_order_holds_window`
   check (`expires_at <= created_at + 2 hours`) makes that filter exact, and it
   keeps those queries to a bounded index range however much history builds up.
+- The inbox's churn read (diner cancellations of the last 15 minutes, every
+  code) uses the partial index `public_order_holds_cancelled_recent`
+  (`tenant_id, created_at` where `state = 'cancelled'`), so an idle inbox poll
+  stays cheap as cancelled holds accumulate (retention never deletes them).
 
 Acceptance runs the unmodified `createOrder` (a new check) or `addRound` (a
 round on the table's open check) as the staff member who accepts. For
@@ -234,6 +238,12 @@ deactivation), pausing and plain accepting.
     reveal.
 - **Órdenes inbox.**
   - It appears at the top of Órdenes while a link is active or orders wait.
+    It also stays while it still owns something: an outcome notice, a
+    pay-first receipt or an open payment or rejection dialog. Handling the
+    last order while no code is active (a code deactivated as abuse, the only
+    kiosk deactivated) empties the next read, and the notice and the receipt
+    stay until staff close them ("Ocultar aviso", the receipt's own buttons)
+    or leave Órdenes.
     It polls every 10 s while visible and online, and every 60 s otherwise.
   - Cards are oldest first and show the label, place, age, expiry, name, note
     (allergy mentions styled like kitchen notes) and the pay-first badge.
@@ -252,6 +262,11 @@ deactivation), pausing and plain accepting.
     "Lo verifiqué con el cliente; aceptar de todos modos." (`abuseAcknowledged`;
     otherwise `409 public_hold_link_abuse`). Such holds are not rejected
     automatically: a table code also carries real diners' orders.
+    A sibling's abuse rejection locks only its own hold, so the accept reads
+    the code again as its last read before deciding: a rejection that
+    commits while the accept runs rolls it back with the same 409. One that
+    commits after that read is ordered after the accept, which then needed
+    no acknowledgement.
   - The target select pre-selects a table's only open check, also one opened
     after the card appeared, until staff choose themselves.
   - Accepting says "Q-14 → Orden #142 enviada a cocina." An accept that finds
