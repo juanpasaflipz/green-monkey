@@ -152,6 +152,22 @@ describe("global lock order ratchet (platform §6.2, critic #9, PLATFORM-LOCKS-1
     expect([...found.keys()].filter((k) => k.includes("upgrade:"))).toEqual([]);
     expect(excluded).toEqual(new Set(["restaurant.settings", "stock.policy"]));
   });
+
+  it("commands that update the restaurants row lock it FOR NO KEY UPDATE, never FOR UPDATE, so foreign-key checks (KEY SHARE) on restaurants never wait for them (LO-2, PLATFORM-LOCKS-5)", () => {
+    const labels = new Set(
+      program.units.flatMap((u) =>
+        flatten(
+          u.nodes.filter((n) => "event" in n || "branch" in n || "tx" in n),
+        )
+          .filter((e) => e.object === "restaurants" && e.mode === "update")
+          .map((e) => e.label),
+      ),
+    );
+    expect([...labels].sort()).toEqual([
+      "restaurants for no key update",
+      "update restaurants",
+    ]);
+  });
 });
 
 describe("the scanner finds what the rules forbid (fixtures)", () => {
