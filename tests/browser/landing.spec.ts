@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { LANDING_CLAIMS } from "../../src/marketing/claims";
 
 test("marketing page is responsive, accessible and routes to real app access", async ({
   page,
@@ -78,6 +79,7 @@ test("marketing page is responsive, accessible and routes to real app access", a
 test("kitchen notes are advertised: service 024 shows them on KDS tickets (LANDING_CLAIMS.kitchenNotes)", async ({
   page,
 }) => {
+  expect(LANDING_CLAIMS.kitchenNotes).toBe(true);
   await page.goto("/");
   await expect(
     page.getByText(
@@ -101,9 +103,11 @@ test("signup CTA opens Google signup with simplified notice and without the staf
     route.fulfill({ json: { google: true, billingSandbox: false } }),
   );
   await page.goto("/");
-  // account (031): kitchen-note examples stay off until they are verified.
-  for (const note of ["Sin cebolla", "Sin hielo", "Sin azúcar"])
-    await expect(page.getByText(note, { exact: false })).toHaveCount(0);
+  // account (031): kitchen-note examples follow LANDING_CLAIMS.kitchenNotes
+  // (on since service 024; the claim test above checks them while it is on).
+  if (!LANDING_CLAIMS.kitchenNotes)
+    for (const note of ["Sin cebolla", "Sin hielo", "Sin azúcar"])
+      await expect(page.getByText(note, { exact: false })).toHaveCount(0);
   await page
     .getByRole("link", { name: "Crear cuenta gratis", exact: true })
     .first()
