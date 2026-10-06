@@ -2,8 +2,9 @@
  * cfdi_global (spec §4.8.6): the global-invoice scheduler, builder and sweeps. DB only; stamping
  * is cfdi_stamp's.
  *
- *   1. settings (exit when paused); 2. promote a pending periodicity on its first day;
- *   3. upsert the period rows from the mode's start date through the current period;
+ *   1. settings (exit when paused); 2. add the period rows after the mode's last one through the
+ *      current period, never re-deriving a past date (periodsAfter); 3. promote a pending
+ *      periodicity on its first day;
  *   4. build each due period (closed + grace), oldest first, in its own transaction under a
  *      per-(tenant, mode, period) advisory key: every ticket of the period not claimed in this mode,
  *      in folio order, split into parts of ≤ 4,000 concepts (a ticket never split);
@@ -75,20 +76,37 @@ type PeriodRow = {
 const plusDays = (date: string, n: number) =>
   Temporal.PlainDate.from(date).add({ days: n }).toString();
 
-/** The periods from `from` through the one containing `today`, each with the periodicity in force. */
-export function periodsThrough(
+/**
+ * The period rows to add after `last`, the latest existing row of this mode (from the mode's start
+ * date when there is none), through the one containing `today` (CFDI-R2-1). Past dates are never
+ * re-derived, so a periodicity change can only shape dates that have no row yet: a period in the
+ * month of the previous row continues that row's periodicity (periods never cross a month, so the
+ * month's partition goes on), and a new month takes the periodicity in force on its first day (a
+ * pending change applies from the first of a month). At most `cap` rows per tick; the next tick
+ * continues after the last one.
+ */
+export function periodsAfter(
+  last: { to: string; periodicity: Periodicity } | null,
   from: string,
   today: string,
   s: Pick<
     SettingsRow,
     "globalPeriodicity" | "nextPeriodicity" | "nextPeriodicityFrom"
   >,
+  cap = 2000,
 ): GlobalPeriod[] {
   const out: GlobalPeriod[] = [];
-  let start = from;
-  for (let i = 0; start <= today && i < 2000; i++) {
-    const p = globalPeriodFor(start, periodicityOn(start, s));
+  let prev = last;
+  let start = last ? plusDays(last.to, 1) : from;
+  while (start <= today && out.length < cap) {
+    const p = globalPeriodFor(
+      start,
+      prev && prev.to.slice(0, 7) === start.slice(0, 7)
+        ? prev.periodicity
+        : periodicityOn(start, s),
+    );
     out.push(p);
+    prev = p;
     start = plusDays(p.to, 1);
   }
   return out;
@@ -311,12 +329,35 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
   const grace = rt.config.graceMinutes * MINUTE;
   const now = new Date();
 
-  // 1-3. Settings, periodicity promotion and period rows.
+  // 1-3. Settings, period rows, then the periodicity promotion. The settings row is locked so a
+  // periodicity save (which checks for period rows under the same lock) and this tick serialize.
   const plan = await ctx.tenant(async (tx) => {
-    let settings = await loadSettings(tx);
+    let settings = await loadSettings(tx, { forUpdate: true });
     if (!settings?.enabled) return null;
     const facts = await fiscalFacts(tx);
     const today = businessDate(now.toISOString(), facts.timezone, facts.cutoff);
+    const mode = settings.mode;
+    const from = modeFrom(settings);
+    // New rows only, after the last one of this mode, with the settings as they are BEFORE the
+    // promotion: a pending change still applies only from its first-of-month date, even when
+    // this tick runs days after it (CFDI-R2-1).
+    const [last] = await tx`
+      select date_to::text as to_date, periodicity from cfdi_global_periods
+      where mode = ${mode} order by date_to desc limit 1`;
+    const periods = periodsAfter(
+      last ? { to: last.to_date, periodicity: last.periodicity } : null,
+      from,
+      today,
+      settings,
+    );
+    if (periods.length)
+      await tx`
+        insert into cfdi_global_periods(tenant_id, mode, period_key, periodicity, date_from, date_to, closes_at, due_at)
+        select ${tenantId}, ${mode}, k, p, f::date, t::date, c::timestamptz, c::timestamptz + interval '24 hours'
+        from unnest(${periods.map((x) => x.key)}::text[], ${periods.map((x) => x.periodicity)}::text[],
+          ${periods.map((x) => x.from)}::text[], ${periods.map((x) => x.to)}::text[],
+          ${periods.map((x) => periodClosesAt(x, facts.timezone, facts.cutoff))}::text[]) as v(k, p, f, t, c)
+        on conflict (tenant_id, mode, period_key) do nothing`;
     if (
       settings.nextPeriodicity &&
       settings.nextPeriodicityFrom &&
@@ -328,17 +369,6 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
         where next_periodicity is not null and next_periodicity_from <= ${today}::date`;
       settings = (await loadSettings(tx))!;
     }
-    const mode = settings.mode;
-    const from = modeFrom(settings);
-    const periods = periodsThrough(from, today, settings);
-    if (periods.length)
-      await tx`
-        insert into cfdi_global_periods(tenant_id, mode, period_key, periodicity, date_from, date_to, closes_at, due_at)
-        select ${tenantId}, ${mode}, k, p, f::date, t::date, c::timestamptz, c::timestamptz + interval '24 hours'
-        from unnest(${periods.map((x) => x.key)}::text[], ${periods.map((x) => x.periodicity)}::text[],
-          ${periods.map((x) => x.from)}::text[], ${periods.map((x) => x.to)}::text[],
-          ${periods.map((x) => periodClosesAt(x, facts.timezone, facts.cutoff))}::text[]) as v(k, p, f, t, c)
-        on conflict (tenant_id, mode, period_key) do nothing`;
     const due = await tx`
       select period_key from cfdi_global_periods
       where mode = ${mode} and status = 'open' and closes_at <= ${new Date(now.getTime() - grace)}

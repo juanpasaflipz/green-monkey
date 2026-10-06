@@ -62,6 +62,7 @@ import { noRetries } from "./db-retries.js";
 import { seal } from "../server/tokens.js";
 import { parseCfdiTotals } from "../server/cfdi/xml.js";
 import { businessDate, type Session } from "../shared/domain.js";
+import { firstOfNextMonth } from "../shared/cfdi.js";
 import {
   extractTax,
   formatFolio,
@@ -1739,6 +1740,147 @@ try {
     const [audit] =
       await admin`select detail from audit where tenant_id = ${A.tenantId} and operation = 'cfdi.settings.saved' order by id desc limit 1`;
     assert.ok(audit.detail.before && audit.detail.after);
+  });
+
+  await test("R2-1. a periodicity change never rewrites past periods: the months before the change stay one monthly global each, a late ticket joins its own month, no daily row or empty period dates before the change, and a save once rows exist is deferred", async () => {
+    // Months: m3 and m2 closed long ago (sales), m1 = the change date (first of last month).
+    const firstOf = (back: number) => {
+      const d = new Date(today().slice(0, 7) + "-01T12:00:00Z");
+      d.setUTCMonth(d.getUTCMonth() - back);
+      return d.toISOString().slice(0, 10);
+    };
+    const plus = (date: string, n: number) => {
+      const d = new Date(date + "T12:00:00Z");
+      d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    };
+    const m3 = firstOf(3);
+    const m2 = firstOf(2);
+    const m1 = firstOf(1);
+    const P = await makeTenant("periodicity change");
+    const t1 = await makeTicket(P, { businessDate: plus(m3, 2) });
+    const t2 = await makeTicket(P, { businessDate: plus(m2, 1) });
+    const t3 = await makeTicket(P, { businessDate: plus(m2, 9) });
+    // Activated monthly in m3; a change to daily was saved in m2 for m1 (stored as the panel
+    // stores it); the first tick on or after m1 runs only now (CFDI paused, or no sign-in).
+    await web(P, (tx) =>
+      service.activate(tx, P.owner, { operationId: op(), expectedVersion: 0 }),
+    );
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${P.tenantId}, true)`;
+      await tx`alter table cfdi_settings disable trigger cfdi_settings_guard`;
+      await tx`
+        update cfdi_settings set test_from = ${m3}::date, next_periodicity = 'day',
+          next_periodicity_from = ${m1}::date
+        where tenant_id = ${P.tenantId}`;
+      await tx`alter table cfdi_settings enable trigger cfdi_settings_guard`;
+    });
+    await settle(P.tenantId);
+    const rows = () =>
+      admin`
+        select period_key, periodicity, date_from::text as from_date, date_to::text as to_date, status
+        from cfdi_global_periods where tenant_id = ${P.tenantId} and mode = 'test'
+        order by date_from`;
+    const globalOf = async (ticketId: string) => {
+      const [c] = await admin`
+        select d.period_key, d.part, d.global_info->>'periodicity' as periodicity, d.status
+        from cfdi_document_tickets c join cfdi_documents d on d.tenant_id = c.tenant_id and d.id = c.document_id
+        where c.tenant_id = ${P.tenantId} and c.ticket_id = ${ticketId} and c.state = 'active'`;
+      return c ? { ...c } : null;
+    };
+    const invariants = async (label: string) => {
+      const all = await rows();
+      const before = all.filter((r) => r.from_date < m1);
+      assert.deepEqual(
+        before.map((r) => [r.period_key, r.periodicity, r.status]),
+        [
+          ["M" + m3.slice(0, 7), "month", "built"],
+          ["M" + m2.slice(0, 7), "month", "built"],
+        ],
+        `${label}: the months before the change keep one monthly row each`,
+      );
+      const after = all.filter((r) => r.from_date >= m1);
+      assert.ok(
+        after.every((r) => r.periodicity === "day"),
+        `${label}: rows from the change date are daily`,
+      );
+      assert.equal(after[0].from_date, m1, `${label}: days start at m1`);
+      // Partition: every date from m3 through today belongs to exactly one row.
+      for (let i = 1; i < all.length; i++)
+        assert.equal(
+          all[i].from_date,
+          plus(all[i - 1].to_date, 1),
+          `${label}: no gap or overlap at ${all[i].period_key}`,
+        );
+      const views = await web(P, (tx) =>
+        service.listGlobals(tx, P.manager, {
+          query: { from: m3, to: plus(m1, -1) },
+        } as never),
+      );
+      assert.deepEqual(
+        views.map((v) => [v.periodKey, v.status]),
+        [
+          ["M" + m2.slice(0, 7), "built"],
+          ["M" + m3.slice(0, 7), "built"],
+        ],
+        `${label}: the register (newest first) shows no "Sin ventas" period before the change`,
+      );
+    };
+
+    await invariants("first tick");
+    const settings = (await web(P, (tx) => service.getSettings(tx, P.owner)))
+      .settings!;
+    assert.equal(settings.globalPeriodicity, "day", "promoted");
+    assert.equal(settings.nextPeriodicity, null);
+    assert.deepEqual(await globalOf(t1.id), {
+      period_key: "M" + m3.slice(0, 7),
+      part: 1,
+      periodicity: "month",
+      status: "valid",
+    });
+    const m2Global = await globalOf(t2.id);
+    assert.deepEqual(m2Global, {
+      period_key: "M" + m2.slice(0, 7),
+      part: 1,
+      periodicity: "month",
+      status: "valid",
+    });
+    assert.deepEqual(await globalOf(t3.id), m2Global, "one global for m2");
+
+    // A ticket of m2 synced late goes into a supplementary MONTHLY part of m2 (D5), never into
+    // a daily period; ticks after the promotion add no row before the change date.
+    const t4 = await makeTicket(P, { businessDate: plus(m2, 20) });
+    await tick(P);
+    await invariants("late tick");
+    assert.deepEqual(await globalOf(t4.id), {
+      period_key: "M" + m2.slice(0, 7),
+      part: 2,
+      periodicity: "month",
+      status: "valid",
+    });
+    await due(P.tenantId);
+    await tick(P);
+    await invariants("tick after every due time");
+
+    // Rows exist (none of them open is enough): a new change waits for the first of next month.
+    const saved = await saveSettings(P, { globalPeriodicity: "month" });
+    assert.equal(saved.settings?.globalPeriodicity, "day");
+    assert.equal(saved.settings?.nextPeriodicity, "month");
+    assert.equal(saved.settings?.nextPeriodicityFrom, firstOfNextMonth(today()));
+    const fresh = await makeTenant("periodicity deferred with open rows");
+    await activate(fresh);
+    const [{ open, built }] = await admin`
+      select count(*) filter (where status = 'open')::int as open,
+        count(*) filter (where status <> 'open')::int as built
+      from cfdi_global_periods where tenant_id = ${fresh.tenantId}`;
+    assert.deepEqual({ open, built }, { open: 1, built: 0 });
+    const deferred = await saveSettings(fresh, { globalPeriodicity: "day" });
+    assert.equal(
+      deferred.settings?.globalPeriodicity,
+      "month",
+      "the current month's open row keeps its periodicity",
+    );
+    assert.equal(deferred.settings?.nextPeriodicity, "day");
   });
 
   await test("20. self-invoice window: month and days policies; an expired code is refused; more than 5 portal attempts per ticket in 24 h are refused", async () => {

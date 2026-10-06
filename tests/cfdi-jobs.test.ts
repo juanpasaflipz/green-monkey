@@ -19,7 +19,7 @@ import {
   globalJob,
   nextHour,
   nextSixHours,
-  periodsThrough,
+  periodsAfter,
 } from "../server/cfdi/worker/global";
 import { stampJob } from "../server/cfdi/worker/stamp";
 import { waitStep } from "../server/cfdi/worker/common";
@@ -185,8 +185,8 @@ describe("27. dedupe keys", () => {
 });
 
 describe("global scheduler helpers", () => {
-  it("periodsThrough covers the mode's start through today with the periodicity in force", () => {
-    const periods = periodsThrough("2026-10-17", "2026-11-03", {
+  it("periodsAfter covers the mode's start through today with the periodicity in force", () => {
+    const periods = periodsAfter(null, "2026-10-17", "2026-11-03", {
       globalPeriodicity: "month",
       nextPeriodicity: "day",
       nextPeriodicityFrom: "2026-11-01",
@@ -197,6 +197,79 @@ describe("global scheduler helpers", () => {
       "D2026-11-02",
       "D2026-11-03",
     ]);
+  });
+  it("periodsAfter never re-derives a date that has a row (CFDI-R2-1)", () => {
+    const promoted = {
+      globalPeriodicity: "day" as const,
+      nextPeriodicity: null,
+      nextPeriodicityFrom: null,
+    };
+    // After a promotion month → day on Nov 1, October (built monthly) is never split into days.
+    expect(
+      periodsAfter(
+        { to: "2026-10-31", periodicity: "month" },
+        "2026-08-01",
+        "2026-11-02",
+        promoted,
+      ).map((p) => p.key),
+    ).toEqual(["D2026-11-01", "D2026-11-02"]);
+    // Rows ended mid-month under days; the change was promoted before the rest of the month got
+    // rows: the month keeps its daily partition, the next month takes the new periodicity.
+    expect(
+      periodsAfter(
+        { to: "2026-10-29", periodicity: "day" },
+        "2026-10-01",
+        "2026-11-03",
+        {
+          globalPeriodicity: "month",
+          nextPeriodicity: null,
+          nextPeriodicityFrom: null,
+        },
+      ).map((p) => p.key),
+    ).toEqual(["D2026-10-30", "D2026-10-31", "M2026-11"]);
+    // A month already covered by its row: nothing new until the next month starts.
+    expect(
+      periodsAfter(
+        { to: "2026-10-31", periodicity: "month" },
+        "2026-10-01",
+        "2026-10-20",
+        promoted,
+      ),
+    ).toEqual([]);
+    // Fortnight continuing mid-month, then weeks clipped to the new month.
+    expect(
+      periodsAfter(
+        { to: "2026-10-15", periodicity: "fortnight" },
+        "2026-10-01",
+        "2026-11-03",
+        {
+          globalPeriodicity: "fortnight",
+          nextPeriodicity: "week",
+          nextPeriodicityFrom: "2026-11-01",
+        },
+      ).map((p) => [p.key, p.from, p.to]),
+    ).toEqual([
+      ["F2026-10-2", "2026-10-16", "2026-10-31"],
+      ["W2026-11-01", "2026-11-01", "2026-11-01"],
+      ["W2026-11-02", "2026-11-02", "2026-11-08"],
+    ]);
+  });
+  it("periodsAfter adds at most `cap` rows; the next call continues after them", () => {
+    const s = {
+      globalPeriodicity: "day" as const,
+      nextPeriodicity: null,
+      nextPeriodicityFrom: null,
+    };
+    const first = periodsAfter(null, "2020-01-01", "2026-10-05", s, 2000);
+    expect(first).toHaveLength(2000);
+    const last = first[first.length - 1];
+    const next = periodsAfter(last, "2020-01-01", "2026-10-05", s, 2000);
+    expect(next[0].from).toBe(
+      new Date(Date.parse(last.to + "T00:00:00Z") + 86_400_000)
+        .toISOString()
+        .slice(0, 10),
+    );
+    expect(next[next.length - 1].to).toBe("2026-10-05");
   });
   it("tick chains converge on 6-hour UTC boundaries", () => {
     expect(nextSixHours(new Date("2026-10-05T18:47:31Z")).toISOString()).toBe(

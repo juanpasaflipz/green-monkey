@@ -212,6 +212,16 @@ the next tick, never into the next open period; a part created after `due_at` is
 at most 4,000 concepts; a ticket is never split. With automatic emission off, periods wait for
 **Emitir ahora**.
 
+**Periodicity changes** never reshape a date that already has a period row (CFDI-R2-1). Before
+any row exists (right after activation, until the first tick) a change applies at once; after
+that it is stored as pending from the first day of next month ("El cambio aplica desde el …").
+Each tick adds rows only after the mode's last one: a period in the month of the previous row
+continues that row's periodicity, a new month takes the periodicity in force on its first day,
+and the tick adds the rows before it promotes a pending change, so a month that closed under
+the old periodicity stays one partition of it even when the first tick after the change runs
+days later; late tickets then join a supplementary part of their own period (D5) with its own
+periodicity.
+
 ## Amounts
 
 - Concepts are tax-inclusive (`tax_included: true`, quantity 1, price = fiscal's net gross).

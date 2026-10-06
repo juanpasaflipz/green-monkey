@@ -340,14 +340,16 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
     const facts = await fiscalFacts(tx);
     if (facts.regime === "626" && p.globalPeriodicity !== "month")
       throw new DomainError("cfdi_resico_monthly", 400);
-    // A periodicity change after a global was built applies from the first day of next month,
-    // so a period never mixes periodicities; choosing the current one again cancels it.
+    // Once any period row exists (built or not; the global tick adds the current period's row
+    // right after activation), a periodicity change applies from the first day of next month:
+    // the rows already there keep theirs and the tick never re-derives a past date, so a period
+    // never mixes periodicities (CFDI-R2-1). Choosing the current one again cancels it. The
+    // settings row is locked FOR UPDATE above; the tick adds rows under the same lock.
     let periodicity = before.globalPeriodicity;
     let next: typeof before.nextPeriodicity = null;
     let nextFrom: string | null = null;
     if (p.globalPeriodicity !== before.globalPeriodicity) {
-      const [built] = await tx`
-        select 1 as one from cfdi_global_periods where status <> 'open' limit 1`;
+      const [built] = await tx`select 1 as one from cfdi_global_periods limit 1`;
       if (built) {
         next = p.globalPeriodicity;
         nextFrom = firstOfNextMonth(today(s));
