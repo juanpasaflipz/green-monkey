@@ -144,11 +144,16 @@ export async function endDeviceSession(
  * Ends the Google sign-ins (owner_sessions) that entered a personal device, so
  * the 12-hour gm_account left on a lost or stolen phone or laptop cannot enter
  * the restaurant again (A6). owner_sessions is scoped by app.account_id, which
- * is set per account and cleared again inside this tenant transaction.
+ * is set per account and then restored to the caller's value (empty in POS
+ * transactions; the acting account in account's owner-seat revocation, which
+ * still needs it for its own policies: LD-15 account Q4).
  */
 async function revokeOwnerSessions(tx: Tx, deviceId: string): Promise<number> {
   const rows = await tx`select distinct owner_account_id,owner_session_id from sessions
     where device_id=${deviceId} and owner_session_id is not null`;
+  if (!rows.length) return 0;
+  const [prior] =
+    await tx`select coalesce(current_setting('app.account_id',true),'') as account`;
   let ended = 0;
   for (const row of rows) {
     await tx`select set_config('app.account_id',${row.owner_account_id},true)`;
@@ -157,9 +162,18 @@ async function revokeOwnerSessions(tx: Tx, deviceId: string): Promise<number> {
       returning id`;
     ended += done.length;
   }
-  if (rows.length) await tx`select set_config('app.account_id','',true)`;
+  await tx`select set_config('app.account_id',${prior.account},true)`;
   return ended;
 }
+
+/**
+ * The actor of an offboarding that runs outside a POS session: account's
+ * owner-seat revocation (co-owner removal or leave, previous owner leaving at
+ * a transfer) acts as the acting account's seat employee in each tenant.
+ */
+export type OffboardingActor = Pick<Session, "tenantId" | "employeeId"> & {
+  deviceId: string | null;
+};
 
 /**
  * Offboarding (SEC-3/SEC-5, ACC-R6-2): retires the personal devices an
@@ -176,6 +190,16 @@ export async function retirePersonalDevices(
   s: Session,
   employeeId: string,
 ): Promise<number> {
+  return retirePersonalDevicesAs(tx, s, employeeId);
+}
+/** retirePersonalDevices for an actor that is not a POS session (LD-15 account Q4). */
+export async function retirePersonalDevicesAs(
+  tx: Tx,
+  actor: OffboardingActor,
+  employeeId: string,
+): Promise<number> {
+  // audit() reads only tenantId and employeeId.
+  const s = actor as Session;
   const devices = await tx`select id,name,
       exists(select 1 from cash_sessions c where c.device_id=devices.id and c.closed_at is null) as open_drawer
     from devices
@@ -199,7 +223,7 @@ export async function retirePersonalDevices(
       openDrawer: d.open_drawer,
       sessions,
       ownerSessions,
-      self: d.id === s.deviceId,
+      self: d.id === actor.deviceId,
     });
   }
   return devices.length;

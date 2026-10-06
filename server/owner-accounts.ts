@@ -6,6 +6,14 @@ import { hash, sign, verify, password } from "./auth.js";
 import { type Tx } from "./db.js";
 import { DomainError } from "../shared/domain.js";
 import type { VerifiedGoogleIdentity } from "./google-identity.js";
+import {
+  legalConfig,
+  legalState,
+  recordAcceptances,
+  signupOpen,
+  type LegalConfig,
+} from "./legal.js";
+import { LEGAL_DOCUMENTS, legalAcceptedInput } from "../shared/legal.js";
 
 const opaque = () => randomBytes(32).toString("hex");
 export async function accountScope<T>(
@@ -21,15 +29,27 @@ export async function accountScope<T>(
   }) as Promise<T>;
 }
 
-/** Called only after server-side provider verification, never from request JSON. */
+/**
+ * Called only after server-side provider verification, never from request JSON.
+ * While the legal documents are unpublished (and signup is not explicitly
+ * allowed outside production), a new Google identity is refused with
+ * signup_paused and no owner_accounts row is created; existing accounts still
+ * sign in (account 031, FIT-12).
+ */
 export async function signInGoogleOwner(
   sql: postgres.Sql,
   identity: VerifiedGoogleIdentity,
+  policy: { allowNewAccounts: boolean } = { allowNewAccounts: true },
 ) {
   const identityKey = hash(JSON.stringify([identity.issuer, identity.subject]));
   return sql.begin(async (raw) => {
     const tx = raw as Tx;
     await tx`select set_config('app.identity_key',${identityKey},true)`;
+    if (!policy.allowNewAccounts) {
+      const [known] =
+        await tx`select id from owner_accounts where identity_key=${identityKey}`;
+      if (!known) throw new DomainError("signup_paused", 503);
+    }
     await tx`insert into owner_accounts(id,identity_key,issuer,subject,email,name)
       values(${randomUUID()},${identityKey},${identity.issuer},${identity.subject},${identity.email},${identity.name ?? identity.email})
       on conflict(identity_key) do nothing`;
@@ -118,24 +138,67 @@ export const signupInput = z
       .min(1)
       .max(7)
       .refine((v) => new Set(v).size === v.length),
+    // account (031): versions of the terms, privacy notice and DPA the owner
+    // accepted; required while the documents are published (FIT-12).
+    legalAccepted: legalAcceptedInput.optional(),
+    locale: z.enum(["es", "en"]).default("es"),
   })
   .strict();
 
 export async function createOwnerRestaurant(
   tx: Tx,
-  account: { id: string; name: string },
+  account: { id: string; name: string; sessionId: string },
   input: unknown,
+  legal: LegalConfig = legalConfig(process.env),
 ) {
   const p = signupInput.parse(input);
   await tx`select pg_advisory_xact_lock(hashtextextended(${account.id},918))`;
   const [existing] =
     await tx`select r.id as tenant_id from restaurants r join organizations o on o.id=r.organization_id join signup_billing_intents i on i.tenant_id=r.id where o.created_by_account=${account.id}`;
   if (existing) return { tenantId: existing.tenant_id, created: false };
+  if (!signupOpen(legal)) throw new DomainError("signup_paused", 503);
+  if (legal.status === "published" && !p.legalAccepted?.dpa)
+    throw new DomainError("legal_acceptance_required", 428);
+  const accepted = p.legalAccepted;
+  if (accepted)
+    for (const d of ["terms", "privacy", "dpa"] as const)
+      if (
+        accepted[d] !== undefined &&
+        accepted[d] !== LEGAL_DOCUMENTS[d].version
+      )
+        throw new DomainError("legal_version_mismatch", 409);
   const tenantId = randomUUID(),
     organizationId = randomUUID(),
     employeeId = randomUUID();
   await tx`select set_config('app.tenant_id',${tenantId},true)`;
   await tx`insert into organizations(id,name,created_by_account) values(${organizationId},${p.restaurantName},${account.id})`;
+  if (accepted) {
+    // Terms and privacy only when not already current; the DPA for this organization.
+    const state = await legalState(tx, account.id, legal);
+    await recordAcceptances(
+      tx,
+      account,
+      {
+        documents: [
+          ...(["terms", "privacy"] as const)
+            .filter((d) => state.pending.includes(d) || !state.accepted[d])
+            .map((d) => ({ document: d, version: accepted[d] })),
+          ...(accepted.dpa
+            ? [
+                {
+                  document: "dpa" as const,
+                  version: accepted.dpa,
+                  organizationId,
+                },
+              ]
+            : []),
+        ],
+        locale: p.locale,
+        context: "signup",
+      },
+      legal,
+    );
+  }
   await tx`insert into restaurants(id,organization_id,name,currency,timezone,cutoff,opening_days,free_location)
     values(${tenantId},${organizationId},${p.restaurantName},${p.currency},${p.timezone},${p.cutoff},${p.openingDays},true)`;
   // Social owners have no usable password until an explicit recovery/linking flow.
@@ -157,7 +220,7 @@ export async function enterOwnerRestaurant(
 ) {
   z.uuid().parse(tenantId);
   const [membership] =
-    await tx`select employee_id from owner_memberships where account_id=${accountId} and tenant_id=${tenantId}`;
+    await tx`select employee_id from owner_memberships where account_id=${accountId} and tenant_id=${tenantId} and revoked_at is null`;
   if (!membership) throw new DomainError("forbidden", 403);
   await tx`select set_config('app.tenant_id',${tenantId},true)`;
   const [restaurant] =

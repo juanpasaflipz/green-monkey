@@ -18,6 +18,7 @@ import {
   withOwner,
   ownerBrowserCookie,
 } from "./owner-accounts.js";
+import { legalConfig, legalState, signupOpen } from "./legal.js";
 import {
   selectFreeLocation,
   createAdditionalLocation,
@@ -33,6 +34,8 @@ export function ownerRoutes(sql: postgres.Sql) {
   const google = config
     ? googleIdentityService(config, googleAttemptStore(sql))
     : null;
+  // account (031): new Google accounts wait for the published legal documents.
+  const legal = legalConfig(process.env);
   const flowCookie = {
     ...cookieOptions,
     sameSite: "lax" as const,
@@ -132,15 +135,23 @@ export function ownerRoutes(sql: postgres.Sql) {
         code: req.query.code,
         browserToken: req.cookies.gm_google_flow ?? "",
       });
-      const cookie = await signInGoogleOwner(sql, identity);
+      const cookie = await signInGoogleOwner(sql, identity, {
+        allowNewAccounts: signupOpen(legal),
+      });
       res.cookie("gm_account", cookie, {
         ...cookieOptions,
         maxAge: 12 * 3600_000,
       });
       // Existing restaurant sessions are not silently switched by an OAuth callback.
       res.redirect(303, "/app?account=1");
-    } catch {
-      res.redirect(303, "/app?auth_error=google_login_failed");
+    } catch (e) {
+      res.redirect(
+        303,
+        "/app?auth_error=" +
+          (e instanceof DomainError && e.code === "signup_paused"
+            ? "signup_paused"
+            : "google_login_failed"),
+      );
     }
   });
   router.get("/account", async (req, res, next) => {
@@ -153,10 +164,16 @@ export function ownerRoutes(sql: postgres.Sql) {
           name: account.name,
           email: account.email,
           csrf: account.csrf,
-          organizations:
-            await tx`select id,name from organizations where created_by_account=${account.id}`,
+          // account (031): co-owned organizations carry role 'co_owner'.
+          organizations: await tx`select o.id,o.name,'primary'::text as role from organizations o
+              where o.created_by_account=${account.id}
+            union all
+            select o.id,o.name,'co_owner'::text as role from organization_co_owners c
+              join organizations o on o.id=c.organization_id
+             where c.account_id=${account.id} and c.removed_at is null`,
           restaurants:
-            await tx`select r.id,r.name,r.currency,r.timezone,r.organization_id,r.activation_pending,r.free_location from restaurants r join owner_memberships m on m.tenant_id=r.id where m.account_id=${account.id}`,
+            await tx`select r.id,r.name,r.currency,r.timezone,r.organization_id,r.activation_pending,r.free_location from restaurants r join owner_memberships m on m.tenant_id=r.id where m.account_id=${account.id} and m.revoked_at is null`,
+          legal: await legalState(tx, account.id, legal),
         }),
       );
       res.json(result);
@@ -302,7 +319,7 @@ export function ownerRoutes(sql: postgres.Sql) {
           sql,
           req.cookies.gm_account ?? "",
           req.get("x-csrf-token") ?? "",
-          (tx, account) => revokeInvitation(tx, account.id, req.body.id),
+          (tx, account) => revokeInvitation(tx, account.id, req.body),
         ),
       );
     } catch (error) {

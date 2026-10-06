@@ -401,6 +401,11 @@ CREATE POLICY organization_transfer_update ON organizations AS RESTRICTIVE FOR U
     WHERE t.id = nullif(current_setting('app.transfer_id', true), '')::uuid
       AND t.organization_id = organizations.id AND t.state = 'pending'))
   WITH CHECK (created_by_account = nullif(current_setting('app.account_id', true), '')::uuid);
+-- A verified transfer target or co-owner can see whether the organization has a
+-- subscription (transfer preview "Incluye la facturación"); billing writes stay with
+-- the billing worker and billing reads by the primary keep billing_owner_read.
+CREATE POLICY billing_verified_scope_read ON organization_billing FOR SELECT
+  USING (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
 CREATE POLICY restaurant_verified_scope_read ON restaurants FOR SELECT
   USING (organization_id = nullif(current_setting('app.organization_id', true), '')::uuid);
 -- A removed co-owner or departed previous owner keeps a revoked membership row; it must

@@ -356,6 +356,10 @@ export async function resetStaffPin(
     { employeeId, operationId: p.operationId, pin: pinFingerprint(p.pin) },
     async () => {
       const e = await target(tx, employeeId);
+      // A3 (LD-8, assigned to account 031): an owner's PIN is that person's own
+      // "PIN para terminales compartidas"; another owner (co-owner) cannot set it.
+      if (e.role === "owner" && employeeId !== s.employeeId)
+        throw new DomainError("owner_pin_self_only", 403);
       await tx`update employees set secret_hash=${await hashSecret(p.pin)},pin_set_at=now() where id=${employeeId}`;
       await clearLocks(tx, employeeId);
       const self = employeeId === s.employeeId;
