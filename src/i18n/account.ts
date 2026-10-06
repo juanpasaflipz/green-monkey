@@ -51,6 +51,8 @@ export default defineArea({
     accountHelpTitle: "Ayuda y soporte",
     accountHelpNotConfigured:
       "El contacto de soporte aún no está configurado en este entorno.",
+    accountHelpUnavailable:
+      "No pudimos cargar el contacto de soporte. Revisa tu conexión e intenta de nuevo.",
     accountHelpEmail: "Correo",
     accountHelpPhone: "Teléfono",
     accountHelpWhatsapp: "WhatsApp",
@@ -324,6 +326,8 @@ export default defineArea({
     accountHelpTitle: "Help and support",
     accountHelpNotConfigured:
       "Support contact is not configured in this environment yet.",
+    accountHelpUnavailable:
+      "We couldn't load the support contact. Check your connection and try again.",
     accountHelpEmail: "Email",
     accountHelpPhone: "Phone",
     accountHelpWhatsapp: "WhatsApp",

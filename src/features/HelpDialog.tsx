@@ -21,6 +21,8 @@ export function HelpDialog({
 }) {
   const t = strings[locale];
   const [config, setConfig] = useState<AccountConfig | null>(null);
+  // A failed load (offline) says so instead of "Cargando…" forever (ACC-12).
+  const [failed, setFailed] = useState(false);
   const [version, setVersion] = useState<{
     version: string;
     commit: string;
@@ -29,7 +31,7 @@ export function HelpDialog({
   useEffect(() => {
     void loadAccountConfig()
       .then(setConfig)
-      .catch(() => null);
+      .catch(() => setFailed(true));
     void fetch("/api/version")
       .then((r) => (r.ok ? r.json() : null))
       .then(setVersion)
@@ -96,8 +98,12 @@ export function HelpDialog({
           )}
         </ul>
       ) : (
-        <p className="muted">
-          {config ? t.accountHelpNotConfigured : t.accountLoading}
+        <p className="muted" role={failed ? "alert" : undefined}>
+          {config
+            ? t.accountHelpNotConfigured
+            : failed
+              ? t.accountHelpUnavailable
+              : t.accountLoading}
         </p>
       )}
       <h3>{t.accountHelpLegal}</h3>

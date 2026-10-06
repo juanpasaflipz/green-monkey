@@ -284,7 +284,9 @@ export function OwnerAccess({
             <a
               className={`button full ${wantsSignup ? "primary" : ""}`}
               href="/api/auth/google/start"
-              aria-describedby="signup-privacy-notice"
+              aria-describedby={
+                config?.legal.signupOpen ? "signup-privacy-notice" : undefined
+              }
             >
               {config && !config.legal.signupOpen
                 ? strings[locale].accountGoogleExisting

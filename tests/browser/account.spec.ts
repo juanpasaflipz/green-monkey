@@ -4,7 +4,13 @@ import { randomUUID } from "node:crypto";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { legalContentHash } from "../../server/legal.js";
-import { ownerCookie } from "../../server/owner-accounts.js";
+import { ownerCookie, withOwner } from "../../server/owner-accounts.js";
+import {
+  cancelTransfer,
+  generateRecoveryCodes,
+  redeemRecoveryCode,
+  requestTransfer,
+} from "../../server/ownership-transfer.js";
 import { LEGAL_CI_ENV } from "../fixtures/legal-ci.js";
 import { LEGAL_DOCUMENTS } from "../../shared/legal.js";
 import {
@@ -665,6 +671,21 @@ test("help dialog shows support contact (or not-configured text) and copies rest
     );
     await expect(help.getByText("ID del restaurante")).toHaveCount(0);
     await axe(login);
+    // When the configuration cannot be loaded (offline), the dialog says so
+    // instead of "Cargando…" forever (ACC-12).
+    const offline = await fresh.newPage();
+    await offline.route("**/api/account-config", (route) => route.abort());
+    await offline.goto("/app");
+    await offline
+      .getByRole("button", { name: "Ayuda y privacidad", exact: true })
+      .click();
+    const unavailable = offline.getByRole("dialog", {
+      name: "Ayuda y soporte",
+    });
+    await expect(unavailable.getByRole("alert")).toHaveText(
+      "No pudimos cargar el contacto de soporte. Revisa tu conexión e intenta de nuevo.",
+    );
+    await expect(unavailable).not.toContainText("Cargando");
   } finally {
     await fresh.close();
   }
@@ -835,6 +856,84 @@ test("POS shell: trial-ending warning, then drawer continuation banner after lap
     expect(refused.body.error).toBe("free_selection_required");
   } finally {
     await second.close();
+    await sql.end();
+    await admin.end();
+  }
+});
+
+test("POS shell: the primary's own transfer is no warning; a recovery-code transfer is a critical alert (ACC-1)", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const owner = await ownerFixture(sql, "shellwarn");
+  const thief = await ownerFixture(sql, "shellthief");
+  try {
+    const tenantId = await ownerRestaurant(sql, owner, "Aviso fixture");
+    const [{ organization_id: organizationId }] =
+      await admin`select organization_id from restaurants where id=${tenantId}`;
+    // The primary starts a transfer from their own account.
+    const own = await withOwner(sql, owner.cookie, undefined, (tx, a) =>
+      requestTransfer(
+        tx,
+        a,
+        {
+          operationId: randomUUID(),
+          organizationId,
+          email: `nuevo-${randomUUID().slice(0, 8)}@example.com`,
+          previousOwnerStays: true,
+          confirmName: "Aviso fixture",
+        },
+        PUBLISHED_LEGAL,
+      ),
+    );
+    await useOwnerCookie(context, owner, baseURL);
+    await page.goto("/app");
+    const shell = () =>
+      page.waitForResponse(
+        (r) => r.url().endsWith("/api/account/shell") && r.ok(),
+      );
+    let answered = shell();
+    await page
+      .locator(".row.between")
+      .filter({ hasText: "Aviso fixture" })
+      .getByRole("button", { name: "Entrar", exact: true })
+      .click();
+    await expect(page.locator(".scope")).toContainText("Aviso fixture");
+    await answered;
+    await expect(page.locator(".plan-notice.critical")).toHaveCount(0);
+    await expect(
+      page.getByText(/Soporte inició una transferencia/),
+    ).toHaveCount(0);
+    // A recovery code redeemed by someone else is the hijack warning.
+    await withOwner(sql, owner.cookie, undefined, (tx, a) =>
+      cancelTransfer(tx, a, { transferId: own.id }),
+    );
+    const { codes } = await withOwner(sql, owner.cookie, undefined, (tx, a) =>
+      generateRecoveryCodes(tx, a),
+    );
+    await withOwner(sql, thief.cookie, undefined, (tx, a) =>
+      redeemRecoveryCode(tx, a, { code: codes[0] }),
+    );
+    answered = shell();
+    await page.reload();
+    await answered;
+    const warning = page.locator(".plan-notice.critical");
+    await expect(warning).toHaveAttribute("role", "alert");
+    await expect(warning).toContainText(
+      "Se usó un código de recuperación para transferir la propiedad a",
+    );
+    await expect(warning).not.toContainText("Soporte inició");
+    await expect(
+      warning.getByRole("button", {
+        name: "Cancelar transferencia",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await axe(page);
+  } finally {
+    await deleteOwnerFixtures(admin, [owner.accountId, thief.accountId]);
     await sql.end();
     await admin.end();
   }
