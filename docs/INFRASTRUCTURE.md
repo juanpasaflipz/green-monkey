@@ -18,7 +18,7 @@ The requirement is to keep the same provider setup—Neon, Railway, and the usef
 
 ## Deployment blueprint
 
-Railway project `proactive-upliftment`, two services built from the root
+Railway project `green-monkey`, two services built from the root
 `Dockerfile` (multi-stage, Node 24.21.0, `npm ci` from the lockfile, compiled
 frontend/server, migrations, `scripts/grants.sql`, `scripts/db/post-migrate.sql`
 and the stamped `build-info.json`). Both start through

@@ -87,7 +87,7 @@ rotate the
 
 ## 3. Railway
 
-1. Create the `production` environment in project `proactive-upliftment`.
+1. Create the `production` environment in project `green-monkey`.
 2. Create a project token scoped to it (for GitHub) and pin the CLI version.
 3. `npx @railway/cli@<ver> config plan` (with `npm install --no-save railway@<ver>`
    for the IaC package) must show only additions; then `config apply`.

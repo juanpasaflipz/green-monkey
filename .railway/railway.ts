@@ -131,5 +131,5 @@ export default defineRailway((ctx) => {
     },
   });
 
-  return project("proactive-upliftment", { resources: [web, worker] });
+  return project("green-monkey", { resources: [web, worker] });
 });
