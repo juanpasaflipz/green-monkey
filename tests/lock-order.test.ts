@@ -85,11 +85,11 @@ const PERMANENT: Record<string, string> = {
     "LO-R5 the order's key, only when paymentTarget locked nothing (unresolvable)",
   // Public ordering (LD-24, docs/PUBLIC_ORDERING.md §6): accepting a held order.
   "server/public-holds.ts#acceptHold:2b>1":
-    "LO-R5 the hold's own order key (createOrder/addRound(h.order_operation_id)), before LO-4",
+    "LO-R5 the hold's own order key (createOrder/addRound(h.order_operation_id)), under the hold row and before LO-4",
   "server/public-holds.ts#acceptHold:12>1":
-    "LO-R5 fresh key (recordPayment(randomUUID())) after createOrder's refresh (E5)",
+    "LO-R5 fresh key (recordPayment(randomUUID())) after createOrder's closing refresh, which follows the feed (LO-R3, 027) and cannot issue (E5)",
   "server/public-holds.ts#acceptHold:12>11":
-    "E5 (createOrder's refresh cannot issue at creation; then the drawer, as applySale)",
+    "E5 createOrder's closing refresh cannot issue (nothing is paid at creation); recordPayment then takes the drawer and issues the ticket (LO-12) last, as applySale",
 };
 const ALLOWLIST = { ...PERMANENT };
 
