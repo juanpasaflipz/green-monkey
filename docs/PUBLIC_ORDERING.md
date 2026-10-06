@@ -18,7 +18,10 @@ after B3 and the flag flip (B4), described in
   RELEASE, ACCOUNT_AND_LEGAL, DELIVERY_STATUS, the ledger files) received
   public ordering's text in one commit at B3 (LD-P10): the lock-order rows,
   the DB-9 contract, the abuse runbook and the DB-9 validation procedure.
-  This file stays the area's full reference.
+  The delta review's fix `2d0a5ee` (PUB-B3-1, PUB-B3-2) amended RUNBOOK,
+  RELEASE, LAUNCH_HANDOFF and COMPLETION_LEDGER after that commit: the DB-9
+  validation runs as the Neon owner role, and the hold ARCO redaction is a
+  documented block. This file stays the area's full reference.
 
 **Verified locally only.** The DB and HTTP suite (`npm run test:db:public`),
 the unit tests and the browser suite (`tests/browser/public-ordering.spec.ts`)
@@ -800,6 +803,14 @@ carries only the deletion of the S2 shim, while `server/public-diner.ts` still
 imports it. The tree does not typecheck at `4019641`, `27289f3` and `fcdac07`
 until `69a23d6` adds the wiring. A bisect over `integration/v1` that lands on
 one of them should `git bisect skip 4019641 27289f3 fcdac07`.
+
+**Which commit is B4.** The flag flip first landed as `50cf336`. Review fixes
+came after it and edited RELEASE's go-live item in the lines it changed, so
+`50cf336` was reverted and its change re-applied as the track's last commit
+(PUB-B4-1). Roll back with `git revert` of that re-applied commit, the newest
+one whose subject starts with `feat(public): B4`
+(`git log -1 --format=%h --grep='^feat(public): B4'`); reverting `50cf336`
+itself conflicts.
 
 ## Field checks before printing at scale
 
