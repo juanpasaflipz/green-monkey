@@ -60,3 +60,8 @@ END $$;
 GRANT USAGE ON SCHEMA public TO gm_jobs_worker;
 GRANT SELECT,INSERT ON jobs TO gm_jobs_worker;
 GRANT UPDATE(state,attempts,next_at,lease_until,error_code) ON jobs TO gm_jobs_worker;
+-- 027 fiscal: tickets, ticket taxes and refund adjustments are INSERT-only (CFF art. 30,
+-- immutable by trigger); the profile and the folio counter take column UPDATEs only. No DELETE.
+GRANT SELECT,INSERT ON restaurant_fiscal_profiles,fiscal_folio_counters,fiscal_tickets,fiscal_ticket_taxes,fiscal_adjustments TO gm_app;
+GRANT UPDATE(rfc,legal_name,regime,postal_code,address,ticket_series,tax_region,default_tax_category,border_confirmed_at,border_confirmed_by,version,updated_by,updated_at) ON restaurant_fiscal_profiles TO gm_app;
+GRANT UPDATE(last_value) ON fiscal_folio_counters TO gm_app;
