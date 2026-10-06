@@ -6,7 +6,7 @@ import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { check, disposableLogins, passed } from "./ops-roles.js";
 import { noRetries } from "./db-retries.js";
-import { connect, tenant } from "../server/db.js";
+import { connect, tenant, type Tx } from "../server/db.js";
 import {
   enqueueJob,
   handlers,
@@ -326,6 +326,68 @@ try {
       );
       await tenant(app, tenantId, (tx) => requeueJob(tx, owner, running.id));
       assert.equal((await byKey("cancel-running")).state, "available");
+      await admin`delete from jobs where kind=${kind}`;
+    },
+  );
+
+  await check(
+    "POST /jobs/:id/cancel and /requeue write job.cancelled and job.requeued audit rows with the kind and the state before, in the control's transaction (PLAT-HR-6)",
+    async () => {
+      const { register } = await import("../server/routes/ops.js");
+      const routes = new Map<
+        string,
+        (tx: Tx, s: Session, req: unknown) => Promise<unknown>
+      >();
+      register({
+        app: null as never,
+        sql: null as never,
+        route: (method, path, fn) =>
+          void routes.set(`${method} ${path}`, fn as never),
+      });
+      const stepped: Session = {
+        ...owner,
+        access: {
+          absoluteExpiresAt: null,
+          authenticatedAt: new Date().toISOString(),
+          deviceName: "Caja",
+          deviceKind: "shared",
+          idleLockSeconds: 180,
+          ownerAccount: false,
+        },
+      } as Session;
+      await enqueue(owner, "audited");
+      const [job] =
+        await admin`select id from jobs where kind=${kind} and dedupe_key='audited'`;
+      const call = (path: string) =>
+        tenant(app, tenantId, (tx) =>
+          routes.get(`post ${path}`)!(tx, stepped, {
+            params: { id: job.id },
+          }),
+        );
+      await call("/jobs/:id/cancel");
+      await call("/jobs/:id/requeue");
+      const rows =
+        await admin`select operation, actor_id, detail from audit where tenant_id=${tenantId} and entity_id=${job.id} order by created_at, operation`;
+      assert.deepEqual(
+        rows.map((r) => [r.operation, r.actor_id, r.detail]),
+        [
+          [
+            "job.cancelled",
+            owner.employeeId,
+            { kind, state: "available", errorCode: null },
+          ],
+          [
+            "job.requeued",
+            owner.employeeId,
+            { kind, state: "dead", errorCode: "cancelled" },
+          ],
+        ],
+      );
+      // A refused control writes nothing (the audit row shares its transaction).
+      await assert.rejects(call("/jobs/:id/requeue"), /job_not_requeueable/);
+      const [{ n }] =
+        await admin`select count(*)::int as n from audit where tenant_id=${tenantId} and entity_id=${job.id}`;
+      assert.equal(n, 2);
       await admin`delete from jobs where kind=${kind}`;
     },
   );

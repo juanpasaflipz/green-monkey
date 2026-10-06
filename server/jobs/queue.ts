@@ -179,16 +179,30 @@ export async function extendLease(
   return row?.lease ?? null;
 }
 
+/** What a staff control changed, for its audit row (server/routes/ops.ts). */
+export type JobControlResult = {
+  kind: string;
+  state: string;
+  errorCode: string | null;
+};
+
 /**
  * Staff "retry" for a dead job (owners and managers). Blocked jobs are left
- * alone: they wait for a device, not for a retry.
+ * alone: they wait for a device, not for a retry. Returns the job's kind, state
+ * and error code before the change.
  */
-export async function requeueJob(tx: Tx, s: Session, jobId: string) {
+export async function requeueJob(
+  tx: Tx,
+  s: Session,
+  jobId: string,
+): Promise<JobControlResult> {
   permit(s, managers);
-  const [job] = await tx`select state from jobs where id=${jobId} for update`;
+  const [job] =
+    await tx`select kind, state, error_code from jobs where id=${jobId} for update`;
   if (!job) throw new DomainError("not_found", 404);
   if (job.state !== "dead") throw new DomainError("job_not_requeueable", 409);
   await tx`update jobs set state='available', attempts=0, next_at=now(), error_code=null where id=${jobId}`;
+  return { kind: job.kind, state: job.state, errorCode: job.error_code };
 }
 
 /**
@@ -196,13 +210,20 @@ export async function requeueJob(tx: Tx, s: Session, jobId: string) {
  * goes dead with error_code cancelled, so it is never claimed again. A running holder loses
  * its lease (lease_until is cleared, so its fenced writes match no row) and stops at its
  * next lease check. Done and dead jobs are refused; requeueJob undoes a cancel. Blocked
- * jobs can be cancelled too (a receipt that will never print).
+ * jobs can be cancelled too (a receipt that will never print). Returns the job's kind,
+ * state and error code before the change.
  */
-export async function cancelJob(tx: Tx, s: Session, jobId: string) {
+export async function cancelJob(
+  tx: Tx,
+  s: Session,
+  jobId: string,
+): Promise<JobControlResult> {
   permit(s, managers);
-  const [job] = await tx`select state from jobs where id=${jobId} for update`;
+  const [job] =
+    await tx`select kind, state, error_code from jobs where id=${jobId} for update`;
   if (!job) throw new DomainError("not_found", 404);
   if (job.state === "done" || job.state === "dead")
     throw new DomainError("job_not_cancellable", 409);
   await tx`update jobs set state='dead', lease_until=null, error_code='cancelled' where id=${jobId}`;
+  return { kind: job.kind, state: job.state, errorCode: job.error_code };
 }

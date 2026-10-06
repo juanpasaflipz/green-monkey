@@ -208,7 +208,12 @@ it outside service hours for the same reason.
 
 `GET /api/jobs` lists a restaurant's latest jobs for an owner or manager. Two
 controls, both for an owner or manager with a recent PIN or password
-(step-up), act on one job of their own restaurant:
+(step-up), act on one job of their own restaurant. **No screen calls them
+yet:** they are operator API calls made from a signed-in manager's browser
+session (cookie, CSRF header and a step-up within the last
+`ACCESS_STEP_UP_SECONDS`) until a jobs screen exists. Each writes an audit row
+(`job.requeued`, `job.cancelled`) with the job's kind and its state and error
+code before the change, visible in `GET /api/audit`:
 
 - `POST /api/jobs/<id>/requeue` retries a **dead** job (attempts reset);
 - `POST /api/jobs/<id>/cancel` stops a queued, available, blocked or running
