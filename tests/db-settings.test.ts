@@ -6,7 +6,7 @@ import {
   poolOptions,
   withoutParams,
 } from "../server/db-support.js";
-import { tenant } from "../server/db.js";
+import { connect, connectWorker, tenant } from "../server/db.js";
 
 describe("database connection policy", () => {
   it("connect() strips URL params and uses verify-full for non-loopback hosts, false for loopback (OPS-14 regression)", () => {
@@ -34,6 +34,44 @@ describe("database connection policy", () => {
     expect(databaseIdentity(neon)).toBe(
       "ep-x-pooler.us-east-1.aws.neon.tech:5432/green_monkey",
     );
+  });
+
+  it("connectWorker drops URL parameters, verifies TLS off-host, and does not apply the PG_APP_USER check", async () => {
+    const saved = process.env.PG_APP_USER;
+    process.env.PG_APP_USER = "gm_staging_app";
+    const url =
+      "postgresql://gm_staging_worker:pw@ep-x-pooler.us-east-1.aws.neon.tech/green_monkey?sslmode=require&channel_binding=require&options=-c%20role%3Dgm_migrator";
+    try {
+      // The runtime pool refuses a login other than PG_APP_USER ...
+      expect(() => connect(url)).toThrow(/PG_APP_USER must match/);
+      // ... the jobs worker pool is a different login by design.
+      const worker = connectWorker(url);
+      try {
+        const o = worker.options as unknown as {
+          host: string[];
+          user: string;
+          database: string;
+          ssl: unknown;
+          connection: Record<string, unknown>;
+        };
+        expect(o.host).toEqual(["ep-x-pooler.us-east-1.aws.neon.tech"]);
+        expect(o.user).toBe("gm_staging_worker");
+        expect(o.database).toBe("green_monkey");
+        expect(o.ssl).toBe("verify-full");
+        // No startup parameter survives from the URL (OPS-14).
+        expect(o.connection).toEqual({ application_name: "gm-worker-jobs" });
+      } finally {
+        await worker.end();
+      }
+      const local = connectWorker(
+        "postgresql://gm_worker:local-only-worker@127.0.0.1:55439/green_monkey_dev?sslmode=require",
+      );
+      expect(local.options.ssl).toBe(false);
+      await local.end();
+    } finally {
+      if (saved === undefined) delete process.env.PG_APP_USER;
+      else process.env.PG_APP_USER = saved;
+    }
   });
 
   it("pool size comes from DB_POOL_MAX with a default of 20", () => {

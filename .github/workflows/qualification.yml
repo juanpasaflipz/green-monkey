@@ -61,6 +61,8 @@ jobs:
         run: |
           psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/provision-local.sql
           psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/ops/sql/globals.sql
+          # provision-local.sql created gm_worker; globals.sql created gm_jobs_worker (Wave 2.0).
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -c "GRANT gm_jobs_worker TO gm_worker"
           psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 \
             -c "ALTER ROLE gm_migrator LOGIN PASSWORD 'local-only-migrator'"
           for database in green_monkey_dev green_monkey_test; do

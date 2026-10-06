@@ -404,6 +404,49 @@ try {
   );
 
   await check(
+    "--grants applies the 2.0 jobs-worker block: on `jobs`, gm_jobs_worker holds exactly SELECT, INSERT and UPDATE of the five runner columns",
+    async () => {
+      // Scoped to `jobs`: area blocks (-- 030 cfdi) grant the worker more tables.
+      const adminReal = pool(urlFor(real));
+      const [r] = await adminReal`
+        select
+          (select array_agg(a.privilege_type::text order by a.privilege_type)
+             from pg_class c, aclexplode(c.relacl) a
+            where c.oid = 'public.jobs'::regclass and a.grantee = 'gm_jobs_worker'::regrole) as table_privileges,
+          (select array_agg(att.attname::text || ':' || a.privilege_type order by att.attname, a.privilege_type)
+             from pg_attribute att, aclexplode(att.attacl) a
+            where att.attrelid = 'public.jobs'::regclass and att.attnum > 0
+              and a.grantee = 'gm_jobs_worker'::regrole) as column_privileges,
+          has_table_privilege('gm_jobs_worker', 'public.jobs', 'DELETE') as can_delete,
+          has_table_privilege('gm_jobs_worker', 'public.jobs', 'TRUNCATE') as can_truncate,
+          has_schema_privilege('gm_jobs_worker', 'public', 'USAGE') as schema_usage`;
+      assert.deepEqual(r.table_privileges, ["INSERT", "SELECT"]);
+      assert.deepEqual(r.column_privileges, [
+        "attempts:UPDATE",
+        "error_code:UPDATE",
+        "lease_until:UPDATE",
+        "next_at:UPDATE",
+        "state:UPDATE",
+      ]);
+      assert.equal(r.can_delete, false);
+      assert.equal(r.can_truncate, false);
+      assert.equal(r.schema_usage, true);
+      for (const column of [
+        "payload",
+        "kind",
+        "dedupe_key",
+        "tenant_id",
+        "id",
+        "created_at",
+      ]) {
+        const [c] = await adminReal`
+          select has_column_privilege('gm_jobs_worker', 'public.jobs', ${column}, 'UPDATE') as can_update`;
+        assert.equal(c.can_update, false, `no UPDATE of jobs.${column}`);
+      }
+    },
+  );
+
+  await check(
     "retention as the non-superuser owner deletes only consumed/expired OAuth attempts and old done/dead jobs, and restores FORCE RLS (DB-8 regression)",
     async () => {
       const adminReal = pool(urlFor(real));

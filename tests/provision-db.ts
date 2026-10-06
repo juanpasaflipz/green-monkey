@@ -7,7 +7,13 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import postgres from "postgres";
@@ -20,7 +26,7 @@ import {
   rotateLogin,
 } from "../scripts/ops/rotate-db-login.js";
 import { main as migrate } from "../scripts/migrate.js";
-import { checkRole, tenant } from "../server/db.js";
+import { checkRole, checkWorkerRole, tenant } from "../server/db.js";
 import { setLogSink } from "../server/logging.js";
 
 setLogSink(() => {});
@@ -78,9 +84,10 @@ const grantsBy = async (db: string, role: string, grantor: string) => {
   return { database: row.database ?? [], schema: row.schema ?? [] };
 };
 /**
- * What every deploy's preDeploy runs (.railway/railway.ts): migrate --grants
- * --retention as gm_migrator, which re-grants CONNECT and schema USAGE to the
- * runtime login with gm_migrator as the grantor (OPS-R14).
+ * What the GitHub Actions deploy job runs before any service deploys
+ * (.github/actions/deploy): migrate --grants --retention as gm_migrator, which
+ * re-grants CONNECT and schema USAGE to the runtime login with gm_migrator as
+ * the grantor (OPS-R14).
  */
 const deployGrants = async (db: string, role: string) => {
   await admin.unsafe(
@@ -133,7 +140,12 @@ try {
       assert.equal(none.n, 0, "dry run leaves no roles behind");
 
       const result = await provisionRoles({ ownerUrl, env, file });
-      created.push(result.roles.app, result.roles.billing, result.roles.backup);
+      created.push(
+        result.roles.app,
+        result.roles.billing,
+        result.roles.worker,
+        result.roles.backup,
+      );
       assert.equal(statSync(file).mode & 0o777, 0o600);
       const saved = parse(readFileSync(file, "utf8"));
       assert.deepEqual(Object.keys(saved).sort(), [
@@ -142,7 +154,12 @@ try {
         "DATABASE_URL",
         "MIGRATION_DATABASE_URL",
         "PG_APP_USER",
+        "WORKER_DATABASE_URL",
       ]);
+      assert.equal(
+        decodeURIComponent(new URL(saved.WORKER_DATABASE_URL).username),
+        `gm_${env}_worker`,
+      );
       assert.equal(saved.PG_APP_USER, `gm_${env}_app`);
       if (migrator?.rolcanlogin)
         assert.ok(
@@ -163,8 +180,12 @@ try {
           [`gm_${env}_app`, []],
           [`gm_${env}_backup`, ["gm_backup_reader"]],
           [`gm_${env}_billing`, ["gm_billing_worker"]],
+          [`gm_${env}_worker`, ["gm_jobs_worker"]],
         ],
+        "the worker login is a member of gm_jobs_worker only",
       );
+      // The privileged-login assertion runs over every provisioned login.
+      assert.ok(Object.values(result.roles).includes(`gm_${env}_worker`));
       assert.ok(
         roles.every((r) => !r.rolsuper && !r.rolbypassrls && !r.rolcreaterole),
       );
@@ -200,6 +221,20 @@ try {
       const [b] =
         await backup`select current_setting('statement_timeout') as statement`;
       assert.equal(b.statement, "0");
+      // The jobs login: 30 s / 8 s / 60 s (shown as 1min), CONNECT, and
+      // checkWorkerRole passes.
+      const worker = as(saved.WORKER_DATABASE_URL);
+      await checkWorkerRole(worker);
+      const [w] = await worker`
+      select current_setting('statement_timeout') as statement,
+             current_setting('lock_timeout') as lock,
+             current_setting('idle_in_transaction_session_timeout') as idle,
+             has_database_privilege(current_user, current_database(), 'CONNECT') as connect`;
+      assert.deepEqual(
+        { ...w },
+        { statement: "30s", lock: "8s", idle: "1min", connect: true },
+      );
+      await assert.rejects(checkRole(worker), /must not bypass RLS/);
     },
   );
 
@@ -215,6 +250,62 @@ try {
       const app = as(saved.DATABASE_URL);
       const [ok] = await app`select 1 as ok`;
       assert.equal(ok.ok, 1);
+    },
+  );
+
+  await check(
+    "a re-run with an existing env file appends WORKER_DATABASE_URL and rewrites no key",
+    async () => {
+      const worker = `gm_${env}_worker`;
+      const full = readFileSync(file, "utf8");
+      // An environment provisioned before Wave 2.0: no worker login, and no
+      // WORKER_DATABASE_URL line in its env file.
+      const before = full
+        .split("\n")
+        .filter((line) => !line.startsWith("WORKER_DATABASE_URL="))
+        .join("\n");
+      writeFileSync(file, before);
+      await disconnect(worker);
+      await admin.unsafe(
+        `revoke connect on database "${database}" from "${worker}"`,
+      );
+      await admin.unsafe(`drop role "${worker}"`);
+      const result = await provisionRoles({ ownerUrl, env, file });
+      assert.ok(result.actions.includes(`created ${worker}`));
+      assert.ok(
+        result.actions.includes("env file: appended WORKER_DATABASE_URL"),
+      );
+      const after = readFileSync(file, "utf8");
+      assert.ok(
+        after.startsWith(before),
+        "every saved key is kept byte for byte",
+      );
+      const appended = parse(after.slice(before.length));
+      assert.deepEqual(Object.keys(appended), ["WORKER_DATABASE_URL"]);
+      const url = new URL(appended.WORKER_DATABASE_URL);
+      assert.equal(decodeURIComponent(url.username), worker);
+      assert.ok(url.password.length >= 32, "a new login gets a saved password");
+      await checkWorkerRole(as(appended.WORKER_DATABASE_URL));
+
+      // A login that exists but whose password was never saved is appended
+      // without one, with a rotation hint; nothing else changes.
+      writeFileSync(file, before);
+      const again = await provisionRoles({ ownerUrl, env, file });
+      assert.ok(!again.actions.some((a) => a.startsWith("created gm_")));
+      assert.ok(
+        again.actions.includes(
+          `${worker}: existing login without a saved password; rotate it (rotate-db-login.ts --kind worker)`,
+        ),
+      );
+      const kept = readFileSync(file, "utf8");
+      assert.ok(kept.startsWith(before));
+      const tail = parse(kept.slice(before.length));
+      assert.equal(new URL(tail.WORKER_DATABASE_URL).password, "");
+      // The working URL is restored for the rotation check below.
+      writeFileSync(file, after);
+      const third = await provisionRoles({ ownerUrl, env, file });
+      assert.ok(!third.actions.some((a) => a.startsWith("env file:")));
+      assert.equal(readFileSync(file, "utf8"), after, "nothing to append");
     },
   );
 
@@ -266,6 +357,131 @@ try {
           file: null,
         }),
         /migrator/,
+      );
+    },
+  );
+
+  await check(
+    "rotate --kind worker copies membership and defaults; finalize drops the old login",
+    async () => {
+      const saved = parse(readFileSync(file, "utf8"));
+      const old = `gm_${env}_worker`;
+      const rotated = await rotateLogin({
+        ownerUrl,
+        env,
+        kind: "worker",
+        file: join(dir, "rotated-worker"),
+      });
+      created.push(rotated.newName);
+      assert.equal(
+        rotated.old,
+        old,
+        "the default old login is gm_<env>_worker",
+      );
+      assert.ok(
+        rotated.actions.includes(
+          `${rotated.newName} is a member of gm_jobs_worker`,
+        ),
+      );
+      const next = as(rotated.url);
+      await checkWorkerRole(next);
+      const [n] = await next`
+      select current_setting('statement_timeout') as statement,
+             current_setting('lock_timeout') as lock,
+             current_setting('idle_in_transaction_session_timeout') as idle`;
+      assert.deepEqual(
+        { ...n },
+        { statement: "30s", lock: "8s", idle: "1min" },
+      );
+      const current = as(saved.WORKER_DATABASE_URL);
+      await current`select 1`;
+      await assert.rejects(
+        finalizeRotation({ ownerUrl, old }),
+        /still has \d+ sessions/,
+      );
+      await disconnect(old);
+      await finalizeRotation({ ownerUrl, old });
+      const [gone] =
+        await admin`select count(*)::int as n from pg_roles where rolname=${old}`;
+      assert.equal(gone.n, 0);
+      await checkWorkerRole(next);
+    },
+  );
+
+  await check(
+    "globals.sql creates gm_jobs_worker and gm_support idempotently",
+    async () => {
+      const globals = readFileSync("scripts/ops/sql/globals.sql", "utf8");
+      await admin.unsafe(globals);
+      await admin.unsafe(globals);
+      const capabilities = await admin`
+        select rolname, rolcanlogin, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb
+        from pg_roles
+        where rolname = any(${["gm_backup_reader", "gm_billing_worker", "gm_jobs_worker", "gm_support"]})
+        order by 1`;
+      assert.deepEqual(
+        capabilities.map((r) => r.rolname),
+        [
+          "gm_backup_reader",
+          "gm_billing_worker",
+          "gm_jobs_worker",
+          "gm_support",
+        ],
+      );
+      assert.ok(
+        capabilities.every(
+          (r) =>
+            !r.rolcanlogin &&
+            !r.rolsuper &&
+            !r.rolbypassrls &&
+            !r.rolcreaterole &&
+            !r.rolcreatedb,
+        ),
+        "capability roles are NOLOGIN without privileges",
+      );
+      // Roles are cluster-global and shared, so creation itself is observed
+      // on renamed copies inside a transaction that is rolled back.
+      const suffix = randomBytes(3).toString("hex");
+      const names = [`gm_jobs_worker_${suffix}`, `gm_support_${suffix}`];
+      const renamed = globals
+        .replace("'gm_jobs_worker'", `'${names[0]}'`)
+        .replace("'gm_support'", `'${names[1]}'`);
+      assert.notEqual(renamed, globals);
+      const ROLLBACK = Symbol("rollback");
+      await admin
+        .begin(async (tx) => {
+          await tx.unsafe(renamed);
+          await tx.unsafe(renamed);
+          const rows = await tx`
+            select rolname, rolcanlogin from pg_roles where rolname = any(${names}) order by 1`;
+          assert.deepEqual(
+            rows.map((r) => [r.rolname, r.rolcanlogin]),
+            names.map((name) => [name, false]),
+          );
+          throw ROLLBACK;
+        })
+        .catch((error) => {
+          if (error !== ROLLBACK) throw error;
+        });
+      const [left] =
+        await admin`select count(*)::int as n from pg_roles where rolname = any(${names})`;
+      assert.equal(left.n, 0);
+    },
+  );
+
+  await check(
+    "database-grants.sql grants gm_jobs_worker CONNECT and schema USAGE",
+    async () => {
+      const db = as(ownerUrl);
+      const [r] = await db`
+        select has_database_privilege('gm_jobs_worker', current_database(), 'CONNECT') as connect,
+               has_database_privilege('public', current_database(), 'CONNECT') as public_connect,
+               has_schema_privilege('gm_jobs_worker', 'public', 'USAGE') as usage,
+               has_schema_privilege('gm_jobs_worker', 'public', 'CREATE') as create`;
+      assert.deepEqual(
+        { ...r },
+        { connect: true, public_connect: false, usage: true, create: false },
+        "an explicit CONNECT (PUBLIC has none) and USAGE, never CREATE",
       );
     },
   );
@@ -384,7 +600,7 @@ try {
         `create role "${neonOwner}" login createrole createdb bypassrls nosuperuser password '${neonOwnerPassword}'`,
       );
       await admin.unsafe(
-        `grant gm_migrator, gm_billing_worker, gm_backup_reader to "${neonOwner}" with admin true, inherit false, set false`,
+        `grant gm_migrator, gm_billing_worker, gm_backup_reader, gm_jobs_worker, gm_support to "${neonOwner}" with admin true, inherit false, set false`,
       );
       await admin.unsafe(
         `create database "${neonDatabase}" owner "${neonOwner}"`,
@@ -420,7 +636,12 @@ try {
         env: neonEnv,
         file: neonFile,
       });
-      created.push(result.roles.app, result.roles.billing, result.roles.backup);
+      created.push(
+        result.roles.app,
+        result.roles.billing,
+        result.roles.worker,
+        result.roles.backup,
+      );
       assert.ok(
         result.actions.includes(
           "asserted: no privileged login; only gm_migrator owns tables",

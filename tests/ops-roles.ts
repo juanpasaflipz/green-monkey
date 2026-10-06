@@ -4,8 +4,8 @@ import postgres from "postgres";
 /**
  * Disposable LOGIN roles for the ops DB suites, created through the isolated
  * test admin connection and dropped afterwards. Capability roles (NOLOGIN)
- * come from migrations; these logins only inherit them, like the provisioned
- * gm_<env>_worker and gm_<env>_backup logins.
+ * come from scripts/ops/sql/globals.sql; these logins only inherit them, like
+ * the provisioned gm_<env>_worker and gm_<env>_backup logins.
  */
 export async function disposableLogins(
   admin: postgres.Sql,

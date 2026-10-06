@@ -1,7 +1,7 @@
 // User-run, zero-downtime database login rotation (OPS-9). Connects as the
 // database owner through PROVISION_DATABASE_URL.
 //
-//   rotate:   tsx scripts/ops/rotate-db-login.ts --env staging --kind runtime|billing|backup [--old <name>] [--new-name <name>]
+//   rotate:   tsx scripts/ops/rotate-db-login.ts --env staging --kind runtime|billing|worker|backup [--old <name>] [--new-name <name>]
 //             Creates a new login with the old one's memberships and role
 //             settings and a fresh password, writes its URL to
 //             .env.rotated-<env>-<kind>-<new> (0600). A runtime login also
@@ -16,7 +16,9 @@
 //             DROP OWNED leaves (each deploy grants as gm_migrator, OPS-R14).
 //   migrator: tsx scripts/ops/rotate-db-login.ts --env staging --kind migrator
 //             Sets a new gm_migrator password and writes the new URL; update
-//             MIGRATION_DATABASE_URL on the worker service.
+//             the GitHub environment secret:
+//             gh secret set MIGRATION_DATABASE_URL --env <env> < <file>
+//             (stdin; never on the command line). No Railway service holds it.
 // Prints role names and actions only, never passwords.
 import "dotenv/config";
 import postgres from "postgres";
@@ -31,11 +33,13 @@ import { ensurePrivilegesOf, pooledHost } from "./provision-roles.js";
 const ROLE = /^[a-z_][a-z0-9_]{0,62}$/;
 const ident = (v: string) => '"' + v.replaceAll('"', '""') + '"';
 const literal = (v: string) => "'" + v.replaceAll("'", "''") + "'";
-export type LoginKind = "runtime" | "billing" | "backup" | "migrator";
+export type LoginKind =
+  "runtime" | "billing" | "backup" | "worker" | "migrator";
 const suffix: Record<Exclude<LoginKind, "migrator">, string> = {
   runtime: "app",
   billing: "billing",
   backup: "backup",
+  worker: "worker",
 };
 
 function connect(ownerUrl: string) {
@@ -302,7 +306,7 @@ export async function finalizeRotation(o: { ownerUrl: string; old: string }) {
   return { dropped: o.old, actions };
 }
 
-/** New password for gm_migrator (used only by the worker's preDeploy). */
+/** New password for gm_migrator (used only by the GitHub Actions deploy job and retention workflow). */
 export async function rotateMigrator(o: {
   ownerUrl: string;
   env: string;
@@ -358,12 +362,12 @@ if (invokedDirectly()) {
       result = {
         role: r.role,
         file: r.file,
-        next: "update MIGRATION_DATABASE_URL on the worker service",
+        next: "update the GitHub environment secret: gh secret set MIGRATION_DATABASE_URL --env <env> < <file> (stdin; never on the command line)",
       };
     } else {
       const kind = value("--kind") as Exclude<LoginKind, "migrator">;
-      if (!["runtime", "billing", "backup"].includes(kind))
-        throw Error("--kind runtime|billing|backup|migrator");
+      if (!["runtime", "billing", "backup", "worker"].includes(kind))
+        throw Error("--kind runtime|billing|backup|worker|migrator");
       const r = await rotateLogin({
         ownerUrl,
         env,
@@ -378,10 +382,12 @@ if (invokedDirectly()) {
         actions: r.actions,
         next:
           kind === "runtime"
-            ? "the new login already holds the runtime grants; set DATABASE_URL and PG_APP_USER on web and PG_APP_USER on worker, redeploy both in any order (merge no migration mid-rotation), then --finalize"
+            ? "the new login already holds the runtime grants; set DATABASE_URL and PG_APP_USER on web and the GitHub environment variable PG_APP_USER; redeploy web (merge no migration mid-rotation); then --finalize"
             : kind === "billing"
               ? "set BILLING_DATABASE_URL on web and worker, redeploy both, then --finalize"
-              : "update the BACKUP_DATABASE_URL GitHub environment secret, then --finalize",
+              : kind === "worker"
+                ? "set WORKER_DATABASE_URL on the worker service, redeploy it, then --finalize"
+                : "update the BACKUP_DATABASE_URL GitHub environment secret, then --finalize",
       };
     }
     console.log(

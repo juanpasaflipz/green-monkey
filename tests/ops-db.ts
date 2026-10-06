@@ -1,12 +1,20 @@
 import "dotenv/config";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import postgres from "postgres";
 import { isolatedTarget } from "./isolated-target.js";
 import { check, disposableLogins, passed } from "./ops-roles.js";
-import { checkRole, connect, tenant, waitForDatabase } from "../server/db.js";
+import {
+  checkRole,
+  checkWorkerRole,
+  connect,
+  tenant,
+  waitForDatabase,
+  type Tx,
+} from "../server/db.js";
 import { computeStatus } from "../server/ops/status.js";
-import { reconcilePolicies } from "../server/ops/schema.js";
+import { assertRuntimeRole, reconcilePolicies } from "../server/ops/schema.js";
 import { setLogSink } from "../server/logging.js";
 
 setLogSink(() => {});
@@ -39,7 +47,7 @@ const rejects = async (promise: Promise<unknown>, pattern: RegExp) =>
     assert.match(`${e?.code ?? ""} ${e?.message ?? ""}`, pattern);
     return true;
   });
-const cleanup: { drop?: () => Promise<void> } = {};
+const cleanup: { drop?: () => Promise<void>; roles?: () => Promise<void> } = {};
 
 try {
   await check(
@@ -242,11 +250,128 @@ try {
     },
   );
 
+  // Wave 2.0 (e): one membership list (server/roles.ts) for every login check.
+  // Roles are cluster-global, so these checks create disposable logins and
+  // never drop or alter a capability role.
+  const { logins, drop } = await disposableLogins(admin, runtime, {
+    plain: [],
+    jobs: ["gm_jobs_worker"],
+    support: ["gm_support"],
+    backup: ["gm_backup_reader"],
+    migrator: ["gm_migrator"],
+    createdb: [],
+    worker: ["gm_jobs_worker"],
+    workerBilling: ["gm_jobs_worker", "gm_billing_worker"],
+    workerSupport: ["gm_jobs_worker", "gm_support"],
+    workerBackup: ["gm_jobs_worker", "gm_backup_reader"],
+    workerMigrator: ["gm_jobs_worker", "gm_migrator"],
+    workerBypass: ["gm_jobs_worker"],
+    workerCreaterole: ["gm_jobs_worker"],
+    workerCreatedb: ["gm_jobs_worker"],
+    workerOwner: ["gm_jobs_worker"],
+  });
+  cleanup.roles = drop;
+  await admin.unsafe(`alter role "${logins.createdb.role}" createdb`);
+  await admin.unsafe(`alter role "${logins.workerBypass.role}" bypassrls`);
+  await admin.unsafe(`alter role "${logins.workerCreaterole.role}" createrole`);
+  await admin.unsafe(`alter role "${logins.workerCreatedb.role}" createdb`);
+  const ownedTable = `opstest_owned_${randomBytes(4).toString("hex")}`;
+
+  await check(
+    "checkRole rejects runtime logins that are members of gm_jobs_worker, gm_support, gm_backup_reader or gm_migrator, or have CREATEDB",
+    async () => {
+      await checkRole(logins.plain.sql);
+      for (const name of ["jobs", "support", "backup", "migrator", "createdb"])
+        await rejects(
+          checkRole(logins[name].sql),
+          /Runtime role must not bypass RLS/,
+        );
+    },
+  );
+
+  await check(
+    "checkWorkerRole accepts a gm_jobs_worker member; rejects a non-member, any other capability or gm_migrator membership, BYPASSRLS, CREATEROLE, CREATEDB and a table owner",
+    async () => {
+      await checkWorkerRole(logins.worker.sql);
+      for (const name of [
+        "plain",
+        "support",
+        "workerBilling",
+        "workerSupport",
+        "workerBackup",
+        "workerMigrator",
+        "workerBypass",
+        "workerCreaterole",
+        "workerCreatedb",
+      ])
+        await rejects(
+          checkWorkerRole(logins[name].sql),
+          /Worker role must be a gm_jobs_worker member without other privileges/,
+        );
+      await admin.unsafe(`create table "${ownedTable}" (id int)`);
+      try {
+        await admin.unsafe(
+          `alter table "${ownedTable}" owner to "${logins.workerOwner.role}"`,
+        );
+        await rejects(
+          checkWorkerRole(logins.workerOwner.sql),
+          /Worker role must not own application tables/,
+        );
+      } finally {
+        await admin.unsafe(`drop table if exists "${ownedTable}"`);
+      }
+      // The runtime check refuses the worker login too.
+      await rejects(
+        checkRole(logins.worker.sql),
+        /Runtime role must not bypass RLS/,
+      );
+    },
+  );
+
+  await check(
+    "assertRuntimeRole refuses gm_support membership (runtime_role_privileged)",
+    async () => {
+      for (const name of ["support", "jobs", "backup", "migrator"])
+        await rejects(
+          admin.begin((raw) => assertRuntimeRole(raw as Tx, logins[name].role)),
+          /runtime_role_privileged/,
+        );
+      await admin.begin((raw) =>
+        assertRuntimeRole(raw as Tx, logins.plain.role),
+      );
+    },
+  );
+
+  await check(
+    "the 2.0 grants guard raises the actionable message when either role is missing",
+    async () => {
+      const manifest = readFileSync("scripts/grants.sql", "utf8");
+      const guard = manifest.match(
+        /DO \$\$ BEGIN\n IF to_regrole\('gm_jobs_worker'\)[\s\S]*?END \$\$;/,
+      )?.[0];
+      assert.ok(guard, "the -- 2.0 jobs worker guard block");
+      assert.ok(
+        manifest.indexOf("-- 2.0 jobs worker") < manifest.indexOf(guard),
+        "the guard belongs to the 2.0 block",
+      );
+      await admin.unsafe(guard);
+      const absent = "gm_absent_" + randomBytes(4).toString("hex");
+      for (const role of ["gm_jobs_worker", "gm_support"])
+        await rejects(
+          admin.unsafe(
+            guard.replace(`to_regrole('${role}')`, `to_regrole('${absent}')`),
+          ),
+          /role gm_jobs_worker or gm_support is missing: run scripts\/ops\/sql\/globals\.sql as the database owner first \(docs\/PROVISIONING\.md\)/,
+        );
+    },
+  );
+
   console.log(
     `Ops DB checks passed: ${passed()} checks against ${new URL(runtime).pathname.slice(1)}.`,
   );
 } finally {
   await cleanup.drop?.();
+  await cleanup.roles?.();
   await traced.end();
   await app.end();
   await admin.end();
