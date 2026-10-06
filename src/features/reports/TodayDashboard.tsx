@@ -2,6 +2,7 @@ import { useState } from "react";
 import { AlertTriangle, Info } from "lucide-react";
 import type { Locale, Session } from "../../../shared/domain";
 import {
+  addDays,
   averageTicket,
   bps,
   quickRange,
@@ -14,6 +15,7 @@ import { Button } from "../../components/ui";
 import { fetchToday } from "./api";
 import { CortePrintButton } from "./CortePrintButton";
 import {
+  countFill,
   cutoffLabel,
   dateLabel,
   exceptionKindLabel,
@@ -37,11 +39,14 @@ export function TodayDashboard({
   locale,
   navigate,
   online = true,
+  refreshKey = 0,
 }: {
   session: Session;
   locale: Locale;
   navigate: (view: string) => void;
   online?: boolean;
+  /** Operations' header Actualizar (REPORTS-UI-10): a change fetches Hoy again. */
+  refreshKey?: number;
 }) {
   const t = strings[locale];
   const m = money(session.restaurant.currency, locale);
@@ -59,7 +64,7 @@ export function TodayDashboard({
       }
     },
     { intervalMs: 60_000, enabled: online },
-    [locale],
+    [locale, refreshKey],
   );
   if (!online && !data)
     return (
@@ -146,9 +151,20 @@ export function TodayDashboard({
               locale={locale}
               requestId={s.requestId}
               onOpenCortes={() => {
-                openReports("cortes", quickRange("today", data.businessDate));
+                // REPORTS-UI-5: the unreviewed differences cover the last 31 days, so Cortes
+                // opens on those days, where every one of them is listed "Por revisar".
+                openReports(
+                  "cortes",
+                  alert.code === "drawer_unreviewed"
+                    ? {
+                        from: alert.since ?? addDays(data.businessDate, -30),
+                        to: data.businessDate,
+                      }
+                    : quickRange("today", data.businessDate),
+                );
                 navigate("finance");
               }}
+              navigate={navigate}
             />
           ))}
         </div>
@@ -157,10 +173,13 @@ export function TodayDashboard({
         <section className="panel report-card" aria-labelledby="today-checks">
           <h2 id="today-checks">{t.reportsTodayOpenChecks}</h2>
           <p>
-            {fill(t.reportsTodayOpenChecksLine, {
-              n: s.sales.openChecks,
-              amount: m(s.sales.outstanding),
-            })}
+            {countFill(
+              locale,
+              "reportsTodayOpenChecksLine",
+              "reportsTodayOpenChecksLineOne",
+              s.sales.openChecks,
+              { amount: m(s.sales.outstanding) },
+            )}
           </p>
           <Button onClick={() => navigate("orders")}>
             {t.reportsTodayViewOrders}
@@ -181,7 +200,12 @@ export function TodayDashboard({
                 })}
               </p>
               <p className="muted">
-                {fill(t.reportsTodayPayments, { n: d.payments })}
+                {countFill(
+                  locale,
+                  "reportsTodayPayments",
+                  "reportsTodayPaymentsOne",
+                  d.payments,
+                )}
                 {d.expected !== null &&
                   " · " +
                     fill(t.reportsTodayExpected, { amount: m(d.expected) })}
@@ -254,11 +278,13 @@ function AlertLine({
   locale,
   requestId,
   onOpenCortes,
+  navigate,
 }: {
   alert: ReportAlert;
   locale: Locale;
   requestId: string;
   onOpenCortes: () => void;
+  navigate: (view: string) => void;
 }) {
   const t = strings[locale];
   const date = alert.since ? dateLabel(alert.since, locale) : "";
@@ -273,11 +299,26 @@ function AlertLine({
               date,
             })
           : alert.code === "missing_tickets"
-            ? fill(t.reportsAlertMissingTickets, { n: alert.count })
+            ? countFill(
+                locale,
+                "reportsAlertMissingTickets",
+                "reportsAlertMissingTicketsOne",
+                alert.count,
+              )
             : alert.code === "drawer_unreviewed"
-              ? fill(t.reportsAlertUnreviewed, { n: alert.count })
+              ? countFill(
+                  locale,
+                  "reportsAlertUnreviewed",
+                  "reportsAlertUnreviewedOne",
+                  alert.count,
+                )
               : alert.code === "offline_review_pending"
-                ? fill(t.reportsAlertOfflineReview, { n: alert.count })
+                ? countFill(
+                    locale,
+                    "reportsAlertOfflineReview",
+                    "reportsAlertOfflineReviewOne",
+                    alert.count,
+                  )
                 : null;
   // cfdi (030) maps its own alerts; an alert this build cannot word is not shown as a raw code.
   if (text === null) return null;
@@ -298,6 +339,16 @@ function AlertLine({
         alert.code === "drawer_unreviewed") && (
         <Button variant="ghost" onClick={onOpenCortes}>
           {t.reportsTabCortes}
+        </Button>
+      )}
+      {alert.code === "missing_tickets" && (
+        <Button variant="ghost" onClick={() => navigate("settings")}>
+          {t.reportsAlertOpenSettings}
+        </Button>
+      )}
+      {alert.code === "offline_review_pending" && (
+        <Button variant="ghost" onClick={() => navigate("kitchen")}>
+          {t.reportsAlertOpenKitchen}
         </Button>
       )}
     </div>

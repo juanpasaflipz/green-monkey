@@ -818,8 +818,11 @@ describe("Resumen rows, summary CSV and the corte del día", () => {
     expect(out).toContain(
       "Ventas con ticket después de reembolsos (IVA incluido) $24,550.00",
     );
-    expect(out).toContain("1 órdenes anuladas por completo · $80.00");
-    expect(out).toContain("Ventas sin conexión 3 · $420.00 (propinas $20.00)");
+    // REPORTS-UI-3: the count stays in the label, the amount only in the value column.
+    expect(out).toContain("Órdenes anuladas por completo (1) $80.00");
+    expect(out).toContain("Ventas sin conexión (3 · propinas $20.00) $420.00");
+    // REPORTS-UI-9: the refund split prints as rows of its own.
+    expect(out).toContain("Reembolsos −$90.00 Efectivo −$90.00");
     expect(out).toContain("Folios A-000101 a A-000196 (96 tickets)");
     expect(out).toContain("Anulaciones: 5 · $640.00");
     expect(out).toContain("Cuentas con saldo 2 · $240.00");

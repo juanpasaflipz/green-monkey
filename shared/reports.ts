@@ -399,6 +399,8 @@ export const dayCortePrintInput = z.object({ operationId: id }).strict();
 export const remoteCloseInput = z
   .object({
     operationId: id,
+    /** The fingerprint of the corte X the dialog showed (CorteDocument.fingerprint). */
+    fingerprint: z.string().min(1).max(200),
     counted: money,
     reason: z.string().trim().min(3).max(300),
     externalReported: money.nullable().optional(),
@@ -920,11 +922,17 @@ export type RestaurantHeader = {
   currency: string;
   timezone: string;
 };
+/**
+ * One contiguous folio run (first … last, count = last − first + 1), or, on a corte X/Z, the
+ * runs of one series that did not fit on paper summarized as first … last with `runs` > 1: the
+ * folios in between were issued by other devices (folioRanges).
+ */
 export type FolioRange = {
   series: string;
   first: string;
   last: string;
   count: number;
+  runs?: number;
 };
 export type CountAmount = { count: number; amount: number };
 export type CorteControls = {
@@ -990,6 +998,12 @@ export type CorteDocument = {
    */
   lateTerminal: number;
   review: DrawerReview | null;
+  /**
+   * The open drawer's money as this document read it (drawerFingerprint; null on a corte Z or a
+   * blind document). A remote close sends it back, and the server refuses the close when the
+   * drawer changed since (reports_drawer_changed, review REPORTS-CORTES-1).
+   */
+  fingerprint: string | null;
 };
 export type DayCorteDocument = {
   date: string;
@@ -1165,13 +1179,16 @@ export type LineDayAggregate = {
   cancelledAmount: number;
   lineDiscounts: number;
   courtesies: number;
-  /** Σ unit cost × remaining units, ticketed orders, lines with a cost. */
+  /**
+   * Σ unit cost × remaining units over the margin basis (orders with a fiscal ticket, and orders
+   * comped to zero, which fiscal never tickets), lines with a cost.
+   */
   cogs: number;
   /** The same over all orders. */
   cogsAll: number;
-  /** Σ remaining gross of ticketed lines with a cost. */
+  /** Σ remaining gross of margin-basis lines with a cost. */
   coveredGross: number;
-  /** Σ remaining gross of ticketed lines. */
+  /** Σ remaining gross of margin-basis lines. */
   ticketedLineGross: number;
   /** Σ unit cost × voided units not returned to stock. */
   wasteCost: number;
@@ -1488,9 +1505,12 @@ function mergeCategories(lists: readonly (readonly CategoryTotals[])[]) {
 /**
  * One FiscalSummary from the summaries of consecutive chunks (fiscalForRange calls fiscalSummary
  * per ≤ 31-day chunk). Categories sum per category in fiscal order (iva16, iva8, iva0, exempt);
- * folio series merge per series (first = min, last = max, count = Σ); totals, ticket counts and
- * missing tickets sum (the chunks' dates are disjoint); from/to are the outer bounds. The parts
- * must be in date order, each starting the day after the previous one ends.
+ * folio runs stay runs, as fiscal returns them (contiguous, last − first + 1 = count, several per
+ * series when later folios belong to other dates, FISCAL-SAT-3): the parts' runs are sorted by
+ * (series, first) and two runs join only when one continues the other (a run split at a chunk
+ * boundary), so a gap is never printed as part of a range (review REPORTS-SQL-1); totals, ticket
+ * counts and missing tickets sum (the chunks' dates are disjoint); from/to are the outer bounds.
+ * The parts must be in date order, each starting the day after the previous one ends.
  */
 export function mergeFiscalSummaries(
   parts: readonly FiscalSummary[],
@@ -1501,27 +1521,28 @@ export function mergeFiscalSummaries(
     if (i > 0 && parts[i].from !== addDays(parts[i - 1].to, 1))
       throw new RangeError("fiscal_parts_not_consecutive");
   }
-  const seriesNames = [
-    ...new Set(parts.flatMap((p) => p.tickets.series.map((x) => x.series))),
-  ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-  const series = seriesNames.map((name) => {
-    const runs = parts.flatMap((p) =>
-      p.tickets.series.filter((x) => x.series === name),
-    );
-    for (const r of runs)
+  const runs = parts
+    .flatMap((p) => p.tickets.series)
+    .map((r) => {
       if (
         !Number.isSafeInteger(r.first) ||
         !Number.isSafeInteger(r.last) ||
         r.first > r.last
       )
         throw new RangeError("invalid_folio_run");
-    return {
-      series: name,
-      first: Math.min(...runs.map((r) => r.first)),
-      last: Math.max(...runs.map((r) => r.last)),
-      count: sumBy(runs, (r) => r.count),
-    };
-  });
+      return { ...r };
+    })
+    .sort((a, b) =>
+      a.series < b.series ? -1 : a.series > b.series ? 1 : a.first - b.first,
+    );
+  const series: FiscalSummary["tickets"]["series"] = [];
+  for (const r of runs) {
+    const prev = series[series.length - 1];
+    if (prev && prev.series === r.series && r.first === prev.last + 1) {
+      prev.last = r.last;
+      prev.count = add(prev.count, r.count);
+    } else series.push(r);
+  }
   const total = (k: keyof FiscalSummary["totals"]) =>
     sumBy(parts, (p) => p.totals[k]);
   return {
@@ -1768,6 +1789,28 @@ export type DrawerFacts = {
   zPrints: number;
 };
 
+/**
+ * Every figure a drawer's expected cash and terminal net come from, as one string: a tender,
+ * refund or cash movement recorded since changes it (each adds to a count or a positive sum). The
+ * remote close compares it under the drawer lock with what the manager's dialog showed.
+ */
+export function drawerFingerprint(f: DrawerFacts): string {
+  return [
+    f.opening,
+    f.cash.count,
+    f.cash.amount,
+    f.cash.tips,
+    f.cash.refunds,
+    f.external.count,
+    f.external.amount,
+    f.external.tips,
+    f.external.refunds,
+    f.paidOuts.count,
+    f.paidOuts.amount,
+    f.payIns,
+  ].join(".");
+}
+
 /** The live expected cash of a drawer (discounts' drawerTotals formula). */
 export function liveExpectedCash(f: DrawerFacts): number {
   return add(
@@ -1963,7 +2006,15 @@ export function cortePrintKind(
   return doc.visibility === "blind" ? "count_slip" : "corte_z";
 }
 
-/** Folio runs of fiscal_tickets per series, formatted with fiscal's formatFolio. */
+/** At most this many folio runs per series print on a corte X/Z (two devices interleave). */
+export const CORTE_FOLIO_RUNS = 4;
+
+/**
+ * Contiguous folio runs per series, in (series, first) order, formatted with fiscal's
+ * formatFolio. With `maxRuns`, a series with more runs than that becomes one summary entry
+ * (first … last, Σ count, `runs`), so a busy two-register drawer never prints dozens of lines
+ * and a range never reads as contiguous.
+ */
 export function folioRanges(
   runs: readonly {
     series: string;
@@ -1971,15 +2022,32 @@ export function folioRanges(
     last: number;
     count: number;
   }[],
+  maxRuns = Number.MAX_SAFE_INTEGER,
 ): FolioRange[] {
-  return [...runs]
-    .sort((a, b) => (a.series < b.series ? -1 : a.series > b.series ? 1 : 0))
-    .map((r) => ({
-      series: r.series,
-      first: formatFolio(r.series, r.first),
-      last: formatFolio(r.series, r.last),
-      count: r.count,
-    }));
+  const sorted = [...runs].sort((a, b) =>
+    a.series < b.series ? -1 : a.series > b.series ? 1 : a.first - b.first,
+  );
+  const out: FolioRange[] = [];
+  for (const name of [...new Set(sorted.map((r) => r.series))]) {
+    const own = sorted.filter((r) => r.series === name);
+    if (own.length > maxRuns)
+      out.push({
+        series: name,
+        first: formatFolio(name, own[0].first),
+        last: formatFolio(name, Math.max(...own.map((r) => r.last))),
+        count: sumBy(own, (r) => r.count),
+        runs: own.length,
+      });
+    else
+      for (const r of own)
+        out.push({
+          series: name,
+          first: formatFolio(name, r.first),
+          last: formatFolio(name, r.last),
+          count: r.count,
+        });
+  }
+  return out;
 }
 
 /**
@@ -2072,10 +2140,11 @@ export function buildCorteDocument(
     },
     payments: add(f.cash.count, f.external.count) - lateCount,
     controls: blind ? null : ctx.controls,
-    folios: blind ? [] : folioRanges(ctx.folios),
+    folios: blind ? [] : folioRanges(ctx.folios, CORTE_FOLIO_RUNS),
     lateCash: blind || !closed ? 0 : add(f.cash.lateAmount, f.cash.lateTips),
     lateTerminal: lateTerminal(f),
     review: blind ? null : f.review,
+    fingerprint: closed || blind ? null : drawerFingerprint(f),
   };
 }
 

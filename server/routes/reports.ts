@@ -1,6 +1,6 @@
 import type express from "express";
 import type { PreAuthContext, RouteContext } from "../http.js";
-import { tenant, type Tx } from "../db.js";
+import type { Tx } from "../db.js";
 import type { AuthRequest } from "../auth.js";
 import { requestIdOf } from "../logging.js";
 import { id, type Session } from "../../shared/domain.js";
@@ -11,7 +11,7 @@ import {
   summaryQuery,
 } from "../../shared/reports.js";
 import { mapReportErrors, snapshotTenant } from "../reports/snapshot.js";
-import type { ReportsPorts } from "../reports/ports.js";
+import { reportsPorts, type ReportsPorts } from "../reports/ports.js";
 import { salesSummary } from "../reports/summary.js";
 import { breakdown } from "../reports/breakdowns.js";
 import { orderRows, tenderRows } from "../reports/lists.js";
@@ -32,28 +32,21 @@ import { reportFilters } from "../reports/filters.js";
 /** reports area routes that must run before authentication. */
 export function registerPreAuth(_ctx: PreAuthContext) {}
 
-/**
- * reports area authenticated routes. Phase A (before fiscal 027 and discounts 028 merge): the
- * routes whose statements read only wave-1 tables. The rest need fiscal's and discounts'
- * functions; they register once `ports` is built from those modules at reports' merge
- * (docs/REPORTS.md "Merge wiring").
- */
+/** reports area authenticated routes, reading fiscal (027) and discounts (028) through the ports. */
 export function register(ctx: RouteContext) {
-  registerReports(ctx, null);
+  registerReports(ctx, reportsPorts);
 }
 
-type Handler = (tx: Tx, s: Session, req: express.Request) => Promise<unknown>;
+type Read = (tx: Tx, s: Session, req: express.Request) => Promise<unknown>;
+type Command = (s: Session, req: express.Request) => Promise<unknown>;
 
-/** Every report route; the ones that need fiscal (027) or discounts (028) only with `ports`. */
-export function registerReports(
-  { app, sql }: RouteContext,
-  ports: ReportsPorts | null,
-) {
+/** Every report route (tests pass their own ports). */
+export function registerReports({ app, sql }: RouteContext, p: ReportsPorts) {
   // The helpers are named get and post, the verbs they register, so tests/lock-scan.ts splits
   // every registration below into its own unit (one request, one transaction) instead of
   // chaining all the routes of this function as one transaction.
   /** A report read: one read-only snapshot, never cached (platform C-8). */
-  const get = (path: string, fn: Handler) =>
+  const get = (path: string, fn: Read) =>
     app.get("/api" + path, async (req, res, next) => {
       try {
         const s = (req as AuthRequest).session;
@@ -67,14 +60,15 @@ export function registerReports(
       }
     });
   /**
-   * A report command (print, remote close): one tenant() transaction whose handler raises the
-   * statement timeout first; a timeout answers reports_timeout (422) like the reads.
+   * A report command (print, remote close). Each runs its own transactions (cortes.ts: the
+   * document from a REPEATABLE READ snapshot, the print number or the close in tenant()); a
+   * statement timeout answers reports_timeout (422) like the reads.
    */
-  const post = (path: string, fn: Handler) =>
+  const post = (path: string, fn: Command) =>
     app.post("/api" + path, async (req, res, next) => {
       try {
         const s = (req as AuthRequest).session;
-        const out = await tenant(sql, s.tenantId, (tx) => fn(tx, s, req));
+        const out = await fn(s, req);
         res.set("Cache-Control", "no-store");
         res.json(out);
       } catch (e) {
@@ -87,8 +81,6 @@ export function registerReports(
   get("/reports/audit", (tx, s, req) => auditLog(tx, s, req.query));
   get("/reports/filters", (tx, s) => reportFilters(tx, s));
   get("/reports/tenders", (tx, s, req) => tenderRows(tx, s, req.query));
-  if (!ports) return;
-  const p = ports;
   get("/reports/summary", (tx, s, req) =>
     salesSummary(
       tx,
@@ -120,13 +112,13 @@ export function registerReports(
   );
   // Moved from server/index.ts: the old daily report shape for PWA bundles (spec §4.5 legacy).
   get("/report", (tx, s, req) => legacyDailyReport(tx, s, req.query));
-  post("/reports/drawers/:id/corte", (tx, s, req) =>
-    printDrawerCorte(tx, s, id.parse(req.params.id), req.body, p),
+  post("/reports/drawers/:id/corte", (s, req) =>
+    printDrawerCorte(sql, s, id.parse(req.params.id), req.body, p),
   );
-  post("/reports/drawers/:id/close", (tx, s, req) =>
-    closeDrawerRemotely(tx, s, id.parse(req.params.id), req.body, p),
+  post("/reports/drawers/:id/close", (s, req) =>
+    closeDrawerRemotely(sql, s, id.parse(req.params.id), req.body, p),
   );
-  post("/reports/days/:date/corte", (tx, s, req) =>
-    printDayCorte(tx, s, dateParam(req), req.body, p),
+  post("/reports/days/:date/corte", (s, req) =>
+    printDayCorte(sql, s, dateParam(req), req.body, p, requestIdOf(req)),
   );
 }

@@ -25,6 +25,7 @@ import { strings, type Key } from "../../i18n";
 import { channelLabel, operationLabel, tenderMethodLabel } from "../../labels";
 import { differenceLabel, exceptionKindLabel, hourLabel } from "./format";
 import { summarySections } from "./summary-rows";
+import { exceptionApprover, exceptionEmployee } from "./exception-text";
 
 /**
  * CSV exports (spec §2.9, §5.6). The writer (BOM, CRLF, quoting, OWASP formula guard, money
@@ -273,9 +274,13 @@ export const exceptionColumns = (
   {
     header: h("reportsColEmployee"),
     type: "t",
-    value: (r) => r.actorName ?? r.accountName,
+    value: (r) => exceptionEmployee(r, locale),
   },
-  { header: h("reportsColApprover"), type: "t", value: (r) => r.approverName },
+  {
+    header: h("reportsColApprover"),
+    type: "t",
+    value: (r) => exceptionApprover(r, locale),
+  },
   { header: h("reportsColAmount"), type: "m", value: (r) => r.amount },
   { header: h("reportsColOrder"), type: "i", value: (r) => r.orderNumber },
   { header: h("reportsColReason"), type: "t", value: reason },

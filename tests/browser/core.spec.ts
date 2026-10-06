@@ -248,9 +248,10 @@ test("inventory receipt, count conflict-safe adjustment and owner drilldown", as
   await movements.getByRole("button", { name: "Cerrar", exact: true }).click();
   await expect(movements).not.toBeVisible();
   await page.getByRole("button", { name: "Hoy", exact: true }).click();
-  await expect(page.locator(".metric-grid")).toBeVisible();
+  // reports (029): Hoy's tiles, then its drill-down to the orders.
+  await expect(page.locator(".report-tiles")).toBeVisible();
   await page.screenshot({ path: "docs/evidence/today-1440.png" });
-  await page.locator(".metric").first().click();
+  await page.getByRole("button", { name: "Ver órdenes", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Órdenes", exact: true }),
   ).toBeVisible();

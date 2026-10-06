@@ -782,24 +782,48 @@ describe("query schemas (zod 4, strict)", () => {
     expect(cortePrintInput.safeParse({ operationId, kind: "y" }).success).toBe(
       false,
     );
+    const fingerprint = "10000.1.4500.0.0.0.0.0.0.0.0.0";
     expect(
       remoteCloseInput.parse({
         operationId,
+        fingerprint,
         counted: 1500,
         reason: "  dispositivo robado  ",
       }),
-    ).toEqual({ operationId, counted: 1500, reason: "dispositivo robado" });
+    ).toEqual({
+      operationId,
+      fingerprint,
+      counted: 1500,
+      reason: "dispositivo robado",
+    });
+    // REPORTS-CORTES-1: the close carries what the dialog showed; without it there is no close.
     expect(
-      remoteCloseInput.safeParse({ operationId, counted: 1500, reason: " ab " })
-        .success,
+      remoteCloseInput.safeParse({
+        operationId,
+        counted: 1500,
+        reason: "motivo",
+      }).success,
     ).toBe(false);
     expect(
-      remoteCloseInput.safeParse({ operationId, counted: -1, reason: "motivo" })
-        .success,
+      remoteCloseInput.safeParse({
+        operationId,
+        fingerprint,
+        counted: 1500,
+        reason: " ab ",
+      }).success,
+    ).toBe(false);
+    expect(
+      remoteCloseInput.safeParse({
+        operationId,
+        fingerprint,
+        counted: -1,
+        reason: "motivo",
+      }).success,
     ).toBe(false);
     expect(
       remoteCloseInput.parse({
         operationId,
+        fingerprint,
         counted: 0,
         reason: "motivo",
         externalReported: null,
@@ -3315,7 +3339,7 @@ describe("fiscal summaries over chunks", () => {
     };
   }
 
-  it("6. mergeFiscalSummaries sums categories and merges folio series (min first, max last, summed count) across 31-day chunks", () => {
+  it("6. mergeFiscalSummaries sums categories and keeps fiscal's contiguous folio runs: a run split at a chunk boundary joins, a gap stays a gap (REPORTS-SQL-1)", () => {
     const range = { from: "2026-08-01", to: "2026-09-29" };
     const chunks = rangeChunks(range);
     expect(chunks).toEqual([
@@ -3328,7 +3352,9 @@ describe("fiscal summaries over chunks", () => {
       [cat("iva16", 116_000, 16_000, 2_000), cat("iva0", 5_000, 0)],
       [cat("iva16", 11_600, 1_600)],
       [
+        // A late offline sync put folio A-000260 (issued in September) into August.
         { series: "A", first: 101, last: 187, count: 87 },
+        { series: "A", first: 260, last: 260, count: 1 },
         { series: "B", first: 1, last: 4, count: 4 },
       ],
       2,
@@ -3372,13 +3398,17 @@ describe("fiscal summaries over chunks", () => {
       gross: 174_000 - 11_600,
       tax: 24_000 - 1_600,
     });
+    // 188..250 continues 101..187 across the chunk boundary; 251..259 belong to other dates.
     expect(m.tickets).toEqual({
-      count: 87 + 4 + 63,
+      count: 87 + 1 + 4 + 63,
       series: [
         { series: "A", first: 101, last: 250, count: 150 },
+        { series: "A", first: 260, last: 260, count: 1 },
         { series: "B", first: 1, last: 4, count: 4 },
       ],
     });
+    // One chunk with two runs of a series keeps both: never one min..max range.
+    expect(mergeFiscalSummaries([a]).tickets.series).toEqual(a.tickets.series);
     expect(m.missingTickets).toBe(3);
     expect(m.totals).toEqual({
       gross: a.totals.gross + b.totals.gross,

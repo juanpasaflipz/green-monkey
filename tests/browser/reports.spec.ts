@@ -1,8 +1,8 @@
 // Reports (029) browser tests. FIT-9 (spec §7.3 tests 10–12): per-station KDS auto-print, the
 // kitchen cancellation chits on a KDS and on a selling device (and a failed chit after a void),
-// and the new-ticket tone. Phase A also checks the offline notice of Hoy and Finanzas (A13.8)
-// and the live report routes over HTTP; the Finanzas views (spec §7.3 tests 1–9, 13, 14) are
-// mounted and tested at the phase B merge (docs/REPORTS.md "Merge wiring").
+// and the new-ticket tone; the offline notice of Hoy and Finanzas (A13.8); the report routes
+// over HTTP. The Hoy and Finanzas views, cortes and the remote close (spec §7.3 tests 1–9, 13,
+// 14, and the second opinion's UI findings, LD-27) are in tests/browser/finance.spec.ts.
 import { test, expect, type Browser, type Page } from "@playwright/test";
 
 const tenantId =
@@ -372,53 +372,42 @@ test("A13.8: Hoy and Finanzas say «Los reportes requieren conexión.» offline 
   context,
 }) => {
   await ownerLogin(page);
-  await expect(page.getByText("Venta de órdenes").first()).toBeVisible();
-  const notice = page.getByText("Los reportes requieren conexión.", {
-    exact: true,
-  });
-  // A report still in flight when the connection drops (held here) never replaces the notice.
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => (release = resolve));
-  await page.route(
-    "**/api/report",
-    async (route) => {
-      await held;
-      await route.continue().catch(() => {});
-    },
-    { times: 1 },
-  );
-  await page.getByRole("button", { name: "Actualizar", exact: true }).click();
+  await expect(page.locator(".report-tiles")).toBeVisible();
+  const notice = page
+    .getByText("Los reportes requieren conexión.", { exact: true })
+    .first();
+  // The rail's buttons: Finanzas has a range chip named "Hoy" too (REPORTS-UI-16).
+  const rail = (name: string) =>
+    page.locator("nav.rail").getByRole("button", { name, exact: true });
   await context.setOffline(true);
   await expect(pill(page, /^Sin conexión/)).toBeVisible();
-  // The open Hoy view switches to the notice by itself.
+  // The open Hoy view says so by itself.
   await expect(notice).toBeVisible();
   const reportRequests: string[] = [];
   page.on("request", (r) => {
     const path = new URL(r.url()).pathname;
     if (/^\/api\/reports?(\/|$)/.test(path)) reportRequests.push(path);
   });
-  release();
-  await page.waitForTimeout(1500);
-  await expect(notice).toBeVisible();
-  await page.getByRole("button", { name: "Finanzas", exact: true }).click();
+  await rail("Finanzas").click();
   await expect(
     page.getByRole("heading", { name: "Finanzas", exact: true }),
   ).toBeVisible();
   await expect(notice).toBeVisible();
-  await page.getByRole("button", { name: "Hoy", exact: true }).click();
+  await rail("Hoy").click();
   await expect(
     page.getByRole("heading", { name: "Hoy", exact: true }),
   ).toBeVisible();
   await expect(notice).toBeVisible();
+  await page.waitForTimeout(1500);
   expect(reportRequests).toEqual([]);
   await context.setOffline(false);
   await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
   await expect(notice).toBeHidden();
-  await expect(page.getByText("Venta de órdenes").first()).toBeVisible();
-  expect(reportRequests).toContain("/api/report");
+  await expect(page.locator(".report-tiles")).toBeVisible();
+  await expect.poll(() => reportRequests).toContain("/api/reports/today");
 });
 
-test("the live report routes answer over HTTP without caching, and refuse a cashier", async ({
+test("the report routes answer over HTTP without caching, refuse a command without the CSRF token, and refuse a cashier the manager reports", async ({
   page,
 }) => {
   await ownerLogin(page);
@@ -433,8 +422,19 @@ test("the live report routes answer over HTTP without caching, and refuse a cash
       };
     }, path);
   const range = "from=2026-01-05&to=2026-01-05";
-  for (const path of [
+  const managerReads = [
     "/api/reports/audit?" + range,
+    "/api/reports/summary?" + range,
+    "/api/reports/breakdown?by=product&" + range,
+    "/api/reports/orders?" + range,
+    "/api/reports/exceptions?" + range,
+    "/api/reports/drawers?" + range,
+    "/api/reports/today",
+    "/api/reports/days/2026-01-05/corte",
+    "/api/report?date=2026-01-05",
+  ];
+  for (const path of [
+    ...managerReads,
     "/api/reports/tenders?" + range,
     "/api/reports/filters",
   ]) {
@@ -444,7 +444,30 @@ test("the live report routes answer over HTTP without caching, and refuse a cash
   }
   const bad = await get("/api/reports/audit?from=2026-01-05");
   expect([bad.status, bad.body.error]).toEqual([400, "invalid_input"]);
+  // A print or a remote close without the session's CSRF token is refused before it runs.
+  const noCsrf = (path: string) =>
+    page.evaluate(async (path) => {
+      const r = await fetch(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operationId: crypto.randomUUID() }),
+      });
+      return { status: r.status, body: await r.json() };
+    }, path);
+  for (const path of [
+    "/api/reports/days/2026-01-05/corte",
+    `/api/reports/drawers/${uuid()}/corte`,
+    `/api/reports/drawers/${uuid()}/close`,
+  ]) {
+    const r = await noCsrf(path);
+    expect([r.status, r.body.error], path).toEqual([403, "forbidden"]);
+  }
   await switchEmployee(page, "cashier", "123456");
-  const refused = await get("/api/reports/audit?" + range);
-  expect([refused.status, refused.body.error]).toEqual([403, "forbidden"]);
+  for (const path of managerReads) {
+    const refused = await get(path);
+    expect([refused.status, refused.body.error], path).toEqual([
+      403,
+      "forbidden",
+    ]);
+  }
 });

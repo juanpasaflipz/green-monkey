@@ -435,8 +435,8 @@ try {
     );
   });
 
-  await test("RPT-R17: the report-print key is advisory class 926, an LO-3 area key: a print waits on that class's key and never on the class-0 (LO-1 operation key) hash of the same text", async () => {
-    assert.equal(REPORT_PRINT_CLASS, 926);
+  await test("RPT-R17: the report-print key is advisory class 930, an LO-3 area key outside cfdi's 926-928 (REPORTS-CONTRACTS-5): a print waits on that class's key and never on the class-0 (LO-1 operation key) hash of the same text", async () => {
+    assert.equal(REPORT_PRINT_CLASS, 930);
     const subject = ids.drawer1;
     const key = reportPrintKey(A, "corte_z", subject);
     const holder = postgres(migration, { max: 1 });
@@ -448,7 +448,7 @@ try {
         await lockReportPrint(tx, A, "corte_z", subject);
       });
       await holder`select pg_advisory_unlock(hashtextextended(${key}, 0))`;
-      // A class-926 holder does, until it lets go.
+      // A class-930 holder does, until it lets go.
       await holder`select pg_advisory_lock(hashtextextended(${key}, ${REPORT_PRINT_CLASS}))`;
       let done = false;
       const print = write(manager, (tx) =>
@@ -464,7 +464,7 @@ try {
             and database = (select oid from pg_database where datname = current_database())`;
         waiting = w.n;
       }
-      assert.ok(waiting > 0, "the print waits on the class-926 key");
+      assert.ok(waiting > 0, "the print waits on the class-930 key");
       assert.equal(done, false);
       await holder`select pg_advisory_unlock(hashtextextended(${key}, ${REPORT_PRINT_CLASS}))`;
       await print;
@@ -499,9 +499,7 @@ try {
                 ${hash(JSON.stringify(corteOperationBody(manager, subject, "z")))}, ${tx.json(stored)})`,
     );
     const replay = (s: Session, drawer = subject) =>
-      write(s, (tx) =>
-        printDrawerCorte(tx, s, drawer, { operationId: op, kind: "z" }, ports),
-      );
+      printDrawerCorte(sql, s, drawer, { operationId: op, kind: "z" }, ports);
     assert.deepEqual(await replay(manager), stored);
     assert.deepEqual(await replay(manager, subject.toUpperCase()), stored);
     // Same device, another employee (a cashier must never receive the stored expected cash).
@@ -1178,7 +1176,6 @@ try {
       missingTicketCount: port("missingTicketCount"),
       moneyControls: port("moneyControls"),
       canSeeExpected: port("canSeeExpected"),
-      closeDrawerRow: port("closeDrawerRow"),
     };
     const refused = (label: string, p: Promise<unknown>, code: string) =>
       assert.rejects(p, (e: any) => {
@@ -1199,20 +1196,25 @@ try {
         (tx, s) => legacyDailyReport(tx, s, { date: today }),
       ],
     ];
-    const commands: [string, (tx: Tx, s: Session) => Promise<unknown>][] = [
+    const commands: [string, (s: Session) => Promise<unknown>][] = [
       [
         "printDayCorte",
-        (tx, s) =>
-          printDayCorte(tx, s, today, { operationId: randomUUID() }, refusing),
+        (s) =>
+          printDayCorte(sql, s, today, { operationId: randomUUID() }, refusing),
       ],
       [
         "closeDrawerRemotely",
-        (tx, s) =>
+        (s) =>
           closeDrawerRemotely(
-            tx,
+            sql,
             s,
             ids.drawer2,
-            { operationId: randomUUID(), counted: 0, reason: "Prueba" },
+            {
+              operationId: randomUUID(),
+              fingerprint: "0",
+              counted: 0,
+              reason: "Prueba",
+            },
             refusing,
           ),
       ],
@@ -1225,11 +1227,7 @@ try {
           "forbidden",
         );
       for (const [label, fn] of commands)
-        await refused(
-          `${s.role} ${label}`,
-          write(s, (tx) => fn(tx, s)),
-          "forbidden",
-        );
+        await refused(`${s.role} ${label}`, fn(s), "forbidden");
     }
     await refused(
       "kitchen drawerCorte",
@@ -1238,14 +1236,12 @@ try {
     );
     await refused(
       "kitchen printDrawerCorte",
-      write(kitchen, (tx) =>
-        printDrawerCorte(
-          tx,
-          kitchen,
-          ids.drawer2,
-          { operationId: randomUUID(), kind: "x" },
-          refusing,
-        ),
+      printDrawerCorte(
+        sql,
+        kitchen,
+        ids.drawer2,
+        { operationId: randomUUID(), kind: "x" },
+        refusing,
       ),
       "forbidden",
     );
@@ -1265,14 +1261,17 @@ try {
       },
     });
     const remote = (s: Session) =>
-      write(s, (tx) =>
-        closeDrawerRemotely(
-          tx,
-          s,
-          randomUUID(),
-          { operationId: randomUUID(), counted: 0, reason: "Prueba" },
-          refusing,
-        ),
+      closeDrawerRemotely(
+        sql,
+        s,
+        randomUUID(),
+        {
+          operationId: randomUUID(),
+          fingerprint: "0",
+          counted: 0,
+          reason: "Prueba",
+        },
+        refusing,
       );
     await refused("no PIN", remote(onTerminal(null)), "step_up_required");
     await refused(

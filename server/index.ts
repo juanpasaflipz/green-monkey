@@ -84,13 +84,7 @@ import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
 } from "./payment-recovery.js";
-import {
-  DomainError,
-  id,
-  money,
-  businessDate,
-  boundaries,
-} from "../shared/domain.js";
+import { DomainError, id, money } from "../shared/domain.js";
 if (
   !process.env.DATABASE_URL ||
   !process.env.JWT_SECRET ||
@@ -374,63 +368,6 @@ route("post", "/inventory/prep", async (tx, s, req) => {
     await audit(tx, s, "prep", p.operationId, p);
     return { ok: true };
   });
-});
-route("get", "/report", async (tx, s, req) => {
-  permit(s, managers);
-  const date = z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/)
-    .parse(
-      req.query.date ??
-        businessDate(
-          new Date().toISOString(),
-          s.restaurant.timezone,
-          s.restaurant.cutoff,
-        ),
-    );
-  const period = boundaries(date, s.restaurant.timezone, s.restaurant.cutoff);
-  const orders =
-    await tx`select o.*,(select coalesce(sum(t.amount),0)::int from tenders t where t.order_id=o.id) as paid from orders o where o.created_at>=${period.start} and o.created_at<${period.end}`;
-  const tenders =
-    await tx`select * from tenders where created_at>=${period.start} and created_at<${period.end}`;
-  const refunds =
-    await tx`select * from refunds where created_at>=${period.start} and created_at<${period.end}`;
-  const costs =
-    await tx`select l.data from order_lines l join orders o on o.tenant_id=l.tenant_id and o.id=l.order_id where o.created_at>=${period.start} and o.created_at<${period.end}`;
-  const cash =
-    await tx`select * from cash_sessions where closed_at>=${period.start} and closed_at<${period.end}`;
-  const unallocatedRecoveries = orders.filter(
-    (o: any) =>
-      o.state === "recovery_pending" || o.state === "recovery_reviewed",
-  );
-  return {
-    date,
-    period,
-    source: "orders/tenders/refunds",
-    refreshedAt: new Date().toISOString(),
-    orders,
-    tenders,
-    refunds,
-    cash,
-    gross: orders.reduce((a: number, o: any) => a + o.total, 0),
-    collected: tenders.reduce((a: number, t: any) => a + t.amount, 0),
-    tips: tenders.reduce((a: number, t: any) => a + t.tip, 0),
-    refundTotal: refunds.reduce((a: number, r: any) => a + r.amount, 0),
-    cogs: costs.reduce(
-      (a: number, l: any) => a + (l.data.cost ?? 0) * l.data.quantity,
-      0,
-    ),
-    unallocatedRecoveryCount: unallocatedRecoveries.length,
-    unallocatedRecoveryTotal: unallocatedRecoveries.reduce(
-      (total: number, o: any) => total + o.total,
-      0,
-    ),
-    costCoverage:
-      costs.length + unallocatedRecoveries.length
-        ? costs.filter((l: any) => l.data.cost !== null).length /
-          (costs.length + unallocatedRecoveries.length)
-        : 0,
-  };
 });
 route("get", "/restaurant", (tx, s) => getSettings(tx, s));
 route("post", "/restaurant", (tx, s, req) => saveSettings(tx, s, req.body));

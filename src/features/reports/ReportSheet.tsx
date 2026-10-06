@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { printDocument, readPrintSettings } from "../../print";
+import { DocFooter } from "../printing/layout";
 import "../printing/printing.css";
 
 /**
@@ -10,10 +11,13 @@ import "../printing/printing.css";
 export function ReportSheet({
   title,
   subtitle,
+  footer,
   children,
 }: {
   title: string;
   subtitle?: string;
+  /** "Documento interno; no es comprobante fiscal." (spec §2.6, review UI-13). */
+  footer?: string;
   children: ReactNode;
 }) {
   return (
@@ -21,6 +25,7 @@ export function ReportSheet({
       <h1>{title}</h1>
       {subtitle && <p>{subtitle}</p>}
       {children}
+      {footer && <DocFooter>{footer}</DocFooter>}
     </div>
   );
 }
@@ -30,9 +35,10 @@ export function printSheet(
   title: string,
   subtitle: string,
   node: ReactNode,
+  footer?: string,
 ): Promise<void> {
   return printDocument(
-    <ReportSheet title={title} subtitle={subtitle}>
+    <ReportSheet title={title} subtitle={subtitle} footer={footer}>
       {node}
     </ReportSheet>,
     readPrintSettings().paper,

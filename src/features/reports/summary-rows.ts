@@ -3,7 +3,7 @@ import { formatFolio } from "../../../shared/fiscal";
 import type { SalesSummary } from "../../../shared/reports";
 import { strings } from "../../i18n";
 import { tenderMethodLabel } from "../../labels";
-import { fill, money, pct } from "./format";
+import { differenceLabel, fill, folioText, money, pct } from "./format";
 
 /**
  * One Resumen row: a label with an amount (minor units, signed: deductions are negative) and/or
@@ -56,16 +56,24 @@ export function summarySections(
       display: String(s.orders),
     }),
     line("averageTicket", t.reportsAverageTicket, s.averageTicket),
-    line("refunds", t.reportsRefunds, neg(summary.refunds.total), {
-      display:
-        (summary.refunds.total ? "−" : "") +
-        m(summary.refunds.total) +
-        " · " +
-        fill(t.reportsRefundsSplit, {
-          cash: m(summary.refunds.cash),
-          external: m(summary.refunds.external),
-        }),
-    }),
+    line("refunds", t.reportsRefunds, neg(summary.refunds.total)),
+    // REPORTS-UI-9: the split is two rows of its own, so no row is wider than a phone.
+    ...(summary.refunds.total
+      ? [
+          line(
+            "refunds.cash",
+            tenderMethodLabel("cash", undefined, locale),
+            neg(summary.refunds.cash),
+            { indent: true },
+          ),
+          line(
+            "refunds.external",
+            tenderMethodLabel("external", undefined, locale),
+            neg(summary.refunds.external),
+            { indent: true },
+          ),
+        ]
+      : []),
     line("voids", t.reportsVoids, s.voids.amount, {
       quantity: s.voids.units,
       display:
@@ -80,7 +88,6 @@ export function summarySections(
         "offlineSales",
         fill(t.reportsOfflineSales, {
           n: s.offlineSales.count,
-          amount: m(s.offlineSales.total),
           tips: m(s.offlineSales.tips),
         }),
         s.offlineSales.total,
@@ -97,10 +104,7 @@ export function summarySections(
     sales.push(
       line(
         "cancelledOrders",
-        fill(t.reportsCancelledOrders, {
-          n: s.cancelledOrders,
-          amount: m(s.cancelledAmount),
-        }),
+        fill(t.reportsCancelledOrders, { n: s.cancelledOrders }),
         s.cancelledAmount,
         { quantity: s.cancelledOrders },
       ),
@@ -150,15 +154,20 @@ export function summarySections(
       line("salesAfterRefunds", t.reportsSalesAfterRefunds, x.totals.netGross),
       line("netAfterRefunds", t.reportsNetAfterRefunds, x.totals.netBase),
     );
+    // One row per contiguous run (fiscal's FiscalSummary, REPORTS-SQL-1): a series has several
+    // when later folios belong to other dates; a gap is never printed inside a range.
     for (const run of summary.tax.tickets.series)
       tax.push(
         line(
-          `folios.${run.series}`,
-          fill(t.reportsFolios, {
-            first: formatFolio(run.series, run.first),
-            last: formatFolio(run.series, run.last),
-            n: run.count,
-          }),
+          `folios.${run.series}.${run.first}`,
+          folioText(
+            {
+              first: formatFolio(run.series, run.first),
+              last: formatFolio(run.series, run.last),
+              count: run.count,
+            },
+            locale,
+          ),
           null,
           { quantity: run.count, display: "" },
         ),
@@ -233,12 +242,9 @@ export function summarySections(
   const margin = summary.margin;
   const cost: SummaryLine[] = [
     line("cogs", t.reportsCogs, s.cogs),
-    line(
-      "costCoverage",
-      fill(t.reportsCostCoverage, { pct: pct(s.costCoverageBps, locale) }),
-      null,
-      { display: pct(s.costCoverageBps, locale) },
-    ),
+    line("costCoverage", t.reportsCostCoverage, null, {
+      display: pct(s.costCoverageBps, locale),
+    }),
     line("restockedCost", t.reportsRestockedCost, margin.restockedCost),
     line("margin", t.reportsMargin, margin.estimatedMargin, {
       strong: true,
@@ -257,12 +263,15 @@ export function summarySections(
       null,
       { display: "" },
     ),
-    line(
-      "drawerDifferences",
-      fill(t.reportsDrawerDifferences, { amount: m(d.differenceNet) }),
-      d.differenceNet,
-    ),
-    line("unreviewed", fill(t.reportsUnreviewed, { n: d.unreviewed }), null, {
+    // REPORTS-UI-3: shortages and overages never cancel out on screen, and every difference
+    // carries its faltante / sobrante word.
+    line("shortages", t.reportsShortages, neg(d.shortages)),
+    line("overages", t.reportsOverages, d.overages),
+    line("drawerDifferences", t.reportsDrawerDifferences, d.differenceNet, {
+      display:
+        `${differenceLabel(d.differenceNet, locale)} ${d.differenceNet === 0 ? "" : m(d.differenceNet)}`.trim(),
+    }),
+    line("unreviewed", t.reportsUnreviewed, null, {
       quantity: d.unreviewed,
       display: String(d.unreviewed),
     }),

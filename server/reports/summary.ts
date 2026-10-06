@@ -101,11 +101,16 @@ export async function salesDays(
  * The line facts CTE body `lf` (S2), shared with the product and category breakdowns: one row per
  * order line of the range's orders, with its voided units and amount, its active discount
  * allocations on units that are not voided (and the comp part), its unit cost snapshot and
- * whether its order has a fiscal ticket.
+ * whether it is in the margin basis (`ticketed`): its order has a fiscal ticket, or the order
+ * was comped to zero. Fiscal never tickets a zero total (fiscal_tickets.gross > 0), so a whole
+ * check given away (a staff meal, a courtesy) adds nothing to fiscal's net base and its food
+ * cost still counts in Costo de lo vendido (spec Q15, review REPORTS-CONTRACTS-2).
  */
 export function lineFacts(tx: Tx, range: DateRange) {
   return tx`
-    select o.business_date, o.id as order_id, (f.id is not null) as ticketed, (o.state = 'cancelled') as cancelled,
+    select o.business_date, o.id as order_id,
+      (f.id is not null or (o.total = 0 and o.discount > 0 and o.state <> 'cancelled')) as ticketed,
+      (o.state = 'cancelled') as cancelled,
       l.id as line_id, l.product_id, l.data,
       (l.data->>'quantity')::int as qty, (l.data->>'total')::int8 as total,
       (l.data->>'cost')::int8 as unit_cost,

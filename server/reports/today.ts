@@ -17,15 +17,20 @@ import { exceptionDayTotals } from "./exceptions.js";
 import { fiscalCurrency, type ReportsPorts } from "./ports.js";
 import { restaurantOf, type ReportRestaurant } from "./restaurant.js";
 import { summaryWithDrawers } from "./summary.js";
+import { windowOf } from "./days.js";
 
 type Row = Record<string, unknown>;
 const n = aggregateInt;
 
+/** Hoy's unreviewed-difference alert covers drawers opened in the last 31 business days. */
+export const UNREVIEWED_ALERT_DAYS = 31;
+
 /**
  * The alerts of Hoy, in display order: failed checks; orphan drawers of a revoked or inactive
  * device; drawers open since an earlier business day on an active device; paid sales without a
- * fiscal ticket; unreviewed drawer differences of the last 31 days; offline rounds awaiting a
- * kitchen decision.
+ * fiscal ticket; unreviewed drawer differences of drawers opened in the last 31 business days
+ * (`since` = the first of them, the range Cortes opens with, review REPORTS-UI-5); offline
+ * rounds awaiting a kitchen decision.
  */
 export async function collectAlerts(
   tx: Tx,
@@ -39,10 +44,14 @@ export async function collectAlerts(
   const failed = failedCheckCodes(summary.checks);
   if (failed.length)
     alerts.push({ code: "checks_mismatch", count: failed.length });
+  const today = currentBusinessDate(restaurant);
+  const since = addDays(today, -(UNREVIEWED_ALERT_DAYS - 1));
+  const w = windowOf({ from: since, to: today }, restaurant);
   const [counts] = await tx<Row[]>`
     select
       (select count(*)::int from cash_sessions c
-        where c.closed_at >= now() - interval '31 days' and c.counted <> c.expected
+        where c.opened_at >= ${w.ws} and c.closed_at is not null and c.counted <> c.expected
+          and business_date_at(c.tenant_id, c.opened_at) >= ${since}::date
           and not exists (select 1 from cash_count_reviews r
                            where r.tenant_id = c.tenant_id and r.drawer_id = c.id)) as unreviewed,
       (select count(*)::int from offline_kitchen_reviews where state = 'pending') as offline_pending,
@@ -69,7 +78,11 @@ export async function collectAlerts(
     if (missing > 0) alerts.push({ code: "missing_tickets", count: missing });
   }
   if (n(counts.unreviewed) > 0)
-    alerts.push({ code: "drawer_unreviewed", count: n(counts.unreviewed) });
+    alerts.push({
+      code: "drawer_unreviewed",
+      count: n(counts.unreviewed),
+      since,
+    });
   if (n(counts.offline_pending) > 0)
     alerts.push({
       code: "offline_review_pending",

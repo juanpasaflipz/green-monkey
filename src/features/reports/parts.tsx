@@ -82,7 +82,7 @@ export function ReportToolbar({
         </Button>
       )}
       {onPrint && (
-        <Button onClick={onPrint} disabled={!online || busy}>
+        <Button onClick={onPrint} disabled={!online || busy || csvBusy}>
           <Printer size={16} aria-hidden="true" />
           {t.reportsPrintSheet}
         </Button>

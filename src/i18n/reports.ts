@@ -34,6 +34,8 @@ export default defineArea({
     reportsOffline: "Los reportes requieren conexión.",
     reportsLoading: "Cargando reporte…",
     reportsEmpty: "No hay ventas en estas fechas.",
+    reportsNoDrawers: "No hay cajas en estas fechas.",
+    reportsNoPayments: "No hay cobros en estas fechas.",
     reportsDownloadCsv: "Descargar CSV",
     reportsPreparingCsv: "Preparando CSV…",
     reportsCsvTruncated:
@@ -59,8 +61,8 @@ export default defineArea({
     reportsVoidUnits: "{n} piezas",
     reportsRecoveredSales:
       "Ventas sin conexión conciliadas (sin detalle de productos)",
-    reportsCancelledOrders: "{n} órdenes anuladas por completo · {amount}",
-    reportsOfflineSales: "Ventas sin conexión {n} · {amount} (propinas {tips})",
+    reportsCancelledOrders: "Órdenes anuladas por completo ({n})",
+    reportsOfflineSales: "Ventas sin conexión ({n} · propinas {tips})",
     reportsTaxTitle: "IVA de ventas con ticket",
     reportsTaxSales: "Venta IVA {rate}",
     reportsTaxBase: "Base IVA {rate}",
@@ -75,6 +77,9 @@ export default defineArea({
       "Ventas con ticket después de reembolsos (IVA incluido)",
     reportsNetAfterRefunds: "Ventas netas después de reembolsos (sin IVA)",
     reportsFolios: "Folios {first} a {last} ({n} tickets)",
+    reportsFolioOne: "Folio {first} (1 ticket)",
+    reportsFoliosRuns:
+      "Folios {first} … {last}: {n} tickets en {runs} tramos (los folios intermedios son de otras cajas)",
     reportsTicketedSplit:
       "Ventas con ticket {ticketed} · Ventas sin ticket {unticketed}",
     reportsUnticketedDetail:
@@ -90,7 +95,7 @@ export default defineArea({
     reportsPaidOuts: "Retiros de efectivo",
     reportsCostTitle: "Costo y margen (estimado)",
     reportsCogs: "Costo de lo vendido",
-    reportsCostCoverage: "Cobertura de costo: {pct} de las ventas",
+    reportsCostCoverage: "Cobertura de costo de las ventas",
     reportsRestockedCost: "Costo regresado a inventario por reembolsos",
     reportsMargin: "Margen estimado",
     reportsMarginHint: "Sobre ventas con ticket, sin IVA ni propinas.",
@@ -99,8 +104,8 @@ export default defineArea({
       "Algunos productos no tienen costo; el margen está incompleto.",
     reportsDrawersTitle: "Cajas",
     reportsDrawersCount: "{open} abiertas · {closed} cerradas",
-    reportsDrawerDifferences: "Diferencias de caja: {amount}",
-    reportsUnreviewed: "{n} diferencias sin revisar",
+    reportsDrawerDifferences: "Diferencia neta de caja",
+    reportsUnreviewed: "Diferencias sin revisar",
     reportsChecksOk: "Todos los totales cuadran.",
     reportsChecksFailed:
       "Los totales no cuadran ({codes}). Avisa a soporte con este código: {id}.",
@@ -149,6 +154,8 @@ export default defineArea({
     reportsRemoteCloseConfirm:
       "¿Cerrar la caja con {amount} contados? Después no se puede cambiar.",
     reportsRemoteCloseSubmit: "Cerrar caja con {amount} contados",
+    reportsRemoteCloseLive: "Efectivo esperado ahora",
+    reportsRemoteCloseChecking: "Revisando la caja…",
     reportsBack: "Volver",
     reportsCountedCash: "Efectivo contado",
     reportsTerminalReportedInput: "Total del corte de la terminal (opcional)",
@@ -204,11 +211,13 @@ export default defineArea({
     reportsTodayTerminal: "Terminal cobrado",
     reportsTodayOpenChecks: "Cuentas abiertas",
     reportsTodayOpenChecksLine: "{n} cuentas con saldo · Pendiente {amount}",
+    reportsTodayOpenChecksLineOne: "1 cuenta con saldo · Pendiente {amount}",
     reportsTodayViewOrders: "Ver órdenes",
     reportsTodayOpenDrawers: "Cajas abiertas",
     reportsTodayNoOpenDrawers: "No hay cajas abiertas.",
     reportsTodayDrawerLine: "{device} · abrió {name} a las {time}",
     reportsTodayPayments: "{n} cobros",
+    reportsTodayPaymentsOne: "1 cobro",
     reportsTodayExpected: "Efectivo esperado {amount}",
     reportsTodayTopProducts: "Más vendidos hoy",
     reportsTodayExceptions: "Excepciones de hoy",
@@ -220,10 +229,19 @@ export default defineArea({
     reportsAlertDrawerOpenLong:
       "La caja de {device} sigue abierta desde el {date}. Ciérrala para cuadrar el día.",
     reportsAlertMissingTickets:
-      "{n} ventas cobradas no tienen ticket fiscal. Emítelos en Ajustes → Datos fiscales.",
-    reportsAlertUnreviewed: "{n} diferencias de caja sin revisar.",
+      "{n} ventas cobradas no tienen ticket fiscal. Emítelos en Configuración → Datos fiscales.",
+    reportsAlertMissingTicketsOne:
+      "1 venta cobrada no tiene ticket fiscal. Emítelo en Configuración → Datos fiscales.",
+    reportsAlertUnreviewed:
+      "{n} diferencias de caja sin revisar en los últimos 31 días.",
+    reportsAlertUnreviewedOne:
+      "1 diferencia de caja sin revisar en los últimos 31 días.",
     reportsAlertOfflineReview:
       "{n} rondas sin conexión esperan decisión de cocina.",
+    reportsAlertOfflineReviewOne:
+      "1 ronda sin conexión espera decisión de cocina.",
+    reportsAlertOpenSettings: "Ir a Configuración",
+    reportsAlertOpenKitchen: "Ir a Cocina",
     reportsDocCorteX: "CORTE X · LECTURA PARCIAL",
     reportsDocCorteZ: "CORTE Z · CIERRE DE CAJA",
     reportsDocCountSlip: "COMPROBANTE DE CONTEO (CORTE CIEGO)",
@@ -437,6 +455,8 @@ export default defineArea({
     reportsOffline: "Reports need a connection.",
     reportsLoading: "Loading report…",
     reportsEmpty: "No sales in this date range.",
+    reportsNoDrawers: "No drawers in this date range.",
+    reportsNoPayments: "No payments in this date range.",
     reportsDownloadCsv: "Download CSV",
     reportsPreparingCsv: "Preparing CSV…",
     reportsCsvTruncated:
@@ -461,8 +481,8 @@ export default defineArea({
     reportsVoids: "Voids (not included in sales)",
     reportsVoidUnits: "{n} units",
     reportsRecoveredSales: "Reconciled offline sales (no item detail)",
-    reportsCancelledOrders: "{n} fully voided orders · {amount}",
-    reportsOfflineSales: "Offline sales {n} · {amount} (tips {tips})",
+    reportsCancelledOrders: "Fully voided orders ({n})",
+    reportsOfflineSales: "Offline sales ({n} · tips {tips})",
     reportsTaxTitle: "VAT on ticketed sales",
     reportsTaxSales: "VAT {rate} sales",
     reportsTaxBase: "VAT {rate} base",
@@ -476,6 +496,9 @@ export default defineArea({
     reportsSalesAfterRefunds: "Ticketed sales after refunds (VAT included)",
     reportsNetAfterRefunds: "Net sales after refunds (excluding VAT)",
     reportsFolios: "Ticket numbers {first} to {last} ({n} tickets)",
+    reportsFolioOne: "Ticket number {first} (1 ticket)",
+    reportsFoliosRuns:
+      "Ticket numbers {first} … {last}: {n} tickets in {runs} runs (the numbers in between belong to other devices)",
     reportsTicketedSplit:
       "Ticketed sales {ticketed} · Sales without a ticket {unticketed}",
     reportsUnticketedDetail:
@@ -491,7 +514,7 @@ export default defineArea({
     reportsPaidOuts: "Cash paid-outs",
     reportsCostTitle: "Cost and margin (estimate)",
     reportsCogs: "Cost of goods sold",
-    reportsCostCoverage: "Cost coverage: {pct} of sales",
+    reportsCostCoverage: "Cost coverage of sales",
     reportsRestockedCost: "Cost returned to stock by refunds",
     reportsMargin: "Estimated margin",
     reportsMarginHint: "On ticketed sales, excluding VAT and tips.",
@@ -499,8 +522,8 @@ export default defineArea({
     reportsCostIncomplete: "Some items have no cost; the margin is incomplete.",
     reportsDrawersTitle: "Drawers",
     reportsDrawersCount: "{open} open · {closed} closed",
-    reportsDrawerDifferences: "Drawer differences: {amount}",
-    reportsUnreviewed: "{n} differences to review",
+    reportsDrawerDifferences: "Net drawer difference",
+    reportsUnreviewed: "Differences to review",
     reportsChecksOk: "All totals reconcile.",
     reportsChecksFailed:
       "Totals do not reconcile ({codes}). Contact support with this code: {id}.",
@@ -549,6 +572,8 @@ export default defineArea({
     reportsRemoteCloseConfirm:
       "Close the drawer with {amount} counted? It cannot be changed afterwards.",
     reportsRemoteCloseSubmit: "Close drawer with {amount} counted",
+    reportsRemoteCloseLive: "Expected cash now",
+    reportsRemoteCloseChecking: "Checking the drawer…",
     reportsBack: "Back",
     reportsCountedCash: "Counted cash",
     reportsTerminalReportedInput: "Terminal batch total (optional)",
@@ -604,11 +629,13 @@ export default defineArea({
     reportsTodayTerminal: "Terminal collected",
     reportsTodayOpenChecks: "Open checks",
     reportsTodayOpenChecksLine: "{n} checks with a balance · Unpaid {amount}",
+    reportsTodayOpenChecksLineOne: "1 check with a balance · Unpaid {amount}",
     reportsTodayViewOrders: "View orders",
     reportsTodayOpenDrawers: "Open drawers",
     reportsTodayNoOpenDrawers: "No open drawers.",
     reportsTodayDrawerLine: "{device} · opened by {name} at {time}",
     reportsTodayPayments: "{n} payments",
+    reportsTodayPaymentsOne: "1 payment",
     reportsTodayExpected: "Expected cash {amount}",
     reportsTodayTopProducts: "Top sellers today",
     reportsTodayExceptions: "Today's exceptions",
@@ -621,8 +648,16 @@ export default defineArea({
       "The {device} drawer has been open since {date}. Close it to reconcile the day.",
     reportsAlertMissingTickets:
       "{n} paid sales have no tax ticket. Issue them in Settings → Tax details.",
-    reportsAlertUnreviewed: "{n} drawer differences to review.",
+    reportsAlertMissingTicketsOne:
+      "1 paid sale has no tax ticket. Issue it in Settings → Tax details.",
+    reportsAlertUnreviewed:
+      "{n} drawer differences to review in the last 31 days.",
+    reportsAlertUnreviewedOne:
+      "1 drawer difference to review in the last 31 days.",
     reportsAlertOfflineReview: "{n} offline rounds await a kitchen decision.",
+    reportsAlertOfflineReviewOne: "1 offline round awaits a kitchen decision.",
+    reportsAlertOpenSettings: "Go to Settings",
+    reportsAlertOpenKitchen: "Go to Kitchen",
     reportsDocCorteX: "X REPORT · PARTIAL READING",
     reportsDocCorteZ: "Z REPORT · DRAWER CLOSE",
     reportsDocCountSlip: "COUNT SLIP (BLIND COUNT)",
@@ -816,8 +851,8 @@ export default defineArea({
       "Choose valid dates: the end date cannot be before the start date, and the range can span up to 92 days for summaries or 31 days for lists.",
     ],
     reports_timeout: [
-      "El reporte tardó demasiado. Elige un rango más corto e intenta de nuevo.",
-      "The report took too long. Choose a shorter range and try again.",
+      "El reporte tardó demasiado. Intenta de nuevo en un momento; en Finanzas también puedes elegir un rango más corto.",
+      "The report took too long. Try again in a moment; in Finanzas you can also choose a shorter range.",
     ],
     reports_corte_hidden: [
       "Tu rol no puede ver el efectivo esperado de esta caja durante el turno. Pide el corte a un responsable.",
@@ -830,6 +865,14 @@ export default defineArea({
     reports_drawer_closed: [
       "Esta caja ya está cerrada.",
       "This drawer is already closed.",
+    ],
+    reports_drawer_in_use: [
+      "Esta caja se usó en su dispositivo en los últimos 10 minutos. Ciérrala en ese dispositivo (Operación → Caja), donde primero se sincronizan sus ventas sin conexión.",
+      "This drawer was used on its device in the last 10 minutes. Close it on that device (Operación → Caja), where its offline sales sync first.",
+    ],
+    reports_drawer_changed: [
+      "La caja cambió desde que la abriste (un cobro, reembolso o retiro). Revisa el efectivo esperado y vuelve a contar.",
+      "The drawer changed since you opened it (a payment, refund or paid-out). Check the expected cash and count again.",
     ],
     reports_drawer_not_orphaned: [
       "Esta caja se cierra desde su dispositivo. Aquí solo se puede cerrar si el dispositivo ya no está activo o si quedó abierta de un día anterior.",

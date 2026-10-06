@@ -110,6 +110,7 @@ export function SummaryTab({
                   t.reportsTabSummary,
                   `${session.restaurant.name} · ${dateLabel(range.from, locale)} – ${dateLabel(range.to, locale)}`,
                   <SummarySheet summary={s} locale={locale} />,
+                  t.reportsDocNotFiscal,
                 )
             : undefined
         }
@@ -395,8 +396,19 @@ function SummarySheet({
   locale: Locale;
 }) {
   const m = money(summary.currency, locale);
+  const t = strings[locale];
+  const failed = summary.checks.filter((c) => !c.ok).map((c) => c.code);
   return (
     <>
+      {/* The Comprobaciones result, as on screen (UI-13). */}
+      <p>
+        {failed.length === 0
+          ? t.reportsChecksOk
+          : fill(t.reportsChecksFailed, {
+              codes: failed.join(", "),
+              id: summary.requestId,
+            })}
+      </p>
       {summarySections(summary, locale).map((section) => (
         <table key={section.id}>
           <caption>{section.title}</caption>

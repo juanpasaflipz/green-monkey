@@ -130,3 +130,40 @@ export function differenceLabel(n: number, locale: Locale): string {
       ? t.reportsOver
       : t.reportsBalanced;
 }
+
+/**
+ * One folio run as printed: "Folios A-000101 a A-000140 (40 tickets)", "Folio A-000171 (1
+ * ticket)", or a corte's summary of interleaved runs ("Folios A-000101 … A-000349: 120 tickets
+ * en 37 tramos …"), never a range that reads as contiguous when it is not.
+ */
+export function folioText(
+  run: { first: string; last: string; count: number; runs?: number },
+  locale: Locale,
+): string {
+  const t = strings[locale];
+  if (run.runs && run.runs > 1)
+    return fill(t.reportsFoliosRuns, {
+      first: run.first,
+      last: run.last,
+      n: run.count,
+      runs: run.runs,
+    });
+  if (run.count === 1) return fill(t.reportsFolioOne, { first: run.first });
+  return fill(t.reportsFolios, {
+    first: run.first,
+    last: run.last,
+    n: run.count,
+  });
+}
+
+/** A count text with its singular variant for n = 1 ("1 cobro", "3 cobros"; UI-14). */
+export function countFill(
+  locale: Locale,
+  many: Key,
+  one: Key,
+  n: number,
+  values: Record<string, string | number> = {},
+): string {
+  const t = strings[locale];
+  return fill(n === 1 ? t[one] : t[many], { ...values, n });
+}

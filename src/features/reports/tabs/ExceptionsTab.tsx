@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { Locale, Session } from "../../../../shared/domain";
 import {
   EXCEPTION_KINDS,
   type DateRange,
   type ExceptionKind,
+  type ExceptionPage,
   type ExceptionRow,
   type ExceptionSummary,
 } from "../../../../shared/reports";
@@ -13,11 +14,16 @@ import { OrderDetail } from "../../OrderDetail";
 import { fetchAllPages, fetchExceptions, fetchFilters } from "../api";
 import { exceptionColumns, exportCsv } from "../csv";
 import { DataTable, type Column } from "../DataTable";
-import { exceptionDetail, exceptionReason } from "../exception-text";
-import { dateTimeLabel, exceptionKindLabel, fill, money } from "../format";
+import {
+  exceptionApprover,
+  exceptionDetail,
+  exceptionEmployee,
+  exceptionReason,
+} from "../exception-text";
+import { dateTimeLabel, exceptionKindLabel, money } from "../format";
 import { ReportStatus, ReportToolbar, Tiles } from "../parts";
 import { printSheet } from "../ReportSheet";
-import { useReport } from "../useReport";
+import { usePagedReport, useReport } from "../useReport";
 
 /** Finanzas → Excepciones: the loss-prevention list (GAP-3, spec §2.7). */
 export function ExceptionsTab({
@@ -38,10 +44,6 @@ export function ExceptionsTab({
   const zone = session.restaurant.timezone;
   const [kinds, setKinds] = useState<ExceptionKind[]>([]);
   const [employee, setEmployee] = useState("");
-  const [rows, setRows] = useState<ExceptionRow[]>([]);
-  const [summary, setSummary] = useState<ExceptionSummary | null>(null);
-  const [next, setNext] = useState<string | null>(null);
-  const [more, setMore] = useState(false);
   const [csvBusy, setCsvBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [detail, setDetail] = useState<string | null>(null);
@@ -51,32 +53,22 @@ export function ExceptionsTab({
     employee: employee || undefined,
   };
   const people = useReport(() => fetchFilters(), [], { online, locale });
-  const list = useReport(
-    () => fetchExceptions(filters),
+  // A filter or range change shows only the new list and its summary (REPORTS-UI-7).
+  const list = usePagedReport<ExceptionPage, ExceptionRow>(
+    (cursor) => fetchExceptions({ ...filters, cursor }),
     [range.from, range.to, kinds.join(","), employee],
     { online, locale },
   );
-  useEffect(() => {
-    if (list.data) {
-      setRows(list.data.rows);
-      setNext(list.data.next);
-      setSummary(list.data.summary);
-    }
-  }, [list.data]);
+  const { rows, next, more } = list;
+  const summary: ExceptionSummary | null = list.data?.summary ?? null;
   const ctx = { locale, currency: session.restaurant.currency, timezone: zone };
   const detailText = (r: ExceptionRow) => exceptionDetail(r, locale, m);
   const reasonText = (r: ExceptionRow) => exceptionReason(r, locale);
   async function loadMore() {
-    if (!next) return;
-    setMore(true);
     try {
-      const page = await fetchExceptions({ ...filters, cursor: next });
-      setRows((r) => [...r, ...page.rows]);
-      setNext(page.next);
+      await list.loadMore();
     } catch (e) {
       setNotice(translateError((e as Error).message, locale));
-    } finally {
-      setMore(false);
     }
   }
   async function all() {
@@ -103,6 +95,51 @@ export function ExceptionsTab({
       setCsvBusy(false);
     }
   }
+  /** The whole filtered list on a letter/A4 sheet: busy while it loads, errors in the notice (UI-19). */
+  async function printList() {
+    setCsvBusy(true);
+    setNotice("");
+    try {
+      const result = await all();
+      await printSheet(
+        t.reportsTabExceptions,
+        session.restaurant.name,
+        <table>
+          <thead>
+            <tr>
+              {columns.map((c) => (
+                <th key={c.key} className={c.numeric ? "num" : undefined}>
+                  {c.header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {result.rows.map((r) => (
+              <tr key={r.kind + r.id}>
+                <td>{dateTimeLabel(r.at, zone, locale)}</td>
+                <td>{exceptionKindLabel(r.kind, locale)}</td>
+                <td>{exceptionEmployee(r, locale)}</td>
+                <td>{exceptionApprover(r, locale)}</td>
+                <td className="num">{m(r.amount)}</td>
+                <td>{r.orderNumber !== null ? "#" + r.orderNumber : ""}</td>
+                <td>
+                  {[detailText(r), reasonText(r)].filter(Boolean).join(" · ")}
+                </td>
+                <td>{r.deviceName ?? ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>,
+        t.reportsDocNotFiscal,
+      );
+      if (result.truncated) setNotice(t.reportsCsvTruncated);
+    } catch (e) {
+      setNotice(translateError((e as Error).message, locale));
+    } finally {
+      setCsvBusy(false);
+    }
+  }
   const toggle = (kind: ExceptionKind) =>
     setKinds((k) =>
       k.includes(kind) ? k.filter((x) => x !== kind) : [...k, kind],
@@ -121,17 +158,12 @@ export function ExceptionsTab({
     {
       key: "employee",
       header: t.reportsColEmployee,
-      render: (r: ExceptionRow) =>
-        r.actorName ??
-        (r.accountName
-          ? fill(t.reportsExAccountOf, { name: r.accountName })
-          : ""),
+      render: (r: ExceptionRow) => exceptionEmployee(r, locale),
     },
     {
       key: "approver",
       header: t.reportsColApprover,
-      render: (r: ExceptionRow) =>
-        r.approverName ?? (r.kind === "discount" ? t.reportsExWithinLimit : ""),
+      render: (r: ExceptionRow) => exceptionApprover(r, locale),
     },
     {
       key: "amount",
@@ -178,45 +210,7 @@ export function ExceptionsTab({
         csvBusy={csvBusy}
         onRefresh={list.reload}
         onCsv={() => void csv()}
-        onPrint={() =>
-          void all().then((result) =>
-            printSheet(
-              t.reportsTabExceptions,
-              session.restaurant.name,
-              <table>
-                <thead>
-                  <tr>
-                    {columns.map((c) => (
-                      <th key={c.key} className={c.numeric ? "num" : undefined}>
-                        {c.header}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {result.rows.map((r) => (
-                    <tr key={r.kind + r.id}>
-                      <td>{dateTimeLabel(r.at, zone, locale)}</td>
-                      <td>{exceptionKindLabel(r.kind, locale)}</td>
-                      <td>{r.actorName ?? r.accountName ?? ""}</td>
-                      <td>{r.approverName ?? ""}</td>
-                      <td className="num">{m(r.amount)}</td>
-                      <td>
-                        {r.orderNumber !== null ? "#" + r.orderNumber : ""}
-                      </td>
-                      <td>
-                        {[detailText(r), reasonText(r)]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </td>
-                      <td>{r.deviceName ?? ""}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>,
-            ),
-          )
-        }
+        onPrint={() => void printList()}
       >
         <Field label={t.reportsEmployeeFilter}>
           <select
@@ -340,11 +334,14 @@ export function ExceptionsTab({
         locale={locale}
         rows={rows}
         rowKey={(r) => r.kind + ":" + r.id}
-        empty={list.loading ? undefined : t.reportsExNone}
+        empty={list.data ? t.reportsExNone : undefined}
         columns={columns}
       />
       {next && (
-        <Button onClick={() => void loadMore()} disabled={more || !online}>
+        <Button
+          onClick={() => void loadMore()}
+          disabled={more || list.loading || !online}
+        >
           {t.reportsLoadMore}
         </Button>
       )}

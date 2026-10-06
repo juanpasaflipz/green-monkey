@@ -254,8 +254,10 @@ export async function employeeRows(
 }
 
 /**
- * Por hora: the local wall-clock hour, in the zone in force at that instant, of the offline sale
- * time (sold_at) for offline orders, else of orders.created_at; rows from the cutoff hour.
+ * Por hora: the local wall-clock hour, in the zone in force at that instant, of the sale: the
+ * offline sale time (sold_at) for synced offline orders, the original sale time of a manager's
+ * financial recovery (offline_recoveries.original_sold_at, not the hour it was reconciled:
+ * review REPORTS-SQL-4), else orders.created_at; rows from the cutoff hour.
  */
 export async function hourBreakdown(
   tx: Tx,
@@ -272,7 +274,11 @@ export async function hourBreakdown(
       select sr.sold_at from offline_sync_records sr
        where sr.tenant_id = o.tenant_id and sr.order_id = o.id and sr.kind in ('sale', 'order')
        order by sr.sold_at limit 1) sr on true
-    cross join lateral (select coalesce(sr.sold_at, o.created_at) as at) x
+    left join lateral (
+      select r.original_sold_at from offline_recoveries r
+       where o.state like 'recovery%' and r.tenant_id = o.tenant_id and r.order_id = o.id
+       limit 1) orc on true
+    cross join lateral (select coalesce(sr.sold_at, orc.original_sold_at, o.created_at) as at) x
     join cfg c on x.at >= c.valid_from and x.at < c.valid_until
     where o.business_date between ${range.from}::date and ${range.to}::date
     group by 1`;

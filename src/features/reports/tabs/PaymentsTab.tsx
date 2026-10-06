@@ -20,7 +20,7 @@ import { exportCsv, methodColumns, tenderColumns } from "../csv";
 import { DataTable } from "../DataTable";
 import { dateLabel, dateTimeLabel, money } from "../format";
 import { ReportStatus, ReportToolbar } from "../parts";
-import { useReport } from "../useReport";
+import { usePagedReport, useReport } from "../useReport";
 
 /** Finanzas → Pagos: collections by method and the recorded payments, paged (spec §2.5). */
 export function PaymentsTab({
@@ -41,9 +41,14 @@ export function PaymentsTab({
   const zone = session.restaurant.timezone;
   const [method, setMethod] = useState<"" | "cash" | "external">("");
   const [drawer, setDrawer] = useState("");
-  const [rows, setRows] = useState<TenderReportRow[]>([]);
-  const [next, setNext] = useState<string | null>(null);
-  const [more, setMore] = useState(false);
+  // REPORTS-UI-8: the Caja filter belongs to the range it was chosen in. A range change (or a
+  // drawer the new range does not list) clears it, so the select and the request agree.
+  const rangeKey = range.from + ":" + range.to;
+  const [drawerRange, setDrawerRange] = useState(rangeKey);
+  if (drawerRange !== rangeKey) {
+    setDrawerRange(rangeKey);
+    if (drawer) setDrawer("");
+  }
   const [csvBusy, setCsvBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [detail, setDetail] = useState<string | null>(null);
@@ -62,29 +67,26 @@ export function PaymentsTab({
     [range.from, range.to],
     { online, locale },
   );
-  const list = useReport(
-    () => fetchTenders(filters),
+  // A filter or range change shows only the new list (REPORTS-UI-7).
+  const list = usePagedReport<
+    Awaited<ReturnType<typeof fetchTenders>>,
+    TenderReportRow
+  >(
+    (cursor) => fetchTenders({ ...filters, cursor }),
     [range.from, range.to, method, drawer],
     { online, locale },
   );
+  const { rows, next, more } = list;
   useEffect(() => {
-    if (list.data) {
-      setRows(list.data.rows);
-      setNext(list.data.next);
-    }
-  }, [list.data]);
+    if (drawer && drawers.data && !drawers.data.some((d) => d.id === drawer))
+      setDrawer("");
+  }, [drawers.data, drawer]);
   const ctx = { locale, currency: session.restaurant.currency, timezone: zone };
   async function loadMore() {
-    if (!next) return;
-    setMore(true);
     try {
-      const page = await fetchTenders({ ...filters, cursor: next });
-      setRows((r) => [...r, ...page.rows]);
-      setNext(page.next);
+      await list.loadMore();
     } catch (e) {
       setNotice(translateError((e as Error).message, locale));
-    } finally {
-      setMore(false);
     }
   }
   async function csv() {
@@ -231,7 +233,7 @@ export function PaymentsTab({
           locale={locale}
           rows={rows}
           rowKey={(r) => r.id}
-          empty={list.loading ? undefined : t.reportsEmpty}
+          empty={list.data ? t.reportsNoPayments : undefined}
           columns={[
             {
               key: "at",
@@ -300,7 +302,10 @@ export function PaymentsTab({
           ]}
         />
         {next && (
-          <Button onClick={() => void loadMore()} disabled={more || !online}>
+          <Button
+            onClick={() => void loadMore()}
+            disabled={more || list.loading || !online}
+          >
             {t.reportsLoadMore}
           </Button>
         )}

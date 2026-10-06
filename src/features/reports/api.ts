@@ -79,6 +79,8 @@ export const remoteClose = (
   drawerId: string,
   body: {
     operationId: string;
+    /** CorteDocument.fingerprint of the corte X the dialog showed (REPORTS-CORTES-1). */
+    fingerprint: string;
     counted: number;
     reason: string;
     externalReported: number | null;

@@ -26,7 +26,13 @@ export type CsvContext = { locale: Locale; currency: string; timezone: string };
 
 /** OWASP CSV injection: `= + - @`, TAB, CR, LF and the full-width `＝＋－＠` start a formula. */
 const FORMULA_START = /^[=+\-@\t\r\n＝＋－＠]/;
-const NEEDS_QUOTES = /[",\r\n]/;
+/**
+ * Quoted: a comma, quote, CR or LF, and a `;` or TAB followed by a formula start. Excel opened
+ * by double-click splits on the system list separator, which is `;` in many locales; quoting
+ * keeps the field whole, so the part after the separator can never become a live formula cell
+ * (REPORTS-SECURITY-2). Other `;` text (fiscal's "Efectivo 200.00; Terminal …") stays as is.
+ */
+const NEEDS_QUOTES = /[",\r\n]|[;\t]\s*[=+\-@＝＋－＠]/;
 /** What a formatted non-text cell may look like; anything else is written as guarded text. */
 const TYPED_CELL: Record<Exclude<CsvType, "t">, RegExp> = {
   m: /^-?\d+(?:\.\d+)?$/,
@@ -40,8 +46,8 @@ const quote = (text: string) => '"' + text.replace(/"/g, '""') + '"';
 
 /**
  * One serialized cell from an already formatted value. Text that could start a formula is
- * prefixed with an apostrophe and quoted; a field with a comma, quote, CR or LF is quoted with
- * its quotes doubled. Numeric and date cells are written as they are, never prefixed, but only
+ * prefixed with an apostrophe and quoted; a field with a comma, quote, CR or LF, or a `;` or TAB
+ * before a formula start (NEEDS_QUOTES), is quoted with its quotes doubled. Numeric and date cells are written as they are, never prefixed, but only
  * when they really have their type's shape: anything else falls back to guarded text.
  *
  * A raw number in a money (`m`) or percent (`p`) column is a TypeError("csv_unformatted"): it is

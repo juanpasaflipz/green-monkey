@@ -87,7 +87,7 @@ export function CortesTab({
         locale={locale}
         rows={rows}
         rowKey={(d) => d.id}
-        empty={report.loading ? undefined : t.reportsEmpty}
+        empty={report.data ? t.reportsNoDrawers : undefined}
         columns={[
           {
             key: "day",

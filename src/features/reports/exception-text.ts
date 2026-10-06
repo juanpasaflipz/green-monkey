@@ -1,20 +1,32 @@
 import type { Label, Locale } from "../../../shared/domain";
 import type { AuditRow, ExceptionRow } from "../../../shared/reports";
 import { strings, type Key } from "../../i18n";
-import { fill, pct } from "./format";
+import { reasonLabel } from "../discounts/format";
+import { differenceLabel, fill, pct } from "./format";
 
 /**
- * The label of a discount or refund reason code. Discounts (028) exports the discount-reason and
- * refund-reason label maps (wave2-cross-track C18: "quality" reads "Producto con defecto" for a
- * discount and "Producto con defecto o queja" for a refund); reports' merge returns them here.
- * Until then a coded reason shows no label, never the raw code.
+ * The label of a discount or refund reason code: discounts' own labels by (kind, code)
+ * (wave2-cross-track C18: "quality" reads "Producto con defecto" for a discount and "Producto
+ * con defecto o queja" for a refund; an unknown code reads "Otro"), never the raw code.
  */
-export function reasonLabel(
-  _kind: "discount" | "refund",
-  _code: string,
-  _locale: Locale,
-): string | null {
-  return null;
+export { reasonLabel };
+
+/** Empleado of an exception row: the actor, or "Cuenta de {mesero}" for an open-price line. */
+export function exceptionEmployee(row: ExceptionRow, locale: Locale): string {
+  return (
+    row.actorName ??
+    (row.accountName
+      ? fill(strings[locale].reportsExAccountOf, { name: row.accountName })
+      : "")
+  );
+}
+
+/** Autorizó of an exception row; a discount without an approver was within the staff limit. */
+export function exceptionApprover(row: ExceptionRow, locale: Locale): string {
+  return (
+    row.approverName ??
+    (row.kind === "discount" ? strings[locale].reportsExWithinLimit : "")
+  );
 }
 
 const PREPARATION: Record<string, Key> = {
@@ -93,8 +105,12 @@ export function exceptionDetail(
       ]
         .filter(Boolean)
         .join(" · ");
+    case "terminal_difference":
+      // REPORTS-UI-4: the signed amount alone reads like a loss; the word says which.
+      return differenceLabel(row.amount, locale);
     case "drawer_difference":
       return [
+        differenceLabel(row.amount, locale),
         d.countMode === "blind"
           ? t.reportsDocCountBlind
           : d.countMode === "visible"

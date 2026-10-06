@@ -19,6 +19,7 @@ import {
   dateTimeLabel,
   differenceLabel,
   fill,
+  folioText,
   money,
   pct,
 } from "./format";
@@ -222,12 +223,8 @@ export function DrawerCorteDocument({
             ))}
             {doc.folios.length ? (
               doc.folios.map((f) => (
-                <p className="doc-meta" key={f.series}>
-                  {fill(t.reportsFolios, {
-                    first: f.first,
-                    last: f.last,
-                    n: f.count,
-                  })}
+                <p className="doc-meta" key={f.series + ":" + f.first}>
+                  {folioText(f, locale)}
                 </p>
               ))
             ) : (
@@ -298,6 +295,8 @@ export function DayCorteDocument({
     "discounts",
     "courtesies",
     "refunds",
+    "refunds.cash",
+    "refunds.external",
     "taxRefundedBase",
     "taxRefunded",
   ]);
@@ -326,17 +325,15 @@ export function DayCorteDocument({
             key={line.id}
             label={line.label}
             value={
-              line.id === "offlineSales" || line.id === "cancelledOrders"
-                ? "" // the label already carries the count and amount
-                : line.id === "refunds"
-                  ? minus(m, summary.refunds.total)
-                  : line.display !== undefined && line.amount === null
-                    ? line.display
-                    : line.amount === null
-                      ? ""
-                      : negative.has(line.id)
-                        ? minus(m, -line.amount)
-                        : m(line.amount)
+              line.id === "refunds"
+                ? minus(m, summary.refunds.total)
+                : line.display !== undefined && line.amount === null
+                  ? line.display
+                  : line.amount === null
+                    ? ""
+                    : negative.has(line.id)
+                      ? minus(m, -line.amount)
+                      : m(line.amount)
             }
             strong={line.strong}
             indent={line.indent}

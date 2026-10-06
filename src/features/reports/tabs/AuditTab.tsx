@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { Locale, Session } from "../../../../shared/domain";
 import {
   AUDIT_GROUP_KEYS,
@@ -14,7 +14,7 @@ import { auditColumns, exportCsv } from "../csv";
 import { auditReference } from "../exception-text";
 import { auditGroupLabel, dateTimeLabel, fill, money } from "../format";
 import { ReportStatus, ReportToolbar } from "../parts";
-import { useReport } from "../useReport";
+import { usePagedReport, useReport } from "../useReport";
 
 /** A detail value: nested objects JSON-stringified. */
 const detailValue = (v: unknown) =>
@@ -39,9 +39,6 @@ export function AuditTab({
   const [group, setGroup] = useState<"" | AuditGroup>("");
   const [orderText, setOrderText] = useState("");
   const [order, setOrder] = useState("");
-  const [rows, setRows] = useState<AuditRow[]>([]);
-  const [next, setNext] = useState<string | null>(null);
-  const [more, setMore] = useState(false);
   const [csvBusy, setCsvBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const filters = {
@@ -51,28 +48,18 @@ export function AuditTab({
     order: order || undefined,
   };
   const people = useReport(() => fetchFilters(), [], { online, locale });
-  const list = useReport(
-    () => fetchAudit(filters),
+  // A filter or range change shows only the new list (REPORTS-UI-7).
+  const list = usePagedReport<Awaited<ReturnType<typeof fetchAudit>>, AuditRow>(
+    (cursor) => fetchAudit({ ...filters, cursor }),
     [range.from, range.to, employee, group, order],
     { online, locale },
   );
-  useEffect(() => {
-    if (list.data) {
-      setRows(list.data.rows);
-      setNext(list.data.next);
-    }
-  }, [list.data]);
+  const { rows, next, more } = list;
   async function loadMore() {
-    if (!next) return;
-    setMore(true);
     try {
-      const page = await fetchAudit({ ...filters, cursor: next });
-      setRows((r) => [...r, ...page.rows]);
-      setNext(page.next);
+      await list.loadMore();
     } catch (e) {
       setNotice(translateError((e as Error).message, locale));
-    } finally {
-      setMore(false);
     }
   }
   async function csv() {
@@ -178,7 +165,7 @@ export function AuditTab({
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 && !list.loading && (
+            {rows.length === 0 && list.data && (
               <tr>
                 <td colSpan={5} className="muted">
                   {t.reportsAuditEmpty}
@@ -226,7 +213,10 @@ export function AuditTab({
         </table>
       </div>
       {next && (
-        <Button onClick={() => void loadMore()} disabled={more || !online}>
+        <Button
+          onClick={() => void loadMore()}
+          disabled={more || list.loading || !online}
+        >
           {t.reportsLoadMore}
         </Button>
       )}

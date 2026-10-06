@@ -120,18 +120,25 @@
   font-size: 14px;
   color: var(--text-2);
 }
+/* REPORTS-UI-6: an amount stays on one line (never "$124,540.0" / "0"); the type shrinks with
+   the tile (container query units) instead. Notes under the value may wrap. */
+.report-tile {
+  container-type: inline-size;
+}
 .report-tile dd {
   margin: 6px 0 0;
-  font-size: 24px;
+  font-size: clamp(14px, 11cqi, 24px);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 .report-tile dd small {
   display: block;
   font-size: 13px;
   font-weight: 400;
   color: var(--text-2);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .report-cards {
   display: grid;
@@ -160,7 +167,8 @@
   border-bottom: 1px solid var(--line);
 }
 .report-rows .doc-label {
-  min-width: 0;
+  min-width: 8em;
+  flex: 1 1 auto;
   overflow-wrap: anywhere;
 }
 .report-rows .doc-amount {
@@ -219,6 +227,14 @@
   right: 0;
   background: var(--surface);
   box-shadow: inset 1px 0 0 var(--line);
+}
+/* REPORTS-UI-2: on a phone a sticky actions column would cover most of the table (Diferencia
+   could never be read in full), so it scrolls with the row. */
+@media (max-width: 650px) {
+  .report-table .sticky-end {
+    position: static;
+    box-shadow: none;
+  }
 }
 .report-table .num,
 .report-table td.num {

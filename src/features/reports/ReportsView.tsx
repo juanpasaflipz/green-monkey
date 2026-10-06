@@ -1,4 +1,5 @@
 import { useRef, type KeyboardEvent } from "react";
+import { ReportRefresh } from "./useReport";
 import type { Locale, Session } from "../../../shared/domain";
 import {
   addDays,
@@ -78,11 +79,14 @@ export function ReportsView({
   locale,
   navigate,
   online = true,
+  refreshKey = 0,
 }: {
   session: Session;
   locale: Locale;
   navigate: (view: string) => void;
   online?: boolean;
+  /** Operations' header Actualizar: every tab's reports fetch again (REPORTS-UI-10). */
+  refreshKey?: number;
 }) {
   const t = strings[locale];
   const settings = session.restaurant;
@@ -167,41 +171,43 @@ export function ReportsView({
           </button>
         ))}
       </div>
-      <div
-        className="report-panel"
-        role="tabpanel"
-        id="reports-panel"
-        tabIndex={0}
-        aria-labelledby={"reports-tab-" + tab}
-      >
-        {rangeError ? (
-          // The stored range exceeds this tab's limit (31 days for row lists).
-          <p className="error" role="alert">
-            {translateError("reports_range_invalid", locale)}
-          </p>
-        ) : tab === "summary" ? (
-          <SummaryTab
-            {...props}
-            navigate={navigate}
-            setRange={setRange}
-            openTab={(next) => setTab(next)}
-          />
-        ) : tab === "products" ? (
-          <ProductsTab {...props} />
-        ) : tab === "staff" ? (
-          <StaffTab {...props} />
-        ) : tab === "hours" ? (
-          <HoursTab {...props} />
-        ) : tab === "payments" ? (
-          <PaymentsTab {...props} navigate={navigate} />
-        ) : tab === "cortes" ? (
-          <CortesTab {...props} />
-        ) : tab === "exceptions" ? (
-          <ExceptionsTab {...props} navigate={navigate} />
-        ) : (
-          <AuditTab {...props} />
-        )}
-      </div>
+      <ReportRefresh.Provider value={refreshKey}>
+        <div
+          className="report-panel"
+          role="tabpanel"
+          id="reports-panel"
+          tabIndex={0}
+          aria-labelledby={"reports-tab-" + tab}
+        >
+          {rangeError ? (
+            // The stored range exceeds this tab's limit (31 days for row lists).
+            <p className="error" role="alert">
+              {translateError("reports_range_invalid", locale)}
+            </p>
+          ) : tab === "summary" ? (
+            <SummaryTab
+              {...props}
+              navigate={navigate}
+              setRange={setRange}
+              openTab={(next) => setTab(next)}
+            />
+          ) : tab === "products" ? (
+            <ProductsTab {...props} />
+          ) : tab === "staff" ? (
+            <StaffTab {...props} />
+          ) : tab === "hours" ? (
+            <HoursTab {...props} />
+          ) : tab === "payments" ? (
+            <PaymentsTab {...props} navigate={navigate} />
+          ) : tab === "cortes" ? (
+            <CortesTab {...props} />
+          ) : tab === "exceptions" ? (
+            <ExceptionsTab {...props} navigate={navigate} />
+          ) : (
+            <AuditTab {...props} />
+          )}
+        </div>
+      </ReportRefresh.Provider>
     </div>
   );
 }

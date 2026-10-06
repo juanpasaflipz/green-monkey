@@ -1,13 +1,12 @@
 SET LOCAL lock_timeout = '5s';
 -- 029 reports: versioned business-day settings (stable day bucketing after a cutoff
--- or timezone change), corte print records, and two small-table indexes for the
--- exceptions report and the drawer list. Expand-only: two new tables, two STABLE
--- functions, one AFTER UPDATE trigger on restaurants, immutability triggers on the
--- new tables and two plain indexes on small tables. No backfill, no CONCURRENTLY,
--- no CHECK on existing tables. It references only objects from migrations <= 021
--- plus its own, so it applies on top of any order of 022-028. The previous app
--- revision never reads these objects; its settings updates are captured by the
--- trigger.
+-- or timezone change), corte print records, and three plain indexes: two on small
+-- tables for the exceptions report and the drawer list, one on fiscal tickets (027)
+-- for a drawer's folio runs. Expand-only: two new tables, two STABLE functions, one
+-- AFTER UPDATE trigger on restaurants, immutability triggers on the new tables and
+-- the indexes. No backfill, no CONCURRENTLY, no CHECK on existing tables. It applies
+-- after fiscal 027 and discounts 028 (merge order). The previous app revision never
+-- reads these objects; its settings updates are captured by the trigger.
 
 -- 1. Business-day settings history. A row (valid_until, timezone, cutoff) means:
 --    instants before valid_until (and at or after the previous row's valid_until)
@@ -98,8 +97,8 @@ CREATE TABLE report_prints(
 CREATE INDEX report_prints_created ON report_prints(tenant_id, created_at);
 
 -- Guard only: the print commands serialize on the advisory key
--- hashtextextended(tenant||':report-print:'||kind||':'||subject,926) (lock level LO-3,
--- area key class 926) before they compute max+1, so concurrent prints never reach this
+-- hashtextextended(tenant||':report-print:'||kind||':'||subject,930) (lock level LO-3,
+-- area key class 930) before they compute max+1, so concurrent prints never reach this
 -- exception.
 CREATE FUNCTION report_prints_consecutive() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
@@ -143,3 +142,9 @@ END $$;
 --    milliseconds.
 CREATE INDEX line_voids_created ON line_voids(tenant_id, created_at);
 CREATE INDEX cash_sessions_opened ON cash_sessions(tenant_id, opened_at);
+
+-- 6. A drawer's corte lists the folio runs of the tickets issued on its device while
+--    it was open, by issue time (a ticket's business date is its order's, so a check
+--    paid days later or a repair ticket would fall outside any date bound). Created
+--    with 027's table still empty before launch; a plain CREATE INDEX.
+CREATE INDEX fiscal_tickets_device_issued ON fiscal_tickets(tenant_id, device_id, issued_at);
