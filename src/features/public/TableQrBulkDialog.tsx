@@ -10,6 +10,7 @@ import { api } from "../../api";
 import { Button, Modal } from "../../components/ui";
 import { fill } from "../menu/format";
 import { printCards } from "./LinkRevealDialog";
+import { refreshPublicInbox } from "./usePublicInbox";
 
 /**
  * "Códigos QR de mesas": create (and with the option, replace) the codes of
@@ -62,6 +63,7 @@ export function TableQrBulkDialog({
       });
       setResult(r);
       onChanged();
+      refreshPublicInbox();
       if (r.created.length) void printCards(r.created, restaurant);
     } catch (e) {
       const code = (e as Error).message;

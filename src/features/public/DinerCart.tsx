@@ -197,7 +197,7 @@ function CartBody({
         <strong>{money(cart.total)}</strong>
       </p>
       {error && (
-        <p className="error" role="alert">
+        <p className="error diner-error" role="alert">
           {error}
         </p>
       )}

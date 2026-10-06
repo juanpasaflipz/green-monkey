@@ -38,6 +38,11 @@ const REFRESH = new Set([
 ]);
 
 type AcceptResult = { hold: { label: string }; order: Order; round: number };
+/**
+ * The last inbox this tab read, per session: Órdenes remounts on every view
+ * change, and offline the inbox still shows (actions disabled) what it knew.
+ */
+let lastRead: { scope: string; data: InboxResponse } | null = null;
 
 /**
  * "Pedidos en línea por confirmar" at the top of Órdenes: polls every 10 s
@@ -61,8 +66,19 @@ export function PublicOrderInbox({
   const t = (k: Key, values?: Record<string, string | number>) =>
     values ? fill(strings[locale][k], values) : strings[locale][k];
   const summary = usePublicInboxSnapshot();
-  const shown = summary.available && (summary.active || summary.pending > 0);
-  const [data, setData] = useState<InboxResponse | null>(null);
+  const scope = session.tenantId + ":" + session.id;
+  const [data, setData] = useState<InboxResponse | null>(() =>
+    lastRead?.scope === scope ? lastRead.data : null,
+  );
+  const [disabled, setDisabled] = useState(false);
+  const busyInbox =
+    !!data?.active ||
+    (data?.holds.length ?? 0) > 0 ||
+    summary.active ||
+    summary.pending > 0;
+  const shown = data
+    ? data.available && (data.active || data.holds.length > 0)
+    : summary.available && (summary.active || summary.pending > 0);
   const [skewMs, setSkewMs] = useState(0);
   const [busy, setBusy] = useState<string | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -85,15 +101,28 @@ export function PublicOrderInbox({
     if (!k) keys.current.set(id, (k = crypto.randomUUID()));
     return k;
   };
+  // Every 10 s while a link is active or orders wait, otherwise a slow check
+  // (GAP-4: an idle inbox read is 3 short statements and no catalog).
   const poll = usePoll(
     async () => {
-      const r = await api<InboxResponse>("/ordering/inbox");
-      setData(r);
-      setSkewMs(Date.parse(r.serverTime) - Date.now());
-      setPublicInboxPending(r.holds.length);
+      try {
+        const r = await api<InboxResponse>("/ordering/inbox");
+        lastRead = { scope, data: r };
+        setData(r);
+        setSkewMs(Date.parse(r.serverTime) - Date.now());
+        setPublicInboxPending(r.holds.length, r.active);
+      } catch (e) {
+        const code = (e as Error).message;
+        if (code === "public_ordering_disabled" || code === "forbidden")
+          return setDisabled(true);
+        throw e;
+      }
     },
-    { intervalMs: 10_000, enabled: shown && online },
-    [shown],
+    {
+      intervalMs: busyInbox ? 10_000 : 60_000,
+      enabled: online && !disabled,
+    },
+    [busyInbox],
   );
   const refresh = () => {
     poll.refresh();

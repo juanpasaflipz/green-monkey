@@ -113,7 +113,8 @@ function requote(
 export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
   permit(s, operators);
   const [settings] = await tx`select coalesce(p.paused,false) as paused,
-      ${staffOnlineSql(tx)} as staff_online, now() as server_time
+      ${staffOnlineSql(tx)} as staff_online, now() as server_time,
+      exists(select 1 from public_links where revoked_at is null) as active
     from (select 1) one left join public_ordering_settings p on true`;
   const rows =
     await tx`select h.id,h.number,h.channel,h.table_id,h.policy,h.name,h.note,
@@ -145,6 +146,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
       : null;
   return {
     available: true,
+    active: settings.active,
     acceptingNow: reason === null,
     reason,
     paused: settings.paused,

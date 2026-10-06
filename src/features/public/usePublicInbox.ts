@@ -26,9 +26,20 @@ const subscribe = (l: () => void) => {
 };
 const snapshot = () => state;
 
-/** The inbox's own count wins between summary polls. */
-export function setPublicInboxPending(pending: number) {
-  if (pending !== state.pending) emit({ ...state, pending });
+/** The inbox's own reading wins between summary polls. */
+export function setPublicInboxPending(pending: number, active?: boolean) {
+  const next = {
+    ...state,
+    available: true,
+    pending,
+    active: active ?? state.active,
+  };
+  if (
+    next.pending !== state.pending ||
+    next.active !== state.active ||
+    !state.available
+  )
+    emit(next);
 }
 let refresher: () => void = () => {};
 /** Asks the shell's summary poll to run now. */

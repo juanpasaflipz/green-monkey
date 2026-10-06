@@ -148,6 +148,8 @@ export function DinerStatus({
       timeZone: menu.restaurant.timezone,
       hour: "2-digit",
       minute: "2-digit",
+      // 21:42 in Spanish (es-MX), 9:42 PM in English.
+      hourCycle: locale === "es" ? "h23" : undefined,
     }).format(new Date(iso));
   const others = holds.filter((h) => h.key !== statusKey);
 

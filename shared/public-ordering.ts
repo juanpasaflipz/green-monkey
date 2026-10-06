@@ -294,6 +294,8 @@ export type InboxHold = {
 };
 export type InboxResponse = {
   available: boolean;
+  /** A link of any kind is active (the inbox shows even with nothing pending). */
+  active: boolean;
   acceptingNow: boolean;
   reason: null | "paused" | "no_staff";
   paused: boolean;

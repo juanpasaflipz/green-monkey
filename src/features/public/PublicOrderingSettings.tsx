@@ -147,6 +147,7 @@ export function PublicOrderingSettings({
       if (!label) return;
       setRevealed(await api<RevealedLink>("/ordering/links", { kind, label }));
       setLabels((l) => ({ ...l, [kind]: "" }));
+      refreshPublicInbox();
       await load();
     });
   const act = (link: PublicLinkView, action: "rotate" | "revoke") =>

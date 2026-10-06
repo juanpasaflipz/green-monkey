@@ -10,6 +10,7 @@ import { Button, Modal } from "../../components/ui";
 import { fill } from "../menu/format";
 import { QrCard } from "./QrCard";
 import { RevealControls, linkUrl } from "./LinkRevealDialog";
+import { refreshPublicInbox } from "./usePublicInbox";
 
 export function shortDate(iso: string, locale: Locale, timezone: string) {
   return new Intl.DateTimeFormat(locale === "es" ? "es-MX" : "en-US", {
@@ -63,6 +64,7 @@ export function TableQrDialog({
     try {
       await fn();
       onChanged();
+      refreshPublicInbox();
     } catch (e) {
       const code = (e as Error).message;
       if (code !== "step_up_cancelled") setError(translateError(code, locale));
