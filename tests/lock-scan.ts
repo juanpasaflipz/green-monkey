@@ -9,7 +9,7 @@
  * step back (LO-R1) unless the object is already held (a free re-lock), and that no table
  * locked FOR SHARE is later locked for update (LO-R6, no SHARE->UPDATE upgrade).
  *
- * What it sees (and therefore enforces):
+ * What it sees (and therefore checks; nothing outside this list is checked):
  * - Builtin lock calls, never expanded: once() = LO-1 operation key, then LO-2
  *   restaurants FOR SHARE unless its kind literal is one once() excludes (parsed from
  *   server/orders.ts); bumpKitchenFeed = LO-10; drawer = LO-11; lockStockItems, stock =
