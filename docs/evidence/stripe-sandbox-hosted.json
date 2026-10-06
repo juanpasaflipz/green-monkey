@@ -1,0 +1,11 @@
+{
+  "checkedAt": "2026-09-14T19:54:32.984Z",
+  "accountId": "acct_1UFZZRFYpuQNRtU1",
+  "configurationId": "bpc_1UFfxRFYpuQNRtU1c1es5LPE",
+  "portalSessionCreated": true,
+  "checkoutSessionCreated": true,
+  "checkoutSameKeyRetry": true,
+  "checkoutExpired": true,
+  "paidCheckoutCompleted": false,
+  "livePayments": false
+}

@@ -1,0 +1,27 @@
+{
+  "provenance": "docs@1c2e617",
+  "source": "openapi_v2.en.yaml#/components/responses/BadRequest",
+  "status": 400,
+  "headers": {
+    "content-type": "application/json; charset=utf-8",
+    "x-facturapi-log-id": "log_authored_0001"
+  },
+  "body": {
+    "ok": false,
+    "message": "El campo \"customer.email\" es requerido.",
+    "status": 400,
+    "code": "invalid_request",
+    "location": "body",
+    "path": "customer.email",
+    "errors": [
+      {
+        "message": "El campo \"customer.email\" es requerido.",
+        "code": "required",
+        "source": "facturapi",
+        "location": "body",
+        "path": "customer.email"
+      }
+    ]
+  },
+  "note": "Verbatim the 'Error object' example of getting-started/errors.mdx (same commit). Body schema: GenericError."
+}

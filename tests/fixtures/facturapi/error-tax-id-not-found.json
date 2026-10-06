@@ -1,0 +1,17 @@
+{
+  "provenance": "docs@1c2e617",
+  "source": "openapi_v2.en.yaml#/components/responses/BadRequest",
+  "status": 400,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "ok": false,
+    "message": "El RFC del receptor no existe en la lista de RFC inscritos no cancelados del SAT.",
+    "status": 400,
+    "code": "tax_id_not_found",
+    "location": "body",
+    "path": "customer.tax_id"
+  },
+  "note": "Authored: the TaxInfoValidationCode tax_id_not_found as the root code ('When a customer or organization tax-information validation detects a single issue, it appears in code', errors.mdx). The message (a Spanish rendering of the documented description), path and location are authored."
+}

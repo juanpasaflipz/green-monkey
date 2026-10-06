@@ -1,0 +1,9 @@
+{
+  "deploymentId": "d0178bd6-4861-43e1-8699-e4056e6d5587",
+  "operationId": "d217a91f-4ef5-4f7a-ac8a-49c09d8f52ed",
+  "queuedAt": "2026-09-14T20:17:40.126Z",
+  "applicationReadyAfterRestartAt": "2026-09-14T20:17:51.933967478Z",
+  "completedAt": "2026-09-14T20:19:14.181Z",
+  "attempts": 1,
+  "status": "succeeded"
+}

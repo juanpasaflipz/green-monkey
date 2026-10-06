@@ -1,0 +1,30 @@
+# Secret scanning for CI (.github/workflows/qualification.yml, job "security").
+# Extends gitleaks' default rules; the allowlist covers only synthetic,
+# documented local/CI placeholders and generated evidence hashes.
+title = "green-monkey"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic CI/local-only values and evidence hashes"
+regexes = [
+  '''synthetic-ci-only-never-use-outside-disposable-tests-123456789''',
+  '''local-only-[a-z-]+''',
+  '''replace-me''',
+  '''replace-with-an-environment-specific-random-secret''',
+  '''demo-green-monkey''',
+  '''whsec_fixture''',
+  '''sk_test_fixture''',
+  # tests/config.test.ts: placeholder proving deployed web refuses Stripe keys.
+  '''sk_live_supersecret''',
+  # qualification.yml SIGNING_KEYS (Wave 2.0): base64url of the 41-byte text
+  # "synthetic-ci-only-never-use-outside-tests"; never a real signing key.
+  '''c3ludGhldGljLWNpLW9ubHktbmV2ZXItdXNlLW91dHNpZGUtdGVzdHM''',
+]
+paths = [
+  '''docs/evidence/''',
+  '''package-lock\.json''',
+  '''prototypes/.*/package-lock\.json''',
+  '''tests/fixtures/''',
+]

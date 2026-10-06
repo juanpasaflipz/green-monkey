@@ -1,0 +1,71 @@
+{
+  "provenance": "docs@1c2e617",
+  "source": "openapi_v2.en.yaml#/paths/~1invoices~1{invoice_id}/delete/responses/200",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "id": "590ce6c56d04f840aa8438af",
+    "created_at": "2026-10-05T18:20:10.512Z",
+    "livemode": false,
+    "status": "canceled",
+    "cancellation_status": "accepted",
+    "verification_url": "https://verificacfdi.facturaelectronica.sat.gob.mx/default.aspx?id=39c85a3f-275b-4341-b259-e8971d9f8a94&re=EKU9003173C9&rr=URE180429TM6&tt=116.000000&fe=bWApPw==",
+    "date": "2026-10-05T18:20:10.000Z",
+    "address": {
+      "zip": "42501"
+    },
+    "type": "I",
+    "customer": {
+      "legal_name": "UNIVERSIDAD ROBOTICA ESPAÑOLA",
+      "tax_id": "URE180429TM6",
+      "address": {
+        "country": "MEX"
+      }
+    },
+    "total": 116.0,
+    "uuid": "39c85a3f-275b-4341-b259-e8971d9f8a94",
+    "folio_number": 914,
+    "series": "F",
+    "external_id": "0b6a1a8e-3f1e-4c55-9d1e-2f6d1c0a9b11",
+    "idempotency_key": "0b6a1a8e-3f1e-4c55-9d1e-2f6d1c0a9b11",
+    "payment_form": "01",
+    "items": [
+      {
+        "quantity": 1,
+        "discount": 0,
+        "product": {
+          "description": "Consumo de alimentos y bebidas",
+          "product_key": "90101501",
+          "unit_key": "E48",
+          "unit_name": "Unidad de servicio",
+          "price": 116,
+          "tax_included": true,
+          "taxability": "02",
+          "taxes": [
+            {
+              "type": "IVA",
+              "rate": 0.16,
+              "factor": "Tasa",
+              "withholding": false
+            }
+          ],
+          "sku": "A-000123"
+        }
+      }
+    ],
+    "related_documents": [],
+    "currency": "MXN",
+    "exchange": 1,
+    "pdf_custom_section": "<p>Ticket A-000123 · 05/10/2026</p>",
+    "stamp": {
+      "date": "2026-10-05T18:20:11.000Z",
+      "sat_cert_number": "30001000000500003456",
+      "signature": "authored-signature",
+      "sat_signature": "authored-sat-signature"
+    },
+    "canceled_at": "2026-10-05T19:02:44.000Z"
+  },
+  "note": "Authored from the DELETE /invoices/{id} description: 'returns an invoice object with the property status: \"canceled\" (the cancellation has already been accepted by the SAT)'. Not a recorded response."
+}

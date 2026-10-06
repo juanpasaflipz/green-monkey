@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  AUTHORED test fixture (not issued by SAT or a PAC): a CFDI 4.0 global invoice shaped after
+  Anexo 20 (CFDI 4.0) and the SAT "Guía de llenado del CFDI global". Attribute order and quote
+  style are mixed on purpose (tests/cfdi.test.ts, parseCfdiTotals). Issuer and receptor are the
+  SAT CFDI 4.0 test identity and the generic RFC; the seal and certificate values are placeholders.
+-->
+<cfdi:Comprobante xmlns:cfdi="http://www.sat.gob.mx/cfd/4" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:schemaLocation="http://www.sat.gob.mx/cfd/4 http://www.sat.gob.mx/sitio_internet/cfd/4/cfdv40.xsd"
+    Version="4.0" Serie='FG' Folio="12" Fecha="2026-10-05T01:10:00" Sello="AUTHORED" FormaPago="01"
+    NoCertificado="30001000000500003416" Certificado="AUTHORED" SubTotal='170.00' Moneda="MXN"
+    Total="186.00" TipoDeComprobante="I" Exportacion="01" MetodoPago="PUE" LugarExpedicion="42501">
+  <cfdi:InformacionGlobal Periodicidad="01" Meses="10" Año="2026"/>
+  <cfdi:Emisor Rfc="EKU9003173C9" Nombre="ESCUELA KEMPER URGATE" RegimenFiscal="601"/>
+  <cfdi:Receptor Rfc="XAXX010101000" Nombre="PUBLICO EN GENERAL" DomicilioFiscalReceptor="42501"
+      RegimenFiscalReceptor="616" UsoCFDI="S01"/>
+  <cfdi:Conceptos>
+    <cfdi:Concepto ClaveProdServ="01010101" NoIdentificacion="A-000123" Cantidad="1" ClaveUnidad="ACT"
+        Descripcion="Venta" ValorUnitario="100.000000" Importe="100.000000" ObjetoImp="02">
+      <cfdi:Impuestos>
+        <cfdi:Traslados>
+          <cfdi:Traslado Importe='16.000000' Base="100.000000" Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.160000"/>
+        </cfdi:Traslados>
+      </cfdi:Impuestos>
+    </cfdi:Concepto>
+    <cfdi:Concepto Importe='50.00' ObjetoImp='02' ClaveProdServ='01010101' NoIdentificacion='A-000123'
+        Cantidad='1' ClaveUnidad='ACT' Descripcion='Venta' ValorUnitario='50.00'>
+      <cfdi:Impuestos>
+        <cfdi:Traslados>
+          <cfdi:Traslado Base="50.00" Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.000000" Importe="0.00"/>
+        </cfdi:Traslados>
+      </cfdi:Impuestos>
+    </cfdi:Concepto>
+    <cfdi:Concepto ClaveProdServ="01010101" NoIdentificacion="A-000124" Cantidad="1" ClaveUnidad="ACT"
+        Descripcion="Venta &amp; propina no incluida" ValorUnitario="20.00" Importe="20.00" ObjetoImp="02">
+      <cfdi:Impuestos>
+        <cfdi:Traslados>
+          <cfdi:Traslado Base="20.00" Impuesto="002" TipoFactor="Exento"/>
+        </cfdi:Traslados>
+      </cfdi:Impuestos>
+    </cfdi:Concepto>
+  </cfdi:Conceptos>
+  <cfdi:Impuestos TotalImpuestosTrasladados="16.00">
+    <cfdi:Traslados>
+      <cfdi:Traslado Base="100.00" Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.160000" Importe="16.00"/>
+      <cfdi:Traslado Base="50.00" Impuesto="002" TipoFactor="Tasa" TasaOCuota="0.000000" Importe="0.00"/>
+      <cfdi:Traslado Base="20.00" Impuesto="002" TipoFactor="Exento"/>
+    </cfdi:Traslados>
+  </cfdi:Impuestos>
+  <cfdi:Complemento>
+    <tfd:TimbreFiscalDigital xmlns:tfd="http://www.sat.gob.mx/TimbreFiscalDigital" Version="1.1"
+        UUID="39c85a3f-275b-4341-b259-e8971d9f8a94" FechaTimbrado="2026-10-05T01:10:05"
+        RfcProvCertif="SPR190613I52" SelloCFD="AUTHORED" NoCertificadoSAT="30001000000500003456" SelloSAT="AUTHORED"/>
+  </cfdi:Complemento>
+</cfdi:Comprobante>

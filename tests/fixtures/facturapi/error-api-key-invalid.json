@@ -1,0 +1,15 @@
+{
+  "provenance": "docs@1c2e617",
+  "source": "openapi_v2.en.yaml#/components/responses/Unauthenticated",
+  "status": 401,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "ok": false,
+    "message": "La llave de API es inválida.",
+    "status": 401,
+    "code": "api_key_invalid"
+  },
+  "note": "Authored: the documented AuthErrorCode api_key_invalid ('The provided API key is invalid') on the documented 401 Unauthenticated response; message authored."
+}

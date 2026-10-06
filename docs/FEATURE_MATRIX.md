@@ -18,7 +18,7 @@
 | Split by items/amount; grouped settlement | Both splits; POS Lite payment groups | Canonical allocations; keep kitchen orders distinct | 3, required |
 | Full/partial refunds, cancellations, history | Both | Reversal records and scoped manager approval | 2–3, required |
 | Offline cash, menu cache, refresh recovery | POS Lite Dexie/sync; Luma local handling | Preserve/rebuild with visible reconciliation | 3, required |
-| QR customer ordering and kiosk | Both; dedicated POS Lite kiosk bundle | Rebuild on same order services | 3, required web flows |
+| QR customer ordering and kiosk | Both; dedicated POS Lite kiosk bundle | Rebuild on same order services; kiosk is required Pro | 3, required web flows |
 | Native iOS/Android wrappers | POS Lite ios/android/Capacitor | Preserve a compatible API path; reintroduce when needed | Optional follow-on |
 | Ingredients, recipe links, substitutions, costs | Luma recipes/substitutes; POS Lite recipe management | Stable IDs, units, snapshots, yield | 4, required |
 | Suppliers, purchase orders, receiving | POS Lite procurement; Luma merchandise | One receiving workflow and stock cause | 4, required |
@@ -32,7 +32,7 @@
 | Cash sessions, paid-outs, end-of-day | POS Lite drawers; Luma cash cut | Guided close and discrepancy explanations | 2, required |
 | Team, shifts, payroll/tips summaries | POS Lite staff/payroll; Luma team | Role-focused management; configurable rules | 5, required; not legal payroll certification |
 | Onboarding, account, subscription billing | Both | One onboarding path and entitlement system | 5, required; billing provider sandbox gate |
-| CFDI invoice/customer self-service/cancellation | Both FacturAPI flows | Verified provider adapter; private credential handling | 5, configured module; required before invoice cutover |
+| CFDI invoice/customer self-service/cancellation | Both FacturAPI flows | Built (030) on fiscal 027, discounts 028 and reports 029; stamping, cancellation, self-invoice and credit notes are DB- and browser-tested against the Facturapi fake: Facturapi organization per restaurant, staff invoice, QR/code self-invoicing portal, global invoices by period, cancellation/substitution, credit notes, worker-only sealed credentials ([CFDI](CFDI.md)). Contract-tested, not sandbox-verified; disabled until keys are configured; live not enabled | 5, configured module; required before invoice cutover |
 | Uber Eats/Rappi/DiDi imports and connectors | POS Lite adapters; Luma delivery parser | Import-first plus verified live connectors | 4–5; live connectivity gated |
 | Courier dispatch (Uber Direct) | POS Lite | Retain distinct dispatch lifecycle and retries | Optional configured module |
 | Loyalty/stamps/referrals | POS Lite | Integrate after checkout; do not obstruct cash sale | 5, configured module |

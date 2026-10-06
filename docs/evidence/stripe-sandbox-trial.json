@@ -1,0 +1,12 @@
+{
+  "checkedAt": "2026-09-14T19:53:37.841Z",
+  "accountId": "acct_1UFZZRFYpuQNRtU1",
+  "organizationId": "5f3cbf19-6b10-41e8-b669-6740f61b545e",
+  "customerId": "cus_VGCLTdycvpdtft",
+  "subscriptionId": "sub_1UFfwZFYpuQNRtU1XTRwbKqR",
+  "trialVerified": true,
+  "idempotentTrial": true,
+  "canceled": true,
+  "accessAfterCancellation": "free",
+  "livePayments": false
+}

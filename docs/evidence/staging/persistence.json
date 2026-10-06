@@ -1,0 +1,23 @@
+{
+  "order": {
+    "id": "033e21ec-879d-4ff0-a42f-b24a26c95054",
+    "total": 9000,
+    "state": "active"
+  },
+  "payment": {
+    "count": 1,
+    "paid": 9000
+  },
+  "rounds": [
+    {
+      "station": "bar",
+      "state": "active",
+      "acknowledged": false
+    },
+    {
+      "station": "kitchen",
+      "state": "ready",
+      "acknowledged": true
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "commit": "b05c6a422c4fc4ca5330cb6a7f42a1098a0a58d2",
+  "deploymentId": "35e6fab1-0774-4e43-87ac-6262da6324fd",
+  "origin": "https://green-monkey-staging.up.railway.app",
+  "health": true,
+  "migrationsThrough": 20,
+  "backupBeforeMigration": true,
+  "sourceOnlyUpload": true,
+  "production": false,
+  "productComplete": false
+}

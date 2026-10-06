@@ -1,0 +1,28 @@
+{
+  "verifiedAt": "2026-09-15T05:19:04.581Z",
+  "accountId": "acct_1UFZZRFYpuQNRtU1",
+  "sandbox": true,
+  "liveCharges": false,
+  "results": [
+    {
+      "scenario": "location-check",
+      "subscriptionId": "sub_1UFoY3FYpuQNRtU10YUX3ioe",
+      "quoteMinor": 0,
+      "quantityBeforeCleanup": 2,
+      "trialPreserved": true,
+      "declinePendingAndRecoveryLink": null,
+      "voidedUpdateRecognized": null,
+      "canceled": true
+    },
+    {
+      "scenario": "location-paid-check",
+      "subscriptionId": "sub_1UFoaOFYpuQNRtU102G0i5Hj",
+      "quoteMinor": 79900,
+      "quantityBeforeCleanup": 2,
+      "trialPreserved": null,
+      "declinePendingAndRecoveryLink": true,
+      "voidedUpdateRecognized": true,
+      "canceled": true
+    }
+  ]
+}

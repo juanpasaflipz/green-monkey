@@ -1,0 +1,28 @@
+{
+  "at": "2026-09-23T04:42:45.238Z",
+  "origin": "https://green-monkey-staging.up.railway.app",
+  "commit": "b05c6a422c4fc4ca5330cb6a7f42a1098a0a58d2",
+  "run": "80bcb687-baf7-442e-a5d5-6b0d2e550dea",
+  "tenantIds": [
+    "60f9fe21-a11a-4642-b13d-b6864e417553"
+  ],
+  "orderId": "2ae5ceee-9ab0-4d30-b845-bbb33e67001f",
+  "identity": "synthetic fixture; not Google OAuth proof",
+  "fixturesRetained": true,
+  "providerCharges": false,
+  "scope": "deployed HTTP and replacement-browser backup restore/download",
+  "checks": [
+    "deployed replacement-browser backup restore is repeatable",
+    "deployed backup download preserves original cash evidence",
+    "unselected Free device cannot sell",
+    "catalog change blocks ordinary sync",
+    "unselected manager can review and reconcile original closed drawer",
+    "sync replay creates no duplicate tender",
+    "original close and discrepancy preserved",
+    "late recovery visible across devices",
+    "both fulfillment follow-ups resolve",
+    "Free selection moves selling permission",
+    "recovered cash refundable from replacement drawer",
+    "refund replay is idempotent"
+  ]
+}

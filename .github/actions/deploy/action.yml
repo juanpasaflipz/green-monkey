@@ -1,0 +1,119 @@
+name: Deploy to Railway
+description: >-
+  Migrates, applies the runtime grants and runs retention as gm_migrator from GitHub
+  Actions (the schema-owner credential never reaches Railway), then applies the Railway
+  IaC (non-destructive changes only, and only when asked), stamps the build, uploads the
+  worker and then the web service, and runs the HTTP smoke against the expected commit.
+inputs:
+  sha:
+    description: Full commit SHA being deployed (already checked out).
+    required: true
+  sync-config:
+    description: >-
+      "true" applies this checkout's .railway/railway.ts. A rollback passes
+      "false": an older file omits variables added since, Railway treats an
+      omission as a deletion, and apply --yes refuses destructive plans, so a
+      rollback keeps the current service configuration (RUNBOOK.md, Rollback).
+    required: false
+    default: "true"
+  railway-token:
+    description: Railway project token scoped to the target environment.
+    required: true
+  railway-cli-version:
+    description: Exact @railway/cli version with `railway config apply`.
+    required: true
+  railway-iac-version:
+    description: Exact `railway` npm package version that provides railway/iac.
+    required: true
+  app-url:
+    description: Public origin of the environment.
+    required: true
+  migration-database-url:
+    description: gm_migrator URL on the direct endpoint (GitHub environment secret MIGRATION_DATABASE_URL).
+    required: true
+  pg-app-user:
+    description: Runtime login the grants manifest targets (GitHub environment variable PG_APP_USER).
+    required: true
+  app-env:
+    description: staging or production (assertMigrationRole refuses a privileged migration login there).
+    required: true
+  alert-webhook-url:
+    description: Webhook for retention_failed (environment secret ALERT_WEBHOOK_URL); empty disables alerts.
+    required: false
+    default: ""
+  alert-webhook-kind:
+    description: ntfy, slack, discord or generic.
+    required: false
+    default: ntfy
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version-file: .nvmrc
+        # No npm cache restored from less-privileged jobs: it would also hold
+        # ~/.npm/_npx, where the Railway CLI below is installed (PLATFORM-CI-3).
+        package-manager-cache: false
+    - name: Install and build
+      shell: bash
+      run: npm ci && npm run build
+    # Before any Railway change: a failure here leaves the old revision serving
+    # on the old schema. Migrations are expand-only, so the running revision
+    # keeps working on the expanded schema while the new one uploads.
+    - name: Migrate, apply runtime grants and run retention (gm_migrator, direct endpoint)
+      shell: bash
+      env:
+        MIGRATION_DATABASE_URL: ${{ inputs.migration-database-url }}
+        PG_APP_USER: ${{ inputs.pg-app-user }}
+        APP_ENV: ${{ inputs.app-env }}
+        ALERT_WEBHOOK_URL: ${{ inputs.alert-webhook-url }}
+        ALERT_WEBHOOK_KIND: ${{ inputs.alert-webhook-kind }}
+      run: |
+        [ -n "$MIGRATION_DATABASE_URL" ] || { echo "::error::environment secret MIGRATION_DATABASE_URL is not set"; exit 1; }
+        [[ "$PG_APP_USER" =~ ^[a-z_][a-z0-9_]{0,62}$ ]] || { echo "::error::environment variable PG_APP_USER is not set"; exit 1; }
+        [[ "$APP_ENV" =~ ^(staging|production)$ ]] || { echo "::error::app-env must be staging or production"; exit 1; }
+        node build/scripts/migrate.js --grants --retention
+    - name: Install the IaC authoring package (not a project dependency)
+      if: inputs.sync-config == 'true'
+      shell: bash
+      env:
+        RAILWAY_IAC_VERSION: ${{ inputs.railway-iac-version }}
+      run: |
+        [[ "$RAILWAY_IAC_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pin RAILWAY_IAC_VERSION"; exit 1; }
+        npm install --no-save --ignore-scripts "railway@$RAILWAY_IAC_VERSION"
+    - name: Keep the current Railway configuration (rollback or older SHA)
+      if: inputs.sync-config != 'true'
+      shell: bash
+      run: echo "::notice::Railway IaC sync skipped; the services keep their current configuration (RUNBOOK.md, Rollback)."
+    - name: Sync Railway service configuration (non-destructive only)
+      if: inputs.sync-config == 'true'
+      shell: bash
+      env:
+        RAILWAY_TOKEN: ${{ inputs.railway-token }}
+        RAILWAY_CLI_VERSION: ${{ inputs.railway-cli-version }}
+      run: |
+        [[ "$RAILWAY_CLI_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pin RAILWAY_CLI_VERSION"; exit 1; }
+        npx -y "@railway/cli@$RAILWAY_CLI_VERSION" config plan
+        # --yes without --confirm-destructive: a plan that would delete a
+        # service or variable stops here for a human review.
+        npx -y "@railway/cli@$RAILWAY_CLI_VERSION" config apply --yes
+    - name: Stamp the build
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+      run: node scripts/ops/stamp-build.mjs "$SHA"
+    - name: Deploy worker then web
+      shell: bash
+      env:
+        RAILWAY_TOKEN: ${{ inputs.railway-token }}
+        RAILWAY_CLI_VERSION: ${{ inputs.railway-cli-version }}
+        SHA: ${{ inputs.sha }}
+      run: |
+        npx -y "@railway/cli@$RAILWAY_CLI_VERSION" up --ci --service worker --message "$SHA"
+        npx -y "@railway/cli@$RAILWAY_CLI_VERSION" up --ci --service web --message "$SHA"
+    - name: Wait for the live revision and smoke
+      shell: bash
+      env:
+        APP_URL: ${{ inputs.app-url }}
+        SHA: ${{ inputs.sha }}
+      run: node scripts/ops/smoke.mjs --base-url "$APP_URL" --expect-commit "$SHA" --timeout 900

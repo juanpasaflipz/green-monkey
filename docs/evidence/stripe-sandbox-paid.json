@@ -1,0 +1,11 @@
+{
+  "checkedAt": "2026-09-14T20:02:25.635Z",
+  "accountId": "acct_1UFZZRFYpuQNRtU1",
+  "subscriptionId": "sub_1UFg4mFYpuQNRtU1naoln9ey",
+  "checkoutComplete": true,
+  "canonicalStatus": "active",
+  "accessPlan": "pro",
+  "amountMinor": 79900,
+  "currency": "mxn",
+  "livePayments": false
+}

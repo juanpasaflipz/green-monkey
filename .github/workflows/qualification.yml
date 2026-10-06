@@ -1,0 +1,218 @@
+name: Qualification
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: qualification-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        # Neon runs PostgreSQL 18 (OPS-12).
+        image: postgres:18
+        env:
+          POSTGRES_USER: gm_provisioner
+          POSTGRES_PASSWORD: local-only-provisioner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gm_provisioner -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    # Test-harness values only. Migration credentials are step-level, so the
+    # compiled servers never see them.
+    env:
+      PGPASSWORD: local-only-provisioner
+      DATABASE_URL: postgresql://gm_app:local-only-green-monkey@127.0.0.1:5432/green_monkey_dev
+      TEST_DATABASE_URL: postgresql://gm_app:local-only-green-monkey@127.0.0.1:5432/green_monkey_test
+      TEST_MIGRATION_DATABASE_URL: postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_test
+      TEST_DATABASE_HOST_ALLOWLIST: 127.0.0.1:5432/green_monkey_test
+      ALLOW_DEMO_SEED: green-monkey-local
+      JWT_SECRET: synthetic-ci-only-never-use-outside-disposable-tests-123456789
+      # OPS-10 keyring (Wave 2.0): every web, DB and browser test runs on the real
+      # keyring. Synthetic: base64url of "synthetic-ci-only-never-use-outside-tests"
+      # (41 bytes). APP_ENV is unset in this job, so the compiled worker's refusal
+      # of SIGNING_KEYS and JWT_SECRET (deployed environments only) does not trip.
+      SIGNING_KEYS: ci-20261005:c3ludGhldGljLWNpLW9ubHktbmV2ZXItdXNlLW91dHNpZGUtdGVzdHM
+      APP_URL: http://127.0.0.1:3002
+      PORT: 3002
+      RESTART_TEST_PORT: 3003
+      # Wave 1 contract §1.2: browser env for every track.
+      DEMO_TENANT_ID: 10000000-0000-4000-8000-000000000001
+      ACCESS_STEP_UP_SECONDS: "1800"
+      ACCESS_IDLE_LOCK_DEFAULT_SECONDS: "0"
+      # account (031): DB suites and compiled servers without the legal set may
+      # still create restaurants (draft documents). Ignored when
+      # APP_ENV=production; the browser and account-http steps publish the
+      # fictional set below instead.
+      LEGAL_UNPUBLISHED_SIGNUP: allow
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: PostgreSQL 18 client tools (backup/restore suite)
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list > /dev/null
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-18
+          /usr/lib/postgresql/18/bin/pg_dump --version
+      - name: Provision disposable databases and least-privilege roles
+        run: |
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/provision-local.sql
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/ops/sql/globals.sql
+          # provision-local.sql created gm_worker; globals.sql created gm_jobs_worker (Wave 2.0).
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -c "GRANT gm_jobs_worker TO gm_worker"
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE gm_migrator LOGIN PASSWORD 'local-only-migrator'"
+          for database in green_monkey_dev green_monkey_test; do
+            psql -h 127.0.0.1 -U gm_provisioner -d "$database" -v ON_ERROR_STOP=1 -f scripts/ops/sql/database-grants.sql
+          done
+      - name: Migrate as the non-superuser owner (Neon parity), then grants and retention
+        env:
+          APP_ENV: staging
+          PG_APP_USER: gm_app
+        run: |
+          for database in green_monkey_dev green_monkey_test; do
+            MIGRATION_DATABASE_URL="postgresql://gm_migrator:local-only-migrator@127.0.0.1:5432/$database" \
+              npx tsx scripts/migrate.ts --grants --retention
+          done
+      - name: Seed fictional fixtures
+        run: |
+          for database in green_monkey_dev green_monkey_test; do
+            MIGRATION_DATABASE_URL="postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/$database" npm run db:seed
+          done
+      - run: npm run typecheck && npm run lint && npm test
+      - run: npm run test:db:qualification
+      - run: npm run build
+      - run: npm run test:restart
+      # Access's compiled-server checks (terminal guard, device-keyed limits,
+      # D22 refusal). The runner seeds pairing codes with the fixture admin
+      # URL; it never passes that URL to the servers it starts.
+      - name: Access HTTP checks
+        env:
+          MIGRATION_DATABASE_URL: postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_dev
+        run: npm run test:access-http
+      # Account's compiled-server checks (account-center terminal guard, the
+      # PUBLIC_ORDERING_ENABLED switch, /api/account-config, export headers and
+      # budget). The runner alone holds the fixture admin URL.
+      - name: Account HTTP checks
+        env:
+          MIGRATION_DATABASE_URL: postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_dev
+          # Fictional legal/support values (LD-3): plausible so the production-mode detector publishes them; never copied to Railway.
+          # Same literals as tests/fixtures/legal-ci.ts.
+          LEGAL_ENTITY_NAME: "Nopal Verde Software S.A. de C.V."
+          LEGAL_ENTITY_ADDRESS: "Calle Jacaranda 120, Col. Centro, 06000 Ciudad de México, CDMX"
+          LEGAL_PRIVACY_CONTACT_EMAIL: "privacidad@nopalverde.mx"
+          LEGAL_JURISDICTION: "Ciudad de México"
+          SUPPORT_EMAIL: "soporte@nopalverde.mx"
+          SUPPORT_PHONE: "+525512345678"
+          SUPPORT_HOURS: "Lun–Sáb 9:00–21:00 (hora del centro)"
+        run: npm run test:account-http
+      - name: Graceful drain of the compiled web and worker
+        run: npm run test:drain
+      - run: npx playwright install --with-deps chromium webkit
+      - name: Compiled browser acceptance (web + worker)
+        env:
+          WORKER_URL: http://127.0.0.1:3005
+          # Fictional legal/support values (LD-3): plausible so the production-mode detector publishes them; never copied to Railway.
+          # Same literals as tests/fixtures/legal-ci.ts.
+          LEGAL_ENTITY_NAME: "Nopal Verde Software S.A. de C.V."
+          LEGAL_ENTITY_ADDRESS: "Calle Jacaranda 120, Col. Centro, 06000 Ciudad de México, CDMX"
+          LEGAL_PRIVACY_CONTACT_EMAIL: "privacidad@nopalverde.mx"
+          LEGAL_JURISDICTION: "Ciudad de México"
+          SUPPORT_EMAIL: "soporte@nopalverde.mx"
+          SUPPORT_PHONE: "+525512345678"
+          SUPPORT_HOURS: "Lun–Sáb 9:00–21:00 (hora del centro)"
+        # cfdi (030): the deterministic Facturapi fake on 127.0.0.1:4799 and, on the worker only,
+        # a fake User key, a synthetic credential keyring (base64url of
+        # "synthetic-ci-only-cfdi-credential-key-000") and the fake's loopback base URL. The web
+        # process never sees FACTURAPI_* or CREDENTIAL_ENCRYPTION_KEY.
+        run: |
+          npm run dev:facturapi-fake > /tmp/green-monkey-facturapi-fake.log 2>&1 &
+          node --input-type=module -e 'for(let i=0;i<60;i++){try{await fetch("http://127.0.0.1:4799/v2/organizations");process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
+          NODE_ENV=production node --import ./build/server/instrument.js build/server/index.js > /tmp/green-monkey-server.log 2>&1 &
+          NODE_ENV=production WORKER_PORT=3005 DATABASE_URL= WORKER_DATABASE_URL=postgresql://gm_worker:local-only-worker@127.0.0.1:5432/green_monkey_dev FACTURAPI_API_KEY=sk_user_ci_fake CREDENTIAL_ENCRYPTION_KEY=ci-cfdi:c3ludGhldGljLWNpLW9ubHktY2ZkaS1jcmVkZW50aWFsLWtleS0wMDA FACTURAPI_BASE_URL=http://127.0.0.1:4799/v2 npm run start:worker > /tmp/green-monkey-worker.log 2>&1 &
+          node --input-type=module -e 'for(let i=0;i<60;i++){try{if((await fetch("http://127.0.0.1:3002/api/health")).ok&&(await fetch("http://127.0.0.1:3005/healthz")).ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
+          # Only the test runner gets the fixture admin URL (owner/Free fixtures);
+          # the web and worker processes above never see a migration credential.
+          TEST_BASE_URL=http://127.0.0.1:3002 TEST_PRODUCTION=1 \
+            MIGRATION_DATABASE_URL=postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_dev \
+            npm run test:browser
+      - name: Load smoke (3 tenants, 60 s)
+        env:
+          LOAD_PROFILE: smoke
+          LOAD_MIGRATION_DATABASE_URL: postgresql://gm_provisioner:local-only-provisioner@127.0.0.1:5432/green_monkey_test
+          LOAD_TARGET_ALLOWLIST: 127.0.0.1:5432/green_monkey_test
+          LOAD_DATABASE_URL: postgresql://gm_app:local-only-green-monkey@127.0.0.1:5432/green_monkey_test
+          LOAD_BASE_URL: http://127.0.0.1:3006
+          LOAD_ORIGIN_ALLOWLIST: http://127.0.0.1:3006
+          # load:run reports the server's db_retry lines; it fails on any 409
+          # concurrent_update (account E7, LD-15 account Q8, LD-32 OPS-3).
+          LOAD_SERVER_LOG: /tmp/green-monkey-load.log
+        run: |
+          npm run load:seed
+          NODE_ENV=production PORT=3006 APP_URL=http://127.0.0.1:3006 DATABASE_URL="$LOAD_DATABASE_URL" \
+            node --import ./build/server/instrument.js build/server/index.js > /tmp/green-monkey-load.log 2>&1 &
+          node --input-type=module -e 'for(let i=0;i<60;i++){try{if((await fetch("http://127.0.0.1:3006/api/health")).ok)process.exit(0)}catch{}await new Promise(r=>setTimeout(r,500))}process.exit(1)'
+          npm run load:run
+      - name: Image smoke (web, worker, migrate --check)
+        run: |
+          node scripts/ops/stamp-build.mjs "$GITHUB_SHA"
+          docker build -t green-monkey:ci .
+          docker run -d --name gm-web --network host -e PORT=3004 -e NODE_ENV=production \
+            -e APP_URL=http://127.0.0.1:3004 -e DATABASE_URL -e JWT_SECRET green-monkey:ci
+          docker run -d --name gm-worker --network host -e PROCESS_KIND=worker -e PORT=3007 -e NODE_ENV=production \
+            -e WORKER_DATABASE_URL=postgresql://gm_worker:local-only-worker@127.0.0.1:5432/green_monkey_dev \
+            green-monkey:ci node --import ./build/server/instrument.js build/server/worker.js
+          node --input-type=module -e '
+            const wait = async (url, ok) => { for (let i = 0; i < 90; i++) { try { const r = await fetch(url); if (await ok(r)) return; } catch {} await new Promise(r => setTimeout(r, 1000)); } throw Error("timeout " + url); };
+            await wait("http://127.0.0.1:3004/api/health", async r => r.ok);
+            await wait("http://127.0.0.1:3004/api/version", async r => r.ok && (await r.json()).commit === process.env.GITHUB_SHA);
+            await wait("http://127.0.0.1:3007/healthz", async r => r.ok && (await r.json()).jobs === true);
+            console.log("image smoke passed");'
+          docker run --rm --network host -e APP_ENV=staging -e PG_APP_USER=gm_app \
+            -e MIGRATION_DATABASE_URL=postgresql://gm_migrator:local-only-migrator@127.0.0.1:5432/green_monkey_dev \
+            green-monkey:ci node build/scripts/migrate.js --check
+      - name: Collect container logs
+        if: failure()
+        run: |
+          docker logs gm-web > /tmp/green-monkey-docker-web.log 2>&1 || true
+          docker logs gm-worker > /tmp/green-monkey-docker-worker.log 2>&1 || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: qualification-failure
+          path: |
+            playwright-report/
+            test-results/
+            /tmp/green-monkey-*.log
+
+  security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Secret scan (full history)
+        run: |
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            detect --source /repo --redact --config /repo/.gitleaks.toml --no-banner

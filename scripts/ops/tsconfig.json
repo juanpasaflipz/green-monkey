@@ -1,0 +1,9 @@
+{
+  "//": "Type-checks the user-run ops and load scripts with the server options (never emits; the build stays tsconfig.server.json). Run by tests/scripts-typecheck.test.ts.",
+  "extends": "../../tsconfig.server.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "../.."
+  },
+  "include": ["./*.ts", "../load/*.ts"]
+}

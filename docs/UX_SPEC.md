@@ -38,6 +38,14 @@ Accessibility target: keyboard-operable flows, focus containment/restoration for
 
 Avoid showing administrative navigation while a cashier takes payment. Offer a visible workspace switch for people with multiple roles. Do not make role detection rely solely on screen width.
 
+Access screens (built; [ACCESS.md](ACCESS.md)):
+- **Unpaired browser:** "Vincular este dispositivo" takes a pairing code; the owner's Google entry appears only where allowed (never on a terminal).
+- **PIN pad:** a paired device shows the restaurant and device name, then "¿Quién entra?" with the active staff list; the employee taps their name and enters their PIN on an on-screen keypad (no system keyboard).
+- **Lock screen** ("Pantalla bloqueada"): shown after the auto-lock, from "Bloquear pantalla" in the header, or when the server ends the session. The workspace stays mounted behind it; the same employee's PIN resumes the cart and open dialogs, another employee's PIN starts their own session. Offline, the locked employee may "Continuar como {name}" while the device's offline window is valid.
+- **Step-up** ("Confirma con tu PIN"): one shared dialog before sensitive commands on terminals; the command is retried unchanged after the PIN.
+- **Manager approval:** a void needing approval asks for "Gerente que autoriza" and "PIN del gerente" in the same dialog.
+- **Equipo** and **Dispositivos** (Configuración): staff with PIN reset, deactivation and unlock; devices with kind, last activity, auto-lock, end session and unpair, plus the pairing-code dialog.
+
 ## Selling layout
 
 ```text
@@ -93,6 +101,10 @@ Split mode supports amount and item quantities, deterministic remainder handling
 Tables use a clear list/grid with name, party/order count if recorded, waiter, elapsed time, amount due, and status text. A graphical floor plan is optional; keyboard access and a list view are required. Moving/merging tables preserves order lineage and permissions.
 
 Kitchen tickets emphasize item quantities, modifiers, notes, table/call name, round, age, and source. Payment status is a separate badge. Filter by station; don't hide active orders just because another payment method created them. Changed/voided lines show a visible delta and acknowledgement. Deduplicate sounds and dispatch. Show a stale-data banner when the feed stops. Cancellation after preparation is an explicit exception, not an invisible deletion.
+
+Implemented as described in [Service](SERVICE.md): Órdenes and Mesas lists with check badges, **Liberar mesa** for paid dine-in checks, the KDS with station filter, round and order notes (allergy notes highlighted), void deltas with acknowledgement and a stale-feed banner, and receipts, pre-bills and kitchen tickets printed through one browser print path on 80 or 58 mm paper.
+
+Offline ([offline recovery](OFFLINE_RECOVERY.md)): the header pill reads **Conectado** or **Sin conexión** and opens the Sync screen; local orders show their provisional number until sync maps it to the server number; synced offline rounds wait in a review lane above the KDS tickets for the station on screen, each with **Preparar ahora** and **Ya se preparó**.
 
 ## Inventory and owner screens
 

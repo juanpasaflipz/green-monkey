@@ -1,0 +1,22 @@
+{
+  "provenance": "docs@1c2e617",
+  "source": "openapi_v2.en.yaml#/components/responses/BadRequest",
+  "status": 400,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": {
+    "message": "No se encontró el RFC [AAA010101AAA] en la Lista de Contribuyentes Obligados.",
+    "status": 400,
+    "code": "invoice_stamping_validation_error",
+    "errors": [
+      {
+        "message": "No se encontró el RFC [AAA010101AAA] en la Lista de Contribuyentes Obligados.",
+        "code": "402",
+        "source": "pac"
+      }
+    ],
+    "ok": false
+  },
+  "note": "Verbatim the 'External errors' example of getting-started/errors.mdx (root invoice_stamping_validation_error, a PAC detail in errors[])."
+}

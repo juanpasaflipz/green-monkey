@@ -1,0 +1,182 @@
+name: Retention
+run-name: Retention ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
+# Deletes only expired OAuth login attempts and done/dead jobs older than 30 days
+# (server/ops/retention.ts), as the schema owner gm_migrator from the GitHub environment
+# secret MIGRATION_DATABASE_URL, never from a Railway service (DB-1). Daily inside
+# RETENTION_WINDOW (04:00-07:00 America/Mexico_City, UTC-6 all year) and after the 03:30
+# backup, whose pg_dump locks would make the pass skip: production 05:15 (11:15 UTC),
+# staging 05:45 (11:45 UTC), off the top of the hour. One run repeats bounded passes while
+# a backlog remains (at most 10, never starting one after 07:00). Every deploy also runs one
+# pass. A lock-timeout skip (exit 75) retries twice, 5 minutes apart; a failure has already
+# alerted retention_failed and this run opens or updates the ops-alert issue.
+#
+# The code that runs is the environment's LIVE release, never main's head
+# (PLATFORM-ROLES-1): production checks out the newest prod-* release tag
+# (deploy.yml tags every production deploy, rollbacks included) and staging the
+# main commit (of the latest 30) whose successful deploy/staging status is the
+# most recent; either must be on main. Nothing that holds the secret runs dev dependencies (PLATFORM-CI-4): the
+# release is installed and compiled first, then only build/scripts/migrate.js
+# runs with MIGRATION_DATABASE_URL. A scheduled run never starts a pass outside
+# RETENTION_WINDOW (a delayed cron does nothing) and stops retrying once it
+# closes (PLATFORM-OPS-8). A manual production dispatch is refused during
+# service hours unless allow_service_hours is set (PLATFORM-CI-6).
+on:
+  schedule:
+    - cron: "15 11 * * *"
+    - cron: "45 11 * * *"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment
+        type: choice
+        options: [production, staging]
+        default: staging
+      allow_service_hours:
+        description: Allow a production run 12:00-23:59 America/Mexico_City (restaurant service hours)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  statuses: read
+  issues: write
+concurrency:
+  group: retention-${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
+  cancel-in-progress: false
+jobs:
+  retention:
+    # Schedules stay off until provisioning lists the environment in the repository
+    # variable OPS_LIVE_ENVIRONMENTS; a manual dispatch always runs.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.schedule == '15 11 * * *' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'production')) ||
+      (github.event.schedule == '45 11 * * *' && contains(vars.OPS_LIVE_ENVIRONMENTS, 'staging'))
+    runs-on: ubuntu-latest
+    # Three attempts of at most 10 passes of at most ~65 s each, plus two 5-minute waits.
+    timeout-minutes: 50
+    environment: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
+    env:
+      RETENTION_ENV: ${{ github.event_name == 'workflow_dispatch' && inputs.environment || (github.event.schedule == '15 11 * * *' && 'production' || 'staging') }}
+      EVENT: ${{ github.event_name }}
+    steps:
+      - name: Resolve the live release (and the service-hours guard)
+        id: live
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ALLOW_SERVICE_HOURS: ${{ inputs.allow_service_hours }}
+        run: |
+          # >>> retention-live-release (executed by tests/workflows.test.ts)
+          repo="$GITHUB_REPOSITORY"
+          case "$RETENTION_ENV" in production|staging) ;; *) echo "::error::unknown environment"; exit 1 ;; esac
+          if [ "$EVENT" = workflow_dispatch ] && [ "$RETENTION_ENV" = production ]; then
+            # Mexico City has no DST since 2022 (UTC-6 year-round), as in deploy.yml.
+            hour=$(TZ=America/Mexico_City date +%H)
+            if [ "$hour" -ge 12 ] && [ "$ALLOW_SERVICE_HOURS" != "true" ]; then
+              echo "::error::refused during service hours (12:00-23:59 America/Mexico_City); dispatch again with allow_service_hours"
+              exit 1
+            fi
+          fi
+          staged() {
+            [ "$(gh api "repos/$repo/commits/$1/statuses" --jq '[.[] | select(.context == "deploy/staging")][0].state')" = success ]
+          }
+          # When the commit's latest deploy/staging status is a success, its created_at
+          # (ISO 8601 UTC, so it compares as text); nothing otherwise.
+          staged_at() {
+            gh api "repos/$repo/commits/$1/statuses" --jq '[.[] | select(.context == "deploy/staging")][0] | select(.state == "success") | .created_at'
+          }
+          sha=""
+          if [ "$RETENTION_ENV" = production ]; then
+            tag=$(gh api --paginate "repos/$repo/git/matching-refs/tags/prod-" --jq '.[].ref' \
+              | sed 's#^refs/tags/##' | grep -E '^prod-[0-9]{8}-[0-9]{4}-[0-9a-f]{7}$' | sort | tail -n 1 || true)
+            [ -n "$tag" ] || { echo "::error::no prod-* release tag: production has no live release to run retention from"; exit 1; }
+            sha=$(gh api "repos/$repo/commits/tags/$tag" --jq .sha)
+            [ "${sha:0:7}" = "${tag##*-}" ] || { echo "::error::release tag $tag does not point at its commit"; exit 1; }
+            staged "$sha" || { echo "::error::$tag was never live on staging"; exit 1; }
+          else
+            # The most recently DEPLOYED commit, not the newest one: a re-run that
+            # deploys an older commit to staging gives it the newest status
+            # (PLAT-HR-8). Ties keep the newer commit.
+            newest=""
+            for candidate in $(gh api "repos/$repo/commits?sha=main&per_page=30" --jq '.[].sha'); do
+              at=$(staged_at "$candidate")
+              if [ -n "$at" ] && { [ -z "$newest" ] || [[ "$at" > "$newest" ]]; }; then
+                newest=$at
+                sha=$candidate
+              fi
+            done
+            [ -n "$sha" ] || { echo "::error::none of main's latest 30 commits carries a successful deploy/staging status"; exit 1; }
+          fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::could not resolve the live release"; exit 1; }
+          case "$(gh api "repos/$repo/compare/$sha...main" --jq .status)" in
+            ahead|identical) ;;
+            *) echo "::error::$sha is not on main"; exit 1 ;;
+          esac
+          echo "Retention runs the live $RETENTION_ENV release $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          # <<< retention-live-release
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.live.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          # No shared npm cache in a job that holds the schema-owner secret (PLATFORM-CI-3).
+          package-manager-cache: false
+      - name: Install and compile the release (no secrets in this step)
+        run: npm ci && npx tsc -p tsconfig.server.json
+      - name: Retention pass
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
+          APP_ENV: ${{ env.RETENTION_ENV }}
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+          ALERT_WEBHOOK_KIND: ${{ vars.ALERT_WEBHOOK_KIND || 'ntfy' }}
+        run: |
+          [ -n "$MIGRATION_DATABASE_URL" ] || { echo "::error::environment secret MIGRATION_DATABASE_URL is not set"; exit 1; }
+          # >>> retention-window-probe (executed by tests/workflows.test.ts)
+          # RETENTION_WINDOW from the release's own code (server/ops/retention.ts). The
+          # probe exits 0 inside the window and 3 outside it; any other exit (a failed
+          # import, a renamed export, a crash) fails the run instead of reading as
+          # "outside the window", which would skip every scheduled pass in green.
+          in_window() {
+            local probe=0
+            node --input-type=module -e 'const { inRetentionWindow } = await import(process.cwd() + "/build/server/ops/retention.js"); process.exit(inRetentionWindow(Date.now()) ? 0 : 3)' || probe=$?
+            case "$probe" in
+              0) return 0 ;;
+              3) return 1 ;;
+              *) echo "::error::retention_window_check_failed: build/server/ops/retention.js did not answer (exit $probe)"; exit 1 ;;
+            esac
+          }
+          # <<< retention-window-probe
+          if [ "$EVENT" = schedule ] && ! in_window; then
+            echo "::notice::retention_outside_window: the scheduled run started after 07:00 America/Mexico_City; the next one runs tomorrow"
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            code=0
+            # The compiled script itself, so the exit code (0, 1 or 75) reaches the shell unchanged.
+            node build/scripts/migrate.js --retention-only || code=$?
+            [ "$code" -eq 75 ] || exit "$code"
+            if [ "$attempt" -lt 3 ]; then
+              echo "retention skipped (lock timeout); retrying in 5 minutes"
+              sleep 300
+              if [ "$EVENT" = schedule ] && ! in_window; then
+                echo "::error::retention skipped (lock timeout) and RETENTION_WINDOW has closed"
+                exit 75
+              fi
+            fi
+          done
+          echo "::error::retention skipped three times (lock timeout)"
+          exit 75
+      - name: Open or update the ops-alert issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          message="retention_failed env=$RETENTION_ENV run=$RUN_URL"
+          title="ops-alert: $RETENTION_ENV"
+          gh label create ops-alert -R "$GITHUB_REPOSITORY" --color B60205 \
+            --description "Automated operations alert" --force >/dev/null 2>&1 || true
+          number=$(gh issue list -R "$GITHUB_REPOSITORY" --state open --label ops-alert --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$number" ]; then gh issue comment -R "$GITHUB_REPOSITORY" "$number" --body "$message"
+          else gh issue create -R "$GITHUB_REPOSITORY" --title "$title" --label ops-alert --body "$message"; fi

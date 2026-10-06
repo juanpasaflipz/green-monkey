@@ -1,0 +1,109 @@
+/* Platform legal pages (account 031). Readable measure, print friendly. */
+.legal-page {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 24px 16px 64px;
+  line-height: 1.6;
+  color: var(--ink);
+}
+.legal-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+.legal-header nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.legal-brand {
+  font-weight: 700;
+  color: var(--brand);
+  text-decoration: none;
+}
+.legal-page h1 {
+  font-size: 2rem;
+  line-height: 1.2;
+  margin: 0 0 8px;
+}
+.legal-page h2 {
+  font-size: 1.15rem;
+  margin: 32px 0 8px;
+}
+.legal-page a {
+  color: var(--brand);
+  overflow-wrap: anywhere;
+  /* Links inside text are underlined, not told apart by color alone (axe link-in-text-block). */
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.legal-page p,
+.legal-page li {
+  overflow-wrap: anywhere;
+}
+.legal-draft {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-line);
+  color: var(--warning);
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-weight: 600;
+}
+.legal-missing {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border: 1px dashed var(--warning-line);
+  border-radius: 6px;
+  padding: 0 6px;
+  font-weight: 600;
+}
+.legal-toc ol {
+  padding-left: 20px;
+  columns: 2 220px;
+}
+.legal-index {
+  padding-left: 20px;
+}
+.legal-index li {
+  margin: 8px 0;
+}
+.legal-offline {
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  padding: 16px;
+}
+.legal-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin-top: 48px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+@media print {
+  /* The global print rule sets @page margins to 0 for receipts (UX-9). */
+  @page {
+    margin: 18mm 16mm;
+  }
+  .legal-header nav,
+  .legal-toc,
+  .legal-footer {
+    display: none;
+  }
+  .legal-page {
+    max-width: none;
+    padding: 0;
+    font-size: 11pt;
+  }
+  .legal-page a {
+    color: inherit;
+    text-decoration: none;
+  }
+  .legal-section {
+    break-inside: avoid-page;
+  }
+}
