@@ -353,7 +353,11 @@ test("HTML 502 from the proxy is treated as offline, not a generic error @cross"
     .getByRole("button", { name: "Confirmar cobro", exact: true })
     .click();
   const alert = page.getByRole("dialog").getByRole("alert");
-  await expect(alert).toContainText("El servidor no está disponible");
+  // The POST is retried once after 800 ms on a 502 (idempotent payments), so
+  // the alert can take longer than the default 5 s on a slow WebKit runner.
+  await expect(alert).toContainText("El servidor no está disponible", {
+    timeout: 15_000,
+  });
   await expect(alert).not.toContainText("No se pudo completar");
   await expect(pill(page, /^Sin conexión/)).toBeVisible();
   await page
