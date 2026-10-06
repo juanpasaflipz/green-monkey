@@ -26,6 +26,14 @@ import {
   retryPaymentRecovery,
 } from "../server/payment-recovery.js";
 
+/** fiscal (027) triggers a cleanup disables (in its own transaction) to delete fixture rows. */
+const FISCAL_TRIGGERS = [
+  ["fiscal_adjustments", "fiscal_adjustments_immutable"],
+  ["fiscal_ticket_taxes", "fiscal_ticket_taxes_immutable"],
+  ["fiscal_tickets", "fiscal_tickets_immutable"],
+  ["fiscal_folio_counters", "fiscal_folio_counters_guard"],
+] as const;
+
 const { runtime, migration } = isolatedTarget(process.env),
   sql = connect(runtime),
   admin = postgres(migration, { max: 1 });
@@ -473,40 +481,56 @@ try {
     "Offline recovery DB passed: v1 compatibility, v2 lease evidence, exact sync/reconciliation replay, price conflict review, uncertain-payment status/retry, revoked-session manager recovery, closed-drawer late correction, durable kitchen/stock task resolution, tenant isolation and capped refund.",
   );
 } finally {
-  for (const table of [
-    "offline_kitchen_reviews",
-    "offline_sync_records",
-    "offline_archives",
-    "refunds",
-    "tender_allocations",
-    "offline_recovery_tasks",
-    "offline_recoveries",
-    "tenders",
-    "rounds",
-    "order_lines",
-    "jobs",
-    "operations",
-    "audit",
-    "orders",
-    "order_numbers",
-    "cash_movements",
-    "cash_sessions",
-    "recipe_versions",
-    "menu_state",
-    "menu_categories",
-    "modifier_groups",
-    "dining_areas",
-    "catalog",
-    "offline_lease_renewals",
-    "sessions",
-    "devices",
-    "employees",
-    "restaurant_entitlements",
-    "kitchen_feed_versions",
-  ])
-    await admin.unsafe(`delete from ${table} where tenant_id=$1`, [tenantId]);
-  await admin`delete from restaurants where id=${tenantId}`;
-  await admin`delete from organizations where id=${organizationId}`;
+  await admin.begin(async (tx) => {
+    // fiscal (027): fiscal records are immutable even for the owner, so this
+    // cleanup switches their named triggers off in the same transaction that
+    // deletes the fixture tenants (LD-12 pattern, LD-16 L5): no other session
+    // ever sees them disabled, and a failed cleanup rolls the switch back.
+    for (const [table, trigger] of FISCAL_TRIGGERS)
+      await tx.unsafe(`alter table ${table} disable trigger ${trigger}`);
+    for (const table of [
+      // fiscal (027), first in FK order (LD-16 L5).
+      "fiscal_adjustments",
+      "fiscal_ticket_taxes",
+      "fiscal_tickets",
+      "fiscal_folio_counters",
+      "restaurant_fiscal_profiles",
+      "offline_kitchen_reviews",
+      "offline_sync_records",
+      "offline_archives",
+      "refunds",
+      "tender_allocations",
+      "offline_recovery_tasks",
+      "offline_recoveries",
+      "tenders",
+      "rounds",
+      "order_lines",
+      "jobs",
+      "operations",
+      "audit",
+      "orders",
+      "order_numbers",
+      "cash_movements",
+      "cash_sessions",
+      "recipe_versions",
+      "menu_state",
+      "menu_categories",
+      "modifier_groups",
+      "dining_areas",
+      "catalog",
+      "offline_lease_renewals",
+      "sessions",
+      "devices",
+      "employees",
+      "restaurant_entitlements",
+      "kitchen_feed_versions",
+    ])
+      await tx.unsafe(`delete from ${table} where tenant_id=$1`, [tenantId]);
+    await tx`delete from restaurants where id=${tenantId}`;
+    await tx`delete from organizations where id=${organizationId}`;
+    for (const [table, trigger] of FISCAL_TRIGGERS)
+      await tx.unsafe(`alter table ${table} enable trigger ${trigger}`);
+  });
   await sql.end();
   await admin.end();
 }

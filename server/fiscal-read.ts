@@ -354,6 +354,27 @@ export async function ticketForCfdi(
   };
 }
 
+export async function hasFiscalTicket(
+  tx: Tx,
+  orderId: string,
+): Promise<boolean> {
+  const [row] =
+    await tx`select exists(select 1 from fiscal_tickets where order_id=${orderId}) as issued`;
+  return !!row?.issued;
+}
+
+/**
+ * A ticketed check takes no more lines or discounts (D1, LD-15 fiscal Q2): late items go out
+ * as a new order for the same table. One index probe.
+ */
+export async function assertNoFiscalTicket(
+  tx: Tx,
+  orderId: string,
+): Promise<void> {
+  if (await hasFiscalTicket(tx, orderId))
+    throw new DomainError("fiscal_ticket_issued", 409);
+}
+
 /** The printed identity of an order's ticket (public ordering's status page, LD-18 LD-P3). */
 export type FiscalTicketIdentity = { folio: string; selfInvoiceCode: string };
 

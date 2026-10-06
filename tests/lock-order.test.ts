@@ -36,21 +36,13 @@ type Unit = { name: string; events: { kind: Kind; at: number }[] };
  * Allowed violations, keyed by (unit, rule). A listed entry that no longer violates fails
  * the test, so stale entries cannot stay.
  */
-// Fiscal (027) reorders these call sites (feed before refresh) and deletes these entries
-// in the same commit (platform §6.2 rows 1, 6 and 8).
-const FISCAL_REORDER = [
-  "server/orders.ts#createOrder:A",
-  "server/orders.ts#createOrder:C",
-  "server/voids.ts#voidLines:A",
-  "server/voids.ts#voidLines:C",
-  "server/service.ts#assignService:A",
-  "server/service.ts#assignService:C",
-];
+// Fiscal (027) reordered createOrder, voidLines and assignService (feed before refresh,
+// platform §6.2 rows 1, 6 and 8) and deleted their A and C entries in the same commit.
 // Permanent, sanctioned exception (LD-11 MENU-INT-5): voids with stock return lock stock
 // rows before rounds rows; no cycle, because rounds are only locked under their order's
 // LO-5 lock.
 const PERMANENT = ["server/voids.ts#voidLines:D"];
-const ALLOWLIST = [...FISCAL_REORDER, ...PERMANENT];
+const ALLOWLIST = [...PERMANENT];
 
 const CALL_EVENTS: Record<string, Kind> = {
   bumpKitchenFeed: "feed",
@@ -381,8 +373,7 @@ describe("global lock order ratchet (platform §6.2, critic #9)", () => {
     `;
     const found = scan("server/voids.ts", reordered);
     expect(found).toEqual(["server/voids.ts#voidLines:D"]);
-    const afterFiscal = ALLOWLIST.filter((e) => !FISCAL_REORDER.includes(e));
-    expect(found.filter((v) => !afterFiscal.includes(v))).toEqual([]);
-    expect(afterFiscal).toEqual(PERMANENT);
+    expect(found.filter((v) => !ALLOWLIST.includes(v))).toEqual([]);
+    expect(ALLOWLIST).toEqual(PERMANENT);
   });
 });

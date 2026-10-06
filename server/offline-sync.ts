@@ -42,6 +42,7 @@ import {
 } from "./offline-leases.js";
 import { requireRecentAuth } from "./access.js";
 import { assertCheckWritable, refreshCheckState } from "./checks.js";
+import { fiscalContext, issueDueTicket } from "./fiscal.js";
 import { allocatePayment } from "../shared/settlement.js";
 import { placeRoundsInOfflineReview } from "./offline-kitchen.js";
 
@@ -267,8 +268,9 @@ export async function verifyLines(
   // the recipe between verification and stock consumption.
   const versions =
     await tx`select id,data from catalog where id=any(${tx.array(productIds)}::uuid[]) order by id for share`;
-  // Staff path: open-price lines are valid evidence (contract D11).
-  const priced = quote(lines, await catalog(tx), true);
+  // Staff path: open-price lines are valid evidence (contract D11). Synced
+  // orders and rounds snapshot tax with the server's fiscal context (027).
+  const priced = quote(lines, await catalog(tx), true, await fiscalContext(tx));
   const problem = linesProblem(
     lines,
     snapshots,
@@ -1098,6 +1100,9 @@ export async function financialRecovery(
     fulfillment: "pending",
     stock: "pending",
   });
+  // fiscal 027: a recovery order is closed at insert, so refreshCheckState never
+  // issues it; one recovery_default group at the restaurant default category.
+  await issueDueTicket(tx, s, orderId, "recovery");
   const result = await getOrder(tx, orderId);
   if (order && !opts.cancelledOnlineCreate)
     await tx`insert into operations(tenant_id,id,kind,hash,result) values(${s.tenantId},${order.operationId},'create_order',${hash(JSON.stringify({ ...order, channel: "offline" }))},${tx.json(result)})`;
