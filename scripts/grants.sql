@@ -73,3 +73,6 @@ GRANT UPDATE(cashier_max_percent_bps,cashier_max_amount,server_max_percent_bps,s
 GRANT UPDATE(reversed_at,reversed_by,reversal_approver_id,reversal_note,reversed_amount) ON discounts TO gm_app;
 GRANT UPDATE(kitchen_acknowledged_at,kitchen_acknowledged_by) ON refund_lines TO gm_app;
 GRANT SELECT ON kitchen_removals TO gm_app;
+-- 029 reports: business-day settings history (written by the restaurants trigger as
+-- the runtime role) and corte print records; INSERT-only, no UPDATE or DELETE.
+GRANT SELECT,INSERT ON business_day_settings,report_prints TO gm_app;

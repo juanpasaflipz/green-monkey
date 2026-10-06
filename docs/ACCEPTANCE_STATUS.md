@@ -51,7 +51,7 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 | FIN-01 | pending | Historical summaries and settlement import not implemented. |
 | FIN-02 | partial | Basic order/tender/refund/tip source totals; full tax/fee/commission definitions pending. |
 | FIN-03 | partial | Pure forecast identity tested; editable historical scenarios not implemented. |
-| FIN-04 | partial | Business cutoff, DST and leap-day unit tests; report integration boundary suite pending. |
+| FIN-04 | partial | Business cutoff, DST and leap-day unit tests; `business_date_at()` equals `businessDate()` on 10,000 instants incl. Tijuana DST, the cutoff instant and settings history (`tests/reports-db.ts`, local); the report statements against fiscal and discounts (`tests/reports-phaseb-db.ts`, local). |
 | MIG-01 | partial | Both normalized catalog fixtures dry-run; mapping rerun/no side effects DB-tested; historical mappings pending. |
 | MIG-02 | partial | Import transactionality implemented; kill-mid-import rehearsal pending. |
 

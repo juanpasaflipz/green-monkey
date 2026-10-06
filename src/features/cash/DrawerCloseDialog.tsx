@@ -57,7 +57,8 @@ export type DrawerView = {
  * In blind mode (the default) expected cash is never shown before the count
  * is saved and no explanation is required; a role that may see expected cash
  * sees the difference afterwards, others only "Corte registrado". The
- * pending-local-sales guard (offline) runs before the request.
+ * pending-local-sales guard (offline) runs before the request. `resultActions`
+ * is reports' slot in the result step (its corte Z or count slip, C10).
  */
 export function DrawerCloseDialog({
   session,
@@ -66,6 +67,7 @@ export function DrawerCloseDialog({
   drawer,
   notice,
   beforeClose,
+  resultActions,
   close,
   closed,
 }: {
@@ -75,6 +77,7 @@ export function DrawerCloseDialog({
   drawer: DrawerView;
   notice?: ReactNode;
   beforeClose?: () => Promise<string | null>;
+  resultActions?: (result: DrawerView) => ReactNode;
   close: () => void;
   closed: () => void | Promise<void>;
 }) {
@@ -201,6 +204,7 @@ export function DrawerCloseDialog({
               {t("discountsCloseExplainNow")}
             </Button>
           )}
+          {resultActions?.(result)}
           <Button variant="primary" onClick={() => void closed()}>
             {t("discountsCloseDone")}
           </Button>

@@ -67,7 +67,8 @@ const ownedElsewhere: Record<string, keyof typeof areas> = {
   invalid_unit: "menu",
   unavailable: "menu",
   rate_limited: "offline",
-  // CFDI and reports cores (pure modules); the full tracks own the wording.
+  // CFDI core (pure modules); the full track owns the wording. Reports (029)
+  // translates its codes in src/i18n/reports.ts (LD-15 reports Q2).
   cfdi_currency_unsupported: "cfdi",
   cfdi_duplicate_ticket: "cfdi",
   cfdi_generic_rfc: "cfdi",
@@ -78,8 +79,6 @@ const ownedElsewhere: Record<string, keyof typeof areas> = {
   cfdi_request_invalid: "cfdi",
   cfdi_stamping_rejected: "cfdi",
   cfdi_use_not_allowed: "cfdi",
-  reports_corte_hidden: "reports",
-  reports_range_invalid: "reports",
 };
 const pendingElsewhere = (code: string) => {
   const owner = ownedElsewhere[code];

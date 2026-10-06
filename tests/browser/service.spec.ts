@@ -1983,10 +1983,13 @@ test("Spanish operator screens show labels instead of codes", async ({
   await page
     .getByRole("button", { name: "Historial de auditoría", exact: true })
     .click();
-  const audit = page.getByRole("dialog");
+  // reports (029): the button opens Finanzas → Bitácora, the paged activity log.
+  await expect(
+    page.getByRole("tab", { name: "Bitácora", exact: true }),
+  ).toHaveAttribute("aria-selected", "true");
+  const audit = page.getByRole("table", { name: "Bitácora" });
   await expect(audit).toContainText("Orden creada");
   await expect(audit).not.toContainText("order.created");
-  await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "Operación", exact: true }).click();
   await page.getByRole("button", { name: "Caja", exact: true }).click();
   await page.getByText("Historial de cajas").click();

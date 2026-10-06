@@ -76,6 +76,10 @@ const CLEANUP_TRIGGERS = [
   ["cash_count_reviews", "cash_count_reviews_immutable"],
   ["cash_sessions", "cash_sessions_closed_immutable"],
   ["stock_movements", "stock_movements_immutable"],
+  // reports (029): this suite changes the cutoff, so 029's trigger records
+  // business_day_settings rows for its tenants (RPT-R18, LD-16 L5).
+  ["report_prints", "report_prints_immutable"],
+  ["business_day_settings", "business_day_settings_immutable"],
 ] as const;
 
 const timezone = "America/Mexico_City";
@@ -2840,6 +2844,9 @@ try {
       "discount_allocations",
       "discounts",
       "cash_count_reviews",
+      // reports (029), after discounts (LD-16 L5).
+      "report_prints",
+      "business_day_settings",
       "offline_kitchen_reviews",
       "offline_sync_records",
       "offline_archives",

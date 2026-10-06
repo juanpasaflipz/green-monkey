@@ -12,7 +12,7 @@ import { FiscalSettings } from "./fiscal/FiscalSettings";
 import { currencyExponent } from "../../shared/domain";
 import { ManagementTools } from "./ManagementTools";
 import { useEffect, useState } from "react";
-import { ArrowUpRight, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { minor, type Session, type Locale } from "../../shared/domain";
 import { strings, translateError, type Key } from "../i18n";
 import { integrationLabel, operationLabel, stockCauseLabel } from "../labels";
@@ -20,11 +20,15 @@ import { api } from "../api";
 import { db, isResolved } from "../offline";
 import { ArchivedDrawerNote } from "./offline/ArchivedDrawerNote";
 import { OfflineKitchenReview } from "./offline/OfflineKitchenReview";
-import { Button, Field, Empty, Modal, Badge } from "../components/ui";
+import { Button, Field, Modal, Badge } from "../components/ui";
 import { DrawerPanel } from "./cash/DrawerPanel";
 import { DrawerReviewDialog } from "./cash/DrawerReviewDialog";
 import { MoneyControlsSettings } from "./cash/MoneyControlsSettings";
 import type { CashHistoryRow } from "./CashHistory";
+import { TodayDashboard } from "./reports/TodayDashboard";
+import { ReportsView, openReports } from "./reports/ReportsView";
+import { CortePrintButton } from "./reports/CortePrintButton";
+import { CORTE_BLIND_WINDOW_HOURS } from "../../shared/reports";
 export function Operations({
   view,
   session,
@@ -65,19 +69,18 @@ export function Operations({
     setModalState(next && { ...next, operationId: crypto.randomUUID() });
   async function load() {
     try {
-      // These views load and poll by themselves.
-      if (["orders", "tables", "kitchen", "sync"].includes(view)) {
+      // These views load and poll by themselves (reports 029: Hoy and Finanzas follow the
+      // connection and the header's Actualizar through `online` and `refreshKey`).
+      if (
+        ["orders", "tables", "kitchen", "sync", "today", "finance"].includes(
+          view,
+        )
+      ) {
         setData(null);
         return;
       }
       if (view === "settings") setData(await api("/capabilities"));
-      else {
-        const endpoint =
-          ({ today: "report", finance: "report" } as Record<string, string>)[
-            view
-          ] ?? view;
-        setData(await api("/" + endpoint));
-      }
+      else setData(await api("/" + view));
       setError("");
     } catch (e) {
       setError(translateError((e as Error).message, locale));
@@ -217,13 +220,23 @@ export function Operations({
               key={historyKey}
               locale={locale}
               currency={session.restaurant.currency}
-              rowActions={(row) =>
-                row.needs_review ? (
-                  <Button onClick={() => setReviewing(row)}>
-                    {t("discountsReviewAction")}
-                  </Button>
-                ) : null
-              }
+              rowActions={(row) => (
+                <>
+                  {row.needs_review && (
+                    <Button onClick={() => setReviewing(row)}>
+                      {t("discountsReviewAction")}
+                    </Button>
+                  )}
+                  {/* reports (029): the corte Z of a closed drawer (LD-16 L6). */}
+                  <CortePrintButton
+                    session={session}
+                    locale={locale}
+                    drawerId={row.id}
+                    label={t("reportsPrintCorteZ")}
+                    online={online}
+                  />
+                </>
+              )}
             />
           )}
           {view === "cash" && (
@@ -235,6 +248,51 @@ export function Operations({
               onOpenDrawer={() => setModal({ kind: "open" })}
               onPaidOut={() => setModal({ kind: "paidout" })}
               beforeClose={pendingCloseCheck}
+              // reports (029): Corte X of the open drawer for a viewer who may see expected cash;
+              // the closed drawer's corte Z or count slip (a cashier's own device, 12 h); and the
+              // close dialog's result step (wave2-cross-track C10).
+              actions={
+                data && !data.closed_at && data.visibility === "full" ? (
+                  <CortePrintButton
+                    session={session}
+                    locale={locale}
+                    drawerId={data.id}
+                    label={t("reportsCorteX")}
+                    online={online}
+                  />
+                ) : undefined
+              }
+              closedActions={
+                data?.closed_at &&
+                (manager ||
+                  Date.now() - Date.parse(data.closed_at) <
+                    CORTE_BLIND_WINDOW_HOURS * 3_600_000) ? (
+                  <CortePrintButton
+                    session={session}
+                    locale={locale}
+                    drawerId={data.id}
+                    label={t(
+                      data.visibility === "full"
+                        ? "reportsReprintCorteZ"
+                        : "reportsPrintCountSlip",
+                    )}
+                    online={online}
+                  />
+                ) : undefined
+              }
+              closeResultActions={(result) => (
+                <CortePrintButton
+                  session={session}
+                  locale={locale}
+                  drawerId={result.id}
+                  label={t(
+                    result.visibility === "full"
+                      ? "reportsPrintCorteZ"
+                      : "reportsPrintCountSlip",
+                  )}
+                  online={online}
+                />
+              )}
               notice={
                 data && (
                   <ArchivedDrawerNote
@@ -334,93 +392,23 @@ export function Operations({
               </div>
             </>
           )}
-          {(view === "today" || view === "finance") && data && (
-            <>
-              <p className="summary-copy">{t("reportHint")}</p>
-              <div className="metric-grid">
-                {[
-                  ["gross", data.gross],
-                  ["collected", data.collected],
-                  ["cogs", data.cogs],
-                  ["refunds", data.refundTotal],
-                ].map(([key, value]) => (
-                  <button
-                    className="metric"
-                    key={key}
-                    onClick={() => navigate("orders")}
-                  >
-                    <span>
-                      {t(key as Key)}
-                      <ArrowUpRight size={17} />
-                    </span>
-                    <strong>{m(value as number)}</strong>
-                    <small>{t("viewRecords")}</small>
-                  </button>
-                ))}
-              </div>
-              <div className="insight-grid">
-                <section className="panel">
-                  <div className="row between">
-                    <h2>{t("orders")}</h2>
-                    <Badge>{data.orders.length}</Badge>
-                  </div>
-                  {data.orders.length ? (
-                    data.orders.slice(0, 6).map((o: any) => (
-                      <button
-                        className="report-row"
-                        key={o.id}
-                        onClick={() => {
-                          localStorage.setItem("gm-resume", o.id);
-                          navigate("sell");
-                        }}
-                      >
-                        <span>
-                          #{o.number} · {o.name || t("order")}
-                        </span>
-                        <strong>{m(o.total)}</strong>
-                        <ArrowUpRight size={16} />
-                      </button>
-                    ))
-                  ) : (
-                    <Empty title={t("noOrders")} />
-                  )}
-                </section>
-                <section className="panel">
-                  <span className="eyebrow">{t("coverage")}</span>
-                  <h2>{Math.round(data.costCoverage * 100)}%</h2>
-                  {data.unallocatedRecoveryCount > 0 && (
-                    <p className="warning-panel">
-                      {locale === "es"
-                        ? `${data.unallocatedRecoveryCount} ventas recuperadas (${m(data.unallocatedRecoveryTotal)}) sin costo histórico por producto. El costo mostrado está incompleto.`
-                        : `${data.unallocatedRecoveryCount} recovered sales (${m(data.unallocatedRecoveryTotal)}) have no historical item costs. Displayed costs are incomplete.`}
-                    </p>
-                  )}
-                  <p>{t("forecastEmpty")}</p>
-                  <hr />
-                  <p>
-                    {t("tip")}: {m(data.tips)}
-                  </p>
-                  {data.cash.map((c: any) => (
-                    <Button
-                      key={c.id}
-                      className="full"
-                      onClick={() => navigate("cash")}
-                    >
-                      {t("difference")}: {m(c.counted - c.expected)}
-                    </Button>
-                  ))}
-                </section>
-              </div>
-              <p className="tiny muted">
-                {t("source")}: {data.source} · {data.date} ·{" "}
-                {session.restaurant.timezone}
-                <br />
-                {t("refresh")}:{" "}
-                {new Date(data.refreshedAt).toLocaleString(locale, {
-                  timeZone: session.restaurant.timezone,
-                })}
-              </p>
-            </>
+          {view === "today" && (
+            <TodayDashboard
+              session={session}
+              locale={locale}
+              navigate={navigate}
+              online={online}
+              refreshKey={refreshKey}
+            />
+          )}
+          {view === "finance" && (
+            <ReportsView
+              session={session}
+              locale={locale}
+              navigate={navigate}
+              online={online}
+              refreshKey={refreshKey}
+            />
           )}
           {view === "team" && (
             <StaffManagement session={session} locale={locale} />
@@ -449,10 +437,11 @@ export function Operations({
                   </div>
                 ))}
               </div>
+              {/* reports (029): the paged Bitácora replaces the newest-100 list. */}
               <Button
-                onClick={async () => {
-                  setDetail(await api("/audit"));
-                  setModal({ kind: "audit" });
+                onClick={() => {
+                  openReports("audit");
+                  navigate("finance");
                 }}
               >
                 {t("audit")}

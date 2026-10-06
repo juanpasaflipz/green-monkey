@@ -13,7 +13,9 @@ import "./cash.css";
  * instead of the cash card (the server sends no cash figures to them). The
  * terminal card is for every operator: it is compared with the terminal's own
  * batch report and is never in the drawer. `actions` is reports' slot (Corte
- * X, reports 029), rendered after "Cerrar caja".
+ * X, reports 029), rendered after "Cerrar caja"; `closedActions` is the same
+ * slot on a closed drawer (reprint of its corte Z or count slip) and
+ * `closeResultActions` the close dialog's result step (wave2-cross-track C10).
  */
 export function DrawerPanel({
   session,
@@ -26,6 +28,8 @@ export function DrawerPanel({
   notice,
   onChanged,
   actions,
+  closedActions,
+  closeResultActions,
 }: {
   session: Session;
   locale: Locale;
@@ -37,6 +41,8 @@ export function DrawerPanel({
   notice?: ReactNode;
   onChanged: () => void | Promise<void>;
   actions?: ReactNode;
+  closedActions?: ReactNode;
+  closeResultActions?: (result: DrawerView) => ReactNode;
 }) {
   const t = (k: Key) => strings[locale][k];
   const manager = ["owner", "manager"].includes(session.role);
@@ -64,6 +70,7 @@ export function DrawerPanel({
               {t("difference")}: {money(data.discrepancy)}
             </p>
           )}
+        {data && closedActions}
       </div>
     );
   const cash = data.cash;
@@ -239,6 +246,7 @@ export function DrawerPanel({
           drawer={data}
           notice={notice}
           beforeClose={beforeClose}
+          resultActions={closeResultActions}
           close={() => setClosing(false)}
           closed={async () => {
             setClosing(false);

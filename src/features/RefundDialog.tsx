@@ -32,8 +32,14 @@ import {
   countText,
   fill,
   lineLabel,
+  reasonLabel,
 } from "./discounts/format";
 import "./discounts/discounts.css";
+import {
+  cancellationsFromRefund,
+  type KitchenCancellationModel,
+} from "./printing/cancellations";
+import { printCancellations } from "./printing/KitchenCancellationDocument";
 
 type Tender = {
   id: string;
@@ -120,6 +126,13 @@ export function RefundDialog({
     order: Order;
     batch: RefundBatchView;
   } | null>(null);
+  // reports (029): the item refund is recorded but its kitchen cancellation chit did not print.
+  const [unprinted, setUnprinted] = useState<KitchenCancellationModel[] | null>(
+    null,
+  );
+  const [reprinting, setReprinting] = useState(false);
+  const printChits = (chits: KitchenCancellationModel[]) =>
+    printCancellations(chits, locale, session.restaurant.timezone);
 
   useEffect(() => {
     let live = true;
@@ -279,6 +292,20 @@ export function RefundDialog({
       );
       setOperationId(crypto.randomUUID());
       setResult(r);
+      // reports (029): with "Imprimir comanda al enviar" the kitchen gets a cancellation chit
+      // for the refunded units it has not served (round and station); printing never fails the
+      // refund, and a failed chit offers only a print retry.
+      if (r.batch.mode === "items" && readPrintSettings().kitchenOnSend) {
+        const chits = cancellationsFromRefund(
+          r.order,
+          r.batch,
+          [reasonLabel("refund", r.batch.reasonCode, locale), r.batch.note]
+            .map((x) => x.trim())
+            .filter(Boolean)
+            .join(" · "),
+        );
+        if (!(await printChits(chits))) setUnprinted(chits);
+      }
     } catch (e) {
       const code = (e as Error).message;
       setError(
@@ -348,6 +375,23 @@ export function RefundDialog({
             })}
           </p>
         </div>
+        {unprinted && (
+          <div className="row wrap">
+            <p className="error" role="alert">
+              {t("reportsKitchenCancelPrintFailed")}
+            </p>
+            <Button
+              disabled={reprinting}
+              onClick={async () => {
+                setReprinting(true);
+                if (await printChits(unprinted)) setUnprinted(null);
+                setReprinting(false);
+              }}
+            >
+              {t("reportsKitchenCancelRetry")}
+            </Button>
+          </div>
+        )}
         <div className="row wrap">
           <Button
             onClick={() =>

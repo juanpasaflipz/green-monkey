@@ -102,6 +102,12 @@ const operations: Record<string, Key> = {
   "discount.reversed": "discountsOpReversed",
   "discount.controls.saved": "discountsOpControlsSaved",
   "cash.reviewed": "discountsOpDrawerReviewed",
+  // reports (029)
+  "reports.corte_x.printed": "reportsOpCorteXPrinted",
+  "reports.corte_z.printed": "reportsOpCorteZPrinted",
+  "reports.corte_z.reprinted": "reportsOpCorteZReprinted",
+  "reports.count_slip.printed": "reportsOpCountSlipPrinted",
+  "reports.day_corte.printed": "reportsOpDayCortePrinted",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",
