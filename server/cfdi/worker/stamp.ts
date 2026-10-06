@@ -3,10 +3,12 @@
  * after an unknown outcome → POST /invoices → record. The document id is Facturapi's
  * idempotency_key and external_id, so a retry can never create a second CFDI (R3, DB test 11).
  *
- * Outcomes that may have created an invoice (timeouts, network failures, 5xx, in-flight 409s,
- * unreadable 2xx) write a `stamp_unknown` event and retry; the next attempt adopts the invoice by
- * external_id. Such a document is never failed and its claims are never released; when the retry
- * limit is reached it stays `stamping`, shows as stuck, and Reintentar adopts it.
+ * Every attempt that reaches POST /invoices first commits a `stamp_sent` event; outcomes that may
+ * have created an invoice (timeouts, network failures, 5xx, in-flight 409s, unreadable 2xx) also
+ * write `stamp_unknown`. A later attempt of a document that was sent looks it up by external_id
+ * BEFORE any other precondition (legal sync, key checks), and is never failed by a permanent error
+ * unless that lookup positively found no invoice (review CFDI-WORKER-2): its claims stay, it stays
+ * `stamping`, shows as stuck, and Reintentar adopts it.
  */
 import type { JobContext, JobOutcome } from "../../jobs.js";
 import { DomainError } from "../../../shared/domain.js";
@@ -97,14 +99,16 @@ export async function stampJob(ctx: JobContext): Promise<JobOutcome> {
         update cfdi_documents set status = 'stamping', attempts = attempts + 1
         where id = ${documentId} and status in ('queued','stamping')`;
     const frozen = (await loadDocument(tx, documentId))!;
-    const [unknown] = await tx`
-      select 1 as one from cfdi_events where document_id = ${documentId} and kind = 'stamp_unknown' limit 1`;
+    // An earlier attempt reached POST /invoices (its stamp_sent event committed first).
+    const [sent] = await tx`
+      select 1 as one from cfdi_events where document_id = ${documentId}
+        and kind in ('stamp_sent','stamp_unknown') limit 1`;
     return {
       kind: "stamp" as const,
       doc: frozen,
       org,
       facts,
-      unknown: !!unknown,
+      sent: !!sent,
     };
   });
   if (prep.kind === "waiting") {
@@ -118,9 +122,9 @@ export async function stampJob(ctx: JobContext): Promise<JobOutcome> {
   }
   const { doc, org, facts } = prep;
 
-  // 3. Preconditions: the organization is ready, its legal data current, the key for this mode.
+  // 3. Preconditions: the organization is ready. A document never sent fails after 10 attempts.
   if (org?.status !== "ready") {
-    if (ctx.job.attempts >= 10 && !prep.unknown && !doc.providerInvoiceId) {
+    if (ctx.job.attempts >= 10 && !prep.sent && !doc.providerInvoiceId) {
       await failDocument(rt, ctx, documentId, { code: "cfdi_not_ready" });
       return DONE;
     }
@@ -130,27 +134,38 @@ export async function stampJob(ctx: JobContext): Promise<JobOutcome> {
     });
   }
   let invoice: FInvoice | null = null;
+  // Whether an invoice may exist at the provider that this attempt has not ruled out: an earlier
+  // attempt was sent and no lookup by external_id answered "none" yet.
+  let mayExist = prep.sent;
   try {
-    if (
-      org.source === "own" &&
-      org.providerOrgId &&
-      org.legalSyncedVersion !== facts.version
-    )
-      await syncLegal(rt, ctx, org.providerOrgId, facts);
     const key = await ctx.tenant((tx) =>
       documentKey(rt, tx, tenantId, doc.mode),
     );
-    // 4. Adopt: an earlier attempt may have created the invoice.
-    if (prep.unknown || doc.attempts > 1)
+    // 4. Adopt first: an earlier attempt may have created the invoice. Before the legal sync or
+    // any other precondition that can fail permanently (CFDI-WORKER-2).
+    if (prep.sent) {
       invoice = await rt.client.findInvoiceByExternalId(
         key,
         documentId,
         ctx.signal,
       );
-    // 5. Stamp.
-    invoice ??= (
-      await rt.client.createInvoice(key, doc.request as never, ctx.signal)
-    ).invoice;
+      mayExist = !!invoice;
+    }
+    if (!invoice) {
+      // The restaurant's legal data, current at Facturapi before a new stamp.
+      if (
+        org.source === "own" &&
+        org.providerOrgId &&
+        org.legalSyncedVersion !== facts.version
+      )
+        await syncLegal(rt, ctx, org.providerOrgId, facts);
+      // 5. Stamp: committed first, so any later attempt (a lost lease included) adopts first.
+      if (!prep.sent)
+        await ctx.tenant((tx) => event(tx, ctx, documentId, "stamp_sent", {}));
+      invoice = (
+        await rt.client.createInvoice(key, doc.request as never, ctx.signal)
+      ).invoice;
+    }
     // 6. Record.
     if (invoice.status === "valid" || invoice.status === "canceled") {
       await recordStamped(ctx, documentId, invoice);
@@ -180,11 +195,10 @@ export async function stampJob(ctx: JobContext): Promise<JobOutcome> {
     const failure = classify(e);
     if (AUTH_CODES.has(failure.code)) {
       await markKeyInvalid(rt!, c, "cfdi_org_key_invalid");
-      // A refused key stamped nothing now (401 before any work). But an earlier attempt with an
-      // unknown outcome may have created the invoice: such a document is never failed (its
-      // claims stay), it stays `stamping` and Reintentar adopts it once the key is fixed
-      // (review CFDI-R6).
-      if (prep.unknown || d.attempts > 1) {
+      // A refused key stamped nothing now (401 before any work). But an earlier attempt that was
+      // sent may have created the invoice: such a document is never failed (its claims stay), it
+      // stays `stamping` and Reintentar adopts it once the key is fixed (review CFDI-R6).
+      if (mayExist) {
         await c.tenant((tx) =>
           event(tx, c, d.id, "stamp_retry", {
             code: "cfdi_org_key_invalid",
@@ -221,6 +235,18 @@ export async function stampJob(ctx: JobContext): Promise<JobOutcome> {
           globalFailedAlert(rt!, c, d.id, "cfdi_attempts_exhausted");
       }
       return next;
+    }
+    // A permanent refusal before this attempt could rule out an earlier invoice (the key, the
+    // live switch, the legal sync): never fail a document that may already be a valid CFDI
+    // (CFDI-WORKER-2). It stays `stamping` (stuck) for Reintentar.
+    if (mayExist) {
+      await c.tenant((tx) =>
+        event(tx, c, d.id, "stamp_retry", {
+          code: failure.code,
+          providerCode: failure.providerCode ?? null,
+        }),
+      );
+      return DONE;
     }
     await failDocument(rt!, c, d.id, {
       code: failure.code,

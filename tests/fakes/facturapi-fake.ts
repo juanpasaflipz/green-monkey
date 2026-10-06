@@ -53,8 +53,11 @@
  * the idempotency lookup, as a retry colliding with a first request still in process would; the
  * next request with the same key gets the invoice. On DELETE /invoices/{id}, the queued faults
  * "unavailable" (503 invoice_cancellation_service_unavailable) and "internal_error" (500) leave the
- * invoice untouched, and "cancel_refused" answers 409 invoice_not_cancelable_by_sat (a final
- * refusal).
+ * invoice untouched, "cancel_refused" answers 409 invoice_not_cancelable_by_sat (a final
+ * refusal), and "timeout" / "lost_response" CANCEL the invoice (as SAT would) and then never answer
+ * or drop the connection: the client cannot know the cancellation happened (review CFDI-WORKER-1).
+ * On PUT /organizations/{id}/legal, the queued fault "legal_rejected" answers 400
+ * organization_tax_info_invalid (a permanent refusal) and any other queued fault a 500.
  *
  * Control API (loopback CLI only, also methods on the fake): POST /__fake/reset,
  * POST /__fake/faults {op, fault, times?, match?}, POST /__fake/organizations/{id}/manifesto,
@@ -122,6 +125,7 @@ export type FakeFault =
   | "cancel_pending"
   | "cancel_rejected"
   | "cancel_refused"
+  | "legal_rejected"
   | "email_failed";
 export type FaultRule = {
   op: FakeOp;
@@ -159,6 +163,7 @@ const faultRule = z
       "cancel_pending",
       "cancel_rejected",
       "cancel_refused",
+      "legal_rejected",
       "email_failed",
     ]),
     times: z.number().int().min(1).max(10_000).optional(),
@@ -316,6 +321,10 @@ const MESSAGES: Record<string, [string, string]> = {
   internal_error: [
     "Ocurrió un error inesperado.",
     "An unexpected internal error occurred.",
+  ],
+  organization_tax_info_invalid: [
+    "Los datos fiscales de la organización no son válidos.",
+    "The organization's tax information is invalid.",
   ],
   organization_incomplete: [
     "La organización no está configurada para esta operación.",
@@ -1486,7 +1495,7 @@ export function createFacturapiFake(
     a: Auth & { kind: "test" | "live" },
     inv: Invoice,
     url: URL,
-  ): Response {
+  ): Outcome {
     const query = cancelQuery.safeParse(
       Object.fromEntries(
         [...url.searchParams].filter(
@@ -1538,6 +1547,9 @@ export function createFacturapiFake(
     if (fault === "internal_error") return error(500, "internal_error");
     if (fault === "cancel_refused")
       return error(409, "invoice_not_cancelable_by_sat");
+    // The request reaches SAT and its answer is lost on the way back (CFDI-WORKER-1).
+    const lost =
+      fault === "timeout" || fault === "lost_response" ? fault : null;
     // SAT (FAQ cancelación 2026, Q12): no acceptance for público en general, totals up to
     // $1,000.00, egresos, or within 24 h of issuance.
     const needsAcceptance =
@@ -1562,6 +1574,7 @@ export function createFacturapiFake(
       inv.cancellationStatus = "accepted";
       inv.canceledAt = now();
     }
+    if (lost) return { kind: lost === "timeout" ? "hang" : "drop" };
     return json(200, invoiceView(inv));
   }
 
@@ -1701,8 +1714,10 @@ export function createFacturapiFake(
         if (raw instanceof Response) return raw;
         const parsed = legalInput.safeParse(raw);
         if (!parsed.success) return invalid(parsed.error.issues);
-        if (takeFault("organizations.legal"))
-          return error(500, "internal_error");
+        const legalFault = takeFault("organizations.legal");
+        if (legalFault === "legal_rejected")
+          return error(400, "organization_tax_info_invalid");
+        if (legalFault) return error(500, "internal_error");
         org.legal = { ...parsed.data, tax_id: org.certificate?.rfc ?? null };
         return json(200, orgView(org));
       }

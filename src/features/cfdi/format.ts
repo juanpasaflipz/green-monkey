@@ -210,10 +210,12 @@ export function withServerIssue(
 const EVENTS: Record<string, Key> = {
   requested: "cfdiEventRequested",
   frozen: "cfdiEventFrozen",
+  stamp_sent: "cfdiEventSent",
   stamped: "cfdiEventStamped",
   pending: "cfdiEventPending",
   failed: "cfdiEventFailed",
   stamp_unknown: "cfdiEventUnknown",
+  cancel_unknown: "cfdiEventUnknown",
   stamp_retry: "cfdiEventRetry",
   attempts_exhausted: "cfdiEventExhausted",
   emailed: "cfdiEventEmailed",

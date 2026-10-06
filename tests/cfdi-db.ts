@@ -3319,6 +3319,100 @@ try {
     assert.deepEqual({ ...r }, { fiscal: true, secrets: false });
   });
 
+  // -------------------------------------------------------------------------------------------
+  // Second-opinion hardening (LD-5, LD-33)
+  // -------------------------------------------------------------------------------------------
+
+  await test("WORKER-1a. a staff cancellation whose DELETE reached SAT but whose answer was lost is read back on the retry: the invoice ends canceled with its ticket released, never failed by a second DELETE", async () => {
+    const W = await makeTenant("worker-1a");
+    await activate(W);
+    const tk = await makeTicket(W);
+    const d = await invoice(W, tk);
+    await settle(W.tenantId);
+    fake.fault({ op: "invoices.cancel", fault: "lost_response" });
+    await cancelAs(W, W.manager, d.id);
+    await settle(W.tenantId);
+    await due(W.tenantId, "cfdi_cancel");
+    await settle(W.tenantId);
+    const doc = await docRow(d.id);
+    assert.equal(doc.status, "canceled");
+    const [c] =
+      await admin`select status, error_code from cfdi_cancellations where document_id = ${d.id}`;
+    assert.deepEqual({ ...c }, { status: "accepted", error_code: null });
+    assert.deepEqual(
+      (await claims(tk.id)).map((r) => r.released_reason),
+      ["canceled"],
+    );
+  });
+
+  await test("WORKER-1b. a reissue whose motive-04 DELETE reached SAT but whose answer was lost reads the global back on the retry: G is canceled, G' replaces it and the waiting invoice stamps", async () => {
+    const W = await makeTenant("worker-1b");
+    await activate(W, { testFrom: daysAgo(40), periodicity: "day" });
+    const day = daysAgo(4);
+    const t1 = await makeTicket(W, { businessDate: day });
+    const t2 = await makeTicket(W, { businessDate: day });
+    await tick(W);
+    const [g] =
+      await admin`select id from cfdi_documents where tenant_id = ${W.tenantId} and kind = 'global' and status = 'valid'`;
+    fake.fault({ op: "invoices.cancel", fault: "lost_response" });
+    const late = await invoice(W, t1, { s: W.manager, reissueGlobal: true });
+    await settle(W.tenantId);
+    await due(W.tenantId, "cfdi_reissue");
+    await settle(W.tenantId);
+    assert.equal((await docRow(g.id)).status, "canceled");
+    const [c] =
+      await admin`select status from cfdi_cancellations where document_id = ${g.id}`;
+    assert.equal(c.status, "accepted");
+    assert.equal((await docRow(late.id)).status, "valid");
+    const [replacement] =
+      await admin`select status, ticket_count from cfdi_documents where replaces_document_id = ${g.id} and kind = 'global'`;
+    assert.deepEqual({ ...replacement }, { status: "valid", ticket_count: 1 });
+    assert.deepEqual(
+      (await claims(t2.id)).map((r) => r.state),
+      ["released", "active"],
+    );
+  });
+
+  await test("WORKER-2. a stamp whose answer was lost is adopted on the retry before any permanent precondition: a fiscal-profile change whose legal update Facturapi refuses never fails a document that may already be a valid CFDI", async () => {
+    const W = await makeTenant("worker-2");
+    await activate(W);
+    const tk = await makeTicket(W);
+    const d = await invoice(W, tk, {
+      receptor: { legalName: "UNIVERSIDAD ROBOTICA FAKE TIMEOUT" },
+    });
+    await settle(W.tenantId);
+    assert.ok((await events(d.id)).includes("stamp_unknown"));
+    assert.equal((await docRow(d.id)).status, "stamping");
+    // The owner edits Datos fiscales meanwhile; Facturapi refuses the legal update.
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${W.tenantId}, true)`;
+      await tx`update restaurant_fiscal_profiles set legal_name = 'ESCUELA KEMPER URGATE SA', version = version + 1`;
+    });
+    fake.fault({ op: "organizations.legal", fault: "legal_rejected" });
+    await due(W.tenantId, "cfdi_stamp");
+    await settle(W.tenantId);
+    const doc = await docRow(d.id);
+    assert.equal(doc.status, "valid", "adopted by external_id");
+    assert.deepEqual(
+      (await claims(tk.id)).map((r) => r.state),
+      ["active"],
+    );
+    const sameKey = [...fake.invoices.values()].filter(
+      (i) => i.body.external_id === d.id,
+    );
+    assert.equal(sameKey.length, 1, "one provider invoice");
+    // A first attempt that never reached Facturapi still fails on the refusal (and frees its
+    // ticket); it consumes the queued fault.
+    const tk2 = await makeTicket(W);
+    const d2 = await invoice(W, tk2);
+    await settle(W.tenantId);
+    const doc2 = await docRow(d2.id);
+    assert.deepEqual(
+      { status: doc2.status, code: doc2.error_code },
+      { status: "failed", code: "cfdi_org_tax_info_invalid" },
+    );
+  });
+
   console.log(`cfdi DB checks passed: ${checks}`);
 } finally {
   await runner.stop(2000);

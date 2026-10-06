@@ -155,6 +155,24 @@ export function cancellationOutcome(
   return "valid";
 }
 
+/**
+ * Whether an earlier attempt of this cancellation may have reached SAT: a retry of the job (a
+ * lost lease included) or a recorded unknown outcome (a recovery job starts at attempt 1).
+ * Such an attempt reads the invoice before it sends DELETE again (review CFDI-WORKER-1).
+ */
+async function mayHaveReachedSat(
+  tx: Tx,
+  ctx: JobContext,
+  documentId: string,
+  cancellationId: string,
+): Promise<boolean> {
+  if (ctx.job.attempts > 1) return true;
+  const [r] = await tx`
+    select 1 as one from cfdi_events where document_id = ${documentId} and kind = 'cancel_unknown'
+      and detail->>'cancellationId' = ${cancellationId} limit 1`;
+  return !!r;
+}
+
 export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
   const cancellationId = (ctx.job.payload as { cancellationId?: string } | null)
     ?.cancellationId;
@@ -206,6 +224,7 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
       c,
       doc,
       substituteUuid,
+      readFirst: await mayHaveReachedSat(tx, ctx, doc.id, c.id),
       key: await documentKey(rt, tx, tenantId, doc.mode),
     };
   });
@@ -224,7 +243,33 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
   // here would only use up attempts while the substitute is pending (CFDI-R2).
   if ("wait" in loaded) return { status: "done" };
   const { c, doc } = loaded;
+  /** Records what SAT says about the invoice: canceled, or waiting for the receptor. */
+  const apply = (result: "canceled" | "pending") =>
+    ctx.tenant(async (tx) => {
+      const current = await loadDocument(tx, doc.id, { forUpdate: true });
+      if (!current) return;
+      if (result === "canceled") await onCanceled(tx, ctx, current, c);
+      else await onRequested(tx, ctx, current, c);
+    });
+  /** The invoice's current cancellation state at the provider (a GET, never a DELETE). */
+  const read = async () =>
+    cancellationOutcome(
+      await rt.client.getInvoice(
+        loaded.key,
+        doc.providerInvoiceId!,
+        ctx.signal,
+      ),
+    );
   try {
+    // A retry never resends DELETE blindly: an earlier attempt whose answer was lost may already
+    // have canceled the CFDI, and a second DELETE answers invoice_not_cancelable (WORKER-1).
+    if (loaded.readFirst) {
+      const now = await read();
+      if (now === "canceled" || now === "pending") {
+        await apply(now);
+        return { status: "done" };
+      }
+    }
     const inv = await rt.client.cancelInvoice(
       loaded.key,
       doc.providerInvoiceId!,
@@ -233,28 +278,43 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
         : { motive: c.motive },
       ctx.signal,
     );
-    const result = cancellationOutcome(inv);
-    await ctx.tenant(async (tx) => {
-      const current = await loadDocument(tx, doc.id, { forUpdate: true });
-      if (!current) return;
-      if (result === "canceled") await onCanceled(tx, ctx, current, c);
-      else await onRequested(tx, ctx, current, c);
-    });
+    await apply(
+      cancellationOutcome(inv) === "canceled" ? "canceled" : "pending",
+    );
     return { status: "done" };
   } catch (e) {
     const failure = classify(e);
     if (failure.code === "cfdi_cancellation_in_progress") {
-      await ctx.tenant(async (tx) => {
-        const current = await loadDocument(tx, doc.id, { forUpdate: true });
-        if (current) await onRequested(tx, ctx, current, c);
-      });
+      await apply("pending");
       return { status: "done" };
     }
-    if (failure.retry || failure.unknownOutcome)
+    if (failure.retry || failure.unknownOutcome) {
+      // The DELETE may have reached SAT: every later attempt (and a recovery job) reads first.
+      if (failure.unknownOutcome)
+        await ctx.tenant((tx) =>
+          event(tx, ctx, doc.id, "cancel_unknown", {
+            cancellationId: c.id,
+            code: failure.code,
+          }),
+        );
       return retryOrExhaust(ctx.job, {
         code: failure.code,
         afterMs: failure.afterMs,
       });
+    }
+    // A permanent answer may describe an invoice an earlier attempt already canceled: act on its
+    // real state before failing the cancellation. A read that fails transiently retries.
+    try {
+      const now = await read();
+      if (now === "canceled" || now === "pending") {
+        await apply(now);
+        return { status: "done" };
+      }
+    } catch (readError) {
+      const r = classify(readError);
+      if (r.retry || r.unknownOutcome)
+        return retryOrExhaust(ctx.job, { code: r.code, afterMs: r.afterMs });
+    }
     await ctx.tenant(async (tx) => {
       await tx`
         update cfdi_cancellations set status = 'failed', error_code = ${failure.code === "cfdi_provider_rejected" ? "cfdi_cancel_rejected_provider" : failure.code},
