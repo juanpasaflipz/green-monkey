@@ -735,7 +735,19 @@ export function DocumentDetail({
           }}
         />
       )}
-      {doc && dialog === "substitute" && (
+      {doc && dialog === "substitute" && doc.kind === "egreso" && (
+        <CreditNoteSubstituteDialog
+          doc={doc}
+          locale={locale}
+          close={() => setDialog(null)}
+          done={(v) => {
+            setDialog(null);
+            changed();
+            open(v.id);
+          }}
+        />
+      )}
+      {doc && dialog === "substitute" && doc.kind !== "egreso" && (
         <SubstituteDialog
           doc={doc}
           locale={locale}
@@ -920,6 +932,111 @@ function CancelDialog({
             disabled={busy || !reason.trim()}
           >
             {again ? t.cfdiConfirmCancelAgain : t.cfdiConfirmCancel}
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * Corrects a credit note (CFDI-SAT-2): a new one for the same refund with the chosen FormaPago,
+ * related 04 to this one, which is then canceled with motive 01.
+ */
+function CreditNoteSubstituteDialog({
+  doc,
+  locale,
+  close,
+  done,
+}: {
+  doc: CfdiDocumentView;
+  locale: Locale;
+  close: () => void;
+  done: (v: CfdiDocumentView) => void;
+}) {
+  const t = strings[locale];
+  const forms = ["01", ...CARD_PAYMENT_FORMS] as const;
+  const [paymentForm, setPaymentForm] = useState<(typeof forms)[number]>(() =>
+    (forms as readonly string[]).includes(doc.paymentForm ?? "")
+      ? (doc.paymentForm as (typeof forms)[number])
+      : "01",
+  );
+  const [reason, setReason] = useState("");
+  const [operationId, setOperationId] = useState(() => crypto.randomUUID());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const label = documentLabel(doc);
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      done(
+        await api<CfdiDocumentView>(`/cfdi/documents/${doc.id}/substitute`, {
+          operationId,
+          paymentForm,
+          reason: reason.trim(),
+        }),
+      );
+    } catch (e) {
+      setError(translateError((e as Error).message, locale));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal
+      title={tr(locale, "cfdiSubstituteCreditTitle", { doc: label })}
+      close={close}
+      closeLabel={t.cfdiClose}
+    >
+      <form
+        className="cfdi-dialog"
+        onSubmit={(e) => {
+          e.preventDefault();
+          void submit();
+        }}
+      >
+        <p className="muted">
+          {tr(locale, "cfdiSubstituteCreditHint", { doc: label })}
+        </p>
+        <Field label={t.cfdiPaymentForm}>
+          <select
+            value={paymentForm}
+            onChange={(e) => {
+              setPaymentForm(e.target.value as (typeof forms)[number]);
+              setOperationId(crypto.randomUUID());
+            }}
+          >
+            {forms.map((f) => (
+              <option key={f} value={f}>
+                {paymentFormLabel(f)}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label={t.cfdiCancelReason}>
+          <textarea
+            value={reason}
+            maxLength={300}
+            required
+            onChange={(e) => {
+              setReason(e.target.value);
+              setOperationId(crypto.randomUUID());
+            }}
+          />
+        </Field>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="row wrap">
+          <Button
+            type="submit"
+            variant="primary"
+            disabled={busy || !reason.trim()}
+          >
+            {t.cfdiConfirmSubstitute}
           </Button>
         </div>
       </form>

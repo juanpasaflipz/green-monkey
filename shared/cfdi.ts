@@ -439,6 +439,17 @@ export const substituteInput = z
     reason: z.string().trim().min(1).max(300),
   })
   .strict();
+/**
+ * Correcting a credit note (CFDI-SAT-2): a substitute credit note related 04 to it (and 01 to the
+ * same parent) with the FormaPago the manager chooses; the old one is then canceled with 01.
+ */
+export const egresoSubstituteInput = z
+  .object({
+    operationId: id,
+    paymentForm: z.enum(["01", ...CARD_PAYMENT_FORMS]),
+    reason: z.string().trim().min(1).max(300),
+  })
+  .strict();
 export const liveInput = z
   .object({
     operationId: id,

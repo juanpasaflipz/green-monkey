@@ -98,6 +98,17 @@ export async function onCanceled(
     payload: { documentId: doc.id, acuse: true },
   });
   if (c.source === "reissue") return;
+  // A credit note is canceled only when its substitute (relation 04) is valid (CFDI-SAT-2): that
+  // one now credits the refund; no ticket changes hands.
+  if (doc.kind === "egreso") {
+    const substitute = await waitingSubstitute(tx, doc.id);
+    if (substitute)
+      await event(tx, ctx, substitute, "substitution_completed", {
+        replaced: doc.id,
+        motive: c.motive,
+      });
+    return;
+  }
   await releaseClaims(tx, doc.id, "canceled");
   // A second substitute is refused while one is unfinished (CFDI-R3-1), so at most one waits.
   // It takes the ticket only while it is still valid with no cancellation of its own, whatever
@@ -109,11 +120,41 @@ export async function onCanceled(
       replaced: doc.id,
       motive: c.motive,
     });
+    await redecideRefunds(tx, ctx, substitute);
   } else
     await cfdiEnqueue(tx, tenantId, {
       kind: "cfdi_global",
       dedupeKey: dedupe.tickAfterCancel(doc.id),
       payload: {},
+    });
+}
+
+/**
+ * The substitute took the ticket (CFDI-R4-2): every refund of its tickets that it does not net
+ * (it was frozen before the refund) and that no live credit note credits gets a new credit-note
+ * decision against it. cfdi_refund waits while the substitute is not valid and is a no-op when
+ * the refund is already credited.
+ */
+async function redecideRefunds(
+  tx: Tx,
+  ctx: JobContext,
+  holderId: string,
+): Promise<void> {
+  const refunds = await tx`
+    select distinct a.refund_id from cfdi_document_tickets c
+    join fiscal_tickets t on t.tenant_id = c.tenant_id and t.id = c.ticket_id
+    join fiscal_adjustments a on a.tenant_id = t.tenant_id and a.order_id = t.order_id
+    join cfdi_documents h on h.tenant_id = c.tenant_id and h.id = c.document_id
+    where c.document_id = ${holderId} and c.state = 'active'
+      and not (a.refund_id = any(h.netted_refund_ids))
+      and not exists (select 1 from cfdi_documents e where e.tenant_id = a.tenant_id
+        and e.kind = 'egreso' and e.refund_id = a.refund_id and e.mode = h.mode
+        and e.status not in ('failed','canceled'))`;
+  for (const r of refunds)
+    await cfdiEnqueue(tx, ctx.job.tenantId, {
+      kind: "cfdi_refund",
+      dedupeKey: `${dedupe.refund(r.refund_id as string)}:handover:${holderId}`,
+      payload: { refundId: r.refund_id as string },
     });
 }
 

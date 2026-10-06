@@ -66,10 +66,12 @@ export async function refundJob(ctx: JobContext): Promise<JobOutcome> {
     if (parent.nettedRefundIds.includes(refundId))
       return { kind: "done" as const };
     // A failed credit note is re-issued only by Reintentar (force): a provider that keeps
-    // refusing it is not asked again every day by the tick's refund sweep (CFDI-R7).
+    // refusing it is not asked again every day by the tick's refund sweep (CFDI-R7). A canceled
+    // one no longer credits the refund (CFDI-R4-2, MONEY-1); a live substitute does.
     const [existing] = await tx`
       select id from cfdi_documents where kind = 'egreso' and refund_id = ${refundId}
-        and mode = ${settings.mode} ${p.force ? tx`and status <> 'failed'` : tx``} limit 1`;
+        and mode = ${settings.mode} and status <> 'canceled'
+        ${p.force ? tx`and status <> 'failed'` : tx``} limit 1`;
     if (existing) return { kind: "done" as const };
     const id = randomUUID();
     // The partial unique index (refund, mode) of non-failed credit notes settles a race with the
@@ -80,7 +82,9 @@ export async function refundJob(ctx: JobContext): Promise<JobOutcome> {
       values (${tenantId}, ${id}, 'egreso', 'refund', ${settings.mode}, 'queued', ${parent.id}, ${refundId},
         ${parent.kind === "invoice" && parent.receptor ? tx.json(parent.receptor as never) : null},
         ${parent.kind === "invoice" ? parent.receptorRfc : null})
-      on conflict (tenant_id, refund_id, mode) where kind = 'egreso' and status <> 'failed' do nothing
+      on conflict (tenant_id, refund_id, mode)
+        where kind = 'egreso' and status not in ('failed','canceled') and replaces_document_id is null
+        do nothing
       returning id`;
     if (!inserted) return { kind: "done" as const };
     await event(tx, ctx, id, "requested", {

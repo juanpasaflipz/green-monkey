@@ -240,6 +240,8 @@ CREATE TABLE cfdi_documents(
   receptor jsonb CHECK (receptor IS NULL OR jsonb_typeof(receptor) = 'object'),
   receptor_rfc text CHECK (receptor_rfc ~ '^[A-ZÑ&]{3,4}[0-9]{6}[A-Z0-9]{3}$'),
   card_payment_form text CHECK (card_payment_form IN ('04','28')),
+  -- A substitute credit note's FormaPago chosen by the manager who corrects one (CFDI-SAT-2).
+  payment_form_override text CHECK (payment_form_override IN ('01','04','28')),
   confirm_pre_start boolean NOT NULL DEFAULT false,
   period_key text CHECK (period_key ~ '^(D[0-9]{4}-[0-9]{2}-[0-9]{2}|W[0-9]{4}-[0-9]{2}-[0-9]{2}|F[0-9]{4}-[0-9]{2}-[12]|M[0-9]{4}-[0-9]{2})$'),
   global_info jsonb CHECK (global_info IS NULL OR jsonb_typeof(global_info) = 'object'),
@@ -289,6 +291,7 @@ CREATE TABLE cfdi_documents(
   CHECK (kind <> 'global' OR (receptor IS NULL AND period_key IS NOT NULL AND global_info IS NOT NULL
                               AND part IS NOT NULL AND refund_id IS NULL)),
   CHECK (kind <> 'egreso' OR (refund_id IS NOT NULL AND parent_document_id IS NOT NULL AND period_key IS NULL)),
+  CHECK (payment_form_override IS NULL OR (kind = 'egreso' AND replaces_document_id IS NOT NULL)),
   CHECK (status NOT IN ('valid','canceling','canceled')
          OR (uuid IS NOT NULL AND provider_invoice_id IS NOT NULL AND stamped_at IS NOT NULL AND total IS NOT NULL)),
   CHECK (status <> 'pending' OR provider_invoice_id IS NOT NULL),
@@ -299,8 +302,13 @@ CREATE TABLE cfdi_documents(
 );
 CREATE UNIQUE INDEX cfdi_documents_provider ON cfdi_documents(tenant_id, provider_invoice_id) WHERE provider_invoice_id IS NOT NULL;
 CREATE UNIQUE INDEX cfdi_documents_uuid ON cfdi_documents(tenant_id, uuid) WHERE uuid IS NOT NULL;
+-- One live credit note per refund and mode. A canceled one no longer credits it (a new decision
+-- may issue another, CFDI-R4-2/MONEY-1); a substitute credit note (relation 04, CFDI-SAT-2) lives
+-- next to the one it replaces until that is canceled, one live substitute per replaced note.
 CREATE UNIQUE INDEX cfdi_documents_refund ON cfdi_documents(tenant_id, refund_id, mode)
-  WHERE kind = 'egreso' AND status <> 'failed';
+  WHERE kind = 'egreso' AND status NOT IN ('failed','canceled') AND replaces_document_id IS NULL;
+CREATE UNIQUE INDEX cfdi_documents_egreso_substitute ON cfdi_documents(tenant_id, replaces_document_id)
+  WHERE kind = 'egreso' AND status NOT IN ('failed','canceled');
 CREATE INDEX cfdi_documents_created ON cfdi_documents(tenant_id, created_at DESC, id);
 CREATE INDEX cfdi_documents_open ON cfdi_documents(tenant_id, status, updated_at)
   WHERE status IN ('waiting','queued','stamping','pending','canceling');
@@ -312,22 +320,24 @@ CREATE INDEX cfdi_documents_parent ON cfdi_documents(tenant_id, parent_document_
 CREATE INDEX cfdi_documents_replaces ON cfdi_documents(tenant_id, replaces_document_id) WHERE replaces_document_id IS NOT NULL;
 CREATE INDEX cfdi_documents_rfc ON cfdi_documents(tenant_id, receptor_rfc, created_at DESC) WHERE receptor_rfc IS NOT NULL;
 
--- The runtime role only inserts fresh nominative requests; every later transition is the worker's.
+-- The runtime role only inserts fresh nominative requests and a manager's substitute credit note;
+-- every later transition is the worker's.
 CREATE POLICY cfdi_documents_insert ON cfdi_documents AS RESTRICTIVE FOR INSERT
   WITH CHECK (cfdi_is_worker() OR (status IN ('queued','waiting') AND request IS NULL AND uuid IS NULL
-    AND provider_invoice_id IS NULL AND attempts = 0 AND kind = 'invoice'));
+    AND provider_invoice_id IS NULL AND attempts = 0
+    AND (kind = 'invoice' OR (kind = 'egreso' AND replaces_document_id IS NOT NULL))));
 
 CREATE FUNCTION cfdi_documents_guard() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF TG_OP = 'DELETE' THEN RAISE EXCEPTION 'cfdi_documents rows are fiscal records' USING ERRCODE = 'restrict_violation'; END IF;
   IF NOT cfdi_is_worker() THEN RAISE EXCEPTION 'cfdi_document_update_worker_only' USING ERRCODE = 'insufficient_privilege'; END IF;
   IF (NEW.tenant_id, NEW.id, NEW.kind, NEW.source, NEW.mode, NEW.receptor, NEW.receptor_rfc, NEW.card_payment_form,
-      NEW.confirm_pre_start, NEW.period_key, NEW.global_info, NEW.part, NEW.refund_id, NEW.parent_document_id,
-      NEW.replaces_document_id, NEW.created_by, NEW.created_at)
+      NEW.payment_form_override, NEW.confirm_pre_start, NEW.period_key, NEW.global_info, NEW.part, NEW.refund_id,
+      NEW.parent_document_id, NEW.replaces_document_id, NEW.created_by, NEW.created_at)
      IS DISTINCT FROM
      (OLD.tenant_id, OLD.id, OLD.kind, OLD.source, OLD.mode, OLD.receptor, OLD.receptor_rfc, OLD.card_payment_form,
-      OLD.confirm_pre_start, OLD.period_key, OLD.global_info, OLD.part, OLD.refund_id, OLD.parent_document_id,
-      OLD.replaces_document_id, OLD.created_by, OLD.created_at) THEN
+      OLD.payment_form_override, OLD.confirm_pre_start, OLD.period_key, OLD.global_info, OLD.part, OLD.refund_id,
+      OLD.parent_document_id, OLD.replaces_document_id, OLD.created_by, OLD.created_at) THEN
     RAISE EXCEPTION 'cfdi_document_identity_immutable';
   END IF;
   IF OLD.request IS NOT NULL AND (NEW.request, NEW.payment_form, NEW.cfdi_use, NEW.series, NEW.netted_refund_ids,

@@ -28,6 +28,7 @@ import {
   needsCardForm,
   operationInput,
   substituteInput,
+  egresoSubstituteInput,
   type CfdiSettingsView,
   type CfdiTicketView,
   type GlobalPeriodView,
@@ -814,6 +815,10 @@ export async function cancelDocument(
   const p = cancelInput.parse(raw);
   if (doc.kind === "global" && p.motive !== "02")
     throw new DomainError("cfdi_invalid_motive", 400);
+  // A credit note is corrected, never just canceled: canceling it with 02/03 would leave its
+  // refund without a CFDI (CFDI-MONEY-1, SAT-2). Motive 01 asks again for a substitution's.
+  if (doc.kind === "egreso" && p.motive !== "01")
+    throw new DomainError("cfdi_not_cancellable", 409);
   await once(
     tx,
     s,
@@ -868,6 +873,7 @@ export async function substituteDocument(
   permit(s, managers);
   const doc = await visibleDocument(tx, s, String(req.params.id));
   requireRecentAuth(s);
+  if (doc.kind === "egreso") return substituteCreditNote(tx, s, doc, raw);
   const p = substituteInput.parse(raw);
   if (doc.kind !== "invoice")
     throw new DomainError("cfdi_not_substitutable", 409);
@@ -908,6 +914,79 @@ export async function substituteDocument(
       await tx`
         insert into cfdi_document_tickets(tenant_id, document_id, ticket_id, mode, state)
         values (${s.tenantId}, ${substitute}, ${claim.ticket_id}, ${current.mode}, 'pending')`;
+      await tx`
+        insert into cfdi_cancellations(tenant_id, id, document_id, motive, substitute_document_id, source,
+          reason, requested_by)
+        values (${s.tenantId}, ${randomUUID()}, ${doc.id}, '01', ${substitute}, 'substitution',
+          ${p.reason}, ${s.employeeId})`;
+      await enqueueStamp(tx, s.tenantId, substitute, {
+        maxAttempts: INVOICE_MAX_ATTEMPTS,
+      });
+      await insertEvent(
+        tx,
+        s.tenantId,
+        substitute,
+        "requested",
+        { source: "staff", replaces: doc.id },
+        s.employeeId,
+      );
+      await insertEvent(
+        tx,
+        s.tenantId,
+        doc.id,
+        "substitution_requested",
+        { substitute },
+        s.employeeId,
+      );
+      await audit(tx, s, "cfdi.substitute.requested", doc.id, {
+        documentId: doc.id,
+        substitute,
+      });
+      return { documentId: substitute };
+    },
+  );
+  return staffView(tx, r.documentId, s);
+}
+
+/**
+ * Corrects a credit note (CFDI-SAT-2): a substitute credit note for the same refund and parent,
+ * related 04 to this one, with the FormaPago the manager chose; once it stamps, this one is
+ * canceled with motive 01 (egresos need no receptor acceptance). Same guards as an invoice's
+ * substitution, plus a parent that is still valid with no cancellation open.
+ */
+async function substituteCreditNote(
+  tx: Tx,
+  s: Session,
+  doc: DocumentRow,
+  raw: unknown,
+) {
+  const p = egresoSubstituteInput.parse(raw);
+  const r = await once(
+    tx,
+    s,
+    p.operationId,
+    "cfdi.substitute",
+    { ...p, documentId: doc.id },
+    async () => {
+      const state = await cfdiState(tx);
+      requireCfdi(state, { needEnabled: true, needReady: true });
+      const current = await cancellable(tx, s, doc);
+      if (await waitingSubstitute(tx, doc.id, UNFINISHED_SUBSTITUTE))
+        throw new DomainError("cfdi_substitution_pending", 409);
+      const [parent] = await tx`
+        select p.status, exists (select 1 from cfdi_cancellations x where x.tenant_id = p.tenant_id
+          and x.document_id = p.id and x.status in ('queued','requested')) as canceling
+        from cfdi_documents p where p.id = ${current.parentDocumentId}`;
+      if (!parent || parent.status !== "valid" || parent.canceling)
+        throw new DomainError("cfdi_credit_note_parent_not_valid", 409);
+      const substitute = randomUUID();
+      await tx`
+        insert into cfdi_documents(tenant_id, id, kind, source, mode, status, replaces_document_id,
+          parent_document_id, refund_id, receptor, receptor_rfc, payment_form_override, created_by)
+        values (${s.tenantId}, ${substitute}, 'egreso', 'staff', ${current.mode}, 'queued', ${doc.id},
+          ${current.parentDocumentId}, ${current.refundId},
+          ${current.receptor ? tx.json(current.receptor as never) : null}, ${current.receptorRfc},
+          ${p.paymentForm}, ${s.employeeId})`;
       await tx`
         insert into cfdi_cancellations(tenant_id, id, document_id, motive, substitute_document_id, source,
           reason, requested_by)

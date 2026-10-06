@@ -126,6 +126,8 @@ export type DocumentRow = {
   receptor: Receptor | null;
   receptorRfc: string | null;
   cardPaymentForm: CardForm | null;
+  /** A substitute credit note's FormaPago chosen by the manager (CFDI-SAT-2). */
+  paymentFormOverride: "01" | CardForm | null;
   confirmPreStart: boolean;
   periodKey: string | null;
   globalInfo: {
@@ -500,8 +502,8 @@ export async function waitingSubstitute(
   const [r] = await tx`
     select d.id from cfdi_documents d
     where d.replaces_document_id = ${documentId} and d.status = any(${[...statuses]}::text[])
-      and exists (select 1 from cfdi_document_tickets c where c.tenant_id = d.tenant_id
-        and c.document_id = d.id and c.state = 'pending')
+      and (d.kind = 'egreso' or exists (select 1 from cfdi_document_tickets c where c.tenant_id = d.tenant_id
+        and c.document_id = d.id and c.state = 'pending'))
       ${
         handOver
           ? tx`and not exists (select 1 from cfdi_cancellations x where x.tenant_id = d.tenant_id
@@ -552,6 +554,7 @@ function documentRow(r: Record<string, any>): DocumentRow {
     receptor: r.receptor,
     receptorRfc: r.receptor_rfc,
     cardPaymentForm: r.card_payment_form,
+    paymentFormOverride: r.payment_form_override ?? null,
     confirmPreStart: r.confirm_pre_start,
     periodKey: r.period_key,
     globalInfo: r.global_info,
@@ -800,8 +803,8 @@ export async function documentView(
       coalesce((select jsonb_agg(c.id) from cfdi_documents c
         where c.parent_document_id = ${id} and c.kind = 'egreso' and c.status in ('queued','stamping','pending','valid','canceling')), '[]') as active_credit_notes,
       (select s.id from cfdi_documents s where s.replaces_document_id = ${id} and s.status = 'valid'
-        and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
-          and c.document_id = s.id and c.state = 'pending')
+        and (s.kind = 'egreso' or exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
+          and c.document_id = s.id and c.state = 'pending'))
         and not exists (select 1 from cfdi_cancellations x where x.tenant_id = s.tenant_id
           and x.document_id = s.id and x.status in ('queued','requested'))
         order by s.created_at desc limit 1) as waiting_substitute,
@@ -809,8 +812,12 @@ export async function documentView(
         and x.status in ('queued','requested')) as substitution_open,
       exists (select 1 from cfdi_documents s where s.replaces_document_id = ${id}
         and s.status = any(${[...UNFINISHED_SUBSTITUTE]}::text[])
-        and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
-          and c.document_id = s.id and c.state = 'pending')) as substitute_unfinished,
+        and (s.kind = 'egreso' or exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
+          and c.document_id = s.id and c.state = 'pending'))) as substitute_unfinished,
+      -- A credit note's parent is still valid with no cancellation open: it can be corrected.
+      exists (select 1 from cfdi_documents p where p.id = ${d.parentDocumentId} and p.status = 'valid'
+        and not exists (select 1 from cfdi_cancellations x where x.tenant_id = p.tenant_id
+          and x.document_id = p.id and x.status in ('queued','requested'))) as parent_valid,
       (select to_jsonb(x) from (select motive, status, reason, created_at, processed_at, substitute_document_id, error_code
         from cfdi_cancellations where document_id = ${id} order by created_at desc limit 1) x) as cancellation,
       coalesce((select jsonb_agg(f.format order by f.format) from cfdi_files f where f.document_id = ${id}), '[]') as files,
@@ -837,18 +844,22 @@ export async function documentView(
   const valid = d.status === "valid";
   // A substitute named by its original's open motive-01 cancellation waits for that to end
   // (CFDI-R4-1): canceling it would leave the original's cancellation without a substitute.
-  const canCancel =
+  const actionable =
     valid &&
     !openCancellation &&
     !extra.substitution_open &&
-    (d.kind === "global" ? owner : manager) &&
+    (d.kind === "global" ? owner : manager);
+  // A credit note is never canceled with motive 02/03 (CFDI-MONEY-1, SAT-2): it is corrected by a
+  // substitute credit note (relation 04) and then canceled with motive 01.
+  const canCancel =
+    actionable &&
+    d.kind !== "egreso" &&
     (extra.active_credit_notes as string[]).length === 0;
-  // A valid substitute still waiting for the ticket while no cancellation of this document is open
-  // (rejected, expired or refused by the provider): two valid CFDIs for one sale (CFDI-R3-1). The
-  // same condition as attention()'s count.
-  const waitingSubstituteId: string | null = openCancellation
-    ? null
-    : (extra.waiting_substitute ?? null);
+  // A valid substitute still waiting for the ticket (a credit note's: still live next to it)
+  // while no cancellation of this document is open (rejected, expired or refused by the
+  // provider): two valid CFDIs for one sale (CFDI-R3-1). The same condition as attention()'s.
+  const waitingSubstituteId: string | null =
+    openCancellation || !valid ? null : (extra.waiting_substitute ?? null);
   return {
     ...summary,
     receptor: d.receptor,
@@ -893,8 +904,16 @@ export async function documentView(
     waitingSubstituteId,
     canCancel,
     canSubstitute:
-      canCancel && d.kind === "invoice" && !extra.substitute_unfinished,
-    canRequestAgain: canCancel && d.kind === "invoice" && !!waitingSubstituteId,
+      (d.kind === "invoice" && canCancel && !extra.substitute_unfinished) ||
+      (d.kind === "egreso" &&
+        actionable &&
+        !!extra.parent_valid &&
+        !extra.substitute_unfinished),
+    canRequestAgain:
+      actionable &&
+      d.kind !== "global" &&
+      (extra.active_credit_notes as string[]).length === 0 &&
+      !!waitingSubstituteId,
     canRetry:
       manager &&
       (summary.stuck ||
@@ -1152,10 +1171,12 @@ export async function attention(tx: Tx): Promise<CfdiAlertsView> {
       -- Valid substitutes still waiting for their ticket while the original has no open
       -- cancellation: rejected, expired or refused by the provider, whatever came after
       -- (CFDI-R3-1). Never clears while two valid CFDIs exist for one sale.
-      (select count(*) from cfdi_documents s where s.kind = 'invoice' and s.status = 'valid'
+      (select count(*) from cfdi_documents s where s.status = 'valid'
         and s.replaces_document_id is not null
-        and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
-          and c.document_id = s.id and c.state = 'pending')
+        and ((s.kind = 'invoice' and exists (select 1 from cfdi_document_tickets c where c.tenant_id = s.tenant_id
+              and c.document_id = s.id and c.state = 'pending'))
+          or (s.kind = 'egreso' and exists (select 1 from cfdi_documents o where o.tenant_id = s.tenant_id
+              and o.id = s.replaces_document_id and o.status = 'valid')))
         and not exists (select 1 from cfdi_cancellations x where x.tenant_id = s.tenant_id
           and x.document_id = s.replaces_document_id and x.status in ('queued','requested'))) as rejected,
       exists (select 1 from cfdi_organizations o where o.csd_status = 'valid'

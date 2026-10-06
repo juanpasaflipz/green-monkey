@@ -735,6 +735,11 @@ export type EgresoBuildInput = {
   issuerPostalCode: string;
   /** cfdi_settings.card_payment_form, when the parent's form is not a card form. */
   cardForm: CardForm;
+  /**
+   * A substitute credit note (CFDI-SAT-2): the UUID of the credit note it replaces (relation 04,
+   * next to the 01 relation to the parent) and the FormaPago the manager chose.
+   */
+  replaces?: { uuid: string; paymentForm: "01" | CardForm } | null;
 };
 export type EgresoBuild = {
   body: FInvoiceInput;
@@ -789,11 +794,12 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
     receptor && usoCfdiAllowed(receptor.regime, "G02") ? "G02" : "S01";
   const cardForms = ["04", "28"];
   const paymentForm =
-    refund.method === "external"
+    i.replaces?.paymentForm ??
+    (refund.method === "external"
       ? parent.paymentForm && cardForms.includes(parent.paymentForm)
         ? parent.paymentForm
         : i.cardForm
-      : "01";
+      : "01");
   const body = finalize({
     type: "E",
     customer: receptor
@@ -819,7 +825,12 @@ export function buildEgresoRequest(i: EgresoBuildInput): EgresoBuild {
     currency: "MXN",
     series: SERIES.egreso,
     address: { zip: i.issuerPostalCode },
-    related_documents: [{ relationship: "01", documents: [parent.uuid] }],
+    related_documents: [
+      { relationship: "01", documents: [parent.uuid] },
+      ...(i.replaces
+        ? [{ relationship: "04" as const, documents: [i.replaces.uuid] }]
+        : []),
+    ],
     external_id: i.docId,
     idempotency_key: i.docId,
   });

@@ -162,6 +162,17 @@ async function freezeEgreso(
   const [refund] = await tx<{ method: "cash" | "external" }[]>`
     select method from refunds where id = ${doc.refundId}`;
   const method = refund?.method ?? "cash";
+  // A substitute credit note relates 04 to the one it replaces, which must still be valid.
+  let replaces: { uuid: string; paymentForm: "01" | "04" | "28" } | null = null;
+  if (doc.replacesDocumentId) {
+    const replaced = await loadDocument(tx, doc.replacesDocumentId);
+    if (!replaced?.uuid || replaced.status !== "valid")
+      throw new DomainError("cfdi_substitute_invalid", 409);
+    replaces = {
+      uuid: replaced.uuid,
+      paymentForm: doc.paymentFormOverride ?? "01",
+    };
+  }
   const built = buildEgresoRequest({
     docId: doc.id,
     folio: formatFolio(ticket.series, Number(ticket.number)),
@@ -182,6 +193,7 @@ async function freezeEgreso(
     },
     issuerPostalCode: facts.postalCode,
     cardForm: settings.cardPaymentForm,
+    replaces,
   });
   return {
     body: built.body,

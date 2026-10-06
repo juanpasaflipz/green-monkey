@@ -456,7 +456,7 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
       where a.business_date >= (${plan.today}::date - 62)
         and not (a.refund_id = any(d.netted_refund_ids))
         and not exists (select 1 from cfdi_documents e where e.tenant_id = a.tenant_id and e.kind = 'egreso'
-          and e.refund_id = a.refund_id and e.mode = ${plan.mode})
+          and e.refund_id = a.refund_id and e.mode = ${plan.mode} and e.status <> 'canceled')
       limit 200`;
     for (const r of refunds)
       await cfdiEnqueue(tx, tenantId, {

@@ -239,6 +239,9 @@ export default defineArea({
     cfdiCancellation: "Cancelación: {status}",
     cfdiSubstitute: "Sustituir…",
     cfdiSubstituteTitle: "Sustituir factura {doc}",
+    cfdiSubstituteCreditTitle: "Corregir la nota de crédito {doc}",
+    cfdiSubstituteCreditHint:
+      "Se emitirá una nota de crédito nueva por el mismo reembolso y la misma factura, con la forma de pago que elijas; después {doc} se cancelará con el motivo 01. Una nota de crédito no se cancela sola.",
     cfdiSubstituteHint:
       "Se emitirá una nueva factura que sustituye a {doc} (relación 04) y después se cancelará la anterior con motivo 01.",
     cfdiConfirmSubstitute: "Emitir sustituta",
@@ -600,6 +603,9 @@ export default defineArea({
     cfdiCancellation: "Cancellation: {status}",
     cfdiSubstitute: "Replace…",
     cfdiSubstituteTitle: "Replace invoice {doc}",
+    cfdiSubstituteCreditTitle: "Correct credit note {doc}",
+    cfdiSubstituteCreditHint:
+      "A new credit note is issued for the same refund and invoice, with the payment form you choose; then {doc} is canceled with reason 01. A credit note is never canceled on its own.",
     cfdiSubstituteHint:
       "A new invoice replacing {doc} will be issued (relation 04) and then the previous one is cancelled with reason 01.",
     cfdiConfirmSubstitute: "Issue replacement",
@@ -1075,6 +1081,14 @@ export default defineArea({
     cfdi_substitute_missing: [
       "Esta factura no tiene una sustituta vigente; cancélala con el motivo 02 o 03.",
       "This invoice has no valid replacement; cancel it with reason 02 or 03.",
+    ],
+    cfdi_not_cancellable: [
+      "Una nota de crédito no se cancela sola: corrígela con Sustituir (se emite otra y esta se cancela con el motivo 01).",
+      "A credit note is not canceled on its own: correct it with Replace (another one is issued and this one is canceled with reason 01).",
+    ],
+    cfdi_credit_note_parent_not_valid: [
+      "La factura a la que corresponde esta nota de crédito ya no está vigente o se está cancelando; no se puede sustituir.",
+      "The invoice this credit note belongs to is no longer valid or is being canceled; it cannot be replaced.",
     ],
     cfdi_substitution_in_progress: [
       "Esta factura sustituye a otra cuya cancelación sigue en proceso; espera a que termine antes de cancelarla.",

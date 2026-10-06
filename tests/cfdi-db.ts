@@ -3732,6 +3732,150 @@ try {
     assert.equal((await docRow(d.id)).status, "canceled");
   });
 
+  /** An invoice D with one refund credited by a valid credit note E (related 01 to D). */
+  async function creditedInvoice(t: Fixture) {
+    const tk = await makeTicket(t);
+    const d = await invoice(t, tk);
+    await settle(t.tenantId);
+    const refundId = await refund(t, tk, { iva16: 2320 });
+    await settle(t.tenantId);
+    const [e] =
+      await admin`select id, status, uuid from cfdi_documents where refund_id = ${refundId} and kind = 'egreso'`;
+    assert.equal(e.status, "valid");
+    return { tk, d, refundId, e };
+  }
+  const correctCreditNote = (t: Fixture, id: string, paymentForm: string) =>
+    web(t, (tx) =>
+      service.substituteDocument(
+        tx,
+        t.manager,
+        { operationId: op(), paymentForm, reason: "Se reembolsó en efectivo" },
+        { params: { id } } as never,
+      ),
+    );
+
+  await test("MONEY-1a / SAT-2. a credit note is never canceled with motive 02 or 03 (cfdi_not_cancellable): the register offers Sustituir, not Cancelar", async () => {
+    const W = await makeTenant("money-1a");
+    await activate(W);
+    const { e } = await creditedInvoice(W);
+    for (const motive of ["02", "03"])
+      await rejects(
+        web(W, (tx) =>
+          service.cancelDocument(
+            tx,
+            W.manager,
+            { operationId: op(), motive, reason: "Forma de pago equivocada" },
+            { params: { id: e.id } } as never,
+          ),
+        ),
+        "cfdi_not_cancellable",
+      );
+    const v = await viewOf(W, e.id);
+    assert.equal(v.canCancel, false);
+    assert.equal(v.canSubstitute, true);
+  });
+
+  await test("MONEY-1b / SAT-2. correcting a credit note issues a substitute for the same refund related 01 to the invoice and 04 to the old note, with the chosen FormaPago; the old note is then canceled with motive 01 and no third note is ever issued", async () => {
+    const W = await makeTenant("money-1b");
+    await activate(W);
+    const { d, refundId, e } = await creditedInvoice(W);
+    const e2 = await correctCreditNote(W, e.id, "01");
+    await settle(W.tenantId);
+    const row = await docRow(e2.id);
+    assert.deepEqual(
+      {
+        kind: row.kind,
+        status: row.status,
+        refund: row.refund_id,
+        form: row.payment_form,
+      },
+      { kind: "egreso", status: "valid", refund: refundId, form: "01" },
+    );
+    const parent = await docRow(d.id);
+    assert.deepEqual(row.request.related_documents, [
+      { relationship: "01", documents: [parent.uuid] },
+      { relationship: "04", documents: [e.uuid] },
+    ]);
+    assert.equal((await docRow(e.id)).status, "canceled");
+    const [c] =
+      await admin`select motive, status from cfdi_cancellations where document_id = ${e.id}`;
+    assert.deepEqual({ ...c }, { motive: "01", status: "accepted" });
+    assert.ok((await events(e2.id)).includes("substitution_completed"));
+    // The refund stays credited exactly once: neither the decision nor the sweep adds a note.
+    await web(W, (tx) =>
+      enqueueCfdiRefund(tx, { tenantId: W.tenantId }, refundId),
+    );
+    await tick(W);
+    const live =
+      await admin`select id from cfdi_documents where refund_id = ${refundId} and status not in ('failed','canceled')`;
+    assert.deepEqual(
+      live.map((r) => r.id),
+      [e2.id],
+    );
+    assert.equal((await viewOf(W, d.id)).canCancel, false, "still credited");
+  });
+
+  await test("MONEY-1c / SAT-2. when the provider refuses the old note's motive-01 cancellation, both notes are valid: the attention count shows it and the old note offers the cancellation again", async () => {
+    const W = await makeTenant("money-1c");
+    await activate(W);
+    const { e } = await creditedInvoice(W);
+    fake.fault({
+      op: "invoices.cancel",
+      fault: "cancel_refused",
+      match: { type: "E" },
+    });
+    const e2 = await correctCreditNote(W, e.id, "28");
+    await settle(W.tenantId);
+    assert.equal((await docRow(e2.id)).status, "valid");
+    assert.equal((await docRow(e.id)).status, "valid");
+    const a = await web(W, (tx) => cfdiAlerts(tx));
+    assert.equal(a.rejectedSubstitutions, 1);
+    const v = await viewOf(W, e.id);
+    assert.equal(v.waitingSubstituteId, e2.id);
+    assert.equal(v.canRequestAgain, true);
+    await requestAgain(W, e.id);
+    await settle(W.tenantId);
+    assert.equal((await docRow(e.id)).status, "canceled");
+    assert.equal(
+      (await web(W, (tx) => cfdiAlerts(tx))).rejectedSubstitutions,
+      0,
+    );
+  });
+
+  await test("R4-2. a ticket handed to a substitute frozen before a refund gets that refund re-decided: a credit note related to the substitute, even when the refund's earlier note was canceled", async () => {
+    const W = await makeTenant("r4-2");
+    await activate(W);
+    const { tk, d1, d2 } = await rejectedSubstitution(W);
+    const refundId = await refund(W, tk, { iva16: 5800 });
+    await settle(W.tenantId);
+    const [e1] =
+      await admin`select id, parent_document_id from cfdi_documents where refund_id = ${refundId}`;
+    assert.equal(e1.parent_document_id, d1.id);
+    // The note was canceled (as an earlier release let staff do): D1 can then be canceled.
+    await asWorker(
+      W,
+      (tx) =>
+        tx`update cfdi_documents set status = 'canceled' where id = ${e1.id}`,
+    );
+    await requestAgain(W, d1.id);
+    await settle(W.tenantId);
+    assert.equal((await docRow(d1.id)).status, "canceled");
+    assert.deepEqual(
+      (await claims(tk.id)).map((r) => [r.document_id, r.state]),
+      [
+        [d1.id, "released"],
+        [d2.id, "active"],
+      ],
+    );
+    const notes =
+      await admin`select parent_document_id, status, expected_total from cfdi_documents
+        where refund_id = ${refundId} and status not in ('failed','canceled')`;
+    assert.deepEqual(
+      notes.map((n) => ({ ...n })),
+      [{ parent_document_id: d2.id, status: "valid", expected_total: 5800 }],
+    );
+  });
+
   console.log(`cfdi DB checks passed: ${checks}`);
 } finally {
   await runner.stop(2000);
