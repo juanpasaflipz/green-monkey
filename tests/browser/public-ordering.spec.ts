@@ -216,12 +216,15 @@ async function diner(context: BrowserContext, path: string) {
   await page.goto(path);
   return page;
 }
-async function addTaco(customer: Page) {
+async function addTaco(customer: Page, option = 0) {
   await customer.getByRole("button", { name: /^Taco de asada/ }).click();
   const picker = customer.getByRole("dialog");
-  await picker.getByRole("radio").first().check();
+  await picker.getByRole("radio").nth(option).check();
   await picker.getByRole("button", { name: "Agregar a la orden" }).click();
 }
+/** MONEY-2: the accepted notice names the order the hold became. */
+const acceptedNotice = (label: string) =>
+  new RegExp(`${label} → Orden #\\d+ enviada a cocina\\.`);
 async function sendOrder(customer: Page, name: string) {
   await customer.getByLabel("Nombre (opcional)").fill(name);
   await customer
@@ -290,6 +293,22 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     await expect(
       customer.getByText("Precios en MXN con IVA incluido."),
     ).toBeVisible();
+    // PRIVACY-7: Phase A has no restaurant notice (account's copy says so),
+    // and the platform notice opens in a new tab on a phone.
+    await expect(
+      customer.getByText(
+        "Este restaurante aún no publicó un aviso de privacidad; no escribas datos personales.",
+      ),
+    ).toBeVisible();
+    const platform = customer.getByRole("link", {
+      name: "Pedido procesado con Green Monkey · Privacidad de la plataforma",
+    });
+    await expect(platform).toHaveAttribute(
+      "href",
+      "/legal/privacidad#restaurantes",
+    );
+    await expect(platform).toHaveAttribute("target", "_blank");
+    await expect(platform).toHaveAttribute("rel", "noopener noreferrer");
     await expect(
       customer.getByRole("button", { name: "Taco de hongos, $45.00" }),
     ).toBeVisible();
@@ -311,6 +330,18 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
       /Q-\d+ · Esperando confirmación del personal/,
     );
     const label = (await customer.locator(".diner-code").innerText()).trim();
+    // UX-6: the confirmation is announced from the page's persistent live
+    // region, focus lands on the status heading, and the status region was
+    // mounted before its text arrived.
+    await expect(
+      customer.locator('main > p.sr-only[aria-live="polite"]'),
+    ).toHaveText(
+      `Pedido ${label} enviado. Esperando confirmación del personal.`,
+    );
+    await expect(
+      customer.getByRole("heading", { name: "Estado de tu pedido" }),
+    ).toBeFocused();
+    await expect(head).toHaveAttribute("role", "status");
     await customer.setViewportSize({ width: 390, height: 844 });
     await axe(customer);
     await customer.screenshot({ path: "docs/evidence/public-status-390.png" });
@@ -351,11 +382,12 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     await card
       .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
       .click();
-    await expect(inbox(page)).toContainText(`${label} enviado a cocina.`);
-    await expect(notice).toHaveText(`${label} enviado a cocina.`);
+    await expect(notice).toHaveText(acceptedNotice(label));
     const order = await acceptedOrder(page, `QR ${f.id}`);
     expect(order).toBeTruthy();
     f.orders.push(order!.id);
+    // MONEY-2: the diner knows only the label; it leads the call name.
+    expect(order!.name).toBe(`${label} · QR ${f.id}`);
 
     // The kitchen has it now; the diner follows the round.
     await page
@@ -365,6 +397,9 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
     await expect(
       page.locator(".kitchen-ticket").filter({ hasText: `QR ${f.id}` }),
     ).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator(".kitchen-ticket").filter({ hasText: `QR ${f.id}` }),
+    ).toContainText(label);
     await expect(head).toContainText(/Confirmado · Orden #\d+/, {
       timeout: 15000,
     });
@@ -423,10 +458,12 @@ test("append: a table order joins the table's open check as a new round with the
     await card
       .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
       .click();
-    await expect(inbox(page)).toContainText(`${label} enviado a cocina.`);
+    await expect(inbox(page)).toContainText(acceptedNotice(label));
     const order = (await call(page, `/orders/${check.data.id}`)).data;
     const round2 = order.rounds.find((r: { number: number }) => r.number === 2);
-    expect(round2.note).toBe(`${label} · Ana ${f.id}`);
+    // PRIVACY-3 (deliberate change): the round note prints on the shared
+    // check's receipt, so it carries the label, never the diner's name.
+    expect(round2.note).toBe(label);
     await expect(head).toContainText(
       "Confirmado · se agregó a la cuenta de tu mesa",
     );
@@ -472,6 +509,14 @@ test("reject and restore: the diner sees the reason and gets the cart back", asy
     await expect(customer.locator(".diner-line")).toContainText(
       "Taco de asada",
     );
+    // UX-2: browsing the menu again, the diner gets back to their orders.
+    await customer
+      .getByRole("button", { name: `Tus pedidos (${label})`, exact: true })
+      .click();
+    await expect(head).toContainText("El personal no pudo aceptar tu pedido.");
+    await expect(
+      customer.getByRole("heading", { name: "Estado de tu pedido" }),
+    ).toBeFocused();
   });
 });
 
@@ -520,17 +565,61 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     await kiosk.clock.install();
     await kiosk.goto(url);
     await kiosk.setViewportSize({ width: 1024, height: 768 });
-    await addTaco(kiosk);
-    await kiosk.getByLabel("Nombre (opcional)").fill(`Kiosco ${f.id}`);
+    // PRIVACY-2/UX-5: a kiosk renders no navigational link; its privacy
+    // notices open in an in-page dialog with codes to scan.
+    await expect(
+      kiosk.getByRole("button", { name: /^Taco de asada/ }),
+    ).toBeVisible();
+    expect(await kiosk.locator("a[href]").count()).toBe(0);
     await kiosk
-      .getByRole("button", { name: "Enviar pedido", exact: true })
+      .getByRole("button", {
+        name: "Pedido procesado con Green Monkey · Privacidad de la plataforma",
+      })
       .click();
+    const privacy = kiosk.getByRole("dialog", { name: "Privacidad" });
+    await expect(privacy).toContainText(
+      "Este restaurante aún no publicó un aviso de privacidad",
+    );
+    await expect(privacy.locator('svg[role="img"]')).toHaveCount(1);
+    await axe(kiosk);
+    await privacy.getByRole("button", { name: "Cerrar" }).click();
+    await expect(privacy).toHaveCount(0);
+    await expect(kiosk).toHaveURL(url);
+    // UX-4: with three lines on a 1024×768 kiosk the total and "Enviar
+    // pedido" stay in view (the side cart scrolls inside).
+    await addTaco(kiosk);
+    await addTaco(kiosk, 1);
+    await kiosk.getByRole("button", { name: /^Taco de hongos/ }).click();
+    await expect(kiosk.locator(".diner-line")).toHaveCount(3);
+    const name = kiosk.getByLabel("Nombre (opcional)");
+    const note = kiosk.getByLabel("Indicaciones para la cocina (opcional)");
+    await name.fill(`Kiosco ${f.id}`);
+    await note.fill("sin cebolla");
+    const sendButton = kiosk.getByRole("button", {
+      name: "Enviar pedido",
+      exact: true,
+    });
+    await expect(sendButton).toBeInViewport();
+    await expect(kiosk.locator(".diner-total").first()).toBeInViewport();
+    await sendButton.click();
     const code = kiosk.locator(".kiosk-code");
     await expect(code).toHaveText(/^K-\d+$/);
     const label = (await code.innerText()).trim();
     await expect(kiosk.locator(".kiosk-done")).toContainText(
       "Paga en caja con este código para que preparemos tu pedido.",
     );
+    // UX-3: the code is the largest thing on the screen.
+    expect(await code.evaluate((el) => getComputedStyle(el).fontSize)).toBe(
+      "120px",
+    );
+    // UX-6: a plain heading; the page's live region announces the code.
+    await expect(code).not.toHaveAttribute("role", "status");
+    await expect(
+      kiosk.locator('main > p.sr-only[aria-live="polite"]'),
+    ).toHaveText(
+      `Tu código es ${label}. Paga en caja con este código para que preparemos tu pedido.`,
+    );
+    expect(await kiosk.locator("a[href]").count()).toBe(0);
     await axe(kiosk);
     await kiosk.screenshot({
       path: "docs/evidence/public-kiosk-done-1024.png",
@@ -540,6 +629,9 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     await expect(
       kiosk.getByRole("button", { name: /^Taco de asada/ }),
     ).toBeVisible();
+    // PRIVACY-7: the next customer finds no name or note.
+    await expect(name).toHaveValue("");
+    await expect(note).toHaveValue("");
 
     await goToOrders(page);
     const card = holdCard(page, label);
@@ -557,12 +649,17 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
       .getByRole("button", { name: "Confirmar cobro", exact: true })
       .click();
     await expect(page.locator(".receipt")).toContainText("Cobrado");
+    // MONEY-2: the receipt carries the code the diner holds (order note).
+    await expect(page.locator(".receipt")).toContainText(label);
+    await expect(inbox(page)).toContainText(acceptedNotice(label));
     await page
       .getByRole("button", { name: /Siguiente|Listo/ })
       .first()
       .click();
     const rounds = (await call(page, "/kitchen")).data as { name: string }[];
-    expect(rounds.some((r) => r.name.includes(`Kiosco ${f.id}`))).toBe(true);
+    expect(rounds.some((r) => r.name === `${label} · Kiosco ${f.id}`)).toBe(
+      true,
+    );
   });
 });
 
@@ -578,6 +675,10 @@ test("kiosk idle: a warning at 75 s keeps the cart; at 90 s idle the kiosk clear
     await kiosk.goto(link.path);
     await addTaco(kiosk);
     await expect(kiosk.locator(".diner-line")).toHaveCount(1);
+    const name = kiosk.getByLabel("Nombre (opcional)");
+    const note = kiosk.getByLabel("Indicaciones para la cocina (opcional)");
+    await name.fill(`Idle ${f.id}`);
+    await note.fill("sin cebolla");
     await kiosk.clock.fastForward(75_000);
     const warning = kiosk.getByRole("dialog", { name: "¿Sigues ahí?" });
     await expect(warning).toBeVisible();
@@ -593,6 +694,11 @@ test("kiosk idle: a warning at 75 s keeps the cart; at 90 s idle the kiosk clear
     ).toBeVisible();
     await kiosk.clock.fastForward(90_000);
     await expect(kiosk.locator(".diner-line")).toHaveCount(0);
+    // PRIVACY-7: the reset leaves no name or note for the next customer.
+    await expect(kiosk.getByLabel("Nombre (opcional)")).toHaveValue("");
+    await expect(
+      kiosk.getByLabel("Indicaciones para la cocina (opcional)"),
+    ).toHaveValue("");
     await expect(
       kiosk.getByRole("button", { name: "Enviar pedido", exact: true }),
     ).toBeDisabled();
@@ -618,11 +724,18 @@ test("revoke and rotate: a deactivated code and a replaced table code stop worki
     await page
       .getByRole("button", { name: `Desactivar Puerta ${f.id}`, exact: true })
       .click();
-    await page
-      .locator(".public-settings")
-      .getByRole("button", { name: `Desactivar Puerta ${f.id}`, exact: true })
-      .last()
+    // UX-8: the confirmation is a dialog with its own button text.
+    const confirm = page.getByRole("dialog", {
+      name: `Desactivar Puerta ${f.id}`,
+    });
+    await expect(confirm).toContainText("Nadie podrá pedir con este código.");
+    await confirm
+      .getByRole("button", {
+        name: `Sí, desactivar Puerta ${f.id}`,
+        exact: true,
+      })
       .click();
+    await expect(confirm).toHaveCount(0);
     await expect(
       page.getByRole("button", {
         name: `Desactivar Puerta ${f.id}`,
@@ -654,6 +767,19 @@ test("revoke and rotate: a deactivated code and a replaced table code stop worki
     await expect(
       ordered.getByRole("button", { name: /^Taco de asada/ }),
     ).toBeVisible();
+    // A second phone of the same table is mid-order when the code changes.
+    const sending = await diner(context, table.path);
+    await addTaco(sending);
+    await sendOrder(sending, `Envía ${f.id}`);
+    const sendingHead = sending.locator(".diner-status-head");
+    await expect(sendingHead).toContainText(
+      "Esperando confirmación del personal",
+    );
+    await sending
+      .getByRole("button", { name: "Hacer otro pedido", exact: true })
+      .click();
+    await sending.getByRole("button", { name: /^Taco de hongos/ }).click();
+    await expect(sending.locator(".diner-line")).toHaveCount(1);
     const rotated = await call(page, `/ordering/links/${table.id}/rotate`, {});
     expect(rotated.status).toBe(200);
     f.links.push(rotated.data.id);
@@ -661,12 +787,39 @@ test("revoke and rotate: a deactivated code and a replaced table code stop worki
     await expect(
       old.getByRole("heading", { name: "Este código ya no funciona" }),
     ).toBeVisible();
+    // UX-10: the new code pasted into the same tab (a same-document
+    // navigation) opens it without a reload.
+    await old.evaluate((path) => {
+      location.href = path;
+    }, rotated.data.path);
+    await expect(old.getByText(`Pedido para ${mesa.name}`)).toBeVisible();
+    // UX-1: sending with the replaced code keeps the menu and the cart and
+    // says so next to the way back to this phone's orders.
+    await sending
+      .getByRole("button", { name: "Enviar pedido", exact: true })
+      .click();
+    await expect(sending.locator(".diner-cart")).toContainText(
+      "Este código ya no funciona. Pide al personal un código nuevo.",
+    );
+    await expect(sending.locator(".diner-line")).toHaveCount(1);
+    await sending
+      .getByRole("button", { name: "Ver mis pedidos", exact: true })
+      .click();
+    await expect(sending.getByRole("alert").first()).toContainText(
+      "Este código QR ya no funciona: se reemplazó o se desactivó.",
+    );
+    await expect(sendingHead).toContainText(
+      "Esperando confirmación del personal",
+    );
     // Its next menu poll learns the code was replaced: the page falls back to
-    // its pending order instead of a dead end, and the notice it reaches
-    // from "Hacer otro pedido" leads back to the order.
+    // its pending order, says why, and the notice it reaches from "Hacer
+    // otro pedido" leads back to the order.
     await ordered.clock.fastForward(61_000);
     await expect(orderedHead).toContainText(
       "Esperando confirmación del personal",
+    );
+    await expect(ordered.locator(".diner-closed")).toContainText(
+      "Este código QR ya no funciona: se reemplazó o se desactivó.",
     );
     await ordered
       .getByRole("button", { name: "Hacer otro pedido", exact: true })
@@ -793,6 +946,147 @@ test("staff offline: the inbox says it is available when the connection returns 
       }),
     ).toBeEnabled();
   });
+});
+
+test("abuse: deactivating a code as abuse flags its other orders; accepting one needs the acknowledgement", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({ kind: "counter", label: `Abuso ${f.id}` });
+    const labels: string[] = [];
+    for (const who of ["Uno", "Dos"]) {
+      const customer = await diner(context, link.path);
+      await customer.getByRole("button", { name: /^Taco de hongos/ }).click();
+      await sendOrder(customer, `${who} ${f.id}`);
+      await expect(customer.locator(".diner-status-head")).toContainText(
+        "Esperando confirmación del personal",
+      );
+      labels.push((await customer.locator(".diner-code").innerText()).trim());
+      await customer.close();
+    }
+    const [fake, other] = labels;
+    await goToOrders(page);
+    await holdCard(page, fake)
+      .getByRole("button", { name: "Rechazar", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: `Rechazar pedido ${fake}`,
+    });
+    await dialog.getByRole("radio", { name: "Pedido falso o abuso" }).check();
+    await dialog
+      .getByLabel(
+        "Desactivar también este código QR (dejará de funcionar el impreso)",
+      )
+      .check();
+    await dialog.getByRole("button", { name: "Rechazar pedido" }).click();
+    await expect(inbox(page)).toContainText(`${fake} rechazado.`);
+    // ABUSE-1: the code's other order is flagged and needs a deliberate check.
+    const card = holdCard(page, other);
+    await expect(card).toContainText(
+      "Código desactivado por abuso: verifica con el cliente antes de aceptar.",
+    );
+    const acceptButton = card.getByRole("button", {
+      name: "Aceptar y enviar a cocina",
+      exact: true,
+    });
+    await expect(acceptButton).toBeDisabled();
+    await card
+      .getByLabel("Lo verifiqué con el cliente; aceptar de todos modos.")
+      .check();
+    await axe(page);
+    await acceptButton.click();
+    await expect(inbox(page)).toContainText(acceptedNotice(other));
+    const order = await acceptedOrder(page, `Dos ${f.id}`);
+    expect(order).toBeTruthy();
+    f.orders.push(order!.id);
+  });
+});
+
+test("price change: the acknowledgement covers the total staff saw; a newer price needs a new one, and the diner sees the confirmed total", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  const menu = (await call(page, "/menu")).data as {
+    categories: { id: string; name: { es: string } }[];
+  };
+  const id = crypto.randomUUID();
+  const productName = `Precio ${runId()}`;
+  const save = async (price: number, expectedVersion: number) => {
+    const r = await call(page, "/menu/products/save", {
+      operationId: op(),
+      id,
+      expectedVersion,
+      name: { es: productName, en: "" },
+      categoryId: menu.categories.find((c) => c.name.es === "Antojitos")!.id,
+      kind: "item",
+      price,
+      station: "kitchen",
+      groupIds: [],
+    });
+    expect(r.status, JSON.stringify(r.data)).toBe(200);
+    return r.data.version as number;
+  };
+  let version = await save(4000, 0);
+  try {
+    await withFixture(page, async (f) => {
+      const link = await f.link({ kind: "counter", label: `Precio ${f.id}` });
+      const customer = await diner(context, link.path);
+      await customer
+        .getByRole("button", { name: new RegExp(`^${productName}`) })
+        .click();
+      await sendOrder(customer, `Precio ${f.id}`);
+      const head = customer.locator(".diner-status-head");
+      await expect(head).toContainText("Esperando confirmación del personal");
+      const label = (await customer.locator(".diner-code").innerText()).trim();
+      version = await save(5000, version);
+      await goToOrders(page);
+      const card = holdCard(page, label);
+      await expect(card).toContainText("Total actual");
+      await expect(card).toContainText("$50.00");
+      const ack = card.getByLabel(
+        "El precio cambió desde que el cliente pidió. Ya le avisé.",
+      );
+      const acceptButton = card.getByRole("button", {
+        name: "Aceptar y enviar a cocina",
+        exact: true,
+      });
+      await expect(acceptButton).toBeDisabled();
+      await ack.check();
+      await expect(acceptButton).toBeEnabled();
+      // MONEY-1: the price moves again; the next inbox read clears the
+      // acknowledgement, so the new total needs a new one.
+      version = await save(6500, version);
+      await expect(card).toContainText("$65.00", { timeout: 20000 });
+      await expect(ack).not.toBeChecked();
+      await expect(acceptButton).toBeDisabled();
+      await ack.check();
+      await acceptButton.click();
+      await expect(inbox(page)).toContainText(acceptedNotice(label));
+      const order = await acceptedOrder(page, `Precio ${f.id}`);
+      expect(order).toBeTruthy();
+      f.orders.push(order!.id);
+      const full = (await call(page, `/orders/${order!.id}`)).data;
+      expect(full.total).toBe(6500);
+      // PRIVACY-1: the diner sees the confirmed price, not the one sent.
+      await expect(customer.locator(".diner-price-changed")).toContainText(
+        "El precio cambió al confirmar tu pedido; total confirmado: $65.00.",
+        { timeout: 20000 },
+      );
+      await expect(customer.locator(".diner-status .diner-line")).toContainText(
+        "$65.00",
+      );
+    });
+  } finally {
+    await call(page, "/menu/products/archive", {
+      operationId: op(),
+      id,
+      expectedVersion: version,
+      archived: true,
+    });
+  }
 });
 
 test("legacy signed links show the invalid-code page without calling the API", async ({
