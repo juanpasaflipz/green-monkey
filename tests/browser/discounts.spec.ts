@@ -594,6 +594,66 @@ test("DSC-R1: leaving the refund result with Escape or the X button refreshes Ó
   );
 });
 
+test("DSC-R9: a refund confirmed on a stale check after another device refunded the same taco is refused; the dialog reloads, keeps its inputs and refunds only on a new confirm", async ({
+  page,
+}) => {
+  const name = "Doble " + tag();
+  await login(page);
+  await openDrawer(page);
+  const o = await order(page, name, 2);
+  await pay(page, o.id, 9000);
+  const lineId = o.lines[0].id;
+  await orders(page);
+  await row(page, name)
+    .getByRole("button", { name: "Reembolsar", exact: true })
+    .click();
+  const refund = page.getByRole("dialog", { name: /Reembolso · Orden/ });
+  const quantity = refund.getByLabel(/Taco de hongos · \$45\.00 c\/u/);
+  await expect(refund).toContainText("2 reembolsables");
+  await quantity.fill("1");
+  await refund
+    .getByLabel("Motivo del reembolso")
+    .selectOption({ label: "Producto con defecto o queja" });
+  await refund.getByLabel("Explicación").fill("frío");
+  // Another device refunds the same cold taco first, at the same price.
+  await call(page, `/orders/${o.id}/refunds`, {
+    mode: "items",
+    operationId: uuid(),
+    lines: [{ lineId, quantity: 1 }],
+    expectedAmount: 4500,
+    expectedUnits: [{ lineId, units: [1] }],
+    expectedRefunded: 0,
+    restock: false,
+    reasonCode: "quality",
+    note: "frío",
+  });
+  const confirm = refund.getByRole("button", {
+    name: "Reembolsar $45.00",
+    exact: true,
+  });
+  await confirm.click();
+  await expect(refund.getByRole("alert")).toHaveText(
+    "La orden cambió (otro pago o reembolso). Revisa el importe y confirma de nuevo.",
+  );
+  // Nothing was stored; the dialog shows the reloaded check with its inputs.
+  expect((await call(page, "/orders/" + o.id)).refunded).toBe(4500);
+  await expect(refund).toContainText("1 reembolsables");
+  await expect(quantity).toHaveValue("1");
+  await expect(refund.getByLabel("Explicación")).toHaveValue("frío");
+  // Confirmed again, knowingly, on the current check.
+  await confirm.click();
+  await expect(refund).toContainText("Reembolso registrado: $45.00");
+  await refund.getByRole("button", { name: "Listo", exact: true }).click();
+  const after = await call(page, "/orders/" + o.id);
+  expect(after.refunded).toBe(9000);
+  expect(after.refundBatches).toHaveLength(2);
+  // Both tacos were cancelled before the kitchen served them: acknowledge, so
+  // the ticket leaves the KDS (as the DSC-R1 test does).
+  await call(page, `/kitchen/${after.rounds[0].id}/voids/ack`, {
+    operationId: uuid(),
+  });
+});
+
 test("MON-9/FIT-10: blind close — the cashier never sees expected cash; the manager sees the difference in history and reviews it", async ({
   page,
 }) => {
