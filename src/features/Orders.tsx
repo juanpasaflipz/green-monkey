@@ -449,21 +449,41 @@ export function Orders({
                     <Button
                       variant="ghost"
                       disabled={busyId === o.id || !online}
-                      title={online ? undefined : t("discountsOffline")}
+                      aria-describedby={
+                        online ? undefined : `discount-offline-${o.id}`
+                      }
                       onClick={() => void openDialog("discount", o.id)}
                     >
                       {t("discountsAction")}
                     </Button>
                   )}
+                  {!online && !closed && !o.recovery && o.balance > 0 && (
+                    <small
+                      id={`discount-offline-${o.id}`}
+                      className="tiny muted discounts-offline-hint"
+                    >
+                      {t("discountsOffline")}
+                    </small>
+                  )}
                   {o.refundable > 0 && (
                     <Button
                       variant="ghost"
                       disabled={busyId === o.id || !online}
-                      title={online ? undefined : t("discountsRefundOffline")}
+                      aria-describedby={
+                        online ? undefined : `refund-offline-${o.id}`
+                      }
                       onClick={() => void openDialog("refund", o.id)}
                     >
                       {t("refund")}
                     </Button>
+                  )}
+                  {!online && o.refundable > 0 && (
+                    <small
+                      id={`refund-offline-${o.id}`}
+                      className="tiny muted discounts-offline-hint"
+                    >
+                      {t("discountsRefundOffline")}
+                    </small>
                   )}
                   {!closed && o.balance <= 0 && (
                     <Button

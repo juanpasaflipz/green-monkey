@@ -196,6 +196,8 @@ export default defineArea({
     discountsControlsCloseRoles: "Pueden cerrar caja (además de gerentes)",
     discountsControlsSave: "Guardar controles",
     discountsControlsSaved: "Controles guardados",
+    discountsControlsReloaded:
+      "Otro dispositivo cambió estos controles. Ya ves los valores actuales; revisa y guarda de nuevo.",
     discountsOpApplied: "Descuento aplicado",
     discountsOpReversed: "Descuento quitado",
     discountsOpControlsSaved: "Controles de descuentos y caja actualizados",
@@ -439,6 +441,8 @@ export default defineArea({
     discountsControlsCloseRoles: "Can close the drawer (besides managers)",
     discountsControlsSave: "Save controls",
     discountsControlsSaved: "Controls saved",
+    discountsControlsReloaded:
+      "Another device changed these controls. The current values are shown; review them and save again.",
     discountsOpApplied: "Discount applied",
     discountsOpReversed: "Discount removed",
     discountsOpControlsSaved: "Discount and drawer controls updated",

@@ -64,16 +64,18 @@ export function MoneyControlsSettings({
     expectedRoles: v.expectedRoles,
     closeRoles: v.closeRoles,
   });
-  async function load(force = false) {
+  async function load(force = false): Promise<boolean> {
     try {
       const v = await loadMoneyControls(session, force);
       setView(v);
       setForm(fromView(v));
       setOperationId(crypto.randomUUID());
       setError("");
+      return true;
     } catch (e) {
       setError(t("discountsControlsLoadFailed"));
       void e;
+      return false;
     }
   }
   useEffect(() => {
@@ -93,8 +95,10 @@ export function MoneyControlsSettings({
       </section>
     );
   const readOnly = !view.canEdit;
+  // "0", "0.0" and "0.00" all mean no discount without approval (0 bps);
+  // percentToBps itself rejects 0 (DSC-R7).
   const percentOf = (text: string) =>
-    text.trim() === "0" ? 0 : percentToBps(text);
+    /^0+(\.0{1,2})?$/.test(text.trim()) ? 0 : percentToBps(text);
   const toggle = <T extends string>(list: T[], value: T, on: boolean) =>
     on ? [...new Set([...list, value])] : list.filter((x) => x !== value);
   async function save() {
@@ -138,7 +142,12 @@ export function MoneyControlsSettings({
       setOperationId(crypto.randomUUID());
       setStatus(t("discountsControlsSaved"));
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      const code = (e as Error).message;
+      if (code === "money_controls_changed") {
+        // Another device saved first: show its values with the current
+        // version, so the next save can succeed (DSC-R7).
+        if (await load(true)) setError(t("discountsControlsReloaded"));
+      } else setError(translateError(code, locale));
     } finally {
       setBusy(false);
     }

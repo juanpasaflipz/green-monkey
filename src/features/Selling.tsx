@@ -1461,7 +1461,8 @@ export function Selling({
             }}
             session={session}
             locale={locale}
-            online={online && !cart.blocked}
+            online={online}
+            blocked={cart.blocked}
             money={money}
             onApplied={(o) => {
               // SVC-R10: only the order still on screen is replaced. A check

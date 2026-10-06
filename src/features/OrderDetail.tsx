@@ -100,8 +100,8 @@ export function OrderDetail({
   const refundable = order
     ? order.tenders.some((x: any) => x.amount > x.refunded)
     : false;
-  const discountable =
-    !!order && !closed && !order.recovery && balance > 0 && online;
+  // Shown offline too, disabled with its visible reason (spec §2.2).
+  const discountable = !!order && !closed && !order.recovery && balance > 0;
   const voidable = order?.paymentUnits?.some((u) => u.paid === 0) ?? false;
   const holdsTable = order?.mode === "dine_in" && !!order?.tableId;
   const notes = order ? roundNotes(order) : [];
@@ -225,6 +225,7 @@ export function OrderDetail({
                     money={money}
                   />
                   {discountable &&
+                    online &&
                     order.paymentUnits?.some(
                       (u) =>
                         u.lineId === l.id && u.due > 0 && !u.lineDiscounted,
@@ -406,6 +407,10 @@ export function OrderDetail({
             {discountable && (
               <Button
                 variant="ghost"
+                disabled={!online}
+                aria-describedby={
+                  online ? undefined : "detail-discount-offline"
+                }
                 onClick={() => {
                   setDiscountLine(undefined);
                   setDialog("discount");
@@ -418,7 +423,7 @@ export function OrderDetail({
               <Button
                 variant="ghost"
                 disabled={!online}
-                title={online ? undefined : t("discountsRefundOffline")}
+                aria-describedby={online ? undefined : "detail-refund-offline"}
                 onClick={() => setDialog("refund")}
               >
                 {t("refund")}
@@ -486,6 +491,20 @@ export function OrderDetail({
               </Button>
             )}
           </div>
+          {!online && (discountable || refundable) && (
+            <p className="muted tiny">
+              {discountable && (
+                <span id="detail-discount-offline">
+                  {t("discountsOffline")}
+                </span>
+              )}{" "}
+              {refundable && (
+                <span id="detail-refund-offline">
+                  {t("discountsRefundOffline")}
+                </span>
+              )}
+            </p>
+          )}
           <p className="muted tiny">{t("servicePrintUnconfirmed")}</p>
         </div>
       )}

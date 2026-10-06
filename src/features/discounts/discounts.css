@@ -88,3 +88,17 @@
     color: #000;
   }
 }
+
+/* Vender's "Descuento" entry with its visible offline hint (spec §2.2). */
+.discounts-entry {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+/* A disabled action's visible reason, linked with aria-describedby. */
+.discounts-offline-hint {
+  display: block;
+  max-width: 220px;
+  text-align: right;
+}
