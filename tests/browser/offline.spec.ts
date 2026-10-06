@@ -1405,9 +1405,14 @@ test("Manager archives an unverifiable local record and drawer close unblocks", 
   await page.getByRole("button", { name: "Cerrar caja", exact: true }).click();
   await page.getByLabel("Efectivo contado").fill("0");
   await page.getByLabel("Explicación").fill("Cierre con registro pendiente");
+  // discounts (028): count → confirm; the pending-sales guard runs on save.
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "Guardar", exact: true })
+    .getByRole("button", { name: "Continuar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Guardar conteo y cerrar", exact: true })
     .click();
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
     "Sincroniza las ventas pendientes",
@@ -1450,7 +1455,15 @@ test("Manager archives an unverifiable local record and drawer close unblocks", 
   await page.getByLabel("Explicación").fill("Cierre después de archivar");
   await page
     .getByRole("dialog")
-    .getByRole("button", { name: "Guardar", exact: true })
+    .getByRole("button", { name: "Continuar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "Guardar conteo y cerrar", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Corte registrado" })
+    .getByRole("button", { name: "Listo", exact: true })
     .click();
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });

@@ -73,15 +73,15 @@ export async function kitchenFeed(
       o.created_at as order_created_at,o.business_date::text as business_date,o.service_version,
       t.name as table_name,e.name as waiter_name,
       (select coalesce(jsonb_agg(jsonb_build_object('id',l.id,'quantity',(l.data->>'quantity')::int,
-          'voidedQuantity',coalesce((select sum(cardinality(v.units)) from line_voids v
+          'voidedQuantity',coalesce((select sum(cardinality(v.units)) from kitchen_removals v
              where v.tenant_id=l.tenant_id and v.line_id=l.id),0),
           'name',l.data->'name','optionNames',coalesce(l.data->'optionNames','[]'::jsonb),
           'note',coalesce(l.data->>'note','')) order by l.data->'name'->>'es', l.id),'[]'::jsonb)
        from order_lines l where l.tenant_id=r.tenant_id and l.order_id=r.order_id
          and l.round=r.number and l.data->>'station'=r.station) as lines,
       (select coalesce(jsonb_agg(jsonb_build_object('id',v.id,'lineId',v.line_id,'quantity',cardinality(v.units),
-          'name',l.data->'name','reason',v.reason,'createdAt',v.created_at) order by v.created_at),'[]'::jsonb)
-       from line_voids v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id
+          'name',l.data->'name','reason',v.reason,'createdAt',v.created_at,'kind',v.kind) order by v.created_at),'[]'::jsonb)
+       from kitchen_removals v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id
        where v.tenant_id=r.tenant_id and v.order_id=r.order_id and l.round=r.number and l.data->>'station'=r.station
          and v.kitchen_ack_required and v.kitchen_acknowledged_at is null) as pending_voids
     from rounds r
@@ -108,7 +108,7 @@ export async function kitchenFeed(
       ${station}
       and exists (select 1 from order_lines l where l.tenant_id=r.tenant_id and l.order_id=r.order_id
         and l.round=r.number and l.data->>'station'=r.station
-        and (l.data->>'quantity')::int > coalesce((select sum(cardinality(v.units)) from line_voids v
+        and (l.data->>'quantity')::int > coalesce((select sum(cardinality(v.units)) from kitchen_removals v
              where v.tenant_id=l.tenant_id and v.line_id=l.id),0))
     order by r.completed_at desc limit 10`;
   return {
@@ -194,7 +194,7 @@ export async function recallRound(
         coalesce(r.completed_at > now() - interval '120 minutes',false) as in_window,
         exists (select 1 from order_lines l where l.tenant_id=r.tenant_id and l.order_id=r.order_id
           and l.round=r.number and l.data->>'station'=r.station
-          and (l.data->>'quantity')::int > coalesce((select sum(cardinality(v.units)) from line_voids v
+          and (l.data->>'quantity')::int > coalesce((select sum(cardinality(v.units)) from kitchen_removals v
                where v.tenant_id=l.tenant_id and v.line_id=l.id),0)) as has_items
       from rounds r where r.id=${roundId} for update of r`;
       if (
@@ -250,7 +250,7 @@ export async function clearStaleRounds(
         and r.state <> 'completed' and r.state <> 'offline_review' and o.business_date < ${before}
         ${station}
       returning r.id,r.order_id,r.number,r.station`;
-    if (cleared.length)
+    if (cleared.length) {
       await tx`update line_voids v set kitchen_acknowledged_at=now(),kitchen_acknowledged_by=${s.employeeId}
         from order_lines l, rounds r
         where l.tenant_id=v.tenant_id and l.id=v.line_id
@@ -258,6 +258,15 @@ export async function clearStaleRounds(
           and r.id = any(${tx.array(cleared.map((c) => c.id as string))}::uuid[])
           and l.round=r.number and l.data->>'station'=r.station
           and v.kitchen_ack_required and v.kitchen_acknowledged_at is null`;
+      // discounts (028): refund cancellations of the cleared tickets too.
+      await tx`update refund_lines v set kitchen_acknowledged_at=now(),kitchen_acknowledged_by=${s.employeeId}
+        from order_lines l, rounds r
+        where l.tenant_id=v.tenant_id and l.id=v.line_id
+          and r.tenant_id=v.tenant_id and r.order_id=v.order_id
+          and r.id = any(${tx.array(cleared.map((c) => c.id as string))}::uuid[])
+          and l.round=r.number and l.data->>'station'=r.station
+          and v.kitchen_ack_required and v.kitchen_acknowledged_at is null`;
+    }
     for (const orderId of ids) await refreshOrderState(tx, orderId);
     await audit(tx, s, "kitchen.cleared", s.tenantId, {
       rounds: cleared.map((c) => c.id),

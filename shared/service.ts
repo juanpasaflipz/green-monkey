@@ -34,6 +34,10 @@ export type OrderSummary = {
   refunded: number;
   balance: number;
   refundableCash: number;
+  /** discounts (028): what is still refundable, cash and terminal. */
+  refundable: number;
+  /** discounts (028): the check's effective discount (orders.discount). */
+  discount: number;
   itemCount: number;
   preview: { quantity: number; name: Label }[];
   previewMore: number;
@@ -77,6 +81,8 @@ export type KitchenPendingVoid = {
   name: Label;
   reason: string;
   createdAt: string;
+  /** discounts (028): a void, or a refund of units the kitchen must not prepare. */
+  kind?: "void" | "refund";
 };
 export type KitchenRound = {
   id: string;

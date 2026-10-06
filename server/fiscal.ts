@@ -13,6 +13,7 @@ import type { Tx } from "./db.js";
 import { managers, operators, permit } from "./auth.js";
 import { requireRecentAuth } from "./access.js";
 import { audit, once } from "./orders.js";
+import { discountsByLine } from "./discounts.js";
 import {
   businessDate,
   DomainError,
@@ -365,8 +366,8 @@ async function prepareTicket(
   if (o.total <= 0 || o.paid < o.total || o.currency !== "MXN") return null;
   const profile = o.tax_region ? (o as unknown as ProfileRecord) : null;
   const lines = await orderLines(tx, orderId);
-  // discounts (028): lineDiscounts = await discountsByLine(tx, orderId)
-  const lineDiscounts: Record<string, number> = {};
+  // discounts (028): per-unit allocations by due, active and on non-voided units.
+  const lineDiscounts = await discountsByLine(tx, orderId);
   const ctx = contextOf(profile);
   const breakdown = orderTaxBreakdown({
     lines,
@@ -585,8 +586,10 @@ export async function assertRefundAllowed(
  * summary when the order has no ticket but is fully paid: a refund on an unticketed order with
  * a balance due is refused, refund_balance_due, MONEY-1). Idempotent per refund. Item refunds
  * pass their scope with each entry's exact `gross` (discounts 028), categorized as the ticket
- * froze each line (MONEY-4). Dated by the refund row's own creation time (MONEY-3). No audit
- * of its own: the refund command audits refund.recorded.
+ * froze each line (MONEY-4). Dated by its refund batch's business_date (discounts 028,
+ * computed once per command from the transaction's start), or, for a batchless refund, by the
+ * refund row's own creation time (MONEY-3). No audit of its own: the refund command audits
+ * refund.recorded.
  */
 export async function recordRefundTax(
   tx: Tx,
@@ -594,15 +597,16 @@ export async function recordRefundTax(
   refundId: string,
   scope?: RefundTaxScope[],
 ): Promise<RefundTaxView> {
-  // discounts (028): left join refund_batches b on b.tenant_id=r.tenant_id and b.id=r.batch_id
-  // and select b.business_date::text as batch_date.
-  const [refund] = await tx`select r.amount,r.created_at,t.order_id
+  // discounts (028): a batched refund carries the business date its command computed once.
+  const [refund] =
+    await tx`select r.amount,r.created_at,t.order_id,b.business_date::text as batch_date
       from refunds r join tenders t on t.tenant_id=r.tenant_id and t.id=r.tender_id
+      left join refund_batches b on b.tenant_id=r.tenant_id and b.id=r.batch_id
       where r.id=${refundId}`;
   if (!refund) throw new DomainError("not_found", 404);
-  const batchDate: string | null = null;
-  // The refund row's business date (its created_at, the transaction's start), not the app
-  // clock when this runs: reports date batchless refunds the same way (MONEY-3).
+  const batchDate = (refund.batch_date as string | null) ?? null;
+  // The batch's date, else the refund row's business date (its created_at, the transaction's
+  // start), never the app clock when this runs: reports date refunds the same way (MONEY-3).
   const date =
     batchDate ??
     businessDate(
@@ -635,9 +639,9 @@ export async function recordRefundTax(
   if (ticket && !ticket.id && ticket.total > ticket.paid)
     throw new DomainError("refund_balance_due", 409);
   const ctx = await fiscalContext(tx);
-  // discounts (028): lineDiscounts = await discountsByLine(tx, orderId)
-  const lineDiscounts: Record<string, number> = {};
   const needsLines = !!scope || !ticket?.id;
+  // discounts (028): the lines' active discounts, read only when the lines are.
+  const lineDiscounts = needsLines ? await discountsByLine(tx, orderId) : {};
   const lines = needsLines ? await orderLines(tx, orderId) : [];
   const saleGroups: {
     category: TaxCategory;

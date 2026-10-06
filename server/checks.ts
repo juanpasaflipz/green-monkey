@@ -356,10 +356,10 @@ export async function listOrders(
     await tx`select o.id,o.number,o.business_date::text as business_date,o.created_at,
       o.created_at::text as cursor_t,o.mode,o.channel,o.table_id,t.name as table_name,
       o.name,o.note,e.name as waiter_name,o.state,o.check_state,o.closed_at,o.close_reason,
-      o.total,p.paid,p.refunded,p.refundable_cash,k.open_rounds,k.ready_rounds,
+      o.total,o.discount,p.paid,p.refunded,p.refundable_cash,p.refundable,k.open_rounds,k.ready_rounds,
       li.items,li.preview,
       exists(select 1 from offline_recoveries r where r.tenant_id=o.tenant_id and r.order_id=o.id) as recovery,
-      exists(select 1 from line_voids v where v.tenant_id=o.tenant_id and v.order_id=o.id
+      exists(select 1 from kitchen_removals v where v.tenant_id=o.tenant_id and v.order_id=o.id
              and v.kitchen_ack_required and v.kitchen_acknowledged_at is null) as void_ack_pending
     from orders o
     join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id)
@@ -367,7 +367,8 @@ export async function listOrders(
     left join lateral (
       select coalesce(sum(tn.amount),0)::int as paid,
              coalesce(sum(rf.refunded),0)::int as refunded,
-             coalesce(sum(tn.amount-rf.refunded) filter (where tn.method='cash'),0)::int as refundable_cash
+             coalesce(sum(tn.amount-rf.refunded) filter (where tn.method='cash'),0)::int as refundable_cash,
+             coalesce(sum(tn.amount-rf.refunded),0)::int as refundable
       from tenders tn
       left join lateral (select coalesce(sum(r.amount),0)::int as refunded from refunds r
                          where r.tenant_id=tn.tenant_id and r.tender_id=tn.id) rf on true
@@ -428,6 +429,8 @@ export async function listOrders(
         refunded: r.refunded,
         balance: r.total - r.paid,
         refundableCash: r.refundable_cash,
+        refundable: r.refundable, // discounts: cash and terminal
+        discount: r.discount, // discounts
         itemCount: r.items,
         preview: preview.slice(0, 6),
         previewMore: Math.max(0, preview.length - 6),

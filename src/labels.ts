@@ -97,6 +97,11 @@ const operations: Record<string, Key> = {
   "fiscal.profile.saved": "fiscalOpProfileSaved",
   "fiscal.tickets.repaired": "fiscalOpTicketsRepaired",
   "fiscal.ticket.unallocated_discount": "fiscalOpUnallocatedDiscount",
+  // discounts (028)
+  "discount.applied": "discountsOpApplied",
+  "discount.reversed": "discountsOpReversed",
+  "discount.controls.saved": "discountsOpControlsSaved",
+  "cash.reviewed": "discountsOpDrawerReviewed",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",
@@ -106,6 +111,8 @@ const stockCauses: Record<string, Key> = {
   count_adjust: "serviceStockCount",
   prep_input: "serviceStockPrepInput",
   prep_output: "serviceStockPrepOutput",
+  // discounts (028)
+  refund: "discountsStockCauseRefund",
 };
 const channels: Record<string, Key> = {
   pos: "serviceChannelPos",

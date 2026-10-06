@@ -40,6 +40,8 @@ Menus, choices, combos, open-price items, areas and tables, and ingredient stock
 
 Front-of-house service (orders and tables lists, check lifecycle with **Liberar mesa**, kitchen display, kitchen and order notes, receipts and browser printing on 80/58 mm) is described in [Service](docs/SERVICE.md).
 
+Discounts and courtesies by line or for the whole check (reason codes, per-role limits, one manager PIN for staff over their limit), refunds by item or by amount for cash and external-terminal payments with a kitchen cancellation and optional restock, and drawer controls (cash and terminal apart, blind counts, closer attribution and manager review of differences) are described in [Discounts, refunds and drawer controls](docs/DISCOUNTS.md).
+
 New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
 
 The seed is explicit, repeatable, and refuses non-local hosts. It is never run at boot. Seed prices/costs are fictional. Prices are tax-inclusive (Mexico): each product has a tax category (IVA 16%, IVA 8% in a registered border region, IVA 0% or exempt), every order line keeps an immutable tax snapshot, and every settled sale gets a ticket with a consecutive folio and the issuer's RFC, régimen and place of issue, from the owner's fiscal profile. CFDI invoicing is pending (cfdi 030); IEPS is out of scope. See [docs/FISCAL.md](docs/FISCAL.md).
