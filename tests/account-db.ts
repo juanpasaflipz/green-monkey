@@ -1,0 +1,2870 @@
+/**
+ * Account (031) database suite: legal acceptance, co-owners, ownership transfer,
+ * recovery codes, data export, restaurant privacy and the RLS paths of 031.
+ * Runs against the isolated test target as the runtime role (gm_app), with the
+ * superuser fixture admin only for setup and inspection. Fixtures are left in
+ * place: the evidence tables of 031 are append-only by design.
+ */
+import "dotenv/config";
+import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
+import { Writable } from "node:stream";
+import { setTimeout as delay } from "node:timers/promises";
+import postgres from "postgres";
+import { isolatedTarget } from "./isolated-target.js";
+import { LEGAL_CI_ENV } from "./fixtures/legal-ci.js";
+import { noRetries } from "./db-retries.js";
+import { tenant, type Tx } from "../server/db.js";
+import { authentication, hash, password, sign } from "../server/auth.js";
+import { checkPin, createSession, deviceScope } from "../server/access.js";
+import {
+  createOwnerRestaurant,
+  enterOwnerRestaurant,
+  ownerBrowserCookie,
+  ownerCookie,
+  signInGoogleOwner,
+  withOwner,
+} from "../server/owner-accounts.js";
+import {
+  acceptInvitation,
+  createAdditionalLocation,
+  createInvitation,
+  listInvitations,
+  revokeInvitation,
+  selectFreeLocation,
+} from "../server/owner-management.js";
+import {
+  legalConfig,
+  legalContentHash,
+  legalState,
+  recordAcceptances,
+  requireCurrentLegal,
+} from "../server/legal.js";
+import {
+  createCoOwnerInvitation,
+  leaveCoOwnership,
+  removeCoOwner,
+} from "../server/co-owners.js";
+import {
+  acceptTransfer,
+  cancelTransfer,
+  generateRecoveryCodes,
+  previewTransfer,
+  redeemRecoveryCode,
+  requestTransfer,
+} from "../server/ownership-transfer.js";
+import { accountOverview, shellState } from "../server/account-center.js";
+import {
+  exportBusy,
+  exportHandler,
+  exportScope,
+  exportTables,
+  requireExportAccess,
+} from "../server/data-export.js";
+import {
+  restaurantPrivacy,
+  restaurantPrivacyUrl,
+  saveRestaurantPrivacy,
+} from "../server/account-settings.js";
+import { saveEmployee } from "../server/management.js";
+import {
+  resetStaffPin,
+  setStaffActive,
+  updateStaff,
+} from "../server/access-staff.js";
+import { saasTaxConfig } from "../server/saas-tax.js";
+import { LEGAL_DOCUMENTS } from "../shared/legal.js";
+import { EXPORT_TABLE_DENYLIST } from "../shared/account-export.js";
+import type { Session } from "../shared/domain.js";
+
+const { runtime, migration } = isolatedTarget(process.env);
+const sql = postgres(runtime, { max: 10 }),
+  admin = postgres(migration, { max: 2 });
+const run = randomUUID().slice(0, 8);
+const PUBLISHED = legalConfig({ ...LEGAL_CI_ENV, NODE_ENV: "production" });
+const ALLOW = legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" });
+const CLOSED = legalConfig({});
+const V = {
+  terms: LEGAL_DOCUMENTS.terms.version,
+  privacy: LEGAL_DOCUMENTS.privacy.version,
+  dpa: LEGAL_DOCUMENTS.dpa.version,
+  billingConsent: LEGAL_DOCUMENTS.privacy.version,
+};
+const TAX = saasTaxConfig({}, "web");
+const input = {
+  currency: "MXN",
+  timezone: "America/Mexico_City",
+  cutoff: 240,
+  openingDays: [1, 2, 3, 4, 5, 6, 7],
+};
+assert.equal(PUBLISHED.status, "published");
+
+type Owner = {
+  cookie: string;
+  subject: string;
+  id: string;
+  name: string;
+  email: string;
+  sessionId: string;
+  verifiedEmail: string | null;
+  csrf: string;
+};
+async function owner(label: string): Promise<Owner> {
+  const subject = randomUUID();
+  const email = `${label}-${run}@example.com`;
+  const cookie = await signInGoogleOwner(sql, {
+    issuer: "https://accounts.google.com",
+    subject,
+    email,
+    name: `Cuenta ${label}`,
+  });
+  const a = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
+  return { cookie, subject, ...a };
+}
+const as = <T>(o: Owner, fn: (tx: Tx, a: Owner) => Promise<T>): Promise<T> =>
+  withOwner(sql, o.cookie, undefined, (tx, a) => fn(tx, { ...o, ...a }));
+async function restaurant(o: Owner, name: string, legal = PUBLISHED) {
+  const { tenantId } = await as(o, (tx, a) =>
+    createOwnerRestaurant(
+      tx,
+      a,
+      { ...input, restaurantName: name, legalAccepted: V, locale: "es" },
+      legal,
+    ),
+  );
+  const [r] =
+    await admin`select organization_id from restaurants where id=${tenantId}`;
+  return { tenantId, organizationId: r.organization_id as string };
+}
+async function seat(accountId: string, tenantId: string) {
+  const [m] =
+    await admin`select m.employee_id,m.revoked_at,e.role,e.active,e.deactivated_at,e.pin_set_at,e.login,e.free_slot
+    from owner_memberships m join employees e on e.tenant_id=m.tenant_id and e.id=m.employee_id
+    where m.account_id=${accountId} and m.tenant_id=${tenantId}`;
+  return m;
+}
+async function entry(o: Owner, tenantId: string) {
+  return as(o, (tx, a) =>
+    enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, ownerBrowserCookie()),
+  );
+}
+/** The Session authentication() builds for a device and session cookie. */
+async function sessionFor(cookies: {
+  session: { id: string; tenantId: string; token: string };
+  device: { id: string; tenantId: string; token: string };
+}): Promise<Session> {
+  const req: any = {
+    method: "GET",
+    headers: {},
+    cookies: {
+      gm_session: sign(cookies.session),
+      gm_device: sign(cookies.device),
+    },
+  };
+  await new Promise<void>((resolve, reject) =>
+    authentication(sql)(req, { clearCookie() {} } as any, (e?: unknown) =>
+      e ? reject(e) : resolve(),
+    ),
+  );
+  return req.session;
+}
+const ownerSession = async (o: Owner, tenantId: string) =>
+  sessionFor(await entry(o, tenantId));
+const inTenant = <T>(tenantId: string, fn: (tx: Tx) => Promise<T>) =>
+  tenant(sql, tenantId, fn);
+const token = (path: string, key: "invite" | "transfer") =>
+  path.split(`#${key}=`)[1];
+/** A shared terminal paired in the tenant, with a PIN session for an employee. */
+async function terminalSession(tenantId: string, employeeId: string) {
+  const device = {
+    id: randomUUID(),
+    tenantId,
+    token: randomBytes(32).toString("hex"),
+  };
+  await admin`insert into devices(tenant_id,id,name,token_hash,kind,paired_at,token_expires_at)
+    values(${tenantId},${device.id},${"Caja " + run},${hash(device.token)},'terminal',now(),now()+interval '30 days')`;
+  const created = await inTenant(tenantId, (tx) =>
+    createSession(tx, { employeeId, deviceId: device.id }),
+  );
+  return {
+    device,
+    session: { id: created.id, tenantId, token: created.token },
+  };
+}
+
+class Capture extends Writable {
+  chunks: Buffer[] = [];
+  headers: Record<string, string> = {};
+  headersSent = false;
+  _write(chunk: Buffer, _e: BufferEncoding, cb: () => void) {
+    this.headersSent = true;
+    this.chunks.push(Buffer.from(chunk));
+    cb();
+  }
+  set(name: string, value: string) {
+    this.headers[name.toLowerCase()] = value;
+    return this;
+  }
+  attachment(name: string) {
+    this.headers["content-disposition"] = `attachment; filename="${name}"`;
+    return this;
+  }
+  text() {
+    return Buffer.concat(this.chunks).toString("utf8");
+  }
+}
+async function exportRun(
+  s: Session,
+  format: "json" | "csv",
+  table?: string,
+  tenantParam = s.tenantId,
+) {
+  const res = new Capture();
+  let error: any = null;
+  await exportHandler(sql, format)(
+    { session: s, query: { tenant: tenantParam }, params: { table } } as any,
+    res as any,
+    (e?: unknown) => {
+      error = e ?? null;
+    },
+  );
+  return { res, error, text: res.text() };
+}
+async function rejects(promise: Promise<unknown>, code: string) {
+  await assert.rejects(promise, (e: any) => {
+    assert.equal(e.code ?? e.message, code, String(e.stack ?? e));
+    return true;
+  });
+}
+async function rlsRefused(promise: Promise<unknown>) {
+  await assert.rejects(promise, /row-level security|permission denied/);
+}
+/** LD-12 pattern: one admin transaction with the named trigger disabled. */
+async function moveTransferAvailableAt(id: string, interval: string) {
+  await admin.begin(async (tx) => {
+    await tx`alter table ownership_transfers disable trigger ownership_transfer_guard`;
+    await tx`update ownership_transfers set available_at=now()-${interval}::interval where id=${id}`;
+    await tx`alter table ownership_transfers enable trigger ownership_transfer_guard`;
+  });
+}
+
+let checks = 0;
+async function test(name: string, fn: () => Promise<void>) {
+  await fn();
+  checks++;
+  console.log("PASS", name);
+}
+
+try {
+  // ---- Legal (FIT-12) ---------------------------------------------------------
+  const a = await owner("primary");
+  await test("1 legal: published signup without legalAccepted → legal_acceptance_required", async () => {
+    await rejects(
+      as(a, (tx, x) =>
+        createOwnerRestaurant(
+          tx,
+          x,
+          { ...input, restaurantName: "Sin aceptar" },
+          PUBLISHED,
+        ),
+      ),
+      "legal_acceptance_required",
+    );
+    await rejects(
+      as(a, (tx, x) =>
+        createOwnerRestaurant(
+          tx,
+          x,
+          {
+            ...input,
+            restaurantName: "Versión vieja",
+            legalAccepted: { ...V, terms: "2020-01-01" },
+          },
+          PUBLISHED,
+        ),
+      ),
+      "legal_version_mismatch",
+    );
+    // UX-3: the express billing consent is its own required box.
+    const { billingConsent: _omitted, ...withoutConsent } = V;
+    void _omitted;
+    await rejects(
+      as(a, (tx, x) =>
+        createOwnerRestaurant(
+          tx,
+          x,
+          {
+            ...input,
+            restaurantName: "Sin consentimiento",
+            legalAccepted: withoutConsent,
+          },
+          PUBLISHED,
+        ),
+      ),
+      "legal_acceptance_required",
+    );
+  });
+  const A = await restaurant(a, `Taquería Primaria ${run}`);
+  await test("2 legal: signup records terms, privacy, dpa and the separate billing consent with content/entity hashes and session FK; the evidence time is the server's", async () => {
+    const rows =
+      await admin`select * from legal_acceptances where account_id=${a.id} order by document`;
+    assert.deepEqual(
+      rows.map((r) => r.document),
+      ["billing_consent", "dpa", "privacy", "terms"],
+    );
+    const [consent] = rows;
+    assert.equal(consent.version, LEGAL_DOCUMENTS.privacy.version);
+    // LEGAL-8: accepted_at is forced to the server's time on insert.
+    const backdated = randomUUID();
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context,accepted_at)
+        values(${backdated},${a.id},${a.sessionId},'terms',${V.terms},${legalContentHash("terms")},${PUBLISHED.entityHash},true,'es','reacceptance','2020-01-01')`;
+    const [time] =
+      await admin`select accepted_at > now() - interval '1 minute' as recent from legal_acceptances where id=${backdated}`;
+    assert.equal(time.recent, true);
+    await assert.rejects(admin`truncate legal_acceptances`, /append-only/);
+    for (const r of rows) {
+      assert.equal(r.content_hash, legalContentHash(r.document));
+      assert.equal(r.entity_hash, PUBLISHED.entityHash);
+      assert.equal(r.owner_session_id, a.sessionId);
+      assert.equal(r.published, true);
+      assert.equal(r.context, "signup");
+      assert.equal(
+        r.organization_id,
+        r.document === "dpa" ? A.organizationId : null,
+      );
+    }
+    assert.deepEqual(
+      await as(a, (tx) => legalState(tx, a.id, PUBLISHED)).then((s) => [
+        s.pending,
+        s.dpaPending,
+      ]),
+      [[], []],
+    );
+  });
+  await test("3 legal: unpublished config refuses new Google identity (signup_paused) and signs in an existing one", async () => {
+    const subject = randomUUID();
+    await rejects(
+      signInGoogleOwner(
+        sql,
+        {
+          issuer: "https://accounts.google.com",
+          subject,
+          email: `paused-${run}@example.com`,
+        },
+        { allowNewAccounts: false },
+      ),
+      "signup_paused",
+    );
+    assert.equal(
+      (await admin`select 1 from owner_accounts where subject=${subject}`)
+        .length,
+      0,
+      "no owner_accounts row is created",
+    );
+    const again = await signInGoogleOwner(
+      sql,
+      {
+        issuer: "https://accounts.google.com",
+        subject: a.subject,
+        email: a.email,
+      },
+      { allowNewAccounts: false },
+    );
+    assert.equal(ownerCookie(again).accountId, a.id);
+    const b = await owner("closed");
+    await rejects(
+      as(b, (tx, x) =>
+        createOwnerRestaurant(
+          tx,
+          x,
+          { ...input, restaurantName: "Pausado", legalAccepted: V },
+          CLOSED,
+        ),
+      ),
+      "signup_paused",
+    );
+  });
+  const c = await owner("draft");
+  const C = await restaurant(c, `Fonda Borrador ${run}`, ALLOW);
+  await test("4 legal: unpublished + allow records published=false and pending after publish", async () => {
+    const rows =
+      await admin`select published,entity_hash from legal_acceptances where account_id=${c.id}`;
+    assert.equal(rows.length, 4);
+    assert.ok(rows.every((r) => r.published === false));
+    const state = await as(c, (tx) => legalState(tx, c.id, PUBLISHED));
+    assert.deepEqual(state.pending, ["terms", "privacy"]);
+    assert.deepEqual(state.dpaPending, [C.organizationId]);
+    // Without legalAccepted, allow mode still creates the restaurant.
+    const d = await owner("draft2");
+    const created = await as(d, (tx, x) =>
+      createOwnerRestaurant(
+        tx,
+        x,
+        { ...input, restaurantName: "Sin evidencia" },
+        ALLOW,
+      ),
+    );
+    assert.equal(created.created, true);
+  });
+  await test("5 legal: material version bump gates createInvitation/createAdditionalLocation/billing request; POS enter still allowed", async () => {
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context,accepted_at)
+        values(${randomUUID()},${a.id},${a.sessionId},'terms','2026-01-01',${legalContentHash("terms")},${PUBLISHED.entityHash},true,'es','reacceptance',now())`;
+    // The latest acceptance is now of an older version: terms is pending again.
+    await rejects(
+      as(a, (tx, x) =>
+        createInvitation(
+          tx,
+          x.id,
+          {
+            operationId: randomUUID(),
+            tenantId: A.tenantId,
+            email: `staff-${run}@example.com`,
+            role: "cashier",
+          },
+          PUBLISHED,
+        ),
+      ),
+      "legal_acceptance_required",
+    );
+    await rejects(
+      as(a, (tx, x) =>
+        createAdditionalLocation(
+          tx,
+          x,
+          {
+            ...input,
+            restaurantName: "Segunda",
+            operationId: randomUUID(),
+            sourceTenantId: A.tenantId,
+          },
+          PUBLISHED,
+        ),
+      ),
+      "legal_acceptance_required",
+    );
+    // The billing web routes call the same gate (billing-runtime.ts).
+    await rejects(
+      as(a, (tx) => requireCurrentLegal(tx, a.id, PUBLISHED)),
+      "legal_acceptance_required",
+    );
+    await rejects(
+      as(a, (tx, x) => selectFreeLocation(tx, x.id, A.tenantId, PUBLISHED)),
+      "legal_acceptance_required",
+    );
+    const pos = await entry(a, A.tenantId);
+    assert.equal(pos.session.tenantId, A.tenantId, "POS entry is never gated");
+    await as(a, (tx, x) =>
+      recordAcceptances(
+        tx,
+        x,
+        {
+          documents: [{ document: "terms", version: V.terms }],
+          locale: "es",
+          context: "reacceptance",
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(a, (tx) => requireCurrentLegal(tx, a.id, PUBLISHED));
+  });
+  await test("6 legal: an entity-only change is not material: nothing gates, terms, privacy and the primary's DPA carry an entity_updated notice, and re-accepting clears it (LEGAL-3)", async () => {
+    const changed = legalConfig({
+      ...LEGAL_CI_ENV,
+      NODE_ENV: "production",
+      LEGAL_JURISDICTION: "Guadalajara, Jalisco",
+    });
+    const state = await as(a, (tx) => legalState(tx, a.id, changed));
+    assert.deepEqual(state.pending, []);
+    assert.deepEqual(state.dpaPending, []);
+    assert.deepEqual(
+      state.notices.map((n) => [n.document, n.kind]),
+      [
+        ["terms", "entity_updated"],
+        ["privacy", "entity_updated"],
+        ["dpa", "entity_updated"],
+      ],
+    );
+    assert.deepEqual(state.dpaNoticeOrganizations, [A.organizationId]);
+    await as(a, (tx) => requireCurrentLegal(tx, a.id, changed));
+    // The POS shell and the console say so without gating.
+    const overview = await as(a, (tx, x) =>
+      accountOverview(tx, x, changed, TAX),
+    );
+    assert.equal(overview.legal.notices.length, 3);
+    // Accepting under the new entity records new rows and clears the notice.
+    await as(a, (tx, x) =>
+      recordAcceptances(
+        tx,
+        x,
+        {
+          documents: [
+            { document: "terms", version: V.terms },
+            { document: "privacy", version: V.privacy },
+            {
+              document: "dpa",
+              version: V.dpa,
+              organizationId: A.organizationId,
+            },
+          ],
+          locale: "es",
+          context: "reacceptance",
+        },
+        changed,
+      ),
+    );
+    assert.deepEqual(
+      (await as(a, (tx) => legalState(tx, a.id, changed))).notices,
+      [],
+    );
+    // Under the original entity those new rows are the notice now: re-accept
+    // once more so later checks start clean.
+    await as(a, (tx, x) =>
+      recordAcceptances(
+        tx,
+        x,
+        {
+          documents: [
+            { document: "terms", version: V.terms },
+            { document: "privacy", version: V.privacy },
+            {
+              document: "dpa",
+              version: V.dpa,
+              organizationId: A.organizationId,
+            },
+          ],
+          locale: "es",
+          context: "reacceptance",
+        },
+        PUBLISHED,
+      ),
+    );
+  });
+  await test("7 legal: acceptances cannot be updated or deleted (trigger + grants)", async () => {
+    await assert.rejects(
+      as(
+        a,
+        (tx) =>
+          tx`update legal_acceptances set locale='en' where account_id=${a.id}`,
+      ),
+      /permission denied/,
+    );
+    await assert.rejects(
+      as(a, (tx) => tx`delete from legal_acceptances where account_id=${a.id}`),
+      /permission denied/,
+    );
+    await assert.rejects(
+      admin`update legal_acceptances set locale='en' where account_id=${a.id}`,
+      /append-only/,
+    );
+    await assert.rejects(
+      admin`delete from legal_acceptances where account_id=${a.id}`,
+      /append-only/,
+    );
+  });
+  await test("8 legal: account A cannot read or insert acceptances for account B (RLS)", async () => {
+    const [{ n }] = await as(
+      c,
+      (tx) =>
+        tx`select count(*)::int as n from legal_acceptances where account_id=${a.id}`,
+    );
+    assert.equal(n, 0);
+    await rlsRefused(
+      as(
+        c,
+        (tx) =>
+          tx`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context)
+            values(${randomUUID()},${a.id},${a.sessionId},'terms',${V.terms},${legalContentHash("terms")},${PUBLISHED.entityHash},true,'es','signup')`,
+      ),
+    );
+  });
+
+  // ---- Co-owners (GAP-5) ---------------------------------------------------------
+  await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source)
+    values(${A.tenantId},'trialing',now()+interval '10 days','fixture')`;
+  const co = await owner("coowner");
+  let coSeat = "";
+  let A2 = "";
+  await test("9 co-owner: primary invites; invitee accepts with legal; owner seats at every location; co-owner enters POS as owner", async () => {
+    const invite = await as(a, (tx, x) =>
+      createCoOwnerInvitation(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: A.organizationId,
+          email: co.email,
+        },
+        PUBLISHED,
+      ),
+    );
+    await rejects(
+      as(co, (tx, x) =>
+        acceptInvitation(
+          tx,
+          x,
+          { token: token(invite.path, "invite") },
+          PUBLISHED,
+        ),
+      ),
+      "legal_acceptance_required",
+    );
+    const accepted = await as(co, (tx, x) =>
+      acceptInvitation(
+        tx,
+        x,
+        {
+          token: token(invite.path, "invite"),
+          legalAccepted: { terms: V.terms, privacy: V.privacy },
+          locale: "es",
+        },
+        PUBLISHED,
+      ),
+    );
+    assert.equal(accepted.tenantId, A.tenantId);
+    const s = await seat(co.id, A.tenantId);
+    assert.equal(s.role, "owner");
+    assert.equal(s.active, true);
+    assert.equal(s.pin_set_at, null);
+    assert.equal(s.login, "account-" + co.id);
+    coSeat = s.employee_id;
+    const [row] =
+      await admin`select source,added_by from organization_co_owners where organization_id=${A.organizationId} and account_id=${co.id} and removed_at is null`;
+    assert.deepEqual([row.source, row.added_by], ["invitation", a.id]);
+    const session = await ownerSession(co, A.tenantId);
+    assert.equal(session.role, "owner");
+    const roles = await as(
+      co,
+      (tx) =>
+        tx`select o.id,'co_owner' as role from organization_co_owners c join organizations o on o.id=c.organization_id where c.account_id=${co.id} and c.removed_at is null`,
+    );
+    assert.equal(roles.length, 1);
+  });
+  await test("12 co-owner: new location provisions seats for active co-owners", async () => {
+    const location = await as(a, (tx, x) =>
+      createAdditionalLocation(
+        tx,
+        x,
+        {
+          ...input,
+          restaurantName: "Sucursal Norte",
+          operationId: randomUUID(),
+          sourceTenantId: A.tenantId,
+        },
+        PUBLISHED,
+      ),
+    );
+    A2 = location.tenantId;
+    await admin`update restaurants set activation_pending=false where id=${A2}`;
+    const s = await seat(co.id, A2);
+    assert.equal(s?.role, "owner");
+    assert.equal(s?.revoked_at, null);
+  });
+  await test("10 co-owner: can invite/revoke staff and select Free location; cannot add location, request billing, transfer or invite co-owners", async () => {
+    const staff = await as(co, (tx, x) =>
+      createInvitation(
+        tx,
+        x.id,
+        {
+          operationId: randomUUID(),
+          tenantId: A.tenantId,
+          email: `cashier-${run}@example.com`,
+          role: "cashier",
+        },
+        PUBLISHED,
+      ),
+    );
+    const listed = await as(co, (tx, x) =>
+      listInvitations(tx, x.id, A.tenantId),
+    );
+    assert.ok(listed.some((i) => i.id === staff.id && i.role === "cashier"));
+    await as(co, (tx, x) =>
+      revokeInvitation(tx, x.id, { id: staff.id, tenantId: A.tenantId }),
+    );
+    const pendingCoOwner = await as(a, (tx, x) =>
+      createCoOwnerInvitation(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: A.organizationId,
+          email: `later-${run}@example.com`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await rejects(
+      as(co, (tx, x) =>
+        revokeInvitation(tx, x.id, {
+          id: pendingCoOwner.id,
+          tenantId: A.tenantId,
+        }),
+      ),
+      "co_owner_primary_only",
+    );
+    await as(a, (tx, x) =>
+      revokeInvitation(tx, x.id, {
+        id: pendingCoOwner.id,
+        tenantId: A.tenantId,
+      }),
+    );
+    await as(co, (tx, x) =>
+      selectFreeLocation(tx, x.id, A.tenantId, PUBLISHED),
+    );
+    await rejects(
+      as(co, (tx, x) =>
+        createAdditionalLocation(
+          tx,
+          x,
+          {
+            ...input,
+            restaurantName: "No",
+            operationId: randomUUID(),
+            sourceTenantId: A.tenantId,
+          },
+          PUBLISHED,
+        ),
+      ),
+      "co_owner_primary_only",
+    );
+    await rejects(
+      as(co, (tx, x) =>
+        requestTransfer(
+          tx,
+          x,
+          {
+            operationId: randomUUID(),
+            organizationId: A.organizationId,
+            email: `nobody-${run}@example.com`,
+            previousOwnerStays: false,
+            confirmName: `Taquería Primaria ${run}`,
+          },
+          PUBLISHED,
+        ),
+      ),
+      "co_owner_primary_only",
+    );
+    await rejects(
+      as(co, (tx, x) =>
+        createCoOwnerInvitation(
+          tx,
+          x,
+          {
+            operationId: randomUUID(),
+            organizationId: A.organizationId,
+            email: `other-${run}@example.com`,
+          },
+          PUBLISHED,
+        ),
+      ),
+      "co_owner_primary_only",
+    );
+    // Billing reads stay with the primary (billing_owner_read).
+    await admin`insert into organization_billing(organization_id) values(${A.organizationId}) on conflict do nothing`;
+    assert.equal(
+      (
+        await as(
+          co,
+          (tx) =>
+            tx`select 1 from organization_billing where organization_id=${A.organizationId}`,
+        )
+      ).length,
+      0,
+    );
+    // R-06: a staff invitation in a tenant that already has owner memberships
+    // creates the invitee's own employee row.
+    const cashier = await owner("cashier");
+    const invite = await as(co, (tx, x) =>
+      createInvitation(
+        tx,
+        x.id,
+        {
+          operationId: randomUUID(),
+          tenantId: A.tenantId,
+          email: cashier.email,
+          role: "manager",
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(cashier, (tx, x) =>
+      acceptInvitation(
+        tx,
+        x,
+        {
+          token: token(invite.path, "invite"),
+          legalAccepted: { terms: V.terms, privacy: V.privacy },
+        },
+        PUBLISHED,
+      ),
+    );
+    const own = await seat(cashier.id, A.tenantId);
+    assert.equal(own.role, "manager");
+    assert.equal(own.login, "account-" + cashier.id);
+    assert.notEqual(own.employee_id, coSeat);
+  });
+  await test("11 co-owner: limit 3 enforced at creation and under 4 concurrent acceptances", async () => {
+    const l = await owner("limit");
+    const L = await restaurant(l, `Limite ${run}`);
+    const invites = [];
+    for (let i = 0; i < 3; i++)
+      invites.push(
+        await as(l, (tx, x) =>
+          createCoOwnerInvitation(
+            tx,
+            x,
+            {
+              operationId: randomUUID(),
+              organizationId: L.organizationId,
+              email: `limit${i}-${run}@example.com`,
+            },
+            PUBLISHED,
+          ),
+        ),
+      );
+    await rejects(
+      as(l, (tx, x) =>
+        createCoOwnerInvitation(
+          tx,
+          x,
+          {
+            operationId: randomUUID(),
+            organizationId: L.organizationId,
+            email: `limit4-${run}@example.com`,
+          },
+          PUBLISHED,
+        ),
+      ),
+      "co_owner_limit",
+    );
+    // Two more invitations inserted around the creation limit, then all five
+    // accept at once: exactly three seats.
+    const extra = [];
+    for (let i = 3; i < 5; i++) {
+      const t = randomUUID() + "." + randomBytes(32).toString("hex");
+      await admin`insert into restaurant_invitations(id,tenant_id,created_by,email,role,token_hash)
+          values(${randomUUID()},${L.tenantId},${l.id},${`limit${i}-${run}@example.com`},'co_owner',${hash(t)})`;
+      extra.push(t);
+    }
+    const invitees = [];
+    for (let i = 0; i < 5; i++) invitees.push(await owner(`limit${i}`));
+    const tokens = [...invites.map((i) => token(i.path, "invite")), ...extra];
+    const results = await noRetries("co-owner acceptances at the limit", () =>
+      Promise.allSettled(
+        invitees.map((o, i) =>
+          as(o, (tx, x) =>
+            acceptInvitation(
+              tx,
+              x,
+              {
+                token: tokens[i],
+                legalAccepted: { terms: V.terms, privacy: V.privacy },
+              },
+              PUBLISHED,
+            ),
+          ),
+        ),
+      ),
+    );
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 3);
+    for (const r of results)
+      if (r.status === "rejected")
+        assert.equal((r.reason as any).code, "co_owner_limit");
+    const [{ n }] =
+      await admin`select count(*)::int as n from organization_co_owners where organization_id=${L.organizationId} and removed_at is null`;
+    assert.equal(n, 3);
+  });
+  await test("13c co-owner: a new seat has pin_set_at null and login 'account-<id>' (no usable PIN); after the co-owner sets their own PIN through access's resetStaffPin, PIN sign-in on a terminal works", async () => {
+    const s = await ownerSession(co, A.tenantId);
+    await inTenant(A.tenantId, (tx) =>
+      resetStaffPin(tx, s, coSeat, {
+        operationId: randomUUID(),
+        pin: "482615",
+      }),
+    );
+    const after = await seat(co.id, A.tenantId);
+    assert.notEqual(after.pin_set_at, null);
+    const check = await inTenant(A.tenantId, (tx) =>
+      checkPin(tx, { employeeId: coSeat }, "482615", deviceScope(randomUUID())),
+    );
+    assert.equal(check.outcome, "ok");
+  });
+  await test("14 co-owner: legacy POST /team/save refuses another owner's row (owner_pin_self_only) and owner demotion (owner_role_locked); access's updateStaff/setStaffActive still refuse with the same codes", async () => {
+    const s = await ownerSession(a, A.tenantId);
+    const body = {
+      operationId: randomUUID(),
+      id: coSeat,
+      name: "Intento",
+      login: "account-" + co.id,
+      role: "owner",
+      secret: "123456",
+      active: true,
+    };
+    await rejects(
+      inTenant(A.tenantId, (tx) => saveEmployee(tx, s, body)),
+      "owner_pin_self_only",
+    );
+    await rejects(
+      inTenant(A.tenantId, (tx) =>
+        saveEmployee(tx, s, {
+          ...body,
+          operationId: randomUUID(),
+          id: s.employeeId,
+          login: "account-" + a.id,
+          role: "manager",
+        }),
+      ),
+      "owner_role_locked",
+    );
+    await rejects(
+      inTenant(A.tenantId, (tx) =>
+        updateStaff(tx, s, coSeat, {
+          operationId: randomUUID(),
+          name: "x",
+          role: "manager",
+        }),
+      ),
+      "owner_role_locked",
+    );
+    await rejects(
+      inTenant(A.tenantId, (tx) =>
+        setStaffActive(tx, s, coSeat, {
+          operationId: randomUUID(),
+          active: false,
+        }),
+      ),
+      "owner_cannot_be_deactivated",
+    );
+    // A3: another owner's PIN cannot be set from the primary's session.
+    await rejects(
+      inTenant(A.tenantId, (tx) =>
+        resetStaffPin(tx, s, coSeat, {
+          operationId: randomUUID(),
+          pin: "111111",
+        }),
+      ),
+      "owner_pin_self_only",
+    );
+  });
+  await test("15 co-owner: direct insert into organization_co_owners without invitation hash rejected by RLS", async () => {
+    const x = await owner("forger");
+    const [i] =
+      await admin`select id from restaurant_invitations where tenant_id=${A.tenantId} and role='co_owner' limit 1`;
+    await rlsRefused(
+      as(
+        x,
+        (tx) =>
+          tx`insert into organization_co_owners(id,organization_id,account_id,added_by,source,invitation_id)
+            values(${randomUUID()},${A.organizationId},${x.id},${a.id},'invitation',${i.id})`,
+      ),
+    );
+  });
+  await test("16 co-owner: owner_memberships insert for an unrelated account rejected", async () => {
+    const x = await owner("intruder");
+    await rlsRefused(
+      as(x, async (tx) => {
+        await tx`select set_config('app.tenant_id',${A.tenantId},true)`;
+        await tx`insert into employees(tenant_id,id,name,login,secret_hash,role)
+            values(${A.tenantId},${randomUUID()},'x',${"x-" + run},'x:y','cashier')`;
+        return tx`insert into owner_memberships(account_id,tenant_id,employee_id)
+            values(${x.id},${A.tenantId},${coSeat})`;
+      }),
+    );
+  });
+  await test("13 co-owner: removal uses access's lifecycle (employees inactive, deactivated_at, sessions ended employee_deactivated + revoked, pairing codes cancelled, personal devices retired, membership revoked, audit rows, org hidden)", async () => {
+    const pos = await ownerSession(co, A.tenantId);
+    const codeId = randomUUID();
+    await admin`insert into device_pairing_codes(tenant_id,id,code_hash,device_name,created_by,expires_at)
+        values(${A.tenantId},${codeId},${hash("code-" + codeId)},'Caja 9',${coSeat},now()+interval '10 minutes')`;
+    await admin`update owner_sessions set created_at=now()-interval '1 hour' where id=${a.sessionId}`;
+    await rejects(
+      as(a, (tx, x) =>
+        removeCoOwner(tx, x, {
+          organizationId: A.organizationId,
+          accountId: co.id,
+        }),
+      ),
+      "reauthentication_required",
+    );
+    await admin`update owner_sessions set created_at=now() where id=${a.sessionId}`;
+    await as(a, (tx, x) =>
+      removeCoOwner(tx, x, {
+        organizationId: A.organizationId,
+        accountId: co.id,
+      }),
+    );
+    for (const t of [A.tenantId, A2]) {
+      const s = await seat(co.id, t);
+      assert.equal(s.active, false, t);
+      assert.notEqual(s.deactivated_at, null);
+      assert.notEqual(s.revoked_at, null);
+      assert.equal(s.free_slot, null);
+    }
+    const sessions =
+      await admin`select id,ended_at,end_reason,revoked from sessions where employee_id=${coSeat}`;
+    assert.ok(sessions.length > 0);
+    // Every session ends and is revoked; the ones still live at removal end
+    // with employee_deactivated (earlier ones keep their own reason).
+    assert.ok(sessions.every((x) => x.ended_at && x.revoked));
+    assert.equal(
+      sessions.find((x) => x.id === pos.id)?.end_reason,
+      "employee_deactivated",
+    );
+    const [code] =
+      await admin`select cancelled_at from device_pairing_codes where id=${codeId}`;
+    assert.notEqual(code.cancelled_at, null, "open pairing codes cancelled");
+    const [device] =
+      await admin`select active,revoked_at from devices where id=${pos.deviceId}`;
+    assert.equal(device.active, false, "personal device retired");
+    const audits =
+      await admin`select operation,detail,actor_id from audit where tenant_id=${A.tenantId} and entity_id=${coSeat} order by created_at`;
+    const deactivated = audits.find(
+      (x) => x.operation === "access.employee_deactivated",
+    );
+    assert.deepEqual(Object.keys(deactivated.detail).sort(), [
+      "name",
+      "pairingCodes",
+      "personalDevices",
+      "sessions",
+    ]);
+    assert.equal(deactivated.detail.pairingCodes, 1);
+    assert.ok(deactivated.detail.personalDevices >= 1);
+    assert.ok(audits.some((x) => x.operation === "account.owner_seat_revoked"));
+    const [event] =
+      await admin`select kind from account_events where organization_id=${A.organizationId} and kind='co_owner_removed'`;
+    assert.ok(
+      event,
+      "account_events insert ran after app.account_id was restored",
+    );
+    // The removed co-owner's Google sign-in ended with the retired device (A6).
+    await rejects(
+      as(co, async () => null),
+      "unauthorized",
+    );
+    const again = {
+      ...co,
+      cookie: await signInGoogleOwner(sql, {
+        issuer: "https://accounts.google.com",
+        subject: co.subject,
+        email: co.email,
+      }),
+    };
+    assert.equal(
+      (
+        await as(
+          again,
+          (tx) =>
+            tx`select 1 from restaurants r join owner_memberships m on m.tenant_id=r.id where m.account_id=${co.id} and m.revoked_at is null`,
+        )
+      ).length,
+      0,
+    );
+    assert.equal(
+      (
+        await as(
+          again,
+          (tx) => tx`select 1 from organizations where id=${A.organizationId}`,
+        )
+      ).length,
+      0,
+      "the organization is hidden from the removed co-owner",
+    );
+    await rejects(
+      as(again, (tx, x) =>
+        enterOwnerRestaurant(
+          tx,
+          x.id,
+          A.tenantId,
+          x.sessionId,
+          ownerBrowserCookie(),
+        ),
+      ),
+      "forbidden",
+    );
+  });
+  await test("13b co-owner: re-invite reactivates the same employee (active, deactivated_at null), keeps the PIN the person had set, restores the membership and creates no sessions row", async () => {
+    // The same Google identity signs in again (its earlier sign-in ended
+    // with the retired device).
+    const cookie = await signInGoogleOwner(sql, {
+      issuer: "https://accounts.google.com",
+      subject: co.subject,
+      email: co.email,
+    });
+    const back = { ...co, cookie };
+    const [before] =
+      await admin`select count(*)::int as n from sessions where employee_id=${coSeat}`;
+    const invite = await as(a, (tx, x) =>
+      createCoOwnerInvitation(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: A.organizationId,
+          email: co.email,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(back, (tx, x) =>
+      acceptInvitation(
+        tx,
+        x,
+        {
+          token: token(invite.path, "invite"),
+          legalAccepted: { terms: V.terms, privacy: V.privacy },
+        },
+        PUBLISHED,
+      ),
+    );
+    const s = await seat(co.id, A.tenantId);
+    assert.equal(s.employee_id, coSeat);
+    assert.equal(s.active, true);
+    assert.equal(s.deactivated_at, null);
+    assert.equal(s.revoked_at, null);
+    assert.notEqual(s.pin_set_at, null, "the person's own PIN is kept");
+    const [after] =
+      await admin`select count(*)::int as n from sessions where employee_id=${coSeat}`;
+    assert.equal(after.n, before.n);
+    // Leaving: same lifecycle, removal='left'.
+    await as(back, (tx, x) =>
+      leaveCoOwnership(tx, x, { organizationId: A.organizationId }),
+    );
+    const [left] =
+      await admin`select removal from organization_co_owners where organization_id=${A.organizationId} and account_id=${co.id} order by added_at desc limit 1`;
+    assert.equal(left.removal, "left");
+    await rejects(
+      as(a, (tx, x) =>
+        leaveCoOwnership(tx, x, { organizationId: A.organizationId }),
+      ),
+      "co_owner_primary_only",
+    );
+  });
+
+  // ---- Ownership transfer --------------------------------------------------------
+  const t1 = await owner("transfer-from");
+  const T = await restaurant(t1, `Cocina Traspaso ${run}`);
+  const t2 = await owner("transfer-to");
+  await test("24 transfer: deterministic token on retry with same operationId; different payload → operation_conflict", async () => {
+    const body = {
+      operationId: randomUUID(),
+      organizationId: T.organizationId,
+      email: t2.email,
+      previousOwnerStays: true,
+      confirmName: ` cocina traspaso ${run} `,
+    };
+    const first = await as(t1, (tx, x) =>
+      requestTransfer(tx, x, body, PUBLISHED),
+    );
+    const again = await as(t1, (tx, x) =>
+      requestTransfer(tx, x, body, PUBLISHED),
+    );
+    assert.equal(again.path, first.path);
+    await rejects(
+      as(t1, (tx, x) =>
+        requestTransfer(
+          tx,
+          x,
+          { ...body, previousOwnerStays: false },
+          PUBLISHED,
+        ),
+      ),
+      "operation_conflict",
+    );
+    await rejects(
+      as(t1, (tx, x) =>
+        requestTransfer(
+          tx,
+          x,
+          { ...body, operationId: randomUUID() },
+          PUBLISHED,
+        ),
+      ),
+      "transfer_pending_exists",
+    );
+    await as(t1, (tx, x) => cancelTransfer(tx, x, { transferId: first.id }));
+  });
+  await test("19 transfer: email mismatch, expired, canceled, second pending, self → expected errors", async () => {
+    const base = {
+      organizationId: T.organizationId,
+      previousOwnerStays: false,
+      confirmName: `Cocina Traspaso ${run}`,
+    };
+    await rejects(
+      as(t1, (tx, x) =>
+        requestTransfer(
+          tx,
+          x,
+          { ...base, operationId: randomUUID(), email: t1.email },
+          PUBLISHED,
+        ),
+      ),
+      "transfer_self",
+    );
+    await rejects(
+      as(t1, (tx, x) =>
+        requestTransfer(
+          tx,
+          x,
+          {
+            ...base,
+            operationId: randomUUID(),
+            email: t2.email,
+            confirmName: "Otro nombre",
+          },
+          PUBLISHED,
+        ),
+      ),
+      "invalid_confirmation",
+    );
+    const transfer = await as(t1, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        { ...base, operationId: randomUUID(), email: t2.email },
+        PUBLISHED,
+      ),
+    );
+    const stranger = await owner("stranger");
+    await rejects(
+      as(stranger, (tx, x) =>
+        acceptTransfer(
+          tx,
+          x,
+          { token: token(transfer.path, "transfer"), legalAccepted: V },
+          PUBLISHED,
+        ),
+      ),
+      "transfer_unavailable",
+    );
+    await as(t1, (tx, x) => cancelTransfer(tx, x, { transferId: transfer.id }));
+    await rejects(
+      as(t2, (tx, x) =>
+        acceptTransfer(
+          tx,
+          x,
+          { token: token(transfer.path, "transfer"), legalAccepted: V },
+          PUBLISHED,
+        ),
+      ),
+      "transfer_unavailable",
+    );
+    // An expired pending row (inserted pre-dated by the fixture) is refused,
+    // then closed lazily by the next request.
+    const expired = randomUUID() + "." + randomBytes(32).toString("hex");
+    const expiredId = expired.slice(0, 36);
+    await admin`insert into ownership_transfers(id,organization_id,from_account_id,to_email,token_hash,initiated_by,previous_owner_stays,available_at,expires_at,created_at)
+        values(${expiredId},${T.organizationId},${t1.id},${t2.email},${hash(expired)},'owner',false,now()-interval '4 days',now()-interval '1 day',now()-interval '4 days')`;
+    await rejects(
+      as(t2, (tx, x) =>
+        acceptTransfer(tx, x, { token: expired, legalAccepted: V }, PUBLISHED),
+      ),
+      "transfer_unavailable",
+    );
+    const next = await as(t1, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        { ...base, operationId: randomUUID(), email: t2.email },
+        PUBLISHED,
+      ),
+    );
+    const [closed] =
+      await admin`select state,canceled_by from ownership_transfers where id=${expiredId}`;
+    assert.deepEqual(
+      [closed.state, closed.canceled_by],
+      ["canceled", "expired"],
+    );
+    await as(t2, (tx, x) =>
+      cancelTransfer(tx, x, { token: token(next.path, "transfer") }),
+    );
+    const [declined] =
+      await admin`select canceled_by from ownership_transfers where id=${next.id}`;
+    assert.equal(declined.canceled_by, "target");
+  });
+  await test("21 transfer: UPDATE organizations.created_by_account without valid transfer rejected (as primary, as co-owner, as target with wrong app.transfer_id, with only app.tenant_id)", async () => {
+    const attempts: Array<[Owner, (tx: Tx) => Promise<unknown>]> = [
+      [t1, async () => null],
+      [
+        t2,
+        (tx) =>
+          tx`select set_config('app.transfer_id',${randomUUID()},true),set_config('app.organization_id',${T.organizationId},true)`,
+      ],
+      [
+        t1,
+        (tx) =>
+          tx`select set_config('app.tenant_id',${T.tenantId},true),set_config('app.account_id','',true)`,
+      ],
+    ];
+    for (const [o, setup] of attempts) {
+      const rows = await as(o, async (tx) => {
+        await setup(tx);
+        return tx`update organizations set created_by_account=${t2.id} where id=${T.organizationId} returning id`;
+      });
+      assert.equal(rows.length, 0, "RLS hides the row from the update");
+    }
+    await assert.rejects(
+      admin`update organizations set created_by_account=${t2.id} where id=${T.organizationId}`,
+      /organization_owner_change_requires_transfer/,
+      "the trigger guards even a superuser",
+    );
+    const [org] =
+      await admin`select created_by_account from organizations where id=${T.organizationId}`;
+    assert.equal(org.created_by_account, t1.id);
+  });
+  await test("17 transfer: owner-initiated to new email completes; previous owner stays co-owner; billing reads follow the new primary", async () => {
+    await admin`update ownership_transfers set state='canceled',canceled_at=now(),canceled_by='owner' where organization_id=${T.organizationId} and state='pending'`.catch(
+      () => null,
+    );
+    const transfer = await as(t1, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: T.organizationId,
+          email: t2.email,
+          previousOwnerStays: true,
+          confirmName: `Cocina Traspaso ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    const preview = await as(t2, (tx, x) =>
+      previewTransfer(
+        tx,
+        x,
+        { token: token(transfer.path, "transfer") },
+        PUBLISHED,
+      ),
+    );
+    assert.equal(preview.emailMatches, true);
+    assert.equal(preview.onHold, false);
+    assert.equal(preview.organizationName, `Cocina Traspaso ${run}`);
+    assert.equal(preview.fromName, "Cuenta transfer-from");
+    await rejects(
+      as(t2, (tx, x) =>
+        acceptTransfer(
+          tx,
+          x,
+          { token: token(transfer.path, "transfer") },
+          PUBLISHED,
+        ),
+      ),
+      "legal_acceptance_required",
+    );
+    await admin`insert into organization_billing(organization_id) values(${T.organizationId}) on conflict do nothing`;
+    const done = await as(t2, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(transfer.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.deepEqual(done.tenantIds, [T.tenantId]);
+    const [org] =
+      await admin`select created_by_account from organizations where id=${T.organizationId}`;
+    assert.equal(org.created_by_account, t2.id);
+    const [stays] =
+      await admin`select source,transfer_id from organization_co_owners where organization_id=${T.organizationId} and account_id=${t1.id} and removed_at is null`;
+    assert.deepEqual(
+      [stays.source, stays.transfer_id],
+      ["transfer", transfer.id],
+    );
+    assert.equal((await seat(t1.id, T.tenantId)).active, true);
+    assert.equal((await seat(t2.id, T.tenantId)).role, "owner");
+    const [dpa] =
+      await admin`select context from legal_acceptances where account_id=${t2.id} and document='dpa' and organization_id=${T.organizationId}`;
+    assert.equal(dpa.context, "transfer");
+    assert.equal(
+      (
+        await as(
+          t2,
+          (tx) =>
+            tx`select 1 from organization_billing where organization_id=${T.organizationId}`,
+        )
+      ).length,
+      1,
+    );
+    assert.equal(
+      (
+        await as(
+          t1,
+          (tx) =>
+            tx`select 1 from organization_billing where organization_id=${T.organizationId}`,
+        )
+      ).length,
+      0,
+    );
+    const [state] =
+      await admin`select state,completed_at from ownership_transfers where id=${transfer.id}`;
+    assert.equal(state.state, "completed");
+    const audit =
+      await admin`select 1 from audit where tenant_id=${T.tenantId} and operation='account.ownership_transferred'`;
+    assert.equal(audit.length, 1);
+  });
+  await test("20 transfer: target already primary elsewhere → transfer_target_owns_organization", async () => {
+    const transfer = await as(t2, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: T.organizationId,
+          email: a.email,
+          previousOwnerStays: true,
+          confirmName: `Cocina Traspaso ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await rejects(
+      as(a, (tx, x) =>
+        acceptTransfer(
+          tx,
+          x,
+          { token: token(transfer.path, "transfer"), legalAccepted: V },
+          PUBLISHED,
+        ),
+      ),
+      "transfer_target_owns_organization",
+    );
+    await as(t2, (tx, x) => cancelTransfer(tx, x, { transferId: transfer.id }));
+  });
+  await test("18 transfer: previous owner leaving loses seats and sessions (deactivated_at set, sessions ended with end_reason='employee_deactivated' and revoked)", async () => {
+    const u1 = await owner("leave-from");
+    const U = await restaurant(u1, `Barra Salida ${run}`);
+    const u2 = await owner("leave-to");
+    await ownerSession(u1, U.tenantId);
+    const transfer = await as(u1, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: U.organizationId,
+          email: u2.email,
+          previousOwnerStays: false,
+          confirmName: `Barra Salida ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(u2, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(transfer.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    const s = await seat(u1.id, U.tenantId);
+    assert.equal(s.active, false);
+    assert.notEqual(s.deactivated_at, null);
+    assert.notEqual(s.revoked_at, null);
+    const sessions =
+      await admin`select end_reason,revoked from sessions where employee_id=${s.employee_id}`;
+    assert.ok(sessions.length > 0);
+    assert.ok(
+      sessions.every(
+        (x) => x.end_reason === "employee_deactivated" && x.revoked,
+      ),
+    );
+    assert.equal(
+      (
+        await admin`select 1 from organization_co_owners where organization_id=${U.organizationId} and account_id=${u1.id}`
+      ).length,
+      0,
+    );
+  });
+  await test("22 transfer: two concurrent accepts complete exactly once", async () => {
+    const k1 = await owner("race-from");
+    const K = await restaurant(k1, `Carrera ${run}`);
+    const k2 = await owner("race-to");
+    const transfer = await as(k1, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: K.organizationId,
+          email: k2.email,
+          previousOwnerStays: true,
+          confirmName: `Carrera ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    const results = await noRetries("racing transfer acceptances", () =>
+      Promise.allSettled(
+        [0, 1].map(() =>
+          as(k2, (tx, x) =>
+            acceptTransfer(
+              tx,
+              x,
+              { token: token(transfer.path, "transfer"), legalAccepted: V },
+              PUBLISHED,
+            ),
+          ),
+        ),
+      ),
+    );
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    const failed = results.find(
+      (r) => r.status === "rejected",
+    ) as PromiseRejectedResult;
+    assert.equal(failed.reason.code, "transfer_unavailable");
+    const [{ n }] =
+      await admin`select count(*)::int as n from audit where tenant_id=${K.tenantId} and operation='account.ownership_transferred'`;
+    assert.equal(n, 1);
+  });
+  await test("23 transfer: promotion of existing co-owner (removal='promoted') and of invited manager (role owner, free_slot null, sessions ended role_changed)", async () => {
+    const p1 = await owner("promote-from");
+    const P = await restaurant(p1, `Promocion ${run}`);
+    const p2 = await owner("promote-to");
+    const invite = await as(p1, (tx, x) =>
+      createCoOwnerInvitation(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: P.organizationId,
+          email: p2.email,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(p2, (tx, x) =>
+      acceptInvitation(
+        tx,
+        x,
+        {
+          token: token(invite.path, "invite"),
+          legalAccepted: { terms: V.terms, privacy: V.privacy },
+        },
+        PUBLISHED,
+      ),
+    );
+    const transfer = await as(p1, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: P.organizationId,
+          email: p2.email,
+          previousOwnerStays: true,
+          confirmName: `Promocion ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(p2, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(transfer.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    const [promoted] =
+      await admin`select removal from organization_co_owners where organization_id=${P.organizationId} and account_id=${p2.id}`;
+    assert.equal(promoted.removal, "promoted");
+    // Invited manager promoted to owner.
+    const m1 = await owner("manager-from");
+    const M = await restaurant(m1, `Gerencia ${run}`);
+    await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source)
+        values(${M.tenantId},'trialing',now()+interval '10 days','fixture')`;
+    const m2 = await owner("manager-to");
+    const staff = await as(m1, (tx, x) =>
+      createInvitation(
+        tx,
+        x.id,
+        {
+          operationId: randomUUID(),
+          tenantId: M.tenantId,
+          email: m2.email,
+          role: "manager",
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(m2, (tx, x) =>
+      acceptInvitation(
+        tx,
+        x,
+        {
+          token: token(staff.path, "invite"),
+          legalAccepted: { terms: V.terms, privacy: V.privacy },
+        },
+        PUBLISHED,
+      ),
+    );
+    const managerSeat = (await seat(m2.id, M.tenantId)).employee_id;
+    await admin`update employees set free_slot=1 where id=${managerSeat}`;
+    await ownerSession(m2, M.tenantId);
+    const t = await as(m1, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: M.organizationId,
+          email: m2.email,
+          previousOwnerStays: true,
+          confirmName: `Gerencia ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(m2, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(t.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    const s = await seat(m2.id, M.tenantId);
+    assert.equal(s.employee_id, managerSeat);
+    assert.equal(s.role, "owner");
+    assert.equal(s.free_slot, null);
+    const ended =
+      await admin`select end_reason from sessions where employee_id=${managerSeat}`;
+    assert.ok(ended.every((x) => x.end_reason === "role_changed"));
+  });
+
+  // ---- Recovery codes ------------------------------------------------------------
+  await test("25 recovery: generate requires fresh session; codes single-use; wrong secret generic error; redeem creates 24h-hold transfer; on-hold accept rejected; completes after hold; old primary can cancel", async () => {
+    const r1 = await owner("recover-from");
+    const R = await restaurant(r1, `Recupera ${run}`);
+    await admin`update owner_sessions set created_at=now()-interval '1 hour' where id=${r1.sessionId}`;
+    await rejects(
+      as(r1, (tx, x) => generateRecoveryCodes(tx, x)),
+      "reauthentication_required",
+    );
+    await admin`update owner_sessions set created_at=now() where id=${r1.sessionId}`;
+    const { codes } = await as(r1, (tx, x) => generateRecoveryCodes(tx, x));
+    assert.equal(codes.length, 10);
+    assert.ok(
+      codes.every((c) =>
+        /^[0-9A-HJKMNP-TV-Z]{4}(-[0-9A-HJKMNP-TV-Z]{4}){5}$/.test(c),
+      ),
+    );
+    const stored =
+      await admin`select secret_hash from account_recovery_codes where account_id=${r1.id} and revoked_at is null`;
+    assert.ok(
+      stored.every((x) => /^[a-f0-9]{32}:[a-f0-9]{128}$/.test(x.secret_hash)),
+    );
+    const overview = await as(r1, (tx, x) =>
+      accountOverview(tx, x, PUBLISHED, TAX),
+    );
+    assert.equal(overview.recoveryCodes.remaining, 10);
+    const r2 = await owner("recover-to");
+    const wrong = codes[0].slice(0, -1) + (codes[0].endsWith("0") ? "1" : "0");
+    await rejects(
+      as(r2, (tx, x) => redeemRecoveryCode(tx, x, { code: wrong })),
+      "recovery_code_invalid",
+    );
+    const redeemed = await as(r2, (tx, x) =>
+      redeemRecoveryCode(tx, x, { code: codes[0].toLowerCase() }),
+    );
+    const hold = Date.parse(redeemed.availableAt) - Date.now();
+    assert.ok(hold > 23 * 3600_000 && hold <= 24 * 3600_000 + 60_000);
+    const r3 = await owner("recover-again");
+    await rejects(
+      as(r3, (tx, x) => redeemRecoveryCode(tx, x, { code: codes[0] })),
+      "recovery_code_invalid",
+    );
+    await rejects(
+      as(r2, (tx, x) =>
+        acceptTransfer(
+          tx,
+          x,
+          { transferId: redeemed.transferId, legalAccepted: V },
+          PUBLISHED,
+        ),
+      ),
+      "transfer_on_hold",
+    );
+    const banner = await as(r1, (tx, x) =>
+      accountOverview(tx, x, PUBLISHED, TAX),
+    );
+    assert.equal(
+      banner.organizations[0].transfer?.initiatedBy,
+      "recovery_code",
+    );
+    await moveTransferAvailableAt(redeemed.transferId, "1 minute");
+    await as(r2, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { transferId: redeemed.transferId, legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    const [org] =
+      await admin`select created_by_account from organizations where id=${R.organizationId}`;
+    assert.equal(org.created_by_account, r2.id);
+    // Another redemption: the old primary cancels during the hold.
+    const r4 = await owner("cancel-from");
+    await restaurant(r4, `Cancela ${run}`);
+    const more = await as(r4, (tx, x) => generateRecoveryCodes(tx, x));
+    const r5 = await owner("cancel-to");
+    const pending = await as(r5, (tx, x) =>
+      redeemRecoveryCode(tx, x, { code: more.codes[3] }),
+    );
+    await as(r4, (tx, x) =>
+      cancelTransfer(tx, x, { transferId: pending.transferId }),
+    );
+    const [cancelled] =
+      await admin`select state,canceled_by from ownership_transfers where id=${pending.transferId}`;
+    assert.deepEqual(
+      [cancelled.state, cancelled.canceled_by],
+      ["canceled", "owner"],
+    );
+    // Generating new codes revokes the unused ones.
+    await as(r4, (tx, x) => generateRecoveryCodes(tx, x));
+    const [{ n }] =
+      await admin`select count(*)::int as n from account_recovery_codes where account_id=${r4.id} and used_at is null and revoked_at is null`;
+    assert.equal(n, 10);
+  });
+  await test("26 recovery: account without primary org → recovery_nothing_to_recover and code not consumed", async () => {
+    const r6 = await owner("no-org");
+    const { codes } = await as(r6, (tx, x) => generateRecoveryCodes(tx, x));
+    const r7 = await owner("no-org-target");
+    await rejects(
+      as(r7, (tx, x) => redeemRecoveryCode(tx, x, { code: codes[1] })),
+      "recovery_nothing_to_recover",
+    );
+    const lookup = codes[1].replace(/-/g, "").slice(0, 8);
+    const [row] =
+      await admin`select used_at from account_recovery_codes where lookup=${lookup}`;
+    assert.equal(row.used_at, null);
+  });
+  await test("27 recovery: forged ownership_transfers insert with initiated_by=recovery_code but no used code rejected by RLS", async () => {
+    const f = await owner("forge-recovery");
+    await rlsRefused(
+      as(
+        f,
+        (tx) =>
+          tx`insert into ownership_transfers(id,organization_id,from_account_id,to_email,to_account_id,token_hash,initiated_by,previous_owner_stays,available_at,expires_at)
+            values(${randomUUID()},${A.organizationId},${a.id},${f.email},${f.id},${hash(randomUUID())},'recovery_code',false,now(),now()+interval '1 day')`,
+      ),
+    );
+  });
+
+  // ---- Export ------------------------------------------------------------------
+  const ownerA = await ownerSession(a, A.tenantId);
+  await test("28 export: JSON includes every tenant table, excludes secret columns, contains only this tenant's rows (two tenants)", async () => {
+    const { text, error, res } = await exportRun(ownerA, "json");
+    assert.equal(error, null);
+    assert.match(
+      res.headers["content-disposition"],
+      /green-monkey-taqueria-primaria-[a-z0-9]+-\d{8}\.json/,
+    );
+    assert.equal(res.headers["cache-control"], "no-store");
+    const doc = JSON.parse(text);
+    assert.equal(doc.format, "green-monkey-export");
+    assert.equal(doc.restaurant.id, A.tenantId);
+    for (const column of ["negative_stock_policy", "offline_table_service"])
+      assert.ok(column in doc.restaurant, column);
+    for (const table of [
+      "employees",
+      "devices",
+      "audit",
+      "orders",
+      "pin_throttles",
+    ])
+      assert.ok(table in doc.tables, table);
+    for (const table of [
+      "sessions",
+      "operations",
+      "owner_memberships",
+      "owner_location_commands",
+      "restaurant_invitations",
+      "jobs",
+      "support_actions",
+    ])
+      assert.ok(!(table in doc.tables), table);
+    for (const row of doc.tables.employees) {
+      assert.ok(!("secret_hash" in row));
+      assert.equal(row.tenant_id, A.tenantId);
+    }
+    for (const row of doc.tables.devices) assert.ok(!("token_hash" in row));
+    for (const [name, rows] of Object.entries(doc.tables) as Array<
+      [string, any[]]
+    >)
+      for (const row of rows) assert.equal(row.tenant_id, A.tenantId, name);
+    const [audit] =
+      await admin`select detail from audit where tenant_id=${A.tenantId} and operation='account.data_export' order by created_at desc limit 1`;
+    assert.deepEqual(audit.detail, { format: "json", table: null });
+  });
+  await test("29 export: CSV per table; unknown table 404; non-owner 403; works on Free unselected device and after lapse", async () => {
+    const csv = await exportRun(ownerA, "csv", "employees");
+    assert.equal(csv.error, null);
+    assert.ok(csv.text.startsWith("﻿tenant_id,id,name,login,role"));
+    assert.ok(!csv.text.includes("secret_hash"));
+    const unknown = await exportRun(ownerA, "csv", "sessions");
+    assert.equal(unknown.error?.code, "export_table_unknown");
+    const mismatch = await exportRun(ownerA, "json", undefined, randomUUID());
+    assert.equal(mismatch.error?.code, "session_changed");
+    assert.throws(
+      () => requireExportAccess({ ...ownerA, role: "manager" }),
+      /forbidden/,
+    );
+    // Lapse: Free, and a second browser that holds no Free slot.
+    await admin`update restaurant_entitlements set status='canceled',access_until=now()-interval '1 day' where tenant_id=${A.tenantId}`;
+    const other = await ownerSession(a, A.tenantId);
+    const [slot] =
+      await admin`select free_slot from devices where id=${other.deviceId}`;
+    assert.equal(slot.free_slot, null);
+    assert.equal(other.sellingAllowed, false);
+    const free = await exportRun(other, "json");
+    assert.equal(free.error, null);
+    JSON.parse(free.text);
+  });
+  await test("29b export: on a terminal a stale authenticated_at → step_up_required; after a fresh step-up it succeeds; a personal (owner browser) session never needs it", async () => {
+    const ownerSeat = (await seat(a.id, A.tenantId)).employee_id;
+    const term = await terminalSession(A.tenantId, ownerSeat);
+    await admin`update sessions set authenticated_at=now()-interval '2 hours' where id=${term.session.id}`;
+    const stale = await sessionFor(term);
+    assert.equal(stale.access?.deviceKind, "terminal");
+    assert.throws(() => requireExportAccess(stale), /step_up_required/);
+    await admin`update sessions set authenticated_at=now() where id=${term.session.id}`;
+    requireExportAccess(await sessionFor(term));
+    await admin`update sessions set authenticated_at=now()-interval '2 hours' where id=${ownerA.id}`;
+    requireExportAccess(await sessionFor(await entry(a, A.tenantId)));
+  });
+  await test("29c export: discovery never lists cfdi_secrets or cfdi_files even when gm_app can read them; every denylisted table exists (030 applied)", async () => {
+    // Every denylist entry names a real table, so a rename never silently re-exports it; with
+    // 030 merged this includes cfdi_secrets and cfdi_files (account 031 phase 2).
+    for (const name of EXPORT_TABLE_DENYLIST) {
+      const [row] =
+        await admin`select to_regclass(${"public." + name}) is not null as present`;
+      assert.ok(row.present, `${name} exists`);
+    }
+    const [grants] = await inTenant(
+      A.tenantId,
+      (tx) =>
+        tx`select has_table_privilege('cfdi_files', 'select') as files,
+          has_table_privilege('cfdi_secrets', 'select') as secrets`,
+    );
+    // The runtime role reads cfdi_files (the register's downloads) and never cfdi_secrets.
+    assert.deepEqual(
+      { files: grants.files, secrets: grants.secrets },
+      { files: true, secrets: false },
+    );
+    const tables = await inTenant(A.tenantId, (tx) => exportTables(tx));
+    const names = tables.map((t) => t.name);
+    assert.ok(!names.includes("cfdi_secrets") && !names.includes("cfdi_files"));
+    for (const name of EXPORT_TABLE_DENYLIST)
+      assert.ok(!names.includes(name), name);
+    // The other cfdi tables are the restaurant's own register and stay exportable, minus the
+    // sealed-secret references (test_secret_id, secret_id) the column rule drops.
+    const cfdi = new Map(
+      tables.filter((t) => t.name.startsWith("cfdi_")).map((t) => [t.name, t]),
+    );
+    for (const name of [
+      "cfdi_settings",
+      "cfdi_organizations",
+      "cfdi_csd_uploads",
+      "cfdi_documents",
+      "cfdi_document_tickets",
+      "cfdi_cancellations",
+      "cfdi_events",
+      "cfdi_global_periods",
+    ])
+      assert.ok(cfdi.has(name), `${name} exported`);
+    assert.ok(
+      !cfdi.get("cfdi_organizations")!.columns.some((c) => /secret/.test(c)),
+    );
+    assert.ok(
+      !cfdi.get("cfdi_csd_uploads")!.columns.some((c) => /secret/.test(c)),
+    );
+  });
+  await test("29e export: while an export runs, exportBusy is true (the /account-data/tables pre-check refuses then) and a second one is export_busy; afterwards exports run again (ACC-9)", async () => {
+    /** A response whose client reads only when released (backpressure). */
+    class Held extends Capture {
+      held: Array<() => void> = [];
+      _write(chunk: Buffer, _e: BufferEncoding, cb: () => void) {
+        this.headersSent = true;
+        this.chunks.push(Buffer.from(chunk));
+        this.held.push(cb);
+      }
+      release() {
+        for (const cb of this.held.splice(0)) cb();
+      }
+    }
+    const res = new Held({ highWaterMark: 1 });
+    let error: unknown = null;
+    const first = exportHandler(sql, "json")(
+      {
+        session: ownerA,
+        query: { tenant: ownerA.tenantId },
+        params: {},
+      } as any,
+      res as any,
+      (e?: unknown) => {
+        error = e ?? null;
+      },
+    );
+    for (let i = 0; i < 200 && !exportBusy(ownerA.tenantId); i++)
+      await delay(10);
+    assert.equal(exportBusy(ownerA.tenantId), true);
+    const second = await exportRun(ownerA, "json");
+    assert.equal(second.error?.code, "export_busy");
+    let finished = false;
+    void Promise.resolve(first).then(() => (finished = true));
+    for (let i = 0; i < 10_000 && !finished; i++) {
+      res.release();
+      await delay(1);
+    }
+    assert.equal(finished, true);
+    assert.equal(error, null);
+    assert.equal(exportBusy(ownerA.tenantId), false);
+    assert.equal(JSON.parse(res.text()).restaurant.id, ownerA.tenantId);
+    assert.equal((await exportRun(ownerA, "csv", "orders")).error, null);
+  });
+  await test("29d export: the first statement sets statement_timeout 60s and idle_in_transaction_session_timeout 60s", async () => {
+    const shown = await sql.begin(
+      "isolation level repeatable read read only",
+      async (raw) => {
+        const tx = raw as unknown as Tx;
+        await exportScope(tx, A.tenantId);
+        const [a1] = await tx`show statement_timeout`;
+        const [a2] = await tx`show idle_in_transaction_session_timeout`;
+        const [a3] = await tx`select current_setting('app.tenant_id') as t`;
+        return [
+          a1.statement_timeout,
+          a2.idle_in_transaction_session_timeout,
+          a3.t,
+        ];
+      },
+    );
+    assert.deepEqual(shown, ["1min", "1min", A.tenantId]);
+  });
+
+  // ---- Restaurant privacy URL --------------------------------------------------
+  await test("30 restaurant privacy: owner saves https URL with version; http and whitespace rejected; manager read-only; public catalog URL; terminal owner without recent PIN gets step_up_required", async () => {
+    const save = (body: unknown, s = ownerA) =>
+      inTenant(A.tenantId, (tx) => saveRestaurantPrivacy(tx, s, body));
+    const saved = await save({
+      operationId: randomUUID(),
+      expectedVersion: 0,
+      privacyNoticeUrl: "https://taqueria.mx/privacidad",
+    });
+    assert.deepEqual(saved, {
+      privacyNoticeUrl: "https://taqueria.mx/privacidad",
+      version: 1,
+    });
+    await rejects(
+      save({
+        operationId: randomUUID(),
+        expectedVersion: 0,
+        privacyNoticeUrl: null,
+      }),
+      "settings_changed",
+    );
+    for (const bad of [
+      "http://taqueria.mx",
+      "https://taqueria.mx/a b",
+      "ftp://x",
+    ])
+      await assert.rejects(
+        save({
+          operationId: randomUUID(),
+          expectedVersion: 1,
+          privacyNoticeUrl: bad,
+        }),
+        /ZodError|invalid/i,
+      );
+    assert.equal(
+      await inTenant(A.tenantId, (tx) => restaurantPrivacyUrl(tx)),
+      "https://taqueria.mx/privacidad",
+    );
+    const manager = { ...ownerA, role: "manager" };
+    assert.equal(
+      (await inTenant(A.tenantId, (tx) => restaurantPrivacy(tx, manager)))
+        .privacyNoticeUrl,
+      "https://taqueria.mx/privacidad",
+    );
+    await rejects(
+      save(
+        {
+          operationId: randomUUID(),
+          expectedVersion: 1,
+          privacyNoticeUrl: null,
+        },
+        manager,
+      ),
+      "forbidden",
+    );
+    await rejects(
+      inTenant(A.tenantId, (tx) =>
+        restaurantPrivacy(tx, { ...ownerA, role: "cashier" }),
+      ),
+      "forbidden",
+    );
+    const removed = await save({
+      operationId: randomUUID(),
+      expectedVersion: 1,
+      privacyNoticeUrl: null,
+    });
+    assert.deepEqual(removed, { privacyNoticeUrl: null, version: 2 });
+    // The POST route runs permit(owner) then requireRecentAuth (the same
+    // pair as the export): a terminal session with a stale PIN is refused.
+    const ownerSeat = (await seat(a.id, A.tenantId)).employee_id;
+    const term = await terminalSession(A.tenantId, ownerSeat);
+    await admin`update sessions set authenticated_at=now()-interval '2 hours' where id=${term.session.id}`;
+    const stale = await sessionFor(term);
+    assert.throws(() => requireExportAccess(stale), /step_up_required/);
+  });
+  await test("31 account events, support actions and co-owner/primary account rows (owner_accounts_org_read) readable only by verified org owners; an unrelated account reads none", async () => {
+    await admin`insert into support_actions(id,operator_login,operator_label,ticket,reason,action,organization_id,tenant_id)
+        values(${randomUUID()},'x','Operadora Prueba','T-1001','Verificación de prueba del suite','lookup',${A.organizationId},${A.tenantId})`;
+    const overview = await as(a, (tx, x) =>
+      accountOverview(tx, x, PUBLISHED, TAX),
+    );
+    const org = overview.organizations.find((o) => o.id === A.organizationId)!;
+    assert.equal(org.role, "primary");
+    assert.equal(org.primary.email, a.email);
+    assert.ok(org.supportActions.some((s) => s.ticket === "T-1001"));
+    assert.ok(org.events.some((e) => e.kind === "co_owner_added"));
+    assert.equal(org.taxProfile, "disabled");
+    const x = await owner("unrelated");
+    await rejects(
+      as(x, async (tx, y) => {
+        const { organizationScope } = await import("../server/co-owners.js");
+        return organizationScope(tx, y.id, A.organizationId, "owner");
+      }),
+      "forbidden",
+    );
+    const peek = await as(x, async (tx) => ({
+      support:
+        await tx`select 1 from support_actions where organization_id=${A.organizationId}`,
+      events:
+        await tx`select 1 from account_events where organization_id=${A.organizationId}`,
+      accounts: await tx`select 1 from owner_accounts where id=${a.id}`,
+      coOwners:
+        await tx`select 1 from organization_co_owners where organization_id=${A.organizationId}`,
+    }));
+    for (const [name, rows] of Object.entries(peek))
+      assert.equal(rows.length, 0, name);
+  });
+  await test("32 RLS recursion smoke: every new policy path executes without 'infinite recursion detected'", async () => {
+    const failures: string[] = [];
+    const probes = [
+      "select count(*) from owner_accounts",
+      "select count(*) from organizations",
+      "select count(*) from restaurants",
+      "select count(*) from owner_memberships",
+      "select count(*) from organization_co_owners",
+      "select count(*) from ownership_transfers",
+      "select count(*) from account_recovery_codes",
+      "select count(*) from restaurant_invitations",
+      "select count(*) from legal_acceptances",
+      "select count(*) from account_events",
+      "select count(*) from support_actions",
+      "select count(*) from organization_tax_profiles",
+      "select count(*) from restaurant_account_settings",
+      "select count(*) from organization_billing",
+      "select count(*) from billing_locations",
+      "select count(*) from signup_billing_intents",
+      "update organizations set created_by_account=created_by_account where false",
+      "update owner_memberships set revoked_at=revoked_at where false",
+      "update organization_co_owners set removed_at=removed_at where false",
+      "update ownership_transfers set state=state where false",
+      "update account_recovery_codes set revoked_at=revoked_at where false",
+      "update restaurant_invitations set revoked=revoked where false",
+    ];
+    for (const probe of probes)
+      try {
+        await sql.begin(async (tx) => {
+          await tx`select set_config('app.account_id',${a.id},true),
+              set_config('app.organization_id',${A.organizationId},true),
+              set_config('app.tenant_id',${A.tenantId},true),
+              set_config('app.transfer_id',${randomUUID()},true),
+              set_config('app.transfer_hash',${"0".repeat(64)},true),
+              set_config('app.invitation_hash',${"0".repeat(64)},true),
+              set_config('app.recovery_lookup','ABCDEFGH',true),
+              set_config('app.recovery_account_id',${a.id},true)`;
+          await tx.unsafe(probe);
+        });
+      } catch (e) {
+        if (/recursion/.test(String(e))) failures.push(probe);
+        else throw e;
+      }
+    assert.deepEqual(failures, []);
+  });
+  await test("33 shell: the POS shell's owner block warns only about support and recovery-code transfers (never the primary's own), lists support actions of the last 7 days, reaches the owner seat entered with its PIN on a terminal, and is null for other roles", async () => {
+    const o = await owner("shell");
+    const S = await restaurant(o, `Aviso ${run}`);
+    const shell = (s: Session) =>
+      inTenant(S.tenantId, (tx) => shellState(tx, s, PUBLISHED));
+    const google = await ownerSession(o, S.tenantId);
+    assert.equal(google.access?.ownerAccount, true);
+    // 1. The primary's own transfer is not a warning; the console shows it.
+    const own = await as(o, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: S.organizationId,
+          email: `shell-to-${run}@example.com`,
+          previousOwnerStays: false,
+          confirmName: `Aviso ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    let state = await shell(google);
+    assert.ok(state.account, "a Google-entered owner gets the owner block");
+    assert.deepEqual(state.account.transfers, []);
+    const center = await as(o, (tx, x) =>
+      accountOverview(tx, x, PUBLISHED, TAX),
+    );
+    assert.equal(
+      center.organizations.find((g) => g.id === S.organizationId)?.transfer
+        ?.initiatedBy,
+      "owner",
+    );
+    await as(o, (tx, x) => cancelTransfer(tx, x, { transferId: own.id }));
+    // 2. A support-initiated transfer is a warning with its dates, and the
+    // support action is listed.
+    const actionId = randomUUID();
+    await admin`insert into support_actions(id,operator_login,operator_label,ticket,reason,action,organization_id)
+      values(${actionId},'x','Operadora Prueba','T-3301','Transferencia de prueba del suite','transfer_ownership',${S.organizationId})`;
+    const supportTransfer = randomUUID();
+    await admin`insert into ownership_transfers(id,organization_id,from_account_id,to_email,token_hash,
+        initiated_by,support_action_id,previous_owner_stays,available_at,expires_at)
+      values(${supportTransfer},${S.organizationId},${o.id},${`soporte-${run}@example.com`},${hash(randomUUID())},
+        'support',${actionId},false,now()+interval '72 hours',now()+interval '72 hours'+interval '7 days')`;
+    state = await shell(google);
+    assert.equal(state.account?.transfers.length, 1);
+    const warning = state.account!.transfers[0];
+    assert.equal(warning.initiatedBy, "support");
+    assert.equal(warning.toEmailMasked, "s***@e***.com");
+    assert.equal(warning.organizationName, `Aviso ${run}`);
+    assert.ok(Date.parse(warning.expiresAt) > Date.parse(warning.availableAt));
+    assert.deepEqual(
+      state.account!.supportActions.map((x) => x.action),
+      ["transfer_ownership"],
+    );
+    await admin`update ownership_transfers set state='canceled',canceled_at=now(),canceled_by='support' where id=${supportTransfer}`;
+    // Support actions older than 7 days are not listed (LD-12 named trigger).
+    await admin.begin(async (tx) => {
+      await tx`alter table support_actions disable trigger support_actions_append_only`;
+      await tx`update support_actions set created_at=now()-interval '8 days' where id=${actionId}`;
+      await tx`alter table support_actions enable trigger support_actions_append_only`;
+    });
+    state = await shell(google);
+    assert.deepEqual(state.account?.supportActions, []);
+    assert.deepEqual(state.account?.transfers, []);
+    // 3. A recovery-code transfer warns the primary, also on the owner seat
+    // entered with its PIN on a shared terminal (ACC-5).
+    const { codes } = await as(o, (tx, x) => generateRecoveryCodes(tx, x));
+    const thief = await owner("shell-recovery");
+    await as(thief, (tx, x) => redeemRecoveryCode(tx, x, { code: codes[0] }));
+    state = await shell(google);
+    assert.deepEqual(
+      state.account?.transfers.map((x) => x.initiatedBy),
+      ["recovery_code"],
+    );
+    const ownerSeat = (await seat(o.id, S.tenantId)).employee_id;
+    const pinned = await sessionFor(
+      await terminalSession(S.tenantId, ownerSeat),
+    );
+    assert.equal(pinned.role, "owner");
+    assert.equal(pinned.access?.ownerAccount, false);
+    const pinState = await shell(pinned);
+    assert.deepEqual(
+      pinState.account?.transfers.map((x) => x.initiatedBy),
+      ["recovery_code"],
+    );
+    // 4. Other roles get no owner block.
+    const cashierId = randomUUID();
+    await admin`insert into employees(tenant_id,id,name,login,secret_hash,role,pin_set_at)
+      values(${S.tenantId},${cashierId},'Cajera aviso',${`aviso-${run}`},${password("246813")},'cashier',now())`;
+    const cashier = await sessionFor(
+      await terminalSession(S.tenantId, cashierId),
+    );
+    assert.equal((await shell(cashier)).account, null);
+    // A revoked owner seat (an owner session left over) gets none either.
+    await admin`update owner_memberships set revoked_at=now(),revoked_by=${o.id} where account_id=${o.id} and tenant_id=${S.tenantId}`;
+    assert.equal((await shell(pinned)).account, null);
+  });
+  await test("34 transfer: the co-owner limit is re-checked at acceptance under 931 when the previous owner stays (co-owners who joined during the window count; the promoted target does not)", async () => {
+    const coOwner = async (from: Owner, organizationId: string, to: Owner) => {
+      const invite = await as(from, (tx, x) =>
+        createCoOwnerInvitation(
+          tx,
+          x,
+          { operationId: randomUUID(), organizationId, email: to.email },
+          PUBLISHED,
+        ),
+      );
+      await as(to, (tx, x) =>
+        acceptInvitation(
+          tx,
+          x,
+          {
+            token: token(invite.path, "invite"),
+            legalAccepted: { terms: V.terms, privacy: V.privacy },
+          },
+          PUBLISHED,
+        ),
+      );
+    };
+    const active = async (organizationId: string) =>
+      (
+        await admin`select account_id from organization_co_owners
+          where organization_id=${organizationId} and removed_at is null`
+      )
+        .map((r) => r.account_id as string)
+        .sort();
+    const transferTo = (
+      from: Owner,
+      organizationId: string,
+      name: string,
+      to: Owner,
+    ) =>
+      as(from, (tx, x) =>
+        requestTransfer(
+          tx,
+          x,
+          {
+            operationId: randomUUID(),
+            organizationId,
+            email: to.email,
+            previousOwnerStays: true,
+            confirmName: name,
+          },
+          PUBLISHED,
+        ),
+      );
+    // An outside target: 2 co-owners at request, a third joins in the window.
+    const f = await owner("limit-from");
+    const L = await restaurant(f, `Limite ${run}`);
+    const [c1, c2, c3, outsider] = [
+      await owner("limit-c1"),
+      await owner("limit-c2"),
+      await owner("limit-c3"),
+      await owner("limit-to"),
+    ];
+    await coOwner(f, L.organizationId, c1);
+    await coOwner(f, L.organizationId, c2);
+    const t = await transferTo(f, L.organizationId, `Limite ${run}`, outsider);
+    await coOwner(f, L.organizationId, c3);
+    await rejects(
+      as(outsider, (tx, x) =>
+        acceptTransfer(
+          tx,
+          x,
+          { token: token(t.path, "transfer"), legalAccepted: V },
+          PUBLISHED,
+        ),
+      ),
+      "co_owner_limit",
+    );
+    const [unchanged] =
+      await admin`select o.created_by_account,t.state from organizations o
+        join ownership_transfers t on t.organization_id=o.id where t.id=${t.id}`;
+    assert.deepEqual(
+      [unchanged.created_by_account, unchanged.state],
+      [f.id, "pending"],
+    );
+    assert.equal((await active(L.organizationId)).length, 3);
+    // Once a co-owner leaves, the previous owner becomes the third.
+    await as(c3, (tx, x) =>
+      leaveCoOwnership(tx, x, { organizationId: L.organizationId }),
+    );
+    await as(outsider, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(t.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.deepEqual(
+      await active(L.organizationId),
+      [c1.id, c2.id, f.id].sort(),
+    );
+    // A co-owner target is promoted, so it does not count against the limit.
+    const g = await owner("promote-limit-from");
+    const P = await restaurant(g, `Limite promocion ${run}`);
+    const [d1, d2, d3] = [
+      await owner("promote-limit-d1"),
+      await owner("promote-limit-d2"),
+      await owner("promote-limit-d3"),
+    ];
+    await coOwner(g, P.organizationId, d1);
+    await coOwner(g, P.organizationId, d2);
+    const promote = await transferTo(
+      g,
+      P.organizationId,
+      `Limite promocion ${run}`,
+      d1,
+    );
+    await coOwner(g, P.organizationId, d3);
+    await as(d1, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(promote.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.deepEqual(
+      await active(P.organizationId),
+      [d2.id, d3.id, g.id].sort(),
+    );
+  });
+  // ---- Departing owners' invitations (ACC-15) -----------------------------------
+  const revokedFlag = async (id: string) =>
+    (await admin`select revoked from restaurant_invitations where id=${id}`)[0]
+      .revoked as boolean;
+  const inviteCoOwner = (from: Owner, organizationId: string, email: string) =>
+    as(from, (tx, x) =>
+      createCoOwnerInvitation(
+        tx,
+        x,
+        { operationId: randomUUID(), organizationId, email },
+        PUBLISHED,
+      ),
+    );
+  const inviteStaff = (
+    from: Owner,
+    tenantId: string,
+    email: string,
+    role = "cashier",
+  ) =>
+    as(from, (tx, x) =>
+      createInvitation(
+        tx,
+        x.id,
+        { operationId: randomUUID(), tenantId, email, role },
+        PUBLISHED,
+      ),
+    );
+  const acceptInvite = (who: Owner, path: string) =>
+    as(who, (tx, x) =>
+      acceptInvitation(
+        tx,
+        x,
+        {
+          token: token(path, "invite"),
+          legalAccepted: { terms: V.terms, privacy: V.privacy },
+        },
+        PUBLISHED,
+      ),
+    );
+  await test("35 co-owner: removal and leaving revoke the departing co-owner's pending invitations; their own invitation cannot bring them back, even un-revoked (creator seat check) (ACC-15)", async () => {
+    const p = await owner("seat-inv-primary");
+    const S = await restaurant(p, `Invitaciones ${run}`);
+    const [c, c2, outsider] = [
+      await owner("seat-inv-co"),
+      await owner("seat-inv-co2"),
+      await owner("seat-inv-staff"),
+    ];
+    for (const who of [c, c2])
+      await acceptInvite(
+        who,
+        (await inviteCoOwner(p, S.organizationId, who.email)).path,
+      );
+    // The co-owner prepares a way back in (a manager invitation to their own
+    // Google email) and invites someone else; the primary invites staff too.
+    const self = await inviteStaff(c, S.tenantId, c.email, "manager");
+    const other = await inviteStaff(c, S.tenantId, outsider.email);
+    const kept = await inviteStaff(p, S.tenantId, `kept-${run}@example.com`);
+    await as(p, (tx, x) =>
+      removeCoOwner(tx, x, {
+        organizationId: S.organizationId,
+        accountId: c.id,
+      }),
+    );
+    assert.equal(await revokedFlag(self.id), true);
+    assert.equal(await revokedFlag(other.id), true);
+    assert.equal(
+      await revokedFlag(kept.id),
+      false,
+      "another owner's invitations stay valid",
+    );
+    const [event] =
+      await admin`select detail from account_events where organization_id=${S.organizationId}
+        and kind='co_owner_removed' and subject_account_id=${c.id}`;
+    assert.equal(event.detail.invitationsRevoked, 2);
+    const [audit] =
+      await admin`select detail from audit where tenant_id=${S.tenantId}
+        and operation='account.owner_seat_revoked' and detail->>'accountId'=${c.id}`;
+    assert.equal(audit.detail.invitations, 2);
+    // The removed co-owner signs in again and tries their own invitation.
+    const back = {
+      ...c,
+      cookie: await signInGoogleOwner(sql, {
+        issuer: "https://accounts.google.com",
+        subject: c.subject,
+        email: c.email,
+      }),
+    };
+    await rejects(acceptInvite(back, self.path), "invitation_unavailable");
+    // Defence in depth: even if a revocation were missed, the creator holds
+    // no owner seat any more.
+    await admin`update restaurant_invitations set revoked=false where id=${self.id}`;
+    await rejects(acceptInvite(back, self.path), "invitation_unavailable");
+    await admin`update restaurant_invitations set revoked=true where id=${self.id}`;
+    const s = await seat(c.id, S.tenantId);
+    assert.deepEqual(
+      [s.role, s.active, s.revoked_at !== null],
+      ["owner", false, true],
+      "the removed co-owner stays out",
+    );
+    // Leaving revokes the leaver's pending invitations as well.
+    const left = await inviteStaff(c2, S.tenantId, `left-${run}@example.com`);
+    await as(c2, (tx, x) =>
+      leaveCoOwnership(tx, x, { organizationId: S.organizationId }),
+    );
+    assert.equal(await revokedFlag(left.id), true);
+    const [leftEvent] =
+      await admin`select detail from account_events where organization_id=${S.organizationId}
+        and kind='co_owner_left' and subject_account_id=${c2.id}`;
+    assert.equal(leftEvent.detail.invitationsRevoked, 1);
+    assert.equal(await revokedFlag(kept.id), false);
+  });
+  await test("36 transfer: the previous primary's pending invitations do not outlive the transfer: all of them when they leave (owner-initiated and recovery-code), their co-owner invitations when they stay; a former primary's co-owner invitation is refused even un-revoked (ACC-15)", async () => {
+    // 1. Owner-initiated, the previous owner leaves: every pending invitation.
+    const seller = await owner("inv-seller");
+    const Sx = await restaurant(seller, `Venta ${run}`);
+    const [buyer, planted] = [
+      await owner("inv-buyer"),
+      await owner("inv-planted"),
+    ];
+    const coInv = await inviteCoOwner(seller, Sx.organizationId, planted.email);
+    const staffInv = await inviteStaff(
+      seller,
+      Sx.tenantId,
+      `inv-staff-${run}@example.com`,
+    );
+    const sale = await as(seller, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: Sx.organizationId,
+          email: buyer.email,
+          previousOwnerStays: false,
+          confirmName: `Venta ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(buyer, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(sale.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.deepEqual(
+      [await revokedFlag(coInv.id), await revokedFlag(staffInv.id)],
+      [true, true],
+    );
+    await rejects(acceptInvite(planted, coInv.path), "invitation_unavailable");
+    const [completed] =
+      await admin`select detail from account_events where organization_id=${Sx.organizationId}
+        and kind='transfer_completed'`;
+    assert.equal(completed.detail.invitationsRevoked, 2);
+    // 2. The previous owner stays as co-owner: their co-owner invitations only
+    // (a primary-only power); their staff invitations stay valid.
+    const stay = await owner("inv-stay-from");
+    const St = await restaurant(stay, `Sigue ${run}`);
+    const [heir, y, z] = [
+      await owner("inv-stay-to"),
+      await owner("inv-stay-co"),
+      await owner("inv-stay-staff"),
+    ];
+    const coStay = await inviteCoOwner(stay, St.organizationId, y.email);
+    const staffStay = await inviteStaff(stay, St.tenantId, z.email);
+    const keep = await as(stay, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: St.organizationId,
+          email: heir.email,
+          previousOwnerStays: true,
+          confirmName: `Sigue ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(heir, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { token: token(keep.path, "transfer"), legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.deepEqual(
+      [await revokedFlag(coStay.id), await revokedFlag(staffStay.id)],
+      [true, false],
+    );
+    await rejects(acceptInvite(y, coStay.path), "invitation_unavailable");
+    // Defence in depth: un-revoked, the invitation's creator is no longer the
+    // primary, so it is still refused.
+    await admin`update restaurant_invitations set revoked=false where id=${coStay.id}`;
+    await rejects(acceptInvite(y, coStay.path), "invitation_unavailable");
+    await admin`update restaurant_invitations set revoked=true where id=${coStay.id}`;
+    assert.equal(
+      (
+        await admin`select 1 from organization_co_owners where organization_id=${St.organizationId}
+          and account_id=${y.id}`
+      ).length,
+      0,
+    );
+    // The staff invitation of the previous primary, now a co-owner, works.
+    assert.equal((await acceptInvite(z, staffStay.path)).tenantId, St.tenantId);
+    // 3. Recovery-code transfer: the old (possibly hijacked) account's
+    // invitations die with it.
+    const lost = await owner("inv-lost");
+    const Lo = await restaurant(lost, `Perdida ${run}`);
+    const w = await owner("inv-lost-co");
+    const coLost = await inviteCoOwner(lost, Lo.organizationId, w.email);
+    const { codes } = await as(lost, (tx, x) => generateRecoveryCodes(tx, x));
+    const recoverer = await owner("inv-recoverer");
+    const redeemed = await as(recoverer, (tx, x) =>
+      redeemRecoveryCode(tx, x, { code: codes[0] }),
+    );
+    await moveTransferAvailableAt(redeemed.transferId, "1 minute");
+    await as(recoverer, (tx, x) =>
+      acceptTransfer(
+        tx,
+        x,
+        { transferId: redeemed.transferId, legalAccepted: V },
+        PUBLISHED,
+      ),
+    );
+    assert.equal(await revokedFlag(coLost.id), true);
+    await rejects(acceptInvite(w, coLost.path), "invitation_unavailable");
+  });
+  await test("37 deploy window (ACC-22): the pre-031 acceptInvitation, replayed under 031's policies, spends an invitation without a seat; the ACCOUNT_AND_LEGAL deploy-note query lists it until the owner's new invitation is accepted", async () => {
+    const p = await owner("window-primary");
+    const W = await restaurant(p, `Ventana ${run}`);
+    const invitee = await owner("window-staff");
+    const spent = await inviteStaff(p, W.tenantId, invitee.email);
+    const raw = token(spent.path, "invite");
+    // The previous revision's acceptInvitation (release/v1
+    // server/owner-management.ts): its membership lookup by tenant only, then
+    // the invitation update, run as gm_app under 031's policies.
+    await as(invitee, async (tx, a) => {
+      await tx`select pg_advisory_xact_lock(hashtextextended(${a.id},918))`;
+      await tx`select set_config('app.invitation_hash',${hash(raw)},true)`;
+      const [i] =
+        await tx`select *,expires_at>now() as valid from restaurant_invitations where token_hash=${hash(raw)} for update`;
+      await tx`select set_config('app.tenant_id',${i.tenant_id},true)`;
+      const [existing] =
+        await tx`select employee_id from owner_memberships where tenant_id=${i.tenant_id}`;
+      assert.ok(existing, "membership_tenant_read shows the primary's seat");
+      await tx`update restaurant_invitations set accepted_by=${a.id},accepted_at=now(),employee_id=${existing.employee_id} where id=${i.id}`;
+    });
+    assert.equal(await seat(invitee.id, W.tenantId), undefined, "no seat");
+    // docs/ACCOUNT_AND_LEGAL.md, "Deploy note" (run with a BYPASSRLS role).
+    const spentInvitations = async () =>
+      (
+        await admin`select i.tenant_id, i.id, i.email, i.role, i.accepted_at
+          from restaurant_invitations i
+         where i.accepted_by is not null
+           and not exists (select 1 from owner_memberships m
+                            where m.tenant_id = i.tenant_id and m.account_id = i.accepted_by)
+           and exists (select 1 from owner_memberships o
+                        where o.tenant_id = i.tenant_id and o.employee_id = i.employee_id
+                          and o.account_id <> i.accepted_by)`
+      ).map((r) => r.id as string);
+    assert.ok((await spentInvitations()).includes(spent.id));
+    // The new revision treats the link as accepted; entry is refused.
+    assert.equal(
+      (await acceptInvite(invitee, spent.path)).tenantId,
+      W.tenantId,
+    );
+    await rejects(entry(invitee, W.tenantId), "forbidden");
+    // The remedy: the owner invites the same email again.
+    const again = await inviteStaff(p, W.tenantId, invitee.email);
+    assert.equal(
+      (await acceptInvite(invitee, again.path)).tenantId,
+      W.tenantId,
+    );
+    assert.equal((await seat(invitee.id, W.tenantId)).role, "cashier");
+    assert.ok(!(await spentInvitations()).includes(spent.id));
+  });
+  await test("38 co-owner: removal is never gated by pending legal acceptance (UX-1) and cancels every pending transfer to the removed co-owner, by email or account; a removed co-owner cannot complete a transfer created before the removal; leaving cancels the leaver's own (AUTHZ-1)", async () => {
+    const p = await owner("authz1-primary");
+    const Z = await restaurant(p, `Remocion ${run}`);
+    const [c, c2] = [await owner("authz1-co"), await owner("authz1-co2")];
+    for (const who of [c, c2])
+      await acceptInvite(
+        who,
+        (await inviteCoOwner(p, Z.organizationId, who.email)).path,
+      );
+    // Case 1: an owner-initiated link to the co-owner's Gmail, then the deal
+    // collapses while the primary has documents pending (a material change).
+    const link = await as(p, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: Z.organizationId,
+          email: c.email.toUpperCase(),
+          previousOwnerStays: false,
+          confirmName: `Remocion ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context,accepted_at)
+        values(${randomUUID()},${p.id},${p.sessionId},'terms','2026-01-01',${legalContentHash("terms")},${PUBLISHED.entityHash},true,'es','reacceptance',now())`;
+    await rejects(
+      as(p, (tx) => requireCurrentLegal(tx, p.id, PUBLISHED)),
+      "legal_acceptance_required",
+    );
+    await as(p, (tx, x) =>
+      removeCoOwner(tx, x, {
+        organizationId: Z.organizationId,
+        accountId: c.id,
+      }),
+    );
+    const [canceled] =
+      await admin`select state,canceled_by from ownership_transfers where id=${link.id}`;
+    assert.deepEqual(
+      [canceled.state, canceled.canceled_by],
+      ["canceled", "owner"],
+    );
+    const [removedEvent] =
+      await admin`select detail from account_events where organization_id=${Z.organizationId}
+        and kind='co_owner_removed' and subject_account_id=${c.id}`;
+    assert.equal(removedEvent.detail.transfersCanceled, 1);
+    const [cancelEvent] =
+      await admin`select actor_account_id,detail from account_events where organization_id=${Z.organizationId}
+        and kind='transfer_canceled' and detail->>'transferId'=${link.id}`;
+    assert.equal(cancelEvent.actor_account_id, p.id);
+    assert.equal(cancelEvent.detail.reason, "co_owner_removed");
+    const back = {
+      ...c,
+      cookie: await signInGoogleOwner(sql, {
+        issuer: "https://accounts.google.com",
+        subject: c.subject,
+        email: c.email,
+      }),
+    };
+    await rejects(
+      as(back, (tx, x) =>
+        acceptTransfer(
+          tx,
+          x,
+          { token: token(link.path, "transfer"), legalAccepted: V },
+          PUBLISHED,
+        ),
+      ),
+      "transfer_unavailable",
+    );
+    // Defence in depth: a pending transfer to them that predates the removal
+    // (as if a cancellation were missed) is refused at acceptance too.
+    const missedId = randomUUID();
+    const missed = missedId + "." + randomBytes(32).toString("hex");
+    await admin`insert into ownership_transfers(id,organization_id,from_account_id,to_email,token_hash,
+        initiated_by,previous_owner_stays,available_at,expires_at,created_at)
+      values(${missedId},${Z.organizationId},${p.id},${c.email},${hash(missed)},'owner',false,
+        now()-interval '2 hours',now()+interval '2 days',now()-interval '2 hours')`;
+    await rejects(
+      as(back, (tx, x) =>
+        acceptTransfer(tx, x, { token: missed, legalAccepted: V }, PUBLISHED),
+      ),
+      "transfer_unavailable",
+    );
+    await as(p, (tx, x) => cancelTransfer(tx, x, { transferId: missedId }));
+    // Case 2: a co-owner redeems the primary's recovery code (24 h hold); the
+    // primary reacts by removing them: the transfer by account dies too.
+    await as(p, (tx) =>
+      recordAcceptances(
+        tx,
+        p,
+        {
+          documents: [{ document: "terms", version: V.terms }],
+          locale: "es",
+          context: "reacceptance",
+        },
+        PUBLISHED,
+      ),
+    );
+    const { codes } = await as(p, (tx, x) => generateRecoveryCodes(tx, x));
+    const redeemed = await as(c2, (tx, x) =>
+      redeemRecoveryCode(tx, x, { code: codes[0] }),
+    );
+    await as(p, (tx, x) =>
+      removeCoOwner(tx, x, {
+        organizationId: Z.organizationId,
+        accountId: c2.id,
+      }),
+    );
+    const [recovery] =
+      await admin`select state,canceled_by from ownership_transfers where id=${redeemed.transferId}`;
+    assert.deepEqual(
+      [recovery.state, recovery.canceled_by],
+      ["canceled", "owner"],
+    );
+    // Leaving: a transfer addressed to the leaver is cancelled by the target.
+    const c3 = await owner("authz1-co3");
+    await acceptInvite(
+      c3,
+      (await inviteCoOwner(p, Z.organizationId, c3.email)).path,
+    );
+    const offered = await as(p, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: Z.organizationId,
+          email: c3.email,
+          previousOwnerStays: true,
+          confirmName: `Remocion ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(c3, (tx, x) =>
+      leaveCoOwnership(tx, x, { organizationId: Z.organizationId }),
+    );
+    const [left] =
+      await admin`select state,canceled_by from ownership_transfers where id=${offered.id}`;
+    assert.deepEqual([left.state, left.canceled_by], ["canceled", "target"]);
+    // A transfer to someone else is untouched by a co-owner's removal.
+    const [c4, buyer] = [
+      await owner("authz1-co4"),
+      await owner("authz1-buyer"),
+    ];
+    await acceptInvite(
+      c4,
+      (await inviteCoOwner(p, Z.organizationId, c4.email)).path,
+    );
+    const sale = await as(p, (tx, x) =>
+      requestTransfer(
+        tx,
+        x,
+        {
+          operationId: randomUUID(),
+          organizationId: Z.organizationId,
+          email: buyer.email,
+          previousOwnerStays: false,
+          confirmName: `Remocion ${run}`,
+        },
+        PUBLISHED,
+      ),
+    );
+    await as(p, (tx, x) =>
+      removeCoOwner(tx, x, {
+        organizationId: Z.organizationId,
+        accountId: c4.id,
+      }),
+    );
+    const [kept] =
+      await admin`select state from ownership_transfers where id=${sale.id}`;
+    assert.equal(kept.state, "pending");
+    await as(p, (tx, x) => cancelTransfer(tx, x, { transferId: sale.id }));
+  });
+  await test("39 legal: a Google-member manager with an older acceptance gets the re-acceptance path in the console and the POS shell (LEGAL-4); an announced material change is a banner until its effectiveFrom, then gates (LEGAL-3)", async () => {
+    const p = await owner("legal4-primary");
+    const M = await restaurant(p, `Gerencia ${run}`);
+    const m = await owner("legal4-manager");
+    await acceptInvite(
+      m,
+      (await inviteStaff(p, M.tenantId, m.email, "manager")).path,
+    );
+    const pos = await ownerSession(m, M.tenantId);
+    assert.equal(pos.role, "manager");
+    const shell = () =>
+      inTenant(M.tenantId, (tx) => shellState(tx, pos, PUBLISHED));
+    assert.deepEqual((await shell()).account, {
+      legalPending: false,
+      legalAnnounced: null,
+      transfers: [],
+      supportActions: [],
+    });
+    await admin`insert into legal_acceptances(id,account_id,owner_session_id,document,version,content_hash,entity_hash,published,locale,context)
+        values(${randomUUID()},${m.id},${m.sessionId},'terms','2026-01-01',${legalContentHash("terms")},${PUBLISHED.entityHash},true,'es','reacceptance')`;
+    assert.equal((await shell()).account?.legalPending, true);
+    const overview = await as(m, (tx, x) =>
+      accountOverview(tx, x, PUBLISHED, TAX),
+    );
+    assert.equal(overview.organizations.length, 0);
+    assert.equal(overview.memberships, 1);
+    assert.deepEqual(overview.legal.pending, ["terms"]);
+    assert.deepEqual(overview.legal.dpaPending, [], "never the DPA");
+    await as(m, (tx, x) =>
+      recordAcceptances(
+        tx,
+        x,
+        {
+          documents: [{ document: "terms", version: V.terms }],
+          locale: "es",
+          context: "reacceptance",
+        },
+        PUBLISHED,
+      ),
+    );
+    assert.equal((await shell()).account?.legalPending, false);
+    // A material change of the terms, announced today, effective in 20 days.
+    const meta = LEGAL_DOCUMENTS.terms;
+    const original = { ...meta };
+    const day = (offset: number) =>
+      new Date(Date.now() + offset * 864e5).toISOString().slice(0, 10);
+    try {
+      Object.assign(meta, {
+        version: "2099-01-01",
+        requiresAcceptanceSince: "2099-01-01",
+        previousVersion: original.version,
+        previousRequiresAcceptanceSince: original.requiresAcceptanceSince,
+        // Yesterday: robust to the UTC and Mexico City dates differing.
+        announcedAt: day(-1),
+        effectiveFrom: day(20),
+      });
+      const before = await as(p, (tx) => legalState(tx, p.id, PUBLISHED));
+      assert.deepEqual(before.pending, []);
+      assert.deepEqual(
+        before.notices.map((n) => [n.document, n.kind, n.effectiveFrom]),
+        [["terms", "announced", day(20)]],
+      );
+      await as(p, (tx) => requireCurrentLegal(tx, p.id, PUBLISHED));
+      const ownerPos = await ownerSession(p, M.tenantId);
+      assert.equal(
+        (
+          await inTenant(M.tenantId, (tx) =>
+            shellState(tx, ownerPos, PUBLISHED),
+          )
+        ).account?.legalAnnounced,
+        day(20),
+      );
+      // From effectiveFrom on, the same acceptance gates account commands.
+      Object.assign(meta, { announcedAt: day(-20), effectiveFrom: day(-1) });
+      const after = await as(p, (tx) => legalState(tx, p.id, PUBLISHED));
+      assert.deepEqual(after.pending, ["terms"]);
+      await rejects(
+        as(p, (tx) => requireCurrentLegal(tx, p.id, PUBLISHED)),
+        "legal_acceptance_required",
+      );
+    } finally {
+      Object.assign(meta, original);
+    }
+  });
+  console.log(
+    `Account DB passed (${checks} checks): legal acceptance and gating, co-owners on access's lifecycle, transfers, recovery codes, export, restaurant privacy and the 031 RLS paths. Fixtures retained (append-only evidence).`,
+  );
+} finally {
+  await sql.end();
+  await admin.end();
+}

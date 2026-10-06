@@ -51,3 +51,19 @@ describe("Pro access boundaries", () => {
     ).toBe("free");
   });
 });
+
+describe("support grants (account 031)", () => {
+  const now = Date.parse("2026-10-05T12:00:00Z");
+  it("support source active grant is Pro until accessUntil", () => {
+    const grant = {
+      status: "active" as const,
+      accessUntil: new Date(now + 30 * 86400_000).toISOString(),
+      source: "support" as const,
+    };
+    expect(accessPlan(grant, now)).toBe("pro");
+    expect(accessPlan(grant, now + 30 * 86400_000)).toBe("free");
+    expect(
+      accessPlan({ ...grant, status: "free", accessUntil: null }, now),
+    ).toBe("free");
+  });
+});

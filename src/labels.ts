@@ -119,6 +119,15 @@ const operations: Record<string, Key> = {
   "cfdi.globals.run": "cfdiOpGlobalsRun",
   "cfdi.document.retried": "cfdiOpRetried",
   "cfdi.email.requested": "cfdiOpEmailRequested",
+  // account (031), added at account's merge (contracts 3.13)
+  "account.owner_seat": "accountOpOwnerSeat",
+  "account.owner_seat_revoked": "accountOpOwnerSeatRevoked",
+  "account.co_owner_added": "accountOpCoOwnerAdded",
+  "account.ownership_transferred": "accountOpOwnershipTransferred",
+  "account.data_export": "accountOpDataExport",
+  "account.restaurant_privacy": "accountOpRestaurantPrivacy",
+  "account.free_selection_mode": "accountOpFreeSelectionMode",
+  "plan.free_slot_auto": "accountOpFreeSlotAuto",
   // public (032)
   "public.link_created": "publicOpLinkCreated",
   "public.link_rotated": "publicOpLinkRotated",

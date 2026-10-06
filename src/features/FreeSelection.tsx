@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";
-import { translateError } from "../i18n";
+import { strings, translateError } from "../i18n";
 type Selection = {
+  /** account (031): auto follows drawer openers; manual is the owner's pin. */
+  mode?: "auto" | "manual";
   currentDeviceId: string;
   devices: { id: string; name: string; free_slot: number | null }[];
   employees: {
@@ -21,6 +23,30 @@ export function FreeSelection({ locale }: { locale: Locale }) {
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false),
     [saved, setSaved] = useState(false);
+  // One operation id per "Volver a automático" attempt, reused on retry.
+  const autoOperation = useRef<string | null>(null);
+  async function backToAuto() {
+    setBusy(true);
+    setError("");
+    setSaved(false);
+    autoOperation.current ??= crypto.randomUUID();
+    try {
+      apply(
+        await api<Selection>(
+          "/account/free-selection/mode",
+          { operationId: autoOperation.current, mode: "auto" },
+          { idempotent: true },
+        ),
+      );
+      autoOperation.current = null;
+      window.dispatchEvent(new Event("gm-session-refresh"));
+    } catch (e) {
+      const code = (e as Error).message;
+      if (code !== "step_up_cancelled") setError(translateError(code, locale));
+    } finally {
+      setBusy(false);
+    }
+  }
   function apply(s: Selection) {
     setData(s);
     setDevice(s.devices.find((d) => d.free_slot)?.id ?? s.currentDeviceId);
@@ -115,6 +141,20 @@ export function FreeSelection({ locale }: { locale: Locale }) {
             {es ? "Guardar selección Free" : "Save Free selection"}
           </Button>
         </form>
+      )}
+      {data && (
+        <div className="row free-mode">
+          <p>
+            {data.mode === "manual"
+              ? strings[locale].accountFreeManual
+              : strings[locale].accountFreeAuto}
+          </p>
+          {data.mode === "manual" && (
+            <Button disabled={busy} onClick={() => void backToAuto()}>
+              {strings[locale].accountFreeBackToAuto}
+            </Button>
+          )}
+        </div>
       )}
     </section>
   );

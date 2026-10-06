@@ -23,11 +23,24 @@ import {
   saveFreeSelection,
   sellingAllowed,
 } from "../server/free-limits.js";
-import { createOrder, recordPayment } from "../server/orders.js";
-import { hash, sign } from "../server/auth.js";
-import { pinSignIn } from "../server/access.js";
+import {
+  autoAssignFreeSlots,
+  freeSelectionMode,
+  requireDrawerOpenAllowed,
+  sellingAccess,
+} from "../server/free-limits.js";
+import { setFreeSelectionMode } from "../server/account-settings.js";
+import { createOrder, recordPayment, addRound } from "../server/orders.js";
+import { createSession, pinSignIn } from "../server/access.js";
+import { authentication, hash, sign } from "../server/auth.js";
+import { legalConfig } from "../server/legal.js";
 import type { Session } from "../shared/domain.js";
+import { billingStore } from "../server/billing-store.js";
+import type { Entitlement } from "../shared/plans.js";
 import { noRetries } from "./db-retries.js";
+// Legal gating is not under test here (account-db covers it): restaurants are
+// created as in CI's DB steps, documents unpublished with signup allowed.
+const legal = legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" });
 const { runtime, migration } = isolatedTarget(process.env),
   sql = postgres(runtime, { max: 8 }),
   admin = postgres(migration, { max: 1 });
@@ -47,7 +60,7 @@ try {
     openingDays: [1, 2, 3, 4, 5],
   };
   const { tenantId } = await withOwner(sql, cookie, undefined, (tx, a) =>
-    createOwnerRestaurant(tx, a, input),
+    createOwnerRestaurant(tx, a, input, legal),
   );
   const entries = await Promise.all(
     Array.from({ length: 4 }, () =>
@@ -121,12 +134,17 @@ try {
     /owner_role_reserved/,
   );
   const invite = await withOwner(sql, cookie, undefined, (tx, a) =>
-    createInvitation(tx, a.id, {
-      operationId: randomUUID(),
-      tenantId,
-      email: "free-invite@example.com",
-      role: "cashier",
-    }),
+    createInvitation(
+      tx,
+      a.id,
+      {
+        operationId: randomUUID(),
+        tenantId,
+        email: "free-invite@example.com",
+        role: "cashier",
+      },
+      legal,
+    ),
   );
   const guest = await signInGoogleOwner(sql, {
     issuer: "https://accounts.google.com",
@@ -135,7 +153,12 @@ try {
   });
   await assert.rejects(
     withOwner(sql, guest, undefined, (tx, a) =>
-      acceptInvitation(tx, a, { token: invite.path.split("#invite=")[1] }),
+      acceptInvitation(
+        tx,
+        a,
+        { token: invite.path.split("#invite=")[1] },
+        legal,
+      ),
     ),
     /free_team_limit/,
   );
@@ -190,11 +213,16 @@ try {
     ),
   );
   const location = await withOwner(sql, cookie, undefined, (tx, a) =>
-    createAdditionalLocation(tx, a, {
-      ...input,
-      sourceTenantId: tenantId,
-      operationId: randomUUID(),
-    }),
+    createAdditionalLocation(
+      tx,
+      a,
+      {
+        ...input,
+        sourceTenantId: tenantId,
+        operationId: randomUUID(),
+      },
+      legal,
+    ),
   );
   await admin`update restaurants set activation_pending=false where id=${location.tenantId}`;
   await admin`update restaurant_entitlements set access_until=now()-interval '1 second' where tenant_id=${tenantId}`;
@@ -213,19 +241,21 @@ try {
   );
   await assert.rejects(
     run((tx) =>
-      saveProduct(tx, { ...s, deviceId: otherDevice }, {
-        ...productInput,
-        operationId: randomUUID(),
-        expectedVersion: 1,
-        price: 200,
-      }),
+      saveProduct(
+        tx,
+        { ...s, deviceId: otherDevice },
+        {
+          ...productInput,
+          operationId: randomUUID(),
+          expectedVersion: 1,
+          price: 200,
+        },
+      ),
     ),
     /free_selection_required/,
   );
   await assert.rejects(
-    run((tx) =>
-      saveEmployee(tx, { ...s, deviceId: otherDevice }, employee()),
-    ),
+    run((tx) => saveEmployee(tx, { ...s, deviceId: otherDevice }, employee())),
     /free_selection_required/,
   );
   assert.equal(
@@ -347,6 +377,43 @@ try {
     );
     assert.equal(typeof signedIn.sessionId, "string");
   }
+  // ACC-14: the drawer on otherDevice opened after Pro ended, so switching the
+  // Free selection away stops that register at once: continuation only covers
+  // drawers opened during Pro (no register-by-register selection juggling).
+  await run((tx) =>
+    saveFreeSelection(tx, s, {
+      deviceId: s.deviceId,
+      employeeIds: [staff[1].id, staff[2].id],
+    }),
+  );
+  const switched = await run((tx) =>
+    sellingAccess(tx, s.employeeId, otherDevice),
+  );
+  assert.equal(
+    switched.basis,
+    "none",
+    "a drawer opened on Free is no continuation once its device is unselected",
+  );
+  await assert.rejects(
+    run((tx) =>
+      createOrder(
+        tx,
+        { ...s, deviceId: otherDevice },
+        {
+          ...body,
+          operationId: randomUUID(),
+          lines: body.lines.map((l) => ({ ...l, id: randomUUID() })),
+        },
+      ),
+    ),
+    /free_selection_required/,
+  );
+  await run((tx) =>
+    saveFreeSelection(tx, s, {
+      deviceId: otherDevice,
+      employeeIds: [staff[1].id, staff[2].id],
+    }),
+  );
   await assert.rejects(
     run((tx) =>
       saveFreeSelection(
@@ -364,13 +431,17 @@ try {
     /invalid_selection/,
   );
   await withOwner(sql, cookie, undefined, (tx, a) =>
-    selectFreeLocation(tx, a.id, location.tenantId),
+    selectFreeLocation(tx, a.id, location.tenantId, legal),
   );
+  // The drawer opened above on otherDevice (after the trial lapsed) is still
+  // open: it is no drawer continuation (ACC-14), so only the selected Free
+  // location sells.
   assert.equal(
     await run((tx) => sellingAllowed(tx, s.employeeId, otherDevice)),
     false,
     "only selected Free location sells",
   );
+  await admin`update cash_sessions set closed_at=now(),counted=0,expected=0 where id=${drawerId}`;
   assert.equal(
     (await run((tx) => freeSelection(tx, s))).employees.length,
     3,
@@ -381,10 +452,581 @@ try {
     0,
     "missing scope fails closed",
   );
+  await planLapse();
   console.log(
-    "Free limits DB passed: concurrent device/team caps, invitation cap, owner-role bypass denial, canonical sales/management gates, expiry/replay/payment recovery, owner selection, tenant isolation and single Free location. Synthetic audit fixtures retained.",
+    "Free limits DB passed: concurrent device/team caps, invitation cap, owner-role bypass denial, canonical sales/management gates, expiry/replay/payment recovery, owner selection, tenant isolation and single Free location; plan lapse (GAP-1): drawer continuation, automatic Free slots and manual pinning. Synthetic audit fixtures retained.",
   );
 } finally {
   await sql.end();
   await admin.end();
+}
+
+/**
+ * Plan lapse (account 031, GAP-1): a register whose drawer opened during Pro
+ * keeps selling after the trial ends, Free slots follow drawer openers in auto
+ * mode, and the owner's explicit selection pins manual mode.
+ */
+async function planLapse() {
+  const cookie = await signInGoogleOwner(sql, {
+    issuer: "https://accounts.google.com",
+    subject: randomUUID(),
+    email: "lapse-owner@example.com",
+    name: "Lapse fixture",
+  });
+  const { tenantId } = await withOwner(sql, cookie, undefined, (tx, a) =>
+    createOwnerRestaurant(
+      tx,
+      a,
+      {
+        restaurantName: "Lapse fixture",
+        currency: "MXN",
+        timezone: "America/Mexico_City",
+        cutoff: 240,
+        openingDays: [1, 2, 3, 4, 5, 6, 7],
+      },
+      legal,
+    ),
+  );
+  const run = <T>(fn: Parameters<typeof tenant<T>>[2]) =>
+    tenant(sql, tenantId, fn);
+  const [ownerSeat] =
+    await admin`select employee_id from owner_memberships where tenant_id=${tenantId}`;
+  // The owner's sign-up browser holds the device slot and never opens a drawer.
+  const laptop = await withOwner(sql, cookie, undefined, (tx, a) =>
+    enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, ownerBrowserCookie()),
+  );
+  const devices: Array<{ id: string; token: string }> = [];
+  for (let i = 0; i < 3; i++) {
+    const d = { id: randomUUID(), token: randomBytes(32).toString("hex") };
+    await admin`insert into devices(tenant_id,id,name,token_hash,kind,paired_at,token_expires_at)
+      values(${tenantId},${d.id},${"Caja " + (i + 1)},${hash(d.token)},'terminal',now(),now()+interval '30 days')`;
+    devices.push(d);
+  }
+  const staff: Record<string, string> = {};
+  for (const [name, role] of [
+    ["cook", "kitchen"],
+    ["ana", "cashier"],
+    ["beto", "cashier"],
+    ["caro", "server"],
+  ]) {
+    staff[name] = randomUUID();
+    await admin`insert into employees(tenant_id,id,name,login,secret_hash,role,pin_set_at)
+      values(${tenantId},${staff[name]},${name},${name + "-" + tenantId.slice(0, 8)},'x:y',${role},now())`;
+  }
+  // The kitchen and one cashier hold the two employee slots.
+  await admin`update employees set free_slot=1 where id=${staff.cook}`;
+  await admin`update employees set free_slot=2 where id=${staff.ana}`;
+  const session = (
+    employeeId: string,
+    deviceId: string,
+    role: string,
+  ): Session => ({
+    id: randomUUID(),
+    tenantId,
+    employeeId,
+    deviceId,
+    name: role,
+    role,
+    csrf: "",
+    expiresAt: "",
+    offlineUntil: "",
+    restaurant: {
+      name: "Lapse fixture",
+      currency: "MXN",
+      timezone: "America/Mexico_City",
+      cutoff: 240,
+    },
+  });
+  /** POST /cash/open's body (server/index.ts), without the HTTP layer. */
+  const openDrawer = (s: Session) =>
+    run(async (tx) => {
+      await autoAssignFreeSlots(tx, s);
+      await requireDrawerOpenAllowed(tx, s);
+      const id = randomUUID();
+      await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening) values(${tenantId},${id},${s.deviceId},${s.employeeId},0)`;
+      return id;
+    });
+  const slots = async () => ({
+    device: (
+      await admin`select id from devices where tenant_id=${tenantId} and free_slot is not null`
+    )[0]?.id,
+    employees: Object.fromEntries(
+      (
+        await admin`select id,free_slot from employees where tenant_id=${tenantId} and free_slot is not null`
+      ).map((e) => [e.id, e.free_slot]),
+    ),
+  });
+  const audits = async () =>
+    (
+      await admin`select count(*)::int as n from audit where tenant_id=${tenantId} and operation='plan.free_slot_auto'`
+    )[0].n as number;
+
+  // auto slot: on Free, the first drawer opener claims the slot from a
+  // never-used slot device (the owner's sign-up laptop).
+  assert.equal((await slots()).device, laptop.device.id);
+  const anaOnOne = session(staff.ana, devices[0].id, "cashier");
+  const drawerOne = await openDrawer(anaOnOne);
+  assert.equal(
+    (await slots()).device,
+    devices[0].id,
+    "auto slot: on Free, first drawer opener claims slot from a never-used slot device",
+  );
+  // ...and never takes it away again from a device that has opened a drawer.
+  await assert.rejects(
+    openDrawer(session(staff.ana, devices[1].id, "cashier")),
+    /free_selection_required/,
+  );
+  assert.equal((await slots()).device, devices[0].id);
+  // ACC-14: this restaurant never had Pro (no entitlement row). The selected
+  // register's open drawer is no continuation: an employee without a Free
+  // slot (Caro) cannot start sales there, while Ana (slot holder) can.
+  const caroOnOne = session(staff.caro, devices[0].id, "server");
+  const neverPro = await run((tx) =>
+    sellingAccess(tx, staff.caro, devices[0].id),
+  );
+  assert.equal(
+    neverPro.basis,
+    "none",
+    "never-Pro Free restaurant: an open drawer is no continuation",
+  );
+  assert.equal(neverPro.allowed, false);
+  assert.equal(
+    (await run((tx) => sellingAccess(tx, staff.ana, devices[0].id))).basis,
+    "free_selection",
+  );
+  await assert.rejects(
+    run((tx) =>
+      createOrder(tx, caroOnOne, {
+        operationId: randomUUID(),
+        lines: [
+          {
+            id: randomUUID(),
+            productId: randomUUID(),
+            quantity: 1,
+            options: [],
+            note: "",
+          },
+        ],
+        mode: "takeaway",
+        tableId: null,
+        name: "No",
+        note: "",
+        channel: "pos",
+      }),
+    ),
+    /free_selection_required/,
+  );
+  await admin`update cash_sessions set closed_at=now(),counted=0,expected=0 where id=${drawerOne}`;
+
+  // During Pro the device slot follows the latest drawer opener, and openers
+  // get employee slots, kitchen holders evicted first.
+  await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source)
+    values(${tenantId},'trialing',now()+interval '2 days','fixture')`;
+  const betoOnTwo = session(staff.beto, devices[1].id, "cashier");
+  const drawerTwo = await openDrawer(betoOnTwo);
+  let now = await slots();
+  assert.equal(
+    now.device,
+    devices[1].id,
+    "auto slot: during Pro the device slot follows the latest drawer opener",
+  );
+  assert.equal(now.employees[staff.beto], 1, "kitchen holder evicted first");
+  assert.equal(now.employees[staff.cook], undefined);
+  assert.equal(now.employees[staff.ana], 2);
+  const caroOnThree = session(staff.caro, devices[2].id, "server");
+  await openDrawer(caroOnThree);
+  now = await slots();
+  assert.equal(now.employees[staff.caro], 2, "oldest drawer opener evicted");
+  assert.equal(now.employees[staff.ana], undefined);
+  // I-13: an opener that already holds both slots writes nothing.
+  await admin`update cash_sessions set closed_at=now(),counted=0,expected=0 where device_id=${devices[2].id} and closed_at is null`;
+  const before = await audits();
+  const caroAgain = await openDrawer(caroOnThree);
+  assert.equal(await audits(), before, "no write when nothing moves");
+  await admin`update cash_sessions set closed_at=now(),counted=0,expected=0 where id=${caroAgain}`;
+
+  // A product so the open register can keep selling.
+  const productId = randomUUID();
+  const ownerOnTwo = session(ownerSeat.employee_id, devices[1].id, "owner");
+  await run((tx) =>
+    saveProduct(tx, ownerOnTwo, {
+      operationId: randomUUID(),
+      id: productId,
+      name: { es: "Taco", en: "Taco" },
+      category: { es: "Tacos", en: "Tacos" },
+      price: 2500,
+      available: true,
+      station: "kitchen",
+      expectedVersion: 0,
+      cost: null,
+      recipe: [],
+    }),
+  );
+  const line = () => ({
+    id: randomUUID(),
+    productId,
+    quantity: 1,
+    options: [],
+    note: "",
+  });
+
+  // R-25 / Q5: a selling session renews its offline window; under drawer
+  // continuation it never does.
+  const sessionCookie = await run(async (tx) => {
+    const created = await createSession(tx, {
+      employeeId: staff.beto,
+      deviceId: devices[1].id,
+    });
+    return { id: created.id, tenantId, token: created.token };
+  });
+  const authenticate = async () => {
+    await admin`update sessions set last_seen_at=now()-interval '1 hour' where id=${sessionCookie.id}`;
+    // Bring the window near its end (test-only: one admin transaction with the
+    // evidence trigger disabled, LD-12 pattern).
+    await admin.begin(async (tx) => {
+      await tx`alter table offline_leases disable trigger offline_leases_immutable`;
+      await tx`alter table offline_lease_renewals disable trigger offline_lease_renewals_immutable`;
+      await tx`update offline_leases set valid_until=now()+interval '30 minutes' where session_id=${sessionCookie.id}`;
+      await tx`update offline_lease_renewals set valid_until=now()+interval '30 minutes' where session_id=${sessionCookie.id}`;
+      await tx`alter table offline_lease_renewals enable trigger offline_lease_renewals_immutable`;
+      await tx`alter table offline_leases enable trigger offline_leases_immutable`;
+    });
+    const req: any = {
+      method: "GET",
+      headers: {},
+      cookies: {
+        gm_session: sign(sessionCookie),
+        gm_device: sign({
+          id: devices[1].id,
+          tenantId,
+          token: devices[1].token,
+        }),
+      },
+    };
+    await new Promise<void>((resolve, reject) =>
+      authentication(sql)(req, { clearCookie() {} } as any, (e?: unknown) =>
+        e ? reject(e) : resolve(),
+      ),
+    );
+    return req.session as Session;
+  };
+  const renewals = async () =>
+    (
+      await admin`select count(*)::int as n from offline_lease_renewals where session_id=${sessionCookie.id}`
+    )[0].n as number;
+  await authenticate();
+  assert.equal(
+    await renewals(),
+    1,
+    "a selling session renews its offline window",
+  );
+  await authenticate();
+  assert.equal(await renewals(), 2, "and keeps renewing it while in contact");
+
+  // The trial ends while drawer two is open. The drawer opened an hour before
+  // the lapse (backdated so "opened during Pro" never depends on how fast the
+  // steps above ran).
+  await admin`update cash_sessions set opened_at=now()-interval '1 hour' where id=${drawerTwo}`;
+  await admin`update restaurant_entitlements set access_until=now()-interval '1 second' where tenant_id=${tenantId}`;
+  const lapsed = await authenticate();
+  assert.equal(lapsed.sellingAllowed, true);
+  assert.equal(
+    await renewals(),
+    2,
+    "a continuation session does not append offline_lease_renewals",
+  );
+  const access = await run((tx) =>
+    sellingAccess(tx, staff.beto, devices[1].id),
+  );
+  assert.equal(access.basis, "drawer_continuation");
+  assert.ok(access.continuationUntil);
+  // lapse: the register whose drawer opened during Pro keeps taking orders
+  // and rounds after the trial ended, until the drawer closes.
+  const order = await run((tx) =>
+    createOrder(tx, betoOnTwo, {
+      operationId: randomUUID(),
+      lines: [line()],
+      mode: "takeaway",
+      tableId: null,
+      name: "Para llevar",
+      note: "",
+      channel: "pos",
+    }),
+  );
+  const withRound = await run((tx) =>
+    addRound(tx, betoOnTwo, order.id, {
+      operationId: randomUUID(),
+      lines: [line()],
+      mode: "takeaway",
+      expectedVersion: order.version,
+    }),
+  );
+  assert.equal(withRound.lines.length, 2);
+  // R-26: no new drawer under continuation: free_selection_required, not 500.
+  await assert.rejects(openDrawer(betoOnTwo), /free_selection_required/);
+  // lapse: an unselected device without an open drawer cannot start sales.
+  await assert.rejects(
+    run((tx) =>
+      createOrder(tx, session(staff.ana, devices[0].id, "cashier"), {
+        operationId: randomUUID(),
+        lines: [line()],
+        mode: "takeaway",
+        tableId: null,
+        name: "No",
+        note: "",
+        channel: "pos",
+      }),
+    ),
+    /free_selection_required/,
+  );
+  // ACC-14 / ACC-21: when Pro ended, per entitlement status (drawer two opened
+  // an hour ago). Migration 031's trigger stamps pro_ended_at when a write
+  // takes the row out of Pro, bounded by the end date the row had then, and
+  // keeps it on every later write. backInPro(ago) makes the row active again
+  // with a period that ran out `ago` (the worker's later status write then
+  // takes it out of Pro).
+  const continuationBasis = async () =>
+    (await run((tx) => sellingAccess(tx, staff.beto, devices[1].id))).basis;
+  const entitlementRow = async () =>
+    (
+      await admin`select status,access_until,pro_ended_at,updated_at from restaurant_entitlements where tenant_id=${tenantId}`
+    )[0];
+  const backInPro = async (ago: string, source = "fixture") => {
+    await admin`update restaurant_entitlements set status='active',
+      access_until=now()-${ago}::interval,source=${source} where tenant_id=${tenantId}`;
+    assert.equal(
+      (await entitlementRow()).pro_ended_at,
+      null,
+      "an active row carries no pro_ended_at",
+    );
+  };
+  // Canceled: the earlier of its ended_at (access_until) and leaving Pro.
+  await backInPro("1 second");
+  await admin`update restaurant_entitlements set status='canceled',access_until=now()-interval '1 minute' where tenant_id=${tenantId}`;
+  const canceled = await entitlementRow();
+  assert.ok(canceled.pro_ended_at, "leaving Pro stamps pro_ended_at");
+  assert.equal(
+    await continuationBasis(),
+    "drawer_continuation",
+    "canceled after the drawer opened",
+  );
+  await admin`update restaurant_entitlements set access_until=now()-interval '2 hours' where tenant_id=${tenantId}`;
+  assert.equal(
+    await continuationBasis(),
+    "none",
+    "canceled before the drawer opened",
+  );
+  assert.equal(
+    (await entitlementRow()).pro_ended_at.getTime(),
+    canceled.pro_ended_at.getTime(),
+    "a write that stays out of Pro keeps pro_ended_at",
+  );
+  // past_due and paused from Stripe carry no end date: leaving Pro ends it.
+  for (const status of ["past_due", "paused"]) {
+    await backInPro("1 second");
+    await admin`update restaurant_entitlements set status=${status},access_until=null where tenant_id=${tenantId}`;
+    assert.equal(
+      await continuationBasis(),
+      "drawer_continuation",
+      `${status}: Pro ended after the drawer opened`,
+    );
+    await backInPro("2 hours");
+    await admin`update restaurant_entitlements set status=${status},access_until=null where tenant_id=${tenantId}`;
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      `${status}: Pro ended before the drawer opened`,
+    );
+    // The trigger owns the column: a writer cannot move it.
+    await admin`update restaurant_entitlements set pro_ended_at=now(),updated_at=now() where tenant_id=${tenantId}`;
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      `${status}: an explicit pro_ended_at write is ignored`,
+    );
+  }
+  // A row inserted outside Pro never had Pro under it (rolled back).
+  await admin
+    .begin(async (tx) => {
+      await tx`delete from restaurant_entitlements where tenant_id=${tenantId}`;
+      const [row] =
+        await tx`insert into restaurant_entitlements(tenant_id,status,access_until,source,pro_ended_at)
+          values(${tenantId},'past_due',null,'stripe',now()) returning pro_ended_at`;
+      assert.equal(row.pro_ended_at, null, "an inserted past_due row");
+      throw new Error("rollback");
+    })
+    .catch((error: Error) => {
+      if (error.message !== "rollback") throw error;
+    });
+  // ACC-21: a drawer opened on Free during dunning (past_due since Pro ended
+  // 2 h ago; the drawer opened 1 h ago) never gains continuation, however
+  // often the billing worker reconciles the unchanged subscription: every
+  // reconcile (at least every 15 minutes) upserts the row with
+  // updated_at=now(). Nor when dunning ends in a cancellation.
+  await backInPro("2 hours", "stripe");
+  const [{ organization_id: organizationId }] =
+    await admin`select organization_id from restaurants where id=${tenantId}`;
+  const workerRole = "gm_billing_test_" + randomBytes(6).toString("hex");
+  const workerPassword = randomBytes(32).toString("hex");
+  const database = new URL(migration).pathname.slice(1);
+  await admin.unsafe(
+    `create role "${workerRole}" login password '${workerPassword}' nosuperuser nobypassrls`,
+  );
+  let worker: postgres.Sql | undefined;
+  try {
+    await admin.unsafe(`grant gm_billing_worker to "${workerRole}"`);
+    await admin.unsafe(
+      `grant connect on database "${database}" to "${workerRole}"`,
+    );
+    const u = new URL(runtime);
+    u.username = workerRole;
+    u.password = workerPassword;
+    worker = postgres(u.href, { max: 1 });
+    const store = billingStore(worker);
+    await admin`insert into organization_billing(organization_id,subscription_id,trial_used)
+      values(${organizationId},${"sub_FreeLimits" + randomBytes(6).toString("hex")},true)`;
+    await admin`insert into billing_locations(organization_id,tenant_id) values(${organizationId},${tenantId})`;
+    /** One leased reconcile completed by the real billing store (billing-store.ts complete()). */
+    const reconcile = async (entitlement: Entitlement) => {
+      const id = randomUUID(),
+        token = randomUUID();
+      await admin`insert into billing_operations(id,organization_id,kind,payload,state,lease_token,lease_until,fetch_started_at)
+        values(${id},${organizationId},'reconcile','{}','running',${token},now()+interval '2 minutes',now())`;
+      assert.equal(await store.complete(id, token, {}, entitlement), true);
+    };
+    const pastDue: Entitlement = {
+      status: "past_due",
+      accessUntil: null,
+      source: "stripe",
+    };
+    await reconcile(pastDue);
+    const dunning = await entitlementRow();
+    assert.equal(dunning.status, "past_due");
+    assert.ok(dunning.pro_ended_at);
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      "a drawer opened on Free during dunning",
+    );
+    for (let i = 0; i < 3; i++) await reconcile(pastDue);
+    const after = await entitlementRow();
+    const [drawer] =
+      await admin`select updated_at>opened_at as rewritten from restaurant_entitlements e
+        join cash_sessions c on c.tenant_id=e.tenant_id where c.id=${drawerTwo}`;
+    assert.ok(
+      drawer.rewritten,
+      "the worker rewrote updated_at after the drawer opened",
+    );
+    assert.equal(
+      after.pro_ended_at.getTime(),
+      dunning.pro_ended_at.getTime(),
+      "unchanged reconciles keep pro_ended_at",
+    );
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      "ACC-21: still no continuation after unchanged reconciles",
+    );
+    await reconcile({
+      status: "canceled",
+      accessUntil: new Date().toISOString(),
+      source: "stripe",
+    });
+    assert.equal(
+      (await entitlementRow()).pro_ended_at.getTime(),
+      dunning.pro_ended_at.getTime(),
+      "past_due -> canceled keeps pro_ended_at",
+    );
+    assert.equal(
+      await continuationBasis(),
+      "none",
+      "dunning that ends in a cancellation gives no continuation",
+    );
+  } finally {
+    await admin`delete from billing_operations where organization_id=${organizationId}`;
+    await admin`delete from billing_locations where organization_id=${organizationId}`;
+    await admin`delete from organization_billing where organization_id=${organizationId}`;
+    await worker?.end();
+    await admin.unsafe(
+      `revoke connect on database "${database}" from "${workerRole}"`,
+    );
+    await admin.unsafe(`revoke gm_billing_worker from "${workerRole}"`);
+    await admin.unsafe(`drop role "${workerRole}"`);
+  }
+  // Support's end-entitlement (status free) keeps the grant's end: a grant
+  // ended now continues; one that had already ended before the drawer opened
+  // does not.
+  const endGrant = () =>
+    admin`update restaurant_entitlements set status='free',access_until=least(access_until,now()),
+      source='support',version=version+1,updated_at=now() where tenant_id=${tenantId}`;
+  await admin`update restaurant_entitlements set status='active',access_until=now()+interval '30 days',
+    source='support' where tenant_id=${tenantId}`;
+  await endGrant();
+  assert.equal(
+    await continuationBasis(),
+    "drawer_continuation",
+    "support ended the grant after the drawer opened",
+  );
+  await backInPro("2 hours", "support");
+  await endGrant();
+  assert.equal(
+    await continuationBasis(),
+    "none",
+    "the support grant had ended before the drawer opened",
+  );
+  // Stripe's free (unpaid after past_due, or incomplete): no continuation.
+  await backInPro("1 second", "stripe");
+  await admin`update restaurant_entitlements set status='free',access_until=null where tenant_id=${tenantId}`;
+  assert.equal(
+    await continuationBasis(),
+    "none",
+    "a Stripe free row: no continuation",
+  );
+  await admin`update restaurant_entitlements set status='trialing',access_until=now()-interval '1 second',
+    source='fixture' where tenant_id=${tenantId}`;
+  assert.equal(await continuationBasis(), "drawer_continuation");
+  // Continuation ends 16 h after the drawer opened...
+  await admin`update cash_sessions set opened_at=now()-interval '17 hours' where id=${drawerTwo}`;
+  assert.equal(
+    (await run((tx) => sellingAccess(tx, staff.beto, devices[1].id))).basis,
+    "none",
+  );
+  // ...and when the drawer closes; cash/open is then denied too.
+  await admin`update cash_sessions set opened_at=now(),closed_at=now(),counted=0,expected=0 where id=${drawerTwo}`;
+  assert.equal(
+    await run((tx) => sellingAllowed(tx, staff.beto, devices[1].id)),
+    false,
+  );
+  await assert.rejects(openDrawer(betoOnTwo), /free_selection_required/);
+
+  // Manual mode: the owner's explicit selection pins slots; back-to-auto resumes.
+  const ownerOnLaptop = session(
+    ownerSeat.employee_id,
+    laptop.device.id,
+    "owner",
+  );
+  await run((tx) =>
+    saveFreeSelection(tx, ownerOnLaptop, {
+      deviceId: devices[2].id,
+      employeeIds: [staff.ana],
+    }),
+  );
+  assert.equal(await run((tx) => freeSelectionMode(tx)), "manual");
+  await admin`update restaurant_entitlements set access_until=now()+interval '1 day' where tenant_id=${tenantId}`;
+  await openDrawer(betoOnTwo);
+  assert.equal(
+    (await slots()).device,
+    devices[2].id,
+    "auto slot: manual mode never moves",
+  );
+  await admin`update cash_sessions set closed_at=now(),counted=0,expected=0 where device_id=${devices[1].id} and closed_at is null`;
+  const back = (await run((tx) =>
+    setFreeSelectionMode(tx, ownerOnLaptop, {
+      operationId: randomUUID(),
+      mode: "auto",
+    }),
+  )) as { mode: string };
+  assert.equal(back.mode, "auto");
+  await openDrawer(betoOnTwo);
+  assert.equal((await slots()).device, devices[1].id, "back-to-auto resumes");
 }

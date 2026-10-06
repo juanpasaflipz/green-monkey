@@ -5,12 +5,21 @@ import { changeRestaurant, db } from "../offline";
 import { clearSessionScope } from "../api";
 import { OwnerManagement } from "./OwnerManagement";
 import { strings, translateError } from "../i18n";
+import { AccountCenter } from "./AccountCenter";
+import { LegalAcceptance, type LegalAccepted } from "./LegalAcceptance";
+import {
+  loadAccountConfig,
+  reloadAccountConfig,
+  supportHref,
+  type AccountConfig,
+} from "./accountConfig";
+import { PRIVACY_SIMPLIFIED, legalText } from "../../shared/legal";
 
 type Account = {
   name: string;
   email: string;
   csrf: string;
-  organizations: { id: string; name: string }[];
+  organizations: { id: string; name: string; role: "primary" | "co_owner" }[];
   restaurants: {
     id: string;
     name: string;
@@ -20,6 +29,14 @@ type Account = {
     free_location: boolean;
     organization_id: string;
   }[];
+  legal?: { status: string; pending: Array<"terms" | "privacy"> };
+};
+type InvitationPreview = {
+  role: string;
+  restaurantName: string;
+  organizationName: string;
+  expiresAt: string;
+  emailMatches: boolean;
 };
 const copy = {
   es: {
@@ -125,11 +142,25 @@ export function OwnerAccess({
     }
     return token ?? sessionStorage.getItem("gm-invitation") ?? "";
   });
+  // account (031): an ownership transfer link (#transfer=…) waits for the
+  // target's Google sign-in like an invitation does.
+  const [transferToken, setTransferToken] = useState(() => {
+    const token = new URLSearchParams(location.hash.slice(1)).get("transfer");
+    if (token) {
+      sessionStorage.setItem("gm-transfer", token);
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    return token ?? sessionStorage.getItem("gm-transfer") ?? "";
+  });
+  const [config, setConfig] = useState<AccountConfig | null>(null);
+  const [preview, setPreview] = useState<InvitationPreview | null>(null);
+  const [inviteLegal, setInviteLegal] = useState<LegalAccepted | null>(null);
+  const [signupLegal, setSignupLegal] = useState<LegalAccepted | null>(null);
   const [wantsSignup] = useState(() =>
     new URLSearchParams(location.search).has("signup"),
   );
   const [authError] = useState(
-    new URLSearchParams(location.search).has("auth_error"),
+    new URLSearchParams(location.search).get("auth_error") ?? "",
   );
   async function refresh() {
     setLoading(true);
@@ -145,6 +176,7 @@ export function OwnerAccess({
       )
         throw Error();
       const providers = await providerResponse.json();
+      setConfig(await loadAccountConfig().catch(() => null));
       setGoogle(providers.google);
       if (providers.terminal) setTerminal(true);
       setBillingSandbox(providers.billingSandbox === true);
@@ -160,6 +192,19 @@ export function OwnerAccess({
   useEffect(() => {
     void refresh();
   }, []);
+  useEffect(() => {
+    if (!account || !invitation) return;
+    fetch("/api/auth/account-center/invitations/preview", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-csrf-token": account.csrf,
+      },
+      body: JSON.stringify({ token: invitation }),
+    })
+      .then(async (r) => (r.ok ? setPreview(await r.json()) : setPreview(null)))
+      .catch(() => setPreview(null));
+  }, [account?.csrf, invitation]);
   async function command(path: string, body: unknown) {
     const response = await fetch("/api/auth/account/" + path, {
       method: "POST",
@@ -214,11 +259,176 @@ export function OwnerAccess({
       </section>
     );
   if (loading && !account) return <p role="status">{t.loading}</p>;
+  // UX-8: an account that belongs to no organization sees its restaurant
+  // form first (with its own heading), before the account console; a
+  // pending invitation or transfer link keeps the console first.
+  const signupFirst = Boolean(
+    account &&
+    !account.organizations?.length &&
+    !invitation &&
+    !transferToken &&
+    (!config || config.legal.signupOpen),
+  );
+  const signupBlock = account &&
+    (!config || config.legal.signupOpen) &&
+    !account.organizations?.some((o) => o.role === "primary") && (
+      <form
+        aria-labelledby="signup-form-title"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const f = new FormData(e.currentTarget);
+          setBusy(true);
+          setFailed(false);
+          setTransitionError("");
+          const [hours, minutes] = String(f.get("cutoff"))
+            .split(":")
+            .map(Number);
+          try {
+            const result = await command("signup", {
+              trialRequested:
+                billingSandbox && f.get("trialRequested") === "on",
+              restaurantName: f.get("restaurantName"),
+              currency: f.get("currency"),
+              timezone: f.get("timezone"),
+              cutoff: hours * 60 + minutes,
+              openingDays: f.getAll("openingDays").map(Number),
+              locale,
+              ...(signupLegal ? { legalAccepted: signupLegal } : {}),
+            });
+            await enter(result.tenantId);
+          } catch (error) {
+            // Account refusals say what happened (ACC-17); only network
+            // failures and invalid input keep the generic message.
+            const code = (error as Error).message;
+            if (
+              error instanceof TypeError ||
+              !code ||
+              code === "invalid_input"
+            ) {
+              setFailed(true);
+              return;
+            }
+            setTransitionError(translateError(code, locale));
+            // Changed documents or a paused signup: read the settings
+            // served now (past the 5-minute cache), so the form asks
+            // for the current versions or hides itself.
+            if (
+              code === "legal_version_mismatch" ||
+              code === "legal_acceptance_required" ||
+              code === "signup_paused"
+            ) {
+              setSignupLegal(null);
+              setConfig(await reloadAccountConfig().catch(() => null));
+            }
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <h2 id="signup-form-title">{strings[locale].accountSignupFormTitle}</h2>
+        <Field label={t.name}>
+          <input
+            name="restaurantName"
+            maxLength={100}
+            required
+            autoComplete="organization"
+          />
+        </Field>
+        <details open={invalid || undefined}>
+          <summary>{t.settings}</summary>
+          <Field label={t.currency}>
+            <select name="currency" defaultValue="MXN">
+              <option>MXN</option>
+              <option>USD</option>
+              <option>EUR</option>
+            </select>
+          </Field>
+          <Field label={t.timezone}>
+            <input
+              name="timezone"
+              defaultValue="America/Mexico_City"
+              required
+              list="owner-timezones"
+            />
+          </Field>
+          <datalist id="owner-timezones">
+            <option value="America/Mexico_City" />
+            <option value="America/Cancun" />
+            <option value="America/Tijuana" />
+            <option value="America/New_York" />
+            <option value="Europe/Madrid" />
+          </datalist>
+          <Field label={t.cutoff}>
+            <input name="cutoff" type="time" defaultValue="04:00" required />
+          </Field>
+          <fieldset>
+            <legend>{t.days}</legend>
+            {t.week.map((name, i) => (
+              <label className="opening-day" key={name}>
+                <input
+                  type="checkbox"
+                  name="openingDays"
+                  value={i + 1}
+                  defaultChecked
+                />
+                {name}
+              </label>
+            ))}
+          </fieldset>
+        </details>
+        {billingSandbox ? (
+          <label className="opening-day">
+            <input type="checkbox" name="trialRequested" defaultChecked />
+            {locale === "es"
+              ? "Prueba Pro de 14 días sin tarjeta (sandbox). Desmarca para continuar en Free. Si la activación tarda, puedes seguir usando tu restaurante."
+              : "14-day Pro trial without a card (sandbox). Uncheck to continue on Free. You can keep using your restaurant while activation is pending."}
+          </label>
+        ) : (
+          <p className="muted">{t.free}</p>
+        )}
+        {config ? (
+          <LegalAcceptance
+            // New versions remount it unchecked: accept them again.
+            key={[
+              config.legal.documents.terms.version,
+              config.legal.documents.privacy.version,
+              config.legal.documents.dpa.version,
+            ].join(":")}
+            mode="signup"
+            config={config}
+            locale={locale}
+            onChange={setSignupLegal}
+          />
+        ) : (
+          <div role="alert" className="row">
+            <span>{strings[locale].accountLegalUnavailable}</span>
+            <Button
+              disabled={busy}
+              onClick={async () =>
+                setConfig(await reloadAccountConfig().catch(() => null))
+              }
+            >
+              {t.retry}
+            </Button>
+          </div>
+        )}
+        <Button
+          type="submit"
+          disabled={busy || !config || !signupLegal}
+          variant="primary"
+          className="full"
+        >
+          {busy ? t.busy : t.create}
+        </Button>
+      </form>
+    );
   return (
     <section className="owner-access" aria-label={t.title}>
-      {authError && (
+      {authError && authError !== "terminal" && (
         <p role="alert" className="error">
-          {t.authError}
+          {authError === "signup_paused"
+            ? strings[locale].accountSignupPaused
+            : t.authError}
         </p>
       )}
       {failed && (
@@ -231,14 +441,77 @@ export function OwnerAccess({
       {!account && (google || wantsSignup) && (
         <div className="signup-cta">
           <h2>{t.signupTitle}</h2>
-          <p className="muted">{google ? t.signupHint : t.signupUnavailable}</p>
-          {google && (
+          <p className="muted">
+            {!google
+              ? t.signupUnavailable
+              : config && !config.legal.signupOpen
+                ? strings[locale].accountSignupPaused
+                : t.signupHint}
+            {google &&
+              config &&
+              !config.legal.signupOpen &&
+              config.support.configured && (
+                // UX-15: who to ask while signup is paused.
+                <>
+                  {" "}
+                  {strings[locale].accountSignupPausedContact}{" "}
+                  <a href={supportHref(config)}>
+                    {config.support.email ??
+                      config.support.whatsapp ??
+                      config.support.phone ??
+                      config.support.url}
+                  </a>
+                </>
+              )}
+          </p>
+          {/* The button waits for the configuration, so a Google sign-in never
+              starts without the simplified notice shown next to it (LEGAL-1). */}
+          {google && config && (
             <a
               className={`button full ${wantsSignup ? "primary" : ""}`}
               href="/api/auth/google/start"
+              aria-describedby={
+                config.legal.signupOpen ? "signup-privacy-notice" : undefined
+              }
             >
-              {t.google}
+              {!config.legal.signupOpen
+                ? strings[locale].accountGoogleExisting
+                : t.google}
             </a>
+          )}
+          {google && !config && (
+            <div role="alert" className="row">
+              <span>{strings[locale].accountLegalUnavailable}</span>
+              <Button
+                disabled={busy}
+                onClick={async () =>
+                  setConfig(await reloadAccountConfig().catch(() => null))
+                }
+              >
+                {t.retry}
+              </Button>
+            </div>
+          )}
+          {google && config && config.legal.signupOpen && (
+            <p id="signup-privacy-notice" className="muted signup-notice">
+              {/* One source: the versioned simplified notice (LEGAL-1). */}
+              {config.legal.status === "published" && config.legal.entity
+                ? legalText(
+                    PRIVACY_SIMPLIFIED[locale],
+                    config.legal.entity,
+                    locale,
+                  )
+                : strings[locale].accountSimplifiedNoticeDraft}{" "}
+              <a
+                href={locale === "es" ? "/legal/privacidad" : "/legal/privacy"}
+              >
+                {strings[locale].accountLegalPrivacy}
+              </a>
+              {" · "}
+              <a href={locale === "es" ? "/legal/terminos" : "/legal/terms"}>
+                {strings[locale].accountLegalTerms}
+              </a>
+            </p>
           )}
           <p className="signup-divider">
             <span>{t.or}</span>
@@ -252,21 +525,70 @@ export function OwnerAccess({
           {invitation && (
             <div className="panel">
               <p>
-                {locale === "es"
-                  ? "Tienes una invitación. Acéptala con la cuenta de Google que recibió el enlace."
-                  : "You have an invitation. Accept with the Google account the link was intended for."}
+                {preview
+                  ? preview.role === "co_owner"
+                    ? strings[locale].accountCoOwnerInvited.replace(
+                        "{org}",
+                        preview.organizationName,
+                      )
+                    : strings[locale].accountInvitedAs
+                        .replace(
+                          "{role}",
+                          strings[locale][
+                            preview.role as
+                              "manager" | "cashier" | "server" | "kitchen"
+                          ] ?? preview.role,
+                        )
+                        .replace("{restaurant}", preview.restaurantName)
+                  : locale === "es"
+                    ? "Tienes una invitación. Acéptala con la cuenta de Google que recibió el enlace."
+                    : "You have an invitation. Accept with the Google account the link was intended for."}
               </p>
+              {preview && !preview.emailMatches && (
+                <p role="alert">
+                  {strings[locale].accountInvitationEmailMismatch}
+                </p>
+              )}
+              {config &&
+                config.legal.status === "published" &&
+                !!account.legal?.pending.length && (
+                  <LegalAcceptance
+                    mode="invitation"
+                    config={config}
+                    locale={locale}
+                    onChange={setInviteLegal}
+                  />
+                )}
               <Button
-                disabled={busy}
+                disabled={
+                  busy ||
+                  (config?.legal.status === "published" &&
+                    !!account.legal?.pending.length &&
+                    !inviteLegal)
+                }
                 onClick={async () => {
                   setBusy(true);
                   try {
-                    await command("invitations/accept", { token: invitation });
+                    await command("invitations/accept", {
+                      token: invitation,
+                      locale,
+                      ...(inviteLegal
+                        ? {
+                            legalAccepted: {
+                              terms: inviteLegal.terms,
+                              privacy: inviteLegal.privacy,
+                            },
+                          }
+                        : {}),
+                    });
                     sessionStorage.removeItem("gm-invitation");
                     setInvitation("");
+                    setPreview(null);
                     await refresh();
-                  } catch {
-                    setFailed(true);
+                  } catch (error) {
+                    setTransitionError(
+                      translateError((error as Error).message, locale),
+                    );
                   } finally {
                     setBusy(false);
                   }
@@ -304,113 +626,37 @@ export function OwnerAccess({
               restaurants={account.restaurants.filter((r) =>
                 account.organizations.some((o) => o.id === r.organization_id),
               )}
+              roles={Object.fromEntries(
+                account.organizations.map((o) => [o.id, o.role]),
+              )}
+              config={config}
               billingSandbox={billingSandbox}
               refresh={refresh}
             />
           )}
-          {!account.organizations?.length && (
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                const f = new FormData(e.currentTarget);
-                setBusy(true);
-                setFailed(false);
-                const [hours, minutes] = String(f.get("cutoff"))
-                  .split(":")
-                  .map(Number);
-                try {
-                  const result = await command("signup", {
-                    trialRequested:
-                      billingSandbox && f.get("trialRequested") === "on",
-                    restaurantName: f.get("restaurantName"),
-                    currency: f.get("currency"),
-                    timezone: f.get("timezone"),
-                    cutoff: hours * 60 + minutes,
-                    openingDays: f.getAll("openingDays").map(Number),
-                  });
-                  await enter(result.tenantId);
-                } catch {
-                  setFailed(true);
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              <Field label={t.name}>
-                <input
-                  name="restaurantName"
-                  maxLength={100}
-                  required
-                  autoComplete="organization"
-                />
-              </Field>
-              <details open={invalid || undefined}>
-                <summary>{t.settings}</summary>
-                <Field label={t.currency}>
-                  <select name="currency" defaultValue="MXN">
-                    <option>MXN</option>
-                    <option>USD</option>
-                    <option>EUR</option>
-                  </select>
-                </Field>
-                <Field label={t.timezone}>
-                  <input
-                    name="timezone"
-                    defaultValue="America/Mexico_City"
-                    required
-                    list="owner-timezones"
-                  />
-                </Field>
-                <datalist id="owner-timezones">
-                  <option value="America/Mexico_City" />
-                  <option value="America/Cancun" />
-                  <option value="America/Tijuana" />
-                  <option value="America/New_York" />
-                  <option value="Europe/Madrid" />
-                </datalist>
-                <Field label={t.cutoff}>
-                  <input
-                    name="cutoff"
-                    type="time"
-                    defaultValue="04:00"
-                    required
-                  />
-                </Field>
-                <fieldset>
-                  <legend>{t.days}</legend>
-                  {t.week.map((name, i) => (
-                    <label className="opening-day" key={name}>
-                      <input
-                        type="checkbox"
-                        name="openingDays"
-                        value={i + 1}
-                        defaultChecked
-                      />
-                      {name}
-                    </label>
-                  ))}
-                </fieldset>
-              </details>
-              {billingSandbox ? (
-                <label className="opening-day">
-                  <input type="checkbox" name="trialRequested" defaultChecked />
-                  {locale === "es"
-                    ? "Prueba Pro de 14 días sin tarjeta (sandbox). Desmarca para continuar en Free. Si la activación tarda, puedes seguir usando tu restaurante."
-                    : "14-day Pro trial without a card (sandbox). Uncheck to continue on Free. You can keep using your restaurant while activation is pending."}
-                </label>
-              ) : (
-                <p className="muted">{t.free}</p>
-              )}
-              <Button
-                type="submit"
-                disabled={busy}
-                variant="primary"
-                className="full"
-              >
-                {busy ? t.busy : t.create}
-              </Button>
-            </form>
-          )}
+          {signupFirst && signupBlock}
+          <AccountCenter
+            locale={locale}
+            csrf={account.csrf}
+            config={config}
+            refresh={refresh}
+            reloadConfig={async () =>
+              setConfig(await reloadAccountConfig().catch(() => null))
+            }
+            transferToken={transferToken}
+            clearTransferToken={() => {
+              sessionStorage.removeItem("gm-transfer");
+              setTransferToken("");
+            }}
+          />
+          {config &&
+            !config.legal.signupOpen &&
+            !account.organizations?.some((o) => o.role === "primary") && (
+              <p role="status" className="muted">
+                {strings[locale].accountSignupPaused}
+              </p>
+            )}
+          {!signupFirst && signupBlock}
           <Button
             disabled={busy}
             variant="ghost"

@@ -483,9 +483,12 @@ async function waitFor(check: () => Promise<boolean>, ms = 10_000) {
   }
 }
 /** Advisory-lock requests waiting in this (isolated) test database. */
+// pg_locks spans the whole cluster: count this database's waiters only, so another suite running
+// on the same local server (other worktrees share it) never satisfies a wait early.
 const advisoryWaiters = async () =>
   (
-    await admin`select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted`
+    await admin`select count(*)::int as n from pg_locks where locktype = 'advisory' and not granted
+      and database = (select oid from pg_database where datname = current_database())`
   )[0].n as number;
 /** LD-12 named-trigger pattern: moves a document's clocks back (the guard refuses every role). */
 async function age(documentIds: string[], minutes: number) {
@@ -696,7 +699,7 @@ try {
     );
   });
 
-  await test("2. portal: the code resolves the tenant only through the lookup policy; tenants stay apart; request and download tokens are purpose-bound and expire", async () => {
+  await test("2. portal: the code resolves the tenant only through the lookup policy; tenants stay apart; request and download tokens are purpose-bound and expire; the restaurant's privacy notice is linked (account 031)", async () => {
     const tk = await makeTicket(A, {
       groups: [{ category: "iva16", gross: 23200 }],
     });
@@ -724,6 +727,20 @@ try {
     assert.equal(view.total, 23200);
     assert.equal(view.folio, tk.folio);
     assert.equal("documents" in view, false);
+    // account (031): the portal links the restaurant's own privacy notice (restaurantPrivacyUrl),
+    // and none until the owner sets one.
+    assert.equal(view.privacyUrl, null);
+    await tenant(
+      app,
+      A.tenantId,
+      (tx) =>
+        tx`insert into restaurant_account_settings (tenant_id, privacy_notice_url)
+          values (${A.tenantId}, 'https://taqueria.example/privacidad')`,
+    );
+    assert.equal(
+      (await portal.portalTicket(app, tk.code)).privacyUrl,
+      "https://taqueria.example/privacidad",
+    );
     const submitted = await portal.portalSubmit(app, tk.code, {
       operationId: op(),
       receptor: { ...MORAL, email: "cliente@example.com" },
@@ -3071,8 +3088,14 @@ try {
     ]);
     const live = await liveTicks(T.tenantId);
     assert.equal(live.length, 1);
+    // The next hour's tick; when that hour's key already belongs to a tick that ran (the
+    // setup above marks the activation's tick done), armNextTick suffixes it with this job's id.
     assert.ok(
-      [`tick:${before}`, `tick:${after}`].includes(live[0].dedupe_key),
+      [`tick:${before}`, `tick:${after}`].some(
+        (key) =>
+          live[0].dedupe_key === key ||
+          live[0].dedupe_key.startsWith(`${key}:`),
+      ),
       live[0].dedupe_key,
     );
     // Sign-in restarts a chain with no live tick.

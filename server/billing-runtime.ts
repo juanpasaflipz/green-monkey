@@ -13,6 +13,8 @@ import {
 import { waitForDatabase } from "./db.js";
 import { poolOptions, withoutParams } from "./db-support.js";
 import { log } from "./logging.js";
+import { legalConfig, requireCurrentLegal } from "./legal.js";
+import { saasTaxConfig } from "./saas-tax.js";
 
 /** The billing capability login on the same database as the runtime role. */
 function billingPool(env: NodeJS.ProcessEnv, applicationName: string) {
@@ -58,6 +60,8 @@ export async function billingRuntime(
   const sql = billingPool(env, "gm-web-billing");
   await waitForDatabase(sql, { check: checkBillingRole });
   const store = billingStore(sql);
+  // account (031): billing requests need the current terms, privacy notice and DPA.
+  const legal = legalConfig(env);
   // Pending operations and events are picked up by the worker's next tick
   // (every 2 s), so routes no longer trigger provider work in-process.
   webhook.post(
@@ -126,7 +130,10 @@ export async function billingRuntime(
         appSql,
         req.cookies.gm_account ?? "",
         req.get("x-csrf-token") ?? "",
-        async (_tx, a) => a.id,
+        async (tx, a) => {
+          await requireCurrentLegal(tx, a.id, legal);
+          return a.id;
+        },
       );
       res
         .status(202)
@@ -142,7 +149,10 @@ export async function billingRuntime(
         appSql,
         req.cookies.gm_account ?? "",
         req.get("x-csrf-token") ?? "",
-        async (_tx, a) => a.id,
+        async (tx, a) => {
+          await requireCurrentLegal(tx, a.id, legal);
+          return a.id;
+        },
       );
       res.status(202).json(await store.quoteLocation(account, p.tenantId));
     } catch (error) {
@@ -159,7 +169,10 @@ export async function billingRuntime(
         appSql,
         req.cookies.gm_account ?? "",
         req.get("x-csrf-token") ?? "",
-        async (_tx, a) => a.id,
+        async (tx, a) => {
+          await requireCurrentLegal(tx, a.id, legal);
+          return a.id;
+        },
       );
       res.status(202).json(await store.confirmLocation(account, p.quoteId));
     } catch (error) {
@@ -173,6 +186,12 @@ export async function billingRuntime(
       await sql.end({ timeout: 5 });
     },
   };
+}
+
+/** SAAS_TAX_MODE for the worker's Stripe provider (account 031, GAP-6). */
+function providerTax(env: NodeJS.ProcessEnv) {
+  const c = saasTaxConfig(env, "worker");
+  return { mode: c.mode, taxRateId: c.taxRateId, collectTaxId: c.collectTaxId };
 }
 
 /**
@@ -193,6 +212,7 @@ export async function billingWorker(
     annualPriceId: env.STRIPE_PRICE_PRO_ANNUAL!,
     appUrl: env.APP_URL!,
     portalConfigurationId: env.STRIPE_PORTAL_CONFIG_ID,
+    tax: providerTax(env),
   });
   const sql = billingPool(env, "gm-worker-billing");
   await waitForDatabase(sql, { check: checkBillingRole });

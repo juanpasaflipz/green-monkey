@@ -1866,3 +1866,57 @@ test("a session ended while the PIN confirmation is open shows its lock instead 
     await admin.end();
   }
 });
+
+// A3 (owner PIN self-only, LD-8; added by account 031 per wave2-cross-track
+// C21): an owner never sets another owner's PIN (owner_pin_self_only), but
+// still unlocks them (A5); their own row keeps the shared-terminal PIN form.
+test("A3: another owner's row offers Desbloquear but no PIN form; my own row offers Mi PIN para terminales compartidas", async ({
+  page,
+  baseURL,
+}) => {
+  const admin = fixtureAdmin(baseURL);
+  const other = {
+    id: crypto.randomUUID(),
+    name: `Copropietaria ${tag()}`,
+  };
+  try {
+    // A second owner seat (as a co-owner's), soft-locked so Desbloquear shows.
+    await admin`insert into employees(tenant_id,id,name,login,secret_hash,role,pin_set_at,locked_until)
+      values('10000000-0000-4000-8000-000000000001',${other.id},${other.name},${`a3-${other.id.slice(0, 8)}`},
+        'unusable-fixture-secret','owner',now(),now()+interval '1 hour')`;
+    await ownerLogin(page);
+    await page.getByRole("button", { name: "Equipo", exact: true }).click();
+    await page.getByRole("button", { name: `Editar ${other.name}` }).click();
+    const theirs = page.getByRole("dialog", { name: `Editar a ${other.name}` });
+    await expect(theirs).toContainText(
+      "Solo esta persona puede definir su PIN para terminales compartidas, desde su propia sesión.",
+    );
+    await expect(
+      theirs.getByRole("button", { name: "Desbloquear", exact: true }),
+    ).toBeVisible();
+    await expect(
+      theirs.getByRole("button", { name: "Guardar PIN", exact: true }),
+    ).toHaveCount(0);
+    await expect(theirs.getByLabel("PIN nuevo (6 a 8 dígitos)")).toHaveCount(0);
+    const result = await new AxeBuilder({ page })
+      .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+      .analyze();
+    expect(result.violations).toEqual([]);
+    await theirs.getByRole("button", { name: "Cerrar" }).click();
+
+    await page.getByRole("button", { name: "Editar Alex Demo" }).click();
+    const mine = page.getByRole("dialog", { name: "Editar a Alex Demo" });
+    await expect(
+      mine.getByRole("heading", { name: "Mi PIN para terminales compartidas" }),
+    ).toBeVisible();
+    await expect(mine.getByLabel("PIN nuevo (6 a 8 dígitos)")).toBeVisible();
+    await expect(
+      mine.getByRole("button", { name: "Guardar PIN", exact: true }),
+    ).toBeVisible();
+    await expect(mine).not.toContainText("Solo esta persona puede definir");
+    await mine.getByRole("button", { name: "Cerrar" }).click();
+  } finally {
+    await admin`delete from employees where id=${other.id}`;
+    await admin.end();
+  }
+});

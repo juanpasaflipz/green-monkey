@@ -54,6 +54,15 @@ export async function saveEmployee(tx: Tx, s: Session, raw: unknown) {
       await lockFreeLimits(tx);
       const [old] =
         await tx`select role from employees where id=${p.id} for update`;
+      // Owner seats change only through account's co-owner and transfer flows
+      // (account 031): this legacy save refuses what Equipo refuses, and only
+      // the owner themself sets their own PIN (access A3, LD-8).
+      if (old?.role === "owner" && p.id !== s.employeeId)
+        throw new DomainError("owner_pin_self_only", 403);
+      if (old?.role === "owner" && p.role !== "owner")
+        throw new DomainError("owner_role_locked", 403);
+      if (old?.role === "owner" && !p.active)
+        throw new DomainError("owner_cannot_be_deactivated", 400);
       const slot = await employeeSlot(tx, p.id, p.active, p.role);
       await tx`insert into employees(tenant_id,id,name,login,role,secret_hash,active,free_slot,pin_set_at,deactivated_at)
         values(${s.tenantId},${p.id},${p.name},${p.login},${p.role},${await hashSecret(p.secret)},${p.active},${slot},now(),

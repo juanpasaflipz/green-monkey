@@ -13,8 +13,12 @@ import {
   ownerCookie,
   accountScope,
 } from "../server/owner-accounts.js";
+import { legalConfig } from "../server/legal.js";
 
 const { runtime, migration } = isolatedTarget(process.env);
+// Signup as CI's DB steps run it (documents unpublished, signup allowed); the
+// legal gate itself is covered by account-db.
+const legal = legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" });
 const sql = connect(runtime),
   admin = postgres(migration, { max: 1 });
 const subjects = [randomUUID(), randomUUID()];
@@ -48,6 +52,41 @@ try {
     accountIds[0],
     "subject remains stable",
   );
+  // account (031, FIT-12): while the legal documents are unpublished, a new
+  // Google identity is refused (no account row) and an existing one signs in.
+  const paused = randomUUID();
+  await assert.rejects(
+    signInGoogleOwner(
+      sql,
+      {
+        issuer: "https://accounts.google.com",
+        subject: paused,
+        email: "paused@example.com",
+        name: "Paused fixture",
+      },
+      { allowNewAccounts: false },
+    ),
+    /signup_paused/,
+  );
+  assert.equal(
+    (await admin`select 1 from owner_accounts where subject=${paused}`).length,
+    0,
+  );
+  assert.equal(
+    ownerCookie(
+      await signInGoogleOwner(
+        sql,
+        {
+          issuer: "https://accounts.google.com",
+          subject: subjects[0],
+          email: "same-email@example.com",
+        },
+        { allowNewAccounts: false },
+      ),
+    ).accountId,
+    accountIds[0],
+    "signInGoogleOwner allowNewAccounts=false allows an existing identity",
+  );
   assert.equal((await sql`select * from owner_accounts`).length, 0);
   assert.equal((await sql`select * from owner_memberships`).length, 0);
   const a = await withOwner(sql, cookies[0], undefined, async (_tx, a) => a);
@@ -65,7 +104,7 @@ try {
   const created = await Promise.all(
     Array.from({ length: 4 }, () =>
       withOwner(sql, cookies[0], a.csrf, (tx, account) =>
-        createOwnerRestaurant(tx, account, input),
+        createOwnerRestaurant(tx, account, input, legal),
       ),
     ),
   );

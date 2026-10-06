@@ -5,8 +5,14 @@
 //   JWT_SECRET                   the target server's: pairing codes are HMACs under it
 // Refuses databases not named *_test, *_load or *_staging and APP_ENV=production.
 // Re-running refreshes credentials; fixture.json (0600, gitignored) holds them,
-// plus one single-use pairing code per simulated browser (register and KDS
-// screens), each valid for ACCESS.pairingCodeMinutes: run load:run within that.
+// plus one single-use pairing code per simulated browser (register, KDS
+// screens, then the second register), each valid for ACCESS.pairingCodeMinutes:
+// run load:run within that.
+// Each restaurant is a Free location on Pro in automatic Free-slot mode, so
+// every drawer opening runs account's autoAssignFreeSlots (ARCHITECTURE E7),
+// and cashiers may close their own drawers: the second register opens and
+// closes drawers under rotating cashiers during the load phase (LD-32 OPS-3,
+// LD-15 account Q8).
 import "dotenv/config";
 import postgres from "postgres";
 import { randomBytes, randomInt, randomUUID } from "node:crypto";
@@ -72,14 +78,23 @@ try {
         login: "cashier",
         secret: pin(),
       },
+      // The second register's rotating cashiers (drawer open/close cycle):
+      // three of them for the two Free employee slots, so in automatic mode
+      // every opening evicts the slot of the oldest drawer (E7 writes).
+      drawerCashiers: [
+        { employeeId: employeeId(4, n), login: "cashier2", secret: pin() },
+        { employeeId: employeeId(5, n), login: "cashier3", secret: pin() },
+        { employeeId: employeeId(6, n), login: "cashier4", secret: pin() },
+      ],
       kitchen: [
         { employeeId: employeeId(2, n), login: "kitchen1", secret: pin() },
         { employeeId: employeeId(3, n), login: "kitchen2", secret: pin() },
       ],
     };
-    // One code per simulated browser: the register, then each KDS screen.
+    // One code per simulated browser: the register, each KDS screen, then
+    // the second register (drawer cycle).
     const pairingCodes = Array.from(
-      { length: 1 + profile.kdsScreensPerTenant },
+      { length: 2 + profile.kdsScreensPerTenant },
       generatePairingCode,
     );
     const products: {
@@ -92,12 +107,16 @@ try {
       const tx = raw as Tx;
       await tx`select set_config('app.tenant_id', ${id}, true)`;
       await tx`insert into organizations(id,name) values(${orgId(n)},${name}) on conflict do nothing`;
-      await tx`insert into restaurants(id,organization_id,name) values(${id},${orgId(n)},${name}) on conflict do nothing`;
+      await tx`insert into restaurants(id,organization_id,name,free_location) values(${id},${orgId(n)},${name},true)
+        on conflict (id) do update set free_location=true`;
       const staff = [
         ["owner", credentials.owner, "Load owner"],
         ["cashier", credentials.cashier, "Load cashier"],
         ["kitchen", credentials.kitchen[0], "Load kitchen 1"],
         ["kitchen", credentials.kitchen[1], "Load kitchen 2"],
+        ["cashier", credentials.drawerCashiers[0], "Load cashier 2"],
+        ["cashier", credentials.drawerCashiers[1], "Load cashier 3"],
+        ["cashier", credentials.drawerCashiers[2], "Load cashier 4"],
       ] as const;
       for (const [role, c, display] of staff)
         await tx`
@@ -113,7 +132,12 @@ try {
         where tenant_id=${id} and consumed_at is null and cancelled_at is null`;
       for (const [index, code] of pairingCodes.entries()) {
         const codeId = randomUUID();
-        const deviceName = index === 0 ? "LOAD Caja" : `LOAD KDS ${index}`;
+        const deviceName =
+          index === 0
+            ? "LOAD Caja"
+            : index <= profile.kdsScreensPerTenant
+              ? `LOAD KDS ${index}`
+              : "LOAD Caja 2";
         await tx`
           insert into device_pairing_codes(tenant_id,id,code_hash,device_name,created_by,expires_at)
           values(${id},${codeId},${pairingHash(code)},${deviceName},${credentials.owner.employeeId},
@@ -127,6 +151,13 @@ try {
         insert into restaurant_entitlements(tenant_id,status,access_until,source)
         values(${id},'active',now()+interval '1 year','fixture')
         on conflict(tenant_id) do update set status='active', access_until=excluded.access_until, source='fixture'`;
+      // Automatic Free slots (the default) and cashiers who close their own
+      // drawers (money controls, 028), so the drawer cycle needs no manager.
+      await tx`delete from restaurant_account_settings where tenant_id=${id}`;
+      await tx`
+        insert into money_controls(tenant_id,close_roles,updated_by)
+        values(${id},'{cashier}',${credentials.owner.employeeId})
+        on conflict(tenant_id) do update set close_roles='{cashier}'`;
       for (let t = 1; t <= 15; t++) {
         const table = `a3000000-${pad(t, 4)}-4000-8000-${pad(n)}`;
         tables.push(table);

@@ -14,6 +14,7 @@ import {
   ChefHat,
   LogOut,
   ChevronDown,
+  CircleHelp,
 } from "lucide-react";
 import type { Session, Locale, Product } from "../shared/domain";
 import { strings, translateError, type Key } from "./i18n";
@@ -39,6 +40,8 @@ import { MenuArea, SetupNav, setupViews } from "./features/menu/MenuArea";
 import { menuBaseline, watchMenuRevision } from "./features/menu/freshness";
 import { Operations } from "./features/Operations";
 import { OwnerAccess } from "./features/OwnerAccess";
+import { HelpDialog } from "./features/HelpDialog";
+import { PlanNotice } from "./features/PlanNotice";
 import {
   ApiError,
   blockedReason,
@@ -109,6 +112,7 @@ export default function App() {
   const inbox = usePublicInbox(session, online);
   const [error, setError] = useState("");
   const [ticketsOpen, setTicketsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [, setOwnerAccess] = useState(false);
   const [showAccount, setShowAccount] = useState(
     new URLSearchParams(location.search).has("account") ||
@@ -604,6 +608,12 @@ export default function App() {
               onOwnerReady={ownerReady}
             />
           )}
+          <Button variant="ghost" onClick={() => setHelpOpen(true)}>
+            {t("accountHelpAndPrivacy")}
+          </Button>
+          {helpOpen && (
+            <HelpDialog locale={locale} close={() => setHelpOpen(false)} />
+          )}
         </div>
       </div>
     );
@@ -720,6 +730,14 @@ export default function App() {
           <Button
             variant="ghost"
             className="round"
+            aria-label={t("accountHelp")}
+            onClick={() => setHelpOpen(true)}
+          >
+            <CircleHelp size={18} />
+          </Button>
+          <Button
+            variant="ghost"
+            className="round"
             onClick={() => setLocale(locale === "es" ? "en" : "es")}
           >
             {locale.toUpperCase()}
@@ -804,13 +822,12 @@ export default function App() {
             </Button>
           </div>
         )}
-        {session.sellingAllowed === false && (
-          <p role="status" className="warning">
-            {locale === "es"
-              ? "Free: esta sucursal, dispositivo o empleado no está seleccionado para iniciar ventas. El propietario puede cambiar la selección en Cuenta y Configuración. Puedes terminar cobros y consultar registros."
-              : "Free: this location, device or employee is not selected to start sales. The owner can change selections in Account and Settings. You can finish payments and view records."}
-          </p>
-        )}
+        <PlanNotice
+          session={session}
+          locale={locale}
+          online={online}
+          navigate={setView}
+        />
         {error && (
           <p role="alert" className="error">
             {error}
@@ -847,6 +864,13 @@ export default function App() {
             />
           ))}
       </main>
+      {helpOpen && (
+        <HelpDialog
+          locale={locale}
+          session={session}
+          close={() => setHelpOpen(false)}
+        />
+      )}
       {ticketsOpen && (
         <LocalKitchenTickets
           session={session}

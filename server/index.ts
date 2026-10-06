@@ -2,6 +2,8 @@ import {
   requireSelling,
   freeSelection,
   saveFreeSelection,
+  autoAssignFreeSlots,
+  requireDrawerOpenAllowed,
 } from "./free-limits.js";
 import { billingRuntime } from "./billing-runtime.js";
 import { entitlement, requirePro } from "./entitlements.js";
@@ -157,6 +159,8 @@ reportsRoutes.registerPreAuth({ app, sql });
 cfdiRoutes.registerPreAuth({ app, sql });
 accountRoutes.registerPreAuth({ app, sql });
 app.use("/api", authentication(sql));
+// account (031): every /api/account-data/* path is owner-only with a recent step-up (C30).
+app.use("/api/account-data", accountRoutes.accountDataGuard);
 const route = makeRoute(app, sql);
 route("get", "/service/options", (tx, s) => serviceOptions(tx, s));
 route("post", "/orders/:id/service", (tx, s, req) =>
@@ -270,7 +274,8 @@ route("post", "/cash/open", async (tx, s, req) => {
     .strict()
     .parse(req.body);
   return once(tx, s, p.operationId, "cash.open", p, async () => {
-    await requireSelling(tx, s);
+    await autoAssignFreeSlots(tx, s);
+    await requireDrawerOpenAllowed(tx, s);
     await tx`insert into cash_sessions(tenant_id,id,device_id,employee_id,opening) values(${s.tenantId},${randomUUID()},${s.deviceId},${s.employeeId},${p.opening})`;
     await audit(tx, s, "cash.open", s.deviceId, p);
     return cashSummary(tx, s);

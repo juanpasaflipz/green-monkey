@@ -360,7 +360,7 @@ cómo conservar la bitácora.
 | Descuentos y cortesías | Pendiente (ola 2, descuentos) | No hay descuentos en la app. No cambies precios del menú para simularlos. | `docs/DISCOUNTS.md`, que agrega esa ola |
 | Reportes y cortes por forma de pago | Disponible (reportes, migración 029) | «Hoy» y «Finanzas» (propietario y gerentes); corte X, corte Z y corte del día impresos desde «Caja» o «Finanzas → Cortes». | [Reports](REPORTS.md#cortes) |
 | Cerrar una caja desde otro dispositivo | Disponible (reportes, migración 029) | «Finanzas → Cortes → Cerrar caja desde aquí» (gerente, con PIN) para una caja de un dispositivo desvinculado o que quedó abierta de un día anterior; si su tablet funciona, ciérrala ahí. | [Reports](REPORTS.md#cortes) |
-| Acceso Pro del piloto otorgado por soporte, aviso de privacidad, contacto de soporte dentro de la app | Pendiente (ola 2, cuenta) | En Free, un solo dispositivo vende (sección 2). | `docs/ACCOUNT_AND_LEGAL.md`, que agrega esa ola |
+| Acceso Pro del piloto otorgado por soporte, aviso de privacidad, contacto de soporte dentro de la app | Hecho en la rama de cuenta (031), pendiente de integrarse y de probarse en staging | Mientras no esté integrado: en Free, un solo dispositivo vende (sección 2). Ya integrado: soporte activa Pro para el piloto (hasta 90 días, renovable antes de que termine); el propietario lo ve como «Pro otorgado por soporte» con su fecha de término, y la app avisa 7, 3 y 1 días antes. | [Cuenta y aspectos legales](ACCOUNT_AND_LEGAL.md); [Operations, "Support"](OPERATIONS.md) |
 | Cobro con tarjeta integrado | No incluido | «Terminal externa»: cobras en la terminal del banco y registras su referencia. | [Service](SERVICE.md#payment-dialog) |
 | Impresión directa, corte de papel y apertura del cajón desde la app | No incluido | El controlador de la impresora (sección 1.2). | [Service](SERVICE.md#printing-browseros) |
 | Cobro en dólares | No incluido | Sección 5.1. | Esta guía |
@@ -385,7 +385,10 @@ están en el [runbook, "Contacts and escalation"](RUNBOOK.md#contacts-and-escala
 **Al llamar a soporte, ten a la mano:** el nombre del restaurante, el nombre del
 dispositivo (como aparece en «Dispositivos»), la hora del problema, el número de orden
 si lo hay, lo que dice el indicador de conexión y una foto de la pantalla con el
-mensaje.
+mensaje. Con la versión de cuenta (031), el botón «Ayuda» de la barra superior muestra
+los canales de soporte, el ID del restaurante (con botón «Copiar») y el ID del
+dispositivo que soporte te pedirá. Todo lo que soporte haga en tu cuenta queda
+registrado y lo ves en «Cuenta y propietarios» › «Acciones de soporte».
 
 **Mientras llega la ayuda:** si hay conexión pero el servidor no responde, la app pasa
 sola a venta sin conexión (sección 3). Si no se puede vender en la app, vende en papel

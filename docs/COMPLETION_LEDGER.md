@@ -18,10 +18,19 @@ Do not enable those integrations or substitute mocked evidence for hardware proo
 | M5 jobs/printing/merchant payments | incomplete | Jobs outbox runner done locally (Oct 5: dedupe, lease fencing, backoff, dead-job alerts, restart resume; `tests/jobs-db.ts`); Wave 2.0 (Oct 5, local with CI parity, staging cutover pending): worker-only jobs runner on the `gm_jobs_worker` login with tenant discovery, `runAt` and per-kind `maxAttempts`; next: printer, report/email and payment handlers once devices/providers are selected |
 | M6 inventory/procurement | partial | Stock item setup, recipe links on products and choices, cached balance and per-restaurant negative-stock policy done locally on `track/menu` (not staged); next: purchase orders, substitutions, lots, yields, saved counts |
 | M7 finance/imports/reports | partial | Reports (029, local): metric contract, Hoy, Finanzas, cortes, exceptions and the activity log, wired on fiscal 027 and discounts 028 with the LD-27 hardening. Recurring expenses, settlement imports and schedules remain. |
-| M8 accounts/configured modules | partial | Linking/recovery, co-owner/transfer and explicitly configured providers; device pairing, PIN sign-in and staff offboarding delivered locally (access, migration 023) and await staging verification |
+| M8 accounts/configured modules | partial | Device pairing, PIN sign-in and staff offboarding (access, 023) and co-owners, ownership transfer, recovery codes, legal acceptance, owner data export, plan notices and the vendor support CLI (account, 031) delivered locally and await staging verification; next: verified-email recovery, account linking, explicitly configured providers |
 | M9 migration/readiness | blocked in part | Approved source exports. Per-file migrations, schema readiness, encrypted backups and restore verification locally verified (Oct 5; `tests/migrate-db.ts`, `tests/ops-http.test.ts`, `tests/backup-db.ts`); Wave 2.0 moved migrations and retention to GitHub Actions as `gm_migrator` (local with CI parity, Oct 5); CI/CD and the Neon restore rehearsal are written but have not run; staging restore/rollback and operational evidence pending |
 | M10 final qualification | pending | Full exact-revision security/load/UX/recovery matrix |
 | M11 production launch | not authorized by GitHub publishing | Named live target, enabled modules and cutover window after qualification |
+
+Account 031 deferrals (recorded so they are not mistaken for done):
+verified-email recovery and deliberate account linking (M8.2); SaaS CFDI for
+the subscription (no flag exists; only the optional receptor tax profile is
+stored); Stripe Tax (not used; Mexico border rates unsupported, a fixed IVA
+16 % Tax Rate mode exists instead); account and restaurant deletion tooling
+(offboarding is a manual operator procedure); the `billing_requests` inbox
+(DB-1, reassigned to the post-launch billing area); email reminders (in-app
+only); counsel review of the legal text and the real legal entity values.
 
 ## Capability inventory
 
@@ -32,7 +41,7 @@ unverified unless a dated checkpoint explicitly records it.
 
 | Capability | Required/configured/optional scope | Implementation and evidence | Remaining work / next action |
 | --- | --- | --- | --- |
-| Owner login, employee PIN, permissions | 1–2, required | See DELIVERY_STATUS.md, ACCESS.md and corresponding M1–M9 section | Google owner identity, explicit membership, Free restaurant signup/entry and logout implemented and tested locally with synthetic identity; Google staging login, invitations and organization switching verified in prior staging releases. Access (locally verified October 5, 2026: `test:db:access` 39 checks, `test:access-http` 13 checks, `tests/browser/access.spec.ts` 25 flows): pairing codes, employee picker and PIN pad without a restaurant ID, demo form only with `DEMO_TENANT_ID`, sliding sessions with an absolute cap, per-device PIN throttling with owner unlock (managers unlock only cashiers, servers and kitchen staff) and device-keyed rate limits with a per-restaurant backstop, step-up for every PIN session (a pending prompt is cancelled by a switch or sign-out), idle and manual lock that Escape or a forced close cannot dismiss and that survives reloads and offline restores, a manual lock reaching every open tab while an idle background tab never locks the tab in use (offline soft unlock re-locks on reconnect, refuses every online call except the lock screen's own and the offline sync unsent once the server answers, and is never offered over a lock the server imposed; a revoked session leaves the offline cache) and quick switch, a lock that refreshes its roster, shows the offline lock when the server is unreachable and stays above later dialogs, terminal Google/account refusal under any path spelling or HEAD. Remaining: staging verification; deliberate account linking (account area). |
+| Owner login, employee PIN, permissions | 1–2, required | See DELIVERY_STATUS.md, ACCESS.md and corresponding M1–M9 section | Google owner identity, explicit membership, Free restaurant signup/entry and logout implemented and tested locally with synthetic identity; Google staging login, invitations and organization switching verified in prior staging releases. Access (locally verified October 5, 2026: `test:db:access` 39 checks, `test:access-http` 13 checks, `tests/browser/access.spec.ts` 25 flows): pairing codes, employee picker and PIN pad without a restaurant ID, demo form only with `DEMO_TENANT_ID`, sliding sessions with an absolute cap, per-device PIN throttling with owner unlock (managers unlock only cashiers, servers and kitchen staff) and device-keyed rate limits with a per-restaurant backstop, step-up for every PIN session (a pending prompt is cancelled by a switch or sign-out), idle and manual lock that Escape or a forced close cannot dismiss and that survives reloads and offline restores, a manual lock reaching every open tab while an idle background tab never locks the tab in use (offline soft unlock re-locks on reconnect, refuses every online call except the lock screen's own and the offline sync unsent once the server answers, and is never offered over a lock the server imposed; a revoked session leaves the offline cache) and quick switch, a lock that refreshes its roster, shows the offline lock when the server is unreachable and stays above later dialogs, terminal Google/account refusal under any path spelling or HEAD. Account (031, locally verified October 5, 2026): co-owners, ownership transfer (owner, support, recovery code) and recovery codes; owner seats revoked through access's deactivation. Remaining: staging verification; verified-email recovery and deliberate account linking are deferred (M8.2). |
 | Restaurants/organizations, branding | 1, 4–5, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Owner settings, currency lock, receipt snapshots, approved branding, organization locations/invitations/switching implemented; dynamic asset upload remains pending. |
 | Catalog/categories/search/photos | 2, required; R2 when images enabled | See DELIVERY_STATUS.md and corresponding M1–M9 section | Categories (create, rename, reorder, archive), products with search, duplicate, reorder, archive/restore and live availability, bilingual names (English optional), POS category chips in category order, and menu-revision polling so 86'd items leave the POS within 60 s (or at once on focus or a `gm-menu-refresh` event) without overwriting the cached offline session. Locally verified on `track/menu`: `npm run test:db:menu` (revision bumps), `tests/menu.test.ts` "FOH-8: POS catalog freshness" (poll, focus, refresh event and cleanup guards) and the `tests/browser/menu.spec.ts` "FOH-8" test (an 86 reaches an open Vender screen through the 60 s poll, focus and `gm-menu-refresh`); not staged. Product photos pending (no storage provider configured). |
 | Modifiers, combos, open amount | 2, required | See DELIVERY_STATUS.md and corresponding M1–M9 section | Reusable modifier groups (required, optional or repeatable; min/max; priced choices; choice recipes and costs; live choice availability), combos as products with required choice groups, and open-price items with a manager-set ceiling (staff only; excluded from QR/kiosk). One choice picker for POS and QR/kiosk, priced by the shared quote. Locally verified on `track/menu` (`tests/menu.test.ts`, `npm run test:db:menu`, `tests/browser/menu.spec.ts`); not staged. Per-choice station routing for combos, kitchen/cashier 86 and cart-line editing pending. |
@@ -59,7 +68,7 @@ unverified unless a dated checkpoint explicitly records it.
 | PDF reports and scheduled summaries | 4, required generation; sending when configured | See DELIVERY_STATUS.md and corresponding M1–M9 section | Reports (029, local): browser print / "Guardar como PDF" of the corte del día and report sheets on letter/A4. Scheduled and emailed summaries pending (no mail provider). |
 | Cash sessions, paid-outs, end-of-day | 2, required | See DELIVERY_STATUS.md and DISCOUNTS.md | Device drawer opening, paid-outs; cash and terminal totals apart (only cash refunds and cash tips in expected cash); blind count by default with role-configurable visibility and closing, closer attribution, terminal batch total, immutable closed drawers and one manager review per difference (migration 028, local). Saved close draft pending. |
 | Team, shifts, payroll/tips summaries | 5, required; not legal payroll certification | See DELIVERY_STATUS.md, ACCESS.md and corresponding M1–M9 section | Staff add/edit/role, PIN reset (including the owner's own terminal PIN), deactivate/reactivate with session revocation and unlock implemented and locally verified (access DB and browser suites). Shift start/end and estimated hourly payroll list. Tip distribution and payroll policies pending. |
-| Onboarding, account, subscription billing | 5, required; billing provider sandbox gate | See DELIVERY_STATUS.md and corresponding M1–M9 section | Owner onboarding, 14-day no-card trial, durable sandbox subscription billing, location quantity changes and Free device/team/location limits implemented. See BILLING_IMPLEMENTATION.md and FREE_LIMITS.md; live billing is not enabled. |
+| Onboarding, account, subscription billing | 5, required; billing provider sandbox gate | See DELIVERY_STATUS.md and corresponding M1–M9 section | Owner onboarding, 14-day no-card trial, durable sandbox subscription billing, location quantity changes and Free device/team/location limits implemented. Account (031, locally verified October 5, 2026): signup legal acceptance, lapse drawer continuation, automatic Free slots, POS plan notices, support pilot grants; SaaS tax mode off by default. See BILLING_IMPLEMENTATION.md and FREE_LIMITS.md; live billing is not enabled. |
 | CFDI invoice/customer self-service/cancellation | 5, configured module; required before invoice cutover | See DELIVERY_STATUS.md and [CFDI](CFDI.md) | Built (030) on fiscal 027, discounts 028 and reports 029: stamping, egresos (from fiscal's `recordRefundTax`), self-invoice, cancellation, Hoy alerts and corte coverage are DB- and browser-tested against the Facturapi fake (`tests/cfdi-merge-gate.test.ts` keeps the compat shims out); contract-tested, not sandbox-verified; disabled until keys are configured; live not enabled. Remaining: sandbox verification with a Facturapi test key, live qualification with a real CSD, webhooks, multi-ticket invoices, foreign receptors. |
 | Uber Eats/Rappi/DiDi imports and connectors | 4–5; live connectivity gated | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
 | Courier dispatch (Uber Direct) | Optional configured module | See DELIVERY_STATUS.md and corresponding M1–M9 section | Not implemented. |
@@ -188,6 +197,30 @@ cutover", Wave 2.0 deltas) is an operator step not yet run:
 - the global lock order and its ratchet (`docs/ARCHITECTURE.md`,
   `tests/lock-order.test.ts`), and the negative-stock policy deadlock fix
   (`tests/menu-db.ts`).
+
+## Account 031 evidence (2026-10-05, local with CI parity)
+
+Built on `track/account` and qualified locally on databases migrated as
+`gm_migrator` under FORCE RLS; nothing has run on staging:
+
+- legal documents, configuration and acceptance gating: `tests/legal.test.ts`,
+  `tests/account-db.ts` (checks 1–8), `tests/browser/legal.spec.ts`,
+  `tests/browser/account.spec.ts` (signup, material change);
+- co-owners, transfers and recovery: `tests/account-db.ts` (checks 9–27),
+  `tests/support-db.ts`, `tests/browser/account.spec.ts`;
+- owner data export: `tests/account-export.test.ts`, `tests/account-db.ts`
+  (28–29d), `tests/account-http.ts`, browser downloads and the terminal PIN
+  step-up;
+- plan lapse (continuation, automatic Free slots, notices):
+  `tests/plan-notice.test.ts`, `tests/free-limits-db.ts`,
+  `tests/browser/free-limits.spec.ts`, `tests/browser/account.spec.ts`;
+- SaaS tax mode and canceled `ended_at`: `tests/saas-tax.test.ts`,
+  `tests/stripe-billing.test.ts`, `tests/stripe-catalog.test.ts` (synthetic
+  Stripe responses only);
+- the public-ordering switch: `tests/public-ordering-flag.test.ts`,
+  `tests/account-http.ts`, browser diner and generator checks;
+- the restaurant privacy URL, 031 RLS and grants: `tests/account-db.ts` (30–32),
+  `tests/support-db.ts`.
 
 ## External prerequisites
 

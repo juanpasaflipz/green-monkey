@@ -291,6 +291,33 @@ export function nextHour(now: Date): Date {
   return new Date((Math.floor(now.getTime() / HOUR) + 1) * HOUR);
 }
 
+/**
+ * Arms the chain's next tick at runAt. That hour's key may already belong to a tick that ran
+ * ahead of its time (a restarted chain, "Emitir ahora"): the jobs uniqueness then drops the
+ * insert, so a key suffixed with the current job keeps one live tick. Every path that ends a
+ * tick and must keep the chain alive arms through here.
+ */
+async function armNextTick(
+  tx: Tx,
+  tenantId: string,
+  runAt: Date,
+  currentJobId: string,
+): Promise<void> {
+  await cfdiEnqueue(tx, tenantId, {
+    kind: "cfdi_global",
+    dedupeKey: dedupe.tick(runAt),
+    payload: {},
+    runAt,
+  });
+  if (!(await liveJob(tx, "cfdi_global", {}, { exceptId: currentJobId })))
+    await cfdiEnqueue(tx, tenantId, {
+      kind: "cfdi_global",
+      dedupeKey: `${dedupe.tick(runAt)}:${currentJobId.slice(0, 8)}`,
+      payload: {},
+      runAt,
+    });
+}
+
 export async function globalJob(ctx: JobContext): Promise<JobOutcome> {
   const { rt, outcome } = await runtimeOr(ctx);
   if (!rt) return outcome;
@@ -310,14 +337,7 @@ export async function globalJob(ctx: JobContext): Promise<JobOutcome> {
       // goes dead (jobs_dead_cfdi_global alerts the operator).
       const runAt = nextHour(new Date());
       await ctx
-        .tenant((tx) =>
-          cfdiEnqueue(tx, ctx.job.tenantId, {
-            kind: "cfdi_global",
-            dedupeKey: dedupe.tick(runAt),
-            payload: {},
-            runAt,
-          }),
-        )
+        .tenant((tx) => armNextTick(tx, ctx.job.tenantId, runAt, ctx.job.id))
         .catch((error) =>
           ctx.log.warn("cfdi_global_handover_failed", {}, error),
         );
@@ -433,13 +453,7 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
         select 1 as one from cfdi_csd_uploads
         where tenant_id = ${tenantId} and status in ('queued','processing') limit 1`;
       if (!open) return;
-      const runAt = nextHour(now);
-      await cfdiEnqueue(tx, tenantId, {
-        kind: "cfdi_global",
-        dedupeKey: dedupe.tick(runAt),
-        payload: {},
-        runAt,
-      });
+      await armNextTick(tx, tenantId, nextHour(now), ctx.job.id);
     });
     return { status: "done" };
   }
@@ -520,21 +534,7 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
     let runAt = closeAt && closeAt < fallback ? closeAt : fallback;
     if (runAt.getTime() < now.getTime() + MINUTE)
       runAt = new Date(now.getTime() + MINUTE);
-    await cfdiEnqueue(tx, tenantId, {
-      kind: "cfdi_global",
-      dedupeKey: dedupe.tick(runAt),
-      payload: {},
-      runAt,
-    });
-    // That key may belong to a tick that already ran (one run ahead of its time); the chain
-    // still keeps one live tick.
-    if (!(await liveJob(tx, "cfdi_global", {}, { exceptId: ctx.job.id })))
-      await cfdiEnqueue(tx, tenantId, {
-        kind: "cfdi_global",
-        dedupeKey: `${dedupe.tick(runAt)}:${ctx.job.id.slice(0, 8)}`,
-        payload: {},
-        runAt,
-      });
+    await armNextTick(tx, tenantId, runAt, ctx.job.id);
     return {
       overdue: overdue.map((r) => r.period_key as string),
       csdSoon:

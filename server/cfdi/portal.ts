@@ -26,6 +26,7 @@ import {
   type PortalDocumentStatus,
   type PortalTicketView,
 } from "../../shared/cfdi.js";
+import { restaurantPrivacyUrl } from "../account-settings.js";
 import { tenant, type Tx } from "../db.js";
 import { clientIp, ipHash, log, requestIdOf, routeLabel } from "../logging.js";
 import { once } from "../orders.js";
@@ -201,8 +202,9 @@ export async function portalTicket(
           uuid: null,
         };
     }
-    // account (031): privacyUrl = await restaurantPrivacyUrl(tx);
-    const privacyUrl: string | null = null;
+    // account (031): the restaurant's own privacy notice, as the QR/kiosk pages link it; null
+    // until the owner sets one (the portal then shows cfdiPortalPrivacyFallback).
+    const privacyUrl = await restaurantPrivacyUrl(tx);
     return {
       ...rest,
       // Self-invoicing off: the portal says to ask at the restaurant.

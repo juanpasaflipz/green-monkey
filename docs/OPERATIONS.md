@@ -66,3 +66,157 @@ From Órdenes, **Mesa y mesero** changes the current assignment with a reason. I
 A lost cash-payment response keeps its original operation and target order. **Recuperar pago** retries that exact request, and reload automatically attempts recovery. An uncertain result never authorizes a second payment against another order. Authentication/permission conflicts remain retained for authorized recovery.
 
 `bash scripts/rehearse-restore.sh --verify` creates a separate local restore database, compares control totals including item allocations, and runs the database checks against the restored target. This is local qualification, not a Neon restore or production cutover rehearsal.
+
+## Support (vendor support CLI, account 031)
+
+Green Monkey staff act on customer accounts only through the support CLI, from
+an operator workstation. Every command needs `--operator "<name>" --ticket
+<ref> --reason "<10–500 characters>"`, is written to `support_actions`
+(append-only; the operator login is forced to the database session user) and is
+shown to the restaurant's owners in their account console ("Acciones de
+soporte") and, for 7 days, in the POS shell. A command that touches several
+organizations (a lookup by email that matches two, an anonymization) writes one
+row per organization, so each one's owners see it. Emails are stored there only
+as sha256 digests. The database enforces this: every `gm_support` write must
+match a `support_actions` row the same login wrote in the same transaction for
+that tenant, organization and target, with bounded values (an unlock only
+clears, the audit row is the unlock's own with a server timestamp, the Free slot
+moves only to the logged device, an account row becomes exactly the logged
+state). A raw `psql` session with an operator URL therefore cannot change
+anything the owners do not see (LD-32 AUTHZ-2, OPS-2). Mutating commands ask for the
+restaurant or organization name (`--yes` skips it, never for
+`transfer-ownership`). Design and data model: [account and legal](ACCOUNT_AND_LEGAL.md).
+
+**Provisioning an operator** (once per person and environment):
+
+```sh
+PROVISION_DATABASE_URL=<CREATEROLE owner, direct endpoint> \
+SUPPORT_PROVISION_TARGET=<host:port/database> \
+npm run support:provision -- --name <alnum>
+```
+
+`SUPPORT_PROVISION_TARGET` must repeat the owner URL's exact
+`host:port/database`, and the database must be one ops provisioning creates,
+`green_monkey_<env>` (`green_monkey_production`, `green_monkey_staging`; see
+[provisioning](PROVISIONING.md)), or a local `green_monkey[_<name>]_dev`
+(`green_monkey_acceptance_dev`); anything else stops with
+`explicit_support_provision_target_required` before connecting (LD-32 OPS-1).
+It creates `gm_support_<name>` (LOGIN, member of `gm_support`, no superuser,
+CREATEDB, CREATEROLE or BYPASSRLS) and writes the connection URL once to
+`.env.support-<name>` (mode 0600). Keep that file on the operator's
+workstation as `SUPPORT_DATABASE_URL`. It is **never** a Railway or GitHub
+variable; the web refuses to start with it. `scripts/ops/sql/globals.sql` must
+have created `gm_support` first. Remove an operator with `DROP ROLE` from the
+provisioning owner when they leave.
+
+**Commands** (`npm run support -- <command> …`):
+
+| Command | Use |
+| --- | --- |
+| `lookup --email <e> \| --tenant <id> \| --organization <id>` | Accounts, organizations, restaurants, owners, devices, entitlement, pending transfers. Read-only. |
+| `unlock-employee --tenant <id> --login <login>` | Clears a PIN lock at owner strength (the failure counter, the lock, a permanent "infinity" lock and every device throttle), without spending the manager's daily unlock budget. The confirmation shows the employee's role and says when the lock is permanent: only act on a permanent lock at the request of the primary or a co-owner shown by `lookup`. Writes `access.employee_unlocked` `{by:"support"}` with the ticket. |
+| `grant-entitlement --tenant <id> --until YYYY-MM-DD` | Pilot Pro (below). |
+| `end-entitlement --tenant <id>` | Ends a support grant now (the restaurant goes to Free; drawers opened before the end continue until closed or 16 h; the row keeps the end time in `access_until`). |
+| `transfer-ownership --organization <id> --to-email <e> [--hold-hours 72]` | Support-assisted ownership transfer after identity verification (below). Hold 24 h minimum, 72 h default. |
+| `cancel-transfer --transfer <id>` | Cancels a pending transfer. |
+| `set-free-device --tenant <id> --device <id>` | Emergency Free device reassignment (the owner cannot reach Settings, for example a stolen laptop held the slot); the device ID must be retyped. The automatic/manual mode is unchanged, so in automatic mode a later drawer open can move the slot again: ask the owner to save a manual selection once they can. |
+| `rectify-account --account <id> [--name "<n>"] [--email <e>]` | ARCO rectification of an owner account's name or email (below). Google sign-in is unaffected (it is keyed by the Google subject). |
+| `block-account --account <id> [--offboarding]` | ARCO cancellation, step 1 (blocking): the account can no longer sign in with Google and its account and POS sessions stop working at once. Refused while the person is an active co-owner (`support_account_is_co_owner`: the primary removes them or they leave first) and, without `--offboarding`, while they are a primary (`support_account_is_primary`: transfer the organization first, unless the organization itself is leaving). |
+| `anonymize-account --account <id>` | ARCO cancellation, step 2 (suppression), only for an account blocked at least 5 years ago (`support_retention_not_over`): email and name become non-identifying values, closed transfers that named the person keep only a sha256 digest of the email. Never takes `--yes`. |
+| `redact-email --email <e>` | ARCO cancellation for someone who never had an account (a transfer target who never signed in): their closed transfers keep only the digest, at once. Refused when the email belongs to an account (`support_email_has_account`) or a live transfer to it is pending (`support_transfer_pending`: cancel it first). |
+| `actions --organization <id> [--limit 50]` | Support history for an organization. |
+
+**Pilot grants (v1 production path to Pro).** Production launches with Stripe
+billing disabled; pilot restaurants get Pro from `grant-entitlement`:
+
+- at most **90 days** per grant (`support_grant_too_long`); renew by running it
+  again **before** the end date with a new `--until` (each run is audited);
+- ends at 04:00 restaurant time on the `--until` date;
+- never on a restaurant bound to Stripe billing (`support_grant_stripe_bound`);
+- owners see "Pro otorgado por soporte" with the end date in Settings › Plan,
+  and the POS warns 7, 3 and 1 days before it ends;
+- record the pilot agreement reference as the `--ticket`.
+
+**Identity verification for a support-assisted transfer** (lost Google account
+without recovery codes, a founder leaving, a sale of the business). All of:
+
+1. The requester's INE (both sides) and a selfie or live comparison.
+2. A constancia de situación fiscal whose RFC matches the restaurant's, or an
+   acta constitutiva / poder notarial showing authority over the business.
+3. A live video call with the requester holding the INE.
+4. Proof that the new Google email is controlled by the requester: they open
+   the console with it and read back the transfer notice.
+5. A ticket reference holding the evidence (never in the CLI reason text).
+6. A second operator reviews the evidence before the command runs
+   (recommended; mandatory when the current primary is unreachable).
+
+The current primary sees the critical banner during the hold and can cancel. Do
+not shorten the hold below 72 h unless the current primary confirms in writing.
+
+**Unlock.** Prefer the restaurant's own owner or manager; use
+`unlock-employee` only when nobody with that permission can sign in, after
+confirming the caller is the owner, a co-owner or a manager of the restaurant
+(`lookup` prints the owners and the number of locked employees; confirm a
+manager by name with the owner). A permanent lock is the owner's call: act on
+it only at the request of the primary or a co-owner.
+
+`transfer-ownership` prints its one-time link on `SUPPORT_APP_URL` (or
+`APP_URL`), which must be the deployment's `https` origin; a missing,
+plain-http or `localhost` value stops the command before it writes anything
+(`support_app_url_required`, OPS-5). Set `SUPPORT_APP_URL` in the operator's
+`.env.support-<name>` next to `SUPPORT_DATABASE_URL`.
+
+**ARCO requests** (access, rectification, cancellation, opposition, LFPDPPP
+Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
+
+- answer within **20 business days** and make the decision effective within
+  **15 business days** after answering; free of charge;
+- verify identity as above (INE; for a restaurant's diners or staff, refer
+  them to the restaurant, which is the responsable; Green Monkey assists as
+  encargado under the DPA);
+- **access**: the owner's data export covers the restaurant's records; for the
+  person's own account data, `lookup --email` prints what support can read
+  (organizations, roles, transfers, acceptances), and the person sees their
+  account, co-owners, transfers, activity and tax profile in the account
+  console;
+- **rectification** (Art. 23-24): `rectify-account` changes the account's name
+  or email (what other owners and support see). Names on POS seats and staff
+  records are the restaurant's own records: the owner edits them in Equipo;
+- **cancellation** (Art. 2-III, 24-25): first `block-account` (blocking: the
+  account cannot sign in; its data is kept only to answer for the legal
+  relationship), then, once the longest retention has passed,
+  `anonymize-account`. Retention: the subscription's fiscal records 5 years
+  (CFF Art. 30) and the evidence of the contract (legal acceptances) 10 years
+  (Código de Comercio Art. 49); anonymization keeps acceptances, account
+  events and fiscal records keyed by the account id only (append-only ledgers
+  are never edited or deleted). The CLI waits 5 years after the block; keep the
+  acceptance evidence by id for the rest. For someone who never had an
+  account, `redact-email` acts at once;
+- what the tools do **not** touch: the restaurants' own records (orders,
+  tickets, CFDI, staff and seat names, invitation emails), which belong to the
+  restaurant as responsable and leave with its offboarding; backups (below);
+- record every cancellation in the **cancellation register** (outside the
+  database: the ticket system), one line per command: date, ticket, command,
+  account id or email digest. After any restore (Neon branch, PITR or dump,
+  [BACKUP_RESTORE](BACKUP_RESTORE.md)), re-run every command in the register
+  dated after the restored snapshot before the database serves traffic again.
+  Backups themselves expire by lifecycle (daily 35 days, monthly 1,900 days);
+  until then they are encrypted, access-restricted and used only to recover
+  from a disaster, which the privacy notice and DPA state.
+
+**Breach notification.** On a security incident affecting personal data:
+contain it, record what happened, which data and which restaurants, and notify
+the affected owners (responsables) without delay so they can inform their data
+subjects (LFPDPPP Art. 19–20); notify individual account holders directly for
+account data. Follow the incident steps in [runbook](RUNBOOK.md).
+
+**Offboarding.** When a restaurant leaves: tell the owner to download the JSON
+export (Settings › Privacidad y datos) during an agreed window (30 days by
+default). The JSON does not contain the stamped CFDI files (XML/PDF): the owner
+downloads them from the invoices register or through the SAT's descarga
+masiva and must keep them 5 years (CFF Art. 30). End any support grant; then
+`block-account --offboarding` for the primary (and remove co-owners first).
+The restaurant's records are never deleted by the tools: fiscal records
+(tickets, CFDI) stay blocked for at least 5 years, append-only money ledgers
+stay as they are, and the account follows the ARCO cancellation steps above.
+Record each step in the ticket and the cancellation register.

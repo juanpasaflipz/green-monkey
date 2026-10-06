@@ -15,7 +15,11 @@ import {
   createOwnerRestaurant,
   ownerCookie,
 } from "../server/owner-accounts.js";
+import { legalConfig } from "../server/legal.js";
+import { accessPlan } from "../shared/plans.js";
 const { runtime, migration } = isolatedTarget(process.env);
+// Legal gating is covered by account-db; fixtures sign up as CI's DB steps do.
+const legal = legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" });
 const admin = postgres(migration, { max: 1 }),
   app = postgres(runtime, { max: 4 });
 const role = "gm_billing_test_" + randomBytes(6).toString("hex");
@@ -54,14 +58,19 @@ try {
     const account = ownerCookie(cookie).accountId;
     accounts.push(account);
     const r = await withOwner(app, cookie, undefined, (tx, a) =>
-      createOwnerRestaurant(tx, a, {
-        trialRequested: true,
-        restaurantName: "Billing fixture",
-        currency: "MXN",
-        timezone: "America/Mexico_City",
-        cutoff: 240,
-        openingDays: [1],
-      }),
+      createOwnerRestaurant(
+        tx,
+        a,
+        {
+          trialRequested: true,
+          restaurantName: "Billing fixture",
+          currency: "MXN",
+          timezone: "America/Mexico_City",
+          cutoff: 240,
+          openingDays: [1],
+        },
+        legal,
+      ),
     );
     tenants.push(r.tenantId);
     const [o] =
@@ -160,15 +169,20 @@ try {
   assert.equal(event.n, 1);
   assert.equal(event.processed, true);
   const location = await withOwner(app, cookies[0], undefined, (tx, account) =>
-    createAdditionalLocation(tx, account, {
-      operationId: randomUUID(),
-      sourceTenantId: tenants[0],
-      restaurantName: "Additional billing fixture",
-      currency: "MXN",
-      timezone: "America/Mexico_City",
-      cutoff: 240,
-      openingDays: [1, 2, 3, 4, 5, 6, 7],
-    }),
+    createAdditionalLocation(
+      tx,
+      account,
+      {
+        operationId: randomUUID(),
+        sourceTenantId: tenants[0],
+        restaurantName: "Additional billing fixture",
+        currency: "MXN",
+        timezone: "America/Mexico_City",
+        cutoff: 240,
+        openingDays: [1, 2, 3, 4, 5, 6, 7],
+      },
+      legal,
+    ),
   );
   tenants.push(location.tenantId);
   await assert.rejects(
@@ -278,6 +292,7 @@ try {
     null,
     "past_due never invents grace",
   );
+
   await store.request(accounts[1], tenants[1], "checkout", "year");
   await store.signupIntents();
   const [intents] =
@@ -427,8 +442,43 @@ try {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await runtimeBilling.close();
   }
+  // account (031, GAP-1): a canceled subscription keeps its ended_at date
+  // ("Pro terminó el …") while access stays Free.
+  const endedAt = new Date(Date.now() - 3600_000).toISOString();
+  await store.event("evt_BillingCanceled", "sub_BillingFixture");
+  await store.schedule();
+  let canceled = await store.claim();
+  while (
+    canceled &&
+    !(canceled.kind === "reconcile" && canceled.organization_id === orgs[0])
+  ) {
+    await store.retry(canceled.id, canceled.lease_token);
+    canceled = await store.claim();
+  }
+  assert.ok(canceled, "a reconcile follows the cancellation event");
+  await store.complete(
+    canceled.id,
+    canceled.lease_token,
+    {},
+    { status: "canceled", accessUntil: endedAt, source: "stripe" },
+  );
+  const ended = (await store.status(accounts[0], tenants[0])).entitlement;
+  assert.equal(ended?.status, "canceled");
+  assert.equal(
+    new Date(ended?.access_until).toISOString(),
+    endedAt,
+    "canceled reconcile stores ended_at",
+  );
+  assert.equal(
+    accessPlan(
+      { status: "canceled", accessUntil: endedAt, source: "stripe" },
+      Date.now(),
+    ),
+    "free",
+    "and access stays free",
+  );
   console.log(
-    "Billing DB checks passed: ownership, six-way request dedupe, restricted grants, immutable operations, exclusive leases, restart recovery, stale-write fencing, one trial, duplicate events, isolated grants, past-due revocation and old-key review.",
+    "Billing DB checks passed: ownership, six-way request dedupe, restricted grants, immutable operations, exclusive leases, restart recovery, stale-write fencing, one trial, duplicate events, isolated grants, past-due revocation, old-key review and canceled ended_at.",
   );
 } finally {
   for (const org of orgs) {

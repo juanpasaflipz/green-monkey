@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { PRO_OFFER } from "../../shared/plans";
 import { Button, Field } from "../components/ui";
+import { strings, translateError, type Key } from "../i18n";
+import type { AccountConfig } from "./accountConfig";
 
 type Restaurant = {
   id: string;
@@ -43,18 +45,37 @@ export function OwnerManagement({
   locale,
   csrf,
   restaurants,
+  roles = {},
+  config = null,
   billingSandbox,
   refresh,
 }: {
   locale: Locale;
   csrf: string;
   restaurants: Restaurant[];
+  /** account (031): the account's role per organization. */
+  roles?: Record<string, "primary" | "co_owner">;
+  config?: AccountConfig | null;
   billingSandbox: boolean;
   refresh: () => Promise<void>;
 }) {
   const es = locale === "es";
   const [selected, setSelected] = useState(restaurants[0]?.id ?? "");
   const restaurant = restaurants.find((r) => r.id === selected);
+  // Co-owners manage staff and the Free location; billing and new locations
+  // stay with the primary owner (account 031, D8).
+  const coOwner =
+    !!restaurant && roles[restaurant.organization_id] === "co_owner";
+  const taxNote =
+    config?.saasTax.mode === "tax_rate"
+      ? es
+        ? " + IVA 16 %."
+        : " + 16% VAT."
+      : " " + strings[locale].accountTaxNotConfigured;
+  const roleLabel = (role: string) =>
+    role === "co_owner"
+      ? strings[locale].accountRoleCoOwner
+      : (strings[locale][role as Key] ?? role);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [invitations, setInvitations] = useState<Invitation[]>([]);
@@ -100,14 +121,18 @@ export function OwnerManagement({
     try {
       await work();
     } catch (e) {
+      const code = (e as Error).message;
       setError(
-        (e as Error).message === "pro_required"
-          ? es
-            ? "La sucursal de origen necesita Pro activo para agregar otra ubicación."
-            : "The source location needs active Pro to add another location."
-          : es
-            ? "No se pudo completar. Revisa la conexión y vuelve a intentar; una solicitud pendiente puede tardar."
-            : "Could not complete. Check your connection and retry; a pending request may take a moment.",
+        // account (031): a material change waits for the console's acceptance.
+        code === "legal_acceptance_required"
+          ? translateError(code, locale)
+          : code === "pro_required"
+            ? es
+              ? "La sucursal de origen necesita Pro activo para agregar otra ubicación."
+              : "The source location needs active Pro to add another location."
+            : es
+              ? "No se pudo completar. Revisa la conexión y vuelve a intentar; una solicitud pendiente puede tardar."
+              : "Could not complete. Check your connection and retry; a pending request may take a moment.",
       );
     } finally {
       setBusy(false);
@@ -215,7 +240,10 @@ export function OwnerManagement({
         </section>
       )}
       {error && <p role="alert">{error}</p>}
-      {restaurant?.activation_pending && (
+      {coOwner && (
+        <p className="muted">{strings[locale].accountCoOwnerBillingNote}</p>
+      )}
+      {restaurant?.activation_pending && !coOwner && (
         <section>
           <h3>{es ? "Activar sucursal" : "Activate location"}</h3>
           <p>
@@ -251,9 +279,7 @@ export function OwnerManagement({
                       : es
                         ? "/mes"
                         : "/month"}
-                    {es
-                      ? ", antes de impuestos aplicables."
-                      : ", before applicable taxes."}
+                    {taxNote}
                   </p>
                   {quote.trialEnd && (
                     <p>
@@ -403,7 +429,7 @@ export function OwnerManagement({
           {invitations.map((i) => (
             <div key={i.id} className="panel">
               <p>
-                {i.email} · {i.role}
+                {i.email} · {roleLabel(i.role)}
               </p>
               <p>
                 {i.accepted_at
@@ -429,6 +455,7 @@ export function OwnerManagement({
                     void run(async () => {
                       await request("/api/auth/account/invitations/revoke", {
                         id: i.id,
+                        tenantId: selected,
                       });
                       setLink("");
                       sessionStorage.removeItem("gm-owner-command:invite");
@@ -445,59 +472,72 @@ export function OwnerManagement({
               )}
             </div>
           ))}
-          <h3>{es ? "Agregar sucursal" : "Add location"}</h3>
-          <p>
-            {es
-              ? "Requiere Pro. Cada sucursal cuesta MXN 799/mes o MXN 7,990/año, antes de impuestos. Después de crearla podrás revisar y confirmar el importe proporcional. No inicia otra prueba."
-              : "Requires Pro. Each location costs MXN 799/month or MXN 7,990/year, before taxes. After creating it, review and confirm the prorated amount. This does not start another trial."}
-          </p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const f = new FormData(e.currentTarget);
-              const body = {
-                sourceTenantId: selected,
-                restaurantName: f.get("restaurantName"),
-                currency: restaurant.currency,
-                timezone: f.get("timezone"),
-                cutoff: 240,
-                openingDays: [1, 2, 3, 4, 5, 6, 7],
-              };
-              const fingerprint = JSON.stringify(body);
-              const operationId = savedOperation("location", fingerprint);
-              void run(async () => {
-                const result = await request("/api/auth/account/locations", {
-                  ...body,
-                  operationId,
-                });
-                await refresh();
-                setSelected(result.tenantId);
-                setStatus(null);
-              });
-            }}
-          >
-            <Field
-              label={es ? "Nombre de la nueva sucursal" : "New location name"}
-            >
-              <input name="restaurantName" required maxLength={100} />
-            </Field>
-            <Field label={es ? "Zona horaria" : "Time zone"}>
-              <input
-                key={selected}
-                name="timezone"
-                required
-                defaultValue={restaurant.timezone}
-              />
-            </Field>
-            <p>
-              {es
-                ? "Horario inicial: todos los días, corte a las 04:00. Puedes ajustarlo en configuración al entrar."
-                : "Initial hours: every day, business day starts at 04:00. Adjust in settings after entering."}
-            </p>
-            <Button type="submit" disabled={busy}>
-              {es ? "Crear sucursal pendiente" : "Create pending location"}
-            </Button>
-          </form>
+          {!coOwner && (
+            <>
+              <h3>{es ? "Agregar sucursal" : "Add location"}</h3>
+              <p>
+                {es
+                  ? "Requiere Pro. Cada sucursal cuesta MXN 799/mes o MXN 7,990/año."
+                  : "Requires Pro. Each location costs MXN 799/month or MXN 7,990/year."}
+                {taxNote}{" "}
+                {es
+                  ? "Después de crearla podrás revisar y confirmar el importe proporcional. No inicia otra prueba."
+                  : "After creating it, review and confirm the prorated amount. This does not start another trial."}
+              </p>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const f = new FormData(e.currentTarget);
+                  const body = {
+                    sourceTenantId: selected,
+                    restaurantName: f.get("restaurantName"),
+                    currency: restaurant.currency,
+                    timezone: f.get("timezone"),
+                    cutoff: 240,
+                    openingDays: [1, 2, 3, 4, 5, 6, 7],
+                  };
+                  const fingerprint = JSON.stringify(body);
+                  const operationId = savedOperation("location", fingerprint);
+                  void run(async () => {
+                    const result = await request(
+                      "/api/auth/account/locations",
+                      {
+                        ...body,
+                        operationId,
+                      },
+                    );
+                    await refresh();
+                    setSelected(result.tenantId);
+                    setStatus(null);
+                  });
+                }}
+              >
+                <Field
+                  label={
+                    es ? "Nombre de la nueva sucursal" : "New location name"
+                  }
+                >
+                  <input name="restaurantName" required maxLength={100} />
+                </Field>
+                <Field label={es ? "Zona horaria" : "Time zone"}>
+                  <input
+                    key={selected}
+                    name="timezone"
+                    required
+                    defaultValue={restaurant.timezone}
+                  />
+                </Field>
+                <p>
+                  {es
+                    ? "Horario inicial: todos los días, corte a las 04:00. Puedes ajustarlo en configuración al entrar."
+                    : "Initial hours: every day, business day starts at 04:00. Adjust in settings after entering."}
+                </p>
+                <Button type="submit" disabled={busy}>
+                  {es ? "Crear sucursal pendiente" : "Create pending location"}
+                </Button>
+              </form>
+            </>
+          )}
         </>
       )}
     </details>

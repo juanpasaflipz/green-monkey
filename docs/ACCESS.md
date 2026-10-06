@@ -74,7 +74,10 @@ PIN in the dialog (`verifyApproval`), and that PIN is the only one asked (LD-2):
 the actor's own step-up applies only to a within-limit staff discount with no
 approver; saving the money controls (owner) needs the step-up. Reports (029):
 the remote close of an orphaned drawer (`POST /api/reports/drawers/:id/close`,
-owners and managers) needs the step-up. The client asks "Confirma con tu PIN"
+owners and managers) needs the step-up. Account (031): every
+`/api/account-data/*` path (the owner data export; a guard on the whole prefix,
+owners only) and the owner's restaurant privacy notice and Free-selection mode
+saves need the step-up. The client asks "Confirma con tu PIN"
 and retries the identical request (same `operationId`). Google-entered sessions
 on a personal device are exempt; PIN sessions are not, on any device. A pending
 prompt belongs to the session whose command asked for it:
@@ -520,13 +523,23 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
   unlock block lets another owner be unlocked (§5.4). Access-db test 28 in
   §7.9 must expect `unlock_owner_only` (403) for a manager unlocking an owner
   and a successful unlock by the owner; the owner-PIN self-only part of A3 is
-  unaffected.
+  unaffected. **Done in account (031):** an owner's PIN can be reset only by
+  that owner (`owner_pin_self_only`, in `resetStaffPin` and the legacy
+  `POST /employees` save, which also refuses owner role changes and owner
+  deactivation); access-db covers the A3 self-only reset and the A5 unlock
+  rule.
 - **Retiring a departed owner's devices (account, decision 17).** Deactivation
   now unpairs the employee's personal devices through
   `retirePersonalDevices(tx, s, employeeId)` in `server/access-devices.ts`
-  (ACC-R6-2). Account's `revokeOwnerSeat` should call it with the acting
-  owner's session, or mirror its statements and audit row, instead of the
-  §6.3 item 7 sketch.
+  (ACC-R6-2). **Done in account (031, LD-15 Q4):** `revokeOwnerSeat`
+  (co-owner removal or leaving, a previous owner leaving at transfer) mirrors
+  `setStaffActive`: it deactivates the seat and clears its Free slot, ends and
+  revokes its sessions, cancels its open pairing codes and retires its personal
+  devices through the access-owned actor variant
+  `retirePersonalDevicesAs(tx, actor, employeeId)` (an account actor instead of
+  a POS session), and writes `access.employee_deactivated {name, sessions,
+  pairingCodes, personalDevices}`. `revokeOwnerSessions` now restores the
+  caller's `app.account_id` after its scoped statements.
 - **"Descartar intento" (offline or RecoveryQueue).** A manager-only discard,
   with step-up and an audit row, for attempts in state `missing` with
   `retryAllowed=false`, so a missing attempt that can no longer be retried
