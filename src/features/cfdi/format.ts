@@ -230,6 +230,7 @@ const EVENTS: Record<string, Key> = {
   substitution_completed: "cfdiEventSubstitution",
   reissue_completed: "cfdiEventReissue",
   retry_requested: "cfdiEventRetryRequested",
+  recovery_queued: "cfdiEventRecovered",
 };
 const CANCELLATION: Record<string, Key> = {
   queued: "cfdiStatusCanceling",

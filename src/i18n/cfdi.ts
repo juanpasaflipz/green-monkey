@@ -358,6 +358,7 @@ export default defineArea({
     cfdiEventSubstitution: "Sustitución",
     cfdiEventReissue: "Factura global reemitida",
     cfdiEventRetryRequested: "Reintento solicitado",
+    cfdiEventRecovered: "Reanudado automáticamente",
     cfdiEventOther: "Evento",
   },
   en: {
@@ -707,6 +708,7 @@ export default defineArea({
     cfdiEventSubstitution: "Replacement",
     cfdiEventReissue: "Global invoice reissued",
     cfdiEventRetryRequested: "Retry requested",
+    cfdiEventRecovered: "Resumed automatically",
     cfdiEventOther: "Event",
   },
   errors: {

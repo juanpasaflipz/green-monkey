@@ -182,7 +182,8 @@ describe("amount strategy", () => {
           throw new Error(`G=${g} r=${r}`);
       }
     }
-  });
+    // 800,000 expectations: alone about 2.5 s, past vitest's 5 s default on a loaded machine.
+  }, 60_000);
 
   it("pesos, taxFor and conceptCentavos are exact", () => {
     expect(pesos(10776)).toBe(107.76);

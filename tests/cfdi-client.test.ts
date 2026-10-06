@@ -38,6 +38,7 @@ import { strings } from "../src/i18n";
 import { cfdiReportAlerts } from "../server/cfdi/hooks";
 import {
   cfdiReportAlertText,
+  eventLabel,
   issueOfError,
   periodKeyLabel,
   periodLabel,
@@ -631,5 +632,11 @@ describe("cfdi client: helpers", () => {
     expect(passwordLifetimeMs(null)).toBe(120_000);
     expect(passwordLifetimeMs(0)).toBe(120_000);
     expect(passwordLifetimeMs(1)).toBe(5_000);
+  });
+  it("CFDI-R2: the history names a recovery the tick's sweep queued", () => {
+    expect(eventLabel("recovery_queued", "es")).toBe(
+      "Reanudado automáticamente",
+    );
+    expect(eventLabel("recovery_queued", "en")).toBe("Resumed automatically");
   });
 });
