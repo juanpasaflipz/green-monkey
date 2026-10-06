@@ -92,7 +92,12 @@ brackets/braces, placeholder markers (anywhere: `replace`, `placeholder`,
 `dummy`, `acme`, and `TODO` in capitals only, so "Todos Santos" or "Comida para
 Todos" publish), example domains and reserved TLDs, and under `NODE_ENV=production` also
 test/demo words (`test`, `prueba`, `demo`, `fixture`, `ficticio`,
-`ficticia`). The documents are `published` only when every required value is
+`ficticia`). In production (`APP_ENV=production` or Railway's production
+environment) it also refuses the identifying values of the fictional CI set
+(its entity name, address, contact emails, any address at its domain and its
+phone; ACC-18), so a copied test block cannot publish a fictional data
+controller; its jurisdiction and hours are ordinary values and stay
+allowed. The documents are `published` only when every required value is
 valid; otherwise **no** entity value reaches a client. Startup logs
 `legal_documents_unpublished` with the field names (never values): error level
 when `APP_ENV=production`, warning elsewhere. `legal_unpublished_signup_ignored`
@@ -109,8 +114,8 @@ While unpublished: legal pages show "Documento no vigente…", highlighted
 `signup_paused` (unless the non-production override applies); existing accounts
 sign in; the POS is never affected.
 
-**CI** publishes a fictional, plausible set (`tests/fixtures/legal-ci.ts`,
-"Nopal Verde Software S.A. de C.V.") only on the compiled browser and
+**CI** publishes a fictional, plausible set (`server/legal-ci.ts`, re-exported
+by `tests/fixtures/legal-ci.ts`; "Nopal Verde Software S.A. de C.V.") only on the compiled browser and
 account-http steps of `qualification.yml`; the job sets
 `LEGAL_UNPUBLISHED_SIGNUP=allow` for everything else. These values are never
 copied to Railway. For local browser runs, start the compiled server with the

@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { Tx } from "./db.js";
 import { log } from "./logging.js";
 import { isProductionEnv } from "./production.js";
+import { LEGAL_CI_ENV } from "./legal-ci.js";
 import { DomainError } from "../shared/domain.js";
 import { validateRfc } from "../shared/sat.js";
 import {
@@ -61,6 +62,26 @@ const placeholder = (value: string) =>
 /** Fixture words refused in compiled/deployed processes (NODE_ENV=production). */
 const FIXTURE_WORDS = /\b(test|prueba|demo|fixture|ficticio|ficticia)\b/i;
 const EXAMPLE_DOMAIN = /@(?:[^@]+\.)?example\.(?:com|org|net)$/i;
+/**
+ * The identifying values of the fictional CI set (entity, address, contacts,
+ * and any address at its domain) are placeholders wherever production is
+ * served (ACC-18). Its jurisdiction and hours are ordinary values a real
+ * company may share, so they are not refused.
+ */
+const CI_IDENTIFYING: ReadonlySet<string> = new Set(
+  [
+    LEGAL_CI_ENV.LEGAL_ENTITY_NAME,
+    LEGAL_CI_ENV.LEGAL_ENTITY_ADDRESS,
+    LEGAL_CI_ENV.LEGAL_PRIVACY_CONTACT_EMAIL,
+    LEGAL_CI_ENV.SUPPORT_EMAIL,
+    LEGAL_CI_ENV.SUPPORT_PHONE,
+  ].map((v) => v.toLowerCase()),
+);
+const CI_DOMAIN = LEGAL_CI_ENV.SUPPORT_EMAIL.slice(
+  LEGAL_CI_ENV.SUPPORT_EMAIL.indexOf("@"),
+).toLowerCase();
+const ciValue = (v: string) =>
+  CI_IDENTIFYING.has(v.toLowerCase()) || v.toLowerCase().endsWith(CI_DOMAIN);
 const RESERVED_TLD = /\.(?:test|invalid|local|example)$/i;
 const E164 = /^\+[1-9]\d{7,14}$/;
 
@@ -87,11 +108,15 @@ const https: Check = (v) => {
  * Reads the legal entity and support contact (pure). Refuses empty and
  * malformed values, brackets/braces, placeholder words and example domains;
  * with NODE_ENV=production (staging, production and the compiled CI runs) also
- * test/demo words. The documents are published only when every required field
- * is valid; otherwise no entity value is returned at all.
+ * test/demo words; in production (isProductionEnv) also the identifying
+ * values of the fictional CI set (LEGAL_CI_ENV), which CI publishes with
+ * APP_ENV unset. The
+ * documents are published only when every required field is valid; otherwise
+ * no entity value is returned at all.
  */
 export function legalConfig(env: NodeJS.ProcessEnv): LegalConfig {
   const strict = env.NODE_ENV === "production";
+  const production = isProductionEnv(env);
   const missing: string[] = [];
   const invalid: string[] = [];
   const read = (name: string, check: Check, required: boolean) => {
@@ -104,7 +129,8 @@ export function legalConfig(env: NodeJS.ProcessEnv): LegalConfig {
       !check(raw) ||
       /[<>[\]{}]/.test(raw) ||
       placeholder(raw) ||
-      (strict && FIXTURE_WORDS.test(raw))
+      (strict && FIXTURE_WORDS.test(raw)) ||
+      (production && ciValue(raw))
     ) {
       invalid.push(name);
       return null;

@@ -55,7 +55,9 @@ Before production accepts its first restaurant (see also
 2. The production `web` variables hold the real `LEGAL_ENTITY_NAME`,
    `LEGAL_ENTITY_ADDRESS`, `LEGAL_PRIVACY_CONTACT_EMAIL`,
    `LEGAL_JURISDICTION` (and the optional `LEGAL_ENTITY_RFC`) and the
-   `SUPPORT_*` channels.
+   `SUPPORT_*` channels, never the fictional CI set ("Nopal Verde Software
+   S.A. de C.V.", `@nopalverde.mx`, `server/legal-ci.ts`): production refuses
+   those values and keeps the documents unpublished.
 3. `GET /api/account-config` reports `legal.status: "published"`, and the
    startup log has no `legal_documents_unpublished`.
 4. `LEGAL_UNPUBLISHED_SIGNUP` is unset (startup logs

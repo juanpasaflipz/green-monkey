@@ -192,7 +192,8 @@ uses its own values or stays unpublished (it may set
 
 The account area's detector (`legalConfig()` in `server/legal.ts`) refuses
 missing, malformed and placeholder values (and test/demo words under
-`NODE_ENV=production`). While anything required is refused, the documents stay
+`NODE_ENV=production`; in production also the fictional CI set's entity,
+address, contacts and `@nopalverde.mx` addresses). While anything required is refused, the documents stay
 unpublished, signup is paused, and startup logs `legal_documents_unpublished`
 with the variable names (error level in production). Before inviting
 restaurants, confirm `GET https://<domain>/api/account-config` reports

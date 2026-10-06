@@ -111,6 +111,52 @@ describe("legal configuration (FIT-12, LD-3)", () => {
     expect(c.entity?.rfc).toBeNull();
   });
 
+  it("production refuses the fictional CI set's identifying values (ACC-18)", () => {
+    for (const where of [
+      { APP_ENV: "production" },
+      { RAILWAY_ENVIRONMENT_NAME: "production" },
+    ]) {
+      const c = legalConfig({ ...LEGAL_CI_ENV, ...production, ...where });
+      expect(c.status).toBe("unpublished");
+      expect(c.entity).toBeNull();
+      expect(c.invalid.sort()).toEqual(
+        [
+          "LEGAL_ENTITY_ADDRESS",
+          "LEGAL_ENTITY_NAME",
+          "LEGAL_PRIVACY_CONTACT_EMAIL",
+          "SUPPORT_EMAIL",
+          "SUPPORT_PHONE",
+        ].sort(),
+      );
+      expect(c.support.configured).toBe(false);
+      // One copied value is enough to keep the documents unpublished, and
+      // any address at the fictional domain counts.
+      expect(
+        legalConfig({
+          ...valid,
+          ...where,
+          LEGAL_ENTITY_NAME: LEGAL_CI_ENV.LEGAL_ENTITY_NAME.toUpperCase(),
+        }).invalid,
+      ).toEqual(["LEGAL_ENTITY_NAME"]);
+      expect(
+        legalConfig({
+          ...valid,
+          ...where,
+          LEGAL_PRIVACY_CONTACT_EMAIL: "datos@nopalverde.mx",
+        }).status,
+      ).toBe("unpublished");
+      // A real set with the same jurisdiction and hours publishes.
+      const real = legalConfig({
+        ...valid,
+        ...where,
+        LEGAL_JURISDICTION: LEGAL_CI_ENV.LEGAL_JURISDICTION,
+        SUPPORT_HOURS: LEGAL_CI_ENV.SUPPORT_HOURS,
+      });
+      expect(real.status).toBe("published");
+      expect(real.support.hoursEs).toBe(LEGAL_CI_ENV.SUPPORT_HOURS);
+    }
+  });
+
   it("APP_ENV=production ignores LEGAL_UNPUBLISHED_SIGNUP=allow and logs it", () => {
     const allowed = legalConfig({ LEGAL_UNPUBLISHED_SIGNUP: "allow" });
     expect(signupOpen(allowed)).toBe(true);

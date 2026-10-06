@@ -1,7 +1,8 @@
 /**
  * The fictional CI legal set and the local harness (account 031, LD-3, ACC-2).
  *
- * 1. One set of literals: tests/fixtures/legal-ci.ts is canonical; the
+ * 1. One set of literals: server/legal-ci.ts (re-exported by
+ *    tests/fixtures/legal-ci.ts) is canonical; the
  *    sourceable tests/fixtures/legal-ci.sh (scripts/compiled-local.sh), the
  *    commented lines of .env.example and both steps of qualification.yml that
  *    publish it must carry exactly the same values.
