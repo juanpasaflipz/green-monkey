@@ -373,6 +373,59 @@ test("DSC-R2: Quitar descuento recovers from stale_order: it reloads the check, 
   expect(after.discount).toBe(4500);
 });
 
+test("DSC-R10: in Vender, Quitar descuento reloads after another device charged a discounted unit, says it can no longer be removed and disables the confirm", async ({
+  page,
+}) => {
+  const name = "Vender " + tag();
+  await login(page);
+  await openDrawer(page);
+  const o = await order(page, name, 2);
+  const lineId = o.lines[0].id;
+  await call(page, `/orders/${o.id}/discounts`, {
+    operationId: uuid(),
+    expectedVersion: o.version,
+    scope: "order",
+    kind: "percent",
+    percentBps: 1000,
+    reasonCode: "regular_customer",
+  });
+  await orders(page);
+  await row(page, name)
+    .getByRole("button", { name: /Abrir orden/ })
+    .click();
+  const existing = page.locator(".existing");
+  await expect(existing).toContainText("−$9.00");
+  await existing
+    .getByRole("button", { name: "Quitar descuento", exact: true })
+    .click();
+  const remove = page.getByRole("dialog", { name: "Quitar descuento" });
+  await remove.getByLabel("Motivo para quitarlo").fill("Se aplicó por error");
+  // Another device charges the first taco: the discount now covers a paid unit.
+  await pay(page, o.id, 4050, { items: [`${lineId}:0`] });
+  const confirm = remove.getByRole("button", {
+    name: "Quitar y sumar $9.00",
+    exact: true,
+  });
+  await confirm.click();
+  // Vender hands the reloaded check back to the dialog (DSC-R10).
+  await expect(remove.getByRole("alert")).toHaveText(
+    "Este descuento ya no se puede quitar: ya se cobró algo de esos productos o hay un descuento más reciente sobre ellos.",
+  );
+  await expect(confirm).toBeDisabled();
+  await expect(remove.getByLabel("Motivo para quitarlo")).toHaveValue(
+    "Se aplicó por error",
+  );
+  // The screen behind it no longer offers the removal either.
+  await expect(
+    existing.getByRole("button", { name: "Quitar descuento", exact: true }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(remove).toBeHidden();
+  const after = await call(page, "/orders/" + o.id);
+  expect(after.discounts[0].reversal).toBeNull();
+  expect(after.discount).toBe(900);
+});
+
 test("MON-4: refund one paid item by card; the terminal reference is required; the kitchen shows it as refunded and acknowledges it", async ({
   page,
 }) => {

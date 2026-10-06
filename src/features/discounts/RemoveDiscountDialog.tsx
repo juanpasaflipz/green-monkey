@@ -8,14 +8,8 @@ import {
   type ApprovalValue,
 } from "../../components/ManagerApproval";
 import { strings, translateError, type Key } from "../../i18n";
-import { discountRemovable, fill } from "./format";
+import { fill, removableAfterReload } from "./format";
 import "./discounts.css";
-
-/** The discount as `order` shows it, when it can still be removed there. */
-function removableIn(order: Order, discountId: string) {
-  const d = (order.discounts ?? []).find((x) => x.id === discountId);
-  return d && discountRemovable(order, d) ? d : null;
-}
 
 /**
  * "Quitar descuento": the discount's single reversal. Staff need a manager's
@@ -52,6 +46,8 @@ export function RemoveDiscountDialog({
   const staff = !["owner", "manager"].includes(session.role);
   const [operationId] = useState(() => crypto.randomUUID());
   const [order, setOrder] = useState(initial);
+  // Set by reload(): from then on the fresh order decides (DSC-R10).
+  const [reloaded, setReloaded] = useState(false);
   const [note, setNote] = useState("");
   const [approval, setApproval] = useState<ApprovalValue>({
     employeeId: "",
@@ -59,7 +55,7 @@ export function RemoveDiscountDialog({
   });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const live = order === initial ? chosen : removableIn(order, chosen.id);
+  const live = removableAfterReload(order, chosen, reloaded);
   const discount =
     live ?? (order.discounts ?? []).find((d) => d.id === chosen.id) ?? chosen;
   const amount = money(discount.activeAmount);
@@ -69,7 +65,8 @@ export function RemoveDiscountDialog({
     try {
       const fresh = await api<Order>("/orders/" + order.id);
       setOrder(fresh);
-      if (!removableIn(fresh, chosen.id))
+      setReloaded(true);
+      if (!removableAfterReload(fresh, chosen, true))
         setError(translateError("discount_not_reversible", locale));
       await refreshed?.(fresh);
     } catch {

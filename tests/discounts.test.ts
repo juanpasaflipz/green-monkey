@@ -37,6 +37,7 @@ import {
   voidCandidates,
   type AdjustmentRow,
   type MoneyControls,
+  type OrderDiscount,
   type RefundedUnit,
   type TenderAllocation,
   type UnitDiscount,
@@ -47,6 +48,7 @@ import {
   orderTaxSummary,
 } from "../shared/fiscal";
 import { line as fiscalLine, rng } from "./fixtures/fiscal";
+import { removableAfterReload } from "../src/features/discounts/format";
 
 const code = (fn: () => unknown) => {
   try {
@@ -1101,5 +1103,87 @@ describe("inputs and helpers", () => {
     expect(discountClosesCheck({ ...o, paid: 4500 }, { amount: 4500 })).toBe(
       true,
     );
+  });
+});
+
+describe("Quitar descuento after a reload (DSC-R10)", () => {
+  const taco = line(9000, 2);
+  const discountOn = (
+    units: number[],
+    over: Partial<OrderDiscount> = {},
+  ): OrderDiscount => ({
+    id: "d1",
+    scope: "line",
+    lineId: taco.id,
+    kind: "percent",
+    percentBps: 1000,
+    base: 4500 * units.length,
+    amount: 450 * units.length,
+    units: units.length,
+    activeAmount: 450 * units.length,
+    releasedAmount: 0,
+    allocations: units.map((unit) => ({
+      lineId: taco.id,
+      unit,
+      amount: 450,
+      voided: false,
+    })),
+    reasonCode: "regular_customer",
+    note: "",
+    actorName: "Alex Demo",
+    approverName: null,
+    createdAt: "2026-10-05T12:00:00.000Z",
+    reversal: null,
+    ...over,
+  });
+
+  it("follows the reloaded check even when it is the same object the dialog was given (Vender)", () => {
+    const chosen = discountOn([0, 1]);
+    // Vender hands the reloaded order back as the dialog's `order` prop, so
+    // order === initial again: only the reload flag tells.
+    const fresh = view({
+      lines: [taco],
+      discounts: [discountOn([0, 1])],
+      allocations: [{ tenderId: "t", lineId: taco.id, unit: 0, amount: 4050 }],
+    });
+    expect(removableAfterReload(fresh, chosen, false)).toBe(chosen);
+    expect(removableAfterReload(fresh, chosen, true)).toBeNull();
+  });
+
+  it("after a reload shows the discount's current amount, or null when it was removed elsewhere", () => {
+    const chosen = discountOn([0, 1]);
+    // Another device voided unit 1: the discount is still removable, for less.
+    const voided = discountOn([0, 1], {
+      activeAmount: 450,
+      releasedAmount: 450,
+      allocations: [
+        { lineId: taco.id, unit: 0, amount: 450, voided: false },
+        { lineId: taco.id, unit: 1, amount: 450, voided: true },
+      ],
+    });
+    const fresh = view({
+      lines: [{ ...taco, voidedUnits: [1] }],
+      discounts: [voided],
+    });
+    expect(removableAfterReload(fresh, chosen, true)?.activeAmount).toBe(450);
+    const reversed = view({
+      lines: [taco],
+      discounts: [
+        discountOn([0, 1], {
+          activeAmount: 0,
+          reversal: {
+            at: "2026-10-05T12:05:00.000Z",
+            byName: "Alex Demo",
+            approverName: null,
+            note: "Se aplicó por error",
+            amount: 900,
+          },
+        }),
+      ],
+    });
+    expect(removableAfterReload(reversed, chosen, true)).toBeNull();
+    expect(
+      removableAfterReload(view({ lines: [taco] }), chosen, true),
+    ).toBeNull();
   });
 });

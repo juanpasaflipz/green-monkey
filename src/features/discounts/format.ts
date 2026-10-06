@@ -117,3 +117,20 @@ export function discountRemovable(order: Order, d: OrderDiscount): boolean {
     x.allocations.some((a) => !a.voided && units.has(`${a.lineId}:${a.unit}`)),
   );
 }
+
+/**
+ * The discount "Quitar descuento" acts on (DSC-R10): the one the screen chose
+ * until the dialog reloads the check; after a reload, that discount as the
+ * fresh check shows it (with its current amount), or null once it can no
+ * longer be removed. Object identity cannot tell whether a reload happened:
+ * Vender hands the reloaded order straight back as the dialog's `order` prop.
+ */
+export function removableAfterReload(
+  order: Order,
+  chosen: OrderDiscount,
+  reloaded: boolean,
+): OrderDiscount | null {
+  if (!reloaded) return chosen;
+  const d = (order.discounts ?? []).find((x) => x.id === chosen.id);
+  return d && discountRemovable(order, d) ? d : null;
+}
