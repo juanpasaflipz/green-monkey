@@ -2914,8 +2914,11 @@ test.describe("offline table service (Beta) turned on", () => {
     ).toEqual(["Agua de jamaica"]);
     // Leave no open check behind for the next tests, and deliver the kitchen
     // rounds it put on the KDS as the KDS would (LD-42 hygiene, POL-R2-5).
-    // Round 1 synced from the local order is held for offline review, which
-    // the kitchen feed never lists; round 2 was sent here.
+    // Round 1 synced from the local order is held for offline review: it is a
+    // card in the KDS lane "Ventas sin conexión por revisar" (not in the
+    // kitchen feed) until someone decides it, and the previous-day clear never
+    // removes it, so the kitchen decides it here ("Ya se preparó",
+    // POLISH-OPS-3); round 2 was sent here.
     await page.evaluate(
       async ({ id, amount }) => {
         const s = await (await fetch("/api/session")).json();
@@ -2930,6 +2933,12 @@ test.describe("offline table service (Beta) turned on", () => {
           });
           if (!r.ok) throw Error(`${path}: ${r.status}`);
         };
+        const lane = await (await fetch("/api/offline/kitchen")).json();
+        for (const item of lane.items.filter((i: any) => i.orderId === id))
+          await post(`/offline/kitchen/${item.roundId}/decision`, {
+            operationId: crypto.randomUUID(),
+            decision: "already_served",
+          });
         await post(`/orders/${id}/payments`, {
           operationId: crypto.randomUUID(),
           amount,
@@ -2957,12 +2966,21 @@ test.describe("offline table service (Beta) turned on", () => {
     expect(
       delivered.rounds.find((round: any) => round.number === 2)?.state,
     ).toBe("completed");
-    // Nothing of this test stays on the kitchen screen.
+    // Nothing of this test stays on the kitchen screen: no active or ready
+    // round, and no card in the offline review lane.
     expect(
       delivered.rounds
-        .filter((round: any) => ["active", "ready"].includes(round.state))
+        .filter((round: any) =>
+          ["active", "ready", "offline_review"].includes(round.state),
+        )
         .map((round: any) => round.number),
     ).toEqual([]);
+    const lane = await page.evaluate(async () =>
+      (await fetch("/api/offline/kitchen")).json(),
+    );
+    expect(lane.items.filter((item: any) => item.orderId === orderId)).toEqual(
+      [],
+    );
   });
 
   test("A draft whose order no longer exists is shown as such and can only be discarded (LD-13 addendum)", async ({
