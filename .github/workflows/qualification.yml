@@ -11,7 +11,9 @@ concurrency:
 jobs:
   qualify:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # About 30 minutes when the runner is healthy; the headroom absorbs a slow
+    # apt mirror (main run 37626233378 spent 16 minutes installing browsers).
+    timeout-minutes: 60
     services:
       postgres:
         # Neon runs PostgreSQL 18 (OPS-12).
@@ -121,7 +123,15 @@ jobs:
         run: npm run test:account-http
       - name: Graceful drain of the compiled web and worker
         run: npm run test:drain
-      - run: npx playwright install --with-deps chromium webkit
+      - name: Install Playwright browsers (bounded, one retry)
+        # A stalled apt mirror once took 16 minutes here; bound each attempt
+        # so a hang retries once instead of eating the job's time budget.
+        run: |
+          for attempt in 1 2; do
+            timeout 600 npx playwright install --with-deps chromium webkit && exit 0
+            echo "::warning::playwright install attempt $attempt failed or timed out"
+          done
+          exit 1
       - name: Compiled browser acceptance (web + worker)
         env:
           WORKER_URL: http://127.0.0.1:3005
