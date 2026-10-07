@@ -3,7 +3,7 @@ import type { Locale } from "../../../shared/domain";
 import type { MenuCategory } from "../../../shared/menu";
 import { categoryInput } from "../../../shared/menu-schema";
 import { api } from "../../api";
-import { translateError } from "../../i18n";
+import { errorNotice } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
 import { translator } from "./format";
 
@@ -46,7 +46,7 @@ export function CategoryDialog({
     try {
       onSaved(await api<MenuCategory>("/menu/categories/save", body));
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

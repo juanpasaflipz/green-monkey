@@ -14,7 +14,6 @@ export default defineArea({
     serviceOrdersEmptyOpen: "No hay cuentas abiertas.",
     serviceOrdersEmptyDay: "No hay órdenes en este día.",
     serviceOrdersDetail: "Detalle",
-    serviceOrdersFromDay: "Del {date}",
     serviceOrdersMore: "+{n} más",
     serviceOrdersNotePrefix: "Nota: {note}",
     serviceOrdersFilters: "Filtros de órdenes",
@@ -31,6 +30,7 @@ export default defineArea({
     serviceVoidAckPending: "Cocina aún no confirma",
     // Order detail and receipt
     serviceDetailTitle: "Orden #{n}",
+    servicePayOrderTitle: "Cobrar {order}",
     serviceDetailItems: "Productos",
     serviceDetailRounds: "Rondas de cocina",
     serviceDetailPayments: "Pagos",
@@ -113,7 +113,7 @@ export default defineArea({
     serviceKdsClearStaleConfirm:
       "Se marcarán como entregados {n} tickets de días anteriores. Queda registrado quién lo hizo.",
     serviceKdsTruncated:
-      "Se muestran los 200 tickets más antiguos; los nuevos no aparecen hasta que se entreguen tickets. Un gerente puede retirar los de días anteriores.",
+      "Hay más de 200 tickets abiertos: se muestran los 200 más recientes y los más antiguos quedan ocultos. Un gerente puede retirar los de días anteriores con «Retirar tickets de días anteriores».",
     serviceKdsAckFirst:
       "Confirma la cancelación antes de marcar el ticket como entregado.",
     serviceKdsDismiss: "Descartar",
@@ -131,7 +131,7 @@ export default defineArea({
     servicePrintKdsAuto:
       "Imprimir tickets nuevos automáticamente en esta pantalla",
     servicePrintSilentHint:
-      "Para imprimir sin diálogo, abre Chrome con impresión de kiosco en este equipo (ver guía).",
+      "La impresión sin diálogo no está confirmada: con esta opción, cada ticket nuevo abre el diálogo de impresión. Sigue la guía del piloto, sección 1.3.",
     servicePrintUnconfirmed:
       "La impresión del navegador no confirma que salió papel.",
     // Selling
@@ -164,7 +164,12 @@ export default defineArea({
       "Guardamos la orden que estabas capturando en Borradores.",
     serviceSendChanged:
       "Parte de esta orden ya había llegado a cocina y después cambiaste cantidades o notas. En el carrito quedó solo lo que falta o cambió; revisa las cantidades y notas antes de enviar.",
-    serviceDraftRound: "#{n} · ronda sin enviar",
+    serviceDraftRound: "{order} · ronda sin enviar",
+    serviceDraftOrderGone:
+      "La orden de este borrador ya no existe en este dispositivo ni en el servidor.",
+    serviceDraftDiscard: "Descartar borrador",
+    serviceDraftItemsOne: "1 producto",
+    serviceDraftItems: "{n} productos",
     servicePayDueChanged:
       "El saldo pendiente cambió a {due}. Revisa el importe antes de confirmar.",
     serviceReprintKitchen: "Reimprimir comanda",
@@ -295,7 +300,6 @@ export default defineArea({
     serviceOrdersEmptyOpen: "No open checks.",
     serviceOrdersEmptyDay: "No orders on this day.",
     serviceOrdersDetail: "Details",
-    serviceOrdersFromDay: "From {date}",
     serviceOrdersMore: "+{n} more",
     serviceOrdersNotePrefix: "Note: {note}",
     serviceOrdersFilters: "Order filters",
@@ -310,6 +314,7 @@ export default defineArea({
     serviceReleaseTable: "Release table",
     serviceVoidAckPending: "Kitchen has not confirmed",
     serviceDetailTitle: "Order #{n}",
+    servicePayOrderTitle: "Collect payment for {order}",
     serviceDetailItems: "Items",
     serviceDetailRounds: "Kitchen rounds",
     serviceDetailPayments: "Payments",
@@ -388,7 +393,7 @@ export default defineArea({
     serviceKdsClearStaleConfirm:
       "{n} tickets from previous days will be marked delivered. Who did it is recorded.",
     serviceKdsTruncated:
-      "Showing the 200 oldest tickets; new ones do not appear until tickets are delivered. A manager can clear those from previous days.",
+      "More than 200 tickets are open: the 200 newest are shown and older ones are hidden. A manager can clear those from previous days with “Clear tickets from previous days”.",
     serviceKdsAckFirst:
       "Acknowledge the cancellation before marking the ticket delivered.",
     serviceKdsDismiss: "Dismiss",
@@ -404,7 +409,7 @@ export default defineArea({
     servicePrintKitchenOnSend: "Print kitchen ticket when sending",
     servicePrintKdsAuto: "Print new tickets automatically on this screen",
     servicePrintSilentHint:
-      "To print without a dialog, launch Chrome with kiosk printing on this device (see guide).",
+      "Printing without a dialog is not confirmed: with this option, each new ticket opens the print dialog. Follow the pilot guide, section 1.3.",
     servicePrintUnconfirmed:
       "Browser printing does not confirm that paper came out.",
     serviceLineNote: "Kitchen note",
@@ -433,7 +438,12 @@ export default defineArea({
     serviceDraftParked: "The order you were entering was saved in Drafts.",
     serviceSendChanged:
       "Part of this order had already reached the kitchen, and quantities or notes changed afterwards. The cart keeps only what is missing or changed; review quantities and notes before sending.",
-    serviceDraftRound: "#{n} · unsent round",
+    serviceDraftRound: "{order} · unsent round",
+    serviceDraftOrderGone:
+      "This draft's order no longer exists on this device or on the server.",
+    serviceDraftDiscard: "Discard draft",
+    serviceDraftItemsOne: "1 item",
+    serviceDraftItems: "{n} items",
     servicePayDueChanged:
       "The balance due changed to {due}. Review the amount before confirming.",
     serviceReprintKitchen: "Reprint kitchen ticket",
@@ -686,6 +696,10 @@ export default defineArea({
     payload_too_large: [
       "La solicitud es demasiado grande. Reduce los datos e inténtalo de nuevo.",
       "The request is too large. Reduce the data and try again.",
+    ],
+    request_aborted: [
+      "La conexión se cortó antes de enviar todos los datos. Inténtalo de nuevo.",
+      "The connection dropped before all the data was sent. Try again.",
     ],
   },
 });

@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { Check } from "lucide-react";
 import {
   currencyExponent,
@@ -14,9 +14,10 @@ import {
   validatePayment,
   type PaymentValues,
 } from "../../shared/service";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { Button, Field, Modal } from "../components/ui";
 import { moneyFormatter } from "./Receipt";
+import { currentBusinessDate, orderNumberLabel } from "../labels";
 
 /** Offline (026) fills this slot; it is used only while the device is offline. */
 export type OfflinePaymentSlot = {
@@ -26,6 +27,9 @@ export type OfflinePaymentSlot = {
   /** Translated reason that disables Confirm. */
   blockReason: string | null;
 };
+
+/** How long Confirm ignores taps after the connection changes under the open dialog (LD-45). */
+export const CONFIRM_SETTLE_MS = 700;
 
 /**
  * The payment form. It mounts fresh for every payment, so method, reference
@@ -101,6 +105,22 @@ export function PaymentDialog({
     setDueChanged(true);
     if (amountFollows && !splitItems) setAmountText(text(due));
   }
+  // LD-45: the connection changing relabels Confirm in place ("Confirmar
+  // cobro" and "Guardar cobro en este dispositivo" are different actions on
+  // the same button). A tap already on its way as it changes must not run
+  // the other one, so Confirm ignores taps for CONFIRM_SETTLE_MS after each
+  // change. Opening the dialog is not a change.
+  const [shownOnline, setShownOnline] = useState(online);
+  const [settling, setSettling] = useState(0);
+  if (online !== shownOnline) {
+    setShownOnline(online);
+    setSettling((n) => n + 1);
+  }
+  useEffect(() => {
+    if (!settling) return;
+    const timer = setTimeout(() => setSettling(0), CONFIRM_SETTLE_MS);
+    return () => clearTimeout(timer);
+  }, [settling]);
   const parse = (s: string, emptyAsZero = false) => {
     try {
       return parseMoneyInput(s, exponent, { emptyAsZero });
@@ -151,6 +171,7 @@ export function PaymentDialog({
   const externalAllowed = online || !!slot?.allowExternal;
   const canConfirm =
     !busy &&
+    !settling &&
     !blockReason &&
     (pendingPayment || (validation.ok && !waitingForItems));
   const confirmLabel = online
@@ -158,9 +179,18 @@ export function PaymentDialog({
     : slot
       ? slot.confirmLabel(method)
       : t("saveOffline");
+  // LD-29: collecting an order from another business day names it, with its date.
+  const today = currentBusinessDate(session.restaurant);
+  const title =
+    current?.businessDate && current.number && current.businessDate !== today
+      ? t("servicePayOrderTitle").replace(
+          "{order}",
+          orderNumberLabel(current, today, locale),
+        )
+      : t("pay");
   return (
     <Modal
-      title={t("pay")}
+      title={title}
       close={() => !busy && onClose()}
       closeLabel={t("close")}
       footer={
@@ -206,7 +236,7 @@ export function PaymentDialog({
         </p>
       )}
       {!online && (
-        <div className="warning-panel">
+        <div className="warning-panel" role="status">
           {slot ? slot.hint(method) : <p>{t("offlineHint")}</p>}
         </div>
       )}
@@ -277,7 +307,7 @@ export function PaymentDialog({
               setAmountFollows(false);
               setReceivedInput(null);
             } catch (e) {
-              setLocalError(translateError((e as Error).message, locale));
+              setLocalError(errorNotice(e, locale));
             }
           }}
         >

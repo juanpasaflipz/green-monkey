@@ -12,7 +12,7 @@ import {
 } from "../../../shared/discounts";
 import { api } from "../../api";
 import { Button, Field } from "../../components/ui";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, translateError, type Key } from "../../i18n";
 import { fill } from "../discounts/format";
 import {
   loadMoneyControls,
@@ -151,7 +151,7 @@ export function MoneyControlsSettings({
         // An earlier save with this id was recorded (CONCURRENCY-4): show the
         // saved values; load() starts a new operation for the next save.
         if (await load(true)) setError(t("discountsOperationRecorded"));
-      } else setError(translateError(code, locale));
+      } else setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

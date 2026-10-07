@@ -161,12 +161,15 @@ is closed.
     confirmado: $100.00."
   - One `role="status"` region stays mounted from "Cargando…" to the loaded
     state, so a screen reader hears each change.
-  - A just-expired hold reads as waiting for 5 minutes more
-    (`HOLD_EXPIRY_GRACE_SECONDS`, equal to `PAID_ACCEPT_GRACE_SECONDS`): an
-    accept that locked it in time may still be committing, and staff may
-    still collect a pay-first hold (below), so the diner never sees
-    "vencido" while staff can still accept it. The diner's cancel and every
-    other staff decision stop exactly at `expires_at`.
+  - A just-expired hold reads as waiting a little longer
+    (`holdExpiryGraceSeconds`): 60 seconds for an accept-policy hold
+    (`HOLD_EXPIRY_GRACE_SECONDS`), because an accept that locked it in time
+    may still be committing, and 5 minutes for a pay-first hold
+    (`PAID_ACCEPT_GRACE_SECONDS`), which staff may still collect (below), so
+    the diner never sees "vencido" while staff can still accept it, and an
+    accept-policy hold that nobody can accept any more does not read as
+    waiting for 5 minutes (PUB-R3-L1). The diner's cancel and every other
+    staff decision stop exactly at `expires_at`.
   - A code found replaced on a menu poll switches the page to this phone's
     orders with "Este código QR ya no funciona: se reemplazó o se desactivó.
     …" above them.
@@ -897,7 +900,9 @@ DB test 21 runs this block exactly as written, as `gm_migrator`:
     check it again after the cleanup. A browser run on a persistent database
     (staging, RELEASE item 5) leaves no public ticket on the demo
     restaurant's kitchen screen. `core.spec`'s QR test is covered by
-    track/flake's file-level `kitchenHygiene()` once W3-2 lands.
+    its file-level `kitchenHygiene()` (W3-2), and `public-ordering.spec`
+    registers the same hygiene after its own cleanup, so a round or offline
+    review that cleanup missed is still settled.
   - The table-QR end-to-end test (the diner at 390 px, the inbox accept)
     and the pay-first kiosk test (the 1024 px kiosk, the inbox charge) are
     tagged `@cross`, so CI also runs them on the `webkit-ipad` project:

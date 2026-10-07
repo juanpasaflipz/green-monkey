@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import type { Locale } from "../../shared/domain";
 import { currencyExponent } from "../../shared/domain";
 import { api } from "../api";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice } from "../i18n";
 import { tenderMethodLabel } from "../labels";
 import { Badge, Button } from "../components/ui";
 import { fill } from "./discounts/format";
@@ -59,7 +59,7 @@ export function CashHistory({
         if (live) setRows(data);
       })
       .catch((e: Error) => {
-        if (live) setError(translateError(e.message, locale));
+        if (live) setError(errorNotice(e, locale));
       });
     return () => {
       live = false;
@@ -154,9 +154,7 @@ export function CashHistory({
               onClick={() =>
                 void api(`/cash/history/${row.id}`)
                   .then(setDetail)
-                  .catch((e: Error) =>
-                    setError(translateError(e.message, locale)),
-                  )
+                  .catch((e: Error) => setError(errorNotice(e, locale)))
               }
             >
               {es ? "Ver movimientos" : "View movements"}

@@ -17,7 +17,7 @@ import {
   type ReceptorIssue,
 } from "../../../shared/cfdi";
 import { api } from "../../api";
-import { strings, translateError } from "../../i18n";
+import { strings, errorNotice, translateError } from "../../i18n";
 import { Button, Modal } from "../../components/ui";
 import { emptyReceptor, ReceptorFields } from "./ReceptorFields";
 import { DocumentDetail } from "./CfdiDocuments";
@@ -112,8 +112,7 @@ export function InvoiceDialog({
         setCardForm(v.cardPaymentForm);
       })
       .catch((e) => {
-        if (alive.current)
-          setError(translateError((e as Error).message, locale));
+        if (alive.current) setError(errorNotice(e, locale));
       });
     return () => {
       alive.current = false;
@@ -193,7 +192,7 @@ export function InvoiceDialog({
       notified.current = false;
       setDoc(created);
     } catch (e) {
-      if (alive.current) setError(translateError((e as Error).message, locale));
+      if (alive.current) setError(errorNotice(e, locale));
     } finally {
       if (alive.current) setBusy(false);
     }
@@ -218,7 +217,7 @@ export function InvoiceDialog({
       setEmailOperation(crypto.randomUUID());
       setEmailNotice(t.cfdiEmailQueued);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

@@ -634,6 +634,12 @@ export async function archiveProduct(tx: Tx, s: Session, raw: unknown) {
         throw new DomainError("menu_limit", 409);
       checkProductGroups(old.data.kind, old.data.groups);
       await validateRecipe(tx, old.data.recipe ?? []);
+      // LD-28: a restored product meets the tax rule a save does (IVA 8% needs a border
+      // region; fiscal owns the check). menu_state was taken above, so a profile save that
+      // leaves the border region either counts this product or this restore reads the
+      // general region (FISCAL-CONCURRENCY-3).
+      if (old.data.archived)
+        await assertProductFiscalAllowed(tx, old.data.fiscal);
       data = {
         ...old.data,
         archived: false,

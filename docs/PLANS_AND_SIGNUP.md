@@ -229,4 +229,9 @@ staging, and the legal text awaits counsel review.
   CSV) from Settings, on Free too.
 - **QR and kiosk** (Pro) are on since public ordering (032/033) shipped:
   `PUBLIC_ORDERING_ENABLED` unset means on everywhere and `false` is the kill
-  switch, under which the landing and plan copy say "próximamente".
+  switch. Under the kill switch the landing page does not advertise QR or
+  kiosk and Configuración → Plan tells a Pro restaurant "Pedidos QR y kiosco
+  desactivados temporalmente por Green Monkey."; "Kiosco y pedidos QR:
+  próximamente." shows only on a deployment where B4 (the flag flip) is
+  reverted, so an unset variable means it was never offered there (PUB-R3-L2,
+  [account and legal](ACCOUNT_AND_LEGAL.md)).

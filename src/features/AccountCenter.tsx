@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { Locale } from "../../shared/domain";
 import { Button, Field } from "../components/ui";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import type { AccountConfig } from "./accountConfig";
 import { LegalAcceptance, type LegalAccepted } from "./LegalAcceptance";
 import {
@@ -211,7 +211,7 @@ export function AccountCenter({
     } catch (e) {
       const code = (e as Error).message;
       if (code === "reauthentication_required") setReauth(true);
-      else setError(translateError(code, locale));
+      else setError(errorNotice(e, locale));
       if (code === "transfer_unavailable") {
         clearTransferToken();
         setPreview(null);
@@ -237,7 +237,7 @@ export function AccountCenter({
     post<Preview>("transfers/preview", { token: transferToken })
       .then(setPreview)
       .catch((e) => {
-        setError(translateError((e as Error).message, locale));
+        setError(errorNotice(e, locale));
         clearTransferToken();
       });
   }, [transferToken]);

@@ -10,8 +10,11 @@ import {
   dinerRejectReason,
   effectiveHoldState,
   holdActions,
+  holdExpiryGraceSeconds,
   holdLabel,
+  HOLD_EXPIRY_GRACE_SECONDS,
   linkPath,
+  PAID_ACCEPT_GRACE_SECONDS,
   PUBLIC_TOKEN,
   publicOrderInput,
   roundProgress,
@@ -27,6 +30,7 @@ import {
 import { publicKey, scopeKey } from "../server/public-limits";
 import { parseDinerLocation } from "../src/features/public/dinerRoute";
 import { HoldCard } from "../src/features/public/HoldCard";
+import { currentBusinessDate } from "../src/labels";
 import { PublicInboxBanner } from "../src/features/public/PublicInboxBanner";
 import { KioskDone } from "../src/features/public/KioskDone";
 import { DinerStatus } from "../src/features/public/DinerStatus";
@@ -53,6 +57,18 @@ const order = (over: Record<string, unknown> = {}) => ({
 });
 
 describe("public ordering tokens and schemas (032)", () => {
+  it("the diner's expiry grace is 5 minutes only for a pay-first hold; an accept-policy hold keeps 60 s (PUB-R3-L1)", () => {
+    expect(PAID_ACCEPT_GRACE_SECONDS).toBe(300);
+    expect(HOLD_EXPIRY_GRACE_SECONDS).toBe(60);
+    expect(holdExpiryGraceSeconds("pay_first")).toBe(300);
+    expect(holdExpiryGraceSeconds("accept")).toBe(60);
+    // The status read uses the same helper for both policies.
+    const diner = readFileSync("server/public-diner.ts", "utf8");
+    expect(diner).toContain(
+      'case when h.policy=\'pay_first\' then ${holdExpiryGraceSeconds("pay_first")}::int else ${holdExpiryGraceSeconds("accept")}::int end',
+    );
+  });
+
   it("1. tokens are 22-character base64url and unique", () => {
     const seen = new Set<string>();
     for (let i = 0; i < 1000; i++) {
@@ -386,6 +402,76 @@ describe("public ordering tokens and schemas (032)", () => {
       expect(markup).toContain("<select");
       expect(markup).toContain("Cuenta #142");
     }
+  });
+
+  it("15b. the target select names an open check from another business day with its date, as Órdenes does (LD-29, POL-R2-2)", () => {
+    const restaurant = {
+      currency: "MXN",
+      timezone: "America/Mexico_City",
+      cutoff: 240,
+    };
+    const today = currentBusinessDate(restaurant);
+    const check = (number: number, businessDate: string) => ({
+      id: id(),
+      number,
+      businessDate,
+      version: 1,
+      checkState: "open" as const,
+      total: 9000,
+      paid: 0,
+      waiterName: "Ana",
+    });
+    const hold: InboxHold = {
+      id: id(),
+      label: "Q-9",
+      kind: "table",
+      channel: "qr",
+      tableId: id(),
+      tableName: "Mesa 4",
+      linkLabel: "",
+      linkRevoked: null,
+      name: "",
+      note: "",
+      policy: "accept",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+      lines: [
+        {
+          id: id(),
+          quantity: 1,
+          name: { es: "Taco", en: "Taco" },
+          optionNames: [],
+          unitPrice: 4500,
+          total: 4500,
+          issue: null,
+          currentTotal: 4500,
+        },
+      ],
+      quotedTotal: 4500,
+      currentTotal: 4500,
+      openChecks: [check(10, "2026-01-05"), check(11, today)],
+    };
+    const markup = (locale: "es" | "en") =>
+      renderToStaticMarkup(
+        createElement(HoldCard, {
+          hold,
+          session: { role: "cashier", restaurant } as Session,
+          locale,
+          online: true,
+          busy: false,
+          error: "",
+          nowMs: Date.now(),
+          forceNew: false,
+          onAccept: () => {},
+          onPay: () => {},
+          onReject: () => {},
+        }),
+      );
+    expect(markup("es")).toContain(
+      "Cuenta #10\u00a0·\u00a05\u00a0ene de Mesa 4 (Ana)",
+    );
+    expect(markup("es")).toContain("Cuenta #11 de Mesa 4 (Ana)");
+    expect(markup("en")).toContain("#10\u00a0·\u00a0Jan\u00a05");
   });
 
   it("17. the accept carries the total staff saw and an abuse acknowledgement; the yes/no price flag is gone (MONEY-1, ABUSE-1)", () => {

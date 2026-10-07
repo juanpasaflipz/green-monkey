@@ -71,6 +71,7 @@ describe("retention pass (OPS-R6)", () => {
     expect(result).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: 0 },
       redacted: { public_order_holds: 0 },
+      backlog: [],
       skipped: [],
       failed: [],
     });
@@ -228,23 +229,26 @@ describe("retentionPasses (P-24)", () => {
     }) as unknown as typeof retentionPass;
     return { pass, calls };
   }
+  /** A pass whose jobs ended on a full batch (a backlog may remain) unless `backlog` says otherwise. */
   const full = (
     jobs = RETENTION_BATCH,
     oauth = 0,
     holds = 0,
+    backlog: string[] = ["jobs"],
   ): RetentionResult => ({
     deleted: { oauth_login_attempts: oauth, jobs },
     redacted: { public_order_holds: holds },
+    backlog,
     skipped: [],
     failed: [],
   });
 
-  it("repeats while a pass deleted a full RETENTION_BATCH from some table and sums deletions", async () => {
+  it("repeats while a pass left a backlog (some table's last batch was full) and sums deletions", async () => {
     expect(RETENTION_BATCH).toBe(5000);
     const { pass, calls } = scripted([
       full(20 * RETENTION_BATCH, 3),
-      full(RETENTION_BATCH, 0),
-      full(1200, 0),
+      full(RETENTION_BATCH, 0), // the time budget ran out after a full batch
+      full(1200, 0, 0, []),
     ]);
     const result = await retentionPasses(sql, noAlert, {
       pass,
@@ -257,6 +261,7 @@ describe("retentionPasses (P-24)", () => {
         jobs: 21 * RETENTION_BATCH + 1200,
       },
       redacted: { public_order_holds: 0 },
+      backlog: [],
       skipped: [],
       failed: [],
     });
@@ -264,8 +269,8 @@ describe("retentionPasses (P-24)", () => {
 
   it("a full batch of redacted holds is a backlog too, and redactions are summed (LD-41)", async () => {
     const { pass, calls } = scripted([
-      full(0, 0, RETENTION_BATCH),
-      full(0, 0, 7),
+      full(0, 0, RETENTION_BATCH, ["public_order_holds"]),
+      full(0, 0, 7, []),
     ]);
     const result = await retentionPasses(sql, noAlert, {
       pass,
@@ -278,7 +283,7 @@ describe("retentionPasses (P-24)", () => {
   });
 
   it("stops after a short pass", async () => {
-    const { pass, calls } = scripted([full(RETENTION_BATCH - 1, 10)]);
+    const { pass, calls } = scripted([full(RETENTION_BATCH - 1, 10, 0, [])]);
     await retentionPasses(sql, noAlert, { pass, now: () => inside });
     expect(calls.n).toBe(1);
   });
@@ -324,6 +329,7 @@ describe("retentionPasses (P-24)", () => {
       {
         deleted: { oauth_login_attempts: 0, jobs: 0 },
         redacted: { public_order_holds: 0 },
+        backlog: [],
         skipped: ["jobs"],
         failed: [],
       },
@@ -337,6 +343,7 @@ describe("retentionPasses (P-24)", () => {
     ).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: RETENTION_BATCH },
       redacted: { public_order_holds: 0 },
+      backlog: [],
       skipped: ["jobs"],
       failed: [],
     });
@@ -345,6 +352,7 @@ describe("retentionPasses (P-24)", () => {
       {
         deleted: { oauth_login_attempts: 0, jobs: RETENTION_BATCH },
         redacted: { public_order_holds: 0 },
+        backlog: ["jobs"],
         skipped: [],
         failed: ["oauth_login_attempts"],
       },
@@ -389,8 +397,137 @@ describe("retentionPasses (P-24)", () => {
     ).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: 0 },
       redacted: { public_order_holds: 0 },
+      backlog: [],
       skipped: [],
       failed: [],
     });
+  });
+});
+
+describe("retentionPasses stops without an extra empty pass (PLAT-R3)", () => {
+  const inside = Date.parse("2026-10-05T11:15:00Z"); // 05:15 in Mexico City
+  const noAlert = async () => {};
+  /**
+   * A pool over simulated tables: each DELETE or redaction UPDATE takes up to
+   * its LIMIT ($1) of the rows still matching, as the real statements do.
+   */
+  function simulated(rows: Record<string, number>) {
+    const left = { ...rows };
+    const tx = Object.assign(
+      (strings: TemplateStringsArray) =>
+        Promise.resolve(
+          strings.join("$").includes("relforcerowsecurity")
+            ? [{ forced: true }]
+            : [],
+        ),
+      {
+        unsafe: (text: string, values: unknown[] = []) => {
+          const table = /^(?:delete from|update) ([a-z_]+) /.exec(text)?.[1];
+          const count = table
+            ? Math.min(left[table] ?? 0, Number(values[0]))
+            : 0;
+          if (table && count) left[table] -= count;
+          return Promise.resolve(Object.assign([], { count }));
+        },
+      },
+    );
+    const sql = {
+      begin: async (fn: (t: typeof tx) => Promise<number>) => fn(tx),
+    } as unknown as postgres.Sql;
+    return { sql, left };
+  }
+  /** retentionPass with no pause between batches, counting its calls. */
+  function counted() {
+    const calls = { n: 0 };
+    const pass = (async (
+      ...[sql, alert, o]: Parameters<typeof retentionPass>
+    ) => {
+      calls.n++;
+      return retentionPass(sql, alert, { ...o, pauseMs: 0 });
+    }) as typeof retentionPass;
+    return { pass, calls };
+  }
+
+  for (const [table, kind] of [
+    ["jobs", "deleted"],
+    ["oauth_login_attempts", "deleted"],
+    ["public_order_holds", "redacted"],
+  ] as const)
+    for (const n of [
+      0,
+      RETENTION_BATCH - 1,
+      RETENTION_BATCH,
+      RETENTION_BATCH + 1,
+    ])
+      it(`${n} matching ${table} rows take exactly one pass`, async () => {
+        const { sql, left } = simulated({ [table]: n });
+        const { pass, calls } = counted();
+        const result = await retentionPasses(sql, noAlert, {
+          pass,
+          now: () => inside,
+        });
+        expect(calls.n).toBe(1);
+        expect(result?.[kind][table]).toBe(n);
+        expect(result?.backlog).toEqual([]);
+        expect(left[table]).toBe(0);
+      });
+
+  it("a pass that stops at maxBatches on a full batch is followed by one more, which ends the run when it comes back short or empty", async () => {
+    // Batches of 3, one batch per table per pass: a full batch is the only
+    // case where the pass cannot know whether rows remain.
+    const run = { batch: 3, maxBatches: 1 };
+    for (const [n, passes] of [
+      [0, 1],
+      [2, 1],
+      [3, 2],
+      [4, 2],
+      [6, 3],
+      [7, 3],
+    ] as const) {
+      const { sql, left } = simulated({ jobs: n, public_order_holds: n });
+      const { pass, calls } = counted();
+      const result = await retentionPasses(sql, noAlert, {
+        pass,
+        now: () => inside,
+        run,
+      });
+      expect(calls.n, `${n} rows`).toBe(passes);
+      expect(result?.deleted.jobs).toBe(n);
+      expect(result?.redacted.public_order_holds).toBe(n);
+      expect(result?.backlog).toEqual([]);
+      expect(left).toEqual({ jobs: 0, public_order_holds: 0 });
+    }
+  });
+
+  it("runRetention lists a table as backlog only when its last batch was full or the budget ran out first", async () => {
+    const short = simulated({ jobs: 4, public_order_holds: 3 });
+    expect(
+      (await runRetention(short.sql, { batch: 3, pauseMs: 0 })).backlog,
+    ).toEqual([]);
+    const capped = simulated({ jobs: 4, public_order_holds: 3 });
+    expect(
+      (
+        await runRetention(capped.sql, {
+          batch: 3,
+          maxBatches: 1,
+          pauseMs: 0,
+        })
+      ).backlog,
+    ).toEqual(["jobs", "public_order_holds"]);
+    // The clock passes the budget after the first table's first batch.
+    let clock = 0;
+    const budget = simulated({ oauth_login_attempts: 3, jobs: 1 });
+    const result = await runRetention(budget.sql, {
+      batch: 3,
+      budgetMs: 10,
+      pauseMs: 0,
+      now: () => (clock += 6),
+    });
+    expect(result.deleted).toEqual({ oauth_login_attempts: 3, jobs: 0 });
+    expect(result.backlog).toEqual([
+      "oauth_login_attempts",
+      "jobs",
+      "public_order_holds",
+    ]);
   });
 });

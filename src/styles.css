@@ -1781,6 +1781,23 @@ th {
 .order-line .line-sending {
   margin: 4px 0 0;
 }
+/* Borradores: a draft whose order no longer exists (POL-5, POL-R3-4) sits in
+   the list's rhythm (the entries' 16 px gap) as one bordered card: its text,
+   the warning and the discard action, each on its own row. */
+.draft-gone {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+}
+.draft-gone p {
+  margin: 0;
+}
+.draft-gone .button {
+  justify-self: start;
+}
 .product .in-cart {
   font-size: 13px;
   font-weight: 600;
@@ -2277,9 +2294,12 @@ dialog.has-footer[open] {
   margin: 0;
   font-weight: 600;
 }
+/* A fully voided line: struck through and in the secondary text colour
+ * (#5e5e5e on the white ticket, 6.5:1), never faded with opacity, which took
+ * its muted parts to 2.7:1 (W3-2). */
 .ticket-lines > div.voided {
   text-decoration: line-through;
-  opacity: 0.6;
+  color: var(--text-2);
 }
 .void-history summary {
   cursor: pointer;

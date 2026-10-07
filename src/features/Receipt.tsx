@@ -7,7 +7,7 @@ import {
   type Order,
   type Session,
 } from "../../shared/domain";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice } from "../i18n";
 import { api } from "../api";
 import { tenderMethodLabel } from "../labels";
 import { Badge, Button, Modal } from "../components/ui";
@@ -509,7 +509,7 @@ export function ReceiptModal({
               try {
                 await onRelease();
               } catch (e) {
-                setError(translateError((e as Error).message, locale));
+                setError(errorNotice(e, locale));
               } finally {
                 setBusy(false);
               }

@@ -33,7 +33,7 @@ import {
 } from "../../../shared/fiscal";
 import { api } from "../../api";
 import { Badge, Button } from "../../components/ui";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, translateError, type Key } from "../../i18n";
 import { prefetchFiscalContext } from "./context";
 import { categoryLabel, fill, fiscalDate, fiscalDateTime } from "./format";
 import { TicketRegister } from "./TicketRegister";
@@ -175,7 +175,7 @@ export function FiscalSettings({
     try {
       show(await api<FiscalProfileView>("/fiscal/profile"));
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -296,7 +296,7 @@ export function FiscalSettings({
           return;
         }
       }
-      setError(translateError(code, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -315,7 +315,7 @@ export function FiscalSettings({
       setRepairId(crypto.randomUUID());
       setData(await api<FiscalProfileView>("/fiscal/profile"));
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

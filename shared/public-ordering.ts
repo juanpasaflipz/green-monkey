@@ -22,11 +22,21 @@ export const PAID_ACCEPT_GRACE_SECONDS = 300;
 /**
  * A pending hold reads as expired to its diner only this long after
  * expires_at: an accept that locked the hold just before expiry may commit a
- * moment after it (CONCURRENCY-2), and a pay-first hold can still be collected
- * for PAID_ACCEPT_GRACE_SECONDS, so the diner must not see "vencido" while
- * staff can still accept it (LD-41).
+ * moment after it (CONCURRENCY-2). A pay-first hold gets
+ * PAID_ACCEPT_GRACE_SECONDS instead (holdExpiryGraceSeconds).
  */
-export const HOLD_EXPIRY_GRACE_SECONDS = PAID_ACCEPT_GRACE_SECONDS;
+export const HOLD_EXPIRY_GRACE_SECONDS = 60;
+/**
+ * The diner's grace for one hold: a pay-first hold can still be collected for
+ * PAID_ACCEPT_GRACE_SECONDS, so its diner must not see "vencido" while staff
+ * can still accept it (LD-41); an accept-policy hold, which no paid accept can
+ * revive, keeps HOLD_EXPIRY_GRACE_SECONDS (PUB-R3-L1).
+ */
+export function holdExpiryGraceSeconds(policy: string): number {
+  return policy === "pay_first"
+    ? PAID_ACCEPT_GRACE_SECONDS
+    : HOLD_EXPIRY_GRACE_SECONDS;
+}
 export const PUBLIC_LIMITS = {
   /** Per scope (a table across its links, or a link): pending holds, holds
    * created per window, and diner cancellations per window (churn). */
@@ -345,6 +355,8 @@ export type InboxHold = {
   openChecks: {
     id: string;
     number: number;
+    /** The check's business day, so yesterday's open #10 reads "#10 · 5 oct" (LD-29). */
+    businessDate?: string;
     version: number;
     checkState: "open" | "paid";
     total: number;

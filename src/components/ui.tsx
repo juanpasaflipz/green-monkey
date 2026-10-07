@@ -90,7 +90,11 @@ export function Modal({
       }}
     >
       <div className="modal-head">
-        <h2 id={titleId}>{title}</h2>
+        {/* tabIndex -1: a dialog whose focused control went away (a discarded
+            Borradores entry) moves the focus here, never to <body>. */}
+        <h2 id={titleId} tabIndex={-1}>
+          {title}
+        </h2>
         <Button variant="ghost" aria-label={closeLabel} onClick={close}>
           <X size={22} />
         </Button>

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
 import { useConnectivity } from "../../connectivity";
 import { Badge } from "../../components/ui";
-import { translateError } from "../../i18n";
+import { errorNotice } from "../../i18n";
 import {
   refreshOfflineSettings,
   saveOfflineSettings,
@@ -47,7 +47,7 @@ export function OfflineTableServiceSetting({
       await saveOfflineSettings(session, value, pending.current.operationId);
       pending.current = null;
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setSaving(null);
       setBusy(false);

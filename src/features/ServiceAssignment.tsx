@@ -1,16 +1,20 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Button, Field, Modal } from "../components/ui";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import type { Locale, Order } from "../../shared/domain";
+import { orderNumberLabel } from "../labels";
 export function ServiceAssignment({
   order,
   locale,
+  today,
   close,
   saved,
 }: {
   order: Order;
   locale: Locale;
+  /** The current business date: an order from another day names it (LD-29). */
+  today: string | null | undefined;
   close: () => void;
   saved: () => Promise<void>;
 }) {
@@ -27,12 +31,12 @@ export function ServiceAssignment({
   useEffect(() => {
     void api("/service/options")
       .then(setOptions)
-      .catch((e) => setError(translateError(e.message, locale)));
+      .catch((e) => setError(errorNotice(e, locale)));
   }, []);
   return (
     <Modal title={t("assignService")} close={close} closeLabel={t("close")}>
       <p>
-        #{order.number} · {order.name}
+        {orderNumberLabel(order, today, locale)} · {order.name}
       </p>
       {error && (
         <p className="error" role="alert">
@@ -60,7 +64,7 @@ export function ServiceAssignment({
               await saved();
               close();
             } catch (e) {
-              setError(translateError((e as Error).message, locale));
+              setError(errorNotice(e, locale));
             } finally {
               setBusy(false);
             }

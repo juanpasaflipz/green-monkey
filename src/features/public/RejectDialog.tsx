@@ -5,7 +5,7 @@ import {
   type InboxHold,
   type RejectReason,
 } from "../../../shared/public-ordering";
-import { strings, translateError, type Key } from "../../i18n";
+import { errorNotice, strings, type Key } from "../../i18n";
 import { api } from "../../api";
 import { Button, Modal } from "../../components/ui";
 import { fill } from "../menu/format";
@@ -60,7 +60,7 @@ export function RejectDialog({
         code === "public_order_expired"
       )
         return onDone(code);
-      setError(translateError(code, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

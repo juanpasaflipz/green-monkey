@@ -181,6 +181,21 @@ describe("sync error classification and retry", () => {
       expect(classifySyncError(code, "domain")).toBe("conflict");
   });
 
+  it("a body that did not arrive intact is retried; body answers that fail the same way every time stay conflicts (LD-48, POL-W3R2-L1)", () => {
+    // body-parser answers both 400 before any handler runs (server/api-errors.ts):
+    // nothing was recorded, and the same record (same operationId) replays safely.
+    for (const code of ["request_aborted", "request_size_invalid"])
+      expect(classifySyncError(code, "domain"), code).toBe("transient");
+    for (const code of [
+      "invalid_json",
+      "payload_too_large",
+      "unsupported_encoding",
+      "unsupported_charset",
+      "too_many_parameters",
+    ])
+      expect(classifySyncError(code, "domain"), code).toBe("conflict");
+  });
+
   it("50 consecutive transient failures never yield conflict and delay caps at 60 s ±20 %", () => {
     // Regression OFF-6: transient failures used to exhaust after ~5 minutes.
     let status = "pending",

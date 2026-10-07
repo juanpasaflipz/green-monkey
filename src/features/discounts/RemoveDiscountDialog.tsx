@@ -7,7 +7,7 @@ import {
   ManagerApproval,
   type ApprovalValue,
 } from "../../components/ManagerApproval";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, translateError, type Key } from "../../i18n";
 import { fill, removableAfterReload } from "./format";
 import "./discounts.css";
 
@@ -114,7 +114,7 @@ export function RemoveDiscountDialog({
                   ? t("discountsTicketIssued")
                   : code === "operation_conflict"
                     ? t("discountsOperationRecorded")
-                    : translateError(code, locale);
+                    : errorNotice(err, locale);
             setError(message);
             if (
               [

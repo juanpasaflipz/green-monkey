@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "../api";
 import { Button, Field, Modal } from "../components/ui";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { stepUpExempt } from "../../shared/access";
 import { voidCandidates } from "../../shared/discounts";
@@ -10,6 +10,7 @@ import {
   type ApprovalValue,
 } from "../components/ManagerApproval";
 import { readPrintSettings } from "../print";
+import { currentBusinessDate, orderNumberLabel } from "../labels";
 import {
   cancellationsFromVoid,
   type KitchenCancellationModel,
@@ -29,6 +30,7 @@ export function VoidDialog({
   money,
   close,
   saved,
+  today,
 }: {
   order: Order;
   session: Session;
@@ -36,6 +38,8 @@ export function VoidDialog({
   money: (n: number) => string;
   close: () => void;
   saved: () => Promise<void>;
+  /** The current business date (Órdenes: the list's); else the session's (LD-29). */
+  today?: string | null;
 }) {
   const t = (key: Key) => strings[locale][key];
   const manager = ["owner", "manager"].includes(session.role);
@@ -97,7 +101,12 @@ export function VoidDialog({
   return (
     <Modal title={t("voidItems")} close={close} closeLabel={t("close")} wide>
       <p>
-        #{order.number} · {order.name || t("order")}
+        {orderNumberLabel(
+          order,
+          today || currentBusinessDate(session.restaurant),
+          locale,
+        )}{" "}
+        · {order.name || t("order")}
       </p>
       {unprinted ? (
         <>
@@ -160,7 +169,10 @@ export function VoidDialog({
               // reports (029): with "Imprimir comanda al enviar" the kitchen gets a
               // cancellation chit; printing never fails the void.
               const chits = readPrintSettings().kitchenOnSend
-                ? cancellationsFromVoid(order, after, reason)
+                ? cancellationsFromVoid(order, after, reason, {
+                    today: today || currentBusinessDate(session.restaurant),
+                    locale,
+                  })
                 : [];
               const printed = await print(chits);
               await saved();
@@ -170,7 +182,7 @@ export function VoidDialog({
               }
               close();
             } catch (err) {
-              setError(translateError((err as Error).message, locale));
+              setError(errorNotice(err, locale));
             } finally {
               setBusy(false);
             }

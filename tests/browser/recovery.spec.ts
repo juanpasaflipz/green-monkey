@@ -1,4 +1,5 @@
 import { test, expect, request as playwrightRequest } from "@playwright/test";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 async function login(page: any) {
   await page.goto("/app");
@@ -9,6 +10,63 @@ async function login(page: any) {
   ).toBeVisible();
   await page.getByRole("button", { name: "Operación", exact: true }).click();
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it, and
+// every offline sale it leaves in the kitchen review lane is decided (FLK-R3).
+kitchenHygiene();
+
+/** Taco de hongos as the first test found it, while the test has it marked unavailable. */
+let changedProduct: any = null;
+/**
+ * Marks Taco de hongos available again as it was. The test's finally calls it; a timed-out
+ * test never reaches its finally, so afterEach calls it too and the product never stays
+ * unavailable for the tests after this one.
+ */
+async function restoreProduct(page: any, context: any) {
+  const product = changedProduct;
+  if (!product) return;
+  changedProduct = null;
+  await context.setOffline(false).catch(() => {});
+  if (!/^https?:/.test(page.url())) await page.goto("/app");
+  const csrf = () =>
+    page.evaluate(async () => {
+      const r = await fetch("/api/session");
+      return r.ok ? ((await r.json()).csrf as string) : null;
+    });
+  // Signed out (a timeout between the test's sign-out and sign-in): sign in again.
+  let token = await csrf();
+  if (!token) {
+    await login(page);
+    token = await csrf();
+  }
+  const restored = await page.evaluate(
+    async ({ token, data }: { token: string; data: unknown }) => {
+      const r = await fetch("/api/catalog/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-csrf-token": token },
+        body: JSON.stringify(data),
+      });
+      return { ok: r.ok, text: await r.text() };
+    },
+    {
+      token,
+      data: {
+        operationId: crypto.randomUUID(),
+        id: product.id,
+        name: product.name,
+        category: product.category,
+        price: product.price,
+        available: product.available,
+        station: product.station,
+        expectedVersion: product.version + 1,
+        cost: product.cost,
+        recipe: product.recipe,
+      },
+    },
+  );
+  expect(restored.ok, restored.text).toBe(true);
+}
+test.afterEach(async ({ page, context }) => restoreProduct(page, context));
 
 test("manager reconciles offline cash and resolves kitchen and stock follow-ups", async ({
   page,
@@ -50,8 +108,6 @@ test("manager reconciles offline cash and resolves kitchen and stock follow-ups"
       cookie: cookies.map(({ name, value }) => `${name}=${value}`).join("; "),
     },
   });
-  let currentCsrf = session.csrf;
-  let catalogChanged = false;
   try {
     await context.setOffline(true);
     await page.getByRole("button", { name: "Cobrar", exact: true }).click();
@@ -114,7 +170,7 @@ test("manager reconciles offline cash and resolves kitchen and stock follow-ups"
       },
     });
     expect(changed.ok(), await changed.text()).toBe(true);
-    catalogChanged = true;
+    changedProduct = product;
     await context.setOffline(false);
     const cash = await (await api.get("/api/cash")).json();
     const closeReason = `Recovery history fixture ${crypto.randomUUID()}`;
@@ -136,7 +192,6 @@ test("manager reconciles offline cash and resolves kitchen and stock follow-ups"
     expect(replacement.tenantId).toBe(session.tenantId);
     expect(replacement.deviceId).not.toBe(session.deviceId);
     expect(replacement.id).not.toBe(session.id);
-    currentCsrf = replacement.csrf;
     await api.dispose();
     const replacementCookies = await context.cookies();
     api = await playwrightRequest.newContext({
@@ -255,24 +310,7 @@ test("manager reconciles offline cash and resolves kitchen and stock follow-ups"
     expect(refunded.tenders).toHaveLength(1);
   } finally {
     await context.setOffline(false).catch(() => {});
-    if (catalogChanged) {
-      const restored = await api.post("/api/catalog/save", {
-        headers: { "x-csrf-token": currentCsrf },
-        data: {
-          operationId: crypto.randomUUID(),
-          id: product.id,
-          name: product.name,
-          category: product.category,
-          price: product.price,
-          available: product.available,
-          station: product.station,
-          expectedVersion: product.version + 1,
-          cost: product.cost,
-          recipe: product.recipe,
-        },
-      });
-      expect(restored.ok(), await restored.text()).toBe(true);
-    }
+    await restoreProduct(page, context);
     await api.dispose();
   }
 });

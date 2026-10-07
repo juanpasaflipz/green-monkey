@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type express from "express";
+import { supportReference } from "../shared/support.js";
 
 /**
  * Structured JSON logger. One line per call on stdout in the shape Railway
@@ -143,6 +144,10 @@ function emit(level: Level, message: string, bound: Attrs, attrs?: Attrs) {
     ...(redact(bound) as Attrs),
     ...(attrs ? (redact(attrs) as Attrs) : {}),
   };
+  // The "Referencia de soporte" staff read out (RUNBOOK "Signals"): every line
+  // of a request is searchable as @supportRef:<ref>.
+  if (typeof record.requestId === "string" && record.supportRef === undefined)
+    record.supportRef = supportReference(record.requestId);
   try {
     sink(JSON.stringify(record));
   } catch {
@@ -262,13 +267,45 @@ export function clientAddress(req: express.Request): {
   const trust = req.app?.get("trust proxy fn") as
     ((addr: string, i: number) => boolean) | undefined;
   const peerTrusted = Boolean(trust && peer && trust(peer, 0));
-  const realIp = unmapIpv4(req.get("x-real-ip")?.trim() ?? "");
+  const header = req.get("x-real-ip");
+  const realIp = unmapIpv4(header?.trim() ?? "");
   if (peerTrusted && isIP(realIp))
     return { ip: realIp, source: "x-real-ip", peerTrusted };
   const forwarded = req.ip === undefined ? "" : unmapIpv4(req.ip);
-  if (forwarded && forwarded !== peer)
-    return { ip: forwarded, source: "forwarded", peerTrusted };
-  return { ip: peer || "unknown", source: "peer", peerTrusted };
+  const source = forwarded && forwarded !== peer ? "forwarded" : "peer";
+  if (peerTrusted) warnWithoutRealIp(req, source, header);
+  return source === "forwarded"
+    ? { ip: forwarded, source, peerTrusted }
+    : { ip: peer || "unknown", source, peerTrusted };
+}
+
+/** Whether this process has warned that a trusted peer sent no usable X-Real-IP. */
+let warnedWithoutRealIp = false;
+/** Railway's health checks reach the service directly, without the edge's headers. */
+const HEALTH_PATHS = new Set(["/health", "/api/health"]);
+
+/**
+ * NETFIX-L1: on a deployed web (APP_ENV staging or production) a request
+ * from a trusted proxy without a usable X-Real-IP means the edge's header
+ * shape changed or another proxy now sits in front: limits then key on
+ * req.ip, the edge hop every client behind it shares (RUNBOOK "Client
+ * address"). Warns once per process; the line carries no address.
+ */
+function warnWithoutRealIp(
+  req: express.Request,
+  source: ClientIpSource,
+  header: string | undefined,
+) {
+  if (warnedWithoutRealIp) return;
+  const env = process.env.APP_ENV?.trim();
+  if (env !== "staging" && env !== "production") return;
+  if (HEALTH_PATHS.has((req.originalUrl || req.url || "").split("?")[0]))
+    return;
+  warnedWithoutRealIp = true;
+  log.warn("client_ip_without_real_ip", {
+    source,
+    realIpHeader: header?.trim() ? "invalid" : "missing",
+  });
 }
 
 /** The client address every per-IP limit and log `ipHash` uses (clientAddress). */
@@ -329,9 +366,29 @@ export function requestLog(
 }
 
 /**
+ * The API's answers to a request body the client got wrong or cut short
+ * (api-errors.ts BODY_PARSER_ERRORS): nothing failed here, so they are logged
+ * at info, never as an error line (POL-R3-3).
+ */
+export const BODY_REJECTIONS: ReadonlySet<string> = new Set([
+  "invalid_json",
+  "payload_too_large",
+  "request_aborted",
+  "request_size_invalid",
+  "unsupported_encoding",
+  "unsupported_charset",
+  "too_many_parameters",
+]);
+
+/**
  * Logs an error the API answered (SEC-8): 5xx with name, message, stack,
  * route template and SQLSTATE through reportError; DomainError 5xx at warn;
- * malformed or oversized bodies at info; other 4xx at debug.
+ * every other 4xx but a 401 as `request_rejected` at info with its code, so a
+ * "Referencia de soporte" on a 4xx is searchable (LD-48, POLISH-OPS-2: the
+ * client shows one for invalid_input, a body rejection (BODY_REJECTIONS) or a
+ * code it has no text for, which only the client knows, for example an older
+ * cached revision). An invalid_input line names the failed fields as zod issue
+ * paths and codes, never their values. A 401 stays at debug.
  */
 export function logRequestError(
   error: unknown,
@@ -348,10 +405,24 @@ export function logRequestError(
   if (response.code === "internal_error")
     reportError(error, { event: "request_failed", ...attrs });
   else if (response.status >= 500) log.warn("domain_error_5xx", attrs);
-  else if (
-    response.code === "invalid_json" ||
-    response.code === "payload_too_large"
-  )
-    log.info("request_rejected", attrs);
-  else log.debug("request_rejected", attrs);
+  else if (response.status === 401) log.debug("request_rejected", attrs);
+  else {
+    // A ZodError's issues (classifyApiError: invalid_input): where and why, no input.
+    const raw = (error as { issues?: unknown } | null | undefined)?.issues;
+    const issues =
+      response.code === "invalid_input" && Array.isArray(raw)
+        ? raw.slice(0, 10).map((issue: { path?: unknown; code?: unknown }) => ({
+            path: (Array.isArray(issue?.path) ? issue.path : [])
+              .map((key: unknown) =>
+                typeof key === "number" ||
+                (typeof key === "string" && /^[A-Za-z_]\w{0,63}$/.test(key))
+                  ? key
+                  : "?",
+              )
+              .join("."),
+            code: typeof issue?.code === "string" ? issue.code : "unknown",
+          }))
+        : undefined;
+    log.info("request_rejected", issues ? { ...attrs, issues } : attrs);
+  }
 }

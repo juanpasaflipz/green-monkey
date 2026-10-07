@@ -21,7 +21,7 @@ import {
   type ReceptorIssue,
 } from "../../../shared/cfdi";
 import { api } from "../../api";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, translateError, type Key } from "../../i18n";
 import { Badge, Button, Empty, Field, Modal } from "../../components/ui";
 import { InvoiceDialog } from "./InvoiceDialog";
 import { emptyReceptor, ReceptorFields } from "./ReceptorFields";
@@ -110,7 +110,7 @@ export function CfdiDocuments({
       setRows(page.rows);
       setNext(page.next);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -132,7 +132,7 @@ export function CfdiDocuments({
       setRows((r) => [...(r ?? []), ...page.rows]);
       setNext(page.next);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -146,7 +146,7 @@ export function CfdiDocuments({
       );
       setTicket(v);
     } catch (e) {
-      setTicketError(translateError((e as Error).message, locale));
+      setTicketError(errorNotice(e, locale));
     }
   }
 
@@ -391,7 +391,7 @@ export function DocumentDetail({
       setDoc(v);
       setEmail(v.receptor?.email ?? "");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }, [documentId, locale]);
   useEffect(() => {
@@ -408,7 +408,7 @@ export function DocumentDetail({
       after();
       changed();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -912,7 +912,7 @@ function CancelDialog({
       );
       done(v);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -1032,7 +1032,7 @@ function CreditNoteSubstituteDialog({
         }),
       );
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -1142,7 +1142,7 @@ function SubstituteDialog({
       );
       done(v);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

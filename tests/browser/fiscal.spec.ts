@@ -1,6 +1,13 @@
 import { readFileSync } from "node:fs";
-import { test, expect, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type BrowserContext,
+  type Page,
+  type Request,
+} from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 // Fiscal (027) browser checks. Every spec shares the demo tenant and its fiscal profile is
 // tenant-wide: this spec only ever saves the general region (IVA 16%), an empty series and the
@@ -97,6 +104,29 @@ const printed = (page: Page) =>
   page.evaluate(() => (window as any).__printed as string[]);
 /** Printed text without whitespace: #print-root is not laid out on screen media. */
 const squash = (text: string) => text.replace(/\s+/g, "");
+/**
+ * The network goes down at the payment's first POST /api/orders (LD-45): the
+ * requests before it reach the server, so Confirm is tapped while the device
+ * is still online, and the sale is saved locally only after that POST fails.
+ * Installed before Cobrar, the outage could take the device offline through
+ * the dialog's own GETs and relabel the button under the click. Returns `sent`,
+ * the wait for that POST (the online path ran).
+ */
+async function networkDownFromFirstOrderPost(
+  context: BrowserContext,
+  page: Page,
+) {
+  const isOrderPost = (request: Request) =>
+    request.method() === "POST" &&
+    new URL(request.url()).pathname === "/api/orders";
+  let down = false;
+  await context.route("**/api/**", (route) => {
+    down ||= isOrderPost(route.request());
+    return down ? route.abort("internetdisconnected") : route.fallback();
+  });
+  // Wrapped: an async function returning the bare promise would wait for it.
+  return { sent: page.waitForRequest(isOrderPost) };
+}
 async function lastPrint(page: Page, count = 1) {
   await expect.poll(async () => (await printed(page)).length).toBe(count);
   return (await printed(page))[count - 1];
@@ -147,6 +177,9 @@ async function sell(page: Page) {
   await page.getByRole("button", { name: "Operación", exact: true }).click();
   await page.getByRole("button", { name: "Vender", exact: true }).click();
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test("owner completes the fiscal profile: invalid RFC and regime mismatch show inline errors, then saves (FIT-6)", async ({
   page,
@@ -483,15 +516,21 @@ test("FIT-7 (fiscal part): the ticket register lists the folio, finds it by foli
   await panel.getByText("Registro de tickets").click();
   await panel.getByRole("button", { name: "Mostrar", exact: true }).click();
   const table = panel.locator(".fiscal-table").last();
-  await expect(
-    panel.getByRole("cell", { name: folio, exact: true }),
-  ).toBeVisible();
+  // W3-2 (FLK-R7): the day's register lists the oldest 200 first, so on a
+  // database that keeps earlier runs' tickets the new folio may be on a later
+  // page. The day's listing is shown and summarized here; the folio is listed
+  // on the search result below, and the CSV (every page of the same day's
+  // listing) contains it, so the time does not grow with the day's tickets.
+  await expect(table.locator("tbody tr").first()).toBeVisible();
   await expect(
     panel.getByRole("region", { name: "Resumen de IVA" }),
   ).toContainText("IVA 16%");
   await panel.getByLabel("Buscar folio").fill(folio);
   await panel.getByRole("button", { name: "Mostrar", exact: true }).click();
   await expect(table.locator("tbody tr")).toHaveCount(1);
+  await expect(
+    table.getByRole("cell", { name: folio, exact: true }),
+  ).toBeVisible();
   await expect(table).toContainText(`#${order.number}`);
   await expect(
     panel.getByRole("button", { name: `Reimprimir ticket ${folio}` }),
@@ -663,7 +702,7 @@ test("product editor: IVA 8% is disabled outside a border region; saving IVA 0% 
   expect(paper).not.toContain("IVA 16%");
 });
 
-test("offline local receipt shows Folio fiscal pendiente with the cached issuer; with the UI in English it prints in Spanish", async ({
+test("offline local receipt shows Folio pendiente with the cached issuer; with the UI in English it prints in Spanish", async ({
   page,
   context,
 }) => {
@@ -692,9 +731,7 @@ test("offline local receipt shows Folio fiscal pendiente with the cached issuer;
   await cached;
   await page.getByRole("button", { name: "ES", exact: true }).click();
   await productTile(page, "Mushroom taco").click();
-  await context.route("**/api/**", (route) =>
-    route.abort("internetdisconnected"),
-  );
+  const { sent } = await networkDownFromFirstOrderPost(context, page);
   try {
     await page
       .getByRole("button", { name: "Collect payment", exact: true })
@@ -702,6 +739,7 @@ test("offline local receipt shows Folio fiscal pendiente with the cached issuer;
     await page
       .getByRole("button", { name: "Confirm payment", exact: true })
       .click();
+    await sent;
     await page
       .getByRole("button", {
         name: "Save cash payment on this device",
@@ -709,9 +747,7 @@ test("offline local receipt shows Folio fiscal pendiente with the cached issuer;
       })
       .click();
     const receipt = page.locator(".receipt");
-    await expect(receipt).toContainText(
-      "Ticket number pending: assigned on sync.",
-    );
+    await expect(receipt).toContainText("Folio pending: assigned when synced.");
     await expect(receipt).toContainText(`RFC: ${RFC}`);
     await stubPrint(page);
     await page
@@ -719,9 +755,8 @@ test("offline local receipt shows Folio fiscal pendiente with the cached issuer;
       .click();
     const paper = await lastPrint(page);
     expect(paper).toContain("Número provisional");
-    expect(paper).toContain(
-      "Folio fiscal pendiente: se asigna al sincronizar.",
-    );
+    expect(paper).toContain("Folio pendiente: se asigna al sincronizar.");
+    expect(paper.toLowerCase()).not.toContain("folio fiscal");
     expect(paper).toContain(`RFC: ${RFC}`);
     expect(paper).toContain("Precios con IVA incluido");
     expect(paper).not.toContain("Provisional number");
@@ -759,15 +794,14 @@ test("FISCAL-OFFLINE-1: a synced offline sale is found in Órdenes by the provis
   await page.getByRole("button", { name: "Vender", exact: true }).click();
   await cached;
   await productTile(page, "Taco de hongos").click();
-  await context.route("**/api/**", (route) =>
-    route.abort("internetdisconnected"),
-  );
+  const { sent } = await networkDownFromFirstOrderPost(context, page);
   let number: string;
   try {
     await page.getByRole("button", { name: "Cobrar", exact: true }).click();
     await page
       .getByRole("button", { name: "Confirmar cobro", exact: true })
       .click();
+    await sent;
     await page
       .getByRole("button", {
         name: "Guardar cobro en este dispositivo",

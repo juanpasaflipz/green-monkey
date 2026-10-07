@@ -1,19 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import express from "express";
-import type { AddressInfo } from "node:net";
+import { connect, type AddressInfo } from "node:net";
 import type http from "node:http";
 import { trustProxy } from "../server/http.js";
-import {
-  clientIp,
-  logRequestError,
-  requestIdOf,
-  requestLog,
-  setLogSink,
-} from "../server/logging.js";
+import { apiErrorHandler } from "../server/api-errors.js";
+import { clientIp, requestLog, setLogSink } from "../server/logging.js";
 import type postgres from "postgres";
 import { opsLimiter, registerPreAuth } from "../server/routes/ops.js";
 import { ownerRoutes } from "../server/owner-routes.js";
+import { z } from "zod";
 import { DomainError } from "../shared/domain.js";
+import { supportReference } from "../shared/support.js";
 
 /** Never queried: the routes these tests call do not touch the database. */
 const noDatabase = {} as postgres.Sql;
@@ -67,7 +64,7 @@ function ownerRouter() {
   }
 }
 
-/** An app wired like server/index.ts: proxy trust, body parser, request log, error logging. */
+/** An app wired like server/index.ts: proxy trust, body parser, request log, its error handler. */
 async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
   const app = express();
   app.set("trust proxy", trustProxy(env));
@@ -101,28 +98,21 @@ async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
   app.post("/api/fails", () => {
     throw new DomainError("schema_not_ready", 503);
   });
-  app.use(
-    (
-      error: unknown,
-      req: express.Request,
-      res: express.Response,
-      _next: express.NextFunction,
-    ) => {
-      const requestId = requestIdOf(req);
-      if (!res.headersSent) res.setHeader("X-Request-Id", requestId);
-      const reply = (status: number, code: string) => {
-        logRequestError(error, req, { status, code });
-        return res.status(status).json({ error: code, requestId });
-      };
-      if (error instanceof DomainError) return reply(error.status, error.code);
-      const parse = (error as { type?: string }) ?? {};
-      if (parse.type === "entity.parse.failed")
-        return reply(400, "invalid_json");
-      if (parse.type === "entity.too.large")
-        return reply(413, "payload_too_large");
-      return reply(500, "internal_error");
-    },
-  );
+  app.post("/api/zod", (req, res) => {
+    z.strictObject({
+      lines: z.array(z.object({ quantity: z.number().int().positive() })),
+      note: z.string().optional(),
+      tags: z.record(z.string(), z.number()).optional(),
+    }).parse(req.body);
+    res.json({ ok: true });
+  });
+  app.post("/api/refused", () => {
+    throw new DomainError("brand_new_code", 409);
+  });
+  app.post("/api/unauthorized", () => {
+    throw new DomainError("unauthorized", 401);
+  });
+  app.use(apiErrorHandler);
   server = app.listen(0, "127.0.0.1");
   await new Promise((r) => server!.once("listening", r));
   return `http://127.0.0.1:${(server!.address() as AddressInfo).port}`;
@@ -257,6 +247,66 @@ describe("request log, client address and error logging", () => {
     expect((await big.json()).error).toBe("payload_too_large");
   });
 
+  it("a client that disconnects mid-body is logged at info as request_aborted, never as a 500 error line (body-parser request.aborted)", async () => {
+    const origin = await start();
+    const { port } = new URL(origin);
+    // Headers promise 500 bytes; the client sends a few and hangs up.
+    await new Promise<void>((resolve, reject) => {
+      const socket = connect(Number(port), "127.0.0.1", () => {
+        socket.write(
+          "POST /api/public/abc/orders HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+            "Content-Type: application/json\r\nContent-Length: 500\r\n\r\n" +
+            '{"x":',
+          () => setTimeout(() => (socket.destroy(), resolve()), 50),
+        );
+      });
+      socket.on("error", reject);
+    });
+    const deadline = Date.now() + 2000;
+    while (!lines.some((l) => l.code) && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 10));
+    const rejected = lines.filter((l) => l.code === "request_aborted");
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({
+      level: "info",
+      message: "request_rejected",
+      method: "POST",
+      status: 400,
+    });
+    expect(rejected[0].requestId).toBeTruthy();
+    expect(lines.filter((l) => l.level === "error")).toEqual([]);
+    expect(lines.some((l) => l.code === "internal_error")).toBe(false);
+  });
+
+  it("an unsupported charset or content encoding is answered 415 by the server's error handler and logged at info, never as an error line (POL-R3-3)", async () => {
+    const origin = await start();
+    const charset = await fetch(`${origin}/api/public/abc/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=latin-9" },
+      body: "{}",
+    });
+    expect(charset.status).toBe(415);
+    const charsetBody = await charset.json();
+    expect(charsetBody.error).toBe("unsupported_charset");
+    expect(charset.headers.get("x-request-id")).toBe(charsetBody.requestId);
+    const encoding = await fetch(`${origin}/api/public/abc/orders`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": "x-unknown",
+      },
+      body: "{}",
+    });
+    expect(encoding.status).toBe(415);
+    expect((await encoding.json()).error).toBe("unsupported_encoding");
+    const rejected = lines.filter((l) => l.message === "request_rejected");
+    expect(rejected.map((l) => [l.level, l.status, l.code])).toEqual([
+      ["info", 415, "unsupported_charset"],
+      ["info", 415, "unsupported_encoding"],
+    ]);
+    expect(lines.filter((l) => l.level === "error")).toEqual([]);
+  });
+
   it("500 logs name, message, stack and route template, never the token path", async () => {
     const origin = await start();
     const response = await fetch(
@@ -278,6 +328,86 @@ describe("request log, client address and error logging", () => {
     expect(JSON.stringify(lines)).not.toContain("SECRET-ORDERING-TOKEN");
     const access = lines.find((l) => l.message === "http_request")!;
     expect(access).toMatchObject({ level: "error", status: 500 });
+  });
+
+  it("a 500 carries its request id in X-Request-Id and the body, and its log lines carry the support reference staff read out (LD-17)", async () => {
+    const origin = await start();
+    const response = await fetch(`${origin}/api/public/abc/orders`);
+    expect(response.status).toBe(500);
+    const body = await response.json();
+    expect(body).toEqual({
+      error: "internal_error",
+      requestId: expect.any(String),
+    });
+    expect(response.headers.get("x-request-id")).toBe(body.requestId);
+    const ref = supportReference(body.requestId);
+    expect(ref).toMatch(/^[0-9A-F]{8}$/);
+    for (const message of ["request_failed", "http_request"])
+      expect(lines.find((l) => l.message === message)).toMatchObject({
+        requestId: body.requestId,
+        supportRef: ref,
+      });
+  });
+
+  it("an unexpected 4xx's code reaches the production log (info) with its support reference; invalid_input names the failed fields, never their values; a 401 stays at debug (LD-48, POLISH-OPS-2)", async () => {
+    const origin = await start();
+    // Deployed web logs at info (.railway/railway.ts).
+    process.env.LOG_LEVEL = "info";
+    const post = (path: string, body: unknown) =>
+      fetch(`${origin}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    // An older cached client posts a body the current schema rejects.
+    const invalid = await post("/api/zod", {
+      lines: [{ quantity: 2 }, { quantity: -7777 }],
+      note: 7,
+      // A key the client chose is not a field name: masked.
+      tags: { "Juan Pérez": "SECRET_VALUE" },
+      extra: true,
+    });
+    expect(invalid.status).toBe(400);
+    const invalidBody = await invalid.json();
+    expect(invalidBody.error).toBe("invalid_input");
+    // A domain code the client may have no text for.
+    const refused = await post("/api/refused", {});
+    expect(refused.status).toBe(409);
+    const refusedBody = await refused.json();
+    const unauthorized = await post("/api/unauthorized", {});
+    expect(unauthorized.status).toBe(401);
+    await new Promise((r) => setTimeout(r, 20));
+    const rejected = lines.filter((l) => l.message === "request_rejected");
+    expect(rejected).toEqual([
+      expect.objectContaining({
+        level: "info",
+        status: 400,
+        code: "invalid_input",
+        route: "/api/zod",
+        requestId: invalidBody.requestId,
+        supportRef: supportReference(invalidBody.requestId),
+        issues: [
+          { path: "lines.1.quantity", code: "too_small" },
+          { path: "note", code: "invalid_type" },
+          { path: "tags.?", code: "invalid_type" },
+          { path: "", code: "unrecognized_keys" },
+        ],
+      }),
+      expect.objectContaining({
+        level: "info",
+        status: 409,
+        code: "brand_new_code",
+        requestId: refusedBody.requestId,
+        supportRef: supportReference(refusedBody.requestId),
+      }),
+    ]);
+    // Field names and issue codes only: no value the client sent.
+    const text = JSON.stringify(rejected);
+    expect(text).not.toContain("7777");
+    expect(text).not.toContain("Juan");
+    expect(text).not.toContain("SECRET_VALUE");
+    expect(text).not.toContain("extra");
+    expect(lines.some((l) => l.code === "unauthorized")).toBe(false);
   });
 
   it("DomainError 5xx is logged; reads log at debug; successful tenant writes notify the jobs runner", async () => {

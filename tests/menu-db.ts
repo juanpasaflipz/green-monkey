@@ -2648,6 +2648,79 @@ try {
     }
   });
 
+  await test("LD-28: restoring an archived IVA 8% product needs a border region; outside one it is refused with fiscal_border_rate_not_allowed and stays archived", async () => {
+    const t = await makeTenant("Border restore");
+    // A northern-border profile (fiscal's own rules: identity at a border postal code,
+    // confirmed by the owner); written directly, as fiscal's step-up save is not under test.
+    await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`insert into restaurant_fiscal_profiles(tenant_id,rfc,legal_name,regime,postal_code,
+          tax_region,default_tax_category,border_confirmed_at,border_confirmed_by,updated_by)
+          values(${t.tenantId},'EKU9003173C9','ALIMENTOS FRONTERIZOS DE PRUEBA','601','22000',
+            'border_north','iva16',now(),${t.owner.employeeId},${t.owner.employeeId})`,
+    );
+    const category = await newCategory(t.manager, "Frontera");
+    const iva8 = { taxCategory: "iva8", satProductKey: null, satUnitKey: null };
+    const product = await newProduct(t.manager, category.id, { fiscal: iva8 });
+    const archive = (version: number, archived: boolean) =>
+      run(t.manager, (tx) =>
+        archiveProduct(tx, t.manager, {
+          operationId: op(),
+          id: product.id,
+          expectedVersion: version,
+          archived,
+        }),
+      );
+    // Border region: archive and restore as before.
+    const shelved = await archive(product.version, true);
+    const restored = await archive(shelved.version, false);
+    assert.equal(restored.archived, false);
+    assert.equal(restored.available, true);
+    assert.deepEqual(restored.fiscal, iva8);
+    const archived = await archive(restored.version, true);
+    // The owner leaves the border region: an archived IVA 8% product does not block that
+    // (fiscal counts active ones only), so the restore is what must refuse.
+    await asAdmin(
+      t.tenantId,
+      (tx) =>
+        tx`update restaurant_fiscal_profiles set tax_region='general',
+          border_confirmed_at=null,border_confirmed_by=null,version=version+1`,
+    );
+    await rejects(
+      archive(archived.version, false),
+      "fiscal_border_rate_not_allowed",
+    );
+    const [doc] = await run(
+      t.manager,
+      (tx) => tx`select data from catalog where id=${product.id}`,
+    );
+    assert.equal(doc.data.archived, true, "the product stays archived");
+    assert.equal(doc.data.available, false);
+    assert.equal(doc.data.version, archived.version, "nothing was written");
+    // A product with another rate restores in the general region.
+    const iva16 = await newProduct(t.manager, category.id, {
+      fiscal: { taxCategory: "iva16", satProductKey: null, satUnitKey: null },
+    });
+    const off = await run(t.manager, (tx) =>
+      archiveProduct(tx, t.manager, {
+        operationId: op(),
+        id: iva16.id,
+        expectedVersion: iva16.version,
+        archived: true,
+      }),
+    );
+    const back = await run(t.manager, (tx) =>
+      archiveProduct(tx, t.manager, {
+        operationId: op(),
+        id: iva16.id,
+        expectedVersion: off.version,
+        archived: false,
+      }),
+    );
+    assert.equal(back.archived, false);
+  });
+
   // --------------------------------------------------------- public ordering
   // Public ordering 032 replaced the signed /:token/... routes with header
   // tokens (x-gm-link-token) on /menu, /revision and /orders, and diner

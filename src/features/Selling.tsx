@@ -27,7 +27,13 @@ import {
   idSequence,
   type PaymentValues,
 } from "../../shared/service";
-import { strings, translateError, type Key } from "../i18n";
+import {
+  strings,
+  errorNotice,
+  errorSentence,
+  translateError,
+  type Key,
+} from "../i18n";
 import { api, ApiError, isSessionRejection } from "../api";
 import {
   attemptsForOrder,
@@ -35,13 +41,26 @@ import {
   db,
   parkPaymentAttempt,
   scope,
+  syncPending,
   type Draft,
 } from "../offline";
 import { useOfflineSelling } from "./offline/useOfflineSelling";
 import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
-import { fmt, orderLabel } from "./offline/format";
-import { isServerOrder, type LocalOrderView } from "../offline-records";
+import { fmt, orderLabel, parkedOrderLabel } from "./offline/format";
+import { DraftGoneEntry, draftEntryText } from "./DraftEntry";
+import { currentBusinessDate, orderNumberText } from "../labels";
+import {
+  isServerOrder,
+  parkedOrderRef,
+  parkedOrderValue,
+  pinnedParkedOrder,
+  resolveParkedOrder,
+  resolveParkedOrderToResume,
+  type LocalOrderView,
+  type ParkedOrderRef,
+  type ParkedOrderTarget,
+} from "../offline-records";
 import { DiscountButton } from "./discounts/DiscountButton";
 import { CheckDiscountSummary } from "./discounts/OrderAdjustments";
 import { Button, Field, Empty, Modal, Badge } from "../components/ui";
@@ -94,7 +113,11 @@ class HandledError extends Error {
 /** A parked cart, and the check it was a round for (null for a new order). */
 type ParkedDraft = {
   draft: Draft;
-  order: { id: string; number: number } | null;
+  order: ParkedOrderRef | null;
+  /** How the list names the order: "#12", "B-07" or "B-07 → #12" (LD-13 addendum). */
+  label: string | null;
+  /** The order no longer exists on this device or on the server: only discard. */
+  gone: boolean;
 };
 export function Selling({
   session,
@@ -133,6 +156,19 @@ export function Selling({
   const [busy, setBusy] = useState(false);
   const [pendingPayment, setPendingPayment] = useState(false);
   const [parked, setParked] = useState<ParkedDraft[] | null>(null);
+  /** A Borradores resume in progress (restoreDraft). */
+  const restoring = useRef(false);
+  /** The draft whose entry just turned "gone": its discard button takes focus. */
+  const [goneFocus, setGoneFocus] = useState<string | null>(null);
+  /**
+   * After a discard (LD-48, POLISH-UX-5): the Borradores dialog and the entry that takes
+   * the focus the removed button had (the next one, else the previous one), or null for
+   * the dialog's heading when the list is empty, so focus never falls to <body>.
+   */
+  const [discardFocus, setDiscardFocus] = useState<{
+    dialog: HTMLElement | null;
+    id: string | null;
+  } | null>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [cashSession, setCashSession] = useState<any>(null);
   const [notice, setNotice] = useState("");
@@ -194,6 +230,14 @@ export function Selling({
   /** Service-owned record of the check a parked round belongs to. */
   const parkedOrderId = (operationId: string) =>
     scope(session) + ":parked-order:" + operationId;
+  // LD-29: an open order from another business day names its date.
+  const today = currentBusinessDate(session.restaurant);
+  /**
+   * An order as a notice names it: "10", or "10 · 5 oct" for an order of another
+   * business day, so yesterday's #10 never reads as today's (LD-29, POL-R2-2).
+   */
+  const numberText = (o: { number: number; businessDate?: string | null }) =>
+    orderNumberText(o, currentBusinessDate(session.restaurant), locale);
   const offline = useOfflineSelling({
     session,
     catalog,
@@ -246,7 +290,9 @@ export function Selling({
     if (order)
       await db.cache.put({
         id: parkedOrderId(d.operationId),
-        value: { id: order.id, number: order.number },
+        // LD-29: the business date names an order of another day in Borradores;
+        // a local order's provisional number names it once it is gone (LD-48).
+        value: parkedOrderValue(order),
       });
     else await db.cache.delete(parkedOrderId(d.operationId));
   }
@@ -292,12 +338,15 @@ export function Selling({
    * cart is in Borradores under the same operation id; the waiter is told it
    * did not reach the kitchen, since the cart on screen is another check now.
    */
-  function failedAfterSwitch(target: Order | null, code: string) {
-    const reason = translateError(code, locale);
+  function failedAfterSwitch(target: Order | null, error: unknown) {
+    const code = (error as Error).message;
+    // With the "Referencia de soporte" when the send failed on the server,
+    // closed by a full stop before the next sentence (POL-R2-4).
+    const reason = errorSentence(error, locale);
     setError(
       target
         ? t("serviceRoundFailedAfterSwitch")
-            .replace("{n}", String(target.number))
+            .replace("{n}", numberText(target))
             .replace("{reason}", reason)
         : t("serviceSendFailedAfterSwitch").replace("{reason}", reason),
     );
@@ -343,7 +392,7 @@ export function Selling({
       setCurrent(order);
     setNotice(
       [
-        t("serviceSentAfterSwitch").replace("{n}", String(order.number)),
+        t("serviceSentAfterSwitch").replace("{n}", numberText(order)),
         ...(remaining ? [t("serviceDraftParked")] : []),
       ].join(" "),
     );
@@ -354,29 +403,128 @@ export function Selling({
     ).filter((d) => d.id !== activeId);
     setParked(
       await Promise.all(
-        drafts.map(async (draft) => {
-          const value = (await db.cache.get(parkedOrderId(draft.id)))?.value;
+        drafts.map(async (draft): Promise<ParkedDraft> => {
+          const key = parkedOrderId(draft.id);
+          const stored = parkedOrderRef((await db.cache.get(key))?.value);
+          // LD-13 addendum: a local order is named by this device's records.
+          const where = stored
+            ? await resolveParkedOrder(session, stored.id).catch(() => null)
+            : null;
+          // POL-R2-3: a local id that resolved to its server order is stored
+          // as that server order before its synced record is pruned.
+          const pinned = stored && where && pinnedParkedOrder(stored, where);
+          if (pinned)
+            await db.cache.put({ id: key, value: pinned }).catch(() => {});
           return {
             draft,
-            order:
-              value && typeof value.id === "string"
-                ? { id: value.id as string, number: Number(value.number) }
-                : null,
+            order: pinned || stored,
+            label: parkedOrderLabel(where, stored, today, locale),
+            gone: where?.kind === "gone",
           };
         }),
       ),
     );
   }
-  /** SVC-R5: a parked round goes back onto its check while it is not closed. */
-  async function restoreDraft({ draft: d, order: parkedOrder }: ParkedDraft) {
+  /** A draft whose order no longer exists anywhere (LD-13 addendum). */
+  function markGone(id: string) {
+    // Its button is replaced by the gone panel: focus moves to its discard action.
+    setGoneFocus(id);
+    setParked(
+      (list) =>
+        list?.map((p) => (p.draft.id === id ? { ...p, gone: true } : p)) ??
+        null,
+    );
+  }
+  async function discardDraft(
+    { draft: d }: ParkedDraft,
+    dialog: HTMLElement | null,
+  ) {
+    await db.drafts.delete(d.id);
+    await db.cache.delete(parkedOrderId(d.id));
+    const list = parked ?? [];
+    const at = list.findIndex((p) => p.draft.id === d.id);
+    const next = at < 0 ? null : (list[at + 1] ?? list[at - 1] ?? null);
+    setDiscardFocus({ dialog, id: next?.draft.id ?? null });
+    setParked((list) => list?.filter((p) => p.draft.id !== d.id) ?? null);
+  }
+  useEffect(() => {
+    if (!discardFocus) return;
+    const { dialog, id } = discardFocus;
+    setDiscardFocus(null);
+    const entry = id
+      ? dialog?.querySelector<HTMLElement>(`[data-draft-entry="${id}"]`)
+      : null;
+    const target = entry
+      ? entry.matches("button")
+        ? entry
+        : entry.querySelector<HTMLElement>("button")
+      : dialog?.querySelector<HTMLElement>("h2");
+    target?.focus();
+  }, [parked, discardFocus]);
+  /**
+   * SVC-R5: a parked round goes back onto its check while it is not closed.
+   * LD-13 addendum: the check may be a local order (created on this device,
+   * not synced yet: its projection), a local order that synced since (the
+   * server order its sync recorded), or a server order (read online; offline,
+   * this device's cached copy). One that no longer exists anywhere is shown
+   * as such, with only a discard action. One resume at a time: online it may
+   * wait for a sync pass first, and a second tap meanwhile does nothing.
+   */
+  async function restoreDraft(entry: ParkedDraft) {
+    if (restoring.current) return;
+    restoring.current = true;
+    try {
+      await resumeDraft(entry);
+    } finally {
+      restoring.current = false;
+    }
+  }
+  async function resumeDraft({ draft: d, order: parkedOrder }: ParkedDraft) {
     let target: Order | null = null;
     if (parkedOrder) {
+      let where: ParkedOrderTarget;
       try {
-        target = await api<Order>("/orders/" + parkedOrder.id);
+        // POLISH-OFFLINE-3: online, a local order's record is synced first, so
+        // one that already became a server order (its answer lost) is read
+        // from the server before the round is placed on it.
+        where = await resolveParkedOrderToResume(session, parkedOrder.id, {
+          online,
+          sync: () => syncPending(session, { force: true, reason: "manual" }),
+        });
       } catch (e) {
-        // Without the check the round cannot be placed; it stays parked.
+        // This device's store could not be read: the round stays parked.
         setParked(null);
-        setError(translateError((e as Error).message, locale));
+        setError(errorNotice(e, locale));
+        return;
+      }
+      if (where.kind === "gone") {
+        markGone(d.id);
+        return;
+      }
+      if (where.kind === "local") target = where.order;
+      else if (online)
+        try {
+          target = await api<Order>("/orders/" + where.orderId);
+        } catch (e) {
+          if (e instanceof ApiError && e.message === "not_found") {
+            markGone(d.id);
+            return;
+          }
+          // Without the check the round cannot be placed; it stays parked.
+          setParked(null);
+          setError(errorNotice(e, locale));
+          return;
+        }
+      else if (where.cached) target = where.cached;
+      else {
+        // Offline, a check this device does not keep cannot take the round
+        // (LD-7); it stays parked until the connection is back.
+        setParked(null);
+        setError(
+          offline.tableService
+            ? translateError("offline_order_not_cached", locale)
+            : t("offlineAvailableOnReconnect"),
+        );
         return;
       }
     }
@@ -391,7 +539,9 @@ export function Selling({
     }
     await replaceContext(null, d.order);
     if (target) {
-      setClosedCheck("server");
+      // A check paid on this device (local or cached) never had these lines,
+      // so "Enviar como orden nueva" may save them locally (offline §2.3).
+      setClosedCheck(isServerOrder(target) ? "server" : "offline");
       setError(t("serviceCheckClosedKeep"));
     }
   }
@@ -422,7 +572,7 @@ export function Selling({
               setPendingPayment(false);
               if (moved())
                 setNotice(
-                  t("servicePaidAfterSwitch").replace("{n}", String(o.number)),
+                  t("servicePaidAfterSwitch").replace("{n}", numberText(o)),
                 );
               else {
                 setCurrent(o);
@@ -447,8 +597,7 @@ export function Selling({
               setPendingPayment(false);
               setError(t("offlineAttemptParked"));
             }
-          } else if (live)
-            setError(translateError((e as Error).message, locale));
+          } else if (live) setError(errorNotice(e, locale));
         }
       })();
     }
@@ -528,7 +677,7 @@ export function Selling({
             setNotice(
               [
                 ...notes,
-                t("serviceResumeClosed").replace("{n}", String(o.number)),
+                t("serviceResumeClosed").replace("{n}", numberText(o)),
               ].join(" "),
             );
             return;
@@ -541,7 +690,7 @@ export function Selling({
           });
           setNotice(notes.join(" "));
         })
-        .catch((e) => setError(translateError((e as Error).message, locale)));
+        .catch((e) => setError(errorNotice(e, locale)));
     }
     if (table) {
       // A new check for a table never adds rounds to the order on screen.
@@ -627,8 +776,15 @@ export function Selling({
   function printNewRound(o: Order) {
     printRounds(o, [Math.max(0, ...o.lines.map((l) => l.round ?? 0))]);
   }
+  /** The business day printed comandas name their order against (LD-44). */
+  const printDay = () => ({
+    today: currentBusinessDate(session.restaurant),
+    locale,
+  });
   function printRounds(o: Order, rounds: number[]) {
-    printTickets(rounds.flatMap((round) => ticketsFromOrderRound(o, round)));
+    printTickets(
+      rounds.flatMap((round) => ticketsFromOrderRound(o, round, printDay())),
+    );
   }
   function printTickets(tickets: KitchenTicketModel[]) {
     if (!tickets.length) return;
@@ -680,13 +836,9 @@ export function Selling({
           // written into the cart now on screen. LD-12 R6: as online, what the
           // record holds leaves the parked copy of that cart, so restoring it
           // never saves those lines twice. The rest stays parked as a round of
-          // a cached server order; a local order cannot be resumed from
-          // Borradores (it has no server id), so then it stays as a new order.
-          const remaining = await trimParkedCopy(
-            d,
-            view,
-            offline.isLocalOrder(view) ? null : view,
-          );
+          // the order it reached, a cached server order or a local order
+          // (Borradores resumes both, LD-13 addendum).
+          const remaining = await trimParkedCopy(d, view, view);
           setNotice(
             [
               t("offlineSentToDevice"),
@@ -750,12 +902,12 @@ export function Selling({
       // operation id, so sending it from there replays or recovers it (FOH-11);
       // the cart on screen belongs to another order and stays as it is, and
       // the waiter is told the send did not land (SVC-REV-1).
-      if (moved()) throw failedAfterSwitch(target, code);
+      if (moved()) throw failedAfterSwitch(target, e);
       if (code === "stale_order" && target) {
         // Refresh in place; the unsent lines and their operation id stay.
         try {
           const latest = await api<Order>("/orders/" + target.id);
-          if (moved()) throw failedAfterSwitch(target, code);
+          if (moved()) throw failedAfterSwitch(target, e);
           setCurrent(latest);
           if (checkStateOf(latest) === "closed") {
             setClosedCheck("server");
@@ -765,7 +917,7 @@ export function Selling({
           setNotice(t("serviceStaleRefreshed"));
         } catch (refresh) {
           if (refresh instanceof HandledError) throw refresh;
-          setError(translateError((refresh as Error).message, locale));
+          setError(errorNotice(refresh, locale));
         }
         throw new HandledError(code);
       }
@@ -776,7 +928,7 @@ export function Selling({
         setClosedCheck("server");
         setError(
           code === "fiscal_ticket_issued"
-            ? translateError(code, locale)
+            ? errorNotice(e, locale)
             : t("serviceCheckClosedKeep"),
         );
         throw new HandledError(code, true);
@@ -792,7 +944,7 @@ export function Selling({
           target ? api<Order>("/orders/" + target.id).catch(() => null) : null,
         );
         // SVC-R10: the parked copy recovers the same way when it is sent.
-        if (moved()) throw failedAfterSwitch(target, code);
+        if (moved()) throw failedAfterSwitch(target, e);
         if (latest) {
           const operationId = crypto.randomUUID();
           const ids = idSequence();
@@ -831,7 +983,7 @@ export function Selling({
       if (code === "offline_check_paid") setClosedCheck("offline");
       if (CATALOG_CODES.includes(code))
         window.dispatchEvent(new Event("gm-menu-refresh"));
-      setError(translateError(code, locale));
+      setError(errorNotice(e, locale));
       throw new HandledError(code);
     } finally {
       if (!landed) requestFailed();
@@ -869,7 +1021,7 @@ export function Selling({
     payingRef.current = true;
     setPaying(true);
     void collect(values, items)
-      .catch((e) => setError(translateError((e as Error).message, locale)))
+      .catch((e) => setError(errorNotice(e, locale)))
       .finally(() => {
         payingRef.current = false;
         setPaying(false);
@@ -967,12 +1119,12 @@ export function Selling({
                   setNotice(
                     t("servicePaidAfterSwitch").replace(
                       "{n}",
-                      String(result.number),
+                      numberText(result),
                     ),
                   );
               });
             } catch (e) {
-              setError(translateError((e as Error).message, locale));
+              setError(errorNotice(e, locale));
             } finally {
               setPendingPayment(!!(await db.cache.get(attemptId)));
               setBusy(false);
@@ -993,7 +1145,7 @@ export function Selling({
       setPayment(false);
       if (!owned || epoch !== contextEpoch.current) {
         setNotice(
-          t("servicePaidAfterSwitch").replace("{n}", String(result.number)),
+          t("servicePaidAfterSwitch").replace("{n}", numberText(result)),
         );
         return;
       }
@@ -1101,8 +1253,7 @@ export function Selling({
       }
       // SVC-REV-1: a switch waiting for this payment keeps its error on screen.
       if (epoch === contextEpoch.current) requestFailed();
-      if (!(e instanceof HandledError))
-        setError(translateError((e as Error).message, locale));
+      if (!(e instanceof HandledError)) setError(errorNotice(e, locale));
       // "Enviar como orden nueva" lives in the cart: close the dialog for it.
       else if (e.offerNew) setPayment(false);
     } finally {
@@ -1160,7 +1311,7 @@ export function Selling({
       <div className="cart-heading">
         <div>
           <span className="eyebrow">
-            {current ? orderLabel(current) : t("newOrder")}
+            {current ? orderLabel(current, today, locale) : t("newOrder")}
           </span>
           <h2>{t("order")}</h2>
         </div>
@@ -1243,7 +1394,7 @@ export function Selling({
         {current && (
           <div className="existing">
             <strong>
-              {orderLabel(current)} · {t("sent")}
+              {orderLabel(current, today, locale)} · {t("sent")}
             </strong>
             <p>
               {current.lines
@@ -1370,7 +1521,9 @@ export function Selling({
         {noteReprint && (
           <Button
             className="small"
-            onClick={() => printTickets(ticketsForOpenRounds(noteReprint))}
+            onClick={() =>
+              printTickets(ticketsForOpenRounds(noteReprint, printDay()))
+            }
           >
             <Printer size={16} />
             {t("serviceReprintKitchen")}
@@ -1725,7 +1878,9 @@ export function Selling({
                 {noteReprint?.id === receipt.id && (
                   <Button
                     onClick={() =>
-                      printTickets(ticketsForOpenRounds(noteReprint))
+                      printTickets(
+                        ticketsForOpenRounds(noteReprint, printDay()),
+                      )
                     }
                   >
                     <Printer size={16} />
@@ -1767,21 +1922,35 @@ export function Selling({
           {!parked.length ? (
             <Empty title={t("noData")} />
           ) : (
-            parked.map((p) => (
-              <Button
-                className="full"
-                key={p.draft.id}
-                onClick={() => void restoreDraft(p)}
-              >
-                {p.order &&
-                  t("serviceDraftRound").replace(
-                    "{n}",
-                    String(p.order.number),
-                  ) + " · "}
-                {p.draft.order.name || t("order")} ·{" "}
-                {p.draft.order.lines.length} {t("items")}
-              </Button>
-            ))
+            parked.map((p) => {
+              const text = draftEntryText(
+                {
+                  label: p.label,
+                  name: p.draft.order.name,
+                  lines: p.draft.order.lines.length,
+                },
+                locale,
+              );
+              return p.gone ? (
+                <DraftGoneEntry
+                  key={p.draft.id}
+                  draftId={p.draft.id}
+                  text={text}
+                  locale={locale}
+                  autoFocus={goneFocus === p.draft.id}
+                  onDiscard={(dialog) => void discardDraft(p, dialog)}
+                />
+              ) : (
+                <Button
+                  className="full"
+                  key={p.draft.id}
+                  data-draft-entry={p.draft.id}
+                  onClick={() => void restoreDraft(p)}
+                >
+                  {text}
+                </Button>
+              );
+            })
           )}
         </Modal>
       )}

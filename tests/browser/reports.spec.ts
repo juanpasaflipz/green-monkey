@@ -4,6 +4,7 @@
 // over HTTP. The Hoy and Finanzas views, cortes and the remote close (spec §7.3 tests 1–9, 13,
 // 14, and the second opinion's UI findings, LD-27) are in tests/browser/finance.spec.ts.
 import { test, expect, type Browser, type Page } from "@playwright/test";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 const tenantId =
   process.env.DEMO_TENANT_ID ?? "10000000-0000-4000-8000-000000000001";
@@ -174,6 +175,9 @@ async function settle(page: Page, orderId: string) {
       method: "cash",
     });
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test("FIT-9: a Barra KDS with auto-print prints only new bar tickets, and a void prints a cancellation chit there", async ({
   page,

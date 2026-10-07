@@ -26,7 +26,7 @@ import {
   type Periodicity,
 } from "../../../shared/cfdi";
 import { api } from "../../api";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, translateError, type Key } from "../../i18n";
 import { Badge, Button, Field } from "../../components/ui";
 import { prefetchCfdiStatus } from "./status";
 import { CsdUpload } from "./CsdUpload";
@@ -189,8 +189,7 @@ export function CfdiSettings({
         if (alive.current) apply(v, resetForm);
         return v;
       } catch (e) {
-        if (alive.current)
-          setError(translateError((e as Error).message, locale));
+        if (alive.current) setError(errorNotice(e, locale));
         return null;
       }
     },
@@ -256,7 +255,7 @@ export function CfdiSettings({
       apply(v, resetForm);
       void prefetchCfdiStatus(session);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

@@ -51,8 +51,37 @@ acknowledged a critical alert within 15 minutes during service hours
 
 Alerts carry codes and counts only, never personal or tenant data. Logs are
 single-line JSON in Railway: filter with `@level:error`, `@message:http_request`,
-`@requestId:<id>` (the "Referencia de soporte" a cashier reads out is the first
-8 characters of a request id), `@route:/api/orders/:id`.
+`@requestId:<id>`, `@supportRef:<ref>`, `@route:/api/orders/:id`.
+
+**Referencia de soporte.** When a request fails on the server (any 5xx) or gets a
+4xx the screen has no specific text for (an unknown code, or a malformed request:
+`invalid_input`, `invalid_json`, `payload_too_large`, `request_aborted`,
+`request_size_invalid`, `unsupported_encoding`, `unsupported_charset`,
+`too_many_parameters`), the red error notice on that screen includes
+"Referencia de soporte: 3F2A9C1B" (English
+UI: "Support reference: 3F2A9C1B"). The reference is the first 8 letters and
+digits of the request id, in capitals, with O written as 0 and I and L as 1, so
+it never contains those three letters: if a caller reads one (an app revision
+cached before this rule), type 0 for O and 1 for I or L. The full id is the response's
+`X-Request-Id` header and the error body's `requestId` (Railway's
+`X-Railway-Request-Id` when the edge sent one). Every log line of that request
+carries the reference as `supportRef`: search `@supportRef:3F2A9C1B` exactly as
+the cashier reads it (capital letters), then `@requestId:<id>` with the full id
+from a matched line to see all of that request's lines (for a 5xx,
+`request_failed` has the error name, message, stack and route; every 4xx but a
+401 is logged at info as `request_rejected` with its `code`, never as an error
+line, and an `invalid_input` line adds `issues`: the failed fields' paths and
+zod issue codes, never the values sent). Domain refusals
+the screen explains (for example a closed check or a wrong PIN) and failures that
+never reached the server (no connection, timeouts) show no reference: there is
+no server line to find. **Sincronización** shows the same reference under an
+offline record whose last sync attempt failed that way (a record retrying a
+server error, or waiting for review with a code the app cannot explain), until
+the record syncs or is archived. A few failures show a fixed message instead of the
+server's answer and carry no reference either: background refreshes, a settings
+panel that could not load, and the sign-in screen, which reads a server error
+as "Sin conexión". For those, ask for the screen and the time and filter by
+`@level:error` and `@route`.
 
 ## "The POS is down" playbook
 
@@ -165,12 +194,15 @@ peer's `X-Real-IP` is ignored. Limiters group IPv6 clients per /56, and every
 (`tests/client-ip.test.ts` fails on one without, and on any `req.ip` read
 outside `server/logging.ts`).
 
-Check it with `GET /api/ops/diagnostics/ip`, which answers
-`{ ip, peerTrusted, source }`: behind the edge, `peerTrusted: true`,
-`source: "x-real-ip"` and your own public address. The CD smoke's `client_ip`
-check requires exactly that, plus the same answer when the request carries
-spoofed `X-Forwarded-For` and `X-Real-IP`. Its error names each failed
-condition:
+Check it by hand with `GET /api/ops/diagnostics/ip`, which answers
+`{ ip, peerTrusted, source }`: behind the edge you should see
+`peerTrusted: true`, `source: "x-real-ip"` and your own public address. The
+CD smoke's `client_ip` check proves less than that: it requires
+`peerTrusted: true`, `source: "x-real-ip"` and a public address, and the same
+answer when the request carries spoofed `X-Forwarded-For` and `X-Real-IP`
+(spoof invariance). It cannot prove the address is the runner's own (it does
+not know it), so after a change at the edge also compare the answer with
+your own address by hand. Its error names each failed condition:
 
 | Smoke error | Meaning | Action |
 | --- | --- | --- |
@@ -179,6 +211,13 @@ condition:
 | `source is peer, not x-real-ip` | the request reached `web` without the edge's headers | check the domain still routes through Railway's edge |
 | `ip is a client-supplied forwarding header value` or `forwarding headers changed the client IP` | the edge passed the client's own headers on: anyone can pick their limiter bucket | stop the rollout; roll back |
 | `ip is a proxy or private address, not public` or `ip is not an IP address` | the address is the edge's peer, a private range or missing | as for `peerTrusted is false` |
+
+Between smokes, a deployed `web` (`APP_ENV` staging or production) logs
+`client_ip_without_real_ip` (warn, once per process, with `source` and
+`realIpHeader: missing|invalid`, never an address) the first time a request
+from a trusted peer arrives without a usable `X-Real-IP` (Railway's health
+checks on `/health` and `/api/health` excepted). Treat it like the smoke's
+`source is forwarded` or `source is peer` rows above.
 
 While the address is wrong, a restaurant or a carrier NAT behind one edge hop
 shares one bucket per limit (one busy client can lock the others out of PIN
@@ -220,9 +259,11 @@ schema owner `gm_migrator` from GitHub Actions (the environment secret
 - **Daily:** `.github/workflows/retention.yml`, production at 05:15 and
   staging at 05:45 America/Mexico_City (11:15 and 11:45 UTC), after the
   03:30 backup and inside the 04:00–07:00 window (`RETENTION_WINDOW`). One
-  run repeats bounded passes while the previous pass deleted a full batch
-  (5,000 rows) from some table, at most 10 passes, and never starts a pass
-  after 07:00. The schedules run only for environments listed in the
+  run repeats bounded passes while the previous pass left a backlog (some
+  table's last 5,000-row batch was full, so the pass stopped at its batch or
+  time limit), at most 10 passes, and never starts a pass after 07:00. A pass
+  that ends every table on a short or empty batch is the last one;
+  `retention_only_complete` logs any `backlog` left when the run stops. The schedules run only for environments listed in the
   repository variable `OPS_LIVE_ENVIRONMENTS`; a manual dispatch (Actions →
   Retention → environment) always runs, except production during service
   hours (12:00–23:59) without `allow_service_hours`.
@@ -372,6 +413,22 @@ offline vault, direct endpoint):
    role, since only the grantor can revoke them), and drops the login, in
    one transaction. A refusal naming a grantor the owner cannot `SET ROLE`
    to changed nothing: revoke that grant as its grantor, then retry.
+   A schema grant whose grantor is `pg_database_owner` (schema `public`'s
+   owner since PostgreSQL 15; a legacy grant made before the cutover, as on
+   staging in LD-47) cannot be revoked that way: Neon lets no login
+   `SET ROLE pg_database_owner`. Finalize revokes it in the same transaction
+   through the schema's ownership: `ALTER SCHEMA public OWNER TO` the owner
+   login (which rewrites `pg_database_owner`'s grants as that login's),
+   `REVOKE`, `ALTER SCHEMA public OWNER TO pg_database_owner`, and it rolls
+   everything back unless the schema ACL afterwards is the starting one
+   minus exactly that grant, owned by `pg_database_owner` again (the action
+   reads "schema ownership round trip, ACL verified"). The round trip folds
+   any entry naming the owner login itself into the owner's own entry, so a
+   refusal listing what it would have `lost` or `gained` changed nothing:
+   run the same three statements by hand in one transaction as the owner
+   login, compare `select nspacl from pg_namespace where nspname = 'public'`
+   before and after (only the old login's entry may go), restore any other
+   entry the round trip changed before `COMMIT`, then retry the finalize.
 4. Same for `--kind billing` (both services), `--kind worker`
    (`WORKER_DATABASE_URL` on `worker`, redeploy it, then `--finalize`; the new
    login copies the `gm_jobs_worker` membership and the 30 s/8 s/60 s
@@ -682,11 +739,13 @@ Known gaps this release leaves open, with their owner:
 | DB-6, grants hash in readiness | Grants are applied in the newest migration's transaction, so a new revision cannot pass `/api/health` before its tables are granted; readiness itself checks only `schema_migrations` (`server/readiness.ts` is frozen this wave). | Ops, next wave: a `schema_grants` registry and a readiness check of the manifest hash. |
 | OPS-R10, retention needs DDL | Each retention batch turns off FORCE row-level security (ACCESS EXCLUSIVE until commit) and scans `jobs` without an index, because only the owner may delete and FORCE applies to it. The daily workflow therefore runs it only 04:00–07:00 Mexico City (and each deploy runs one pass), with a 200 ms lock wait and a 1.5 s statement bound per batch; at a few million `jobs` rows (blocked receipt jobs are never deleted) the scan exceeds the bound and `retention_failed` reports `statement_timeout` every night. | Ops, next wave (a new migration; 022 is limited to the hot-path indexes): a partial index `jobs(created_at) WHERE state IN ('done','dead')` so each batch finds its rows in milliseconds, and a `gm_maintenance` login with DELETE on the two tables under policies limited to the retention predicates, so retention needs no DDL and no ACCESS EXCLUSIVE lock and can run at any hour. |
 | OPS-R17, gitleaks image by tag | The qualification secret scan runs `ghcr.io/gitleaks/gitleaks:v8.21.2` by tag, while every action is pinned by commit SHA; a retagged image would run with the repository history mounted. The digest is not pinned yet: it could not be read from the registry in the environment that made this change, and a guessed digest would fail every run. | Ops: read the index digest (`docker buildx imagetools inspect ghcr.io/gitleaks/gitleaks:v8.21.2`), pin `…:v8.21.2@sha256:<digest>`, and make `tests/workflows.test.ts` refuse a `docker run` image without a digest. |
-| PLATFORM-ROLES-2 (rest), reachable-role checks | The runtime and worker login checks cover every role a login can `SET ROLE` to since the hardening. Still unchanged: `assertRuntimeRole` (`server/ops/schema.ts`), the `provision-roles.ts` assertion (attributes and `neon_superuser` only), and `globals.sql`, which creates missing capability roles but never corrects an existing `gm_jobs_worker` or `gm_support` (`ALTER ROLE … NOLOGIN NOBYPASSRLS …`). | Wave 3 ops: the same reachable-role allow-list in `assertRuntimeRole` and `provision-roles.ts`, and a normalizing `ALTER ROLE` for each capability role in `globals.sql`. |
-| PLATFORM-ROLES-4, local bootstrap migrates as the superuser | `scripts/setup-local.sh` migrates and applies grants as `gm_provisioner` (the initdb superuser), so locally FORCE RLS does not bind the table owner; CI, the track reset script and Neon migrate as `gm_migrator`. A SECURITY DEFINER helper that forgets `app.tenant_id` passes locally and fails in CI. | Wave 3 ops: mirror `qualification.yml` (give `gm_migrator` a local login, apply `database-grants.sql`, migrate with `MIGRATION_DATABASE_URL` as `gm_migrator`; keep `gm_provisioner` for fixtures only). |
-| PLATFORM-CI-8, images by tag | Besides gitleaks (OPS-R17 above), the `postgres:18` CI service and the production base image `node:24.21.0-bookworm-slim` (`Dockerfile`) are referenced by mutable tags; `tests/workflows.test.ts` pins only `uses:` lines. | Wave 3 ops, with OPS-R17: pin each image by digest (tag as a comment) and make the workflows test require `@sha256:` on `docker run`, `services` images and `FROM` lines. |
+| PLATFORM-ROLES-2 (rest), reachable-role checks | The runtime and worker login checks cover every role a login can `SET ROLE` to since the hardening. Still unchanged: `assertRuntimeRole` (`server/ops/schema.ts`), the `provision-roles.ts` assertion (attributes and `neon_superuser` only), and `globals.sql`, which creates missing capability roles but never corrects an existing `gm_jobs_worker` or `gm_support` (`ALTER ROLE … NOLOGIN NOBYPASSRLS …`). | Deferred beyond v1 (wave 3 plan): the same reachable-role allow-list in `assertRuntimeRole` and `provision-roles.ts`, and a normalizing `ALTER ROLE` for each capability role in `globals.sql`. Risk until then: a capability role changed by hand on a cluster (given `LOGIN`, `BYPASSRLS` or another membership) is neither corrected by `globals.sql` nor refused at startup until this lands. |
+| PLATFORM-ROLES-4, local bootstrap migrates as the superuser | `scripts/setup-local.sh` migrates and applies grants as `gm_provisioner` (the initdb superuser), so locally FORCE RLS does not bind the table owner; CI, the track reset script and Neon migrate as `gm_migrator`. A SECURITY DEFINER helper that forgets `app.tenant_id` passes locally and fails in CI. | Deferred beyond v1 (wave 3 plan): mirror `qualification.yml` (give `gm_migrator` a local login, apply `database-grants.sql`, migrate with `MIGRATION_DATABASE_URL` as `gm_migrator`; keep `gm_provisioner` for fixtures only). Risk until then: a developer's local run misses a FORCE RLS mistake that CI then catches; deployed environments are unaffected (they migrate as `gm_migrator`). |
+| PLATFORM-CI-8, images by tag | Besides gitleaks (OPS-R17 above), the `postgres:18` CI service and the production base image `node:24.21.0-bookworm-slim` (`Dockerfile`) are referenced by mutable tags; `tests/workflows.test.ts` pins only `uses:` lines. | Deferred beyond v1 (wave 3 plan), with OPS-R17: pin each image by digest (tag as a comment) and make the workflows test require `@sha256:` on `docker run`, `services` images and `FROM` lines. Risk until then: an image retagged upstream runs in CI, or ships in the production image, without a reviewed change here. |
 | PUBLIC-OPS-7, public ordering in the GAP-4 profile | The load profile (`scripts/load/profile.ts`, `run-load.ts`) models the cashier, the KDS and the tables view only. Since public ordering's B4, every operator device of a restaurant with an active code also polls `/api/ordering/inbox/summary` (20 s; 5 min otherwise) and Órdenes polls `/api/ordering/inbox` (10 s; 60 s otherwise), and diners poll the menu revision (1 min) and their order status (5-20 s). None of it is in the measured p95 ([LOAD_TEST.md](LOAD_TEST.md)). | Ops and public, before go-live: the staging `target`/`stress` capacity run that sizes `DB_POOL_MAX` includes these polls and a diner submit/status mix for restaurants with codes (RELEASE item 5). Not built yet (LD-41). |
-| OPS-10 residual: lookup digests and legacy tokens | **Done in Wave 2.0:** the signing keyring (`SIGNING_KEYS`, named kids, HKDF per-use keys, purpose-bound sealed tokens, two-step rotation; "Signing keys" above). Production refuses pre-2.0 tokens. Still keyed by `JWT_SECRET`: the pairing-code, PIN-fingerprint, invitation and transfer digests, so `JWT_SECRET` stays required on `web`, and outside production pre-2.0 tokens verify while it is set. F2 (in-transaction authentication) is unchanged. | Wave 3 (D4): keyed digests (access A1) together with account's invitation and transfer HMACs; then production unsets `JWT_SECRET`. |
+| OPS-10 residual: lookup digests and legacy tokens | **Done in Wave 2.0:** the signing keyring (`SIGNING_KEYS`, named kids, HKDF per-use keys, purpose-bound sealed tokens, two-step rotation; "Signing keys" above). Production refuses pre-2.0 tokens. Still keyed by `JWT_SECRET`: the pairing-code, PIN-fingerprint, invitation and transfer digests, so `JWT_SECRET` stays required on `web`, and outside production pre-2.0 tokens verify while it is set. F2 (in-transaction authentication) is unchanged. | Deferred beyond v1 (wave 3 plan, D4): keyed digests (access A1) together with account's invitation and transfer HMACs; then production unsets `JWT_SECRET`. Risk until then: `JWT_SECRET` stays a long-lived secret on `web`, and whoever holds it together with a database copy can test guesses against those digests offline (PINs and pairing codes are short), so it is kept and rotated like the signing keys. |
+| LD-16 L4, the worker loads the web's auth module | The worker process reaches the web's authentication modules by two paths: `server/jobs/queue.ts` imports the role check (`permit`, `managers`) from `server/auth.ts`; and `server/worker.ts` imports `billingWorker` from `server/billing-runtime.ts`, whose web routes import `withOwner` from `server/owner-accounts.ts`, which imports `createSession` from `server/access.ts` and `hash`, `sign`, `verify` and `password` from `server/auth.ts`. So the worker loads `auth.ts`, `access.ts`, `owner-accounts.ts` and, through them, the lazily loaded keyring, including the token-signing functions, although the worker never calls them: it authenticates no request and mints no token. `tests/import-graph.test.ts` keeps `tokens.ts`, `orders.ts`, `fiscal.ts`, `index.ts`, `routes/*` and cfdi's web service out of its graph, and pins these two paths (a new path, or a split that removes one, fails until this row is updated). | Deferred beyond v1 (wave 3 plan, "billing-runtime/queue split from auth"): move the role check the queue needs into a leaf module; split the billing worker loop (`billingWorker`, `billingTick`) out of `billing-runtime.ts` into a module that does not import `owner-accounts.ts` (the owner billing routes stay on the web); then add `auth.ts`, `access.ts` and `owner-accounts.ts` to the worker's forbidden list. Risk until then: module-level code added to `auth.ts`, `access.ts` or `owner-accounts.ts` also runs in the worker, and the signing helpers are loaded there; no credential follows them (a deployed worker refuses `SIGNING_KEYS` and `JWT_SECRET`, LD-8), so in a deployed worker they have no key to sign or verify with. |
+| FISCAL-OFFLINE-3, offline sales and a fiscal profile change | Queued offline sales are taxed with the fiscal profile in force when they sync, not when they were sold: saving the profile never invalidates offline leases ([FISCAL.md](FISCAL.md) "Limitations"). | Deferred beyond v1 (wave 3 plan): carry the fiscal context (or a profile version) in the offline lease and tax each sale with the one it was sold under. Risk until then: switching the border region (IVA 8 % / 16 %) or the default product tax while a device holds unsynced sales issues those tickets at the new rate; the border decree's 2026-12-31 end makes that switch likely on 2027-01-01, so sync every device before saving the profile. |
 
 ## Incident log template
 

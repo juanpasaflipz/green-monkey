@@ -6,7 +6,7 @@ import {
   type AuditRow,
   type DateRange,
 } from "../../../../shared/reports";
-import { strings, translateError } from "../../../i18n";
+import { strings, errorNotice } from "../../../i18n";
 import { operationLabel } from "../../../labels";
 import { Button, Field } from "../../../components/ui";
 import { fetchAllPages, fetchAudit, fetchFilters } from "../api";
@@ -84,7 +84,7 @@ export function AuditTab({
     try {
       await list.loadMore();
     } catch (e) {
-      setNotice(translateError((e as Error).message, locale));
+      setNotice(errorNotice(e, locale));
     }
   }
   async function csv() {
@@ -107,7 +107,7 @@ export function AuditTab({
       );
       if (result.truncated) setNotice(t.reportsCsvTruncated);
     } catch (e) {
-      setNotice(translateError((e as Error).message, locale));
+      setNotice(errorNotice(e, locale));
     } finally {
       setCsvBusy(false);
     }

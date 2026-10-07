@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
 import { api } from "../../api";
 import { Button, Field, Modal } from "../../components/ui";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, type Key } from "../../i18n";
 import { fill } from "../discounts/format";
 import "./cash.css";
 
@@ -51,7 +51,7 @@ export function DrawerReviewDialog({
             });
             await saved();
           } catch (err) {
-            setError(translateError((err as Error).message, locale));
+            setError(errorNotice(err, locale));
           } finally {
             setBusy(false);
           }

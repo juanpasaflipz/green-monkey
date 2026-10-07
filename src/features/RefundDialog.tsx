@@ -23,8 +23,13 @@ import {
   ManagerApproval,
   type ApprovalValue,
 } from "../components/ManagerApproval";
-import { strings, translateError, type Key } from "../i18n";
-import { tenderMethodLabel } from "../labels";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
+import {
+  currentBusinessDate,
+  orderNumberLabel,
+  orderNumberText,
+  tenderMethodLabel,
+} from "../labels";
 import { printDocument, readPrintSettings } from "../print";
 import { RefundSlip } from "./discounts/RefundSlip";
 import {
@@ -80,6 +85,7 @@ export function RefundDialog({
   close,
   saved,
   online = true,
+  today,
 }: {
   order: Order;
   session: Session;
@@ -88,6 +94,8 @@ export function RefundDialog({
   close: () => void;
   saved: () => Promise<void> | void;
   online?: boolean;
+  /** The current business date (Órdenes: the list's); else the session's (LD-29). */
+  today?: string | null;
 }) {
   const t = (k: Key) => strings[locale][k];
   const exponent = currencyExponent(session.restaurant.currency);
@@ -189,7 +197,7 @@ export function RefundDialog({
     try {
       plan = planItemRefund(order, entries);
     } catch (e) {
-      planError = translateError((e as Error).message, locale);
+      planError = errorNotice(e, locale);
     }
   const tender =
     tab === "amount" ? amountTenders.find((x) => x.id === tenderId) : undefined;
@@ -308,6 +316,10 @@ export function RefundDialog({
             .map((x) => x.trim())
             .filter(Boolean)
             .join(" · "),
+          {
+            today: today || currentBusinessDate(session.restaurant),
+            locale,
+          },
         );
         if (!(await printChits(chits))) setUnprinted(chits);
       }
@@ -316,7 +328,7 @@ export function RefundDialog({
       setError(
         code === "operation_conflict"
           ? t("discountsOperationRecorded")
-          : translateError(code, locale),
+          : errorNotice(e, locale),
       );
       // CONCURRENCY-4: an earlier attempt with this id was recorded; the
       // reloaded check shows it, a new confirm is a new operation, and leaving
@@ -332,7 +344,14 @@ export function RefundDialog({
     }
   }
 
-  const title = fill(t("discountsRefundTitle"), { n: order.number });
+  // LD-29 (POL-R2-2): yesterday's #10 names its date, as the header line does.
+  const title = fill(t("discountsRefundTitle"), {
+    n: orderNumberText(
+      order,
+      today || currentBusinessDate(session.restaurant),
+      locale,
+    ),
+  });
   /** Cancel and close: after a recorded attempt the parent refreshes too. */
   const leave = () => (recorded ? void finish() : close());
   /**
@@ -428,7 +447,12 @@ export function RefundDialog({
   return (
     <Modal title={title} close={leave} closeLabel={t("close")} wide>
       <p>
-        #{order.number} · {order.name || t("order")}
+        {orderNumberLabel(
+          order,
+          today || currentBusinessDate(session.restaurant),
+          locale,
+        )}{" "}
+        · {order.name || t("order")}
       </p>
       {!online && (
         <p className="warning-panel" role="status">

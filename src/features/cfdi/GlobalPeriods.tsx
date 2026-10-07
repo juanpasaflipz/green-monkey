@@ -7,7 +7,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
 import type { GlobalPeriodView } from "../../../shared/cfdi";
 import { api } from "../../api";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, type Key } from "../../i18n";
 import { Badge, Button, Empty } from "../../components/ui";
 import { DocumentDetail } from "./CfdiDocuments";
 import {
@@ -79,7 +79,7 @@ export function GlobalPeriods({
       );
       setPeriods([...rows].sort((a, b) => b.from.localeCompare(a.from)));
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }, [tz, cutoff, locale]);
   useEffect(() => {
@@ -101,7 +101,7 @@ export function GlobalPeriods({
       setNotice(t.cfdiRunQueued);
       await load();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(null);
     }

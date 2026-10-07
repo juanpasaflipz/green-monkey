@@ -9,7 +9,7 @@ import {
   type DateRange,
   type QuickRange,
 } from "../../../shared/reports";
-import { strings, translateError, type Key } from "../../i18n";
+import { strings, errorNotice, type Key } from "../../i18n";
 import { Button, Field } from "../../components/ui";
 import { cutoffLabel, fill } from "./format";
 
@@ -84,7 +84,7 @@ export function RangePicker({
             setError("");
             onChange(range);
           } catch (err) {
-            setError(translateError((err as Error).message, locale));
+            setError(errorNotice(err, locale));
           }
         }}
       >

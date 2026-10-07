@@ -218,6 +218,25 @@ describe("api transport", () => {
       ]);
       expect(calls).toHaveLength(2);
     }
+    // A body that did not arrive intact on the retry (LD-48): no handler ran
+    // either, so the first attempt's outcome is still the answer.
+    for (const code of ["request_aborted", "request_size_invalid"]) {
+      const calls = mockFetch(
+        () => Promise.reject(new TypeError("offline")),
+        json(400, { error: code }),
+      );
+      const paid = failure(
+        api("/orders/o/payments", { operationId: "op" }, { idempotent: true }),
+      );
+      await vi.advanceTimersByTimeAsync(800);
+      const e = await paid;
+      expect([e.message, e.kind, e.transient], code).toEqual([
+        "network_unavailable",
+        "network",
+        true,
+      ]);
+      expect(calls).toHaveLength(2);
+    }
     // A domain refusal on the retry is still the answer: the handler ran.
     const refused = mockFetch(
       () => Promise.reject(new TypeError("offline")),

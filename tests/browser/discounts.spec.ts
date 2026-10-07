@@ -2,6 +2,7 @@ import "dotenv/config";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import postgres from "postgres";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 // Discounts, refunds and drawer controls (028), specs/discounts.md §7.3. The
 // demo owner "Alex Demo" approves (the demo has no separate manager); the
@@ -181,6 +182,9 @@ async function resetControls(baseURL: string | undefined) {
     await admin.end();
   }
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test.beforeEach(async ({ baseURL }) => {
   await resetControls(baseURL);

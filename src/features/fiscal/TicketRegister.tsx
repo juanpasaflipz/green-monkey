@@ -15,7 +15,7 @@ import type {
 import { formatFolio } from "../../../shared/fiscal";
 import { api } from "../../api";
 import { Button } from "../../components/ui";
-import { strings, translateError } from "../../i18n";
+import { strings, errorNotice } from "../../i18n";
 import { tenderMethodLabel } from "../../labels";
 import { printDocument, readPrintSettings } from "../../print";
 import { auditPrint, ReceiptDocument } from "../Receipt";
@@ -51,7 +51,7 @@ export function TicketRegister({
     try {
       await fn();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
