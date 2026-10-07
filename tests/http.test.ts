@@ -19,7 +19,7 @@ describe("trust proxy", () => {
     expect(() => trustProxy({ TRUST_PROXY: "true" })).toThrow();
   });
 
-  it("derives the client from the proxy hop, ignoring spoofed left entries", () => {
+  it("trusts Railway's edge peer, never a public hop (the client address itself comes from X-Real-IP: tests/client-ip.test.ts)", () => {
     const app = express();
     app.set("trust proxy", trustProxy({ NODE_ENV: "production" }));
     const compile = app.get("trust proxy fn") as (

@@ -165,12 +165,15 @@ peer's `X-Real-IP` is ignored. Limiters group IPv6 clients per /56, and every
 (`tests/client-ip.test.ts` fails on one without, and on any `req.ip` read
 outside `server/logging.ts`).
 
-Check it with `GET /api/ops/diagnostics/ip`, which answers
-`{ ip, peerTrusted, source }`: behind the edge, `peerTrusted: true`,
-`source: "x-real-ip"` and your own public address. The CD smoke's `client_ip`
-check requires exactly that, plus the same answer when the request carries
-spoofed `X-Forwarded-For` and `X-Real-IP`. Its error names each failed
-condition:
+Check it by hand with `GET /api/ops/diagnostics/ip`, which answers
+`{ ip, peerTrusted, source }`: behind the edge you should see
+`peerTrusted: true`, `source: "x-real-ip"` and your own public address. The
+CD smoke's `client_ip` check proves less than that: it requires
+`peerTrusted: true`, `source: "x-real-ip"` and a public address, and the same
+answer when the request carries spoofed `X-Forwarded-For` and `X-Real-IP`
+(spoof invariance). It cannot prove the address is the runner's own (it does
+not know it), so after a change at the edge also compare the answer with
+your own address by hand. Its error names each failed condition:
 
 | Smoke error | Meaning | Action |
 | --- | --- | --- |
