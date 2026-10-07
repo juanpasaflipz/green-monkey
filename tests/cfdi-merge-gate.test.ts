@@ -1,6 +1,6 @@
 // cfdi merge gate (review CFDI-R5), kept as a regression guard after the fiscal/discounts merge:
 // no compat shim, 027 stand-in or shim import may come back, fiscal's recordRefundTax calls
-// enqueueCfdiRefund, the worker reads 028's refunds.method, the stamping browser tests skip only
+// enqueueCfdiRefund and its finishTickets cfdiTicketsIssued, the worker reads 028's refunds.method, the stamping browser tests skip only
 // for a missing local worker, and the status lines no longer say the flows wait for a rebase.
 // Pure: reads files only.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -60,6 +60,19 @@ describe("cfdi merge gate (CFDI-R5)", () => {
     expect(read("server/cfdi/worker/freeze.ts")).toMatch(
       /select method from refunds where id =/,
     );
+  });
+
+  it("fiscal's finishTickets (every issuance: sale, recovery, repair) tells cfdi about late tickets (LD-51 F12)", () => {
+    const fiscal = read("server/fiscal.ts");
+    const finish = fiscal.slice(
+      fiscal.indexOf("async function finishTickets("),
+      fiscal.indexOf("export async function issueDueTicket("),
+    );
+    expect(finish).toMatch(/await cfdiTicketsIssued\(\s*tx,\s*s,/);
+    expect(fiscal).toMatch(
+      /import \{ cfdiTicketsIssued, enqueueCfdiRefund \} from "\.\/cfdi\/hooks\.js"/,
+    );
+    expect(fiscal.match(/finishTickets\(tx, s,/g)?.length).toBe(2);
   });
 
   it("the stamping browser tests no longer skip for a missing fiscal, and the status lines were re-verified", () => {

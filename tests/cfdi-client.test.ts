@@ -76,9 +76,14 @@ import {
 } from "../src/features/cfdi/CfdiDocuments";
 import {
   cfdiBadge,
+  OrganizationFacts,
   orgErrorText,
+  PeriodicityStatus,
+  SelfInvoiceBound,
   settling,
 } from "../src/features/cfdi/CfdiSettings";
+import { deadlineText } from "../src/features/cfdi/format";
+import type { CfdiOrganizationView } from "../shared/cfdi";
 import { CfdiCorteCoverage } from "../src/features/cfdi/CfdiCorteCoverage";
 import { base64Of, passwordLifetimeMs } from "../src/features/cfdi/CsdUpload";
 import {
@@ -939,5 +944,229 @@ describe("cfdi client: helpers", () => {
       "Reanudado automáticamente",
     );
     expect(eventLabel("recovery_queued", "en")).toBe("Resumed automatically");
+  });
+});
+
+describe("LD-51 (cfdifix): the printed deadline, the issuer block and the periodicity field", () => {
+  const origin = "https://pos.example.com";
+  const bound = {
+    globalPeriodicity: "day" as const,
+    nextPeriodicity: null,
+    nextPeriodicityFrom: null,
+    cutoff: 240,
+    graceMinutes: 60,
+  };
+  it("F1: with a daily global the receipt prints the global's build (next day 05:00), with its time", () => {
+    const out = html(
+      createElement(CfdiReceiptBlock, {
+        ticket,
+        status: status({
+          selfInvoice: {
+            enabled: true,
+            policy: "month",
+            days: 30,
+            globalBound: bound,
+          },
+        }),
+        kind: "receipt",
+        origin,
+      }),
+    );
+    // Business date 4 Oct 2026, cut at 04:00: the daily global is built 5 Oct 05:00 local.
+    expect(out).toContain("Disponible hasta el 05/10/2026 a las 05:00");
+  });
+  it("F1: with a monthly global the month policy ends first: the date alone, as before", () => {
+    const out = html(
+      createElement(CfdiReceiptBlock, {
+        ticket,
+        status: status({
+          selfInvoice: {
+            enabled: true,
+            policy: "month",
+            days: 30,
+            globalBound: { ...bound, globalPeriodicity: "month" },
+          },
+        }),
+        kind: "receipt",
+        origin,
+      }),
+    );
+    expect(out).toContain("Disponible hasta el 31/10/2026");
+    expect(out).not.toContain(" a las ");
+  });
+  it("F1: a weekly global with a 30-day policy prints the Sunday close + grace date", () => {
+    const out = html(
+      createElement(CfdiReceiptBlock, {
+        ticket,
+        status: status({
+          selfInvoice: {
+            enabled: true,
+            policy: "days",
+            days: 30,
+            globalBound: { ...bound, globalPeriodicity: "week" },
+          },
+        }),
+        kind: "receipt",
+        origin,
+      }),
+    );
+    // Sunday 4 October closes its week: built 5 Oct 05:00, the next day, so with its time.
+    expect(out).toContain("Disponible hasta el 05/10/2026 a las 05:00");
+  });
+  it("F1: the portal's deadline text, in Spanish and English", () => {
+    expect(
+      deadlineText(
+        "2026-10-05T11:00:00Z",
+        "2026-10-04",
+        "America/Mexico_City",
+        "es",
+      ),
+    ).toBe("05/10/2026 a las 05:00");
+    expect(
+      deadlineText(
+        "2026-10-05T11:00:00Z",
+        "2026-10-04",
+        "America/Mexico_City",
+        "en",
+      ),
+    ).toMatch(/^10\/05\/2026 at 0?5:00\sAM$/);
+    expect(
+      deadlineText(
+        "2026-11-01T05:59:59.999Z",
+        "2026-10-04",
+        "America/Mexico_City",
+        "es",
+      ),
+    ).toBe("31/10/2026");
+  });
+  it("F1: the settings say how the periodicity bounds self-invoicing", () => {
+    expect(
+      html(
+        createElement(SelfInvoiceBound, {
+          periodicity: "day",
+          graceMinutes: 60,
+          locale: "es",
+        }),
+      ),
+    ).toContain("al cierre del día del consumo más 60 min");
+    expect(
+      html(
+        createElement(SelfInvoiceBound, {
+          periodicity: "month",
+          graceMinutes: 30,
+          locale: "en",
+        }),
+      ),
+    ).toContain("at the close of the month of purchase plus 30 min");
+  });
+
+  const org = (
+    over: Partial<CfdiOrganizationView> = {},
+  ): CfdiOrganizationView => ({
+    source: "own",
+    status: "ready",
+    provisioned: true,
+    errorCode: null,
+    taxId: null,
+    sharedIssuer: null,
+    legalSyncedVersion: 1,
+    fiscalProfileVersion: 2,
+    csd: {
+      status: "missing",
+      serial: null,
+      validUntil: null,
+      lastUpload: null,
+    },
+    productionReady: false,
+    pendingSteps: [],
+    checkedAt: null,
+    lastEvent: null,
+    ...over,
+  });
+  it("F9: the issuer RFC reads pending until Facturapi reports it, then shows it", () => {
+    const pending = html(
+      createElement(OrganizationFacts, { org: org(), locale: "es" }),
+    );
+    expect(pending).toContain("RFC del emisor");
+    expect(pending).toContain("Pendiente: Facturapi aún no lo reporta");
+    const known = html(
+      createElement(OrganizationFacts, {
+        org: org({ taxId: "EKU9003173C9" }),
+        locale: "es",
+      }),
+    );
+    expect(known).toContain("EKU9003173C9");
+    expect(known).not.toContain("Pendiente");
+    // An own organization behind on its legal data still says it will be sent.
+    expect(known).toContain(strings.es.cfdiLegalPending);
+  });
+  it("F3/F8: the shared sandbox shows the platform test organization as the issuer and no legal-sync note", () => {
+    const out = html(
+      createElement(OrganizationFacts, {
+        org: org({
+          source: "shared_sandbox",
+          taxId: "EKU9003173C9",
+          legalSyncedVersion: null,
+          sharedIssuer: {
+            legalName: "PLATAFORMA DE PRUEBA",
+            taxId: "EKU9003173C9",
+            regime: "601",
+            postalCode: "01000",
+          },
+        }),
+        locale: "es",
+      }),
+    );
+    expect(out).toContain("PLATAFORMA DE PRUEBA");
+    expect(out).toContain("EKU9003173C9");
+    expect(out).toContain("601 — General de Ley Personas Morales");
+    expect(out).toContain("01000");
+    expect(out).toContain("Emisor de prueba de la plataforma");
+    expect(out).toContain(strings.es.cfdiSharedIssuerNote);
+    expect(out).not.toContain(strings.es.cfdiLegalPending);
+    expect(out).not.toContain("Datos fiscales enviados a Facturapi");
+  });
+  it("F10: the periodicity field states the current one and a pending change with its date", () => {
+    expect(
+      html(
+        createElement(PeriodicityStatus, {
+          settings: {
+            globalPeriodicity: "month",
+            nextPeriodicity: null,
+            nextPeriodicityFrom: null,
+          },
+          locale: "es",
+        }),
+      ),
+    ).toContain("Periodicidad actual: mensual.");
+    const pending = html(
+      createElement(PeriodicityStatus, {
+        settings: {
+          globalPeriodicity: "month",
+          nextPeriodicity: "day",
+          nextPeriodicityFrom: "2026-11-01",
+        },
+        locale: "es",
+      }),
+    );
+    expect(pending).toContain("Periodicidad actual: mensual.");
+    expect(pending).toContain("Cambia a diaria desde el 1 nov 2026.");
+    expect(
+      html(
+        createElement(PeriodicityStatus, {
+          settings: {
+            globalPeriodicity: "week",
+            nextPeriodicity: "fortnight",
+            nextPeriodicityFrom: "2026-11-01",
+          },
+          locale: "en",
+        }),
+      ),
+    ).toContain("Current frequency: weekly. Changes to fortnightly on");
+  });
+  it("F7: the register names the acuse that was not stored", () => {
+    expect(eventLabel("acuse_mismatch", "es")).toBe(
+      strings.es.cfdiEventAcuseMismatch,
+    );
   });
 });
