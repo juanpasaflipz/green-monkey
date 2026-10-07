@@ -18,6 +18,15 @@ export const SUPPORT_OPERATOR = "acceptance";
 
 const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
 
+/**
+ * What Railway's edge adds to every request (LD-46): the web trusts its
+ * loopback peer like the edge, so the gate's clients send the client address
+ * the edge would, and the deployed web never logs client_ip_without_real_ip
+ * (LD-49). The address stays 127.0.0.1: every device still shares the per-IP
+ * buckets of §3.8.
+ */
+export const EDGE_HEADERS: Record<string, string> = { "X-Real-IP": "127.0.0.1" };
+
 /** Ports and URLs; TEST_BASE_URL names the web's own plain-http listener. */
 export function runUrls(env: NodeJS.ProcessEnv = process.env) {
   const base = new URL(env.TEST_BASE_URL ?? "http://127.0.0.1:3390");

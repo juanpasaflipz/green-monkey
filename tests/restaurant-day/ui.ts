@@ -16,7 +16,7 @@ import {
 } from "@playwright/test";
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { OUT } from "./env.js";
+import { EDGE_HEADERS, OUT } from "./env.js";
 
 // ------------------------------------------------------------------ money
 
@@ -124,6 +124,7 @@ export async function newDevice(
     locale: "es-MX",
     timezoneId: spec.tz,
     permissions: ["clipboard-read", "clipboard-write"],
+    extraHTTPHeaders: EDGE_HEADERS,
     ...(storageState ? { storageState } : {}),
   });
   await context.addInitScript(() => {

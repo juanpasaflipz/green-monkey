@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { EDGE_HEADERS } from "./tests/restaurant-day/env";
 
 /**
  * The restaurant-day go-live gate (specs/acceptance.md §2): one serial chain,
@@ -22,6 +23,8 @@ export default defineConfig({
     headless: true,
     // A missing or disabled control fails within seconds, not at the test budget.
     actionTimeout: 15_000,
+    // The `request` fixture (G1 preflight) reaches the web the way the edge would.
+    extraHTTPHeaders: EDGE_HEADERS,
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
   },

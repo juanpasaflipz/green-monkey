@@ -31,6 +31,7 @@ import {
   assertIsolatedRun,
   cfdiBranch,
   cfdiFakePort,
+  EDGE_HEADERS,
   type RunState,
 } from "./env.js";
 import { LEGAL_CI_ENV } from "../../server/legal-ci.js";
@@ -470,7 +471,9 @@ export default async function globalSetup() {
     await waitFor(
       "/api/ops/status ok",
       async () => {
-        const s = await (await fetch(`${u.base.origin}/api/ops/status`)).json();
+        const s = await (
+          await fetch(`${u.base.origin}/api/ops/status`, { headers: EDGE_HEADERS })
+        ).json();
         return (
           s.ok === true && s.worker?.status === "ok" && s.degraded === false
         );
