@@ -849,6 +849,8 @@ export const RESTAURANT_B = {
     regime: "612",
     regimeLabel:
       "612 — Personas Físicas con Actividades Empresariales y Profesionales",
+    receiptRegime:
+      "612 Personas Físicas con Actividades Empresariales y Profesionales",
     zip: "22000",
     street: "Av. Revolución 1050",
     neighborhood: "Zona Centro",
