@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import postgres from "postgres";
-import { password, sign } from "../server/auth.js";
+import { password } from "../server/auth.js";
 import { checkRole, connect, dbRetryCount, tenant } from "../server/db.js";
 import {
   addRound,
@@ -16,13 +16,11 @@ import {
   stock,
 } from "../server/orders.js";
 import { receive, saveProduct } from "../server/management.js";
-import {
-  PUBLIC_ORDERS_PER_MINUTE,
-  PUBLIC_REQUESTS_PER_MINUTE,
-  REVISION_POLLS_PER_IP_PER_MINUTE,
-  REVISION_POLLS_PER_MINUTE,
-  publicOrdering,
-} from "../server/public-ordering.js";
+import { publicOrdering } from "../server/public-ordering.js";
+import { PUBLIC_RATES } from "../server/public-limits.js";
+import { createLink, revokeLink } from "../server/public-links.js";
+import { newPublicToken } from "../server/public-tokens.js";
+import { LINK_HEADER } from "../shared/public-ordering.js";
 import { commitImport } from "../server/imports.js";
 import {
   serviceOptions,
@@ -2724,6 +2722,10 @@ try {
   });
 
   // --------------------------------------------------------- public ordering
+  // Public ordering 032 replaced the signed /:token/... routes with header
+  // tokens (x-gm-link-token) on /menu, /revision and /orders, and diner
+  // orders now become holds; the MENU-R1/R3/R6 budgets are kept as
+  // PUBLIC_RATES (deliberate change, spec §7.4).
   /** The real public router on a loopback port; every request comes from one
    * client IP, like diners on a restaurant's guest Wi-Fi. */
   async function servePublic(db: postgres.Sql) {
@@ -2752,13 +2754,18 @@ try {
       limit: r.headers.get("ratelimit-limit"),
       body: await r.json(),
     });
+    const headers = (token: string) => ({
+      "content-type": "application/json",
+      [LINK_HEADER]: token,
+    });
     return {
-      get: async (path: string) => reply(await fetch(origin + path)),
-      post: async (path: string, body: unknown) =>
+      get: async (path: string, token: string) =>
+        reply(await fetch(origin + path, { headers: headers(token) })),
+      post: async (path: string, token: string, body: unknown) =>
         reply(
           await fetch(origin + path, {
             method: "POST",
-            headers: { "content-type": "application/json" },
+            headers: headers(token),
             body: JSON.stringify(body),
           }),
         ),
@@ -2766,77 +2773,103 @@ try {
         new Promise<void>((resolve) => server.close(() => resolve())),
     };
   }
-  /** A link as POST /ordering-links signs it. */
-  const orderingLink = (channel: "qr" | "kiosk") =>
-    sign({
-      purpose: "ordering",
-      id: randomUUID(),
-      tenantId: a.tenantId,
-      employeeId: manager.employeeId,
-      deviceId: manager.deviceId,
-      tableId: null,
-      channel,
-      expiresAt: Date.now() + 3600_000,
-    });
-  const qrOrder = (productId: string) =>
-    orderBody([{ productId }], { channel: "qr" });
+  /** Links come from the staff command; ordering needs an active staff terminal. */
+  const orderingLinks: string[] = [];
+  const orderingLink = async (kind: "counter" | "kiosk") => {
+    const l = await run(manager, (tx) =>
+      createLink(tx, manager, { kind, label: `Pruebas ${kind}` }),
+    );
+    orderingLinks.push(l.id);
+    return l.token;
+  };
+  const revokeOrderingLinks = async () => {
+    for (const id of orderingLinks.splice(0))
+      await run(manager, (tx) =>
+        revokeLink(tx, manager, id, { operationId: op() }),
+      );
+  };
+  await asAdmin(
+    a.tenantId,
+    (
+      tx,
+    ) => tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,expires_at,
+        offline_until,created_at,last_seen_at,authenticated_at,absolute_expires_at)
+      values(${a.tenantId},${randomUUID()},${cashier.employeeId},${cashier.deviceId},${"menu-" + randomUUID()},
+        'fixture',now()+interval '8 hours',now()+interval '4 hours',now(),now(),now(),now()+interval '16 hours')`,
+  );
+  /** A diner order for one product: a fresh operationId and status key each time. */
+  const qrOrder = (product: { id: string; price: number }) => ({
+    operationId: op(),
+    statusKey: newPublicToken(),
+    lines: [
+      { id: randomUUID(), productId: product.id, quantity: 1, options: [] },
+    ],
+    expectedTotal: product.price,
+  });
 
-  await test("MENU-R1/R6: QR/kiosk revision polls, catalog loads and orders have separate budgets, so a diner's order is never refused for them", async () => {
+  await test("MENU-R1/R6: QR/kiosk revision polls, menu loads and orders have separate budgets, so a diner's order is never refused for them", async () => {
     const product = await newProduct(manager, tacos.id);
     const pub = await servePublic(sql);
-    const qr = orderingLink("qr"),
-      kiosk = orderingLink("kiosk");
+    const qr = await orderingLink("counter"),
+      kiosk = await orderingLink("kiosk"),
+      qr2 = await orderingLink("counter"),
+      qr3 = await orderingLink("counter");
     try {
       const polls = [];
-      for (let i = 0; i < PUBLIC_REQUESTS_PER_MINUTE + 5; i++)
-        polls.push(await pub.get(qr + "/revision"));
+      for (let i = 0; i < PUBLIC_RATES.revisionPerIpLink + 15; i++)
+        polls.push(await pub.get("revision", qr));
       const served = polls.filter((p) => p.status === 200);
-      assert.equal(served.length, REVISION_POLLS_PER_MINUTE);
+      assert.equal(served.length, PUBLIC_RATES.revisionPerIpLink);
       assert(served.every((p) => typeof p.body.revision === "number"));
-      assert.equal(served[0].limit, String(REVISION_POLLS_PER_MINUTE));
+      assert.equal(served[0].limit, String(PUBLIC_RATES.revisionPerIpLink));
       const refused = polls.filter((p) => p.status === 429);
-      assert.equal(
-        refused.length,
-        PUBLIC_REQUESTS_PER_MINUTE + 5 - REVISION_POLLS_PER_MINUTE,
-      );
-      assert.deepEqual(refused[0].body, { error: "rate_limited" });
+      assert.equal(refused.length, 15);
+      assert.equal(refused[0].body.error, "rate_limited");
       // Another link from the same IP (the kiosk, another table) polls on.
-      assert.equal((await pub.get(kiosk + "/revision")).status, 200);
-      // After more polls than the shared limit, the diner's order goes through.
-      const sent = await pub.post(qr + "/orders", qrOrder(product.id));
+      assert.equal((await pub.get("revision", kiosk)).status, 200);
+      // After more polls than the menu budget, the diner's order goes through.
+      const sent = await pub.post("orders", qr, qrOrder(product));
       assert.equal(sent.status, 200, JSON.stringify(sent.body));
-      assert.equal(sent.body.order.total, product.price);
-      assert.equal(sent.limit, String(PUBLIC_ORDERS_PER_MINUTE));
-      // MENU-R6 (deliberate change): catalog loads keep their unchanged
-      // per-IP limit, but orders no longer count towards it.
-      for (let i = 0; i < PUBLIC_REQUESTS_PER_MINUTE; i++) {
-        const loaded = await pub.get(qr + "/catalog");
+      assert.match(sent.body.label, /^Q-\d+$/);
+      assert.equal(sent.body.state, "pending");
+      assert.equal(sent.body.total, product.price);
+      // Menu loads keep their own per-IP limit, and orders never count towards it.
+      for (let i = 0; i < PUBLIC_RATES.menuPerIp; i++) {
+        const loaded = await pub.get("menu", qr);
         assert.equal(loaded.status, 200);
-        assert.equal(loaded.limit, String(PUBLIC_REQUESTS_PER_MINUTE));
+        assert.equal(loaded.limit, String(PUBLIC_RATES.menuPerIp));
       }
-      const over = await pub.get(qr + "/catalog");
+      const over = await pub.get("menu", qr);
       assert.equal(over.status, 429);
-      assert.deepEqual(over.body, { error: "rate_limited" });
+      assert.equal(over.body.error, "rate_limited");
       // Every open page refetching after a menu change cannot refuse an order.
-      const after = await pub.post(qr + "/orders", qrOrder(product.id));
+      const after = await pub.post("orders", qr, qrOrder(product));
       assert.equal(after.status, 200, JSON.stringify(after.body));
-      // An exhausted shared budget does not stop another link's polls.
-      assert.equal((await pub.get(kiosk + "/revision")).status, 200);
-      // Orders keep their own per-IP limit.
-      for (let i = 2; i < PUBLIC_ORDERS_PER_MINUTE; i++)
-        assert.equal(
-          (await pub.post(qr + "/orders", qrOrder(product.id))).status,
-          200,
+      // An exhausted menu budget does not stop another link's polls.
+      assert.equal((await pub.get("revision", kiosk)).status, 200);
+      // Orders keep their own per-IP limit (30, MENU-R6). They are spread over
+      // three counter links (10 each: the per-(IP, link) write budget and the
+      // counter pending cap), so the refusal is the per-IP limiter's.
+      const spread = [qr, qr2, qr3];
+      for (let i = 2; i < PUBLIC_RATES.submitPerIp; i++) {
+        const r = await pub.post(
+          "orders",
+          spread[Math.floor(i / PUBLIC_RATES.writePerIpLink)],
+          qrOrder(product),
         );
-      const flood = await pub.post(qr + "/orders", qrOrder(product.id));
+        assert.equal(r.status, 200, `#${i} ${JSON.stringify(r.body)}`);
+      }
+      const flood = await pub.post("orders", qr2, qrOrder(product));
       assert.equal(flood.status, 429);
-      assert.deepEqual(flood.body, { error: "rate_limited" });
+      assert.equal(flood.body.error, "rate_limited");
+      assert.equal(flood.limit, String(PUBLIC_RATES.submitPerIp));
     } finally {
       await pub.close();
+      await revokeOrderingLinks();
     }
   });
 
-  await test("MENU-R3: one client IP cannot lift the revision-poll bound with token spellings or many links, and its order still goes through", async () => {
+  await test("MENU-R3: one client IP cannot lift the revision-poll bound with token spellings, random tokens or many links, and its order still goes through", async () => {
     const product = await newProduct(manager, tacos.id);
     // Count database transactions the public router opens.
     let transactions = 0;
@@ -2850,112 +2883,103 @@ try {
         };
       },
     }) as postgres.Sql;
-    const qr = orderingLink("qr");
-    // The signature is the last part in both the v2 and the legacy format.
-    const signature = qr.split(".").at(-1)!;
-    const alphabet =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    const sameBytes = [...alphabet].find(
-      (c) =>
-        c !== signature.slice(-1) &&
-        Buffer.from(signature.slice(0, -1) + c, "base64url").equals(
-          Buffer.from(signature, "base64url"),
-        ),
-    )!;
-    assert(sameBytes, "the last character has unused bits");
-    // Spellings verify() accepts for the same signed link.
+    const qr = await orderingLink("counter");
+    // Spellings of the same link, a legacy signed token and wrong lengths.
     const spellings = [
-      qr + ".1",
       qr + "=",
-      qr + "!",
-      qr.slice(0, -1) + sameBytes,
+      qr.slice(0, -1) + "!",
+      qr + "A",
+      qr.slice(1),
+      "eyJwdXJwb3NlIjoib3JkZXJpbmcifQ.c2lnbmF0dXJl",
+      "",
     ];
 
     let pub = await servePublic(counted);
     try {
       for (const token of spellings) {
         for (const r of [
-          await pub.get(token + "/revision"),
-          await pub.get(token + "/catalog"),
-          await pub.post(token + "/orders", qrOrder(product.id)),
+          await pub.get("revision", token),
+          await pub.get("menu", token),
+          await pub.post("orders", token, qrOrder(product)),
         ]) {
-          assert.equal(r.status, 401, token);
-          assert.deepEqual(r.body, { error: "unauthorized" });
+          assert.equal(r.status, 404, token);
+          assert.equal(r.body.error, "public_link_invalid");
         }
       }
       assert.equal(transactions, 0, "refused before the database");
-      assert.equal((await pub.get(qr + "/revision")).status, 200);
-      assert.equal(transactions, 1);
+      assert.equal((await pub.get("revision", qr)).status, 200);
+      // The link lookup and the tenant read; the lookup is cached afterwards.
+      assert.equal(transactions, 2);
+      assert.equal((await pub.get("revision", qr)).status, 200);
+      assert.equal(transactions, 3);
     } finally {
       await pub.close();
     }
 
-    // The reviewer's flood: `${token}.${i}` from one IP, past the ceiling.
+    // A flood of distinct well-formed tokens from one IP, past the ceiling.
     pub = await servePublic(counted);
     transactions = 0;
     try {
       const flood = [];
-      for (let i = 0; i < REVISION_POLLS_PER_IP_PER_MINUTE + 10; i++)
-        flood.push(await pub.get(`${qr}.${i}/revision`));
+      for (let i = 0; i < PUBLIC_RATES.revisionPerIp + 10; i++)
+        flood.push(await pub.get("revision", newPublicToken()));
       assert.equal(flood.filter((r) => r.status === 200).length, 0);
       assert.equal(
-        flood.filter((r) => r.status === 401).length,
-        REVISION_POLLS_PER_MINUTE,
+        flood.filter((r) => r.status === 404).length,
+        PUBLIC_RATES.revisionPerIp,
       );
-      assert.equal(
-        flood.filter((r) => r.status === 429).length,
-        REVISION_POLLS_PER_IP_PER_MINUTE + 10 - REVISION_POLLS_PER_MINUTE,
-      );
+      assert.equal(flood.filter((r) => r.status === 429).length, 10);
       const last = flood.at(-1)!;
-      assert.equal(last.limit, String(REVISION_POLLS_PER_IP_PER_MINUTE));
-      assert.deepEqual(last.body, { error: "rate_limited" });
-      assert.equal(transactions, 0);
+      assert.equal(last.limit, String(PUBLIC_RATES.revisionPerIp));
+      assert.equal(last.body.error, "rate_limited");
+      // Each unknown token costs one short lookup, bounded by the ceiling.
+      assert.equal(transactions, PUBLIC_RATES.revisionPerIp);
       // The ceiling is per client IP, whatever the token.
-      assert.equal((await pub.get(qr + "/revision")).status, 429);
-      assert.equal(transactions, 0);
-      // The diner's order and catalog have their own budgets.
-      const sent = await pub.post(qr + "/orders", qrOrder(product.id));
+      assert.equal((await pub.get("revision", qr)).status, 429);
+      assert.equal(transactions, PUBLIC_RATES.revisionPerIp);
+      // The diner's order and menu have their own budgets.
+      const sent = await pub.post("orders", qr, qrOrder(product));
       assert.equal(sent.status, 200, JSON.stringify(sent.body));
-      assert.equal((await pub.get(qr + "/catalog")).status, 200);
-      assert.equal(transactions, 2);
+      assert.equal((await pub.get("menu", qr)).status, 200);
+      assert.equal(transactions, PUBLIC_RATES.revisionPerIp + 2);
     } finally {
       await pub.close();
     }
 
-    // Many valid links (several tables' QR codes) from one IP: each keeps its
-    // per-link budget, and together they stop at the per-IP ceiling.
+    // Many valid links (several counters and kiosks) from one IP: each keeps
+    // its per-link budget, and together they stop at the per-IP ceiling.
     pub = await servePublic(counted);
     transactions = 0;
     try {
-      const links = Array.from(
-        {
-          length:
-            Math.ceil(
-              REVISION_POLLS_PER_IP_PER_MINUTE / REVISION_POLLS_PER_MINUTE,
-            ) + 1,
-        },
-        () => orderingLink("qr"),
-      );
+      const needed =
+        Math.ceil(PUBLIC_RATES.revisionPerIp / PUBLIC_RATES.revisionPerIpLink) +
+        1;
+      const links = [qr];
+      while (links.length < needed)
+        links.push(await orderingLink(links.length < 5 ? "counter" : "kiosk"));
       let served = 0,
         refused = 0;
       for (const link of links)
-        for (let i = 0; i < REVISION_POLLS_PER_MINUTE; i++) {
-          const r = await pub.get(link + "/revision");
+        for (let i = 0; i < PUBLIC_RATES.revisionPerIpLink; i++) {
+          const r = await pub.get("revision", link);
           if (r.status === 200) served++;
           else if (r.status === 429) refused++;
           else assert.fail(`unexpected ${r.status}`);
         }
-      assert.equal(served, REVISION_POLLS_PER_IP_PER_MINUTE);
+      assert.equal(served, PUBLIC_RATES.revisionPerIp);
       assert.equal(
         refused,
-        links.length * REVISION_POLLS_PER_MINUTE -
-          REVISION_POLLS_PER_IP_PER_MINUTE,
+        links.length * PUBLIC_RATES.revisionPerIpLink -
+          PUBLIC_RATES.revisionPerIp,
       );
-      assert.equal(transactions, REVISION_POLLS_PER_IP_PER_MINUTE);
-      const sent = await pub.post(links[0] + "/orders", qrOrder(product.id));
+      // One transaction per served poll plus at most one lookup per new link.
+      assert(transactions >= PUBLIC_RATES.revisionPerIp);
+      assert(transactions <= PUBLIC_RATES.revisionPerIp + links.length);
+      const sent = await pub.post("orders", links[1], qrOrder(product));
       assert.equal(sent.status, 200, JSON.stringify(sent.body));
     } finally {
       await pub.close();
+      await revokeOrderingLinks();
     }
   });
 

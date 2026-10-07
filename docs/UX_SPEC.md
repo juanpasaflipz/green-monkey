@@ -106,6 +106,8 @@ Implemented as described in [Service](SERVICE.md): Órdenes and Mesas lists with
 
 Offline ([offline recovery](OFFLINE_RECOVERY.md)): the header pill reads **Conectado** or **Sin conexión** and opens the Sync screen; local orders show their provisional number until sync maps it to the server number; synced offline rounds wait in a review lane above the KDS tickets for the station on screen, each with **Preparar ahora** and **Ya se preparó**.
 
+QR and kiosk ordering (Pro; [public ordering](PUBLIC_ORDERING.md)): there is no online card payment. A diner's QR or kiosk order is **held** ("Q-14" / "K-14") and reaches the kitchen, stock and fiscal records only when staff accept it in Órdenes ("Pedidos en línea por confirmar"), or after staff charge it first when the restaurant chose "Se cobra antes de enviar a cocina". Table codes are printed from Mesas, kiosk and takeaway codes from Configuración; a code is shown once and replaced or deactivated in one step.
+
 ## Inventory and owner screens
 
 Inventory has task tabs: Existencias, Recibir, Preparación, Conteo, Mermas. A stock row shows unit, available/prepared quantity, threshold, recent movement, and action. Count entry keeps focus in a rapid-entry sequence, supports partial saved counts, and previews variance reasons before posting adjustments.

@@ -107,7 +107,9 @@ export function PlanSettings({
                 ? es
                   ? "Kiosco y órdenes QR habilitados."
                   : "Kiosk and QR ordering enabled."
-                : strings[locale].accountPublicOrderingSoon}
+                : config?.publicOrdering.switchedOff
+                  ? strings[locale].accountPublicOrderingOff
+                  : strings[locale].accountPublicOrderingSoon}
           </p>
           {plan.accessUntil && plan.plan === "pro" && (
             <p>

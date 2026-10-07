@@ -92,7 +92,7 @@ cart offer **Editar nota** under the same rule.
 | Method and path | Roles | Notes |
 | --- | --- | --- |
 | GET `/api/service/orders` | operators | `status=current\|open\|closed\|all`, `date`, `table`, `q`, `cursor`, `limit ≤ 100`; one statement per page |
-| GET `/api/service/tables` | operators | occupancy from checks that are not closed; one statement |
+| GET `/api/service/tables` | operators | occupancy from checks that are not closed, plus each table's pending QR orders (`pendingHolds`, public ordering 032, a subquery of the same statement); one statement |
 | POST `/api/service/orders/:id/close` | operators | `{operationId}`; `balance_due` while money is owed |
 | POST `/api/service/orders/:id/note` | operators | `{operationId, note ≤ 500}`; bumps the kitchen feed |
 | POST `/api/service/orders/:id/print` | operators | `{operationId, document: receipt\|check, reprint}`; audit only |
@@ -430,6 +430,21 @@ the drawer is open.
   `printLabel`/`printLabelHint` for a Spanish twin of a UI-language label.
 - `tenderMethodLabel` labels only `cash` and `external`; any other method shows
   "Otro método de pago" until its area adds a label.
+- Public QR/kiosk ordering (032, [PUBLIC_ORDERING](PUBLIC_ORDERING.md)): a
+  diner's order waits as a hold, outside `orders`, until staff accept it in
+  the inbox at the top of **Órdenes**; acceptance runs the unmodified
+  `createOrder` (a new check, `channel` `qr`/`kiosk`) or `addRound` (a round
+  on the table's **open** check; a paid or closed target is refused with
+  `public_hold_target_invalid`), and for pay-first `recordPayment` through
+  `PaymentDialog`, ending on `ReceiptModal`. The hold's label travels with
+  the order: a new check's call name is `Q-14 · Ana` and its order note
+  `Q-14 · sin cebolla`; an appended round's note is `Q-14 · sin cebolla`,
+  never the diner's name, because round notes print on the shared check's
+  receipt (LD-1). A pending, unexpired table hold counts as occupancy:
+  `tablesWithOpenChecks` unions those holds' tables with the tables of checks
+  that are not closed (so such a table cannot be archived, `table_in_use`),
+  and Mesas shows "Pedido QR por confirmar" on its card. Public ordering adds no `getOrders` member and
+  never calls `getOrder` (C-14).
 - Component slots: `Kitchen.beforeTickets`, `Tables.onEditTables`,
   `PaymentDialog.offline`, `ReceiptModal.label`/`labelHint`/`extraActions`/
   `header`/`footer`.

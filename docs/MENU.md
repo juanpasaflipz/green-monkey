@@ -89,59 +89,60 @@ revision read. Any feature can force a refetch with
 offline catalog cache entry, never the cached session, which belongs to sign-in
 and access's heartbeat (contract D15).
 
-**QR and kiosk freshness.** `GET /public/:token/catalog` also returns the menu
-revision, read before the catalog. An open QR or kiosk page polls
-`GET /public/:token/revision` about every minute (each wait is 50 to 60 seconds,
-at random, so pages opened together do not poll in step) and when it becomes
-visible again. It refetches the catalog only when the revision moved. It also
-refetches after the server refuses an order with a catalog error, and on every
-kiosk idle reset. The reset also clears the previous customer's error message.
-A hidden page, or one showing its sent order, does not poll, and checks from
+**QR and kiosk freshness.** Public ordering (032) serves the diner menu at
+`GET /api/public/menu` and the freshness poll at `GET /api/public/revision`;
+the code travels in the `x-gm-link-token` header, never in a path
+([public ordering](PUBLIC_ORDERING.md)). The menu carries the menu revision,
+read before the catalog (`menuRevision`, then `publicCatalog`), and the poll
+also returns whether ordering is open. An open QR or kiosk page polls about
+every minute (each wait is 50 to 60 seconds, at random, so pages opened
+together do not poll in step) and when it becomes visible again. It refetches
+the menu only when the revision moved. It also refetches after the server
+refuses an order with a catalog error (`unavailable`, `invalid_modifier`,
+`required_modifier`, `public_price_changed`), and on every kiosk idle reset. A
+hidden page, or one showing its sent order, does not poll, and checks from
 focus or visibility changes less than 15 seconds apart are skipped.
 
 **Public request limits.** Diners on a restaurant's guest Wi-Fi share one public
-IP, so every limit below is per client IP (IPv6 grouped by /56) and the three
-kinds of request never share a budget (`server/public-ordering.ts`). The client
-IP is `clientIp(req)` from `server/logging.ts`, the address the request log and
-the access and ops limits use: behind Railway's edge it is the diner's network,
-never the edge's own address.
+IP, so the limits are per client IP (IPv6 grouped by /56), keyed on
+`clientIp(req)` from `server/logging.ts`, the address the request log and the
+access and ops limits use: behind Railway's edge it is the diner's network,
+never the edge's own address. They are public ordering's
+(`server/public-limits.ts`, `PUBLIC_RATES`) and replace menu's earlier
+catalog, order and revision constants:
 
 | Request | Limit per client IP per minute |
 | --- | --- |
-| Catalog loads (and receipt reads) | 30 |
-| Order submissions | 30, their own, so catalog refetches after a menu change can never refuse an order |
-| Revision polls | 240 in total, whatever the token, and within that 20 per link |
+| Menu loads | 60 |
+| Order submissions | 30, their own, so menu refetches after a change can never refuse an order |
+| Revision polls | 240 in total, whatever the code, and within that 20 per code |
+| A missing or malformed code | 30, its own bucket, refused with 404 before any database work |
 
-The 240-a-minute ceiling is what bounds the database work one client can cause:
-each served poll is one short transaction on the pool the POS sells from. A page
-polls once a minute, plus focus checks at least 15 seconds apart (five a minute
-at worst), so one guest Wi-Fi IP still carries about 50 pages that are refocused
-constantly, and several times that many ordinary ones. The per-link budget keys
-on the server-signed link id, so one busy table cannot slow another table or the
-kiosk. Public routes accept a link only spelled exactly as the server signed
-it: the shared token check (`verify()`, `server/keyring.ts`) accepts exactly one
-spelling per signed token (the exact part count, canonical base64url, no
-trailing `=` or `!`, no stray low bits), so any other spelling of a link is
-refused with 401 before any database work and one signed link has one
-rate-limit key (Wave 2.0, P-22). A refused poll is retried on
-the next tick. Refusals answer 429 with `{"error":"rate_limited"}`. Per-link and
-per-table limits on stored links are public-ordering's (032).
+The 240-a-minute revision ceiling (MENU-R3) bounds the database work one
+client can cause: each served poll is one short transaction on the pool the
+POS sells from, and an unknown well-formed code costs one short lookup and
+still counts. A page polls once a minute, plus focus checks at least 15
+seconds apart (five a minute at worst), so one guest Wi-Fi IP still carries
+about 50 pages that are refocused constantly, and several times that many
+ordinary ones. The per-code budget (MENU-R1) keys on the header only when it
+is a well-formed code, so one busy table cannot slow another table or the
+kiosk and no client can mint buckets. A refused poll is retried on the next
+tick. Refusals answer 429 with `{"error":"rate_limited","requestId"}`.
+Per-table, per-code and per-restaurant caps on held orders, status and cancel
+budgets are public ordering's ([public ordering](PUBLIC_ORDERING.md) §4).
 
 **QR/kiosk status, stated honestly.** Menu's part of QR and kiosk ordering is
 done: optional and required groups are offered through the same picker as the
-POS, and money is formatted for es-MX. QR/kiosk ordering is still **not ready
-for production**:
-
-- ordering links still expire after 24 hours and cannot be revoked;
-- QR and kiosk orders still reach the kitchen unpaid;
-- all of this belongs to public-ordering (migration 032, wave 3), which brings
-  stored, revocable links and held orders;
-- until then, production keeps QR/kiosk ordering off through
-  `PUBLIC_ORDERING_ENABLED` (account, migration 031; unset means false when
-  `APP_ENV=production`): when it is false, `/api/public/*` and link creation
-  answer 404 `public_ordering_disabled` before any token or rate limit, the
-  link generator is hidden and old links show diners "Pide en el mostrador"
-  ([account and legal](ACCOUNT_AND_LEGAL.md)).
+POS, and money is formatted for es-MX. Public ordering (032/033) replaced the
+24-hour signed links with revocable codes and the unpaid kitchen dispatch with
+held orders that reach the kitchen only when staff accept them (or collect
+payment first). There is no online card payment. `PUBLIC_ORDERING_ENABLED`
+(account, 031) stays the kill switch: when it is false, `/api/public/*` and
+the staff ordering routes answer 404 `public_ordering_disabled` before any
+code or rate limit, staff screens hide the ordering panel, the table QR
+actions and the inbox, and a code shows diners only "Pide al personal"
+([account and legal](ACCOUNT_AND_LEGAL.md)). Unset, it is on in every
+environment (public ordering's flag flip, B4).
 
 **Carts price line by line.** In the POS cart and the QR/kiosk order, each line
 is priced on its own by service's `priceCart()` (`shared/service.ts`; QR/kiosk
@@ -414,7 +415,8 @@ Menu's merge resolved every hand-off it owned:
   (see "Carts price line by line").
 - Public ordering limits key on the real client address, `clientIp(req)` from
   `server/logging.ts`, like the access and ops limits (LD-11). IPv6 clients are
-  grouped per /56; the per-link revision budget adds the signed link id.
+  grouped per /56; the per-code revision budget adds the well-formed code from
+  the header (public ordering, 032, superseding the signed link id).
 
 Done at offline's merge: sync (`/offline/sync`, legacy `/sync`) quotes with
 `canOpen = true` in offline's rewrite (D11), so open-price lines recorded

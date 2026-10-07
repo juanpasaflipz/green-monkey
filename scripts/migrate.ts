@@ -11,7 +11,9 @@
 //                   migrations are pending the grants commit in the newest
 //                   migration's transaction, before its registry row.
 //     --retention   then run the retention pass (oauth attempts, done/dead
-//                   jobs); a failure alerts retention_failed, never fails
+//                   jobs; blanks the diner name and note of public ordering
+//                   holds older than 30 days); a failure alerts
+//                   retention_failed, never fails
 //     --grants-only only apply grants and reconcile policies
 //     --retention-only
 //                   only run retention (up to 10 passes inside
@@ -178,6 +180,7 @@ export async function main(
       log.info("retention_only_complete", {
         ok: Boolean(result && !result.failed.length),
         deleted: result?.deleted ?? {},
+        redacted: result?.redacted ?? {},
         skipped: result?.skipped ?? [],
       });
       if (!result || result.failed.length) return 1; // retentionPass has already alerted retention_failed

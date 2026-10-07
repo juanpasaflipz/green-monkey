@@ -82,6 +82,10 @@ export function AccountPrivacy({
       setUrl(saved.privacyNoticeUrl ?? "");
       setOperationId(crypto.randomUUID());
       setMessage(t.accountPrivacySaved);
+      // Public ordering's "no privacy notice" warnings follow the change
+      // (PUBLIC-SECURITY-4; RESTAURANT_PRIVACY_EVENT in
+      // src/features/public/PrivacyNoticeWarning.tsx).
+      window.dispatchEvent(new Event("gm-restaurant-privacy"));
     } catch (e) {
       const code = (e as Error).message;
       if (code === "step_up_cancelled") return;
@@ -152,6 +156,7 @@ export function AccountPrivacy({
       >
         <Field label={t.accountPrivacyUrlLabel}>
           <input
+            id="account-privacy-url"
             type="url"
             inputMode="url"
             value={url}

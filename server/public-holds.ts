@@ -1,0 +1,502 @@
+// Staff side of held QR/kiosk orders (032): the Órdenes inbox, the shell
+// summary, and the accept/reject decisions. Accepting runs the unmodified
+// createOrder or addRound (and recordPayment for pay-first) as the staff
+// member: rounds, stock, the kitchen job, the feed bump and, when the accept
+// pays the check, its fiscal ticket (027) happen only here.
+//
+// Lock order (docs/PUBLIC_ORDERING.md): every decision takes its once() key
+// (LO-1), restaurants FOR SHARE (LO-2), then the hold row FOR UPDATE (LO-2b)
+// before anything else. The nested once() keys are the hold's own
+// order_operation_id (LO-R5) and a server-fresh key for the payment.
+import { randomUUID } from "node:crypto";
+import type { Tx } from "./db.js";
+import { managers, operators, permit } from "./auth.js";
+import { requireRecentAuth } from "./access.js";
+import { requirePro } from "./entitlements.js";
+import {
+  addRound,
+  audit,
+  catalog,
+  createOrder,
+  once,
+  recordPayment,
+} from "./orders.js";
+import { lockLinks, revokeLinkRow, staffOnlineSql } from "./public-links.js";
+import {
+  DomainError,
+  quote,
+  sum,
+  type Order,
+  type Product,
+  type Session,
+} from "../shared/domain.js";
+import {
+  PAID_ACCEPT_GRACE_SECONDS,
+  PUBLIC_LIMITS,
+  acceptInput,
+  holdLabel,
+  rejectInput,
+  type HoldPolicy,
+  type InboxHold,
+  type InboxResponse,
+  type InboxSummary,
+  type LinkKind,
+  type PricedHoldLine,
+  type PublicLine,
+} from "../shared/public-ordering.js";
+
+export { staffOnlineSql };
+
+/**
+ * Shell badge and banner: one indexed statement, no orders read (GAP-4).
+ * Expired holds stay 'pending', so live-hold queries also bound created_at to
+ * 2 hours: exact under public_order_holds_window (expires_at <= created_at +
+ * 2 h), and an index range however much history the tenant has.
+ */
+export async function inboxSummary(tx: Tx, s: Session): Promise<InboxSummary> {
+  permit(s, operators);
+  const [r] = await tx`select
+      count(*) filter (where h.expires_at>now())::int as pending,
+      min(h.created_at) filter (where h.expires_at>now()) as oldest_at,
+      exists(select 1 from public_links where revoked_at is null) as active
+    from public_order_holds h
+    where h.state='pending' and h.created_at>now()-interval '2 hours'`;
+  return {
+    available: true,
+    active: r.active,
+    pending: r.pending,
+    oldestAt: r.oldest_at ? (r.oldest_at as Date).toISOString() : null,
+  };
+}
+
+/** Codes a re-quote turns into "Ya no disponible". */
+const UNAVAILABLE = new Set([
+  "unavailable",
+  "invalid_modifier",
+  "required_modifier",
+  "forbidden",
+  "open_amount_exceeds",
+  "invalid_amount",
+]);
+
+/** Each held line against the current menu: unavailable, a new price, or fine. */
+function requote(
+  lines: PublicLine[],
+  priced: PricedHoldLine[],
+  menu: Product[],
+): Pick<InboxHold, "lines" | "currentTotal"> {
+  let anyUnavailable = false;
+  const out = priced.map((shown) => {
+    const input = lines.find((l) => l.id === shown.id);
+    let current: number | null = null;
+    try {
+      if (input)
+        current = quote([{ ...input, note: "" }], menu, false)[0].total;
+    } catch (e) {
+      if (!(e instanceof DomainError) || !UNAVAILABLE.has(e.code)) throw e;
+    }
+    if (current === null) anyUnavailable = true;
+    return {
+      ...shown,
+      issue:
+        current === null
+          ? ("unavailable" as const)
+          : current !== shown.total
+            ? ("price_changed" as const)
+            : null,
+      currentTotal: current,
+    };
+  });
+  return {
+    lines: out,
+    currentTotal: anyUnavailable
+      ? null
+      : sum(out.map((l) => l.currentTotal ?? 0)),
+  };
+}
+
+/**
+ * The Órdenes inbox: at most 5 statements, and 3 when nothing is pending
+ * (the catalog and open checks are read only for pending holds).
+ */
+export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
+  permit(s, operators);
+  const [settings] = await tx`select coalesce(p.paused,false) as paused,
+      ${staffOnlineSql(tx)} as staff_online, now() as server_time,
+      exists(select 1 from public_links where revoked_at is null) as active
+    from (select 1) one left join public_ordering_settings p on true`;
+  const rows =
+    await tx`select h.id,h.number,h.channel,h.table_id,h.policy,h.name,h.note,
+      h.lines,h.priced,h.quoted_total,h.created_at,h.expires_at,
+      l.kind,l.label as link_label,l.revoke_reason as link_revoked,t.name as table_name
+    from public_order_holds h
+    join public_links l on l.tenant_id=h.tenant_id and l.id=h.link_id
+    left join dining_tables t on t.tenant_id=h.tenant_id and t.id=h.table_id
+    where h.state='pending' and h.expires_at>now() and h.created_at>now()-interval '2 hours'
+    order by h.created_at,h.id limit 100`;
+  // The recently expired count and the churning codes (ABUSE-2): diner
+  // cancellations per scope (a table across its links, or a link) in the
+  // window that reached the kind's budget. One statement.
+  const [expired] = await tx`select
+      (select count(*)::int from public_order_holds
+        where state='pending' and expires_at<=now() and expires_at>now()-interval '30 minutes'
+          and created_at>now()-interval '150 minutes') as n,
+      (select coalesce(json_agg(json_build_object('kind',c.kind,'name',c.name) order by c.name),'[]'::json)
+        from (select min(l.kind) as kind,coalesce(min(t.name),min(l.label)) as name,
+            count(*)::int as cancelled
+          from public_order_holds h
+          join public_links l on l.tenant_id=h.tenant_id and l.id=h.link_id
+          left join dining_tables t on t.tenant_id=h.tenant_id and t.id=h.table_id
+          where h.state='cancelled'
+            and h.created_at>now()-make_interval(mins=>${PUBLIC_LIMITS.windowMinutes})
+          group by coalesce(h.table_id,h.link_id)) c
+        where c.cancelled>=case c.kind when 'table' then ${PUBLIC_LIMITS.table.cancelsPerWindow}::int
+          when 'counter' then ${PUBLIC_LIMITS.counter.cancelsPerWindow}::int
+          else ${PUBLIC_LIMITS.kiosk.cancelsPerWindow}::int end) as churning`;
+  const tableIds = [
+    ...new Set(rows.flatMap((r) => (r.table_id ? [r.table_id as string] : []))),
+  ];
+  const checks = tableIds.length
+    ? await tx`select o.id,o.number,o.version,o.check_state,o.total,o.table_id,e.name as waiter_name,
+          coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)::int as paid
+        from orders o
+        join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id)
+        where o.check_state <> 'closed' and o.table_id=any(${tx.array(tableIds)}::uuid[])
+        order by o.created_at,o.id`
+    : [];
+  const menu = rows.length ? await catalog(tx) : [];
+  const reason = settings.paused
+    ? "paused"
+    : !settings.staff_online
+      ? "no_staff"
+      : null;
+  return {
+    available: true,
+    active: settings.active,
+    acceptingNow: reason === null,
+    reason,
+    paused: settings.paused,
+    recentlyExpired: expired.n,
+    churning: expired.churning as InboxResponse["churning"],
+    serverTime: (settings.server_time as Date).toISOString(),
+    holds: rows.map((r) => ({
+      id: r.id,
+      label: holdLabel(r.channel, r.number),
+      kind: r.kind as LinkKind,
+      channel: r.channel,
+      tableId: r.table_id,
+      tableName: r.table_name ?? null,
+      linkLabel: r.link_label,
+      linkRevoked: (r.link_revoked ?? null) as InboxHold["linkRevoked"],
+      name: r.name,
+      note: r.note,
+      policy: r.policy as HoldPolicy,
+      createdAt: (r.created_at as Date).toISOString(),
+      expiresAt: (r.expires_at as Date).toISOString(),
+      quotedTotal: r.quoted_total,
+      ...requote(r.lines as PublicLine[], r.priced as PricedHoldLine[], menu),
+      openChecks: checks
+        .filter((c) => c.table_id === r.table_id)
+        .map((c) => ({
+          id: c.id,
+          number: c.number,
+          version: c.version,
+          checkState: c.check_state,
+          total: c.total,
+          paid: c.paid,
+          waiterName: c.waiter_name,
+        })),
+    })),
+  };
+}
+
+type HoldDecisionRow = {
+  id: string;
+  link_id: string;
+  number: number;
+  channel: "qr" | "kiosk";
+  mode: "dine_in" | "takeaway";
+  table_id: string | null;
+  policy: HoldPolicy;
+  name: string;
+  note: string;
+  lines: PublicLine[];
+  priced: PricedHoldLine[];
+  order_operation_id: string;
+  state: string;
+};
+
+/**
+ * LO-2b: the hold row, always the first row lock of a decision. Expiry is
+ * judged by the clock once the row is locked (not the transaction start), so
+ * a decision that waited for the row cannot start after expires_at; the
+ * diner's status gives an accept that commits a moment later a grace
+ * (HOLD_EXPIRY_GRACE_SECONDS, CONCURRENCY-2). An accept that carries the
+ * payment of a pay-first hold passes up to PAID_ACCEPT_GRACE_SECONDS after
+ * expires_at: the cashier already charged the terminal when it arrives
+ * (LD-41, PUBLIC-MONEY-2).
+ */
+async function lockHold(
+  tx: Tx,
+  holdId: string,
+  o: { withPayment?: boolean } = {},
+): Promise<HoldDecisionRow> {
+  const [h] = await tx<
+    HoldDecisionRow[]
+  >`select * from public_order_holds where id=${holdId} for update`;
+  if (!h) throw new DomainError("not_found", 404);
+  if (h.state !== "pending")
+    throw new DomainError("public_order_not_pending", 409);
+  const grace =
+    o.withPayment && h.policy === "pay_first" ? PAID_ACCEPT_GRACE_SECONDS : 0;
+  // A second statement: the lock statement's own expressions may be computed
+  // before it waited for the row.
+  const [clock] =
+    await tx`select expires_at+make_interval(secs=>${grace})<=clock_timestamp() as expired
+      from public_order_holds where id=${holdId}`;
+  if (clock.expired) throw new DomainError("public_order_expired", 409);
+  return h;
+}
+
+export type AcceptResult = {
+  hold: { id: string; label: string; state: "accepted" };
+  order: Order;
+  round: number;
+};
+
+/**
+ * "Aceptar y enviar a cocina" / "Cobrar y enviar a cocina": the hold becomes a
+ * new check or a round on the table's open check, as the staff member, in
+ * one transaction. Any throw (stock, drawer, stale target, payment) rolls
+ * everything back and the hold stays pending.
+ */
+export async function acceptHold(
+  tx: Tx,
+  s: Session,
+  holdId: string,
+  raw: unknown,
+): Promise<AcceptResult> {
+  permit(s, operators);
+  const p = acceptInput.parse(raw);
+  return once(
+    tx,
+    s,
+    p.operationId,
+    "public.hold.accept",
+    { holdId, ...p },
+    async () => {
+      const h = await lockHold(tx, holdId, { withPayment: !!p.payment });
+      // Both targets: addRound alone would only check requireSelling.
+      await requirePro(tx);
+      if (p.payment && p.target.kind !== "new")
+        throw new DomainError("invalid_input");
+      // ABUSE-1: a code deactivated as abuse may still carry real diners'
+      // orders, so its holds are accepted only after staff verified them.
+      const [link] =
+        await tx`select revoke_reason from public_links where id=${h.link_id}`;
+      const abuse = link?.revoke_reason === "abuse";
+      if (abuse && !p.abuseAcknowledged)
+        throw new DomainError("public_hold_link_abuse", 409);
+      const ids = new Set(h.lines.map((l) => l.id));
+      const excluded = new Set(p.excludeLineIds);
+      if ([...excluded].some((x) => !ids.has(x)) || excluded.size >= ids.size)
+        throw new DomainError("invalid_input");
+      const lines = h.lines
+        .filter((l) => !excluded.has(l.id))
+        .map((l) => ({ ...l, note: "" }));
+      const quoted = sum(
+        h.priced.filter((l) => !excluded.has(l.id)).map((l) => l.total),
+      );
+      // Menu errors (unavailable, invalid_modifier, …) pass through.
+      const current = sum(
+        quote(lines, await catalog(tx), false).map((l) => l.total),
+      );
+      // MONEY-1: the total staff saw. A changed price needs the exact new
+      // total acknowledged; any acknowledged total must be the current one.
+      if (
+        (current !== quoted || p.acknowledgedTotal !== null) &&
+        p.acknowledgedTotal !== current
+      )
+        throw new DomainError("public_hold_price_changed", 409);
+      // Nothing to collect on a free order.
+      if (p.payment && current === 0) throw new DomainError("invalid_input");
+      const override = h.policy === "pay_first" && !p.payment && current > 0;
+      if (override) {
+        if (!managers.includes(s.role))
+          throw new DomainError("public_payment_required", 409);
+        // LD-2: a manager acting alone on a shared terminal confirms with a fresh PIN.
+        requireRecentAuth(s);
+      }
+      const label = holdLabel(h.channel, h.number);
+      let order: Order;
+      if (p.target.kind === "new") {
+        // MONEY-2: the diner knows the order only by its label (Q-14/K-14),
+        // so the label leads the call name (KDS, kitchen ticket, Órdenes) and
+        // the order note (the receipt prints it, LD-1).
+        order = await createOrder(tx, s, {
+          operationId: h.order_operation_id,
+          lines,
+          mode: h.mode,
+          tableId: h.table_id,
+          name: [label, h.name].filter(Boolean).join(" · "),
+          note: [label, h.note].filter(Boolean).join(" · "),
+          channel: h.channel,
+        });
+      } else {
+        const [o] =
+          await tx`select id,table_id,check_state from orders where id=${p.target.orderId}`;
+        // Only an open check of the hold's own table: a check gets its fiscal
+        // ticket when it is paid and takes no rounds afterwards (fiscal D1,
+        // LD-15 fiscal Q2; LD-P15 OQ-4).
+        if (
+          !h.table_id ||
+          !o ||
+          o.table_id !== h.table_id ||
+          o.check_state !== "open"
+        )
+          throw new DomainError("public_hold_target_invalid", 409);
+        // The round note carries the label and the kitchen note, never the
+        // diner's name: round notes print on the shared check's receipt
+        // (PRIVACY-3, LD-1).
+        try {
+          order = await addRound(tx, s, o.id, {
+            operationId: h.order_operation_id,
+            lines,
+            mode: "dine_in",
+            tableId: h.table_id,
+            name: "",
+            channel: h.channel,
+            expectedVersion: p.target.expectedVersion,
+            note: [label, h.note].filter(Boolean).join(" · ").slice(0, 500),
+          });
+        } catch (e) {
+          // The check above read the target without a lock. A payment that
+          // settled it since issued its ticket, and addRound refuses a
+          // ticketed check under the order lock: the same answer as any
+          // target that is no longer open (the whole accept rolls back).
+          if (e instanceof DomainError && e.code === "fiscal_ticket_issued")
+            throw new DomainError("public_hold_target_invalid", 409);
+          throw e;
+        }
+      }
+      // The round this hold became: read, never derived from order.version
+      // (a void bumps the version without inserting a round).
+      const [{ round }] =
+        await tx`select max(number)::int as round from rounds where order_id=${order.id}`;
+      // What the round actually charged: createOrder/addRound re-read the
+      // menu, so a change committed since the check above is caught here and
+      // rolls everything back (MONEY-1).
+      const charged = await tx<
+        { id: string; unit_price: number; total: number }[]
+      >`select id,(data->>'unitPrice')::int as unit_price,(data->>'total')::int as total
+        from order_lines where order_id=${order.id} and round=${round} order by id`;
+      const roundTotal = sum(charged.map((l) => l.total));
+      if (
+        roundTotal !== current ||
+        charged.length !== lines.length ||
+        charged.some((l) => !ids.has(l.id) || excluded.has(l.id))
+      )
+        throw new DomainError("public_hold_price_changed", 409);
+      // CONCURRENCY-3: the target's state was read without a lock; a payment
+      // that settled it in between leaves its version unchanged. A check that
+      // was fully paid before this round refuses it (rolled back). With
+      // fiscal tickets on, addRound already refused it above; this guard
+      // covers a check paid while issuance was off (FISCAL_TICKETS_ENABLED).
+      if (p.target.kind === "append") {
+        const before = order.total - roundTotal;
+        if (before > 0 && order.paid >= before)
+          throw new DomainError("public_hold_target_invalid", 409);
+      }
+      if (p.payment) {
+        if (p.payment.amount !== order.total - order.paid)
+          throw new DomainError("public_payment_must_cover_total", 409);
+        // Server-fresh key (LO-R5, the recordSettlement pattern); the outer
+        // once() makes the whole accept, payment included, idempotent.
+        order = await recordPayment(tx, s, order.id, {
+          ...p.payment,
+          operationId: randomUUID(),
+        });
+      }
+      // ABUSE-1 again, as the last read before the decision: a sibling's
+      // abuse rejection locks only its own hold, so nothing above waited for
+      // it. Under READ COMMITTED this statement sees one that committed while
+      // createOrder/addRound ran, and the whole accept rolls back (PUB-HR-2).
+      const [linkNow] =
+        await tx`select revoke_reason from public_links where id=${h.link_id}`;
+      const abuseNow = abuse || linkNow?.revoke_reason === "abuse";
+      if (abuseNow && !p.abuseAcknowledged)
+        throw new DomainError("public_hold_link_abuse", 409);
+      await tx`update public_order_holds set state='accepted',decided_at=clock_timestamp(),
+          decided_by=${s.employeeId},order_id=${order.id},order_round=${round},
+          excluded_line_ids=${tx.array([...excluded])}::uuid[],
+          paid_at_accept=${!!p.payment},policy_override=${override},
+          accepted_total=${roundTotal},
+          accepted_lines=${tx.json(charged.map((l) => ({ id: l.id, unitPrice: l.unit_price, total: l.total })))}
+        where id=${holdId}`;
+      await audit(tx, s, "public.hold_accepted", holdId, {
+        orderId: order.id,
+        label,
+        target: p.target.kind,
+        round,
+        paid: !!p.payment,
+        override,
+        excluded: excluded.size,
+        priceChanged: current !== quoted,
+        total: roundTotal,
+        ...(abuseNow ? { abuseAcknowledged: true } : {}),
+      });
+      return {
+        hold: { id: holdId, label, state: "accepted" as const },
+        order,
+        round,
+      };
+    },
+  );
+}
+
+/**
+ * "Rechazar": any operator, no PIN. With revokeLink (managers, "abuso") the
+ * hold's link is deactivated in the same transaction, after the hold row.
+ */
+export async function rejectHold(
+  tx: Tx,
+  s: Session,
+  holdId: string,
+  raw: unknown,
+): Promise<{
+  hold: { id: string; label: string; state: "rejected" };
+  revokedLink: boolean;
+}> {
+  permit(s, operators);
+  const p = rejectInput.parse(raw);
+  if (p.revokeLink) permit(s, managers);
+  return once(
+    tx,
+    s,
+    p.operationId,
+    "public.hold.reject",
+    { holdId, ...p },
+    async () => {
+      const h = await lockHold(tx, holdId);
+      await tx`update public_order_holds set state='rejected',reject_reason=${p.reason},
+          decided_at=clock_timestamp(),decided_by=${s.employeeId}
+        where id=${holdId}`;
+      let revokedLink = false;
+      if (p.revokeLink) {
+        await lockLinks(tx);
+        await tx`select id from public_links where id=${h.link_id} for update`;
+        revokedLink = await revokeLinkRow(tx, s, h.link_id, "abuse");
+      }
+      const label = holdLabel(h.channel, h.number);
+      await audit(tx, s, "public.hold_rejected", holdId, {
+        reason: p.reason,
+        label,
+        revokedLink,
+      });
+      return {
+        hold: { id: holdId, label, state: "rejected" as const },
+        revokedLink,
+      };
+    },
+  );
+}

@@ -58,6 +58,8 @@ export type ApiOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   idempotent?: boolean;
+  /** Extra request headers (public ordering's x-gm-link-token / x-gm-status-token). */
+  headers?: Record<string, string>;
 };
 let csrf = "";
 let tenantId = "",
@@ -154,6 +156,7 @@ async function request<T>(
             ...(tenantId
               ? { "x-tenant-id": tenantId, "x-session-id": sessionId }
               : {}),
+            ...(options.headers ?? {}),
           },
           credentials: "same-origin",
           signal: controller.signal,

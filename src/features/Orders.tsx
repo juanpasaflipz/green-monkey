@@ -25,6 +25,7 @@ import { moneyFormatter } from "./Receipt";
 import { useOnlineChargeBlocks } from "./offline/useOnlineChargeBlocks";
 import { DiscountDialog } from "./discounts/DiscountDialog";
 import { fill } from "./discounts/format";
+import { PublicOrderInbox } from "./public/PublicOrderInbox";
 
 type Tab = "current" | "open" | "closed";
 const isTab = (v: unknown): v is Tab =>
@@ -225,6 +226,13 @@ export function Orders({
     });
   return (
     <div className="orders-view">
+      <PublicOrderInbox
+        session={session}
+        locale={locale}
+        online={online}
+        navigate={navigate}
+        onChanged={refresh}
+      />
       <div
         className="orders-toolbar"
         role="search"

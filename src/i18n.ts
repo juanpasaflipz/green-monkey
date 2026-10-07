@@ -10,6 +10,7 @@ import discounts from "./i18n/discounts";
 import reports from "./i18n/reports";
 import cfdi from "./i18n/cfdi";
 import account from "./i18n/account";
+import publicOrdering from "./i18n/public-ordering";
 
 /** Area modules, merged after the base strings. */
 export const areas = {
@@ -23,6 +24,7 @@ export const areas = {
   reports,
   cfdi,
   account,
+  publicOrdering,
 };
 const base = {
   es: {
@@ -61,10 +63,7 @@ const base = {
       "Sincroniza las ventas pendientes de este dispositivo antes de cerrar caja.",
     settleOrders: "Cobrar juntas",
     selectOrder: "Seleccionar orden",
-    payAtCounter: "Paga en caja. Tu orden se enviará a cocina sin cobrar.",
     remove: "Quitar",
-    orderingLinks: "Pedidos QR y kiosco",
-    createLink: "Crear enlace de pedido",
     editMenu: "Editar menú",
     addSupplier: "Agregar proveedor",
     receivePurchase: "Recibir compra",
@@ -319,11 +318,7 @@ const base = {
       "Sync this device’s pending sales before closing the drawer.",
     settleOrders: "Settle together",
     selectOrder: "Select order",
-    payAtCounter:
-      "Pay at the counter. Your unpaid order will be sent to the kitchen.",
     remove: "Remove",
-    orderingLinks: "QR and kiosk ordering",
-    createLink: "Create ordering link",
     editMenu: "Edit menu",
     addSupplier: "Add supplier",
     receivePurchase: "Receive purchase",
@@ -556,6 +551,7 @@ export const strings = {
     ...reports.es,
     ...cfdi.es,
     ...account.es,
+    ...publicOrdering.es,
   },
   en: {
     ...base.en,
@@ -569,6 +565,7 @@ export const strings = {
     ...reports.en,
     ...cfdi.en,
     ...account.en,
+    ...publicOrdering.en,
   },
 };
 export type Key = keyof typeof strings.es;
@@ -706,6 +703,7 @@ export const errorText: Record<string, readonly [string, string]> = {
   ...reports.errors,
   ...cfdi.errors,
   ...account.errors,
+  ...publicOrdering.errors,
 };
 export function translateError(code: string, locale: Locale) {
   return errorText[code]?.[locale === "es" ? 0 : 1] ?? strings[locale].error;

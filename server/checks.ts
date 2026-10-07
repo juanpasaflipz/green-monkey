@@ -6,6 +6,7 @@ import { permit, operators } from "./auth.js";
 import { audit, getOrder, once, recordPayment } from "./orders.js";
 import { bumpKitchenFeed } from "./kitchen.js";
 import { issueDueTicket } from "./fiscal.js";
+import { publicOrderingEnabled } from "./account-settings.js";
 import {
   DomainError,
   businessDate,
@@ -448,7 +449,12 @@ export async function listOrders(
   };
 }
 
-/** Table occupancy from checks that are not closed, in one statement. */
+/**
+ * Table occupancy from checks that are not closed, in one statement. Pending
+ * QR orders count only while public ordering is on: with account's kill
+ * switch off staff cannot open the inbox to handle them (PUBLIC-UX-2,
+ * PUBLIC-SECURITY-2; the flag is pure and validated at startup).
+ */
 export async function tableOccupancy(
   tx: Tx,
   s: Session,
@@ -460,7 +466,13 @@ export async function tableOccupancy(
         'businessDate',o.business_date,'waiterName',e.name,'total',o.total,'paid',p.paid,
         'balance',o.total-p.paid,'checkState',o.check_state,
         'openRounds',k.open_rounds,'readyRounds',k.ready_rounds) order by o.created_at)
-      filter (where o.id is not null),'[]'::jsonb) as checks
+      filter (where o.id is not null),'[]'::jsonb) as checks,
+      ${
+        publicOrderingEnabled(process.env)
+          ? tx`(select count(*)::int from public_order_holds h where h.tenant_id=t.tenant_id and h.table_id=t.id
+         and h.state='pending' and h.expires_at>now() and h.created_at>now()-interval '2 hours')`
+          : tx`0`
+      } as pending_holds
     from dining_tables t
     left join orders o on o.tenant_id=t.tenant_id and o.table_id=t.id and o.check_state <> 'closed'
     left join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id)
@@ -477,5 +489,6 @@ export async function tableOccupancy(
     id: r.id,
     name: r.name,
     checks: r.checks,
+    pendingHolds: r.pending_holds,
   }));
 }
