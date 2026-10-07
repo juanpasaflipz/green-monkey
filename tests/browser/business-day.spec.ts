@@ -31,6 +31,32 @@ function fixtureAdmin(baseURL: string | undefined) {
   return postgres(process.env.MIGRATION_DATABASE_URL!, { max: 1 });
 }
 
+/**
+ * The demo restaurant's cutoff as the test found it, while the test has moved it. The
+ * test's finally restores it; a timed-out test never reaches its finally (the early
+ * morning branch keeps the cutoff at 0 for the whole test), so afterEach restores it
+ * too and the restaurant never keeps a moved rollover for later tests or runs
+ * (global-setup only shifts a cutoff of exactly 240; POLISH-OPS-4).
+ */
+let changedCutoff: number | null = null;
+
+async function restoreCutoff(baseURL: string | undefined) {
+  const cutoff = changedCutoff;
+  if (cutoff === null) return;
+  const admin = fixtureAdmin(baseURL);
+  try {
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${tenantId}, true)`;
+      await tx`update restaurants set cutoff = ${cutoff} where id = ${tenantId}`;
+    });
+    changedCutoff = null;
+  } finally {
+    await admin.end();
+  }
+}
+
+test.afterEach(async ({ baseURL }) => restoreCutoff(baseURL));
+
 async function login(page: Page) {
   await page.goto("/app");
   await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
@@ -137,6 +163,7 @@ test("LD-29: an open order from the previous business day shows its date next to
     fresh: any = null;
   try {
     await login(page);
+    changedCutoff = restaurant.cutoff;
     await setCutoff(1439);
     old = await takeawayOrder(page, oldName);
     await setCutoff(minuteOfDay() >= restaurant.cutoff ? restaurant.cutoff : 0);
@@ -357,6 +384,7 @@ test("LD-29: an open order from the previous business day shows its date next to
       }
     } finally {
       await setCutoff(restaurant.cutoff);
+      changedCutoff = null;
       await admin.end();
     }
   }
