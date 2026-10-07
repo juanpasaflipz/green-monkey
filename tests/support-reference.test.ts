@@ -24,8 +24,28 @@ afterEach(() => {
 describe("support reference", () => {
   it("is the first 8 letters and digits of the request id, upper-cased to read aloud", () => {
     expect(supportReference(ID)).toBe("3F2A9C1B");
-    expect(supportReference("ops-browser-check-0001")).toBe("OPSBROWS");
+    expect(supportReference("ops-browser-check-0001")).toBe("0PSBR0WS");
     expect(supportReference("ab_c-1")).toBe("ABC1");
+  });
+
+  it("never shows a letter a listener confuses with a digit: O is 0, I and L are 1 (POLISH-UX-4)", () => {
+    // A request id that is not hex (requestIdOf accepts any well-formed
+    // X-Railway-Request-Id): "Fh2tOe8n" would read "FH2TOE8N", which a cashier
+    // reads aloud as "…T, cero, E…" while the log line says "O".
+    expect(supportReference("Fh2tOe8nQ_x")).toBe("FH2T0E8N");
+    expect(supportReference("oIlLiO01-zz")).toBe("01111001");
+    for (const id of [
+      ID,
+      "Fh2tOe8nQ_x",
+      "ops-browser-check-0001",
+      "lIoO-9a8b7c6d",
+      "QJ2fz6uQRzibgXcnWJZsAA_603794277",
+    ]) {
+      const ref = supportReference(id);
+      expect(ref, id).toMatch(/^[0-9A-HJKMNP-Z]{1,8}$/);
+      // Reading it back as typed gives the same reference (the screen and @supportRef agree).
+      expect(supportReference(ref), id).toBe(ref);
+    }
   });
 
   it("server errors and unexpected 4xx show it after the translated text, in es and en", () => {
@@ -208,7 +228,7 @@ describe("support reference", () => {
     log.info("explicit", { requestId: "ops-browser-check-0001" });
     log.info("outside");
     expect(lines[0]).toMatchObject({ requestId: ID, supportRef: "3F2A9C1B" });
-    expect(lines[1]).toMatchObject({ supportRef: "OPSBROWS" });
+    expect(lines[1]).toMatchObject({ supportRef: "0PSBR0WS" });
     expect(lines[2]).not.toHaveProperty("supportRef");
   });
 });

@@ -60,7 +60,9 @@ single-line JSON in Railway: filter with `@level:error`, `@message:http_request`
 `too_many_parameters`), the red error notice on that screen includes
 "Referencia de soporte: 3F2A9C1B" (English
 UI: "Support reference: 3F2A9C1B"). The reference is the first 8 letters and
-digits of the request id, in capitals; the full id is the response's
+digits of the request id, in capitals, with O written as 0 and I and L as 1, so
+it never contains those three letters: if a caller reads one (an app revision
+cached before this rule), type 0 for O and 1 for I or L. The full id is the response's
 `X-Request-Id` header and the error body's `requestId` (Railway's
 `X-Railway-Request-Id` when the edge sent one). Every log line of that request
 carries the reference as `supportRef`: search `@supportRef:3F2A9C1B` exactly as
