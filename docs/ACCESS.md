@@ -77,7 +77,13 @@ the remote close of an orphaned drawer (`POST /api/reports/drawers/:id/close`,
 owners and managers) needs the step-up. Account (031): every
 `/api/account-data/*` path (the owner data export; a guard on the whole prefix,
 owners only) and the owner's restaurant privacy notice and Free-selection mode
-saves need the step-up. The client asks "Confirma con tu PIN"
+saves need the step-up. Public ordering (032): creating, bulk-creating and
+replacing ordering codes (`POST /api/ordering/links`, `/links/tables`,
+`/links/:id/rotate`), saving the ordering policies
+(`POST /api/ordering/settings`, managers) and a manager's pay-first exception
+("Aceptar sin cobrar (excepción)", `POST /api/ordering/holds/:id/accept`
+without a payment) need the step-up; deactivating a code, rejecting (also as
+abuse), pausing and a plain accept never ask. The client asks "Confirma con tu PIN"
 and retries the identical request (same `operationId`). Google-entered sessions
 on a personal device are exempt; PIN sessions are not, on any device. A pending
 prompt belongs to the session whose command asked for it:

@@ -7,7 +7,7 @@ const SelfInvoicePortal = lazy(
   () => import("./features/cfdi/SelfInvoicePortal"),
 );
 const LegalPage = lazy(() => import("./legal/LegalPage"));
-import { PublicOrdering } from "./features/PublicOrdering";
+const PublicOrdering = lazy(() => import("./features/PublicOrdering"));
 import { PlatformGate } from "./features/offline/PlatformGate";
 import { registerServiceWorker } from "./service-worker";
 import "@fontsource-variable/inter/opsz.css";
@@ -19,7 +19,7 @@ createRoot(document.getElementById("root")!).render(
         <LegalPage />
       ) : /^\/(f|factura)(\/|$)/.test(location.pathname) ? (
         <SelfInvoicePortal />
-      ) : /^\/(qr|kiosk)\//.test(location.pathname) ? (
+      ) : /^\/(qr|kiosk)(\/|$)/.test(location.pathname) ? (
         <PublicOrdering />
       ) : location.pathname === "/" &&
         !new URLSearchParams(location.search).has("account") &&

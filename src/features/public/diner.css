@@ -1,0 +1,352 @@
+/* Public QR/kiosk diner page (032): 390 px phone first, a side cart from
+   768 px, kiosk sizes with targets of at least 64 px. Never printed. */
+.diner {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 16px 96px;
+  min-height: 100vh;
+  overflow-wrap: anywhere;
+}
+.diner h1 {
+  font-size: 24px;
+  line-height: 1.2;
+  margin: 0;
+}
+.diner h2 {
+  font-size: 18px;
+  margin: 24px 0 12px;
+}
+.diner-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.diner-place {
+  margin: 4px 0 0;
+  font-weight: 600;
+}
+.diner-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  flex: none;
+  max-width: 60%;
+}
+.diner-language {
+  flex: none;
+}
+.diner-link {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  text-align: left;
+}
+.diner-link:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.diner-privacy-codes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: center;
+}
+.diner-privacy-code {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  margin: 0;
+  max-width: 200px;
+  text-align: center;
+}
+.diner-status-heading {
+  outline: none;
+}
+.diner-status-heading:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.diner-price-changed {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 600;
+}
+.diner-policy p {
+  margin: 12px 0 0;
+}
+.diner-closed {
+  background: var(--warning-bg);
+  color: var(--warning);
+  border-radius: 8px;
+  padding: 14px 16px;
+  font-size: 14px;
+  margin: 16px 0;
+}
+.diner-products {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.diner-product {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 64px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  text-align: left;
+  font-size: 16px;
+  white-space: normal;
+  cursor: pointer;
+}
+.diner-product:hover:not(:disabled) {
+  background: var(--fill);
+}
+.diner-product:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+.diner-product:disabled {
+  cursor: default;
+  color: var(--text-2);
+  background: var(--fill);
+}
+.diner-product-name {
+  font-weight: 600;
+}
+.diner-product-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.diner-cart-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 12px 16px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  z-index: 5;
+}
+.diner-cart-bar .button {
+  width: 100%;
+}
+.diner-cart {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--surface);
+}
+.diner-cart h2 {
+  margin-top: 0;
+}
+.diner-lines {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.diner-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.diner-line.excluded .diner-line-name,
+.diner-line.excluded .diner-line-total {
+  text-decoration: line-through;
+  color: var(--text-2);
+}
+.diner-line-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.diner-stepper {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+}
+.diner-stepper .button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 8px 14px;
+}
+.diner-total {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 20px;
+  margin: 16px 0 0;
+}
+.diner-send {
+  min-height: 52px;
+}
+.diner-unknown {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+.diner-unknown p {
+  margin: 0;
+}
+.diner-privacy {
+  margin: 8px 0 0;
+}
+.diner-footer {
+  margin-top: 32px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+.diner-footer a,
+.diner-privacy a {
+  color: var(--ink);
+}
+.diner-notice {
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 12px;
+}
+.diner-loading {
+  padding: 32px 0;
+}
+.diner-status {
+  margin-top: 16px;
+}
+.diner-status-title {
+  font-size: 20px;
+  margin: 0;
+}
+.diner-code {
+  font-size: 28px;
+}
+.diner-progress {
+  font-weight: 600;
+  margin: 4px 0 0;
+}
+.diner-money {
+  font-size: 18px;
+  font-weight: 600;
+}
+.diner-status-actions {
+  margin-top: 16px;
+}
+.diner-history {
+  margin-top: 24px;
+}
+.diner-offline {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.88);
+  color: #fff;
+  text-align: center;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+/* Kiosk: large touch targets and type. */
+.kiosk .diner-product {
+  min-height: 96px;
+  font-size: 18px;
+}
+.kiosk .button {
+  min-height: 64px;
+  font-size: 18px;
+}
+.kiosk-done {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 48px 0;
+  text-align: center;
+}
+.kiosk-done p {
+  margin: 0;
+}
+/* .diner h2 (0,1,1) would otherwise win over a bare .kiosk-code (UX-3). */
+.diner .kiosk-code {
+  font-size: 120px;
+  line-height: 1;
+  margin: 0;
+}
+.kiosk-total {
+  font-size: 32px;
+  font-weight: 700;
+}
+.kiosk-instructions {
+  font-size: 22px;
+  max-width: 32ch;
+}
+.kiosk-new {
+  min-width: 240px;
+}
+
+@media (min-width: 480px) {
+  .diner-products {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (min-width: 768px) {
+  .diner {
+    padding-bottom: 32px;
+  }
+  .diner-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 24px;
+    align-items: start;
+  }
+  /* The side cart fits the viewport and scrolls inside, with the total and
+     "Enviar pedido" pinned to its bottom (UX-4). The header sits in the menu
+     column, so the panel starts at the top of the page. */
+  .diner-cart {
+    position: sticky;
+    top: 16px;
+    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    padding-bottom: 0;
+  }
+  .diner-cart .diner-cart-footer {
+    position: sticky;
+    bottom: 0;
+    margin: 0 -16px;
+    padding: 4px 16px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--line);
+  }
+}
+@media (min-width: 1024px) {
+  .diner-products {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+@media print {
+  .diner {
+    display: none;
+  }
+}

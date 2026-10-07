@@ -35,6 +35,35 @@ async function call(page: Page, path: string, body?: unknown) {
     { path, body },
   );
 }
+/**
+ * Public ordering (032): a counter code for one test, and its cleanup (every
+ * hold it received decided, the code deactivated; LD-P9).
+ */
+async function orderingLink(
+  page: Page,
+  kind: "counter" | "kiosk",
+  label: string,
+) {
+  const link = await call(page, "/ordering/links", { kind, label });
+  expect(link.status, JSON.stringify(link.data)).toBe(200);
+  return link.data as { id: string; path: string; label: string };
+}
+async function closeOrderingLinks(
+  page: Page,
+  links: { id: string; label: string }[],
+) {
+  const inbox = await call(page, "/ordering/inbox");
+  for (const h of inbox.data?.holds ?? [])
+    if (links.some((l) => l.label === h.linkLabel))
+      await call(page, `/ordering/holds/${h.id}/reject`, {
+        operationId: crypto.randomUUID(),
+        reason: "other",
+      });
+  for (const l of links)
+    await call(page, `/ordering/links/${l.id}/revoke`, {
+      operationId: crypto.randomUUID(),
+    });
+}
 const noHorizontalScroll = (page: Page) =>
   page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
 async function axe(page: Page) {
@@ -296,27 +325,29 @@ test("FIT-4: optional extras are offered in POS and QR ordering", async ({
       .first(),
   ).toContainText("Precio abierto");
 
-  const link = await call(page, "/ordering-links", {
-    channel: "qr",
-    tableId: null,
-  });
-  expect(link.status).toBe(200);
-  const customer = await context.newPage();
-  await customer.goto(link.data.path);
-  await expect(
-    customer.getByRole("heading", { name: "Casa del Bosque · Demo" }),
-  ).toBeVisible();
-  await expect(customer.getByRole("button", { name: /^Varios/ })).toHaveCount(
-    0,
-  );
-  await customer.getByRole("button", { name: /Taco de asada/ }).click();
-  const qrPicker = customer.getByRole("dialog");
-  await qrPicker.getByRole("radio").first().check();
-  await qrPicker.getByRole("checkbox", { name: /Aguacate/ }).check();
-  await expect(qrPicker.locator(".picker-price")).toHaveText("$75.00");
-  await qrPicker.getByRole("button", { name: "Agregar a la orden" }).click();
-  await expect(customer.locator(".large-money")).toHaveText("$75.00");
-  await customer.close();
+  // Public ordering (032): a counter code; the diner picker offers the same
+  // optional extras, and the open-price item stays POS-only.
+  const link = await orderingLink(page, "counter", `Pruebas ${suffix()}`);
+  try {
+    const customer = await context.newPage();
+    await customer.goto(link.path);
+    await expect(
+      customer.getByRole("heading", { name: "Casa del Bosque · Demo" }),
+    ).toBeVisible();
+    await expect(customer.getByRole("button", { name: /^Varios/ })).toHaveCount(
+      0,
+    );
+    await customer.getByRole("button", { name: /^Taco de asada/ }).click();
+    const qrPicker = customer.getByRole("dialog");
+    await qrPicker.getByRole("radio").first().check();
+    await qrPicker.getByRole("checkbox", { name: /Aguacate/ }).check();
+    await expect(qrPicker.locator(".picker-price")).toHaveText("$75.00");
+    await qrPicker.getByRole("button", { name: "Agregar a la orden" }).click();
+    await expect(customer.locator(".diner-total strong")).toHaveText("$75.00");
+    await customer.close();
+  } finally {
+    await closeOrderingLinks(page, [link]);
+  }
 });
 
 test("manager sets up areas and tables; archived tables leave Mesas; an open check blocks archiving", async ({
@@ -1292,30 +1323,31 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
   await login(page);
   const first = await createProduct(page, tostada, 4000, "Antojitos");
   const second = await createProduct(page, tepache, 2500, "Bebidas");
+  // Public ordering (032): counter and kiosk codes; a sent order is a hold
+  // waiting for staff ("Esperando confirmación del personal").
+  const links: { id: string; path: string; label: string }[] = [];
   try {
-    const qr = await call(page, "/ordering-links", {
-      channel: "qr",
-      tableId: null,
-    });
+    const qr = await orderingLink(page, "counter", `Pruebas QR ${id}`);
+    links.push(qr);
     const customer = await context.newPage();
-    await customer.goto(qr.data.path);
+    await customer.goto(qr.path);
     await expect(
       customer.getByRole("heading", { name: "Casa del Bosque · Demo" }),
     ).toBeVisible();
     // OWNER-11: the order summary lists the chosen options.
-    await customer.getByRole("button", { name: /Taco de asada/ }).click();
+    await customer.getByRole("button", { name: /^Taco de asada/ }).click();
     const picker = customer.getByRole("dialog");
     await picker.getByRole("radio", { name: /Salsa roja/ }).check();
     await picker.getByRole("checkbox", { name: /Queso/ }).check();
     await picker.getByRole("button", { name: "Agregar a la orden" }).click();
-    await expect(customer.locator(".report-row").first()).toContainText(
+    await expect(customer.locator(".diner-line").first()).toContainText(
       "Salsa roja · Queso",
     );
     const grid = customer
-      .locator(".product-grid")
-      .getByRole("button", { name: new RegExp(tostada) });
+      .locator(".diner-products")
+      .getByRole("button", { name: new RegExp("^" + tostada) });
     await grid.click();
-    await expect(customer.locator(".large-money")).toHaveText("$110.00");
+    await expect(customer.locator(".diner-total strong")).toHaveText("$110.00");
 
     // OWNER-2: the open page learns about the 86 on its minute poll.
     await setAvailable(page, first.id, false);
@@ -1327,9 +1359,9 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
     await expect(stale.getByRole("alert")).toHaveText(
       "Ya no está disponible. Quítalo de la orden.",
     );
-    await expect(customer.locator(".large-money")).toHaveText("$70.00");
+    await expect(customer.locator(".diner-total strong")).toHaveText("$70.00");
     const send = customer.getByRole("button", {
-      name: "Enviar a cocina",
+      name: "Enviar pedido",
       exact: true,
     });
     await expect(send).toBeDisabled();
@@ -1338,9 +1370,9 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
       .getByRole("textbox", { name: "Nombre (opcional)" })
       .fill(`QR ${id}`);
     await send.click();
-    await expect(
-      customer.getByText("Enviado a cocina", { exact: true }),
-    ).toBeVisible();
+    await expect(customer.locator(".diner-status-head")).toContainText(
+      "Esperando confirmación del personal",
+    );
     // MENU-R1: diners share the venue's IP, so a page showing its sent order
     // stops asking for the menu revision (poll, focus and visibility).
     const polls: string[] = [];
@@ -1352,36 +1384,33 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
       window.dispatchEvent(new Event("focus"));
       document.dispatchEvent(new Event("visibilitychange"));
     });
-    // The receipt refresh round-trip lets any due request go out first.
-    const receipt = customer.waitForResponse((r) =>
-      new URL(r.url()).pathname.startsWith("/api/public/receipt/"),
+    // The status poll's round-trip lets any due request go out first.
+    const status = await customer.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/public/status",
     );
-    await customer.getByRole("button", { name: "Actualizar" }).click();
-    expect((await receipt).ok()).toBe(true);
-    await expect(
-      customer.getByText("Enviado a cocina", { exact: true }),
-    ).toBeVisible();
+    expect(status.ok()).toBe(true);
+    await expect(customer.locator(".diner-status-head")).toContainText(
+      "Esperando confirmación del personal",
+    );
     expect(polls).toEqual([]);
     await customer.close();
 
     // Kiosk: an item 86'd before any poll is refused by the server; the page
     // refetches at once and marks the line. The idle reset clears the order
     // and the message for the next customer.
-    const kioskLink = await call(page, "/ordering-links", {
-      channel: "kiosk",
-      tableId: null,
-    });
+    const kioskLink = await orderingLink(page, "kiosk", `Pruebas kiosco ${id}`);
+    links.push(kioskLink);
     const kiosk = await context.newPage();
-    await kiosk.goto(kioskLink.data.path);
+    await kiosk.goto(kioskLink.path);
     await kiosk
-      .locator(".product-grid")
-      .getByRole("button", { name: new RegExp(tepache) })
+      .locator(".diner-products")
+      .getByRole("button", { name: new RegExp("^" + tepache) })
       .click();
     await setAvailable(page, second.id, false);
     await kiosk
-      .getByRole("button", { name: "Enviar a cocina", exact: true })
+      .getByRole("button", { name: "Enviar pedido", exact: true })
       .click();
-    const message = kiosk.locator(".public-ordering > p.error");
+    const message = kiosk.locator(".diner-error");
     await expect(message).toHaveText(
       "Un producto ya no está disponible. Quítalo de la orden.",
     );
@@ -1389,11 +1418,12 @@ test("OWNER-2/OWNER-11: QR and kiosk pages follow menu changes, flag a stale lin
     await page.clock.fastForward(90_000);
     await expect(message).toHaveCount(0);
     await expect(kiosk.locator(".line-unavailable")).toHaveCount(0);
-    await expect(kiosk.locator(".large-money")).toHaveText("$0.00");
+    await expect(kiosk.locator(".diner-total strong")).toHaveText("$0.00");
     await kiosk.close();
   } finally {
     await setAvailable(page, first.id, true);
     await setAvailable(page, second.id, true);
+    await closeOrderingLinks(page, links);
   }
 });
 

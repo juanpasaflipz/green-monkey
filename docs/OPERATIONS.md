@@ -15,6 +15,8 @@ This application is under implementation and is not approved for live service.
 11. **Caja** shows cash and the external terminal apart: expected cash counts only cash payments, cash tips, cash refunds and paid-outs; terminal payments, tips and refunds are listed separately to compare with the terminal's batch report. By default the close is **blind**: **Cerrar caja** asks for the counted cash (and optionally the terminal's batch total) before showing anything, confirms, and only then shows owners and managers the difference ("Sobrante", "Faltante", "Cuadra"); cashiers and servers never see expected cash and close only when the owner allows it. A closed drawer cannot change; a manager explains a difference once under **Historial de cajas → Revisar diferencia**.
 12. Fiscal (Mexico): the owner fills **Configuración → Datos fiscales** (RFC, razón social, régimen, C.P.; the fictional SAT test RFC `EKU9003173C9` locally). Every settled sale then gets a ticket with a consecutive folio, printed in Spanish with the IVA breakdown; **Registro de tickets** lists them, shows the IVA summary and downloads the accountant's CSV. Missing tickets, the `FISCAL_TICKETS_ENABLED` kill switch, series changes and the border-incentive expiry are in the [fiscal runbook](FISCAL.md#runbook).
 
+13. **Pedidos en línea (QR y kiosco)** ([public ordering](PUBLIC_ORDERING.md), migrations 032 and 033; Pro). **Menú e inventario → Mesas → Código QR** creates a table's printable card (shown once; printing again is **Reemplazar e imprimir**, and the old code stops working at once); **Códigos QR de mesas** creates or replaces many at once. **Configuración → Pedidos en línea (QR y kiosco)** sets the two policies ("El personal confirma; se cobra después" or "Se cobra antes de enviar a cocina"), **Tiempo para confirmar**, **Importe máximo por pedido** (saved with **Guardar pedidos en línea**), and lists kiosks and takeaway codes with **Reemplazar** and **Desactivar**. Diners' orders wait in the inbox at the top of **Órdenes** (the rail and the tab show the count; elsewhere a banner says "2 pedidos en línea por confirmar"): **Aceptar y enviar a cocina**, **Cobrar y enviar a cocina** for pay-first (a manager may **Aceptar sin cobrar (excepción)** with a fresh PIN), or **Rechazar** with a reason. A changed price needs "Ya le avisé" before accepting. Any operator can **Pausar** online ordering; it also pauses by itself when no shared terminal (caja or mesero) has had Green Monkey open for 5 minutes. Abuse: **Rechazar → Pedido falso o abuso**, and a manager ticks "Desactivar también este código QR" ([runbook](RUNBOOK.md) "Online ordering abuse"). No online card payment exists: diners pay staff.
+
 ## Offline
 
 Offline refresh requires the compiled server and service worker, not Vite development serving. Log in and open a drawer while connected first. Cash drafts and queued payments persist in IndexedDB. The sync screen retains errors and retries. Offline, new orders are paid in full in cash or recorded as an external-terminal payment (reference and confirmation required) under a device-prefixed provisional number; integrated payments, voids, refunds, discounts, item splits, settlements, drawer operations and stock guarantees are unavailable. Existing checks show "Disponible al volver la conexión" unless an owner or manager turns on **Servicio de mesa sin conexión** (Beta, off by default) on the Sync screen. After sync, rounds of offline sales wait in the KDS review lane until someone chooses **Preparar ahora** or **Ya se preparó**; a manager reconciles or archives conflicts on the Sync screen after a PIN step-up. **Cobrar juntas** refuses a check while this device holds unsynced offline records of it. See [offline recovery](OFFLINE_RECOVERY.md).
@@ -192,6 +194,17 @@ Arts. 28–34) arrive at `LEGAL_PRIVACY_CONTACT_EMAIL`:
   are never edited or deleted). The CLI waits 5 years after the block; keep the
   acceptance evidence by id for the rest. For someone who never had an
   account, `redact-email` acts at once;
+- **held QR/kiosk orders** (public ordering, 032-034): a diner who typed a
+  name or a note on a QR or kiosk order can have the hold's copy blanked.
+  The restaurant has no tool for it (the runtime role cannot change a hold's
+  name or note), so when the restaurant (or the diner, with the restaurant's
+  label `Q-14`/`K-14`, the date and the restaurant) asks, support runs
+  [PUBLIC_ORDERING.md](PUBLIC_ORDERING.md) "Redacting a hold (ARCO)" as
+  `gm_migrator` for that one hold, in any state, and records it in the
+  cancellation register (date, ticket, "hold redaction", restaurant id, date
+  and number). Retention blanks every hold's copy after 30 days anyway. An
+  accepted hold's order keeps its call name and note: that is the
+  restaurant's sales record, edited only by the restaurant;
 - what the tools do **not** touch: the restaurants' own records (orders,
   tickets, CFDI, staff and seat names, invitation emails), which belong to the
   restaurant as responsable and leave with its offboarding; backups (below);

@@ -3,6 +3,7 @@ import { DeviceManagement } from "./DeviceManagement";
 import { StaffManagement } from "./StaffManagement";
 import { RecoveryQueue } from "./RecoveryQueue";
 import { FreeSelection } from "./FreeSelection";
+import { PublicOrderingSettings } from "./public/PublicOrderingSettings";
 import { PlanSettings } from "./PlanSettings";
 import { Orders } from "./Orders";
 import { Tables } from "./Tables";
@@ -170,6 +171,12 @@ export function Operations({
           {["owner", "manager"].includes(session.role) && (
             <AccountPrivacy session={session} locale={locale} />
           )}
+          <PublicOrderingSettings
+            session={session}
+            locale={locale}
+            online={online}
+            navigate={navigate}
+          />
           {session.role === "owner" && <FreeSelection locale={locale} />}
           {manager && <DeviceManagement session={session} locale={locale} />}
           <PlanSettings

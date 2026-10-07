@@ -338,43 +338,127 @@ test("offline cash persists and synchronizes after reconnect", async ({
   );
 });
 
-test("QR shares authoritative order pricing and exposes a narrow receipt", async ({
+// LD-P9: the QR test's cleanup. It runs in the test's finally and, should the
+// test time out before reaching it, here.
+let qrCleanup: (() => Promise<void>) | null = null;
+test.afterEach(async () => {
+  const cleanup = qrCleanup;
+  qrCleanup = null;
+  if (cleanup) await cleanup();
+});
+
+test("QR orders wait for staff, are priced by the server, and the customer follows them once accepted", async ({
   page,
   context,
 }) => {
   await login(page);
-  const access = await page.evaluate(async () => {
-    const s = await (await fetch("/api/session")).json();
-    const r = await fetch("/api/ordering-links", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-csrf-token": s.csrf },
-      body: JSON.stringify({ channel: "qr", tableId: null }),
+  const id = crypto.randomUUID().slice(0, 5);
+  const name = `QR acceptance ${id}`;
+  const label = `Aceptación ${id}`;
+  /** Authenticated JSON call (GET without a body) with the app's CSRF token. */
+  const call = (path: string, body?: unknown) =>
+    page.evaluate(
+      async ({ path, body }) => {
+        const s = await (await fetch("/api/session")).json();
+        const r = await fetch("/api" + path, {
+          method: body === undefined ? "GET" : "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-csrf-token": s.csrf,
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        return r.json();
+      },
+      { path, body },
+    );
+  let linkId: string | null = null;
+  // Rejects every hold of this test still waiting for staff, settles and
+  // releases every check its acceptance opened, then deactivates the code.
+  const cleanup = async () => {
+    qrCleanup = null;
+    const inbox = await call("/ordering/inbox");
+    for (const h of (inbox.holds ?? []) as {
+      id: string;
+      name: string;
+      linkLabel: string;
+    }[])
+      if (h.name.includes(name) || h.linkLabel === label)
+        await call(`/ordering/holds/${h.id}/reject`, {
+          operationId: crypto.randomUUID(),
+          reason: "other",
+        });
+    const open = await call(
+      "/service/orders?status=open&limit=100&q=" + encodeURIComponent(name),
+    );
+    for (const item of (open.items ?? []) as { id: string; name: string }[]) {
+      if (!item.name.includes(name)) continue;
+      const order = await call(`/orders/${item.id}`);
+      if (!order?.id || order.checkState === "closed") continue;
+      const due = order.total - order.paid;
+      if (due > 0) {
+        await call("/cash/open", {
+          operationId: crypto.randomUUID(),
+          opening: 0,
+        });
+        await call(`/orders/${item.id}/payments`, {
+          operationId: crypto.randomUUID(),
+          amount: due,
+          received: due,
+          method: "cash",
+        });
+      }
+      await call(`/service/orders/${item.id}/close`, {
+        operationId: crypto.randomUUID(),
+      });
+    }
+    if (linkId)
+      await call(`/ordering/links/${linkId}/revoke`, {
+        operationId: crypto.randomUUID(),
+      });
+  };
+  qrCleanup = cleanup;
+  try {
+    // Public ordering (032): a revocable counter code instead of a 24 h signed
+    // link, and the order waits for staff instead of going to the kitchen.
+    const link = await call("/ordering/links", { kind: "counter", label });
+    linkId = link.id ?? null;
+    expect(linkId, JSON.stringify(link)).not.toBeNull();
+    const customer = await context.newPage();
+    await customer.goto(link.path);
+    await expect(
+      customer.getByRole("heading", { name: "Casa del Bosque · Demo" }),
+    ).toBeVisible();
+    await customer.getByRole("button", { name: /^Taco de hongos/ }).click();
+    await customer
+      .getByRole("textbox", { name: "Nombre (opcional)" })
+      .fill(name);
+    await customer
+      .getByRole("button", { name: "Enviar pedido", exact: true })
+      .click();
+    const head = customer.locator(".diner-status-head");
+    await expect(head).toContainText("Esperando confirmación del personal");
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    const card = page.locator(".hold-card").filter({ hasText: name });
+    await expect(card).toContainText("$45.00");
+    await card
+      .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
+      .click();
+    await expect(head).toContainText(/Confirmado · Orden #\d+/, {
+      timeout: 20000,
     });
-    return r.json();
-  });
-  const customer = await context.newPage();
-  await customer.goto(access.path);
-  await expect(
-    customer.getByRole("heading", { name: "Casa del Bosque · Demo" }),
-  ).toBeVisible();
-  await customer.getByRole("button", { name: /Taco de hongos/ }).click();
-  await customer
-    .getByRole("textbox", { name: "Nombre (opcional)" })
-    .fill("QR acceptance");
-  await customer
-    .getByRole("button", { name: "Enviar a cocina", exact: true })
-    .click();
-  await expect(
-    customer.getByText("Sin cobrar", { exact: true }).first(),
-  ).toBeVisible();
-  await expect(
-    customer.getByText("Enviado a cocina", { exact: true }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
-  await expect(
-    page.locator(".order-summary").filter({ hasText: "QR acceptance" }).first(),
-  ).toContainText("$45.00");
-  await customer.close();
+    await expect(customer.locator(".diner-money")).toContainText(
+      "Por pagar: $45.00",
+    );
+    const summary = page
+      .locator(".order-summary")
+      .filter({ hasText: name })
+      .first();
+    await expect(summary).toContainText("$45.00");
+    await customer.close();
+  } finally {
+    if (qrCleanup) await cleanup();
+  }
 });
 
 test("grouped cash settlement preserves distinct kitchen orders", async ({

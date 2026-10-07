@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { Tx } from "./db.js";
 import { audit, once } from "./orders.js";
 import { requireSelling } from "./free-limits.js";
+import { publicOrderingEnabled } from "./account-settings.js";
 import { managers, permit } from "./auth.js";
 import { DomainError, type Session } from "../shared/domain.js";
 import {
@@ -45,7 +46,7 @@ function toArea(r: AreaRow): DiningArea {
     archived: r.archived_at !== null,
   };
 }
-function toTable(r: TableRow, open = false): DiningTable {
+function toTable(r: TableRow, use?: TableUse): DiningTable {
   return {
     id: r.id,
     name: r.name,
@@ -54,7 +55,8 @@ function toTable(r: TableRow, open = false): DiningTable {
     position: r.position,
     version: r.version,
     archived: r.archived_at !== null,
-    open,
+    open: use !== undefined,
+    ...(use === "qr_hold" ? { pendingQr: true as const } : {}),
   };
 }
 
@@ -62,22 +64,53 @@ async function lockFloor(tx: Tx) {
   await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id')||':floor',0))`;
 }
 
+/** Why a table is in use: an open check, or only a pending QR order (032). */
+export type TableUse = "check" | "qr_hold";
+
 /**
- * The ids of tables with an open check, optionally limited to some tables.
- * The single home of the "open check" rule (contract D10): the service
- * lifecycle's `o.check_state <> 'closed'`, written literally so the partial
- * index orders_table_open (024) serves it. A paid dine-in check still holds
- * its table until "Liberar mesa" closes it.
+ * Why each table is in use, optionally limited to some tables. The single
+ * home of the "open check" rule (contract D10): the service lifecycle's
+ * `o.check_state <> 'closed'`, written literally so the partial index
+ * orders_table_open (024) serves it. A paid dine-in check still holds its
+ * table until "Liberar mesa" closes it. A pending, unexpired QR order waiting
+ * for staff (public ordering 032) holds its table too, but only while public
+ * ordering is on: with account's kill switch off nobody can accept or reject
+ * it, so it must not block archiving (PUBLIC-UX-2, PUBLIC-SECURITY-2). An
+ * open check wins over a pending QR order.
  */
+export async function tablesInUse(
+  tx: Tx,
+  tableIds?: string[],
+): Promise<Map<string, TableUse>> {
+  // Pure and validated at startup (accountWebConfig); read per call so the
+  // DB suite can exercise the switch.
+  const holds = publicOrderingEnabled(process.env);
+  const rows = await tx`select o.table_id,'check' as use from orders o
+    where o.table_id is not null
+      ${tableIds ? tx`and o.table_id=any(${tx.array(tableIds)}::uuid[])` : tx``}
+      and o.check_state <> 'closed'
+    ${
+      holds
+        ? tx`union
+    select h.table_id,'qr_hold' as use from public_order_holds h
+    where h.table_id is not null
+      ${tableIds ? tx`and h.table_id=any(${tx.array(tableIds)}::uuid[])` : tx``}
+      and h.state='pending' and h.expires_at>now() and h.created_at>now()-interval '2 hours'`
+        : tx``
+    }`;
+  const use = new Map<string, TableUse>();
+  for (const r of rows)
+    if (use.get(r.table_id) !== "check")
+      use.set(r.table_id as string, r.use as TableUse);
+  return use;
+}
+
+/** The ids of tables in use (tablesInUse): an open check or a pending QR order. */
 export async function tablesWithOpenChecks(
   tx: Tx,
   tableIds?: string[],
 ): Promise<Set<string>> {
-  const rows = await tx`select distinct o.table_id from orders o
-    where o.table_id is not null
-      ${tableIds ? tx`and o.table_id=any(${tx.array(tableIds)}::uuid[])` : tx``}
-      and o.check_state <> 'closed'`;
-  return new Set(rows.map((r) => r.table_id as string));
+  return new Set((await tablesInUse(tx, tableIds)).keys());
 }
 
 /** GET /tables: active tables in area, then table order (superset of old fields). */
@@ -96,10 +129,10 @@ export async function floorPayload(tx: Tx, s: Session) {
   const tables = await tx<TableRow[]>`select t.* from dining_tables t
     left join dining_areas a on a.tenant_id=t.tenant_id and a.id=t.area_id
     order by a.position nulls first,t.position,t.name,t.id`;
-  const open = await tablesWithOpenChecks(tx);
+  const use = await tablesInUse(tx);
   return {
     areas: areas.map(toArea),
-    tables: tables.map((t) => toTable(t, open.has(t.id))),
+    tables: tables.map((t) => toTable(t, use.get(t.id))),
   };
 }
 
@@ -272,7 +305,7 @@ export async function saveTable(tx: Tx, s: Session, raw: unknown) {
         : null,
       after: { name: p.name, areaId: p.areaId, seats: p.seats },
     });
-    return toTable(row, (await tablesWithOpenChecks(tx, [p.id])).has(p.id));
+    return toTable(row, (await tablesInUse(tx, [p.id])).get(p.id));
   });
 }
 
@@ -350,8 +383,12 @@ export async function archiveTable(tx: Tx, s: Session, raw: unknown) {
       throw new DomainError("menu_changed", 409);
     let row: TableRow;
     if (p.archived) {
-      if ((await tablesWithOpenChecks(tx, [p.id])).has(p.id))
-        throw new DomainError("table_in_use", 409);
+      const use = (await tablesInUse(tx, [p.id])).get(p.id);
+      if (use)
+        throw new DomainError(
+          use === "check" ? "table_in_use" : "table_pending_qr",
+          409,
+        );
       [row] = await tx<
         TableRow[]
       >`update dining_tables set archived_at=coalesce(archived_at,now()),version=version+1 where id=${p.id} returning *`;
@@ -374,6 +411,6 @@ export async function archiveTable(tx: Tx, s: Session, raw: unknown) {
         where id=${p.id} returning *`;
     }
     await audit(tx, s, "floor.table.archived", p.id, { archived: p.archived });
-    return toTable(row, (await tablesWithOpenChecks(tx, [p.id])).has(p.id));
+    return toTable(row, (await tablesInUse(tx, [p.id])).get(p.id));
   });
 }

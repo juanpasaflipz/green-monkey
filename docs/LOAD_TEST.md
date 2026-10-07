@@ -49,6 +49,25 @@ Results go to `docs/evidence/load/<date>-<host>-<profile>.json` and `.md`
 | Error rate | < 0.1% |
 | 5xx other than 503 with `Retry-After` | 0 |
 
+## Not in the profile yet: public ordering (PUBLIC-OPS-7)
+
+Since public ordering's B4 (QR and kiosk on for every Pro restaurant), a
+restaurant with an active code adds steady traffic the profile does not
+model:
+
+| Who | Request | Interval |
+| --- | --- | --- |
+| Every operator device | `GET /api/ordering/inbox/summary` | 20 s while a code is active or orders wait, else 5 min |
+| A device on Órdenes | `GET /api/ordering/inbox` | 10 s while busy, else 60 s |
+| Each diner page or kiosk | `GET /api/public/revision` | 1 min (jittered) |
+| Each diner with an order | `GET /api/public/status` | 5 s for 2 min, then 15 s; 20 s after acceptance |
+| Diners | `POST /api/public/orders`, `/status/cancel` | per order |
+
+The staging `target`/`stress` run that sizes `DB_POOL_MAX` must include these
+polls and a diner submit/status mix for restaurants with codes before
+go-live (RELEASE item 5; RUNBOOK "Open follow-ups"). Until then the p95 below
+does not cover them.
+
 ## Pool sizing procedure
 
 Run `target` and `stress` on staging with `DB_POOL_MAX` ∈ {8, 20, 40} (Railway

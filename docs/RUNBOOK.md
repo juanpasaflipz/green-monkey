@@ -45,6 +45,8 @@ acknowledged a critical alert within 15 minutes during service hours
 | `cfdi_global_overdue:*`, `cfdi_global_late:*`, `cfdi_global_failed:*` (warning) | ntfy, from the worker | a global invoice missed its 24 h deadline, a late supplementary part was issued after it, or a part failed: Facturas globales → **Emitir ahora** / **Reintentar** |
 | `cfdi_stamp_unresolved:*`, `cfdi_cancel_unresolved:*`, `cfdi_cancel_failed:*`, `cfdi_substitution_rejected:*`, `cfdi_reissue_failed:*`, `cfdi_refund_unresolved:*`, `cfdi_ticket_excluded:*`, `cfdi_amount_mismatch:*` (warning) | ntfy, from the worker | one restaurant's document needs a person (`<tenant>` = first 8 hex characters of the tenant id): see the action per key in [CFDI](CFDI.md) "Operations" |
 | `cfdi_csd_expiring:*` (info) | ntfy, from the worker | a restaurant's CSD expires within 30 days: the owner uploads a new one |
+| `public_order_limited` (log, warn) | web logs | a public QR/kiosk order hit a durable cap (`code`: `public_order_limit`, `public_ordering_busy` or `public_order_churn`); the line names the code's `ref` (the "Ref. 7A3F" staff see in Mesas or Configuración), its kind and the client's `ipHash`, never a token or a path. Repeated lines for one `ref` from one `ipHash`: "Online ordering abuse" below |
+| `rate_limited` with `limiter: public-*` (log, warn) | web logs | a client hit a public ordering per-IP or per-link limit (in memory, per replica); one diner retrying is normal, a steady stream from one `ipHash` is abuse |
 | `jobs_dead_cfdi_*` (warning) | ntfy, from the worker | a cfdi job used up its attempts. The global tick's recovery sweep re-enqueues what the document needs within a day (or a manager presses **Reintentar** on it); a dead `cfdi_global` tick already scheduled the next one, and the chain also restarts at the next worker deploy and operator sign-in ([CFDI](CFDI.md) "Jobs") |
 
 Alerts carry codes and counts only, never personal or tenant data. Logs are
@@ -149,12 +151,24 @@ than 30 days (`server/ops/retention.ts`). It never deletes sessions, any
 `offline_*` table, operations, audit, `device_pairing_codes`, any money,
 stock, cash or void table, `fiscal_*`, `cfdi_*`, `business_day_settings`,
 `report_prints`, `support_actions`, `legal_acceptances`, `account_events`,
-`ownership_transfers`, `billing_*`, or blocked receipt jobs
-(`tests/retention.test.ts` asserts the allow-list).
+`ownership_transfers`, `billing_*`, any `public_*` table
+(`public_ordering_settings`, `public_links`, `public_hold_numbers`,
+`public_order_holds`: diner status pages, the abuse and churn reads and the
+owner export use them), or blocked receipt jobs (`tests/retention.test.ts`
+asserts the allow-list).
 
-Both tables force row-level security and the runtime login has no DELETE, so
-retention runs as the schema owner `gm_migrator` from GitHub Actions (the
-environment secret `MIGRATION_DATABASE_URL`), never from a Railway service:
+It also **redacts** in place, never deletes: the diner's name and note of
+every public ordering hold older than 30 days, in any state, are blanked
+(migration 034 lets the transition trigger accept exactly that update;
+LD-41). Each run reports them as `redacted.public_order_holds` in the
+`retention_run` log line (and `retention_only_complete` for the daily run).
+034's partial index `public_order_holds_unredacted` keeps each batch to the
+holds that still carry a name or note.
+
+The three tables force row-level security and the runtime login has no
+DELETE (nor UPDATE on a hold's name or note), so retention runs as the
+schema owner `gm_migrator` from GitHub Actions (the environment secret
+`MIGRATION_DATABASE_URL`), never from a Railway service:
 
 - **Once per deploy:** the deploy job's `migrate.js --grants --retention`. A
   failure alerts and never fails the deploy.
@@ -188,8 +202,9 @@ environment secret `MIGRATION_DATABASE_URL`), never from a Railway service:
   issue.
 
 Each batch briefly turns off FORCE row-level security, which takes an ACCESS
-EXCLUSIVE lock on the table until it commits, and every order and payment
-inserts into `jobs`. So each batch waits at most 200 ms for that lock and
+EXCLUSIVE lock on the table until it commits (for `public_order_holds`, diner
+submits and staff decisions wait for it the same way), and every order and
+payment inserts into `jobs`. So each batch waits at most 200 ms for that lock and
 runs each statement at most 1.5 s. Every batch, from a deploy or the daily
 run, can therefore stall order and payment inserts for up to about 1.7 s;
 that matters during service (a deploy) and for a restaurant that already
@@ -208,6 +223,19 @@ migrations, grants or policy reconcile; inside the window it repeats passes
 while a backlog remains, outside it runs exactly one. It exits 1 when a table
 fails (after alerting) and 75 when a table was skipped on a lock timeout. Run
 it outside service hours for the same reason.
+
+### Log retention
+
+Service logs (web and worker) live only in Railway, which keeps them for the
+workspace plan's period: 7 days on Hobby, 30 days on Pro, up to 90 days on
+Enterprise (Railway's documentation, "Logs", checked 2026-10-06). Railway
+notes that upgrading a plan restores older logs at once, so the period limits
+what is shown, not what Railway stores. Members of the Railway project can
+read them; nothing forwards them elsewhere. Some lines carry pseudonymous
+personal data (`ipHash` in `rate_limited` and `public_order_limited`,
+[PUBLIC_ORDERING.md](PUBLIC_ORDERING.md) §12), so keep project membership to
+the people who operate the service and record the plan in use for counsel
+([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.12).
 
 ## Jobs
 
@@ -247,7 +275,17 @@ wait while the index builds (platform P-27, LD-8). Fiscal's 027 belongs in
 the same window: its foreign keys to `orders`, `restaurants`, `employees`,
 `devices` and `refunds` and its `BEFORE INSERT` trigger on `order_lines` take
 `SHARE ROW EXCLUSIVE` on those tables until 027 commits, so sales wait for it
-(bounded by its `SET LOCAL lock_timeout = '5s'`). The fiscal operations
+(bounded by its `SET LOCAL lock_timeout = '5s'`). Public ordering's 032 belongs
+in the same window once production has traffic (P-27, LD-P15 OQ-14): its
+`ADD CONSTRAINT … NOT VALID` statements take a brief `ACCESS EXCLUSIVE` on
+`orders`, `rounds` and `jobs` (first in the file, `lock_timeout` 5 s, retried
+on 55P03), and a deadlock with live KDS reads rolls the whole file back and
+fails the deploy (re-running it is safe). Run "DB-9 validation" below before
+the first deploy that carries 032 and 033. Public ordering's 034 replaces the
+hold transition function (no table lock) and builds a small non-concurrent
+partial index on `public_order_holds`, so diner submits and hold decisions
+wait while it builds; it belongs in the same window once QR ordering has
+traffic. The fiscal operations
 (missing tickets, kill switch, series, border incentive) are in
 [FISCAL.md](FISCAL.md#runbook).
 
@@ -359,8 +397,9 @@ entry (`k<YYYYMMDD>-<4 hex>:<32 random bytes>`).
      Dispositivos (at most 5 open codes at a time; see
      [ACCESS.md](ACCESS.md) "Signing-key rotation and terminals");
    - owners sign in with Google again;
-   - QR/kiosk ordering links (off in production until wave 3) and CFDI
-     self-invoice links stop working and are issued again.
+   - CFDI self-invoice links stop working and are issued again. Public
+     ordering's QR and kiosk codes (032) are database rows, not signed
+     tokens: a key rotation leaves them working.
 3. **`JWT_SECRET`** stays required on `web` in v1: outside production it
    still verifies pre-2.0 tokens (production refuses them; none were ever
    issued there), and it keys the lookup digests. Rotate it only together
@@ -470,6 +509,124 @@ undeclared variable is planned as a deletion, and CD's non-destructive
 step. Declare a variable before setting it: `TRUST_PROXY` is deliberately
 undeclared (its default is correct on Railway).
 
+## Online ordering abuse
+
+Public QR and kiosk ordering (032, [PUBLIC_ORDERING](PUBLIC_ORDERING.md) §11).
+A diner's order is only a hold until staff accept it: nothing reaches the
+kitchen, stock or a fiscal record on its own.
+
+1. **Reject as abuse.** In Órdenes, **Rechazar** → "Pedido falso o abuso". A
+   manager ticks "Desactivar también este código QR". The printed code stops
+   working at once in every web process (each request re-reads the link);
+   the diner sees "Pregunta al personal". The code's other pending orders stay
+   in the inbox, marked "Código desactivado por abuso", and need an explicit
+   tick before anyone accepts them.
+2. **Pause** online ordering (any operator, from the inbox or Configuración)
+   while the source is unclear.
+3. **Replace** a table's code in Mesas (**Reemplazar e imprimir**) and stick
+   the new card; deactivate a kiosk or takeaway code in Configuración.
+4. **Churn.** Many orders sent and cancelled from one code show in the inbox
+   by name ("muchos pedidos cancelados desde el cliente"); replace or
+   deactivate that code.
+5. **Logs.** `rate_limited` lines carry the limiter name and `ipHash`;
+   `public_order_limited` lines carry the code, the link's `ref` and kind, and
+   `ipHash` (pseudonymous personal data: see "Log retention" above). Neither stores tokens or paths. The durable caps (3 pending per
+   table, 5 per kiosk, 10 per takeaway code, 40 per restaurant; windows per
+   15 minutes) bound the damage whatever the IP.
+6. **Kill switch.** `PUBLIC_ORDERING_ENABLED=false` on `web` (a redeploy)
+   turns QR and kiosk ordering off for every restaurant: diner and staff
+   ordering routes answer `404 public_ordering_disabled`, and staff screens
+   hide the panel, the table QR actions and the inbox. Pending QR orders can
+   be neither accepted nor rejected while it is off, so they stop counting
+   on tables too: Mesas shows no "Pedido QR por confirmar" badge and a table
+   held only by one can be archived. They expire on their own.
+   - Use exactly `false` (any other value except `true` or empty stops the
+     web with `public_ordering_flag_invalid`). After the redeploy, check that
+     `GET /api/account-config` reports `publicOrdering.enabled: false` and
+     `switchedOff: true`; a Pro restaurant's plan panel then says "Pedidos
+     QR y kiosco desactivados temporalmente por Green Monkey."
+   - Staff terminals that are open drop the waiting cards, the badge and the
+     banner at their next inbox or summary read.
+   - **To turn it back on,** unset the variable or set it to `true`,
+     redeploy, and check that `/api/account-config` reports
+     `publicOrdering.enabled: true`. No reload is needed anywhere: staff
+     terminals read the summary again within 5 minutes (at once when
+     brought to the front), diner pages that loaded their menu clear the
+     "no están disponibles" notice at their next minute poll, and a kiosk
+     that booted while ordering was off retries its menu every 20 s
+     (PUBLIC-UX-1, PUBLIC-OPS-1). The response is cacheable for 5 minutes,
+     so a browser may show the old `/api/account-config` that long.
+
+## DB-9 validation
+
+032 adds CHECK constraints `NOT VALID` on `orders.state`, `orders.channel`,
+`orders.mode`, `rounds.state` and `jobs.state` (enforced for every new write
+at once); 033 (`-- gm:no-transaction`, one `VALIDATE` per part, `SHARE UPDATE
+EXCLUSIVE`) validates existing rows. **Before the first deploy that carries
+them,** run the check below on staging and on production. It lists every row
+033 would refuse, by table, `tenant_id` and `id`, and it must return no rows.
+Staging deploys on its own once Qualification passes on `main`, so run it on
+staging **before merging** the change that brings 032/033 to `main`, and on
+production before dispatching that SHA (PUBLIC-OPS-8).
+
+**Run it as the Neon owner role** (`neondb_owner`, which bypasses RLS through
+`neon_superuser`; [PROVISIONING.md](PROVISIONING.md)), connected as that role
+and never after `SET ROLE gm_migrator`. Do not run it as `gm_migrator`:
+`orders`, `rounds` and `jobs` use FORCE ROW LEVEL SECURITY, and `gm_migrator`
+is neither a superuser nor BYPASSRLS. With no restaurant set it sees no rows
+at all, so the check would pass whatever the data. The block's
+`set local row_security = off` turns that mistake into an error (`query would
+be affected by row-level security policy for table "orders"`) instead of an
+empty result. If you get that error, reconnect as the Neon owner role.
+
+```sql
+begin read only;
+set local row_security = off;
+select tenant_id, id, state from orders where state not in ('active','ready','completed','cancelled','recovery_pending','recovery_reviewed');
+select tenant_id, id, channel from orders where channel not in ('pos','qr','kiosk','offline');
+select tenant_id, id, mode from orders where mode not in ('takeaway','dine_in','delivery');
+select tenant_id, id, state from rounds where state not in ('active','ready','completed','offline_review');
+select tenant_id, id, state from jobs where state not in ('queued','available','running','done','blocked','dead');
+rollback;
+```
+
+If 033 fails anyway (a row outside a set), nothing is lost. 032 committed, so
+its constraints already block new bad writes, and the new revision never
+passes readiness because 033's registry row is written only after every part
+succeeds. To recover:
+
+1. Run the check above, as the Neon owner role, to find each row.
+2. Repair each row as the same role, with the block below. Set it to the
+   value the current code would write (for example, a legacy `state`), and
+   record it in the incident log. `UPDATE 0` means the `tenant_id` or `id` is
+   wrong and nothing changed.
+3. Re-run the deploy. `VALIDATE` of an already valid constraint is a no-op.
+
+```sql
+begin;
+set local row_security = off;
+update <table> set <column> = '<value>' where tenant_id = '<tenant_id>' and id = '<id>';
+commit;
+```
+
+`tests/public-ordering-db.ts` test 1+3 runs both blocks exactly as written
+here. As a BYPASSRLS non-superuser member of the owner (the Neon owner role's
+shape), they list and repair another tenant's bad row in every column. As the
+schema owner (`gm_migrator`'s shape), they fail instead of passing. A new value in any of these
+columns needs a migration that drops and re-adds its constraint
+(`-- gm:contract-approved`), tests that write it, and a note to public
+ordering (LD-P13).
+
+## Hold redaction (ARCO)
+
+A diner's ARCO cancellation of the name or note typed on a QR or kiosk
+order: support runs [PUBLIC_ORDERING.md](PUBLIC_ORDERING.md) "Redacting a
+hold (ARCO)" as `gm_migrator`, for one hold in any state, and records it in
+the cancellation register ([OPERATIONS.md](OPERATIONS.md), "ARCO requests").
+Since 034 it is a plain tenant-scoped `UPDATE` that locks only that hold, so
+it can run at any hour; retention blanks every hold older than 30 days
+anyway ("Retention" above).
+
 ## Open follow-ups
 
 Known gaps this release leaves open, with their owner:
@@ -483,6 +640,7 @@ Known gaps this release leaves open, with their owner:
 | PLATFORM-ROLES-2 (rest), reachable-role checks | The runtime and worker login checks cover every role a login can `SET ROLE` to since the hardening. Still unchanged: `assertRuntimeRole` (`server/ops/schema.ts`), the `provision-roles.ts` assertion (attributes and `neon_superuser` only), and `globals.sql`, which creates missing capability roles but never corrects an existing `gm_jobs_worker` or `gm_support` (`ALTER ROLE … NOLOGIN NOBYPASSRLS …`). | Wave 3 ops: the same reachable-role allow-list in `assertRuntimeRole` and `provision-roles.ts`, and a normalizing `ALTER ROLE` for each capability role in `globals.sql`. |
 | PLATFORM-ROLES-4, local bootstrap migrates as the superuser | `scripts/setup-local.sh` migrates and applies grants as `gm_provisioner` (the initdb superuser), so locally FORCE RLS does not bind the table owner; CI, the track reset script and Neon migrate as `gm_migrator`. A SECURITY DEFINER helper that forgets `app.tenant_id` passes locally and fails in CI. | Wave 3 ops: mirror `qualification.yml` (give `gm_migrator` a local login, apply `database-grants.sql`, migrate with `MIGRATION_DATABASE_URL` as `gm_migrator`; keep `gm_provisioner` for fixtures only). |
 | PLATFORM-CI-8, images by tag | Besides gitleaks (OPS-R17 above), the `postgres:18` CI service and the production base image `node:24.21.0-bookworm-slim` (`Dockerfile`) are referenced by mutable tags; `tests/workflows.test.ts` pins only `uses:` lines. | Wave 3 ops, with OPS-R17: pin each image by digest (tag as a comment) and make the workflows test require `@sha256:` on `docker run`, `services` images and `FROM` lines. |
+| PUBLIC-OPS-7, public ordering in the GAP-4 profile | The load profile (`scripts/load/profile.ts`, `run-load.ts`) models the cashier, the KDS and the tables view only. Since public ordering's B4, every operator device of a restaurant with an active code also polls `/api/ordering/inbox/summary` (20 s; 5 min otherwise) and Órdenes polls `/api/ordering/inbox` (10 s; 60 s otherwise), and diners poll the menu revision (1 min) and their order status (5-20 s). None of it is in the measured p95 ([LOAD_TEST.md](LOAD_TEST.md)). | Ops and public, before go-live: the staging `target`/`stress` capacity run that sizes `DB_POOL_MAX` includes these polls and a diner submit/status mix for restaurants with codes (RELEASE item 5). Not built yet (LD-41). |
 | OPS-10 residual: lookup digests and legacy tokens | **Done in Wave 2.0:** the signing keyring (`SIGNING_KEYS`, named kids, HKDF per-use keys, purpose-bound sealed tokens, two-step rotation; "Signing keys" above). Production refuses pre-2.0 tokens. Still keyed by `JWT_SECRET`: the pairing-code, PIN-fingerprint, invitation and transfer digests, so `JWT_SECRET` stays required on `web`, and outside production pre-2.0 tokens verify while it is set. F2 (in-transaction authentication) is unchanged. | Wave 3 (D4): keyed digests (access A1) together with account's invitation and transfer HMACs; then production unsets `JWT_SECRET`. |
 
 ## Incident log template

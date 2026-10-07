@@ -1579,6 +1579,9 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
     expect(refundOnUnticketed).toBeGreaterThan(40);
   });
 
+  // 200 worlds × every drift: about 2 s alone, but up to 9 s while the whole
+  // unit suite runs in parallel on a loaded machine (CI parity runs), past
+  // vitest's 5 s default. Only the time limit is set; nothing else changes.
   it("property: a one-centavo drift (+1 or −1) in a guarded aggregate fails its own check, plus paid_identity only when a lower S1 total makes outstanding negative, and Ventas brutas − Descuentos = Ventas totales holds under any drift", () => {
     const random = rng(7);
     let tried = 0;
@@ -1731,7 +1734,7 @@ describe("metric contract composition (MON-6, FIN-02)", () => {
     expect(withRefunds).toBeGreaterThan(10);
     // The natural worlds reach the outstanding = 0 branch of the −1 total drift too.
     expect(fullyPaid).toBeGreaterThan(0);
-  });
+  }, 30_000);
 
   it("Ventas brutas cannot disagree with Ventas totales + Descuentos: a stale S1 gross column is ignored", () => {
     const date = "2026-10-05";

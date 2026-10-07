@@ -15,12 +15,27 @@ import { translateError } from "../../i18n";
 import { Badge, Button, Empty, Field, Modal } from "../../components/ui";
 import { translator } from "./format";
 import { ConfirmDialog } from "./ConfirmDialog";
+import type {
+  PublicLinkView,
+  PublicLinksResponse,
+  PublicSettingsView,
+} from "../../../shared/public-ordering";
+import { TableQrDialog, shortDate } from "../public/TableQrDialog";
+import { TableQrBulkDialog } from "../public/TableQrBulkDialog";
+import {
+  focusRestaurantPrivacy,
+  useRestaurantPrivacyMissing,
+} from "../public/PrivacyNoticeWarning";
 
 type Floor = { areas: DiningArea[]; tables: DiningTable[] };
 type Dialog =
   | { kind: "area"; area?: DiningArea }
   | { kind: "table"; table?: DiningTable; areaId?: string | null }
   | { kind: "bulk"; areaId?: string | null };
+
+/** Why a table cannot be archived: an open check, or only a pending QR order. */
+const inUse = (tb: DiningTable) =>
+  tb.pendingQr ? "table_pending_qr" : "table_in_use";
 
 function swap<T>(list: T[], index: number, delta: number): T[] {
   const next = [...list];
@@ -31,13 +46,16 @@ function swap<T>(list: T[], index: number, delta: number): T[] {
 
 /** Menú e inventario → Mesas: areas and tables. */
 export function FloorWorkspace({
-  session: _session,
+  session,
   locale,
   online,
+  navigate,
 }: {
   session: Session;
   locale: Locale;
   online: boolean;
+  /** Opens another view (Configuración for the privacy notice, PUBLIC-SECURITY-4). */
+  navigate?: (view: string) => void;
 }) {
   const t = translator(locale);
   const [floor, setFloor] = useState<Floor | null>(null);
@@ -47,6 +65,35 @@ export function FloorWorkspace({
   const [showArchived, setShowArchived] = useState(false);
   const [dialog, setDialog] = useState<(Dialog & { key: string }) | null>(null);
   const [archiveTable, setArchiveTable] = useState<DiningTable | null>(null);
+  // Public ordering (032): table QR codes, when this server offers them on Pro.
+  const [qr, setQr] = useState<PublicLinkView[] | null>(null);
+  const [qrTable, setQrTable] = useState<DiningTable | null>(null);
+  const [qrBulk, setQrBulk] = useState(false);
+  const privacyMissing = useRestaurantPrivacyMissing(qr !== null);
+  const openPrivacy = navigate
+    ? () => {
+        setQrTable(null);
+        setQrBulk(false);
+        navigate("settings");
+        focusRestaurantPrivacy();
+      }
+    : undefined;
+
+  async function loadQr() {
+    try {
+      const v = await api<PublicSettingsView>("/ordering/settings");
+      if (!v.available || !v.pro) return setQr(null);
+      setQr((await api<PublicLinksResponse>("/ordering/links")).links);
+    } catch {
+      setQr(null);
+    }
+  }
+  useEffect(() => {
+    void loadQr();
+  }, []);
+  const tableLink = (id: string) =>
+    qr?.find((l) => l.kind === "table" && l.tableId === id && !l.revokedAt) ??
+    null;
 
   async function load() {
     try {
@@ -126,6 +173,11 @@ export function FloorWorkspace({
         <Button disabled={!online} onClick={() => open({ kind: "area" })}>
           {t("menuAreaNew")}
         </Button>
+        {qr && (
+          <Button disabled={!online} onClick={() => setQrBulk(true)}>
+            {t("publicBulkTitle")}
+          </Button>
+        )}
         <label className="menu-check">
           <input
             type="checkbox"
@@ -231,12 +283,32 @@ export function FloorWorkspace({
                               </span>
                             )}
                             {tb.open && (
-                              <Badge tone="amber">{t("menuTableOpen")}</Badge>
+                              <Badge tone="amber">
+                                {t(
+                                  tb.pendingQr
+                                    ? "publicTablePending"
+                                    : "menuTableOpen",
+                                )}
+                              </Badge>
                             )}
                             {tb.archived && (
                               <Badge>{t("menuArchivedBadge")}</Badge>
                             )}
                           </div>
+                          {qr && (
+                            <span className="tiny muted">
+                              {tableLink(tb.id)
+                                ? t("publicTableQrActive", {
+                                    ref: tableLink(tb.id)!.ref,
+                                    date: shortDate(
+                                      tableLink(tb.id)!.createdAt,
+                                      locale,
+                                      session.restaurant.timezone,
+                                    ),
+                                  })
+                                : t("publicTableQrNone")}
+                            </span>
+                          )}
                         </div>
                         <div className="row wrap menu-row-actions">
                           {!tb.archived && (
@@ -282,11 +354,22 @@ export function FloorWorkspace({
                           >
                             {t("menuEdit")}
                           </Button>
+                          {qr && !tb.archived && (
+                            <Button
+                              aria-label={t("publicTableQrFor", {
+                                name: tb.name,
+                              })}
+                              disabled={!online}
+                              onClick={() => setQrTable(tb)}
+                            >
+                              {t("publicTableQr")}
+                            </Button>
+                          )}
                           <Button
                             disabled={locked || (tb.open && !tb.archived)}
                             title={
                               tb.open && !tb.archived
-                                ? translateError("table_in_use", locale)
+                                ? translateError(inUse(tb), locale)
                                 : undefined
                             }
                             aria-label={`${t(tb.archived ? "menuRestore" : "menuArchive")} ${tb.name}`}
@@ -305,7 +388,7 @@ export function FloorWorkspace({
                         </div>
                         {tb.open && !tb.archived && (
                           <p className="tiny muted menu-row-note">
-                            {translateError("table_in_use", locale)}
+                            {translateError(inUse(tb), locale)}
                           </p>
                         )}
                       </li>
@@ -317,6 +400,31 @@ export function FloorWorkspace({
           })
       ) : (
         <Empty title={t("menuFloorEmpty")} />
+      )}
+      {qrTable && (
+        <TableQrDialog
+          table={qrTable}
+          link={tableLink(qrTable.id)}
+          restaurant={session.restaurant.name}
+          timezone={session.restaurant.timezone}
+          locale={locale}
+          privacyMissing={privacyMissing}
+          onOpenPrivacy={openPrivacy}
+          onClose={() => setQrTable(null)}
+          onChanged={() => void loadQr()}
+        />
+      )}
+      {qrBulk && qr && (
+        <TableQrBulkDialog
+          tables={floor.tables.filter((tb) => !tb.archived)}
+          links={qr}
+          restaurant={session.restaurant.name}
+          locale={locale}
+          privacyMissing={privacyMissing}
+          onOpenPrivacy={openPrivacy}
+          onClose={() => setQrBulk(false)}
+          onChanged={() => void loadQr()}
+        />
       )}
       {archiveTable && (
         <ConfirmDialog

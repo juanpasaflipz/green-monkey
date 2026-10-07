@@ -5,7 +5,6 @@ import {
   autoAssignFreeSlots,
   requireDrawerOpenAllowed,
 } from "./free-limits.js";
-import { publicOrderingEnabled } from "./account-settings.js";
 import { billingRuntime } from "./billing-runtime.js";
 import { entitlement, requirePro } from "./entitlements.js";
 import { ownerRoutes } from "./owner-routes.js";
@@ -28,7 +27,6 @@ import { connect, tenant, waitForDatabase } from "./db.js";
 import {
   authentication,
   type AuthRequest,
-  sign,
   permit,
   operators,
   managers,
@@ -84,6 +82,7 @@ import * as reportsRoutes from "./routes/reports.js";
 import * as cfdiRoutes from "./routes/cfdi.js";
 import { cfdiCapability } from "./cfdi/hooks.js";
 import * as accountRoutes from "./routes/account.js";
+import * as publicOrderingRoutes from "./routes/public-ordering.js";
 import {
   paymentRecoveryStatus,
   retryPaymentRecovery,
@@ -95,8 +94,6 @@ if (
   process.env.JWT_SECRET.length < 32
 )
   throw Error("DATABASE_URL and JWT_SECRET (32+ characters) required");
-// account (031): QR/kiosk ordering is off in production until wave 3; an invalid value fails startup.
-const PUBLIC_ORDERING = publicOrderingEnabled(process.env);
 const sql = connect(process.env.DATABASE_URL);
 await waitForDatabase(sql);
 const billing = await billingRuntime(sql, process.env);
@@ -469,34 +466,6 @@ route("get", "/jobs", async (tx, s) => {
   permit(s, managers);
   return tx`select * from jobs order by created_at desc limit 100`;
 });
-route("post", "/ordering-links", async (tx, s, req) => {
-  if (!PUBLIC_ORDERING) throw new DomainError("public_ordering_disabled", 404);
-  permit(s, managers);
-  const p = z
-    .object({ channel: z.enum(["qr", "kiosk"]), tableId: id.nullable() })
-    .strict()
-    .parse(req.body);
-  if (p.tableId) {
-    const rows = await tx`select id from dining_tables where id=${p.tableId}`;
-    if (!rows.length) throw new DomainError("not_found", 404);
-  }
-  await requireSelling(tx, s);
-  await requirePro(tx);
-  const token = sign({
-    purpose: "ordering",
-    id: randomUUID(),
-    tenantId: s.tenantId,
-    employeeId: s.employeeId,
-    deviceId: s.deviceId,
-    tableId: p.tableId,
-    channel: p.channel,
-    expiresAt: Date.now() + 86400_000,
-  });
-  return {
-    path: "/" + p.channel + "/" + token,
-    expiresAt: new Date(Date.now() + 86400_000).toISOString(),
-  };
-});
 route("get", "/plan", async (tx) => entitlement(tx));
 route("get", "/capabilities", async (tx) => ({
   cash: { enabled: true },
@@ -517,8 +486,16 @@ discountsRoutes.register({ app, sql, route });
 reportsRoutes.register({ app, sql, route });
 cfdiRoutes.register({ app, sql, route });
 accountRoutes.register({ app, sql, route });
+publicOrderingRoutes.register({ app, sql, route });
 app.use("/api", (_req, res) => res.status(404).json({ error: "not_found" }));
 if (process.env.NODE_ENV === "production") {
+  // Diner pages (public ordering 032) stay out of search indexes; helmet
+  // already sends Referrer-Policy: no-referrer on every response.
+  app.use((req, res, next) => {
+    if (/^\/(qr|kiosk)(\/|$)/.test(req.path))
+      res.set("X-Robots-Tag", "noindex");
+    next();
+  });
   app.use(express.static(resolve("dist")));
   app.get("/{*path}", (_req, res) => res.sendFile(resolve("dist/index.html")));
 }
