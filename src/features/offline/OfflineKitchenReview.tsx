@@ -5,13 +5,16 @@ import { useConnectivity } from "../../connectivity";
 import { Button, Modal } from "../../components/ui";
 import { errorNotice } from "../../i18n";
 import { lanePollDelay } from "../../offline-policy";
-import { clockTime, translator } from "./format";
+import { currentBusinessDate } from "../../labels";
+import { clockTime, offlineReviewOrderLabel, translator } from "./format";
 import "./offline.css";
 
 type ReviewItem = {
   roundId: string;
   orderId: string;
   orderNumber: number;
+  /** The order's business day (LD-48): the label dates an order of another day. */
+  businessDate?: string | null;
   provisionalNumber: string | null;
   station: string;
   round: number;
@@ -58,6 +61,8 @@ export function OfflineKitchenReview({
   const t = translator(locale);
   const net = useConnectivity();
   const [all, setAll] = useState<ReviewItem[]>([]);
+  /** The server's current business day at the last load (the KDS feed's, LD-29). */
+  const [today, setToday] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirmAll, setConfirmAll] = useState(false);
@@ -69,8 +74,12 @@ export function OfflineKitchenReview({
     if (inflight.current) return null;
     inflight.current = true;
     try {
-      const result = await api<{ items: ReviewItem[] }>("/offline/kitchen");
+      const result = await api<{
+        items: ReviewItem[];
+        currentBusinessDate?: string;
+      }>("/offline/kitchen");
       setAll(result.items);
+      setToday(result.currentBusinessDate ?? null);
       return result.items.length;
     } catch {
       /* The next poll retries; the live KDS keeps working. */
@@ -178,12 +187,11 @@ export function OfflineKitchenReview({
         {items.map((item) => (
           <article className="offline-review-card" key={item.roundId}>
             <h3>
-              {item.provisionalNumber
-                ? t("offlineMapped", {
-                    provisional: item.provisionalNumber,
-                    number: item.orderNumber,
-                  })
-                : `#${item.orderNumber}`}
+              {offlineReviewOrderLabel(
+                item,
+                today ?? currentBusinessDate(session.restaurant),
+                locale,
+              )}
             </h3>
             <p>
               {t(item.station === "bar" ? "bar" : "kitchen")} ·{" "}

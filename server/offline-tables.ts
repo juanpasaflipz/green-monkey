@@ -298,6 +298,7 @@ reviewTargets.resolve = async (tx, p) => {
   const target = {
     orderId: found.order.id,
     number: found.order.number,
+    businessDate: found.order.businessDate ?? null,
     due: dueOf(found.order),
   };
   // A round never goes onto a closed or fully paid check (I6, §4.4.2).

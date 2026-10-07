@@ -112,6 +112,34 @@ export function parkedOrderLabel(
   return stored?.number ? "#" + orderNumberText(stored, today, locale) : null;
 }
 
+/**
+ * How the kitchen's offline review lane names a held round's order: "#46", or
+ * "B-07 → #46" for one that began as a local order, dated like the KDS when the order
+ * is from another business day ("#46 · 5 oct", LD-48): an offline sale synced after
+ * the cutoff continues the numbers of the day it was sold.
+ */
+export function offlineReviewOrderLabel(
+  item: {
+    orderNumber: number;
+    provisionalNumber: string | null;
+    businessDate?: string | null;
+  },
+  today: string | null | undefined,
+  locale: Locale,
+): string {
+  const number = orderNumberText(
+    { number: item.orderNumber, businessDate: item.businessDate },
+    today,
+    locale,
+  );
+  return item.provisionalNumber
+    ? fmt(strings[locale].offlineMapped, {
+        provisional: item.provisionalNumber,
+        number,
+      })
+    : "#" + number;
+}
+
 /** True while only this device knows the order's number (the hint applies). */
 export const provisionalOnly = (order: {
   number: number;

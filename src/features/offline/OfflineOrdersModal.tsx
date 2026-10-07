@@ -10,7 +10,38 @@ import {
   type LocalOrderView,
 } from "../../offline-records";
 import { Button, Empty, Modal } from "../../components/ui";
-import { clockTime, moneyFormatter, translator } from "./format";
+import { currentBusinessDate } from "../../labels";
+import { clockTime, moneyFormatter, orderLabel, translator } from "./format";
+
+/**
+ * One check in the offline pick list, named as the cart heading names it (orderLabel):
+ * "B-07", "B-07 → #142", "#10", and dated when it is from another business day
+ * ("#10 · 5 oct", LD-48), so yesterday's open #10 is never picked for today's.
+ */
+export function OfflineOrderRow({
+  order,
+  today,
+  locale,
+  due,
+  onPick,
+}: {
+  order: LocalOrderView;
+  today: string;
+  locale: Locale;
+  due: string;
+  onPick: (order: LocalOrderView) => void;
+}) {
+  return (
+    <Button className="full" onClick={() => onPick(order)}>
+      <span>
+        {orderLabel(order, today, locale)}
+        {order.tableName ? ` · ${order.tableName}` : ""}
+        {order.name ? ` · ${order.name}` : ""}
+      </span>
+      <strong>{due}</strong>
+    </Button>
+  );
+}
 
 /** Open orders this device can keep serving while offline (§2.3). */
 export function OfflineOrdersModal({
@@ -52,18 +83,16 @@ export function OfflineOrdersModal({
       live = false;
     };
   }, [session.id]);
+  const today = currentBusinessDate(session.restaurant);
   const row = (order: LocalOrderView) => (
-    <Button className="full" key={order.id} onClick={() => onPick(order)}>
-      <span>
-        {order.offline.provisionalNumber ?? `#${order.number}`}
-        {order.offline.provisionalNumber && order.number
-          ? ` → #${order.number}`
-          : ""}
-        {order.tableName ? ` · ${order.tableName}` : ""}
-        {order.name ? ` · ${order.name}` : ""}
-      </span>
-      <strong>{money(order.total - order.paid)}</strong>
-    </Button>
+    <OfflineOrderRow
+      key={order.id}
+      order={order}
+      today={today}
+      locale={locale}
+      due={money(order.total - order.paid)}
+      onPick={onPick}
+    />
   );
   return (
     <Modal title={t("offlineOpenOrders")} close={close} closeLabel={t("close")}>
