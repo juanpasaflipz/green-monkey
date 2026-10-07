@@ -433,6 +433,17 @@ export async function tap(d: Device, target: Locator) {
   await target.click();
 }
 
+/**
+ * An action outside the selling flow's tap budget (voids, discounts, refunds,
+ * kitchen, setup): counted and timed like a tap, but the browser may scroll
+ * a long dialog to reach it, as a person would.
+ */
+export async function press(d: Device, target: Locator) {
+  run.taps++;
+  d.lastInputAt = Date.now();
+  await target.click();
+}
+
 export async function fill(d: Device, target: Locator, value: string) {
   run.taps++;
   d.lastInputAt = Date.now();

@@ -32,6 +32,7 @@ import {
   escapeRe,
   fill,
   run,
+  press,
   tap,
   typePin,
   type Device,
@@ -236,7 +237,7 @@ async function voidFromOrders(
 ) {
   const page = caja.page;
   await toOrders(caja);
-  await tap(caja, orderCard(page, o.number).getByRole("button", { name: "Anular", exact: true }));
+  await press(caja, orderCard(page, o.number).getByRole("button", { name: "Anular", exact: true }));
   const dialog = page.getByRole("dialog", { name: "Anular productos" });
   const p = productDef(r, o.lines[v.line]!.product);
   await fill(caja, dialog.getByLabel(new RegExp(`^${escapeRe(p.name)} · `)), String(v.units));
@@ -244,11 +245,11 @@ async function voidFromOrders(
   const back = dialog.getByRole("radio", { name: "Regresar ingredientes al inventario" });
   if (opts.returnAllowed) {
     await expect(back).toBeEnabled();
-    if (v.restock) await tap(caja, back);
+    if (v.restock) await press(caja, back);
   } else {
     await expect(back).toBeDisabled();
     await expect(dialog.getByText("Cocina ya vio este pedido; los ingredientes no regresan al inventario.", { exact: true })).toBeVisible();
-    await tap(caja, dialog.getByRole("radio", { name: "No regresar (ya se preparó o se desecha)" }));
+    await press(caja, dialog.getByRole("radio", { name: "No regresar (ya se preparó o se desecha)" }));
   }
   const approval = dialog.getByRole("group", { name: "Autorización de gerente" });
   const marisol = staffA("marisol");
@@ -257,13 +258,13 @@ async function voidFromOrders(
   if (opts.wrongPinFirst) {
     await allowing([{ method: "POST", url: /\/api\/orders\/[^/]+\/voids$/, status: 403 }], async () => {
       await fill(caja, approval.getByLabel("PIN del gerente", { exact: true }), "000000");
-      await tap(caja, submit);
+      await press(caja, submit);
       await expect(dialog.getByRole("alert")).toHaveText("PIN de gerente incorrecto o el empleado no es gerente.");
     });
   }
   await fill(caja, approval.getByLabel("PIN del gerente", { exact: true }), marisol.pin);
   if (opts.checkpointId) await checkpoint(caja, opts.checkpointId, { settle: dialog });
-  await tap(caja, submit);
+  await press(caja, submit);
   await expect(dialog).toHaveCount(0);
   // Marisol's PIN authorized this command only: no session's lastAuthAt changes (§3.5.4).
 }
@@ -274,14 +275,14 @@ async function ackVoid(cocina: Device, ticket: Locator, number: number, line: st
   await expect(alert).toContainText("Cancelado");
   await expect(alert).toContainText(line);
   await expect(cocina.page.locator(".kds [aria-live=polite][role=status]")).toContainText(`Cancelación en ticket #${number}`);
-  await tap(cocina, alert.getByRole("button", { name: "Enterado de la cancelación", exact: true }));
+  await press(cocina, alert.getByRole("button", { name: "Enterado de la cancelación", exact: true }));
   await expect(alert).toHaveCount(0);
 }
 
 /** Resumes an order from Órdenes ("Abrir orden") into Vender. */
 async function resume(caja: Device, n: number) {
   await toOrders(caja);
-  await tap(caja, orderCard(caja.page, n).getByRole("button", { name: "Abrir orden", exact: true }));
+  await press(caja, orderCard(caja.page, n).getByRole("button", { name: "Abrir orden", exact: true }));
   await expect(caja.page.getByRole("heading", { name: "Vender", level: 1 })).toBeVisible();
   await expect(caja.page.locator("aside.cart .existing")).toContainText(`#${n}`);
 }
@@ -373,7 +374,7 @@ export async function serviceA1(dev: Devices, state: RunState) {
     await build(caja, o);
     await send(caja);
     const tickets = await kitchen(cocina, o, false);
-    await tap(cocina, tickets.Cocina!.getByRole("button", { name: "Confirmar recepción", exact: true }));
+    await press(cocina, tickets.Cocina!.getByRole("button", { name: "Confirmar recepción", exact: true }));
     await expect(tickets.Cocina!).toContainText("Cocina recibió");
     await voidFromOrders(caja, o, o.voids![0]!, { returnAllowed: false, checkpointId: "A10-void" });
     await ackVoid(cocina, tickets.Cocina!, o.number, `1 × ${productDef(r, "GR").name}`);
@@ -428,10 +429,10 @@ export async function serviceA1(dev: Devices, state: RunState) {
     await expect(card.locator(".badges")).toContainText("Anulada");
     for (const b of ["Abrir orden", "Anular", "Reembolsar", "Cobrar"])
       await expect(card.getByRole("button", { name: b, exact: true })).toHaveCount(0);
-    await tap(caja, card.getByRole("button", { name: "Detalle", exact: true }));
+    await press(caja, card.getByRole("button", { name: "Detalle", exact: true }));
     const detail = caja.page.getByRole("dialog", { name: `Orden #${o.number}` });
     await expect(detail).toContainText(/Cerrada \d{2}:\d{2} · Anulada/);
-    await tap(caja, detail.getByRole("button", { name: "Cerrar", exact: true }));
+    await press(caja, detail.getByRole("button", { name: "Cerrar", exact: true }));
     await ackVoid(cocina, tickets.Cocina!, o.number, `1 × ${productDef(r, "GR").name}`);
     await expect(tickets.Cocina!).toHaveCount(0);
   }
@@ -451,14 +452,14 @@ export async function serviceA1(dev: Devices, state: RunState) {
 async function discountFlow(caja: Device, o: OrderDef, checkpointId: string) {
   const page = caja.page;
   const marisol = staffA("marisol");
-  await tap(caja, page.locator("aside.cart").getByRole("button", { name: "Descuento", exact: true }));
+  await press(caja, page.locator("aside.cart").getByRole("button", { name: "Descuento", exact: true }));
   const first = page.getByRole("dialog", { name: "Enviar productos primero" });
-  await tap(caja, first.getByRole("button", { name: "Enviar y continuar", exact: true }));
+  await press(caja, first.getByRole("button", { name: "Enviar y continuar", exact: true }));
   const dialog = page.getByRole("dialog", { name: `Descuento · Orden #${o.number}` });
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("radio", { name: "Toda la cuenta" })).toBeChecked();
   await expect(dialog.getByRole("group", { name: "Tipo" }).getByRole("button", { name: "Porcentaje", exact: true })).toHaveAttribute("aria-pressed", "true");
-  await tap(caja, dialog.getByRole("button", { name: "10 %", exact: true }));
+  await press(caja, dialog.getByRole("button", { name: "10 %", exact: true }));
   await dialog.getByLabel(/^Motivo/).selectOption({ label: o.discountBps!.reasonLabel });
   const preview = dialog.locator(".discount-preview");
   await expect(preview.locator("strong")).toHaveText(`Descuento: −${mxn(1820)} · Saldo nuevo: ${mxn(16380)}`);
@@ -474,7 +475,7 @@ async function discountFlow(caja: Device, o: OrderDef, checkpointId: string) {
     if (req.method() === "POST" && /\/api\/orders\/[^/]+\/discounts$/.test(new URL(req.url()).pathname)) posts.push(req.url());
   };
   page.on("request", listener);
-  await tap(caja, dialog.getByRole("button", { name: `Aplicar descuento −${mxn(1820)}`, exact: true }));
+  await press(caja, dialog.getByRole("button", { name: `Aplicar descuento −${mxn(1820)}`, exact: true }));
   await expect(dialog).toHaveCount(0);
   // One PIN (LD-2): Diego last authenticated at A8.5, yet no step-up dialog appears.
   await expect(page.getByRole("dialog", { name: "Confirma con tu PIN" })).toHaveCount(0);
@@ -486,13 +487,13 @@ async function discountFlow(caja: Device, o: OrderDef, checkpointId: string) {
 async function courtesyFlow(caja: Device, o: OrderDef) {
   const page = caja.page;
   const marisol = staffA("marisol");
-  await tap(caja, page.locator("aside.cart").getByRole("button", { name: "Descuento", exact: true }));
+  await press(caja, page.locator("aside.cart").getByRole("button", { name: "Descuento", exact: true }));
   const first = page.getByRole("dialog", { name: "Enviar productos primero" });
-  await tap(caja, first.getByRole("button", { name: "Enviar y continuar", exact: true }));
+  await press(caja, first.getByRole("button", { name: "Enviar y continuar", exact: true }));
   const dialog = page.getByRole("dialog", { name: `Descuento · Orden #${o.number}` });
-  await tap(caja, dialog.getByRole("radio", { name: "Un producto" }));
+  await press(caja, dialog.getByRole("radio", { name: "Un producto" }));
   await dialog.getByLabel(/^Producto/).selectOption({ label: `1 × Agua fresca (Jamaica, Grande) · ${mxn(4500)} pendiente` });
-  await tap(caja, dialog.getByRole("group", { name: "Tipo" }).getByRole("button", { name: "Cortesía (100%)", exact: true }));
+  await press(caja, dialog.getByRole("group", { name: "Tipo" }).getByRole("button", { name: "Cortesía (100%)", exact: true }));
   await expect(dialog.getByLabel(/^Cantidad/)).toHaveValue("1");
   await expect(dialog.getByText("1 pieza sin cobrar", { exact: true })).toBeVisible();
   await dialog.getByLabel(/^Motivo/).selectOption({ label: o.courtesy!.reasonLabel });
@@ -500,11 +501,12 @@ async function courtesyFlow(caja: Device, o: OrderDef) {
   const approval = dialog.getByRole("group", { name: "Autorización de gerente" });
   await approval.getByLabel(/^Gerente que autoriza/).selectOption({ label: marisol.name });
   await fill(caja, approval.getByLabel("PIN del gerente", { exact: true }), marisol.pin);
-  await tap(caja, dialog.getByRole("button", { name: `Aplicar descuento −${mxn(4500)}`, exact: true }));
+  await press(caja, dialog.getByRole("button", { name: `Aplicar descuento −${mxn(4500)}`, exact: true }));
   await expect(dialog).toHaveCount(0);
   await expect(page.getByRole("dialog", { name: "Confirma con tu PIN" })).toHaveCount(0);
   await expect(page.locator("aside.cart .total strong")).toHaveText(mxn(6000));
-  await expect(page.locator("aside.cart .existing")).toContainText(`Cortesía −${mxn(4500)}`);
+  // Built: the check summary names the comped line ("Cortesía · Agua fresca (Jamaica, Grande) −$45.00").
+  await expect(page.locator("aside.cart .existing")).toContainText(`Cortesía · Agua fresca (Jamaica, Grande)−${mxn(4500)}`);
 }
 
 /** A10.13: an 86 mid-draft blocks the line until it is removed. */

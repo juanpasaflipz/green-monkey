@@ -19,6 +19,7 @@ import {
   escapeRe,
   fill,
   nextPrint,
+  press,
   prints,
   record,
   run,
@@ -32,6 +33,8 @@ export const FIGURES = ticketFigures();
 
 /** Collapses whitespace so row texts ("Total\n$82.00") compare as "Total $82.00". */
 export const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+/** Print captures: compared without any whitespace (see rcChecks). */
+export const squash = (s: string) => s.replace(/\s+/g, "");
 
 export function productDef(r: Restaurant, id: string): ProductDef {
   const p = (r.products as ProductDef[]).find((x) => x.id === id);
@@ -302,8 +305,10 @@ export async function rcChecks(
   const before = (await prints(page)).length;
   await tap(d, page.getByRole("button", { name: "Imprimir recibo", exact: true }));
   const printed = await nextPrint(page, before, `receipt-${key}`);
-  const paper = norm(printed.text);
-  for (const s of [...expected, ...(opts.extra ?? [])]) expect(paper, `${key} print: "${s}"`).toContain(s);
+  // The print root is never laid out on screen, so its text has no line
+  // breaks between blocks: compare without whitespace.
+  const paper = squash(printed.text);
+  for (const s of [...expected, ...(opts.extra ?? [])]) expect(paper, `${key} print: "${s}"`).toContain(squash(s));
   return printed;
 }
 
@@ -327,7 +332,8 @@ export function receiptStrings(r: Restaurant, key: string, payments: Payment[]) 
   for (const l of f.lines) {
     if (!l.remaining) continue;
     out.push(`${l.remaining} × ${l.name} ${mxn(l.total)}`);
-    for (const o of l.options) out.push(`+ ${o}`);
+    const p = (r.products as ProductDef[]).find((x) => x.name === l.name)!;
+    for (const o of optionLabels(r, p, l.options)) out.push(`+ ${o}`);
     if (l.note) out.push(l.note);
   }
   const rate = r === RESTAURANT_B ? "8%" : "16%";
@@ -365,7 +371,7 @@ export function kdsTicket(page: Page, number: number, station: "Cocina" | "Barra
   return page
     .locator("article.kitchen-ticket")
     .filter({ has: page.locator("h2", { hasText: new RegExp(`^#${number}(\\s|$)`) }) })
-    .filter({ has: page.locator("header span", { hasText: new RegExp(`^Ronda ${round} · .* · ${STATION[station]}$`) }) });
+    .filter({ has: page.locator("header > div:first-child > span", { hasText: new RegExp(`^Ronda ${round} · .* · ${STATION[station]}$`) }) });
 }
 
 export type KdsExpectation = {
@@ -392,7 +398,7 @@ export async function kdsChecks(k: Device, e: KdsExpectation) {
     await expect(ticket).toBeVisible({ timeout: 10_000 });
     tickets[station] = ticket;
     if (e.callName) await expect(ticket.locator("h2")).toHaveText(`#${e.number} ${e.callName}`);
-    await expect(ticket.locator("header span").first()).toHaveText(
+    await expect(ticket.locator("header > div:first-child > span")).toHaveText(
       `Ronda ${e.round ?? 1} · ${e.mode ?? "Para llevar"} · ${STATION[station]}`,
     );
     if (e.where) await expect(ticket.locator(":scope > p").first()).toHaveText(e.where);
@@ -423,7 +429,7 @@ export async function kdsChecks(k: Device, e: KdsExpectation) {
 export async function progressTicket(k: Device, ticket: Locator, from: "sent" | "seen" | "ready" = "sent") {
   const steps = ["Confirmar recepción", "Marcar listo", "Marcar entregado"];
   for (const label of steps.slice(from === "sent" ? 0 : from === "seen" ? 1 : 2)) {
-    await tap(k, ticket.getByRole("button", { name: label, exact: true }));
+    await press(k, ticket.getByRole("button", { name: label, exact: true }));
     if (label !== "Marcar entregado") await expect(ticket.getByRole("button", { name: steps[steps.indexOf(label) + 1]!, exact: true })).toBeVisible();
   }
   await expect(ticket).toHaveCount(0);
