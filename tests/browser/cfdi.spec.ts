@@ -681,16 +681,17 @@ test("LD-51 F1/F2/F10, CFDIFIX-1/5/7: the owner switches the global to daily in 
           /^Periodicidad actual: mensual\. Cambia a diaria desde el .+\. No se aplicó al momento: .+\.$/,
         ),
       ).toBeVisible();
+      // The reason, in the periodicity line and in the save's status (UX-2).
+      const why =
+        reason === "globals"
+          ? "el mes ya tiene una factura global"
+          : reason === "overdue"
+            ? "un ticket del mes quedaría en un periodo cuya factura global ya está atrasada"
+            : "acortaría el plazo para autofacturar de tickets ya vendidos este mes";
       await expect(
-        cfdi.getByText(
-          reason === "globals"
-            ? "el mes ya tiene una factura global"
-            : reason === "overdue"
-              ? "un ticket del mes quedaría en un periodo cuya factura global ya está atrasada"
-              : "acortaría el plazo para autofacturar de tickets ya vendidos este mes",
-          { exact: false },
-        ),
-      ).toBeVisible();
+        cfdi.getByText(/^Periodicidad actual: mensual\./),
+      ).toContainText(why);
+      await expect(status).toContainText(why);
       // The portal keeps answering the deadline the receipt printed.
       await customer.reload();
       await expect(customer.getByText(/^Puedes facturar hasta el /)).toHaveText(
