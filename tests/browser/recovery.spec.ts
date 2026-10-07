@@ -1,4 +1,5 @@
 import { test, expect, request as playwrightRequest } from "@playwright/test";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 async function login(page: any) {
   await page.goto("/app");
@@ -9,6 +10,10 @@ async function login(page: any) {
   ).toBeVisible();
   await page.getByRole("button", { name: "Operación", exact: true }).click();
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it, and
+// every offline sale it leaves in the kitchen review lane is decided (FLK-R3).
+kitchenHygiene();
 
 test("manager reconciles offline cash and resolves kitchen and stock follow-ups", async ({
   page,

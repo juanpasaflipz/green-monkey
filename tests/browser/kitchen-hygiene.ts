@@ -1,9 +1,10 @@
+import { randomUUID } from "node:crypto";
 import {
   test,
   expect,
-  type Browser,
-  type BrowserContext,
-  type Page,
+  request,
+  type APIRequestContext,
+  type APIResponse,
 } from "@playwright/test";
 
 /**
@@ -17,15 +18,21 @@ import {
  * feed cap, screens that no longer showed new tickets.
  *
  * kitchenHygiene() registers, for the spec file (or describe) that calls it,
- * a beforeEach that notes the kitchen feed as the test starts and an
- * afterEach that delivers, as the demo owner, every open round the test
- * created: pending cancellations are acknowledged first, then each round goes
- * to ready and delivered through the same API the KDS uses. A round that
- * cannot be delivered fails the test softly (the test's own error, if any,
- * stays the first one reported).
+ * a beforeEach that notes the kitchen feed and the offline review lane as the
+ * test starts and an afterEach that, as the demo owner, first decides
+ * "already served" for every offline sale the test left in the review lane
+ * (the kitchen's own decision route, FLK-R8), then delivers every open round
+ * the test created: pending cancellations are acknowledged first, then each
+ * round goes to ready and delivered through the same API the KDS uses. A
+ * round or review that cannot be settled fails the test softly (the test's
+ * own error, if any, stays the first one reported).
  *
- * The cleanup signs in once per worker in a browser context of its own, so it
- * never depends on the state a test left its pages in.
+ * The cleanup signs in once per worker on an API request context of its own,
+ * so it never depends on the state a test left its pages, devices or sessions
+ * in, and it works the same in every browser project. It keeps the session
+ * cookies itself and sends them on every call: the compiled server marks them
+ * Secure, which WebKit's contexts and Playwright's cookie store (outside
+ * "localhost") withhold from a plain-HTTP http://127.0.0.1 server.
  */
 
 const TENANT =
@@ -43,105 +50,170 @@ type FeedRound = {
   pendingVoids: unknown[];
 };
 type Feed = { serverTime: string; rounds: FeedRound[] };
+/** A pending offline-sold round (GET /api/offline/kitchen, oldest 100). */
+type Review = {
+  roundId: string;
+  orderNumber: number;
+  name: string;
+  syncedAt: string;
+};
+type Before = { ids: Set<string>; reviews: Set<string>; since: number };
+type Owner = {
+  api: APIRequestContext;
+  baseURL: string;
+  csrf: string;
+  /** The session cookies, name to value, as the server last set them. */
+  jar: Map<string, string>;
+};
 
-let owner: { browser: Browser; context: BrowserContext; page: Page } | null =
-  null;
+let owner: Owner | null = null;
 
-/** The cleanup's owner page (signed in on its own paired browser context). */
-async function ownerPage(browser: Browser, baseURL: string, fresh = false) {
-  if (owner && (fresh || owner.browser !== browser)) {
-    await owner.context.close().catch(() => {});
+/** Keeps the cookies a response sets. */
+function keep(jar: Map<string, string>, r: APIResponse) {
+  for (const h of r.headersArray())
+    if (h.name.toLowerCase() === "set-cookie") {
+      const pair = h.value.split(";")[0];
+      const split = pair.indexOf("=");
+      jar.set(pair.slice(0, split).trim(), pair.slice(split + 1).trim());
+    }
+  return r;
+}
+
+/** One API call with the jar's cookies (and the CSRF token on a POST). */
+async function call(
+  o: Pick<Owner, "api" | "jar"> & { csrf?: string },
+  method: "get" | "post",
+  path: string,
+  data?: object,
+) {
+  const cookie = [...o.jar].map(([k, v]) => `${k}=${v}`).join("; ");
+  return keep(
+    o.jar,
+    await o.api[method]("/api" + path, {
+      headers: {
+        ...(cookie ? { cookie } : {}),
+        ...(o.csrf ? { "x-csrf-token": o.csrf } : {}),
+      },
+      ...(data ? { data } : {}),
+    }),
+  );
+}
+
+/** The cleanup's owner session (its own request context and cookies). */
+async function signIn(baseURL: string, fresh = false): Promise<Owner> {
+  if (owner && (fresh || owner.baseURL !== baseURL)) {
+    await owner.api.dispose().catch(() => {});
     owner = null;
   }
   if (!owner) {
-    const context = await browser.newContext({ baseURL });
-    const page = await context.newPage();
-    await page.goto("/api/health");
-    const status = await page.evaluate(
-      async ({ tenantId, login, secret }) =>
-        (
-          await fetch("/api/login", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ tenantId, login, secret }),
-          })
-        ).status,
-      { tenantId: TENANT, ...OWNER },
-    );
-    if (status !== 200) {
-      await context.close();
-      throw Error(`kitchen hygiene: owner sign-in answered ${status}`);
+    const api = await request.newContext({ baseURL });
+    const jar = new Map<string, string>();
+    try {
+      const login = await call({ api, jar }, "post", "/login", {
+        tenantId: TENANT,
+        ...OWNER,
+      });
+      if (login.status() !== 200)
+        throw Error(
+          `kitchen hygiene: owner sign-in answered ${login.status()}`,
+        );
+      const session = await call({ api, jar }, "get", "/session");
+      if (!session.ok())
+        throw Error(`kitchen hygiene: session answered ${session.status()}`);
+      owner = { api, baseURL, jar, csrf: (await session.json()).csrf };
+    } catch (e) {
+      await api.dispose().catch(() => {});
+      throw e;
     }
-    owner = { browser, context, page };
   }
-  return owner.page;
+  return owner;
+}
+
+async function read<T>(o: Owner, path: string): Promise<T> {
+  const r = await call(o, "get", path);
+  if (!r.ok())
+    throw Error(`kitchen hygiene: GET ${path} answered ${r.status()}`);
+  return r.json();
+}
+
+/** A KDS command as the owner; returns why it was refused, if it was. */
+async function post(o: Owner, path: string, body: object = {}) {
+  const r = await call(o, "post", path, {
+    operationId: randomUUID(),
+    ...body,
+  });
+  return r.ok() ? null : `POST ${path} ${r.status()} ${await r.text()}`;
 }
 
 /** GET /api/service/kitchen (every station) as the cleanup owner. */
-async function feed(page: Page): Promise<Feed> {
-  return page.evaluate(async () => {
-    const r = await fetch("/api/service/kitchen?station=all");
-    if (!r.ok) throw Error(`kitchen feed ${r.status}`);
-    return r.json();
-  });
-}
+const feed = (o: Owner) => read<Feed>(o, "/service/kitchen?station=all");
 
-async function withOwner<T>(
-  browser: Browser,
-  baseURL: string,
-  fn: (page: Page) => Promise<T>,
-) {
+/** The review lane of offline sales the kitchen has not decided yet. */
+const reviews = async (o: Owner) =>
+  (await read<{ items: Review[] }>(o, "/offline/kitchen")).items;
+
+async function withOwner<T>(baseURL: string, fn: (o: Owner) => Promise<T>) {
   try {
-    return await fn(await ownerPage(browser, baseURL));
+    return await fn(await signIn(baseURL));
   } catch {
-    // The session may have ended (a test signed the device out, the server
+    // The session may have ended (a test ended every session, the server
     // restarted): sign in again once.
-    return fn(await ownerPage(browser, baseURL, true));
+    return fn(await signIn(baseURL, true));
   }
 }
 
 /** Open rounds on the KDS that the test created (not open before it, created after it began). */
-function created(f: Feed, before: { ids: Set<string>; since: number }) {
+function created(f: Feed, before: Before) {
   return f.rounds.filter(
     (r) => !before.ids.has(r.id) && Date.parse(r.createdAt) >= before.since,
   );
 }
 
-/** Delivers the rounds a test created; returns those still open. */
-async function deliver(
-  page: Page,
-  before: { ids: Set<string>; since: number },
-): Promise<string[]> {
-  for (let pass = 0; pass < 3; pass++) {
-    const mine = created(await feed(page), before);
-    if (!mine.length) return [];
-    await page.evaluate(async (rounds) => {
-      const s = await (await fetch("/api/session")).json();
-      const post = (path: string, body: object = {}) =>
-        fetch("/api" + path, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-csrf-token": s.csrf,
-          },
-          body: JSON.stringify({ operationId: crypto.randomUUID(), ...body }),
-        });
-      for (const r of rounds) {
-        // A pending cancellation blocks delivery (SVC-K6); acknowledging the
-        // last item of a round may also complete it, so re-read next pass.
-        if (r.pendingVoids.length) {
-          await post(`/kitchen/${r.id}/voids/ack`);
-          continue;
-        }
-        if (r.state === "active")
-          await post(`/kitchen/${r.id}`, { state: "ready" });
-        await post(`/kitchen/${r.id}`, { state: "completed" });
-      }
-    }, mine);
-  }
-  return created(await feed(page), before).map(
-    (r) => `#${r.orderNumber} ${r.callName} (${r.state})`,
+/** Offline sales the test left in the review lane (synced after it began). */
+function reviewed(items: Review[], before: Before) {
+  return items.filter(
+    (r) =>
+      !before.reviews.has(r.roundId) && Date.parse(r.syncedAt) >= before.since,
   );
+}
+
+/**
+ * Settles the review lane entries and rounds a test created; returns those
+ * still open, with any refused command.
+ */
+async function deliver(o: Owner, before: Before): Promise<string[]> {
+  const refused: string[] = [];
+  const note = (why: string | null) => why && refused.push(why);
+  for (const r of reviewed(await reviews(o), before))
+    note(
+      await post(o, `/offline/kitchen/${r.roundId}/decision`, {
+        decision: "already_served",
+      }),
+    );
+  for (let pass = 0; pass < 3; pass++) {
+    const mine = created(await feed(o), before);
+    if (!mine.length) break;
+    for (const r of mine) {
+      // A pending cancellation blocks delivery (SVC-K6); acknowledging the
+      // last item of a round may also complete it, so re-read next pass.
+      if (r.pendingVoids.length) {
+        note(await post(o, `/kitchen/${r.id}/voids/ack`));
+        continue;
+      }
+      if (r.state === "active")
+        note(await post(o, `/kitchen/${r.id}`, { state: "ready" }));
+      note(await post(o, `/kitchen/${r.id}`, { state: "completed" }));
+    }
+  }
+  const left = [
+    ...reviewed(await reviews(o), before).map(
+      (r) => `#${r.orderNumber} ${r.name} (offline review)`,
+    ),
+    ...created(await feed(o), before).map(
+      (r) => `#${r.orderNumber} ${r.callName} (${r.state})`,
+    ),
+  ];
+  return left.length ? [...left, ...refused] : [];
 }
 
 /**
@@ -150,23 +222,27 @@ async function deliver(
  * kitchen of the demo restaurant.
  */
 export function kitchenHygiene() {
-  let before: { ids: Set<string>; since: number } | null = null;
-  test.beforeEach(async ({ browser, baseURL }) => {
+  let before: Before | null = null;
+  test.beforeEach(async ({ baseURL }) => {
     before = null;
-    const f = await withOwner(browser, baseURL!, feed);
+    const [f, lane] = await withOwner(baseURL!, (o) =>
+      Promise.all([feed(o), reviews(o)]),
+    );
     before = {
       ids: new Set(f.rounds.map((r) => r.id)),
+      reviews: new Set(lane.map((r) => r.roundId)),
       since: Date.parse(f.serverTime) - CLOCK_MARGIN_MS,
     };
   });
-  test.afterEach(async ({ browser, baseURL }) => {
+  test.afterEach(async ({ baseURL }) => {
     const start = before;
     if (!start) return;
-    const left = await withOwner(browser, baseURL!, (page) =>
-      deliver(page, start),
-    );
+    const left = await withOwner(baseURL!, (o) => deliver(o, start));
     expect
-      .soft(left, "kitchen rounds this test opened are delivered (W3-2)")
+      .soft(
+        left,
+        "kitchen rounds and offline reviews this test opened are settled (W3-2)",
+      )
       .toEqual([]);
   });
 }

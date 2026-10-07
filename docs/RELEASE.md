@@ -38,14 +38,20 @@ Dockerfile is built with a stamped commit and the container must pass
 (`/healthz`) and pass `migrate.js --check`.
 
 The browser suite is written to run again on a database it already ran
-against (W3-2, LD-42): `tests/browser/kitchen-hygiene.ts` delivers, as the
-demo owner, every kitchen round a test in the order-heavy specs (kitchen,
-reports, service, voids, core, discounts, menu, fiscal, cfdi, finance) opened,
-and `tests/browser/global-setup.ts` delivers the rounds earlier runs left open
-on the demo restaurants before a run, only on the isolated local fixture
-database. Tests find their own records by unique names or by searching (no
-"last" ticket or first register page). A reused staging database still
-accumulates the open checks, and the rounds of specs outside that list.
+against (W3-2, LD-42). After each test of every spec that sends rounds to the
+kitchen (kitchen, reports, service, voids, core, discounts, menu, fiscal, cfdi,
+finance, access, offline, recovery, settlement-settings),
+`tests/browser/kitchen-hygiene.ts`, signed in as the demo owner on a request
+context of its own, decides "already served" for the offline sales the test
+left in the kitchen review lane and delivers every kitchen round the test
+opened; `public-ordering.spec` delivers its own rounds. Before a run,
+`tests/browser/global-setup.ts` settles what an interrupted run left on each
+demo restaurant (open rounds, their pending cancellations, pending kitchen
+reviews), naming the restaurant in every statement, and only on the isolated
+local fixture database. Tests find their own records by unique names or by
+searching (no "last" ticket or first register page). A reused staging
+database still accumulates the open checks, but no kitchen rounds or kitchen
+reviews.
 Local confirmation (October 6, 2026, local fixture only, not staging): after
 the full qualification, three full browser rounds on one database without a
 reset between them, the last two with four `yes` processes loading the CPU,

@@ -8,6 +8,7 @@ import {
 } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { transformServiceWorker } from "../../vite/sw-shell-plugin";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 const tenantId = "10000000-0000-4000-8000-000000000001";
 const PROVISIONAL = /[A-Z][A-Z0-9]{0,2}-\d{2,4}/;
@@ -54,6 +55,10 @@ test.beforeEach(async ({ context, browserName, baseURL }) => {
     await route.fulfill({ response, headers });
   });
 });
+
+// W3-2: every round a test sends to the kitchen is delivered after it, and
+// every offline sale it leaves in the kitchen review lane is decided (FLK-R3).
+kitchenHygiene();
 
 async function login(page: Page) {
   await page.goto("/app");
