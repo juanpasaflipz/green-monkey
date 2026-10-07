@@ -1,6 +1,6 @@
 import postgres from "postgres";
 import express, { Router } from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { withOwner } from "./owner-accounts.js";
 import { billingStore, checkBillingRole } from "./billing-store.js";
@@ -12,7 +12,7 @@ import {
 } from "./stripe-webhook.js";
 import { waitForDatabase } from "./db.js";
 import { poolOptions, withoutParams } from "./db-support.js";
-import { log } from "./logging.js";
+import { clientIp, log } from "./logging.js";
 import { legalConfig, requireCurrentLegal } from "./legal.js";
 import { saasTaxConfig } from "./saas-tax.js";
 
@@ -93,12 +93,15 @@ export async function billingRuntime(
     res.set("Referrer-Policy", "no-referrer");
     next();
   });
+  // Keyed on the real client (clientIp, IPv6 per /56), not on req.ip, which
+  // behind Railway's edge is the edge hop (LD-46).
   routes.use(
     rateLimit({
       windowMs: 60000,
       limit: 30,
       standardHeaders: true,
       legacyHeaders: false,
+      keyGenerator: (req) => ipKeyGenerator(clientIp(req), 56),
     }),
   );
   routes.get("/status", async (req, res, next) => {

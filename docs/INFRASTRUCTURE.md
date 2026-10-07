@@ -55,6 +55,19 @@ stops for review. Domains are deliberately not in IaC. Settings IaC cannot
 express are manual and listed in [RUNBOOK.md](RUNBOOK.md): restart policy
 (On Failure), region, custom domain, serverless sleep (off), deploy webhook.
 
+Client address (LD-46): Railway's edge connects to `web` from
+100.64.0.0/10, discards the client's own `X-Forwarded-For` and `X-Real-IP`,
+and sends `X-Forwarded-For: <client>, <edge hop>` and `X-Real-IP: <client>`
+(verified on staging on 2026-10-07 with a temporary header-echo service).
+With the default `trust proxy` Express's `req.ip` is the edge hop, shared by
+every client behind it, so `clientIp(req)` (`server/logging.ts`) returns
+`X-Real-IP` when the immediate peer is trusted and the header is one valid
+address, else `req.ip`. Every per-IP limit and log `ipHash` keys on it, and
+every `rateLimit()` has an explicit `keyGenerator` through it.
+`/api/ops/diagnostics/ip` reports `{ ip, peerTrusted, source }` and the CD
+smoke requires `peerTrusted: true` and `source: "x-real-ip"` on a deployed
+origin ([RUNBOOK.md](RUNBOOK.md) "Client address").
+
 `/health` is process liveness. `/api/health` returns 200 only when the newest
 bundled migration is applied and the instance is not draining; otherwise 503
 (`schema_not_ready`, `server_draining`). `/api/ops/status` is the public,
@@ -123,7 +136,7 @@ context; the runtime role has no DELETE anywhere.
 | `ALERT_WEBHOOK_URL`, `ALERT_WEBHOOK_KIND`, `SENTRY_DSN` | New: alert webhook (ntfy by default) and optional error tracking |
 | `BILLING_DATABASE_URL` | Billing capability login; web (commands, webhook) and worker (provider loop) |
 | `BACKUP_DATABASE_URL`, `PROVISION_DATABASE_URL` | Backup workflow and operator scripts only; refused by deployed services |
-| `TRUST_PROXY` | Express trust proxy; unset means `loopback, 100.0.0.0/8` in production (Railway edge) |
+| `TRUST_PROXY` | Express trust proxy; unset means `loopback, 100.0.0.0/8` in production (Railway edge). The client address is the trusted edge's `X-Real-IP`, not `req.ip` (`clientIp`, LD-46; "Deployment blueprint" above) |
 | `JWT_SECRET` | Retain, `web` only; verifies pre-2.0 tokens outside production and keys the lookup digests; generated per environment, rotated only with an emergency key rotation ([RUNBOOK.md](RUNBOOK.md) "Signing keys") |
 | `SIGNING_KEYS` | New (Wave 2.0, OPS-10): `web` only, `kid:base64url(>=32 bytes)[,…]`, first entry signs; required when `APP_ENV=production`; a deployed worker refuses it |
 | `WORKER_DATABASE_URL` | New (Wave 2.0): jobs login of the `worker` only; a deployed web refuses it |
