@@ -113,6 +113,14 @@ const neonDatabase = `green_monkey_provision_${neonEnv}_test`;
 const neonOwner = `gm_test_neon_owner_${neonEnv}`;
 const neonOwnerPassword = randomBytes(24).toString("hex");
 const neonGrantor = `gm_test_grantor_${neonEnv}`;
+/** The database owner's URL for the Neon-parity database (a non-superuser owner). */
+const neonOwnerUrl = (() => {
+  const u = new URL(migration);
+  u.pathname = "/" + neonDatabase;
+  u.username = neonOwner;
+  u.password = neonOwnerPassword;
+  return u.href;
+})();
 try {
   await admin.unsafe(`create database "${database}"`);
   assert.equal(
@@ -658,13 +666,6 @@ try {
       await admin.unsafe(
         `create database "${neonDatabase}" owner "${neonOwner}"`,
       );
-      const neonOwnerUrl = (() => {
-        const u = new URL(migration);
-        u.pathname = "/" + neonDatabase;
-        u.username = neonOwner;
-        u.password = neonOwnerPassword;
-        return u.href;
-      })();
       const owner = as(neonOwnerUrl);
       const [self] = await owner`
         select r.rolsuper, pg_has_role(current_user, 'gm_migrator', 'SET') as can_set
@@ -833,6 +834,77 @@ try {
       });
       const third = as(runtimeThird.url);
       await tenant(third, tenantId, (tx) => tx`select 1 from dining_tables`);
+    },
+  );
+
+  await check(
+    "LD-47: finalize revokes a schema grant made through pg_database_owner with a verified ownership round trip, and refuses, changing nothing, when the round trip would rewrite any other entry",
+    async () => {
+      // Staging (Neon, 2026-10-07): a legacy `USAGE on schema public granted
+      // by pg_database_owner`, made before the cutover, outlived DROP OWNED,
+      // and nobody can SET ROLE to pg_database_owner there. The same state
+      // here: a superuser's grant is recorded with the schema owner as its
+      // grantor, and DROP OWNED revokes as the owner login's best grantor,
+      // gm_migrator (it inherits it since provisioning), so that grant stays.
+      const old = `gm_${neonEnv}_ld47`;
+      const owner = as(neonOwnerUrl);
+      const u = new URL(migration);
+      u.pathname = "/" + neonDatabase;
+      const superuser = as(u.href);
+      await owner.unsafe(`create role "${old}" login`);
+      created.push(old);
+      await superuser.unsafe(`grant usage on schema public to "${old}"`);
+      const acl = async () => {
+        const [row] = await superuser`
+          select n.nspowner::regrole::text as owner,
+            array(select format('%s|%s|%s|%s', a.grantee::regrole, a.grantor::regrole, a.privilege_type, a.is_grantable)
+                  from aclexplode(n.nspacl) a order by 1) as entries
+          from pg_namespace n where n.nspname = 'public'`;
+        return { owner: row.owner as string, entries: row.entries as string[] };
+      };
+      const start = await acl();
+      assert.equal(start.owner, "pg_database_owner");
+      assert.ok(
+        start.entries.includes(`${old}|pg_database_owner|USAGE|f`),
+        start.entries.join(" "),
+      );
+      // An entry for the owner login itself: handing the schema to that
+      // login and back would fold it into the owner's own entry.
+      await superuser.unsafe(`grant usage on schema public to "${neonOwner}"`);
+      const guarded = await acl();
+      await assert.rejects(
+        finalizeRotation({ ownerUrl: neonOwnerUrl, old }),
+        new RegExp(
+          `ownership round trip on schema public would change more than ${old}'s grant .*lost ${neonOwner}\\|pg_database_owner\\|USAGE\\|f;.*nothing was dropped`,
+        ),
+      );
+      assert.deepEqual(await acl(), guarded, "the refusal changed no entry");
+      const [kept] =
+        await admin`select count(*)::int as n from pg_roles where rolname=${old}`;
+      assert.equal(kept.n, 1, "and dropped nothing");
+      await superuser.unsafe(
+        `revoke usage on schema public from "${neonOwner}"`,
+      );
+      assert.deepEqual(await acl(), start);
+
+      const done = await finalizeRotation({ ownerUrl: neonOwnerUrl, old });
+      assert.ok(
+        done.actions.includes(
+          "revoked USAGE on schema public granted by pg_database_owner (schema ownership round trip, ACL verified)",
+        ),
+        done.actions.join("; "),
+      );
+      assert.deepEqual(
+        await acl(),
+        {
+          owner: "pg_database_owner",
+          entries: start.entries.filter((e) => !e.startsWith(`${old}|`)),
+        },
+        "schema public is back with pg_database_owner, only the old login's entry gone",
+      );
+      const [gone] =
+        await admin`select count(*)::int as n from pg_roles where rolname=${old}`;
+      assert.equal(gone.n, 0, "the old login is dropped");
     },
   );
 

@@ -113,7 +113,7 @@ export default defineArea({
     serviceKdsClearStaleConfirm:
       "Se marcarán como entregados {n} tickets de días anteriores. Queda registrado quién lo hizo.",
     serviceKdsTruncated:
-      "Se muestran los 200 tickets más antiguos; los nuevos no aparecen hasta que se entreguen tickets. Un gerente puede retirar los de días anteriores.",
+      "Hay más de 200 tickets abiertos: se muestran los 200 más recientes y los más antiguos quedan ocultos. Un gerente puede retirar los de días anteriores con «Retirar tickets de días anteriores».",
     serviceKdsAckFirst:
       "Confirma la cancelación antes de marcar el ticket como entregado.",
     serviceKdsDismiss: "Descartar",
@@ -393,7 +393,7 @@ export default defineArea({
     serviceKdsClearStaleConfirm:
       "{n} tickets from previous days will be marked delivered. Who did it is recorded.",
     serviceKdsTruncated:
-      "Showing the 200 oldest tickets; new ones do not appear until tickets are delivered. A manager can clear those from previous days.",
+      "More than 200 tickets are open: the 200 newest are shown and older ones are hidden. A manager can clear those from previous days with “Clear tickets from previous days”.",
     serviceKdsAckFirst:
       "Acknowledge the cancellation before marking the ticket delivered.",
     serviceKdsDismiss: "Dismiss",

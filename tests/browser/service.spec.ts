@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"];
 
@@ -138,6 +139,9 @@ async function freeTables(page: Page) {
     (t) => !t.checks.length,
   );
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test("dine-in table accepts dessert after delivery, stays occupied until paid and released", async ({
   page,

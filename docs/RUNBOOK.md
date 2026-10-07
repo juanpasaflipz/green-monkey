@@ -194,12 +194,15 @@ peer's `X-Real-IP` is ignored. Limiters group IPv6 clients per /56, and every
 (`tests/client-ip.test.ts` fails on one without, and on any `req.ip` read
 outside `server/logging.ts`).
 
-Check it with `GET /api/ops/diagnostics/ip`, which answers
-`{ ip, peerTrusted, source }`: behind the edge, `peerTrusted: true`,
-`source: "x-real-ip"` and your own public address. The CD smoke's `client_ip`
-check requires exactly that, plus the same answer when the request carries
-spoofed `X-Forwarded-For` and `X-Real-IP`. Its error names each failed
-condition:
+Check it by hand with `GET /api/ops/diagnostics/ip`, which answers
+`{ ip, peerTrusted, source }`: behind the edge you should see
+`peerTrusted: true`, `source: "x-real-ip"` and your own public address. The
+CD smoke's `client_ip` check proves less than that: it requires
+`peerTrusted: true`, `source: "x-real-ip"` and a public address, and the same
+answer when the request carries spoofed `X-Forwarded-For` and `X-Real-IP`
+(spoof invariance). It cannot prove the address is the runner's own (it does
+not know it), so after a change at the edge also compare the answer with
+your own address by hand. Its error names each failed condition:
 
 | Smoke error | Meaning | Action |
 | --- | --- | --- |
@@ -208,6 +211,13 @@ condition:
 | `source is peer, not x-real-ip` | the request reached `web` without the edge's headers | check the domain still routes through Railway's edge |
 | `ip is a client-supplied forwarding header value` or `forwarding headers changed the client IP` | the edge passed the client's own headers on: anyone can pick their limiter bucket | stop the rollout; roll back |
 | `ip is a proxy or private address, not public` or `ip is not an IP address` | the address is the edge's peer, a private range or missing | as for `peerTrusted is false` |
+
+Between smokes, a deployed `web` (`APP_ENV` staging or production) logs
+`client_ip_without_real_ip` (warn, once per process, with `source` and
+`realIpHeader: missing|invalid`, never an address) the first time a request
+from a trusted peer arrives without a usable `X-Real-IP` (Railway's health
+checks on `/health` and `/api/health` excepted). Treat it like the smoke's
+`source is forwarded` or `source is peer` rows above.
 
 While the address is wrong, a restaurant or a carrier NAT behind one edge hop
 shares one bucket per limit (one busy client can lock the others out of PIN
@@ -403,6 +413,22 @@ offline vault, direct endpoint):
    role, since only the grantor can revoke them), and drops the login, in
    one transaction. A refusal naming a grantor the owner cannot `SET ROLE`
    to changed nothing: revoke that grant as its grantor, then retry.
+   A schema grant whose grantor is `pg_database_owner` (schema `public`'s
+   owner since PostgreSQL 15; a legacy grant made before the cutover, as on
+   staging in LD-47) cannot be revoked that way: Neon lets no login
+   `SET ROLE pg_database_owner`. Finalize revokes it in the same transaction
+   through the schema's ownership: `ALTER SCHEMA public OWNER TO` the owner
+   login (which rewrites `pg_database_owner`'s grants as that login's),
+   `REVOKE`, `ALTER SCHEMA public OWNER TO pg_database_owner`, and it rolls
+   everything back unless the schema ACL afterwards is the starting one
+   minus exactly that grant, owned by `pg_database_owner` again (the action
+   reads "schema ownership round trip, ACL verified"). The round trip folds
+   any entry naming the owner login itself into the owner's own entry, so a
+   refusal listing what it would have `lost` or `gained` changed nothing:
+   run the same three statements by hand in one transaction as the owner
+   login, compare `select nspacl from pg_namespace where nspname = 'public'`
+   before and after (only the old login's entry may go), restore any other
+   entry the round trip changed before `COMMIT`, then retry the finalize.
 4. Same for `--kind billing` (both services), `--kind worker`
    (`WORKER_DATABASE_URL` on `worker`, redeploy it, then `--finalize`; the new
    login copies the `gm_jobs_worker` membership and the 30 s/8 s/60 s

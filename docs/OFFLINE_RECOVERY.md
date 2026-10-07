@@ -20,6 +20,13 @@ The POS decides it is offline from what actually happens, not from
   timeout, 5xx, a non-JSON or HTML proxy page) switch the device to offline; two
   consecutive successes switch it back. A browser that reports itself offline is
   offline immediately.
+- A request and its one bounded retry (GETs, and POSTs that carry an
+  operationId) report separately, so a 502 and its retry 800 ms later are two
+  failures and take the device offline. That is deliberate in v1 (LD-45): both
+  attempts failing is outage evidence. When it happens under the open payment
+  dialog, Confirm turns into "Guardar cobro en este dispositivo" in place and
+  ignores taps for 700 ms after each change, so a tap meant for the other label
+  does nothing.
 - Requests time out (GET 8 s, POST 15 s, offline sync 20 s), so a hung server never
   leaves a dialog stuck.
 

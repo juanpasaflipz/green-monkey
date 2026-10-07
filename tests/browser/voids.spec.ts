@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 const tenantId = "10000000-0000-4000-8000-000000000001";
 
@@ -23,6 +24,9 @@ async function switchEmployee(page: Page, login: string, secret: string) {
   expect(status).toBe(200);
   await page.goto("/app");
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test("cashier voids an item with manager approval and the kitchen acknowledges it", async ({
   page,
