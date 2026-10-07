@@ -1,7 +1,14 @@
 import type express from "express";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type { PreAuthContext, RouteContext } from "../http.js";
-import { clientIp, ipHash, log, requestIdOf, routeLabel } from "../logging.js";
+import {
+  clientAddress,
+  clientIp,
+  ipHash,
+  log,
+  requestIdOf,
+  routeLabel,
+} from "../logging.js";
 import { opsStatus } from "../ops/status.js";
 import { cancelJob, requeueJob } from "../jobs/queue.js";
 import { requireRecentAuth } from "../access.js";
@@ -63,21 +70,17 @@ export function registerPreAuth(ctx: PreAuthContext) {
     },
   );
 
-  // The requester's own address as the server sees it, so the CD smoke can
-  // prove the proxy hop is trusted correctly. No headers are echoed.
+  // The requester's own address as the server sees it (clientAddress), so the
+  // CD smoke can prove the edge is a trusted peer and the address is the
+  // edge's X-Real-IP (source "x-real-ip"), not the edge hop (LD-46). No
+  // headers are echoed.
   app.get(
     "/api/ops/diagnostics/ip",
     opsLimiter("ops-ip", 60),
     (req: express.Request, res: express.Response) => {
-      const trust = req.app.get("trust proxy fn") as
-        ((addr: string, i: number) => boolean) | undefined;
-      const peer = req.socket.remoteAddress ?? "";
+      const { ip, peerTrusted, source } = clientAddress(req);
       res.set("Cache-Control", "no-store");
-      res.json({
-        ip: clientIp(req),
-        peerTrusted: Boolean(trust && peer && trust(peer, 0)),
-        forwardedHop: req.ip !== peer,
-      });
+      res.json({ ip, peerTrusted, source });
     },
   );
 }

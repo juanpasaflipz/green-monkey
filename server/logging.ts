@@ -226,21 +226,54 @@ export function routeLabel(req: express.Request): string {
   return typeof path === "string" ? `${req.baseUrl}${path}` : "unmatched";
 }
 
+/** Where clientAddress() took the address from (reported by /api/ops/diagnostics/ip). */
+export type ClientIpSource = "x-real-ip" | "forwarded" | "peer";
+
+/** "::ffff:a.b.c.d" (an IPv4 client on a dual-stack socket) as "a.b.c.d"; anything else unchanged. */
+function unmapIpv4(address: string): string {
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(address);
+  return mapped && isIP(mapped[1]) === 4 ? mapped[1] : address;
+}
+
 /**
- * The client address. With trust proxy, req.ip is the nearest untrusted
- * X-Forwarded-For hop. When the peer is itself a trusted proxy that sent no
- * usable hop, X-Real-IP (set by Railway's edge) is used; a client-supplied
- * X-Real-IP from an untrusted peer is ignored.
+ * The client address, where it came from, and whether the immediate peer is
+ * a trusted proxy (the app's `trust proxy`; IPv4-mapped peers normalised).
+ *
+ * Railway's edge (verified on staging, LD-46) connects from 100.64.0.0/10,
+ * discards any X-Forwarded-For and X-Real-IP the client sent, and sends
+ * `X-Forwarded-For: <client>, <edge hop>` and `X-Real-IP: <client>`. Express
+ * walks X-Forwarded-For from the right to the first untrusted address, which
+ * there is the edge hop (a public address shared by every client behind it),
+ * so req.ip alone is not the client. Hence:
+ * - a trusted peer with a valid X-Real-IP: X-Real-IP (`x-real-ip`). A trusted
+ *   proxy must overwrite or strip that header, as Railway's edge does;
+ * - otherwise req.ip: an X-Forwarded-For hop (`forwarded`) or the socket
+ *   address (`peer`). A client-supplied X-Real-IP from an untrusted peer is
+ *   ignored.
+ * Limiters key on ipKeyGenerator(clientIp(req), 56), so IPv6 clients are
+ * grouped per /56.
  */
-export function clientIp(req: express.Request): string {
-  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
+export function clientAddress(req: express.Request): {
+  ip: string;
+  source: ClientIpSource;
+  peerTrusted: boolean;
+} {
+  const peer = unmapIpv4(req.socket.remoteAddress ?? "");
   const trust = req.app?.get("trust proxy fn") as
     ((addr: string, i: number) => boolean) | undefined;
-  const peer = req.socket.remoteAddress ?? "";
-  const realIp = req.get("x-real-ip")?.trim() ?? "";
-  if (trust && peer && trust(peer, 0) && ip === peer && isIP(realIp))
-    return realIp;
-  return ip;
+  const peerTrusted = Boolean(trust && peer && trust(peer, 0));
+  const realIp = unmapIpv4(req.get("x-real-ip")?.trim() ?? "");
+  if (peerTrusted && isIP(realIp))
+    return { ip: realIp, source: "x-real-ip", peerTrusted };
+  const forwarded = req.ip === undefined ? "" : unmapIpv4(req.ip);
+  if (forwarded && forwarded !== peer)
+    return { ip: forwarded, source: "forwarded", peerTrusted };
+  return { ip: peer || "unknown", source: "peer", peerTrusted };
+}
+
+/** The client address every per-IP limit and log `ipHash` uses (clientAddress). */
+export function clientIp(req: express.Request): string {
+  return clientAddress(req).ip;
 }
 
 /** Short, non-reversible label for an address in logs. */
