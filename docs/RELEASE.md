@@ -52,15 +52,22 @@ local fixture database. Tests find their own records by unique names or by
 searching (no "last" ticket or first register page). A reused staging
 database still accumulates the open checks, but no kitchen rounds or kitchen
 reviews.
-Local confirmation (October 6, 2026, local fixture only, not staging): after
-the full qualification, three full browser rounds on one database without a
+Local confirmation (October 7, 2026, local fixture only, not staging), after
+W3-2 absorbed public 032/033/034: the full qualification passed (browser 249
+passed, 1 skipped) and left no open round and no pending kitchen review on
+the demo restaurants. Then three full browser rounds on one database without a
 reset between them, the last two with four `yes` processes loading the CPU,
-each passed 229 tests (1 skipped) with the same web process throughout; each
-run left 20 open rounds from specs outside the list, which the next run's
-global setup delivered. An earlier set of the same rounds, run while the
-machine's load average was about 440 for reasons outside this suite, had 4
-and 9 time-outs in tests whose bodies W3-2 did not change (each passed when
-rerun alone on that database).
+each passed 249 tests (1 skipped) with the same web process throughout, and
+after each round the demo restaurants had no open round and no pending kitchen
+review; about once per round the hygiene settled a late offline sync from the
+previous test before the next one began. Earlier sets, recorded as they ran:
+one before that late-sync step passed 3/3 but its third round left 4 pending
+reviews (the reason for the step); one run while another browser suite and
+macOS background services kept the load average near 50 had a second round of
+an hour with 6 failures and 2 more in the part of its third round that ran
+before it was stopped, all in tests whose bodies W3-2 did not change (time-outs,
+and one test that met the codes a timed-out test could not clean up); each of
+the 8 passed when rerun alone, and the set was repeated.
 
 `security`: `npm audit --omit=dev --audit-level=high` and gitleaks over the
 full history (`.gitleaks.toml` allowlists only synthetic local/CI values).
