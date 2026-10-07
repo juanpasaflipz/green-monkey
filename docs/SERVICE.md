@@ -384,7 +384,9 @@ the drawer is open.
   print dialog; none of this has been verified here. The KDS "Impresión"
   dialog's hint therefore says printing without a dialog is not confirmed and
   points staff to the pilot manual's print steps ([PILOT_SOP §1.3](PILOT_SOP.md)),
-  which count on the dialog at every print (LD-17).
+  which count on the dialog at every print (LD-17). KDS auto-print and the
+  comanda on send therefore open the dialog at each ticket: they are practical
+  only on a device verified to print without it.
 - Browser printing never confirms that paper came out.
 - Kitchen cancellation chits (reports 029): a KDS with auto-print and a selling device
   that prints on send also print "CANCELACIÓN · NO PREPARAR" after a void, per round and

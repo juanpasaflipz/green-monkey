@@ -201,10 +201,13 @@ PREPARAR", or "REEMBOLSADO · NO PREPARAR" for refunds), one per round and stati
 A restaurant uses one of two setups: one device per station with its KDS station filter and
 auto-print on, or one selling device with "comanda al enviar" printing every station's
 section on its own printer. Set the thermal printer's roll size and zero margins in the OS
-driver. Silent printing needs Chrome or Edge started with `--kiosk-printing` and the thermal
-printer as the OS default (described as working on Windows; macOS and Android always show the
-dialog); the kiosk flag is not verified on pilot hardware yet (LD-17). Browser printing never
-confirms that paper came out. Cash-drawer kick and auto-cut depend on the printer driver.
+driver. There is no confirmed way to print without the browser's print dialog today
+([PILOT_SOP §1.3](PILOT_SOP.md)): every chit, like every comanda and receipt, opens the dialog,
+so the KDS auto-print setup is practical only on a device verified to print without it.
+Public sources, not official Chrome or Chromium documentation, describe Chrome started with
+`--kiosk-printing` as printing silently on Windows; it is not verified here, and the pilot
+does not depend on it (LD-17, [Service](SERVICE.md)). Browser printing never confirms that
+paper came out. Cash-drawer kick and auto-cut depend on the printer driver.
 
 ## CSV
 
@@ -285,7 +288,8 @@ fiscal data) and 37 (a batchless refund fails `refunds_vs_fiscal`) run in the DB
 done here (follow-ups): spec DB tests 3 for summaries, breakdowns and exceptions (DB-7/MON-6
 covers collections and activity pages), 33 (performance), 35 (fiscal's complement extraction,
 covered in fiscal's suite) and 38 (the acceptance rows, covered by unit test 21 on the
-document); `DocRow` adoption in the receipt documents (deferred to Wave 3, LD-16 L8).
+document). `DocRow` is not adopted in the receipt documents in v1 (LD-16 L8; the reason is
+in [delivery status](DELIVERY_STATUS.md), "Thermal receipts").
 
 ## Limitations and decisions
 

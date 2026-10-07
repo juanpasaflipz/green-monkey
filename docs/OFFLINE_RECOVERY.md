@@ -660,8 +660,9 @@ TEST_BASE_URL=http://127.0.0.1:<port> TEST_PRODUCTION=1 npx playwright test
   10 s / 30 s lane cadence; another test signs in with manual offline mode on.
 
 Not verified, and still release gates: real tablets (iPad Safari and installed app,
-Android Chrome), real thermal printers through the browser dialog and
-`--kiosk-printing`, a real ISP outage on restaurant Wi-Fi, and staging proof of a
+Android Chrome), real thermal printers through the browser dialog (and, only if the
+owner tries it, the unconfirmed `--kiosk-printing` start option, [PILOT_SOP
+§1.3](PILOT_SOP.md)), a real ISP outage on restaurant Wi-Fi, and staging proof of a
 service-worker update between two deployed builds.
 
 ## Earlier recovery slice (September 2026)
