@@ -532,17 +532,21 @@ async function finishTickets(
   await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail)
     select ${s.tenantId},a.id,${s.employeeId},a.operation,a.entity,a.detail
     from jsonb_to_recordset(${tx.json(audits)}) as a(id uuid,operation text,entity text,detail jsonb)`;
-  // cfdi (LD-51 F12): a ticket issued into a period whose global was already built gets its
-  // supplementary global from a tick now, not at the next scheduled one. A job insert, no lock.
-  await cfdiTicketsIssued(
+  return rows.map((r) => r.view);
+}
+
+/**
+ * cfdi (LD-51 F12): a ticket for a business date whose global was already built (an offline sale
+ * synced late, a repair) gets its supplementary global from a tick now, not at the next scheduled
+ * one. Called before the folio counter (LO-12), so it never lengthens that lock: nothing for a
+ * ticket of today, else one read and at most a job insert, which commits with the ticket.
+ */
+function tellCfdi(tx: Tx, s: Session, due: readonly DueTicket[]) {
+  return cfdiTicketsIssued(
     tx,
     s,
-    rows.map(({ due, record }) => ({
-      id: record.id,
-      businessDate: due.businessDate,
-    })),
+    due.map((d) => ({ id: d.orderId, businessDate: d.businessDate })),
   );
-  return rows.map((r) => r.view);
 }
 
 /**
@@ -563,6 +567,7 @@ export async function issueDueTicket(
   const prepared = await prepareTicket(tx, orderId, source);
   if (!prepared) return null;
   if ("ticket" in prepared) return prepared.ticket;
+  await tellCfdi(tx, s, [prepared.due]);
   const record = await insertDueTicket(tx, s, prepared.due);
   const [view] = await finishTickets(tx, s, [{ due: prepared.due, record }]);
   return view;
@@ -824,6 +829,7 @@ export async function repairMissingTickets(
       if (prepared && "due" in prepared) due.push(prepared.due);
     }
     const before = await missingTicketCount(tx);
+    await tellCfdi(tx, s, due);
     const issued: { due: DueTicket; record: TicketRecord }[] = [];
     for (const d of due)
       issued.push({ due: d, record: await insertDueTicket(tx, s, d) });

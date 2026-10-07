@@ -1,6 +1,6 @@
 // cfdi merge gate (review CFDI-R5), kept as a regression guard after the fiscal/discounts merge:
 // no compat shim, 027 stand-in or shim import may come back, fiscal's recordRefundTax calls
-// enqueueCfdiRefund and its finishTickets cfdiTicketsIssued, the worker reads 028's refunds.method, the stamping browser tests skip only
+// enqueueCfdiRefund and its issuance tells cfdiTicketsIssued, the worker reads 028's refunds.method, the stamping browser tests skip only
 // for a missing local worker, and the status lines no longer say the flows wait for a rebase.
 // Pure: reads files only.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -62,17 +62,28 @@ describe("cfdi merge gate (CFDI-R5)", () => {
     );
   });
 
-  it("fiscal's finishTickets (every issuance: sale, recovery, repair) tells cfdi about late tickets (LD-51 F12)", () => {
+  it("fiscal tells cfdi about every issued ticket before it takes the folio counter (sale, recovery, repair; LD-51 F12)", () => {
     const fiscal = read("server/fiscal.ts");
-    const finish = fiscal.slice(
-      fiscal.indexOf("async function finishTickets("),
-      fiscal.indexOf("export async function issueDueTicket("),
+    const body = (from: string, to: string) =>
+      fiscal.slice(
+        fiscal.indexOf(from),
+        fiscal.indexOf(to, fiscal.indexOf(from)),
+      );
+    expect(body("function tellCfdi(", "\n}\n")).toMatch(
+      /cfdiTicketsIssued\(\s*tx,\s*s,/,
     );
-    expect(finish).toMatch(/await cfdiTicketsIssued\(\s*tx,\s*s,/);
-    expect(fiscal).toMatch(
-      /import \{ cfdiTicketsIssued, enqueueCfdiRefund \} from "\.\/cfdi\/hooks\.js"/,
+    for (const unit of [
+      body("export async function issueDueTicket(", "\n}\n"),
+      body("export async function repairMissingTickets(", "\n}\n"),
+    ]) {
+      expect(unit).toMatch(/await tellCfdi\(tx, s, /);
+      expect(unit.indexOf("await tellCfdi(")).toBeLessThan(
+        unit.indexOf("insertDueTicket("),
+      );
+    }
+    expect(body("async function finishTickets(", "\n}\n")).not.toMatch(
+      /cfdiTicketsIssued|tellCfdi/,
     );
-    expect(fiscal.match(/finishTickets\(tx, s,/g)?.length).toBe(2);
   });
 
   it("the stamping browser tests no longer skip for a missing fiscal, and the status lines were re-verified", () => {

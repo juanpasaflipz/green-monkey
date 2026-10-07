@@ -383,9 +383,11 @@ periodicity. With reissue on, the policy alone applies (and each late invoice co
 stamps). "Emitir ahora" pressed during the grace takes the period's tickets before the printed
 time; that is the manager's choice.
 
-**Tickets issued into a built period** (LD-51 F12): fiscal's `finishTickets` (every issuance:
-sale, offline recovery, repair) calls `cfdiTicketsIssued`, which enqueues a tick due now when a
-ticket's date falls in a period whose global was already built (one key per 10 minutes,
+**Tickets issued into a built period** (LD-51 F12): fiscal's `issueDueTicket` and repair (every
+issuance: sale, offline recovery, repair) call `cfdiTicketsIssued` before they take the folio
+counter (LO-12, whose statement budget stays as fiscal set it), which enqueues a tick due now
+when a ticket's date, older than today's business date, falls in a period whose global was
+already built (one key per 10 minutes,
 `tick:issued:<bucket>`; when that key already ran and no tick is waiting to run, a key suffixed
 with the ticket, as `armNextTick` does for the chain, LD-39). The late sweep then builds its
 supplementary part at once instead of at the next scheduled tick (up to 6 hours).
@@ -419,7 +421,7 @@ a unit, DB and (where it shows) browser check:
 | F9 | The issuer RFC reads "Pendiente" until Facturapi reports it, never the profile's |
 | F10 | The periodicity field states the one in force and a pending change with its date |
 | F11 | Each period counts its unclaimed tickets ("N por emitir") in its tickets and totals |
-| F12 | A ticket issued into a built period enqueues a tick now (fiscal's issuance hook) |
+| F12 | A ticket issued into a built period enqueues a tick now (fiscal's issuance hook, before the folio counter) |
 | F13 | One `cfdi_job_done` info line per successful job, with Facturapi's log ids ("Jobs") |
 | F4–F6 | Hand-off items for the user, the accountant and the provider ([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.13 and 1.14) |
 
@@ -644,9 +646,10 @@ behaviour.
 - **Refund hook.** Fiscal's `recordRefundTax` calls `enqueueCfdiRefund(tx, s, refundId)` after it
   inserts the refund's tax rows (step 9; a no-op while CFDI is off). Every refund path reaches it:
   discounts' `insertRefundBatch` and the legacy refund.
-- **Issuance hook** (LD-51 F12). Fiscal's `finishTickets` calls `cfdiTicketsIssued(tx, s, tickets)`
-  after it inserts the tickets: a tick due now for a ticket of a built period (one read, a job
-  insert at most, no lock; a no-op while CFDI is off).
+- **Issuance hook** (LD-51 F12). Fiscal's `issueDueTicket` and `repairMissingTickets` call
+  `cfdiTicketsIssued(tx, s, tickets)` before the folio counter: a tick due now for a ticket of a
+  built period (nothing for a ticket of today; else one read and a job insert at most, no lock;
+  a no-op while CFDI is off).
 - **Discounts 028.** A credit note's FormaPago follows `refunds.method`: a card (`external`)
   refund takes the parent's card form (04/28) or the restaurant's, a cash refund 01. The refund
   dialog shows "Esta venta ya tiene factura (CFDI)…" when `useCfdiTicketStatus` reports a valid

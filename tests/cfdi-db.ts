@@ -5294,7 +5294,7 @@ try {
     assert.equal(p.total, 5800 - 1160);
   });
 
-  await test("LD-51 F12. a ticket issued into a period whose global was already built enqueues a tick due now (fiscal's finishTickets hook) and gets its supplementary part at once; within the same 10 minutes a second one gets a key suffixed with the ticket once the first tick ran; a ticket of an open period enqueues nothing", async () => {
+  await test("LD-51 F12. a ticket issued into a period whose global was already built enqueues a tick due now (fiscal's issuance hook, before the folio counter) and gets its supplementary part at once; within the same 10 minutes a second one gets a key suffixed with the ticket once the first tick ran; a ticket of an open period enqueues nothing", async () => {
     const L = await makeTenant("issued F12");
     await activate(L, { testFrom: daysAgo(5), periodicity: "day" });
     const day = daysAgo(3);
@@ -5318,7 +5318,7 @@ try {
     };
     const issued = (tk: Ticket) =>
       web(L, (tx) =>
-        cfdiTicketsIssued(tx, { tenantId: L.tenantId }, [
+        cfdiTicketsIssued(tx, L.owner, [
           { id: tk.id, businessDate: tk.businessDate },
         ]),
       );
