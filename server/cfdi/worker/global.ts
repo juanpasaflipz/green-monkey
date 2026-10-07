@@ -59,8 +59,6 @@ import {
   loadSettings,
   modeFrom,
   periodicityChangeAllowed,
-  platform,
-  stampingFacts,
   unclaimedTickets,
   type FiscalFacts,
   type SettingsRow,
@@ -255,8 +253,7 @@ async function buildPeriod(
   key: string,
   ctxData: {
     settings: SettingsRow;
-    /** The stamping issuer's facts (stampingFacts: the shared sandbox's in that mode). */
-    issuer: FiscalFacts;
+    facts: FiscalFacts;
     mode: "test" | "live";
     from: string;
     today: string;
@@ -264,7 +261,7 @@ async function buildPeriod(
   o: { force: boolean },
 ): Promise<void> {
   const tenantId = ctx.job.tenantId;
-  const { settings, issuer, mode } = ctxData;
+  const { settings, facts, mode } = ctxData;
   const created: { id: string; part: number; late: boolean }[] = [];
   let excludedCount = 0;
   let periodDue = "";
@@ -306,7 +303,7 @@ async function buildPeriod(
           where mode = ${mode} and period_key = ${key}`;
       return;
     }
-    if (!issuer.postalCode) return;
+    if (!facts.postalCode) return;
     const late = period.status !== "open";
     const parts = buildGlobalRequests({
       docIds: randomUUID,
@@ -316,7 +313,7 @@ async function buildPeriod(
         months: period.from.slice(5, 7),
         year: Number(period.from.slice(0, 4)),
       },
-      issuerPostalCode: issuer.postalCode,
+      issuerPostalCode: facts.postalCode,
       cardForm: settings.cardPaymentForm,
     });
     let claimed = 0;
@@ -538,11 +535,7 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
         late.push(r.period_key);
     return {
       settings,
-      issuer: stampingFacts(
-        facts,
-        await platform(tx),
-        await loadOrganization(tx),
-      ),
+      facts,
       mode,
       from,
       today,
