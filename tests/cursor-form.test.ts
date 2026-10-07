@@ -29,6 +29,15 @@ function cursorCalls(text: string): string[] {
   return calls;
 }
 
+/**
+ * The iterator form's arguments: none, or the batch size as a number literal
+ * or an UPPER_CASE constant. postgres.js takes a lone function argument as the
+ * callback (query.js cursor(rows = 1, fn)), so any other identifier, such as
+ * `.cursor(onRows)`, counts as the callback form (FLK-R4).
+ */
+const iteratorForm = (args: string) =>
+  /^(\d+|[A-Z_][A-Z0-9_]*)?,?$/.test(args.replace(/\s/g, ""));
+
 describe("postgres.js cursors (W3-2 flake, LD-42)", () => {
   it("the scanner tells the iterator form from the callback form", () => {
     expect(
@@ -42,10 +51,25 @@ describe("postgres.js cursors (W3-2 flake, LD-42)", () => {
     ).toEqual([]);
   });
 
+  it("only a batch size passes as the iterator form; a named or inline callback does not", () => {
+    for (const args of ["", "500", "\n  500,\n", "EXPORT_BATCH", "BATCH,"])
+      expect(iteratorForm(args), JSON.stringify(args)).toBe(true);
+    for (const args of [
+      "onRows",
+      "handler.rows",
+      "500, onRows",
+      "BATCH, write",
+      "500, async (rows) => { await f(rows); }",
+      "async (rows) => f(rows)",
+      "batchSize",
+    ])
+      expect(iteratorForm(args), JSON.stringify(args)).toBe(false);
+  });
+
   it("server/ and scripts/ only use the async-iterator form: postgres 3.4.8 neither awaits nor catches a .cursor(n, fn) callback on a query's final batch", () => {
     const offenders = ["server", "scripts"].flatMap(sources).flatMap((file) =>
       cursorCalls(readFileSync(file, "utf8"))
-        .filter((args) => !/^[\w.$]*,?$/.test(args.replace(/\s/g, "")))
+        .filter((args) => !iteratorForm(args))
         .map((args) => `${file}: .cursor(${args.trim().slice(0, 60)}`),
     );
     expect(offenders).toEqual([]);
