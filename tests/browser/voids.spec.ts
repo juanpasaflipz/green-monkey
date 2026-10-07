@@ -120,3 +120,64 @@ test("cashier voids an item with manager approval and the kitchen acknowledges i
   await expect(alert).toBeHidden();
   await expect(ticket).toContainText(`1 × ${product}`);
 });
+
+test("a check voided from Órdenes while it was the cart in Vender does not stay there with its old balance (restaurant-day A10.14)", async ({
+  page,
+}) => {
+  const name = `Anulada ${Date.now()}`;
+  await page.goto("/app");
+  await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Hoy", exact: true }),
+  ).toBeVisible();
+  await page.evaluate(async () => {
+    const s = await (await fetch("/api/session")).json();
+    const cash = await (await fetch("/api/cash")).json();
+    if (!cash || cash.closed_at)
+      await fetch("/api/cash/open", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-csrf-token": s.csrf },
+        body: JSON.stringify({
+          operationId: crypto.randomUUID(),
+          opening: 50000,
+        }),
+      });
+  });
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await page
+    .locator("button.product")
+    .filter({ hasText: "Limonada natural" })
+    .click();
+  await page.getByLabel("Nombre para llamar").fill(name);
+  await page
+    .getByRole("button", { name: "Enviar a cocina", exact: true })
+    .click();
+  await expect(page.locator(".existing")).toContainText("Limonada natural");
+  const number = (await page.locator(".existing strong").innerText()).match(
+    /#(\d+)/,
+  )![1];
+  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+  const card = page.locator(".order-summary").filter({ hasText: name });
+  await card.getByRole("button", { name: "Anular", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Anular productos" });
+  await dialog.getByLabel(/Limonada natural/).fill("1");
+  await dialog
+    .getByLabel("Motivo de la anulación")
+    .fill("Cliente cambió de opinión");
+  await dialog
+    .getByLabel(/^(Confirma con tu PIN|PIN del gerente)/)
+    .fill("demo-green-monkey");
+  await dialog.getByRole("button", { name: /Anular 1 productos/ }).click();
+  await expect(dialog).toBeHidden();
+  await expect(card).toContainText("Anulada");
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await expect(
+    page.getByText(`La orden #${number} ya se cerró. Empieza una nueva.`),
+  ).toBeVisible();
+  await expect(page.locator(".existing")).toHaveCount(0);
+  await expect(
+    page.getByText("La siguiente buena orden empieza aquí."),
+  ).toBeVisible();
+});

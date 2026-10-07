@@ -637,6 +637,35 @@ export function Selling({
     if (!resume && !table) {
       // Vender is on screen with nothing to switch to: its error is visible.
       unseenFailure.current = false;
+      // A check closed elsewhere while Vender was hidden (voided or settled
+      // from Órdenes) never stays the cart on screen with its old balance:
+      // re-read it, and start a new order when it is closed (FIT-1).
+      const shown = currentRef.current;
+      if (
+        online &&
+        shown &&
+        isServerOrder(shown) &&
+        !draftRef.current.lines.length &&
+        !busy &&
+        !paying &&
+        !showingReceipt
+      ) {
+        const epoch = contextEpoch.current;
+        void api<Order>("/orders/" + shown.id)
+          .then((o) => {
+            if (
+              contextEpoch.current !== epoch ||
+              currentRef.current?.id !== o.id ||
+              draftRef.current.lines.length
+            )
+              return;
+            if (checkStateOf(o) === "closed") {
+              void replaceContext(null, fresh());
+              setNotice(t("serviceResumeClosed").replace("{n}", numberText(o)));
+            } else setCurrent(o);
+          })
+          .catch(() => {});
+      }
       return;
     }
     // SVC-R10: a send or payment in flight (and the receipt it shows) finishes
