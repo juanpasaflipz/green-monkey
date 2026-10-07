@@ -3020,6 +3020,11 @@ test.describe("offline table service (Beta) turned on", () => {
       "La orden de este borrador ya no existe en este dispositivo ni en el servidor.",
     );
     await expect(entry).toHaveCount(0);
+    // The gone entry is one bordered card in the list's rhythm (POL-R3-4).
+    const gone = drafts.locator(".draft-gone");
+    await expect(gone).toHaveCSS("display", "grid");
+    await expect(gone).toHaveCSS("row-gap", "12px");
+    await expect(gone).toHaveCSS("border-top-width", "1px");
     // The discard action names its draft and takes the focus the entry had (POL-5).
     const discard = drafts.getByRole("button", {
       name: /^Descartar borrador: #999 · ronda sin enviar · .+ · 1 /,
