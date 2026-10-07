@@ -106,7 +106,7 @@ class HandledError extends Error {
 /** A parked cart, and the check it was a round for (null for a new order). */
 type ParkedDraft = {
   draft: Draft;
-  order: { id: string; number: number } | null;
+  order: { id: string; number: number; businessDate: string | null } | null;
   /** How the list names the order: "#12", "B-07" or "B-07 → #12" (LD-13 addendum). */
   label: string | null;
   /** The order no longer exists on this device or on the server: only discard. */
@@ -266,7 +266,12 @@ export function Selling({
     if (order)
       await db.cache.put({
         id: parkedOrderId(d.operationId),
-        value: { id: order.id, number: order.number },
+        // LD-29: the business date names an order of another day in Borradores.
+        value: {
+          id: order.id,
+          number: order.number,
+          businessDate: order.businessDate ?? null,
+        },
       });
     else await db.cache.delete(parkedOrderId(d.operationId));
   }
@@ -381,7 +386,14 @@ export function Selling({
           const value = (await db.cache.get(parkedOrderId(draft.id)))?.value;
           const order =
             value && typeof value.id === "string"
-              ? { id: value.id as string, number: Number(value.number) }
+              ? {
+                  id: value.id as string,
+                  number: Number(value.number),
+                  businessDate:
+                    typeof value.businessDate === "string"
+                      ? value.businessDate
+                      : null,
+                }
               : null;
           // LD-13 addendum: a local order is named by this device's records.
           const where = order

@@ -15,7 +15,7 @@ import {
 } from "../../shared/service";
 import { api } from "../api";
 import { strings, errorNotice, type Key } from "../i18n";
-import { channelLabel, orderNumberLabel } from "../labels";
+import { channelLabel, orderNumberLabel, orderNumberText } from "../labels";
 import { Badge, Button, Empty, Modal } from "../components/ui";
 import { usePoll, useStoredState } from "../serviceHooks";
 import { PrintSettingsDialog, printDocument, usePrintSettings } from "../print";
@@ -185,18 +185,22 @@ export function Kitchen({
     for (const x of fresh) seenRounds.current.add(x.id);
     for (const id of voidIds) seenVoids.current.add(id);
     for (const x of r.rounds) seenNotes.current.set(x.id, notesOf(x));
+    // LD-29: a ticket of another business day is announced with its date, as
+    // its header reads ("#10 · 5 oct"), so two "#10" never sound alike.
+    const ticket = (x: KitchenRound) =>
+      orderNumberText(
+        { number: x.orderNumber, businessDate: x.businessDate },
+        r.currentBusinessDate,
+        locale,
+      );
     const messages = [
       ...fresh.map((x) =>
         t("serviceKdsAnnounce")
-          .replace("{n}", String(x.orderNumber))
+          .replace("{n}", ticket(x))
           .replace("{r}", String(x.roundNumber)),
       ),
-      ...noted.map((x) =>
-        t("serviceKdsNoteAnnounce").replace("{n}", String(x.orderNumber)),
-      ),
-      ...voided.map((x) =>
-        t("serviceKdsVoidAnnounce").replace("{n}", String(x.orderNumber)),
-      ),
+      ...noted.map((x) => t("serviceKdsNoteAnnounce").replace("{n}", ticket(x))),
+      ...voided.map((x) => t("serviceKdsVoidAnnounce").replace("{n}", ticket(x))),
     ];
     if (messages.length) setAnnouncement(messages.join(". "));
     const alerted = [...fresh, ...noted];

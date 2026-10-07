@@ -66,12 +66,13 @@ export function orderLabel(
  * as staff know it from the local projection or this device's cached copy
  * ("B-07", "B-07 → #142", "#12"); for a local order that synced with no cached
  * copy (for example closed online), from its record ("B-07 → #142"); else the
- * number stored when the round was parked. Null when nothing names it (a new
- * order's draft, or a local order that is gone).
+ * number (and business date, "#12 · 5 oct", LD-29) stored when the round was
+ * parked. Null when nothing names it (a new order's draft, or a local order
+ * that is gone).
  */
 export function parkedOrderLabel(
   where: ParkedOrderTarget | null,
-  stored: { number: number } | null,
+  stored: { number: number; businessDate?: string | null } | null,
   today: string | null | undefined,
   locale: Locale,
 ): string | null {
@@ -90,7 +91,7 @@ export function parkedOrderLabel(
         locale,
       );
   }
-  return stored?.number ? "#" + stored.number : null;
+  return stored?.number ? "#" + orderNumberText(stored, today, locale) : null;
 }
 
 /** True while only this device knows the order's number (the hint applies). */

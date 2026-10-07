@@ -171,7 +171,12 @@ export function SettlementDialog({
             const full = await Promise.all(
               checks.map((c) => api<Order>("/orders/" + c.id)),
             );
-            const refused = await onlineChargeRefusal(session, full, locale);
+            const refused = await onlineChargeRefusal(
+              session,
+              full,
+              locale,
+              day,
+            );
             if (refused) {
               setError(refused);
               return;

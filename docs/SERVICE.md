@@ -120,10 +120,14 @@ every business day (the restaurant's timezone and cutoff, `businessDate()` in
 new one can both be #10. These screens add the business date to an order that is
 not from the current business day: "#10 · 5 oct" (English UI "#10 · Oct 5"):
 the Órdenes cards and their checkboxes, **Cobrar juntas** (each check's line,
-the "still owes" and "balance changed" notices and the lines after the payment),
-the Mesas check cards, the cart heading in Vender, the payment dialog title
+the "still owes" and "balance changed" notices, the lines after the payment and
+the refusal while this device holds an unsynced offline record of a check), the
+Mesas check cards, the cart heading in Vender, the payment dialog title
 ("Cobrar #10 · 5 oct"), the order detail title, the headers of the void, refund
-and service-assignment dialogs, and the kitchen tickets on screen. The current
+and service-assignment dialogs, a round parked in Borradores for a server order
+("#10 · 5 oct · ronda sin enviar", from the date stored when it was parked;
+rounds parked before this change keep "#10"), and the kitchen tickets on screen
+and their spoken announcements ("Nuevo ticket #10 · 5 oct, ronda 2"). The current
 business date comes from the server where the response carries it (Órdenes
 list, kitchen feed) and otherwise from the session's restaurant settings with
 the same helper (`currentBusinessDate` in `src/labels.ts`) on the corrected

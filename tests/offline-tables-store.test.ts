@@ -60,6 +60,8 @@ import {
   setOfflineTableServiceForTests,
 } from "../src/offline-settings";
 import { parkedOrderLabel } from "../src/features/offline/format";
+import { onlineChargeRefusal } from "../src/features/offline/useOnlineChargeBlocks";
+import { translateError } from "../src/i18n";
 
 const mockedApi = vi.mocked(api);
 const uuid = (n: number) =>
@@ -1104,6 +1106,37 @@ describe("grouped online charge: Órdenes › Cobrar juntas (OFF-R29)", () => {
   });
 });
 
+describe("grouped online charge refusal names the business date (LD-29, POL-R2-2)", () => {
+  it("an order from another business day is refused as \"#N · 5 oct · …\"; today's keeps \"#N · …\"", async () => {
+    const s = session();
+    const id = uuid(114);
+    await cacheSnapshot(s, [serverCopy(id)]);
+    const round = roundInput(100);
+    await saveOfflineRound(ctxOf(s), { target: { orderId: id }, ...round });
+    mockedApi.mockRejectedValue(
+      new ApiError("server_unavailable", 503, "server"),
+    );
+    const order = { ...serverOrder(id), businessDate: "2026-10-05" };
+    const reason = (locale: "es" | "en") =>
+      translateError("offline_round_pending_for_order", locale);
+    const refusal = async (o: Order, locale: "es" | "en") => {
+      const text = await onlineChargeRefusal(s, [o], locale, "2026-10-06");
+      // The refusal started a sync of this device's records: let it finish.
+      await syncPending(s, { force: true, reason: "manual" });
+      return text;
+    };
+    expect(await refusal(order, "es")).toBe(
+      `#${order.number} · 5 oct · ${reason("es")}`,
+    );
+    expect(await refusal(order, "en")).toBe(
+      `#${order.number} · Oct 5 · ${reason("en")}`,
+    );
+    expect(
+      await refusal({ ...order, businessDate: "2026-10-06" }, "es"),
+    ).toBe(`#${order.number} · ${reason("es")}`);
+  });
+});
+
 describe("kitchen ticket round labels (OFF-R28)", () => {
   const copy = {
     banner: "COMANDA · SIN CONEXIÓN",
@@ -1873,6 +1906,28 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
       parkedOrderLabel(
         { kind: "server", orderId: uuid(431), cached: null },
         { number: 12 },
+        "2026-10-06",
+        "es",
+      ),
+    ).toBe("#12");
+    // With the business date stored at park time, an order of another day names
+    // its date as Órdenes does (LD-29, POL-R2-2); today's keeps the plain number.
+    for (const [locale, label] of [
+      ["es", "#12 · 5 oct"],
+      ["en", "#12 · Oct 5"],
+    ] as const)
+      expect(
+        parkedOrderLabel(
+          { kind: "server", orderId: uuid(431), cached: null },
+          { number: 12, businessDate: "2026-10-05" },
+          "2026-10-06",
+          locale,
+        ),
+      ).toBe(label);
+    expect(
+      parkedOrderLabel(
+        { kind: "server", orderId: uuid(431), cached: null },
+        { number: 12, businessDate: "2026-10-06" },
         "2026-10-06",
         "es",
       ),

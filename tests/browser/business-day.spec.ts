@@ -8,7 +8,7 @@ import postgres from "postgres";
 // The demo owner runs it on the isolated local fixture database; the restaurant's
 // cutoff is moved as the owner would (app.tenant_id set, LD-16) and restored after.
 // LD-42 hygiene: the test pays both of its checks and completes their kitchen rounds
-// itself; it never clears other tests' tickets.
+// (the old order's second round included) itself; it never clears other tests' tickets.
 const tenantId = "10000000-0000-4000-8000-000000000001";
 const uuid = () => crypto.randomUUID();
 
@@ -91,7 +91,7 @@ const dayLabel = (page: Page, date: string, locale: "es" | "en") =>
     { date, locale },
   );
 
-test("LD-29: an open order from the previous business day shows its date next to its number in Órdenes, the cart, the payment dialog and the kitchen; today's orders keep the plain number", async ({
+test("LD-29: an open order from the previous business day shows its date next to its number in Órdenes, the cart, the payment dialog, Borradores and the kitchen (tickets and announcements); today's orders keep the plain number", async ({
   page,
   baseURL,
 }) => {
@@ -187,6 +187,25 @@ test("LD-29: an open order from the previous business day shows its date next to
         .filter({ hasText: freshName })
         .locator("h2"),
     ).toHaveText(`#${fresh.number} ${freshName}`);
+    // A new round of the old order is announced with its date, as its header
+    // reads, so it never sounds like today's #N (POL-R2-2).
+    const catalog = await call<any[]>(page, "/catalog");
+    const taco = catalog.find((p) => p.name.es === "Taco de hongos");
+    const before = await call(page, "/orders/" + old.id);
+    await call(page, `/orders/${old.id}/rounds`, {
+      operationId: uuid(),
+      expectedVersion: before.version,
+      lines: [
+        { id: uuid(), productId: taco.id, quantity: 1, options: [], note: "" },
+      ],
+      mode: before.mode,
+    });
+    old = await call(page, "/orders/" + old.id);
+    await expect(
+      page
+        .getByRole("status")
+        .filter({ hasText: `Nuevo ticket ${oldLabel}, ronda 2` }),
+    ).toHaveCount(1, { timeout: 15_000 });
 
     // Resumed into the cart and opened for payment.
     await page.getByRole("button", { name: "Órdenes", exact: true }).click();
@@ -198,6 +217,25 @@ test("LD-29: an open order from the previous business day shows its date next to
     await expect(
       page.getByRole("dialog", { name: `Cobrar ${oldLabel}`, exact: true }),
     ).toBeVisible();
+    await page.keyboard.press("Escape");
+    // A round tapped for it and parked in Borradores names the date too (POL-R2-2).
+    await page
+      .locator("button.product")
+      .filter({ has: page.getByText("Taco de hongos", { exact: true }) })
+      .click();
+    await page
+      .getByRole("button", { name: "Nueva orden", exact: true })
+      .click();
+    await expect(page.locator(".cart-heading .eyebrow")).toHaveText(
+      "Nueva orden",
+    );
+    await page.getByRole("button", { name: "Borradores", exact: true }).click();
+    await expect(
+      page
+        .getByRole("dialog", { name: "Borradores" })
+        .getByRole("button")
+        .filter({ hasText: `${oldLabel} · ronda sin enviar` }),
+    ).toHaveCount(1);
     await page.keyboard.press("Escape");
 
     // English: "#10 · Oct 5".
