@@ -180,6 +180,13 @@ condition:
 | `ip is a client-supplied forwarding header value` or `forwarding headers changed the client IP` | the edge passed the client's own headers on: anyone can pick their limiter bucket | stop the rollout; roll back |
 | `ip is a proxy or private address, not public` or `ip is not an IP address` | the address is the edge's peer, a private range or missing | as for `peerTrusted is false` |
 
+Between smokes, a deployed `web` (`APP_ENV` staging or production) logs
+`client_ip_without_real_ip` (warn, once per process, with `source` and
+`realIpHeader: missing|invalid`, never an address) the first time a request
+from a trusted peer arrives without a usable `X-Real-IP` (Railway's health
+checks on `/health` and `/api/health` excepted). Treat it like the smoke's
+`source is forwarded` or `source is peer` rows above.
+
 While the address is wrong, a restaurant or a carrier NAT behind one edge hop
 shares one bucket per limit (one busy client can lock the others out of PIN
 login or public ordering), and `ipHash` names the hop, not the client.

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import express from "express";
 import { ipKeyGenerator } from "express-rate-limit";
 import { readFileSync, readdirSync } from "node:fs";
@@ -22,6 +22,7 @@ function request(
   peer: string | undefined,
   headers: Record<string, string> = {},
   trust: string | number | boolean = trustProxy({ NODE_ENV: "production" }),
+  url = "/api/orders",
 ): express.Request {
   const app = express();
   app.set("trust proxy", trust);
@@ -31,6 +32,7 @@ function request(
   return Object.create(app.request, {
     socket: { value: { remoteAddress: peer } },
     headers: { value: lower },
+    url: { value: url },
   }) as express.Request;
 }
 const railway = (client: string, peer = EDGE_PEER) =>
@@ -170,6 +172,53 @@ describe("clientIp behind Railway's edge (LD-46)", () => {
       source: "peer",
       peerTrusted: false,
     });
+  });
+});
+
+describe("a deployed web warns once when a trusted peer sends no usable X-Real-IP (NETFIX-L1)", () => {
+  it("one warn per process on staging or production; none in development, for a usable header, an untrusted peer or a health check", async () => {
+    const saved = process.env.APP_ENV;
+    // A fresh module: the warning is once per process.
+    vi.resetModules();
+    const logging = await import("../server/logging.js");
+    const lines: Record<string, unknown>[] = [];
+    logging.setLogSink((line) => lines.push(JSON.parse(line)));
+    const warned = () =>
+      lines.filter((l) => l.message === "client_ip_without_real_ip");
+    const noHeader = () =>
+      request(EDGE_PEER, { "X-Forwarded-For": "198.51.100.7" });
+    try {
+      process.env.APP_ENV = "development";
+      logging.clientAddress(noHeader());
+      expect(warned()).toEqual([]);
+      for (const env of ["staging", "production"]) {
+        process.env.APP_ENV = env;
+        logging.clientAddress(railway("198.51.100.7"));
+        logging.clientAddress(request("203.0.113.5"));
+        logging.clientAddress(request(EDGE_PEER, {}, undefined, "/api/health"));
+        logging.clientAddress(request(EDGE_PEER, {}, undefined, "/health"));
+        expect(warned(), env).toEqual([]);
+      }
+      expect(logging.clientAddress(noHeader())).toMatchObject({
+        source: "forwarded",
+      });
+      logging.clientAddress(request(EDGE_PEER, { "X-Real-IP": "bogus" }));
+      logging.clientAddress(noHeader());
+      expect(warned()).toEqual([
+        expect.objectContaining({
+          level: "warn",
+          env: "production",
+          source: "forwarded",
+          realIpHeader: "missing",
+        }),
+      ]);
+      // No address in the line: neither the forwarded hop nor the peer.
+      expect(JSON.stringify(warned())).not.toMatch(/198\.51\.100|100\.64/);
+    } finally {
+      if (saved === undefined) delete process.env.APP_ENV;
+      else process.env.APP_ENV = saved;
+      logging.setLogSink(null);
+    }
   });
 });
 

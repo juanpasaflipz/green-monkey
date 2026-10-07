@@ -262,13 +262,45 @@ export function clientAddress(req: express.Request): {
   const trust = req.app?.get("trust proxy fn") as
     ((addr: string, i: number) => boolean) | undefined;
   const peerTrusted = Boolean(trust && peer && trust(peer, 0));
-  const realIp = unmapIpv4(req.get("x-real-ip")?.trim() ?? "");
+  const header = req.get("x-real-ip");
+  const realIp = unmapIpv4(header?.trim() ?? "");
   if (peerTrusted && isIP(realIp))
     return { ip: realIp, source: "x-real-ip", peerTrusted };
   const forwarded = req.ip === undefined ? "" : unmapIpv4(req.ip);
-  if (forwarded && forwarded !== peer)
-    return { ip: forwarded, source: "forwarded", peerTrusted };
-  return { ip: peer || "unknown", source: "peer", peerTrusted };
+  const source = forwarded && forwarded !== peer ? "forwarded" : "peer";
+  if (peerTrusted) warnWithoutRealIp(req, source, header);
+  return source === "forwarded"
+    ? { ip: forwarded, source, peerTrusted }
+    : { ip: peer || "unknown", source, peerTrusted };
+}
+
+/** Whether this process has warned that a trusted peer sent no usable X-Real-IP. */
+let warnedWithoutRealIp = false;
+/** Railway's health checks reach the service directly, without the edge's headers. */
+const HEALTH_PATHS = new Set(["/health", "/api/health"]);
+
+/**
+ * NETFIX-L1: on a deployed web (APP_ENV staging or production) a request
+ * from a trusted proxy without a usable X-Real-IP means the edge's header
+ * shape changed or another proxy now sits in front: limits then key on
+ * req.ip, the edge hop every client behind it shares (RUNBOOK "Client
+ * address"). Warns once per process; the line carries no address.
+ */
+function warnWithoutRealIp(
+  req: express.Request,
+  source: ClientIpSource,
+  header: string | undefined,
+) {
+  if (warnedWithoutRealIp) return;
+  const env = process.env.APP_ENV?.trim();
+  if (env !== "staging" && env !== "production") return;
+  if (HEALTH_PATHS.has((req.originalUrl || req.url || "").split("?")[0]))
+    return;
+  warnedWithoutRealIp = true;
+  log.warn("client_ip_without_real_ip", {
+    source,
+    realIpHeader: header?.trim() ? "invalid" : "missing",
+  });
 }
 
 /** The client address every per-IP limit and log `ipHash` uses (clientAddress). */
