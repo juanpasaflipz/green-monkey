@@ -146,13 +146,21 @@ cached before the deploy keep working. A later contract change removes them.
   oldest, so a restaurant that never delivered tickets stopped seeing new
   orders). A truncated feed shows an alert that older tickets are hidden and
   that a manager can retire the ones from previous days with "Retirar tickets
-  de días anteriores"; the feed's `staleCount` counts every open previous-day
-  round, hidden ones included, so that action stays available at the cap.
+  de días anteriores"; the feed's `staleCount` counts the open previous-day
+  rounds, hidden ones included, that one clear retires (the rounds of at most
+  500 orders, `CLEAR_STALE_ORDER_LIMIT`; FLK-R5), so that action stays
+  available at the cap and its confirmation promises what it delivers; the
+  button returns with the next batch's count.
 - Tickets show the order note, round note and line notes (allergy notes are
   emphasized), every modifier, voided quantities and pending cancellations.
 - New tickets get a highlight, an aria-live announcement and, after a tap on
   **Activar sonido**, a beep (browsers block audio until a tap after each
   reload; a banner says so). Pending cancellations announce with a lower tone.
+  At the cap, a ticket that leaves the screen lets the next older hidden round
+  slide in at the top; that round was sent long ago, so it joins silently with
+  its notes and cancellations (no highlight, announcement, beep or auto-print),
+  as tickets do on a reload; only rounds created after the previous truncated
+  feed's oldest ticket are new (FLK-R1, `src/features/kitchenFeed.ts`).
   The button and the banner follow the live audio state: when the system
   suspends or interrupts audio (a call, a notification, an app switch) the
   screen tries to resume it when shown again and otherwise asks for
