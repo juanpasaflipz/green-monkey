@@ -884,6 +884,17 @@ DB test 21 runs this block exactly as written, as `gm_migrator`:
     a `finally` (LD-P9). `public-ordering.spec` and `core.spec` also run that
     cleanup from an `afterEach`, for a test that times out before its
     `finally`.
+  - Closing a check never completes its kitchen rounds, so
+    `public-ordering.spec`'s cleanup also delivers, as the owner through the
+    KDS API, every round the test opened (LD-42): the rounds of the orders its
+    accepts created (read from the accept responses), of the checks it
+    opened, and of call names or tables carrying its run id. It reads
+    `GET /kitchen`, which lists every open round with no feed cap, and fails
+    the test when one stays open. The table-QR and pay-first kiosk tests
+    check it again after the cleanup. A browser run on a persistent database
+    (staging, RELEASE item 5) leaves no public ticket on the demo
+    restaurant's kitchen screen. `core.spec`'s QR test is covered by
+    track/flake's file-level `kitchenHygiene()` once W3-2 lands.
   - The table-QR end-to-end test (the diner at 390 px, the inbox accept)
     and the pay-first kiosk test (the 1024 px kiosk, the inbox charge) are
     tagged `@cross`, so CI also runs them on the `webkit-ipad` project:

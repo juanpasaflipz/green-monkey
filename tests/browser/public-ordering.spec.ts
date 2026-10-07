@@ -4,6 +4,7 @@ import {
   type Browser,
   type BrowserContext,
   type Page,
+  type Response as NetworkResponse,
   type Route,
 } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
@@ -11,8 +12,10 @@ import AxeBuilder from "@axe-core/playwright";
 // Public QR/kiosk ordering (032). Every test makes its own "QR <runId>" tables
 // and links and, in a finally, decides or cancels every hold, revokes every
 // link, resumes ordering, restores the policies, settles every check it
-// opened and archives its tables (LD-P9), so later specs never see an inbox,
-// a banner or an occupied table from here.
+// opened, delivers every kitchen round it opened (LD-42) and archives its
+// tables (LD-P9), so later specs and later runs on a persistent database
+// never see an inbox, a banner, a kitchen ticket or an occupied table from
+// here.
 
 // Local helpers (wave rule: no shared helper module in-wave).
 async function login(page: Page) {
@@ -123,12 +126,46 @@ type Link = {
   token: string;
   tableName: string | null;
 };
+/** An open round as GET /kitchen lists it (every open round, no feed cap). */
+type KitchenRow = {
+  id: string;
+  order_id: string;
+  state: string;
+  name: string | null;
+  table_name: string | null;
+  pending_voids: unknown[] | null;
+};
 
 /** Everything one test created, undone in its finally. */
 class Fixture {
   links: string[] = [];
   tables: Table[] = [];
   orders: string[] = [];
+  /**
+   * LD-42: the order of every accept this test's staff made (UI or API), read
+   * from the accept responses, so cleanup finds its kitchen rounds even when
+   * the test never added the order to `orders` (the pay-first kiosk).
+   */
+  accepted = new Set<string>();
+  private acceptReads: Promise<void>[] = [];
+  private onResponse = (r: NetworkResponse) => {
+    if (
+      r.request().method() !== "POST" ||
+      !r.ok() ||
+      !/^\/api\/ordering\/holds\/[^/]+\/accept$/.test(new URL(r.url()).pathname)
+    )
+      return;
+    this.acceptReads.push(
+      r.json().then(
+        (body: { order?: { id?: string } } | null) => {
+          if (body?.order?.id) this.accepted.add(body.order.id);
+        },
+        // A body the page no longer holds: the call name and the table still
+        // identify the round.
+        () => {},
+      ),
+    );
+  };
   policies = false;
   /** The restaurant's privacy notice URL before setPrivacy (account 031). */
   privacyBefore: { url: string | null } | null = null;
@@ -136,7 +173,9 @@ class Fixture {
   constructor(
     public page: Page,
     public id = runId(),
-  ) {}
+  ) {
+    page.context().on("response", this.onResponse);
+  }
   /** Three fresh tables "QR <id> 1..3" for this test only. */
   async makeTables(n = 3) {
     const r = await call(this.page, "/floor/tables/bulk", {
@@ -219,6 +258,59 @@ class Fixture {
     }
     if (first) throw first.error;
   }
+  /**
+   * This test's open kitchen rounds: those of the orders its accepts created
+   * or it opened itself, of a call name carrying its id ("Q-14 · QR <id>",
+   * "Mesa <id>") or of its "QR <id> n" tables. GET /kitchen lists every open
+   * round, so the KDS feed's cap cannot hide one on a busy database.
+   */
+  async kitchenRounds(): Promise<KitchenRow[]> {
+    await Promise.all(this.acceptReads);
+    const r = await call(this.page, "/kitchen");
+    expect(r.status, JSON.stringify(r.data)).toBe(200);
+    return (r.data as KitchenRow[]).filter(
+      (k) =>
+        this.accepted.has(k.order_id) ||
+        this.orders.includes(k.order_id) ||
+        (k.name ?? "").split(" ").includes(this.id) ||
+        (k.table_name ?? "").startsWith(`QR ${this.id} `),
+    );
+  }
+  /**
+   * LD-42: delivers, as the KDS does, every kitchen round this test opened:
+   * a pending cancellation is acknowledged first (SVC-K6), then the round
+   * goes to ready and to delivered. closeCheck never completes rounds, so
+   * without this every accept left a ticket on the demo restaurant's kitchen
+   * screen of a persistent database (staging). Fails when one stays open.
+   */
+  async completeRounds() {
+    const refused: string[] = [];
+    const post = async (path: string, body: object) => {
+      const r = await call(this.page, path, { operationId: op(), ...body });
+      if (r.status !== 200)
+        refused.push(`${path} ${r.status} ${JSON.stringify(r.data)}`);
+    };
+    for (let pass = 0; pass < 3; pass++) {
+      const open = await this.kitchenRounds();
+      if (!open.length) break;
+      for (const r of open) {
+        // Acknowledging a round's last cancelled item may complete it: the
+        // next pass reads it again.
+        if (r.pending_voids?.length) {
+          await post(`/kitchen/${r.id}/voids/ack`, {});
+          continue;
+        }
+        if (r.state === "active")
+          await post(`/kitchen/${r.id}`, { state: "ready" });
+        await post(`/kitchen/${r.id}`, { state: "completed" });
+      }
+    }
+    const left = await this.kitchenRounds();
+    expect(
+      left.map((r) => `${r.name} (${r.table_name ?? "sin mesa"}, ${r.state})`),
+      `kitchen rounds of test ${this.id} left open (LD-42); refused: ${refused.join("; ")}`,
+    ).toEqual([]);
+  }
   async cleanup() {
     if (this.done) return;
     this.done = true;
@@ -275,6 +367,12 @@ class Fixture {
         });
       });
     await step(() => this.settleOrders());
+    // Its own step (LD-42), after the checks are settled: a failed payment or
+    // close still leaves no ticket on the kitchen screen.
+    await step(() => {
+      this.page.context().off("response", this.onResponse);
+      return this.completeRounds();
+    });
     await step(async () => {
       const floor = await call(this.page, "/floor");
       for (const t of floor.data.tables as (Table & { archived: boolean })[])
@@ -390,7 +488,9 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
   if (browserName === "chromium")
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await login(page);
+  let fixture = null as Fixture | null;
   await withFixture(page, async (f) => {
+    fixture = f;
     const [mesa] = await f.makeTables();
     await page
       .getByRole("button", { name: "Menú e inventario", exact: true })
@@ -624,6 +724,9 @@ test("table QR end to end: create and print the code, the diner orders, staff ac
       customer.getByRole("link", { name: /Factura tu consumo/ }),
     ).toHaveCount(0);
   });
+  // LD-42: its round was left "Listo"; the cleanup delivered it, so the
+  // demo restaurant's kitchen keeps no ticket of this test.
+  expect((await fixture!.kitchenRounds()).map((r) => r.name)).toEqual([]);
 });
 
 test("privacy notice warning: without the restaurant's notice the settings panel and the table QR dialog warn before codes are made and lead to the privacy field; saving a notice clears it (PUBLIC-SECURITY-4)", async ({
@@ -792,7 +895,9 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
   context,
 }) => {
   await login(page);
+  let fixture = null as Fixture | null;
   await withFixture(page, async (f) => {
+    fixture = f;
     f.policies = true;
     await openDrawer(page);
     await page
@@ -959,7 +1064,18 @@ test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges 
     expect(rounds.some((r) => r.name === `${label} · Kiosco ${f.id}`)).toBe(
       true,
     );
+    // LD-42: the cleanup knows the order this charge-and-accept created
+    // (the test never adds it to f.orders) and finds its open round.
+    const mine = await f.kitchenRounds();
+    expect(mine.length).toBeGreaterThan(0);
+    expect([...new Set(mine.map((r) => r.name))]).toEqual([
+      `${label} · Kiosco ${f.id}`,
+    ]);
+    expect(mine.every((r) => f.accepted.has(r.order_id))).toBe(true);
   });
+  // LD-42: the cleanup delivered it, so the demo restaurant's kitchen keeps
+  // no ticket of this test.
+  expect((await fixture!.kitchenRounds()).map((r) => r.name)).toEqual([]);
 });
 
 test("pay-first refusal after a terminal charge: the cashier is told to record the charge on a manual order or refund it (LD-41, PUBLIC-MONEY-2)", async ({
