@@ -413,6 +413,18 @@ describe("cfdi client: ticket status (29)", () => {
       false,
     );
     expect(ticketStatusWanted(ticket.id, status())).toBe(true);
+    // Never activated (no mode): the server would answer cfdi_disabled (409), which the
+    // browser logs (restaurant-day G4 at A14.4, branch K). Paused keeps its mode: asked.
+    const off = {
+      enabled: false,
+      ready: false,
+      canInvoice: false,
+      selfInvoice: null,
+    };
+    expect(ticketStatusWanted(ticket.id, status({ ...off, mode: null }))).toBe(
+      false,
+    );
+    expect(ticketStatusWanted(ticket.id, status(off))).toBe(true);
     function Probe({ id }: { id: string | null }) {
       return createElement("i", null, String(useCfdiTicketStatus(id)));
     }
