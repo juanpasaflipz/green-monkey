@@ -267,6 +267,10 @@ test("the receipt on a 1024×768 tablet keeps Imprimir recibo and Siguiente vent
     await expect(
       page.getByRole("button", { name, exact: true }),
     ).toBeInViewport({ ratio: 1 });
+  // The scrolling receipt is reachable from the keyboard (axe
+  // scrollable-region-focusable).
+  const axe = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
+  expect(axe.violations).toEqual([]);
   await page
     .getByRole("button", { name: "Siguiente venta", exact: true })
     .click();

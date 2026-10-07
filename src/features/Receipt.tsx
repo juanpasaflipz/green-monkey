@@ -525,7 +525,13 @@ export function ReceiptModal({
         </>
       }
     >
-      <div className="receipt">
+      {/* Focusable, so a keyboard can scroll a long receipt above the actions. */}
+      <div
+        className="receipt"
+        tabIndex={0}
+        role="region"
+        aria-label={local ? t.localReceipt : t.receipt}
+      >
         <ReceiptDocument
           order={order}
           session={session}
