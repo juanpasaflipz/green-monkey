@@ -197,11 +197,12 @@ function staleRow(
  * only once every signed-in terminal has refreshed (the save's `periodicity_applied` event names
  * the moment, PERIODICITY_REBUILD_WAIT_MS after it, CFDIFIX-CONCURRENCY-2): until then the rows stay
  * as they are (a stale row is never built) and this step does nothing. A terminal offline for
- * longer is the residual risk docs/CFDI.md records. The 24-hour and globals conditions are judged
- * as of the save (CFDIFIX-CONCURRENCY-3): a tick that runs late (a worker outage) never undoes a
- * change only because it was late. When the re-check still defers, receipts printed since the save
- * may carry the new periodicity's deadline, which can be later than the old one's: the operator is
- * alerted (`reverted`).
+ * longer is the residual risk docs/CFDI.md records. The 24-hour condition is judged as of the save
+ * (CFDIFIX-CONCURRENCY-3): a tick that runs late (a worker outage) never undoes a change only
+ * because it was late; a global of the month is judged now (its rows cannot be deleted). When the
+ * re-check still defers a change that kept or lengthened the save day's deadlines, receipts printed
+ * since the save carry a later deadline than the old periodicity gives: the operator is alerted
+ * (`reverted`).
  */
 async function rebuildMonth(
   tx: Tx,
