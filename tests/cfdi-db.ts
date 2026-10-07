@@ -57,7 +57,7 @@ import {
   enqueueCfdiRefund,
 } from "../server/cfdi/hooks.js";
 import { selfInvoiceOffered } from "../server/cfdi/store.js";
-import { recordRefundTax } from "../server/fiscal.js";
+import { issueDueTicket, recordRefundTax } from "../server/fiscal.js";
 import { todaySummary } from "../server/reports/today.js";
 import { dayCorte } from "../server/reports/cortes.js";
 import { reportsPorts } from "../server/reports/ports.js";
@@ -5449,7 +5449,7 @@ try {
     assert.equal(p.total, 5800 - 1160);
   });
 
-  await test("LD-51 F12. a ticket issued into a period whose global was already built enqueues a tick due now (fiscal's issuance hook, before the folio counter) and gets its supplementary part at once; within the same 10 minutes a second one gets a key suffixed with the ticket once the first tick ran; a ticket of an open period enqueues nothing", async () => {
+  await test("LD-51 F12. a ticket issued into a period whose global was already built enqueues a tick due now (fiscal's issuance hook, before the folio counter) and gets its supplementary part at once; within the same 10 minutes a second one gets a key suffixed with the ticket once the first tick ran; a ticket of an open period enqueues nothing; fiscal's own issueDueTicket (offline recovery) reaches the hook (CFDIFIX-4)", async () => {
     const L = await makeTenant("issued F12");
     await activate(L, { testFrom: daysAgo(5), periodicity: "day" });
     const day = daysAgo(3);
@@ -5504,6 +5504,32 @@ try {
       "a ticket of an open period needs no tick",
     );
     assert.equal(await claimOf(t3.id), null);
+    // CFDIFIX-4: through fiscal's own issuance, as offline recovery reaches it: an order of that
+    // day, paid but never ticketed (an offline sale synced late), issued by issueDueTicket in the
+    // runtime role's transaction. Its hook enqueues the tick before the folio counter, and the
+    // ticket lands in a third part of its own period.
+    const orderId = randomUUID();
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id',${L.tenantId},true)`;
+      await tx`insert into orders(tenant_id,id,number,business_date,employee_id,mode,name,note,channel,total)
+        values(${L.tenantId},${orderId},${L.folio + 5000},${day},${L.cashier.employeeId},'takeaway','','','pos',5800)`;
+      await tx`insert into tenders(tenant_id,id,order_id,session_id,method,amount,received,external_reference)
+        values(${L.tenantId},${randomUUID()},${orderId},${L.drawerId},'cash',5800,5800,null)`;
+    });
+    const recovered = await web(L, async (tx) => {
+      await tx`select id from orders where id = ${orderId} for update`;
+      return issueDueTicket(tx, L.cashier, orderId, "recovery");
+    });
+    assert.ok(recovered, "fiscal issued the ticket");
+    assert.equal(recovered.businessDate, day);
+    const third = await issuedTicks();
+    assert.equal(third.length, 3, "fiscal's hook enqueued a tick");
+    assert.equal(third[2].due, true);
+    await settle(L.tenantId);
+    assert.deepEqual(await claimOf(recovered.id), {
+      period: "D" + day,
+      part: 3,
+    });
   });
 
   await test("LD-51 F13. every cfdi job that ends done logs one cfdi_job_done info line: the stamp with its document id and each answer's X-Facturapi-Log-Id, the cancellation with its document and cancellation ids, ticks and the organization job with theirs", async () => {
