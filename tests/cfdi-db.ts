@@ -2106,6 +2106,78 @@ try {
     assert.equal(row.mode, "live");
     assert.equal(row.livemode, true);
     assert.equal(row.status, "valid");
+    // CFDIFIX-2: in live mode a cancellation acuse naming another CFDI is never expected (a
+    // parser or provider-format problem): it is not stored, the operator is alerted, the register
+    // says it will be requested again, and Reintentar (or the tick's sweep) fetches it again,
+    // three times in all; a later answer that names the document is stored.
+    const acuseFiles = async (id: string) =>
+      (
+        await admin`select format from cfdi_files where document_id = ${id}
+          and format like 'cancel%' order by format`
+      ).map((r) => r.format as string);
+    const retry = (id: string) =>
+      web(L, (tx) =>
+        service.retryDocument(tx, L.manager, { operationId: op() }, {
+          params: { id },
+        } as never),
+      );
+    const recovery = async (id: string) =>
+      web(L, async (tx) => recoveryAction(tx, (await loadDocument(tx, id))!));
+    alerts.length = 0;
+    fake.fault({ op: "invoices.cancellation_receipt", fault: "sample_acuse" });
+    await cancelAs(L, L.manager, d.id);
+    await settle(L.tenantId);
+    assert.equal((await docRow(d.id)).status, "canceled");
+    assert.deepEqual(await acuseFiles(d.id), [], "never stored");
+    assert.ok((await events(d.id)).includes("acuse_mismatch_live"));
+    assert.ok(!(await events(d.id)).includes("acuse_mismatch"));
+    assert.ok(
+      alerts.some(
+        (a) =>
+          a.key === `cfdi_acuse_mismatch:${L.tenantId.slice(0, 8)}:${d.id}` &&
+          a.severity === "warning",
+      ),
+      "the operator is alerted",
+    );
+    await age([d.id], 120);
+    assert.deepEqual(await recovery(d.id), { kind: "deliver", acuse: true });
+    await retry(d.id);
+    await settle(L.tenantId);
+    assert.deepEqual(
+      await acuseFiles(d.id),
+      ["cancel_pdf", "cancel_xml"],
+      "the document's own acuse, fetched again, is stored",
+    );
+    const d2 = await invoice(L, await makeTicket(L));
+    await settle(L.tenantId);
+    fake.fault({ op: "invoices.cancellation_receipt", fault: "sample_acuse" });
+    await cancelAs(L, L.manager, d2.id);
+    await settle(L.tenantId);
+    await age([d2.id], 120);
+    for (let i = 0; i < 2; i++) {
+      fake.fault({
+        op: "invoices.cancellation_receipt",
+        fault: "sample_acuse",
+      });
+      await retry(d2.id);
+      await settle(L.tenantId);
+    }
+    assert.equal(
+      (await events(d2.id)).filter((k) => k === "acuse_mismatch_live").length,
+      3,
+    );
+    assert.equal(await recovery(d2.id), null, "three attempts in all");
+    assert.equal(
+      (
+        await web(L, (tx) =>
+          service.getDocument(tx, L.manager, {
+            params: { id: d2.id },
+          } as never),
+        )
+      ).canRetry,
+      false,
+    );
+    assert.deepEqual(await acuseFiles(d2.id), []);
     // Live is final, even for the owner of the table.
     await assert.rejects(
       admin`update cfdi_settings set mode = 'test', live_from = null, live_enabled_at = null, live_enabled_by = null where tenant_id = ${L.tenantId}`,

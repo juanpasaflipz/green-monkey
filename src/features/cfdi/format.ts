@@ -284,6 +284,7 @@ const EVENTS: Record<string, Key> = {
   retry_requested: "cfdiEventRetryRequested",
   recovery_queued: "cfdiEventRecovered",
   acuse_mismatch: "cfdiEventAcuseMismatch",
+  acuse_mismatch_live: "cfdiEventAcuseMismatchLive",
 };
 const CANCELLATION: Record<string, Key> = {
   queued: "cfdiStatusCanceling",

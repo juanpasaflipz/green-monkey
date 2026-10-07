@@ -434,6 +434,8 @@ export default defineArea({
     cfdiEventOther: "Evento",
     cfdiEventAcuseMismatch:
       "El acuse que entregó Facturapi es de otro CFDI (modo prueba); no se guardó",
+    cfdiEventAcuseMismatchLive:
+      "El acuse de cancelación que entregó Facturapi no corresponde a este CFDI; no se guardó y se volverá a pedir",
   },
   en: {
     cfdiTitle: "Electronic invoicing (CFDI)",
@@ -858,6 +860,8 @@ export default defineArea({
     cfdiEventOther: "Event",
     cfdiEventAcuseMismatch:
       "The acuse Facturapi returned belongs to another CFDI (test mode); it was not stored",
+    cfdiEventAcuseMismatchLive:
+      "The cancellation acuse Facturapi returned is not this CFDI's; it was not stored and will be requested again",
   },
   errors: {
     cfdi_unavailable: [

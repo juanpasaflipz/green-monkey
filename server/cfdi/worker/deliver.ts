@@ -120,7 +120,9 @@ export async function deliverJob(ctx: JobContext): Promise<JobOutcome> {
       // The acuse is stored (and offered) only when it is the document's: its XML names the
       // document's UUID. Facturapi's test mode answers a sample acuse of another CFDI; that one is
       // never stored, and the status keeps coming from the document (LD-51 F7). The PDF is the
-      // same receipt, so it follows the XML's answer.
+      // same receipt, so it follows the XML's answer. In live mode a mismatch is never expected
+      // (a provider-format or parser problem, CFDIFIX-2): the operator is alerted and recovery
+      // fetches it again, at most LIVE_ACUSE_ATTEMPTS times (recovery.ts).
       if (!loaded.files.includes("cancel_xml")) {
         const xml = await rt.client.downloadCancellationReceipt(
           key,
@@ -129,11 +131,23 @@ export async function deliverJob(ctx: JobContext): Promise<JobOutcome> {
           ctx.signal,
         );
         if (!acuseMatches(xml, doc.uuid)) {
+          const live = doc.mode === "live";
           await ctx.tenant((tx) =>
-            event(tx, ctx, documentId, "acuse_mismatch", {
-              mode: doc.mode,
-            }),
+            event(
+              tx,
+              ctx,
+              documentId,
+              live ? "acuse_mismatch_live" : "acuse_mismatch",
+              { mode: doc.mode },
+            ),
           );
+          if (live)
+            raise(rt, {
+              key: `cfdi_acuse_mismatch:${tenantTag(tenantId)}:${documentId}`,
+              severity: "warning",
+              title: "CFDI cancellation acuse names another CFDI",
+              body: `tenant ${tenantTag(tenantId)} document ${documentId}`,
+            });
           return { status: "done" };
         }
         await ctx.tenant(

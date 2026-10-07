@@ -20,6 +20,11 @@ import { loadDocument, type DocumentRow } from "./store.js";
 
 /** A state counts as stranded after this long without a change (spec stuck rule: 30 minutes). */
 export const RECOVERY_MINUTES = 30;
+/**
+ * A live document's cancellation acuse that named another CFDI is fetched again this many times
+ * in all (CFDIFIX-2); a test-mode one (Facturapi's sample, LD-51 F7) never again.
+ */
+export const LIVE_ACUSE_ATTEMPTS = 3;
 
 export type RecoveryAction =
   /** pending at the provider, or canceling while the receptor decides: poll again. */
@@ -129,12 +134,17 @@ export async function recoveryAction(
     stale &&
     (!files.has("cancel_xml") || !files.has("cancel_pdf"))
   ) {
-    // An acuse that named another CFDI (Facturapi's test-mode sample) is never fetched again
-    // (LD-51 F7): the register offers none and the status comes from the document.
-    const [mismatch] = await tx`
-      select 1 as one from cfdi_events where document_id = ${doc.id} and kind = 'acuse_mismatch'
-      limit 1`;
-    return mismatch ? null : { kind: "deliver", acuse: true };
+    // An acuse that named another CFDI is not stored. Facturapi's test-mode sample is never
+    // fetched again (LD-51 F7): the register offers none and the status comes from the document.
+    // A live one is fetched again, LIVE_ACUSE_ATTEMPTS times in all (CFDIFIX-2).
+    const [m] = await tx`
+      select count(*) filter (where kind = 'acuse_mismatch')::int as sample,
+        count(*) filter (where kind = 'acuse_mismatch_live')::int as live
+      from cfdi_events where document_id = ${doc.id}
+        and kind in ('acuse_mismatch','acuse_mismatch_live')`;
+    return m.sample > 0 || m.live >= LIVE_ACUSE_ATTEMPTS
+      ? null
+      : { kind: "deliver", acuse: true };
   }
   return null;
 }

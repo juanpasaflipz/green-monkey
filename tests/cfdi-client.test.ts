@@ -1435,4 +1435,11 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
       strings.es.cfdiEventAcuseMismatch,
     );
   });
+  it("CFDIFIX-2: a live-mode mismatch never reads as test mode, and says it will be requested again", () => {
+    const es = eventLabel("acuse_mismatch_live", "es");
+    expect(es).toBe(strings.es.cfdiEventAcuseMismatchLive);
+    expect(es).not.toContain("modo prueba");
+    expect(es).toContain("se volverá a pedir");
+    expect(eventLabel("acuse_mismatch_live", "en")).not.toContain("test mode");
+  });
 });
