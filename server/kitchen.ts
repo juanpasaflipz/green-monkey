@@ -40,6 +40,26 @@ export const kitchenQuery = z
   })
   .strict();
 
+/** Orders one clear-stale takes at most, so its transaction stays bounded. */
+export const CLEAR_STALE_ORDER_LIMIT = 500;
+
+/**
+ * The orders whose open rounds of business days before `before` one
+ * clear-stale retires: at most CLEAR_STALE_ORDER_LIMIT, lowest id first. The
+ * feed counts the rounds of this same batch (FLK-R5).
+ */
+function staleOrders(
+  tx: Tx,
+  before: string,
+  station: "all" | "kitchen" | "bar",
+) {
+  return tx`select distinct r.order_id from rounds r
+    join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id
+    where r.state <> 'completed' and r.state <> 'offline_review' and o.business_date < ${before}::date
+      ${station === "all" ? tx`` : tx`and r.station = ${station}`}
+    order by 1 limit ${CLEAR_STALE_ORDER_LIMIT}`;
+}
+
 const iso = (v: unknown) =>
   v instanceof Date
     ? v.toISOString()
@@ -100,15 +120,20 @@ export async function kitchenFeed(
     s.restaurant.timezone,
     s.restaurant.cutoff,
   );
-  // Open rounds of previous business days (what clear-stale retires). A
-  // truncated feed hides the oldest ones, so they are counted apart.
+  // Open rounds of previous business days that one clear-stale retires. A
+  // truncated feed hides the oldest ones, so they are counted apart, within
+  // the clear's own batch (FLK-R5): the number on the button is what one
+  // clear delivers, and the button returns for the next batch. Without
+  // truncation every open round is on screen (at most 200 orders, under the
+  // batch size).
   const staleCount = truncated
     ? Number(
         (
           await tx`select count(*)::int as n from rounds r
             join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id
             where r.state <> 'completed' and r.state <> 'offline_review'
-              and o.business_date < ${currentBusinessDate}::date ${station}`
+              and o.business_date < ${currentBusinessDate}::date ${station}
+              and r.order_id in (${staleOrders(tx, currentBusinessDate, q.station)})`
         )[0].n,
       )
     : rounds.filter((r) => r.business_date < currentBusinessDate).length;
@@ -233,7 +258,8 @@ export async function recallRound(
 
 /**
  * Manager command: completes rounds left open from previous business days and
- * acknowledges their pending voids on the manager's behalf. Audited.
+ * acknowledges their pending voids on the manager's behalf. Audited. One call
+ * takes the rounds of at most CLEAR_STALE_ORDER_LIMIT orders (staleOrders).
  */
 export async function clearStaleRounds(
   tx: Tx,
@@ -250,13 +276,9 @@ export async function clearStaleRounds(
     );
     const station =
       p.station === "all" ? tx`` : tx`and r.station = ${p.station}`;
-    const ids = (
-      await tx`select distinct r.order_id from rounds r
-        join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id
-        where r.state <> 'completed' and r.state <> 'offline_review' and o.business_date < ${before}
-          ${station}
-        order by 1 limit 500`
-    ).map((r) => r.order_id as string);
+    const ids = (await staleOrders(tx, before, p.station)).map(
+      (r) => r.order_id as string,
+    );
     if (!ids.length) return { cleared: 0 };
     // Orders first, sorted by id, before any round (see bumpKitchenFeed).
     await tx`select id from orders where id = any(${tx.array(ids)}::uuid[]) order by id for update`;

@@ -28,10 +28,12 @@ import {
   recordSettlement,
 } from "../server/checks.js";
 import {
+  CLEAR_STALE_ORDER_LIMIT,
   clearStaleRounds,
   kitchenFeed,
   recallRound,
 } from "../server/kitchen.js";
+import { placeRoundsInOfflineReview } from "../server/offline-kitchen.js";
 import { recordPaidOut, refund, cashSummary } from "../server/operations.js";
 import { issueOfflineLease } from "../server/offline-leases.js";
 import {
@@ -46,6 +48,7 @@ import {
   type OrderListResponse,
 } from "../shared/service.js";
 import { isolatedTarget } from "./isolated-target.js";
+import { deliverOpenRounds } from "./browser/global-setup.js";
 import { noRetries } from "./db-retries.js";
 
 // Every run creates its own fictional organization and two restaurants, so
@@ -1241,31 +1244,50 @@ try {
     });
   });
 
-  await test("KDS cap (LD-42): past 200 open rounds the feed carries the newest 200, oldest first, flags truncated and counts the previous-day rounds it hides", async () => {
-    // A restaurant of its own, so the rounds other checks leave open do not count.
-    const capTenant = randomUUID();
-    const capIds = {
+  /**
+   * A restaurant of its own (owner, manager, kitchen; a kitchen taco and a bar
+   * water), so the rounds other checks leave open do not count.
+   */
+  async function kitchenTenant(label: string) {
+    const id = randomUUID();
+    const staff = {
       owner: randomUUID(),
       manager: randomUUID(),
       kitchen: randomUUID(),
     };
-    await admin`insert into restaurants(id,organization_id,name,currency,timezone,cutoff) values(${capTenant},${organizationId},'Servicio tope · Prueba','MXN','America/Mexico_City',240)`;
-    await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source) values(${capTenant},'active',now()+interval '14 days','fixture')`;
-    for (const [role, id] of Object.entries(capIds))
-      await admin`insert into employees(tenant_id,id,name,login,secret_hash,role) values(${capTenant},${id},${role + " tope"},${role},'fixture',${role})`;
-    await admin`insert into devices(tenant_id,id,name,token_hash) values(${capTenant},${deviceId},'Caja tope','fixture')`;
+    await admin`insert into restaurants(id,organization_id,name,currency,timezone,cutoff) values(${id},${organizationId},${`Servicio ${label} · Prueba`},'MXN','America/Mexico_City',240)`;
+    await admin`insert into restaurant_entitlements(tenant_id,status,access_until,source) values(${id},'active',now()+interval '14 days','fixture')`;
+    for (const [role, employee] of Object.entries(staff))
+      await admin`insert into employees(tenant_id,id,name,login,secret_hash,role) values(${id},${employee},${`${role} ${label}`},${role},'fixture',${role})`;
+    await admin`insert into devices(tenant_id,id,name,token_hash) values(${id},${deviceId},${`Caja ${label}`},'fixture')`;
     const taco = randomUUID(),
       water = randomUUID();
     for (const p of [
-      product(taco, "Taco tope", 3000),
-      product(water, "Agua tope", 2000, { station: "bar" }),
+      product(taco, `Taco ${label}`, 3000),
+      product(water, `Agua ${label}`, 2000, { station: "bar" }),
     ])
-      await admin`insert into catalog(tenant_id,id,data) values(${capTenant},${p.id},${admin.json(p as any)})`;
-    const capOwner = session("owner", capIds.owner, capTenant);
-    const capManager = session("manager", capIds.manager, capTenant);
-    const capKitchen = session("kitchen", capIds.kitchen, capTenant);
-    const order = (productId = taco) =>
-      newOrder({ s: capOwner, lines: [{ productId }] });
+      await admin`insert into catalog(tenant_id,id,data) values(${id},${p.id},${admin.json(p as any)})`;
+    const s = {
+      owner: session("owner", staff.owner, id),
+      manager: session("manager", staff.manager, id),
+      kitchen: session("kitchen", staff.kitchen, id),
+    };
+    return {
+      id,
+      staff,
+      taco,
+      water,
+      ...s,
+      order: (productId = taco, quantity = 1) =>
+        newOrder({ s: s.owner, lines: [{ productId, quantity }] }),
+    };
+  }
+
+  await test("KDS cap (LD-42): past 200 open rounds the feed carries the newest 200, oldest first, flags truncated and counts the previous-day rounds it hides", async () => {
+    const cap = await kitchenTenant("tope");
+    const { id: capTenant, manager: capManager, kitchen: capKitchen } = cap;
+    const water = cap.water;
+    const order = (productId = cap.taco) => cap.order(productId);
     // Oldest first: a kitchen ticket from yesterday, a bar ticket, then 200
     // kitchen tickets of today (202 open rounds, 201 in the kitchen).
     const yesterday = await order();
@@ -1331,6 +1353,141 @@ try {
     assert.equal(under.rounds.at(-1)!.orderId, newest.id);
     assert.ok(ascending(under));
     assert.equal(under.staleCount, 0);
+  });
+
+  await test("KDS clear count (FLK-R5): past the cap the previous-day count is what one clear-stale delivers, and the button returns for the rest", async () => {
+    const t = await kitchenTenant("lote");
+    // More previous-day orders than one clear takes; one of them also has a
+    // bar round, so the count is of rounds within the clear's order batch.
+    const both = await newOrder({
+      s: t.owner,
+      lines: [{ productId: t.taco }, { productId: t.water }],
+    });
+    assert.equal(both.rounds.length, 2);
+    for (let i = 0; i < CLEAR_STALE_ORDER_LIMIT; i++) await t.order();
+    await asAdmin(
+      (tx) =>
+        tx`update orders set business_date=business_date-1 where tenant_id=${t.id}`,
+    );
+    const total = CLEAR_STALE_ORDER_LIMIT + 2;
+    const first = await full(t.kitchen);
+    assert.equal(first.truncated, true);
+    assert.ok(
+      [CLEAR_STALE_ORDER_LIMIT, CLEAR_STALE_ORDER_LIMIT + 1].includes(
+        first.staleCount,
+      ),
+      `one batch of orders, not all ${total} rounds: ${first.staleCount}`,
+    );
+    const clear = () =>
+      run(t.manager, (tx) =>
+        clearStaleRounds(tx, t.manager, { operationId: randomUUID() }),
+      );
+    assert.equal(
+      (await clear()).cleared,
+      first.staleCount,
+      "the confirmation's count is what the clear delivered",
+    );
+    const second = await full(t.kitchen);
+    assert.equal(second.truncated, false);
+    assert.equal(second.staleCount, total - first.staleCount);
+    assert.equal(second.rounds.length, second.staleCount);
+    assert.equal((await clear()).cleared, second.staleCount);
+    const done = await full(t.kitchen);
+    assert.equal(done.staleCount, 0);
+    assert.deepEqual(done.rounds, []);
+  });
+
+  await test("browser global setup's kitchen reset (FLK-R2, FLK-R8): one restaurant's open rounds, cancellations and offline reviews are settled and no other restaurant is touched", async () => {
+    // Global setup runs it as the migration role, which bypasses row-level
+    // security: here too (admin), so only the statements' own scoping holds.
+    const [role] =
+      await admin`select rolbypassrls or rolsuper as bypass from pg_roles where rolname=current_user`;
+    assert.equal(role.bypass, true, "the reset runs as global setup does");
+    const a = await kitchenTenant("reinicio A");
+    const b = await kitchenTenant("reinicio B");
+    /** An open ticket, a ready one with a pending cancellation, an offline sale in review. */
+    async function leftovers(t: Awaited<ReturnType<typeof kitchenTenant>>) {
+      const open = await t.order();
+      const cancelled = await t.order(t.taco, 2);
+      const r = kitchenRound(cancelled);
+      await progress(r.id, "seen", t.kitchen);
+      await progress(r.id, "ready", t.kitchen);
+      const voided = await voidAs(t.owner, cancelled, 1);
+      assert.equal(voided.voids!.at(-1)!.kitchenPending, true);
+      const offline = await t.order();
+      const operationId = randomUUID();
+      await admin`insert into offline_sync_records(tenant_id,operation_id,kind,format_version,path,device_id,employee_id,session_id,order_id,round_number,recorded_at,sold_at,business_date,kitchen_delivery,actor_id)
+        select ${t.id},${operationId},'order',3,'automatic',${deviceId},${t.staff.owner},${randomUUID()},id,1,now(),now(),business_date,'device_list',${t.staff.owner}
+        from orders where tenant_id=${t.id} and id=${offline.id}`;
+      await run(t.owner, (tx) =>
+        placeRoundsInOfflineReview(tx, t.owner, {
+          orderId: offline.id,
+          roundNumber: 1,
+          operationId,
+        }),
+      );
+      return { open, cancelled, offline };
+    }
+    const la = await leftovers(a);
+    const lb = await leftovers(b);
+    const snapshot = async (tenant: string) => ({
+      rounds: (
+        await admin`select r.order_id,r.state from rounds r where r.tenant_id=${tenant} order by r.order_id`
+      ).map((r) => `${r.order_id}:${r.state}`),
+      orders: (
+        await admin`select id,state from orders where tenant_id=${tenant} order by id`
+      ).map((o) => `${o.id}:${o.state}`),
+      voids: (
+        await admin`select id,kitchen_acknowledged_by from line_voids where tenant_id=${tenant} order by id`
+      ).map((v) => `${v.id}:${v.kitchen_acknowledged_by}`),
+      reviews: (
+        await admin`select round_id,state,decided_by from offline_kitchen_reviews where tenant_id=${tenant} order by round_id`
+      ).map((k) => `${k.round_id}:${k.state}:${k.decided_by}`),
+      version: (
+        await admin`select version from kitchen_feed_versions where tenant_id=${tenant}`
+      ).map((v) => Number(v.version)),
+    });
+    const untouched = await snapshot(b.id);
+    assert.deepEqual(
+      untouched.reviews.map((k) => k.split(":")[1]),
+      ["pending"],
+    );
+    assert.equal(untouched.voids.length, 1);
+    assert.match(untouched.voids[0], /:null$/);
+    const versionA = (await snapshot(a.id)).version[0];
+
+    await admin.begin((tx) => deliverOpenRounds(tx, a.id));
+
+    assert.deepEqual(await snapshot(b.id), untouched, "restaurant B as it was");
+    const after = await snapshot(a.id);
+    assert.ok(
+      after.rounds.every((r) => r.endsWith(":completed")),
+      after.rounds.join(", "),
+    );
+    for (const o of [la.open, la.cancelled, la.offline])
+      assert.ok(after.orders.includes(`${o.id}:completed`), o.id);
+    assert.equal(after.voids.length, 1);
+    assert.ok(
+      after.voids[0].endsWith(`:${a.staff.owner}`),
+      "acknowledged by restaurant A's own owner",
+    );
+    assert.equal(after.reviews.length, 1);
+    assert.equal(
+      after.reviews[0].split(":").slice(1).join(":"),
+      `already_served:${a.staff.owner}`,
+    );
+    assert.equal(after.version[0], versionA + 1);
+    assert.deepEqual((await full(a.kitchen)).rounds, []);
+    const feedB = await full(b.kitchen);
+    assert.deepEqual(
+      feedB.rounds.map((r) => r.orderId).sort(),
+      [lb.open.id, lb.cancelled.id].sort(),
+    );
+    assert.equal(
+      feedB.rounds.find((r) => r.orderId === lb.cancelled.id)!.pendingVoids
+        .length,
+      1,
+    );
   });
 
   await test("a ticket with an unacknowledged void is not delivered until the kitchen acknowledges it", async () => {
