@@ -10,6 +10,7 @@ import {
 import { strings, errorNotice } from "../i18n";
 import { api } from "../api";
 import { tenderMethodLabel } from "../labels";
+import { dateTime } from "../datetime";
 import { Badge, Button, Modal } from "../components/ui";
 import { printDocument, usePrintSettings, type PaperWidth } from "../print";
 import type { LocalReceipt } from "../offline-records";
@@ -162,9 +163,7 @@ export function ReceiptDocument({
       {labelHint && <p className="muted tiny">{labelHint}</p>}
       <p>
         {label ?? "#" + (order.number || order.id.slice(0, 8))} ·{" "}
-        {new Date(order.createdAt).toLocaleString(locale, {
-          timeZone: restaurant.timezone,
-        })}
+        {dateTime(order.createdAt, restaurant.timezone, locale)}
         {order.tableName && (
           <>
             <br />
