@@ -11,6 +11,7 @@ import { OUT, STATE_FILE, type RunState } from "../restaurant-day/env.js";
 import { oracle } from "../restaurant-day/oracle.js";
 import { expectedDay, oracleDay } from "../restaurant-day/self-check.js";
 import {
+  guard,
   assertLogs,
   assertNoViolations,
   newDevice,
@@ -22,7 +23,9 @@ import {
 } from "../restaurant-day/ui.js";
 import { setupA, setupB } from "../restaurant-day/setup-flows.js";
 import { preflight } from "../restaurant-day/preflight.js";
-import { serviceA1, serviceA2 } from "../restaurant-day/service-a.js";
+import { serviceB } from "../restaurant-day/service-b.js";
+import { assertTimingBudgets, serviceA1, serviceA2, timings } from "../restaurant-day/service-a.js";
+import { serviceA4, serviceA5 } from "../restaurant-day/close-a.js";
 import { serviceA3 } from "../restaurant-day/outage.js";
 
 test.skip(
@@ -91,12 +94,33 @@ test.describe("restaurant day", () => {
       test.setTimeout(6 * 60_000);
       await serviceA3(dev, state);
     });
+    test("A after the outage (A14)", async () => {
+      test.setTimeout(6 * 60_000);
+      await serviceA4(dev, state);
+      // §11: the five canonical samples (A03, A07, A11, A16, A24).
+      run.step = "§11";
+      run.timing = timings;
+      const budgets = assertTimingBudgets();
+      test.info().annotations.push({ type: "timing", description: budgets.rows.join("\n") });
+      expect(timings).toHaveLength(5);
+      await guard(["GAP-4", "DB-3", "FOH-10"], async () => {
+        expect(budgets.problems, "§11 tap and latency budgets").toEqual([]);
+      });
+    });
+    test("A close (A15)", async () => {
+      test.setTimeout(5 * 60_000);
+      await serviceA5(dev, state);
+    });
   });
 
   test.describe("B: Restaurante Casa Jacaranda", () => {
     test("B setup (B1–B5)", async () => {
       test.setTimeout(8 * 60_000);
       await setupB(dev, state, saveState);
+    });
+    test("B service and close (B6–B7)", async () => {
+      test.setTimeout(10 * 60_000);
+      await serviceB(dev, state);
     });
   });
 });

@@ -20,6 +20,7 @@ import {
 } from "./selling.js";
 import { idleOracle, orderA, orderCard, staffA, toOrders, toSell, toCash, setIdleLock } from "./service-a.js";
 import {
+  advance,
   checkpoint,
   fill,
   nextPrint,
@@ -42,8 +43,7 @@ export const pill = (d: Device) => d.page.locator(".top-actions button.connectio
 
 /** runFor on a device clock; the app's idle time grows by the same amount (§3.5.5). */
 async function runFor(d: Device, ms: number) {
-  await d.context.clock.runFor(ms);
-  d.lastInputAt -= ms;
+  await advance(d, ms);
 }
 
 /** Re-syncs a device clock to real time plus its skew (§3.5.3). */

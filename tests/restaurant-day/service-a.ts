@@ -28,6 +28,7 @@ import {
   type Timing,
 } from "./selling.js";
 import {
+  advance,
   allowing,
   checkpoint,
   escapeRe,
@@ -96,6 +97,31 @@ async function payAndCheck(caja: Device, cocina: Device, o: OrderDef, due: numbe
   await nextSale(caja);
   if (opts.kitchen !== false) await kitchen(cocina, o);
 }
+
+/** P-SELL for one order book entry, with the hooks the later steps need. */
+export async function saleA(
+  caja: Device,
+  cocina: Device,
+  o: OrderDef,
+  opts: {
+    picker?: Record<number, Parameters<typeof addLine>[4]>;
+    kitchen?: boolean;
+    /** runs right after "Confirmar cobro" (A14.2's lost response) */
+    afterConfirm?: () => Promise<void>;
+  } = {},
+) {
+  const due = await build(caja, o, { picker: opts.picker });
+  if (!opts.afterConfirm) return payAndCheck(caja, cocina, o, due, { kitchen: opts.kitchen });
+  const dialog = await payDialog(caja, o.payment!, due, { hasDraftLines: true });
+  await tap(caja, dialog.getByRole("button", { name: "Confirmar cobro" }));
+  await opts.afterConfirm();
+  await expect(caja.page.locator(".receipt")).toContainText("Folio:", { timeout: 30_000 });
+  firstPrint[o.id] = (await rcChecks(caja, r, o.id, { payments: [o.payment!] }))!;
+  await nextSale(caja);
+  if (opts.kitchen !== false) await kitchen(cocina, o);
+}
+
+export const canonicalSale = (caja: Device, cocina: Device, o: OrderDef) => canonical(caja, cocina, o);
 
 /** §11: the canonical order, eight (or nine) taps, each latency measured. */
 async function canonical(caja: Device, cocina: Device, o: OrderDef) {
@@ -528,11 +554,15 @@ async function eightySix(caja: Device, cocina: Device, owner: Device, o: OrderDe
   await op.getByRole("switch", { name: `Disponible: ${ts.name}` }).click();
   await expect(op.getByRole("status").filter({ hasText: "Cambios guardados" })).toBeVisible();
   await expect(op.getByRole("switch", { name: `Disponible: ${ts.name}` })).not.toBeChecked();
-  // The menu revision poll refetches within 60 s.
-  await caja.context.clock.runFor("01:01");
-  await caja.context.clock.setSystemTime(Date.now() + caja.skew);
+  // The menu revision poll refetches within 60 s (one poll period of device time;
+  // a second period only if the first poll ran before the owner's save landed).
   const blocked = page.locator("aside.cart .order-line.line-error");
-  await expect(blocked).toContainText(ts.name, { timeout: 15_000 });
+  for (let period = 0; period < 2 && !(await blocked.count()); period++) {
+    await advance(caja, 61_000);
+    await caja.context.clock.setSystemTime(Date.now() + caja.skew);
+    await blocked.waitFor({ timeout: 15_000 }).catch(() => {});
+  }
+  await expect(blocked).toContainText(ts.name);
   await expect(blocked.getByRole("alert")).toHaveText("No disponible. Quítalo para continuar.");
   await expect(page.locator("aside.cart").getByText("Quita los productos no disponibles para enviar o cobrar.", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Enviar a cocina", exact: true })).toBeDisabled();
@@ -600,7 +630,7 @@ export async function idleOracle(d: Device, current: { name: string; pin: string
     return;
   }
   if (idle < 71_000)
-    await expect.poll(() => Date.now() - d.lastInputAt, { intervals: [1_000], timeout: 30_000 }).toBeGreaterThan(71_000);
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, d.lastInputAt + 71_000 - Date.now())));
   await expect(lock.getByRole("heading", { name: "Pantalla bloqueada" })).toBeVisible({ timeout: 15_000 });
   await typePin(d, lock, current.name, current.pin);
   await expect(lock).toHaveCount(0);
@@ -668,6 +698,7 @@ export async function serviceA2(dev: Devices) {
   for (const amount of [x.opening, x.cashSales, x.cashTips, x.expected, x.terminalSales, x.terminalTips, x.terminalNet])
     expect(printed).toContain(squash(mxn(amount)));
   await press(caja, preview.getByRole("button", { name: "Cerrar", exact: true }));
+  await expect(preview).toHaveCount(0);
   await expect(caja.page.getByText("Caja abierta", { exact: true }).first()).toBeVisible();
   // A11.3 / A11.4: Caja 1 locks after 1 min from Diego's next session.
   run.step = "A11.3";
@@ -683,7 +714,7 @@ export async function serviceA2(dev: Devices) {
   await details(caja, a18.callName);
   // A12.2: one minute idle locks the screen; the cart stays mounted underneath.
   run.step = "A12.2";
-  await caja.context.clock.fastForward("01:01");
+  await advance(caja, 61_000);
   await caja.context.clock.setSystemTime(Date.now() + caja.skew);
   const lock = caja.page.locator("dialog.lock-screen");
   await expect(lock.getByRole("heading", { name: "Pantalla bloqueada" })).toBeVisible({ timeout: 15_000 });

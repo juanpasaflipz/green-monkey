@@ -439,8 +439,17 @@ async function categoriesAndProducts(owner: Device, r: Restaurant, checkpointId?
     if (p.recipe.length) await fillRecipe(dialog.locator("fieldset", { hasText: "Receta (descuenta inventario)" }), r, p.recipe);
     if (p.cost !== null) await label(dialog, "Costo estimado por unidad").fill(money(p.cost));
     if (p.tax === "iva0") await label(dialog, "Impuesto").selectOption({ label: "IVA 0%" });
-    else
-      await expect(label(dialog, "Impuesto")).toHaveValue("default");
+    else await expect(label(dialog, "Impuesto")).toHaveValue("default");
+    if (r === RESTAURANT_B && p.tax !== "iva0") {
+      // B4.1: the border restaurant's default is IVA 8%, which is selectable here.
+      await expect(label(dialog, "Impuesto").locator("option:checked")).toHaveText(
+        "Predeterminado del restaurante (IVA 8% (región fronteriza))",
+      );
+      await expect(label(dialog, "Impuesto").locator("option", { hasText: "IVA 8% (región fronteriza)" }).last()).not.toHaveAttribute(
+        "disabled",
+        "",
+      );
+    }
     if (p.kind === "combo" && r === RESTAURANT_A) {
       // A7.c3 (FIT-4): a combo needs a required group.
       await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
@@ -734,6 +743,103 @@ export async function setupA(dev: Devices, state: RunState, save: () => void) {
   await openDrawer(caja, r.openingCash, "A9-cash");
 }
 
-export async function setupB(_dev: Devices, _state: RunState, _save: () => void) {
-  // B1-B5 follow (§7.5).
+/** B3 (§7.3): areas and tables in Menú e inventario → Mesas, then the operational view. */
+async function floor(owner: Device, r: typeof RESTAURANT_B) {
+  const page = owner.page;
+  await menuNav(page, "Mesas");
+  await expect(page.getByRole("heading", { name: "Mesas y áreas" })).toBeVisible();
+  for (const a of r.areas) {
+    await page.getByRole("button", { name: "Nueva área", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Nueva área" });
+    await label(dialog, "Nombre del área").fill(a.name);
+    await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+  }
+  for (const a of r.areas) {
+    await page.getByRole("button", { name: "Agregar varias mesas", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Agregar varias mesas" });
+    await label(dialog, "Área").selectOption({ label: a.name });
+    await label(dialog, "Prefijo").fill(a.prefix);
+    await label(dialog, "Desde").fill(String(a.from));
+    await label(dialog, "Hasta").fill(String(a.to));
+    await label(dialog, "Lugares").fill(String(a.seats));
+    await expect(
+      dialog.getByText(`Se crearán: ${a.prefix} ${a.from} … ${a.prefix} ${a.to} (${a.to - a.from + 1} mesas)`, { exact: true }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: "Guardar", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+  }
+  await checkpoint(owner, "B3-floor");
+}
+
+export async function setupB(dev: Devices, state: RunState, save: () => void) {
+  const r = RESTAURANT_B;
+  const owner = await dev("ownerB");
+  run.step = "B1.1";
+  await googleOwner(owner, r, state.baseUrl);
+  await signup(owner, r, state.cutoffB);
+  run.step = "B1.3";
+  state.tenantB = await readTenantId(owner);
+  expect(state.tenantB).not.toBe(state.tenantA);
+  save();
+  run.step = "B1.4";
+  await grantPro(state.tenantB, r, state.businessDateB, state.runId);
+  await proGranted(owner, state.runId, state.businessDateB);
+  run.step = "B1.5";
+  await fiscalProfile(owner, r, "B1-fiscal-border");
+  run.step = "B2.1";
+  await staff(owner, r);
+  run.step = "B2.2";
+  await moneyControls(owner);
+  run.step = "B3";
+  await floor(owner, r);
+  run.step = "B4.1";
+  await stockItems(owner, r);
+  await modifierGroups(owner, r);
+  await categoriesAndProducts(owner, r);
+  run.step = "B5.1";
+  const pairs = [
+    ["cajaB", "Caja"],
+    ["sofiaB", "Comandera 1"],
+    ["tomasB", "Comandera 2"],
+    ["cocinaB", "Cocina"],
+  ] as const;
+  for (const [name, deviceName] of pairs) {
+    const device = await dev(name);
+    const { code, dialog } = await pairingCode(owner, deviceName);
+    await pair(device, code, r.name, deviceName);
+    await expect(dialog.getByRole("status").filter({ hasText: `Vinculado: ${deviceName}` })).toBeVisible();
+    await dialog.getByRole("button", { name: "Cerrar", exact: true }).click();
+  }
+  const sofiaB = await dev("sofiaB");
+  await checkpoint(sofiaB, "B5-roster-phone");
+  const person = (key: string) => r.staff.find((p) => p.key === key)!;
+  for (const [name, key] of [
+    ["cajaB", "karla"],
+    ["sofiaB", "sofia"],
+    ["tomasB", "tomas"],
+    ["cocinaB", "ramon"],
+  ] as const) {
+    const device = await dev(name);
+    const who = person(key);
+    if (name === "sofiaB") {
+      await device.page.getByRole("button", { name: new RegExp(`^${who.name}`) }).click();
+      for (const key of await device.page.locator(".keypad button").all()) {
+        const box = await key.boundingBox();
+        expect(box?.height ?? 0, "B5.1: PinPad keys are at least 44 px tall").toBeGreaterThanOrEqual(44);
+      }
+      await typePin(device, device.page, who.name, who.pin);
+      run.lastAuthAt[`${who.name}@${device.name}`] = Date.now();
+    } else await signIn(device, who.name, who.pin);
+  }
+  run.step = "B3.4";
+  const caja = await dev("cajaB");
+  await caja.page.getByRole("button", { name: "Mesas", exact: true }).click();
+  const cards = caja.page.locator("article.table-card");
+  await expect(cards).toHaveCount(12);
+  await expect(cards.first()).toHaveAccessibleName("Mesa 1");
+  for (const card of await cards.all()) await expect(card).toContainText("Disponible");
+  await checkpoint(caja, "B3-tables-empty");
+  run.step = "B5.2";
+  await openDrawer(caja, r.openingCash);
 }

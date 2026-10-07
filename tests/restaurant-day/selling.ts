@@ -163,6 +163,9 @@ export async function addLine(d: Device, r: Restaurant, line: Line, index: numbe
       if (o.timed) await expect(cartLine(page, index)).toContainText(p.name);
     });
   }
+  // On a phone the cart lives in the "Ver orden" dialog.
+  const phone = !(await page.locator("aside.cart").isVisible());
+  if (phone && (line.qty > 1 || line.note)) await press(d, page.locator("button.mobile-order"));
   const row = cartLine(page, index);
   await expect(row.locator("strong").first()).toHaveText(p.name);
   for (let q = 1; q < line.qty; q++) {
@@ -183,11 +186,13 @@ export async function addLine(d: Device, r: Restaurant, line: Line, index: numbe
     }
     await expect(row.locator(".line-note")).toHaveText(line.note);
   }
+  if (phone && (line.qty > 1 || line.note))
+    await press(d, page.getByRole("dialog", { name: "Orden" }).getByRole("button", { name: "Cerrar", exact: true }));
 }
 
 /** The index-th line of the visible cart. */
 export function cartLine(page: Page, index: number) {
-  return page.locator("aside.cart .order-line, dialog[open] .order-line").nth(index);
+  return page.locator("aside.cart:visible .order-line, dialog[open] .order-line").nth(index);
 }
 
 /** P-SELL step 3: call name and order note through "Detalles" (compact layout). */
@@ -213,8 +218,8 @@ export async function assertCart(d: Device, r: Restaurant, lines: Line[], due: n
     if (line.note) await expect(row.locator(".line-note")).toHaveText(line.note);
     await expect(row.locator(":scope > strong")).toHaveText(mxn(unitPrice(r, line) * line.qty));
   }
-  await expect(page.locator("aside.cart .order-line, dialog[open] .order-line")).toHaveCount(lines.length);
-  await expect(page.locator("aside.cart .total strong, dialog[open] .total strong").first()).toHaveText(mxn(due));
+  await expect(page.locator("aside.cart:visible .order-line, dialog[open] .order-line")).toHaveCount(lines.length);
+  await expect(page.locator("aside.cart:visible .total strong, dialog[open] .total strong").first()).toHaveText(mxn(due));
 }
 
 /** G2.4 (FOH-10): every line of a 3-line cart, Enviar and Cobrar fit a 1024×768 tablet. */

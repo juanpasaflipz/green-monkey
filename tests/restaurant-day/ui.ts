@@ -77,6 +77,9 @@ export type Device = {
   outage: boolean;
   injected: WeakSet<Request>;
   lastInputAt: number;
+  /** requests in flight (advance() lets them finish before each step) */
+  pending: number;
+  inFlight?: Map<Request, number>;
 };
 
 export const run = {
@@ -142,11 +145,27 @@ export async function newDevice(
     outage: false,
     injected: new WeakSet(),
     lastInputAt: Date.now(),
+    pending: 0,
   };
   if (spec.clock === "install") await context.clock.install({ time: Date.now() + device.skew });
   const page = await context.newPage();
   device.page = page;
   page.on("pageerror", (e) => violation(`${name} pageerror: ${e.message}`));
+  // API calls in flight (advance() lets them finish before each clock step).
+  const inFlight = new Map<Request, number>();
+  const api = (req: Request) =>
+    ["fetch", "xhr"].includes(req.resourceType()) && new URL(req.url()).pathname.startsWith("/api/");
+  page.on("request", (req) => {
+    if (api(req)) inFlight.set(req, Date.now());
+    device.pending = inFlight.size;
+  });
+  const settled = (req: Request) => {
+    inFlight.delete(req);
+    device.pending = inFlight.size;
+  };
+  page.on("requestfinished", settled);
+  page.on("requestfailed", settled);
+  device.inFlight = inFlight;
   page.on("response", async (response) => {
     const request = response.request();
     const entry: ResponseEntry = {
@@ -427,7 +446,9 @@ export function overflowing(page: Page) {
 
 /** §11.1: counts the activation and fails if the target needs scrolling. */
 export async function tap(d: Device, target: Locator) {
-  await expect(target).toBeInViewport();
+  // The no-scroll rule is the tablet budget of Caja 1 (§11, FOH-10); phones and
+  // the other tablets may scroll to reach a control, as people do.
+  if (d.name === "cajaA") await expect(target).toBeInViewport();
   run.taps++;
   d.lastInputAt = Date.now();
   await target.click();
@@ -450,6 +471,34 @@ export async function fill(d: Device, target: Locator, value: string) {
   await target.fill(value);
 }
 
+// ------------------------------------------------------------ device time
+
+/**
+ * Advances a device clock in 3 s steps (§3.5.3). One big jump would turn the
+ * requests in flight into 60 s latency samples and mark the connection slow
+ * ("Conexión lenta" counts two samples over 4 s); each step stays under that.
+ * The app's idle time grows by the same amount (§3.5.5).
+ */
+export async function advance(d: Device, ms: number) {
+  for (let done = 0; done < ms; done += 3_000) {
+    // A request in flight across a jump would read as seconds of latency.
+    // Only short calls matter; a call open for seconds (GET /api/auth/account on a
+    // terminal never reports finished) is not waited for.
+    const young = () => [...(d.inFlight ?? new Map()).values()].filter((at) => Date.now() - at < 2_000).length;
+    await expect
+      .poll(young, { intervals: [25], timeout: 5_000 })
+      .toBe(0)
+      .catch(() =>
+        logLine(
+          "advance.log",
+          `${d.name}: still in flight at a clock step: ${[...(d.inFlight ?? new Map()).keys()].map((r) => r.method() + " " + new URL(r.url()).pathname).join(", ")}`,
+        ),
+      );
+    await d.context.clock.runFor(Math.min(3_000, ms - done));
+  }
+  d.lastInputAt -= ms;
+}
+
 // ------------------------------------------------------------ prints (§3.4)
 
 export type Print = { at: number; text: string; html: string };
@@ -458,7 +507,8 @@ export async function prints(page: Page): Promise<Print[]> {
 }
 /** Waits for print number `count` (1-based) and returns it, saved to prints/. */
 export async function nextPrint(page: Page, before: number, label: string): Promise<Print> {
-  await expect.poll(async () => (await prints(page)).length, { message: `print ${label}` }).toBeGreaterThan(before);
+  // Printing waits two animation frames; under CPU load allow more than one expect timeout.
+  await expect.poll(async () => (await prints(page)).length, { message: `print ${label}`, timeout: 20_000 }).toBeGreaterThan(before);
   const all = await prints(page);
   const p = all[all.length - 1]!;
   run.prints++;
