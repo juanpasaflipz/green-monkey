@@ -2,9 +2,11 @@
  * cfdi_global (spec §4.8.6): the global-invoice scheduler, builder and sweeps. DB only; stamping
  * is cfdi_stamp's.
  *
- *   1. settings (exit when paused); 2. add the period rows after the mode's last one through the
- *      current period, never re-deriving a past date (periodsAfter); 3. promote a pending
- *      periodicity on its first day;
+ *   1. settings (exit when paused); 1b. rebuild the current month's rows after a periodicity
+ *      that applied at once (LD-51 F2; rows no document used, under the settings lock and the
+ *      period keys); 2. add the period rows after the mode's last one through the current
+ *      period, never re-deriving a past date (periodsAfter); 3. promote a pending periodicity on
+ *      its first day;
  *   4. build each due period (closed + grace), oldest first, in its own transaction under a
  *      per-(tenant, mode, period) advisory key: every ticket of the period not claimed in this mode,
  *      in folio order, split into parts of ≤ 4,000 concepts (a ticket never split);
@@ -56,6 +58,9 @@ import {
   loadOrganization,
   loadSettings,
   modeFrom,
+  periodicityChangeAllowed,
+  platform,
+  stampingFacts,
   unclaimedTickets,
   type FiscalFacts,
   type SettingsRow,
@@ -157,6 +162,92 @@ async function eligibleTicketIds(
 
 class NoTickets extends Error {}
 
+/** "2026-10-01" for any business date of October 2026. */
+const monthStartOf = (date: string) => date.slice(0, 8) + "01";
+
+/**
+ * A row of the current month whose periodicity is not the one in force on its dates: left by a
+ * periodicity that applied at once (LD-51 F2) until the tick's rebuild replaces it. Rows of earlier
+ * months keep theirs (CFDI-R2-1).
+ */
+function staleRow(
+  r: { from: string; periodicity: Periodicity },
+  s: Pick<
+    SettingsRow,
+    "globalPeriodicity" | "nextPeriodicity" | "nextPeriodicityFrom"
+  >,
+  today: string,
+): boolean {
+  return (
+    r.from >= monthStartOf(today) && r.periodicity !== periodicityOn(r.from, s)
+  );
+}
+
+/**
+ * Step 1b (LD-51 F2), in the plan's transaction under the settings row lock: a periodicity saved
+ * to apply at once leaves the current month's rows of the old one. With every row's period key
+ * taken, the change is checked again (periodicityChangeAllowed: no global document of the month,
+ * no unclaimed ticket past a 24-hour deadline) and the month's rows are deleted (036 lets the
+ * worker delete only rows no document used), so periodsAfter re-adds the month under the new
+ * periodicity. If the month got shaped meanwhile, the change waits for next month like any other.
+ */
+async function rebuildMonth(
+  tx: Tx,
+  ctx: JobContext,
+  settings: SettingsRow,
+  facts: FiscalFacts,
+  today: string,
+): Promise<SettingsRow> {
+  const tenantId = ctx.job.tenantId;
+  const monthStart = monthStartOf(today);
+  const rows = await tx`
+    select period_key, periodicity, date_from::text as from_date from cfdi_global_periods
+    where mode = ${settings.mode} and date_from >= ${monthStart}::date
+    order by period_key`;
+  const stale = rows.filter((r) =>
+    staleRow(
+      { from: r.from_date, periodicity: r.periodicity },
+      settings,
+      today,
+    ),
+  );
+  if (!stale.length) return settings;
+  for (const r of rows)
+    await lockPeriod(tx, tenantId, settings.mode, r.period_key as string);
+  const was = stale[0].periodicity as Periodicity;
+  const target = periodicityOn(today, settings);
+  const allowed = await periodicityChangeAllowed(
+    tx,
+    {
+      ...settings,
+      globalPeriodicity: was,
+      nextPeriodicity: null,
+      nextPeriodicityFrom: null,
+    },
+    target,
+    today,
+    facts,
+  );
+  if (allowed) {
+    const removed = await tx`
+      delete from cfdi_global_periods
+      where mode = ${settings.mode} and date_from >= ${monthStart}::date
+      returning period_key`;
+    await event(tx, ctx, null, "periodicity_rebuilt", {
+      from: was,
+      to: target,
+      periods: removed.map((r) => r.period_key as string),
+    });
+    return settings;
+  }
+  await tx`
+    update cfdi_settings set global_periodicity = ${was}, next_periodicity = ${target},
+      next_periodicity_from = ${firstOfNextMonth(today)}::date, version = version + 1,
+      updated_at = now()`;
+  await event(tx, ctx, null, "periodicity_deferred", { from: was, to: target });
+  return (await loadSettings(tx))!;
+}
+
 /** Step 4 for one period: parts, claims and stamping jobs. Returns the parts created. */
 async function buildPeriod(
   rt: CfdiRuntime,
@@ -164,25 +255,33 @@ async function buildPeriod(
   key: string,
   ctxData: {
     settings: SettingsRow;
-    facts: FiscalFacts;
+    /** The stamping issuer's facts (stampingFacts: the shared sandbox's in that mode). */
+    issuer: FiscalFacts;
     mode: "test" | "live";
     from: string;
+    today: string;
   },
   o: { force: boolean },
 ): Promise<void> {
   const tenantId = ctx.job.tenantId;
-  const { settings, facts, mode } = ctxData;
+  const { settings, issuer, mode } = ctxData;
   const created: { id: string; part: number; late: boolean }[] = [];
   let excludedCount = 0;
   let periodDue = "";
   await ctx.tenant(async (tx) => {
     await tx`select set_config('statement_timeout', '30s', true)`;
+    // The settings row first (FOR SHARE), as a periodicity save and the tick's rebuild take it
+    // (FOR UPDATE) before any period key: a save that applies at once and a build of the month
+    // it reshapes serialize (LD-51 F2).
+    const current = await loadSettings(tx, { forShare: true });
     await lockPeriod(tx, tenantId, mode, key);
     const [row] = await tx`
       select *, date_from::text as from_date, date_to::text as to_date from cfdi_global_periods
       where mode = ${mode} and period_key = ${key} for update`;
     if (!row) return;
     const period = periodRow(row);
+    // A row left by a periodicity that applied at once is never built: the tick rebuilds it.
+    if (current && staleRow(period, current, ctxData.today)) return;
     periodDue = period.dueAt;
     if (Date.parse(period.closesAt) > Date.now()) return;
     if (period.status === "open" && !settings.globalAuto && !o.force) return;
@@ -207,7 +306,7 @@ async function buildPeriod(
           where mode = ${mode} and period_key = ${key}`;
       return;
     }
-    if (!facts.postalCode) return;
+    if (!issuer.postalCode) return;
     const late = period.status !== "open";
     const parts = buildGlobalRequests({
       docIds: randomUUID,
@@ -217,7 +316,7 @@ async function buildPeriod(
         months: period.from.slice(5, 7),
         year: Number(period.from.slice(0, 4)),
       },
-      issuerPostalCode: facts.postalCode,
+      issuerPostalCode: issuer.postalCode,
       cardForm: settings.cardPaymentForm,
     });
     let claimed = 0;
@@ -375,6 +474,8 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
           updated_at = now()`;
       settings = (await loadSettings(tx))!;
     }
+    // 1b. A periodicity that applied at once: rebuild the current month's rows (LD-51 F2).
+    settings = await rebuildMonth(tx, ctx, settings, facts, today);
     const from = modeFrom(settings);
     // New rows only, after the last one of this mode, with the settings as they are BEFORE the
     // promotion: a pending change still applies only from its first-of-month date, even when
@@ -437,7 +538,11 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
         late.push(r.period_key);
     return {
       settings,
-      facts,
+      issuer: stampingFacts(
+        facts,
+        await platform(tx),
+        await loadOrganization(tx),
+      ),
       mode,
       from,
       today,

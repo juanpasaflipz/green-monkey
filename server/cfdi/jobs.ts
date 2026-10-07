@@ -77,6 +77,8 @@ export const dedupe = {
   tickActivate: () => "tick:activate",
   tickLive: () => "tick:live",
   tickAfterCancel: (documentId: string) => `tick:after-cancel:${documentId}`,
+  /** A ticket issued into a period whose global was already built (LD-51 F12), per 10 minutes. */
+  tickIssued: (at: Date) => `tick:issued:${tenMinuteBucket(at)}`,
   run: (operationId: string) => `run:${operationId}`,
   refund: (refundId: string) => `refund:${refundId}`,
   refundForce: (refundId: string, operationId: string) =>

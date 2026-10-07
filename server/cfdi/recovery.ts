@@ -128,8 +128,14 @@ export async function recoveryAction(
     doc.status === "canceled" &&
     stale &&
     (!files.has("cancel_xml") || !files.has("cancel_pdf"))
-  )
-    return { kind: "deliver", acuse: true };
+  ) {
+    // An acuse that named another CFDI (Facturapi's test-mode sample) is never fetched again
+    // (LD-51 F7): the register offers none and the status comes from the document.
+    const [mismatch] = await tx`
+      select 1 as one from cfdi_events where document_id = ${doc.id} and kind = 'acuse_mismatch'
+      limit 1`;
+    return mismatch ? null : { kind: "deliver", acuse: true };
+  }
   return null;
 }
 

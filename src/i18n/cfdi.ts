@@ -42,6 +42,13 @@ export default defineArea({
     cfdiOrgError: "Error: {error}",
     cfdiRetry: "Reintentar",
     cfdiIssuerRfc: "RFC del emisor",
+    cfdiIssuerPending: "Pendiente: Facturapi aún no lo reporta",
+    cfdiSharedIssuerTitle: "Emisor de prueba de la plataforma",
+    cfdiSharedIssuerNote:
+      "En este modo se timbra con la organización de prueba de la plataforma: los datos fiscales del restaurante (RFC, régimen y código postal) no se usan para timbrar.",
+    cfdiIssuerLegalName: "Razón social del emisor",
+    cfdiIssuerRegime: "Régimen fiscal del emisor",
+    cfdiIssuerPostalCode: "Lugar de expedición (código postal)",
     cfdiLegalSynced: "Datos fiscales enviados a Facturapi (versión {n})",
     cfdiLegalPending:
       "Los datos fiscales actualizados se enviarán antes de la próxima factura.",
@@ -72,7 +79,17 @@ export default defineArea({
     cfdiPeriodicityMonth: "Mensual",
     cfdiPeriodicityHint:
       "La factura global se emite automáticamente al cierre de cada periodo, dentro de las 24 horas que exige el SAT, con los tickets que no se facturaron a un cliente.",
-    cfdiPeriodicityFrom: "El cambio aplica desde el {date}.",
+    cfdiPeriodicityFrom: "Cambia a {next} desde el {date}.",
+    cfdiPeriodicityCurrent: "Periodicidad actual: {current}.",
+    cfdiActivatePeriodicityHint:
+      "Puedes cambiarla después: el cambio aplica al momento mientras no se haya emitido ninguna factura global del mes ni quede un ticket atrasado; si no, desde el día 1 del mes siguiente.",
+    cfdiSelfInvoiceBound:
+      "Mientras «Sustituir la factura global automáticamente» esté apagado, un ticket solo se puede autofacturar hasta que entra en la factura global: {when}. El ticket impreso y el portal muestran ese plazo cuando llega antes que el de autofacturación.",
+    cfdiBoundDay: "al cierre del día del consumo más {n} min",
+    cfdiBoundWeek:
+      "al cierre de la semana del consumo (domingo o fin de mes) más {n} min",
+    cfdiBoundFortnight: "al cierre de la quincena del consumo más {n} min",
+    cfdiBoundMonth: "al cierre del mes del consumo más {n} min",
     cfdiResicoMonthly: "En RESICO la factura global es mensual.",
     cfdiGlobalAuto: "Emitir la factura global automáticamente",
     cfdiConceptMode: "Conceptos de la factura del cliente",
@@ -288,6 +305,7 @@ export default defineArea({
     cfdiPeriodLate: "Emitida fuera de plazo",
     cfdiPeriodPart: "Parte {n}",
     cfdiLateTickets: "{n} tickets tardíos",
+    cfdiPeriodUnclaimed: "{n} por emitir",
     cfdiRunNow: "Emitir ahora",
     cfdiRunQueued: "La factura global se emitirá en unos segundos.",
     cfdiEmptyGlobals: "Todavía no hay periodos de factura global.",
@@ -306,6 +324,9 @@ export default defineArea({
     cfdiPortalFind: "Buscar",
     cfdiPortalTicket: "Ticket {folio} · {date} · {total}",
     cfdiPortalDeadline: "Puedes facturar hasta el {date}.",
+    cfdiPortalDeadlineGlobal:
+      "Después, el ticket se incluye en la factura global del restaurante.",
+    cfdiDateAtTime: "{date} a las {time}",
     cfdiPortalTestMode: "Modo prueba: la factura no tendrá validez fiscal.",
     cfdiPortalInvoiced: "Este ticket ya se facturó.",
     cfdiPortalDownloadMine: "Descargar mi factura",
@@ -402,6 +423,8 @@ export default defineArea({
     cfdiEventRetryRequested: "Reintento solicitado",
     cfdiEventRecovered: "Reanudado automáticamente",
     cfdiEventOther: "Evento",
+    cfdiEventAcuseMismatch:
+      "El acuse que entregó Facturapi es de otro CFDI (modo prueba); no se guardó",
   },
   en: {
     cfdiTitle: "Electronic invoicing (CFDI)",
@@ -436,6 +459,13 @@ export default defineArea({
     cfdiOrgError: "Error: {error}",
     cfdiRetry: "Retry",
     cfdiIssuerRfc: "Issuer RFC",
+    cfdiIssuerPending: "Pending: Facturapi has not reported it yet",
+    cfdiSharedIssuerTitle: "Platform test issuer",
+    cfdiSharedIssuerNote:
+      "In this mode invoices are stamped by the platform's test organization: the restaurant's tax details (RFC, tax regime and postal code) are not used to stamp.",
+    cfdiIssuerLegalName: "Issuer legal name",
+    cfdiIssuerRegime: "Issuer tax regime",
+    cfdiIssuerPostalCode: "Place of issue (postal code)",
     cfdiLegalSynced: "Tax details sent to Facturapi (version {n})",
     cfdiLegalPending:
       "Updated tax details will be sent before the next invoice.",
@@ -465,7 +495,18 @@ export default defineArea({
     cfdiPeriodicityMonth: "Monthly",
     cfdiPeriodicityHint:
       "The global invoice is issued automatically when each period closes, within the 24 hours SAT requires, with the tickets that were not invoiced to a customer.",
-    cfdiPeriodicityFrom: "The change applies from {date}.",
+    cfdiPeriodicityFrom: "Changes to {next} on {date}.",
+    cfdiPeriodicityCurrent: "Current frequency: {current}.",
+    cfdiActivatePeriodicityHint:
+      "You can change it later: the change applies at once while no global invoice of the month has been issued and no ticket is overdue; otherwise from the 1st of next month.",
+    cfdiSelfInvoiceBound:
+      "While “Replace the global invoice automatically” is off, a ticket can be self-invoiced only until it goes into the global invoice: {when}. The printed ticket and the portal show that deadline when it comes before the self-invoicing one.",
+    cfdiBoundDay: "at the close of the day of purchase plus {n} min",
+    cfdiBoundWeek:
+      "at the close of the week of purchase (Sunday or month end) plus {n} min",
+    cfdiBoundFortnight:
+      "at the close of the half-month of purchase plus {n} min",
+    cfdiBoundMonth: "at the close of the month of purchase plus {n} min",
     cfdiResicoMonthly: "Under RESICO the global invoice is monthly.",
     cfdiGlobalAuto: "Issue the global invoice automatically",
     cfdiConceptMode: "Lines on the customer's invoice",
@@ -681,6 +722,7 @@ export default defineArea({
     cfdiPeriodLate: "Issued late",
     cfdiPeriodPart: "Part {n}",
     cfdiLateTickets: "{n} late tickets",
+    cfdiPeriodUnclaimed: "{n} to be issued",
     cfdiRunNow: "Issue now",
     cfdiRunQueued: "The global invoice will be issued in a few seconds.",
     cfdiEmptyGlobals: "There are no global invoice periods yet.",
@@ -699,6 +741,9 @@ export default defineArea({
     cfdiPortalFind: "Find",
     cfdiPortalTicket: "Ticket {folio} · {date} · {total}",
     cfdiPortalDeadline: "You can invoice until {date}.",
+    cfdiPortalDeadlineGlobal:
+      "After that, the ticket goes into the restaurant's global invoice.",
+    cfdiDateAtTime: "{date} at {time}",
     cfdiPortalTestMode: "Test mode: the invoice will have no tax validity.",
     cfdiPortalInvoiced: "This ticket has already been invoiced.",
     cfdiPortalDownloadMine: "Download my invoice",
@@ -793,6 +838,8 @@ export default defineArea({
     cfdiEventRetryRequested: "Retry requested",
     cfdiEventRecovered: "Resumed automatically",
     cfdiEventOther: "Event",
+    cfdiEventAcuseMismatch:
+      "The acuse Facturapi returned belongs to another CFDI (test mode); it was not stored",
   },
   errors: {
     cfdi_unavailable: [

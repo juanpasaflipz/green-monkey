@@ -9,6 +9,7 @@ import {
   type Session,
 } from "../../../shared/domain";
 import {
+  deadlineShowsTime,
   docLabel,
   globalPeriodFor,
   PAYMENT_FORMS,
@@ -102,6 +103,28 @@ export function shortDate(
     timeZone: timezone,
   }).format(new Date(iso));
 }
+/**
+ * A self-invoicing deadline for the receipt and the portal (LD-51 F1): "31/10/2026", or
+ * "08/10/2026 a las 05:00" when it falls on the purchase's business date or the next day (a daily
+ * global), where the date alone would read as the whole day.
+ */
+export function deadlineText(
+  iso: string,
+  businessDate: string,
+  timezone: string,
+  locale: Locale,
+): string {
+  const date = shortDate(iso, timezone, locale);
+  if (!deadlineShowsTime(iso, businessDate, timezone)) return date;
+  const time = new Intl.DateTimeFormat(intl(locale), {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: timezone,
+    ...(locale === "es" ? { hourCycle: "h23" as const } : {}),
+  }).format(new Date(iso));
+  return t(locale, "cfdiDateAtTime", { date, time });
+}
+
 export function dateTimeLabel(
   iso: string,
   timezone: string,
@@ -260,6 +283,7 @@ const EVENTS: Record<string, Key> = {
   reissue_completed: "cfdiEventReissue",
   retry_requested: "cfdiEventRetryRequested",
   recovery_queued: "cfdiEventRecovered",
+  acuse_mismatch: "cfdiEventAcuseMismatch",
 };
 const CANCELLATION: Record<string, Key> = {
   queued: "cfdiStatusCanceling",

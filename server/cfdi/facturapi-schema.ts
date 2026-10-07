@@ -288,6 +288,9 @@ export const organizationResponse = z.looseObject({
       legal_name: optionalText,
       tax_system: optionalText,
       tax_id: optionalText,
+      // OrganizationAddress (CommonAddressProperties.zip): the shared sandbox's issuer postal code
+      // (LD-51 F3). An unreadable address never breaks an organization read.
+      address: z.looseObject({ zip: optionalText }).nullish().catch(null),
     })
     .nullish(),
   certificate: z

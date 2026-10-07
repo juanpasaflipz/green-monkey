@@ -395,3 +395,40 @@ export function parseCfdiTotals(xml: string | Uint8Array): CfdiTotals {
     throw new CfdiXmlError("unterminated document");
   return result;
 }
+
+const SAT_UUID_TEXT =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/**
+ * The folios fiscales a cancellation acuse names (LD-51 F7), upper-cased: SAT's acuse lists each
+ * canceled CFDI as Folios/UUID (with EstatusUUID); its element prefix and namespace vary
+ * (cancelacfd.sat.gob.mx), so the local name UUID is read in any namespace, as an element's text
+ * or as a UUID attribute (EstatusUUID never counts). Facturapi's test mode answers a sample acuse
+ * that names another CFDI: the caller stores an acuse only when it names the document's UUID.
+ * Empty for a file that is not UTF-8 text, declares a DTD or names no UUID.
+ */
+export function acuseUuids(xml: Uint8Array): string[] {
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(xml);
+  } catch {
+    return [];
+  }
+  if (/<!DOCTYPE|<!ENTITY/i.test(text)) return [];
+  const found = new Set<string>();
+  const element =
+    /<(?:[A-Za-z_][\w.-]*:)?UUID(?:\s[^>]*)?>\s*([^<\s]+)\s*<\/(?:[A-Za-z_][\w.-]*:)?UUID\s*>/g;
+  for (const m of text.matchAll(element))
+    if (SAT_UUID_TEXT.test(m[1])) found.add(m[1].toUpperCase());
+  const attribute = /\sUUID\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  for (const m of text.matchAll(attribute)) {
+    const value = (m[1] ?? m[2] ?? "").trim();
+    if (SAT_UUID_TEXT.test(value)) found.add(value.toUpperCase());
+  }
+  return [...found];
+}
+
+/** Whether a cancellation acuse is the document's own (it names the document's UUID). */
+export function acuseMatches(xml: Uint8Array, uuid: string | null): boolean {
+  return !!uuid && acuseUuids(xml).includes(uuid.trim().toUpperCase());
+}

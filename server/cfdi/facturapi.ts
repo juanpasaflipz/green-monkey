@@ -57,6 +57,13 @@ export interface FacturapiOptions {
   userAgent?: string;
   /** Tests only: shorter timeouts. Production uses 15 s, and 30 s for stamping, cancel and CSD. */
   timeouts?: { standardMs: number; longMs: number };
+  /**
+   * Called for every 2xx answer with its X-Facturapi-Log-Id ("Request correlation ID",
+   * errors.mdx "Useful headers"; the SDK's FacturapiError.logId), null when the answer has none:
+   * Facturapi documents the header on error responses, so a success may not carry it. The worker
+   * puts it in the job's info line (LD-51 F13). Never given a secret.
+   */
+  onResponse?: (meta: { logId: string | null; status: number }) => void;
 }
 
 export type FacturapiErrorKind =
@@ -192,6 +199,8 @@ const MAX_JSON_BYTES = 5 * 1024 * 1024;
 /** Matches the cfdi_files content cap (20 MB). */
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_ERROR_BYTES = 64 * 1024;
+/** A log id worth logging: a short token, never anything that could carry a secret or text. */
+const LOG_ID = /^[A-Za-z0-9_.:-]{1,100}$/;
 const MAX_MESSAGE = 1000;
 
 /** Which secret a key kind must carry; also used by callers that unseal stored keys. */
@@ -557,6 +566,15 @@ export function createFacturapiClient(
         throw failed(error);
       }
       if (!response.ok) throw await httpError(response).catch(failed);
+      const logId = response.headers.get("x-facturapi-log-id");
+      try {
+        o.onResponse?.({
+          logId: logId && LOG_ID.test(logId) ? logId : null,
+          status: response.status,
+        });
+      } catch {
+        // An observer never breaks a provider call.
+      }
       try {
         // The body is read under the same deadline: an abort mid-body classifies the same way.
         return await read(response);

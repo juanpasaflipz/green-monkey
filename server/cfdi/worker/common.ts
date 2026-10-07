@@ -6,7 +6,13 @@ import type { Tx } from "../../db.js";
 import { classifyFacturapiError, type FacturapiFailure } from "../errors.js";
 import { cfdiEnqueue, type CfdiJobKind } from "../jobs.js";
 import { insertEvent } from "../store.js";
-import { cfdiRuntime, raise, tenantTag, type CfdiRuntime } from "./runtime.js";
+import {
+  cfdiRuntime,
+  raise,
+  tenantTag,
+  traceQuiet,
+  type CfdiRuntime,
+} from "./runtime.js";
 import { VaultError } from "../vault.js";
 
 export const MINUTE = 60_000;
@@ -49,6 +55,7 @@ export async function unavailable(ctx: JobContext): Promise<JobOutcome> {
     reason: "cfdi_unavailable",
     next: next.dedupeKey,
   });
+  traceQuiet();
   return { status: "done" };
 }
 

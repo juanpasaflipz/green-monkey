@@ -20,6 +20,7 @@ import {
   loadSettings,
   type FiscalFacts,
   type OrganizationRow,
+  type SharedIssuer,
 } from "../store.js";
 import { sealSecret } from "../vault.js";
 import {
@@ -67,6 +68,38 @@ export function legalFrom(f: FiscalFacts): FLegalInput {
   };
 }
 
+const RFC = /^[A-ZÑ&]{3,4}[0-9]{6}[A-Z0-9]{3}$/;
+
+/**
+ * The shared sandbox organization's legal data as Facturapi reports it (LD-51 F3), each fact only
+ * when it has the shape cfdi_platform accepts (036), else null: the stamp then falls back to the
+ * restaurant's own fact for that one.
+ */
+export function sharedIssuerOf(org: FOrganization): SharedIssuer {
+  const legal = org.legal;
+  const name = legal?.legal_name?.trim() ?? "";
+  const rfc = legal?.tax_id?.trim().toUpperCase() ?? "";
+  const regime = legal?.tax_system?.trim() ?? "";
+  const zip = legal?.address?.zip?.trim() ?? "";
+  return {
+    legalName: name && name.length <= 300 ? name : null,
+    taxId: RFC.test(rfc) ? rfc : null,
+    regime: /^\d{3}$/.test(regime) ? regime : null,
+    postalCode: /^\d{5}$/.test(zip) ? zip : null,
+  };
+}
+
+/** Publishes the shared sandbox issuer on cfdi_platform (no tenant data; the worker's row). */
+export async function publishSharedIssuer(
+  tx: Tx,
+  issuer: SharedIssuer,
+): Promise<void> {
+  await tx`
+    update cfdi_platform set shared_legal_name = ${issuer.legalName}, shared_tax_id = ${issuer.taxId},
+      shared_tax_system = ${issuer.regime}, shared_postal_code = ${issuer.postalCode}
+    where id = 1 and provider = 'sandbox_shared'`;
+}
+
 /** Organization facts Facturapi reports, as stored on cfdi_organizations. */
 async function storeFacts(
   tx: Tx,
@@ -108,7 +141,11 @@ async function refresh(
   if (org.source === "shared_sandbox") {
     if (!rt.config.testKey) return null;
     const me = await rt.client.me({ kind: "test", secret: rt.config.testKey });
-    await ctx.tenant((tx) => storeFacts(tx, me, { keepProcessing: true }));
+    await ctx.tenant(async (tx) => {
+      await storeFacts(tx, me, { keepProcessing: true });
+      // The stamping issuer of every restaurant in this mode (LD-51 F3), kept current.
+      await publishSharedIssuer(tx, sharedIssuerOf(me));
+    });
     return me;
   }
   if (!org.providerOrgId) return null;

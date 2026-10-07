@@ -24,10 +24,10 @@ import { emptyReceptor, ReceptorFields } from "./ReceptorFields";
 import { portalFileUrl } from "./download";
 import {
   dateLabel,
+  deadlineText,
   docLabel,
   issueOfError,
   moneyLabel,
-  shortDate,
   t as tr,
   withServerIssue,
 } from "./format";
@@ -398,11 +398,20 @@ export default function SelfInvoicePortal() {
               })}
             </strong>
           </p>
+          {/* The deadline the receipt printed (LD-51 F1): with its time on the purchase day or
+              the next, and why when the ticket's global ends it. */}
           {ticket.deadline && canForm && (
             <p>
               {tr(locale, "cfdiPortalDeadline", {
-                date: shortDate(ticket.deadline, ticket.timezone, locale),
+                date: deadlineText(
+                  ticket.deadline,
+                  ticket.businessDate,
+                  ticket.timezone,
+                  locale,
+                ),
               })}
+              {ticket.deadlineBound === "global" &&
+                ` ${t.cfdiPortalDeadlineGlobal}`}
             </p>
           )}
           {ticket.mode === "test" && (
@@ -461,7 +470,12 @@ export default function SelfInvoicePortal() {
                 <p role="status">
                   {tr(locale, "cfdiPortalExpired", {
                     date: ticket.deadline
-                      ? shortDate(ticket.deadline, ticket.timezone, locale)
+                      ? deadlineText(
+                          ticket.deadline,
+                          ticket.businessDate,
+                          ticket.timezone,
+                          locale,
+                        )
                       : "",
                   })}
                   {contact}

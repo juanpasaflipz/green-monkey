@@ -329,9 +329,10 @@ export function firstOfNextMonth(date: string): string {
 }
 
 /**
- * Last instant a customer may self-invoice a ticket: the last calendar day of the purchase month
- * (policy "month") or `days` days after the business date (policy "days"), at 23:59:59.999 in the
- * restaurant timezone.
+ * Last instant a customer may self-invoice a ticket under the restaurant's policy alone: the last
+ * calendar day of the purchase month (policy "month") or `days` days after the business date
+ * (policy "days"), at 23:59:59.999 in the restaurant timezone. The deadline a customer actually
+ * has is effectiveSelfInvoiceDeadline's.
  */
 export function selfInvoiceDeadline(
   businessDate: string,
@@ -349,6 +350,126 @@ export function selfInvoiceDeadline(
     })
     .toInstant()
     .toString();
+}
+
+/**
+ * What bounds self-invoicing besides the policy (LD-51 F1): with portal_reissue_global off, the
+ * portal never cancels a global, so a ticket can be self-invoiced only until its global takes it,
+ * which the worker builds at the period's close + CFDI_GLOBAL_GRACE_MINUTES. The cached status
+ * carries it so a receipt printed offline shows the same date the portal enforces.
+ */
+export type SelfInvoiceGlobalBound = {
+  globalPeriodicity: Periodicity;
+  nextPeriodicity: Periodicity | null;
+  nextPeriodicityFrom: string | null;
+  /** The restaurant's business-day cutoff (minutes after midnight): a period closes at its end. */
+  cutoff: number;
+  /** The worker's CFDI_GLOBAL_GRACE_MINUTES (published in cfdi_platform; default 60). */
+  graceMinutes: number;
+};
+
+/** Default of CFDI_GLOBAL_GRACE_MINUTES (server/cfdi/config.ts), for a worker that published none. */
+export const DEFAULT_GLOBAL_GRACE_MINUTES = 60;
+
+/** The instant the global of a ticket's period is built: its close (end of the business day) + grace. */
+export function globalBuildAt(
+  businessDate: string,
+  bound: SelfInvoiceGlobalBound,
+  timezone: string,
+): string {
+  const closesAt = periodClosesAt(
+    periodOn(businessDate, bound),
+    timezone,
+    bound.cutoff,
+  );
+  return plusMinutes(closesAt, bound.graceMinutes);
+}
+
+function plusMinutes(instant: string, minutes: number): string {
+  return Temporal.Instant.from(instant).add({ minutes }).toString();
+}
+
+/**
+ * The self-invoicing deadline a customer has (LD-51 F1): the policy deadline, or, when the global
+ * bound applies, the earlier of it and the moment the ticket's global is built (`globalAt`, or the
+ * period's close `closesAt` + `graceMinutes` when the caller read the period row). `bound` says
+ * which one ended it.
+ */
+export function effectiveSelfInvoiceDeadline(
+  businessDate: string,
+  w: {
+    policy: "month" | "days";
+    days: number;
+    timezone: string;
+    /** Null or absent: no global bound (reissue on, or a status cached before cfdifix). */
+    global?:
+      { closesAt: string; graceMinutes: number } | { globalAt: string } | null;
+  },
+): { deadline: string; bound: "policy" | "global" } {
+  const policy = selfInvoiceDeadline(
+    businessDate,
+    w.policy,
+    w.days,
+    w.timezone,
+  );
+  if (!w.global) return { deadline: policy, bound: "policy" };
+  const globalAt =
+    "globalAt" in w.global
+      ? w.global.globalAt
+      : plusMinutes(w.global.closesAt, w.global.graceMinutes);
+  return Date.parse(globalAt) < Date.parse(policy)
+    ? { deadline: Temporal.Instant.from(globalAt).toString(), bound: "global" }
+    : { deadline: policy, bound: "policy" };
+}
+
+/**
+ * The receipt and the portal print the deadline's time too when it falls on the purchase's business
+ * date or the next calendar day (a daily global, LD-51 F1): a date alone would read as the whole day.
+ */
+export function deadlineShowsTime(
+  deadline: string,
+  businessDate: string,
+  timezone: string,
+): boolean {
+  const day = Temporal.Instant.from(deadline)
+    .toZonedDateTimeISO(timezone)
+    .toPlainDate();
+  return (
+    Temporal.PlainDate.compare(day, plainDate(businessDate).add({ days: 1 })) <=
+    0
+  );
+}
+
+/**
+ * Whether a periodicity change may apply at once (LD-51 F2) instead of from the first of next
+ * month. It may while the current month is still unshaped: no global document of any of its
+ * periods (stamped, claiming or failed: the register and the sweeps read documents by period key),
+ * and no unclaimed ticket of the month would sit in a period, old or new, whose 24-hour deadline
+ * (RMF 2.7.1.21) already passed, so re-partitioning the month never turns an on-time global into
+ * a late one nor hides one that is late. `dates` are the business dates of the month's unclaimed
+ * eligible tickets on or after the mode's start.
+ */
+export function periodicityChangeNow(i: {
+  hasGlobals: boolean;
+  dates: readonly string[];
+  from: Periodicity;
+  to: Periodicity;
+  timezone: string;
+  cutoff: number;
+  now: Date;
+}): boolean {
+  if (i.hasGlobals) return false;
+  return i.dates.every((date) =>
+    [i.from, i.to].every(
+      (p) =>
+        Date.parse(
+          plusMinutes(
+            periodClosesAt(globalPeriodFor(date, p), i.timezone, i.cutoff),
+            24 * 60,
+          ),
+        ) > i.now.getTime(),
+    ),
+  );
 }
 
 /**
@@ -452,8 +573,17 @@ export const cfdiSettingsInput = z
   })
   .strict();
 export type CfdiSettingsInput = z.infer<typeof cfdiSettingsInput>;
+/**
+ * Activation asks for the global periodicity (LD-51 F2), so a restaurant never starts on a default
+ * it then cannot change for the month; RESICO (626) is coerced to monthly as every save is (D4,
+ * SAT-4). Optional for older clients: monthly (D4).
+ */
 export const activateInput = z
-  .object({ operationId: id, expectedVersion: z.literal(0) })
+  .object({
+    operationId: id,
+    expectedVersion: z.literal(0),
+    globalPeriodicity: z.enum(PERIODICITIES).default("month"),
+  })
   .strict();
 export const operationInput = z.object({ operationId: id }).strict();
 export const invoiceRequestInput = z
@@ -590,6 +720,11 @@ export type CfdiStatusView = {
     enabled: boolean;
     policy: "month" | "days";
     days: number;
+    /**
+     * The global bound of the deadline (LD-51 F1); null when the portal reissues globals. Absent in
+     * a status cached before cfdifix: the receipt then prints the policy date alone.
+     */
+    globalBound?: SelfInvoiceGlobalBound | null;
   } | null;
   timezone: string;
   version: number;
@@ -600,7 +735,18 @@ export type CfdiOrganizationView = {
   /** The organization exists at Facturapi (it has an id): a CSD can be uploaded to it. */
   provisioned: boolean;
   errorCode: string | null;
+  /** The issuer RFC as Facturapi reports it; null ("pendiente") until it does (LD-51 F9). */
   taxId: string | null;
+  /**
+   * Shared sandbox (LD-51 F3): the platform's test organization, which stamps every test CFDI in
+   * this mode, as Facturapi reports it; the restaurant's fiscal profile is not used to stamp.
+   */
+  sharedIssuer: {
+    legalName: string | null;
+    taxId: string | null;
+    regime: string | null;
+    postalCode: string | null;
+  } | null;
   legalSyncedVersion: number | null;
   fiscalProfileVersion: number;
   csd: {
@@ -633,6 +779,8 @@ export type CfdiAttention = {
 export type CfdiSettingsView = CfdiStatusView & {
   /** Owner. */
   canEdit: boolean;
+  /** The worker's CFDI_GLOBAL_GRACE_MINUTES: the settings explain the self-invoicing bound. */
+  globalGraceMinutes: number;
   prerequisites: {
     platform: boolean;
     fiscalComplete: boolean;
@@ -785,7 +933,13 @@ export type CfdiTicketView = {
   issuerRfc: string | null;
   mode: CfdiMode;
   eligibility: TicketEligibility;
+  /** The self-invoicing deadline (null when self-invoicing is off). */
   deadline: string | null;
+  /**
+   * What ends it (LD-51 F1): the restaurant's policy, or the ticket's global (built at its period's
+   * close + grace while the portal does not reissue globals). Null without a deadline.
+   */
+  deadlineBound: "policy" | "global" | null;
   needsCardForm: boolean;
   /** The restaurant's card payment form (settings): the card question's initial answer (§2.5). */
   cardPaymentForm: CardForm;
@@ -825,9 +979,12 @@ export type GlobalPeriodView = {
   closesAt: string;
   dueAt: string;
   status: GlobalPeriodStatus;
+  /** Tickets in the period's documents plus its unclaimed ones (LD-51 F11). */
   ticketCount: number;
   total: number;
   tax: number;
+  /** Eligible tickets of the period in no CFDI yet ("Por emitir"), counted in ticketCount. */
+  unclaimedTickets: number;
   lateTickets: number;
   documents: {
     id: string;

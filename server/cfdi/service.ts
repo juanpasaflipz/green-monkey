@@ -27,6 +27,7 @@ import {
   liveInput,
   needsCardForm,
   operationInput,
+  periodicityOn,
   substituteInput,
   egresoSubstituteInput,
   cancellationAllowed,
@@ -61,12 +62,14 @@ import {
   documentView,
   fiscalComplete,
   fiscalFacts,
+  graceMinutes,
   hasCreditNotes,
   insertEvent,
   isStuck,
   listDocuments,
   loadDocument,
   loadSettings,
+  periodicityChangeAllowed,
   periodViews,
   requireCfdi,
   statusView,
@@ -171,9 +174,21 @@ async function settingsView(
     org?.csdStatus === "valid" &&
     !!org.csdValidUntil &&
     Date.parse(org.csdValidUntil) > Date.now() + 7 * 86_400_000;
+  // Shared sandbox (LD-51 F3): the issuer is the platform's test organization, as the worker read
+  // it from Facturapi; the restaurant's profile is not used to stamp.
+  const shared = org?.source === "shared_sandbox";
+  const sharedIssuer = shared
+    ? {
+        legalName: st.platform?.sharedIssuer?.legalName ?? null,
+        taxId: st.platform?.sharedIssuer?.taxId ?? org.legalTaxId,
+        regime: st.platform?.sharedIssuer?.regime ?? null,
+        postalCode: st.platform?.sharedIssuer?.postalCode ?? null,
+      }
+    : null;
   return {
     ...status,
     canEdit: s.role === "owner",
+    globalGraceMinutes: graceMinutes(st.platform),
     prerequisites: {
       platform: available(st.platform),
       fiscalComplete: fiscalComplete(facts),
@@ -219,7 +234,10 @@ async function settingsView(
           status: org.status,
           provisioned: !!org.providerOrgId,
           errorCode: org.errorCode,
-          taxId: org.legalTaxId ?? facts.rfc,
+          // The RFC Facturapi reports for the issuer, never the profile's before it does: an
+          // organization still resolving shows it as pending (LD-51 F9).
+          taxId: sharedIssuer ? sharedIssuer.taxId : org.legalTaxId,
+          sharedIssuer,
           legalSyncedVersion: org.legalSyncedVersion,
           fiscalProfileVersion: facts.version,
           csd: {
@@ -317,10 +335,13 @@ export async function activate(tx: Tx, s: Session, raw: unknown) {
       throw new DomainError("cfdi_currency_unsupported", 409);
     if ((facts.legalName ?? "").length > 100)
       throw new DomainError("cfdi_legal_name_too_long", 409);
+    // The periodicity is chosen at activation (LD-51 F2); RESICO (626) is monthly (D4, SAT-4).
+    const periodicity =
+      facts.regime === "626" ? ("month" as const) : p.globalPeriodicity;
     // A concurrent activation (another operationId) may have won: answer a conflict, not a 500.
     const created = await tx`
-      insert into cfdi_settings(tenant_id, test_from, updated_by)
-      values (${s.tenantId}, ${today(s)}::date, ${s.employeeId})
+      insert into cfdi_settings(tenant_id, test_from, global_periodicity, updated_by)
+      values (${s.tenantId}, ${today(s)}::date, ${periodicity}, ${s.employeeId})
       on conflict (tenant_id) do nothing returning tenant_id`;
     if (!created.length) throw new DomainError("cfdi_settings_changed", 409);
     await tx`
@@ -339,6 +360,7 @@ export async function activate(tx: Tx, s: Session, raw: unknown) {
     await insertEvent(tx, s.tenantId, null, "activated", {}, s.employeeId);
     await audit(tx, s, "cfdi.activated", s.tenantId, {
       provider: state.platform!.provider,
+      globalPeriodicity: periodicity,
     });
     return { ok: true };
   });
@@ -359,21 +381,33 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
     // so a restaurant that became RESICO can still save its other settings (CFDI-SAT-4, UX-1).
     const wanted =
       facts.regime === "626" ? ("month" as const) : p.globalPeriodicity;
-    // Once any period row exists (built or not; the global tick adds the current period's row
-    // right after activation), a periodicity change applies from the first day of next month:
-    // the rows already there keep theirs and the tick never re-derives a past date, so a period
-    // never mixes periodicities (CFDI-R2-1). Choosing the current one again cancels it. The
-    // settings row is locked FOR UPDATE above; the tick adds rows under the same lock.
+    // A periodicity change applies at once while the current month is unshaped: no global
+    // document of its periods and no unclaimed ticket in a period, old or new, past its 24-hour
+    // deadline (LD-51 F2; periodicityChangeNow). The tick then rebuilds the month's period rows.
+    // Otherwise it applies from the first day of next month and the month keeps one periodicity
+    // (CFDI-R2-1). Choosing the periodicity in force cancels a pending change (one that is
+    // already in force today stays: the tick promotes it). The settings row is locked FOR UPDATE
+    // above; the tick's rebuild and the global builder take it too, so neither runs on a month
+    // this decision reads differently.
+    const day = today(s);
+    const effective = periodicityOn(day, before);
     let periodicity = before.globalPeriodicity;
-    let next: typeof before.nextPeriodicity = null;
-    let nextFrom: string | null = null;
-    if (wanted !== before.globalPeriodicity) {
-      const [built] =
-        await tx`select 1 as one from cfdi_global_periods limit 1`;
-      if (built) {
-        next = wanted;
-        nextFrom = firstOfNextMonth(today(s));
-      } else periodicity = wanted;
+    let next = before.nextPeriodicity;
+    let nextFrom = before.nextPeriodicityFrom;
+    let rebuild = false;
+    if (wanted === effective) {
+      if (!(nextFrom && nextFrom <= day)) {
+        next = null;
+        nextFrom = null;
+      }
+    } else if (await periodicityChangeAllowed(tx, before, wanted, day, facts)) {
+      periodicity = wanted;
+      next = null;
+      nextFrom = null;
+      rebuild = true;
+    } else {
+      next = wanted;
+      nextFrom = firstOfNextMonth(day);
     }
     await tx`
       update cfdi_settings set enabled = ${p.enabled}, global_periodicity = ${periodicity},
@@ -421,6 +455,14 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
       dedupeKey: dedupe.tickEnsure(new Date()),
       payload: {},
     });
+    // A periodicity applied at once: the tick rebuilds the month's period rows now, with a key of
+    // its own (the bucket's may be used up by a tick that already ran).
+    if (rebuild)
+      await cfdiEnqueue(tx, s.tenantId, {
+        kind: "cfdi_global",
+        dedupeKey: `tick:periodicity:${before.version + 1}`,
+        payload: {},
+      });
     // Turned back on: the chain ended while paused, and the bucket's key may be used up by a
     // tick that ran (and exited) while paused, so the restart has a key of its own (WORKER-4).
     if (p.enabled && !before.enabled)

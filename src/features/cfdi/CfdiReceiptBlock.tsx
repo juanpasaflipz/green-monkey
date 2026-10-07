@@ -4,18 +4,24 @@
  * con el folio {folio}." only when CFDI is enabled; the slot function returns null otherwise (and
  * for pre-bills), so fiscal's own line survives. Pure render from the cached status: it prints
  * offline. Printed text is Spanish regardless of the UI language (fiscal D10).
+ *
+ * The printed deadline is the one the portal enforces (LD-51 F1): the restaurant's policy, or,
+ * while the portal does not reissue globals, the moment the ticket's global is built (its period's
+ * close + the worker's grace) when that comes first, with the time when it falls on the purchase
+ * day or the next.
  */
 import type { ReactNode } from "react";
 import type { Locale, Order } from "../../../shared/domain";
 import {
+  effectiveSelfInvoiceDeadline,
   formatTicketCode,
-  selfInvoiceDeadline,
+  globalBuildAt,
   type CfdiStatusView,
 } from "../../../shared/cfdi";
 import type { FiscalTicketView } from "../../../shared/fiscal";
 import type { ReceiptKind } from "../Receipt";
 import { getCfdiStatus } from "./status";
-import { shortDate, t } from "./format";
+import { deadlineText, t } from "./format";
 import { SelfInvoiceQr } from "./SelfInvoiceQr";
 import "./cfdi.css";
 
@@ -56,12 +62,17 @@ export function CfdiReceiptBlock({
         </p>
       </div>
     );
-  const deadline = selfInvoiceDeadline(
-    ticket.businessDate,
-    status.selfInvoice.policy,
-    status.selfInvoice.days,
-    status.timezone,
-  );
+  const bound = status.selfInvoice.globalBound;
+  const { deadline } = effectiveSelfInvoiceDeadline(ticket.businessDate, {
+    policy: status.selfInvoice.policy,
+    days: status.selfInvoice.days,
+    timezone: status.timezone,
+    global: bound
+      ? {
+          globalAt: globalBuildAt(ticket.businessDate, bound, status.timezone),
+        }
+      : null,
+  });
   const url = `${host}/factura`;
   return (
     <div className="cfdi-receipt-block">
@@ -82,7 +93,12 @@ export function CfdiReceiptBlock({
         </span>
         <span>
           {t(PRINT, "cfdiReceiptDeadline", {
-            date: shortDate(deadline, status.timezone, PRINT),
+            date: deadlineText(
+              deadline,
+              ticket.businessDate,
+              status.timezone,
+              PRINT,
+            ),
           })}
         </span>
       </div>

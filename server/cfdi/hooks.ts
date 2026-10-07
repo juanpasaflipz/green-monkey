@@ -1,8 +1,9 @@
 /**
  * cfdi's cross-area contracts (spec §6.1). Web only.
  *   fiscal (027):  enqueueCfdiRefund, called from recordRefundTax step 9 (only when adjustment rows
- *                  were inserted). No-op when CFDI is not enabled; never throws for a missing
- *                  setting; takes no locks (LO-R8).
+ *                  were inserted); cfdiTicketsIssued, called from finishTickets (every ticket
+ *                  issuance: sale, offline recovery, repair). No-op when CFDI is not enabled; never
+ *                  throw for a missing setting; take no locks (LO-R8).
  *   ops:           cfdiCapability for GET /api/capabilities.
  *   reports (029): cfdiAlerts + cfdiReportAlerts for Today, cfdiCoverage for the day corte.
  * Imports only cfdi's jobs and store modules and the db types, so fiscal → cfdi has no cycle.
@@ -27,6 +28,51 @@ export async function enqueueCfdiRefund(
     dedupeKey: dedupe.refund(refundId),
     payload: { refundId },
   });
+}
+
+/**
+ * Fiscal's issuance hook (LD-51 F12): a ticket issued into a period whose global was already
+ * built (an offline sale synced late, a repair) is put in a supplementary part of its own period
+ * (D5) by the next tick's late sweep, which may be up to 6 hours away. Enqueue a tick due now: one
+ * key per 10 minutes, so a sync burst runs one tick; when that key already belongs to a tick that
+ * ran (the jobs uniqueness keeps done rows) and no tick is waiting to run now, a key suffixed with
+ * the ticket keeps one, as armNextTick does for the chain (LD-39). A ticket of an open period, or
+ * from before the mode's start, needs nothing. One statement when it does nothing; no lock.
+ */
+export async function cfdiTicketsIssued(
+  tx: Tx,
+  s: Pick<Session, "tenantId">,
+  tickets: readonly { id: string; businessDate: string }[],
+): Promise<void> {
+  if (!tickets.length) return;
+  const dates = [...new Set(tickets.map((t) => t.businessDate))];
+  const [late] = await tx`
+    select 1 as one from cfdi_settings s
+    join cfdi_global_periods g on g.tenant_id = s.tenant_id and g.mode = s.mode
+      and g.status in ('built','empty')
+    join unnest(${dates}::date[]) d(day) on d.day between g.date_from and g.date_to
+      and d.day >= (case when s.mode = 'live' then coalesce(s.live_from, s.test_from) else s.test_from end)
+    where s.enabled
+    limit 1`;
+  if (!late) return;
+  const now = new Date();
+  await cfdiEnqueue(tx, s.tenantId, {
+    kind: "cfdi_global",
+    dedupeKey: dedupe.tickIssued(now),
+    payload: {},
+  });
+  const [waiting] = await tx`
+    select 1 as one from jobs
+    where tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
+      and kind = 'cfdi_global' and state in ('queued','available')
+      and next_at <= now() + interval '1 minute'
+    limit 1`;
+  if (!waiting)
+    await cfdiEnqueue(tx, s.tenantId, {
+      kind: "cfdi_global",
+      dedupeKey: `${dedupe.tickIssued(now)}:${tickets[0].id.slice(0, 8)}`,
+      payload: {},
+    });
 }
 
 /** GET /api/capabilities `facturapi` (the Integraciones panel). */

@@ -14,7 +14,7 @@ import { managers, operators, permit } from "./auth.js";
 import { requireRecentAuth } from "./access.js";
 import { audit, once } from "./orders.js";
 import { discountsByLine } from "./discounts.js";
-import { enqueueCfdiRefund } from "./cfdi/hooks.js";
+import { cfdiTicketsIssued, enqueueCfdiRefund } from "./cfdi/hooks.js";
 import {
   businessDate,
   DomainError,
@@ -532,6 +532,16 @@ async function finishTickets(
   await tx`insert into audit(tenant_id,id,actor_id,operation,entity_id,detail)
     select ${s.tenantId},a.id,${s.employeeId},a.operation,a.entity,a.detail
     from jsonb_to_recordset(${tx.json(audits)}) as a(id uuid,operation text,entity text,detail jsonb)`;
+  // cfdi (LD-51 F12): a ticket issued into a period whose global was already built gets its
+  // supplementary global from a tick now, not at the next scheduled one. A job insert, no lock.
+  await cfdiTicketsIssued(
+    tx,
+    s,
+    rows.map(({ due, record }) => ({
+      id: record.id,
+      businessDate: due.businessDate,
+    })),
+  );
   return rows.map((r) => r.view);
 }
 

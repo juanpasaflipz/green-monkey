@@ -14,7 +14,7 @@ import { enqueueStamp, INVOICE_MAX_ATTEMPTS, retryOrExhaust } from "../jobs.js";
 import { lockDocument } from "../locks.js";
 import { loadDocument, loadSettings } from "../store.js";
 import { event, HOUR, runtimeOr } from "./common.js";
-import { raise, tenantTag } from "./runtime.js";
+import { raise, tenantTag, traceDocument } from "./runtime.js";
 
 type Payload = { refundId?: string; force?: boolean };
 
@@ -102,9 +102,13 @@ export async function refundJob(ctx: JobContext): Promise<JobOutcome> {
       parent: parent.id,
     });
     await enqueueStamp(tx, tenantId, id, { maxAttempts: INVOICE_MAX_ATTEMPTS });
-    return { kind: "done" as const };
+    return { kind: "done" as const, creditNote: id };
   });
-  if (decision.kind === "done") return { status: "done" };
+  if (decision.kind === "done") {
+    // The credit note it created (LD-51 F13's info line).
+    if ("creditNote" in decision) traceDocument(decision.creditNote ?? null);
+    return { status: "done" };
+  }
   const afterMs =
     decision.code === "cfdi_parent_canceling"
       ? 6 * HOUR

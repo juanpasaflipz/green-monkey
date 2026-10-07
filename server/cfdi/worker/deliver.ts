@@ -13,7 +13,7 @@ import type { JobContext, JobOutcome } from "../../jobs.js";
 import { retryOrExhaust } from "../jobs.js";
 import { canonicalAmounts } from "../build.js";
 import type { FInvoiceInput } from "../facturapi-schema.js";
-import { parseCfdiTotals } from "../xml.js";
+import { acuseMatches, parseCfdiTotals } from "../xml.js";
 import { loadDocument, type DocumentRow } from "../store.js";
 import { classify, event, runtimeOr } from "./common.js";
 import { documentKey, raise, tenantTag } from "./runtime.js";
@@ -117,19 +117,43 @@ export async function deliverJob(ctx: JobContext): Promise<JobOutcome> {
   try {
     if (p.acuse) {
       if (doc.status !== "canceled") return { status: "done" };
-      for (const format of ["xml", "pdf"] as const) {
-        const name = format === "xml" ? "cancel_xml" : "cancel_pdf";
-        if (loaded.files.includes(name)) continue;
-        const bytes = await rt.client.downloadCancellationReceipt(
+      // The acuse is stored (and offered) only when it is the document's: its XML names the
+      // document's UUID. Facturapi's test mode answers a sample acuse of another CFDI; that one is
+      // never stored, and the status keeps coming from the document (LD-51 F7). The PDF is the
+      // same receipt, so it follows the XML's answer.
+      if (!loaded.files.includes("cancel_xml")) {
+        const xml = await rt.client.downloadCancellationReceipt(
           key,
           providerId,
-          format,
+          "xml",
+          ctx.signal,
+        );
+        if (!acuseMatches(xml, doc.uuid)) {
+          await ctx.tenant((tx) =>
+            event(tx, ctx, documentId, "acuse_mismatch", {
+              mode: doc.mode,
+            }),
+          );
+          return { status: "done" };
+        }
+        await ctx.tenant(
+          (tx) => tx`
+            insert into cfdi_files(tenant_id, document_id, format, content, sha256)
+            values (${tenantId}, ${documentId}, 'cancel_xml', ${Buffer.from(xml)}, ${sha256(xml)})
+            on conflict do nothing`,
+        );
+      }
+      if (!loaded.files.includes("cancel_pdf")) {
+        const pdf = await rt.client.downloadCancellationReceipt(
+          key,
+          providerId,
+          "pdf",
           ctx.signal,
         );
         await ctx.tenant(
           (tx) => tx`
             insert into cfdi_files(tenant_id, document_id, format, content, sha256)
-            values (${tenantId}, ${documentId}, ${name}, ${Buffer.from(bytes)}, ${sha256(bytes)})
+            values (${tenantId}, ${documentId}, 'cancel_pdf', ${Buffer.from(pdf)}, ${sha256(pdf)})
             on conflict do nothing`,
         );
       }

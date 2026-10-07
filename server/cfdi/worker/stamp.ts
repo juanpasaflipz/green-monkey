@@ -19,6 +19,8 @@ import {
   loadDocument,
   loadOrganization,
   loadSettings,
+  platform,
+  stampingFacts,
   type DocumentRow,
 } from "../store.js";
 import {
@@ -62,7 +64,13 @@ export async function stampJob(ctx: JobContext): Promise<JobOutcome> {
     if (!settings) return { kind: "done" as const };
     if (!doc.request) {
       try {
-        const f = await freezeRequest(tx, doc, settings, facts);
+        // The issuer's facts: the shared sandbox organization's in that mode (LD-51 F3).
+        const f = await freezeRequest(
+          tx,
+          doc,
+          settings,
+          stampingFacts(facts, await platform(tx), org),
+        );
         await tx`
           update cfdi_documents set request = ${tx.json(f.body as never)}, payment_form = ${f.body.payment_form},
             cfdi_use = ${f.body.use}, series = ${f.body.series}, netted_refund_ids = ${f.nettedRefundIds}::uuid[],
