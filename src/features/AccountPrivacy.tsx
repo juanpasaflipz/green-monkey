@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Locale, Session } from "../../shared/domain";
 import { stepUpExempt } from "../../shared/access";
+import { exportTableLabel } from "../../shared/account-export";
 import { api, ApiError } from "../api";
 import { Button, Field } from "../components/ui";
 import { strings, errorNotice, translateError } from "../i18n";
@@ -204,11 +205,17 @@ export function AccountPrivacy({
           <div className="row">
             <Field label={t.accountExportTable}>
               <select value={table} onChange={(e) => setTable(e.target.value)}>
-                {tables.map((x) => (
-                  <option key={x.name} value={x.name}>
-                    {x.name}
-                  </option>
-                ))}
+                {tables
+                  .map((x) => ({
+                    name: x.name,
+                    label: exportTableLabel(x.name, locale),
+                  }))
+                  .sort((a, b) => a.label.localeCompare(b.label, locale))
+                  .map((x) => (
+                    <option key={x.name} value={x.name}>
+                      {x.label}
+                    </option>
+                  ))}
               </select>
             </Field>
             {tables.length ? (
