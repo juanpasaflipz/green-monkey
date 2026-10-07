@@ -150,11 +150,11 @@ test("Datos fiscales saved on Configuración updates the CFDI requirements on th
     await expect(page.locator(".scope")).toContainText("Requisitos CFDI");
     await openSettings(page);
     const cfdi = panel(page);
-    await expect(
-      cfdi.getByText("Completa los datos fiscales del restaurante.", {
-        exact: true,
-      }),
-    ).toBeVisible();
+    // Each requirement is a list item: "✗ " or "✓ " (aria-hidden) and its text.
+    const missing = cfdi.locator("li.cfdi-check.missing", {
+      hasText: "Completa los datos fiscales del restaurante.",
+    });
+    await expect(missing).toBeVisible();
     const fiscal = page.getByRole("region", { name: "Datos fiscales" });
     await fiscal.getByLabel(/^RFC/).fill(RECEPTOR.rfc);
     await fiscal.getByLabel(/^Nombre o razón social/).fill(RECEPTOR.legalName);
@@ -172,16 +172,16 @@ test("Datos fiscales saved on Configuración updates the CFDI requirements on th
     ).toBeVisible();
     // Same screen, no navigation: the requirement turns ✓.
     await expect(
-      cfdi.getByText("Datos fiscales completos", { exact: true }),
+      cfdi.locator("li.cfdi-check.ok", { hasText: "Datos fiscales completos" }),
     ).toBeVisible();
-    await expect(
-      cfdi.getByText("Completa los datos fiscales del restaurante."),
-    ).toHaveCount(0);
+    await expect(missing).toHaveCount(0);
   } finally {
     if (tenantId)
       await admin.begin(async (tx) => {
         await tx`select set_config('app.tenant_id', ${tenantId}, true)`;
         await tx`delete from restaurant_fiscal_profiles where tenant_id=${tenantId}`;
+        // The fiscal save bumps the menu revision (default tax), creating the row.
+        await tx`delete from menu_state where tenant_id=${tenantId}`;
       });
     await deleteOwnerFixtures(admin, [owner.accountId]);
     await sql.end();
