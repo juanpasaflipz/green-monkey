@@ -45,10 +45,15 @@ export function AccessGate({
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [ownerAccount, setOwnerAccount] = useState(false);
+  // The device credential this browser had was refused (SEC-5): kept until the
+  // device pairs again, since the server clears the cookie with that answer.
+  const [deviceReason, setDeviceReason] = useState("");
   async function refresh() {
     try {
       const next = await api<TerminalState>("/access/terminal");
       setState(next);
+      if (next.reason) setDeviceReason(next.reason);
+      else if (next.paired) setDeviceReason("");
       setFailed(false);
       setUnreachable(false);
       setSelected((current) =>
@@ -129,7 +134,10 @@ export function AccessGate({
         )}
       </div>
     );
-  const reasonText = reason ? translateError(reason, locale) : "";
+  const reasonText =
+    reason || deviceReason
+      ? translateError(reason || deviceReason, locale)
+      : "";
   const owner = (
     <OwnerAccess
       locale={locale}

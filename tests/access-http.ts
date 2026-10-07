@@ -275,6 +275,19 @@ try {
     const terminal = await valid.browser.request("GET", "/api/access/terminal");
     assert.equal(terminal.json.paired, false);
   });
+  await check("a revoked device on its roster: /api/access/terminal says device_revoked, so the pairing gate tells the cashier why (SEC-5, restaurant-day A15.7)", async () => {
+    const valid = await pairedCashier(`HTTP roster ${randomUUID().slice(0, 4)}`);
+    await valid.browser.request("POST", "/api/logout");
+    await admin`update devices set active=false,revoked_at=now(),revoked_reason='revoked' where id=${valid.deviceId}`;
+    const terminal = await valid.browser.request("GET", "/api/access/terminal");
+    assert.equal(terminal.status, 200);
+    assert.equal(terminal.json.paired, false);
+    assert.equal(terminal.json.reason, "device_revoked");
+    assert.ok(terminal.cleared.includes("gm_device"));
+    // The credential is gone now: a fresh read is a plain unpaired browser.
+    const again = await valid.browser.request("GET", "/api/access/terminal");
+    assert.equal(again.json.reason, undefined);
+  });
   await check("anonymous floods from the restaurant's IP never spend a paired terminal's PIN or gate budget, and one device's budget is its own (A9/ACC-FLOOR-4)", async () => {
     // Guest Wi-Fi on the same public IP: cookie-less requests, then a forged cookie.
     const anonymous = new Browser();

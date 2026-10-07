@@ -180,13 +180,21 @@ export function isRecentAuth(
   if (stepUpExempt(access)) return true;
   if (!access) return true;
   if (!access.authenticatedAt) return false;
-  return nowMs - new Date(access.authenticatedAt).getTime() <= maxAgeSeconds * 1000;
+  return (
+    nowMs - new Date(access.authenticatedAt).getTime() <= maxAgeSeconds * 1000
+  );
 }
 
 // Wire types shared by the access routes and the client screens ----------
 
 export type TerminalState = {
   paired: boolean;
+  /**
+   * Set when this browser carried a device credential the server no longer
+   * honours (unpaired, or its pairing expired): the gate says why it is
+   * asking for a code again (SEC-5).
+   */
+  reason?: "device_revoked";
   google: boolean;
   demo: { tenantId: string; login: "owner" } | null;
   device?: {
