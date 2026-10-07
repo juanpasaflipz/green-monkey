@@ -18,7 +18,7 @@ import {
   squash,
   type Restaurant,
 } from "./selling.js";
-import { orderA, orderCard, staffA, toOrders, toSell, toCash, setIdleLock } from "./service-a.js";
+import { idleOracle, orderA, orderCard, staffA, toOrders, toSell, toCash, setIdleLock } from "./service-a.js";
 import {
   checkpoint,
   fill,
@@ -28,6 +28,7 @@ import {
   readApi,
   run,
   tap,
+  typePin,
   type Device,
   type Devices,
 } from "./ui.js";
@@ -38,6 +39,12 @@ const EDGE_502 = "<html><body>Application failed to respond</body></html>";
 
 /** The connection pill in the top bar. */
 export const pill = (d: Device) => d.page.locator(".top-actions button.connection");
+
+/** runFor on a device clock; the app's idle time grows by the same amount (§3.5.5). */
+async function runFor(d: Device, ms: number) {
+  await d.context.clock.runFor(ms);
+  d.lastInputAt -= ms;
+}
 
 /** Re-syncs a device clock to real time plus its skew (§3.5.3). */
 async function resync(d: Device) {
@@ -145,6 +152,7 @@ export async function serviceA3(dev: Devices, state: RunState) {
   const hugo = staffA("hugo");
   // Precondition: online, queue empty, offline saves print the comanda.
   run.step = "A13.0";
+  await idleOracle(caja, diego);
   await expect(pill(caja)).toHaveAccessibleName("Conectado");
   await press(caja, pill(caja));
   await page.getByLabel(/^Al guardar sin conexión/).selectOption({ label: "Imprimir comanda" });
@@ -155,11 +163,11 @@ export async function serviceA3(dev: Devices, state: RunState) {
   await edge502(caja);
   await edge502(cocina);
   run.step = "A13.2";
-  await caja.context.clock.runFor("00:30");
-  await cocina.context.clock.runFor("00:30");
+  await runFor(caja, 30_000);
+  await runFor(cocina, 30_000);
   await press(caja, page.getByRole("textbox", { name: "Buscar producto…" }));
-  await caja.context.clock.runFor("00:35");
-  await cocina.context.clock.runFor("00:35");
+  await runFor(caja, 35_000);
+  await runFor(cocina, 35_000);
   await resync(caja);
   await resync(cocina);
   const tResync = Date.now();
@@ -207,7 +215,9 @@ export async function serviceA3(dev: Devices, state: RunState) {
   await press(caja, page.locator("aside.cart").getByRole("button", { name: "Cantidad − Tortillas de maíz 1 kg", exact: true }));
   await toCash(caja);
   await expect(page.getByRole("button", { name: "Cerrar caja", exact: true })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Corte X", exact: true })).toBeDisabled();
+  await expect(page.getByText("Cerrar caja y registrar retiros requieren conexión.", { exact: true })).toBeVisible();
+  // A cashier under blind close never sees "Corte X" (expected cash is hidden; reports 029).
+  await expect(page.getByRole("button", { name: "Corte X", exact: true })).toHaveCount(0);
   page.off("request", watch);
   expect(attempts, "A13.8: no online-only command leaves the device").toEqual([]);
 
@@ -247,8 +257,8 @@ export async function serviceA3(dev: Devices, state: RunState) {
   let simulated = 65_000 + (Date.now() - tResync);
   let lockSeen = false;
   while (simulated < 600_000) {
-    await caja.context.clock.runFor(60_000);
-    await cocina.context.clock.runFor(60_000);
+    await runFor(caja, 60_000);
+    await runFor(cocina, 60_000);
     simulated += 60_000;
     await expect(pill(caja)).toHaveAccessibleName("Sin conexión · 4 por sincronizar");
     await expect(page.getByText("Requiere revisión")).toHaveCount(0);
@@ -283,8 +293,8 @@ export async function serviceA3(dev: Devices, state: RunState) {
     await route.fetch();
     await route.abort("connectionreset");
   });
-  await caja.context.clock.runFor("00:35");
-  await cocina.context.clock.runFor("00:35");
+  await runFor(caja, 35_000);
+  await runFor(cocina, 35_000);
   await resync(caja);
   await resync(cocina);
 
@@ -293,6 +303,12 @@ export async function serviceA3(dev: Devices, state: RunState) {
   await expect(pill(caja)).toHaveAccessibleName("Conectado", { timeout: 30_000 });
   caja.outage = false;
   expect(lost, "A13.11: the first sync response was lost").toBe(true);
+  // Built (ACC-18): "Continuar como" is a soft unlock; when the server answers
+  // again the lock comes back and asks for Diego's PIN.
+  await expect(lock.getByRole("heading", { name: "Pantalla bloqueada" })).toBeVisible();
+  await typePin(caja, lock, diego.name, diego.pin);
+  await expect(lock).toHaveCount(0);
+  run.lastAuthAt[`${diego.name}@${caja.name}`] = Date.now();
   await press(caja, pill(caja));
   const numbers: Record<string, number> = { A19: 19, A20: 20, A21: 21, A22: 22 };
   for (const id of Object.keys(numbers)) {
@@ -314,7 +330,15 @@ export async function serviceA3(dev: Devices, state: RunState) {
   run.step = "A13.13";
   const k = cocina.page;
   const lane = k.locator("section").filter({ has: k.locator("#offline-review-title") });
-  await expect(lane.locator("#offline-review-title")).toHaveText(/^Ventas sin conexión por revisar \(\d+\)$/, { timeout: 30_000 });
+  // One card per station round: A22's drink is a second (bar) card, so 4 sales make 5 cards.
+  const stationRounds = ["A19", "A20", "A21", "A22"].reduce(
+    (n, id) => n + new Set(kdsLines(r, orderA(id).lines).map((l) => l.station)).size,
+    0,
+  );
+  await expect(lane.locator("#offline-review-title")).toHaveText(`Ventas sin conexión por revisar (${stationRounds})`, {
+    timeout: 30_000,
+  });
+  await expect(lane.locator("article.offline-review-card")).toHaveCount(stationRounds);
   await expect(lane).toContainText("Se vendieron sin conexión. Confirma si cocina ya las preparó para no repetirlas.");
   const cards = lane.locator("article.offline-review-card");
   for (const id of Object.keys(numbers)) {
@@ -337,10 +361,16 @@ export async function serviceA3(dev: Devices, state: RunState) {
   await expect(cards).toHaveCount(0, { timeout: 15_000 });
   const a21 = orderA("A21");
   const tickets = await kdsChecks(cocina, { number: 21, callName: a21.callName, lines: kdsLines(r, a21.lines), tenant: "A" });
-  for (const t of Object.values(tickets)) await progressTicket(cocina, t);
+  // "Preparar ahora" is the kitchen's acknowledgement: the ticket arrives as "Cocina recibió".
+  for (const t of Object.values(tickets)) {
+    await expect(t).toContainText("Cocina recibió");
+    await expect(t.locator(".ticket-badges")).toContainText("Venta sin conexión");
+    await progressTicket(cocina, t, "seen");
+  }
 
   // A13.14: the reprint carries the folio assigned at sync.
   run.step = "A13.14";
+  await idleOracle(caja, diego);
   await toOrders(caja);
   await press(caja, orderCard(page, 19).getByRole("button", { name: "Detalle", exact: true }));
   const detail = page.getByRole("dialog", { name: "Orden #19" });

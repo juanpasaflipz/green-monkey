@@ -698,6 +698,7 @@ export async function serviceA2(dev: Devices) {
   await expect(caja.page.getByText("La siguiente buena orden empieza aquí.", { exact: true })).toBeVisible();
   // A12.4: Paola rings A17.
   run.step = "A12.4";
+  await idleOracle(caja, paola);
   {
     const o = orderA("A17");
     const due = await build(caja, o);
@@ -705,6 +706,7 @@ export async function serviceA2(dev: Devices) {
   }
   // A12.5: back to Diego; his draft is restored and paid.
   run.step = "A12.5";
+  await idleOracle(caja, paola);
   await switchUser(caja, diego);
   await toSell(caja);
   await assertCart(caja, r, a18.lines, FIGURES.A18!.total);
