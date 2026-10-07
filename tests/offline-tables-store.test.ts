@@ -8,6 +8,7 @@
  * on, so every test turns it on for the fixture restaurant, except the "off"
  * describe, which checks the default.
  */
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Order, Session } from "../shared/domain";
 import { fakeDb } from "./offline-fake-db";
@@ -48,6 +49,7 @@ import {
   refreshOpenOrders,
   rememberOpenOrder,
   resolveParkedOrder,
+  resolveParkedOrderToResume,
   saveOfflineCheckout,
   saveOfflineOrder,
   saveOfflinePartial,
@@ -2164,6 +2166,70 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
       businessDate: "2026-10-05",
       provisionalNumber: number,
     });
+  });
+
+  it("online, a round parked for a local order whose record is still 'syncing' syncs it first and resumes onto the server order it became (LD-48, POLISH-OFFLINE-3)", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    // A power cut during its sync: the server committed it as #142, but the
+    // device never stored the answer, so the row stays "syncing".
+    await fakeDb.pending.update(open.id, { status: "syncing" });
+    expect((await resolveParkedOrder(s, open.id)).kind).toBe("local");
+    // Online: the forced pass replays the same record (same operationId) and
+    // the server answers with the order it already made.
+    const serverId = uuid(460);
+    mockedApi.mockResolvedValueOnce({
+      kind: "order",
+      orderId: serverId,
+      orderNumber: 142,
+      roundNumber: 1,
+      tenderId: null,
+      businessDate: "2026-10-06",
+      order: serverOrder(serverId, { paid: 250, state: "completed" }),
+    });
+    const sync = vi.fn(() => syncPending(s, { force: true, reason: "manual" }));
+    const where = await resolveParkedOrderToResume(s, open.id, {
+      online: true,
+      sync,
+    });
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(mockedApi).toHaveBeenCalledWith(
+      "/offline/sync",
+      expect.objectContaining({ operationId: open.id }),
+      expect.anything(),
+    );
+    // Selling now reads that server order (GET /orders) instead of saving the
+    // round on the local projection and printing its comanda.
+    expect(where).toMatchObject({ kind: "server", orderId: serverId });
+    // Offline the projection is still the order: no sync is attempted.
+    const offline = await localOrder(s, 100);
+    const noSync = vi.fn(async () => {});
+    expect(
+      (
+        await resolveParkedOrderToResume(s, offline.id, {
+          online: false,
+          sync: noSync,
+        })
+      ).kind,
+    ).toBe("local");
+    expect(noSync).not.toHaveBeenCalled();
+    // A pass that does not finish in time leaves the record unresolved: the
+    // local projection is used, as before.
+    const slow = vi.fn(() => new Promise<void>(() => {}));
+    expect(
+      (
+        await resolveParkedOrderToResume(s, offline.id, {
+          online: true,
+          sync: slow,
+          timeoutMs: 10,
+        })
+      ).kind,
+    ).toBe("local");
+    expect(slow).toHaveBeenCalledTimes(1);
+    // Selling's resume goes through it, online, with a forced sync pass.
+    expect(readFileSync("src/features/Selling.tsx", "utf8")).toMatch(
+      /resolveParkedOrderToResume\(session, parkedOrder\.id, \{\s*online,\s*sync: \(\) => syncPending\(session, \{ force: true, reason: "manual" \}\),/,
+    );
   });
 
   it("a server order id resolves to itself (with its cached copy when there is one)", async () => {

@@ -1180,6 +1180,34 @@ export async function resolveParkedOrder(
 }
 
 /**
+ * resolveParkedOrder for a resume (LD-48, POLISH-OFFLINE-3). Online, a local order whose
+ * record has not synced may already be a server order: a sync that committed but whose
+ * answer was lost (a power cut) leaves the record "syncing", and another device may have
+ * charged that server order since. `sync` runs this device's sync pass first, bounded by
+ * `timeoutMs`, so a record that syncs resolves to its server order, which the caller reads
+ * (a closed check then offers "Enviar como orden nueva") before the round is saved and
+ * printed. Offline, or while the record stays unresolved, the local projection is used as
+ * before: the order is still this device's alone.
+ */
+export async function resolveParkedOrderToResume(
+  session: Session,
+  id: string,
+  options: { online: boolean; sync: () => Promise<void>; timeoutMs?: number },
+): Promise<ParkedOrderTarget> {
+  const where = await resolveParkedOrder(session, id);
+  if (where.kind !== "local" || !options.online) return where;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    options.sync().catch(() => {}),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, options.timeoutMs ?? 5_000);
+    }),
+  ]);
+  clearTimeout(timer);
+  return resolveParkedOrder(session, id);
+}
+
+/**
  * The order a cart parked in Borradores belongs to, as Selling stores it (its
  * "parked-order" cache value): the order id resolveParkedOrder reads, the number and
  * business date to name it when no copy does (LD-29), and, once it names the server

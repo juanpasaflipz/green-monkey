@@ -41,6 +41,7 @@ import {
   db,
   parkPaymentAttempt,
   scope,
+  syncPending,
   type Draft,
 } from "../offline";
 import { useOfflineSelling } from "./offline/useOfflineSelling";
@@ -55,6 +56,7 @@ import {
   parkedOrderValue,
   pinnedParkedOrder,
   resolveParkedOrder,
+  resolveParkedOrderToResume,
   type LocalOrderView,
   type ParkedOrderRef,
   type ParkedOrderTarget,
@@ -154,6 +156,8 @@ export function Selling({
   const [busy, setBusy] = useState(false);
   const [pendingPayment, setPendingPayment] = useState(false);
   const [parked, setParked] = useState<ParkedDraft[] | null>(null);
+  /** A Borradores resume in progress (restoreDraft). */
+  const restoring = useRef(false);
   /** The draft whose entry just turned "gone": its discard button takes focus. */
   const [goneFocus, setGoneFocus] = useState<string | null>(null);
   /**
@@ -463,14 +467,30 @@ export function Selling({
    * not synced yet: its projection), a local order that synced since (the
    * server order its sync recorded), or a server order (read online; offline,
    * this device's cached copy). One that no longer exists anywhere is shown
-   * as such, with only a discard action.
+   * as such, with only a discard action. One resume at a time: online it may
+   * wait for a sync pass first, and a second tap meanwhile does nothing.
    */
-  async function restoreDraft({ draft: d, order: parkedOrder }: ParkedDraft) {
+  async function restoreDraft(entry: ParkedDraft) {
+    if (restoring.current) return;
+    restoring.current = true;
+    try {
+      await resumeDraft(entry);
+    } finally {
+      restoring.current = false;
+    }
+  }
+  async function resumeDraft({ draft: d, order: parkedOrder }: ParkedDraft) {
     let target: Order | null = null;
     if (parkedOrder) {
       let where: ParkedOrderTarget;
       try {
-        where = await resolveParkedOrder(session, parkedOrder.id);
+        // POLISH-OFFLINE-3: online, a local order's record is synced first, so
+        // one that already became a server order (its answer lost) is read
+        // from the server before the round is placed on it.
+        where = await resolveParkedOrderToResume(session, parkedOrder.id, {
+          online,
+          sync: () => syncPending(session, { force: true, reason: "manual" }),
+        });
       } catch (e) {
         // This device's store could not be read: the round stays parked.
         setParked(null);
