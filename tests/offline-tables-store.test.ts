@@ -1131,10 +1131,10 @@ describe("grouped online charge refusal names the business date (LD-29, POL-R2-2
       return text;
     };
     expect(await refusal(order, "es")).toBe(
-      `#${order.number} · 5 oct · ${reason("es")}`,
+      `#${order.number}\u00a0·\u00a05\u00a0oct · ${reason("es")}`,
     );
     expect(await refusal(order, "en")).toBe(
-      `#${order.number} · Oct 5 · ${reason("en")}`,
+      `#${order.number}\u00a0·\u00a0Oct\u00a05 · ${reason("en")}`,
     );
     expect(await refusal({ ...order, businessDate: "2026-10-06" }, "es")).toBe(
       `#${order.number} · ${reason("es")}`,
@@ -1168,7 +1168,7 @@ describe("kitchen ticket round labels (OFF-R28)", () => {
     // Borradores: a parked reference stored without a date is named by the copy.
     const where = await resolveParkedOrder(s, table);
     expect(parkedOrderLabel(where, { number: 42 }, "2026-10-06", "es")).toBe(
-      "#42 · 5 oct",
+      "#42\u00a0·\u00a05\u00a0oct",
     );
     expect(parkedOrderLabel(where, { number: 42 }, "2026-10-05", "es")).toBe(
       "#42",
@@ -1186,7 +1186,7 @@ describe("kitchen ticket round labels (OFF-R28)", () => {
         "2026-10-06",
         "en",
       ),
-    ).toBe("#42 · Oct 5");
+    ).toBe("#42\u00a0·\u00a0Oct\u00a05");
     // An offline round on yesterday's check: its record names the day (the Sync
     // screen dates it) and the comanda prints it with the screens' helper.
     const round = roundInput(51);
@@ -1202,7 +1202,7 @@ describe("kitchen ticket round labels (OFF-R28)", () => {
     const tickets = await localKitchenTickets(s, 0, dated);
     expect(
       tickets.find((t) => t.operationId === round.operationId)?.ticket.label,
-    ).toBe("#42 · 5 oct · Ronda 2");
+    ).toBe("#42\u00a0·\u00a05\u00a0oct · Ronda 2");
     // Without the formatter (or on its own business day) it stays "#42".
     expect(await labels(s)).toMatchObject({
       [round.operationId]: "#42 · Ronda 2",
@@ -1971,8 +1971,8 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
     // With the business date stored at park time, an order of another day names
     // its date as Órdenes does (LD-29, POL-R2-2); today's keeps the plain number.
     for (const [locale, label] of [
-      ["es", "#12 · 5 oct"],
-      ["en", "#12 · Oct 5"],
+      ["es", "#12\u00a0·\u00a05\u00a0oct"],
+      ["en", "#12\u00a0·\u00a0Oct\u00a05"],
     ] as const)
       expect(
         parkedOrderLabel(
@@ -2054,7 +2054,7 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
       `${provisional} → #142`,
     );
     expect(parkedOrderLabel(after, pinned, "2026-10-06", "en")).toBe(
-      `${provisional} → #142 · Oct 5`,
+      `${provisional} → #142\u00a0·\u00a0Oct\u00a05`,
     );
     // A stored value that names no order is not a reference.
     expect(parkedOrderRef(null)).toBeNull();

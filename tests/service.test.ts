@@ -729,9 +729,12 @@ describe("LD-29: business-day labels after the cutoff rollover", () => {
     const before = currentBusinessDate(mexico, at("2026-10-06T09:59:00Z"));
     const after = currentBusinessDate(mexico, at("2026-10-06T10:00:00Z"));
     expect(orderNumberLabel(order, before, "es")).toBe("#10");
-    expect(orderNumberLabel(order, after, "es")).toBe("#10 · 5 oct");
-    expect(orderNumberLabel(order, after, "en")).toBe("#10 · Oct 5");
-    expect(orderNumberText(order, after, "es")).toBe("10 · 5 oct");
+    // Non-breaking spaces (LD-48, POLISH-UX-2): "#10 · 5 oct" never wraps apart.
+    expect(orderNumberLabel(order, after, "es")).toBe("#10\u00a0·\u00a05\u00a0oct");
+    expect(orderNumberLabel(order, after, "en")).toBe("#10\u00a0·\u00a0Oct\u00a05");
+    expect(orderNumberText(order, after, "es")).toBe("10\u00a0·\u00a05\u00a0oct");
+    for (const locale of ["es", "en"] as const)
+      expect(orderNumberLabel(order, after, locale)).not.toMatch(/ /);
     expect(businessDayLabel("2026-01-31", "es")).toBe("31 ene");
     // Today's new #10 keeps the plain number; unknown dates never invent one.
     expect(
@@ -776,7 +779,7 @@ describe("LD-29: business-day labels after the cutoff rollover", () => {
   it("the cart heading names a numbered order's date; provisional numbers are unchanged", () => {
     const id = "00000000-0000-4000-8000-000000000010";
     const order = { id, number: 10, businessDate: "2026-10-05" };
-    expect(orderLabel(order, "2026-10-06", "es")).toBe("#10 · 5 oct");
+    expect(orderLabel(order, "2026-10-06", "es")).toBe("#10\u00a0·\u00a05\u00a0oct");
     expect(orderLabel(order, "2026-10-05", "es")).toBe("#10");
     expect(orderLabel(order)).toBe("#10");
     expect(
@@ -785,7 +788,7 @@ describe("LD-29: business-day labels after the cutoff rollover", () => {
         "2026-10-06",
         "en",
       ),
-    ).toBe("B-07 → #10 · Oct 5");
+    ).toBe("B-07 → #10\u00a0·\u00a0Oct\u00a05");
     expect(
       orderLabel(
         { id, number: 0, offline: { provisionalNumber: "B-07" } },

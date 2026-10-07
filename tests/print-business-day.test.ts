@@ -28,6 +28,9 @@ const L = (es: string, en = es): Label => ({ es, en });
 const zone = "America/Mexico_City";
 const yesterday = "2026-10-05";
 const today = "2026-10-06";
+/** The dated label as the documents carry it: non-breaking spaces (LD-48, POLISH-UX-2). */
+const OLD_ES = "#10\u00a0·\u00a05\u00a0oct";
+const OLD_EN = "#10\u00a0·\u00a0Oct\u00a05";
 /** Visible text of server-rendered markup (tags removed, spaces collapsed). */
 const text = (html: string) =>
   html
@@ -149,7 +152,7 @@ describe("printed kitchen paper names the business date of an order from another
 
   it("the comanda: KDS rounds, a sent round and the note reprint", () => {
     expect(ticketFromKitchenRound(kitchenRound(yesterday), es).label).toBe(
-      "#10 · 5 oct",
+      OLD_ES,
     );
     expect(
       comanda(ticketFromKitchenRound(kitchenRound(yesterday), es)),
@@ -162,14 +165,14 @@ describe("printed kitchen paper names the business date of an order from another
       /^#10 Mesa 4 Ronda 2/,
     );
     const sent = ticketsFromOrderRound(order(yesterday), 2, es);
-    expect(sent.map((t) => t.label)).toEqual(["#10 · 5 oct"]);
+    expect(sent.map((t) => t.label)).toEqual([OLD_ES]);
     expect(comanda(sent[0])).toMatch(/^#10 · 5 oct Mesa 4/);
     expect(
       ticketsFromOrderRound(order(today), 2, es).map((t) => t.label),
     ).toEqual(["#10"]);
     expect(
       ticketsForOpenRounds(order(yesterday), en).map((t) => t.label),
-    ).toEqual(["#10 · Oct 5"]);
+    ).toEqual([OLD_EN]);
     // An order without a business date (an older cached copy) keeps "#10".
     expect(
       ticketsFromOrderRound(order(undefined), 2, es).map((t) => t.label),
@@ -182,7 +185,7 @@ describe("printed kitchen paper names the business date of an order from another
       new Set(["v1"]),
       es,
     );
-    expect(fromKds.map((c) => c.label)).toEqual(["#10 · 5 oct"]);
+    expect(fromKds.map((c) => c.label)).toEqual([OLD_ES]);
     expect(chit(fromKds[0])).toContain("#10 · 5 oct Mesa 4");
     expect(
       cancellationsFromKitchenRounds(
@@ -212,7 +215,7 @@ describe("printed kitchen paper names the business date of an order from another
       ],
     } as Partial<Order>);
     const voided = cancellationsFromVoid(before, after, "Error de captura", en);
-    expect(voided.map((c) => c.label)).toEqual(["#10 · Oct 5"]);
+    expect(voided.map((c) => c.label)).toEqual([OLD_EN]);
     expect(chit(voided[0], "en")).toContain("#10 · Oct 5 Mesa 4");
 
     const refunded = cancellationsFromRefund(
@@ -221,7 +224,7 @@ describe("printed kitchen paper names the business date of an order from another
       "Producto con defecto o queja",
       es,
     );
-    expect(refunded.map((c) => c.label)).toEqual(["#10 · 5 oct"]);
+    expect(refunded.map((c) => c.label)).toEqual([OLD_ES]);
     expect(chit(refunded[0])).toContain("#10 · 5 oct Mesa 4");
     expect(
       cancellationsFromRefund(

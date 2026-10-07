@@ -226,20 +226,43 @@ export function currentBusinessDate(
   );
 }
 
+/** U+00A0: joins a dated label so it never wraps apart (LD-48, POLISH-UX-2). */
+const NBSP = "\u00a0";
+
+/**
+ * `text` as staff read it: unchanged, or followed by " · 5 oct" (" · Oct 5") when `day` is
+ * another business day than `today`. The date is joined with non-breaking spaces, so a
+ * narrow header (the KDS ticket at iPad portrait widths) never splits "5" from "oct"
+ * or the date from the number.
+ */
+export function withBusinessDay(
+  text: string,
+  day: string | null | undefined,
+  today: string | null | undefined,
+  locale: Locale,
+): string {
+  return day && today && day !== today
+    ? `${text}${NBSP}·${NBSP}${businessDayLabel(day, locale).replace(/\s/g, NBSP)}`
+    : text;
+}
+
 /**
  * An order number as staff read it: "10", or "10 · 5 oct" ("10 · Oct 5") when the order
- * belongs to another business day than `today`. Numbers restart every business day, so
- * after the cutoff an open order from the day before and a new one can both be #10.
+ * belongs to another business day than `today` (withBusinessDay: non-breaking spaces).
+ * Numbers restart every business day, so after the cutoff an open order from the day
+ * before and a new one can both be #10.
  */
 export function orderNumberText(
   order: { number: number; businessDate?: string | null },
   today: string | null | undefined,
   locale: Locale,
 ): string {
-  const day = order.businessDate;
-  return day && today && day !== today
-    ? `${order.number} · ${businessDayLabel(day, locale)}`
-    : String(order.number);
+  return withBusinessDay(
+    String(order.number),
+    order.businessDate,
+    today,
+    locale,
+  );
 }
 
 /** "#10", or "#10 · 5 oct" for an order from another business day (orderNumberText). */

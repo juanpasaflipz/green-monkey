@@ -467,9 +467,11 @@ describe("public ordering tokens and schemas (032)", () => {
           onReject: () => {},
         }),
       );
-    expect(markup("es")).toContain("Cuenta #10 · 5 ene de Mesa 4 (Ana)");
+    expect(markup("es")).toContain(
+      "Cuenta #10\u00a0·\u00a05\u00a0ene de Mesa 4 (Ana)",
+    );
     expect(markup("es")).toContain("Cuenta #11 de Mesa 4 (Ana)");
-    expect(markup("en")).toContain("#10 · Jan 5");
+    expect(markup("en")).toContain("#10\u00a0·\u00a0Jan\u00a05");
   });
 
   it("17. the accept carries the total staff saw and an abuse acknowledgement; the yes/no price flag is gone (MONEY-1, ABUSE-1)", () => {

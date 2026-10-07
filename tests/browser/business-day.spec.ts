@@ -147,6 +147,9 @@ test("LD-29: an open order from the previous business day shows its date next to
     await page.getByRole("button", { name: "Operación", exact: true }).click();
     const es = await dayLabel(page, old.businessDate, "es");
     const oldLabel = `#${old.number} · ${es}`;
+    // As the documents carry it: non-breaking spaces, so the date never wraps
+    // apart from the number (LD-48, POLISH-UX-2). Locators normalise them.
+    const oldText = oldLabel.replace(/ /g, "\u00a0");
 
     // Órdenes: the card and its checkbox name the date; today's order does not.
     await page.getByRole("button", { name: "Órdenes", exact: true }).click();
@@ -186,12 +189,12 @@ test("LD-29: an open order from the previous business day shows its date next to
 
     // The kitchen ticket list.
     await page.getByRole("button", { name: "Cocina", exact: true }).click();
-    await expect(
-      page
-        .locator("article.kitchen-ticket")
-        .filter({ hasText: oldName })
-        .locator("h2"),
-    ).toContainText(oldLabel);
+    const oldHeader = page
+      .locator("article.kitchen-ticket")
+      .filter({ hasText: oldName })
+      .locator("h2");
+    await expect(oldHeader).toContainText(oldLabel);
+    expect(await oldHeader.textContent()).toContain(oldText);
     await expect(
       page
         .locator("article.kitchen-ticket")
@@ -216,7 +219,7 @@ test("LD-29: an open order from the previous business day shows its date next to
     await expect
       .poll(() => page.evaluate(() => (window as any).__printed as string[]))
       .toEqual([
-        expect.stringContaining(`${oldLabel} ${oldName}`),
+        expect.stringContaining(`${oldText} ${oldName}`),
         expect.stringContaining(`#${fresh.number} ${freshName}`),
       ]);
     // A new round of the old order is announced with its date, as its header
