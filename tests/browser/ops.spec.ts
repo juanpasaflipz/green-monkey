@@ -130,3 +130,65 @@ test("a server error notice shows the Referencia de soporte staff read out (LD-1
     await page.unroute("**/api/orders");
   }
 });
+
+test("public ordering's inbox and settings notices show the Referencia de soporte of a server error (POL-R2-6)", async ({
+  page,
+}) => {
+  await login(page);
+  const requestId = "3f2a9c1b-7d4e-4c2a-9b1e-0123456789ab";
+  const failure = {
+    status: 500,
+    headers: { "X-Request-Id": requestId },
+    json: { error: "internal_error", requestId },
+  };
+  // The inbox shows as it does with an active code and nothing pending; the
+  // pause and the settings save fail on the server before changing anything.
+  await page.route("**/api/ordering/inbox/summary", (route) =>
+    route.fulfill({
+      json: { available: true, active: true, pending: 0, oldestAt: null },
+    }),
+  );
+  await page.route("**/api/ordering/inbox", (route) =>
+    route.fulfill({
+      json: {
+        available: true,
+        active: true,
+        acceptingNow: true,
+        reason: null,
+        paused: false,
+        holds: [],
+        recentlyExpired: 0,
+        churning: [],
+        serverTime: new Date().toISOString(),
+      },
+    }),
+  );
+  await page.route("**/api/ordering/pause", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill(failure)
+      : route.continue(),
+  );
+  await page.route("**/api/ordering/settings", (route) =>
+    route.request().method() === "POST"
+      ? route.fulfill(failure)
+      : route.continue(),
+  );
+  try {
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    const inbox = page.locator(".public-inbox");
+    await inbox.getByRole("button", { name: "Pausar", exact: true }).click();
+    await expect(inbox.locator(".public-notice")).toContainText(
+      "Referencia de soporte: 3F2A9C1B",
+    );
+    await page
+      .getByRole("button", { name: "Configuración", exact: true })
+      .click();
+    const panel = page.locator(".public-settings");
+    await panel
+      .getByRole("button", { name: "Guardar pedidos en línea", exact: true })
+      .click();
+    await expect(panel).toContainText("Referencia de soporte: 3F2A9C1B");
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  }
+});

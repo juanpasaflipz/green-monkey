@@ -14,7 +14,7 @@ import {
   type PublicSettingsView,
   type RevealedLink,
 } from "../../../shared/public-ordering";
-import { strings, translateError, type Key } from "../../i18n";
+import { errorNotice, strings, type Key } from "../../i18n";
 import { api } from "../../api";
 import { Badge, Button, Field, Modal } from "../../components/ui";
 import { moneyFormatter } from "../Receipt";
@@ -88,7 +88,7 @@ export function PublicOrderingSettings({
       if (v.available && v.pro && v.canEdit)
         setLinks((await api<PublicLinksResponse>("/ordering/links")).links);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -108,7 +108,8 @@ export function PublicOrderingSettings({
     } catch (e) {
       const code = (e as Error).message;
       if (code === "settings_changed") await load();
-      if (code !== "step_up_cancelled") setError(translateError(code, locale));
+      // A server error carries its "Referencia de soporte" (POL-R2-6).
+      if (code !== "step_up_cancelled") setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
