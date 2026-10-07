@@ -4,6 +4,7 @@ import { lineRemaining } from "../../shared/settlement";
 import { changeDue, roundNotes } from "../../shared/service";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { api } from "../api";
+import { dateTime } from "../datetime";
 import { strings, errorNotice, type Key } from "../i18n";
 import {
   channelLabel,
@@ -171,10 +172,8 @@ export function OrderDetail({
       ) : (
         <div className="order-detail">
           <p className="muted">
-            {new Date(order.createdAt).toLocaleString(locale, {
-              timeZone: zone,
-            })}{" "}
-            · {channelLabel(order.channel ?? "pos", locale)} ·{" "}
+            {dateTime(order.createdAt, zone, locale)} ·{" "}
+            {channelLabel(order.channel ?? "pos", locale)} ·{" "}
             {t(order.mode as Key)} · {order.tableName ?? t("noTable")} ·{" "}
             {order.waiterName}
             <br />
@@ -211,9 +210,7 @@ export function OrderDetail({
                   .replace("{number}", order.offline.provisionalNumber)
                   .replace(
                     "{date}",
-                    new Date(order.offline.soldAt).toLocaleString(locale, {
-                      timeZone: zone,
-                    }),
+                    dateTime(order.offline.soldAt, zone, locale),
                   )}
               </>
             )}

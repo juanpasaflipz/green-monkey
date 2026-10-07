@@ -1930,6 +1930,11 @@ test("orders: current tab, search, closed tab, detail, reprint and paging", asyn
   const detail = page.getByRole("dialog", { name: `Orden #${paid.number}` });
   await expect(detail).toContainText("Efectivo");
   await expect(detail).toContainText("Cobrada");
+  // The header dates the order dd/MM/yyyy HH:mm, never toLocaleString's
+  // "7/10/2026, 9:41:23" (restaurant-day G3 dates rule, FOH-13).
+  await expect(detail.locator(".order-detail > p.muted").first()).toHaveText(
+    /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2} · /,
+  );
   const detailAxe = await new AxeBuilder({ page })
     .include("dialog")
     .withTags(AXE_TAGS)
