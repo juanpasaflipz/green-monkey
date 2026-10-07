@@ -4,7 +4,7 @@
  * a discount, a courtesy, an 86 and the canonical-order timing (§11).
  */
 import { expect, type Locator, type Page } from "@playwright/test";
-import { mxn } from "./oracle.js";
+import { mxn, oracleA } from "./oracle.js";
 import { ORDERS_A, RESTAURANT_A, type OrderDef } from "./scenario.js";
 import {
   FIGURES,
@@ -20,6 +20,7 @@ import {
   nextSale,
   norm,
   payDialog,
+  squash,
   productCard,
   productDef,
   progressTicket,
@@ -31,6 +32,9 @@ import {
   checkpoint,
   escapeRe,
   fill,
+  nextPrint,
+  parseMxn,
+  prints,
   run,
   press,
   tap,
@@ -550,3 +554,189 @@ async function eightySix(caja: Device, cocina: Device, owner: Device, o: OrderDe
 }
 
 export { norm, typePin };
+
+// ------------------------------------------------------------- A11 / A12
+
+/** A row of a printed or previewed document (DocRow): its amount by its exact label (§5.3). */
+export function docRow(scope: Locator, label: string | RegExp) {
+  const page = scope.page();
+  return scope
+    .locator(".doc-row")
+    .filter({
+      has: page.locator(".doc-label", {
+        hasText: typeof label === "string" ? new RegExp(`^${escapeRe(label)}$`) : label,
+      }),
+    })
+    .locator(".doc-amount");
+}
+
+/** reportValue (§5.3): a missing row fails; the amount is parsed to centavos. */
+export async function reportValue(scope: Locator, label: string | RegExp) {
+  const cell = docRow(scope, label);
+  await expect(cell, `row "${label}"`).toHaveCount(1);
+  return parseMxn(await cell.innerText());
+}
+
+/** "Bloquear pantalla" → "Cambiar de usuario" → name → PIN (quick switch). */
+export async function switchUser(d: Device, to: { name: string; pin: string }, opts: { lockedAlready?: boolean } = {}) {
+  const page = d.page;
+  if (!opts.lockedAlready) await press(d, page.getByRole("button", { name: "Bloquear pantalla", exact: true }));
+  const lock = page.locator("dialog.lock-screen");
+  await expect(lock.getByRole("heading", { name: "Pantalla bloqueada" })).toBeVisible();
+  await press(d, lock.getByRole("button", { name: "Cambiar de usuario", exact: true }));
+  await press(d, lock.locator(".roster-person").filter({ hasText: to.name }));
+  await typePin(d, lock, to.name, to.pin);
+  await expect(lock).toHaveCount(0);
+  run.lastAuthAt[`${to.name}@${d.name}`] = Date.now();
+}
+
+/** §3.5.5 idle oracle for cajaA while "Bloqueo automático" is 1 min. */
+export async function idleOracle(d: Device, current: { name: string; pin: string }) {
+  if (!idleLockOn) return;
+  const lock = d.page.locator("dialog.lock-screen");
+  const idle = Date.now() - d.lastInputAt;
+  if (idle < 45_000) {
+    await expect(lock).toHaveCount(0);
+    return;
+  }
+  if (idle < 71_000)
+    await expect.poll(() => Date.now() - d.lastInputAt, { intervals: [1_000], timeout: 30_000 }).toBeGreaterThan(71_000);
+  await expect(lock.getByRole("heading", { name: "Pantalla bloqueada" })).toBeVisible({ timeout: 15_000 });
+  await typePin(d, lock, current.name, current.pin);
+  await expect(lock).toHaveCount(0);
+  run.lastAuthAt[`${current.name}@${d.name}`] = Date.now();
+}
+export let idleLockOn = false;
+export function setIdleLock(on: boolean) {
+  idleLockOn = on;
+}
+
+/** Operación → Caja on a terminal. */
+export async function toCash(d: Device) {
+  await press(d, d.page.getByRole("navigation", { name: "Operación" }).getByRole("button", { name: "Caja", exact: true }));
+}
+
+/** A11.3 / A14.1: the owner sets Caja 1's "Bloqueo automático". */
+export async function setAutoLock(owner: Device, device: string, choice: "1 min" | "Nunca") {
+  const page = owner.page;
+  await page.getByRole("navigation", { name: "Operación" }).getByRole("button", { name: "Configuración" }).click();
+  const list = page.getByRole("region", { name: "Dispositivos" });
+  await list.getByRole("button", { name: `Editar · ${device}`, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: `Editar «${device}»` });
+  await dialog.getByLabel(/^Bloqueo automático/).selectOption({ label: choice });
+  await dialog.getByRole("button", { name: "Guardar cambios", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByRole("status").filter({ hasText: "Cambios guardados" })).toBeVisible();
+}
+
+export async function serviceA2(dev: Devices) {
+  const caja = await dev("cajaA");
+  const cocina = await dev("cocinaA");
+  const owner = await dev("ownerA");
+  const marisol = staffA("marisol");
+  const diego = staffA("diego");
+  const paola = staffA("paola");
+  // A11.1: Marisol switches in.
+  run.step = "A11.1";
+  await switchUser(caja, marisol);
+  // A11.2: corte X is a read-only partial reading (§6.13, labels bound to reports 029).
+  run.step = "A11.2";
+  await toCash(caja);
+  await expect(caja.page.getByText("Caja abierta", { exact: true }).first()).toBeVisible();
+  await press(caja, caja.page.getByRole("button", { name: "Corte X", exact: true }));
+  const preview = caja.page.getByRole("dialog", { name: "Vista previa" });
+  const doc = preview.locator(".corte-doc");
+  await expect(doc).toContainText("CORTE X · LECTURA PARCIAL");
+  const x = expectedCorteX();
+  const read = {
+    opening: await reportValue(doc, "Fondo inicial"),
+    cashSales: await reportValue(doc, "Ventas en efectivo"),
+    cashTips: await reportValue(doc, "Propinas en efectivo"),
+    cashRefunds: await reportValue(doc, "Reembolsos en efectivo"),
+    expected: await reportValue(doc, "Efectivo esperado"),
+    terminalSales: await reportValue(doc, /^Cobros con terminal \(\d+\)$/),
+    terminalTips: await reportValue(doc, "Propinas con terminal"),
+    terminalNet: await reportValue(doc, "Neto en terminal"),
+  };
+  expect(read).toEqual(x);
+  await expect(doc).toContainText("Folios A-000001 a A-000015 (15 tickets)");
+  await expect(doc).toContainText("Lectura parcial: la caja sigue abierta.");
+  await checkpoint(caja, "A11-cortex", { settle: preview });
+  const before = (await prints(caja.page)).length;
+  await press(caja, preview.getByRole("button", { name: "Imprimir", exact: true }));
+  const printed = squash((await nextPrint(caja.page, before, "corte-x")).text);
+  for (const amount of [x.opening, x.cashSales, x.cashTips, x.expected, x.terminalSales, x.terminalTips, x.terminalNet])
+    expect(printed).toContain(squash(mxn(amount)));
+  await press(caja, preview.getByRole("button", { name: "Cerrar", exact: true }));
+  await expect(caja.page.getByText("Caja abierta", { exact: true }).first()).toBeVisible();
+  // A11.3 / A11.4: Caja 1 locks after 1 min from Diego's next session.
+  run.step = "A11.3";
+  await setAutoLock(owner, "Caja 1", "1 min");
+  run.step = "A11.4";
+  await switchUser(caja, diego);
+  setIdleLock(true);
+  // A12.1: Diego's draft (A18), not sent.
+  run.step = "A12.1";
+  const a18 = orderA("A18");
+  await toSell(caja);
+  for (const [i, line] of a18.lines.entries()) await addLine(caja, r, line, i);
+  await details(caja, a18.callName);
+  // A12.2: one minute idle locks the screen; the cart stays mounted underneath.
+  run.step = "A12.2";
+  await caja.context.clock.fastForward("01:01");
+  await caja.context.clock.setSystemTime(Date.now() + caja.skew);
+  const lock = caja.page.locator("dialog.lock-screen");
+  await expect(lock.getByRole("heading", { name: "Pantalla bloqueada" })).toBeVisible({ timeout: 15_000 });
+  expect(await lock.evaluate((d: HTMLDialogElement) => d.matches(":modal"))).toBe(true);
+  await expect(caja.page.locator("aside.cart .order-line")).toHaveCount(2);
+  await focusTrapped(caja, lock);
+  await checkpoint(caja, "A12-lock", { settle: lock });
+  // A12.3: Paola's workspace is fresh.
+  run.step = "A12.3";
+  await switchUser(caja, paola, { lockedAlready: true });
+  await toSell(caja);
+  await expect(caja.page.getByText("La siguiente buena orden empieza aquí.", { exact: true })).toBeVisible();
+  // A12.4: Paola rings A17.
+  run.step = "A12.4";
+  {
+    const o = orderA("A17");
+    const due = await build(caja, o);
+    await payAndCheck(caja, cocina, o, due);
+  }
+  // A12.5: back to Diego; his draft is restored and paid.
+  run.step = "A12.5";
+  await switchUser(caja, diego);
+  await toSell(caja);
+  await assertCart(caja, r, a18.lines, FIGURES.A18!.total);
+  await payAndCheck(caja, cocina, a18, FIGURES.A18!.total);
+  // A12.6: PIN rate (§3.8).
+  const now = Date.now();
+  expect(run.pinLedger.filter((t) => now - t < 60_000).length).toBeLessThanOrEqual(20);
+}
+
+/** The corte X figures (§6.13) from the oracle's tickets #1-#16. */
+function expectedCorteX() {
+  const x = oracleA().corteX;
+  const terminal = ORDERS_A.filter((o) => o.number <= 16 && o.payment?.method === "external");
+  const sales = terminal.reduce((s, o) => s + FIGURES[o.id]!.total, 0);
+  const tips = terminal.reduce((s, o) => s + (o.payment!.tip ?? 0), 0);
+  return {
+    opening: parseMxn(x.opening),
+    cashSales: parseMxn(x.cash),
+    cashTips: parseMxn(x.cashTips),
+    cashRefunds: 0,
+    expected: parseMxn(x.expectedCash),
+    terminalSales: sales,
+    terminalTips: tips,
+    terminalNet: sales + tips,
+  };
+}
+
+/** access §1.8: Tab ten times never leaves the dialog. */
+export async function focusTrapped(d: Device, dialog: Locator) {
+  for (let i = 0; i < 10; i++) {
+    await d.page.keyboard.press("Tab");
+    expect(await dialog.evaluate((el) => el.contains(document.activeElement))).toBe(true);
+  }
+  d.lastInputAt = Date.now();
+}

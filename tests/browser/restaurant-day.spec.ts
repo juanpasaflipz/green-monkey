@@ -22,7 +22,8 @@ import {
 } from "../restaurant-day/ui.js";
 import { setupA, setupB } from "../restaurant-day/setup-flows.js";
 import { preflight } from "../restaurant-day/preflight.js";
-import { serviceA1 } from "../restaurant-day/service-a.js";
+import { serviceA1, serviceA2 } from "../restaurant-day/service-a.js";
+import { serviceA3 } from "../restaurant-day/outage.js";
 
 test.skip(
   process.env.RD_ACCEPTANCE !== "1",
@@ -81,6 +82,14 @@ test.describe("restaurant day", () => {
     test("A service, part 1 (A10)", async () => {
       test.setTimeout(10 * 60_000);
       await serviceA1(dev, state);
+    });
+    test("A shift (A11–A12)", async () => {
+      test.setTimeout(5 * 60_000);
+      await serviceA2(dev);
+    });
+    test("A outage (A13)", async () => {
+      test.setTimeout(6 * 60_000);
+      await serviceA3(dev, state);
     });
   });
 

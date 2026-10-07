@@ -173,9 +173,14 @@ export async function addLine(d: Device, r: Restaurant, line: Line, index: numbe
   if (line.note) {
     await tap(d, row.getByRole("button", { name: `Nota para ${p.name}`, exact: true }));
     const presets = ["Sin cebolla", "Sin chile", "Sin cilantro", "Salsa aparte"];
-    if (presets.includes(line.note)) await tap(d, row.getByRole("button", { name: line.note, exact: true }));
-    else await fill(d, row.getByLabel("Nota para cocina", { exact: true }), line.note);
-    await tap(d, row.getByRole("button", { name: "Listo", exact: true }));
+    if (presets.includes(line.note)) {
+      await tap(d, row.getByRole("button", { name: line.note, exact: true }));
+      await tap(d, row.getByRole("button", { name: "Listo", exact: true }));
+    } else {
+      // Typing scrolls the note box into view; "Listo" may then sit below it.
+      await fill(d, row.getByLabel("Nota para cocina", { exact: true }), line.note);
+      await press(d, row.getByRole("button", { name: "Listo", exact: true }));
+    }
     await expect(row.locator(".line-note")).toHaveText(line.note);
   }
 }
@@ -405,12 +410,21 @@ export async function kdsChecks(k: Device, e: KdsExpectation) {
     const mine = e.lines.filter((l) => l.station === station);
     const rows = ticket.locator(".ticket-lines > div");
     await expect(rows).toHaveCount(mine.length);
-    for (const [i, l] of mine.entries()) {
-      const row = rows.nth(i);
-      await expect(row.locator("strong").first()).toHaveText(`${l.qty} × ${l.name}`);
-      await expect(row.locator(".ticket-option")).toHaveText(l.options.map((o) => `+ ${o}`));
-      if (l.note) await expect(row.locator(".ticket-note")).toContainText(l.note);
-    }
+    // The kitchen lists lines in its own order: compare the lines as a multiset.
+    const shown = await rows.evaluateAll((els) =>
+      els.map((el) => ({
+        title: (el.querySelector("strong")?.textContent ?? "").replace(/\s+/g, " ").trim(),
+        options: Array.from(el.querySelectorAll(".ticket-option")).map((o) => (o.textContent ?? "").trim()),
+        note: (el.querySelector(".ticket-note")?.textContent ?? "").replace(/\s+/g, " ").trim(),
+      })),
+    );
+    const want = mine.map((l) => ({
+      title: `${l.qty} × ${l.name}`,
+      options: l.options.map((o) => `+ ${o}`),
+      note: l.note ?? "",
+    }));
+    const key = (x: { title: string; options: string[]; note: string }) => JSON.stringify(x);
+    expect(shown.map(key).sort(), `#${e.number} ${station}: kitchen lines`).toEqual(want.map(key).sort());
     if (e.orderNote) {
       const allergy = /alerg/i.test(e.orderNote);
       const block = ticket.locator(":scope > .ticket-note").first();
