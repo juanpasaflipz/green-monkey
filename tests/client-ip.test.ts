@@ -237,6 +237,12 @@ interface LimiterScan {
   calls: string[];
   /** Calls whose options object has no keyGenerator (or is not an object literal). */
   missing: string[];
+  /**
+   * Calls whose keyGenerator does not reach clientIp: neither its own code
+   * nor any function, variable or parameter default of the same file it
+   * names calls clientIp (NETFIX-L2).
+   */
+  bypass: string[];
   /** Imports the scan cannot follow (namespace imports, require). */
   unsupported: string[];
   /** Property reads of req.ip / req.ips (the edge hop behind Railway). */
@@ -253,8 +259,43 @@ function scanLimiters(file: string, source: string): LimiterScan {
   const out: LimiterScan = {
     calls: [],
     missing: [],
+    bypass: [],
     unsupported: [],
     reqIp: [],
+  };
+  // Same-file declarations a keyGenerator may name: functions, variables
+  // and parameters with a default, by name (scopes are not told apart).
+  const declared = new Map<string, ts.Node[]>();
+  const declare = (name: ts.Node, value: ts.Node | undefined) => {
+    if (!ts.isIdentifier(name) || !value) return;
+    declared.set(name.text, [...(declared.get(name.text) ?? []), value]);
+  };
+  const collect = (node: ts.Node) => {
+    if (ts.isFunctionDeclaration(node) && node.name)
+      declare(node.name, node.body);
+    if (ts.isVariableDeclaration(node)) declare(node.name, node.initializer);
+    if (ts.isParameter(node)) declare(node.name, node.initializer);
+    ts.forEachChild(node, collect);
+  };
+  collect(sf);
+  /** Whether `node` calls clientIp, itself or through what it names. */
+  const throughClientIp = (node: ts.Node, seen = new Set<ts.Node>()) => {
+    let found = false;
+    const walk = (n: ts.Node) => {
+      if (found) return;
+      if (ts.isIdentifier(n)) {
+        if (n.text === "clientIp") found = true;
+        for (const value of declared.get(n.text) ?? [])
+          if (!seen.has(value)) {
+            seen.add(value);
+            walk(value);
+          }
+        return;
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(node);
+    return found;
   };
   const where = (node: ts.Node) =>
     `${file}:${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}`;
@@ -304,6 +345,21 @@ function scanLimiters(file: string, source: string): LimiterScan {
             p.name.text === "keyGenerator",
         );
       if (!keyed) out.missing.push(where(node));
+      else {
+        const key = (options as ts.ObjectLiteralExpression).properties.find(
+          (p) =>
+            !ts.isSpreadAssignment(p) &&
+            p.name !== undefined &&
+            (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) &&
+            p.name.text === "keyGenerator",
+        )!;
+        const value = ts.isPropertyAssignment(key)
+          ? key.initializer
+          : ts.isShorthandPropertyAssignment(key)
+            ? key.name
+            : key;
+        if (!throughClientIp(value)) out.bypass.push(where(node));
+      }
     }
     if (
       ts.isPropertyAccessExpression(node) &&
@@ -319,16 +375,26 @@ function scanLimiters(file: string, source: string): LimiterScan {
 }
 
 describe("every rate limiter keys on the real client (LD-46 ratchet)", () => {
-  it("the scanner sees default, named and aliased imports and flags a limiter without keyGenerator", () => {
+  it("the scanner sees default, named and aliased imports and flags a limiter without keyGenerator, or with one that does not go through clientIp", () => {
     const scan = scanLimiters(
       "fixture.ts",
       [
         'import limit, { rateLimit as rl } from "express-rate-limit";',
-        "const a = limit({ windowMs: 1, keyGenerator: (req) => k(req) });",
+        "const a = limit({ windowMs: 1, keyGenerator: (req) => ipKeyGenerator(clientIp(req), 56) });",
         "const b = rl({ windowMs: 1 });",
         "const c = limit(options);",
         "const d = limit({ ...options, keyGenerator });",
         "const ip = req.ip;",
+        // NETFIX-L2: the key itself must come from clientIp, directly or
+        // through a function or default declared in the same file.
+        "const e = limit({ keyGenerator: (req) => req.socket.remoteAddress ?? '' });",
+        "const f = limit({ keyGenerator: (req) => ipKeyGenerator(String(req.headers['x-forwarded-for']), 56) });",
+        "function ipKey(req) { return ipKeyGenerator(clientIp(req), 56); }",
+        "const deviceKey = (req) => device(req) ?? `ip:${ipKey(req)}`;",
+        "const g = limit({ keyGenerator: ipKey });",
+        "const h = limit({ keyGenerator: (req) => deviceKey(req) });",
+        "function make(key = (req) => ipKey(req)) { return limit({ keyGenerator: key }); }",
+        "const i = limit({ keyGenerator: (req) => tenantKey(req) });",
       ].join("\n"),
     );
     expect(scan.calls).toEqual([
@@ -336,8 +402,20 @@ describe("every rate limiter keys on the real client (LD-46 ratchet)", () => {
       "fixture.ts:3",
       "fixture.ts:4",
       "fixture.ts:5",
+      "fixture.ts:7",
+      "fixture.ts:8",
+      "fixture.ts:11",
+      "fixture.ts:12",
+      "fixture.ts:13",
+      "fixture.ts:14",
     ]);
     expect(scan.missing).toEqual(["fixture.ts:3", "fixture.ts:4"]);
+    expect(scan.bypass).toEqual([
+      "fixture.ts:5",
+      "fixture.ts:7",
+      "fixture.ts:8",
+      "fixture.ts:14",
+    ]);
     expect(scan.reqIp).toEqual(["fixture.ts:6"]);
     expect(
       scanLimiters("ns.ts", 'import * as erl from "express-rate-limit";')
@@ -345,9 +423,10 @@ describe("every rate limiter keys on the real client (LD-46 ratchet)", () => {
     ).toEqual(["ns.ts:1"]);
   });
 
-  it("no rateLimit() in server/ goes without an explicit keyGenerator, and only logging.ts reads req.ip", () => {
+  it("no rateLimit() in server/ goes without an explicit keyGenerator through clientIp, and only logging.ts reads req.ip", () => {
     const calls: string[] = [];
     const missing: string[] = [];
+    const bypass: string[] = [];
     const unsupported: string[] = [];
     const reqIp: string[] = [];
     for (const file of serverFiles()) {
@@ -357,6 +436,7 @@ describe("every rate limiter keys on the real client (LD-46 ratchet)", () => {
       );
       calls.push(...scan.calls);
       missing.push(...scan.missing);
+      bypass.push(...scan.bypass);
       unsupported.push(...scan.unsupported);
       if (!file.endsWith(join("server", "logging.ts")))
         reqIp.push(...scan.reqIp);
@@ -370,6 +450,7 @@ describe("every rate limiter keys on the real client (LD-46 ratchet)", () => {
       true,
     );
     expect(missing).toEqual([]);
+    expect(bypass).toEqual([]);
     expect(unsupported).toEqual([]);
     expect(reqIp).toEqual([]);
   });
