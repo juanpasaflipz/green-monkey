@@ -300,7 +300,11 @@ una sucursal» y escribe el domicilio de este local. Sin esos datos, cada ticket
 ### 4.3 Cerrar turno
 
 1. **Cuentas abiertas.** En «Órdenes», pestaña «Abiertas», cobra o revisa lo que siga
-   abierto y toca «Liberar mesa» en las mesas pagadas.
+   abierto y toca «Liberar mesa» en las mesas pagadas. Los números de orden empiezan de
+   nuevo cada día a la hora de «Cierre del día de negocio» (las 04:00 si el propietario
+   no la cambió): después de esa hora, una orden que siga abierta de un día anterior
+   muestra su fecha junto al número, por ejemplo «#10 · 5 oct», en «Órdenes», en
+   «Cocina» y en las comandas impresas. Es otra orden que el «#10» de hoy.
 2. **Sincroniza.** El indicador de conexión no debe mostrar «N por sincronizar». Si
    lo muestra, abre «Sincronización» → «Reintentar sincronización». Mientras haya
    ventas pendientes en el dispositivo, cerrar caja se niega con «Sincroniza las
@@ -409,7 +413,9 @@ están en el [runbook, "Contacts and escalation"](RUNBOOK.md#contacts-and-escala
 **Al llamar a soporte, ten a la mano:** el nombre del restaurante, el nombre del
 dispositivo (como aparece en «Dispositivos»), la hora del problema, el número de orden
 si lo hay, lo que dice el indicador de conexión y una foto de la pantalla con el
-mensaje. Con la versión de cuenta (031), el botón «Ayuda» de la barra superior muestra
+mensaje. Si el mensaje rojo dice «Referencia de soporte: 3F2A9C1B» (ocho letras y
+números; también aparece en «Sincronización», debajo de una venta que no se pudo
+enviar), díctala letra por letra: es lo primero que soporte busca. Con la versión de cuenta (031), el botón «Ayuda» de la barra superior muestra
 los canales de soporte, el ID del restaurante (con botón «Copiar») y el ID del
 dispositivo que soporte te pedirá. Todo lo que soporte haga en tu cuenta queda
 registrado y lo ves en «Cuenta y propietarios» › «Acciones de soporte».

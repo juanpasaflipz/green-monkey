@@ -113,6 +113,28 @@ describe("operator docs consistency (W3-1 docs pass)", () => {
     expect(recent).not.toContain("businessDate");
   });
 
+  it("PILOT_SOP tells the cashier to read out the support reference and shows the dated order number; RUNBOOK does not claim the reference ends the notice (LD-48, POLISH-UX-3)", () => {
+    const sop = doc("docs/PILOT_SOP.md");
+    const call = section(sop, "7. A quién llamar").replace(/\s+/g, " ");
+    const shown = strings.es.opsSupportReference.replace("{ref}", "3F2A9C1B");
+    expect(call).toContain(`Si el mensaje rojo dice «${shown}»`);
+    expect(call).toMatch(
+      /díctala letra por letra: es lo primero que soporte busca/,
+    );
+    expect(call).toContain("«Sincronización»");
+    const close = sop
+      .slice(sop.indexOf("\n### 4.3 Cerrar turno\n"), sop.indexOf("\n## 5."))
+      .replace(/\s+/g, " ");
+    expect(close).toContain(`«${strings.es.businessCutoff}»`);
+    expect(close).toContain("«#10 · 5 oct»");
+    const signals = section(doc("docs/RUNBOOK.md"), "Signals").replace(
+      /\s+/g,
+      " ",
+    );
+    expect(signals).not.toMatch(/ends with "Referencia de soporte/);
+    expect(signals).toContain(`includes "${shown}"`);
+  });
+
   it("the DocRow decision for the receipt documents is recorded (LD-16 L8)", () => {
     const status = doc("docs/DELIVERY_STATUS.md");
     expect(status).toMatch(
