@@ -191,7 +191,11 @@ Every cfdi job that ends done logs one info line, `cfdi_job_done` (LD-51 F13), w
 header as the request correlation id on error responses (errors.mdx "Useful headers"; the Node
 SDK's `FacturapiError.logId`, Context7 `/facturapi/facturapi-node`); a successful answer that
 carries it is logged too, one that does not adds nothing. Hand-overs while CFDI is unavailable
-log `cfdi_job_waiting` instead.
+log `cfdi_job_waiting` instead. The line is written when the handler returns done, before the
+runner records the completion (CFDIFIX-10, accepted): if the job's lease is lost at that moment
+the runner logs `job_lease_lost` next and the job may run again (every handler is idempotent:
+the document key, the external id, the dedupe keys), so a second `cfdi_job_done` for the same
+`jobId` can follow. Read the line as "the handler finished"; the job's state is the runner's.
 
 Retries never send two invoices: the document id is Facturapi's `idempotency_key` and
 `external_id`, and after an unknown outcome (timeout, network, 5xx) the next attempt first adopts

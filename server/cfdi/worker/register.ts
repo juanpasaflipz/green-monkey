@@ -6,6 +6,10 @@
  * Every handler runs with its job trace (traced): a job that ends done logs one info line,
  * `cfdi_job_done`, with the document it acted on, the ids its payload carries and the
  * X-Facturapi-Log-Id of each provider answer (LD-51 F13). The runner's own `job_done` is debug.
+ * The line is logged here, when the handler returns, before the runner's completeJob: a lease
+ * lost at completion logs job_lease_lost next and the job may run again, so a second line for
+ * the same jobId can follow (CFDIFIX-10, accepted and documented in docs/CFDI.md "Jobs"; the
+ * handlers are idempotent).
  */
 import { registerWorkerJobHandler } from "../../jobs/worker-registry.js";
 import type { JobHandler } from "../../jobs.js";

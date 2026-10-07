@@ -436,13 +436,15 @@ line), and keep where noted.
   - A **test key** (`sk_test_…`) as `FACTURAPI_TEST_KEY` on the **staging** worker:
     the shared sandbox needed for the Wave 3 staging rehearsal of the daily global
     invoice (a "Missing items" entry of LD-16, see the dependency tags). Per the 030
-    spec, production refuses a test key on its own. **Your decision (LD-51 F4):** the
-    test key you supplied belongs to a Facturapi organization registered with your real
-    taxpayer identity, and in the shared sandbox that organization is the issuer of every
-    staging test CFDI (its name, RFC, régimen and postal code are on each one, and the CFDI
-    panel shows it). Recommended: create a dedicated Facturapi organization with a SAT test
-    identity for staging and give the staging worker its test key; otherwise accept it
-    knowingly. Rehearsal files that carry that identity stay out of the repository.
+    spec, production refuses a test key on its own. **Decided (LD-51 F4, LD-53,
+    2026-10-07):** the test key you supplied belongs to a Facturapi organization
+    registered with your real taxpayer identity, and in the shared sandbox that
+    organization is the issuer of every staging test CFDI (its name, RFC, régimen and
+    postal code are on each one, and the CFDI panel shows it). You accepted it: that test
+    key stays on the staging worker. Reminder: the rehearsal files that carry that
+    identity stay local, out of the repository and out of anything shared. A dedicated
+    Facturapi organization with a SAT test identity remains possible later (give the
+    staging worker its test key); nothing else changes.
   - `CFDI_LIVE_ENABLED=true` (its effect is *proposed* by the 030 spec) on the
     production worker only when you decide to go live; per the spec it is refused
     anywhere else (on `integration/v1` today, only the web refuses it,
