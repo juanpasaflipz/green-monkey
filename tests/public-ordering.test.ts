@@ -10,8 +10,11 @@ import {
   dinerRejectReason,
   effectiveHoldState,
   holdActions,
+  holdExpiryGraceSeconds,
   holdLabel,
+  HOLD_EXPIRY_GRACE_SECONDS,
   linkPath,
+  PAID_ACCEPT_GRACE_SECONDS,
   PUBLIC_TOKEN,
   publicOrderInput,
   roundProgress,
@@ -53,6 +56,18 @@ const order = (over: Record<string, unknown> = {}) => ({
 });
 
 describe("public ordering tokens and schemas (032)", () => {
+  it("the diner's expiry grace is 5 minutes only for a pay-first hold; an accept-policy hold keeps 60 s (PUB-R3-L1)", () => {
+    expect(PAID_ACCEPT_GRACE_SECONDS).toBe(300);
+    expect(HOLD_EXPIRY_GRACE_SECONDS).toBe(60);
+    expect(holdExpiryGraceSeconds("pay_first")).toBe(300);
+    expect(holdExpiryGraceSeconds("accept")).toBe(60);
+    // The status read uses the same helper for both policies.
+    const diner = readFileSync("server/public-diner.ts", "utf8");
+    expect(diner).toContain(
+      'case when h.policy=\'pay_first\' then ${holdExpiryGraceSeconds("pay_first")}::int else ${holdExpiryGraceSeconds("accept")}::int end',
+    );
+  });
+
   it("1. tokens are 22-character base64url and unique", () => {
     const seen = new Set<string>();
     for (let i = 0; i < 1000; i++) {

@@ -85,6 +85,7 @@ import {
 import {
   HOLD_EXPIRY_GRACE_SECONDS,
   PAID_ACCEPT_GRACE_SECONDS,
+  holdExpiryGraceSeconds,
   LINK_HEADER,
   PUBLIC_LIMITS,
   STATUS_HEADER,
@@ -4094,7 +4095,7 @@ try {
     }
   });
 
-  await test("41. expiry: staff decisions stop at expires_at; the diner keeps seeing a just-expired hold as waiting for the grace (CONCURRENCY-2); a pay-first accept that carries its payment passes up to PAID_ACCEPT_GRACE_SECONDS after expiry, nothing else does (LD-41, PUBLIC-MONEY-2)", async () => {
+  await test("41. expiry: staff decisions stop at expires_at; the diner keeps seeing a just-expired hold as waiting for the grace (CONCURRENCY-2: 60 s for an accept-policy hold, PUB-R3-L1); a pay-first accept that carries its payment passes up to PAID_ACCEPT_GRACE_SECONDS after expiry, nothing else does, and only a pay-first hold reads as waiting that long (LD-41, PUBLIC-MONEY-2)", async () => {
     const t = await makeTenant("grace");
     const l = await link(t, { kind: "counter", label: "Ventanilla" });
     const recent = await insertHold(
@@ -4124,9 +4125,15 @@ try {
     // PUBLIC-MONEY-2: the cashier charged the terminal while the hold
     // expired. Only the pay-first accept that carries the payment still
     // passes, for PAID_ACCEPT_GRACE_SECONDS; the diner sees it as waiting
-    // until then and cannot cancel it.
-    assert.equal(HOLD_EXPIRY_GRACE_SECONDS, PAID_ACCEPT_GRACE_SECONDS);
+    // until then and cannot cancel it. An accept-policy hold keeps the
+    // 60-second commit grace (PUB-R3-L1).
     assert.equal(PAID_ACCEPT_GRACE_SECONDS, 300);
+    assert.equal(HOLD_EXPIRY_GRACE_SECONDS, 60);
+    assert.equal(
+      holdExpiryGraceSeconds("pay_first"),
+      PAID_ACCEPT_GRACE_SECONDS,
+    );
+    assert.equal(holdExpiryGraceSeconds("accept"), HOLD_EXPIRY_GRACE_SECONDS);
     const pay = { amount: 4500, received: 5000, method: "cash" };
     const late = await insertHold(
       t,
@@ -4165,6 +4172,29 @@ try {
     await rejects(
       accept(t, acceptPolicy.row.id, { payment: pay }),
       "public_order_expired",
+    );
+    // Nobody can accept it any more, so past the 60-second grace its diner
+    // reads it as expired, while a pay-first hold expired as long ago still
+    // reads as waiting (PUB-R3-L1).
+    const lapsed = await insertHold(
+      t,
+      { ...l, tableId: null },
+      { expiredSecondsAgo: 90, policy: "accept" },
+    );
+    assert.equal(
+      (await pub.status(l.token, lapsed.statusKey)).body.state,
+      "expired",
+      "an accept-policy hold reads as expired after 60 s",
+    );
+    const collectable = await insertHold(
+      t,
+      { ...l, tableId: null },
+      { expiredSecondsAgo: 90, policy: "pay_first" },
+    );
+    assert.equal(
+      (await pub.status(l.token, collectable.statusKey)).body.state,
+      "pending",
+      "a pay-first hold reads as waiting while staff can still collect it",
     );
     // Past the grace even the paid accept is refused, and nothing was sold.
     const tooLate = await insertHold(
