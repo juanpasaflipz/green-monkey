@@ -787,6 +787,38 @@ test("privacy notice warning: without the restaurant's notice the settings panel
   });
 });
 
+test("settings status: the long paused status (no shared terminal connected) wraps on a 390 px phone instead of widening the page (restaurant-day G2)", async ({
+  page,
+}) => {
+  await login(page);
+  // Whatever the demo terminals are doing, show the longest status text.
+  await page.route("**/api/ordering/settings", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const response = await route.fetch();
+    const view = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...view, pro: true, reason: "no_staff", acceptingNow: false },
+    });
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .getByRole("button", { name: "Configuración", exact: true })
+    .click();
+  const panel = page.locator(".public-settings");
+  await expect(
+    panel.getByText(
+      "En pausa: ninguna terminal compartida (caja o mesero) está conectada",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
+    )
+    .toBe(true);
+});
+
 test("append: a table order joins the table's open check as a new round with the hold label; the diner sees no money", async ({
   page,
   context,
