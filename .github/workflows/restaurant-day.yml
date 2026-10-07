@@ -25,6 +25,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   day:
+    # The required status check context (ops/github/main-ruleset.json). A job
+    # skipped by its `if` reports success, so ordinary PRs are never blocked.
+    name: restaurant-day
     # Ordinary PRs skip at once.
     if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/')
     runs-on: ubuntu-latest
@@ -50,8 +53,9 @@ jobs:
       RD_ACCEPTANCE: "1"
       TEST_BASE_URL: http://127.0.0.1:3390
       APP_URL: https://127.0.0.1:3390 # LD-16 L12, §3.2.1: https APP_URL over the plain loopback listener
-      # The vendor's real legal entity and support channels (repository variables, §3.3).
-      # Production mode refuses fictional and CI values, so a gate without them fails (G1.6).
+      # Legal and support values production mode publishes (repository variables, §3.3):
+      # the vendor's real ones or a plausible fictional set that never reaches Railway
+      # (LD-3). Production refuses placeholders and the CI literals, failing G1.6.
       RD_LEGAL_ENTITY_NAME: ${{ vars.RD_LEGAL_ENTITY_NAME }}
       RD_LEGAL_ENTITY_ADDRESS: ${{ vars.RD_LEGAL_ENTITY_ADDRESS }}
       RD_LEGAL_ENTITY_RFC: ${{ vars.RD_LEGAL_ENTITY_RFC }}
@@ -130,6 +134,7 @@ jobs:
   # production refuses it) with the same generated keys, https APP_URL and real
   # RD values; the D22 check still runs with production values (§3.2).
   day-cfdi:
+    name: restaurant-day-cfdi
     needs: cfdi-key
     if: needs.cfdi-key.outputs.present == 'true'
     runs-on: ubuntu-latest

@@ -8,9 +8,11 @@
 #   RD_LEGAL_JURISDICTION=… RD_SUPPORT_EMAIL=… RD_SUPPORT_PHONE=… RD_SUPPORT_HOURS=… \
 #   [RD_PG_PORT=55439] [TEST_BASE_URL=http://127.0.0.1:3390] bash scripts/restaurant-day.sh
 #
-# The RD_* values are the vendor's real legal entity and support channels:
-# production mode refuses fictional, placeholder and CI values (account §2.2,
-# ACC-18), and a gate that cannot publish them is itself a go-live blocker.
+# The RD_* values are legal and support values that production mode publishes:
+# the vendor's real ones (spec §3.3) or a plausible fictional set kept only in
+# the repository variables (LD-3; never copied to Railway). Production refuses
+# placeholder words and the CI literals of tests/fixtures/legal-ci.ts (account
+# §2.2, ACC-18), and a gate that cannot publish its documents fails at G1.6.
 # Never source an env/*.env file or ./.env for this run (§13.4).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -27,7 +29,7 @@ for name in LEGAL_ENTITY_NAME LEGAL_ENTITY_ADDRESS LEGAL_PRIVACY_CONTACT_EMAIL L
 done
 if [ -n "${RD_LEGAL_ENTITY_RFC:-}" ]; then export LEGAL_ENTITY_RFC="$RD_LEGAL_ENTITY_RFC"; fi
 if [ ${#missing[@]} -gt 0 ]; then
-  echo "restaurant-day: missing ${missing[*]} (the vendor's real legal and support values)" >&2
+  echo "restaurant-day: missing ${missing[*]} (legal and support values production publishes; never the CI literals)" >&2
   exit 2
 fi
 # LD-22: legal-ci.sh keeps every value already set; without "off" it would

@@ -1318,6 +1318,16 @@ describe("restaurant-day.yml: the go-live gate (specs/acceptance.md §13)", () =
     for (const name of ["day", "cfdi-key"])
       expect(job(name), name).toContain("startsWith(github.head_ref, 'release/')");
     expect(job("day-cfdi")).toContain("needs: cfdi-key");
+    // The ruleset requires both by job name; a job skipped by its `if` reports success.
+    expect(job("day")).toContain("name: restaurant-day\n");
+    expect(job("day-cfdi")).toContain("name: restaurant-day-cfdi\n");
+    const ruleset = JSON.parse(read("ops/github/main-ruleset.json")) as {
+      rules: Array<{ type: string; parameters?: { required_status_checks?: Array<{ context: string }> } }>;
+    };
+    const required = ruleset.rules
+      .find((r) => r.type === "required_status_checks")!
+      .parameters!.required_status_checks!.map((c) => c.context);
+    expect(required).toEqual(expect.arrayContaining(["qualify", "security", "restaurant-day", "restaurant-day-cfdi"]));
     expect(job("day-cfdi")).toContain("if: needs.cfdi-key.outputs.present == 'true'");
   });
 
