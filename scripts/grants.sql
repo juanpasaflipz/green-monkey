@@ -146,8 +146,8 @@ GRANT UPDATE(state,decided_at,decided_by,reject_reason,order_id,order_round,excl
 -- pass run as the schema owner. Stated here so the manifest says so.
 REVOKE UPDATE(name,note) ON public_order_holds FROM gm_app;
 
--- 035 cfdifix (LD-51 F2): an immediate periodicity change rebuilds the current month's period
--- rows. The worker may DELETE a cfdi_global_periods row only when no document ever used it: 035's
+-- 036 cfdifix (LD-51 F2): an immediate periodicity change rebuilds the current month's period
+-- rows. The worker may DELETE a cfdi_global_periods row only when no document ever used it: 036's
 -- guard refuses every other DELETE (status built, a part, any global document of its key) and every
 -- runtime-role DELETE, and TRUNCATE stays refused. Listed in tests/ops-db.ts PLATFORM-ROLES-5.
 GRANT DELETE ON cfdi_global_periods TO gm_jobs_worker;

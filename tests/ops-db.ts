@@ -155,8 +155,8 @@ try {
       // let a login lock or observe other tenants' rows. A future exception is
       // listed here explicitly, never granted silently.
       const allowed: string[] = [
-        // cfdifix 035 (LD-51 F2): an immediate periodicity change rebuilds the current month's
-        // period rows; 035's guard lets the worker delete only a row no document ever used, and
+        // cfdifix 036 (LD-51 F2): an immediate periodicity change rebuilds the current month's
+        // period rows; 036's guard lets the worker delete only a row no document ever used, and
         // tests/cfdi-db.ts proves it refuses every other DELETE.
         "gm_jobs_worker DELETE cfdi_global_periods",
       ];

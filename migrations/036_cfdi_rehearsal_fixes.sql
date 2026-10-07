@@ -1,4 +1,4 @@
--- 035_cfdi_rehearsal_fixes.sql — fixes from the real-sandbox CFDI rehearsal (LD-51, track
+-- 036_cfdi_rehearsal_fixes.sql — fixes from the real-sandbox CFDI rehearsal (LD-51, track
 -- cfdifix). Why a migration is unavoidable:
 --   F1  the web prints the self-invoicing deadline, which ends when the ticket's global is built
 --       (period close + CFDI_GLOBAL_GRACE_MINUTES); that grace is a worker-only setting, so the
@@ -14,7 +14,7 @@
 -- statement (the worker's DELETE of a document-less row), which the previous revision never sends;
 -- every UPDATE it allowed is still allowed and every one it refused is still refused, as are
 -- TRUNCATE and every other DELETE. No DML, so the LD-6 NO FORCE / FORCE wrapper is not needed. The
--- worker's DELETE grant lives in scripts/grants.sql ("-- 035 cfdifix"); RLS tenant_scope still
+-- worker's DELETE grant lives in scripts/grants.sql ("-- 036 cfdifix"); RLS tenant_scope still
 -- fences it to the job's tenant. Idempotent: ADD COLUMN IF NOT EXISTS, CREATE OR REPLACE FUNCTION.
 SET LOCAL lock_timeout = '5s';
 
