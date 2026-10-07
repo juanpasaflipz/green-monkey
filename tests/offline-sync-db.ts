@@ -2134,6 +2134,10 @@ try {
   assert.equal(deliveredView.total - deliveredView.paid, 100);
   assert.deepEqual(deliveredView.tenderIds, []);
   assert.deepEqual(deliveredView.offlineOperationIds, []);
+  // POL-R3-1: each copy carries its business day, so a device names
+  // yesterday's open #10 "#10 · 5 oct" from the copy alone (LD-29).
+  assert.match(deliveredView.businessDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(deliveredView.businessDate, delivered.businessDate);
   assert(snapshot.orders.length <= 200);
   // OFF-R3: each copy lists exactly the tenders and offline records it already
   // contains, so a device never counts its own synced rows twice. An active

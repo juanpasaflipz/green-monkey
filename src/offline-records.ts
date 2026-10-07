@@ -418,6 +418,8 @@ export const pricedFrom = (row: Pending): PricedLine[] =>
 /** What a kitchen ticket says about a record (label, round, table, call name). */
 export type TicketHeading = {
   label: string;
+  /** A cached server order's number and business day, which copy.order names (LD-44). */
+  order?: { number: number; businessDate?: string | null };
   round: number;
   mode: string;
   tableName: string | null;
@@ -453,7 +455,13 @@ export const ticketHeadings: Partial<Record<string, HeadingResolver>> = {
 export async function localKitchenTickets(
   session: Session,
   sinceMs: number,
-  copy: { banner: string; footer: string; round: (n: number) => string },
+  copy: {
+    banner: string;
+    footer: string;
+    round: (n: number) => string;
+    /** "#142", or "#142 · 5 oct" for an order from another business day (LD-44). */
+    order?: (ref: { number: number; businessDate?: string | null }) => string;
+  },
   tables: { id: string; name: string }[] = [],
 ): Promise<LocalTicket[]> {
   const rows = (
@@ -469,12 +477,12 @@ export async function localKitchenTickets(
     const heading = ticketHeadings[body.kind]?.(row, rows, tableName);
     const createdAt = Date.parse(body.recordedAt);
     if (!heading || createdAt < sinceMs) continue;
+    const { order, ...headed } = heading;
+    const label = order && copy.order ? copy.order(order) : heading.label;
     for (const ticket of ticketsFromLines({
-      ...heading,
+      ...headed,
       label:
-        heading.round > 1
-          ? `${heading.label} · ${copy.round(heading.round)}`
-          : heading.label,
+        heading.round > 1 ? `${label} · ${copy.round(heading.round)}` : label,
       banner: copy.banner,
       footer: copy.footer,
       time: body.recordedAt,
@@ -537,6 +545,11 @@ type CachedOrder = {
   discount?: number;
   state: string;
   createdAt: string;
+  /**
+   * The order's business day, so a copy names yesterday's #10 "#10 · 5 oct"
+   * (LD-29, POL-R3-1); absent in copies stored before it was kept.
+   */
+  businessDate?: string;
   serviceVersion?: number;
   lines: {
     id: string;
@@ -691,6 +704,7 @@ function cachedFrom(order: Order, receivedAt: number): CachedOrder {
     discount: order.discount ?? 0,
     state: order.state,
     createdAt: order.createdAt,
+    ...(order.businessDate ? { businessDate: order.businessDate } : {}),
     serviceVersion: order.serviceVersion,
     lines: order.lines.map((line) => ({
       id: line.id,
@@ -1003,6 +1017,7 @@ export async function cachedServerOpenOrders(
       refunded: 0,
       state: order.state,
       createdAt: order.createdAt,
+      ...(order.businessDate ? { businessDate: order.businessDate } : {}),
       serviceVersion: order.serviceVersion,
       // LD-1: the copy's round notes and those of rounds added here.
       rounds,
@@ -1327,6 +1342,7 @@ function withContext(row: Pending, order: LocalOrderView): Pending {
       ? { round }
       : {
           orderNumber: order.number,
+          ...(order.businessDate ? { businessDate: order.businessDate } : {}),
           mode: order.mode,
           tableName: order.tableName ?? null,
           name: order.name,
@@ -1347,6 +1363,7 @@ function withOrderContext(row: Pending, order: LocalOrderView): Pending {
         ...row,
         context: {
           orderNumber: order.number,
+          ...(order.businessDate ? { businessDate: order.businessDate } : {}),
           mode: order.mode,
           tableName: order.tableName ?? null,
           name: order.name,
@@ -1838,6 +1855,14 @@ ticketHeadings.round = (row, rows, tableName) => {
   }
   return {
     label: `#${row.context?.orderNumber ?? "—"}`,
+    ...(typeof row.context?.orderNumber === "number"
+      ? {
+          order: {
+            number: row.context.orderNumber,
+            businessDate: row.context.businessDate ?? null,
+          },
+        }
+      : {}),
     round,
     mode: row.context?.mode ?? "dine_in",
     tableName: row.context?.tableName ?? null,

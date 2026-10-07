@@ -29,6 +29,7 @@ import { serviceWorkerSupported } from "../service-worker";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";
 import { errorNotice, translateError } from "../i18n";
+import { currentBusinessDate, orderNumberText } from "../labels";
 import { ArchiveRecordForm } from "./offline/ArchiveRecordForm";
 import { OfflineTableServiceSetting } from "./offline/OfflineTableServiceSetting";
 import { clockTime, rowErrorCode, translator } from "./offline/format";
@@ -490,7 +491,16 @@ export function RecoveryQueue({
               {kindLabel(row)} ·{" "}
               {number ??
                 (row.context?.orderNumber
-                  ? `#${row.context.orderNumber}`
+                  ? // LD-29: a cached order from another business day names its date.
+                    "#" +
+                    orderNumberText(
+                      {
+                        number: row.context.orderNumber,
+                        businessDate: row.context.businessDate,
+                      },
+                      currentBusinessDate(session.restaurant),
+                      locale,
+                    )
                   : row.id.slice(0, 8))}{" "}
               · {format(amountOf(row), currencyOf(row))}
             </h3>

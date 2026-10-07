@@ -64,6 +64,7 @@ import {
   setOfflineTableServiceForTests,
 } from "../src/offline-settings";
 import { parkedOrderLabel } from "../src/features/offline/format";
+import { orderNumberText } from "../src/labels";
 import { onlineChargeRefusal } from "../src/features/offline/useOnlineChargeBlocks";
 import { translateError } from "../src/i18n";
 
@@ -1154,6 +1155,59 @@ describe("kitchen ticket round labels (OFF-R28)", () => {
         item.ticket.label,
       ]),
     );
+
+  it("a cached server copy carries its business day: Borradores, the offline comanda and the Sync screen's context date yesterday's #42 (POL-R3-1, LD-44)", async () => {
+    const s = session();
+    const table = uuid(95);
+    // The snapshot's copy (GET /offline/open-orders) of yesterday's open check.
+    await cacheSnapshot(s, [
+      { ...serverCopy(table), businessDate: "2026-10-05" } as ReturnType<
+        typeof serverCopy
+      >,
+    ]);
+    // Borradores: a parked reference stored without a date is named by the copy.
+    const where = await resolveParkedOrder(s, table);
+    expect(parkedOrderLabel(where, { number: 42 }, "2026-10-06", "es")).toBe(
+      "#42 · 5 oct",
+    );
+    expect(parkedOrderLabel(where, { number: 42 }, "2026-10-05", "es")).toBe(
+      "#42",
+    );
+    // A copy Selling keeps from a server order it received carries it too.
+    const other = uuid(96);
+    await rememberOpenOrder(s, {
+      ...serverOrder(other),
+      businessDate: "2026-10-05",
+    });
+    expect(
+      parkedOrderLabel(
+        await resolveParkedOrder(s, other),
+        { number: 42 },
+        "2026-10-06",
+        "en",
+      ),
+    ).toBe("#42 · Oct 5");
+    // An offline round on yesterday's check: its record names the day (the Sync
+    // screen dates it) and the comanda prints it with the screens' helper.
+    const round = roundInput(51);
+    await saveOfflineRound(ctxOf(s), { target: { orderId: table }, ...round });
+    expect(
+      (await fakeDb.pending.get(round.operationId))?.context,
+    ).toMatchObject({ orderNumber: 42, businessDate: "2026-10-05" });
+    const dated = {
+      ...copy,
+      order: (ref: { number: number; businessDate?: string | null }) =>
+        "#" + orderNumberText(ref, "2026-10-06", "es"),
+    };
+    const tickets = await localKitchenTickets(s, 0, dated);
+    expect(
+      tickets.find((t) => t.operationId === round.operationId)?.ticket.label,
+    ).toBe("#42 · 5 oct · Ronda 2");
+    // Without the formatter (or on its own business day) it stays "#42".
+    expect(await labels(s)).toMatchObject({
+      [round.operationId]: "#42 · Ronda 2",
+    });
+  });
 
   it("a round on a cached server order takes the order's next round, then its real one once synced", async () => {
     const s = session();

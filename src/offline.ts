@@ -37,6 +37,8 @@ export type Pending = {
   /** Local display context of a cached server order (never sent). */
   context?: {
     orderNumber?: number;
+    /** The cached server order's business day, to date its number (LD-29). */
+    businessDate?: string | null;
     mode?: string;
     tableName?: string | null;
     name?: string;
