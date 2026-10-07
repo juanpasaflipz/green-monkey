@@ -204,6 +204,45 @@ test("dine-in table accepts dessert after delivery, stays occupied until paid an
   expect(axe.violations).toEqual([]);
 });
 
+test("a 1024×768 tablet shows the first six products of the catalog without scrolling (FOH-10, restaurant-day §11)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await login(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  const cards = page.locator("button.product");
+  await expect(cards.nth(5)).toBeVisible();
+  for (let i = 0; i < 6; i++)
+    await expect(cards.nth(i)).toBeInViewport({ ratio: 1 });
+});
+
+test("a line note on a 1024×768 tablet: the editor's chips and Listo come on screen without scrolling the cart (FOH-10, restaurant-day A10.1)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await login(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await productTile(page, "Taco de asada").click();
+  await page
+    .getByRole("dialog")
+    .getByRole("radio", { name: /Salsa verde/ })
+    .check();
+  await page
+    .getByRole("button", { name: "Agregar a la orden", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Nota para Taco de asada" }).click();
+  const line = page.locator("aside.cart .order-line").first();
+  await expect(
+    line.getByRole("button", { name: "Sin cebolla", exact: true }),
+  ).toBeInViewport();
+  await expect(
+    line.getByRole("button", { name: "Listo", exact: true }),
+  ).toBeInViewport();
+  await line.getByRole("button", { name: "Sin cebolla", exact: true }).click();
+  await line.getByRole("button", { name: "Listo", exact: true }).click();
+  await expect(line.locator(".line-note")).toHaveText("Sin cebolla");
+});
+
 test("kitchen sees order, line and round notes with modifiers; receipt shows modifiers", async ({
   page,
 }) => {

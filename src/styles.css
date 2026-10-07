@@ -2031,6 +2031,43 @@ th {
   .cart-heading {
     margin-bottom: 8px;
   }
+  .line-note-editor textarea {
+    min-height: 56px;
+  }
+  /* A 10" tablet shows a small menu without scrolling the catalog (FOH-10,
+     restaurant-day §11: the canonical order's products are all on screen). */
+  .catalog {
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+  .section-title {
+    margin-bottom: 12px;
+  }
+  .categories {
+    margin: 12px 0;
+  }
+  .catalog-label {
+    margin-bottom: 8px;
+  }
+  .product-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .product-art {
+    height: 64px;
+    margin-bottom: 6px;
+  }
+  .dish-mark {
+    height: 40px;
+    width: 40px;
+    font-size: 16px;
+  }
+  .add-mark {
+    height: 28px;
+    width: 28px;
+    bottom: 6px;
+    right: 6px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .order-line.just-added {
