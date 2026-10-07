@@ -105,9 +105,7 @@ export function issuedTickPrefix(at: Date): string {
 /** When the bucket's tick runs: the bucket's end plus ISSUED_TICK_DELAY_MS. */
 export function issuedTickRunAt(at: Date): Date {
   const start = Math.floor(at.getTime() / ISSUED_TICK_BUCKET_MS);
-  return new Date(
-    (start + 1) * ISSUED_TICK_BUCKET_MS + ISSUED_TICK_DELAY_MS,
-  );
+  return new Date((start + 1) * ISSUED_TICK_BUCKET_MS + ISSUED_TICK_DELAY_MS);
 }
 
 /** "2026-10-05T18:40" for 18:40:00–18:49:59 UTC. */

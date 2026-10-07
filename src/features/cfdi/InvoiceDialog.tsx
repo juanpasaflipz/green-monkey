@@ -260,17 +260,17 @@ export function InvoiceDialog({
         {ticket?.deadline &&
           ticket.eligibility === "available" &&
           Date.parse(ticket.deadline) > Date.now() && (
-          <p className="muted">
-            {tr(locale, "cfdiStaffSelfInvoiceDeadline", {
-              date: deadlineText(
-                ticket.deadline,
-                ticket.businessDate,
-                session.restaurant.timezone,
-                locale,
-              ),
-            })}
-          </p>
-        )}
+            <p className="muted">
+              {tr(locale, "cfdiStaffSelfInvoiceDeadline", {
+                date: deadlineText(
+                  ticket.deadline,
+                  ticket.businessDate,
+                  session.restaurant.timezone,
+                  locale,
+                ),
+              })}
+            </p>
+          )}
         {ticket?.eligibility === "invoiced" && ticket.covering && (
           <div role="status">
             <p>

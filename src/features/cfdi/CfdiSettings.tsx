@@ -302,9 +302,7 @@ export function ActivationPeriodicity({
         graceMinutes={graceMinutes}
         locale={locale}
       />
-      {!resico && (
-        <p className="muted tiny">{t.cfdiActivatePeriodicityHint}</p>
-      )}
+      {!resico && <p className="muted tiny">{t.cfdiActivatePeriodicityHint}</p>}
     </>
   );
 }
@@ -329,8 +327,14 @@ export function SelfInvoicePendingStatus({
 
 /** Whether `next` self-invoicing terms end earlier than `prev` for some ticket (UX-4 hint). */
 export function selfInvoiceShortens(
-  prev: Pick<Form, "selfInvoicePolicy" | "selfInvoiceDays" | "portalReissueGlobal">,
-  next: Pick<Form, "selfInvoicePolicy" | "selfInvoiceDays" | "portalReissueGlobal">,
+  prev: Pick<
+    Form,
+    "selfInvoicePolicy" | "selfInvoiceDays" | "portalReissueGlobal"
+  >,
+  next: Pick<
+    Form,
+    "selfInvoicePolicy" | "selfInvoiceDays" | "portalReissueGlobal"
+  >,
 ): boolean {
   if (prev.portalReissueGlobal && !next.portalReissueGlobal) return true;
   if (next.selfInvoicePolicy !== "days") return false;

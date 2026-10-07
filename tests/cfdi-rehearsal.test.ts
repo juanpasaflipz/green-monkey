@@ -20,11 +20,7 @@ import {
   periodicityChangeNow,
   type SelfInvoiceGlobalBound,
 } from "../shared/cfdi";
-import {
-  dedupe,
-  issuedTickPrefix,
-  issuedTickRunAt,
-} from "../server/cfdi/jobs";
+import { dedupe, issuedTickPrefix, issuedTickRunAt } from "../server/cfdi/jobs";
 import {
   sharedIssuerComplete,
   stampingFacts,
@@ -175,11 +171,7 @@ describe("LD-51 F1: the self-invoicing deadline ends when the ticket's global is
 describe("LD-55 CFDIFIX-FISCAL-5 / UX-4: a self-invoicing change that would shorten printed deadlines waits", () => {
   // Wednesday 7 October 2026, cutoff 04:00, grace 60, weekly globals.
   const date = "2026-10-07";
-  const weekly = globalBuildAt(
-    date,
-    bound({ globalPeriodicity: "week" }),
-    TZ,
-  );
+  const weekly = globalBuildAt(date, bound({ globalPeriodicity: "week" }), TZ);
   const fromAt = businessDayStart("2026-11-01", TZ, 240); // 1 Nov 04:00 local
   it("before the change applies, the later of the new terms' deadline and the current one cut at its start", () => {
     // Reissue on (policy alone, 31 Oct) → off (weekly global, 12 Oct 05:00), from 1 Nov: the
@@ -436,8 +428,18 @@ describe("LD-51 F3: the shared sandbox stamps as the platform's test organizatio
     // the shared organization's régimen in the RESICO decision.
     for (const missing of [
       { legalName: null, taxId: null, regime: "626", postalCode: "01000" },
-      { legalName: null, taxId: "EKU9003173C9", regime: null, postalCode: "01000" },
-      { legalName: null, taxId: "EKU9003173C9", regime: "601", postalCode: null },
+      {
+        legalName: null,
+        taxId: "EKU9003173C9",
+        regime: null,
+        postalCode: "01000",
+      },
+      {
+        legalName: null,
+        taxId: "EKU9003173C9",
+        regime: "601",
+        postalCode: null,
+      },
     ])
       expect(
         stampingFacts(facts, platform(missing), { source: "shared_sandbox" }),
@@ -544,21 +546,27 @@ describe("LD-51 F12 / LD-55: the issuance tick's key and time", () => {
   it("one bucket per 30 minutes; the key carries the issuing order (only that operation can meet it, CFDIFIX-CONCURRENCY-1), short enough for the jobs table", () => {
     const key = dedupe.tickIssued(new Date("2026-10-07T18:43:10Z"), order);
     expect(key).toBe(`tick:issued:2026-10-07T18:30:${order}`);
-    expect(key.startsWith(issuedTickPrefix(new Date("2026-10-07T18:30:00Z")))).toBe(true);
-    expect(key.startsWith(issuedTickPrefix(new Date("2026-10-07T18:59:59Z")))).toBe(true);
-    expect(key.startsWith(issuedTickPrefix(new Date("2026-10-07T19:00:00Z")))).toBe(false);
+    expect(
+      key.startsWith(issuedTickPrefix(new Date("2026-10-07T18:30:00Z"))),
+    ).toBe(true);
+    expect(
+      key.startsWith(issuedTickPrefix(new Date("2026-10-07T18:59:59Z"))),
+    ).toBe(true);
+    expect(
+      key.startsWith(issuedTickPrefix(new Date("2026-10-07T19:00:00Z"))),
+    ).toBe(false);
     expect(key.length).toBeLessThanOrEqual(200);
   });
   it("the tick is due 10 minutes after its bucket ends, never at once (CFDIFIX-FISCAL-4, OPS-2)", () => {
-    expect(issuedTickRunAt(new Date("2026-10-07T18:43:10Z")).toISOString()).toBe(
-      "2026-10-07T19:10:00.000Z",
-    );
-    expect(issuedTickRunAt(new Date("2026-10-07T18:30:00Z")).toISOString()).toBe(
-      "2026-10-07T19:10:00.000Z",
-    );
-    expect(issuedTickRunAt(new Date("2026-10-07T18:59:59.999Z")).toISOString()).toBe(
-      "2026-10-07T19:10:00.000Z",
-    );
+    expect(
+      issuedTickRunAt(new Date("2026-10-07T18:43:10Z")).toISOString(),
+    ).toBe("2026-10-07T19:10:00.000Z");
+    expect(
+      issuedTickRunAt(new Date("2026-10-07T18:30:00Z")).toISOString(),
+    ).toBe("2026-10-07T19:10:00.000Z");
+    expect(
+      issuedTickRunAt(new Date("2026-10-07T18:59:59.999Z")).toISOString(),
+    ).toBe("2026-10-07T19:10:00.000Z");
   });
 });
 
@@ -751,7 +759,12 @@ describe("LD-51 F13: Facturapi's log id and the job's one info line", () => {
       logId: null,
     });
     expect(
-      await run({ status: "done" }, () => traceQuiet(), undefined, "cfdi_job_failed"),
+      await run(
+        { status: "done" },
+        () => traceQuiet(),
+        undefined,
+        "cfdi_job_failed",
+      ),
     ).toEqual([]);
   });
   it("outside a job a log id goes nowhere", () => {

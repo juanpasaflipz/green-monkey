@@ -391,9 +391,7 @@ function plusMinutes(instant: string, minutes: number): string {
 
 /** The global bound of one set of self-invoicing terms: none (reissue on), or the global's build. */
 type GlobalArg =
-  | { closesAt: string; graceMinutes: number }
-  | { globalAt: string }
-  | null;
+  { closesAt: string; graceMinutes: number } | { globalAt: string } | null;
 
 function termsDeadline(
   businessDate: string,

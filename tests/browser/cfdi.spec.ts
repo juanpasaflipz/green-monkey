@@ -294,8 +294,7 @@ async function saveSettings(page: Page, patch: Record<string, unknown>) {
     // A self-invoicing change that waits is kept, as the panel's form keeps it (LD-55).
     selfInvoicePolicy: s.selfInvoicePending?.policy ?? s.selfInvoicePolicy,
     selfInvoiceDays: s.selfInvoicePending?.days ?? s.selfInvoiceDays,
-    portalReissueGlobal:
-      s.selfInvoicePending?.reissue ?? s.portalReissueGlobal,
+    portalReissueGlobal: s.selfInvoicePending?.reissue ?? s.portalReissueGlobal,
     supportEmail: s.supportEmail,
     ...patch,
   });

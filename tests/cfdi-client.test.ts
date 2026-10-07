@@ -1606,7 +1606,11 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
       true,
     );
     expect(
-      selfInvoiceShortens(on, { ...on, selfInvoicePolicy: "days", selfInvoiceDays: 3 }),
+      selfInvoiceShortens(on, {
+        ...on,
+        selfInvoicePolicy: "days",
+        selfInvoiceDays: 3,
+      }),
     ).toBe(true);
     expect(
       selfInvoiceShortens(
@@ -1633,7 +1637,12 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
       "Cambio pendiente del plazo para autofacturarse: aplica desde el 1 nov 2026",
     );
     expect(
-      html(createElement(SelfInvoicePendingStatus, { pending: null, locale: "es" })),
+      html(
+        createElement(SelfInvoicePendingStatus, {
+          pending: null,
+          locale: "es",
+        }),
+      ),
     ).toBe("");
   });
   it("LD-55 CFDIFIX-FISCAL-1 / UX-1: a global-bound deadline prints its time whatever the day: a mid-week weekly sale, a fortnightly one, a 'days' window cut by a monthly global", () => {

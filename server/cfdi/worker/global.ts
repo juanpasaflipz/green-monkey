@@ -238,11 +238,7 @@ async function rebuildMonth(
   };
   const savedAt =
     applied && detail.to === target ? new Date(applied.created_at) : null;
-  if (
-    savedAt &&
-    detail.rebuildAt &&
-    Date.parse(detail.rebuildAt) > Date.now()
-  )
+  if (savedAt && detail.rebuildAt && Date.parse(detail.rebuildAt) > Date.now())
     return settings;
   for (const r of rows)
     await lockPeriod(tx, tenantId, settings.mode, r.period_key as string);

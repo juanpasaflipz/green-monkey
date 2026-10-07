@@ -14,12 +14,7 @@ import {
   type DocumentRow,
 } from "../store.js";
 import { event, MINUTE } from "./common.js";
-import {
-  raise,
-  tenantTag,
-  traceFailure,
-  type CfdiRuntime,
-} from "./runtime.js";
+import { raise, tenantTag, traceFailure, type CfdiRuntime } from "./runtime.js";
 
 /** valid: provider ids, UUID and totals; deliver; release dependents; a substitute's cancellation. */
 export async function recordStamped(

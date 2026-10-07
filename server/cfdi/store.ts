@@ -1309,9 +1309,7 @@ export async function globalBuildTimes(
     facts.cutoff,
   );
   for (const date of covered) {
-    const found = rows.find(
-      (r) => r.from_date <= date && r.to_date >= date,
-    );
+    const found = rows.find((r) => r.from_date <= date && r.to_date >= date);
     const row =
       found &&
       !(

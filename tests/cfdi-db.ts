@@ -5675,11 +5675,12 @@ try {
     await issued(t1);
     const first = await issuedTicks();
     assert.equal(first.length, 1);
-    const bucketOf = (key: string) =>
-      Date.parse(key.slice(12, 28) + ":00Z");
+    const bucketOf = (key: string) => Date.parse(key.slice(12, 28) + ":00Z");
     assert.match(
       first[0].key,
-      new RegExp(`^tick:issued:\\d{4}-\\d{2}-\\d{2}T\\d{2}:[03]0:${t1.orderId}$`),
+      new RegExp(
+        `^tick:issued:\\d{4}-\\d{2}-\\d{2}T\\d{2}:[03]0:${t1.orderId}$`,
+      ),
       "the 30-minute bucket and the issuing order",
     );
     assert.equal(
@@ -5724,7 +5725,10 @@ try {
       drain.length,
       "later late tickets of a bucket find its tick waiting: one tick per bucket",
     );
-    assert.ok(drain.every((k) => k.state !== "done"), "none ran yet");
+    assert.ok(
+      drain.every((k) => k.state !== "done"),
+      "none ran yet",
+    );
     // The tick's time comes: one supplementary part takes the whole drain.
     await due(L.tenantId);
     await settle(L.tenantId);
@@ -5980,7 +5984,10 @@ try {
     assert.equal(kept.eligibility, "available");
     const status = await web(S5, (tx) => service.getStatus(tx, S5.cashier));
     assert.equal(status.selfInvoice?.globalBound, null);
-    assert.equal(status.selfInvoice?.pending?.globalBound?.globalPeriodicity, "day");
+    assert.equal(
+      status.selfInvoice?.pending?.globalBound?.globalPeriodicity,
+      "day",
+    );
     assert.equal(
       status.selfInvoice?.pending?.fromAt,
       boundaries(plus(31), restaurant.timezone, restaurant.cutoff).start,
@@ -6069,7 +6076,11 @@ try {
     const after = (await web(W, (tx) => service.getSettings(tx, W.owner)))
       .settings!;
     assert.deepEqual(
-      [after.globalPeriodicity, after.nextPeriodicity, after.nextPeriodicityFrom],
+      [
+        after.globalPeriodicity,
+        after.nextPeriodicity,
+        after.nextPeriodicityFrom,
+      ],
       ["month", "day", firstOfNextMonth(today())],
     );
     assert.equal(after.periodicityDeferred?.reason, "deadline");
@@ -6198,7 +6209,9 @@ try {
     assert.equal(failed[0].outcome, "document_failed");
     assert.equal(typeof failed[0].code, "string");
     assert.match(String(failed[0].logId), /^log_fake_\d{6}$/);
-    assert.ok((failed[0].facturapiLogIds as string[]).includes(String(failed[0].logId)));
+    assert.ok(
+      (failed[0].facturapiLogIds as string[]).includes(String(failed[0].logId)),
+    );
     const [event] = await admin`
       select detail from cfdi_events where document_id = ${refused.id} and kind = 'failed'`;
     assert.equal(event.detail.logId, failed[0].logId, "kept with the failure");
