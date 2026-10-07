@@ -218,12 +218,6 @@ export function Orders({
   }
   const saved = async () => refresh();
   const chosen = items.filter((o) => selected.includes(o.id));
-  const dateLabel = (d: string) =>
-    new Date(d + "T12:00:00Z").toLocaleDateString(locale, {
-      timeZone: "UTC",
-      day: "numeric",
-      month: "short",
-    });
   return (
     <div className="orders-view">
       <PublicOrderInbox
@@ -330,6 +324,8 @@ export function Orders({
                   />
                 </label>
                 <div>
+                  {/* LD-29: the number names an order of another business day
+                      ("#10 · 5 oct"); the card shows that date once (LD-48). */}
                   <span className="eyebrow">
                     {orderNumberLabel(o, today, locale)} · {t(o.mode as Key)} ·{" "}
                     {channelLabel(o.channel, locale)}
@@ -412,14 +408,6 @@ export function Orders({
                         {fill(t("discountsBadge"), {
                           amount: money(o.discount),
                         })}
-                      </Badge>
-                    )}
-                    {today && o.businessDate < today && (
-                      <Badge tone="amber">
-                        {t("serviceOrdersFromDay").replace(
-                          "{date}",
-                          dateLabel(o.businessDate),
-                        )}
                       </Badge>
                     )}
                   </div>

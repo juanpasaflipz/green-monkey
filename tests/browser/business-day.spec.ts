@@ -157,6 +157,10 @@ test("LD-29: an open order from the previous business day shows its date next to
       has: page.getByRole("heading", { name: oldName, exact: true }),
     });
     await expect(oldCard.locator(".eyebrow")).toContainText(oldLabel + " ·");
+    // The card names that date once: no second "Del 5 oct" badge (LD-48, POLISH-UX-7).
+    const cardText = (await oldCard.innerText()).replace(/\s+/g, " ");
+    expect(cardText.split(es).length - 1).toBe(1);
+    await expect(oldCard).not.toContainText("Del ");
     await expect(
       oldCard.getByRole("checkbox", {
         name: `Seleccionar orden ${oldLabel}`,
