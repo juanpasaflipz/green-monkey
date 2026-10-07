@@ -77,6 +77,11 @@ import {
   restoredLock,
 } from "./access/lock";
 import "./access/access.css";
+import { usePublicInbox } from "./features/public/usePublicInbox";
+import {
+  NavBadge,
+  PublicInboxBanner,
+} from "./features/public/PublicInboxBanner";
 import { installFiscalReceipt } from "./features/fiscal/FiscalReceipt";
 import {
   clearFiscalContext,
@@ -104,6 +109,7 @@ export default function App() {
   const [view, setView] = useState("sell");
   const net = useConnectivity();
   const online = net.canUseServer;
+  const inbox = usePublicInbox(session, online);
   const [error, setError] = useState("");
   const [ticketsOpen, setTicketsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -683,6 +689,9 @@ export default function App() {
               >
                 <Glyph size={20} strokeWidth={current ? 2.4 : 2} />
                 <span>{t(name as Key)}</span>
+                {(name === "orders" || name === "operation") && (
+                  <NavBadge count={inbox.pending} />
+                )}
               </button>
             );
           })}
@@ -770,6 +779,7 @@ export default function App() {
                   aria-current={view === key ? "page" : undefined}
                 >
                   {t(key)}
+                  {key === "orders" && <NavBadge count={inbox.pending} />}
                 </button>
               ),
             )}
@@ -785,6 +795,11 @@ export default function App() {
           oldestUnresolvedAt={oldestUnresolvedAt}
           onOpenSync={() => setView("sync")}
           onOpenTickets={() => setTicketsOpen(true)}
+        />
+        <PublicInboxBanner
+          count={view === "orders" ? 0 : inbox.pending}
+          locale={locale}
+          onView={() => setView("orders")}
         />
         <UpdatePrompt locale={locale} session={session} />
         {expiring && (

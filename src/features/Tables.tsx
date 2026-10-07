@@ -127,6 +127,15 @@ export function Tables({
               {ready && (
                 <Badge tone="green">{t("serviceTableFoodReady")}</Badge>
               )}
+              {(table.pendingHolds ?? 0) > 0 && (
+                <button
+                  type="button"
+                  className="badge-button"
+                  onClick={() => navigate("orders")}
+                >
+                  <Badge tone="amber">{t("publicTablePending")}</Badge>
+                </button>
+              )}
               {table.checks.map((c) =>
                 // A check settled by an older app revision during a deploy can
                 // stay "open" at balance 0; it is released the same way.

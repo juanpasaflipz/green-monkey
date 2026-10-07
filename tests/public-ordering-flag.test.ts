@@ -4,19 +4,28 @@ import { describe, expect, it } from "vitest";
 import {
   publicOrderingEnabled,
   publicOrderingGate,
+  publicOrderingSwitchedOff,
 } from "../server/account-settings";
 import { accountWebConfig } from "../server/account-config";
 import { loadConfig } from "../server/config-rules";
+import { LINK_HEADER } from "../shared/public-ordering";
 
-describe("PUBLIC_ORDERING_ENABLED interim switch (SEC-7 / FIT-11 / FOH-13)", () => {
-  it("publicOrderingEnabled: unset is false when APP_ENV=production and true otherwise; explicit true/false win; other values throw public_ordering_flag_invalid", () => {
+describe("PUBLIC_ORDERING_ENABLED kill switch (SEC-7 / FIT-11 / FOH-13)", () => {
+  it("publicOrderingEnabled: unset or empty is true in every environment (public ordering B4); explicit true/false win; other values throw public_ordering_flag_invalid", () => {
     expect(publicOrderingEnabled({})).toBe(true);
     expect(publicOrderingEnabled({ APP_ENV: "staging" })).toBe(true);
-    expect(publicOrderingEnabled({ APP_ENV: "production" })).toBe(false);
+    expect(publicOrderingEnabled({ APP_ENV: "production" })).toBe(true);
     expect(
       publicOrderingEnabled({
         APP_ENV: "production",
         PUBLIC_ORDERING_ENABLED: " ",
+      }),
+    ).toBe(true);
+    // "false" stays the kill switch, in production too.
+    expect(
+      publicOrderingEnabled({
+        APP_ENV: "production",
+        PUBLIC_ORDERING_ENABLED: "false",
       }),
     ).toBe(false);
     expect(
@@ -51,6 +60,29 @@ describe("PUBLIC_ORDERING_ENABLED interim switch (SEC-7 / FIT-11 / FOH-13)", () 
     ).toThrow("public_ordering_flag_invalid");
   });
 
+  it('publicOrderingSwitchedOff: only an explicit "false" is the kill switch; unset or "true" is not (PUBLIC-UX-4)', () => {
+    expect(
+      publicOrderingSwitchedOff({ PUBLIC_ORDERING_ENABLED: "false" }),
+    ).toBe(true);
+    expect(
+      publicOrderingSwitchedOff({
+        APP_ENV: "production",
+        PUBLIC_ORDERING_ENABLED: " false ",
+      }),
+    ).toBe(true);
+    expect(publicOrderingSwitchedOff({})).toBe(false);
+    expect(publicOrderingSwitchedOff({ APP_ENV: "production" })).toBe(false);
+    expect(
+      publicOrderingSwitchedOff({
+        APP_ENV: "production",
+        PUBLIC_ORDERING_ENABLED: "",
+      }),
+    ).toBe(false);
+    expect(publicOrderingSwitchedOff({ PUBLIC_ORDERING_ENABLED: "true" })).toBe(
+      false,
+    );
+  });
+
   it("publicOrderingGate disabled answers 404 {error:'public_ordering_disabled'} and never calls next; enabled calls next", async () => {
     const app = express();
     let reached = 0;
@@ -63,14 +95,19 @@ describe("PUBLIC_ORDERING_ENABLED interim switch (SEC-7 / FIT-11 / FOH-13)", () 
     const server = app.listen(0, "127.0.0.1");
     await new Promise((resolve) => server.once("listening", resolve));
     const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    // Public ordering (032) routes: the link token travels in a header.
+    const headers = { [LINK_HEADER]: "A".repeat(22) };
     try {
-      const off = await fetch(base + "/off/token/catalog");
+      const off = await fetch(base + "/off/menu", { headers });
       expect(off.status).toBe(404);
       expect(await off.json()).toEqual({ error: "public_ordering_disabled" });
-      const post = await fetch(base + "/off/token/orders", { method: "POST" });
+      const post = await fetch(base + "/off/orders", {
+        method: "POST",
+        headers,
+      });
       expect(post.status).toBe(404);
       expect(reached).toBe(0);
-      const on = await fetch(base + "/on/token/catalog");
+      const on = await fetch(base + "/on/menu", { headers });
       expect(on.status).toBe(200);
       expect(reached).toBe(1);
     } finally {

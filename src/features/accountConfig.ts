@@ -34,7 +34,8 @@ export type AccountConfig = {
     taxProfileEnabled: boolean;
     cfdiEnabled: false;
   };
-  publicOrdering: { enabled: boolean };
+  /** switchedOff: the operator's kill switch, not a deployment that never offered it. */
+  publicOrdering: { enabled: boolean; switchedOff?: boolean };
 };
 
 let cached: Promise<AccountConfig> | null = null;

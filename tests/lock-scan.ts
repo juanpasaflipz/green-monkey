@@ -89,7 +89,11 @@ export const TABLE_LEVEL: Record<string, number> = {
   catalog: LEVEL.config,
   dining_areas: LEVEL.config,
   dining_tables: LEVEL.config,
+  // public ordering (032; ARCHITECTURE LO-3/LO-4, PUBLIC-CONCURRENCY-1)
+  public_links: LEVEL.config,
+  public_ordering_settings: LEVEL.config,
   order_numbers: LEVEL.orderNumbers,
+  public_hold_numbers: LEVEL.orderNumbers,
   orders: LEVEL.orders,
   employees: LEVEL.employees,
   rounds: LEVEL.rounds,
@@ -110,6 +114,8 @@ const UPSERTED = new Set([
   "kitchen_feed_versions",
   "menu_state",
   "fiscal_folio_counters",
+  "public_hold_numbers",
+  "public_ordering_settings",
 ]);
 /** Advisory key classes above any tenant lock (billing, owner accounts, organizations). */
 const ORGANIZATION_CLASSES = new Set([711, 918, 919, 921]);

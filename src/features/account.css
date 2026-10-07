@@ -112,11 +112,6 @@
   align-items: end;
   gap: 8px 12px;
 }
-.public-ordering-footer {
-  margin: 32px 0 16px;
-  font-size: 13px;
-  text-align: center;
-}
 /* Sensitive-command sign-in prompt shown before the form (UX-2). */
 .reauth-ahead {
   margin: 8px 0;

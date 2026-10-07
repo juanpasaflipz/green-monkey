@@ -341,6 +341,23 @@ line), and keep where noted.
   publication date: nothing is in force before it, so nothing needs 15 days' notice).
   Include your decision on Sentry (1.9): if approved, it joins the processor lists in
   that same version.
+- **QR and kiosk ordering's diner data (032-034, on for every Pro restaurant since
+  public ordering's B4).** Give counsel this list too, so the platform notice and the
+  guidance for each restaurant's own notice cover it (LD-41, PUBLIC-OPS-5):
+  - the diner's optional **name** and kitchen **note** on each held order
+    (`public_order_holds`). The hold's copy is blanked after **30 days** by the daily
+    retention, in any state, or earlier on an ARCO request (support's block in
+    [PUBLIC_ORDERING.md](PUBLIC_ORDERING.md), "Redacting a hold (ARCO)";
+    [OPERATIONS.md](OPERATIONS.md), "ARCO requests"). Once staff accept it, the name
+    and note also become the order's call name and note, part of the restaurant's
+    sales record, kept with its orders;
+  - **`ipHash`** in the `rate_limited` and `public_order_limited` log lines: a 48-bit
+    unsalted SHA-256 prefix of the client address. For IPv4 it can be reversed by
+    enumeration, so it is pseudonymous personal data. Logs stay in Railway for the
+    plan's period ([RUNBOOK.md](RUNBOOK.md), "Log retention"); record which plan
+    production runs on;
+  - each restaurant is the controller for its diners: Configuración and the table
+    QR dialogs warn while a restaurant has not set its own notice URL.
 - **How to verify.** The three pages open on the production domain with your
   values; the simplified notice appears next to the Google button and restaurant
   signup; a test signup records its acceptance.
@@ -453,7 +470,10 @@ line), and keep where noted.
 - **How to verify.** The full test print in [PILOT_SOP.md §1.2](PILOT_SOP.md#12-configurar-la-impresora-térmica-58-u-80-mm-en-el-sistema-operativo)
   step 10 passes on each device, and one deliberate outage (router unplugged) is sold
   through and synced, as [PILOT_SOP.md §3](PILOT_SOP.md#3-conexión-y-venta-sin-conexión)
-  describes.
+  describes. If the pilot uses QR or kiosk ordering, also run the field checks in
+  [PUBLIC_ORDERING.md](PUBLIC_ORDERING.md#field-checks-before-printing-at-scale):
+  a printed table card scanned by the diners' phone cameras keeps its `#` code, and
+  a kiosk tablet uses its own browser profile.
 
 ### 1.17 Contacts, escalation and the go-live decision
 
@@ -574,3 +594,8 @@ pilot devices have not passed the PILOT_SOP test print and outage drill.
   [STAGING.md](STAGING.md#wave-20-cutover-record),
   [BACKUP_RESTORE.md](BACKUP_RESTORE.md)).
 - Physical printers, tablets, silent printing and a real outage: not checked (1.16).
+- Public QR/kiosk ordering (032/033): built on `track/public` and verified locally
+  only. Its first production deploy runs the DB-9 validation check first, as the
+  Neon owner role (never `gm_migrator`, which FORCE RLS blinds), and goes
+  before 07:00 Mexico City ([RUNBOOK.md](RUNBOOK.md), "DB-9 validation" and "Deploy
+  window"); QR scanners and printed cards are field checks (1.16).

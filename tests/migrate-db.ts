@@ -291,6 +291,82 @@ try {
     },
   );
 
+  await check(
+    "a no-transaction newest file shares the grants hook and its registry row in one transaction on the reserved connection: a failing manifest records nothing and keeps the idempotent statements, a rerun grants and records it (PUB-R5, LD-41, PUBLIC-CONCURRENCY-2)",
+    async () => {
+      const manifests = mkdtempSync(join(tmpdir(), "gm-grants-"));
+      try {
+        write(
+          "008_ntx.sql",
+          [
+            "-- gm:no-transaction",
+            "CREATE TABLE IF NOT EXISTS n1(id int);",
+            "-- gm:statement-break",
+            "DROP INDEX CONCURRENTLY IF EXISTS n1_id;",
+            "-- gm:statement-break",
+            "CREATE INDEX CONCURRENTLY n1_id ON n1 (id);",
+            "",
+          ].join("\n"),
+        );
+        const files = readMigrations(dir);
+        assert.equal(files.at(-1)?.name, "008_ntx.sql");
+        assert.equal(files.at(-1)?.transactional, false);
+        const bad = join(manifests, "bad.sql"),
+          good = join(manifests, "good.sql");
+        writeFileSync(bad, "GRANT SELECT ON n1, missing_table TO gm_app;\n");
+        writeFileSync(good, "GRANT SELECT ON n1 TO gm_app;\n");
+        const grantsFrom = (manifestPath: string) => (tx: Tx) =>
+          applyGrantsTx(tx, {
+            role: "gm_app",
+            database: synthetic,
+            manifestPath,
+          });
+        await assert.rejects(
+          applyMigrations(sql, files, {
+            sleep: noSleep,
+            beforeLastRecord: grantsFrom(bad),
+          }),
+          (e: any) =>
+            e.code === "migration_failed" && e.detail.file === "008_ntx.sql",
+        );
+        const state = async () => {
+          const [r] = await sql`
+            select exists(select 1 from schema_migrations where name='008_ntx.sql') as recorded,
+                   to_regclass('public.n1') is not null as table,
+                   (select indisvalid from pg_index where indexrelid=to_regclass('public.n1_id')) as index,
+                   has_table_privilege('gm_app', 'public.n1', 'SELECT') as granted`;
+          return { ...r };
+        };
+        assert.deepEqual(
+          await state(),
+          { recorded: false, table: true, index: true, granted: false },
+          "nothing recorded or granted; the statements before the hook stay",
+        );
+        const [open] = await sql`select count(*)::int as n from pg_stat_activity
+          where datname=${synthetic} and state like 'idle in transaction%'`;
+        assert.equal(open.n, 0, "the failed hook's transaction rolled back");
+        assert.deepEqual(
+          await applyMigrations(sql, readMigrations(dir), {
+            sleep: noSleep,
+            beforeLastRecord: grantsFrom(good),
+          }),
+          ["008_ntx.sql"],
+        );
+        assert.deepEqual(await state(), {
+          recorded: true,
+          table: true,
+          index: true,
+          granted: true,
+        });
+        const [setting] =
+          await sql`select current_setting('lock_timeout') as v`;
+        assert.equal(setting.v, "0", "the reserved connection was reset");
+      } finally {
+        rmSync(manifests, { recursive: true, force: true });
+      }
+    },
+  );
+
   const migratorUrl = urlFor(real, {
     name: migrator,
     password: migratorPassword,

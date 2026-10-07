@@ -2111,18 +2111,6 @@ th {
   }
 }
 
-.public-ordering {
-  max-width: 1100px;
-  margin: auto;
-  padding: 24px;
-}
-.public-ordering .product-grid {
-  margin: 24px 0;
-}
-.public-ordering > .panel {
-  margin-top: 24px;
-}
-
 .selection-check {
   min-width: 48px;
   min-height: 48px;

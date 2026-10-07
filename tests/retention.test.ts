@@ -8,8 +8,10 @@ import {
   RETENTION_LOCK_TIMEOUT_MS,
   RETENTION_STATEMENT_TIMEOUT_MS,
   RETENTION_WINDOW,
+  redactionRules,
   retentionPass,
   retentionPasses,
+  retentionRules,
   runRetention,
   type RetentionResult,
 } from "../server/ops/retention.js";
@@ -33,13 +35,17 @@ describe("retention pass (OPS-R6)", () => {
     const result = await retentionPass(failing("XX000"), async (a) => {
       alerts.push(a);
     });
-    expect(result?.failed).toEqual(["oauth_login_attempts", "jobs"]);
+    expect(result?.failed).toEqual([
+      "oauth_login_attempts",
+      "jobs",
+      "public_order_holds",
+    ]);
     expect(alerts).toEqual([
       {
         key: "retention_failed",
         severity: "warning",
         title: "retention failed",
-        body: "retention_failed tables=oauth_login_attempts,jobs",
+        body: "retention_failed tables=oauth_login_attempts,jobs,public_order_holds",
       },
     ]);
   });
@@ -49,7 +55,11 @@ describe("retention pass (OPS-R6)", () => {
     const result = await retentionPass(failing("55P03"), async (a) => {
       alerts.push(a);
     });
-    expect(result?.skipped).toEqual(["oauth_login_attempts", "jobs"]);
+    expect(result?.skipped).toEqual([
+      "oauth_login_attempts",
+      "jobs",
+      "public_order_holds",
+    ]);
     expect(alerts).toEqual([]);
   });
 
@@ -60,6 +70,7 @@ describe("retention pass (OPS-R6)", () => {
     });
     expect(result).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: 0 },
+      redacted: { public_order_holds: 0 },
       skipped: [],
       failed: [],
     });
@@ -71,7 +82,11 @@ describe("retention pass (OPS-R6)", () => {
     const result = await retentionPass(failing("57014"), async (a) => {
       alerts.push(a);
     });
-    expect(result?.failed).toEqual(["oauth_login_attempts", "jobs"]);
+    expect(result?.failed).toEqual([
+      "oauth_login_attempts",
+      "jobs",
+      "public_order_holds",
+    ]);
     expect(result?.skipped).toEqual([]);
     expect(alerts.map((a) => a.key)).toEqual(["retention_failed"]);
   });
@@ -102,7 +117,11 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
     expect(result.failed).toEqual([]);
     expect(RETENTION_LOCK_TIMEOUT_MS).toBe(200);
     expect(RETENTION_STATEMENT_TIMEOUT_MS).toBe(1500);
-    for (const table of ["oauth_login_attempts", "jobs"]) {
+    for (const table of [
+      "oauth_login_attempts",
+      "jobs",
+      "public_order_holds",
+    ]) {
       const alter = statements.findIndex(
         (s) => s.text === `alter table ${table} no force row level security`,
       );
@@ -115,6 +134,47 @@ describe("retention bounds and off-hours window (OPS-R10)", () => {
     await expect(runRetention(sql, { statementTimeoutMs: 0 })).rejects.toThrow(
       "retention_timeout_invalid",
     );
+  });
+
+  it("deletes only from the two allow-listed tables and only redacts holds older than 30 days, in place (LD-41, PUBLIC-SECURITY-3)", async () => {
+    expect(retentionRules.map((r) => r.table)).toEqual([
+      "oauth_login_attempts",
+      "jobs",
+    ]);
+    expect(redactionRules).toEqual([
+      {
+        table: "public_order_holds",
+        set: "name = '', note = ''",
+        predicate:
+          "(name <> '' OR note <> '') AND created_at < now() - interval '30 days'",
+      },
+    ]);
+    const statements: string[] = [];
+    const tx = Object.assign(
+      (strings: TemplateStringsArray) => {
+        const text = strings.join("$");
+        return Promise.resolve(
+          text.includes("relforcerowsecurity") ? [{ forced: true }] : [],
+        );
+      },
+      {
+        unsafe: (text: string) => {
+          statements.push(text);
+          return Promise.resolve(Object.assign([], { count: 0 }));
+        },
+      },
+    );
+    const sql = {
+      begin: async (fn: (t: typeof tx) => Promise<number>) => fn(tx),
+    } as unknown as postgres.Sql;
+    await runRetention(sql, { pauseMs: 0 });
+    const holds = statements.filter((t) => t.includes("public_order_holds"));
+    expect(holds).toEqual([
+      "alter table public_order_holds no force row level security",
+      "update public_order_holds set name = '', note = '' where ctid in (select ctid from public_order_holds where (name <> '' OR note <> '') AND created_at < now() - interval '30 days' limit $1)",
+      "alter table public_order_holds force row level security",
+    ]);
+    expect(statements.some((t) => /^delete from public_/.test(t))).toBe(false);
   });
 
   it("the window is 04:00-07:00 in Mexico City, before breakfast service (OPS-R15)", () => {
@@ -168,8 +228,13 @@ describe("retentionPasses (P-24)", () => {
     }) as unknown as typeof retentionPass;
     return { pass, calls };
   }
-  const full = (jobs = RETENTION_BATCH, oauth = 0): RetentionResult => ({
+  const full = (
+    jobs = RETENTION_BATCH,
+    oauth = 0,
+    holds = 0,
+  ): RetentionResult => ({
     deleted: { oauth_login_attempts: oauth, jobs },
+    redacted: { public_order_holds: holds },
     skipped: [],
     failed: [],
   });
@@ -191,8 +256,24 @@ describe("retentionPasses (P-24)", () => {
         oauth_login_attempts: 3,
         jobs: 21 * RETENTION_BATCH + 1200,
       },
+      redacted: { public_order_holds: 0 },
       skipped: [],
       failed: [],
+    });
+  });
+
+  it("a full batch of redacted holds is a backlog too, and redactions are summed (LD-41)", async () => {
+    const { pass, calls } = scripted([
+      full(0, 0, RETENTION_BATCH),
+      full(0, 0, 7),
+    ]);
+    const result = await retentionPasses(sql, noAlert, {
+      pass,
+      now: () => inside,
+    });
+    expect(calls.n).toBe(2);
+    expect(result?.redacted).toEqual({
+      public_order_holds: RETENTION_BATCH + 7,
     });
   });
 
@@ -242,6 +323,7 @@ describe("retentionPasses (P-24)", () => {
       full(),
       {
         deleted: { oauth_login_attempts: 0, jobs: 0 },
+        redacted: { public_order_holds: 0 },
         skipped: ["jobs"],
         failed: [],
       },
@@ -254,6 +336,7 @@ describe("retentionPasses (P-24)", () => {
       }),
     ).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: RETENTION_BATCH },
+      redacted: { public_order_holds: 0 },
       skipped: ["jobs"],
       failed: [],
     });
@@ -261,6 +344,7 @@ describe("retentionPasses (P-24)", () => {
     const failed = scripted([
       {
         deleted: { oauth_login_attempts: 0, jobs: RETENTION_BATCH },
+        redacted: { public_order_holds: 0 },
         skipped: [],
         failed: ["oauth_login_attempts"],
       },
@@ -294,12 +378,17 @@ describe("retentionPasses (P-24)", () => {
       },
       { now: () => inside },
     );
-    expect(result?.failed).toEqual(["oauth_login_attempts", "jobs"]);
+    expect(result?.failed).toEqual([
+      "oauth_login_attempts",
+      "jobs",
+      "public_order_holds",
+    ]);
     expect(alerts.map((a) => a.key)).toEqual(["retention_failed"]);
     expect(
       await retentionPasses(empty, noAlert, { now: () => inside }),
     ).toEqual({
       deleted: { oauth_login_attempts: 0, jobs: 0 },
+      redacted: { public_order_holds: 0 },
       skipped: [],
       failed: [],
     });

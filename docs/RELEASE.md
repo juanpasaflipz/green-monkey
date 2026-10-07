@@ -85,8 +85,28 @@ Before production accepts its first restaurant (see also
    startup log has no `legal_documents_unpublished`.
 4. `LEGAL_UNPUBLISHED_SIGNUP` is unset (startup logs
    `legal_unpublished_signup_ignored` otherwise).
-5. `PUBLIC_ORDERING_ENABLED` is unset or `false` until public ordering (032)
-   ships; `/api/account-config` reports `publicOrdering.enabled: false`.
+5. Public ordering (032/033/034): the "DB-9 validation" check
+   ([RUNBOOK.md](RUNBOOK.md)), run as the Neon owner role and never as
+   `gm_migrator` (FORCE RLS hides every row from it), returns no rows on
+   staging before the change that brings 032 and 033 to `main` merges
+   (staging deploys on its own once Qualification passes there) and on
+   production before that SHA is dispatched (PUBLIC-OPS-8). That deploy runs
+   before 07:00 Mexico City once production has traffic (RUNBOOK "Deploy
+   window"), and the LD-5 delta reviews of B1-B4 are done (LD-23, LD-41).
+   The GAP-4 `target` capacity run on staging includes public ordering's
+   polls (inbox summary and inbox on operator devices, diner revision,
+   submit and status) before `DB_POOL_MAX` is chosen (LOAD_TEST.md,
+   PUBLIC-OPS-7).
+   `PUBLIC_ORDERING_ENABLED` is unset or `true` on production
+   (`/api/account-config` reports `publicOrdering.enabled: true`; since public
+   ordering's flag flip, B4, unset means on everywhere), and a staging browser
+   run passed on the same revision. To turn QR and kiosk ordering off (roll
+   back), set it to `false` on `web` and redeploy: no deploy window and no
+   new build (RUNBOOK "Online ordering abuse", step 6). Reverting the B4
+   commit restores the old default (off in production when unset) only
+   where that commit exists; `main` takes squashed or rebased merges, so
+   there the forward change in PUBLIC_ORDERING "Rolling back QR and kiosk
+   ordering" applies (PUBLIC-OPS-2).
 6. At least one support operator is provisioned (`npm run support:provision`,
    [operations](OPERATIONS.md), Support) and can run `lookup`; pilot
    restaurants get Pro with `grant-entitlement`.
@@ -179,7 +199,10 @@ local and CI clusters need (contract C-11):
   `PG_APP_USER` commits in the **same transaction as the newest pending
   migration**, before its `schema_migrations` row. Readiness keys on that row,
   so a new revision never passes `/api/health` before its tables are granted,
-  and a failing manifest rolls the newest migration back with it. With nothing
+  and a failing manifest rolls the newest migration back with it. When the
+  newest pending file is a no-transaction file (033), the manifest and that
+  file's registry row commit together in one explicit transaction on the
+  runner's reserved connection after its last statement. With nothing
   pending, the manifest runs in its own transaction;
 - then the backup-reader policy reconciler (`scripts/db/post-migrate.sql`) and,
   with `--retention`, the retention pass (a failure alerts `retention_failed`

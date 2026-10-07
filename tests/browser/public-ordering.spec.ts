@@ -1,0 +1,1822 @@
+import {
+  test,
+  expect,
+  type Browser,
+  type BrowserContext,
+  type Page,
+  type Response as NetworkResponse,
+  type Route,
+} from "@playwright/test";
+import AxeBuilder from "@axe-core/playwright";
+
+// Public QR/kiosk ordering (032). Every test makes its own "QR <runId>" tables
+// and links and, in a finally, decides or cancels every hold, revokes every
+// link, resumes ordering, restores the policies, settles every check it
+// opened, delivers every kitchen round it opened (LD-42) and archives its
+// tables (LD-P9), so later specs and later runs on a persistent database
+// never see an inbox, a banner, a kitchen ticket or an occupied table from
+// here.
+
+// Local helpers (wave rule: no shared helper module in-wave).
+async function login(page: Page) {
+  await page.goto("/app");
+  await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Hoy", exact: true }),
+  ).toBeVisible();
+}
+/** Authenticated JSON call from the page (same cookies and CSRF as the app). */
+async function call(page: Page, path: string, body?: unknown) {
+  return page.evaluate(
+    async ({ path, body }) => {
+      const s = await (await fetch("/api/session")).json();
+      const r = await fetch("/api" + path, {
+        method: body === undefined ? "GET" : "POST",
+        headers: { "Content-Type": "application/json", "x-csrf-token": s.csrf },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return { status: r.status, data: await r.json() };
+    },
+    { path, body },
+  );
+}
+const op = () => crypto.randomUUID();
+const runId = () => Math.random().toString(36).slice(2, 7);
+/**
+ * Opens this device's drawer unless it is already open: a second
+ * POST /cash/open on the same device hits one_open_drawer, and the server
+ * logs that as an internal error.
+ */
+async function openDrawer(page: Page) {
+  const d = (await call(page, "/cash")).data as {
+    id?: string;
+    closed_at?: string | null;
+  } | null;
+  if (d?.id && !d.closed_at) return;
+  const r = await call(page, "/cash/open", { operationId: op(), opening: 0 });
+  expect(r.status, JSON.stringify(r.data)).toBe(200);
+}
+async function axe(page: Page) {
+  const results = await new AxeBuilder({ page })
+    .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+    .analyze();
+  expect(results.violations).toEqual([]);
+}
+const noHorizontalScroll = (page: Page) =>
+  page.evaluate(() => document.documentElement.scrollWidth <= innerWidth);
+
+// PUBLIC-UX-7: the table-QR and pay-first kiosk tests are tagged @cross, so CI
+// also runs them on the webkit-ipad project (iPad POS terminals and every
+// iPhone diner run WebKit). As in offline.spec: against a local plain-HTTP
+// compiled server, Chromium treats loopback as secure but WebKit does not (it
+// upgrades every subresource under CSP upgrade-insecure-requests and refuses
+// Secure cookies), so the WebKit project drops only that directive and the
+// Secure attribute of the login cookies; every other header is unchanged.
+test.beforeEach(async ({ context, browserName, baseURL }) => {
+  if (browserName !== "webkit" || !baseURL?.startsWith("http:")) return;
+  await context.route("**/*", async (route) => {
+    const request = route.request();
+    const login = new URL(request.url()).pathname === "/api/login";
+    if (request.resourceType() !== "document" && !login)
+      return route.fallback();
+    const response = await route.fetch();
+    const headers = response.headers();
+    if (headers["content-security-policy"])
+      headers["content-security-policy"] = headers["content-security-policy"]
+        .split(";")
+        .filter((part) => part.trim() !== "upgrade-insecure-requests")
+        .join(";");
+    const cookies = response
+      .headersArray()
+      .filter((header) => header.name.toLowerCase() === "set-cookie")
+      .map((header) => {
+        const [pair, ...attributes] = header.value.split(";");
+        const split = pair!.indexOf("=");
+        const maxAge = attributes
+          .map((a) => a.trim().match(/^max-age=(\d+)$/i)?.[1])
+          .find(Boolean);
+        return {
+          name: pair!.slice(0, split).trim(),
+          value: pair!.slice(split + 1).trim(),
+          url: new URL(request.url()).origin,
+          httpOnly: true,
+          sameSite: "Strict" as const,
+          expires: maxAge ? Math.floor(Date.now() / 1000) + Number(maxAge) : -1,
+        };
+      });
+    if (cookies.length) await context.addCookies(cookies);
+    delete headers["set-cookie"];
+    await route.fulfill({ response, headers });
+  });
+});
+/** docs/evidence comes from the Chromium run only (the @cross tests run twice). */
+async function evidence(
+  target: { screenshot(o: { path: string }): Promise<unknown> },
+  path: string,
+) {
+  if (test.info().project.name === "chromium")
+    await target.screenshot({ path });
+}
+
+type Table = { id: string; name: string; version: number };
+type Link = {
+  id: string;
+  path: string;
+  token: string;
+  tableName: string | null;
+};
+/** An open round as GET /kitchen lists it (every open round, no feed cap). */
+type KitchenRow = {
+  id: string;
+  order_id: string;
+  state: string;
+  name: string | null;
+  table_name: string | null;
+  pending_voids: unknown[] | null;
+};
+
+/** Everything one test created, undone in its finally. */
+class Fixture {
+  links: string[] = [];
+  tables: Table[] = [];
+  orders: string[] = [];
+  /**
+   * LD-42: the order of every accept this test's staff made (UI or API), read
+   * from the accept responses, so cleanup finds its kitchen rounds even when
+   * the test never added the order to `orders` (the pay-first kiosk).
+   */
+  accepted = new Set<string>();
+  private acceptReads: Promise<void>[] = [];
+  private onResponse = (r: NetworkResponse) => {
+    if (
+      r.request().method() !== "POST" ||
+      !r.ok() ||
+      !/^\/api\/ordering\/holds\/[^/]+\/accept$/.test(new URL(r.url()).pathname)
+    )
+      return;
+    this.acceptReads.push(
+      r.json().then(
+        (body: { order?: { id?: string } } | null) => {
+          if (body?.order?.id) this.accepted.add(body.order.id);
+        },
+        // A body the page no longer holds: the call name and the table still
+        // identify the round.
+        () => {},
+      ),
+    );
+  };
+  policies = false;
+  /** The restaurant's privacy notice URL before setPrivacy (account 031). */
+  privacyBefore: { url: string | null } | null = null;
+  done = false;
+  constructor(
+    public page: Page,
+    public id = runId(),
+  ) {
+    page.context().on("response", this.onResponse);
+  }
+  /** Three fresh tables "QR <id> 1..3" for this test only. */
+  async makeTables(n = 3) {
+    const r = await call(this.page, "/floor/tables/bulk", {
+      operationId: op(),
+      areaId: null,
+      prefix: `QR ${this.id}`,
+      from: 1,
+      to: n,
+    });
+    expect(r.status).toBe(200);
+    const floor = await call(this.page, "/floor");
+    this.tables = (floor.data.tables as Table[]).filter((t) =>
+      t.name.startsWith(`QR ${this.id} `),
+    );
+    expect(this.tables).toHaveLength(n);
+    return this.tables;
+  }
+  async link(body: object): Promise<Link> {
+    const r = await call(this.page, "/ordering/links", body);
+    expect(r.status, JSON.stringify(r.data)).toBe(200);
+    this.links.push(r.data.id);
+    return r.data;
+  }
+  /** Saves the restaurant's privacy notice URL (account 031); cleanup restores it. */
+  async setPrivacy(url: string | null) {
+    const v = (await call(this.page, "/account/restaurant-privacy")).data;
+    this.privacyBefore ??= { url: v.privacyNoticeUrl };
+    const r = await call(this.page, "/account/restaurant-privacy", {
+      operationId: op(),
+      expectedVersion: v.version,
+      privacyNoticeUrl: url,
+    });
+    expect(r.status, JSON.stringify(r.data)).toBe(200);
+  }
+  async restorePrivacy() {
+    if (!this.privacyBefore) return;
+    await this.setPrivacy(this.privacyBefore.url);
+    this.privacyBefore = null;
+  }
+  /** Rejects every pending hold of this test's links, by table or link name. */
+  async decideHolds() {
+    const inbox = await call(this.page, "/ordering/inbox");
+    if (inbox.status !== 200) return;
+    for (const h of inbox.data.holds)
+      if (
+        (h.tableName ?? "").includes(`QR ${this.id}`) ||
+        (h.linkLabel ?? "").includes(this.id)
+      )
+        await call(this.page, `/ordering/holds/${h.id}/reject`, {
+          operationId: op(),
+          reason: "other",
+        });
+  }
+  /**
+   * Pays (on this device's drawer) and releases every check this test opened.
+   * Each check is settled on its own; the first failure is rethrown after the
+   * rest (PUB-B3-L1).
+   */
+  async settleOrders() {
+    await openDrawer(this.page);
+    let first: { error: unknown } | null = null;
+    for (const id of this.orders) {
+      try {
+        const o = (await call(this.page, `/orders/${id}`)).data;
+        if (!o || o.checkState === "closed") continue;
+        const due = o.total - o.paid;
+        if (due > 0)
+          await call(this.page, `/orders/${id}/payments`, {
+            operationId: op(),
+            amount: due,
+            received: due,
+            method: "cash",
+          });
+        await call(this.page, `/service/orders/${id}/close`, {
+          operationId: op(),
+        });
+      } catch (error) {
+        first ??= { error };
+      }
+    }
+    if (first) throw first.error;
+  }
+  /**
+   * This test's open kitchen rounds: those of the orders its accepts created
+   * or it opened itself, of a call name carrying its id ("Q-14 · QR <id>",
+   * "Mesa <id>") or of its "QR <id> n" tables. GET /kitchen lists every open
+   * round, so the KDS feed's cap cannot hide one on a busy database.
+   */
+  async kitchenRounds(): Promise<KitchenRow[]> {
+    await Promise.all(this.acceptReads);
+    const r = await call(this.page, "/kitchen");
+    expect(r.status, JSON.stringify(r.data)).toBe(200);
+    return (r.data as KitchenRow[]).filter(
+      (k) =>
+        this.accepted.has(k.order_id) ||
+        this.orders.includes(k.order_id) ||
+        (k.name ?? "").split(" ").includes(this.id) ||
+        (k.table_name ?? "").startsWith(`QR ${this.id} `),
+    );
+  }
+  /**
+   * LD-42: delivers, as the KDS does, every kitchen round this test opened:
+   * a pending cancellation is acknowledged first (SVC-K6), then the round
+   * goes to ready and to delivered. closeCheck never completes rounds, so
+   * without this every accept left a ticket on the demo restaurant's kitchen
+   * screen of a persistent database (staging). Fails when one stays open.
+   */
+  async completeRounds() {
+    const refused: string[] = [];
+    const post = async (path: string, body: object) => {
+      const r = await call(this.page, path, { operationId: op(), ...body });
+      if (r.status !== 200)
+        refused.push(`${path} ${r.status} ${JSON.stringify(r.data)}`);
+    };
+    for (let pass = 0; pass < 3; pass++) {
+      const open = await this.kitchenRounds();
+      if (!open.length) break;
+      for (const r of open) {
+        // Acknowledging a round's last cancelled item may complete it: the
+        // next pass reads it again.
+        if (r.pending_voids?.length) {
+          await post(`/kitchen/${r.id}/voids/ack`, {});
+          continue;
+        }
+        if (r.state === "active")
+          await post(`/kitchen/${r.id}`, { state: "ready" });
+        await post(`/kitchen/${r.id}`, { state: "completed" });
+      }
+    }
+    const left = await this.kitchenRounds();
+    expect(
+      left.map((r) => `${r.name} (${r.table_name ?? "sin mesa"}, ${r.state})`),
+      `kitchen rounds of test ${this.id} left open (LD-42); refused: ${refused.join("; ")}`,
+    ).toEqual([]);
+  }
+  async cleanup() {
+    if (this.done) return;
+    this.done = true;
+    // Every LD-P9 step runs on its own: a step that throws is recorded and the
+    // next one still runs. The privacy restore (which asserts its status,
+    // PUB-B3-3) comes last, and the first failure is the one reported
+    // (PUB-B3-L1).
+    const errors: unknown[] = [];
+    const step = async (fn: () => Promise<unknown>) => {
+      try {
+        await fn();
+      } catch (e) {
+        errors.push(e);
+      }
+    };
+    // A test that failed while it routed the API must not route its own
+    // cleanup (a mocked inbox read would leave its holds pending).
+    await step(() => this.page.unrouteAll({ behavior: "ignoreErrors" }));
+    // A test may have switched this page to the cashier: clean up as the owner.
+    await step(async () => {
+      const who = await call(this.page, "/session").catch(() => null);
+      if (who?.data?.role !== "owner") {
+        await this.page.evaluate(() =>
+          fetch("/api/logout", { method: "POST" }),
+        );
+        await login(this.page);
+      }
+    });
+    await step(() => this.decideHolds());
+    for (const id of this.links)
+      await step(() =>
+        call(this.page, `/ordering/links/${id}/revoke`, {
+          operationId: op(),
+        }),
+      );
+    await step(async () => {
+      const s = await call(this.page, "/ordering/settings");
+      if (s.data?.paused)
+        await call(this.page, "/ordering/pause", {
+          operationId: op(),
+          paused: false,
+        });
+    });
+    if (this.policies)
+      await step(async () => {
+        const v = (await call(this.page, "/ordering/settings")).data;
+        await call(this.page, "/ordering/settings", {
+          operationId: op(),
+          expectedVersion: v.version,
+          tablePolicy: "accept",
+          counterPolicy: "accept",
+          holdMinutes: 30,
+          maxOrderTotal: 1_000_000,
+        });
+      });
+    await step(() => this.settleOrders());
+    // Its own step (LD-42), after the checks are settled: a failed payment or
+    // close still leaves no ticket on the kitchen screen.
+    await step(() => {
+      this.page.context().off("response", this.onResponse);
+      return this.completeRounds();
+    });
+    await step(async () => {
+      const floor = await call(this.page, "/floor");
+      for (const t of floor.data.tables as (Table & { archived: boolean })[])
+        if (t.name.startsWith(`QR ${this.id} `) && !t.archived)
+          await step(() =>
+            call(this.page, "/floor/tables/archive", {
+              operationId: op(),
+              id: t.id,
+              expectedVersion: t.version,
+              archived: true,
+            }),
+          );
+    });
+    await step(() => this.restorePrivacy());
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1)
+      throw new AggregateError(
+        errors,
+        `cleanup: ${errors.length} steps failed; first: ${String(
+          errors[0] instanceof Error ? errors[0].message : errors[0],
+        )}`,
+      );
+  }
+}
+let open: Fixture | null = null;
+async function withFixture(page: Page, fn: (f: Fixture) => Promise<void>) {
+  const f = (open = new Fixture(page));
+  try {
+    await fn(f);
+  } finally {
+    await f.cleanup();
+    open = null;
+  }
+}
+// A timed-out test never reaches its finally: undo its state here.
+test.afterEach(async () => {
+  const f = open;
+  open = null;
+  if (f) await f.cleanup();
+});
+/** The accepted check of a hold, for cleanup. */
+async function acceptedOrder(page: Page, name: string) {
+  const list = await call(
+    page,
+    "/service/orders?status=open&limit=100&q=" + encodeURIComponent(name),
+  );
+  return (list.data.items as { id: string; name: string }[]).find((o) =>
+    o.name.includes(name),
+  );
+}
+async function stubPrint(page: Page) {
+  await page.evaluate(() => {
+    (window as any).__printed = [];
+    window.print = () => {
+      (window as any).__printed.push(
+        document.getElementById("print-root")!.innerText,
+      );
+      window.dispatchEvent(new Event("afterprint"));
+    };
+  });
+}
+async function goToOrders(page: Page) {
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+}
+const inbox = (page: Page) => page.locator(".public-inbox");
+const inboxTitle = (page: Page) => page.locator("#public-inbox-title");
+/**
+ * PUB-HR-1: the next inbox read that finds no active code and nothing
+ * pending, the read after which the section used to unmount. Register it
+ * before the action that handles the last hold.
+ */
+const emptyInboxRead = (page: Page) =>
+  page.waitForResponse(async (r) => {
+    if (
+      !r.url().endsWith("/api/ordering/inbox") ||
+      r.request().method() !== "GET"
+    )
+      return false;
+    const body = await r.json().catch(() => null);
+    return body?.active === false && body.holds?.length === 0;
+  });
+const holdCard = (page: Page, label: string) =>
+  page.locator(".hold-card").filter({ hasText: label });
+/** A diner page with its own clock-free context (cookies shared with staff). */
+async function diner(context: BrowserContext, path: string) {
+  const page = await context.newPage();
+  await page.goto(path);
+  return page;
+}
+async function addTaco(customer: Page, option = 0) {
+  await customer.getByRole("button", { name: /^Taco de asada/ }).click();
+  const picker = customer.getByRole("dialog");
+  await picker.getByRole("radio").nth(option).check();
+  await picker.getByRole("button", { name: "Agregar a la orden" }).click();
+}
+/** MONEY-2: the accepted notice names the order the hold became. */
+const acceptedNotice = (label: string) =>
+  new RegExp(`${label} → Orden #\\d+ enviada a cocina\\.`);
+async function sendOrder(customer: Page, name: string) {
+  await customer.getByLabel("Nombre (opcional)").fill(name);
+  await customer
+    .getByRole("button", { name: "Enviar pedido", exact: true })
+    .click();
+}
+
+test("table QR end to end: create and print the code, the diner orders, staff accept from Órdenes, the kitchen gets it and the diner follows it @cross", async ({
+  page,
+  context,
+  browserName,
+}) => {
+  // WebKit has no clipboard permissions to grant: there the shown link is used.
+  if (browserName === "chromium")
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await login(page);
+  let fixture = null as Fixture | null;
+  await withFixture(page, async (f) => {
+    fixture = f;
+    const [mesa] = await f.makeTables();
+    await page
+      .getByRole("button", { name: "Menú e inventario", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Mesas", exact: true }).click();
+    await page
+      .getByRole("button", { name: `Código QR de ${mesa.name}`, exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: `Código QR de ${mesa.name}`,
+    });
+    // PUBLIC-SECURITY-4: no restaurant notice yet, so the dialog warns
+    // before the code is created.
+    await expect(dialog.getByRole("note")).toContainText(
+      "Tu restaurante aún no tiene un aviso de privacidad.",
+    );
+    await dialog.getByRole("button", { name: "Crear código QR" }).click();
+    const qr = dialog.locator('svg[role="img"]');
+    await expect(qr).toBeVisible();
+    await expect(qr.locator("title")).toHaveText(
+      `Código QR para pedir en ${mesa.name}`,
+    );
+    await expect(dialog).toContainText(
+      "Guárdalo o imprímelo ahora: por seguridad no se vuelve a mostrar.",
+    );
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await axe(page);
+    await evidence(page, "docs/evidence/public-table-qr-1024.png");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await stubPrint(page);
+    await dialog.getByRole("button", { name: "Imprimir", exact: true }).click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__printed.length))
+      .toBe(1);
+    expect(
+      await page.evaluate(() => (window as any).__printed[0] as string),
+    ).toContain("Escanea para ver el menú y pedir");
+    const url = await dialog.getByLabel("Enlace").inputValue();
+    expect(url).toMatch(/\/qr#[A-Za-z0-9_-]{22}$/);
+    if (browserName === "chromium") {
+      await dialog.getByRole("button", { name: "Copiar enlace" }).click();
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+        url,
+      );
+    }
+    await dialog.getByRole("button", { name: "Cerrar" }).click();
+    const links = await call(page, "/ordering/links");
+    f.links.push(
+      ...(links.data.links as { id: string; tableId: string }[])
+        .filter((l) => l.tableId === mesa.id)
+        .map((l) => l.id),
+    );
+    await expect(
+      page.locator(".menu-row").filter({ hasText: mesa.name }),
+    ).toContainText("QR activo · Ref.");
+
+    const customer = await diner(context, url);
+    await expect(
+      customer.getByRole("heading", { name: "Casa del Bosque · Demo" }),
+    ).toBeVisible();
+    await expect(customer.getByText(`Pedido para ${mesa.name}`)).toBeVisible();
+    await expect(
+      customer.getByText("Precios en MXN con IVA incluido."),
+    ).toBeVisible();
+    // PRIVACY-7: without a restaurant notice account's copy says so, and the
+    // platform notice opens in a new tab on a phone.
+    const noNotice = customer.getByText(
+      "Este restaurante aún no publicó un aviso de privacidad; no escribas datos personales.",
+    );
+    await expect(noNotice).toBeVisible();
+    // B3: once the owner saves the restaurant's own notice (account 031), the
+    // diner sees it as a link that opens in a new tab; the value is restored.
+    await f.setPrivacy("https://casa-del-bosque.mx/privacidad");
+    await customer.reload();
+    const restaurantNotice = customer.getByRole("link", {
+      name: "Aviso de privacidad de Casa del Bosque · Demo",
+      exact: true,
+    });
+    await expect(restaurantNotice).toHaveAttribute(
+      "href",
+      "https://casa-del-bosque.mx/privacidad",
+    );
+    await expect(restaurantNotice).toHaveAttribute("target", "_blank");
+    await expect(restaurantNotice).toHaveAttribute(
+      "rel",
+      "noopener noreferrer",
+    );
+    await expect(noNotice).toHaveCount(0);
+    await f.restorePrivacy();
+    await customer.reload();
+    await expect(noNotice).toBeVisible();
+    await expect(restaurantNotice).toHaveCount(0);
+    const platform = customer.getByRole("link", {
+      name: "Pedido procesado con Green Monkey · Privacidad de la plataforma",
+    });
+    await expect(platform).toHaveAttribute(
+      "href",
+      "/legal/privacidad#restaurantes",
+    );
+    await expect(platform).toHaveAttribute("target", "_blank");
+    await expect(platform).toHaveAttribute("rel", "noopener noreferrer");
+    await expect(
+      customer.getByRole("button", { name: "Taco de hongos, $45.00" }),
+    ).toBeVisible();
+    await expect(customer.getByRole("button", { name: /^Varios/ })).toHaveCount(
+      0,
+    );
+    await customer.setViewportSize({ width: 390, height: 844 });
+    expect(await noHorizontalScroll(customer)).toBe(true);
+    await axe(customer);
+    await evidence(customer, "docs/evidence/public-diner-menu-390.png");
+    await customer.setViewportSize({ width: 768, height: 1024 });
+    await axe(customer);
+    await addTaco(customer);
+    await sendOrder(customer, `QR ${f.id}`);
+    const head = customer.locator(".diner-status-head");
+    await expect(head).toContainText(
+      /Q-\d+ · Esperando confirmación del personal/,
+    );
+    const label = (await customer.locator(".diner-code").innerText()).trim();
+    // UX-6: the confirmation is announced from the page's persistent live
+    // region, focus lands on the status heading, and the status region was
+    // mounted before its text arrived.
+    await expect(
+      customer.locator('main > p.sr-only[aria-live="polite"]'),
+    ).toHaveText(
+      `Pedido ${label} enviado. Esperando confirmación del personal.`,
+    );
+    await expect(
+      customer.getByRole("heading", { name: "Estado de tu pedido" }),
+    ).toBeFocused();
+    await expect(head).toHaveAttribute("role", "status");
+    await customer.setViewportSize({ width: 390, height: 844 });
+    await axe(customer);
+    await evidence(customer, "docs/evidence/public-status-390.png");
+
+    // Nothing reached the kitchen.
+    const kitchen = await call(page, "/kitchen");
+    expect(
+      (kitchen.data as { name: string }[]).some((r) =>
+        r.name.includes(`QR ${f.id}`),
+      ),
+    ).toBe(false);
+
+    // Staff: the badge and the banner lead to the inbox.
+    await page.reload();
+    await expect(
+      page
+        .locator(".rail")
+        .getByRole("button", { name: "Operación", exact: true }),
+    ).toContainText(/\d/);
+    const banner = page.locator(".public-banner");
+    await expect(banner).toContainText(/pedidos? en línea por confirmar/);
+    await banner.getByRole("button", { name: "Ver", exact: true }).click();
+    // LD-P8: the live regions stay mounted while empty, so their next text is
+    // announced (the banner's region in Órdenes, the inbox notice).
+    await expect(
+      page.locator('.public-banner-live[aria-live="polite"]'),
+    ).toBeEmpty();
+    const notice = inbox(page).locator('.public-notice[aria-live="polite"]');
+    await expect(notice).toBeEmpty();
+    const card = holdCard(page, label);
+    await expect(card).toContainText(mesa.name);
+    await expect(card).toContainText(`QR ${f.id}`);
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await axe(page);
+    await evidence(page, "docs/evidence/public-inbox-1024.png");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await axe(page);
+    await card
+      .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
+      .click();
+    await expect(notice).toHaveText(acceptedNotice(label));
+    const order = await acceptedOrder(page, `QR ${f.id}`);
+    expect(order).toBeTruthy();
+    f.orders.push(order!.id);
+    // MONEY-2: the diner knows only the label; it leads the call name.
+    expect(order!.name).toBe(`${label} · QR ${f.id}`);
+    // B1: staff collect the check at the table while the kitchen works; the
+    // payment issues its fiscal ticket (027).
+    await openDrawer(page);
+    const due = (await call(page, `/orders/${order!.id}`)).data;
+    const paid = await call(page, `/orders/${order!.id}/payments`, {
+      operationId: op(),
+      amount: due.total - due.paid,
+      received: due.total - due.paid,
+      method: "cash",
+    });
+    expect(paid.status, JSON.stringify(paid.data)).toBe(200);
+    const folio = paid.data.fiscal?.ticket?.folio as string;
+    expect(folio).toMatch(/^(?:[A-Z0-9]{1,10}-)?\d{6}$/);
+
+    // The kitchen has it now; the diner follows the round.
+    await page
+      .getByRole("button", { name: "Cocina", exact: true })
+      .first()
+      .click();
+    await expect(
+      page.locator(".kitchen-ticket").filter({ hasText: `QR ${f.id}` }),
+    ).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator(".kitchen-ticket").filter({ hasText: `QR ${f.id}` }),
+    ).toContainText(label);
+    await expect(head).toContainText(/Confirmado · Orden #\d+/, {
+      timeout: 15000,
+    });
+    await expect(head).toContainText("En preparación");
+    const rounds = (await call(page, "/kitchen")).data as {
+      id: string;
+      name: string;
+    }[];
+    for (const r of rounds.filter((r) => r.name.includes(`QR ${f.id}`)))
+      await call(page, `/kitchen/${r.id}`, {
+        operationId: op(),
+        state: "ready",
+      });
+    await expect(head).toContainText("Listo", { timeout: 30000 });
+    // B1: the poll that shows "Listo" also carries the payment made above:
+    // the check's fiscal ticket exists, and the diner sees its folio as the
+    // printed ticket shows it (027).
+    await expect(customer.locator(".diner-money")).toHaveText(
+      `Pagado · Folio ${folio}`,
+    );
+    // LD-41 (PUBLIC-MONEY-1): staff collected this table check, so whoever
+    // paid holds the printed ticket; this phone gets no self-invoice link,
+    // only where to ask for the invoice.
+    await expect(customer.locator(".diner-invoice-hint")).toHaveText(
+      "Pide tu factura con tu ticket impreso o en caja.",
+    );
+    await expect(
+      customer.getByRole("link", { name: /Factura tu consumo/ }),
+    ).toHaveCount(0);
+  });
+  // LD-42: its round was left "Listo"; the cleanup delivered it, so the
+  // demo restaurant's kitchen keeps no ticket of this test.
+  expect((await fixture!.kitchenRounds()).map((r) => r.name)).toEqual([]);
+});
+
+test("privacy notice warning: without the restaurant's notice the settings panel and the table QR dialog warn before codes are made and lead to the privacy field; saving a notice clears it (PUBLIC-SECURITY-4)", async ({
+  page,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const [mesa] = await f.makeTables(1);
+    await f.setPrivacy(null);
+    const warning = "Tu restaurante aún no tiene un aviso de privacidad.";
+    const field = page.getByLabel(
+      "Enlace al aviso de privacidad de tu restaurante",
+      { exact: true },
+    );
+    await page
+      .getByRole("button", { name: "Configuración", exact: true })
+      .click();
+    const panel = page.locator(".public-settings");
+    await expect(panel.getByRole("note")).toContainText(warning);
+    await panel
+      .getByRole("button", { name: "Agregar aviso de privacidad", exact: true })
+      .click();
+    await expect(field).toBeFocused();
+    await axe(page);
+    await field.fill("https://casa-del-bosque.mx/privacidad");
+    await page
+      .getByRole("button", { name: "Guardar enlace", exact: true })
+      .click();
+    await expect(panel.getByRole("note")).toHaveCount(0);
+    const openQr = async () => {
+      await page
+        .getByRole("button", { name: "Menú e inventario", exact: true })
+        .click();
+      await page.getByRole("button", { name: "Mesas", exact: true }).click();
+      await page
+        .getByRole("button", { name: `Código QR de ${mesa.name}`, exact: true })
+        .click();
+      return page.getByRole("dialog", { name: `Código QR de ${mesa.name}` });
+    };
+    let dialog = await openQr();
+    await expect(
+      dialog.getByRole("button", { name: "Crear código QR" }),
+    ).toBeVisible();
+    await expect(dialog.getByRole("note")).toHaveCount(0);
+    await dialog.getByRole("button", { name: "Cerrar" }).click();
+    // The notice is removed again: Mesas warns and leads to Configuración.
+    await f.setPrivacy(null);
+    await page
+      .getByRole("button", { name: "Configuración", exact: true })
+      .click();
+    dialog = await openQr();
+    await expect(dialog.getByRole("note")).toContainText(warning);
+    await dialog
+      .getByRole("button", { name: "Agregar aviso de privacidad", exact: true })
+      .click();
+    await expect(dialog).toHaveCount(0);
+    await expect(field).toBeFocused();
+  });
+});
+
+test("append: a table order joins the table's open check as a new round with the hold label; the diner sees no money", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const [, mesa] = await f.makeTables();
+    const catalog = (await call(page, "/catalog")).data as {
+      id: string;
+      name: { es: string };
+    }[];
+    const hongos = catalog.find((p) => p.name.es === "Taco de hongos")!;
+    const check = await call(page, "/orders", {
+      operationId: op(),
+      lines: [
+        { id: op(), productId: hongos.id, quantity: 1, options: [], note: "" },
+      ],
+      mode: "dine_in",
+      tableId: mesa.id,
+      name: `Mesa ${f.id}`,
+      note: "",
+      channel: "pos",
+    });
+    expect(check.status).toBe(200);
+    f.orders.push(check.data.id);
+    const link = await f.link({ kind: "table", tableId: mesa.id });
+    const customer = await diner(context, link.path);
+    await addTaco(customer);
+    await sendOrder(customer, `Ana ${f.id}`);
+    const head = customer.locator(".diner-status-head");
+    await expect(head).toContainText("Esperando confirmación del personal");
+    const label = (await customer.locator(".diner-code").innerText()).trim();
+    await goToOrders(page);
+    const card = holdCard(page, label);
+    await expect(card.getByLabel("Enviar a")).toHaveValue(check.data.id);
+    await expect(card.getByLabel("Enviar a")).toContainText(
+      `Cuenta #${check.data.number} de ${mesa.name}`,
+    );
+    await card
+      .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
+      .click();
+    await expect(inbox(page)).toContainText(acceptedNotice(label));
+    const order = (await call(page, `/orders/${check.data.id}`)).data;
+    const round2 = order.rounds.find((r: { number: number }) => r.number === 2);
+    // PRIVACY-3 (deliberate change): the round note prints on the shared
+    // check's receipt, so it carries the label, never the diner's name.
+    expect(round2.note).toBe(label);
+    await expect(head).toContainText(
+      "Confirmado · se agregó a la cuenta de tu mesa",
+    );
+    await expect(customer.locator(".diner-money")).toHaveCount(0);
+    await expect(customer.getByText(/Por pagar|Pagado/)).toHaveCount(0);
+  });
+});
+
+test("reject and restore: the diner sees the reason and gets the cart back", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({ kind: "counter", label: `Ventanilla ${f.id}` });
+    const customer = await diner(context, link.path);
+    await expect(
+      customer.getByText(`Para llevar · Ventanilla ${f.id}`),
+    ).toBeVisible();
+    await addTaco(customer);
+    await sendOrder(customer, `Beto ${f.id}`);
+    const head = customer.locator(".diner-status-head");
+    await expect(head).toContainText("Esperando confirmación del personal");
+    const label = (await customer.locator(".diner-code").innerText()).trim();
+    await goToOrders(page);
+    await holdCard(page, label)
+      .getByRole("button", { name: "Rechazar", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: `Rechazar pedido ${label}`,
+    });
+    await dialog
+      .getByRole("radio", { name: "Productos no disponibles" })
+      .check();
+    await dialog.getByRole("button", { name: "Rechazar pedido" }).click();
+    await expect(inbox(page)).toContainText(`${label} rechazado.`);
+    await expect(head).toContainText("El personal no pudo aceptar tu pedido.", {
+      timeout: 20000,
+    });
+    await expect(head).toContainText("Algún producto no está disponible.");
+    await customer.getByRole("button", { name: "Volver al menú" }).click();
+    await expect(customer.locator(".diner-line")).toHaveCount(1);
+    await expect(customer.locator(".diner-line")).toContainText(
+      "Taco de asada",
+    );
+    // UX-2: browsing the menu again, the diner gets back to their orders.
+    await customer
+      .getByRole("button", { name: `Tus pedidos (${label})`, exact: true })
+      .click();
+    await expect(head).toContainText("El personal no pudo aceptar tu pedido.");
+    await expect(
+      customer.getByRole("heading", { name: "Estado de tu pedido" }),
+    ).toBeFocused();
+  });
+});
+
+test("pay-first kiosk: the kiosk shows its code and resets; the cashier charges before the kitchen gets it @cross", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  let fixture = null as Fixture | null;
+  await withFixture(page, async (f) => {
+    fixture = f;
+    f.policies = true;
+    await openDrawer(page);
+    await page
+      .getByRole("button", { name: "Configuración", exact: true })
+      .click();
+    const panel = page.locator(".public-settings");
+    await panel
+      .getByRole("combobox", { name: "Pedidos para llevar y kiosco" })
+      .selectOption({ label: "Se cobra antes de enviar a cocina" });
+    await panel
+      .getByRole("button", { name: "Guardar pedidos en línea", exact: true })
+      .click();
+    await expect(panel).toContainText("Pedidos en línea guardados");
+    await expect(
+      page.getByText("Configuración guardada", { exact: true }),
+    ).toHaveCount(0);
+    await panel.getByLabel("Nombre del kiosco").fill(`Entrada ${f.id}`);
+    await panel.getByRole("button", { name: "Agregar kiosco" }).click();
+    const reveal = page.getByRole("dialog", { name: "Código listo" });
+    await expect(reveal).toContainText(
+      "Abre este enlace en el navegador del kiosco y déjalo en pantalla completa.",
+    );
+    const url = await reveal.getByLabel("Enlace").inputValue();
+    expect(url).toMatch(/\/kiosk#[A-Za-z0-9_-]{22}$/);
+    await reveal.getByRole("button", { name: "Cerrar" }).click();
+    const listed = await call(page, "/ordering/links");
+    const kioskIds = (listed.data.links as { id: string; label: string }[])
+      .filter((l) => l.label === `Entrada ${f.id}`)
+      .map((l) => l.id);
+    expect(kioskIds).toHaveLength(1);
+    f.links.push(...kioskIds);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await axe(page);
+    await evidence(panel, "docs/evidence/public-settings-1440.png");
+
+    const kiosk = await context.newPage();
+    await kiosk.clock.install();
+    await kiosk.goto(url);
+    await kiosk.setViewportSize({ width: 1024, height: 768 });
+    // PRIVACY-2/UX-5: a kiosk renders no navigational link; its privacy
+    // notices open in an in-page dialog with codes to scan.
+    await expect(
+      kiosk.getByRole("button", { name: /^Taco de asada/ }),
+    ).toBeVisible();
+    expect(await kiosk.locator("a[href]").count()).toBe(0);
+    await kiosk
+      .getByRole("button", {
+        name: "Pedido procesado con Green Monkey · Privacidad de la plataforma",
+      })
+      .click();
+    const privacy = kiosk.getByRole("dialog", { name: "Privacidad" });
+    await expect(privacy).toContainText(
+      "Este restaurante aún no publicó un aviso de privacidad",
+    );
+    await expect(privacy.locator('svg[role="img"]')).toHaveCount(1);
+    await axe(kiosk);
+    await privacy.getByRole("button", { name: "Cerrar" }).click();
+    await expect(privacy).toHaveCount(0);
+    await expect(kiosk).toHaveURL(url);
+    // UX-4: with three lines on a 1024×768 kiosk the total and "Enviar
+    // pedido" stay in view (the side cart scrolls inside).
+    await addTaco(kiosk);
+    await addTaco(kiosk, 1);
+    await kiosk.getByRole("button", { name: /^Taco de hongos/ }).click();
+    await expect(kiosk.locator(".diner-line")).toHaveCount(3);
+    const name = kiosk.getByLabel("Nombre (opcional)");
+    const note = kiosk.getByLabel("Indicaciones para la cocina (opcional)");
+    await name.fill(`Kiosco ${f.id}`);
+    await note.fill("sin cebolla");
+    const sendButton = kiosk.getByRole("button", {
+      name: "Enviar pedido",
+      exact: true,
+    });
+    await expect(sendButton).toBeInViewport();
+    await expect(kiosk.locator(".diner-total").first()).toBeInViewport();
+    await sendButton.click();
+    const code = kiosk.locator(".kiosk-code");
+    await expect(code).toHaveText(/^K-\d+$/);
+    const label = (await code.innerText()).trim();
+    await expect(kiosk.locator(".kiosk-done")).toContainText(
+      "Paga en caja con este código para que preparemos tu pedido.",
+    );
+    // UX-3: the code is the largest thing on the screen.
+    expect(await code.evaluate((el) => getComputedStyle(el).fontSize)).toBe(
+      "120px",
+    );
+    // UX-6: a plain heading; the page's live region announces the code.
+    await expect(code).not.toHaveAttribute("role", "status");
+    await expect(
+      kiosk.locator('main > p.sr-only[aria-live="polite"]'),
+    ).toHaveText(
+      `Tu código es ${label}. Paga en caja con este código para que preparemos tu pedido.`,
+    );
+    expect(await kiosk.locator("a[href]").count()).toBe(0);
+    await axe(kiosk);
+    await evidence(kiosk, "docs/evidence/public-kiosk-done-1024.png");
+    await kiosk.clock.fastForward(20_000);
+    await expect(code).toHaveCount(0);
+    await expect(
+      kiosk.getByRole("button", { name: /^Taco de asada/ }),
+    ).toBeVisible();
+    // PRIVACY-7: the next customer finds no name or note.
+    await expect(name).toHaveValue("");
+    await expect(note).toHaveValue("");
+
+    // PUB-HR-1: a manager deactivates the only code while its order waits;
+    // the cashier still charges it and the receipt outlives the next inbox
+    // read, which finds nothing active and nothing pending.
+    const revoked = await call(page, `/ordering/links/${kioskIds[0]}/revoke`, {
+      operationId: op(),
+    });
+    expect(revoked.status, JSON.stringify(revoked.data)).toBe(200);
+    const before = await call(page, "/ordering/inbox");
+    expect(before.data.active).toBe(false);
+    expect(before.data.holds).toHaveLength(1);
+
+    await goToOrders(page);
+    const card = holdCard(page, label);
+    await expect(card).toContainText("Se cobra antes de cocina");
+    await expect(
+      card.getByRole("button", {
+        name: "Aceptar y enviar a cocina",
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await card
+      .getByRole("button", { name: "Cobrar y enviar a cocina", exact: true })
+      .click();
+    const emptied = emptyInboxRead(page);
+    await page
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(page.locator(".receipt")).toContainText("Cobrado");
+    await emptied;
+    await expect(inboxTitle(page)).toHaveText(
+      "Pedidos en línea por confirmar (0)",
+    );
+    await expect(page.locator(".receipt")).toBeVisible();
+    // MONEY-2: the receipt carries the code the diner holds (order note).
+    await expect(page.locator(".receipt")).toContainText(label);
+    // B1: the accept's payment issued the fiscal ticket in the same
+    // transaction, so the receipt prints its folio, and the ticket's gross is
+    // the total the inbox showed for the hold (fiscal 027, X26).
+    const folioLine = page.locator(".receipt .fiscal-folio");
+    await expect(folioLine).toHaveText(/^Folio: (?:[A-Z0-9]{1,10}-)?\d{6}$/);
+    const folio = (await folioLine.innerText()).replace(/^Folio:\s*/, "");
+    const tickets = await call(
+      page,
+      "/fiscal/tickets?folio=" + encodeURIComponent(folio),
+    );
+    expect(tickets.status, JSON.stringify(tickets.data)).toBe(200);
+    expect(tickets.data.rows).toHaveLength(1);
+    expect(tickets.data.rows[0].gross).toBe(before.data.holds[0].currentTotal);
+    await expect(inbox(page)).toContainText(acceptedNotice(label));
+    await page
+      .getByRole("button", { name: /Siguiente|Listo/ })
+      .first()
+      .click();
+    await expect(page.locator(".receipt")).toHaveCount(0);
+    await expect(inbox(page).locator(".public-notice")).toHaveText(
+      acceptedNotice(label),
+    );
+    const rounds = (await call(page, "/kitchen")).data as { name: string }[];
+    expect(rounds.some((r) => r.name === `${label} · Kiosco ${f.id}`)).toBe(
+      true,
+    );
+    // LD-42: the cleanup knows the order this charge-and-accept created
+    // (the test never adds it to f.orders) and finds its open round.
+    const mine = await f.kitchenRounds();
+    expect(mine.length).toBeGreaterThan(0);
+    expect([...new Set(mine.map((r) => r.name))]).toEqual([
+      `${label} · Kiosco ${f.id}`,
+    ]);
+    expect(mine.every((r) => f.accepted.has(r.order_id))).toBe(true);
+  });
+  // LD-42: the cleanup delivered it, so the demo restaurant's kitchen keeps
+  // no ticket of this test.
+  expect((await fixture!.kitchenRounds()).map((r) => r.name)).toEqual([]);
+});
+
+test("pay-first refusal after a terminal charge: the cashier is told to record the charge on a manual order or refund it (LD-41, PUBLIC-MONEY-2)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    f.policies = true;
+    await openDrawer(page);
+    const v = (await call(page, "/ordering/settings")).data;
+    const saved = await call(page, "/ordering/settings", {
+      operationId: op(),
+      expectedVersion: v.version,
+      tablePolicy: "accept",
+      counterPolicy: "pay_first",
+      holdMinutes: 30,
+      maxOrderTotal: 1_000_000,
+    });
+    expect(saved.status, JSON.stringify(saved.data)).toBe(200);
+    const counter = await f.link({ kind: "counter", label: `Caja ${f.id}` });
+    const customer = await diner(context, counter.path);
+    await addTaco(customer);
+    await sendOrder(customer, `Terminal ${f.id}`);
+    await expect(customer.locator(".diner-status-head")).toContainText(/Q-\d+/);
+    const label = (await customer.locator(".diner-code").innerText()).trim();
+    await goToOrders(page);
+    const card = holdCard(page, label);
+    await card
+      .getByRole("button", { name: "Cobrar y enviar a cocina", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await dialog
+      .getByRole("button", { name: "Terminal externa", exact: true })
+      .click();
+    await dialog.getByLabel("Referencia de aprobación").fill("APR-123456");
+    await dialog
+      .getByLabel("Confirmo que la terminal aprobó este pago")
+      .check();
+    // The hold expired while the terminal approved the charge, past the
+    // paid-accept grace: the server refuses and records nothing.
+    await page.route("**/api/ordering/holds/*/accept", (route) =>
+      route.fulfill({ status: 409, json: { error: "public_order_expired" } }),
+    );
+    await dialog
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(inbox(page).locator(".public-notice")).toContainText(
+      new RegExp(
+        `${label}: .+ La terminal ya cobró \\$\\d+\\.\\d{2} y ${label} no se registró: registra el cobro en una orden manual o reembólsalo\\.`,
+      ),
+    );
+    await page.unroute("**/api/ordering/holds/*/accept");
+    // A cash payment needs no such copy: nothing was charged outside.
+    await page.route("**/api/ordering/holds/*/accept", (route) =>
+      route.fulfill({ status: 409, json: { error: "public_order_expired" } }),
+    );
+    await card
+      .getByRole("button", { name: "Cobrar y enviar a cocina", exact: true })
+      .click();
+    await dialog
+      .getByRole("button", { name: "Confirmar cobro", exact: true })
+      .click();
+    await expect(inbox(page).locator(".public-notice")).toContainText(
+      `${label}: `,
+    );
+    await expect(inbox(page).locator(".public-notice")).not.toContainText(
+      "La terminal ya cobró",
+    );
+    await page.unroute("**/api/ordering/holds/*/accept");
+  });
+});
+
+test("kiosk idle: a warning at 75 s keeps the cart; at 90 s idle the kiosk clears it and returns to Spanish", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({ kind: "kiosk", label: `Idle ${f.id}` });
+    const kiosk = await context.newPage();
+    await kiosk.clock.install();
+    await kiosk.goto(link.path);
+    await addTaco(kiosk);
+    await expect(kiosk.locator(".diner-line")).toHaveCount(1);
+    const name = kiosk.getByLabel("Nombre (opcional)");
+    const note = kiosk.getByLabel("Indicaciones para la cocina (opcional)");
+    await name.fill(`Idle ${f.id}`);
+    await note.fill("sin cebolla");
+    await kiosk.clock.fastForward(75_000);
+    const warning = kiosk.getByRole("dialog", { name: "¿Sigues ahí?" });
+    await expect(warning).toBeVisible();
+    await warning
+      .getByRole("button", { name: "Seguir pidiendo" })
+      .first()
+      .click();
+    await expect(warning).toHaveCount(0);
+    await expect(kiosk.locator(".diner-line")).toHaveCount(1);
+    await kiosk.getByRole("button", { name: "English", exact: true }).click();
+    await expect(
+      kiosk.getByRole("button", { name: "Send order" }),
+    ).toBeVisible();
+    await kiosk.clock.fastForward(90_000);
+    await expect(kiosk.locator(".diner-line")).toHaveCount(0);
+    // PRIVACY-7: the reset leaves no name or note for the next customer.
+    await expect(kiosk.getByLabel("Nombre (opcional)")).toHaveValue("");
+    await expect(
+      kiosk.getByLabel("Indicaciones para la cocina (opcional)"),
+    ).toHaveValue("");
+    await expect(
+      kiosk.getByRole("button", { name: "Enviar pedido", exact: true }),
+    ).toBeDisabled();
+    await expect(kiosk.getByRole("button", { name: "English" })).toBeVisible();
+  });
+});
+
+test("revoke and rotate: a deactivated code and a replaced table code stop working at once; the new one works", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const [mesa] = await f.makeTables();
+    const counter = await f.link({ kind: "counter", label: `Puerta ${f.id}` });
+    const customer = await diner(context, counter.path);
+    await expect(
+      customer.getByRole("button", { name: /^Taco de asada/ }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "Configuración", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: `Desactivar Puerta ${f.id}`, exact: true })
+      .click();
+    // UX-8: the confirmation is a dialog with its own button text.
+    const confirm = page.getByRole("dialog", {
+      name: `Desactivar Puerta ${f.id}`,
+    });
+    await expect(confirm).toContainText("Nadie podrá pedir con este código.");
+    await confirm
+      .getByRole("button", {
+        name: `Sí, desactivar Puerta ${f.id}`,
+        exact: true,
+      })
+      .click();
+    await expect(confirm).toHaveCount(0);
+    await expect(
+      page.getByRole("button", {
+        name: `Desactivar Puerta ${f.id}`,
+        exact: true,
+      }),
+    ).toHaveCount(0);
+    await customer.reload();
+    await expect(
+      customer.getByRole("heading", { name: "Este código ya no funciona" }),
+    ).toBeVisible();
+
+    const table = await f.link({ kind: "table", tableId: mesa.id });
+    const old = await diner(context, table.path);
+    await expect(old.getByText(`Pedido para ${mesa.name}`)).toBeVisible();
+    // A phone that ordered with the old code keeps following its order.
+    const ordered = await context.newPage();
+    await ordered.clock.install();
+    await ordered.goto(table.path);
+    await addTaco(ordered);
+    await sendOrder(ordered, `Rota ${f.id}`);
+    const orderedHead = ordered.locator(".diner-status-head");
+    await expect(orderedHead).toContainText(
+      "Esperando confirmación del personal",
+    );
+    // It goes back to the menu (loaded) before the code is replaced.
+    await ordered
+      .getByRole("button", { name: "Hacer otro pedido", exact: true })
+      .click();
+    await expect(
+      ordered.getByRole("button", { name: /^Taco de asada/ }),
+    ).toBeVisible();
+    // A second phone of the same table is mid-order when the code changes.
+    const sending = await diner(context, table.path);
+    await addTaco(sending);
+    await sendOrder(sending, `Envía ${f.id}`);
+    const sendingHead = sending.locator(".diner-status-head");
+    await expect(sendingHead).toContainText(
+      "Esperando confirmación del personal",
+    );
+    await sending
+      .getByRole("button", { name: "Hacer otro pedido", exact: true })
+      .click();
+    await sending.getByRole("button", { name: /^Taco de hongos/ }).click();
+    await expect(sending.locator(".diner-line")).toHaveCount(1);
+    const rotated = await call(page, `/ordering/links/${table.id}/rotate`, {});
+    expect(rotated.status).toBe(200);
+    f.links.push(rotated.data.id);
+    await old.reload();
+    await expect(
+      old.getByRole("heading", { name: "Este código ya no funciona" }),
+    ).toBeVisible();
+    // UX-10: the new code pasted into the same tab (a same-document
+    // navigation) opens it without a reload.
+    await old.evaluate((path) => {
+      location.href = path;
+    }, rotated.data.path);
+    await expect(old.getByText(`Pedido para ${mesa.name}`)).toBeVisible();
+    // UX-1: sending with the replaced code keeps the menu and the cart and
+    // says so next to the way back to this phone's orders.
+    await sending
+      .getByRole("button", { name: "Enviar pedido", exact: true })
+      .click();
+    await expect(sending.locator(".diner-cart")).toContainText(
+      "Este código ya no funciona. Pide al personal un código nuevo.",
+    );
+    await expect(sending.locator(".diner-line")).toHaveCount(1);
+    await sending
+      .getByRole("button", { name: "Ver mis pedidos", exact: true })
+      .click();
+    await expect(sending.getByRole("alert").first()).toContainText(
+      "Este código QR ya no funciona: se reemplazó o se desactivó.",
+    );
+    await expect(sendingHead).toContainText(
+      "Esperando confirmación del personal",
+    );
+    // Its next menu poll learns the code was replaced: the page falls back to
+    // its pending order, says why, and the notice it reaches from "Hacer
+    // otro pedido" leads back to the order.
+    await ordered.clock.fastForward(61_000);
+    await expect(orderedHead).toContainText(
+      "Esperando confirmación del personal",
+    );
+    await expect(ordered.locator(".diner-closed")).toContainText(
+      "Este código QR ya no funciona: se reemplazó o se desactivó.",
+    );
+    await ordered
+      .getByRole("button", { name: "Hacer otro pedido", exact: true })
+      .click();
+    await expect(
+      ordered.getByRole("heading", { name: "Este código ya no funciona" }),
+    ).toBeVisible();
+    await ordered
+      .getByRole("button", { name: "Ver mis pedidos", exact: true })
+      .click();
+    await expect(orderedHead).toContainText(
+      "Esperando confirmación del personal",
+    );
+    await ordered.reload();
+    await expect(ordered.locator(".diner-status-head")).toContainText(
+      "Esperando confirmación del personal",
+    );
+    const fresh = await diner(context, rotated.data.path);
+    await expect(fresh.getByText(`Pedido para ${mesa.name}`)).toBeVisible();
+  });
+});
+
+test("paused: the cashier pauses from the inbox; the diner keeps the menu with sending disabled until ordering resumes", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({ kind: "counter", label: `Pausa ${f.id}` });
+    const customer = await context.newPage();
+    await customer.clock.install();
+    await customer.goto(link.path);
+    await addTaco(customer);
+    const send = customer.getByRole("button", {
+      name: "Enviar pedido",
+      exact: true,
+    });
+    await expect(send).toBeEnabled();
+    // Sign in as the cashier on the same terminal.
+    await page.evaluate(async () => {
+      const s = await (await fetch("/api/session")).json();
+      await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tenantId: s.tenantId,
+          login: "cashier",
+          secret: "123456",
+        }),
+      });
+    });
+    await page.goto("/app");
+    await page.getByRole("button", { name: "Órdenes", exact: true }).click();
+    await inbox(page)
+      .getByRole("button", { name: "Pausar", exact: true })
+      .click();
+    await expect(inbox(page)).toContainText("En pausa");
+    await customer.clock.fastForward(61_000);
+    await expect(customer.locator(".diner-closed").first()).toContainText(
+      "El restaurante no está recibiendo pedidos en línea en este momento.",
+    );
+    await expect(send).toBeDisabled();
+    await expect(
+      customer.getByRole("button", { name: /^Taco de hongos/ }),
+    ).toBeVisible();
+    await inbox(page)
+      .getByRole("button", { name: "Reanudar", exact: true })
+      .click();
+    await expect(inbox(page)).toContainText("Recibiendo pedidos");
+    await customer.clock.fastForward(61_000);
+    await expect(send).toBeEnabled();
+    // Back to the owner for the cleanup.
+    await page.evaluate(() => fetch("/api/logout", { method: "POST" }));
+    await login(page);
+  });
+});
+
+test("kill switch off and on: a diner page and a kiosk that said 'not available' come back on their own (PUBLIC-UX-1)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const disabled = (route: Route) =>
+      route.fulfill({
+        status: 404,
+        json: { error: "public_ordering_disabled" },
+      });
+    const unavailable = (p: Page) =>
+      p.getByRole("heading", {
+        name: "Los pedidos en línea no están disponibles por ahora. Pide al personal.",
+        exact: true,
+      });
+    // A QR page whose menu loaded: its next revision poll finds the switch
+    // off, and a later one finds it on again.
+    const counter = await f.link({ kind: "counter", label: `Vuelve ${f.id}` });
+    const customer = await context.newPage();
+    await customer.clock.install();
+    await customer.goto(counter.path);
+    const taco = customer.getByRole("button", { name: /^Taco de asada/ });
+    await expect(taco).toBeVisible();
+    await customer.route("**/api/public/**", disabled);
+    await customer.clock.fastForward(61_000);
+    await expect(unavailable(customer)).toBeVisible();
+    await expect(taco).toHaveCount(0);
+    await customer.unroute("**/api/public/**", disabled);
+    const menuRead = customer.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/public/menu" && r.ok(),
+    );
+    await customer.clock.fastForward(61_000);
+    await expect(taco).toBeVisible();
+    await expect(unavailable(customer)).toHaveCount(0);
+    // Back from "not available" the catalog is fetched again.
+    await menuRead;
+    // A kiosk that boots while ordering is off has no menu and no revision
+    // poll: it keeps asking for the menu and shows it once ordering is back.
+    const link = await f.link({ kind: "kiosk", label: `Arranque ${f.id}` });
+    const kiosk = await context.newPage();
+    await kiosk.clock.install();
+    await kiosk.route("**/api/public/**", disabled);
+    await kiosk.goto(link.path);
+    await expect(unavailable(kiosk)).toBeVisible();
+    await kiosk.clock.fastForward(21_000);
+    await expect(unavailable(kiosk)).toBeVisible();
+    await kiosk.unroute("**/api/public/**", disabled);
+    await kiosk.clock.fastForward(21_000);
+    await expect(
+      kiosk.getByRole("button", { name: /^Taco de asada/ }),
+    ).toBeVisible();
+    await expect(unavailable(kiosk)).toHaveCount(0);
+  });
+});
+
+test("kill switch off and on: a staff terminal drops the waiting cards and the badge, then shows them again without a reload (PUBLIC-OPS-1)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({
+      kind: "counter",
+      label: `Interruptor ${f.id}`,
+    });
+    const customer = await diner(context, link.path);
+    await addTaco(customer);
+    await sendOrder(customer, `Interruptor ${f.id}`);
+    await expect(customer.locator(".diner-status-head")).toContainText(
+      "Esperando confirmación del personal",
+    );
+    const label = (await customer.locator(".diner-code").innerText()).trim();
+    await customer.close();
+    await page.reload();
+    const badge = page
+      .locator(".rail")
+      .getByRole("button", { name: "Operación", exact: true });
+    await expect(badge).toContainText(/\d/);
+    await goToOrders(page);
+    const card = holdCard(page, label);
+    await expect(card).toBeVisible();
+    // The deployment switches ordering off (PUBLIC_ORDERING_ENABLED=false):
+    // the inbox answers 404 and the summary "not available".
+    const off = (route: Route) =>
+      route.fulfill({
+        status: 404,
+        json: { error: "public_ordering_disabled" },
+      });
+    const offSummary = (route: Route) =>
+      route.fulfill({
+        json: { available: false, active: false, pending: 0, oldestAt: null },
+      });
+    await page.route("**/api/ordering/inbox", off);
+    await page.route("**/api/ordering/inbox/summary", offSummary);
+    // The next inbox read (every 10 s) drops the cards and the badge.
+    await expect(card).toHaveCount(0, { timeout: 20_000 });
+    await expect(badge).not.toContainText(/\d/);
+    // A remount does not bring the stale cards back.
+    await page
+      .getByRole("button", { name: "Menú e inventario", exact: true })
+      .click();
+    await goToOrders(page);
+    await expect(card).toHaveCount(0);
+    // Ordering is back on the same session: the summary poll was never
+    // stopped, so the next run (here: the terminal comes to the front)
+    // brings the badge and the inbox back.
+    await page.unroute("**/api/ordering/inbox", off);
+    await page.unroute("**/api/ordering/inbox/summary", offSummary);
+    await page.evaluate(() =>
+      document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await expect(card).toBeVisible({ timeout: 20_000 });
+    await expect(badge).toContainText(/\d/);
+  });
+});
+
+test("staff offline: the inbox says it is available when the connection returns and disables its actions", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({ kind: "counter", label: `Red ${f.id}` });
+    const customer = await diner(context, link.path);
+    await addTaco(customer);
+    await sendOrder(customer, `Red ${f.id}`);
+    await expect(customer.locator(".diner-status-head")).toContainText(
+      "Esperando confirmación del personal",
+    );
+    const label = (await customer.locator(".diner-code").innerText()).trim();
+    await customer.close();
+    await goToOrders(page);
+    const card = holdCard(page, label);
+    await expect(card).toBeVisible();
+    await page
+      .locator(".top-actions")
+      .getByRole("button", { name: /^Conectado/ })
+      .click();
+    await page.getByRole("switch", { name: "Trabajar sin conexión" }).check();
+    await goToOrders(page);
+    await expect(inbox(page)).toContainText(
+      "Disponible al volver la conexión.",
+    );
+    await expect(
+      card.getByRole("button", {
+        name: "Aceptar y enviar a cocina",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await expect(
+      card.getByRole("button", { name: "Rechazar", exact: true }),
+    ).toBeDisabled();
+    await page
+      .locator(".top-actions")
+      .getByRole("button", { name: /^Sin conexión/ })
+      .click();
+    await page.getByRole("switch", { name: "Trabajar sin conexión" }).uncheck();
+    await goToOrders(page);
+    await expect(
+      card.getByRole("button", {
+        name: "Aceptar y enviar a cocina",
+        exact: true,
+      }),
+    ).toBeEnabled();
+  });
+});
+
+test("abuse: deactivating a code as abuse flags its other orders; accepting one needs the acknowledgement", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({ kind: "counter", label: `Abuso ${f.id}` });
+    const labels: string[] = [];
+    for (const who of ["Uno", "Dos"]) {
+      const customer = await diner(context, link.path);
+      await customer.getByRole("button", { name: /^Taco de hongos/ }).click();
+      await sendOrder(customer, `${who} ${f.id}`);
+      await expect(customer.locator(".diner-status-head")).toContainText(
+        "Esperando confirmación del personal",
+      );
+      labels.push((await customer.locator(".diner-code").innerText()).trim());
+      await customer.close();
+    }
+    const [fake, other] = labels;
+    await goToOrders(page);
+    await holdCard(page, fake)
+      .getByRole("button", { name: "Rechazar", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: `Rechazar pedido ${fake}`,
+    });
+    await dialog.getByRole("radio", { name: "Pedido falso o abuso" }).check();
+    await dialog
+      .getByLabel(
+        "Desactivar también este código QR (dejará de funcionar el impreso)",
+      )
+      .check();
+    await dialog.getByRole("button", { name: "Rechazar pedido" }).click();
+    await expect(inbox(page)).toContainText(`${fake} rechazado.`);
+    // PUB-HR-1: the abused code was the only active one, so accepting its
+    // last hold empties the next inbox read.
+    const before = await call(page, "/ordering/inbox");
+    expect(before.data.active).toBe(false);
+    expect(before.data.holds).toHaveLength(1);
+    // ABUSE-1: the code's other order is flagged and needs a deliberate check.
+    const card = holdCard(page, other);
+    await expect(card).toContainText(
+      "Código desactivado por abuso: verifica con el cliente antes de aceptar.",
+    );
+    const acceptButton = card.getByRole("button", {
+      name: "Aceptar y enviar a cocina",
+      exact: true,
+    });
+    await expect(acceptButton).toBeDisabled();
+    await card
+      .getByLabel("Lo verifiqué con el cliente; aceptar de todos modos.")
+      .check();
+    await axe(page);
+    const emptied = emptyInboxRead(page);
+    await acceptButton.click();
+    await emptied;
+    // The empty read rendered and the outcome is still announced (MONEY-2).
+    await expect(inboxTitle(page)).toHaveText(
+      "Pedidos en línea por confirmar (0)",
+    );
+    const notice = inbox(page).locator('.public-notice[aria-live="polite"]');
+    await expect(notice).toHaveText(acceptedNotice(other));
+    await expect(holdCard(page, other)).toHaveCount(0);
+    await axe(page);
+    // Dismissing the notice lets the empty inbox go.
+    await inbox(page)
+      .getByRole("button", { name: "Ocultar aviso", exact: true })
+      .click();
+    await expect(inbox(page)).toHaveCount(0);
+    const order = await acceptedOrder(page, `Dos ${f.id}`);
+    expect(order).toBeTruthy();
+    f.orders.push(order!.id);
+  });
+});
+
+test("price change: the acknowledgement covers the total staff saw; a newer price needs a new one, and the diner sees the confirmed total", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  const menu = (await call(page, "/menu")).data as {
+    categories: { id: string; name: { es: string } }[];
+  };
+  const id = crypto.randomUUID();
+  const productName = `Precio ${runId()}`;
+  const save = async (price: number, expectedVersion: number) => {
+    const r = await call(page, "/menu/products/save", {
+      operationId: op(),
+      id,
+      expectedVersion,
+      name: { es: productName, en: "" },
+      categoryId: menu.categories.find((c) => c.name.es === "Antojitos")!.id,
+      kind: "item",
+      price,
+      station: "kitchen",
+      groupIds: [],
+    });
+    expect(r.status, JSON.stringify(r.data)).toBe(200);
+    return r.data.version as number;
+  };
+  let version = await save(4000, 0);
+  try {
+    await withFixture(page, async (f) => {
+      const link = await f.link({ kind: "counter", label: `Precio ${f.id}` });
+      const customer = await diner(context, link.path);
+      await customer
+        .getByRole("button", { name: new RegExp(`^${productName}`) })
+        .click();
+      await sendOrder(customer, `Precio ${f.id}`);
+      const head = customer.locator(".diner-status-head");
+      await expect(head).toContainText("Esperando confirmación del personal");
+      const label = (await customer.locator(".diner-code").innerText()).trim();
+      version = await save(5000, version);
+      await goToOrders(page);
+      const card = holdCard(page, label);
+      await expect(card).toContainText("Total actual");
+      await expect(card).toContainText("$50.00");
+      const ack = card.getByLabel(
+        "El precio cambió desde que el cliente pidió. Ya le avisé.",
+      );
+      const acceptButton = card.getByRole("button", {
+        name: "Aceptar y enviar a cocina",
+        exact: true,
+      });
+      await expect(acceptButton).toBeDisabled();
+      await ack.check();
+      await expect(acceptButton).toBeEnabled();
+      // MONEY-1: the price moves again; the next inbox read clears the
+      // acknowledgement, so the new total needs a new one.
+      version = await save(6500, version);
+      await expect(card).toContainText("$65.00", { timeout: 20000 });
+      await expect(ack).not.toBeChecked();
+      await expect(acceptButton).toBeDisabled();
+      await ack.check();
+      await acceptButton.click();
+      await expect(inbox(page)).toContainText(acceptedNotice(label));
+      const order = await acceptedOrder(page, `Precio ${f.id}`);
+      expect(order).toBeTruthy();
+      f.orders.push(order!.id);
+      const full = (await call(page, `/orders/${order!.id}`)).data;
+      expect(full.total).toBe(6500);
+      // PRIVACY-1: the diner sees the confirmed price, not the one sent.
+      await expect(customer.locator(".diner-price-changed")).toContainText(
+        "El precio cambió al confirmar tu pedido; total confirmado: $65.00.",
+        { timeout: 20000 },
+      );
+      await expect(customer.locator(".diner-status .diner-line")).toContainText(
+        "$65.00",
+      );
+    });
+  } finally {
+    await call(page, "/menu/products/archive", {
+      operationId: op(),
+      id,
+      expectedVersion: version,
+      archived: true,
+    });
+  }
+});
+
+test("inbox details: a table's second order pre-selects the check the first one opened; a card another terminal handled keeps its outcome in the notice", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await withFixture(page, async (f) => {
+    const [mesa] = await f.makeTables();
+    const link = await f.link({ kind: "table", tableId: mesa.id });
+    const labels: string[] = [];
+    for (const who of ["Uno", "Dos", "Tres"]) {
+      const customer = await diner(context, link.path);
+      await customer.getByRole("button", { name: /^Taco de hongos/ }).click();
+      await sendOrder(customer, `${who} ${f.id}`);
+      await expect(customer.locator(".diner-status-head")).toContainText(
+        "Esperando confirmación del personal",
+      );
+      labels.push((await customer.locator(".diner-code").innerText()).trim());
+      await customer.close();
+    }
+    const [first, second, third] = labels;
+    await goToOrders(page);
+    // No check is open yet: every card offers "Cuenta nueva".
+    await expect(holdCard(page, second).getByLabel("Enviar a")).toHaveValue(
+      "new",
+    );
+    await holdCard(page, first)
+      .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
+      .click();
+    await expect(inbox(page)).toContainText(acceptedNotice(first));
+    const order = await acceptedOrder(page, `Uno ${f.id}`);
+    expect(order).toBeTruthy();
+    f.orders.push(order!.id);
+    // MONEY-3: the next read finds the check the first order opened; the
+    // untouched second card now pre-selects it.
+    await expect(holdCard(page, second).getByLabel("Enviar a")).toHaveValue(
+      order!.id,
+    );
+    // UX-7: another terminal rejects the third order; this card's accept
+    // then meets "already handled", and the outcome outlives the card.
+    const listed = await call(page, "/ordering/inbox");
+    const hold = (listed.data.holds as { id: string; label: string }[]).find(
+      (h) => h.label === third,
+    )!;
+    await call(page, `/ordering/holds/${hold.id}/reject`, {
+      operationId: op(),
+      reason: "duplicate",
+    });
+    await holdCard(page, third)
+      .getByRole("button", { name: "Aceptar y enviar a cocina", exact: true })
+      .click();
+    const notice = inbox(page).locator('.public-notice[aria-live="polite"]');
+    await expect(notice).toHaveText(`${third}: Este pedido ya fue atendido.`);
+    await expect(holdCard(page, third)).toHaveCount(0);
+    await expect(notice).toHaveText(`${third}: Este pedido ya fue atendido.`);
+  });
+});
+
+test("legacy signed links show the invalid-code page without calling the API", async ({
+  context,
+}) => {
+  const page = await context.newPage();
+  const calls: string[] = [];
+  page.on("request", (r) => {
+    if (new URL(r.url()).pathname.startsWith("/api/public"))
+      calls.push(r.url());
+  });
+  for (const path of [
+    "/qr/eyJhbGciOi.fake",
+    "/kiosk/v2.k1.payload.sig",
+    "/qr",
+  ]) {
+    await page.goto(path);
+    await expect(
+      page.getByRole("heading", { name: "Este código ya no funciona" }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Pide al personal un código nuevo."),
+    ).toBeVisible();
+  }
+  expect(calls).toEqual([]);
+});
+
+test("diner pages never register the service worker", async ({
+  page,
+  browser,
+}) => {
+  test.skip(!process.env.TEST_PRODUCTION, "Needs the compiled service worker");
+  await login(page);
+  await withFixture(page, async (f) => {
+    const link = await f.link({ kind: "counter", label: `SW ${f.id}` });
+    // A fresh browser profile: only the diner page ever loads in it.
+    const fresh = await (browser as Browser).newContext();
+    try {
+      const customer = await fresh.newPage();
+      await customer.goto(link.path);
+      await expect(
+        customer.getByRole("button", { name: /^Taco de asada/ }),
+      ).toBeVisible();
+      await customer.waitForTimeout(1500);
+      expect(
+        await customer.evaluate(
+          async () => (await navigator.serviceWorker.getRegistrations()).length,
+        ),
+      ).toBe(0);
+    } finally {
+      await fresh.close();
+    }
+  });
+});

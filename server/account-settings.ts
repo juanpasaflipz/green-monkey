@@ -133,9 +133,11 @@ export async function setFreeSelectionMode(
 }
 
 /**
- * Public-ordering interim switch (account 031, §2.15): QR/kiosk ordering stays off
- * in production until the wave-3 public-ordering area ships. Pure; each caller
- * reads it once at module load, so an invalid value fails startup.
+ * Public-ordering kill switch (account 031, §2.15). Since public ordering
+ * (032/033) shipped (its B4 flip, public.md step 12), unset or empty means on
+ * in every environment and "false" turns QR/kiosk ordering off. Pure; the
+ * routers read it once at module load and accountWebConfig validates it, so
+ * an invalid value fails startup (Mesas' reads call it per request).
  */
 export function publicOrderingEnabled(
   env: NodeJS.ProcessEnv = process.env,
@@ -143,8 +145,20 @@ export function publicOrderingEnabled(
   const v = env.PUBLIC_ORDERING_ENABLED?.trim();
   if (v === "true") return true;
   if (v === "false") return false;
-  if (!v) return env.APP_ENV !== "production";
+  if (!v) return true;
   throw Error("public_ordering_flag_invalid");
+}
+
+/**
+ * The operator turned QR/kiosk ordering off on purpose (PUBLIC_ORDERING_ENABLED
+ * is exactly "false", the kill switch), as opposed to a deployment that never
+ * offered it (unset under the interim default). Plan settings then say it is
+ * turned off for now, not "coming soon" (PUBLIC-UX-4, LD-41). Pure.
+ */
+export function publicOrderingSwitchedOff(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.PUBLIC_ORDERING_ENABLED?.trim() === "false";
 }
 
 /** First middleware of /api/public: answers 404 before any token or rate limit when disabled. */
