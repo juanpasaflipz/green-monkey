@@ -112,6 +112,14 @@ export function OrderDetail({
   const voidable = order?.paymentUnits?.some((u) => u.paid === 0) ?? false;
   const holdsTable = order?.mode === "dine_in" && !!order?.tableId;
   const notes = order ? roundNotes(order) : [];
+  // Reprinted comandas name an order from another business day with its date (LD-44).
+  const reprint =
+    offerReprint && order
+      ? ticketsForOpenRounds(order, {
+          today: currentBusinessDate(session.restaurant),
+          locale,
+        })
+      : [];
   return (
     <Modal
       wide
@@ -138,11 +146,11 @@ export function OrderDetail({
           {notice}
         </p>
       )}
-      {offerReprint && order && ticketsForOpenRounds(order).length > 0 && (
+      {reprint.length > 0 && (
         <Button
           onClick={() =>
             void printDocument(
-              ticketsForOpenRounds(order).map((ticket, i) => (
+              reprint.map((ticket, i) => (
                 <KitchenTicketDocument
                   key={i}
                   ticket={ticket}

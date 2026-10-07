@@ -315,6 +315,10 @@ export function RefundDialog({
             .map((x) => x.trim())
             .filter(Boolean)
             .join(" · "),
+          {
+            today: today || currentBusinessDate(session.restaurant),
+            locale,
+          },
         );
         if (!(await printChits(chits))) setUnprinted(chits);
       }

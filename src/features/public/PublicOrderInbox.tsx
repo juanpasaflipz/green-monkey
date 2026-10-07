@@ -9,6 +9,7 @@ import { Button } from "../../components/ui";
 import { PaymentDialog } from "../PaymentDialog";
 import { ReceiptModal, checkStateOf, moneyFormatter } from "../Receipt";
 import { KitchenTicketDocument, ticketsFromOrderRound } from "../KitchenTicket";
+import { currentBusinessDate } from "../../labels";
 import { printDocument, readPrintSettings } from "../../print";
 import { fill } from "../menu/format";
 import { HoldCard, type AcceptBody } from "./HoldCard";
@@ -153,7 +154,11 @@ export function PublicOrderInbox({
 
   function printKitchen(r: AcceptResult) {
     if (!readPrintSettings().kitchenOnSend) return;
-    const tickets = ticketsFromOrderRound(r.order, r.round);
+    // An accepted round on yesterday's open check prints its date (LD-44).
+    const tickets = ticketsFromOrderRound(r.order, r.round, {
+      today: currentBusinessDate(session.restaurant),
+      locale,
+    });
     if (!tickets.length) return;
     void printDocument(
       tickets.map((ticket, i) => (

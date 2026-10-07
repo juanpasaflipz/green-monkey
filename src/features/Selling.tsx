@@ -721,8 +721,15 @@ export function Selling({
   function printNewRound(o: Order) {
     printRounds(o, [Math.max(0, ...o.lines.map((l) => l.round ?? 0))]);
   }
+  /** The business day printed comandas name their order against (LD-44). */
+  const printDay = () => ({
+    today: currentBusinessDate(session.restaurant),
+    locale,
+  });
   function printRounds(o: Order, rounds: number[]) {
-    printTickets(rounds.flatMap((round) => ticketsFromOrderRound(o, round)));
+    printTickets(
+      rounds.flatMap((round) => ticketsFromOrderRound(o, round, printDay())),
+    );
   }
   function printTickets(tickets: KitchenTicketModel[]) {
     if (!tickets.length) return;
@@ -1459,7 +1466,9 @@ export function Selling({
         {noteReprint && (
           <Button
             className="small"
-            onClick={() => printTickets(ticketsForOpenRounds(noteReprint))}
+            onClick={() =>
+              printTickets(ticketsForOpenRounds(noteReprint, printDay()))
+            }
           >
             <Printer size={16} />
             {t("serviceReprintKitchen")}
@@ -1814,7 +1823,9 @@ export function Selling({
                 {noteReprint?.id === receipt.id && (
                   <Button
                     onClick={() =>
-                      printTickets(ticketsForOpenRounds(noteReprint))
+                      printTickets(
+                        ticketsForOpenRounds(noteReprint, printDay()),
+                      )
                     }
                   >
                     <Printer size={16} />

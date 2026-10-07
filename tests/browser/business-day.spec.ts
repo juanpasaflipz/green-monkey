@@ -91,7 +91,7 @@ const dayLabel = (page: Page, date: string, locale: "es" | "en") =>
     { date, locale },
   );
 
-test("LD-29: an open order from the previous business day shows its date next to its number in Órdenes, the cart, the payment dialog, Borradores and the kitchen (tickets and announcements); today's orders keep the plain number", async ({
+test("LD-29: an open order from the previous business day shows its date next to its number in Órdenes, the cart, the payment dialog, Borradores and the kitchen (tickets, printed comandas and announcements); today's orders keep the plain number", async ({
   page,
   baseURL,
 }) => {
@@ -187,6 +187,27 @@ test("LD-29: an open order from the previous business day shows its date next to
         .filter({ hasText: freshName })
         .locator("h2"),
     ).toHaveText(`#${fresh.number} ${freshName}`);
+    // The comanda printed from the kitchen screen names the date as its header
+    // does; today's prints its plain number (LD-44).
+    await page.evaluate(() => {
+      (window as any).__printed = [];
+      window.print = () =>
+        (window as any).__printed.push(
+          document.getElementById("print-root")?.innerText ?? "",
+        );
+    });
+    for (const name of [oldName, freshName])
+      await page
+        .locator("article.kitchen-ticket")
+        .filter({ hasText: name })
+        .getByRole("button", { name: "Imprimir comanda", exact: true })
+        .click();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__printed as string[]))
+      .toEqual([
+        expect.stringContaining(`${oldLabel} ${oldName}`),
+        expect.stringContaining(`#${fresh.number} ${freshName}`),
+      ]);
     // A new round of the old order is announced with its date, as its header
     // reads, so it never sounds like today's #N (POL-R2-2).
     const catalog = await call<any[]>(page, "/catalog");

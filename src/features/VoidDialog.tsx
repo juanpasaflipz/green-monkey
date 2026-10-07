@@ -169,7 +169,10 @@ export function VoidDialog({
               // reports (029): with "Imprimir comanda al enviar" the kitchen gets a
               // cancellation chit; printing never fails the void.
               const chits = readPrintSettings().kitchenOnSend
-                ? cancellationsFromVoid(order, after, reason)
+                ? cancellationsFromVoid(order, after, reason, {
+                    today: today || currentBusinessDate(session.restaurant),
+                    locale,
+                  })
                 : [];
               const printed = await print(chits);
               await saved();

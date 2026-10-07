@@ -94,6 +94,8 @@ function round(p: Partial<KitchenRound>): KitchenRound {
     ...p,
   };
 }
+/** The fixtures' own business day: the chits name the order as "#142" (LD-44). */
+const sameDay = { today: "2026-10-05", locale: "es" as const };
 const pending = (
   id: string,
   lineId: string,
@@ -148,6 +150,7 @@ describe("kitchen cancellation chits (FIT-9)", () => {
     const chits = cancellationsFromKitchenRounds(
       rounds,
       new Set(["v-new", "v-new2", "v-ref"]),
+      sameDay,
     );
     expect(chits).toHaveLength(2);
     expect(chits[0]).toEqual({
@@ -184,9 +187,12 @@ describe("kitchen cancellation chits (FIT-9)", () => {
         }),
       ],
       new Set(["a", "b"]),
+      sameDay,
     );
     expect(mixed[0]).toMatchObject({ kind: "void", reason: "x; y" });
-    expect(cancellationsFromKitchenRounds(rounds, new Set())).toEqual([]);
+    expect(cancellationsFromKitchenRounds(rounds, new Set(), sameDay)).toEqual(
+      [],
+    );
   });
 
   const line = (p: Partial<PricedLine>): PricedLine => ({
@@ -287,7 +293,12 @@ describe("kitchen cancellation chits (FIT-9)", () => {
         ],
       },
     );
-    const chits = cancellationsFromVoid(before, after, " Error de captura ");
+    const chits = cancellationsFromVoid(
+      before,
+      after,
+      " Error de captura ",
+      sameDay,
+    );
     expect(
       chits.map((c) => [c.round, c.station, c.lines.map((l) => l.quantity)]),
     ).toEqual([
@@ -301,7 +312,7 @@ describe("kitchen cancellation chits (FIT-9)", () => {
       time: "2026-10-05T20:15:00.000Z",
       tableName: "M4",
     });
-    expect(cancellationsFromVoid(after, after, "x")).toEqual([]);
+    expect(cancellationsFromVoid(after, after, "x", sameDay)).toEqual([]);
   });
 
   it("15b. RPT-R12: a void of a completed (served) round prints no chit, as the KDS shows no pending void for it", () => {
@@ -317,9 +328,9 @@ describe("kitchen cancellation chits (FIT-9)", () => {
       ],
       { voids: [served] },
     );
-    expect(cancellationsFromVoid(before, afterServed, "Ya servido")).toEqual(
-      [],
-    );
+    expect(
+      cancellationsFromVoid(before, afterServed, "Ya servido", sameDay),
+    ).toEqual([]);
     // One command voiding a served unit and an unserved one prints only the unserved one.
     const afterMixed = order(
       [
@@ -340,7 +351,7 @@ describe("kitchen cancellation chits (FIT-9)", () => {
       },
     );
     expect(
-      cancellationsFromVoid(before, afterMixed, "Error").map((c) => [
+      cancellationsFromVoid(before, afterMixed, "Error", sameDay).map((c) => [
         c.round,
         c.station,
         c.lines.map((l) => [l.name.es, l.quantity]),
@@ -365,6 +376,7 @@ describe("kitchen cancellation chits (FIT-9)", () => {
         createdAt: "2026-10-05T20:30:00.000Z",
       },
       "Producto con defecto o queja · frío",
+      sameDay,
     );
     expect(chits).toEqual([
       {
@@ -383,7 +395,7 @@ describe("kitchen cancellation chits (FIT-9)", () => {
       },
     ]);
     // An amount refund has no lines: nothing prints.
-    expect(cancellationsFromRefund(o, { lines: [] }, "x")).toEqual([]);
+    expect(cancellationsFromRefund(o, { lines: [] }, "x", sameDay)).toEqual([]);
   });
 });
 

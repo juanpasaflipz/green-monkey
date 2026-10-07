@@ -223,7 +223,10 @@ export function Kitchen({
           alerted.map((x) => (
             <KitchenTicketDocument
               key={x.id}
-              ticket={ticketFromKitchenRound(x)}
+              ticket={ticketFromKitchenRound(x, {
+                today: r.currentBusinessDate,
+                locale,
+              })}
               locale={locale}
               timezone={zone}
             />
@@ -235,7 +238,10 @@ export function Kitchen({
     // reports (029): a cook working from paper gets a cancellation chit per round.
     if (settingsRef.current.kdsAutoPrint && voided.length)
       void printCancellations(
-        cancellationsFromKitchenRounds(voided, newVoidIds),
+        cancellationsFromKitchenRounds(voided, newVoidIds, {
+          today: r.currentBusinessDate,
+          locale,
+        }),
         locale,
         zone,
         settingsRef.current.paper,
@@ -403,7 +409,10 @@ export function Kitchen({
   const print = (r: KitchenRound) =>
     void printDocument(
       <KitchenTicketDocument
-        ticket={ticketFromKitchenRound(r)}
+        ticket={ticketFromKitchenRound(r, {
+          today: feed?.currentBusinessDate,
+          locale,
+        })}
         locale={locale}
         timezone={zone}
       />,
