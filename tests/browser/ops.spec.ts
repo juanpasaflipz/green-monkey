@@ -88,12 +88,12 @@ test("the client-address probe returns only the requester's address", async ({
   request,
 }) => {
   const probe = await (await request.get("/api/ops/diagnostics/ip")).json();
-  expect(Object.keys(probe).sort()).toEqual([
-    "forwardedHop",
-    "ip",
-    "peerTrusted",
-  ]);
+  // LD-46: { ip, peerTrusted, source } (source says where the address came
+  // from; the CD smoke requires "x-real-ip" behind Railway's edge).
+  expect(Object.keys(probe).sort()).toEqual(["ip", "peerTrusted", "source"]);
   expect(typeof probe.ip).toBe("string");
+  expect(typeof probe.peerTrusted).toBe("boolean");
+  expect(["x-real-ip", "forwarded", "peer"]).toContain(probe.source);
   const health = await request.get("/api/health");
   expect(health.status()).toBe(200);
   expect(await health.json()).toEqual({ ok: true });

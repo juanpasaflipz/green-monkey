@@ -429,8 +429,10 @@ type Reply<T = any> = {
 };
 /**
  * The real diner router behind loopback proxy trust, so every request may
- * claim its own client address with X-Forwarded-For (independent limiter
- * buckets per simulated diner unless a test pins one).
+ * claim its own client address (independent limiter buckets per simulated
+ * diner unless a test pins one). Requests carry Railway's edge shape (LD-46):
+ * X-Real-IP is the diner and X-Forwarded-For ends with one shared edge hop,
+ * so the limiters must key on clientIp's X-Real-IP, not req.ip.
  */
 async function serve(db: postgres.Sql = sql) {
   const app = express();
@@ -469,9 +471,11 @@ async function serve(db: postgres.Sql = sql) {
     path: string,
     o: { link?: string; status?: string; body?: unknown; ip?: string } = {},
   ): Promise<Reply> => {
+    const ip = o.ip ?? randomIp();
     const headers: Record<string, string> = {
       "content-type": "application/json",
-      "x-forwarded-for": o.ip ?? randomIp(),
+      "x-forwarded-for": `${ip}, 192.0.2.84`,
+      "x-real-ip": ip,
     };
     if (o.link !== undefined) headers[LINK_HEADER] = o.link;
     if (o.status !== undefined) headers[STATUS_HEADER] = o.status;
