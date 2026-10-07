@@ -569,7 +569,8 @@ behaviour.
 - **Discounts 028.** A credit note's FormaPago follows `refunds.method`: a card (`external`)
   refund takes the parent's card form (04/28) or the restaurant's, a cash refund 01. The refund
   dialog shows "Esta venta ya tiene factura (CFDI)…" when `useCfdiTicketStatus` reports a valid
-  covering invoice or global.
+  covering invoice or global. It asks only once the restaurant has activated CFDI (a mode; a
+  paused restaurant is still asked): before that the server answers `cfdi_disabled` (409).
 - **Reports 029.** `collectAlerts()` adds the four `cfdi_*` codes (`cfdiReportAlerts`), Hoy words
   them (`cfdiReportAlertText`) and links them to Configuración; `dayCorte()` sets `extra.cfdi`
   (`cfdiCoverage`) and the corte del día prints it as "Facturación (CFDI)". All are absent while
