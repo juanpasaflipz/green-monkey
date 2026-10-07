@@ -181,6 +181,7 @@ export async function main(
         ok: Boolean(result && !result.failed.length),
         deleted: result?.deleted ?? {},
         redacted: result?.redacted ?? {},
+        backlog: result?.backlog ?? [],
         skipped: result?.skipped ?? [],
       });
       if (!result || result.failed.length) return 1; // retentionPass has already alerted retention_failed

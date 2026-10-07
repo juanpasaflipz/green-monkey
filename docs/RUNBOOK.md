@@ -194,9 +194,11 @@ schema owner `gm_migrator` from GitHub Actions (the environment secret
 - **Daily:** `.github/workflows/retention.yml`, production at 05:15 and
   staging at 05:45 America/Mexico_City (11:15 and 11:45 UTC), after the
   03:30 backup and inside the 04:00–07:00 window (`RETENTION_WINDOW`). One
-  run repeats bounded passes while the previous pass deleted a full batch
-  (5,000 rows) from some table, at most 10 passes, and never starts a pass
-  after 07:00. The schedules run only for environments listed in the
+  run repeats bounded passes while the previous pass left a backlog (some
+  table's last 5,000-row batch was full, so the pass stopped at its batch or
+  time limit), at most 10 passes, and never starts a pass after 07:00. A pass
+  that ends every table on a short or empty batch is the last one;
+  `retention_only_complete` logs any `backlog` left when the run stops. The schedules run only for environments listed in the
   repository variable `OPS_LIVE_ENVIRONMENTS`; a manual dispatch (Actions →
   Retention → environment) always runs, except production during service
   hours (12:00–23:59) without `allow_service_hours`.
