@@ -100,6 +100,14 @@ test("Configuración shows the CFDI panel before activation: badge, prerequisite
     await expect(
       cfdi.getByRole("button", { name: "Activar en modo prueba" }),
     ).toBeVisible();
+    // LD-51 F2: activation asks for the global periodicity (monthly by default, D4) and says how
+    // it bounds self-invoicing (F1).
+    await expect(
+      cfdi.getByLabel("Periodicidad de la factura global"),
+    ).toHaveValue("month");
+    await expect(
+      cfdi.getByText(/al cierre del mes del consumo más \d+ min/),
+    ).toBeVisible();
   }
   // The Configuración view keeps a single "Guardar" (RestaurantSettings) and its status text.
   await expect(
@@ -403,6 +411,10 @@ test("FIT-6: owner activates CFDI in test mode, a wrong CSD password is refused 
         timeout: 30_000,
       });
     }
+    // LD-51 F9: the issuer RFC is the one Facturapi reports for the organization (its CSD's).
+    await expect(cfdi.getByText(RECEPTOR.rfc, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
     expect(
       (
         await new AxeBuilder({ page })
@@ -569,6 +581,70 @@ test("customer self-invoices from /f/{code}: inline receptor errors, then succes
     ).toEqual([]);
   } finally {
     await customerContext.close();
+    await pauseCfdi(page);
+  }
+});
+
+test("LD-51 F1/F2/F10: the owner switches the global to daily in the panel; with no global of the month yet it applies at once, the panel states it and the bound it puts on self-invoicing, and the portal shows the daily deadline with its time", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(120_000);
+  await login(page);
+  test.skip(
+    !(await stampingReady(page)),
+    "needs the cfdi worker with the Facturapi fake",
+  );
+  await ensureFiscalIdentity(page);
+  await ensureCfdiOn(page);
+  const customerContext = await browser.newContext();
+  const customer = await customerContext.newPage();
+  try {
+    const before = (await settings(page)).settings;
+    if (before.globalPeriodicity !== "month" || before.nextPeriodicity)
+      await saveSettings(page, { globalPeriodicity: "month" });
+    // A global document of this month would make the change wait for next month (F2).
+    const today = new Date().toISOString().slice(0, 10);
+    const periods = (
+      await call<{ documents: unknown[] }[]>(
+        page,
+        `/cfdi/globals?from=${today.slice(0, 8)}01&to=${today}`,
+      )
+    ).body;
+    const unshaped = periods.every((p) => p.documents.length === 0);
+    await openSettings(page);
+    const cfdi = panel(page);
+    await expect(cfdi.getByText("Periodicidad actual: mensual.")).toBeVisible();
+    await cfdi
+      .getByLabel("Periodicidad de la factura global")
+      .selectOption("day");
+    await expect(
+      cfdi.getByText(/al cierre del día del consumo más \d+ min/),
+    ).toBeVisible();
+    await cfdi
+      .getByRole("button", { name: "Guardar configuración", exact: true })
+      .click();
+    await expect(
+      cfdi.getByText("Configuración de facturación guardada"),
+    ).toBeVisible();
+    if (!unshaped) {
+      await expect(cfdi.getByText(/Cambia a diaria desde el/)).toBeVisible();
+      return;
+    }
+    await expect(cfdi.getByText("Periodicidad actual: diaria.")).toBeVisible();
+    expect((await settings(page)).settings.globalPeriodicity).toBe("day");
+    // The portal answers the deadline the receipt prints: the close of today's business day plus
+    // the grace, with its time, and why.
+    const order = await paidOrder(page, "CFDI daily " + Date.now());
+    await customer.goto(`/f/${order.fiscal.ticket.selfInvoiceCode}`);
+    await expect(
+      customer.getByText(
+        /^Puedes facturar hasta el \d{2}\/\d{2}\/\d{4} a las \d{2}:\d{2}\. Después, el ticket se incluye en la factura global del restaurante\.$/,
+      ),
+    ).toBeVisible();
+  } finally {
+    await customerContext.close();
+    await saveSettings(page, { globalPeriodicity: "month" });
     await pauseCfdi(page);
   }
 });
