@@ -223,6 +223,14 @@ test("owner pairs a terminal with a code and a new cashier signs in with name an
   const add = page.getByRole("dialog", { name: "Agregar empleado" });
   await add.getByLabel("Nombre", { exact: true }).fill(cashier);
   await add.getByLabel("Rol").selectOption({ label: "Cajero" });
+  // A short PIN names the rule in Spanish, not the browser's generic
+  // validation bubble (restaurant-day A4.3, FOH-8).
+  await add.getByLabel("PIN nuevo (6 a 8 dígitos)").fill("1234");
+  await add.getByLabel("Confirma el PIN").fill("1234");
+  await add.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(add.getByRole("alert")).toHaveText(
+    "El PIN debe tener de 6 a 8 dígitos.",
+  );
   await add.getByLabel("PIN nuevo (6 a 8 dígitos)").fill("481516");
   await add.getByLabel("Confirma el PIN").fill("481516");
   await add.getByRole("button", { name: "Guardar", exact: true }).click();

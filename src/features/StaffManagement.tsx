@@ -2,11 +2,18 @@ import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import type { StaffRow } from "../../shared/access";
-import { strings, errorNotice, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import { api } from "../api";
 import { Badge, Button, Field, Modal } from "../components/ui";
 import { lockTime } from "./PinPad";
 import "../access/access.css";
+
+/**
+ * A new PIN: 6 to 8 digits. Checked on submit with the specific message
+ * (pin_invalid_format) instead of the browser's generic validation bubble,
+ * which never names the rule (FOH-8; restaurant-day A4.3).
+ */
+const PIN_FORMAT = /^\d{6,8}$/;
 
 const ROLES = ["manager", "cashier", "server", "kitchen"] as const;
 
@@ -275,8 +282,6 @@ function PinFields({
           type="password"
           inputMode="numeric"
           autoComplete="new-password"
-          pattern="\d{6,8}"
-          minLength={6}
           maxLength={8}
           required
           value={pin}
@@ -288,8 +293,6 @@ function PinFields({
           type="password"
           inputMode="numeric"
           autoComplete="new-password"
-          pattern="\d{6,8}"
-          minLength={6}
           maxLength={8}
           required
           value={confirm}
@@ -324,6 +327,8 @@ function AddStaff({
         onSubmit={async (e) => {
           e.preventDefault();
           setError("");
+          if (!PIN_FORMAT.test(pin))
+            return setError(translateError("pin_invalid_format", locale));
           if (pin !== confirm) return setError(t.accessStaffPinMismatch);
           setBusy(true);
           try {
@@ -507,6 +512,8 @@ function EditStaff({
           onSubmit={async (e) => {
             e.preventDefault();
             setError("");
+            if (!PIN_FORMAT.test(pin))
+              return setError(translateError("pin_invalid_format", locale));
             if (pin !== confirm) return setError(t.accessStaffPinMismatch);
             if (
               await run(
