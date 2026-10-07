@@ -46,6 +46,11 @@ async function runFor(d: Device, ms: number) {
   await advance(d, ms);
 }
 
+/** Real time passing, for every device at once (the test process's own timer). */
+async function realWait(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** Re-syncs a device clock to real time plus its skew (§3.5.3). */
 async function resync(d: Device) {
   await d.context.clock.setSystemTime(Date.now() + d.skew);
@@ -163,13 +168,14 @@ export async function serviceA3(dev: Devices, state: RunState) {
   await edge502(caja);
   await edge502(cocina);
   run.step = "A13.2";
-  await runFor(caja, 30_000);
-  await runFor(cocina, 30_000);
+  // These 65 s pass in real time, not with runFor: the app's corrected clock
+  // follows the monotonic clock from its last contact with the server (OFF-R24),
+  // and a fake-clock jump would leave it ahead of the server for good. The four
+  // sales right after must carry their true instants (D7: recorded_at = the
+  // device clock minus its 3 minutes, sold_at within 10 s of the real sale).
+  await realWait(30_000);
   await press(caja, page.getByRole("textbox", { name: "Buscar producto…" }));
-  await runFor(caja, 35_000);
-  await runFor(cocina, 35_000);
-  await resync(caja);
-  await resync(cocina);
+  await realWait(35_000);
   const tResync = Date.now();
   for (const d of [caja, cocina]) await expect(pill(d)).toHaveAccessibleName(/^Sin conexión/, { timeout: 15_000 });
   const banner = page.locator(".connection-banner");
@@ -218,6 +224,11 @@ export async function serviceA3(dev: Devices, state: RunState) {
   await expect(page.getByText("Cerrar caja y registrar retiros requieren conexión.", { exact: true })).toBeVisible();
   // A cashier under blind close never sees "Corte X" (expected cash is hidden; reports 029).
   await expect(page.getByRole("button", { name: "Corte X", exact: true })).toHaveCount(0);
+  // Built: Órdenes reads its list from the server, so offline it offers no check
+  // at all, and with it no "Reembolsar" or "Anular" (spec: disabled with a reason).
+  await press(caja, page.getByRole("navigation", { name: "Operación" }).getByRole("button", { name: "Órdenes", exact: true }));
+  await expect(page.locator(".orders-view")).toBeVisible();
+  await expect(page.locator(".orders-view button:enabled").filter({ hasText: /^(Reembolsar|Anular|Descuento)$/ })).toHaveCount(0);
   page.off("request", watch);
   expect(attempts, "A13.8: no online-only command leaves the device").toEqual([]);
 
