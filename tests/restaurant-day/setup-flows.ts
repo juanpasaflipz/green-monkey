@@ -695,6 +695,18 @@ export async function setupA(dev: Devices, state: RunState, save: () => void) {
   const diego = r.staff.find((p) => p.key === "diego")!;
   await signIn(caja, diego.name, diego.pin);
   await expect(caja.page.getByRole("heading", { name: "Vender", level: 1 })).toBeVisible();
+  // A7.c5: Vender lists the categories in the menu's order (after the "all" chip); the
+  // open-price product shows "Precio abierto" instead of a price and the combo its tag.
+  {
+    const chips = await caja.page.locator(".categories button").allInnerTexts();
+    expect(chips.slice(1).map((c) => c.trim())).toEqual(r.categories);
+    const card = (id: string) =>
+      caja.page.locator("button.product").filter({
+        has: caja.page.locator("strong", { hasText: new RegExp(`^${escapeRe(r.products.find((p) => p.id === id)!.name)}$`) }),
+      });
+    await expect(card("VA").locator(".product-price")).toHaveText("Precio abierto");
+    await expect(card("CP").locator(".product-tag")).toHaveText("Combo");
+  }
   // A8.6: a wrong code on an unpaired device.
   const probe = await dev("probe");
   await probe.page.goto("/app");
