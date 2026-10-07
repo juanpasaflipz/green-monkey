@@ -62,9 +62,7 @@ describe("offline screens date an order from another business day (LD-48)", () =
     expect(offlineReviewOrderLabel(held(yesterday, null), today, "en")).toBe(
       `#46${D}·${D}Oct${D}5`,
     );
-    expect(offlineReviewOrderLabel(held(today, null), today, "es")).toBe(
-      "#46",
-    );
+    expect(offlineReviewOrderLabel(held(today, null), today, "es")).toBe("#46");
     expect(offlineReviewOrderLabel(held(yesterday, "B-07"), today, "es")).toBe(
       `B-07 → #46${D}·${D}5${D}oct`,
     );
@@ -132,9 +130,7 @@ describe("offline screens date an order from another business day (LD-48)", () =
       },
     });
     expect(row(mapped)).toBe(`B-07 → #142${D}·${D}5${D}oct $150.00`);
-    expect(row({ ...mapped, number: 0 })).toBe(
-      `B-07${D}·${D}5${D}oct $150.00`,
-    );
+    expect(row({ ...mapped, number: 0 })).toBe(`B-07${D}·${D}5${D}oct $150.00`);
   });
 
   it("the offline payment review names the check the money would go to with its date (POLISH-MONEY-2, POLISH-UX-8)", () => {

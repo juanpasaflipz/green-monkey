@@ -2103,9 +2103,7 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
         day,
         "es",
       );
-    expect(await label(yesterday.id)).toBe(
-      `${number}\u00a0·\u00a05\u00a0oct`,
-    );
+    expect(await label(yesterday.id)).toBe(`${number}\u00a0·\u00a05\u00a0oct`);
     expect(await label(today.id)).toBe(number);
     // The offline comanda prints the date of yesterday's provisional number.
     const tickets = await localKitchenTickets(s, 0, {
