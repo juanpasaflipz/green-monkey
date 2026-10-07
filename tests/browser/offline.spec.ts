@@ -1014,6 +1014,35 @@ test("Offline kitchen ticket prints and appears in the device list", async ({
   await context.setOffline(false);
 });
 
+test("Setting 'Al guardar sin conexión' on the Sync screen applies to the next offline sale without a reload (restaurant-day A13)", async ({
+  page,
+  context,
+}) => {
+  await page.addInitScript(() => {
+    (window as any).__prints = 0;
+    window.print = () => {
+      (window as any).__prints++;
+    };
+  });
+  await login(page);
+  await page.evaluate(() => localStorage.setItem("gm-offline-print", "ask"));
+  await openDrawer(page);
+  await pill(page, /^Conectado/).click();
+  await page
+    .getByLabel("Al guardar sin conexión")
+    .selectOption({ label: "Imprimir comanda" });
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await goOffline(context, page);
+  await saveOfflineSale(page);
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__prints))
+    .toBe(1);
+  await nextSale(page);
+  await context.setOffline(false);
+});
+
 test("An offline external-terminal sale shows and prints service's local receipt with the method, the reference and the order note (LD-10 B4, LD-1)", async ({
   page,
   context,
