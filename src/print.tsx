@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useId, useSyncExternalStore, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { Locale } from "../shared/domain";
@@ -173,6 +173,8 @@ export function PrintSettingsDialog({
 }) {
   const t = strings[locale];
   const [settings, save] = usePrintSettings();
+  // The hint is the checkbox's description, so a screen reader reads it on toggle.
+  const silentHintId = useId();
   return (
     <Modal title={t.servicePrintSettings} close={close} closeLabel={t.close}>
       <fieldset className="field">
@@ -206,11 +208,14 @@ export function PrintSettingsDialog({
             <input
               type="checkbox"
               checked={settings.kdsAutoPrint}
+              aria-describedby={silentHintId}
               onChange={(e) => save({ kdsAutoPrint: e.target.checked })}
             />
             <span>{t.servicePrintKdsAuto}</span>
           </label>
-          <p className="muted">{t.servicePrintSilentHint}</p>
+          <p className="muted" id={silentHintId}>
+            {t.servicePrintSilentHint}
+          </p>
         </>
       )}
       <p className="muted tiny">{t.servicePrintUnconfirmed}</p>

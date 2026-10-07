@@ -51,12 +51,18 @@ describe("copy that sends staff to the pilot manual (LD-17)", () => {
     "utf8",
   ).replace(/\s+/g, " ");
 
-  it("the silent-print hint points to the pilot manual's print steps, not to an unconfirmed Chrome flag", () => {
+  it("the silent-print hint points to the pilot guide's print steps, not to an unconfirmed Chrome flag, and says what auto-print does (POLISH-UX-9)", () => {
     expect(strings.es.servicePrintSilentHint).toBe(
-      "La impresión sin diálogo no está confirmada; sigue los pasos de impresión del manual del piloto.",
+      "La impresión sin diálogo no está confirmada: con esta opción, cada ticket nuevo abre el diálogo de impresión. Sigue la guía del piloto, sección 1.3.",
     );
     expect(strings.en.servicePrintSilentHint).toBe(
-      "Printing without a dialog is not confirmed; follow the printing steps in the pilot manual.",
+      "Printing without a dialog is not confirmed: with this option, each new ticket opens the print dialog. Follow the pilot guide, section 1.3.",
+    );
+    // The section it names is PILOT_SOP's silent-printing section, under the
+    // guide's own title.
+    expect(pilotSop).toContain("# Guía de operación del piloto");
+    expect(pilotSop).toContain(
+      "### 1.3 Imprimir sin diálogo (modo kiosco) según el navegador",
     );
     for (const locale of ["es", "en"] as const)
       expect(strings[locale].servicePrintSilentHint).not.toMatch(

@@ -98,10 +98,14 @@ opciones cambian según el fabricante y el sistema; consulta el manual del contr
 
 ### 1.3 Imprimir sin diálogo (modo kiosco) según el navegador
 
-En «Cocina», la ventana «Impresión» dice: «La impresión sin diálogo no está confirmada;
-sigue los pasos de impresión del manual del piloto.» (en inglés: «Printing without a dialog
-is not confirmed; follow the printing steps in the pilot manual.»). El manual del piloto es
-esta guía y esos pasos son los de esta sección. La app ya no recomienda abrir Chrome con
+En «Cocina», la ventana «Impresión» dice, debajo de «Imprimir tickets nuevos
+automáticamente en esta pantalla»: «La impresión sin diálogo no está confirmada: con esta
+opción, cada ticket nuevo abre el diálogo de impresión. Sigue la guía del piloto, sección
+1.3.» (en inglés: «Printing without a dialog is not confirmed: with this option, each new
+ticket opens the print dialog. Follow the pilot guide, section 1.3.»). La guía del piloto
+es esta guía («Guía de operación del piloto») y la sección 1.3 es esta. Con la impresión
+automática activada, alguien debe tocar «Imprimir» o «Cancelar» en cada diálogo, que
+cubre la pantalla de cocina mientras está abierto. La app ya no recomienda abrir Chrome con
 impresión de kiosco: ninguna documentación oficial que consultamos lo confirma (LD-17; se
 volvió a consultar la documentación de políticas de Chrome Enterprise y la de Chromium el 6
 de octubre de 2026).

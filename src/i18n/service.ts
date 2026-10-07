@@ -131,7 +131,7 @@ export default defineArea({
     servicePrintKdsAuto:
       "Imprimir tickets nuevos automáticamente en esta pantalla",
     servicePrintSilentHint:
-      "La impresión sin diálogo no está confirmada; sigue los pasos de impresión del manual del piloto.",
+      "La impresión sin diálogo no está confirmada: con esta opción, cada ticket nuevo abre el diálogo de impresión. Sigue la guía del piloto, sección 1.3.",
     servicePrintUnconfirmed:
       "La impresión del navegador no confirma que salió papel.",
     // Selling
@@ -409,7 +409,7 @@ export default defineArea({
     servicePrintKitchenOnSend: "Print kitchen ticket when sending",
     servicePrintKdsAuto: "Print new tickets automatically on this screen",
     servicePrintSilentHint:
-      "Printing without a dialog is not confirmed; follow the printing steps in the pilot manual.",
+      "Printing without a dialog is not confirmed: with this option, each new ticket opens the print dialog. Follow the pilot guide, section 1.3.",
     servicePrintUnconfirmed:
       "Browser printing does not confirm that paper came out.",
     serviceLineNote: "Kitchen note",
