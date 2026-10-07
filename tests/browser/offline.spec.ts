@@ -464,6 +464,55 @@ test("an outage noticed after Cobrar relabels Confirmar in place, and the relabe
   await context.unroute("**/api/**");
 });
 
+test("while the payment dialog is open, Confirm ignores taps for 700 ms after the connection changes; the offline notice is a status (LD-45)", async ({
+  page,
+  context,
+}) => {
+  // A tap that lands as the button relabels (online to offline, or back)
+  // must not run the other action: Confirm stays disabled for 700 ms after
+  // each change while the dialog is open.
+  await page.clock.install();
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const confirm = dialog.getByRole("button", {
+    name: "Confirmar cobro",
+    exact: true,
+  });
+  // Opening the dialog is not a change: Confirm works at once.
+  await expect(confirm).toBeEnabled();
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
+  await goOffline(context, page);
+  const save = dialog.getByRole("button", {
+    name: "Guardar cobro en este dispositivo",
+    exact: true,
+  });
+  await expect(save).toBeDisabled();
+  await expect(dialog.getByRole("status")).toContainText(
+    "Sin conexión: el cobro se guarda en este dispositivo.",
+  );
+  await page.clock.runFor(650);
+  await expect(save).toBeDisabled();
+  await page.clock.runFor(100);
+  await expect(save).toBeEnabled();
+  // Back online: two good probes (the online event's, then 2 s later).
+  await context.setOffline(false);
+  await expect
+    .poll(async () => {
+      await page.clock.runFor(500);
+      return confirm.count();
+    })
+    .toBe(1);
+  await expect(confirm).toBeDisabled();
+  await page.clock.runFor(750);
+  await expect(confirm).toBeEnabled();
+  await expect(dialog.getByRole("status")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});
+
 test("Hung server times out and the payment dialog becomes closable within 16 s", async ({
   page,
   context,
