@@ -83,6 +83,13 @@ const PERMANENT: Record<string, string> = {
     "LO-R5 financialRecovery re-takes the draft's order key reconcileSale took first",
   "server/offline-tables.ts#reconcilers.payment:5>1":
     "LO-R5 the order's key, only when paymentTarget locked nothing (unresolvable)",
+  // Public ordering (LD-24, docs/PUBLIC_ORDERING.md §6): accepting a held order.
+  "server/public-holds.ts#acceptHold:2b>1":
+    "LO-R5 the hold's own order key (createOrder/addRound(h.order_operation_id)), under the hold row and before LO-4",
+  "server/public-holds.ts#acceptHold:12>1":
+    "LO-R5 fresh key (recordPayment(randomUUID())) after createOrder's closing refresh, which follows the feed (LO-R3, 027) and cannot issue (E5)",
+  "server/public-holds.ts#acceptHold:12>11":
+    "E5 createOrder's closing refresh cannot issue (nothing is paid at creation); recordPayment then takes the drawer and issues the ticket (LO-12) last, as applySale",
 };
 const ALLOWLIST = { ...PERMANENT };
 
@@ -279,6 +286,47 @@ describe("the scanner finds what the rules forbid (fixtures)", () => {
       "f.ts#feedThenStock:10>9",
       "f.ts#refreshThenFeed:12>10",
       "f.ts#roundsAfterStock:9>7",
+    ]);
+  });
+
+  it("PUBLIC-CONCURRENCY-1: public ordering's LO-3 rows (links FOR UPDATE, the settings row and its upsert) and LO-4 hold numbers are ordered objects too", () => {
+    const found = scan({
+      "p.ts": `
+        export async function orderThenLink(tx, s) {
+          await tx\`select * from orders where id=\${id} for update\`;
+          await tx\`select id from public_links where id=\${l} for update\`;
+        }
+        export async function drawerThenSettings(tx, s) {
+          await tx\`select * from cash_sessions where id=\${d} for update\`;
+          await tx\`select paused from public_ordering_settings for update\`;
+        }
+        export async function orderThenSettingsUpsert(tx, s) {
+          await tx\`select * from orders where id=\${id} for update\`;
+          await tx\`insert into public_ordering_settings(tenant_id,paused) values(\${t},true) on conflict(tenant_id) do update set paused=true\`;
+        }
+        export async function orderThenHoldNumber(tx, s) {
+          await tx\`select * from orders where id=\${id} for update\`;
+          await tx\`insert into public_hold_numbers(tenant_id,business_date,value) values(\${t},\${d},1) on conflict(tenant_id,business_date) do update set value=public_hold_numbers.value+1\`;
+        }
+        export async function revokeAfterOrder(tx, s) {
+          await tx\`select * from orders where id=\${id} for update\`;
+          await tx\`update public_links set revoked_at=now() where id=\${l}\`;
+        }
+        export async function conforming(tx, s) {
+          await tx\`select id from public_order_holds where id=\${h} for update\`;
+          await tx\`select id from public_links where id=\${l} for update\`;
+          await tx\`select paused from public_ordering_settings for update\`;
+          await tx\`insert into public_hold_numbers(tenant_id,business_date,value) values(\${t},\${d},1) on conflict(tenant_id,business_date) do update set value=public_hold_numbers.value+1\`;
+          await tx\`select * from orders where id=\${id} for update\`;
+        }
+      `,
+    });
+    expect(found).toEqual([
+      "p.ts#drawerThenSettings:11>3",
+      "p.ts#orderThenHoldNumber:5>4",
+      "p.ts#orderThenLink:5>3",
+      "p.ts#orderThenSettingsUpsert:5>3",
+      "p.ts#revokeAfterOrder:5>3",
     ]);
   });
 

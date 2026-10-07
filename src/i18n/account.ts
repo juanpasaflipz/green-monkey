@@ -276,6 +276,8 @@ export default defineArea({
     accountSupportGrantPrefix: "Pro otorgado por soporte",
     accountPlanProEnded: "Pro terminó el {date}.",
     accountPublicOrderingSoon: "Kiosco y pedidos QR: próximamente.",
+    accountPublicOrderingOff:
+      "Pedidos QR y kiosco desactivados temporalmente por Green Monkey.",
     // Diner-facing public ordering copy (key names pinned for wave 3, LD-P12)
     accountGuestNameLabel: "Nombre (opcional)",
     accountGuestNameHint:
@@ -286,7 +288,7 @@ export default defineArea({
     accountGuestPlatformPrivacy:
       "Pedido procesado con Green Monkey · Privacidad de la plataforma",
     accountGuestOrderingUnavailable:
-      "Los pedidos en línea no están disponibles por ahora. Pide en el mostrador.",
+      "Los pedidos en línea no están disponibles por ahora. Pide al personal.",
     // Landing (Landing.tsx keeps them inline for its lightweight bundle)
     accountLandingFooterSupport: "Soporte",
     accountLandingFaqDataQ: "¿De quién son mis datos?",
@@ -566,6 +568,8 @@ export default defineArea({
     accountSupportGrantPrefix: "Pro granted by support",
     accountPlanProEnded: "Pro ended on {date}.",
     accountPublicOrderingSoon: "Kiosk and QR ordering: coming soon.",
+    accountPublicOrderingOff:
+      "QR and kiosk ordering is temporarily turned off by Green Monkey.",
     accountGuestNameLabel: "Name (optional)",
     accountGuestNameHint:
       "Only to call you when your order is ready. You can use a nickname.",
@@ -575,7 +579,7 @@ export default defineArea({
     accountGuestPlatformPrivacy:
       "Order processed with Green Monkey · Platform privacy",
     accountGuestOrderingUnavailable:
-      "Online ordering is unavailable right now. Please order at the counter.",
+      "Online ordering is unavailable right now. Please order with the staff.",
     accountLandingFooterSupport: "Support",
     accountLandingFaqDataQ: "Who owns my data?",
     accountLandingFaqDataA:
@@ -674,8 +678,8 @@ export default defineArea({
       "The details changed in another session. Reload before saving.",
     ],
     public_ordering_disabled: [
-      "Los pedidos en línea no están disponibles por ahora. Pide en el mostrador.",
-      "Online ordering is unavailable right now. Please order at the counter.",
+      "Los pedidos en línea no están disponibles por ahora. Pide al personal.",
+      "Online ordering is unavailable right now. Please order with the staff.",
     ],
   },
 });

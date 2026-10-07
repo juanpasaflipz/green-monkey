@@ -18,7 +18,7 @@ The requirement is to keep the same provider setup—Neon, Railway, and the usef
 
 ## Deployment blueprint
 
-Railway project `proactive-upliftment`, two services built from the root
+Railway project `green-monkey`, two services built from the root
 `Dockerfile` (multi-stage, Node 24.21.0, `npm ci` from the lockfile, compiled
 frontend/server, migrations, `scripts/grants.sql`, `scripts/db/post-migrate.sql`
 and the stamped `build-info.json`). Both start through
@@ -76,9 +76,9 @@ Each role has one job ([PROVISIONING.md](PROVISIONING.md) creates them):
 | `gm_<env>_app` (`DATABASE_URL`) | pooled (`-pooler`) | web | `statement_timeout` 10 s, `lock_timeout` 8 s, `idle_in_transaction_session_timeout` 15 s |
 | `gm_<env>_billing` (`BILLING_DATABASE_URL`) | pooled | web (owner billing commands, webhook; only while billing is enabled, refused by production web otherwise: open DB-1 follow-up in [RUNBOOK.md](RUNBOOK.md)), worker (provider loop); member of `gm_billing_worker` | 30 s / 8 s / 60 s |
 | `gm_<env>_worker` (`WORKER_DATABASE_URL`) | pooled | worker only (jobs runner for worker-only kinds); member of `gm_jobs_worker` and nothing more privileged (`checkWorkerRole`); claims, completes and enqueues jobs inside `tenant()` and discovers tenants through area `SELECT` policies | 30 s / 8 s / 60 s |
-| `gm_migrator` (`MIGRATION_DATABASE_URL`) | direct | GitHub Actions only (environment secret): the deploy job (migrate, grants, retention) and the daily retention workflow; no Railway service holds it. Owns the schema; no superuser, BYPASSRLS or CREATEROLE, so FORCE RLS applies to it (backfills use the owner pattern, [RELEASE.md](RELEASE.md)) | `lock_timeout` 5 s, `statement_timeout` 10 min |
+| `gm_migrator` (`MIGRATION_DATABASE_URL`) | direct | GitHub Actions (environment secret): the deploy job (migrate, grants, retention) and the daily retention workflow; no Railway service holds it. Manual uses, from a private 0600 file on the operator's workstation (as for a manual retention purge, [RUNBOOK.md](RUNBOOK.md) "Retention"): that purge, and support's hold redaction for an ARCO request ([PUBLIC_ORDERING.md](PUBLIC_ORDERING.md), "Redacting a hold (ARCO)"). Owns the schema; no superuser, BYPASSRLS or CREATEROLE, so FORCE RLS applies to it (backfills use the owner pattern, [RELEASE.md](RELEASE.md)) | `lock_timeout` 5 s, `statement_timeout` 10 min |
 | `gm_<env>_backup` (`BACKUP_DATABASE_URL`) | direct | GitHub backup workflow; member of `gm_backup_reader` (reads through `ops_backup_read` policies) | no timeouts |
-| `neondb_owner` | direct | provisioning and rotation scripts only; password kept offline | — |
+| `neondb_owner` | direct | provisioning and rotation scripts; manually, the DB-9 check and repair before the first deploy carrying 032/033 ([RUNBOOK.md](RUNBOOK.md), "DB-9 validation"); password kept offline | — |
 | `gm_support_<name>` (`SUPPORT_DATABASE_URL`) | direct | operator workstation only (account's support CLI, 031); member of `gm_support`; both runtime processes refuse it | account's |
 
 Capability roles (NOLOGIN), created only by `scripts/ops/sql/globals.sql`,

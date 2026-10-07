@@ -128,6 +128,15 @@ const operations: Record<string, Key> = {
   "account.restaurant_privacy": "accountOpRestaurantPrivacy",
   "account.free_selection_mode": "accountOpFreeSelectionMode",
   "plan.free_slot_auto": "accountOpFreeSlotAuto",
+  // public (032)
+  "public.link_created": "publicOpLinkCreated",
+  "public.link_rotated": "publicOpLinkRotated",
+  "public.link_revoked": "publicOpLinkRevoked",
+  "public.settings_saved": "publicOpSettings",
+  "public.paused": "publicOpPaused",
+  "public.resumed": "publicOpResumed",
+  "public.hold_accepted": "publicOpHoldAccepted",
+  "public.hold_rejected": "publicOpHoldRejected",
 };
 const stockCauses: Record<string, Key> = {
   sale: "serviceStockSale",

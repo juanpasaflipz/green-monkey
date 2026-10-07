@@ -86,7 +86,12 @@ export function MenuArea({
         />
       )}
       {view === "floor" && (
-        <FloorWorkspace session={session} locale={locale} online={online} />
+        <FloorWorkspace
+          session={session}
+          locale={locale}
+          online={online}
+          navigate={navigate}
+        />
       )}
     </>
   );

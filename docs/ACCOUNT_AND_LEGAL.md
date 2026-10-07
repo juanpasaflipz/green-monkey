@@ -12,7 +12,7 @@ owner's account console (co-owners, ownership transfer, recovery codes, support
 actions, activity), the vendor support CLI, the owner data export, the
 restaurant's own privacy notice link for QR/kiosk diners, plan-lapse
 continuation and notices (GAP-1), the SaaS tax mode (GAP-6, off by default) and
-the interim public-ordering switch.
+the public-ordering kill switch.
 
 ## Documents and versions
 
@@ -47,9 +47,10 @@ disclose the encrypted backups and their lifecycle (LEGAL-2, UX-5, DATA-2).
 
 `/legal` lists them. The pages render outside the POS shell, work from the
 offline shell (with a "connect to see the current version" notice when the
-configuration cannot load) and print cleanly. The QR/kiosk footer links to
-`/legal/privacidad#restaurantes`, the section that explains Green Monkey's role
-as encargado for diners.
+configuration cannot load) and print cleanly. The QR diner page's footer links
+to `/legal/privacidad#restaurantes`, the section that explains Green Monkey's
+role as encargado for diners (a kiosk shows the same notice as a QR code in an
+in-page dialog, so a tap never leaves the kiosk).
 
 Each document has a `version`, a `requiresAcceptanceSince`, the
 `previousVersion` and `previousRequiresAcceptanceSince` it replaces (null for
@@ -357,7 +358,10 @@ co-owners; works on Free, after a lapse and on unselected devices).
   devices, memberships and location commands, invitations, billing bindings,
   jobs, support actions, `cfdi_secrets`, `cfdi_files`) and every column whose
   name has a `hash`, `secret`, `token` or `csrf` segment. New areas: name a
-  secret column accordingly or add it to the denylist.
+  secret column accordingly or add it to the denylist. Public ordering's four
+  tables (032) are exported without `token_hash`, `status_key_hash` and
+  `request_hash` (public DB 31); the diners' names and notes on holds are the
+  restaurant's own records and stay in the export.
 - One export per tenant at a time and two per process (`429 export_busy`),
   10 per hour per tenant (`429 rate_limited`), 60 s statement and idle
   timeouts, client aborts cancel the cursor, `Cache-Control: no-store`, and an
@@ -373,8 +377,16 @@ diners' data). QR/kiosk pages show "Aviso de privacidad de {restaurante}" next
 to the optional name field ("Nombre (opcional)", "Solo para llamarte cuando tu
 pedido esté listo. Puedes usar un apodo."), or "Este restaurante aún no publicó
 un aviso de privacidad; no escribas datos personales." when none is set.
-`restaurantPrivacyUrl(tx)` is the anchor other diner pages (cfdi portal,
-public ordering) use.
+`restaurantPrivacyUrl(tx)` is the anchor other diner pages use: the cfdi
+portal (`privacyUrl`) and public ordering's diner menu
+(`PublicMenuView.restaurant.privacyNoticeUrl`, `server/public-diner.ts`). On a
+phone the notice opens in a new tab (`rel="noopener noreferrer"`) so the order
+stays open; a kiosk shows it as a QR code in an in-page dialog. The diner copy
+is account's six `accountGuest*` keys (`src/i18n/account.ts`), which public
+ordering's `DinerCart`, `DinerNotice`, `PrivacyDialog` and `dinerApi` read.
+Diners' ARCO requests go to the restaurant, the responsable; for a held order
+that never became a sale, support follows [public ordering](PUBLIC_ORDERING.md)
+§12.
 
 ## Plan lapse (GAP-1)
 
@@ -408,24 +420,36 @@ public ordering) use.
 
 ## Public ordering switch (`PUBLIC_ORDERING_ENABLED`)
 
-Why: QR/kiosk links are signed 24-hour bearer links without revocation, unpaid
-QR orders reach the kitchen, and tables are not bound (SEC-7, FIT-11, FOH-13);
-the public-ordering area (032/033) fixes them. Until it ships, production must
-not expose QR or kiosk ordering.
+Why it exists: before public ordering, QR/kiosk links were signed 24-hour
+bearer links without revocation, unpaid QR orders reached the kitchen, and
+tables were not bound (SEC-7, FIT-11, FOH-13). Public ordering (032/033)
+replaced them with revocable codes and held orders, and keeps this flag as the
+operator kill switch ([public ordering](PUBLIC_ORDERING.md) §8).
 
-- Values `true`/`false`; unset means `false` when `APP_ENV=production` and
-  `true` elsewhere; anything else stops the web with
-  `public_ordering_flag_invalid`.
-- When `false`: every `/api/public/*` request answers
-  `404 public_ordering_disabled` before any token is read or any limit is
-  counted (malformed JSON still gets `400 invalid_json`), `POST
-  /api/ordering-links` answers the same, the link generator is hidden,
-  PlanSettings says "Kiosco y pedidos QR: próximamente.", the landing does not
-  advertise QR/kiosk, and an old QR/kiosk link shows only "Los pedidos en línea
-  no están disponibles por ahora. Pide en el mostrador."
+- Values `true`/`false`; unset or empty means `true` in every environment
+  since public ordering's flag flip (B4, a separately revertible commit: until
+  it, unset meant `false` when `APP_ENV=production`); anything else stops the
+  web with `public_ordering_flag_invalid`. `false` is the kill switch.
+- When `false`: every `/api/public/*` request (menu, revision, orders, status,
+  cancel) answers `404 public_ordering_disabled` before any code is read or
+  any limit is counted (malformed JSON still gets `400 invalid_json`); the
+  staff ordering routes (`/api/ordering/links`, holds, inbox, settings
+  writes, pause) answer the same, while `GET /api/ordering/settings` and the
+  inbox summary say "not available", so Configuración hides the online
+  ordering panel, Mesas hides the table QR actions and Órdenes shows no
+  inbox; `/api/account-config` reports `publicOrdering: { enabled: false,
+  switchedOff: true }` and PlanSettings tells a Pro restaurant "Pedidos QR y
+  kiosco desactivados temporalmente por Green Monkey." (before B4 an unset
+  variable in production meant a deployment that never offered it, which
+  reads "Kiosco y pedidos QR: próximamente."; PUBLIC-UX-4), the landing does not advertise
+  QR/kiosk, and a QR or kiosk code shows only "Los pedidos en línea no están
+  disponibles por ahora. Pide al personal." (neutral for table and takeaway
+  codes, PUBLIC-UX-3; a legacy signed path shows "Este código ya no
+  funciona" without calling the API).
 - Owner: account owns the flag, `publicOrderingEnabled()`,
-  `publicOrderingGate()` and the error code. The public-ordering area decides
-  whether it stays as an operator kill switch or is removed when 032 ships.
+  `publicOrderingGate()` and the error code; public ordering imports them
+  (`server/public-ordering.ts`, `server/routes/public-ordering.ts`) and keeps
+  the flag as its kill switch.
 
 ## Shared-terminal guard
 
@@ -600,6 +624,27 @@ invitation normally.
      hour before a six-hour UTC boundary and dropped its own identical fix).
      cfdi-db 7b now counts advisory waiters in its own database only: locally
      every worktree shares one server, and `pg_locks` spans all of it.
+- **Public ordering B3 (merge of integration/v1 into `track/public`, LD-P12).**
+  Account's hunks in public-owned files were resolved in public's favour:
+  `POST /api/ordering-links` stays deleted with its gate line, and
+  `server/index.ts` drops the now-unused module constant (an invalid flag
+  still stops the web: `accountWebConfig` and each module-level
+  `publicOrderingEnabled(process.env)` read refuse it); the diner router runs
+  account's real `publicOrderingGate` and fills
+  `PublicMenuView.restaurant.privacyNoticeUrl` from `restaurantPrivacyUrl`;
+  `PublicOrdering.tsx` is public's thin entry, whose diner components read the
+  six `accountGuest*` keys (account's `.public-ordering-footer` rule went with
+  the old page); `ManagementTools.tsx` lost the link generator with its
+  `loadAccountConfig` gating, and the settings panel and the table QR
+  actions hide on public ordering's own "not available" answers. Account's
+  QR tests were rewritten under rule 5.2.1, intent kept: account-http checks
+  2-3 on the header routes and a revocable counter code, the flag test's
+  gate legs, and `account.spec`'s privacy-URL, disabled-deployment and
+  hidden-generator legs (now "the online-ordering panel and the table QR
+  codes are hidden"). Settings: `… AccountPrivacy → PublicOrderingSettings →
+  FreeSelection …` (LD-P7); `-- 032 public-ordering` grants after
+  `-- 031 account`; `test:db:qualification` ends `… account → support →
+  public`; `src/labels.ts` `// public (032)` after account's block.
 - **Lock scanner units.** The account-center routes pass their handlers
   inline (`router.post(path, limiter, (req, res, next) => answer(…))`), so the
   scanner checks each request as its own unit; the earlier

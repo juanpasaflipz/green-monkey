@@ -227,6 +227,6 @@ staging, and the legal text awaits counsel review.
   continuation).
 - **Data export:** owners download all restaurant records (JSON, or one table as
   CSV) from Settings, on Free too.
-- **QR and kiosk** stay off in production (`PUBLIC_ORDERING_ENABLED` unset)
-  until the public-ordering area (032) ships; the landing and plan copy say
-  "próximamente".
+- **QR and kiosk** (Pro) are on since public ordering (032/033) shipped:
+  `PUBLIC_ORDERING_ENABLED` unset means on everywhere and `false` is the kill
+  switch, under which the landing and plan copy say "próximamente".

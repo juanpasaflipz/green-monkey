@@ -129,3 +129,19 @@ GRANT UPDATE(used_at,used_by_account,used_for_transfer,revoked_at) ON account_re
 GRANT SELECT ON support_actions TO gm_app;
 GRANT SELECT,INSERT ON organization_tax_profiles TO gm_app;
 GRANT UPDATE(rfc,legal_name,tax_regime,postal_code,cfdi_use,invoice_email,version,updated_at,updated_by_account) ON organization_tax_profiles TO gm_app;
+-- 032 public-ordering
+-- No DELETE on any of the four tables. A hold's diner request and a link's
+-- identity stay immutable (column grants plus the 032 transition triggers).
+-- Nothing for the worker, support or backup roles.
+GRANT SELECT,INSERT ON public_ordering_settings,public_links,public_hold_numbers,public_order_holds TO gm_app;
+GRANT UPDATE(paused,table_policy,counter_policy,hold_minutes,max_order_total,version,updated_at,updated_by) ON public_ordering_settings TO gm_app;
+GRANT UPDATE(label,revoked_at,revoked_by,revoke_reason) ON public_links TO gm_app;
+GRANT UPDATE(value) ON public_hold_numbers TO gm_app;
+GRANT UPDATE(state,decided_at,decided_by,reject_reason,order_id,order_round,excluded_line_ids,paid_at_accept,policy_override,accepted_total,accepted_lines) ON public_order_holds TO gm_app;
+
+-- 034 public-ordering redaction
+-- The hold transition trigger lets a redaction-only update through (name and
+-- note blanked, nothing else changed); the grants decide who may send it.
+-- gm_app never updates name or note: support's ARCO block and the retention
+-- pass run as the schema owner. Stated here so the manifest says so.
+REVOKE UPDATE(name,note) ON public_order_holds FROM gm_app;
