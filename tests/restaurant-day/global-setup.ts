@@ -30,6 +30,7 @@ import {
   SUPPORT_OPERATOR,
   assertIsolatedRun,
   cfdiBranch,
+  cfdiFakePort,
   type RunState,
 } from "./env.js";
 import { LEGAL_CI_ENV } from "../../server/legal-ci.js";
@@ -40,6 +41,7 @@ export const PIDS_FILE = resolve(OUT, ".pids.json");
 const LOGS = {
   server: resolve(OUT, "server.log"),
   worker: resolve(OUT, "worker.log"),
+  facturapi: resolve(OUT, "facturapi-fake.log"),
 };
 
 /** Forbidden for each process kind (server/config-rules.ts forbiddenCredentials) plus the demo switch. */
@@ -226,7 +228,8 @@ export default async function globalSetup() {
     throw Error(
       "restaurant-day setup: LEGAL_UNPUBLISHED_SIGNUP must not be allow (§3.3)",
     );
-  for (const port of [u.port, u.workerPort])
+  const fakePort = cfdiFakePort();
+  for (const port of [u.port, u.workerPort, ...(fakePort ? [fakePort] : [])])
     if (!(await portFree(port)))
       throw Error(`restaurant-day setup: port ${port} is busy`);
 
@@ -341,7 +344,17 @@ export default async function globalSetup() {
     APP_URL: u.app.origin,
     WORKER_DATABASE_URL: u.worker,
     FACTURAPI_TEST_KEY:
-      branch === "K" ? process.env.FACTURAPI_TEST_KEY!.trim() : "",
+      branch === "K" && !fakePort ? process.env.FACTURAPI_TEST_KEY!.trim() : "",
+    // Local triage only (cfdiFakePort): an unknown sk_test_ key gets the fake's
+    // ready shared-sandbox organization.
+    ...(fakePort
+      ? {
+          APP_ENV: "test",
+          RAILWAY_ENVIRONMENT_NAME: "",
+          FACTURAPI_TEST_KEY: `sk_test_rdfake${randomBytes(6).toString("hex")}`,
+          FACTURAPI_BASE_URL: `http://127.0.0.1:${fakePort}/v2`,
+        }
+      : {}),
   };
   const web = [
     "--import",
@@ -405,7 +418,7 @@ export default async function globalSetup() {
 
   const pids: Record<string, number> = {};
   const start = (
-    name: "server" | "worker",
+    name: "server" | "worker" | "facturapi",
     args: string[],
     env: Record<string, string>,
   ) => {
@@ -421,6 +434,23 @@ export default async function globalSetup() {
     writeFileSync(PIDS_FILE, JSON.stringify(pids));
     return child;
   };
+  if (fakePort) {
+    const fake = start(
+      "facturapi",
+      ["--import", "tsx", "tests/fakes/facturapi-fake.ts"],
+      { ...baseEnv(), FACTURAPI_FAKE_PORT: String(fakePort) },
+    );
+    await waitFor(
+      "the Facturapi fake",
+      async () =>
+        (await fetch(`http://127.0.0.1:${fakePort}/v2/organizations`)).status > 0,
+      30_000,
+      fake,
+    ).catch((error) => {
+      fake.kill();
+      throw error;
+    });
+  }
   const webProcess = start("server", web, webEnv);
   const workerProcess = start("worker", worker, workerEnv);
   try {

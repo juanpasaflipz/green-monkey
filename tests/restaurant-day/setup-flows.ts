@@ -11,6 +11,7 @@ import { signInGoogleOwner } from "../../server/owner-accounts.js";
 import { supportDatabaseUrl, type RunState } from "./env.js";
 import { RESTAURANT_A, RESTAURANT_B, URL_NAMESPACE } from "./scenario.js";
 import { allowing, checkpoint, escapeRe, logLine, readApi, run, typePin, type Device, type Devices } from "./ui.js";
+import { activateCfdi } from "./cfdi-k.js";
 
 type Restaurant = typeof RESTAURANT_A | typeof RESTAURANT_B;
 
@@ -787,6 +788,8 @@ export async function setupB(dev: Devices, state: RunState, save: () => void) {
   await proGranted(owner, state.runId, state.businessDateB);
   run.step = "B1.5";
   await fiscalProfile(owner, r, "B1-fiscal-border");
+  // B1.6, branch K only: CFDI in test mode before any sale.
+  if (run.branch === "K") await activateCfdi(owner, state);
   run.step = "B2.1";
   await staff(owner, r);
   run.step = "B2.2";

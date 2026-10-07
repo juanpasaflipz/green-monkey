@@ -35,6 +35,7 @@ import {
   type Devices,
 } from "./ui.js";
 import type { RunState } from "./env.js";
+import { globalReadiness, invoiceB3, selfInvoiceReceipt } from "./cfdi-k.js";
 
 const r = RESTAURANT_B;
 const check = (id: string) => CHECKS_B.find((c) => c.id === id)!;
@@ -66,6 +67,15 @@ async function round(
   if (opts.newCheck) await press(waiter, card.getByRole("button", { name: "Nueva cuenta", exact: true }));
   else await press(waiter, card.getByRole("button", { name: new RegExp(`^#${c.number} · `) }));
   await expect(page.getByRole("heading", { name: "Vender", level: 1 })).toBeVisible();
+  if (!opts.newCheck) {
+    // As a waiter would: see the check loaded before adding to it. A line tapped while
+    // the resume is still loading goes to a fresh draft, which the resume then parks in
+    // Borradores ("Guardamos la orden que estabas capturando en Borradores.").
+    await press(waiter, page.locator("button.mobile-order"));
+    const loaded = page.getByRole("dialog", { name: "Orden" });
+    await expect(loaded.locator(".existing")).toContainText(`#${c.number} · `);
+    await press(waiter, loaded.getByRole("button", { name: "Cerrar", exact: true }));
+  }
   // The cart starts from the previous rounds' lines (sent), so new lines start at index 0 of the draft.
   const before = n === 1 ? 0 : 0;
   for (const [i, line] of rd.lines.entries()) await addLine(waiter, r, line, before + i, opts.pickerOptions ?? {});
@@ -324,10 +334,15 @@ export async function serviceB(dev: Devices, state: RunState) {
     await expect(table(page, B2.movedTo!)).toContainText("Disponible");
   }
 
-  // B6.9: B3 and the CFDI request (branch N: provider disabled).
+  // B6.9: B3 and the CFDI request (branch N: provider disabled; branch K: sandbox).
   run.step = "B6.9";
   await payCheck(caja, B3, {});
-  {
+  if (run.branch === "K") {
+    await selfInvoiceReceipt(caja, state);
+    // The receipt is a modal: release first, then Órdenes → Detalle → Facturar.
+    await releaseFromReceipt(caja, B3);
+    await invoiceB3(caja, state);
+  } else {
     const page = caja.page;
     await expect(page.locator(".receipt")).toContainText(`¿Necesitas factura? Pídela con el folio ${FIGURES.B3!.folio}.`);
     await expect(page.getByRole("button", { name: "Facturar" })).toHaveCount(0);
@@ -490,10 +505,19 @@ export async function serviceB(dev: Devices, state: RunState) {
     await dayFigures(owner, "B", state.businessDateB);
   }
 
-  // B7.4 / B7.5: the register (gapless J-000001…J-000007) and global readiness (branch N).
+  // B7.4 / B7.5: the register (gapless J-000001…J-000007) and global readiness.
   run.step = "B7.4";
   await registerChecks(owner, "B", state.businessDateB);
   await expect(owner.page.getByText("Ventas cobradas sin ticket")).toHaveCount(0);
+  run.step = "B7.5";
+  if (run.branch === "K") await globalReadiness(owner, caja, state);
+  else {
+    // CFDI is hidden: no "Facturas globales" register (cfdi §2.3).
+    const panel = owner.page.locator(".cfdi-settings");
+    await owner.page.getByRole("navigation", { name: "Operación" }).getByRole("button", { name: "Configuración" }).click();
+    await expect(panel.getByText("No disponible", { exact: true })).toBeVisible();
+    await expect(panel.locator("summary", { hasText: "Facturas globales" })).toHaveCount(0);
+  }
   for (const d of [caja, sofia, tomas]) {
     const pending = await readApi(d, "/api/session");
     record(`${d.name} session`, 200, pending.status);

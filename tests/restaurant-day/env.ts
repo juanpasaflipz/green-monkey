@@ -69,7 +69,25 @@ export function assertIsolatedRun(env: NodeJS.ProcessEnv = process.env) {
 
 /** Branch K (day-cfdi job) when a Facturapi test key is present, else N. */
 export function cfdiBranch(env: NodeJS.ProcessEnv = process.env): "N" | "K" {
-  return env.FACTURAPI_TEST_KEY?.trim() ? "K" : "N";
+  return env.FACTURAPI_TEST_KEY?.trim() || cfdiFakePort(env) ? "K" : "N";
+}
+
+/**
+ * Local triage of branch K against tests/fakes/facturapi-fake.ts
+ * (RD_CFDI_FAKE_PORT): the worker then runs as APP_ENV=test, the only place a
+ * loopback FACTURAPI_BASE_URL is accepted (cfdi config). It proves the UI
+ * flow, never the sandbox: CI refuses it, and a run with it is never the gate.
+ */
+export function cfdiFakePort(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = env.RD_CFDI_FAKE_PORT?.trim();
+  if (!raw) return null;
+  if (env.CI) throw Error("restaurant-day: RD_CFDI_FAKE_PORT is a local triage switch; CI never sets it");
+  if (env.FACTURAPI_TEST_KEY?.trim())
+    throw Error("restaurant-day: RD_CFDI_FAKE_PORT and FACTURAPI_TEST_KEY are exclusive");
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535)
+    throw Error("restaurant-day: RD_CFDI_FAKE_PORT must be a port number");
+  return port;
 }
 
 /** SUPPORT_DATABASE_URL from the operator file support:provision wrote. */

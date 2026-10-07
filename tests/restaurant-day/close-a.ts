@@ -290,6 +290,8 @@ export async function serviceA4(dev: Devices, state: RunState) {
     await toOrders(caja);
     await press(caja, orderCard(page, n).getByRole("button", { name: "Detalle", exact: true }));
     const detail = page.getByRole("dialog", { name: `Orden #${n}` });
+    // Scan the loaded detail, not its "Cargando" state.
+    await expect(detail.locator(".order-detail")).toBeVisible();
     if (n === 6) await checkpoint(caja, "A14-detail", { settle: detail });
     const before = (await prints(page)).length;
     await press(caja, detail.getByRole("button", { name: "Reimprimir recibo", exact: true }));
@@ -625,7 +627,10 @@ export async function registerChecks(owner: Device, restaurant: "A" | "B", busin
   }
   const summary = register.locator("section.fiscal-summary");
   await expect(summary).toContainText(`${tickets[0]!.folio} a ${tickets.at(-1)!.folio} (${tickets.length} tickets)`);
-  await checkpoint(owner, restaurant === "A" ? "A15-register" : "B7-global", { settle: register });
+  // B7-global is the register in branch N and the Facturas globales register in branch K (§12).
+  await checkpoint(owner, restaurant === "A" ? "A15-register" : run.branch === "N" ? "B7-global" : "B7-register", {
+    settle: register,
+  });
   // CSV (LD-16 L13): UTF-8 with BOM, CRLF, fixed headers.
   const download = page.waitForEvent("download");
   await register.getByRole("button", { name: "Descargar CSV", exact: true }).click();

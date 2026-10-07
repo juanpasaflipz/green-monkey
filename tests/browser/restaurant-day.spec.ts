@@ -46,6 +46,7 @@ function saveState() {
 test.beforeAll(async () => {
   state = JSON.parse(readFileSync(STATE_FILE, "utf8"));
   baseUrl = state.baseUrl;
+  run.branch = state.branch;
 });
 
 test.afterEach(async () => {

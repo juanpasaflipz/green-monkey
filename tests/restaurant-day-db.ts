@@ -465,12 +465,27 @@ await check("D18", "no demo data", async () => {
   assert.deepEqual(r, { demo: 0, people: 0 });
 });
 
-await check("D19", "factura global readiness (branch N): one concept per ticket and category, sums equal §7.11 row N", async () => {
-  const concepts = await inB((tx) =>
-    tx`select t.series||'-'||lpad(t.number::text,6,'0') as folio, x.category, x.gross::int as gross, x.base::int as base, x.tax::int as tax
-      from fiscal_tickets t join fiscal_ticket_taxes x on x.ticket_id=t.id where t.business_date=${state.businessDateB} and x.gross<>0`,
+await check("D19", `factura global readiness (branch ${state.branch}): one concept per ticket and category, sums equal §7.11 row ${state.branch}`, async () => {
+  // Branch K: J-000003 has the one active claim (its individual test invoice), so the
+  // readiness set is the other six tickets. The built claims table is cfdi_document_tickets.
+  const claims = await inB((tx) =>
+    tx`select t.series||'-'||lpad(t.number::text,6,'0') as folio, c.mode, d.kind, d.status, d.amount_check, d.expected_total::int as expected
+      from cfdi_document_tickets c join fiscal_tickets t on t.id=c.ticket_id join cfdi_documents d on d.id=c.document_id
+      where c.state='active'`,
   );
-  const g = expectedB.globalN;
+  if (state.branch === "K")
+    assert.deepEqual(plain(claims), [
+      { folio: "J-000003", mode: "test", kind: "invoice", status: "valid", amount_check: "exact", expected: 38500 },
+    ]);
+  else assert.deepEqual(plain(claims), []);
+  const claimed = new Set(claims.map((c) => c.folio as string));
+  const concepts = (
+    await inB((tx) =>
+      tx`select t.series||'-'||lpad(t.number::text,6,'0') as folio, x.category, x.gross::int as gross, x.base::int as base, x.tax::int as tax
+        from fiscal_tickets t join fiscal_ticket_taxes x on x.ticket_id=t.id where t.business_date=${state.businessDateB} and x.gross<>0`,
+    )
+  ).filter((c) => !claimed.has(c.folio as string));
+  const g = state.branch === "K" ? expectedB.globalK : expectedB.globalN;
   assert.equal(concepts.length, g.concepts);
   assert.equal(new Set(concepts.map((c) => c.folio)).size, g.tickets);
   const iva8 = concepts.filter((c) => c.category === "iva8");

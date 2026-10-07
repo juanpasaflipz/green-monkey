@@ -97,6 +97,8 @@ export const run = {
   seenKds: { A: new Set<string>(), B: new Set<string>() },
   /** RD_SOFT findings so far */
   soft: 0,
+  /** CFDI branch of this run (§3.3): N without a Facturapi test key, K with one */
+  branch: "N" as "N" | "K",
 };
 
 /** Boot refusals every signed-out or unpaired device makes (§4.4). */
@@ -336,7 +338,7 @@ export const BRANCH_K_ALLOWED = [
 ];
 const GENERIC_ERROR = "No se pudo completar la acción.";
 
-export async function scanText(page: Page, id: string, branch: "N" | "K" = "N") {
+export async function scanText(page: Page, id: string, branch: "N" | "K" = run.branch) {
   const found = await page.evaluate(() => {
     const parts: string[] = [document.body.innerText, document.title];
     for (const el of Array.from(document.querySelectorAll("[aria-label],[title],[placeholder],[alt]")))
