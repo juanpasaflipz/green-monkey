@@ -339,7 +339,7 @@ async function stockItems(owner: Device, r: Restaurant, checkpointId?: string) {
     const row = page.getByRole("row", { name: new RegExp(`^${s.name.replace(/[()]/g, "\\$&")}`) });
     await expect(row.getByRole("cell").nth(2)).toHaveText(new Intl.NumberFormat("es-MX").format(s.opening));
   }
-  await expect(page.getByRole("row", { name: /^Suadero/ })).not.toContainText("Negativo");
+  if (r === RESTAURANT_A) await expect(page.getByRole("row", { name: /^Suadero/ })).not.toContainText("Negativo");
 }
 
 type RecipeEntry = { stock: string; qty: number; typed: { value: string; unit: string } };

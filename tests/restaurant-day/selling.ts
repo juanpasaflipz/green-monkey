@@ -165,7 +165,7 @@ export async function addLine(d: Device, r: Restaurant, line: Line, index: numbe
   }
   // On a phone the cart lives in the "Ver orden" dialog.
   const phone = !(await page.locator("aside.cart").isVisible());
-  if (phone && (line.qty > 1 || line.note)) await press(d, page.locator("button.mobile-order"));
+  if (phone) await press(d, page.locator("button.mobile-order"));
   const row = cartLine(page, index);
   await expect(row.locator("strong").first()).toHaveText(p.name);
   for (let q = 1; q < line.qty; q++) {
@@ -186,8 +186,7 @@ export async function addLine(d: Device, r: Restaurant, line: Line, index: numbe
     }
     await expect(row.locator(".line-note")).toHaveText(line.note);
   }
-  if (phone && (line.qty > 1 || line.note))
-    await press(d, page.getByRole("dialog", { name: "Orden" }).getByRole("button", { name: "Cerrar", exact: true }));
+  if (phone) await press(d, page.getByRole("dialog", { name: "Orden" }).getByRole("button", { name: "Cerrar", exact: true }));
 }
 
 /** The index-th line of the visible cart. */

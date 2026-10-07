@@ -745,6 +745,22 @@ export async function serviceA2(dev: Devices) {
   // A12.6: PIN rate (§3.8).
   const now = Date.now();
   expect(run.pinLedger.filter((t) => now - t < 60_000).length).toBeLessThanOrEqual(20);
+  // The compressed minutes (A10.13, A12.2) moved the tablet's clock while its
+  // heartbeat sampled the offset; the offset is the median of the last five
+  // samples, so three heartbeats at real time restore the true 3 minutes
+  // before the outage records it (D7, A13.9).
+  await freshHeartbeats(caja, 3);
+}
+
+/** Waits for n heartbeat answers (GET /api/offline/ping, every 30 s online) from now on. */
+export async function freshHeartbeats(d: Device, n: number) {
+  const since = Date.now();
+  await expect
+    .poll(
+      () => d.responses.filter((r) => r.at > since && r.status === 200 && new URL(r.url).pathname === "/api/offline/ping").length,
+      { intervals: [1_000], timeout: 120_000, message: `${n} heartbeats on ${d.name}` },
+    )
+    .toBeGreaterThanOrEqual(n);
 }
 
 /** The corte X figures (§6.13) from the oracle's tickets #1-#16. */

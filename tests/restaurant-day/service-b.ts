@@ -43,7 +43,11 @@ const table = (page: Page, name: string) => page.locator(`article.table-card[ari
 
 /** Operación → Mesas on a terminal or phone. */
 async function toTables(d: Device) {
-  await press(d, d.page.getByRole("navigation", { name: "Operación" }).getByRole("button", { name: "Mesas", exact: true }));
+  // Already on Mesas: "Actualizar" re-reads the floor, as a person would.
+  if (await d.page.locator(".table-grid").isVisible()) {
+    await press(d, d.page.getByRole("button", { name: "Actualizar", exact: true }));
+  } else
+    await press(d, d.page.getByRole("navigation", { name: "Operación" }).getByRole("button", { name: "Mesas", exact: true }));
   await expect(d.page.locator(".table-grid")).toBeVisible();
 }
 
@@ -115,7 +119,7 @@ async function payment(caja: Device, c: CheckDef, p: Payment, due: number, opts:
   await tap(caja, page.getByRole("button", { name: "Cobrar", exact: true }));
   const dialog = page.getByRole("dialog", { name: /^Cobrar/ });
   await expect(dialog.getByLabel("Importe", { exact: true })).toHaveValue(pesos(due));
-  const amount = p.amount ?? due;
+  const amount = p.units ? p.units.reduce((sum, u) => sum + unitAmount(c, u), 0) : (p.amount ?? due);
   if (p.units) {
     await press(caja, dialog.getByRole("button", { name: "Dividir por productos", exact: true }));
     const units = dialog.getByRole("group", { name: "Productos de este pago" });
@@ -158,7 +162,7 @@ async function payCheck(caja: Device, c: CheckDef, opts: { afterFirst?: () => Pr
     if (i === 0 && opts.afterFirst) await opts.afterFirst();
   }
   const payments = c.payments.map((p) =>
-    p.units ? { ...p, amount: p.units.reduce((s, u) => s + unitAmount(u), 0) } : p,
+    p.units ? { ...p, amount: p.units.reduce((s, u) => s + unitAmount(c, u), 0) } : p,
   );
   return rcChecks(caja, r, c.id, {
     payments,
@@ -166,13 +170,12 @@ async function payCheck(caja: Device, c: CheckDef, opts: { afterFirst?: () => Pr
   });
 }
 
-/** The unit price of a "{product} · {n}" split unit. */
-function unitAmount(label: string) {
+/** The unit price of a "{product} · {n}" split unit of one check. */
+function unitAmount(c: CheckDef, label: string) {
   const name = label.replace(/ · \d+$/, "");
-  const f = FIGURES;
-  for (const id of Object.keys(f))
-    for (const l of f[id]!.lines) if (l.name === name && id.startsWith("B")) return l.unit;
-  throw Error(`unit ${label}`);
+  const line = FIGURES[c.id]!.lines.find((l) => l.name === name);
+  if (!line) throw Error(`unit ${label} of ${c.id}`);
+  return line.unit;
 }
 
 /** "Liberar mesa" on the receipt (the table becomes Disponible). */
@@ -222,7 +225,9 @@ export async function serviceB(dev: Devices, state: RunState) {
     await fill(tomas, dialog.getByLabel("Explicación", { exact: true }), "Clientes pidieron terraza");
     await checkpoint(tomas, "B6-transfer", { settle: dialog });
     await press(tomas, dialog.getByRole("button", { name: "Guardar", exact: true }));
-    await expect(page.getByText("Asignación actualizada").first()).toBeVisible();
+    await expect(dialog).toHaveCount(0);
+    // Built: the order card shows the new table; "Asignación actualizada" is the kitchen's badge.
+    await expect(card).toContainText(`${B2.movedTo} · ${staffB("tomas").name}`);
   }
   for (const station of ["Cocina", "Barra"] as const) {
     const t = kdsTicket(cocina.page, 2, station);
@@ -332,10 +337,12 @@ export async function serviceB(dev: Devices, state: RunState) {
     await op.getByRole("navigation", { name: "Operación" }).getByRole("button", { name: "Configuración" }).click();
     const cfdi = op.locator(".cfdi-settings");
     await expect(cfdi.getByText("No disponible", { exact: true })).toBeVisible();
-    await expect(cfdi.getByText("La facturación electrónica no está configurada en este entorno.", { exact: true })).toHaveCount(2);
+    // The provider note and the failed platform prerequisite (✗ …) both carry the sentence.
+    await expect(cfdi.getByText("La facturación electrónica no está configurada en este entorno.")).toHaveCount(2);
     await expect(cfdi.getByRole("button", { name: "Activar en modo prueba" })).toBeDisabled();
     await expect(op.getByText("Facturación CFDI (Facturapi)", { exact: true })).toBeVisible();
-    const integration = op.locator("article, li, div").filter({ has: op.getByRole("heading", { name: "Facturación CFDI (Facturapi)" }) }).last();
+    // The integration card: its heading row, then the hint below it.
+    const integration = op.getByRole("heading", { name: "Facturación CFDI (Facturapi)" }).locator("xpath=../..");
     await expect(integration).toContainText("Deshabilitado");
     await expect(integration).toContainText("Requiere configuración y verificación externa.");
     const caps = await readApi(owner, "/api/capabilities");

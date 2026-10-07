@@ -335,8 +335,10 @@ export async function serviceA3(dev: Devices, state: RunState) {
     (n, id) => n + new Set(kdsLines(r, orderA(id).lines).map((l) => l.station)).size,
     0,
   );
+  // The lane polls every 30 s while empty; the A13.11 re-sync moved the kitchen
+  // clock back by the compressed 35 s, so its next poll can be up to 65 s away.
   await expect(lane.locator("#offline-review-title")).toHaveText(`Ventas sin conexión por revisar (${stationRounds})`, {
-    timeout: 30_000,
+    timeout: 90_000,
   });
   await expect(lane.locator("article.offline-review-card")).toHaveCount(stationRounds);
   await expect(lane).toContainText("Se vendieron sin conexión. Confirma si cocina ya las preparó para no repetirlas.");

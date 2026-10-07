@@ -19,7 +19,6 @@ import {
 } from "./selling.js";
 import {
   canonicalSale,
-  docRow,
   firstPrint,
   orderA,
   orderCard,

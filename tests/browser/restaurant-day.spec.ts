@@ -24,6 +24,7 @@ import {
 import { setupA, setupB } from "../restaurant-day/setup-flows.js";
 import { preflight } from "../restaurant-day/preflight.js";
 import { serviceB } from "../restaurant-day/service-b.js";
+import { crossRestaurant } from "../restaurant-day/cross.js";
 import { assertTimingBudgets, serviceA1, serviceA2, timings } from "../restaurant-day/service-a.js";
 import { serviceA4, serviceA5 } from "../restaurant-day/close-a.js";
 import { serviceA3 } from "../restaurant-day/outage.js";
@@ -87,7 +88,7 @@ test.describe("restaurant day", () => {
       await serviceA1(dev, state);
     });
     test("A shift (A11–A12)", async () => {
-      test.setTimeout(5 * 60_000);
+      test.setTimeout(7 * 60_000);
       await serviceA2(dev);
     });
     test("A outage (A13)", async () => {
@@ -122,5 +123,10 @@ test.describe("restaurant day", () => {
       test.setTimeout(10 * 60_000);
       await serviceB(dev, state);
     });
+  });
+
+  test("X1 cross-restaurant isolation", async () => {
+    test.setTimeout(3 * 60_000);
+    await crossRestaurant(dev, state);
   });
 });
