@@ -372,6 +372,22 @@ offline vault, direct endpoint):
    role, since only the grantor can revoke them), and drops the login, in
    one transaction. A refusal naming a grantor the owner cannot `SET ROLE`
    to changed nothing: revoke that grant as its grantor, then retry.
+   A schema grant whose grantor is `pg_database_owner` (schema `public`'s
+   owner since PostgreSQL 15; a legacy grant made before the cutover, as on
+   staging in LD-47) cannot be revoked that way: Neon lets no login
+   `SET ROLE pg_database_owner`. Finalize revokes it in the same transaction
+   through the schema's ownership: `ALTER SCHEMA public OWNER TO` the owner
+   login (which rewrites `pg_database_owner`'s grants as that login's),
+   `REVOKE`, `ALTER SCHEMA public OWNER TO pg_database_owner`, and it rolls
+   everything back unless the schema ACL afterwards is the starting one
+   minus exactly that grant, owned by `pg_database_owner` again (the action
+   reads "schema ownership round trip, ACL verified"). The round trip folds
+   any entry naming the owner login itself into the owner's own entry, so a
+   refusal listing what it would have `lost` or `gained` changed nothing:
+   run the same three statements by hand in one transaction as the owner
+   login, compare `select nspacl from pg_namespace where nspname = 'public'`
+   before and after (only the old login's entry may go), restore any other
+   entry the round trip changed before `COMMIT`, then retry the finalize.
 4. Same for `--kind billing` (both services), `--kind worker`
    (`WORKER_DATABASE_URL` on `worker`, redeploy it, then `--finalize`; the new
    login copies the `gm_jobs_worker` membership and the 30 s/8 s/60 s
