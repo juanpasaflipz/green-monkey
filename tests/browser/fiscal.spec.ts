@@ -1,5 +1,11 @@
 import { readFileSync } from "node:fs";
-import { test, expect, type Page } from "@playwright/test";
+import {
+  test,
+  expect,
+  type BrowserContext,
+  type Page,
+  type Request,
+} from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { kitchenHygiene } from "./kitchen-hygiene.js";
 
@@ -98,6 +104,29 @@ const printed = (page: Page) =>
   page.evaluate(() => (window as any).__printed as string[]);
 /** Printed text without whitespace: #print-root is not laid out on screen media. */
 const squash = (text: string) => text.replace(/\s+/g, "");
+/**
+ * The network goes down at the payment's first POST /api/orders (LD-45): the
+ * requests before it reach the server, so Confirm is tapped while the device
+ * is still online, and the sale is saved locally only after that POST fails.
+ * Installed before Cobrar, the outage could take the device offline through
+ * the dialog's own GETs and relabel the button under the click. Returns `sent`,
+ * the wait for that POST (the online path ran).
+ */
+async function networkDownFromFirstOrderPost(
+  context: BrowserContext,
+  page: Page,
+) {
+  const isOrderPost = (request: Request) =>
+    request.method() === "POST" &&
+    new URL(request.url()).pathname === "/api/orders";
+  let down = false;
+  await context.route("**/api/**", (route) => {
+    down ||= isOrderPost(route.request());
+    return down ? route.abort("internetdisconnected") : route.fallback();
+  });
+  // Wrapped: an async function returning the bare promise would wait for it.
+  return { sent: page.waitForRequest(isOrderPost) };
+}
 async function lastPrint(page: Page, count = 1) {
   await expect.poll(async () => (await printed(page)).length).toBe(count);
   return (await printed(page))[count - 1];
@@ -702,9 +731,7 @@ test("offline local receipt shows Folio fiscal pendiente with the cached issuer;
   await cached;
   await page.getByRole("button", { name: "ES", exact: true }).click();
   await productTile(page, "Mushroom taco").click();
-  await context.route("**/api/**", (route) =>
-    route.abort("internetdisconnected"),
-  );
+  const { sent } = await networkDownFromFirstOrderPost(context, page);
   try {
     await page
       .getByRole("button", { name: "Collect payment", exact: true })
@@ -712,6 +739,7 @@ test("offline local receipt shows Folio fiscal pendiente with the cached issuer;
     await page
       .getByRole("button", { name: "Confirm payment", exact: true })
       .click();
+    await sent;
     await page
       .getByRole("button", {
         name: "Save cash payment on this device",
@@ -769,15 +797,14 @@ test("FISCAL-OFFLINE-1: a synced offline sale is found in Órdenes by the provis
   await page.getByRole("button", { name: "Vender", exact: true }).click();
   await cached;
   await productTile(page, "Taco de hongos").click();
-  await context.route("**/api/**", (route) =>
-    route.abort("internetdisconnected"),
-  );
+  const { sent } = await networkDownFromFirstOrderPost(context, page);
   let number: string;
   try {
     await page.getByRole("button", { name: "Cobrar", exact: true }).click();
     await page
       .getByRole("button", { name: "Confirmar cobro", exact: true })
       .click();
+    await sent;
     await page
       .getByRole("button", {
         name: "Guardar cobro en este dispositivo",
