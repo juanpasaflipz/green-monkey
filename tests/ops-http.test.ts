@@ -10,8 +10,25 @@ import {
   requestLog,
   setLogSink,
 } from "../server/logging.js";
-import { opsLimiter } from "../server/routes/ops.js";
+import type postgres from "postgres";
+import { opsLimiter, registerPreAuth } from "../server/routes/ops.js";
+import { ownerRoutes } from "../server/owner-routes.js";
 import { DomainError } from "../shared/domain.js";
+
+/** Never queried: the routes these tests call do not touch the database. */
+const noDatabase = {} as postgres.Sql;
+/** Railway's edge hop in X-Forwarded-For (a documentation address, LD-46). */
+const EDGE_HOP = "192.0.2.84";
+/**
+ * The headers Railway's edge sends for a client (verified on staging, LD-46):
+ * it discards the client's own forwarding headers, appends itself after the
+ * client in X-Forwarded-For and sets X-Real-IP to the client. The tests'
+ * loopback peer stands in for the edge's 100.64.0.0/10 peer (both trusted).
+ */
+const edge = (client: string) => ({
+  "X-Forwarded-For": `${client}, ${EDGE_HOP}`,
+  "X-Real-IP": client,
+});
 
 let lines: Record<string, any>[] = [];
 let server: http.Server | null = null;
@@ -31,6 +48,24 @@ afterEach(async () => {
   await new Promise<void>((r) => (server ? server.close(() => r()) : r()));
   server = null;
 });
+
+/** ownerRoutes reads Google sign-in from process.env when built: build it without. */
+function ownerRouter() {
+  const names = [
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+    "GOOGLE_REDIRECT_URI",
+  ];
+  const saved = names.map((n) => process.env[n]);
+  for (const n of names) delete process.env[n];
+  try {
+    return ownerRoutes(noDatabase);
+  } finally {
+    names.forEach((n, i) => {
+      if (saved[i] !== undefined) process.env[n] = saved[i];
+    });
+  }
+}
 
 /** An app wired like server/index.ts: proxy trust, body parser, request log, error logging. */
 async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
@@ -52,6 +87,9 @@ async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
       (tenantId) => reads.push(tenantId),
     ),
   );
+  // The real /api/ops/diagnostics/ip and owner limiters (no database reached).
+  registerPreAuth({ app, sql: noDatabase });
+  app.use("/api/auth", ownerRouter());
   app.get("/api/limited", opsLimiter("test", 2), (req, res) =>
     res.json({ ip: clientIp(req) }),
   );
@@ -113,21 +151,81 @@ describe("request log, client address and error logging", () => {
     expect(JSON.stringify(lines)).not.toContain("203.0.113.1");
   });
 
-  it("X-Real-IP is used only from a trusted peer without a forwarded hop", async () => {
+  it("X-Real-IP from a trusted peer is the client, even with a forwarded hop; an untrusted peer's is ignored", async () => {
     let origin = await start();
     const ip = async (headers: Record<string, string>) =>
       (await (await fetch(`${origin}/api/ip`, { headers })).json()).ip;
     expect(await ip({ "X-Real-IP": "198.51.100.7" })).toBe("198.51.100.7");
     expect(await ip({ "X-Real-IP": "not-an-ip" })).toBe("127.0.0.1");
+    // LD-46 (deliberate change): the trusted edge's X-Real-IP wins over
+    // req.ip, which behind Railway is the edge's own X-Forwarded-For hop.
     expect(
       await ip({
         "X-Real-IP": "198.51.100.7",
         "X-Forwarded-For": "203.0.113.9",
       }),
-    ).toBe("203.0.113.9");
+    ).toBe("198.51.100.7");
+    expect(await ip({ "X-Forwarded-For": "203.0.113.9" })).toBe("203.0.113.9");
     await new Promise<void>((r) => server!.close(() => r()));
     origin = await start({ NODE_ENV: "development" });
     expect(await ip({ "X-Real-IP": "198.51.100.7" })).toBe("127.0.0.1");
+  });
+
+  it("Railway's edge shape: two clients behind one edge hop get their own ops and owner buckets (LD-46 regression)", async () => {
+    const origin = await start();
+    const limited = (client: string) =>
+      fetch(`${origin}/api/limited`, { headers: edge(client) });
+    expect((await limited("198.51.100.7")).status).toBe(200);
+    expect((await limited("198.51.100.7")).status).toBe(200);
+    expect((await limited("198.51.100.7")).status).toBe(429);
+    const other = await limited("198.51.100.8");
+    expect(other.status).toBe(200);
+    expect((await other.json()).ip).toBe("198.51.100.8");
+    // The owner routes' 30/min budget (owner-routes.ts) once keyed on req.ip,
+    // the edge hop, so one client used it up for everyone behind that hop.
+    const owner = (client: string) =>
+      fetch(`${origin}/api/auth/unrouted`, {
+        method: "POST",
+        headers: edge(client),
+      });
+    for (let i = 0; i < 30; i++)
+      expect((await owner("198.51.100.7")).status).toBe(404);
+    expect((await owner("198.51.100.7")).status).toBe(429);
+    expect((await owner("198.51.100.8")).status).toBe(404);
+    expect(JSON.stringify(lines)).not.toContain("198.51.100.7");
+  });
+
+  it("/api/ops/diagnostics/ip reports the address, whether the peer is trusted and its source", async () => {
+    let origin = await start();
+    const probe = async (headers: Record<string, string> = {}) => {
+      const response = await fetch(`${origin}/api/ops/diagnostics/ip`, {
+        headers,
+      });
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      return response.json();
+    };
+    expect(await probe(edge("198.51.100.7"))).toEqual({
+      ip: "198.51.100.7",
+      peerTrusted: true,
+      source: "x-real-ip",
+    });
+    expect(await probe({ "X-Forwarded-For": "198.51.100.9" })).toEqual({
+      ip: "198.51.100.9",
+      peerTrusted: true,
+      source: "forwarded",
+    });
+    expect(await probe()).toEqual({
+      ip: "127.0.0.1",
+      peerTrusted: true,
+      source: "peer",
+    });
+    await new Promise<void>((r) => server!.close(() => r()));
+    origin = await start({ NODE_ENV: "development" });
+    expect(await probe(edge("198.51.100.7"))).toEqual({
+      ip: "127.0.0.1",
+      peerTrusted: false,
+      source: "peer",
+    });
   });
 
   it("X-Railway-Request-Id is reused and returned as X-Request-Id and in the error body", async () => {
