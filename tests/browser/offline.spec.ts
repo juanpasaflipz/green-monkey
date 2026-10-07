@@ -1040,6 +1040,11 @@ test("Setting 'Al guardar sin conexión' on the Sync screen applies to the next 
     .poll(() => page.evaluate(() => (window as any).__prints))
     .toBe(1);
   await nextSale(page);
+  // The Sync screen dates the local record dd/MM/yyyy HH:mm (restaurant-day G3).
+  await pill(page, /^Sin conexión/).click();
+  await expect(
+    page.getByText(/^Registrado \d{2}\/\d{2}\/\d{4} \d{2}:\d{2} · /).first(),
+  ).toBeVisible();
   await context.setOffline(false);
 });
 

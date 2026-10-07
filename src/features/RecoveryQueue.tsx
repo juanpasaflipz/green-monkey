@@ -30,6 +30,7 @@ import { api } from "../api";
 import { Button, Field } from "../components/ui";
 import { errorNotice } from "../i18n";
 import { currentBusinessDate, orderNumberText } from "../labels";
+import { dateTime } from "../datetime";
 import { ArchiveRecordForm } from "./offline/ArchiveRecordForm";
 import { OfflineTableServiceSetting } from "./offline/OfflineTableServiceSetting";
 import { clockTime, rowErrorNotice, translator } from "./offline/format";
@@ -531,9 +532,10 @@ export function RecoveryQueue({
             </p>
             <p>
               {t("offlineRecordedAt", {
-                time: new Date(row.body.recordedAt).toLocaleString(
-                  es ? "es-MX" : "en-US",
-                  { timeZone: session.restaurant.timezone },
+                time: dateTime(
+                  row.body.recordedAt,
+                  session.restaurant.timezone,
+                  locale,
                 ),
               })}{" "}
               · {es ? "Intentos" : "Attempts"}: {row.attempts}
@@ -585,8 +587,10 @@ export function RecoveryQueue({
           </h3>
           <p>{recovery.reason}</p>
           <p>
-            {new Date(recovery.original_sold_at).toLocaleString(
-              es ? "es-MX" : "en-US",
+            {dateTime(
+              recovery.original_sold_at,
+              session.restaurant.timezone,
+              locale,
             )}
           </p>
           {recovery.tasks.map((task: any) => (
@@ -645,7 +649,7 @@ export function RecoveryQueue({
           <p>{archive.reason}</p>
           <p className="muted">
             {t("offlineArchivedBy", { name: archive.actorName })} ·{" "}
-            {new Date(archive.createdAt).toLocaleString(es ? "es-MX" : "en-US")}
+            {dateTime(archive.createdAt, session.restaurant.timezone, locale)}
           </p>
         </article>
       ))}
