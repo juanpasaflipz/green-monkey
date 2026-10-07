@@ -132,13 +132,28 @@ business date comes from the server where the response carries it (Órdenes
 list, kitchen feed) and otherwise from the session's restaurant settings with
 the same helper (`currentBusinessDate` in `src/labels.ts`) on the corrected
 server clock (`src/clock.ts`), so a tablet whose clock is a few minutes off
-agrees with Órdenes around the cutoff. Short notices in Vender (for example "La
-orden #10 llegó a cocina mientras cambiabas de cuenta") keep the plain number.
+agrees with Órdenes around the cutoff. The Órdenes card names the date once, in
+its number (there is no separate "Del 5 oct" badge). The label is joined with
+non-breaking spaces, so "#10 · 5 oct" never wraps apart on a narrow KDS header.
 
-Printed documents keep "#10", including kitchen paper: a comanda or cancellation
-chit for a round added after the cutoff to yesterday's open #10 prints "#10"
-next to today's #10 (known limitation; the chit's call name, table and time tell
-them apart, and the KDS screen shows the date).
+The same dated number is used by Vender's notices (for example "La orden
+#10 · 5 oct llegó a cocina mientras cambiabas de cuenta", and the paid, failed
+round and closed-check notices), the discount and refund dialog titles, the QR
+inbox's accepted notice and its **Enviar a** list of open checks, and the
+offline screens: the offline "Órdenes abiertas" pick list, the offline payment
+review's check, the KDS lane "Ventas sin conexión por revisar" and
+Sincronización. A provisional
+number from another business day is dated the same way ("B-03 · 5 oct",
+"B-07 → #142 · 5 oct"), since each device restarts its B- numbers every business
+day.
+
+Kitchen paper is dated too: every comanda and cancellation chit for an order
+from another business day prints "#10 · 5 oct" (the comanda on send, KDS
+auto-print and **Imprimir comanda**, the reprint after a note edit, the void and
+refund chits, a QR order accepted from the inbox, and the offline **Comandas
+(N)**). The one screen that keeps the plain number is the KDS **Recientes** list
+of completed rounds (its feed carries no business date). The customer receipt
+and pre-cuenta print the plain number next to the order's date and time.
 
 **Legacy endpoints scheduled for removal.** `GET /api/orders` (now batched) and
 `GET /api/kitchen` keep their response shapes for one release so PWA bundles

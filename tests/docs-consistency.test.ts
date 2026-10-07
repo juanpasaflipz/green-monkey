@@ -88,6 +88,31 @@ describe("operator docs consistency (W3-1 docs pass)", () => {
     );
   });
 
+  it("SERVICE's rollover paragraph says what ships: kitchen paper and Vender's notices are dated (LD-44, LD-48; POLISH-UX-1, POLISH-MONEY-1)", () => {
+    const text = doc("docs/SERVICE.md").replace(/\s+/g, " ");
+    expect(text).not.toContain("Printed documents keep");
+    expect(text).not.toMatch(/keep the plain number/);
+    expect(text).toContain(
+      'every comanda and cancellation chit for an order from another business day prints "#10 · 5 oct"',
+    );
+    expect(text).toContain(
+      '"La orden #10 · 5 oct llegó a cocina mientras cambiabas de cuenta"',
+    );
+    expect(text).toMatch(/keeps the plain number is the KDS \*\*Recientes\*\*/);
+    // The code the paragraph describes: kitchen paper is labelled with the dated helper,
+    // and the Recientes feed has no business date to show.
+    for (const path of [
+      "src/features/KitchenTicket.tsx",
+      "src/features/printing/cancellations.ts",
+    ])
+      expect(doc(path), path).toMatch(/label: orderNumberLabel\(/);
+    const recent = doc("shared/service.ts").match(
+      /export type KitchenRecent = \{[^}]*\}/,
+    )?.[0];
+    expect(recent).toBeDefined();
+    expect(recent).not.toContain("businessDate");
+  });
+
   it("the DocRow decision for the receipt documents is recorded (LD-16 L8)", () => {
     const status = doc("docs/DELIVERY_STATUS.md");
     expect(status).toMatch(
