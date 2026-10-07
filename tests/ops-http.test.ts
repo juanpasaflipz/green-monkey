@@ -8,6 +8,7 @@ import { clientIp, requestLog, setLogSink } from "../server/logging.js";
 import type postgres from "postgres";
 import { opsLimiter, registerPreAuth } from "../server/routes/ops.js";
 import { ownerRoutes } from "../server/owner-routes.js";
+import { z } from "zod";
 import { DomainError } from "../shared/domain.js";
 import { supportReference } from "../shared/support.js";
 
@@ -96,6 +97,20 @@ async function start(env: NodeJS.ProcessEnv = { NODE_ENV: "production" }) {
   app.post("/api/public/:token/orders", (_req, res) => res.json({ ok: true }));
   app.post("/api/fails", () => {
     throw new DomainError("schema_not_ready", 503);
+  });
+  app.post("/api/zod", (req, res) => {
+    z.strictObject({
+      lines: z.array(z.object({ quantity: z.number().int().positive() })),
+      note: z.string().optional(),
+      tags: z.record(z.string(), z.number()).optional(),
+    }).parse(req.body);
+    res.json({ ok: true });
+  });
+  app.post("/api/refused", () => {
+    throw new DomainError("brand_new_code", 409);
+  });
+  app.post("/api/unauthorized", () => {
+    throw new DomainError("unauthorized", 401);
   });
   app.use(apiErrorHandler);
   server = app.listen(0, "127.0.0.1");
@@ -332,6 +347,67 @@ describe("request log, client address and error logging", () => {
         requestId: body.requestId,
         supportRef: ref,
       });
+  });
+
+  it("an unexpected 4xx's code reaches the production log (info) with its support reference; invalid_input names the failed fields, never their values; a 401 stays at debug (LD-48, POLISH-OPS-2)", async () => {
+    const origin = await start();
+    // Deployed web logs at info (.railway/railway.ts).
+    process.env.LOG_LEVEL = "info";
+    const post = (path: string, body: unknown) =>
+      fetch(`${origin}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    // An older cached client posts a body the current schema rejects.
+    const invalid = await post("/api/zod", {
+      lines: [{ quantity: 2 }, { quantity: -7777 }],
+      note: 7,
+      // A key the client chose is not a field name: masked.
+      tags: { "Juan Pérez": "SECRET_VALUE" },
+      extra: true,
+    });
+    expect(invalid.status).toBe(400);
+    const invalidBody = await invalid.json();
+    expect(invalidBody.error).toBe("invalid_input");
+    // A domain code the client may have no text for.
+    const refused = await post("/api/refused", {});
+    expect(refused.status).toBe(409);
+    const refusedBody = await refused.json();
+    const unauthorized = await post("/api/unauthorized", {});
+    expect(unauthorized.status).toBe(401);
+    await new Promise((r) => setTimeout(r, 20));
+    const rejected = lines.filter((l) => l.message === "request_rejected");
+    expect(rejected).toEqual([
+      expect.objectContaining({
+        level: "info",
+        status: 400,
+        code: "invalid_input",
+        route: "/api/zod",
+        requestId: invalidBody.requestId,
+        supportRef: supportReference(invalidBody.requestId),
+        issues: [
+          { path: "lines.1.quantity", code: "too_small" },
+          { path: "note", code: "invalid_type" },
+          { path: "tags.?", code: "invalid_type" },
+          { path: "", code: "unrecognized_keys" },
+        ],
+      }),
+      expect.objectContaining({
+        level: "info",
+        status: 409,
+        code: "brand_new_code",
+        requestId: refusedBody.requestId,
+        supportRef: supportReference(refusedBody.requestId),
+      }),
+    ]);
+    // Field names and issue codes only: no value the client sent.
+    const text = JSON.stringify(rejected);
+    expect(text).not.toContain("7777");
+    expect(text).not.toContain("Juan");
+    expect(text).not.toContain("SECRET_VALUE");
+    expect(text).not.toContain("extra");
+    expect(lines.some((l) => l.code === "unauthorized")).toBe(false);
   });
 
   it("DomainError 5xx is logged; reads log at debug; successful tenant writes notify the jobs runner", async () => {

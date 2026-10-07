@@ -57,9 +57,8 @@ single-line JSON in Railway: filter with `@level:error`, `@message:http_request`
 4xx the screen has no specific text for (an unknown code, or a malformed request:
 `invalid_input`, `invalid_json`, `payload_too_large`, `request_aborted`,
 `request_size_invalid`, `unsupported_encoding`, `unsupported_charset`,
-`too_many_parameters`; the server logs the body ones at info as
-`request_rejected`, never as an error line), the red
-error notice on that screen ends with "Referencia de soporte: 3F2A9C1B" (English
+`too_many_parameters`), the red error notice on that screen ends with
+"Referencia de soporte: 3F2A9C1B" (English
 UI: "Support reference: 3F2A9C1B"). The reference is the first 8 letters and
 digits of the request id, in capitals; the full id is the response's
 `X-Request-Id` header and the error body's `requestId` (Railway's
@@ -67,7 +66,10 @@ digits of the request id, in capitals; the full id is the response's
 carries the reference as `supportRef`: search `@supportRef:3F2A9C1B` exactly as
 the cashier reads it (capital letters), then `@requestId:<id>` with the full id
 from a matched line to see all of that request's lines (for a 5xx,
-`request_failed` has the error name, message, stack and route). Domain refusals
+`request_failed` has the error name, message, stack and route; every 4xx but a
+401 is logged at info as `request_rejected` with its `code`, never as an error
+line, and an `invalid_input` line adds `issues`: the failed fields' paths and
+zod issue codes, never the values sent). Domain refusals
 the screen explains (for example a closed check or a wrong PIN) and failures that
 never reached the server (no connection, timeouts) show no reference: there is
 no server line to find. **Sincronización** shows the same reference under an
