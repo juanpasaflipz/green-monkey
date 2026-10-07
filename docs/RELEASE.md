@@ -46,6 +46,15 @@ on the demo restaurants before a run, only on the isolated local fixture
 database. Tests find their own records by unique names or by searching (no
 "last" ticket or first register page). A reused staging database still
 accumulates the open checks, and the rounds of specs outside that list.
+Local confirmation (October 6, 2026, local fixture only, not staging): after
+the full qualification, three full browser rounds on one database without a
+reset between them, the last two with four `yes` processes loading the CPU,
+each passed 229 tests (1 skipped) with the same web process throughout; each
+run left 20 open rounds from specs outside the list, which the next run's
+global setup delivered. An earlier set of the same rounds, run while the
+machine's load average was about 440 for reasons outside this suite, had 4
+and 9 time-outs in tests whose bodies W3-2 did not change (each passed when
+rerun alone on that database).
 
 `security`: `npm audit --omit=dev --audit-level=high` and gitleaks over the
 full history (`.gitleaks.toml` allowlists only synthetic local/CI values).
