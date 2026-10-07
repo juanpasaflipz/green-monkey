@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { api, ApiError, responseError } from "../src/api";
 import {
   errorNotice,
+  errorSentence,
+  strings,
   supportReferenceOf,
   translateError,
   withSupportReference,
@@ -64,6 +66,36 @@ describe("support reference", () => {
     expect(errorNotice(new Error("drawer_required"), "en")).toBe(
       translateError("drawer_required", "en"),
     );
+  });
+
+  it("inside a longer notice the reference is closed by a full stop before the next sentence (POL-R2-4)", () => {
+    const server = new ApiError("internal_error", 500, "server", ID);
+    expect(errorSentence(server, "es")).toBe(
+      `${translateError("internal_error", "es")} Referencia de soporte: 3F2A9C1B.`,
+    );
+    expect(errorSentence(server, "en")).toBe(
+      `${translateError("internal_error", "en")} Support reference: 3F2A9C1B.`,
+    );
+    // A notice that already ends a sentence is left as it is.
+    const domain = new ApiError("check_closed", 409, "domain", ID);
+    expect(translateError("check_closed", "es")).toMatch(/[.!?…]$/);
+    expect(errorSentence(domain, "es")).toBe(errorNotice(domain, "es"));
+    // Selling's "sent after the cart moved" notices (SVC-REV-1) read as sentences.
+    for (const [locale, next] of [
+      ["es", " Quedó en Borradores"],
+      ["en", " It is in Drafts"],
+    ] as const) {
+      const ref = locale === "es" ? "Referencia de soporte" : "Support reference";
+      for (const key of [
+        "serviceRoundFailedAfterSwitch",
+        "serviceSendFailedAfterSwitch",
+      ] as const) {
+        const text = strings[locale][key]
+          .replace("{n}", "10")
+          .replace("{reason}", errorSentence(server, locale));
+        expect(text).toContain(`${ref}: 3F2A9C1B.${next}`);
+      }
+    }
   });
 
   it("api() keeps the request id from the error body, or from X-Request-Id when the body has none", async () => {

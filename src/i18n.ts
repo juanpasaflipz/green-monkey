@@ -756,6 +756,16 @@ export function errorNotice(error: unknown, locale: Locale): string {
 }
 
 /**
+ * errorNotice as a sentence inside a longer notice ("…no llegó a cocina: {reason} Quedó en
+ * Borradores…"): it always ends with a full stop, also after the "Referencia de soporte",
+ * so the next sentence never runs on from the reference (POL-R2-4).
+ */
+export function errorSentence(error: unknown, locale: Locale): string {
+  const notice = errorNotice(error, locale);
+  return /[.!?…]$/.test(notice) ? notice : notice + ".";
+}
+
+/**
  * A screen's own text for a failed request (for example a generic "could not enter"),
  * followed by the "Referencia de soporte" when the error carries one (supportReferenceOf).
  */

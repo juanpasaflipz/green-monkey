@@ -27,7 +27,13 @@ import {
   idSequence,
   type PaymentValues,
 } from "../../shared/service";
-import { strings, errorNotice, translateError, type Key } from "../i18n";
+import {
+  strings,
+  errorNotice,
+  errorSentence,
+  translateError,
+  type Key,
+} from "../i18n";
 import { api, ApiError, isSessionRejection } from "../api";
 import {
   attemptsForOrder,
@@ -308,8 +314,9 @@ export function Selling({
    */
   function failedAfterSwitch(target: Order | null, error: unknown) {
     const code = (error as Error).message;
-    // With the "Referencia de soporte" when the send failed on the server.
-    const reason = errorNotice(error, locale);
+    // With the "Referencia de soporte" when the send failed on the server,
+    // closed by a full stop before the next sentence (POL-R2-4).
+    const reason = errorSentence(error, locale);
     setError(
       target
         ? t("serviceRoundFailedAfterSwitch")
