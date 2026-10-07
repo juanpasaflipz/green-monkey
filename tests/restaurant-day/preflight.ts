@@ -11,9 +11,10 @@ export async function preflight(dev: Devices, request: APIRequestContext, state:
   expect((await request.get("/api/health")).status()).toBe(200);
   const status = await (await request.get("/api/ops/status")).json();
   expect(status).toMatchObject({ ok: true, schema: "ready", worker: { status: "ok" }, degraded: false });
-  // G1.2: the stamped commit in CI; a local build reports "local".
+  // G1.2: the commit CI stamped (RD_BUILD_COMMIT: a nightly run checks out the
+  // release branch, not GITHUB_SHA); a local build reports "local".
   const version = await (await request.get("/api/version")).json();
-  expect(version.commit).toBe(process.env.GITHUB_SHA ?? "local");
+  expect(version.commit).toBe(process.env.RD_BUILD_COMMIT ?? process.env.GITHUB_SHA ?? "local");
   // G1.6: published legal documents; production hides `missing`.
   const config = await (await request.get("/api/account-config")).json();
   expect(config.legal.status, "G1.6 legal documents published").toBe("published");
