@@ -900,7 +900,9 @@ DB test 21 runs this block exactly as written, as `gm_migrator`:
     check it again after the cleanup. A browser run on a persistent database
     (staging, RELEASE item 5) leaves no public ticket on the demo
     restaurant's kitchen screen. `core.spec`'s QR test is covered by
-    track/flake's file-level `kitchenHygiene()` once W3-2 lands.
+    its file-level `kitchenHygiene()` (W3-2), and `public-ordering.spec`
+    registers the same hygiene after its own cleanup, so a round or offline
+    review that cleanup missed is still settled.
   - The table-QR end-to-end test (the diner at 390 px, the inbox accept)
     and the pay-first kiosk test (the 1024 px kiosk, the inbox charge) are
     tagged `@cross`, so CI also runs them on the `webkit-ipad` project:

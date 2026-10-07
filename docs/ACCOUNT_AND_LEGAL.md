@@ -366,6 +366,15 @@ co-owners; works on Free, after a lapse and on unselected devices).
   10 per hour per tenant (`429 rate_limited`), 60 s statement and idle
   timeouts, client aborts cancel the cursor, `Cache-Control: no-store`, and an
   `account.data_export {format, table}` audit row.
+- Each table is read with the async-iterator form of the postgres.js cursor
+  (500 rows per batch), so every batch's write is awaited, a table's final
+  batch included: the client's backpressure holds and an abort ends the export
+  as `export_aborted` instead of an unhandled rejection that ended the web
+  process (W3-2; the `.cursor(n, fn)` callback form is never used, which
+  `tests/cursor-form.test.ts` enforces for `server/` and `scripts/`).
+  account-http check FLK-1 abandons a 24 MiB JSON and CSV export under
+  backpressure, then requires the process to answer and the next export to
+  complete.
 - Filenames: `green-monkey-<slug>-<YYYYMMDD>.json` and
   `green-monkey-<slug>-<table>-<YYYYMMDD>.csv` (restaurant timezone).
 

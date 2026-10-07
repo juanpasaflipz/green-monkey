@@ -2362,9 +2362,12 @@ dialog.has-footer[open] {
   margin: 0;
   font-weight: 600;
 }
+/* A fully voided line: struck through and in the secondary text colour
+ * (#5e5e5e on the white ticket, 6.5:1), never faded with opacity, which took
+ * its muted parts to 2.7:1 (W3-2). */
 .ticket-lines > div.voided {
   text-decoration: line-through;
-  opacity: 0.6;
+  color: var(--text-2);
 }
 .void-history summary {
   cursor: pointer;

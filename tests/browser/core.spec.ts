@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 async function login(page: any) {
   await page.goto("/app");
   await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
@@ -9,6 +10,14 @@ async function login(page: any) {
   ).toBeVisible();
   await page.getByRole("button", { name: "Operación", exact: true }).click();
 }
+/** A call name of its own per run (letters only, never an order number). */
+const tag = () =>
+  "core" +
+  Array.from(String(Date.now() % 1e8), (d) => "abcdefghij"[Number(d)]).join("");
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
+
 test("cashier order, modifier, kitchen acknowledgement, payment and receipt", async ({
   page,
 }) => {
@@ -30,7 +39,9 @@ test("cashier order, modifier, kitchen acknowledgement, payment and receipt", as
     .getByRole("button", { name: "Agregar a la orden", exact: true })
     .click();
   await page.getByRole("button", { name: /Agua de jamaica/ }).click();
-  await page.getByLabel("Nombre para llamar").fill("Browser acceptance");
+  // W3-2: a name of its own, so tickets earlier runs left never match.
+  const name = "Browser acceptance " + tag();
+  await page.getByLabel("Nombre para llamar").fill(name);
   await page
     .getByRole("button", { name: "Enviar a cocina", exact: true })
     .click();
@@ -39,10 +50,11 @@ test("cashier order, modifier, kitchen acknowledgement, payment and receipt", as
     .getByRole("button", { name: "Cocina", exact: true })
     .first()
     .click();
+  // The order sends two tickets (kitchen and bar): this is the kitchen one.
   const ticket = page
     .locator(".kitchen-ticket")
-    .filter({ hasText: "Browser acceptance" })
-    .last();
+    .filter({ hasText: name })
+    .filter({ hasText: "Taco de asada" });
   await ticket.getByRole("button", { name: "Confirmar recepción" }).click();
   await expect(ticket).toContainText("Cocina recibió");
   await ticket.getByRole("button", { name: "Marcar listo" }).click();

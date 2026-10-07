@@ -40,6 +40,38 @@ Dockerfile is built with a stamped commit and the container must pass
 `/api/health`, report the commit on `/api/version`, start the worker
 (`/healthz`) and pass `migrate.js --check`.
 
+The browser suite is written to run again on a database it already ran
+against (W3-2, LD-42). After each test of every spec that sends rounds to the
+kitchen (kitchen, reports, service, voids, core, discounts, menu, fiscal, cfdi,
+finance, access, offline, recovery, settlement-settings),
+`tests/browser/kitchen-hygiene.ts`, signed in as the demo owner on a request
+context of its own, decides "already served" for the offline sales the test
+left in the kitchen review lane and delivers every kitchen round the test
+opened; `public-ordering.spec` delivers its own rounds. Before a run,
+`tests/browser/global-setup.ts` settles what an interrupted run left on each
+demo restaurant (open rounds, their pending cancellations, pending kitchen
+reviews), naming the restaurant in every statement, and only on the isolated
+local fixture database. Tests find their own records by unique names or by
+searching (no "last" ticket or first register page). A reused staging
+database still accumulates the open checks, but no kitchen rounds or kitchen
+reviews.
+Local confirmation (October 7, 2026, local fixture only, not staging), after
+W3-2 absorbed public 032/033/034: the full qualification passed (browser 249
+passed, 1 skipped) and left no open round and no pending kitchen review on
+the demo restaurants. Then three full browser rounds on one database without a
+reset between them, the last two with four `yes` processes loading the CPU,
+each passed 249 tests (1 skipped) with the same web process throughout, and
+after each round the demo restaurants had no open round and no pending kitchen
+review; about once per round the hygiene settled a late offline sync from the
+previous test before the next one began. Earlier sets, recorded as they ran:
+one before that late-sync step passed 3/3 but its third round left 4 pending
+reviews (the reason for the step); one run while another browser suite and
+macOS background services kept the load average near 50 had a second round of
+an hour with 6 failures and 2 more in the part of its third round that ran
+before it was stopped, all in tests whose bodies W3-2 did not change (time-outs,
+and one test that met the codes a timed-out test could not clean up); each of
+the 8 passed when rerun alone, and the set was repeated.
+
 `security`: `npm audit --omit=dev --audit-level=high` and gitleaks over the
 full history (`.gitleaks.toml` allowlists only synthetic local/CI values).
 

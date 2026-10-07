@@ -22,9 +22,14 @@ import { PrintSettingsDialog, printDocument, usePrintSettings } from "../print";
 import { KitchenTicketDocument, ticketFromKitchenRound } from "./KitchenTicket";
 import { cancellationsFromKitchenRounds } from "./printing/cancellations";
 import { printCancellations } from "./printing/KitchenCancellationDocument";
+import {
+  clearStaleCount,
+  kdsChanges,
+  type FullFeed,
+  type KdsSeen,
+} from "./kitchenFeed";
 
 export type Station = "all" | "kitchen" | "bar";
-type FullFeed = Extract<KitchenFeed, { unchanged: false }>;
 const isStation = (v: unknown): v is Station =>
   v === "all" || v === "kitchen" || v === "bar";
 const isSound = (v: unknown): v is "on" | "off" => v === "on" || v === "off";
@@ -78,7 +83,6 @@ export function Kitchen({
 }) {
   const t = (k: Key) => strings[locale][k];
   const role = session.role;
-  const manager = ["owner", "manager"].includes(role);
   const [station, setStation] = useStoredState<Station>(
     "gm-kds-station",
     "all",
@@ -111,10 +115,8 @@ export function Kitchen({
   const version = useRef<number | null>(null);
   const lastFull = useRef(0);
   const offset = useRef(0);
-  const seenRounds = useRef<Set<string> | null>(null);
-  const seenVoids = useRef<Set<string>>(new Set());
-  /** The order and round notes each seen ticket last showed. */
-  const seenNotes = useRef<Map<string, string>>(new Map());
+  /** What this station's screen has shown (null until its first feed). */
+  const seen = useRef<KdsSeen | null>(null);
   const loadedStation = useRef<Station | null>(null);
   const loadedRefresh = useRef(refreshKey);
   const generation = useRef(0);
@@ -132,8 +134,7 @@ export function Kitchen({
       loadedStation.current = station;
       generation.current++;
       version.current = null;
-      seenRounds.current = null;
-      seenNotes.current = new Map();
+      seen.current = null;
     }
     if (loadedRefresh.current !== refreshKey) {
       loadedRefresh.current = refreshKey;
@@ -157,34 +158,18 @@ export function Kitchen({
   }
 
   function detect(r: FullFeed) {
-    const voidIds = r.rounds.flatMap((x) => x.pendingVoids.map((v) => v.id));
-    const notesOf = (x: KitchenRound) => x.orderNote + "\u0000" + x.roundNote;
-    if (seenRounds.current === null) {
-      // The first load of a station fills the seen sets silently.
-      seenRounds.current = new Set(r.rounds.map((x) => x.id));
-      seenVoids.current = new Set(voidIds);
-      seenNotes.current = new Map(r.rounds.map((x) => [x.id, notesOf(x)]));
-      return;
-    }
-    const fresh = r.rounds.filter((x) => !seenRounds.current!.has(x.id));
-    // SVC-R6: an order note edited after sending changes a ticket the cook
-    // already read; it is announced like a new ticket, never silently.
-    const noted = r.rounds.filter(
-      (x) =>
-        seenRounds.current!.has(x.id) &&
-        seenNotes.current.has(x.id) &&
-        seenNotes.current.get(x.id) !== notesOf(x),
-    );
-    const voided = r.rounds.filter((x) =>
-      x.pendingVoids.some((v) => !seenVoids.current.has(v.id)),
-    );
-    // reports (029): the voids first seen in this load, for the cancellation chits.
-    const newVoidIds = new Set(
-      voidIds.filter((id) => !seenVoids.current.has(id)),
-    );
-    for (const x of fresh) seenRounds.current.add(x.id);
-    for (const id of voidIds) seenVoids.current.add(id);
-    for (const x of r.rounds) seenNotes.current.set(x.id, notesOf(x));
+    // The first feed of a station is silent; a ticket that slides in from
+    // the old end of a truncated feed is not new (FLK-R1, kitchenFeed.ts).
+    // reports (029): newVoidIds are the voids first seen in this load, for
+    // the cancellation chits.
+    const {
+      seen: shown,
+      fresh,
+      noted,
+      voided,
+      newVoidIds,
+    } = kdsChanges(seen.current, r);
+    seen.current = shown;
     // LD-29: a ticket of another business day is announced with its date, as
     // its header reads ("#10 · 5 oct"), so two "#10" never sound alike.
     const ticket = (x: KitchenRound) =>
@@ -388,9 +373,8 @@ export function Kitchen({
 
   const rounds = feed?.rounds ?? [];
   const recent = feed?.recent ?? [];
-  const stale = rounds.filter(
-    (r) => feed && r.businessDate < feed.currentBusinessDate,
-  ).length;
+  // Managers only; a truncated feed uses the server's count (LD-42, FLK-R5).
+  const stale = clearStaleCount(feed, role);
   const lastSuccess = poll.lastSuccess;
   const staleFeed = lastSuccess ? now - lastSuccess > STALE_MS : poll.failing;
   const soundBlocked = sound === "on" && audioState !== "running";
@@ -468,7 +452,7 @@ export function Kitchen({
           <Printer size={18} />
           {t("servicePrintSettings")}
         </Button>
-        {manager && stale > 0 && (
+        {stale > 0 && (
           <Button variant="ghost" onClick={() => setClearOpen(true)}>
             {t("serviceKdsClearStale").replace("{n}", String(stale))}
           </Button>
@@ -504,7 +488,7 @@ export function Kitchen({
         </div>
       )}
       {feed?.truncated && (
-        // SVC-K7: new tickets fall outside a truncated feed, so say so loudly.
+        // SVC-K7 / LD-42: the newest tickets stay; older ones are hidden.
         <p className="warning-panel" role="alert">
           {t("serviceKdsTruncated")}
         </p>

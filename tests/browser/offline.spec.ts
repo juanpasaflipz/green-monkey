@@ -5,9 +5,12 @@ import {
   type Browser,
   type BrowserContext,
   type Page,
+  type Request,
+  type Route,
 } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { transformServiceWorker } from "../../vite/sw-shell-plugin";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 const tenantId = "10000000-0000-4000-8000-000000000001";
 const PROVISIONAL = /[A-Z][A-Z0-9]{0,2}-\d{2,4}/;
@@ -54,6 +57,10 @@ test.beforeEach(async ({ context, browserName, baseURL }) => {
     await route.fulfill({ response, headers });
   });
 });
+
+// W3-2: every round a test sends to the kitchen is delivered after it, and
+// every offline sale it leaves in the kitchen review lane is decided (FLK-R3).
+kitchenHygiene();
 
 async function login(page: Page) {
   await page.goto("/app");
@@ -283,6 +290,42 @@ async function goOffline(context: BrowserContext, page: Page) {
   await expect(pill(page, /^Sin conexión/)).toBeVisible();
 }
 
+/** A proxy's HTML gateway page (OFF-1): not JSON, status 502. */
+const proxy502 = (route: Route) =>
+  route.fulfill({
+    status: 502,
+    contentType: "text/html",
+    body: "<html><body>502 Bad Gateway</body></html>",
+  });
+
+/**
+ * LD-45: the outage starts at the payment's first POST /api/orders. Every
+ * request before it (the dialog's GET /api/cash, api()'s GET retry, the
+ * charge guard) reaches the server, so the device is still online when
+ * Confirmar is tapped. A route installed before Cobrar let those GETs reach
+ * FAIL_THRESHOLD about 0.4 s after the dialog opened, and the button was
+ * relabelled under Playwright's click (WebKit, main CI 37563046530). Earlier
+ * routes (WebKit's cookie shim) still see the requests before it
+ * (route.fallback). Returns `sent`, the wait for that POST, which proves the
+ * payment took the online path.
+ */
+async function outageFromFirstOrderPost(
+  context: BrowserContext,
+  page: Page,
+  fail: (route: Route) => Promise<void>,
+) {
+  const isOrderPost = (request: Request) =>
+    request.method() === "POST" &&
+    new URL(request.url()).pathname === "/api/orders";
+  let down = false;
+  await context.route("**/api/**", (route) => {
+    down ||= isOrderPost(route.request());
+    return down ? fail(route) : route.fallback();
+  });
+  // Wrapped: an async function returning the bare promise would wait for it.
+  return { sent: page.waitForRequest(isOrderPost) };
+}
+
 test("API down while browser online switches to offline selling @cross", async ({
   page,
   context,
@@ -292,13 +335,14 @@ test("API down while browser online switches to offline selling @cross", async (
   await openDrawer(page);
   await expect(pill(page, /^Conectado/)).toBeVisible();
   await page.getByRole("button", { name: /Taco de hongos/ }).click();
-  await context.route("**/api/**", (route) =>
+  const { sent } = await outageFromFirstOrderPost(context, page, (route) =>
     route.abort("internetdisconnected"),
   );
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   await page
     .getByRole("button", { name: "Confirmar cobro", exact: true })
     .click();
+  await sent;
   await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
     "Sin conexión con el servidor",
   );
@@ -341,20 +385,17 @@ test("HTML 502 from the proxy is treated as offline, not a generic error @cross"
   await login(page);
   await openDrawer(page);
   await page.getByRole("button", { name: /Taco de hongos/ }).click();
-  await context.route("**/api/**", (route) =>
-    route.fulfill({
-      status: 502,
-      contentType: "text/html",
-      body: "<html><body>502 Bad Gateway</body></html>",
-    }),
-  );
+  const { sent } = await outageFromFirstOrderPost(context, page, proxy502);
   await page.getByRole("button", { name: "Cobrar", exact: true }).click();
   await page
     .getByRole("button", { name: "Confirmar cobro", exact: true })
     .click();
+  await sent;
   const alert = page.getByRole("dialog").getByRole("alert");
-  // The POST is retried once after 800 ms on a 502 (idempotent payments), so
-  // the alert can take longer than the default 5 s on a slow WebKit runner.
+  // The order POST is idempotent, so api() retries it once after 800 ms
+  // while the device still counts as online (one failure is below
+  // FAIL_THRESHOLD); the second 502 takes the device offline. The alert can
+  // take longer than the default 5 s on a slow WebKit runner.
   await expect(alert).toContainText("El servidor no está disponible", {
     timeout: 15_000,
   });
@@ -368,6 +409,108 @@ test("HTML 502 from the proxy is treated as offline, not a generic error @cross"
     .click();
   await expect(page.locator(".receipt")).toContainText("Número provisional");
   await context.unroute("**/api/**");
+});
+
+test("an outage noticed after Cobrar relabels Confirmar in place, and the relabelled tap saves locally with zero POSTs @cross", async ({
+  page,
+  context,
+}) => {
+  // LD-45 pins the product behaviour the WebKit flake ran into: the dialog
+  // opened online, the device then went offline, and the same footer button
+  // (the element a finger, or a click resolved earlier, is already on)
+  // became "Guardar cobro en este dispositivo". Tapping it saves the sale on
+  // the device and sends nothing.
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const confirm = dialog.getByRole("button", {
+    name: "Confirmar cobro",
+    exact: true,
+  });
+  await expect(confirm).toBeEnabled();
+  const button = (await confirm.elementHandle())!;
+  const posts: string[] = [];
+  let down = false;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (down && request.method() === "POST" && path.startsWith("/api/"))
+      posts.push(path);
+  });
+  await context.route("**/api/**", (route) =>
+    down ? proxy502(route) : route.fallback(),
+  );
+  down = true;
+  // The browser's online event probes at once; a failed probe is confirmed
+  // 3 s later, and the second failure takes the device offline.
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await expect(pill(page, /^Sin conexión/)).toBeVisible({ timeout: 15_000 });
+  const relabelled = dialog.getByRole("button", {
+    name: "Guardar cobro en este dispositivo",
+    exact: true,
+  });
+  await expect(relabelled).toBeVisible();
+  await expect(confirm).toHaveCount(0);
+  // Relabelled in place: the element resolved before the outage is that button.
+  expect(
+    await button.evaluate((b) => b.isConnected && b.textContent),
+  ).toContain("Guardar cobro en este dispositivo");
+  await button.click();
+  const receipt = page.locator(".receipt");
+  await expect(receipt).toContainText("Número provisional");
+  await expect(receipt).toContainText("Pendiente de sincronizar");
+  expect(posts, "the relabelled tap sends nothing").toEqual([]);
+  await context.unroute("**/api/**");
+});
+
+test("while the payment dialog is open, Confirm ignores taps for 700 ms after the connection changes; the offline notice is a status (LD-45)", async ({
+  page,
+  context,
+}) => {
+  // A tap that lands as the button relabels (online to offline, or back)
+  // must not run the other action: Confirm stays disabled for 700 ms after
+  // each change while the dialog is open.
+  await page.clock.install();
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const confirm = dialog.getByRole("button", {
+    name: "Confirmar cobro",
+    exact: true,
+  });
+  // Opening the dialog is not a change: Confirm works at once.
+  await expect(confirm).toBeEnabled();
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
+  await goOffline(context, page);
+  const save = dialog.getByRole("button", {
+    name: "Guardar cobro en este dispositivo",
+    exact: true,
+  });
+  await expect(save).toBeDisabled();
+  await expect(dialog.getByRole("status")).toContainText(
+    "Sin conexión: el cobro se guarda en este dispositivo.",
+  );
+  await page.clock.runFor(650);
+  await expect(save).toBeDisabled();
+  await page.clock.runFor(100);
+  await expect(save).toBeEnabled();
+  // Back online: two good probes (the online event's, then 2 s later).
+  await context.setOffline(false);
+  await expect
+    .poll(async () => {
+      await page.clock.runFor(500);
+      return confirm.count();
+    })
+    .toBe(1);
+  await expect(confirm).toBeDisabled();
+  await page.clock.runFor(750);
+  await expect(confirm).toBeEnabled();
+  await expect(dialog.getByRole("status")).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
 });
 
 test("Hung server times out and the payment dialog becomes closable within 16 s", async ({

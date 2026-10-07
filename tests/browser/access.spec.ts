@@ -7,6 +7,7 @@ import {
 } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import postgres from "postgres";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 const OWNER_PASSWORD = "demo-green-monkey";
 const CASHIER = { name: "Dani Demo", pin: "123456" };
@@ -209,6 +210,10 @@ async function checkLayout(page: Page, evidence: string, include?: string) {
   }
   await page.setViewportSize({ width: 1440, height: 900 });
 }
+
+// W3-2: every round a test sends to the kitchen is delivered after it, and
+// every offline sale it leaves in the kitchen review lane is decided (FLK-R3).
+kitchenHygiene();
 
 test("owner pairs a terminal with a code and a new cashier signs in with name and PIN, without any restaurant ID (FOH-2/FIT-3/SEC-4)", async ({
   page,

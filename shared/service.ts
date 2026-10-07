@@ -100,6 +100,12 @@ export type KitchenRound = {
   seenAt: string | null;
   readyAt: string | null;
   createdAt: string;
+  /**
+   * When the round last entered the open set: its creation, or a later
+   * recall or "Preparar ahora" decision (035). The newest-200 window ranks by
+   * it (FLK-R9); the screen still lists tickets by createdAt.
+   */
+  openedAt: string;
   orderCreatedAt: string;
   businessDate: string;
   mode: string;
@@ -129,9 +135,13 @@ export type KitchenFeed =
       unchanged: false;
       serverTime: string;
       currentBusinessDate: string;
+      /** The KITCHEN_FEED_LIMIT most recently opened rounds (openedAt), listed oldest created first (LD-42). */
       rounds: KitchenRound[];
       recent: KitchenRecent[];
+      /** More open rounds exist than `rounds` carries; the oldest are left out. */
       truncated: boolean;
+      /** Open rounds of previous business days, hidden ones included (clear-stale). */
+      staleCount: number;
     };
 
 export const RECALL_WINDOW_MINUTES = 120;
