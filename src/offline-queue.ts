@@ -218,11 +218,18 @@ async function syncScoped(
         } catch (e) {
           const code = (e as Error).message;
           const kind = e instanceof ApiError ? e.kind : "network";
+          // What support needs to find the failed request (LD-48): its status
+          // and request id, when the server answered.
+          const failure = {
+            errorStatus: e instanceof ApiError ? e.status : undefined,
+            requestId: e instanceof ApiError ? e.requestId : undefined,
+          };
           switch (classifySyncError(code, kind)) {
             case "transient":
               await db.pending.update(row.id, {
                 status: "pending",
                 error: code,
+                ...failure,
                 waitReason: undefined,
                 // Attempts count only while the server looked reachable.
                 attempts: reachable ? row.attempts + 1 : row.attempts,
@@ -236,6 +243,7 @@ async function syncScoped(
               await db.pending.update(row.id, {
                 status: "pending",
                 error: code,
+                ...failure,
                 waitReason: "auth",
               });
               return finish(s, reason);
@@ -244,6 +252,8 @@ async function syncScoped(
                 status: "archived",
                 archivedAt: Date.now(),
                 error: code,
+                errorStatus: undefined,
+                requestId: undefined,
                 waitReason: undefined,
               });
               break;
@@ -253,6 +263,8 @@ async function syncScoped(
                 result: null,
                 syncedAt: Date.now(),
                 error: undefined,
+                errorStatus: undefined,
+                requestId: undefined,
                 waitReason: undefined,
               });
               break;
@@ -260,6 +272,7 @@ async function syncScoped(
               await db.pending.update(row.id, {
                 status: "conflict",
                 error: code,
+                ...failure,
                 waitReason: undefined,
               });
           }
@@ -272,6 +285,8 @@ async function syncScoped(
           result,
           syncedAt: Date.now(),
           error: undefined,
+          errorStatus: undefined,
+          requestId: undefined,
           waitReason: undefined,
           nextAt: 0,
         });
@@ -301,6 +316,8 @@ export async function settleAlreadySynced(row: Pending): Promise<void> {
     syncedAt: Date.now(),
     result,
     error: undefined,
+    errorStatus: undefined,
+    requestId: undefined,
     waitReason: undefined,
   });
 }

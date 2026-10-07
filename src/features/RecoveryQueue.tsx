@@ -28,11 +28,11 @@ import { persistenceStatus } from "../storage-persistence";
 import { serviceWorkerSupported } from "../service-worker";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";
-import { errorNotice, translateError } from "../i18n";
+import { errorNotice } from "../i18n";
 import { currentBusinessDate, orderNumberText } from "../labels";
 import { ArchiveRecordForm } from "./offline/ArchiveRecordForm";
 import { OfflineTableServiceSetting } from "./offline/OfflineTableServiceSetting";
-import { clockTime, rowErrorCode, translator } from "./offline/format";
+import { clockTime, rowErrorNotice, translator } from "./offline/format";
 import {
   OfflineReviewPanel,
   type OfflineReviewDetail,
@@ -543,9 +543,7 @@ export function RecoveryQueue({
                   })}`
                 : ""}
             </p>
-            {row.error && (
-              <p>{translateError(rowErrorCode(row.error, kind), locale)}</p>
-            )}
+            {row.error && <p>{rowErrorNotice(row, kind, locale)}</p>}
             {/* OFFLINE-RECOVERY-04: only its own employee's session sends it. */}
             {!isResolved(row) && row.scope !== scope(session) && (
               <p className="muted tiny">{t("offlineRowOtherEmployee")}</p>

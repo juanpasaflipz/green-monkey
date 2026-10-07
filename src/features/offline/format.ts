@@ -4,7 +4,12 @@ import {
   type OfflineRecord,
   type OfflineRecordKind,
 } from "../../../shared/offline-recovery";
-import { strings, type Key } from "../../i18n";
+import {
+  strings,
+  translateError,
+  withSupportReference,
+  type Key,
+} from "../../i18n";
 import { orderNumberText, withBusinessDay } from "../../labels";
 import type { ParkedOrderRef, ParkedOrderTarget } from "../../offline-records";
 
@@ -181,6 +186,32 @@ export function rowErrorCode(code: string, kind: OfflineRecordKind): string {
   if (code === "offline_catalog_changed" && !money)
     return "offline_why_catalog_items";
   return code;
+}
+
+/**
+ * A Sync row's error as Sincronización shows it: rowErrorCode's explanation, followed by
+ * the "Referencia de soporte" while the row is unresolved and its last attempt failed on
+ * the server (a 5xx) or with an unexpected 4xx (supportReferenceOf), so a manager can read
+ * it out to support like on every other screen (LD-48, POLISH-OFFLINE-4).
+ */
+export function rowErrorNotice(
+  row: {
+    status: string;
+    error?: string;
+    errorStatus?: number;
+    requestId?: string;
+  },
+  kind: OfflineRecordKind,
+  locale: Locale,
+): string {
+  const code = row.error ?? "";
+  const text = translateError(rowErrorCode(code, kind), locale);
+  if (row.status === "synced" || row.status === "archived") return text;
+  return withSupportReference(
+    text,
+    { message: code, status: row.errorStatus, requestId: row.requestId },
+    locale,
+  );
 }
 
 /**

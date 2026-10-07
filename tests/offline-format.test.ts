@@ -9,8 +9,9 @@ import {
   orderLabel,
   provisionalOnly,
   rowErrorCode,
+  rowErrorNotice,
 } from "../src/features/offline/format";
-import { errorText } from "../src/i18n";
+import { errorText, translateError } from "../src/i18n";
 
 const id = "00000000-0000-4000-8000-000000000142";
 
@@ -79,6 +80,63 @@ describe("sync row explanations (OFFLINE-RECOVERY-03)", () => {
       expect(errorText[code], code).toBeDefined();
       expect(errorText[code]![0]).not.toMatch(/Conecta|Actualiza antes/);
     }
+  });
+
+  it("LD-48: an unresolved row whose last attempt failed on the server, or with a 4xx the app has no text for, shows the support reference (POLISH-OFFLINE-4)", () => {
+    const ref = "Referencia de soporte: 3F2A9C1B";
+    // A record retrying a server failure forever.
+    expect(
+      rowErrorNotice(
+        {
+          status: "pending",
+          error: "internal_error",
+          errorStatus: 500,
+          requestId: "3f2a9c1b-0001",
+        },
+        "sale",
+        "es",
+      ),
+    ).toBe(`${translateError("internal_error", "es")} ${ref}`);
+    // A conflict with a code the app cannot explain: rowErrorCode's text, then the reference.
+    const unknown = {
+      status: "conflict",
+      error: "some_new_code",
+      errorStatus: 409,
+      requestId: "3f2a9c1b-0002",
+    };
+    expect(rowErrorNotice(unknown, "sale", "es")).toBe(
+      `${translateError(rowErrorCode("some_new_code", "sale"), "es")} ${ref}`,
+    );
+    expect(rowErrorNotice(unknown, "sale", "en")).toMatch(
+      / Support reference: 3F2A9C1B$/,
+    );
+    // A refusal the screen explains, a failure that never reached the server, a row stored
+    // before the request id was kept, and a resolved row show no reference.
+    for (const row of [
+      {
+        status: "conflict",
+        error: "price_conflict",
+        errorStatus: 409,
+        requestId: "3f2a9c1b-0003",
+      },
+      { status: "pending", error: "network_unavailable", errorStatus: 0 },
+      { status: "pending", error: "internal_error" },
+      {
+        status: "archived",
+        error: "internal_error",
+        errorStatus: 500,
+        requestId: "3f2a9c1b-0004",
+      },
+      {
+        status: "synced",
+        error: "internal_error",
+        errorStatus: 500,
+        requestId: "3f2a9c1b-0005",
+      },
+    ])
+      expect(rowErrorNotice(row, "sale", "es")).toBe(
+        translateError(rowErrorCode(row.error, "sale"), "es"),
+      );
   });
 });
 
