@@ -33,7 +33,10 @@ import {
   kitchenFeed,
   recallRound,
 } from "../server/kitchen.js";
-import { placeRoundsInOfflineReview } from "../server/offline-kitchen.js";
+import {
+  decideOfflineKitchen,
+  placeRoundsInOfflineReview,
+} from "../server/offline-kitchen.js";
 import { recordPaidOut, refund, cashSummary } from "../server/operations.js";
 import { issueOfflineLease } from "../server/offline-leases.js";
 import {
@@ -1353,6 +1356,85 @@ try {
     assert.equal(under.rounds.at(-1)!.orderId, newest.id);
     assert.ok(ascending(under));
     assert.equal(under.staleCount, 0);
+  });
+
+  await test("KDS cap (FLK-R9, 035): a recalled round and a 'Preparar ahora' decision rank by when they reopened, so the newest-200 window shows them; only those transitions stamp reopened_at", async () => {
+    const t = await kitchenTenant("reabre");
+    // The two oldest rounds: one delivered (recallable), one offline sale
+    // waiting in the review lane.
+    const recalled = kitchenRound(await t.order());
+    await progress(recalled.id, "ready", t.kitchen);
+    await progress(recalled.id, "completed", t.kitchen);
+    const offline = await t.order();
+    const operationId = randomUUID();
+    await admin`insert into offline_sync_records(tenant_id,operation_id,kind,format_version,path,device_id,employee_id,session_id,order_id,round_number,recorded_at,sold_at,business_date,kitchen_delivery,actor_id)
+      select ${t.id},${operationId},'order',3,'automatic',${deviceId},${t.staff.owner},${randomUUID()},id,1,now(),now(),business_date,'device_list',${t.staff.owner}
+      from orders where tenant_id=${t.id} and id=${offline.id}`;
+    await run(t.owner, (tx) =>
+      placeRoundsInOfflineReview(tx, t.owner, {
+        orderId: offline.id,
+        roundNumber: 1,
+        operationId,
+      }),
+    );
+    const released = kitchenRound(offline);
+    // Then 200 kitchen tickets: exactly the cap, nothing hidden yet.
+    const today: Order[] = [];
+    for (let i = 0; i < KITCHEN_FEED_LIMIT; i++) today.push(await t.order());
+    assert.equal((await full(t.kitchen)).truncated, false);
+
+    await run(t.kitchen, (tx) =>
+      recallRound(tx, t.kitchen, recalled.id, { operationId: randomUUID() }),
+    );
+    await run(t.manager, (tx) =>
+      decideOfflineKitchen(tx, t.manager, released.id, {
+        operationId: randomUUID(),
+        decision: "prepare",
+      }),
+    );
+    const f = await full(t.kitchen);
+    assert.equal(f.truncated, true, "202 open rounds");
+    assert.equal(f.rounds.length, KITCHEN_FEED_LIMIT);
+    const shown = f.rounds.map((r) => r.id);
+    assert.ok(shown.includes(recalled.id), "the recalled ticket is shown");
+    assert.ok(
+      shown.includes(released.id),
+      "the released offline sale is shown",
+    );
+    for (const o of today.slice(0, 2))
+      assert.ok(
+        !shown.includes(kitchenRound(o).id),
+        "the two tickets that opened first are the hidden ones",
+      );
+    assert.ok(shown.includes(kitchenRound(today[2]).id));
+    // Still listed by creation: the two reopened rounds come first.
+    assert.deepEqual(shown.slice(0, 2), [recalled.id, released.id]);
+    assert.ok(
+      f.rounds.every(
+        (r, i) =>
+          !i ||
+          Date.parse(f.rounds[i - 1].createdAt) <= Date.parse(r.createdAt),
+      ),
+    );
+    for (const r of f.rounds)
+      if ([recalled.id, released.id].includes(r.id))
+        assert.ok(
+          Date.parse(r.openedAt) > Date.parse(today.at(-1)!.createdAt),
+          "reopened after the newest ticket was sent",
+        );
+      else assert.equal(r.openedAt, r.createdAt);
+
+    // 035's trigger: ready and delivered rounds keep reopened_at null; a
+    // recall and a "Preparar ahora" set it.
+    const delivered = kitchenRound(today[3]);
+    await progress(delivered.id, "ready", t.kitchen);
+    await progress(delivered.id, "completed", t.kitchen);
+    const stamped = await admin`select id from rounds
+      where tenant_id=${t.id} and reopened_at is not null order by id`;
+    assert.deepEqual(
+      stamped.map((r) => r.id),
+      [recalled.id, released.id].sort(),
+    );
   });
 
   await test("KDS clear count (FLK-R5): past the cap the previous-day count is what one clear-stale delivers, and the button returns for the rest", async () => {

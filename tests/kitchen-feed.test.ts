@@ -15,7 +15,7 @@ const TODAY = "2026-10-06";
 const YESTERDAY = "2026-10-05";
 const BASE = Date.parse("2026-10-06T15:00:00.000Z");
 
-/** Round n, created n minutes after BASE (higher n = newer). */
+/** Round n, created (and opened) n minutes after BASE (higher n = newer). */
 function round(n: number, extra: Partial<KitchenRound> = {}): KitchenRound {
   return {
     id: `r${n}`,
@@ -27,6 +27,7 @@ function round(n: number, extra: Partial<KitchenRound> = {}): KitchenRound {
     seenAt: null,
     readyAt: null,
     createdAt: new Date(BASE + n * 60000).toISOString(),
+    openedAt: new Date(BASE + n * 60000).toISOString(),
     orderCreatedAt: new Date(BASE + n * 60000).toISOString(),
     businessDate: TODAY,
     mode: "takeaway",
@@ -163,6 +164,54 @@ describe("kdsChanges: which tickets a KDS announces as new", () => {
     const { seen } = kdsChanges(null, feed(range(5, 10)));
     const next = kdsChanges(seen, feed([round(1), ...range(5, 10)]));
     expect(ids(next.fresh)).toEqual(["r1"]);
+  });
+
+  it("FLK-R9: past the cap a recalled or released round is new however long ago it was created; later slide-ins stay quiet", () => {
+    // 201 open, r100..r299 on screen after a reload (r99 hidden).
+    const loaded = kdsChanges(null, feed(range(100, 299), true));
+    // A manager's "Preparar ahora" puts r5 (created at minute 5, synced
+    // offline) on the kitchen screen at minute 400: it ranks by when it
+    // opened, so r100 is the one now hidden, and the screen lists r5 first.
+    const released = round(5, {
+      openedAt: new Date(BASE + 400 * 60000).toISOString(),
+    });
+    const next = kdsChanges(
+      loaded.seen,
+      feed([released, ...range(101, 299)], true),
+    );
+    expect(ids(next.fresh)).toEqual(["r5"]);
+    // The edge is the earliest openedAt on screen (r101), not the first
+    // ticket's: r5 is delivered, r100 slides back in quietly and r300, sent
+    // meanwhile, is new.
+    expect(next.seen.hiddenUntil).toBe(Date.parse(round(101).openedAt));
+    const after = kdsChanges(
+      next.seen,
+      feed([...range(100, 299), round(300)], true),
+    );
+    expect(ids(after.fresh)).toEqual(["r300"]);
+  });
+
+  it("a feed without openedAt (a server before 035) ranks by createdAt as before", () => {
+    const legacy = (n: number) => {
+      const { openedAt: _, ...rest } = round(n);
+      return rest as KitchenRound;
+    };
+    const loaded = kdsChanges(
+      null,
+      feed(
+        Array.from({ length: 200 }, (_, i) => legacy(i + 2)),
+        true,
+      ),
+    );
+    expect(loaded.seen.hiddenUntil).toBe(Date.parse(round(2).createdAt));
+    const slid = kdsChanges(
+      loaded.seen,
+      feed([
+        legacy(1),
+        ...Array.from({ length: 199 }, (_, i) => legacy(i + 3)),
+      ]),
+    );
+    expect(slid.fresh).toEqual([]);
   });
 
   it("a station's first feed being truncated hides nothing new later", () => {

@@ -89,8 +89,17 @@ export async function kitchenFeed(
   // offline review never reach the live KDS until a manager decides (offline 026).
   // Past the cap the newest rounds stay (LD-42), so a restaurant that never
   // bumps tickets still sees new orders; the screen lists them oldest first.
-  const newest =
-    await tx`select r.id,r.order_id,r.number,r.station,r.state,r.seen_at,r.ready_at,r.created_at,r.note as round_note,
+  // "Newest" is by when a round last entered the open set (FLK-R9, 035): a
+  // recalled round or a "Preparar ahora" decision is new to the kitchen even
+  // though the round was created long ago, so it is never the one left out.
+  const rounds = await tx`with ranked as (
+      select r.tenant_id,r.id,count(*) over () as open_count
+      from rounds r
+      where r.state <> 'completed' and r.state <> 'offline_review' ${station}
+      order by coalesce(r.reopened_at,r.created_at) desc, r.id desc
+      limit ${KITCHEN_FEED_LIMIT})
+    select k.open_count,r.id,r.order_id,r.number,r.station,r.state,r.seen_at,r.ready_at,r.created_at,
+      coalesce(r.reopened_at,r.created_at) as opened_at,r.note as round_note,
       o.number as order_number,o.name as call_name,o.mode,o.channel,o.note as order_note,
       o.created_at as order_created_at,o.business_date::text as business_date,o.service_version,
       t.name as table_name,e.name as waiter_name,
@@ -106,15 +115,14 @@ export async function kitchenFeed(
        from kitchen_removals v join order_lines l on l.tenant_id=v.tenant_id and l.id=v.line_id
        where v.tenant_id=r.tenant_id and v.order_id=r.order_id and l.round=r.number and l.data->>'station'=r.station
          and v.kitchen_ack_required and v.kitchen_acknowledged_at is null) as pending_voids
-    from rounds r
+    from ranked k
+    join rounds r on r.tenant_id=k.tenant_id and r.id=k.id
     join orders o on o.tenant_id=r.tenant_id and o.id=r.order_id
     join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id)
     left join dining_tables t on t.tenant_id=o.tenant_id and t.id=o.table_id
-    where r.state <> 'completed' and r.state <> 'offline_review' ${station}
-    order by r.created_at desc, r.id desc
-    limit ${KITCHEN_FEED_LIMIT + 1}`;
-  const truncated = newest.length > KITCHEN_FEED_LIMIT;
-  const rounds = newest.slice(0, KITCHEN_FEED_LIMIT).reverse();
+    order by r.created_at, r.id`;
+  const truncated =
+    rounds.length > 0 && Number(rounds[0].open_count) > KITCHEN_FEED_LIMIT;
   const currentBusinessDate = businessDate(
     serverTime,
     s.restaurant.timezone,
@@ -169,6 +177,7 @@ export async function kitchenFeed(
       seenAt: iso(r.seen_at),
       readyAt: iso(r.ready_at),
       createdAt: iso(r.created_at)!,
+      openedAt: iso(r.opened_at)!,
       orderCreatedAt: iso(r.order_created_at)!,
       businessDate: r.business_date,
       mode: r.mode,

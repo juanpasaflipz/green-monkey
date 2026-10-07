@@ -72,7 +72,10 @@ cart offer **Editar nota** under the same rule.
   note, assignment and later areas' own columns stay mutable. Corrections after
   close are refunds; no check is ever reopened.
 - `rounds_progress_timestamps` maintains `rounds.ready_at` and
-  `rounds.completed_at`; recall clears `completed_at`.
+  `rounds.completed_at`; recall clears `completed_at`. Since 035 (W3-2,
+  expand-only) it also stamps `rounds.reopened_at` when a round leaves
+  `completed` (a recall) or `offline_review` (a "Preparar ahora" decision)
+  for the kitchen screen; it stays NULL otherwise.
 - The backfill closes historical settled, fully voided and recovery orders.
   The deployed migration role owns the tables but is neither superuser nor
   BYPASSRLS, so the backfill switches `orders` and `tenders` to
@@ -144,7 +147,11 @@ cached before the deploy keep working. A later contract change removes them.
 - The feed is bounded to the 200 newest open rounds, listed oldest first, and
   excludes rounds held for offline review (LD-42: before W3-2 it kept the 200
   oldest, so a restaurant that never delivered tickets stopped seeing new
-  orders). A truncated feed shows an alert that older tickets are hidden and
+  orders). "Newest" ranks by when a round last entered the open set
+  (`openedAt`: `reopened_at`, else `created_at`; FLK-R9), so a recalled
+  ticket or a "Preparar ahora" offline sale is shown and announced at the
+  cap however long ago it was created; the screen still lists tickets by
+  creation. A truncated feed shows an alert that older tickets are hidden and
   that a manager can retire the ones from previous days with "Retirar tickets
   de días anteriores"; the feed's `staleCount` counts the open previous-day
   rounds, hidden ones included, that one clear retires (the rounds of at most
@@ -159,8 +166,9 @@ cached before the deploy keep working. A later contract change removes them.
   At the cap, a ticket that leaves the screen lets the next older hidden round
   slide in at the top; that round was sent long ago, so it joins silently with
   its notes and cancellations (no highlight, announcement, beep or auto-print),
-  as tickets do on a reload; only rounds created after the previous truncated
-  feed's oldest ticket are new (FLK-R1, `src/features/kitchenFeed.ts`).
+  as tickets do on a reload; only rounds that opened after the previous
+  truncated feed's earliest `openedAt` are new (FLK-R1, FLK-R9,
+  `src/features/kitchenFeed.ts`).
   The button and the banner follow the live audio state: when the system
   suspends or interrupts audio (a call, a notification, an app switch) the
   screen tries to resume it when shown again and otherwise asks for

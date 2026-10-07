@@ -6,8 +6,8 @@ export type FullFeed = Extract<KitchenFeed, { unchanged: false }>;
 /**
  * What one KDS screen has already shown for its station: the rounds and
  * pending cancellations it has seen, the notes each ticket last showed and,
- * when its last feed was truncated (LD-42), the creation time of that feed's
- * oldest ticket (the open rounds created up to then may still be hidden).
+ * when its last feed was truncated (LD-42), the earliest openedAt in that
+ * feed (the open rounds that opened up to then may still be hidden).
  */
 export type KdsSeen = {
   rounds: Set<string>;
@@ -29,22 +29,29 @@ export type KdsChanges = {
 };
 
 const notesOf = (x: KitchenRound) => x.orderNote + "\u0000" + x.roundNote;
+/**
+ * When the round last entered the open set, which is what the newest-200
+ * window ranks by (FLK-R9); a feed from a server before 035 has no openedAt.
+ */
+const openedAt = (x: KitchenRound) => Date.parse(x.openedAt ?? x.createdAt);
 
 /**
  * Compares a full feed with what the screen has shown. The first feed of a
  * station (seen null) fills the seen sets silently.
  *
- * FLK-R1: past the cap the feed carries the newest open rounds, so when a
- * ticket leaves the screen (delivered, or its last item cancelled) the next
- * older hidden round slides in at the old end. That round was sent long ago,
- * and the kitchen may already have it on paper: it joins silently, with its
+ * FLK-R1: past the cap the feed carries the most recently opened rounds, so
+ * when a ticket leaves the screen (delivered, or its last item cancelled)
+ * the next older hidden round slides in. That round was sent long ago, and
+ * the kitchen may already have it on paper: it joins silently, with its
  * notes and pending cancellations, like the tickets of a first load. Only a
- * round created after the previous truncated feed's oldest ticket is new.
+ * round that opened after the previous truncated feed's earliest openedAt is
+ * new: a fresh send, and also a recalled round or a "Preparar ahora"
+ * decision (FLK-R9), however long ago the round was created.
  */
 export function kdsChanges(seen: KdsSeen | null, r: FullFeed): KdsChanges {
   const voidIds = r.rounds.flatMap((x) => x.pendingVoids.map((v) => v.id));
   const hiddenUntil =
-    r.truncated && r.rounds.length ? Date.parse(r.rounds[0].createdAt) : null;
+    r.truncated && r.rounds.length ? Math.min(...r.rounds.map(openedAt)) : null;
   if (!seen)
     return {
       seen: {
@@ -60,8 +67,7 @@ export function kdsChanges(seen: KdsSeen | null, r: FullFeed): KdsChanges {
     };
   const edge = seen.hiddenUntil;
   const unseen = r.rounds.filter((x) => !seen.rounds.has(x.id));
-  const slidIn = (x: KitchenRound) =>
-    edge !== null && Date.parse(x.createdAt) <= edge;
+  const slidIn = (x: KitchenRound) => edge !== null && openedAt(x) <= edge;
   for (const x of unseen.filter(slidIn))
     for (const v of x.pendingVoids) seen.voids.add(v.id);
   const fresh = unseen.filter((x) => !slidIn(x));
