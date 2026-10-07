@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { businessDate, type LineInput, type Product } from "../shared/domain";
 import {
   businessDayLabel,
@@ -738,6 +739,38 @@ describe("LD-29: business-day labels after the cutoff rollover", () => {
     ).toBe("#10");
     expect(orderNumberLabel({ number: 10 }, after, "es")).toBe("#10");
     expect(orderNumberLabel(order, null, "es")).toBe("#10");
+  });
+
+  it("notices and dialog titles that name an order by number use the dated label (POL-R2-2)", () => {
+    const source = (file: string) => readFileSync(file, "utf8");
+    // Selling: the after-switch, paid-after-switch and resume-closed notices.
+    const selling = source("src/features/Selling.tsx");
+    expect(selling).not.toMatch(/"\{n\}",\s*String\(\w+\.number\)/);
+    for (const key of [
+      "serviceRoundFailedAfterSwitch",
+      "serviceSentAfterSwitch",
+      "servicePaidAfterSwitch",
+      "serviceResumeClosed",
+    ])
+      expect(selling, key).toMatch(
+        new RegExp(
+          `t\\("${key}"\\)\\s*\\.replace\\(\\s*"\\{n\\}",\\s*numberText\\(`,
+        ),
+      );
+    expect(selling).toMatch(
+      /const numberText = \([^)]*\) =>\s*orderNumberText\(o, currentBusinessDate\(session\.restaurant\), locale\)/,
+    );
+    // The discount and refund dialog titles, and the QR inbox's accepted notice.
+    for (const file of [
+      "src/features/discounts/DiscountDialog.tsx",
+      "src/features/RefundDialog.tsx",
+      "src/features/public/PublicOrderInbox.tsx",
+    ]) {
+      expect(source(file), file).not.toMatch(
+        /\bn(?:umber)?: \w+(?:\.order)?\.number\b/,
+      );
+      expect(source(file), file).toContain("orderNumberText(");
+    }
   });
 
   it("the cart heading names a numbered order's date; provisional numbers are unchanged", () => {

@@ -172,6 +172,17 @@ test("LD-29: an open order from the previous business day shows its date next to
         exact: true,
       }),
     ).toBeVisible();
+    // The discount dialog's title names it the same way (POL-R2-2).
+    await oldCard
+      .getByRole("button", { name: "Descuento", exact: true })
+      .click();
+    await expect(
+      page.getByRole("dialog", {
+        name: `Descuento · Orden ${oldLabel}`,
+        exact: true,
+      }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
 
     // The kitchen ticket list.
     await page.getByRole("button", { name: "Cocina", exact: true }).click();

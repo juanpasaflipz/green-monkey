@@ -27,6 +27,7 @@ import { strings, errorNotice, translateError, type Key } from "../i18n";
 import {
   currentBusinessDate,
   orderNumberLabel,
+  orderNumberText,
   tenderMethodLabel,
 } from "../labels";
 import { printDocument, readPrintSettings } from "../print";
@@ -343,7 +344,14 @@ export function RefundDialog({
     }
   }
 
-  const title = fill(t("discountsRefundTitle"), { n: order.number });
+  // LD-29 (POL-R2-2): yesterday's #10 names its date, as the header line does.
+  const title = fill(t("discountsRefundTitle"), {
+    n: orderNumberText(
+      order,
+      today || currentBusinessDate(session.restaurant),
+      locale,
+    ),
+  });
   /** Cancel and close: after a recorded attempt the parent refreshes too. */
   const leave = () => (recorded ? void finish() : close());
   /**

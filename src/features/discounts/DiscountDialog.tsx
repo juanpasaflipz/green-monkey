@@ -24,6 +24,7 @@ import {
   unapprovedDiscounts,
 } from "../../../shared/discounts";
 import { api } from "../../api";
+import { currentBusinessDate, orderNumberText } from "../../labels";
 import { Button, Field, Modal } from "../../components/ui";
 import {
   ManagerApproval,
@@ -254,7 +255,14 @@ export function DiscountDialog({
   const due = balanceDue(order);
   return (
     <Modal
-      title={fill(t("discountsDialogTitle"), { n: order.number })}
+      title={fill(t("discountsDialogTitle"), {
+        // LD-29 (POL-R2-2): yesterday's open #10 names its date.
+        n: orderNumberText(
+          order,
+          currentBusinessDate(session.restaurant),
+          locale,
+        ),
+      })}
       close={close}
       closeLabel={t("close")}
       wide

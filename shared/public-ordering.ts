@@ -355,6 +355,8 @@ export type InboxHold = {
   openChecks: {
     id: string;
     number: number;
+    /** The check's business day, so yesterday's open #10 reads "#10 · 5 oct" (LD-29). */
+    businessDate?: string;
     version: number;
     checkState: "open" | "paid";
     total: number;

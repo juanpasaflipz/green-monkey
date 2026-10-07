@@ -15,7 +15,7 @@ import { Button } from "../../components/ui";
 import { PaymentDialog } from "../PaymentDialog";
 import { ReceiptModal, checkStateOf, moneyFormatter } from "../Receipt";
 import { KitchenTicketDocument, ticketsFromOrderRound } from "../KitchenTicket";
-import { currentBusinessDate } from "../../labels";
+import { currentBusinessDate, orderNumberText } from "../../labels";
 import { printDocument, readPrintSettings } from "../../print";
 import { fill } from "../menu/format";
 import { HoldCard, type AcceptBody } from "./HoldCard";
@@ -199,7 +199,12 @@ export function PublicOrderInbox({
     setNotice(
       t("publicAcceptedNotice", {
         label: r.hold.label,
-        number: r.order.number,
+        // A round on yesterday's open check names its date (POL-R2-2).
+        number: orderNumberText(
+          r.order,
+          currentBusinessDate(session.restaurant),
+          locale,
+        ),
       }),
     );
     printKitchen(r);

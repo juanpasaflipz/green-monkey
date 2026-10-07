@@ -6,6 +6,7 @@ import { strings, type Key } from "../../i18n";
 import { Badge, Button } from "../../components/ui";
 import { moneyFormatter } from "../Receipt";
 import { fill } from "../menu/format";
+import { currentBusinessDate, orderNumberText } from "../../labels";
 
 export type AcceptBody = {
   target:
@@ -52,6 +53,10 @@ export function HoldCard({
     values ? fill(strings[locale][k], values) : strings[locale][k];
   const money = moneyFormatter(session.restaurant.currency, locale);
   const open = hold.openChecks.filter((c) => c.checkState === "open");
+  // LD-29 (POL-R2-2): yesterday's open #10 reads "#10 · 5 oct" in "Enviar a".
+  const today = open.some((c) => c.businessDate)
+    ? currentBusinessDate(session.restaurant)
+    : null;
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [target, setTarget] = useState<string>(() =>
     open.length === 1 ? open[0].id : "new",
@@ -249,7 +254,7 @@ export function HoldCard({
             {open.map((c) => (
               <option key={c.id} value={c.id}>
                 {t("publicTargetAppend", {
-                  number: c.number,
+                  number: orderNumberText(c, today, locale),
                   table: hold.tableName ?? "",
                   waiter: c.waiterName,
                 })}

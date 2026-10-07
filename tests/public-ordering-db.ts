@@ -3083,6 +3083,9 @@ try {
       box.holds[0].openChecks.map((c) => [c.id, c.checkState]),
       [[check.id, "open"]],
     );
+    // "Enviar a" names yesterday's open check with its date (LD-29, POL-R2-2).
+    assert.match(check.businessDate!, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(box.holds[0].openChecks[0].businessDate, check.businessDate);
     assert.deepEqual(box.holds[1].openChecks, []);
     assert.deepEqual(
       box.holds[1].lines.map((l) => [l.issue, l.currentTotal]),

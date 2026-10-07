@@ -47,7 +47,7 @@ import { useOfflineSelling } from "./offline/useOfflineSelling";
 import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
 import { fmt, orderLabel, parkedOrderLabel } from "./offline/format";
-import { currentBusinessDate } from "../labels";
+import { currentBusinessDate, orderNumberText } from "../labels";
 import {
   isServerOrder,
   parkedOrderRef,
@@ -217,6 +217,12 @@ export function Selling({
     scope(session) + ":parked-order:" + operationId;
   // LD-29: an open order from another business day names its date.
   const today = currentBusinessDate(session.restaurant);
+  /**
+   * An order as a notice names it: "10", or "10 · 5 oct" for an order of another
+   * business day, so yesterday's #10 never reads as today's (LD-29, POL-R2-2).
+   */
+  const numberText = (o: { number: number; businessDate?: string | null }) =>
+    orderNumberText(o, currentBusinessDate(session.restaurant), locale);
   const offline = useOfflineSelling({
     session,
     catalog,
@@ -328,7 +334,7 @@ export function Selling({
     setError(
       target
         ? t("serviceRoundFailedAfterSwitch")
-            .replace("{n}", String(target.number))
+            .replace("{n}", numberText(target))
             .replace("{reason}", reason)
         : t("serviceSendFailedAfterSwitch").replace("{reason}", reason),
     );
@@ -374,7 +380,7 @@ export function Selling({
       setCurrent(order);
     setNotice(
       [
-        t("serviceSentAfterSwitch").replace("{n}", String(order.number)),
+        t("serviceSentAfterSwitch").replace("{n}", numberText(order)),
         ...(remaining ? [t("serviceDraftParked")] : []),
       ].join(" "),
     );
@@ -517,7 +523,7 @@ export function Selling({
               setPendingPayment(false);
               if (moved())
                 setNotice(
-                  t("servicePaidAfterSwitch").replace("{n}", String(o.number)),
+                  t("servicePaidAfterSwitch").replace("{n}", numberText(o)),
                 );
               else {
                 setCurrent(o);
@@ -622,7 +628,7 @@ export function Selling({
             setNotice(
               [
                 ...notes,
-                t("serviceResumeClosed").replace("{n}", String(o.number)),
+                t("serviceResumeClosed").replace("{n}", numberText(o)),
               ].join(" "),
             );
             return;
@@ -1064,7 +1070,7 @@ export function Selling({
                   setNotice(
                     t("servicePaidAfterSwitch").replace(
                       "{n}",
-                      String(result.number),
+                      numberText(result),
                     ),
                   );
               });
@@ -1090,7 +1096,7 @@ export function Selling({
       setPayment(false);
       if (!owned || epoch !== contextEpoch.current) {
         setNotice(
-          t("servicePaidAfterSwitch").replace("{n}", String(result.number)),
+          t("servicePaidAfterSwitch").replace("{n}", numberText(result)),
         );
         return;
       }
