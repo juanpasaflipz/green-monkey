@@ -76,8 +76,10 @@ DB reconciliation suite (D1–D19) re-reads the day under RLS.
 | CI | `.github/workflows/restaurant-day.yml`: on demand, nightly (`vars.RD_NIGHTLY_REF`) and on release/* PRs into `main`; jobs `restaurant-day` and `restaurant-day-cfdi` are required checks in `ops/github/main-ruleset.json` |
 | Artifacts | `test-results/restaurant-day/` (state, oracle, actual, timing, axe, screens, prints, server, worker and D22 logs) |
 
-**Status, October 7, 2026 (local only).** Branch N passed end to end twice in a row on this branch
-(10/10 browser tests in about 8 minutes, then D1–D19), with zero soft findings. It ran on the local
+**Status, October 7, 2026 (local only).** Branch N passed end to end in the last five full runs on
+this branch, the last two after absorbing integration/v1 (W3-2 flake fixes, LD-45, LD-49) and on
+the final code (10/10 browser tests in about 9 minutes, then D1–D19), with zero soft findings. The
+track's full qualification passed on the final code as well. It ran on the local
 fixture cluster with a plausible fictional legal and support set, so G1.6 proves publication of
 that set, not of the vendor's real values (LD-3). The workflow has never run on GitHub: the
 repository variables `RD_LEGAL_*`, `RD_SUPPORT_*` and `RD_NIGHTLY_REF` must be set and
@@ -87,7 +89,7 @@ Facturapi sandbox) passed end to end locally only against the Facturapi fake (10
 is unverified against the real sandbox, including the D22 test receptor (§15 Q5) and LD-36's
 RESICO test organization.
 
-Timing (§11), canonical order sampled five times per run on the 10-inch tablet, two local runs:
+Timing (§11), canonical order sampled five times per run on the 10-inch tablet, local runs:
 every tap's latency p95 within its budget (taps 1-6 and 8 under 80 ms against 150-700 ms; "Confirmar
 cobro" 141-253 ms against 2 s), system time p95 0.53-0.68 s (budget 4 s), kitchen appearance p95
 2.9-3.0 s (budget 3.5 s), modelled cashier time 10.5-10.7 s with exact cash and 11.6-11.8 s with a
@@ -105,7 +107,7 @@ confirmation. Local latencies are not production latencies (no network between b
 | FOH-10 on a 10-inch tablet (1024×768): menu cards, the line-note "Listo", the payment dialog's quick cash, "Cambio" and terminal confirmation, and the receipt's buttons needed scrolling | `9560bc6`, `6e87e7c`, `34db98a` | `tests/browser/service.spec.ts` |
 | Axe: the scrolling receipt was not keyboard-focusable | `fff9a37` | `tests/browser/service.spec.ts` |
 | G3 dates: receipts, the money-controls note and the Sync screen used `toLocaleString` ("7/10/2026") instead of dd/MM/yyyy HH:mm | `99927cc`, `2512a5d` | `tests/datetime.test.ts`, `tests/browser/offline.spec.ts` |
-| A check closed from Órdenes stayed in Vender's cart with its old balance | `8ee970c` | `tests/browser/voids.spec.ts` |
+| A check closed from Órdenes stayed in Vender's cart with its old balance | `8ee970c`; narrowed in `f974181` to the moment Vender comes back on screen (the broader re-read delayed an offline sync, which integration's kitchen hygiene caught) | `tests/browser/voids.spec.ts`, `tests/browser/offline.spec.ts` |
 | "Al guardar sin conexión" chosen on the Sync screen did not apply to the next offline sale | `6f78209` | `tests/browser/offline.spec.ts` |
 | During an outage Caja showed "Caja cerrada" and "Abrir caja" for an open drawer | `3510d2e` | `tests/browser/offline.spec.ts` |
 | A15.7: an unpaired terminal's gate did not say the device had been unpaired | `a528034` | `tests/access-http.ts`, `tests/browser/access.spec.ts` |
@@ -143,6 +145,7 @@ confirmation. Local latencies are not production latencies (no network between b
 - P-ROUND on a phone: before adding a round to an existing check, the waiter opens "Ver orden" and sees the check loaded. A line tapped while the resume is still loading goes to a fresh draft that the resume parks in Borradores (seen once in a branch K run at B6.6).
 - §11: `tap()` asserts "in viewport" on Caja 1 (the tablet the budget measures); other devices and steps outside the budget use `press()`.
 - §6.11 says A16 pays exact, but the order book (§6.6), which the money tables come from, pays A16 with "$100": the order book wins, so A07, A16 and A24 take 9 taps.
+- LD-46/LD-49 (absorbed from integration): the web trusts its loopback peer like Railway's edge, so every gate client sends the edge's `X-Real-IP` (127.0.0.1, keeping §3.8's shared per-IP buckets); the clients exercise the production client-address path and the deployed web has no `client_ip_without_real_ip` warning to log.
 - §13.1: the nightly job checks out `vars.RD_NIGHTLY_REF` (scheduled runs start on the default branch), and G1.2 compares `/api/version` with the stamped commit (`RD_BUILD_COMMIT`), not `GITHUB_SHA`.
 
 ### Open items
