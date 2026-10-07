@@ -195,7 +195,8 @@ Code security:
   and used codes all return `pairing_code_invalid`.
 - `POST /api/access/pair` allows 10 failed attempts per minute per IP
   (`too_many_attempts`), keyed on `clientIp(req)` (`server/logging.ts`): the real
-  client behind Railway's edge (`trust proxy`), IPv6 per /56.
+  client behind Railway's edge (its `X-Real-IP` from a trusted peer, LD-46),
+  IPv6 per /56.
 - A code dies with its creator's access: deactivating the creator, or a role
   change away from owner/manager, cancels their open codes, and redemption
   requires an active owner or manager creator.
@@ -510,8 +511,9 @@ code from Dispositivos, then **Desvincular** the old "Owner browser" entry.
 - **Limiter key (ops merge, LD-9): done at access's integration.** Every
   access limiter keys on `ipKey(req)` in `server/routes/access.ts`, which now
   uses `clientIp(req)` from `server/logging.ts`; the CD smoke
-  (`scripts/ops/smoke.mjs`) fails a deployed run whose edge sends no
-  X-Forwarded-For hop.
+  (`scripts/ops/smoke.mjs`) fails a deployed run whose client address is not
+  the edge's X-Real-IP from a trusted peer (LD-46: behind Railway's edge the
+  X-Forwarded-For hop is the edge's own address).
 - **Void approval pre-check (service merge, contracts §4.2): done at service's
   integration.** `verifyApproval` refuses a closed or fully paid order before
   checking any PIN (ACC-R-5). It now reads `check_state` and calls service's

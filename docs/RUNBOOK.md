@@ -144,6 +144,46 @@ would double every limit and split buckets. Before scaling out, move the
 limiter store to Postgres or Redis. Size the database pool from
 [LOAD_TEST.md](LOAD_TEST.md) first.
 
+## Client address
+
+Every per-IP limit (access PIN, pairing and logout; public ordering; the cfdi
+portal; account; owner sign-in and account; billing; ops endpoints) and every
+`ipHash` in the logs key on `clientIp(req)` (`server/logging.ts`, LD-46).
+
+Railway's edge, as verified on staging on 2026-10-07 with a temporary
+header-echo service (created, probed, deleted), connects to `web` from
+100.64.0.0/10, **discards** any `X-Forwarded-For` and `X-Real-IP` the client
+sent, and sends `X-Forwarded-For: <client>, <edge hop>` and
+`X-Real-IP: <client>`. Express's `req.ip` takes the rightmost untrusted
+`X-Forwarded-For` entry, which there is the edge hop: a public address that
+every client behind that hop shares. So `clientIp` returns `X-Real-IP` when
+the immediate peer is trusted by `trust proxy` (`TRUST_PROXY`, default
+`loopback, 100.0.0.0/8` in production; IPv4-mapped peers count as IPv4) and
+the header is exactly one valid address; otherwise `req.ip`. An untrusted
+peer's `X-Real-IP` is ignored. Limiters group IPv6 clients per /56, and every
+`rateLimit()` in `server/` has an explicit `keyGenerator` through `clientIp`
+(`tests/client-ip.test.ts` fails on one without, and on any `req.ip` read
+outside `server/logging.ts`).
+
+Check it with `GET /api/ops/diagnostics/ip`, which answers
+`{ ip, peerTrusted, source }`: behind the edge, `peerTrusted: true`,
+`source: "x-real-ip"` and your own public address. The CD smoke's `client_ip`
+check requires exactly that, plus the same answer when the request carries
+spoofed `X-Forwarded-For` and `X-Real-IP`. Its error names each failed
+condition:
+
+| Smoke error | Meaning | Action |
+| --- | --- | --- |
+| `peerTrusted is false` | the edge's peer address is outside `trust proxy`; every client then shares the peer's bucket | check `TRUST_PROXY` (deliberately undeclared; declare it in `.railway/railway.ts` before setting it, "Staging cutover" below) or a change in Railway's internal range; do not promote |
+| `source is forwarded, not x-real-ip` | no usable `X-Real-IP` from the edge: the address is the edge hop (the first staging deploy's failure) | Railway's headers changed; re-verify the header shape with a header-echo service (record it without addresses) before changing `clientIp`; do not promote |
+| `source is peer, not x-real-ip` | the request reached `web` without the edge's headers | check the domain still routes through Railway's edge |
+| `ip is a client-supplied forwarding header value` or `forwarding headers changed the client IP` | the edge passed the client's own headers on: anyone can pick their limiter bucket | stop the rollout; roll back |
+| `ip is a proxy or private address, not public` or `ip is not an IP address` | the address is the edge's peer, a private range or missing | as for `peerTrusted is false` |
+
+While the address is wrong, a restaurant or a carrier NAT behind one edge hop
+shares one bucket per limit (one busy client can lock the others out of PIN
+login or public ordering), and `ipHash` names the hop, not the client.
+
 ## Retention
 
 Retention deletes only expired OAuth login attempts and done/dead jobs older
@@ -469,7 +509,7 @@ consent; record each in [STAGING.md](STAGING.md)). Pin the CLI with
    `ALERT_WEBHOOK_URL`, backup and R2 secrets) and variables (`APP_URL`,
    `PG_APP_USER`, `ALERT_WEBHOOK_KIND`, the pinned CLI and IaC versions).
 9. Merge to `main`; CD deploys; the smoke must pass, including the client IP
-   check.
+   check ("Client address" above: `source: "x-real-ip"` from a trusted peer).
 10. Railway deploy webhook → ntfy; check the manual settings above.
 11. Rotate `gm_staging_app` (dual role), deploy, finalize.
 12. Rotate the billing login (replaces the exposed `gm_staging_billing`).
