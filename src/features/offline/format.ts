@@ -5,7 +5,7 @@ import {
   type OfflineRecordKind,
 } from "../../../shared/offline-recovery";
 import { strings, type Key } from "../../i18n";
-import { orderNumberText } from "../../labels";
+import { orderNumberText, withBusinessDay } from "../../labels";
 import type { ParkedOrderRef, ParkedOrderTarget } from "../../offline-records";
 
 /** Replaces {name} placeholders in a translated string. */
@@ -39,8 +39,9 @@ export function clockTime(
  * How an order is named on screen and on receipts (§2.4): "B-07" while only
  * the device knows it, "B-07 → #142" once the server numbered an order that
  * began offline, and "#142" otherwise. Given the current business date (and
- * the locale), a numbered order from another business day also names its
- * date: "#142 · 5 oct" (LD-29).
+ * the locale), an order from another business day also names its date:
+ * "#142 · 5 oct" (LD-29), and "B-07 · 5 oct" for a provisional number, which
+ * restarts every business day too (LD-48).
  */
 export function orderLabel(
   order: {
@@ -57,7 +58,8 @@ export function orderLabel(
     ? "#" + orderNumberText(order, today, locale)
     : null;
   if (provisional && number) return `${provisional} → ${number}`;
-  if (provisional) return provisional;
+  if (provisional)
+    return withBusinessDay(provisional, order.businessDate, today, locale);
   return number ?? "#" + order.id.slice(0, 8);
 }
 
@@ -89,6 +91,7 @@ export function parkedOrderLabel(
         {
           id: where.orderId,
           number: synced.number ?? 0,
+          businessDate: synced.businessDate ?? null,
           offline: { provisionalNumber: synced.provisionalNumber },
         },
         today,

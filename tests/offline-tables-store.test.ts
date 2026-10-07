@@ -64,7 +64,12 @@ import {
   setOfflineTableServiceForTests,
 } from "../src/offline-settings";
 import { parkedOrderLabel } from "../src/features/offline/format";
-import { orderNumberText } from "../src/labels";
+import {
+  currentBusinessDate,
+  orderNumberText,
+  withBusinessDay,
+} from "../src/labels";
+import { orderLabel } from "../src/features/offline/format";
 import { onlineChargeRefusal } from "../src/features/offline/useOnlineChargeBlocks";
 import { translateError } from "../src/i18n";
 
@@ -1920,13 +1925,14 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
     const open = await localOrder(s, 250);
     const provisional = open.offline.provisionalNumber!;
     expect(provisional).toBeTruthy();
-    // Parked under the local id: stored number 0.
+    // Parked under the local id: stored number 0. Named on its own business day
+    // (the projection carries its provisional number's day, LD-48).
     const stored = { number: 0 };
     expect(
       parkedOrderLabel(
         await resolveParkedOrder(s, open.id),
         stored,
-        "2026-10-06",
+        currentBusinessDate(s.restaurant),
         "es",
       ),
     ).toBe(provisional);
@@ -2059,6 +2065,107 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
     // A stored value that names no order is not a reference.
     expect(parkedOrderRef(null)).toBeNull();
     expect(parkedOrderRef({ number: 3 })).toBeNull();
+  });
+
+  it("a provisional number from another business day names its date: the projection, Borradores, the synced record and the offline comanda tell yesterday's B-01 from today's (LD-48, POLISH-OFFLINE-5)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // 03:40 in Mexico City with the 04:00 cutoff: business day 5 oct.
+    vi.setSystemTime(new Date("2026-10-06T09:40:00.000Z"));
+    const s = session({
+      offlineUntil: new Date("2026-10-06T13:00:00.000Z").toISOString(),
+    });
+    const yesterday = await localOrder(s, 250);
+    // 04:20: business day 6 oct. The per-day counter restarts, so the device
+    // numbers the next local order the same.
+    vi.setSystemTime(new Date("2026-10-06T10:20:00.000Z"));
+    const today = await localOrder(s, 300);
+    const number = yesterday.offline.provisionalNumber!;
+    expect(today.offline.provisionalNumber).toBe(number);
+    const day = currentBusinessDate(s.restaurant);
+    expect(day).toBe("2026-10-06");
+    const views = await localOpenOrders(s);
+    const viewOf = (id: string) => views.find((v) => v.id === id)!;
+    expect(viewOf(yesterday.id).businessDate).toBe("2026-10-05");
+    expect(viewOf(today.id).businessDate).toBe("2026-10-06");
+    // The cart heading and the offline "Órdenes abiertas" list (orderLabel).
+    expect(orderLabel(viewOf(yesterday.id), day, "es")).toBe(
+      `${number}\u00a0·\u00a05\u00a0oct`,
+    );
+    expect(orderLabel(viewOf(yesterday.id), day, "en")).toBe(
+      `${number}\u00a0·\u00a0Oct\u00a05`,
+    );
+    expect(orderLabel(viewOf(today.id), day, "es")).toBe(number);
+    // Borradores: a round parked for each.
+    const label = async (id: string) =>
+      parkedOrderLabel(
+        await resolveParkedOrder(s, id),
+        { number: 0 },
+        day,
+        "es",
+      );
+    expect(await label(yesterday.id)).toBe(
+      `${number}\u00a0·\u00a05\u00a0oct`,
+    );
+    expect(await label(today.id)).toBe(number);
+    // The offline comanda prints the date of yesterday's provisional number.
+    const tickets = await localKitchenTickets(s, 0, {
+      banner: "COMANDA · SIN CONEXIÓN",
+      footer: "Número provisional.",
+      round: (n: number) => `Ronda ${n}`,
+      dated: (text: string, d: string) => withBusinessDay(text, d, day, "es"),
+    });
+    const ticketOf = (id: string) =>
+      tickets.find((t) => t.operationId === id)?.ticket.label;
+    expect(ticketOf(yesterday.id)).toBe(`${number}\u00a0·\u00a05\u00a0oct`);
+    expect(ticketOf(today.id)).toBe(number);
+    // A round added to yesterday's local order: its comanda names the order's day.
+    const round = roundInput(40);
+    await saveOfflineRound(ctxOf(s), {
+      target: { localOrderOperationId: yesterday.id },
+      ...round,
+    });
+    const withRound = await localKitchenTickets(s, 0, {
+      banner: "",
+      footer: "",
+      round: (n: number) => `Ronda ${n}`,
+      dated: (text: string, d: string) => withBusinessDay(text, d, day, "es"),
+    });
+    expect(
+      withRound.find((t) => t.operationId === round.operationId)?.ticket.label,
+    ).toBe(`${number}\u00a0·\u00a05\u00a0oct · Ronda 2`);
+    // Synced as #142 of 5 oct, with no cached copy: Borradores names the server
+    // number with the day the sync returned, and the pinned reference keeps it.
+    const serverId = uuid(450);
+    await markSynced(
+      yesterday.id,
+      { orderId: serverId, orderNumber: 142, businessDate: "2026-10-05" },
+      Date.now(),
+    );
+    const where = await resolveParkedOrder(s, yesterday.id);
+    expect(where).toEqual({
+      kind: "server",
+      orderId: serverId,
+      cached: null,
+      synced: {
+        provisionalNumber: number,
+        number: 142,
+        businessDate: "2026-10-05",
+      },
+    });
+    expect(parkedOrderLabel(where, { number: 0 }, day, "es")).toBe(
+      `${number} → #142\u00a0·\u00a05\u00a0oct`,
+    );
+    expect(
+      pinnedParkedOrder(
+        { id: yesterday.id, number: 0, businessDate: null },
+        where,
+      ),
+    ).toEqual({
+      id: serverId,
+      number: 142,
+      businessDate: "2026-10-05",
+      provisionalNumber: number,
+    });
   });
 
   it("a server order id resolves to itself (with its cached copy when there is one)", async () => {

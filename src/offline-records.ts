@@ -418,6 +418,12 @@ export const pricedFrom = (row: Pending): PricedLine[] =>
 /** What a kitchen ticket says about a record (label, round, table, call name). */
 export type TicketHeading = {
   label: string;
+  /**
+   * When the provisional number in `label` was allocated (its order or sale record's
+   * recordedAt): provisional numbers restart every business day, so one from another
+   * business day prints dated ("B-03 · 5 oct", LD-48, POLISH-OFFLINE-5).
+   */
+  provisionalAt?: string;
   /** A cached server order's number and business day, which copy.order names (LD-44). */
   order?: { number: number; businessDate?: string | null };
   round: number;
@@ -439,6 +445,7 @@ export const ticketHeadings: Partial<Record<string, HeadingResolver>> = {
     const body = row.body as OfflineRecordV3 & { kind: "sale" };
     return {
       label: body.provisionalNumber ?? "—",
+      ...(body.provisionalNumber ? { provisionalAt: body.recordedAt } : {}),
       round: 1,
       mode: body.order.mode,
       tableName: tableName(body.order.tableId),
@@ -461,6 +468,8 @@ export async function localKitchenTickets(
     round: (n: number) => string;
     /** "#142", or "#142 · 5 oct" for an order from another business day (LD-44). */
     order?: (ref: { number: number; businessDate?: string | null }) => string;
+    /** "B-03", or "B-03 · 5 oct" for a provisional number from another business day. */
+    dated?: (text: string, day: string) => string;
   },
   tables: { id: string; name: string }[] = [],
 ): Promise<LocalTicket[]> {
@@ -477,8 +486,20 @@ export async function localKitchenTickets(
     const heading = ticketHeadings[body.kind]?.(row, rows, tableName);
     const createdAt = Date.parse(body.recordedAt);
     if (!heading || createdAt < sinceMs) continue;
-    const { order, ...headed } = heading;
-    const label = order && copy.order ? copy.order(order) : heading.label;
+    const { order, provisionalAt, ...headed } = heading;
+    const label =
+      order && copy.order
+        ? copy.order(order)
+        : provisionalAt && copy.dated
+          ? copy.dated(
+              heading.label,
+              businessDate(
+                provisionalAt,
+                session.restaurant.timezone,
+                session.restaurant.cutoff,
+              ),
+            )
+          : heading.label;
     for (const ticket of ticketsFromLines({
       ...headed,
       label:
@@ -823,6 +844,8 @@ const targetsLocal = (body: OfflineRecordV3, operationId: string) =>
 type SyncResult = {
   orderId?: string;
   orderNumber?: number;
+  /** The server order's business day (OfflineSyncResult.businessDate, LD-29). */
+  businessDate?: string;
   tenderId?: string | null;
   roundNumber?: number | null;
 };
@@ -905,6 +928,14 @@ async function localOrders(session: Session): Promise<LocalOrderView[]> {
     views.push({
       id: body.operationId,
       number: result?.orderNumber ?? 0,
+      // Its provisional number's business day: the same helper and inputs the
+      // per-day counter used (allocateNumber), and the day the server assigns at
+      // sync, so yesterday's B-03 is named apart from today's (LD-48).
+      businessDate: businessDate(
+        body.recordedAt,
+        session.restaurant.timezone,
+        session.restaurant.cutoff,
+      ),
       version: round,
       mode: body.order.mode,
       tableId: body.order.tableId,
@@ -1083,10 +1114,15 @@ export type ParkedOrderTarget =
       orderId: string;
       cached: LocalOrderView | null;
       /**
-       * For a local order that synced: its provisional number and the server number the
-       * sync returned, so Borradores names it "B-07 → #142" without a cached copy.
+       * For a local order that synced: its provisional number, and the server number
+       * and business day the sync returned, so Borradores names it "B-07 → #142" (or
+       * "B-07 → #142 · 5 oct") without a cached copy.
        */
-      synced?: { provisionalNumber: string | null; number: number | null };
+      synced?: {
+        provisionalNumber: string | null;
+        number: number | null;
+        businessDate?: string;
+      };
     }
   | { kind: "gone" };
 
@@ -1130,6 +1166,9 @@ export async function resolveParkedOrder(
         provisionalNumber: record.body.provisionalNumber ?? null,
         number:
           typeof result?.orderNumber === "number" ? result.orderNumber : null,
+        ...(typeof result?.businessDate === "string"
+          ? { businessDate: result.businessDate }
+          : {}),
       },
     };
   }
@@ -1184,7 +1223,11 @@ export function pinnedParkedOrder(
   return {
     id: where.orderId,
     number: where.synced?.number ?? where.cached?.number ?? 0,
-    businessDate: where.cached?.businessDate ?? stored.businessDate,
+    // The day the sync returned, else the copy's, else the one stored at park time.
+    businessDate:
+      where.synced?.businessDate ??
+      where.cached?.businessDate ??
+      stored.businessDate,
     provisionalNumber:
       where.synced?.provisionalNumber ??
       where.cached?.offline?.provisionalNumber ??
@@ -1813,6 +1856,7 @@ ticketHeadings.order = (row, _rows, tableName) => {
   const body = row.body as OfflineRecordV3 & { kind: "order" };
   return {
     label: body.provisionalNumber ?? "—",
+    ...(body.provisionalNumber ? { provisionalAt: body.recordedAt } : {}),
     round: 1,
     mode: body.order.mode,
     tableName: tableName(body.order.tableId),
@@ -1843,8 +1887,11 @@ ticketHeadings.round = (row, rows, tableName) => {
         (body.target as { localOrderOperationId: string })
           .localOrderOperationId,
     )?.body as (OfflineRecordV3 & { kind: "order" }) | undefined;
+    const label = body.provisionalNumber ?? parent?.provisionalNumber ?? null;
     return {
-      label: body.provisionalNumber ?? parent?.provisionalNumber ?? "—",
+      label: label ?? "—",
+      // The local order's number was allocated when its order record was saved.
+      ...(label ? { provisionalAt: parent?.recordedAt ?? body.recordedAt } : {}),
       round,
       mode: parent?.order.mode ?? "dine_in",
       tableName: tableName(parent?.order.tableId ?? null),
