@@ -10,7 +10,11 @@
  * The worker has no SELECT on employees: functions that join employees (documentView) are web-only
  * callers' (spec §3.1).
  */
-import { boundaries, DomainError } from "../../shared/domain.js";
+import {
+  boundaries,
+  businessDate as businessDate_,
+  DomainError,
+} from "../../shared/domain.js";
 import {
   cancellationAllowed,
   cancellationDeadline,
@@ -1204,10 +1208,25 @@ export async function ticketDeadlineInfo(
   const businessDate = t.payload.ticket.businessDate;
   let global: { globalAt: string } | null = null;
   if (!s.portalReissueGlobal && businessDate >= modeFrom(s)) {
-    const [row] = await tx`
-      select closes_at from cfdi_global_periods
+    const [found] = await tx`
+      select closes_at, periodicity, date_from::text as from_date from cfdi_global_periods
       where mode = ${s.mode} and date_from <= ${businessDate}::date and date_to >= ${businessDate}::date
       limit 1`;
+    // A row of the current month left by a periodicity that applied at once is replaced by the
+    // tick's rebuild (LD-51 F2): the periodicity in force decides until then.
+    const today = businessDate_(
+      new Date().toISOString(),
+      facts.timezone,
+      facts.cutoff,
+    );
+    const row =
+      found &&
+      !(
+        found.from_date >= today.slice(0, 8) + "01" &&
+        found.periodicity !== periodicityOn(found.from_date, s)
+      )
+        ? found
+        : null;
     const grace = graceMinutes(state.platform);
     global = {
       globalAt: row

@@ -36,6 +36,7 @@ import {
 } from "../server/cfdi/config.js";
 import { createFacturapiClient } from "../server/cfdi/facturapi.js";
 import {
+  recordProviderResponse,
   setCfdiRuntime,
   type CfdiRuntime,
 } from "../server/cfdi/worker/runtime.js";
@@ -52,6 +53,7 @@ import {
   cfdiCapability,
   cfdiCoverage,
   cfdiReportAlerts,
+  cfdiTicketsIssued,
   enqueueCfdiRefund,
 } from "../server/cfdi/hooks.js";
 import { selfInvoiceOffered } from "../server/cfdi/store.js";
@@ -66,8 +68,13 @@ import { lockDocument, lockPeriod } from "../server/cfdi/locks.js";
 import { noRetries } from "./db-retries.js";
 import { seal } from "../server/tokens.js";
 import { parseCfdiTotals } from "../server/cfdi/xml.js";
-import { businessDate, type Session } from "../shared/domain.js";
-import { firstOfNextMonth } from "../shared/cfdi.js";
+import { boundaries, businessDate, type Session } from "../shared/domain.js";
+import {
+  firstOfNextMonth,
+  globalPeriodFor,
+  selfInvoiceDeadline,
+  type Periodicity,
+} from "../shared/cfdi.js";
 import {
   extractTax,
   formatFolio,
@@ -78,8 +85,12 @@ import {
 import { createFacturapiFake, FAKE_BASE_URL } from "./fakes/facturapi-fake.js";
 import { TEST_CSD, TEST_CSD_PASSWORD } from "./fixtures/cfdi/test-csd.js";
 
-// CFDI_DB_DEBUG=1 prints warnings and errors (job handler failures) while debugging.
+// CFDI_DB_DEBUG=1 prints warnings and errors (job handler failures) while debugging. The jobs'
+// cfdi_job_done info lines are kept for the LD-51 F13 check.
+const jobDoneLines: Record<string, unknown>[] = [];
 setLogSink((line) => {
+  if (line.includes('"message":"cfdi_job_done"'))
+    jobDoneLines.push(JSON.parse(line));
   if (process.env.CFDI_DB_DEBUG && /"level":"(warn|error)"/.test(line))
     console.error(line);
 });
@@ -113,6 +124,8 @@ const runtime: CfdiRuntime = {
     baseUrl: FAKE_BASE_URL,
     userAgent: "green-monkey/test",
     timeouts: { standardMs: 1500, longMs: 1500 },
+    // As the worker boot wires it: each answer's X-Facturapi-Log-Id joins the job's info line.
+    onResponse: recordProviderResponse,
   }),
   alert: (a) => {
     alerts.push(a);
@@ -366,13 +379,20 @@ const web = <T>(t: Fixture, fn: (tx: Tx) => Promise<T>) =>
   tenant(app, t.tenantId, fn);
 const op = () => randomUUID();
 
-/** Activation through the owner's route, provisioning by the worker, optional backdated start. */
+/**
+ * Activation through the owner's route with its global periodicity (LD-51 F2: the activation step
+ * takes it), provisioning by the worker, optional backdated start.
+ */
 async function activate(
   t: Fixture,
   o: { testFrom?: string; periodicity?: "day" | "month" } = {},
 ) {
   await web(t, (tx) =>
-    service.activate(tx, t.owner, { operationId: op(), expectedVersion: 0 }),
+    service.activate(tx, t.owner, {
+      operationId: op(),
+      expectedVersion: 0,
+      globalPeriodicity: o.periodicity ?? "month",
+    }),
   );
   if (o.testFrom)
     // LD-12 named-trigger pattern: test_from is immutable for every role.
@@ -381,8 +401,6 @@ async function activate(
       await tx`update cfdi_settings set test_from = ${o.testFrom}::date where tenant_id = ${t.tenantId}`;
       await tx`alter table cfdi_settings enable trigger cfdi_settings_guard`;
     });
-  if (o.periodicity && o.periodicity !== "month")
-    await saveSettings(t, { globalPeriodicity: o.periodicity });
   await settle(t.tenantId);
   const view = await web(t, (tx) => service.getSettings(tx, t.manager));
   assert.equal(
@@ -513,6 +531,29 @@ const cancelAs = (t: Fixture, s: Session, id: string) =>
 const liveTicks = async (tenantId: string) =>
   admin`select dedupe_key, next_at from jobs where tenant_id = ${tenantId} and kind = 'cfdi_global'
     and state in ('queued','available','running') order by next_at`;
+
+/**
+ * Gives the tenant a global document in a period of the current month (LD-51 F2's "the month has
+ * a global"): a queued part of today's period row, inserted by the worker login (the runtime role
+ * never inserts globals) with no job, so nothing stamps it during the run.
+ */
+async function claimCurrentMonth(t: Fixture) {
+  await tenant(worker, t.tenantId, async (tx) => {
+    const [row] = await tx`
+      select g.mode, g.period_key, g.periodicity, g.date_from::text as from_date,
+        g.date_to::text as to_date
+      from cfdi_global_periods g join cfdi_settings s on s.tenant_id = g.tenant_id and s.mode = g.mode
+      where g.date_from >= ${today().slice(0, 8) + "01"}::date
+      order by g.date_from desc limit 1`;
+    assert.ok(row, "the tick created the current month's row");
+    await tx`
+      insert into cfdi_documents(tenant_id, id, kind, source, mode, status, period_key, global_info, part)
+      values (${t.tenantId}, ${randomUUID()}, 'global', 'scheduler', ${row.mode}, 'queued', ${row.period_key},
+        ${tx.json({ periodicity: row.periodicity, months: row.from_date.slice(5, 7), year: Number(row.from_date.slice(0, 4)), from: row.from_date, to: row.to_date })},
+        coalesce((select max(part) from cfdi_documents where kind = 'global' and mode = ${row.mode}
+          and period_key = ${row.period_key}), 0) + 1)`;
+  });
+}
 
 let checks = 0;
 async function test(name: string, fn: () => Promise<void>) {
@@ -2301,20 +2342,28 @@ try {
     assert.equal(claimed.length, 0);
   });
 
-  await test("19. settings: a periodicity change applies from the first of next month once a global exists; RESICO forces monthly; a stale version conflicts", async () => {
-    const saved = await saveSettings(A, { globalPeriodicity: "week" });
+  await test("19. settings: once the current month has a global document a periodicity change applies from the first of next month; choosing the current one cancels it; RESICO forces monthly; a stale version conflicts", async () => {
+    // LD-51 F2: a change applies at once while the month is unshaped; a global document of one
+    // of its periods (any status) shapes it, whatever the calendar day of this run.
+    const S = await makeTenant("periodicity 19");
+    await activate(S, { periodicity: "day" });
+    await claimCurrentMonth(S);
+    const saved = await saveSettings(S, { globalPeriodicity: "week" });
     assert.equal(saved.settings?.globalPeriodicity, "day");
     assert.equal(saved.settings?.nextPeriodicity, "week");
-    assert.match(saved.settings!.nextPeriodicityFrom!, /^\d{4}-\d{2}-01$/);
-    const back = await saveSettings(A, { globalPeriodicity: "day" });
+    assert.equal(
+      saved.settings?.nextPeriodicityFrom,
+      firstOfNextMonth(today()),
+    );
+    const back = await saveSettings(S, { globalPeriodicity: "day" });
     assert.equal(
       back.settings?.nextPeriodicity,
       null,
       "choosing the current one cancels the change",
     );
     await rejects(
-      web(A, (tx) =>
-        service.saveSettings(tx, A.owner, {
+      web(S, (tx) =>
+        service.saveSettings(tx, S.owner, {
           ...settingsBody(back.settings!),
           expectedVersion: back.settings!.version - 1,
         }),
@@ -2322,8 +2371,8 @@ try {
       "cfdi_settings_changed",
     );
     await rejects(
-      web(A, (tx) =>
-        service.saveSettings(tx, A.manager, {
+      web(S, (tx) =>
+        service.saveSettings(tx, S.manager, {
           ...settingsBody(back.settings!),
           expectedVersion: back.settings!.version,
         }),
@@ -2335,8 +2384,11 @@ try {
       legalName: "BERENICE XIMO QUEZADA",
       regime: "626",
     });
-    const view = await activate(R);
+    // LD-51 F2: the activation step takes the periodicity, and RESICO's monthly rule (D4, SAT-4)
+    // applies to it as to every save: a "day" from the activation stores "month".
+    const view = await activate(R, { periodicity: "day" });
     assert.equal(view.settings?.resicoMonthly, true);
+    assert.equal(view.settings?.globalPeriodicity, "month");
     // LD-33 SAT-4: a RESICO save is coerced to monthly (never refused, which locked the owner
     // out of every other setting); a "day" from an older client stores "month".
     const coerced = await saveSettings(R, { globalPeriodicity: "day" });
@@ -2345,11 +2397,11 @@ try {
       "month",
     );
     const [audit] =
-      await admin`select detail from audit where tenant_id = ${A.tenantId} and operation = 'cfdi.settings.saved' order by id desc limit 1`;
+      await admin`select detail from audit where tenant_id = ${S.tenantId} and operation = 'cfdi.settings.saved' order by id desc limit 1`;
     assert.ok(audit.detail.before && audit.detail.after);
   });
 
-  await test("R2-1. a periodicity change never rewrites past periods: the months before the change stay one monthly global each, a late ticket joins its own month, no daily row or empty period dates before the change, and a save once rows exist is deferred", async () => {
+  await test("R2-1. a periodicity change never rewrites past periods: the months before the change stay one monthly global each, a late ticket joins its own month, no daily row or empty period dates before the change, and a save once the month has a global is deferred", async () => {
     // Months: m3 and m2 closed long ago (sales), m1 = the change date (first of last month).
     const firstOf = (back: number) => {
       const d = new Date(today().slice(0, 7) + "-01T12:00:00Z");
@@ -2469,7 +2521,10 @@ try {
     await tick(P);
     await invariants("tick after every due time");
 
-    // Rows exist (none of them open is enough): a new change waits for the first of next month.
+    // The month of this run already has a global (a document of one of its periods) or not:
+    // either way the earlier months keep their rows. With one, a new change waits for the first
+    // of next month (LD-51 F2); the immediate case is check F2b's.
+    await claimCurrentMonth(P);
     const saved = await saveSettings(P, { globalPeriodicity: "month" });
     assert.equal(saved.settings?.globalPeriodicity, "day");
     assert.equal(saved.settings?.nextPeriodicity, "month");
@@ -2477,20 +2532,8 @@ try {
       saved.settings?.nextPeriodicityFrom,
       firstOfNextMonth(today()),
     );
-    const fresh = await makeTenant("periodicity deferred with open rows");
-    await activate(fresh);
-    const [{ open, built }] = await admin`
-      select count(*) filter (where status = 'open')::int as open,
-        count(*) filter (where status <> 'open')::int as built
-      from cfdi_global_periods where tenant_id = ${fresh.tenantId}`;
-    assert.deepEqual({ open, built }, { open: 1, built: 0 });
-    const deferred = await saveSettings(fresh, { globalPeriodicity: "day" });
-    assert.equal(
-      deferred.settings?.globalPeriodicity,
-      "month",
-      "the current month's open row keeps its periodicity",
-    );
-    assert.equal(deferred.settings?.nextPeriodicity, "day");
+    await tick(P);
+    await invariants("tick after a deferred change");
   });
 
   await test("20. self-invoice window: month and days policies; an expired code is refused; more than 5 portal attempts per ticket in 24 h are refused", async () => {
@@ -4131,7 +4174,12 @@ try {
       selfInvoiceEnabled: false,
     });
     assert.equal(saved.settings?.selfInvoiceEnabled, false);
-    assert.equal(saved.settings?.nextPeriodicity, "month");
+    // The save carries monthly (coerced). LD-51 F2: a change applies at once while the month has
+    // no global and no overdue ticket, as here (activated today, nothing built): monthly now.
+    assert.deepEqual(
+      [saved.settings?.globalPeriodicity, saved.settings?.nextPeriodicity],
+      ["month", null],
+    );
   });
 
   await test("UX-2. restaurant-side portal failures never use up the customer's 5 attempts (only data they can fix counts), and an expired certificate closes self-invoicing (not_ready) instead of failing every attempt", async () => {
@@ -4799,6 +4847,534 @@ try {
       0,
       "the paused chain ends with the last open upload",
     );
+  });
+
+  // -------------------------------------------------------------------------------------------
+  // LD-51: fixes from the real-sandbox rehearsal (track cfdifix)
+  // -------------------------------------------------------------------------------------------
+
+  /** The portal's deadline for a ticket (the one the receipt prints) and what ends it. */
+  const portalWindow = async (tk: Ticket) => {
+    const v = await portal.portalTicket(app, tk.code);
+    return {
+      deadline: v.deadline,
+      bound: v.deadlineBound,
+      eligibility: v.eligibility,
+    };
+  };
+  /** The earlier of the policy deadline and the period's close + 60 min (the suite's grace). */
+  const expectedWindow = (
+    date: string,
+    p: Periodicity,
+    policy: "month" | "days",
+    days: number,
+  ) => {
+    const period = globalPeriodFor(date, p);
+    const globalAt =
+      Date.parse(
+        boundaries(period.to, restaurant.timezone, restaurant.cutoff).end,
+      ) +
+      60 * 60_000;
+    const policyAt = Date.parse(
+      selfInvoiceDeadline(date, policy, days, restaurant.timezone),
+    );
+    return globalAt < policyAt
+      ? { at: globalAt, bound: "global" as const }
+      : { at: policyAt, bound: "policy" as const };
+  };
+
+  await test("LD-51 F1. self-invoicing ends at the earlier of the policy and the ticket's global build (period close + the worker's grace) while the portal does not reissue globals, for each periodicity; the status carries the bound for the printed receipt; reissue on leaves the policy alone; a ticket past its global's build is refused before the build", async () => {
+    const F = await makeTenant("deadline F1");
+    await activate(F, { periodicity: "day" });
+    const [published] =
+      await admin`select global_grace_minutes from cfdi_platform where id = 1`;
+    assert.equal(
+      published.global_grace_minutes,
+      60,
+      "the worker publishes its CFDI_GLOBAL_GRACE_MINUTES",
+    );
+    const status = await web(F, (tx) => service.getStatus(tx, F.cashier));
+    assert.deepEqual(status.selfInvoice?.globalBound, {
+      globalPeriodicity: "day",
+      nextPeriodicity: null,
+      nextPeriodicityFrom: null,
+      cutoff: 240,
+      graceMinutes: 60,
+    });
+    const tk = await makeTicket(F);
+    for (const p of ["day", "week", "fortnight", "month"] as const)
+      for (const [policy, days] of [
+        ["month", 30],
+        ["days", 3],
+      ] as const) {
+        const saved = await saveSettings(F, {
+          globalPeriodicity: p,
+          selfInvoicePolicy: policy,
+          selfInvoiceDays: days,
+        });
+        assert.equal(
+          saved.settings?.globalPeriodicity,
+          p,
+          `${p}: applies at once (no global of the month yet)`,
+        );
+        const want = expectedWindow(tk.businessDate, p, policy, days);
+        // Right after the save (the month's rows still have the old periodicity) and after the
+        // tick rebuilt them, the portal answers the same deadline.
+        for (const moment of ["before the rebuild", "after the rebuild"]) {
+          const got = await portalWindow(tk);
+          assert.equal(
+            Date.parse(got.deadline!),
+            want.at,
+            `${p}/${policy} ${moment}`,
+          );
+          assert.equal(got.bound, want.bound, `${p}/${policy} ${moment}`);
+          assert.equal(got.eligibility, "available");
+          await tick(F);
+        }
+        const staff = await web(F, (tx) =>
+          service.getTicket(tx, F.manager, {
+            params: { ticketId: tk.id },
+          } as never),
+        );
+        assert.equal(Date.parse(staff.deadline!), want.at);
+        const bound = (await web(F, (tx) => service.getStatus(tx, F.cashier)))
+          .selfInvoice?.globalBound;
+        assert.equal(
+          bound?.globalPeriodicity,
+          p,
+          "the receipt's bound follows",
+        );
+      }
+    // A daily global ends self-invoicing at the close of the business day + 60 min.
+    await saveSettings(F, {
+      globalPeriodicity: "day",
+      selfInvoicePolicy: "days",
+      selfInvoiceDays: 3,
+    });
+    assert.equal((await portalWindow(tk)).bound, "global");
+    // With the portal's global reissue on, the policy alone.
+    await saveSettings(F, { portalReissueGlobal: true });
+    const reissue = await portalWindow(tk);
+    assert.equal(reissue.bound, "policy");
+    assert.equal(
+      Date.parse(reissue.deadline!),
+      Date.parse(
+        selfInvoiceDeadline(tk.businessDate, "days", 3, restaurant.timezone),
+      ),
+    );
+    assert.equal(
+      (await web(F, (tx) => service.getStatus(tx, F.cashier))).selfInvoice
+        ?.globalBound,
+      null,
+    );
+    // Sold two days ago and synced only now, before any tick ran: its day's global was due to be
+    // built yesterday at 05:00, so the portal refuses it (the printed deadline) even unbuilt.
+    const G = await makeTenant("deadline F1 expired");
+    await activate(G, { testFrom: daysAgo(5), periodicity: "day" });
+    const late = await makeTicket(G, { businessDate: daysAgo(2) });
+    const expired = await portalWindow(late);
+    assert.equal(expired.eligibility, "expired");
+    assert.equal(expired.bound, "global");
+    await rejects(
+      portal.portalSubmit(app, late.code, {
+        operationId: op(),
+        receptor: { ...MORAL },
+        cardForm: null,
+        privacyAccepted: true,
+        locale: "es",
+      }),
+      "cfdi_portal_expired",
+    );
+  });
+
+  await test("LD-51 F2. activation takes the periodicity; a change applies at once while the month has no global and no overdue ticket, and the tick rebuilds the month's rows (036: only the worker deletes, only rows no document used); a month shaped between the save and the tick defers the change to next month; a change that would put a ticket in an overdue period waits", async () => {
+    const M = await makeTenant("periodicity F2");
+    const view = await activate(M, { periodicity: "month" });
+    assert.equal(view.settings?.globalPeriodicity, "month");
+    const monthKey = "M" + today().slice(0, 7);
+    const rows = async () =>
+      (
+        await admin`select period_key, periodicity from cfdi_global_periods
+          where tenant_id = ${M.tenantId} order by date_from`
+      ).map((r) => [r.period_key as string, r.periodicity as string]);
+    assert.deepEqual(await rows(), [[monthKey, "month"]]);
+    await makeTicket(M);
+    const now = await saveSettings(M, { globalPeriodicity: "day" });
+    assert.equal(now.settings?.globalPeriodicity, "day", "applies at once");
+    assert.equal(now.settings?.nextPeriodicity, null);
+    const [own] = await admin`
+      select dedupe_key from jobs where tenant_id = ${M.tenantId} and kind = 'cfdi_global'
+        and dedupe_key like 'tick:periodicity:%'`;
+    assert.ok(own, "a tick of its own rebuilds the month");
+    await settle(M.tenantId);
+    assert.deepEqual(await rows(), [["D" + today(), "day"]]);
+    const [rebuilt] = await admin`
+      select detail from cfdi_events where tenant_id = ${M.tenantId} and kind = 'periodicity_rebuilt'`;
+    assert.deepEqual(rebuilt.detail, {
+      from: "month",
+      to: "day",
+      periods: [monthKey],
+    });
+    // 036's guard: the runtime role never deletes a period row; the worker only one no document
+    // used (A's closed days hold globals); TRUNCATE stays refused.
+    await assert.rejects(
+      web(M, (tx) => tx`delete from cfdi_global_periods`),
+      /permission denied|cfdi_global_periods rows are not deleted/,
+    );
+    await assert.rejects(
+      tenant(
+        worker,
+        A.tenantId,
+        (tx) =>
+          tx`delete from cfdi_global_periods where period_key = ${"D" + dayX}`,
+      ),
+      /cfdi_period_has_documents/,
+    );
+    await assert.rejects(
+      worker`truncate cfdi_global_periods`,
+      /permission denied|immutable/,
+    );
+    class Rollback extends Error {}
+    await worker
+      .begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${M.tenantId}, true)`;
+        const gone =
+          await tx`delete from cfdi_global_periods where period_key = ${"D" + today()} returning period_key`;
+        assert.equal(gone.length, 1, "a document-less open row");
+        throw new Rollback();
+      })
+      .catch((e) => {
+        if (!(e instanceof Rollback)) throw e;
+      });
+    // Saved at once, but the month got a global before the tick ran: the tick defers the change.
+    const back = await saveSettings(M, { globalPeriodicity: "month" });
+    assert.equal(back.settings?.globalPeriodicity, "month");
+    await claimCurrentMonth(M);
+    await settle(M.tenantId);
+    const deferred = (await web(M, (tx) => service.getSettings(tx, M.owner)))
+      .settings!;
+    assert.deepEqual(
+      [
+        deferred.globalPeriodicity,
+        deferred.nextPeriodicity,
+        deferred.nextPeriodicityFrom,
+      ],
+      ["day", "month", firstOfNextMonth(today())],
+    );
+    assert.deepEqual(await rows(), [["D" + today(), "day"]]);
+    const [later] = await admin`
+      select detail from cfdi_events where tenant_id = ${M.tenantId} and kind = 'periodicity_deferred'`;
+    assert.deepEqual(later.detail, { from: "day", to: "month" });
+    // A ticket two days ago in a monthly month: a daily period for it is already past its
+    // 24 hours (RMF 2.7.1.21), so switching to daily now waits for next month. Needs a month that
+    // is at least three days old.
+    if (Number(today().slice(8, 10)) >= 3) {
+      const O = await makeTenant("periodicity F2 overdue");
+      await activate(O, {
+        testFrom: today().slice(0, 8) + "01",
+        periodicity: "month",
+      });
+      await makeTicket(O, { businessDate: daysAgo(2) });
+      const waits = await saveSettings(O, { globalPeriodicity: "day" });
+      assert.equal(waits.settings?.globalPeriodicity, "month");
+      assert.equal(waits.settings?.nextPeriodicity, "day");
+    } else
+      console.log(
+        "  (F2: the overdue-ticket leg needs day 3 of a month or later; covered in tests/cfdi-shared.test.ts)",
+      );
+  });
+
+  await test("LD-51 F3/F9. in the shared sandbox the stamping issuer is the platform test organization as Facturapi reports it: its régimen and RFC decide the RESICO retention (none for a 601 issuer though the restaurant's profile is 626) and its postal code is LugarExpedicion of invoices and globals; the panel shows it; an own organization's RFC reads pending until Facturapi reports it", async () => {
+    // F9 in organizations mode: Facturapi reports no RFC for a fresh organization before its CSD.
+    // (The key rotation check left the worker on kid t2: publish its upload key as a restart would.)
+    assert.equal(await verifyAndPublish(worker, runtime), true);
+    const N = await makeTenant("issuer rfc F9");
+    const fresh = await activate(N);
+    assert.equal(fresh.organization?.taxId, null, "pending, not the profile's");
+    assert.equal(fresh.organization?.sharedIssuer, null);
+    await uploadTestCsd(N);
+    await settle(N.tenantId);
+    assert.equal(
+      (await web(N, (tx) => service.getSettings(tx, N.owner))).organization
+        ?.taxId,
+      "EKU9003173C9",
+    );
+
+    const sandboxFake = createFacturapiFake({
+      seed: "cfdifix-f3",
+      sharedIssuer: {
+        legal_name: "PLATAFORMA DE PRUEBA",
+        tax_system: "601",
+        tax_id: "EKU9003173C9",
+        address: { zip: "01000" },
+      },
+    });
+    const sandbox: CfdiRuntime = {
+      config: cfdiWorkerConfig(
+        { FACTURAPI_TEST_KEY: "sk_test_cfdifix_shared" },
+        "test",
+      ),
+      ring: null,
+      client: createFacturapiClient({
+        fetch: sandboxFake.fetch,
+        baseUrl: FAKE_BASE_URL,
+        userAgent: "green-monkey/test",
+        timeouts: { standardMs: 1500, longMs: 1500 },
+        onResponse: recordProviderResponse,
+      }),
+      alert: (a) => {
+        alerts.push(a);
+      },
+      providerOk: true,
+    };
+    setCfdiRuntime(sandbox);
+    try {
+      assert.equal(await verifyAndPublish(worker, sandbox), true);
+      const [published] = await admin`
+        select provider, shared_legal_name, shared_tax_id, shared_tax_system, shared_postal_code
+        from cfdi_platform where id = 1`;
+      assert.deepEqual(
+        { ...published },
+        {
+          provider: "sandbox_shared",
+          shared_legal_name: "PLATAFORMA DE PRUEBA",
+          shared_tax_id: "EKU9003173C9",
+          shared_tax_system: "601",
+          shared_postal_code: "01000",
+        },
+      );
+      // A RESICO restaurant (626, persona física) invoicing a persona moral: the issuer that
+      // stamps is the shared organization (601), so no ISR retention, and LugarExpedicion is its.
+      const X = await makeTenant("shared sandbox F3", {
+        rfc: "XIQB891116QE4",
+        legalName: "BERENICE XIMO QUEZADA",
+        regime: "626",
+      });
+      const settingsX = await activate(X);
+      assert.equal(settingsX.organization?.source, "shared_sandbox");
+      assert.deepEqual(settingsX.organization?.sharedIssuer, {
+        legalName: "PLATAFORMA DE PRUEBA",
+        taxId: "EKU9003173C9",
+        regime: "601",
+        postalCode: "01000",
+      });
+      assert.equal(settingsX.organization?.taxId, "EKU9003173C9");
+      const inv = await invoice(X, await makeTicket(X));
+      await settle(X.tenantId);
+      const row = await docRow(inv.id);
+      assert.equal(row.status, "valid");
+      assert.equal(row.expected_withholding, 0);
+      assert.ok(
+        (row.request.items as { product: { taxes: unknown[] } }[]).every(
+          (i) => i.product.taxes.length === 1,
+        ),
+        "no ISR retention: the stamping issuer is not RESICO",
+      );
+      assert.equal(row.request.address.zip, "01000");
+      // A global: LugarExpedicion and PUBLICO EN GENERAL's DomicilioFiscalReceptor are the
+      // shared organization's postal code too.
+      const Y = await makeTenant("shared sandbox F3 global");
+      const sold = await makeTicket(Y, { businessDate: daysAgo(2) });
+      await activate(Y, { testFrom: daysAgo(3), periodicity: "day" });
+      const [g] = await admin`
+        select d.request, d.status from cfdi_document_tickets c
+        join cfdi_documents d on d.tenant_id = c.tenant_id and d.id = c.document_id
+        where c.ticket_id = ${sold.id} and c.state = 'active' and d.kind = 'global'`;
+      assert.equal(g.status, "valid");
+      assert.equal(g.request.address.zip, "01000");
+      assert.equal(g.request.customer.address.zip, "01000");
+    } finally {
+      setCfdiRuntime(runtime);
+      assert.equal(await verifyAndPublish(worker, runtime), true);
+    }
+    const [restored] =
+      await admin`select provider, shared_tax_id from cfdi_platform where id = 1`;
+    assert.deepEqual(
+      { ...restored },
+      { provider: "organizations", shared_tax_id: null },
+    );
+  });
+
+  await test("LD-51 F7. a cancellation acuse is stored and offered only when it names the document's UUID: Facturapi's test-mode sample of another CFDI is recorded (acuse_mismatch), never stored or fetched again, and the status still comes from the document", async () => {
+    const C = await makeTenant("acuse F7");
+    await activate(C);
+    const own = await invoice(C, await makeTicket(C));
+    await settle(C.tenantId);
+    await cancelAs(C, C.manager, own.id);
+    await settle(C.tenantId);
+    const stored = await admin`
+      select format, content from cfdi_files where document_id = ${own.id} and format like 'cancel%'
+      order by format`;
+    assert.deepEqual(
+      stored.map((r) => r.format),
+      ["cancel_pdf", "cancel_xml"],
+    );
+    assert.ok(
+      Buffer.from(stored[1].content)
+        .toString()
+        .toUpperCase()
+        .includes(String((await docRow(own.id)).uuid).toUpperCase()),
+      "the stored acuse names the document",
+    );
+    const sample = await invoice(C, await makeTicket(C));
+    await settle(C.tenantId);
+    fake.fault({ op: "invoices.cancellation_receipt", fault: "sample_acuse" });
+    await cancelAs(C, C.manager, sample.id);
+    await settle(C.tenantId);
+    assert.equal((await docRow(sample.id)).status, "canceled");
+    const [{ n }] = await admin`
+      select count(*)::int as n from cfdi_files where document_id = ${sample.id} and format like 'cancel%'`;
+    assert.equal(n, 0, "the sample is never stored");
+    assert.ok((await events(sample.id)).includes("acuse_mismatch"));
+    const detail = await web(C, (tx) =>
+      service.getDocument(tx, C.manager, {
+        params: { id: sample.id },
+      } as never),
+    );
+    assert.equal(detail.status, "canceled");
+    assert.deepEqual(
+      detail.files.filter((f) => f.startsWith("cancel")),
+      [],
+      "no acuse offered",
+    );
+    await age([sample.id], 120);
+    const doc = await web(C, (tx) => loadDocument(tx, sample.id));
+    assert.equal(
+      await web(C, (tx) => recoveryAction(tx, doc!)),
+      null,
+      "the recovery sweep never fetches it again",
+    );
+    assert.equal(
+      (
+        await web(C, (tx) =>
+          service.getDocument(tx, C.manager, {
+            params: { id: sample.id },
+          } as never),
+        )
+      ).canRetry,
+      false,
+    );
+  });
+
+  await test("LD-51 F11. a period counts the tickets its global will take (in no CFDI, net of refunds) in its tickets and totals, as 'por emitir'", async () => {
+    const U = await makeTenant("unclaimed F11");
+    await activate(U);
+    const t1 = await makeTicket(U, {
+      groups: [{ category: "iva16", gross: 11600 }],
+    });
+    const t2 = await makeTicket(U, {
+      groups: [{ category: "iva16", gross: 5800 }],
+    });
+    await refund(U, t2, { iva16: 1160 });
+    const current = async () =>
+      (
+        await web(U, (tx) =>
+          service.listGlobals(tx, U.manager, {
+            query: { from: today(), to: today() },
+          } as never),
+        )
+      )[0];
+    const refundTax =
+      extractTax(5800, 1600).tax - extractTax(5800 - 1160, 1600).tax;
+    let p = await current();
+    assert.equal(p.status, "open");
+    assert.equal(p.ticketCount, 2);
+    assert.equal(p.unclaimedTickets, 2);
+    assert.equal(p.total, 11600 + 5800 - 1160);
+    assert.equal(
+      p.tax,
+      extractTax(11600, 1600).tax + extractTax(5800, 1600).tax - refundTax,
+    );
+    // An invoiced ticket leaves the period's count.
+    await invoice(U, t1);
+    await settle(U.tenantId);
+    p = await current();
+    assert.equal(p.ticketCount, 1);
+    assert.equal(p.unclaimedTickets, 1);
+    assert.equal(p.total, 5800 - 1160);
+  });
+
+  await test("LD-51 F12. a ticket issued into a period whose global was already built enqueues a tick due now (fiscal's finishTickets hook) and gets its supplementary part at once; within the same 10 minutes a second one gets a key suffixed with the ticket once the first tick ran; a ticket of an open period enqueues nothing", async () => {
+    const L = await makeTenant("issued F12");
+    await activate(L, { testFrom: daysAgo(5), periodicity: "day" });
+    const day = daysAgo(3);
+    const [built] = await admin`
+      select status from cfdi_global_periods where tenant_id = ${L.tenantId} and period_key = ${"D" + day}`;
+    assert.equal(built.status, "empty", "the activation tick closed that day");
+    const issuedTicks = async () =>
+      (
+        await admin`select dedupe_key, next_at <= now() as due from jobs
+          where tenant_id = ${L.tenantId} and kind = 'cfdi_global' and dedupe_key like 'tick:issued:%'
+          order by created_at`
+      ).map((r) => ({ key: r.dedupe_key as string, due: r.due as boolean }));
+    const claimOf = async (ticketId: string) => {
+      const [c] = await admin`
+        select d.period_key, d.part from cfdi_document_tickets c
+        join cfdi_documents d on d.tenant_id = c.tenant_id and d.id = c.document_id
+        where c.ticket_id = ${ticketId} and c.state = 'active'`;
+      return c
+        ? { period: c.period_key as string, part: c.part as number }
+        : null;
+    };
+    const issued = (tk: Ticket) =>
+      web(L, (tx) =>
+        cfdiTicketsIssued(tx, { tenantId: L.tenantId }, [
+          { id: tk.id, businessDate: tk.businessDate },
+        ]),
+      );
+    const t1 = await makeTicket(L, { businessDate: day });
+    await issued(t1);
+    const first = await issuedTicks();
+    assert.equal(first.length, 1);
+    assert.match(first[0].key, /^tick:issued:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/);
+    assert.equal(first[0].due, true);
+    await settle(L.tenantId);
+    assert.deepEqual(await claimOf(t1.id), { period: "D" + day, part: 1 });
+    const t2 = await makeTicket(L, { businessDate: day });
+    await issued(t2);
+    const second = await issuedTicks();
+    assert.equal(second.length, 2);
+    assert.ok(
+      second[1].key === `${first[0].key}:${t2.id.slice(0, 8)}` ||
+        /^tick:issued:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(second[1].key),
+      "the bucket's key already ran: a key suffixed with the ticket (or the next bucket's)",
+    );
+    await settle(L.tenantId);
+    assert.deepEqual(await claimOf(t2.id), { period: "D" + day, part: 2 });
+    const t3 = await makeTicket(L);
+    await issued(t3);
+    assert.equal(
+      (await issuedTicks()).length,
+      2,
+      "a ticket of an open period needs no tick",
+    );
+    assert.equal(await claimOf(t3.id), null);
+  });
+
+  await test("LD-51 F13. every cfdi job that ends done logs one cfdi_job_done info line: the stamp with its document id and each answer's X-Facturapi-Log-Id, the cancellation with its document and cancellation ids, ticks and the organization job with theirs", async () => {
+    const J = await makeTenant("job log F13");
+    await activate(J);
+    const doc = await invoice(J, await makeTicket(J));
+    await settle(J.tenantId);
+    const lines = (kind: string) =>
+      jobDoneLines.filter((l) => l.tenantId === J.tenantId && l.kind === kind);
+    const stamp = lines("cfdi_stamp");
+    assert.equal(stamp.length, 1);
+    assert.equal(stamp[0].level, "info");
+    assert.equal(stamp[0].documentId, doc.id);
+    const logIds = stamp[0].facturapiLogIds as string[];
+    assert.ok(logIds.length >= 1);
+    assert.ok(logIds.every((id) => /^log_fake_\d{6}$/.test(id)));
+    assert.ok(lines("cfdi_deliver").some((l) => l.documentId === doc.id));
+    assert.ok(lines("cfdi_org").some((l) => l.action === "provision"));
+    assert.ok(lines("cfdi_global").length >= 1);
+    await cancelAs(J, J.manager, doc.id);
+    await settle(J.tenantId);
+    const cancel = lines("cfdi_cancel");
+    assert.equal(cancel.length, 1);
+    assert.equal(cancel[0].documentId, doc.id);
+    assert.equal(typeof cancel[0].cancellationId, "string");
+    assert.ok((cancel[0].facturapiLogIds as string[]).length >= 1);
   });
 
   console.log(`cfdi DB checks passed: ${checks}`);

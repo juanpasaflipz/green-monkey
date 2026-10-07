@@ -57,7 +57,10 @@
  * refusal), and "timeout" / "lost_response" CANCEL the invoice (as SAT would) and then never answer
  * or drop the connection: the client cannot know the cancellation happened (review CFDI-WORKER-1).
  * On PUT /organizations/{id}/legal, the queued fault "legal_rejected" answers 400
- * organization_tax_info_invalid (a permanent refusal) and any other queued fault a 500.
+ * organization_tax_info_invalid (a permanent refusal) and any other queued fault a 500. On
+ * GET /invoices/{id}/cancellation_receipt/{xml|pdf}, the queued fault "sample_acuse" answers an
+ * acuse that names another CFDI, as Facturapi's test mode does (LD-51 F7). `sharedIssuer` sets the
+ * shared sandbox organization's legal data (LD-51 F3).
  *
  * Control API (loopback CLI only, also methods on the fake): POST /__fake/reset,
  * POST /__fake/faults {op, fault, times?, match?}, POST /__fake/organizations/{id}/manifesto,
@@ -108,7 +111,8 @@ export type FakeOp =
   | "invoices.get"
   | "invoices.cancel"
   | "invoices.email"
-  | "invoices.download";
+  | "invoices.download"
+  | "invoices.cancellation_receipt";
 export type FakeFault =
   | "timeout"
   | "lost_response"
@@ -126,7 +130,8 @@ export type FakeFault =
   | "cancel_rejected"
   | "cancel_refused"
   | "legal_rejected"
-  | "email_failed";
+  | "email_failed"
+  | "sample_acuse";
 export type FaultRule = {
   op: FakeOp;
   fault: FakeFault;
@@ -146,6 +151,7 @@ const faultRule = z
       "invoices.cancel",
       "invoices.email",
       "invoices.download",
+      "invoices.cancellation_receipt",
     ]),
     fault: z.enum([
       "timeout",
@@ -165,6 +171,7 @@ const faultRule = z
       "cancel_refused",
       "legal_rejected",
       "email_failed",
+      "sample_acuse",
     ]),
     times: z.number().int().min(1).max(10_000).optional(),
     match: z
@@ -448,6 +455,8 @@ const PERIODICITY: Record<string, string> = {
 };
 const CFDI_NS = "http://www.sat.gob.mx/cfd/4";
 const TFD_NS = "http://www.sat.gob.mx/TimbreFiscalDigital";
+/** The CFDI a test-mode sample acuse names (never one the fake stamped). */
+const SAMPLE_ACUSE_UUID = "1A2B3C4D-0000-4000-8000-0000000000AA";
 const TEST_ISSUER = {
   name: "Organización de prueba",
   legal_name: "ESCUELA KEMPER URGATE",
@@ -587,7 +596,16 @@ export interface FacturapiFake {
 }
 
 export function createFacturapiFake(
-  o: { now?: Date; seed?: string } = {},
+  o: {
+    now?: Date;
+    seed?: string;
+    /**
+     * The shared sandbox organization's legal data (an unknown sk_test_ key's organization):
+     * EKU9003173C9 / 601 / 42501 by default. The cfdi DB suite gives it another issuer than the
+     * restaurant's profile to prove the stamp uses the shared organization's (LD-51 F3).
+     */
+    sharedIssuer?: Partial<typeof TEST_ISSUER>;
+  } = {},
 ): FacturapiFake {
   const seed = o.seed ?? "green-monkey-facturapi-fake";
   let offsetMs = 0;
@@ -980,10 +998,15 @@ export function createFacturapiFake(
     );
   }
 
-  function acuse(inv: Invoice): string {
+  /**
+   * SAT's cancellation acuse shape (Folios/UUID with EstatusUUID, Folios in the cancelacfd
+   * namespace). `uuid` is the CFDI it names: the invoice's own, or, for the queued fault
+   * "sample_acuse" (Facturapi's test mode, LD-51 F7), a fixed sample of another CFDI.
+   */
+  function acuse(inv: Invoice, uuid = inv.uuid): string {
     return (
-      `<?xml version="1.0" encoding="UTF-8"?>\n<Acuse Fecha="${cfdiDate(inv.canceledAt ?? now())}" RfcEmisor="${inv.issuer.rfc}">` +
-      `<Folios><UUID>${inv.uuid?.toUpperCase()}</UUID><EstatusUUID>201</EstatusUUID></Folios></Acuse>\n`
+      `<?xml version="1.0" encoding="UTF-8"?>\n<Acuse xmlns:xsd="http://www.w3.org/2001/XMLSchema" Fecha="${cfdiDate(inv.canceledAt ?? now())}" RfcEmisor="${inv.issuer.rfc}">` +
+      `<Folios xmlns="http://cancelacfd.sat.gob.mx"><UUID>${uuid?.toUpperCase()}</UUID><EstatusUUID>201</EstatusUUID></Folios></Acuse>\n`
     );
   }
 
@@ -1014,7 +1037,11 @@ export function createFacturapiFake(
       name: TEST_ISSUER.name,
       createdAt: now(),
       shared: true,
-      legal: { ...TEST_ISSUER },
+      legal: {
+        ...TEST_ISSUER,
+        ...o.sharedIssuer,
+        address: { ...TEST_ISSUER.address, ...o.sharedIssuer?.address },
+      },
       certificate: null,
       manifesto: false,
       testKey: secret,
@@ -1826,11 +1853,15 @@ export function createFacturapiFake(
         if (!inv.cancel || inv.status !== "canceled")
           return error(400, "invoice_cancellation_receipt_unavailable");
         const isXml = sub.endsWith("xml");
+        const sample =
+          takeFault("invoices.cancellation_receipt", inv.body) ===
+          "sample_acuse";
+        const named = sample ? SAMPLE_ACUSE_UUID : inv.uuid;
         return new Response(
           isXml
-            ? new TextEncoder().encode(acuse(inv))
+            ? new TextEncoder().encode(acuse(inv, named))
             : fakePdf([
-                `ACUSE DE CANCELACION (FAKE) ${inv.uuid?.toUpperCase()}`,
+                `ACUSE DE CANCELACION (FAKE) ${named?.toUpperCase()}`,
                 `Motivo ${inv.cancel.motive}`,
               ]),
           {
