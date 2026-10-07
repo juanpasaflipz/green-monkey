@@ -441,35 +441,70 @@ export function deadlineShowsTime(
 }
 
 /**
- * Whether a periodicity change may apply at once (LD-51 F2) instead of from the first of next
- * month. It may while the current month is still unshaped: no global document of any of its
- * periods (stamped, claiming or failed: the register and the sweeps read documents by period key),
- * and no unclaimed ticket of the month would sit in a period, old or new, whose 24-hour deadline
- * (RMF 2.7.1.21) already passed, so re-partitioning the month never turns an on-time global into
- * a late one nor hides one that is late. `dates` are the business dates of the month's unclaimed
- * eligible tickets on or after the mode's start.
+ * Why a periodicity change must wait for the first of next month (LD-51 F2), or null when it may
+ * apply at once:
+ *   "globals"   the month has a global document of one of its periods (stamped, claiming or
+ *               failed: the register and the sweeps read documents by period key);
+ *   "overdue"   an unclaimed ticket of the month would sit in a period, old or new, whose 24-hour
+ *               deadline (RMF 2.7.1.21) already passed: re-partitioning the month never turns an
+ *               on-time global into a late one nor hides one that is late;
+ *   "deadline"  the change would give an unclaimed ticket of the month an earlier
+ *               self-invoicing deadline than it has (CFDIFIX-1): its receipt already printed the
+ *               deadline under the old periodicity (effectiveSelfInvoiceDeadline: the earlier of
+ *               the policy and the global's build), and the portal must never refuse a customer
+ *               before that date. A change that keeps or lengthens every deadline applies at once.
+ *               The check does not depend on the self-invoicing or reissue switches: a receipt
+ *               printed while they were on keeps its date when they are turned back on.
+ * `dates` are the business dates of the month's unclaimed eligible tickets on or after the mode's
+ * start; `selfInvoice` the policy in force after the change and the worker's grace.
  */
-export function periodicityChangeNow(i: {
+export type PeriodicityChangeBlock = "globals" | "overdue" | "deadline";
+export function periodicityChangeBlock(i: {
   hasGlobals: boolean;
   dates: readonly string[];
   from: Periodicity;
   to: Periodicity;
   timezone: string;
   cutoff: number;
+  selfInvoice: {
+    policy: "month" | "days";
+    days: number;
+    graceMinutes: number;
+  };
   now: Date;
-}): boolean {
-  if (i.hasGlobals) return false;
-  return i.dates.every((date) =>
-    [i.from, i.to].every(
+}): PeriodicityChangeBlock | null {
+  if (i.hasGlobals) return "globals";
+  const closesAt = (date: string, p: Periodicity) =>
+    periodClosesAt(globalPeriodFor(date, p), i.timezone, i.cutoff);
+  const overdue = i.dates.some((date) =>
+    [i.from, i.to].some(
       (p) =>
-        Date.parse(
-          plusMinutes(
-            periodClosesAt(globalPeriodFor(date, p), i.timezone, i.cutoff),
-            24 * 60,
-          ),
-        ) > i.now.getTime(),
+        Date.parse(plusMinutes(closesAt(date, p), 24 * 60)) <= i.now.getTime(),
     ),
   );
+  if (overdue) return "overdue";
+  const deadline = (date: string, p: Periodicity) =>
+    Date.parse(
+      effectiveSelfInvoiceDeadline(date, {
+        policy: i.selfInvoice.policy,
+        days: i.selfInvoice.days,
+        timezone: i.timezone,
+        global: {
+          closesAt: closesAt(date, p),
+          graceMinutes: i.selfInvoice.graceMinutes,
+        },
+      }).deadline,
+    );
+  if (i.dates.some((date) => deadline(date, i.to) < deadline(date, i.from)))
+    return "deadline";
+  return null;
+}
+
+/** Whether a periodicity change may apply at once (periodicityChangeBlock answers null). */
+export function periodicityChangeNow(
+  i: Parameters<typeof periodicityChangeBlock>[0],
+): boolean {
+  return periodicityChangeBlock(i) === null;
 }
 
 /**
@@ -781,6 +816,11 @@ export type CfdiSettingsView = CfdiStatusView & {
   canEdit: boolean;
   /** The worker's CFDI_GLOBAL_GRACE_MINUTES: the settings explain the self-invoicing bound. */
   globalGraceMinutes: number;
+  /**
+   * The restaurant's business date on the server (timezone and cutoff): which month a change
+   * reshapes and which periodicity is in force (CFDIFIX-6).
+   */
+  businessDate: string;
   prerequisites: {
     platform: boolean;
     fiscalComplete: boolean;
@@ -811,6 +851,18 @@ export type CfdiSettingsView = CfdiStatusView & {
     updatedAt: string;
     updatedByName: string | null;
     resicoMonthly: boolean;
+    /**
+     * Why the pending change did not apply at once (CFDIFIX-5), while it is still the pending one:
+     * refused by the save, or deferred by the tick when the month got shaped before it rebuilt it.
+     */
+    periodicityDeferred: {
+      at: string;
+      from: Periodicity;
+      to: Periodicity;
+      nextFrom: string;
+      reason: PeriodicityChangeBlock;
+      source: "save" | "tick";
+    } | null;
   };
   organization: CfdiOrganizationView | null;
   live: {

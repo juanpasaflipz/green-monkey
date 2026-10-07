@@ -1135,6 +1135,7 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
             nextPeriodicity: null,
             nextPeriodicityFrom: null,
           },
+          businessDate: "2026-10-07",
           locale: "es",
         }),
       ),
@@ -1146,6 +1147,7 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
           nextPeriodicity: "day",
           nextPeriodicityFrom: "2026-11-01",
         },
+        businessDate: "2026-10-07",
         locale: "es",
       }),
     );
@@ -1159,10 +1161,76 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
             nextPeriodicity: "fortnight",
             nextPeriodicityFrom: "2026-11-01",
           },
+          businessDate: "2026-10-07",
           locale: "en",
         }),
       ),
     ).toContain("Current frequency: weekly. Changes to fortnightly on");
+  });
+  it("CFDIFIX-6: from its first day a pending change is the current one, before the tick promotes it", () => {
+    const out = html(
+      createElement(PeriodicityStatus, {
+        settings: {
+          globalPeriodicity: "month",
+          nextPeriodicity: "day",
+          nextPeriodicityFrom: "2026-11-01",
+        },
+        businessDate: "2026-11-01",
+        locale: "es",
+      }),
+    );
+    expect(out).toContain("Periodicidad actual: diaria.");
+    expect(out).not.toContain("Cambia a");
+  });
+  it("CFDIFIX-5: a change that waits says why, while it is still the pending one", () => {
+    const settings = {
+      globalPeriodicity: "month" as const,
+      nextPeriodicity: "day" as const,
+      nextPeriodicityFrom: "2026-11-01",
+    };
+    const deferred = (reason: "globals" | "overdue" | "deadline") => ({
+      at: "2026-10-07T18:00:00.000Z",
+      from: "month" as const,
+      to: "day" as const,
+      nextFrom: "2026-11-01",
+      reason,
+      source: "save" as const,
+    });
+    const out = (
+      reason: "globals" | "overdue" | "deadline",
+      locale: "es" | "en",
+    ) =>
+      html(
+        createElement(PeriodicityStatus, {
+          settings: { ...settings, periodicityDeferred: deferred(reason) },
+          businessDate: "2026-10-07",
+          locale,
+        }),
+      );
+    expect(out("deadline", "es")).toContain(
+      "Cambia a diaria desde el 1 nov 2026. No se aplicó al momento: acortaría el plazo para autofacturar de tickets ya vendidos este mes.",
+    );
+    expect(out("globals", "es")).toContain(
+      "No se aplicó al momento: el mes ya tiene una factura global.",
+    );
+    expect(out("overdue", "en")).toContain(
+      "It did not apply at once: a ticket of the month would fall in a period whose global invoice is already overdue.",
+    );
+    // No pending change (the owner chose again), no reason.
+    expect(
+      html(
+        createElement(PeriodicityStatus, {
+          settings: {
+            globalPeriodicity: "month",
+            nextPeriodicity: null,
+            nextPeriodicityFrom: null,
+            periodicityDeferred: null,
+          },
+          businessDate: "2026-10-07",
+          locale: "es",
+        }),
+      ),
+    ).not.toContain("No se aplicó");
   });
   it("F7: the register names the acuse that was not stored", () => {
     expect(eventLabel("acuse_mismatch", "es")).toBe(

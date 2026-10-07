@@ -58,7 +58,7 @@ import {
   loadOrganization,
   loadSettings,
   modeFrom,
-  periodicityChangeAllowed,
+  periodicityChangeBlocked,
   unclaimedTickets,
   type FiscalFacts,
   type SettingsRow,
@@ -184,10 +184,15 @@ function staleRow(
 /**
  * Step 1b (LD-51 F2), in the plan's transaction under the settings row lock: a periodicity saved
  * to apply at once leaves the current month's rows of the old one. With every row's period key
- * taken, the change is checked again (periodicityChangeAllowed: no global document of the month,
- * no unclaimed ticket past a 24-hour deadline) and the month's rows are deleted (036 lets the
- * worker delete only rows no document used), so periodsAfter re-adds the month under the new
- * periodicity. If the month got shaped meanwhile, the change waits for next month like any other.
+ * taken, the change is checked again with the save's rule (periodicityChangeBlocked: no global
+ * document of the month, no unclaimed ticket past a 24-hour deadline, no unclaimed ticket whose
+ * self-invoicing deadline it brings forward, CFDIFIX-1) and the month's rows are deleted (036 lets
+ * the worker delete only rows no document used), so periodsAfter re-adds the month under the new
+ * periodicity. If the month got shaped meanwhile, the change waits for next month like any other,
+ * and the event says why (the panel shows it, CFDIFIX-5). The deadline check reads every
+ * unclaimed ticket of the month, including any sold between the save and this tick: a receipt
+ * printed by a terminal that had not yet refreshed its status carries the old deadline, and
+ * deferring only lengthens the deadlines of receipts that printed the new one.
  */
 async function rebuildMonth(
   tx: Tx,
@@ -195,6 +200,7 @@ async function rebuildMonth(
   settings: SettingsRow,
   facts: FiscalFacts,
   today: string,
+  graceMinutes: number,
 ): Promise<SettingsRow> {
   const tenantId = ctx.job.tenantId;
   const monthStart = monthStartOf(today);
@@ -214,7 +220,7 @@ async function rebuildMonth(
     await lockPeriod(tx, tenantId, settings.mode, r.period_key as string);
   const was = stale[0].periodicity as Periodicity;
   const target = periodicityOn(today, settings);
-  const allowed = await periodicityChangeAllowed(
+  const blocked = await periodicityChangeBlocked(
     tx,
     {
       ...settings,
@@ -225,8 +231,9 @@ async function rebuildMonth(
     target,
     today,
     facts,
+    graceMinutes,
   );
-  if (allowed) {
+  if (!blocked) {
     const removed = await tx`
       delete from cfdi_global_periods
       where mode = ${settings.mode} and date_from >= ${monthStart}::date
@@ -238,11 +245,18 @@ async function rebuildMonth(
     });
     return settings;
   }
+  const nextFrom = firstOfNextMonth(today);
   await tx`
     update cfdi_settings set global_periodicity = ${was}, next_periodicity = ${target},
-      next_periodicity_from = ${firstOfNextMonth(today)}::date, version = version + 1,
+      next_periodicity_from = ${nextFrom}::date, version = version + 1,
       updated_at = now()`;
-  await event(tx, ctx, null, "periodicity_deferred", { from: was, to: target });
+  await event(tx, ctx, null, "periodicity_deferred", {
+    from: was,
+    to: target,
+    nextFrom,
+    reason: blocked,
+    source: "tick",
+  });
   return (await loadSettings(tx))!;
 }
 
@@ -472,7 +486,14 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
       settings = (await loadSettings(tx))!;
     }
     // 1b. A periodicity that applied at once: rebuild the current month's rows (LD-51 F2).
-    settings = await rebuildMonth(tx, ctx, settings, facts, today);
+    settings = await rebuildMonth(
+      tx,
+      ctx,
+      settings,
+      facts,
+      today,
+      rt.config.graceMinutes,
+    );
     const from = modeFrom(settings);
     // New rows only, after the last one of this mode, with the settings as they are BEFORE the
     // promotion: a pending change still applies only from its first-of-month date, even when

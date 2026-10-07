@@ -346,19 +346,41 @@ the next tick, never into the next open period; a part created after `due_at` is
 at most 4,000 concepts; a ticket is never split. With automatic emission off, periods wait for
 **Emitir ahora**.
 
-**Periodicity changes** (LD-51 F2). Activation takes the periodicity. A later change applies
-**at once** while the current month is unshaped: no global document of any of its periods
-(stamped, claiming or failed) and no unclaimed ticket of the month that would sit in a period,
-old or new, already past its 24-hour deadline (RMF 2.7.1.21: re-partitioning must never turn an
-on-time global into a late one nor hide one that is late; `periodicityChangeNow`). The save
-then enqueues a tick of its own, which takes the settings row lock and every period key of the
-month, checks the same rule again, deletes the month's rows (only the worker may, only rows no
-document used, 036) and adds them back under the new periodicity (`periodicity_rebuilt` event).
-If the month got a global between the save and the tick, the change waits for next month
-instead (`periodicity_deferred`). The global builder takes the settings row (FOR SHARE) before
-its period key, so a save and a build serialize, and it never builds a row a change left stale.
-Otherwise the change is stored as pending from the first day of next month and the panel says
-so ("Periodicidad actual: mensual. Cambia a diaria desde el …", F10). Earlier months never change
+**Periodicity changes** (LD-51 F2, CFDIFIX-1). Activation takes the periodicity. A later change
+applies **at once** while the current month is unshaped (`periodicityChangeBlock` answers null):
+- no global document of any of its periods (stamped, claiming or failed): reason `globals`;
+- no unclaimed ticket of the month that would sit in a period, old or new, already past its
+  24-hour deadline (RMF 2.7.1.21: re-partitioning must never turn an on-time global into a late
+  one nor hide one that is late): reason `overdue`;
+- no unclaimed ticket of the month whose self-invoicing deadline the change would bring forward:
+  reason `deadline`. Its receipt printed the deadline under the old periodicity (the earlier of
+  the policy and the global's build, "Self-invoicing ends when the ticket's global is built"),
+  and the portal must never refuse a customer before the printed date. The deadline is compared
+  under the self-invoicing policy the save stores; a change that keeps or lengthens every
+  deadline (day → month, week → fortnight, or a policy that ends first anyway) still applies at
+  once. The check does not depend on the self-invoicing or reissue switches: a receipt printed
+  while they were on keeps its date when they are turned back on. In practice a shorter
+  periodicity applies at once only on a month with no unclaimed ticket yet (right after
+  activation, or on the 1st before the first sale); on the last day of a month a monthly and a
+  daily global of that day close together, so that day's tickets do not block it.
+
+The save then enqueues a tick of its own, which takes the settings row lock and every period key
+of the month, checks the same rule again over every unclaimed ticket of the month (including one
+sold between the save and the tick: a terminal that had not refreshed its status printed the old
+deadline, and deferring only lengthens the deadlines of receipts that printed the new one),
+deletes the month's rows (only the worker may, only rows no document used, 036) and adds them
+back under the new periodicity (`periodicity_rebuilt` event). If the month got shaped between the
+save and the tick, the change waits for next month instead (`periodicity_deferred`). The global
+builder takes the settings row (FOR SHARE) before its period key, so a save and a build
+serialize, and it never builds a row a change left stale. Otherwise the change is stored as
+pending from the first day of next month and the panel says so, and why ("Periodicidad actual:
+mensual. Cambia a diaria desde el …. No se aplicó al momento: acortaría el plazo para autofacturar
+de tickets ya vendidos este mes.", F10, CFDIFIX-5): the save and the tick record a document-less
+`periodicity_deferred` event (`from`, `to`, `nextFrom`, `reason`, `source` save or tick; the
+save's names its owner), and the settings view shows the latest one while its change is still the
+pending one. "Periodicidad actual" is the periodicity in force on the server's business date
+(`businessDate` in the view): from its first day a pending change is in force even before the
+tick promotes it (CFDIFIX-6). Earlier months never change
 (CFDI-R2-1), nor does a month once it has a global: each tick adds rows only after the mode's
 last one, a period in
 the month of the previous row continues that row's periodicity, a new month takes the

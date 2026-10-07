@@ -82,7 +82,16 @@ export default defineArea({
     cfdiPeriodicityFrom: "Cambia a {next} desde el {date}.",
     cfdiPeriodicityCurrent: "Periodicidad actual: {current}.",
     cfdiActivatePeriodicityHint:
-      "Puedes cambiarla después: el cambio aplica al momento mientras no se haya emitido ninguna factura global del mes ni quede un ticket atrasado; si no, desde el día 1 del mes siguiente.",
+      "Puedes cambiarla después: el cambio aplica al momento mientras no se haya emitido ninguna factura global del mes, no quede un ticket atrasado y no acorte el plazo para autofacturar de un ticket ya vendido; si no, desde el día 1 del mes siguiente.",
+    cfdiPeriodicityChangeHint:
+      "Un cambio aplica al momento mientras no se haya emitido ninguna factura global del mes, no quede un ticket atrasado y no acorte el plazo para autofacturar de un ticket ya vendido (el que imprimió su ticket); si no, desde el día 1 del mes siguiente.",
+    cfdiPeriodicityDeferred: "No se aplicó al momento: {reason}.",
+    cfdiDeferredGlobals: "el mes ya tiene una factura global",
+    cfdiDeferredOverdue:
+      "un ticket del mes quedaría en un periodo cuya factura global ya está atrasada",
+    cfdiDeferredDeadline:
+      "acortaría el plazo para autofacturar de tickets ya vendidos este mes",
+    cfdiSelfInvoiceBoundNext: "Con periodicidad {next}: {when}.",
     cfdiSelfInvoiceBound:
       "Mientras «Sustituir la factura global automáticamente» esté apagado, un ticket solo se puede autofacturar hasta que entra en la factura global: {when}. El ticket impreso y el portal muestran ese plazo cuando llega antes que el de autofacturación.",
     cfdiBoundDay: "al cierre del día del consumo más {n} min",
@@ -498,7 +507,16 @@ export default defineArea({
     cfdiPeriodicityFrom: "Changes to {next} on {date}.",
     cfdiPeriodicityCurrent: "Current frequency: {current}.",
     cfdiActivatePeriodicityHint:
-      "You can change it later: the change applies at once while no global invoice of the month has been issued and no ticket is overdue; otherwise from the 1st of next month.",
+      "You can change it later: the change applies at once while no global invoice of the month has been issued, no ticket is overdue and it does not shorten the self-invoicing deadline of a ticket already sold; otherwise from the 1st of next month.",
+    cfdiPeriodicityChangeHint:
+      "A change applies at once while no global invoice of the month has been issued, no ticket is overdue and it does not shorten the self-invoicing deadline of a ticket already sold (the one its receipt printed); otherwise from the 1st of next month.",
+    cfdiPeriodicityDeferred: "It did not apply at once: {reason}.",
+    cfdiDeferredGlobals: "the month already has a global invoice",
+    cfdiDeferredOverdue:
+      "a ticket of the month would fall in a period whose global invoice is already overdue",
+    cfdiDeferredDeadline:
+      "it would shorten the self-invoicing deadline of tickets already sold this month",
+    cfdiSelfInvoiceBoundNext: "With {next} globals: {when}.",
     cfdiSelfInvoiceBound:
       "While “Replace the global invoice automatically” is off, a ticket can be self-invoiced only until it goes into the global invoice: {when}. The printed ticket and the portal show that deadline when it comes before the self-invoicing one.",
     cfdiBoundDay: "at the close of the day of purchase plus {n} min",

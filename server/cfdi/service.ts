@@ -34,6 +34,8 @@ import {
   type CfdiSettingsView,
   type CfdiTicketView,
   type GlobalPeriodView,
+  type Periodicity,
+  type PeriodicityChangeBlock,
   type Receptor,
 } from "../../shared/cfdi.js";
 import { parseFolio } from "../../shared/fiscal.js";
@@ -69,7 +71,8 @@ import {
   listDocuments,
   loadDocument,
   loadSettings,
-  periodicityChangeAllowed,
+  periodicityChangeBlocked,
+  platform,
   periodViews,
   requireCfdi,
   statusView,
@@ -144,6 +147,9 @@ async function settingsView(
   let lastEvent: NonNullable<CfdiSettingsView["organization"]>["lastEvent"] =
     null;
   let updatedByName: string | null = null;
+  let periodicityDeferred: NonNullable<
+    CfdiSettingsView["settings"]
+  >["periodicityDeferred"] = null;
   if (settings) {
     const [u] = await tx`
       select id, status, error_code, created_at from cfdi_csd_uploads order by created_at desc limit 1`;
@@ -167,6 +173,30 @@ async function settingsView(
     const [n] =
       await tx`select name from employees where id = ${settings.updatedBy}`;
     updatedByName = n?.name ?? null;
+    // Why the pending periodicity waits (CFDIFIX-5): the latest deferral, while it is still the
+    // pending change (the owner may have chosen again since).
+    if (settings.nextPeriodicity) {
+      const [d] = await tx`
+        select created_at, detail from cfdi_events
+        where document_id is null and kind = 'periodicity_deferred'
+        order by created_at desc limit 1`;
+      const x = d?.detail as Record<string, unknown> | undefined;
+      if (
+        x &&
+        x.from === settings.globalPeriodicity &&
+        x.to === settings.nextPeriodicity &&
+        x.nextFrom === settings.nextPeriodicityFrom &&
+        typeof x.reason === "string"
+      )
+        periodicityDeferred = {
+          at: new Date(d.created_at).toISOString(),
+          from: x.from as Periodicity,
+          to: x.to as Periodicity,
+          nextFrom: x.nextFrom as string,
+          reason: x.reason as PeriodicityChangeBlock,
+          source: x.source === "tick" ? "tick" : "save",
+        };
+    }
   }
   const alerts = settings ? await attention(tx) : null;
   const minFrom = settings ? currentPeriodStart(settings, day) : day;
@@ -189,6 +219,7 @@ async function settingsView(
     ...status,
     canEdit: s.role === "owner",
     globalGraceMinutes: graceMinutes(st.platform),
+    businessDate: day,
     prerequisites: {
       platform: available(st.platform),
       fiscalComplete: fiscalComplete(facts),
@@ -226,6 +257,7 @@ async function settingsView(
           updatedAt: settings.updatedAt,
           updatedByName,
           resicoMonthly: facts.regime === "626",
+          periodicityDeferred,
         }
       : null,
     organization: org
@@ -382,32 +414,50 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
     const wanted =
       facts.regime === "626" ? ("month" as const) : p.globalPeriodicity;
     // A periodicity change applies at once while the current month is unshaped: no global
-    // document of its periods and no unclaimed ticket in a period, old or new, past its 24-hour
-    // deadline (LD-51 F2; periodicityChangeNow). The tick then rebuilds the month's period rows.
-    // Otherwise it applies from the first day of next month and the month keeps one periodicity
-    // (CFDI-R2-1). Choosing the periodicity in force cancels a pending change (one that is
-    // already in force today stays: the tick promotes it). The settings row is locked FOR UPDATE
-    // above; the tick's rebuild and the global builder take it too, so neither runs on a month
-    // this decision reads differently.
+    // document of its periods, no unclaimed ticket in a period, old or new, past its 24-hour
+    // deadline, and no unclaimed ticket of the month whose self-invoicing deadline (the one its
+    // receipt printed) the change would bring forward (LD-51 F2, CFDIFIX-1;
+    // periodicityChangeBlock, with the policy this save stores). The tick then rebuilds the
+    // month's period rows. Otherwise it applies from the first day of next month and the month
+    // keeps one periodicity (CFDI-R2-1); the reason is recorded for the panel
+    // (periodicity_deferred). Choosing the periodicity in force cancels a pending change (one
+    // that is already in force today stays: the tick promotes it). The settings row is locked
+    // FOR UPDATE above; the tick's rebuild and the global builder take it too, so neither runs on
+    // a month this decision reads differently.
     const day = today(s);
     const effective = periodicityOn(day, before);
     let periodicity = before.globalPeriodicity;
     let next = before.nextPeriodicity;
     let nextFrom = before.nextPeriodicityFrom;
     let rebuild = false;
+    let deferred: PeriodicityChangeBlock | null = null;
     if (wanted === effective) {
       if (!(nextFrom && nextFrom <= day)) {
         next = null;
         nextFrom = null;
       }
-    } else if (await periodicityChangeAllowed(tx, before, wanted, day, facts)) {
-      periodicity = wanted;
-      next = null;
-      nextFrom = null;
-      rebuild = true;
     } else {
-      next = wanted;
-      nextFrom = firstOfNextMonth(day);
+      deferred = await periodicityChangeBlocked(
+        tx,
+        {
+          ...before,
+          selfInvoicePolicy: p.selfInvoicePolicy,
+          selfInvoiceDays: p.selfInvoiceDays,
+        },
+        wanted,
+        day,
+        facts,
+        graceMinutes(await platform(tx)),
+      );
+      if (deferred) {
+        next = wanted;
+        nextFrom = firstOfNextMonth(day);
+      } else {
+        periodicity = wanted;
+        next = null;
+        nextFrom = null;
+        rebuild = true;
+      }
     }
     await tx`
       update cfdi_settings set enabled = ${p.enabled}, global_periodicity = ${periodicity},
@@ -450,6 +500,26 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
       before: was,
       after,
     });
+    // A change stored as pending (again, or anew) says why it did not apply at once (CFDIFIX-5).
+    if (
+      deferred &&
+      (before.nextPeriodicity !== next ||
+        before.nextPeriodicityFrom !== nextFrom)
+    )
+      await insertEvent(
+        tx,
+        s.tenantId,
+        null,
+        "periodicity_deferred",
+        {
+          from: effective,
+          to: wanted,
+          nextFrom,
+          reason: deferred,
+          source: "save",
+        },
+        s.employeeId,
+      );
     await cfdiEnqueue(tx, s.tenantId, {
       kind: "cfdi_global",
       dedupeKey: dedupe.tickEnsure(new Date()),

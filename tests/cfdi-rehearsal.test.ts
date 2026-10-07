@@ -1,7 +1,8 @@
 // cfdifix (LD-51): unit checks for the fixes from the real-sandbox CFDI rehearsal. Pure: no
 // database, no network (the Facturapi client runs against a stubbed fetch).
 //   F1 the self-invoicing deadline's global bound per periodicity, and when it prints its time;
-//   F2 when a periodicity change may apply at once;
+//   F2 when a periodicity change may apply at once, and why it waits (CFDIFIX-1: never a
+//      deadline a receipt already printed brought forward);
 //   F3 the stamping issuer facts in the shared sandbox and what the worker publishes of them;
 //   F7 the cancellation acuse's UUIDs;
 //   F12 the issuance tick's key;
@@ -11,6 +12,7 @@ import {
   deadlineShowsTime,
   effectiveSelfInvoiceDeadline,
   globalBuildAt,
+  periodicityChangeBlock,
   periodicityChangeNow,
   type SelfInvoiceGlobalBound,
 } from "../shared/cfdi";
@@ -138,12 +140,31 @@ describe("LD-51 F1: the self-invoicing deadline ends when the ticket's global is
 describe("LD-51 F2: a periodicity change applies at once only on an unshaped month", () => {
   // 7 October 2026, 12:00 local (18:00Z): the business day of 7 Oct runs since 04:00.
   const now = new Date("2026-10-07T18:00:00Z");
-  const change = (o: {
+  type P = "day" | "week" | "fortnight" | "month";
+  const block = (o: {
     hasGlobals?: boolean;
     dates?: string[];
-    from: "day" | "week" | "fortnight" | "month";
-    to: "day" | "week" | "fortnight" | "month";
+    from: P;
+    to: P;
+    policy?: "month" | "days";
+    days?: number;
+    now?: Date;
   }) =>
+    periodicityChangeBlock({
+      hasGlobals: o.hasGlobals ?? false,
+      dates: o.dates ?? [],
+      from: o.from,
+      to: o.to,
+      timezone: TZ,
+      cutoff: 240,
+      selfInvoice: {
+        policy: o.policy ?? "month",
+        days: o.days ?? 30,
+        graceMinutes: 60,
+      },
+      now: o.now ?? now,
+    });
+  const change = (o: Parameters<typeof block>[0]) =>
     periodicityChangeNow({
       hasGlobals: o.hasGlobals ?? false,
       dates: o.dates ?? [],
@@ -151,33 +172,100 @@ describe("LD-51 F2: a periodicity change applies at once only on an unshaped mon
       to: o.to,
       timezone: TZ,
       cutoff: 240,
-      now,
+      selfInvoice: {
+        policy: o.policy ?? "month",
+        days: o.days ?? 30,
+        graceMinutes: 60,
+      },
+      now: o.now ?? now,
     });
 
   it("no global of the month and no ticket: at once, either way", () => {
     expect(change({ from: "month", to: "day" })).toBe(true);
     expect(change({ from: "day", to: "month" })).toBe(true);
+    expect(block({ from: "month", to: "day" })).toBeNull();
   });
   it("a global document of the month (any status): from next month", () => {
     expect(change({ hasGlobals: true, from: "month", to: "day" })).toBe(false);
+    expect(block({ hasGlobals: true, from: "day", to: "month" })).toBe(
+      "globals",
+    );
   });
   it("a ticket of 5 Oct would sit in a daily period due 7 Oct 04:00, already past: from next month", () => {
-    expect(change({ dates: ["2026-10-05"], from: "month", to: "day" })).toBe(
-      false,
+    expect(block({ dates: ["2026-10-05"], from: "month", to: "day" })).toBe(
+      "overdue",
     );
   });
   it("an overdue daily period is never hidden in a monthly one: from next month", () => {
-    expect(change({ dates: ["2026-10-05"], from: "day", to: "month" })).toBe(
-      false,
+    expect(block({ dates: ["2026-10-05"], from: "day", to: "month" })).toBe(
+      "overdue",
     );
   });
-  it("a ticket of yesterday (its daily global due tomorrow 04:00) or today: at once", () => {
+  it("CFDIFIX-1: activated 7 Oct with monthly globals, a sale on 7 Oct, a switch to daily on 8 Oct at 12:00: the receipt printed 31 Oct, the daily global would end it 8 Oct 05:00, so the change waits", () => {
     expect(
-      change({ dates: ["2026-10-06", "2026-10-07"], from: "month", to: "day" }),
+      block({
+        dates: ["2026-10-07"],
+        from: "month",
+        to: "day",
+        now: new Date("2026-10-08T18:00:00Z"),
+      }),
+    ).toBe("deadline");
+  });
+  it("CFDIFIX-1: month → day with yesterday's or today's ticket (no period overdue) brings their deadline forward: from next month", () => {
+    expect(block({ dates: ["2026-10-06"], from: "month", to: "day" })).toBe(
+      "deadline",
+    );
+    expect(block({ dates: ["2026-10-07"], from: "month", to: "day" })).toBe(
+      "deadline",
+    );
+    expect(block({ dates: ["2026-10-06"], from: "month", to: "week" })).toBe(
+      "deadline",
+    );
+    expect(
+      block({ dates: ["2026-10-06"], from: "fortnight", to: "week" }),
+    ).toBe("deadline");
+  });
+  it("CFDIFIX-1: a change that keeps or lengthens every deadline applies at once", () => {
+    expect(
+      change({ dates: ["2026-10-06", "2026-10-07"], from: "day", to: "month" }),
     ).toBe(true);
     expect(
       change({ dates: ["2026-10-06"], from: "week", to: "fortnight" }),
     ).toBe(true);
+    // A one-day policy (7 Oct 23:59) ends before either global: nothing moves.
+    expect(
+      change({
+        dates: ["2026-10-06"],
+        from: "month",
+        to: "fortnight",
+        policy: "days",
+        days: 1,
+      }),
+    ).toBe(true);
+    // ... but a daily global (7 Oct 05:00) would end it earlier.
+    expect(
+      block({
+        dates: ["2026-10-06"],
+        from: "month",
+        to: "day",
+        policy: "days",
+        days: 1,
+      }),
+    ).toBe("deadline");
+  });
+  it("CFDIFIX-1: on the last day of a month a monthly and a daily global of that day close together: today's tickets keep their deadline, an earlier day's does not", () => {
+    const lastDay = new Date("2026-10-31T18:00:00Z");
+    expect(
+      change({ dates: ["2026-10-31"], from: "month", to: "day", now: lastDay }),
+    ).toBe(true);
+    expect(
+      block({
+        dates: ["2026-10-30", "2026-10-31"],
+        from: "month",
+        to: "day",
+        now: lastDay,
+      }),
+    ).toBe("deadline");
   });
 });
 

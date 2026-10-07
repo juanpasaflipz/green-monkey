@@ -26,7 +26,7 @@ import {
   maskEmail,
   maskRfc,
   needsCardForm,
-  periodicityChangeNow,
+  periodicityChangeBlock,
   periodicityOn,
   type CfdiAlertsView,
   type CfdiAttention,
@@ -41,6 +41,7 @@ import {
   type CardForm,
   type GlobalPeriodView,
   type Periodicity,
+  type PeriodicityChangeBlock,
   type PortalDocumentStatus,
   type Receptor,
   type SelfInvoiceGlobalBound,
@@ -1646,25 +1647,33 @@ export async function monthShape(
 }
 
 /**
- * Whether changing to `to` may apply at once (LD-51 F2, shared/cfdi.ts periodicityChangeNow):
- * decided by the web under the settings row lock and checked again by the tick, under the same
- * lock and the period keys, before it rebuilds the month's rows.
+ * Why changing to `to` must wait for next month, or null when it may apply at once (LD-51 F2,
+ * shared/cfdi.ts periodicityChangeBlock): decided by the web under the settings row lock and
+ * checked again by the tick, under the same lock and the period keys, before it rebuilds the
+ * month's rows. `s` carries the periodicity in force today and the self-invoicing policy that
+ * applies after the change; `graceMinutes` is the worker's (published in cfdi_platform).
  */
-export async function periodicityChangeAllowed(
+export async function periodicityChangeBlocked(
   tx: Tx,
   s: SettingsRow,
   to: Periodicity,
   today: string,
   facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  graceMinutes: number,
   now = new Date(),
-): Promise<boolean> {
+): Promise<PeriodicityChangeBlock | null> {
   const shape = await monthShape(tx, s, today);
-  return periodicityChangeNow({
+  return periodicityChangeBlock({
     ...shape,
     from: periodicityOn(today, s),
     to,
     timezone: facts.timezone,
     cutoff: facts.cutoff,
+    selfInvoice: {
+      policy: s.selfInvoicePolicy,
+      days: s.selfInvoiceDays,
+      graceMinutes,
+    },
     now,
   });
 }

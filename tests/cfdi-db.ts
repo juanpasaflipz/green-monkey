@@ -4945,13 +4945,49 @@ try {
           "the receipt's bound follows",
         );
       }
-    // A daily global ends self-invoicing at the close of the business day + 60 min.
-    await saveSettings(F, {
+    // CFDIFIX-1: the ticket was sold (and its receipt printed) under the monthly global; a switch
+    // back to daily would end its self-invoicing at tomorrow's 05:00, before the printed date, so
+    // it waits for next month and the portal keeps answering the printed deadline. On the last
+    // day of a month a monthly and a daily global of that day close together: nothing moves and
+    // the change applies at once.
+    const printed = expectedWindow(tk.businessDate, "month", "days", 3);
+    const daily = expectedWindow(tk.businessDate, "day", "days", 3);
+    const lastDay =
+      globalPeriodFor(tk.businessDate, "month").to === tk.businessDate;
+    assert.equal(daily.at < printed.at, !lastDay, "the daily bound is earlier");
+    const back = await saveSettings(F, {
       globalPeriodicity: "day",
       selfInvoicePolicy: "days",
       selfInvoiceDays: 3,
     });
-    assert.equal((await portalWindow(tk)).bound, "global");
+    if (lastDay)
+      assert.equal(back.settings?.globalPeriodicity, "day", "the last day");
+    else {
+      assert.deepEqual(
+        [
+          back.settings?.globalPeriodicity,
+          back.settings?.nextPeriodicity,
+          back.settings?.nextPeriodicityFrom,
+        ],
+        ["month", "day", firstOfNextMonth(today())],
+        "the change waits for next month",
+      );
+      assert.equal(back.settings?.periodicityDeferred?.reason, "deadline");
+      assert.equal(back.settings?.periodicityDeferred?.source, "save");
+      for (const moment of ["after the save", "after a tick"]) {
+        const got = await portalWindow(tk);
+        assert.equal(Date.parse(got.deadline!), printed.at, moment);
+        assert.equal(got.bound, printed.bound, moment);
+        assert.equal(got.eligibility, "available", moment);
+        await tick(F);
+      }
+      assert.equal(
+        (await web(F, (tx) => service.getStatus(tx, F.cashier))).selfInvoice
+          ?.globalBound?.globalPeriodicity,
+        "month",
+        "the receipt keeps printing the monthly bound this month",
+      );
+    }
     // With the portal's global reissue on, the policy alone.
     await saveSettings(F, { portalReissueGlobal: true });
     const reissue = await portalWindow(tk);
@@ -4987,21 +5023,33 @@ try {
     );
   });
 
-  await test("LD-51 F2. activation takes the periodicity; a change applies at once while the month has no global and no overdue ticket, and the tick rebuilds the month's rows (036: only the worker deletes, only rows no document used); a month shaped between the save and the tick defers the change to next month; a change that would put a ticket in an overdue period waits", async () => {
+  await test("LD-51 F2. activation takes the periodicity; a change applies at once while the month has no global, no overdue ticket and no unclaimed ticket whose self-invoicing deadline it brings forward (CFDIFIX-1), and the tick rebuilds the month's rows (036: only the worker deletes, only rows no document used); a month shaped between the save and the tick, or a ticket sold meanwhile whose deadline the change would bring forward, defers the change to next month; a change that would put a ticket in an overdue period waits; the panel says why (CFDIFIX-5)", async () => {
     const M = await makeTenant("periodicity F2");
     const view = await activate(M, { periodicity: "month" });
     assert.equal(view.settings?.globalPeriodicity, "month");
+    assert.equal(view.businessDate, today(), "the server's business date");
     const monthKey = "M" + today().slice(0, 7);
-    const rows = async () =>
+    const rows = async (t: Fixture = M) =>
       (
         await admin`select period_key, periodicity from cfdi_global_periods
-          where tenant_id = ${M.tenantId} order by date_from`
+          where tenant_id = ${t.tenantId} order by date_from`
       ).map((r) => [r.period_key as string, r.periodicity as string]);
+    const deferral = async (t: Fixture) =>
+      (
+        await admin`select detail, actor_id from cfdi_events where tenant_id = ${t.tenantId}
+          and kind = 'periodicity_deferred' order by created_at desc limit 1`
+      )[0];
+    const pending = (v: Awaited<ReturnType<typeof saveSettings>>) => [
+      v.settings?.globalPeriodicity,
+      v.settings?.nextPeriodicity,
+      v.settings?.nextPeriodicityFrom,
+    ];
     assert.deepEqual(await rows(), [[monthKey, "month"]]);
-    await makeTicket(M);
+    // No ticket of the month yet: the switch to daily applies at once.
     const now = await saveSettings(M, { globalPeriodicity: "day" });
     assert.equal(now.settings?.globalPeriodicity, "day", "applies at once");
     assert.equal(now.settings?.nextPeriodicity, null);
+    assert.equal(now.settings?.periodicityDeferred, null);
     const [own] = await admin`
       select dedupe_key from jobs where tenant_id = ${M.tenantId} and kind = 'cfdi_global'
         and dedupe_key like 'tick:periodicity:%'`;
@@ -5015,6 +5063,8 @@ try {
       to: "day",
       periods: [monthKey],
     });
+    // Sold under the daily global.
+    await makeTicket(M);
     // 036's guard: the runtime role never deletes a period row; the worker only one no document
     // used (A's closed days hold globals); TRUNCATE stays refused.
     await assert.rejects(
@@ -5046,7 +5096,8 @@ try {
       .catch((e) => {
         if (!(e instanceof Rollback)) throw e;
       });
-    // Saved at once, but the month got a global before the tick ran: the tick defers the change.
+    // Back to monthly only lengthens the ticket's deadline: at once. But the month got a global
+    // before the tick ran: the tick defers the change, and the panel says why.
     const back = await saveSettings(M, { globalPeriodicity: "month" });
     assert.equal(back.settings?.globalPeriodicity, "month");
     await claimCurrentMonth(M);
@@ -5062,25 +5113,129 @@ try {
       ["day", "month", firstOfNextMonth(today())],
     );
     assert.deepEqual(await rows(), [["D" + today(), "day"]]);
-    const [later] = await admin`
-      select detail from cfdi_events where tenant_id = ${M.tenantId} and kind = 'periodicity_deferred'`;
-    assert.deepEqual(later.detail, { from: "day", to: "month" });
-    // A ticket two days ago in a monthly month: a daily period for it is already past its
-    // 24 hours (RMF 2.7.1.21), so switching to daily now waits for next month. Needs a month that
-    // is at least three days old.
+    const later = await deferral(M);
+    assert.deepEqual(later.detail, {
+      from: "day",
+      to: "month",
+      nextFrom: firstOfNextMonth(today()),
+      reason: "globals",
+      source: "tick",
+    });
+    assert.equal(later.actor_id, null);
+    assert.deepEqual(
+      { ...deferred.periodicityDeferred, at: undefined },
+      {
+        at: undefined,
+        from: "day",
+        to: "month",
+        nextFrom: firstOfNextMonth(today()),
+        reason: "globals",
+        source: "tick",
+      },
+    );
+    // Choosing again (the periodicity in force) clears the pending change and its reason.
+    const again = await saveSettings(M, { globalPeriodicity: "day" });
+    assert.deepEqual(pending(again), ["day", null, null]);
+    assert.equal(again.settings?.periodicityDeferred, null);
+
+    // CFDIFIX-1, the review's case: activated with monthly globals, a ticket of an earlier day of
+    // the month (yesterday; today on the 1st), then a switch to daily. The ticket's receipt printed
+    // the month's deadline; a daily global would end it at that day's close + 60 min (already
+    // past, or tomorrow's 05:00), so the change waits for next month and the portal still answers
+    // the printed deadline.
+    const firstDay = today().slice(8, 10) === "01";
+    const earlier = firstDay ? today() : daysAgo(1);
+    const P = await makeTenant("periodicity F2 deadline");
+    await activate(P, {
+      testFrom: today().slice(0, 8) + "01",
+      periodicity: "month",
+    });
+    const sold = await makeTicket(P, { businessDate: earlier });
+    const printed = expectedWindow(earlier, "month", "month", 30);
+    assert.ok(
+      expectedWindow(earlier, "day", "month", 30).at < printed.at,
+      "a daily global would end it earlier",
+    );
+    const waits = await saveSettings(P, { globalPeriodicity: "day" });
+    assert.deepEqual(pending(waits), [
+      "month",
+      "day",
+      firstOfNextMonth(today()),
+    ]);
+    assert.equal(waits.settings?.periodicityDeferred?.reason, "deadline");
+    assert.equal(waits.settings?.periodicityDeferred?.source, "save");
+    assert.equal((await deferral(P)).actor_id, P.owner.employeeId);
+    await settle(P.tenantId);
+    assert.deepEqual(await rows(P), [[monthKey, "month"]], "no rebuild");
+    const answer = await portalWindow(sold);
+    assert.equal(Date.parse(answer.deadline!), printed.at);
+    assert.equal(answer.eligibility, "available");
+    // The same switch with the portal's global reissue on (or self-invoicing off) waits too: a
+    // receipt printed while it was off keeps its date if it is turned off again.
+    const reissue = await saveSettings(P, {
+      globalPeriodicity: "day",
+      portalReissueGlobal: true,
+    });
+    assert.deepEqual(pending(reissue), [
+      "month",
+      "day",
+      firstOfNextMonth(today()),
+    ]);
+    const off = await saveSettings(P, {
+      globalPeriodicity: "day",
+      portalReissueGlobal: false,
+      selfInvoiceEnabled: false,
+    });
+    assert.deepEqual(pending(off), ["month", "day", firstOfNextMonth(today())]);
+
+    // CFDIFIX-1 in the tick: the switch applied at once (no ticket yet), but a ticket was sold
+    // before the rebuild tick ran (a terminal that had not refreshed printed the month's
+    // deadline): the tick defers the change for the same reason.
+    const Q = await makeTenant("periodicity F2 tick");
+    await activate(Q, {
+      testFrom: today().slice(0, 8) + "01",
+      periodicity: "month",
+    });
+    const atOnce = await saveSettings(Q, { globalPeriodicity: "day" });
+    assert.equal(atOnce.settings?.globalPeriodicity, "day");
+    const lastDay = globalPeriodFor(today(), "month").to === today();
+    await makeTicket(Q, { businessDate: lastDay ? daysAgo(1) : today() });
+    await settle(Q.tenantId);
+    const tickDeferred = (
+      await web(Q, (tx) => service.getSettings(tx, Q.owner))
+    ).settings!;
+    assert.deepEqual(
+      [
+        tickDeferred.globalPeriodicity,
+        tickDeferred.nextPeriodicity,
+        tickDeferred.nextPeriodicityFrom,
+      ],
+      ["month", "day", firstOfNextMonth(today())],
+    );
+    assert.equal(tickDeferred.periodicityDeferred?.reason, "deadline");
+    assert.equal(tickDeferred.periodicityDeferred?.source, "tick");
+    assert.deepEqual(await rows(Q), [[monthKey, "month"]]);
+
+    // A ticket two days ago in a daily month: its daily period is already past its 24 hours
+    // (RMF 2.7.1.21), so even switching to monthly (which only lengthens deadlines) waits for next
+    // month: the overdue period is never hidden. Needs a month that is at least three days old.
     if (Number(today().slice(8, 10)) >= 3) {
       const O = await makeTenant("periodicity F2 overdue");
       await activate(O, {
         testFrom: today().slice(0, 8) + "01",
-        periodicity: "month",
+        periodicity: "day",
       });
       await makeTicket(O, { businessDate: daysAgo(2) });
-      const waits = await saveSettings(O, { globalPeriodicity: "day" });
-      assert.equal(waits.settings?.globalPeriodicity, "month");
-      assert.equal(waits.settings?.nextPeriodicity, "day");
+      const overdue = await saveSettings(O, { globalPeriodicity: "month" });
+      assert.deepEqual(pending(overdue), [
+        "day",
+        "month",
+        firstOfNextMonth(today()),
+      ]);
+      assert.equal(overdue.settings?.periodicityDeferred?.reason, "overdue");
     } else
       console.log(
-        "  (F2: the overdue-ticket leg needs day 3 of a month or later; covered in tests/cfdi-shared.test.ts)",
+        "  (F2: the overdue-ticket leg needs day 3 of a month or later; covered in tests/cfdi-rehearsal.test.ts)",
       );
   });
 
