@@ -98,12 +98,13 @@ opciones cambian según el fabricante y el sistema; consulta el manual del contr
 
 ### 1.3 Imprimir sin diálogo (modo kiosco) según el navegador
 
-En «Cocina», la ventana «Impresión» dice: «Para imprimir sin diálogo, sigue los pasos de
-impresión del manual del piloto.» (en inglés: «To print without a dialog, follow the
-printing steps in the pilot manual.»). El manual del piloto es esta guía y esos pasos son
-los de esta sección. La app ya no recomienda abrir Chrome con impresión de kiosco: ninguna
-documentación oficial que consultamos lo confirma (LD-17; se volvió a consultar la
-documentación de políticas de Chrome Enterprise y la de Chromium el 6 de octubre de 2026).
+En «Cocina», la ventana «Impresión» dice: «La impresión sin diálogo no está confirmada;
+sigue los pasos de impresión del manual del piloto.» (en inglés: «Printing without a dialog
+is not confirmed; follow the printing steps in the pilot manual.»). El manual del piloto es
+esta guía y esos pasos son los de esta sección. La app ya no recomienda abrir Chrome con
+impresión de kiosco: ninguna documentación oficial que consultamos lo confirma (LD-17; se
+volvió a consultar la documentación de políticas de Chrome Enterprise y la de Chromium el 6
+de octubre de 2026).
 
 **Hoy no existe una forma confirmada de imprimir sin diálogo.** Con los pasos siguientes,
 el diálogo del navegador aparece en cada recibo, cuenta y comanda.

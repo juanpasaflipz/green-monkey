@@ -53,15 +53,30 @@ describe("copy that sends staff to the pilot manual (LD-17)", () => {
 
   it("the silent-print hint points to the pilot manual's print steps, not to an unconfirmed Chrome flag", () => {
     expect(strings.es.servicePrintSilentHint).toBe(
-      "Para imprimir sin diálogo, sigue los pasos de impresión del manual del piloto.",
+      "La impresión sin diálogo no está confirmada; sigue los pasos de impresión del manual del piloto.",
     );
     expect(strings.en.servicePrintSilentHint).toBe(
-      "To print without a dialog, follow the printing steps in the pilot manual.",
+      "Printing without a dialog is not confirmed; follow the printing steps in the pilot manual.",
     );
     for (const locale of ["es", "en"] as const)
       expect(strings[locale].servicePrintSilentHint).not.toMatch(
         /kiosk|kiosco|chrome/i,
       );
+  });
+
+  it("the hint never promises a dialog-free route that the manual says does not exist (POL-R2-1)", () => {
+    // PILOT_SOP §1.3: no confirmed way to print without a dialog today.
+    expect(pilotSop).toContain(
+      "Hoy no existe una forma confirmada de imprimir sin diálogo.",
+    );
+    expect(strings.es.servicePrintSilentHint).toMatch(/no está confirmada/);
+    expect(strings.en.servicePrintSilentHint).toMatch(/is not confirmed/);
+    expect(strings.es.servicePrintSilentHint).not.toMatch(
+      /^Para imprimir sin diálogo/,
+    );
+    expect(strings.en.servicePrintSilentHint).not.toMatch(
+      /^To print without a dialog/,
+    );
   });
 
   it("PILOT_SOP's printing section quotes the hint the app shows", () => {

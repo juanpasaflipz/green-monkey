@@ -374,9 +374,9 @@ the drawer is open.
   Chromium with `--kiosk-printing` with the thermal printer as the OS default
   printer as working on Windows, and say macOS and Android always show the
   print dialog; none of this has been verified here. The KDS "Impresión"
-  dialog's hint therefore points staff to the pilot manual's print steps
-  ([PILOT_SOP §1.3](PILOT_SOP.md)), which count on the dialog at every print
-  (LD-17).
+  dialog's hint therefore says printing without a dialog is not confirmed and
+  points staff to the pilot manual's print steps ([PILOT_SOP §1.3](PILOT_SOP.md)),
+  which count on the dialog at every print (LD-17).
 - Browser printing never confirms that paper came out.
 - Kitchen cancellation chits (reports 029): a KDS with auto-print and a selling device
   that prints on send also print "CANCELACIÓN · NO PREPARAR" after a void, per round and
