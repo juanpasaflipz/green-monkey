@@ -28,10 +28,11 @@ import { persistenceStatus } from "../storage-persistence";
 import { serviceWorkerSupported } from "../service-worker";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";
-import { translateError } from "../i18n";
+import { errorNotice } from "../i18n";
+import { currentBusinessDate, orderNumberText } from "../labels";
 import { ArchiveRecordForm } from "./offline/ArchiveRecordForm";
 import { OfflineTableServiceSetting } from "./offline/OfflineTableServiceSetting";
-import { clockTime, rowErrorCode, translator } from "./offline/format";
+import { clockTime, rowErrorNotice, translator } from "./offline/format";
 import {
   OfflineReviewPanel,
   type OfflineReviewDetail,
@@ -147,7 +148,7 @@ export function RecoveryQueue({
         );
         setAttempts(value.attempts);
       },
-      error: (e: Error) => setError(translateError(e.message, locale)),
+      error: (e: Error) => setError(errorNotice(e, locale)),
     });
     return () => subscription.unsubscribe();
   }, [visible]);
@@ -164,9 +165,7 @@ export function RecoveryQueue({
   useEffect(() => {
     if (!manager || !net.canUseServer) return;
     const refresh = () =>
-      void loadServer().catch((e: Error) =>
-        setError(translateError(e.message, locale)),
-      );
+      void loadServer().catch((e: Error) => setError(errorNotice(e, locale)));
     refresh();
     const timer = setInterval(() => {
       if (document.visibilityState === "visible") refresh();
@@ -192,7 +191,7 @@ export function RecoveryQueue({
       await fn();
       if (net.canUseServer) await loadServer().catch(() => {});
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -492,7 +491,16 @@ export function RecoveryQueue({
               {kindLabel(row)} ·{" "}
               {number ??
                 (row.context?.orderNumber
-                  ? `#${row.context.orderNumber}`
+                  ? // LD-29: a cached order from another business day names its date.
+                    "#" +
+                    orderNumberText(
+                      {
+                        number: row.context.orderNumber,
+                        businessDate: row.context.businessDate,
+                      },
+                      currentBusinessDate(session.restaurant),
+                      locale,
+                    )
                   : row.id.slice(0, 8))}{" "}
               · {format(amountOf(row), currencyOf(row))}
             </h3>
@@ -535,9 +543,7 @@ export function RecoveryQueue({
                   })}`
                 : ""}
             </p>
-            {row.error && (
-              <p>{translateError(rowErrorCode(row.error, kind), locale)}</p>
-            )}
+            {row.error && <p>{rowErrorNotice(row, kind, locale)}</p>}
             {/* OFFLINE-RECOVERY-04: only its own employee's session sends it. */}
             {!isResolved(row) && row.scope !== scope(session) && (
               <p className="muted tiny">{t("offlineRowOtherEmployee")}</p>

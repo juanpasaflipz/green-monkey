@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Locale } from "../../shared/domain";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice, translateError } from "../i18n";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";
 import { finishPendingLogout } from "../access/session";
@@ -37,10 +37,9 @@ export function PairDevice({
           } catch (err) {
             const message = (err as Error).message;
             setError(
-              translateError(
-                message === "invalid_input" ? "pairing_code_invalid" : message,
-                locale,
-              ),
+              message === "invalid_input"
+                ? translateError("pairing_code_invalid", locale)
+                : errorNotice(err, locale),
             );
           } finally {
             setBusy(false);

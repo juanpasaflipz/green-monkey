@@ -27,6 +27,13 @@ export type Pending = {
   attempts: number;
   nextAt: number;
   error?: string;
+  /**
+   * The last failed attempt's HTTP status and server request id (LD-48, POLISH-OFFLINE-4):
+   * Sincronización shows the "Referencia de soporte" for a 5xx or an unexpected 4xx, as
+   * every other screen does (supportReferenceOf). Cleared once the row resolves.
+   */
+  errorStatus?: number;
+  requestId?: string;
   result?: any;
   kind?: OfflineRecordKind;
   sequence?: number;
@@ -37,6 +44,8 @@ export type Pending = {
   /** Local display context of a cached server order (never sent). */
   context?: {
     orderNumber?: number;
+    /** The cached server order's business day, to date its number (LD-29). */
+    businessDate?: string | null;
     mode?: string;
     tableName?: string | null;
     name?: string;

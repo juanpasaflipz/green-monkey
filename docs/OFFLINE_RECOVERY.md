@@ -135,6 +135,10 @@ server balance at sync (for example because the table was paid on another device
 after the last refresh) is refused and shown for review; it is never partially
 applied. Local orders are only changed through offline records, even after the
 connection returns; once their record syncs, selling continues on the server order.
+A round parked in Borradores for a local order (switching to another order with
+unsent items) resumes onto that local order, online or offline, and after its record
+syncs onto the server order the sync recorded (LD-13 addendum; [Service, "Parked
+carts"](SERVICE.md#parked-carts)).
 
 What this does and does not guarantee about charging twice, or too little:
 
@@ -223,7 +227,7 @@ time for reprints.
 A provisional number is never a fiscal folio (LD-12). The local receipt prints the
 issuer data from the fiscal context cached on the device (Dexie
 `{tenantId}:fiscal-context`, refreshed at every sign-in and when the window
-regains focus after a minute) and "Folio fiscal pendiente: se asigna al
+regains focus after a minute) and "Folio pendiente: se asigna al
 sincronizar." (a partial local payment says the folio comes when the check is
 settled). The server assigns the consecutive folio when the sale syncs (or when a
 manager reconciles it), with the sale's business date; order history and reprints
@@ -311,8 +315,9 @@ Retry policy:
 
 - Transient failures (network, timeout, 5xx, non-JSON, 429, database unavailable,
   contention the server gave up retrying (`concurrent_update`), a JSON 404 from a
-  server rolled back to a build without the sync endpoint, a device clock slightly
-  ahead, a dependency still queued) are retried forever
+  server rolled back to a build without the sync endpoint, a body that did not
+  arrive intact (`request_aborted`, `request_size_invalid`: no handler ran, LD-48),
+  a device clock slightly ahead, a dependency still queued) are retried forever
   with jittered backoff capped at 60 s. They never become conflicts themselves,
   and they never turn a later record into one: while a record waits on a
   transient answer (or its backoff), every later record of the same order waits
@@ -663,8 +668,9 @@ TEST_BASE_URL=http://127.0.0.1:<port> TEST_PRODUCTION=1 npx playwright test
   10 s / 30 s lane cadence; another test signs in with manual offline mode on.
 
 Not verified, and still release gates: real tablets (iPad Safari and installed app,
-Android Chrome), real thermal printers through the browser dialog and
-`--kiosk-printing`, a real ISP outage on restaurant Wi-Fi, and staging proof of a
+Android Chrome), real thermal printers through the browser dialog (and, only if the
+owner tries it, the unconfirmed `--kiosk-printing` start option, [PILOT_SOP
+§1.3](PILOT_SOP.md)), a real ISP outage on restaurant Wi-Fi, and staging proof of a
 service-worker update between two deployed builds.
 
 ## Earlier recovery slice (September 2026)

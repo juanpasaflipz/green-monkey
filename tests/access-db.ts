@@ -2141,9 +2141,13 @@ try {
       await rowLocked;
       const again = pin(terminal, cashierId, CASHIER_PIN, first.cookie);
       let waiting = false;
+      // pg_locks spans the whole cluster: count this database's waiters only (other worktrees'
+      // suites share the local server, LD-40). A row-lock waiter waits on a transactionid, whose
+      // pg_locks.database is NULL, so filter on the waiting backend's database (as menu-db does).
       for (let i = 0; i < 100 && !waiting; i++) {
-        const [w] =
-          await admin`select count(*)::int as n from pg_locks where not granted`;
+        const [w] = await admin`select count(*)::int as n from pg_locks l
+          join pg_stat_activity s on s.pid=l.pid
+          where not l.granted and s.datname=current_database()`;
         waiting = w.n > 0;
         if (!waiting) await new Promise((resolve) => setTimeout(resolve, 50));
       }

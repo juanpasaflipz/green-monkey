@@ -14,8 +14,8 @@ import {
   type KitchenRound,
 } from "../../shared/service";
 import { api } from "../api";
-import { strings, translateError, type Key } from "../i18n";
-import { channelLabel } from "../labels";
+import { strings, errorNotice, type Key } from "../i18n";
+import { channelLabel, orderNumberLabel, orderNumberText } from "../labels";
 import { Badge, Button, Empty, Modal } from "../components/ui";
 import { usePoll, useStoredState } from "../serviceHooks";
 import { PrintSettingsDialog, printDocument, usePrintSettings } from "../print";
@@ -170,17 +170,25 @@ export function Kitchen({
       newVoidIds,
     } = kdsChanges(seen.current, r);
     seen.current = shown;
+    // LD-29: a ticket of another business day is announced with its date, as
+    // its header reads ("#10 · 5 oct"), so two "#10" never sound alike.
+    const ticket = (x: KitchenRound) =>
+      orderNumberText(
+        { number: x.orderNumber, businessDate: x.businessDate },
+        r.currentBusinessDate,
+        locale,
+      );
     const messages = [
       ...fresh.map((x) =>
         t("serviceKdsAnnounce")
-          .replace("{n}", String(x.orderNumber))
+          .replace("{n}", ticket(x))
           .replace("{r}", String(x.roundNumber)),
       ),
       ...noted.map((x) =>
-        t("serviceKdsNoteAnnounce").replace("{n}", String(x.orderNumber)),
+        t("serviceKdsNoteAnnounce").replace("{n}", ticket(x)),
       ),
       ...voided.map((x) =>
-        t("serviceKdsVoidAnnounce").replace("{n}", String(x.orderNumber)),
+        t("serviceKdsVoidAnnounce").replace("{n}", ticket(x)),
       ),
     ];
     if (messages.length) setAnnouncement(messages.join(". "));
@@ -200,7 +208,10 @@ export function Kitchen({
           alerted.map((x) => (
             <KitchenTicketDocument
               key={x.id}
-              ticket={ticketFromKitchenRound(x)}
+              ticket={ticketFromKitchenRound(x, {
+                today: r.currentBusinessDate,
+                locale,
+              })}
               locale={locale}
               timezone={zone}
             />
@@ -212,7 +223,10 @@ export function Kitchen({
     // reports (029): a cook working from paper gets a cancellation chit per round.
     if (settingsRef.current.kdsAutoPrint && voided.length)
       void printCancellations(
-        cancellationsFromKitchenRounds(voided, newVoidIds),
+        cancellationsFromKitchenRounds(voided, newVoidIds, {
+          today: r.currentBusinessDate,
+          locale,
+        }),
         locale,
         zone,
         settingsRef.current.paper,
@@ -337,7 +351,7 @@ export function Kitchen({
       }
       setActionError("");
     } catch (e) {
-      setActionError(translateError((e as Error).message, locale));
+      setActionError(errorNotice(e, locale));
     } finally {
       busyRef.current.delete(id);
       setBusyIds(new Set(busyRef.current));
@@ -379,7 +393,10 @@ export function Kitchen({
   const print = (r: KitchenRound) =>
     void printDocument(
       <KitchenTicketDocument
-        ticket={ticketFromKitchenRound(r)}
+        ticket={ticketFromKitchenRound(r, {
+          today: feed?.currentBusinessDate,
+          locale,
+        })}
         locale={locale}
         timezone={zone}
       />,
@@ -511,7 +528,12 @@ export function Kitchen({
               <header>
                 <div>
                   <h2>
-                    #{r.orderNumber} <span>{r.callName}</span>
+                    {orderNumberLabel(
+                      { number: r.orderNumber, businessDate: r.businessDate },
+                      feed?.currentBusinessDate,
+                      locale,
+                    )}{" "}
+                    <span>{r.callName}</span>
                   </h2>
                   <span>
                     {t("round")} {r.roundNumber} · {t(r.mode as Key)}

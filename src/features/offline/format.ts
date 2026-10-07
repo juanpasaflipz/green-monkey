@@ -4,7 +4,14 @@ import {
   type OfflineRecord,
   type OfflineRecordKind,
 } from "../../../shared/offline-recovery";
-import { strings, type Key } from "../../i18n";
+import {
+  strings,
+  translateError,
+  withSupportReference,
+  type Key,
+} from "../../i18n";
+import { orderNumberText, withBusinessDay } from "../../labels";
+import type { ParkedOrderRef, ParkedOrderTarget } from "../../offline-records";
 
 /** Replaces {name} placeholders in a translated string. */
 export function fmt(text: string, vars: Record<string, string | number>) {
@@ -36,17 +43,106 @@ export function clockTime(
 /**
  * How an order is named on screen and on receipts (§2.4): "B-07" while only
  * the device knows it, "B-07 → #142" once the server numbered an order that
- * began offline, and "#142" otherwise.
+ * began offline, and "#142" otherwise. Given the current business date (and
+ * the locale), an order from another business day also names its date:
+ * "#142 · 5 oct" (LD-29), and "B-07 · 5 oct" for a provisional number, which
+ * restarts every business day too (LD-48).
  */
-export function orderLabel(order: {
-  number: number;
-  id: string;
-  offline?: { provisionalNumber?: string | null } | null;
-}): string {
+export function orderLabel(
+  order: {
+    number: number;
+    id: string;
+    businessDate?: string | null;
+    offline?: { provisionalNumber?: string | null } | null;
+  },
+  today?: string | null,
+  locale: Locale = "es",
+): string {
   const provisional = order.offline?.provisionalNumber ?? null;
-  if (provisional && order.number) return `${provisional} → #${order.number}`;
-  if (provisional) return provisional;
-  return "#" + (order.number || order.id.slice(0, 8));
+  const number = order.number
+    ? "#" + orderNumberText(order, today, locale)
+    : null;
+  if (provisional && number) return `${provisional} → ${number}`;
+  if (provisional)
+    return withBusinessDay(provisional, order.businessDate, today, locale);
+  return number ?? "#" + order.id.slice(0, 8);
+}
+
+/**
+ * How Borradores names the order a parked round belongs to (LD-13 addendum):
+ * as staff know it from the local projection or this device's cached copy
+ * ("B-07", "B-07 → #142", "#12"); for a local order that synced with no cached
+ * copy (for example closed online), from its record ("B-07 → #142"); else the
+ * number (and business date, "#12 · 5 oct", LD-29) stored when the round was
+ * parked, or rewritten when its local order resolved to its server order
+ * ("B-07 → #142", POL-R2-3). Null when nothing names it (a new order's
+ * draft, or a local order that is gone).
+ */
+export function parkedOrderLabel(
+  where: ParkedOrderTarget | null,
+  stored: Pick<
+    ParkedOrderRef,
+    "number" | "businessDate" | "provisionalNumber"
+  > | null,
+  today: string | null | undefined,
+  locale: Locale,
+): string | null {
+  if (where?.kind === "local") return orderLabel(where.order, today, locale);
+  if (where?.kind === "server") {
+    if (where.cached) return orderLabel(where.cached, today, locale);
+    const synced = where.synced;
+    if (synced && (synced.provisionalNumber || synced.number))
+      return orderLabel(
+        {
+          id: where.orderId,
+          number: synced.number ?? 0,
+          businessDate: synced.businessDate ?? null,
+          offline: { provisionalNumber: synced.provisionalNumber },
+        },
+        today,
+        locale,
+      );
+  }
+  if (stored?.provisionalNumber)
+    return orderLabel(
+      {
+        id: "",
+        number: stored.number,
+        businessDate: stored.businessDate,
+        offline: { provisionalNumber: stored.provisionalNumber },
+      },
+      today,
+      locale,
+    );
+  return stored?.number ? "#" + orderNumberText(stored, today, locale) : null;
+}
+
+/**
+ * How the kitchen's offline review lane names a held round's order: "#46", or
+ * "B-07 → #46" for one that began as a local order, dated like the KDS when the order
+ * is from another business day ("#46 · 5 oct", LD-48): an offline sale synced after
+ * the cutoff continues the numbers of the day it was sold.
+ */
+export function offlineReviewOrderLabel(
+  item: {
+    orderNumber: number;
+    provisionalNumber: string | null;
+    businessDate?: string | null;
+  },
+  today: string | null | undefined,
+  locale: Locale,
+): string {
+  const number = orderNumberText(
+    { number: item.orderNumber, businessDate: item.businessDate },
+    today,
+    locale,
+  );
+  return item.provisionalNumber
+    ? fmt(strings[locale].offlineMapped, {
+        provisional: item.provisionalNumber,
+        number,
+      })
+    : "#" + number;
 }
 
 /** True while only this device knows the order's number (the hint applies). */
@@ -90,6 +186,32 @@ export function rowErrorCode(code: string, kind: OfflineRecordKind): string {
   if (code === "offline_catalog_changed" && !money)
     return "offline_why_catalog_items";
   return code;
+}
+
+/**
+ * A Sync row's error as Sincronización shows it: rowErrorCode's explanation, followed by
+ * the "Referencia de soporte" while the row is unresolved and its last attempt failed on
+ * the server (a 5xx) or with an unexpected 4xx (supportReferenceOf), so a manager can read
+ * it out to support like on every other screen (LD-48, POLISH-OFFLINE-4).
+ */
+export function rowErrorNotice(
+  row: {
+    status: string;
+    error?: string;
+    errorStatus?: number;
+    requestId?: string;
+  },
+  kind: OfflineRecordKind,
+  locale: Locale,
+): string {
+  const code = row.error ?? "";
+  const text = translateError(rowErrorCode(code, kind), locale);
+  if (row.status === "synced" || row.status === "archived") return text;
+  return withSupportReference(
+    text,
+    { message: code, status: row.errorStatus, requestId: row.requestId },
+    locale,
+  );
 }
 
 /**

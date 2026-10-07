@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice } from "../i18n";
 type Selection = {
   /** account (031): auto follows drawer openers; manual is the owner's pin. */
   mode?: "auto" | "manual";
@@ -42,7 +42,7 @@ export function FreeSelection({ locale }: { locale: Locale }) {
       window.dispatchEvent(new Event("gm-session-refresh"));
     } catch (e) {
       const code = (e as Error).message;
-      if (code !== "step_up_cancelled") setError(translateError(code, locale));
+      if (code !== "step_up_cancelled") setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -55,7 +55,7 @@ export function FreeSelection({ locale }: { locale: Locale }) {
   useEffect(() => {
     void api<Selection>("/plan/selection")
       .then(apply)
-      .catch((e) => setError(translateError(e.message, locale)));
+      .catch((e) => setError(errorNotice(e, locale)));
   }, []);
   return (
     <section className="panel">
@@ -91,7 +91,7 @@ export function FreeSelection({ locale }: { locale: Locale }) {
               setSaved(true);
               window.dispatchEvent(new Event("gm-session-refresh"));
             } catch (e) {
-              setError(translateError((e as Error).message, locale));
+              setError(errorNotice(e, locale));
             } finally {
               setBusy(false);
             }

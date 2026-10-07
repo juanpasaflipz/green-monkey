@@ -273,15 +273,13 @@ describe("the fiscal blocks of the printed ticket", () => {
     expect(partial).not.toContain("Base IVA");
     expect(
       render({ fiscal: { ticket: null, provisional, refunds: [] } }),
-    ).toContain(
-      "Sin folio fiscal. Un gerente puede emitir los tickets faltantes en Configuración.",
-    );
+    ).toContain("Ticket sin folio.");
     expect(
       render(
         { state: "local", fiscal: undefined },
         { kind: "local", label: "Número provisional A-01" },
       ),
-    ).toContain("Folio fiscal pendiente: se asigna al sincronizar.");
+    ).toContain("Folio pendiente: se asigna al sincronizar.");
     const check = render(
       { paid: 0, fiscal: { ticket: null, provisional, refunds: [] } },
       { kind: "check" },
@@ -300,7 +298,31 @@ describe("the fiscal blocks of the printed ticket", () => {
     expect(partial).toContain(
       "Comprobante de pago parcial. El ticket con folio se emite al liquidar la cuenta.",
     );
-    expect(partial).not.toContain("Folio fiscal pendiente");
+    expect(partial).not.toContain("Folio pendiente");
+  });
+
+  it("FISCAL-UI-7 (LD-34 Q17): customer paper never says 'folio fiscal' (the CFDI UUID) nor carries a staff instruction", () => {
+    const noFolio = {
+      fiscal: { ticket: null, provisional: summary, refunds: [] },
+    };
+    const local = [
+      { state: "local" as const, fiscal: undefined },
+      { kind: "local" as const, label: "Número provisional A-01" },
+    ] as const;
+    const es = [render(noFolio), render(local[0], local[1])];
+    expect(es[0]).toContain("Ticket sin folio.");
+    expect(es[1]).toContain("Folio pendiente: se asigna al sincronizar.");
+    const en = [
+      render(noFolio, { locale: "en" }),
+      render(local[0], { ...local[1], locale: "en" }),
+    ];
+    expect(en[0]).toContain("Ticket without folio.");
+    expect(en[1]).toContain("Folio pending: assigned when synced.");
+    for (const text of [...es, ...en]) {
+      expect(text.toLowerCase()).not.toContain("folio fiscal");
+      expect(text).not.toContain("Configuración");
+      expect(text).not.toContain("Settings");
+    }
   });
 
   it("FISCAL-OFFLINE-1: a synced offline sale's ticket names its provisional number and sale time; the local receipt does not repeat it", () => {

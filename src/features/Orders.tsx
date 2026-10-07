@@ -8,8 +8,8 @@ import {
   type OrderSummary,
 } from "../../shared/service";
 import { api } from "../api";
-import { strings, translateError, type Key } from "../i18n";
-import { channelLabel } from "../labels";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
+import { channelLabel, orderNumberLabel } from "../labels";
 import { Badge, Button, Empty, Field } from "../components/ui";
 import {
   requestSellingContext,
@@ -130,7 +130,7 @@ export function Orders({
       );
       setError("");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
       throw e;
     } finally {
       setLoaded(true);
@@ -186,7 +186,7 @@ export function Orders({
       });
       setNextCursor(r.nextCursor);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   async function openDialog(
@@ -197,7 +197,7 @@ export function Orders({
     try {
       setDialog({ kind, order: await api<Order>("/orders/" + id) });
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusyId(null);
     }
@@ -211,19 +211,13 @@ export function Orders({
       closeKeys.current.delete(o.id);
       refresh();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusyId(null);
     }
   }
   const saved = async () => refresh();
   const chosen = items.filter((o) => selected.includes(o.id));
-  const dateLabel = (d: string) =>
-    new Date(d + "T12:00:00Z").toLocaleDateString(locale, {
-      timeZone: "UTC",
-      day: "numeric",
-      month: "short",
-    });
   return (
     <div className="orders-view">
       <PublicOrderInbox
@@ -313,7 +307,11 @@ export function Orders({
                 <label className="selection-check">
                   <input
                     type="checkbox"
-                    aria-label={t("selectOrder") + " #" + o.number}
+                    aria-label={
+                      t("selectOrder") +
+                      " " +
+                      orderNumberLabel(o, today, locale)
+                    }
                     disabled={closed || o.balance <= 0 || !!chargeBlocks[o.id]}
                     checked={selected.includes(o.id)}
                     onChange={() =>
@@ -326,8 +324,10 @@ export function Orders({
                   />
                 </label>
                 <div>
+                  {/* LD-29: the number names an order of another business day
+                      ("#10 · 5 oct"); the card shows that date once (LD-48). */}
                   <span className="eyebrow">
-                    #{o.number} · {t(o.mode as Key)} ·{" "}
+                    {orderNumberLabel(o, today, locale)} · {t(o.mode as Key)} ·{" "}
                     {channelLabel(o.channel, locale)}
                   </span>
                   <h3>{o.name || t("order")}</h3>
@@ -408,14 +408,6 @@ export function Orders({
                         {fill(t("discountsBadge"), {
                           amount: money(o.discount),
                         })}
-                      </Badge>
-                    )}
-                    {today && o.businessDate < today && (
-                      <Badge tone="amber">
-                        {t("serviceOrdersFromDay").replace(
-                          "{date}",
-                          dateLabel(o.businessDate),
-                        )}
                       </Badge>
                     )}
                   </div>
@@ -526,6 +518,7 @@ export function Orders({
           session={session}
           locale={locale}
           money={money}
+          today={today}
           close={() => setSettling(false)}
           saved={async () => {
             setSelected([]);
@@ -539,6 +532,7 @@ export function Orders({
           session={session}
           locale={locale}
           money={money}
+          today={today}
           close={() => setDialog(null)}
           saved={saved}
         />
@@ -547,6 +541,7 @@ export function Orders({
         <ServiceAssignment
           order={dialog.order}
           locale={locale}
+          today={today}
           close={() => setDialog(null)}
           saved={saved}
         />
@@ -557,6 +552,7 @@ export function Orders({
           session={session}
           locale={locale}
           money={money}
+          today={today}
           close={() => setDialog(null)}
           saved={saved}
           online={online}

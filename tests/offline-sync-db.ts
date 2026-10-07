@@ -861,6 +861,19 @@ try {
   assert.equal(mine[0]!.orderNumber, synced.orderNumber);
   assert.equal(mine[0]!.kitchenDelivery, "device_list");
   assert.equal(mine[0]!.deviceName, "Caja 1");
+  // LD-48: each held round names its order's business day, and the lane the
+  // current one, so yesterday's #46 is dated as on the KDS.
+  const [laneOrder] =
+    await admin`select business_date::text as day from orders where tenant_id=${tenantId} and id=${synced.orderId}`;
+  assert(mine.every((item) => item.businessDate === laneOrder.day));
+  assert.equal(
+    lane.currentBusinessDate,
+    businessDate(
+      new Date().toISOString(),
+      restaurant.timezone,
+      restaurant.cutoff,
+    ),
+  );
   assert(mine.every((item) => item.lines.length === 1));
   const cashierView = await run((tx) => listOfflineKitchen(tx, s1));
   assert(cashierView.items.length >= 2, "cashiers can see the lane");
@@ -1437,6 +1450,8 @@ try {
   );
   assert.equal(queuedReady.reconcilable, true);
   assert.equal(queuedReady.target?.orderId, queuedOpened.orderId);
+  // LD-48: the review names the target check's business day to date its number.
+  assert.equal(queuedReady.target?.businessDate, queuedOpened.businessDate);
   // OFF-R10: a reconcile into an order waits for a drawer close in progress
   // (which holds the drawer row), so the close either counts the tender or
   // happens first and the tender is a late adjustment; never a lost tender.
@@ -1865,6 +1880,8 @@ try {
   assert.deepEqual(cheapReview.target, {
     orderId: cheapOnline.id,
     number: cheapOnline.number,
+    // LD-48: the target names its business day, to date its number.
+    businessDate: cheapOnline.businessDate,
     due: 100,
   });
   assert(cheapReview.problems.includes("price_conflict"));
@@ -1928,6 +1945,8 @@ try {
     reviewOfflineRecord(tx, manager1, dearSale),
   );
   assert.equal(dearReview.target?.orderId, dearOnline.id);
+  assert.equal(dearReview.target?.businessDate, dearOnline.businessDate);
+  assert.match(dearReview.target?.businessDate ?? "", /^\d{4}-\d{2}-\d{2}$/);
   assert.equal(dearReview.reconcilable, false);
   assert(dearReview.problems.includes("price_conflict"));
   assert(dearReview.problems.includes("offline_payment_exceeds_due"));
@@ -2134,6 +2153,10 @@ try {
   assert.equal(deliveredView.total - deliveredView.paid, 100);
   assert.deepEqual(deliveredView.tenderIds, []);
   assert.deepEqual(deliveredView.offlineOperationIds, []);
+  // POL-R3-1: each copy carries its business day, so a device names
+  // yesterday's open #10 "#10 · 5 oct" from the copy alone (LD-29).
+  assert.match(deliveredView.businessDate, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(deliveredView.businessDate, delivered.businessDate);
   assert(snapshot.orders.length <= 200);
   // OFF-R3: each copy lists exactly the tenders and offline records it already
   // contains, so a device never counts its own synced rows twice. An active

@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import type express from "express";
+import { supportReference } from "../shared/support.js";
 
 /**
  * Structured JSON logger. One line per call on stdout in the shape Railway
@@ -143,6 +144,10 @@ function emit(level: Level, message: string, bound: Attrs, attrs?: Attrs) {
     ...(redact(bound) as Attrs),
     ...(attrs ? (redact(attrs) as Attrs) : {}),
   };
+  // The "Referencia de soporte" staff read out (RUNBOOK "Signals"): every line
+  // of a request is searchable as @supportRef:<ref>.
+  if (typeof record.requestId === "string" && record.supportRef === undefined)
+    record.supportRef = supportReference(record.requestId);
   try {
     sink(JSON.stringify(record));
   } catch {
@@ -361,9 +366,29 @@ export function requestLog(
 }
 
 /**
+ * The API's answers to a request body the client got wrong or cut short
+ * (api-errors.ts BODY_PARSER_ERRORS): nothing failed here, so they are logged
+ * at info, never as an error line (POL-R3-3).
+ */
+export const BODY_REJECTIONS: ReadonlySet<string> = new Set([
+  "invalid_json",
+  "payload_too_large",
+  "request_aborted",
+  "request_size_invalid",
+  "unsupported_encoding",
+  "unsupported_charset",
+  "too_many_parameters",
+]);
+
+/**
  * Logs an error the API answered (SEC-8): 5xx with name, message, stack,
  * route template and SQLSTATE through reportError; DomainError 5xx at warn;
- * malformed or oversized bodies at info; other 4xx at debug.
+ * every other 4xx but a 401 as `request_rejected` at info with its code, so a
+ * "Referencia de soporte" on a 4xx is searchable (LD-48, POLISH-OPS-2: the
+ * client shows one for invalid_input, a body rejection (BODY_REJECTIONS) or a
+ * code it has no text for, which only the client knows, for example an older
+ * cached revision). An invalid_input line names the failed fields as zod issue
+ * paths and codes, never their values. A 401 stays at debug.
  */
 export function logRequestError(
   error: unknown,
@@ -380,10 +405,24 @@ export function logRequestError(
   if (response.code === "internal_error")
     reportError(error, { event: "request_failed", ...attrs });
   else if (response.status >= 500) log.warn("domain_error_5xx", attrs);
-  else if (
-    response.code === "invalid_json" ||
-    response.code === "payload_too_large"
-  )
-    log.info("request_rejected", attrs);
-  else log.debug("request_rejected", attrs);
+  else if (response.status === 401) log.debug("request_rejected", attrs);
+  else {
+    // A ZodError's issues (classifyApiError: invalid_input): where and why, no input.
+    const raw = (error as { issues?: unknown } | null | undefined)?.issues;
+    const issues =
+      response.code === "invalid_input" && Array.isArray(raw)
+        ? raw.slice(0, 10).map((issue: { path?: unknown; code?: unknown }) => ({
+            path: (Array.isArray(issue?.path) ? issue.path : [])
+              .map((key: unknown) =>
+                typeof key === "number" ||
+                (typeof key === "string" && /^[A-Za-z_]\w{0,63}$/.test(key))
+                  ? key
+                  : "?",
+              )
+              .join("."),
+            code: typeof issue?.code === "string" ? issue.code : "unknown",
+          }))
+        : undefined;
+    log.info("request_rejected", issues ? { ...attrs, issues } : attrs);
+  }
 }

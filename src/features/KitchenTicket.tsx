@@ -1,13 +1,22 @@
 import type { Label, Locale, Order, PricedLine } from "../../shared/domain";
 import { ALLERGY_PATTERN, type KitchenRound } from "../../shared/service";
 import { strings, type Key } from "../i18n";
-import { channelLabel } from "../labels";
+import { channelLabel, orderNumberLabel } from "../labels";
+
+/**
+ * The business day a printed kitchen paper names its order against (LD-29,
+ * LD-44): an order from another business day prints "#10 · 5 oct", as the
+ * screens read it, so yesterday's open #10 and today's #10 never print alike.
+ * `today` is the restaurant's current business date (currentBusinessDate, or
+ * the kitchen feed's currentBusinessDate); `locale` the device's print language.
+ */
+export type PrintDay = { today: string | null | undefined; locale: Locale };
 
 /** Everything a printed kitchen ticket (comanda) shows; shared with offline. */
 export type KitchenTicketModel = {
   /** e.g. offline "COMANDA · SIN CONEXIÓN" */
   banner?: string;
-  /** "#142", "B-07", "#142 · Ronda 2" */
+  /** "#142", "#142 · 5 oct" (another business day), "B-07", "#142 · Ronda 2" */
   label: string;
   /** "kitchen" | "bar" */
   station: string;
@@ -33,10 +42,17 @@ export type KitchenTicketModel = {
   footer?: string;
 };
 
-/** A live KDS round as a printable ticket. */
-export function ticketFromKitchenRound(r: KitchenRound): KitchenTicketModel {
+/** A live KDS round as a printable ticket, dated as its screen header is. */
+export function ticketFromKitchenRound(
+  r: KitchenRound,
+  day: PrintDay,
+): KitchenTicketModel {
   return {
-    label: "#" + r.orderNumber,
+    label: orderNumberLabel(
+      { number: r.orderNumber, businessDate: r.businessDate },
+      day.today,
+      day.locale,
+    ),
     station: r.station,
     round: r.roundNumber,
     mode: r.mode,
@@ -95,10 +111,11 @@ export function ticketsFromLines(i: {
 export function ticketsFromOrderRound(
   order: Order,
   round: number,
+  day: PrintDay,
 ): KitchenTicketModel[] {
   const rounds = (order.rounds ?? []).filter((r: any) => r.number === round);
   return ticketsFromLines({
-    label: "#" + order.number,
+    label: orderNumberLabel(order, day.today, day.locale),
     round,
     mode: order.mode,
     tableName: order.tableName ?? null,
@@ -123,7 +140,10 @@ export function ticketsFromOrderRound(
  * The tickets still on the kitchen screen (every station round not yet
  * served), for reprinting comandas after the order note changed.
  */
-export function ticketsForOpenRounds(order: Order): KitchenTicketModel[] {
+export function ticketsForOpenRounds(
+  order: Order,
+  day: PrintDay,
+): KitchenTicketModel[] {
   const open = (order.rounds ?? []).filter(
     (r: any) => r.state !== "completed" && r.state !== "offline_review",
   );
@@ -131,7 +151,7 @@ export function ticketsForOpenRounds(order: Order): KitchenTicketModel[] {
     (a, b) => a - b,
   );
   return numbers.flatMap((n) =>
-    ticketsFromOrderRound(order, n).filter((ticket) =>
+    ticketsFromOrderRound(order, n, day).filter((ticket) =>
       open.some((r: any) => r.number === n && r.station === ticket.station),
     ),
   );

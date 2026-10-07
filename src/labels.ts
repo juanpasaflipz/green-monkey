@@ -1,4 +1,5 @@
-import type { Locale } from "../shared/domain";
+import { businessDate, type Locale } from "../shared/domain";
+import { serverNow } from "./clock";
 import { strings, type Key } from "./i18n";
 
 /**
@@ -193,4 +194,82 @@ export function channelLabel(channel: string, locale: Locale): string {
 }
 export function integrationLabel(key: string, locale: Locale): string {
   return strings[locale][integrations[key] ?? "serviceIntegrationOther"];
+}
+
+// ---- business-day labels (LD-29) -----------------------------------------
+
+/** "5 oct" / "Oct 5": a business date (YYYY-MM-DD) as day and short month, no timezone shift. */
+export function businessDayLabel(date: string, locale: Locale): string {
+  const [y, m, d] = date.split("-").map(Number);
+  return new Intl.DateTimeFormat(locale === "es" ? "es-MX" : "en-US", {
+    day: "numeric",
+    month: "short",
+    timeZone: "UTC",
+  }).format(new Date(Date.UTC(y, m - 1, d)));
+}
+
+/**
+ * The restaurant's current business date with the server's own helper and settings
+ * (shared/domain businessDate: the restaurant timezone and cutoff), for screens whose
+ * response does not carry it. "Now" is the corrected server clock (src/clock.ts, the one
+ * offline evidence uses), so a tablet whose clock is a few minutes off still agrees with
+ * Órdenes and the kitchen (whose date comes from the server) around the cutoff.
+ */
+export function currentBusinessDate(
+  restaurant: { timezone: string; cutoff: number },
+  now: number = serverNow(),
+): string {
+  return businessDate(
+    new Date(now).toISOString(),
+    restaurant.timezone,
+    restaurant.cutoff,
+  );
+}
+
+/** U+00A0: joins a dated label so it never wraps apart (LD-48, POLISH-UX-2). */
+const NBSP = "\u00a0";
+
+/**
+ * `text` as staff read it: unchanged, or followed by " · 5 oct" (" · Oct 5") when `day` is
+ * another business day than `today`. The date is joined with non-breaking spaces, so a
+ * narrow header (the KDS ticket at iPad portrait widths) never splits "5" from "oct"
+ * or the date from the number.
+ */
+export function withBusinessDay(
+  text: string,
+  day: string | null | undefined,
+  today: string | null | undefined,
+  locale: Locale,
+): string {
+  return day && today && day !== today
+    ? `${text}${NBSP}·${NBSP}${businessDayLabel(day, locale).replace(/\s/g, NBSP)}`
+    : text;
+}
+
+/**
+ * An order number as staff read it: "10", or "10 · 5 oct" ("10 · Oct 5") when the order
+ * belongs to another business day than `today` (withBusinessDay: non-breaking spaces).
+ * Numbers restart every business day, so after the cutoff an open order from the day
+ * before and a new one can both be #10.
+ */
+export function orderNumberText(
+  order: { number: number; businessDate?: string | null },
+  today: string | null | undefined,
+  locale: Locale,
+): string {
+  return withBusinessDay(
+    String(order.number),
+    order.businessDate,
+    today,
+    locale,
+  );
+}
+
+/** "#10", or "#10 · 5 oct" for an order from another business day (orderNumberText). */
+export function orderNumberLabel(
+  order: { number: number; businessDate?: string | null },
+  today: string | null | undefined,
+  locale: Locale,
+): string {
+  return "#" + orderNumberText(order, today, locale);
 }

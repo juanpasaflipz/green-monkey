@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Locale, Session } from "../../shared/domain";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice } from "../i18n";
 import { api, isSessionRejection, type ApiError } from "../api";
 import { Modal } from "../components/ui";
 import { PinPad } from "./PinPad";
@@ -54,7 +54,7 @@ export function StepUpDialog({
               onSessionEnded(e as ApiError);
               return;
             }
-            setError(translateError((e as Error).message, locale));
+            setError(errorNotice(e, locale));
           } finally {
             setBusy(false);
           }

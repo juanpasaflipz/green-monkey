@@ -1,5 +1,7 @@
 import type { Label, Order } from "../../../shared/domain";
 import type { KitchenRound } from "../../../shared/service";
+import { orderNumberLabel } from "../../labels";
+import type { PrintDay } from "../KitchenTicket";
 
 /**
  * A printed kitchen cancellation chit ("CANCELACIÓN · NO PREPARAR"): one per round and station,
@@ -7,7 +9,7 @@ import type { KitchenRound } from "../../../shared/service";
  */
 export type KitchenCancellationModel = {
   kind: "void" | "refund";
-  /** "#142" */
+  /** "#142", or "#142 · 5 oct" for an order from another business day (LD-44) */
   label: string;
   callName: string;
   /** "kitchen" | "bar" */
@@ -31,11 +33,13 @@ const latest = (times: readonly string[]) =>
  * KDS auto-print: one chit per round that shows pending voids first seen in this load
  * (`newVoidIds`). The feed holds only the station filter's rounds, so a bar screen prints bar
  * cancellations only. A chit is a refund chit when every one of its voids is a refund
- * cancellation (discounts 028 adds `kind`); a void without `kind` is a void.
+ * cancellation (discounts 028 adds `kind`); a void without `kind` is a void. The chit names
+ * the order as its ticket does: dated when it is from another business day (LD-44).
  */
 export function cancellationsFromKitchenRounds(
   rounds: readonly KitchenRound[],
   newVoidIds: ReadonlySet<string>,
+  day: PrintDay,
 ): KitchenCancellationModel[] {
   return rounds.flatMap((round): KitchenCancellationModel[] => {
     const voids = round.pendingVoids.filter((v) => newVoidIds.has(v.id));
@@ -45,7 +49,11 @@ export function cancellationsFromKitchenRounds(
     return [
       {
         kind: voids.every((v) => kindOf(v) === "refund") ? "refund" : "void",
-        label: "#" + round.orderNumber,
+        label: orderNumberLabel(
+          { number: round.orderNumber, businessDate: round.businessDate },
+          day.today,
+          day.locale,
+        ),
         callName: round.callName,
         station: round.station,
         round: round.roundNumber,
@@ -91,6 +99,7 @@ export function cancellationsFromVoid(
   before: Order,
   after: Order,
   reason: string,
+  day: PrintDay,
 ): KitchenCancellationModel[] {
   const voidedBefore = new Map(
     before.lines.map((l) => [l.id, l.voidedUnits?.length ?? 0]),
@@ -124,7 +133,7 @@ export function cancellationsFromVoid(
   const time = times.length > 0 ? latest(times) : new Date().toISOString();
   return grouped(items).map((group) => ({
     kind: "void",
-    label: "#" + after.number,
+    label: orderNumberLabel(after, day.today, day.locale),
     callName: after.name,
     station: group[0].station,
     round: group[0].round,
@@ -161,6 +170,7 @@ export function cancellationsFromRefund(
   order: Order,
   batch: RefundBatchLines,
   reason: string,
+  day: PrintDay,
 ): KitchenCancellationModel[] {
   const items = batch.lines.flatMap((entry) => {
     const line = order.lines.find((l) => l.id === entry.lineId);
@@ -178,7 +188,7 @@ export function cancellationsFromRefund(
   });
   return grouped(items).map((group) => ({
     kind: "refund",
-    label: "#" + order.number,
+    label: orderNumberLabel(order, day.today, day.locale),
     callName: order.name,
     station: group[0].station,
     round: group[0].round,

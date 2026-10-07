@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { Button, Field } from "../components/ui";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import type { Locale, Session } from "../../shared/domain";
 export function RestaurantSettings({
   session,
@@ -22,7 +22,7 @@ export function RestaurantSettings({
         setData(r);
         setDays(r.openingDays);
       })
-      .catch((e) => setError(translateError(e.message, locale)));
+      .catch((e) => setError(errorNotice(e, locale)));
   }, []);
   const editable = session.role === "owner";
   if (!data) return <p role="status">{error || t("loading")}</p>;
@@ -52,7 +52,7 @@ export function RestaurantSettings({
             setSaved(true);
             window.dispatchEvent(new Event("gm-session-refresh"));
           } catch (e) {
-            setError(translateError((e as Error).message, locale));
+            setError(errorNotice(e, locale));
           } finally {
             setBusy(false);
           }

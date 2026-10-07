@@ -702,7 +702,7 @@ test("product editor: IVA 8% is disabled outside a border region; saving IVA 0% 
   expect(paper).not.toContain("IVA 16%");
 });
 
-test("offline local receipt shows Folio fiscal pendiente with the cached issuer; with the UI in English it prints in Spanish", async ({
+test("offline local receipt shows Folio pendiente with the cached issuer; with the UI in English it prints in Spanish", async ({
   page,
   context,
 }) => {
@@ -747,9 +747,7 @@ test("offline local receipt shows Folio fiscal pendiente with the cached issuer;
       })
       .click();
     const receipt = page.locator(".receipt");
-    await expect(receipt).toContainText(
-      "Ticket number pending: assigned on sync.",
-    );
+    await expect(receipt).toContainText("Folio pending: assigned when synced.");
     await expect(receipt).toContainText(`RFC: ${RFC}`);
     await stubPrint(page);
     await page
@@ -757,9 +755,8 @@ test("offline local receipt shows Folio fiscal pendiente with the cached issuer;
       .click();
     const paper = await lastPrint(page);
     expect(paper).toContain("Número provisional");
-    expect(paper).toContain(
-      "Folio fiscal pendiente: se asigna al sincronizar.",
-    );
+    expect(paper).toContain("Folio pendiente: se asigna al sincronizar.");
+    expect(paper.toLowerCase()).not.toContain("folio fiscal");
     expect(paper).toContain(`RFC: ${RFC}`);
     expect(paper).toContain("Precios con IVA incluido");
     expect(paper).not.toContain("Provisional number");

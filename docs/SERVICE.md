@@ -117,6 +117,47 @@ until staff release it (Órdenes and Mesas offer **Liberar mesa** / **Cerrar
 cuenta** for any open check at balance 0), and its attempt to add a round to an
 already settled check fails with a server error instead of `check_closed`.
 
+**Order numbers across the business-day rollover (LD-29).** Numbers restart
+every business day (the restaurant's timezone and cutoff, `businessDate()` in
+`shared/domain.ts`), so after the cutoff an open order from the day before and a
+new one can both be #10. These screens add the business date to an order that is
+not from the current business day: "#10 · 5 oct" (English UI "#10 · Oct 5"):
+the Órdenes cards and their checkboxes, **Cobrar juntas** (each check's line,
+the "still owes" and "balance changed" notices, the lines after the payment and
+the refusal while this device holds an unsynced offline record of a check), the
+Mesas check cards, the cart heading in Vender, the payment dialog title
+("Cobrar #10 · 5 oct"), the order detail title, the headers of the void, refund
+and service-assignment dialogs, a round parked in Borradores for a server order
+("#10 · 5 oct · ronda sin enviar", from the date stored when it was parked;
+rounds parked before this change keep "#10"), and the kitchen tickets on screen
+and their spoken announcements ("Nuevo ticket #10 · 5 oct, ronda 2"). The current
+business date comes from the server where the response carries it (Órdenes
+list, kitchen feed) and otherwise from the session's restaurant settings with
+the same helper (`currentBusinessDate` in `src/labels.ts`) on the corrected
+server clock (`src/clock.ts`), so a tablet whose clock is a few minutes off
+agrees with Órdenes around the cutoff. The Órdenes card names the date once, in
+its number (there is no separate "Del 5 oct" badge). The label is joined with
+non-breaking spaces, so "#10 · 5 oct" never wraps apart on a narrow KDS header.
+
+The same dated number is used by Vender's notices (for example "La orden
+#10 · 5 oct llegó a cocina mientras cambiabas de cuenta", and the paid, failed
+round and closed-check notices), the discount and refund dialog titles, the QR
+inbox's accepted notice and its **Enviar a** list of open checks, and the
+offline screens: the offline "Órdenes abiertas" pick list, the offline payment
+review's check, the KDS lane "Ventas sin conexión por revisar" and
+Sincronización. A provisional
+number from another business day is dated the same way ("B-03 · 5 oct",
+"B-07 → #142 · 5 oct"), since each device restarts its B- numbers every business
+day.
+
+Kitchen paper is dated too: every comanda and cancellation chit for an order
+from another business day prints "#10 · 5 oct" (the comanda on send, KDS
+auto-print and **Imprimir comanda**, the reprint after a note edit, the void and
+refund chits, a QR order accepted from the inbox, and the offline **Comandas
+(N)**). The one screen that keeps the plain number is the KDS **Recientes** list
+of completed rounds (its feed carries no business date). The customer receipt
+and pre-cuenta print the plain number next to the order's date and time.
+
 **Legacy endpoints scheduled for removal.** `GET /api/orders` (now batched) and
 `GET /api/kitchen` keep their response shapes for one release so PWA bundles
 cached before the deploy keep working. A later contract change removes them.
@@ -230,8 +271,8 @@ order view the save returns, so a product tapped during the save stays, and the
 order note, or the round note, leaves once the record holds it. If the cart
 moved meanwhile (the backstop below), the record's lines leave the copy parked
 in Borradores as they do online (LD-12 R6); what is left stays parked as a
-round of a cached server order, or as a new order when the save went to a
-local order, which Borradores cannot resume.
+round of the order the save reached, a cached server order or a local order
+(Borradores resumes both, see "Parked carts").
 
 ### Switching checks while a send or payment is in flight
 
@@ -298,8 +339,25 @@ store the unsent cart in Borradores. A cart of rounds for an open check also
 keeps that check (IndexedDB cache record `…:parked-order:{operationId}`), is
 listed as "#N · ronda sin enviar" and, when restored, goes back onto that check
 and is sent as a round. If the check closed meanwhile, the cart offers
-**Enviar como orden nueva**; if the check cannot be loaded (offline), the
-draft stays parked.
+**Enviar como orden nueva**.
+
+The check of a parked round is resolved through the device first (LD-13
+addendum, `resolveParkedOrder` in `src/offline-records.ts`): a local order
+created on this device (offline table service, Beta) is listed with its
+provisional number ("B-07 · ronda sin enviar") and goes back onto that local
+order, online or offline; once its order record has synced, the local id
+resolves to the server order the sync recorded ("B-07 → #142 · ronda sin
+enviar"), read from the server online or from the device's cached copy offline.
+Opening Borradores then rewrites the parked reference to that server order
+(`pinnedParkedOrder`, POL-R2-3), because the synced record that maps the local
+id to it is pruned 7 days after it synced (OFF-12); a draft that was never
+listed between its order's sync and that pruning still reads as gone.
+Offline, a server check this device did not keep cannot take the round: the
+draft stays parked with "Disponible al volver la conexión" (table service off)
+or the `offline_order_not_cached` message (on). A draft whose check exists
+nowhere any more (a local order whose record was archived, or a server answer
+`not_found`) is shown as "La orden de este borrador ya no existe en este
+dispositivo ni en el servidor." with only **Descartar borrador**.
 
 ## Payment dialog
 
@@ -353,10 +411,18 @@ the drawer is open.
   `header`/`footer` slots (see integration points).
 - Per-device settings (localStorage `gm-print-settings`): paper width, print a
   kitchen ticket on send (off by default) and auto-print new KDS tickets (off).
-- **Silent printing** requires Chromium launched with `--kiosk-printing` and the
-  thermal printer set as the OS default printer. Public sources describe this as
-  working on Windows; macOS and Android always show the print dialog. Verify on
-  the target device; it has not been verified here.
+- **Silent printing** (no print dialog) has no confirmed method today. Public
+  sources, not official Chrome or Chromium documentation, describe launching
+  Chromium with `--kiosk-printing` with the thermal printer as the OS default
+  printer as working on Windows, and say macOS and Android always show the
+  print dialog; none of this has been verified here. The KDS "Impresión"
+  dialog's hint (the auto-print checkbox's accessible description) therefore
+  says printing without a dialog is not confirmed, that with auto-print each
+  new ticket opens the print dialog, and points staff to the pilot guide's
+  print steps ([PILOT_SOP §1.3](PILOT_SOP.md)), which count on the dialog at
+  every print (LD-17). KDS auto-print and the
+  comanda on send therefore open the dialog at each ticket: they are practical
+  only on a device verified to print without it.
 - Browser printing never confirms that paper came out.
 - Kitchen cancellation chits (reports 029): a KDS with auto-print and a selling device
   that prints on send also print "CANCELACIÓN · NO PREPARAR" after a void, per round and

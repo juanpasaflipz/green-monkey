@@ -10,6 +10,7 @@ import { translateError } from "../../i18n";
 import { db, type Pending } from "../../offline";
 import { dependencyOf, settleAlreadySynced } from "../../offline-queue";
 import { reconciledResult } from "../../offline-records";
+import { currentBusinessDate, orderNumberText } from "../../labels";
 import { carriesMoney, translator } from "./format";
 
 /** POST /api/offline/review (§4.3.5 plus the review explanations). */
@@ -35,7 +36,13 @@ export type OfflineReviewDetail = {
   sessionRevoked: boolean | null;
   prior: { kind: string } | null;
   archived: boolean;
-  target: { orderId: string; number: number; due: number } | null;
+  /** `businessDate`: the order's business day, to date its number (LD-29/LD-48). */
+  target: {
+    orderId: string;
+    number: number;
+    businessDate?: string | null;
+    due: number;
+  } | null;
   reconcilable: boolean;
   reconcileAs?: "order" | "financial" | null;
   /** OFF-R30: sync takes the order an online create made for this draft. */
@@ -90,6 +97,12 @@ export function OfflineReviewPanel({
     [confirmed, setConfirmed] = useState(false),
     [anyway, setAnyway] = useState(false);
   const { kind, target } = detail;
+  // The order money would go to, as Órdenes names it: "10", or "10 · 5 oct" for an
+  // order from another business day (LD-48: often an offline sale synced after the
+  // cutoff, which continues the numbers of the day it was sold).
+  const targetNumber = target
+    ? orderNumberText(target, currentBusinessDate(session.restaurant), locale)
+    : "";
   const money = carriesMoney(kind);
   const external = detail.method === "external";
   const recorded = detail.prior?.kind === "offline_sync";
@@ -255,7 +268,7 @@ export function OfflineReviewPanel({
           <>
             <dt>{es ? "Orden" : "Order"}</dt>
             <dd>
-              #{target.number} · {format(target.due)}
+              #{targetNumber} · {format(target.due)}
             </dd>
           </>
         )}
@@ -306,13 +319,13 @@ export function OfflineReviewPanel({
                 : sentOrder === "other"
                   ? "offlineExistingOrderOtherDraft"
                   : "offlineExistingOrderSent",
-              { n: target.number },
+              { n: targetNumber },
             )}
           </p>
           {sentOrder === "archive" &&
             dependents.some((other) => recordKind(other.body) === "round") && (
               <>
-                <p>{t("offlineDependentsRounds", { n: target.number })}</p>
+                <p>{t("offlineDependentsRounds", { n: targetNumber })}</p>
                 <ul>
                   {dependents
                     .filter((other) => recordKind(other.body) === "round")
@@ -359,10 +372,10 @@ export function OfflineReviewPanel({
         <p className="warning-panel" role="status">
           {target.due > 0
             ? t("offlineExistingOrderCharge", {
-                n: target.number,
+                n: targetNumber,
                 due: format(target.due),
               })
-            : t("offlineExistingOrderPaid", { n: target.number })}
+            : t("offlineExistingOrderPaid", { n: targetNumber })}
         </p>
       )}
       {!money && !target && !recorded && !detail.archived && (
@@ -384,7 +397,7 @@ export function OfflineReviewPanel({
         <>
           <p>
             {into && target
-              ? t("offlineReconcileIntoOrder", { n: target.number })
+              ? t("offlineReconcileIntoOrder", { n: targetNumber })
               : t(
                   external
                     ? "offlineReconcileRecoveryExternal"
@@ -411,7 +424,7 @@ export function OfflineReviewPanel({
                   external
                     ? "offlineReconcileConfirmIntoOrderExternal"
                     : "offlineReconcileIntoOrderConfirm",
-                  { n: target.number },
+                  { n: targetNumber },
                 )
               : t(
                   external

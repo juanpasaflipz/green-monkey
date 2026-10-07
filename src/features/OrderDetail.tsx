@@ -4,8 +4,13 @@ import { lineRemaining } from "../../shared/settlement";
 import { changeDue, roundNotes } from "../../shared/service";
 import type { Locale, Order, Session } from "../../shared/domain";
 import { api } from "../api";
-import { strings, translateError, type Key } from "../i18n";
-import { channelLabel, tenderMethodLabel } from "../labels";
+import { strings, errorNotice, type Key } from "../i18n";
+import {
+  channelLabel,
+  currentBusinessDate,
+  orderNumberText,
+  tenderMethodLabel,
+} from "../labels";
 import { Badge, Button, Field, Modal } from "../components/ui";
 import { printDocument, usePrintSettings } from "../print";
 import { requestSellingContext } from "../serviceHooks";
@@ -85,7 +90,7 @@ export function OrderDetail({
       setOrder(await api<Order>("/orders/" + orderId));
       setError("");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -107,12 +112,26 @@ export function OrderDetail({
   const voidable = order?.paymentUnits?.some((u) => u.paid === 0) ?? false;
   const holdsTable = order?.mode === "dine_in" && !!order?.tableId;
   const notes = order ? roundNotes(order) : [];
+  // Reprinted comandas name an order from another business day with its date (LD-44).
+  const reprint =
+    offerReprint && order
+      ? ticketsForOpenRounds(order, {
+          today: currentBusinessDate(session.restaurant),
+          locale,
+        })
+      : [];
   return (
     <Modal
       wide
       title={t("serviceDetailTitle").replace(
         "{n}",
-        String(order?.number ?? ""),
+        order
+          ? orderNumberText(
+              order,
+              currentBusinessDate(session.restaurant),
+              locale,
+            )
+          : "",
       )}
       close={close}
       closeLabel={t("close")}
@@ -127,11 +146,11 @@ export function OrderDetail({
           {notice}
         </p>
       )}
-      {offerReprint && order && ticketsForOpenRounds(order).length > 0 && (
+      {reprint.length > 0 && (
         <Button
           onClick={() =>
             void printDocument(
-              ticketsForOpenRounds(order).map((ticket, i) => (
+              reprint.map((ticket, i) => (
                 <KitchenTicketDocument
                   key={i}
                   ticket={ticket}
@@ -469,7 +488,7 @@ export function OrderDetail({
                     closeKey.current = crypto.randomUUID();
                     await saved();
                   } catch (e) {
-                    setError(translateError((e as Error).message, locale));
+                    setError(errorNotice(e, locale));
                   } finally {
                     setBusy(false);
                   }
@@ -555,6 +574,7 @@ export function OrderDetail({
         <ServiceAssignment
           order={order}
           locale={locale}
+          today={currentBusinessDate(session.restaurant)}
           close={() => setDialog(null)}
           saved={saved}
         />
@@ -634,7 +654,7 @@ export function NoteDialog({
             await saved(o);
             close();
           } catch (err) {
-            setError(translateError((err as Error).message, locale));
+            setError(errorNotice(err, locale));
           } finally {
             setBusy(false);
           }

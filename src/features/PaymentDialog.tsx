@@ -14,9 +14,10 @@ import {
   validatePayment,
   type PaymentValues,
 } from "../../shared/service";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { Button, Field, Modal } from "../components/ui";
 import { moneyFormatter } from "./Receipt";
+import { currentBusinessDate, orderNumberLabel } from "../labels";
 
 /** Offline (026) fills this slot; it is used only while the device is offline. */
 export type OfflinePaymentSlot = {
@@ -178,9 +179,18 @@ export function PaymentDialog({
     : slot
       ? slot.confirmLabel(method)
       : t("saveOffline");
+  // LD-29: collecting an order from another business day names it, with its date.
+  const today = currentBusinessDate(session.restaurant);
+  const title =
+    current?.businessDate && current.number && current.businessDate !== today
+      ? t("servicePayOrderTitle").replace(
+          "{order}",
+          orderNumberLabel(current, today, locale),
+        )
+      : t("pay");
   return (
     <Modal
-      title={t("pay")}
+      title={title}
       close={() => !busy && onClose()}
       closeLabel={t("close")}
       footer={
@@ -297,7 +307,7 @@ export function PaymentDialog({
               setAmountFollows(false);
               setReceivedInput(null);
             } catch (e) {
-              setLocalError(translateError((e as Error).message, locale));
+              setLocalError(errorNotice(e, locale));
             }
           }}
         >

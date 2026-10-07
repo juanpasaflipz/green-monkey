@@ -21,7 +21,7 @@ import {
   type Product,
 } from "../shared/domain.js";
 import {
-  HOLD_EXPIRY_GRACE_SECONDS,
+  holdExpiryGraceSeconds,
   PUBLIC_LIMITS,
   PUBLIC_TOKEN,
   canonicalRequest,
@@ -402,12 +402,14 @@ export async function submitHold(
 /**
  * A hold by its status key. The status read gives a just-expired hold its
  * grace (an accept that locked it in time may still be committing,
- * CONCURRENCY-2); the cancel takes the row lock and uses the exact expiry.
+ * CONCURRENCY-2; a pay-first hold, which staff may still collect, the longer
+ * PAID_ACCEPT_GRACE_SECONDS: holdExpiryGraceSeconds, PUB-R3-L1); the cancel
+ * takes the row lock and uses the exact expiry.
  */
 const holdByKey = (tx: Tx, linkId: string, statusKey: string, lock = false) =>
   tx<
     HoldRow[]
-  >`select h.*,(h.state='pending' and h.expires_at<=${lock ? tx`now()` : tx`now()-make_interval(secs=>${HOLD_EXPIRY_GRACE_SECONDS})`}) as expired,${restaurantOf(tx)}
+  >`select h.*,(h.state='pending' and h.expires_at<=${lock ? tx`now()` : tx`now()-make_interval(secs=>case when h.policy='pay_first' then ${holdExpiryGraceSeconds("pay_first")}::int else ${holdExpiryGraceSeconds("accept")}::int end)`}) as expired,${restaurantOf(tx)}
     from public_order_holds h
     where h.status_key_hash=${statusHash(statusKey)} and h.link_id=${linkId}
     ${lock ? tx`for update of h` : tx``}`;

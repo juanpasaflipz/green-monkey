@@ -98,13 +98,41 @@ opciones cambian según el fabricante y el sistema; consulta el manual del contr
 
 ### 1.3 Imprimir sin diálogo (modo kiosco) según el navegador
 
-En «Cocina», la ventana «Impresión» dice: «Para imprimir sin diálogo, abre Chrome con
-impresión de kiosco en este equipo (ver guía).» Esta es esa guía, y lo que podemos
-afirmar hoy es lo siguiente:
+En «Cocina», la ventana «Impresión» dice, debajo de «Imprimir tickets nuevos
+automáticamente en esta pantalla»: «La impresión sin diálogo no está confirmada: con esta
+opción, cada ticket nuevo abre el diálogo de impresión. Sigue la guía del piloto, sección
+1.3.» (en inglés: «Printing without a dialog is not confirmed: with this option, each new
+ticket opens the print dialog. Follow the pilot guide, section 1.3.»). La guía del piloto
+es esta guía («Guía de operación del piloto») y la sección 1.3 es esta. Con la impresión
+automática activada, alguien debe tocar «Imprimir» o «Cancelar» en cada diálogo, que
+cubre la pantalla de cocina mientras está abierto. La app ya no recomienda abrir Chrome con
+impresión de kiosco: ninguna documentación oficial que consultamos lo confirma (LD-17; se
+volvió a consultar la documentación de políticas de Chrome Enterprise y la de Chromium el 6
+de octubre de 2026).
+
+**Hoy no existe una forma confirmada de imprimir sin diálogo.** Con los pasos siguientes,
+el diálogo del navegador aparece en cada recibo, cuenta y comanda.
+
+**Pasos de impresión del piloto, en cada equipo que imprime:**
+
+1. Configura la impresora térmica en el sistema operativo (sección 1.2, pasos 1 a 9) y
+   déjala como impresora predeterminada del sistema.
+2. En Chrome administrado, activa la política `PrintPreviewUseSystemDefaultPrinter`
+   para que el diálogo proponga esa impresora (sección 1.2, paso 9).
+3. Cada impresión abre el diálogo del navegador: revisa que el destino sea la térmica y
+   confirma con «Imprimir». Cuenta con este paso en cada recibo, cuenta y comanda.
+4. Haz la prueba completa de la sección 1.2, paso 10, y revisa que salió papel (el
+   navegador nunca lo confirma).
+5. Si el propietario quiere probar la opción de inicio `--kiosk-printing` en Windows,
+   hazlo solo como prueba en ese equipo, con los pasos 1 a 4 ya hechos, y anota el
+   resultado: no está confirmada en documentación oficial (tabla siguiente) ni probada por
+   nosotros, así que el piloto no depende de ella.
+
+Lo que podemos afirmar hoy por navegador:
 
 | Navegador | Qué está confirmado en documentación oficial | Qué no está confirmado |
 | --- | --- | --- |
-| Chrome (Windows, macOS) | Las políticas administradas `PrintPreviewUseSystemDefaultPrinter` (destino predeterminado = impresora del sistema) y `DisablePrintPreview` (abre el diálogo del sistema en lugar de la vista previa de Chrome). Ninguna de las dos imprime sin diálogo. | La opción de inicio `--kiosk-printing`. No aparece en la documentación oficial que consultamos; [Service](SERVICE.md#printing-browseros) la cita de fuentes públicas como funcional en Windows. No se ha probado. |
+| Chrome (Windows, macOS) | Las políticas administradas `PrintPreviewUseSystemDefaultPrinter` (destino predeterminado = impresora del sistema) y `DisablePrintPreview` (abre el diálogo del sistema en lugar de la vista previa de Chrome). Ninguna de las dos imprime sin diálogo. | La opción de inicio `--kiosk-printing`. No aparece en la documentación oficial que consultamos (políticas de Chrome Enterprise y documentación de Chromium); [Service](SERVICE.md#printing-browseros) la cita de fuentes públicas como funcional en Windows. No se ha probado. |
 | Edge | — (no consultamos su documentación) | Impresión sin diálogo. |
 | Firefox | La opción `--kiosk` abre Firefox en pantalla completa. | Impresión sin diálogo. |
 | Safari en iPad o iPhone | — | Imprime con AirPrint ([limitaciones físicas](OFFLINE_RECOVERY.md#physical-limitations)); la mayoría de las impresoras térmicas no son compatibles con AirPrint. No lo verificamos en un iPad real. |
@@ -276,7 +304,11 @@ una sucursal» y escribe el domicilio de este local. Sin esos datos, cada ticket
 ### 4.3 Cerrar turno
 
 1. **Cuentas abiertas.** En «Órdenes», pestaña «Abiertas», cobra o revisa lo que siga
-   abierto y toca «Liberar mesa» en las mesas pagadas.
+   abierto y toca «Liberar mesa» en las mesas pagadas. Los números de orden empiezan de
+   nuevo cada día a la hora de «Cierre del día de negocio» (las 04:00 si el propietario
+   no la cambió): después de esa hora, una orden que siga abierta de un día anterior
+   muestra su fecha junto al número, por ejemplo «#10 · 5 oct», en «Órdenes», en
+   «Cocina» y en las comandas impresas. Es otra orden que el «#10» de hoy.
 2. **Sincroniza.** El indicador de conexión no debe mostrar «N por sincronizar». Si
    lo muestra, abre «Sincronización» → «Reintentar sincronización». Mientras haya
    ventas pendientes en el dispositivo, cerrar caja se niega con «Sincroniza las
@@ -385,7 +417,9 @@ están en el [runbook, "Contacts and escalation"](RUNBOOK.md#contacts-and-escala
 **Al llamar a soporte, ten a la mano:** el nombre del restaurante, el nombre del
 dispositivo (como aparece en «Dispositivos»), la hora del problema, el número de orden
 si lo hay, lo que dice el indicador de conexión y una foto de la pantalla con el
-mensaje. Con la versión de cuenta (031), el botón «Ayuda» de la barra superior muestra
+mensaje. Si el mensaje rojo dice «Referencia de soporte: 3F2A9C1B» (ocho letras y
+números; también aparece en «Sincronización», debajo de una venta que no se pudo
+enviar), díctala letra por letra: es lo primero que soporte busca. Con la versión de cuenta (031), el botón «Ayuda» de la barra superior muestra
 los canales de soporte, el ID del restaurante (con botón «Copiar») y el ID del
 dispositivo que soporte te pedirá. Todo lo que soporte haga en tu cuenta queda
 registrado y lo ves en «Cuenta y propietarios» › «Acciones de soporte».

@@ -418,6 +418,14 @@ export const pricedFrom = (row: Pending): PricedLine[] =>
 /** What a kitchen ticket says about a record (label, round, table, call name). */
 export type TicketHeading = {
   label: string;
+  /**
+   * When the provisional number in `label` was allocated (its order or sale record's
+   * recordedAt): provisional numbers restart every business day, so one from another
+   * business day prints dated ("B-03 · 5 oct", LD-48, POLISH-OFFLINE-5).
+   */
+  provisionalAt?: string;
+  /** A cached server order's number and business day, which copy.order names (LD-44). */
+  order?: { number: number; businessDate?: string | null };
   round: number;
   mode: string;
   tableName: string | null;
@@ -437,6 +445,7 @@ export const ticketHeadings: Partial<Record<string, HeadingResolver>> = {
     const body = row.body as OfflineRecordV3 & { kind: "sale" };
     return {
       label: body.provisionalNumber ?? "—",
+      ...(body.provisionalNumber ? { provisionalAt: body.recordedAt } : {}),
       round: 1,
       mode: body.order.mode,
       tableName: tableName(body.order.tableId),
@@ -453,7 +462,15 @@ export const ticketHeadings: Partial<Record<string, HeadingResolver>> = {
 export async function localKitchenTickets(
   session: Session,
   sinceMs: number,
-  copy: { banner: string; footer: string; round: (n: number) => string },
+  copy: {
+    banner: string;
+    footer: string;
+    round: (n: number) => string;
+    /** "#142", or "#142 · 5 oct" for an order from another business day (LD-44). */
+    order?: (ref: { number: number; businessDate?: string | null }) => string;
+    /** "B-03", or "B-03 · 5 oct" for a provisional number from another business day. */
+    dated?: (text: string, day: string) => string;
+  },
   tables: { id: string; name: string }[] = [],
 ): Promise<LocalTicket[]> {
   const rows = (
@@ -469,12 +486,24 @@ export async function localKitchenTickets(
     const heading = ticketHeadings[body.kind]?.(row, rows, tableName);
     const createdAt = Date.parse(body.recordedAt);
     if (!heading || createdAt < sinceMs) continue;
+    const { order, provisionalAt, ...headed } = heading;
+    const label =
+      order && copy.order
+        ? copy.order(order)
+        : provisionalAt && copy.dated
+          ? copy.dated(
+              heading.label,
+              businessDate(
+                provisionalAt,
+                session.restaurant.timezone,
+                session.restaurant.cutoff,
+              ),
+            )
+          : heading.label;
     for (const ticket of ticketsFromLines({
-      ...heading,
+      ...headed,
       label:
-        heading.round > 1
-          ? `${heading.label} · ${copy.round(heading.round)}`
-          : heading.label,
+        heading.round > 1 ? `${label} · ${copy.round(heading.round)}` : label,
       banner: copy.banner,
       footer: copy.footer,
       time: body.recordedAt,
@@ -537,6 +566,11 @@ type CachedOrder = {
   discount?: number;
   state: string;
   createdAt: string;
+  /**
+   * The order's business day, so a copy names yesterday's #10 "#10 · 5 oct"
+   * (LD-29, POL-R3-1); absent in copies stored before it was kept.
+   */
+  businessDate?: string;
   serviceVersion?: number;
   lines: {
     id: string;
@@ -691,6 +725,7 @@ function cachedFrom(order: Order, receivedAt: number): CachedOrder {
     discount: order.discount ?? 0,
     state: order.state,
     createdAt: order.createdAt,
+    ...(order.businessDate ? { businessDate: order.businessDate } : {}),
     serviceVersion: order.serviceVersion,
     lines: order.lines.map((line) => ({
       id: line.id,
@@ -809,6 +844,8 @@ const targetsLocal = (body: OfflineRecordV3, operationId: string) =>
 type SyncResult = {
   orderId?: string;
   orderNumber?: number;
+  /** The server order's business day (OfflineSyncResult.businessDate, LD-29). */
+  businessDate?: string;
   tenderId?: string | null;
   roundNumber?: number | null;
 };
@@ -891,6 +928,14 @@ async function localOrders(session: Session): Promise<LocalOrderView[]> {
     views.push({
       id: body.operationId,
       number: result?.orderNumber ?? 0,
+      // Its provisional number's business day: the same helper and inputs the
+      // per-day counter used (allocateNumber), and the day the server assigns at
+      // sync, so yesterday's B-03 is named apart from today's (LD-48).
+      businessDate: businessDate(
+        body.recordedAt,
+        session.restaurant.timezone,
+        session.restaurant.cutoff,
+      ),
       version: round,
       mode: body.order.mode,
       tableId: body.order.tableId,
@@ -1003,6 +1048,7 @@ export async function cachedServerOpenOrders(
       refunded: 0,
       state: order.state,
       createdAt: order.createdAt,
+      ...(order.businessDate ? { businessDate: order.businessDate } : {}),
       serviceVersion: order.serviceVersion,
       // LD-1: the copy's round notes and those of rounds added here.
       rounds,
@@ -1058,6 +1104,182 @@ export async function findOpenOrder(
       (order) => order.id === orderId,
     ) ?? null
   );
+}
+
+/** Where a cart parked in Borradores for an order goes back to (resolveParkedOrder). */
+export type ParkedOrderTarget =
+  | { kind: "local"; order: LocalOrderView }
+  | {
+      kind: "server";
+      orderId: string;
+      cached: LocalOrderView | null;
+      /**
+       * For a local order that synced: its provisional number, and the server number
+       * and business day the sync returned, so Borradores names it "B-07 → #142" (or
+       * "B-07 → #142 · 5 oct") without a cached copy.
+       */
+      synced?: {
+        provisionalNumber: string | null;
+        number: number | null;
+        businessDate?: string;
+      };
+    }
+  | { kind: "gone" };
+
+/**
+ * Resolves the order a parked cart belongs to (LD-13 addendum). `id` is the order id
+ * Selling stored when it parked the cart: a server order id, or the local id (the order
+ * record's operation id) of an order created on this device.
+ * - local: this device still owns the order (its order record has not synced): its
+ *   projection, which takes the round like any local order, online or offline.
+ * - server: the server order to read: the id itself, or the server id the sync recorded
+ *   for a local order whose record synced (or a manager reconciled), since the server
+ *   owns it from then on (OFF-R12). `cached` is this device's projection of it (OFF-R2),
+ *   the only copy usable offline (null when table service is off or it is not cached).
+ *   `synced` carries such a local order's provisional and server numbers.
+ * - gone: a local order this device no longer has (its record was archived) that never
+ *   became a server order, or one whose record synced without naming its server order.
+ */
+export async function resolveParkedOrder(
+  session: Session,
+  id: string,
+): Promise<ParkedOrderTarget> {
+  const record = await db.pending.get(id);
+  if (
+    record &&
+    record.scope.startsWith(deviceRowsPrefix(session)) &&
+    isV3(record.body) &&
+    record.body.kind === "order"
+  ) {
+    const local = (await localOrders(session)).find(
+      (order) => order.offline.localOperationId === id,
+    );
+    if (local) return { kind: "local", order: local };
+    const result = resultOf(record);
+    const orderId = result?.orderId ?? null;
+    if (!orderId) return { kind: "gone" };
+    return {
+      kind: "server",
+      orderId,
+      cached: await findOpenOrder(session, { orderId }),
+      synced: {
+        provisionalNumber: record.body.provisionalNumber ?? null,
+        number:
+          typeof result?.orderNumber === "number" ? result.orderNumber : null,
+        ...(typeof result?.businessDate === "string"
+          ? { businessDate: result.businessDate }
+          : {}),
+      },
+    };
+  }
+  return {
+    kind: "server",
+    orderId: id,
+    cached: await findOpenOrder(session, { orderId: id }),
+  };
+}
+
+/**
+ * resolveParkedOrder for a resume (LD-48, POLISH-OFFLINE-3). Online, a local order whose
+ * record has not synced may already be a server order: a sync that committed but whose
+ * answer was lost (a power cut) leaves the record "syncing", and another device may have
+ * charged that server order since. `sync` runs this device's sync pass first, bounded by
+ * `timeoutMs`, so a record that syncs resolves to its server order, which the caller reads
+ * (a closed check then offers "Enviar como orden nueva") before the round is saved and
+ * printed. Offline, or while the record stays unresolved, the local projection is used as
+ * before: the order is still this device's alone.
+ */
+export async function resolveParkedOrderToResume(
+  session: Session,
+  id: string,
+  options: { online: boolean; sync: () => Promise<void>; timeoutMs?: number },
+): Promise<ParkedOrderTarget> {
+  const where = await resolveParkedOrder(session, id);
+  if (where.kind !== "local" || !options.online) return where;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    options.sync().catch(() => {}),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, options.timeoutMs ?? 5_000);
+    }),
+  ]);
+  clearTimeout(timer);
+  return resolveParkedOrder(session, id);
+}
+
+/**
+ * The order a cart parked in Borradores belongs to, as Selling stores it (its
+ * "parked-order" cache value): the order id resolveParkedOrder reads, the number and
+ * business date to name it when no copy does (LD-29), and, once it names the server
+ * order a local order became, that order's provisional number ("B-07 → #142").
+ */
+export type ParkedOrderRef = {
+  id: string;
+  number: number;
+  businessDate: string | null;
+  provisionalNumber?: string | null;
+};
+
+/**
+ * The parked-order value Selling stores when it parks a round for `order` (parkedOrderRef
+ * reads it back): its id, number and business date, and the provisional number this
+ * device gave it, so a draft whose local order is later archived still names it
+ * ("B-07 · ronda sin enviar · …", LD-48, POLISH-UX-6) instead of an anonymous card.
+ */
+export function parkedOrderValue(order: Order): ParkedOrderRef {
+  const provisional = (order as Partial<LocalOrderView>).offline
+    ?.provisionalNumber;
+  return {
+    id: order.id,
+    number: order.number,
+    businessDate: order.businessDate ?? null,
+    ...(typeof provisional === "string" && provisional
+      ? { provisionalNumber: provisional }
+      : {}),
+  };
+}
+
+/** Reads a stored parked-order value; null when it names no order. */
+export function parkedOrderRef(value: unknown): ParkedOrderRef | null {
+  const v = value as Record<string, unknown> | null | undefined;
+  if (!v || typeof v.id !== "string" || !v.id) return null;
+  const number = Number(v.number);
+  return {
+    id: v.id,
+    number: Number.isFinite(number) ? number : 0,
+    businessDate: typeof v.businessDate === "string" ? v.businessDate : null,
+    ...(typeof v.provisionalNumber === "string"
+      ? { provisionalNumber: v.provisionalNumber }
+      : {}),
+  };
+}
+
+/**
+ * POL-R2-3: the reference to store once a parked cart's order resolved. A local id that
+ * now resolves to the server order its sync recorded is rewritten to name that server
+ * order (with its number and the local provisional number, so Borradores names it the
+ * same), because the synced record that maps one to the other is pruned 7 days after it
+ * synced (OFF-12) and the local id alone would then read as an order the server does not
+ * have. Null when the stored reference already names the order to read.
+ */
+export function pinnedParkedOrder(
+  stored: ParkedOrderRef,
+  where: ParkedOrderTarget,
+): ParkedOrderRef | null {
+  if (where.kind !== "server" || where.orderId === stored.id) return null;
+  return {
+    id: where.orderId,
+    number: where.synced?.number ?? where.cached?.number ?? 0,
+    // The day the sync returned, else the copy's, else the one stored at park time.
+    businessDate:
+      where.synced?.businessDate ??
+      where.cached?.businessDate ??
+      stored.businessDate,
+    provisionalNumber:
+      where.synced?.provisionalNumber ??
+      where.cached?.offline?.provisionalNumber ??
+      null,
+  };
 }
 
 async function targetNumber(target: OrderTarget): Promise<string | null> {
@@ -1210,6 +1432,7 @@ function withContext(row: Pending, order: LocalOrderView): Pending {
       ? { round }
       : {
           orderNumber: order.number,
+          ...(order.businessDate ? { businessDate: order.businessDate } : {}),
           mode: order.mode,
           tableName: order.tableName ?? null,
           name: order.name,
@@ -1230,6 +1453,7 @@ function withOrderContext(row: Pending, order: LocalOrderView): Pending {
         ...row,
         context: {
           orderNumber: order.number,
+          ...(order.businessDate ? { businessDate: order.businessDate } : {}),
           mode: order.mode,
           tableName: order.tableName ?? null,
           name: order.name,
@@ -1679,6 +1903,7 @@ ticketHeadings.order = (row, _rows, tableName) => {
   const body = row.body as OfflineRecordV3 & { kind: "order" };
   return {
     label: body.provisionalNumber ?? "—",
+    ...(body.provisionalNumber ? { provisionalAt: body.recordedAt } : {}),
     round: 1,
     mode: body.order.mode,
     tableName: tableName(body.order.tableId),
@@ -1709,8 +1934,13 @@ ticketHeadings.round = (row, rows, tableName) => {
         (body.target as { localOrderOperationId: string })
           .localOrderOperationId,
     )?.body as (OfflineRecordV3 & { kind: "order" }) | undefined;
+    const label = body.provisionalNumber ?? parent?.provisionalNumber ?? null;
     return {
-      label: body.provisionalNumber ?? parent?.provisionalNumber ?? "—",
+      label: label ?? "—",
+      // The local order's number was allocated when its order record was saved.
+      ...(label
+        ? { provisionalAt: parent?.recordedAt ?? body.recordedAt }
+        : {}),
       round,
       mode: parent?.order.mode ?? "dine_in",
       tableName: tableName(parent?.order.tableId ?? null),
@@ -1721,6 +1951,14 @@ ticketHeadings.round = (row, rows, tableName) => {
   }
   return {
     label: `#${row.context?.orderNumber ?? "—"}`,
+    ...(typeof row.context?.orderNumber === "number"
+      ? {
+          order: {
+            number: row.context.orderNumber,
+            businessDate: row.context.businessDate ?? null,
+          },
+        }
+      : {}),
     round,
     mode: row.context?.mode ?? "dine_in",
     tableName: row.context?.tableName ?? null,

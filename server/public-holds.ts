@@ -157,7 +157,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
     ...new Set(rows.flatMap((r) => (r.table_id ? [r.table_id as string] : []))),
   ];
   const checks = tableIds.length
-    ? await tx`select o.id,o.number,o.version,o.check_state,o.total,o.table_id,e.name as waiter_name,
+    ? await tx`select o.id,o.number,o.business_date::text as business_day,o.version,o.check_state,o.total,o.table_id,e.name as waiter_name,
           coalesce((select sum(t.amount) from tenders t where t.tenant_id=o.tenant_id and t.order_id=o.id),0)::int as paid
         from orders o
         join employees e on e.tenant_id=o.tenant_id and e.id=coalesce(o.assigned_employee_id,o.employee_id)
@@ -200,6 +200,7 @@ export async function inbox(tx: Tx, s: Session): Promise<InboxResponse> {
         .map((c) => ({
           id: c.id,
           number: c.number,
+          businessDate: c.business_day,
           version: c.version,
           checkState: c.check_state,
           total: c.total,

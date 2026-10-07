@@ -153,13 +153,14 @@ cutover must happen before then.
 
 Rotations are recorded here without secrets (date, role, action, operator).
 The procedure is [RUNBOOK.md](RUNBOOK.md) "Credential rotation"
-(`scripts/ops/rotate-db-login.ts`, dual role, zero downtime).
+(`scripts/ops/rotate-db-login.ts`, dual role, zero downtime); step numbers are those of
+[RUNBOOK.md](RUNBOOK.md) "Staging cutover" (11 to 13).
 
 | Date | Role | Action | Operator |
 | --- | --- | --- | --- |
-| — | `gm_staging_app` | Exposed in a working session (September 30); rotation pending at cutover step 9 | — |
-| — | `gm_staging_billing` | Exposed in a working session (September 30); replace with a rotated billing login at cutover step 10 | — |
-| — | `neondb_owner` | Rotate after the cutover and keep offline (cutover step 11) | — |
+| — | `gm_staging_app` | Exposed in a working session (September 30); rotation pending at cutover step 11 | — |
+| — | `gm_staging_billing` | Exposed in a working session (September 30); replace with a rotated billing login at cutover step 12 | — |
+| — | `neondb_owner` | Rotate after the cutover and keep offline (cutover step 13) | — |
 
 ## Checks and evidence
 

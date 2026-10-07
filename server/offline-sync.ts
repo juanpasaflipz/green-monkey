@@ -734,7 +734,13 @@ export async function synchronizeOffline(
  * explain a refusal or the financial-only path.
  */
 export type ReviewTarget = {
-  target: { orderId: string; number: number; due: number } | null;
+  /** `businessDate`: the order's business day, to date its number (LD-29/LD-48). */
+  target: {
+    orderId: string;
+    number: number;
+    businessDate: string | null;
+    due: number;
+  } | null;
   reconcile: "order" | "financial" | "none";
   problems: string[];
   /**
@@ -832,7 +838,12 @@ async function onlineCreateTarget(
         })
       : found.order;
   const target = order
-    ? { orderId: order.id, number: order.number, due: dueOf(order) }
+    ? {
+        orderId: order.id,
+        number: order.number,
+        businessDate: order.businessDate ?? null,
+        due: dueOf(order),
+      }
     : null;
   const payment = paymentOf(p);
   const withProblem = (code: string) =>

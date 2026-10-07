@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Plus } from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import type { StaffRow } from "../../shared/access";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { api } from "../api";
 import { Badge, Button, Field, Modal } from "../components/ui";
 import { lockTime } from "./PinPad";
@@ -71,7 +71,7 @@ export function StaffManagement({
         current ? (staff.find((r) => r.id === current.id) ?? null) : null,
       );
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -87,7 +87,7 @@ export function StaffManagement({
       setNotice(t.accessStaffUnlocked.replace("{name}", row.name));
       await load();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   const accessLabel = (row: StaffRow) =>
@@ -336,7 +336,7 @@ function AddStaff({
             });
             await saved(row);
           } catch (err) {
-            setError(translateError((err as Error).message, locale));
+            setError(errorNotice(err, locale));
           } finally {
             setBusy(false);
           }
@@ -441,7 +441,7 @@ function EditStaff({
       await saved(message);
       return true;
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
       return false;
     } finally {
       setBusy(false);

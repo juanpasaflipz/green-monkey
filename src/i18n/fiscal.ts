@@ -116,9 +116,8 @@ export default defineArea({
     fiscalReceiptIssued: "Fecha de expedición: {date}",
     fiscalReceiptPartial:
       "Comprobante de pago parcial. El ticket con folio se emite al liquidar la cuenta.",
-    fiscalReceiptNoFolio:
-      "Sin folio fiscal. Un gerente puede emitir los tickets faltantes en Configuración.",
-    fiscalReceiptPending: "Folio fiscal pendiente: se asigna al sincronizar.",
+    fiscalReceiptNoFolio: "Ticket sin folio.",
+    fiscalReceiptPending: "Folio pendiente: se asigna al sincronizar.",
     fiscalReceiptMissingIssuer: "Ticket sin datos fiscales del emisor.",
     fiscalReceiptBase: "Base IVA {rate}",
     fiscalReceiptTax: "IVA {rate}",
@@ -261,9 +260,8 @@ export default defineArea({
     fiscalReceiptIssued: "Issued: {date}",
     fiscalReceiptPartial:
       "Partial payment receipt. The numbered ticket is issued when the check is settled.",
-    fiscalReceiptNoFolio:
-      "No ticket number. A manager can issue missing tickets in Settings.",
-    fiscalReceiptPending: "Ticket number pending: assigned on sync.",
+    fiscalReceiptNoFolio: "Ticket without folio.",
+    fiscalReceiptPending: "Folio pending: assigned when synced.",
     fiscalReceiptMissingIssuer: "Ticket without the issuer's tax details.",
     fiscalReceiptBase: "VAT {rate} base",
     fiscalReceiptTax: "VAT {rate}",

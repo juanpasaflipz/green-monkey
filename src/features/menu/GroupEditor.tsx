@@ -3,7 +3,7 @@ import { currencyExponent, type Locale } from "../../../shared/domain";
 import type { MenuEditorPayload, MenuGroup } from "../../../shared/menu";
 import { groupInput } from "../../../shared/menu-schema";
 import { api } from "../../api";
-import { translateError } from "../../i18n";
+import { errorNotice, translateError } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
 import {
   amountText,
@@ -224,10 +224,9 @@ export function GroupEditor({
       const code = (e as Error).message;
       setStale(code === "menu_changed" || code === "operation_conflict");
       setError(
-        translateError(
-          code === "operation_conflict" ? "menu_changed" : code,
-          locale,
-        ),
+        code === "operation_conflict"
+          ? translateError("menu_changed", locale)
+          : errorNotice(e, locale),
       );
     } finally {
       setBusy(false);
@@ -248,7 +247,7 @@ export function GroupEditor({
       onAvailability?.(o.id, available);
     } catch (e) {
       setOption(o.id, { available: !available });
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
 

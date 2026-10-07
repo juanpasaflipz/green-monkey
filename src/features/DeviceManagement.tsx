@@ -3,7 +3,7 @@ import { Plus } from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import type { ManagedDevice, PairingCodeRow } from "../../shared/access";
 import { ACCESS } from "../../shared/access";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice } from "../i18n";
 import { api } from "../api";
 import { Badge, Button, Field, Modal } from "../components/ui";
 import { serverSignOut } from "../access/session";
@@ -63,7 +63,7 @@ export function DeviceManagement({
       setDevices(list);
       setCodes(open);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -115,7 +115,7 @@ export function DeviceManagement({
                       await api(`/access/pairing-codes/${c.id}/cancel`, {});
                       await load();
                     } catch (e) {
-                      setError(translateError((e as Error).message, locale));
+                      setError(errorNotice(e, locale));
                     } finally {
                       setCancelBusy("");
                     }
@@ -200,7 +200,7 @@ export function DeviceManagement({
                           );
                           await load();
                         } catch (e) {
-                          setError(translateError((e as Error).message, locale));
+                          setError(errorNotice(e, locale));
                         }
                       }}
                     >
@@ -336,7 +336,7 @@ function PairingDialog({
               setState("open");
               setNow(Date.now());
             } catch (err) {
-              setError(translateError((err as Error).message, locale));
+              setError(errorNotice(err, locale));
             } finally {
               setBusy(false);
             }
@@ -438,7 +438,7 @@ function EditDevice({
             });
             await saved();
           } catch (err) {
-            setError(translateError((err as Error).message, locale));
+            setError(errorNotice(err, locale));
           } finally {
             setBusy(false);
           }
@@ -520,7 +520,7 @@ function RevokeDevice({
               } catch (e) {
                 const code = (e as Error).message;
                 if (code === "open_drawer_ack_required") setOpenDrawer(true);
-                setError(translateError(code, locale));
+                setError(errorNotice(e, locale));
               } finally {
                 setBusy(false);
               }

@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { api } from "../api";
 import { Button } from "../components/ui";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice } from "../i18n";
 import { loadAccountConfig, type AccountConfig } from "./accountConfig";
 import { PRO_OFFER, PRO_ANNUAL_SAVING_MINOR } from "../../shared/plans";
 export function PlanSettings({
@@ -29,7 +29,7 @@ export function PlanSettings({
       setPlan(await api("/plan"));
       setError("");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
