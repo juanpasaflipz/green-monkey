@@ -7,11 +7,14 @@
 // healthy worker that runs the same commit with its jobs runner on (a deployed
 // run waits for the new worker: `railway up --ci` returns when the build ends,
 // and a worker that fails to boot leaves the old one answering, PLATFORM-OPS-2),
-// the proxy hop (client IP is public, arrives as a forwarded hop and spoofed
-// forwarding headers are ignored), malformed JSON handling with a matching
-// request id, and that the API requires a session. --local (loopback runs)
-// skips the proxy hop and the worker commit/jobs requirement. Prints one JSON
-// report and exits 1 on any failure.
+// the client address behind the edge (the edge is a trusted peer, the address
+// is its X-Real-IP, public, and spoofed forwarding headers change nothing;
+// LD-46), malformed JSON handling with a matching request id, and that the API
+// requires a session. --local (loopback runs) skips the edge checks and the
+// worker commit/jobs requirement. Prints one JSON report and exits 1 on any
+// failure.
+
+import { isIP } from "node:net";
 
 const args = Object.fromEntries(
   process.argv
@@ -82,15 +85,16 @@ async function until(name, deadline, probe) {
   throw Error(`${name}: ${last}`);
 }
 
-/** RFC 1918, loopback, link-local, CGNAT (Railway edge 100.64/10 and 100/8) and IPv6 private ranges. */
+/** RFC 1918, loopback, link-local, CGNAT (Railway edge 100.64/10 and 100/8), 0/8 and IPv6 private ranges. */
 function isPrivate(ip) {
-  if (/^(::1|fe80:|fc|fd)/i.test(ip)) return true;
-  const v4 = ip.replace(/^::ffff:/, "");
+  if (/^(::1?$|fe80:|fc|fd)/i.test(ip)) return true;
+  const v4 = ip.replace(/^::ffff:/i, "");
   const parts = v4.split(".").map(Number);
   if (parts.length !== 4 || parts.some((n) => !Number.isInteger(n)))
     return false;
   const [a, b] = parts;
   return (
+    a === 0 ||
     a === 10 ||
     a === 127 ||
     a === 100 ||
@@ -155,29 +159,52 @@ await check("ops_status", async () => {
     workerJobs: result.body.worker.jobs ?? null,
   };
 });
+// Client-supplied forwarding headers the deployed edge must discard.
+const SPOOFED = { forwardedFor: "203.0.113.7", realIp: "203.0.113.8" };
+async function diagnostics(headers = {}) {
+  const response = await get("/api/ops/diagnostics/ip", { headers });
+  if (!response.ok) throw Error(`diagnostics status ${response.status}`);
+  return response.json();
+}
 await check("client_ip", async () => {
-  const plain = await (await get("/api/ops/diagnostics/ip")).json();
+  const plain = await diagnostics();
   // Locally there is no edge proxy appending the real client, so loopback is
   // a trusted hop and forwarding headers are expected to apply.
   if (local) return { ip: plain.ip, local: true };
-  const spoofed = await (
-    await get("/api/ops/diagnostics/ip", {
-      headers: { "X-Forwarded-For": "203.0.113.7", "X-Real-IP": "203.0.113.8" },
-    })
-  ).json();
-  if (["203.0.113.7", "203.0.113.8"].includes(spoofed.ip))
-    throw Error("a client-supplied forwarding header was trusted");
-  if (isPrivate(plain.ip))
-    throw Error("client IP is a proxy or private address");
+  const spoofed = await diagnostics({
+    "X-Forwarded-For": SPOOFED.forwardedFor,
+    "X-Real-IP": SPOOFED.realIp,
+  });
+  // Every per-IP limit and log ipHash keys on this address (clientIp). Behind
+  // Railway's edge it must be the edge's X-Real-IP from a trusted peer: the
+  // edge appends its own hop to X-Forwarded-For, so a "forwarded" address is
+  // the edge hop every client behind it shares (LD-46).
+  const failed = [];
+  for (const [name, answer] of [
+    ["plain", plain],
+    ["spoofed", spoofed],
+  ]) {
+    if (answer.peerTrusted !== true)
+      failed.push(
+        `${name}: peerTrusted is ${answer.peerTrusted} (the edge's peer address is not trusted; check TRUST_PROXY)`,
+      );
+    if (answer.source !== "x-real-ip")
+      failed.push(
+        `${name}: source is ${answer.source}, not x-real-ip (the address is not the edge's X-Real-IP)`,
+      );
+  }
+  if (Object.values(SPOOFED).includes(spoofed.ip))
+    failed.push(
+      "spoofed: ip is a client-supplied forwarding header value (the edge passed it on)",
+    );
   if (spoofed.ip !== plain.ip)
-    throw Error("forwarding headers changed the client IP");
-  // Access's PIN, pairing and logout limits key on this address (clientIp),
-  // so a deployed edge must hand Express the real client as an
-  // X-Forwarded-For hop; otherwise every client of a restaurant could fall
-  // into the proxy's bucket (LD-9, OPS-INT-R3).
-  if (plain.forwardedHop !== true)
-    throw Error("the edge sent no X-Forwarded-For hop for the client");
-  return { peerTrusted: plain.peerTrusted, forwardedHop: plain.forwardedHop };
+    failed.push("spoofed: forwarding headers changed the client IP");
+  if (typeof plain.ip !== "string" || isIP(plain.ip) === 0)
+    failed.push("plain: ip is not an IP address");
+  else if (isPrivate(plain.ip))
+    failed.push("plain: ip is a proxy or private address, not public");
+  if (failed.length) throw Error(failed.join("; "));
+  return { peerTrusted: plain.peerTrusted, source: plain.source };
 });
 await check("malformed_json", async () => {
   const response = await get("/api/public/smoke/orders", {

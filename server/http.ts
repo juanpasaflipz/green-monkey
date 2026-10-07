@@ -46,9 +46,11 @@ export function makeRoute(app: express.Express, sql: postgres.Sql): Route {
 }
 
 /**
- * Express `trust proxy` value. Railway's edge proxy connects from 100.0.0.0/8
- * and appends the client to X-Forwarded-For; trusting only that subnet makes
- * req.ip the real client without honouring client-supplied forwarding headers.
+ * Express `trust proxy` value. Railway's edge proxy connects from 100.0.0.0/8;
+ * trusting only that subnet (and loopback) never honours a client's own
+ * forwarding headers. Behind the edge req.ip is the edge hop, not the client:
+ * the client address is clientIp() in server/logging.ts, which takes the
+ * edge's X-Real-IP from a trusted peer (LD-46).
  */
 export function trustProxy(env: NodeJS.ProcessEnv): string | number | boolean {
   const value = env.TRUST_PROXY?.trim();

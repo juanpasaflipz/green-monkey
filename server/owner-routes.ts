@@ -4,9 +4,10 @@ import {
   type RequestHandler,
   type Response,
 } from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import type postgres from "postgres";
 import { cookieOptions, sign } from "./auth.js";
+import { clientIp } from "./logging.js";
 import { isTerminalRequest } from "./access.js";
 import { DomainError } from "../shared/domain.js";
 import { googleConfig, googleIdentityService } from "./google-identity.js";
@@ -49,7 +50,9 @@ export function ownerRoutes(sql: postgres.Sql) {
   });
   // Reads (including the account console's overview, account 031) share the
   // 120/min budget; every other request shares 30/min. The account-center
-  // router adds its own read and command limits behind these.
+  // router adds its own read and command limits behind these. Both key on the
+  // real client (clientIp, IPv6 per /56), not on req.ip, which behind
+  // Railway's edge is the edge hop (LD-46).
   const ownerRead = (req: Request) =>
     req.method === "GET" &&
     (["/providers", "/account", "/account/invitations"].includes(req.path) ||
@@ -60,6 +63,7 @@ export function ownerRoutes(sql: postgres.Sql) {
       limit: 30,
       standardHeaders: true,
       legacyHeaders: false,
+      keyGenerator: (req) => ipKeyGenerator(clientIp(req), 56),
       skip: ownerRead,
     }),
   );
@@ -69,6 +73,7 @@ export function ownerRoutes(sql: postgres.Sql) {
       limit: 120,
       standardHeaders: true,
       legacyHeaders: false,
+      keyGenerator: (req) => ipKeyGenerator(clientIp(req), 56),
       skip: (req) => !ownerRead(req),
     }),
   );
