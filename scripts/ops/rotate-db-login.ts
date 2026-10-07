@@ -13,7 +13,9 @@
 //   finalize: tsx scripts/ops/rotate-db-login.ts --env staging --finalize --old <name>
 //             Refuses while the old login has sessions, then drops it,
 //             revoking as their grantor the database and schema grants that
-//             DROP OWNED leaves (each deploy grants as gm_migrator, OPS-R14).
+//             DROP OWNED leaves (each deploy grants as gm_migrator, OPS-R14);
+//             one from pg_database_owner through a verified schema ownership
+//             round trip (LD-47).
 //   migrator: tsx scripts/ops/rotate-db-login.ts --env staging --kind migrator
 //             Sets a new gm_migrator password and writes the new URL; update
 //             the GitHub environment secret:
@@ -254,6 +256,72 @@ async function remainingGrants(tx: Tx, old: string) {
     order by 1, 2, 3`;
 }
 
+/** Schema public's owner since PostgreSQL 15. Neon lets no login SET ROLE to it (LD-47). */
+const DATABASE_OWNER_ROLE = "pg_database_owner";
+
+/** A schema's owner and its ACL entries ("grantee|grantor|privilege|grantable", sorted). */
+async function schemaAcl(tx: Tx, schema: string) {
+  const [row] = await tx<{ owner: string; entries: string[] }[]>`
+    select n.nspowner::regrole::text as owner,
+      coalesce((select array_agg(e order by e) from (
+        select format('%s|%s|%s|%s', a.grantee::regrole, a.grantor::regrole,
+                      a.privilege_type, a.is_grantable) as e
+        from aclexplode(coalesce(n.nspacl, acldefault('n', n.nspowner))) a) x),
+        '{}') as entries
+    from pg_namespace n where n.nspname = ${schema}`;
+  if (!row) throw Error(`schema ${schema} not found`);
+  return row;
+}
+
+/**
+ * Revokes `privileges` on `schema` that pg_database_owner granted `role`.
+ * Only the grantor can revoke a grant, and on Neon nobody can SET ROLE to
+ * pg_database_owner (LD-47: staging's legacy USAGE on schema public). So, in
+ * the caller's transaction, the schema briefly belongs to the current login
+ * (ALTER ... OWNER rewrites the old owner's grants as the new owner's), the
+ * login revokes them as their grantor, and the schema goes back to
+ * pg_database_owner. That rewrite touches every entry naming either owner,
+ * so the ACL afterwards must be the starting one minus exactly those
+ * entries, under pg_database_owner again; otherwise this throws and the
+ * transaction rolls back.
+ */
+async function revokeAsSchemaOwner(
+  tx: Tx,
+  schema: string,
+  role: string,
+  privileges: string[],
+) {
+  const before = await schemaAcl(tx, schema);
+  if (before.owner !== DATABASE_OWNER_ROLE)
+    throw Error(
+      `schema ${schema} is owned by ${before.owner}, not ${DATABASE_OWNER_ROLE}`,
+    );
+  const [{ grantee }] = await tx`select ${role}::regrole::text as grantee`;
+  const revoked = (e: string) => {
+    const [who, grantor, privilege] = e.split("|");
+    return (
+      who === grantee &&
+      grantor === DATABASE_OWNER_ROLE &&
+      privileges.includes(privilege)
+    );
+  };
+  await tx.unsafe(`alter schema ${ident(schema)} owner to current_user`);
+  await tx.unsafe(
+    `revoke ${privileges.join(", ")} on schema ${ident(schema)} from ${ident(role)}`,
+  );
+  await tx.unsafe(
+    `alter schema ${ident(schema)} owner to ${DATABASE_OWNER_ROLE}`,
+  );
+  const after = await schemaAcl(tx, schema);
+  const expected = before.entries.filter((e) => !revoked(e));
+  const lost = expected.filter((e) => !after.entries.includes(e));
+  const gained = after.entries.filter((e) => !expected.includes(e));
+  if (after.owner !== DATABASE_OWNER_ROLE || lost.length || gained.length)
+    throw Error(
+      `the ownership round trip on schema ${schema} would change more than ${role}'s grant (owner ${after.owner}; lost ${lost.join(", ") || "none"}; gained ${gained.join(", ") || "none"}); nothing was dropped: revoke it by hand (RUNBOOK "Credential rotation") and retry`,
+    );
+}
+
 /** Drops the old login once nothing is connected with it. */
 export async function finalizeRotation(o: { ownerUrl: string; old: string }) {
   if (!ROLE.test(o.old) || o.old === "gm_migrator")
@@ -295,7 +363,9 @@ export async function finalizeRotation(o: { ownerUrl: string; old: string }) {
       // USAGE on schema public are also held from gm_migrator (and, for a
       // superuser or a login that inherits gm_migrator, the owner's grant can
       // be the one left). Revoke each remaining grant as its grantor, since
-      // REVOKE ... GRANTED BY accepts only the current user (OPS-R14).
+      // REVOKE ... GRANTED BY accepts only the current user (OPS-R14). A
+      // schema grant from pg_database_owner goes through the schema's
+      // ownership instead (LD-47, revokeAsSchemaOwner).
       const remaining = await remainingGrants(tx, o.old);
       const blocked = remaining.filter((g) => !g.can_set);
       if (blocked.length)
@@ -312,6 +382,13 @@ export async function finalizeRotation(o: { ownerUrl: string; old: string }) {
       for (const g of remaining) {
         if (!g.privileges.every((p) => PRIVILEGE.test(p)))
           throw Error(`unexpected privilege on ${g.kind} ${g.name}`);
+        if (g.kind === "schema" && g.grantor === DATABASE_OWNER_ROLE) {
+          await revokeAsSchemaOwner(tx, g.name, o.old, g.privileges);
+          actions.push(
+            `revoked ${g.privileges.join(", ")} on schema ${g.name} granted by ${g.grantor} (schema ownership round trip, ACL verified)`,
+          );
+          continue;
+        }
         await tx.unsafe(`set local role ${ident(g.grantor)}`);
         await tx.unsafe(
           `revoke ${g.privileges.join(", ")} on ${g.kind} ${ident(g.name)} from ${ident(o.old)}`,

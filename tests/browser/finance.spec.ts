@@ -2,6 +2,7 @@ import "dotenv/config";
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import postgres from "postgres";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 // Reports (029) browser tests for Hoy, Finanzas and the cortes (spec §7.3 tests 1–9, 13, 14) and the second opinion's UI
 // findings (LD-27: REPORTS-UI-1..UI-10, CORTES-1). The demo owner "Alex Demo" runs every view;
@@ -177,6 +178,9 @@ const addDays = (date: string, days: number) => {
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
 };
+
+// W3-2: every round a test sends to the kitchen is delivered after it.
+kitchenHygiene();
 
 test("Finanzas (§7.3 tests 1, 3): ranges, the cash and terminal split, all totals reconcile, axe; a range whose load fails shows none of the previous range's figures (REPORTS-UI-1)", async ({
   page,

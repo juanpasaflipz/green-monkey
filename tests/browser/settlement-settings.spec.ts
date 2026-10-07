@@ -1,5 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "@playwright/test";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 async function login(page: any) {
   await page.goto("/app");
   await page.getByLabel("Contraseña o PIN").fill("demo-green-monkey");
@@ -8,6 +9,10 @@ async function login(page: any) {
     page.getByRole("heading", { name: "Hoy", exact: true }),
   ).toBeVisible();
 }
+// W3-2: every round a test sends to the kitchen is delivered after it, and
+// every offline sale it leaves in the kitchen review lane is decided (FLK-R3).
+kitchenHygiene();
+
 test("one of three items is paid once and stays allocated after refresh", async ({
   page,
 }) => {

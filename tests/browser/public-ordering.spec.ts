@@ -8,6 +8,7 @@ import {
   type Route,
 } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 // Public QR/kiosk ordering (032). Every test makes its own "QR <runId>" tables
 // and links and, in a finally, decides or cancels every hold, revokes every
@@ -413,6 +414,10 @@ test.afterEach(async () => {
   open = null;
   if (f) await f.cleanup();
 });
+// W3-2: after that cleanup (hooks run in registration order), the shared
+// kitchen hygiene settles any round or offline review a test still left
+// open, as in every other spec that sends rounds to the kitchen (LD-42).
+kitchenHygiene();
 /** The accepted check of a hold, for cleanup. */
 async function acceptedOrder(page: Page, name: string) {
   const list = await call(
