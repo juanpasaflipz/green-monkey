@@ -184,6 +184,11 @@ While the address is wrong, a restaurant or a carrier NAT behind one edge hop
 shares one bucket per limit (one busy client can lock the others out of PIN
 login or public ordering), and `ipHash` names the hop, not the client.
 
+The smoke cannot tell a client's address from another proxy's: keep the custom
+domain DNS-only in Cloudflare ("Manual Railway settings" above). Proxied
+through Cloudflare, `X-Real-IP` would be a Cloudflare address shared by many
+clients while every check above still passes.
+
 ## Retention
 
 Retention deletes only expired OAuth login attempts and done/dead jobs older
