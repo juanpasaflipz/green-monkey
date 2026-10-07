@@ -407,7 +407,8 @@ invoice. The cached status carries the bound (periodicity, pending change, cutof
 receipt printed offline shows the same date. A signed-in device refreshes that status when the
 window regains focus or visibility, when the connection returns and every 5 minutes while online
 and visible (CFDIFIX-3), so a terminal signed in for the whole shift picks up a settings change
-within minutes; the refresh stops once the device's session is no longer the one it started for.
+within minutes; the refresh stops once the device's session is no longer the employee it started
+for (sign-out, or an employee change, which starts a new one).
 A deadline already past when the receipt prints (a check of yesterday's business date paid after
 its daily global was built, or a reprint) is not printed: the receipt says "Pídela en caja con
 el folio …" instead (CFDIFIX-11). The settings explain the trade-off for the chosen

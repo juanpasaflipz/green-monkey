@@ -9,9 +9,9 @@
  * that can change mid-month (a periodicity that applies at once, the policy, the reissue switch),
  * so a terminal signed in for the whole shift refreshes the status when the window regains focus
  * or visibility, when the connection returns, and every STATUS_REFRESH_MS while online and
- * visible. The refresh stops by itself once the device's session is no longer the one it started
- * for (sign-out deletes it, an employee change replaces it) and skips while api() holds calls
- * after a session 401.
+ * visible. The refresh stops by itself once the device's session is no longer the employee it
+ * started for (sign-out deletes it, an employee change replaces it; App starts a new one) and
+ * skips while api() holds calls after a session 401.
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../shared/domain";
@@ -124,7 +124,11 @@ function browserEnv(): StatusRefreshEnv | null {
   };
 }
 
-/** Starts (or restarts) the refresh for the signed-in session `s`. */
+/**
+ * Starts (or restarts) the refresh for the signed-in session `s`. It runs while the device's
+ * session (Dexie "session": deleted at sign-out, replaced by an employee change, rewritten by a
+ * renewal) is the same employee of the same restaurant.
+ */
 function keepFresh(s: Session): void {
   stopRefresh?.();
   stopRefresh = null;
@@ -132,9 +136,13 @@ function keepFresh(s: Session): void {
   if (!env) return;
   stopRefresh = startStatusRefresh({
     env,
-    signedIn: async () =>
-      ((await db.cache.get("session"))?.value as Session | undefined)?.id ===
-      s.id,
+    signedIn: async () => {
+      const cached = (await db.cache.get("session"))?.value as
+        Session | undefined;
+      return (
+        cached?.tenantId === s.tenantId && cached?.employeeId === s.employeeId
+      );
+    },
     paused: requestsBlocked,
     refresh: () => fetchStatus(s),
   });
