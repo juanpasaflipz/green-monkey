@@ -2912,27 +2912,57 @@ test.describe("offline table service (Beta) turned on", () => {
         .filter((line: any) => line.round === 2)
         .map((line: any) => line.name.es),
     ).toEqual(["Agua de jamaica"]);
-    // Leave no open check behind for the next tests.
+    // Leave no open check behind for the next tests, and deliver the kitchen
+    // rounds it put on the KDS as the KDS would (LD-42 hygiene, POL-R2-5).
+    // Round 1 synced from the local order is held for offline review, which
+    // the kitchen feed never lists; round 2 was sent here.
     await page.evaluate(
       async ({ id, amount }) => {
         const s = await (await fetch("/api/session")).json();
-        await fetch(`/api/orders/${id}/payments`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-csrf-token": s.csrf,
-          },
-          body: JSON.stringify({
-            operationId: crypto.randomUUID(),
-            amount,
-            tip: 0,
-            received: amount,
-            method: "cash",
-          }),
+        const post = async (path: string, body: unknown) => {
+          const r = await fetch("/api" + path, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-csrf-token": s.csrf,
+            },
+            body: JSON.stringify(body),
+          });
+          if (!r.ok) throw Error(`${path}: ${r.status}`);
+        };
+        await post(`/orders/${id}/payments`, {
+          operationId: crypto.randomUUID(),
+          amount,
+          tip: 0,
+          received: amount,
+          method: "cash",
         });
+        const paid = await (await fetch(`/api/orders/${id}`)).json();
+        for (const round of paid.rounds ?? []) {
+          if (round.state === "active")
+            await post(`/kitchen/${round.id}`, {
+              operationId: crypto.randomUUID(),
+              state: "ready",
+            });
+          if (round.state === "active" || round.state === "ready")
+            await post(`/kitchen/${round.id}`, {
+              operationId: crypto.randomUUID(),
+              state: "completed",
+            });
+        }
       },
       { id: orderId, amount: order.total - order.paid },
     );
+    const delivered = await serverOrder(page, orderId);
+    expect(
+      delivered.rounds.find((round: any) => round.number === 2)?.state,
+    ).toBe("completed");
+    // Nothing of this test stays on the kitchen screen.
+    expect(
+      delivered.rounds
+        .filter((round: any) => ["active", "ready"].includes(round.state))
+        .map((round: any) => round.number),
+    ).toEqual([]);
   });
 
   test("A draft whose order no longer exists is shown as such and can only be discarded (LD-13 addendum)", async ({
