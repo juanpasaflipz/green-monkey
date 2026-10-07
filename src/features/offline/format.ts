@@ -6,7 +6,7 @@ import {
 } from "../../../shared/offline-recovery";
 import { strings, type Key } from "../../i18n";
 import { orderNumberText } from "../../labels";
-import type { ParkedOrderTarget } from "../../offline-records";
+import type { ParkedOrderRef, ParkedOrderTarget } from "../../offline-records";
 
 /** Replaces {name} placeholders in a translated string. */
 export function fmt(text: string, vars: Record<string, string | number>) {
@@ -67,12 +67,16 @@ export function orderLabel(
  * ("B-07", "B-07 → #142", "#12"); for a local order that synced with no cached
  * copy (for example closed online), from its record ("B-07 → #142"); else the
  * number (and business date, "#12 · 5 oct", LD-29) stored when the round was
- * parked. Null when nothing names it (a new order's draft, or a local order
- * that is gone).
+ * parked, or rewritten when its local order resolved to its server order
+ * ("B-07 → #142", POL-R2-3). Null when nothing names it (a new order's
+ * draft, or a local order that is gone).
  */
 export function parkedOrderLabel(
   where: ParkedOrderTarget | null,
-  stored: { number: number; businessDate?: string | null } | null,
+  stored: Pick<
+    ParkedOrderRef,
+    "number" | "businessDate" | "provisionalNumber"
+  > | null,
   today: string | null | undefined,
   locale: Locale,
 ): string | null {
@@ -91,6 +95,17 @@ export function parkedOrderLabel(
         locale,
       );
   }
+  if (stored?.provisionalNumber)
+    return orderLabel(
+      {
+        id: "",
+        number: stored.number,
+        businessDate: stored.businessDate,
+        offline: { provisionalNumber: stored.provisionalNumber },
+      },
+      today,
+      locale,
+    );
   return stored?.number ? "#" + orderNumberText(stored, today, locale) : null;
 }
 

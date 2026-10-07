@@ -314,6 +314,10 @@ provisional number ("B-07 · ronda sin enviar") and goes back onto that local
 order, online or offline; once its order record has synced, the local id
 resolves to the server order the sync recorded ("B-07 → #142 · ronda sin
 enviar"), read from the server online or from the device's cached copy offline.
+Opening Borradores then rewrites the parked reference to that server order
+(`pinnedParkedOrder`, POL-R2-3), because the synced record that maps the local
+id to it is pruned 7 days after it synced (OFF-12); a draft that was never
+listed between its order's sync and that pruning still reads as gone.
 Offline, a server check this device did not keep cannot take the round: the
 draft stays parked with "Disponible al volver la conexión" (table service off)
 or the `offline_order_not_cached` message (on). A draft whose check exists

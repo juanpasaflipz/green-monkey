@@ -50,8 +50,11 @@ import { fmt, orderLabel, parkedOrderLabel } from "./offline/format";
 import { currentBusinessDate } from "../labels";
 import {
   isServerOrder,
+  parkedOrderRef,
+  pinnedParkedOrder,
   resolveParkedOrder,
   type LocalOrderView,
+  type ParkedOrderRef,
   type ParkedOrderTarget,
 } from "../offline-records";
 import { DiscountButton } from "./discounts/DiscountButton";
@@ -106,7 +109,7 @@ class HandledError extends Error {
 /** A parked cart, and the check it was a round for (null for a new order). */
 type ParkedDraft = {
   draft: Draft;
-  order: { id: string; number: number; businessDate: string | null } | null;
+  order: ParkedOrderRef | null;
   /** How the list names the order: "#12", "B-07" or "B-07 → #12" (LD-13 addendum). */
   label: string | null;
   /** The order no longer exists on this device or on the server: only discard. */
@@ -383,26 +386,21 @@ export function Selling({
     setParked(
       await Promise.all(
         drafts.map(async (draft): Promise<ParkedDraft> => {
-          const value = (await db.cache.get(parkedOrderId(draft.id)))?.value;
-          const order =
-            value && typeof value.id === "string"
-              ? {
-                  id: value.id as string,
-                  number: Number(value.number),
-                  businessDate:
-                    typeof value.businessDate === "string"
-                      ? value.businessDate
-                      : null,
-                }
-              : null;
+          const key = parkedOrderId(draft.id);
+          const stored = parkedOrderRef((await db.cache.get(key))?.value);
           // LD-13 addendum: a local order is named by this device's records.
-          const where = order
-            ? await resolveParkedOrder(session, order.id).catch(() => null)
+          const where = stored
+            ? await resolveParkedOrder(session, stored.id).catch(() => null)
             : null;
+          // POL-R2-3: a local id that resolved to its server order is stored
+          // as that server order before its synced record is pruned.
+          const pinned = stored && where && pinnedParkedOrder(stored, where);
+          if (pinned)
+            await db.cache.put({ id: key, value: pinned }).catch(() => {});
           return {
             draft,
-            order,
-            label: parkedOrderLabel(where, order, today, locale),
+            order: pinned || stored,
+            label: parkedOrderLabel(where, stored, today, locale),
             gone: where?.kind === "gone",
           };
         }),

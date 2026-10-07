@@ -2784,7 +2784,7 @@ test.describe("offline table service (Beta) turned on", () => {
     await context.setOffline(false);
   });
 
-  test("A round parked for a local order resumes from Borradores offline and, after the order synced, onto its server order (LD-13 addendum)", async ({
+  test("A round parked for a local order resumes from Borradores offline and, after the order synced, onto its server order, also once the synced record is pruned (LD-13 addendum)", async ({
     page,
     context,
   }) => {
@@ -2846,9 +2846,52 @@ test.describe("offline table service (Beta) turned on", () => {
     const { orderId, orderNumber } = (await orderRow()).result;
     expect(orderId).toBeTruthy();
 
-    // Online: the local id resolves to the server order the sync recorded.
+    // Online: the local id resolves to the server order the sync recorded,
+    // and opening Borradores stores the parked reference as that server
+    // order (POL-R2-3).
     await page.getByRole("button", { name: "Borradores", exact: true }).click();
-    await parkedRound(`${number} → #${orderNumber}`).click();
+    await expect(parkedRound(`${number} → #${orderNumber}`)).toHaveCount(1);
+    const s = await session(page);
+    const parkedRefs = () =>
+      page.evaluate(
+        (prefix) =>
+          new Promise<any[]>((resolve, reject) => {
+            const request = indexedDB.open("green-monkey-v1");
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const db = request.result,
+                tx = db.transaction("cache", "readonly"),
+                rows = tx.objectStore("cache").getAll();
+              rows.onsuccess = () =>
+                resolve(
+                  (rows.result as any[])
+                    .filter((row) => String(row.id).startsWith(prefix))
+                    .map((row) => row.value),
+                );
+              tx.oncomplete = () => db.close();
+            };
+          }),
+        `${s.tenantId}:${s.deviceId}:${s.employeeId}:parked-order:`,
+      );
+    await expect
+      .poll(async () => (await parkedRefs()).map((ref) => ref?.id))
+      .toEqual([orderId]);
+    expect((await parkedRefs())[0]).toMatchObject({
+      number: orderNumber,
+      provisionalNumber: number,
+    });
+    // Retention then prunes the synced order record (7 days after it synced,
+    // OFF-12): the round still resumes onto its server order instead of
+    // reading as an order that no longer exists.
+    await page.keyboard.press("Escape");
+    await expect(drafts).toHaveCount(0);
+    await deleteRow(page, (await orderRow()).id);
+    expect(await orderRow()).toBeUndefined();
+    await page.getByRole("button", { name: "Borradores", exact: true }).click();
+    await drafts
+      .getByRole("button")
+      .filter({ hasText: `#${orderNumber} · ronda sin enviar` })
+      .click();
     await expect(drafts).toHaveCount(0);
     await expect(heading).toHaveText(`${number} → #${orderNumber}`);
     await expect(cart).toHaveCount(1);

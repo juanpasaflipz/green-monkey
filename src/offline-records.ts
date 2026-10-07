@@ -1125,6 +1125,58 @@ export async function resolveParkedOrder(
   };
 }
 
+/**
+ * The order a cart parked in Borradores belongs to, as Selling stores it (its
+ * "parked-order" cache value): the order id resolveParkedOrder reads, the number and
+ * business date to name it when no copy does (LD-29), and, once it names the server
+ * order a local order became, that order's provisional number ("B-07 → #142").
+ */
+export type ParkedOrderRef = {
+  id: string;
+  number: number;
+  businessDate: string | null;
+  provisionalNumber?: string | null;
+};
+
+/** Reads a stored parked-order value; null when it names no order. */
+export function parkedOrderRef(value: unknown): ParkedOrderRef | null {
+  const v = value as Record<string, unknown> | null | undefined;
+  if (!v || typeof v.id !== "string" || !v.id) return null;
+  const number = Number(v.number);
+  return {
+    id: v.id,
+    number: Number.isFinite(number) ? number : 0,
+    businessDate: typeof v.businessDate === "string" ? v.businessDate : null,
+    ...(typeof v.provisionalNumber === "string"
+      ? { provisionalNumber: v.provisionalNumber }
+      : {}),
+  };
+}
+
+/**
+ * POL-R2-3: the reference to store once a parked cart's order resolved. A local id that
+ * now resolves to the server order its sync recorded is rewritten to name that server
+ * order (with its number and the local provisional number, so Borradores names it the
+ * same), because the synced record that maps one to the other is pruned 7 days after it
+ * synced (OFF-12) and the local id alone would then read as an order the server does not
+ * have. Null when the stored reference already names the order to read.
+ */
+export function pinnedParkedOrder(
+  stored: ParkedOrderRef,
+  where: ParkedOrderTarget,
+): ParkedOrderRef | null {
+  if (where.kind !== "server" || where.orderId === stored.id) return null;
+  return {
+    id: where.orderId,
+    number: where.synced?.number ?? where.cached?.number ?? 0,
+    businessDate: where.cached?.businessDate ?? stored.businessDate,
+    provisionalNumber:
+      where.synced?.provisionalNumber ??
+      where.cached?.offline?.provisionalNumber ??
+      null,
+  };
+}
+
 async function targetNumber(target: OrderTarget): Promise<string | null> {
   if (!("localOrderOperationId" in target)) return null;
   const parent = await db.pending.get(target.localOrderOperationId);

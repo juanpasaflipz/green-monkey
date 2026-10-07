@@ -25,8 +25,10 @@ import {
   guardOnlineCharge,
   guardOnlineCharges,
   OnlineChargeRefused,
+  pruneResolved,
   syncPending,
 } from "../src/offline-queue";
+import { RESOLVED_RETENTION_MS } from "../src/offline-policy";
 import { resetConnectivityForTests } from "../src/connectivity";
 import { scope } from "../src/offline-keys";
 import {
@@ -40,6 +42,8 @@ import {
   localKitchenTickets,
   localOpenOrders,
   orderTicketIds,
+  parkedOrderRef,
+  pinnedParkedOrder,
   reconciledResult,
   refreshOpenOrders,
   rememberOpenOrder,
@@ -1937,6 +1941,66 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
       null,
     );
     expect(parkedOrderLabel(null, null, "2026-10-06", "es")).toBe(null);
+  });
+
+  it("once its local order resolves to the server order its sync recorded, the parked reference names that server order, so the cart still resumes after the synced record is pruned (POL-R2-3)", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    const provisional = open.offline.provisionalNumber!;
+    // As Selling stores it when the round is parked (number 0 while local).
+    const stored = parkedOrderRef({
+      id: open.id,
+      number: 0,
+      businessDate: "2026-10-05",
+    })!;
+    expect(stored).toEqual({
+      id: open.id,
+      number: 0,
+      businessDate: "2026-10-05",
+    });
+    // While the device alone knows the order, the reference stays as parked.
+    expect(
+      pinnedParkedOrder(stored, await resolveParkedOrder(s, open.id)),
+    ).toBeNull();
+    const serverId = uuid(440);
+    const syncedAt = Date.now();
+    await markSynced(open.id, { orderId: serverId, orderNumber: 142 }, syncedAt);
+    const where = await resolveParkedOrder(s, open.id);
+    const pinned = pinnedParkedOrder(stored, where)!;
+    expect(pinned).toEqual({
+      id: serverId,
+      number: 142,
+      businessDate: "2026-10-05",
+      provisionalNumber: provisional,
+    });
+    // Borradores names it the same before and after the rewrite, and the stored
+    // value reads back as written.
+    expect(parkedOrderLabel(where, stored, "2026-10-05", "es")).toBe(
+      `${provisional} → #142`,
+    );
+    expect(parkedOrderRef(JSON.parse(JSON.stringify(pinned)))).toEqual(pinned);
+    // Retention prunes the synced record 7 days later (OFF-12): the local id
+    // alone would now be read as a server id the server does not have.
+    expect(await pruneResolved(syncedAt + RESOLVED_RETENTION_MS + 1)).toBe(1);
+    expect(await fakeDb.pending.get(open.id)).toBeUndefined();
+    expect(await resolveParkedOrder(s, open.id)).toEqual({
+      kind: "server",
+      orderId: open.id,
+      cached: null,
+    });
+    // The pinned reference still reads the server order, under the same name.
+    const after = await resolveParkedOrder(s, pinned.id);
+    expect(after).toEqual({ kind: "server", orderId: serverId, cached: null });
+    expect(pinnedParkedOrder(pinned, after)).toBeNull();
+    expect(parkedOrderLabel(after, pinned, "2026-10-05", "es")).toBe(
+      `${provisional} → #142`,
+    );
+    expect(parkedOrderLabel(after, pinned, "2026-10-06", "en")).toBe(
+      `${provisional} → #142 · Oct 5`,
+    );
+    // A stored value that names no order is not a reference.
+    expect(parkedOrderRef(null)).toBeNull();
+    expect(parkedOrderRef({ number: 3 })).toBeNull();
   });
 
   it("a server order id resolves to itself (with its cached copy when there is one)", async () => {
