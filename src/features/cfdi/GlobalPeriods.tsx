@@ -121,7 +121,14 @@ export function GlobalPeriods({
       )}
       {periods && periods.length === 0 && <Empty title={t.cfdiEmptyGlobals} />}
       {periods && periods.length > 0 && (
-        <div className="cfdi-table-wrap">
+        // Focusable: a narrow screen scrolls the table sideways, and a period with no
+        // documents has nothing else a keyboard could reach (axe scrollable-region-focusable).
+        <div
+          className="cfdi-table-wrap"
+          tabIndex={0}
+          role="region"
+          aria-label={t.cfdiGlobalsTable}
+        >
           <table className="cfdi-table">
             <thead>
               <tr>

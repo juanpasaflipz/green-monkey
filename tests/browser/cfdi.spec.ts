@@ -14,6 +14,13 @@
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import { TEST_CSD, TEST_CSD_PASSWORD } from "../fixtures/cfdi/test-csd";
+import {
+  deleteOwnerFixtures,
+  fixtureDatabases,
+  ownerFixture,
+  ownerRestaurant,
+  useOwnerCookie,
+} from "./account-fixtures.js";
 
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21aa"];
 const RECEPTOR = {
@@ -119,6 +126,117 @@ test("Configuración shows the CFDI panel before activation: badge, prerequisite
       .analyze();
     expect(axe.violations).toEqual([]);
     await noHorizontalScroll(page);
+  }
+});
+
+test("Datos fiscales saved on Configuración updates the CFDI requirements on the same screen, without leaving it (acceptance B1.6)", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  // A new restaurant has no fiscal profile: the CFDI checklist starts with ✗.
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const owner = await ownerFixture(sql, "cfdiprereq");
+  let tenantId = "";
+  try {
+    tenantId = await ownerRestaurant(sql, owner, "Requisitos CFDI");
+    await useOwnerCookie(context, owner, baseURL);
+    await page.goto("/app");
+    await page
+      .locator(".row.between")
+      .filter({ hasText: "Requisitos CFDI" })
+      .getByRole("button", { name: "Entrar", exact: true })
+      .click();
+    await expect(page.locator(".scope")).toContainText("Requisitos CFDI");
+    await openSettings(page);
+    const cfdi = panel(page);
+    await expect(
+      cfdi.getByText("Completa los datos fiscales del restaurante.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    const fiscal = page.getByRole("region", { name: "Datos fiscales" });
+    await fiscal.getByLabel(/^RFC/).fill(RECEPTOR.rfc);
+    await fiscal.getByLabel(/^Nombre o razón social/).fill(RECEPTOR.legalName);
+    await fiscal.getByLabel(/^Régimen fiscal/).selectOption(RECEPTOR.regime);
+    await fiscal
+      .getByLabel(/^Código postal del lugar de expedición/)
+      .fill(RECEPTOR.postalCode);
+    await fiscal
+      .getByRole("button", { name: "Guardar datos fiscales", exact: true })
+      .click();
+    await expect(
+      fiscal
+        .getByRole("status")
+        .filter({ hasText: "Datos fiscales guardados" }),
+    ).toBeVisible();
+    // Same screen, no navigation: the requirement turns ✓.
+    await expect(
+      cfdi.getByText("Datos fiscales completos", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      cfdi.getByText("Completa los datos fiscales del restaurante."),
+    ).toHaveCount(0);
+  } finally {
+    if (tenantId)
+      await admin.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${tenantId}, true)`;
+        await tx`delete from restaurant_fiscal_profiles where tenant_id=${tenantId}`;
+      });
+    await deleteOwnerFixtures(admin, [owner.accountId]);
+    await sql.end();
+    await admin.end();
+  }
+});
+
+test("Facturas globales: the periods table scrolls by keyboard on a narrow screen, axe-clean at 768 and 390 px (acceptance B7-global)", async ({
+  page,
+}) => {
+  await login(page);
+  test.skip(
+    !(await stampingReady(page)),
+    "needs the cfdi worker with the Facturapi fake",
+  );
+  await ensureFiscalIdentity(page);
+  await ensureCfdiOn(page);
+  try {
+    // The activation tick adds the current period's row.
+    const day = (offset: number) =>
+      new Date(Date.now() - 6 * 3_600_000 + offset * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+    await expect
+      .poll(
+        async () =>
+          (
+            await call<unknown[]>(
+              page,
+              `/cfdi/globals?from=${day(-300)}&to=${day(0)}`,
+            )
+          ).body.length,
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(0);
+    await openSettings(page);
+    await panel(page).getByText("Facturas globales", { exact: true }).click();
+    const periods = panel(page).getByRole("region", {
+      name: "Periodos de factura global",
+    });
+    await expect(periods).toBeVisible();
+    await expect(periods).toHaveAttribute("tabindex", "0");
+    for (const [width, height] of [
+      [768, 1024],
+      [390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      const axe = await new AxeBuilder({ page })
+        .include(".cfdi-globals")
+        .withTags(AXE_TAGS)
+        .analyze();
+      expect(axe.violations).toEqual([]);
+    }
+  } finally {
+    await pauseCfdi(page);
   }
 });
 

@@ -29,6 +29,7 @@ import { api } from "../../api";
 import { strings, errorNotice, translateError, type Key } from "../../i18n";
 import { Badge, Button, Field } from "../../components/ui";
 import { prefetchCfdiStatus } from "./status";
+import { useFiscalContext } from "../fiscal/context";
 import { CsdUpload } from "./CsdUpload";
 import { CfdiDocuments } from "./CfdiDocuments";
 import { GlobalPeriods } from "./GlobalPeriods";
@@ -203,6 +204,17 @@ export function CfdiSettings({
       alive.current = false;
     };
   }, [load]);
+
+  // Datos fiscales sits on the same screen: when it saves (FiscalSettings refreshes the
+  // fiscal context), re-read the prerequisites, so "Completa los datos fiscales" and the
+  // disabled "Activar en modo prueba" do not outlive the save. Form edits are kept.
+  const fiscal = useFiscalContext();
+  const seenFiscal = useRef(fiscal);
+  useEffect(() => {
+    if (seenFiscal.current === fiscal) return;
+    seenFiscal.current = fiscal;
+    void load(false);
+  }, [fiscal, load]);
 
   // Poll while the worker is settling something (single-flight, 2 min).
   const polling = settling(data);
