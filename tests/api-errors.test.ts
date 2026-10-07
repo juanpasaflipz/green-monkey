@@ -1,8 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type express from "express";
 import { z } from "zod";
-import { apiErrorHandler, classifyApiError } from "../server/api-errors.js";
-import { setLogSink } from "../server/logging.js";
+import {
+  apiErrorHandler,
+  BODY_PARSER_ERRORS,
+  classifyApiError,
+} from "../server/api-errors.js";
+import { BODY_REJECTIONS, setLogSink } from "../server/logging.js";
+import { errorText, supportReferenceOf } from "../src/i18n";
 import { DomainError } from "../shared/domain.js";
 
 let lines: Record<string, any>[] = [];
@@ -105,6 +110,73 @@ describe("API error classification", () => {
     const failed = fakeExchange({ destroyed: false, writable: true });
     apiErrorHandler(new TypeError("boom"), failed.req, failed.res, () => {});
     expect(failed.sent.status).toBe(500);
+    expect(lines.at(-1)).toMatchObject({
+      level: "error",
+      message: "request_failed",
+      code: "internal_error",
+    });
+  });
+
+  it("body-parser's other client errors answer their 4xx and log at info; a stream the server itself consumed stays a 500 error line (POL-R3-3)", () => {
+    // Types and statuses as body-parser documents and raises them
+    // (expressjs/body-parser README "Errors"; body-parser 2.3.0, raw-body 3.0.2).
+    const expected: [string, number, string][] = [
+      ["request.size.invalid", 400, "request_size_invalid"],
+      ["encoding.unsupported", 415, "unsupported_encoding"],
+      ["charset.unsupported", 415, "unsupported_charset"],
+      ["parameters.too.many", 413, "too_many_parameters"],
+    ];
+    for (const [type, status, code] of expected) {
+      expect(classifyApiError(bodyParserError(type, status)), type).toEqual({
+        status,
+        code,
+      });
+      lines.length = 0;
+      const open = fakeExchange({ destroyed: false, writable: true });
+      apiErrorHandler(
+        bodyParserError(type, status),
+        open.req,
+        open.res,
+        () => {},
+      );
+      expect(open.sent.status, type).toBe(status);
+      expect(open.sent.body, type).toMatchObject({ error: code });
+      expect(lines, type).toEqual([
+        expect.objectContaining({
+          level: "info",
+          message: "request_rejected",
+          status,
+          code,
+        }),
+      ]);
+      // The client shows the translated text with its support reference.
+      expect(errorText[code]?.[0], code).toBeTruthy();
+      expect(errorText[code]?.[1], code).toBeTruthy();
+      expect(
+        supportReferenceOf(
+          Object.assign(new Error(code), {
+            status,
+            requestId: "3f2a9c1b-7d4e-4c2a-9b1e-0123456789ab",
+          }),
+        ),
+        code,
+      ).toBe("3F2A9C1B");
+    }
+    // Every body-parser answer is logged at info (one list for both files).
+    for (const { code } of Object.values(BODY_PARSER_ERRORS))
+      expect(BODY_REJECTIONS.has(code), code).toBe(true);
+    // stream.encoding.set (500): this server's own middleware decoded the
+    // request stream before the parser, a server bug, not the client's.
+    lines.length = 0;
+    const bug = fakeExchange({ destroyed: false, writable: true });
+    apiErrorHandler(
+      bodyParserError("stream.encoding.set", 500),
+      bug.req,
+      bug.res,
+      () => {},
+    );
+    expect(bug.sent.status).toBe(500);
+    expect(bug.sent.body).toMatchObject({ error: "internal_error" });
     expect(lines.at(-1)).toMatchObject({
       level: "error",
       message: "request_failed",

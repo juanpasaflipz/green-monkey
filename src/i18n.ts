@@ -715,6 +715,10 @@ const MALFORMED_REQUEST = new Set([
   "invalid_json",
   "payload_too_large",
   "request_aborted",
+  "request_size_invalid",
+  "unsupported_encoding",
+  "unsupported_charset",
+  "too_many_parameters",
 ]);
 
 /**

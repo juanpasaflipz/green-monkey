@@ -24,5 +24,22 @@ export default defineArea({
       "Esta tarea ya terminó; no se puede cancelar.",
       "This task has already finished; it cannot be cancelled.",
     ],
+    // body-parser's other client errors (server/api-errors.ts, POL-R3-3).
+    request_size_invalid: [
+      "La solicitud llegó incompleta. Inténtalo de nuevo.",
+      "The request arrived incomplete. Try again.",
+    ],
+    unsupported_encoding: [
+      "La solicitud no se pudo leer. Actualiza la pantalla e inténtalo de nuevo.",
+      "The request could not be read. Refresh the screen and try again.",
+    ],
+    unsupported_charset: [
+      "La solicitud no se pudo leer. Actualiza la pantalla e inténtalo de nuevo.",
+      "The request could not be read. Refresh the screen and try again.",
+    ],
+    too_many_parameters: [
+      "La solicitud tiene demasiados datos. Reduce los datos e inténtalo de nuevo.",
+      "The request has too many fields. Reduce the data and try again.",
+    ],
   },
 });

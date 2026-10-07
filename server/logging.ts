@@ -301,10 +301,25 @@ export function requestLog(
 }
 
 /**
+ * The API's answers to a request body the client got wrong or cut short
+ * (api-errors.ts BODY_PARSER_ERRORS): nothing failed here, so they are logged
+ * at info, never as an error line (POL-R3-3).
+ */
+export const BODY_REJECTIONS: ReadonlySet<string> = new Set([
+  "invalid_json",
+  "payload_too_large",
+  "request_aborted",
+  "request_size_invalid",
+  "unsupported_encoding",
+  "unsupported_charset",
+  "too_many_parameters",
+]);
+
+/**
  * Logs an error the API answered (SEC-8): 5xx with name, message, stack,
  * route template and SQLSTATE through reportError; DomainError 5xx at warn;
- * malformed, oversized or aborted bodies (the client disconnected mid-body,
- * nothing failed here) at info; other 4xx at debug.
+ * malformed, oversized, aborted or otherwise unreadable bodies (BODY_REJECTIONS:
+ * the client's request, nothing failed here) at info; other 4xx at debug.
  */
 export function logRequestError(
   error: unknown,
@@ -321,11 +336,7 @@ export function logRequestError(
   if (response.code === "internal_error")
     reportError(error, { event: "request_failed", ...attrs });
   else if (response.status >= 500) log.warn("domain_error_5xx", attrs);
-  else if (
-    response.code === "invalid_json" ||
-    response.code === "payload_too_large" ||
-    response.code === "request_aborted"
-  )
+  else if (BODY_REJECTIONS.has(response.code))
     log.info("request_rejected", attrs);
   else log.debug("request_rejected", attrs);
 }

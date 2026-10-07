@@ -165,6 +165,35 @@ describe("request log, client address and error logging", () => {
     expect(lines.some((l) => l.code === "internal_error")).toBe(false);
   });
 
+  it("an unsupported charset or content encoding is answered 415 by the server's error handler and logged at info, never as an error line (POL-R3-3)", async () => {
+    const origin = await start();
+    const charset = await fetch(`${origin}/api/public/abc/orders`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json; charset=latin-9" },
+      body: "{}",
+    });
+    expect(charset.status).toBe(415);
+    const charsetBody = await charset.json();
+    expect(charsetBody.error).toBe("unsupported_charset");
+    expect(charset.headers.get("x-request-id")).toBe(charsetBody.requestId);
+    const encoding = await fetch(`${origin}/api/public/abc/orders`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Content-Encoding": "x-unknown",
+      },
+      body: "{}",
+    });
+    expect(encoding.status).toBe(415);
+    expect((await encoding.json()).error).toBe("unsupported_encoding");
+    const rejected = lines.filter((l) => l.message === "request_rejected");
+    expect(rejected.map((l) => [l.level, l.status, l.code])).toEqual([
+      ["info", 415, "unsupported_charset"],
+      ["info", 415, "unsupported_encoding"],
+    ]);
+    expect(lines.filter((l) => l.level === "error")).toEqual([]);
+  });
+
   it("500 logs name, message, stack and route template, never the token path", async () => {
     const origin = await start();
     const response = await fetch(

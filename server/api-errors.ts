@@ -4,11 +4,39 @@ import { DomainError } from "../shared/domain.js";
 import { logRequestError, requestIdOf } from "./logging.js";
 
 /**
+ * body-parser's client errors by `type`, with the status body-parser itself gives them
+ * (expressjs/body-parser README "Errors", checked against the installed body-parser 2.3.0
+ * and raw-body 3.0.2): each is the client's request, never a server failure, so it is
+ * answered with its 4xx and logged at info (BODY_REJECTIONS in logging.ts, POL-R3-3).
+ * `stream.encoding.set` and `stream.not.readable` (500) mean this server's own middleware
+ * consumed or decoded the request stream first: a server bug, so they stay 500
+ * internal_error with their error line.
+ */
+export const BODY_PARSER_ERRORS: Readonly<
+  Record<string, { status: number; code: string }>
+> = {
+  // The body is not valid JSON.
+  "entity.parse.failed": { status: 400, code: "invalid_json" },
+  // Larger than express.json's limit (256 kB).
+  "entity.too.large": { status: 413, code: "payload_too_large" },
+  // The client disconnected before sending the whole body.
+  "request.aborted": { status: 400, code: "request_aborted" },
+  // The body received does not match its Content-Length.
+  "request.size.invalid": { status: 400, code: "request_size_invalid" },
+  // A Content-Encoding the parser cannot inflate.
+  "encoding.unsupported": { status: 415, code: "unsupported_encoding" },
+  // A Content-Type charset the parser does not read (JSON: utf-*).
+  "charset.unsupported": { status: 415, code: "unsupported_charset" },
+  // More fields than a urlencoded parser's parameterLimit.
+  "parameters.too.many": { status: 413, code: "too_many_parameters" },
+};
+
+/**
  * How the API answers an error that reached the final handler: a DomainError keeps its
- * status and code, a ZodError is invalid_input, and body-parser's typed errors
- * (expressjs/body-parser "Errors") map to their 4xx: a malformed body is invalid_json, an
- * oversized one payload_too_large, and a client that disconnected before sending the whole
- * body (`request.aborted`, 400) is request_aborted. Anything else is a 500 internal_error.
+ * status and code, a ZodError is invalid_input, and body-parser's client errors map to
+ * their 4xx (BODY_PARSER_ERRORS: a malformed body is invalid_json, an oversized one
+ * payload_too_large, a client that disconnected mid-body request_aborted, and so on).
+ * Anything else is a 500 internal_error.
  */
 export function classifyApiError(error: unknown): {
   status: number;
@@ -18,12 +46,8 @@ export function classifyApiError(error: unknown): {
     return { status: error.status, code: error.code };
   if (error instanceof ZodError) return { status: 400, code: "invalid_input" };
   const type = (error as { type?: unknown } | null | undefined)?.type;
-  if (type === "entity.parse.failed")
-    return { status: 400, code: "invalid_json" };
-  if (type === "entity.too.large")
-    return { status: 413, code: "payload_too_large" };
-  if (type === "request.aborted")
-    return { status: 400, code: "request_aborted" };
+  if (typeof type === "string" && Object.hasOwn(BODY_PARSER_ERRORS, type))
+    return { ...BODY_PARSER_ERRORS[type] };
   return { status: 500, code: "internal_error" };
 }
 
