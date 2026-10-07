@@ -400,7 +400,13 @@ row's close when the tick created it, else the periodicity in force on the ticke
 daily global it is the next morning; the receipt and the portal then print the time too ("08/10/2026
 a las 05:00"), and the portal adds that the ticket then goes into the restaurant's global
 invoice. The cached status carries the bound (periodicity, pending change, cutoff, grace), so a
-receipt printed offline shows the same date. The settings explain the trade-off for the chosen
+receipt printed offline shows the same date. A signed-in device refreshes that status when the
+window regains focus or visibility, when the connection returns and every 5 minutes while online
+and visible (CFDIFIX-3), so a terminal signed in for the whole shift picks up a settings change
+within minutes; the refresh stops once the device's session is no longer the one it started for.
+A deadline already past when the receipt prints (a check of yesterday's business date paid after
+its daily global was built, or a reprint) is not printed: the receipt says "Pídela en caja con
+el folio …" instead (CFDIFIX-11). The settings explain the trade-off for the chosen
 periodicity. With reissue on, the policy alone applies (and each late invoice costs two extra
 stamps). "Emitir ahora" pressed during the grace takes the period's tickets before the printed
 time; that is the manager's choice.

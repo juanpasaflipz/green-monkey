@@ -8,7 +8,9 @@
  * The printed deadline is the one the portal enforces (LD-51 F1): the restaurant's policy, or,
  * while the portal does not reissue globals, the moment the ticket's global is built (its period's
  * close + the worker's grace) when that comes first, with the time when it falls on the purchase
- * day or the next.
+ * day or the next. A deadline already past when the receipt prints (a check of yesterday's business
+ * date paid after its daily global was built, or a reprint) is not printed: the portal would
+ * refuse the code, so the receipt says to ask at the counter (CFDIFIX-11).
  */
 import type { ReactNode } from "react";
 import type { Locale, Order } from "../../../shared/domain";
@@ -33,12 +35,15 @@ export function CfdiReceiptBlock({
   status,
   kind,
   origin,
+  now = Date.now(),
 }: {
   ticket: FiscalTicketView | null;
   status: CfdiStatusView;
   kind: ReceiptKind;
   /** The app's origin ("https://pos.example.com"): the QR opens {origin}/f/{CODE}. */
   origin: string;
+  /** The print instant (ms): a deadline already past prints "Pídela en caja". */
+  now?: number;
 }) {
   const host = origin.replace(/^https?:\/\//, "");
   const test =
@@ -53,15 +58,15 @@ export function CfdiReceiptBlock({
   // selfInvoiceOffered (CFDI-UX-12); otherwise "Pídela en caja". selfInvoiceOffered also checks the
   // certificate (CFDI-INT-4): it answers a live status page, while a printed ticket outlives a
   // certificate renewal.
-  if (!status.selfInvoice?.enabled || !status.ready)
-    return (
-      <div className="cfdi-receipt-block">
-        <p>
-          {t(PRINT, "cfdiReceiptAskCashier", { folio: ticket.folio })}
-          {test}
-        </p>
-      </div>
-    );
+  const askCashier = (
+    <div className="cfdi-receipt-block">
+      <p>
+        {t(PRINT, "cfdiReceiptAskCashier", { folio: ticket.folio })}
+        {test}
+      </p>
+    </div>
+  );
+  if (!status.selfInvoice?.enabled || !status.ready) return askCashier;
   const bound = status.selfInvoice.globalBound;
   const { deadline } = effectiveSelfInvoiceDeadline(ticket.businessDate, {
     policy: status.selfInvoice.policy,
@@ -73,6 +78,7 @@ export function CfdiReceiptBlock({
         }
       : null,
   });
+  if (Date.parse(deadline) <= now) return askCashier;
   const url = `${host}/factura`;
   return (
     <div className="cfdi-receipt-block">

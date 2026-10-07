@@ -52,8 +52,11 @@ import {
   loadCfdiTicketStatus,
   prefetchCfdiStatus,
   setCfdiStatus,
+  startStatusRefresh,
+  STATUS_REFRESH_MS,
   ticketStatusWanted,
   useCfdiTicketStatus,
+  type StatusRefreshEnv,
 } from "../src/features/cfdi/status";
 import {
   emptyReceptor,
@@ -130,6 +133,9 @@ const status = (over: Partial<CfdiStatusView> = {}): CfdiStatusView => ({
   version: 3,
   ...over,
 });
+
+/** The print instant of the receipt checks: 4 Oct 2026 12:00 local, the ticket's business day. */
+const PRINTED = Date.parse("2026-10-04T18:00:00Z");
 
 const ticket = {
   id: "60000000-0000-4000-8000-000000000001",
@@ -251,6 +257,7 @@ describe("cfdi client: printed block (23, 2.12)", () => {
         status: status(),
         kind: "receipt",
         origin,
+        now: PRINTED,
       }),
     );
     expect(out).toContain("¿Necesitas factura?");
@@ -268,6 +275,7 @@ describe("cfdi client: printed block (23, 2.12)", () => {
         status: status({ mode: "test" }),
         kind: "receipt",
         origin,
+        now: PRINTED,
       }),
     );
     expect(out).toContain("(modo prueba)");
@@ -283,6 +291,7 @@ describe("cfdi client: printed block (23, 2.12)", () => {
           }),
           kind: "receipt",
           origin,
+          now: PRINTED,
         }),
       ),
     ).toContain("Pídela en caja con el folio A-000123.");
@@ -293,6 +302,7 @@ describe("cfdi client: printed block (23, 2.12)", () => {
         status: status({ ready: false }),
         kind: "receipt",
         origin,
+        now: PRINTED,
       }),
     );
     expect(notReady).toContain("Pídela en caja con el folio A-000123.");
@@ -472,6 +482,135 @@ describe("cfdi client: ticket status (29)", () => {
       prefetchCfdiStatus({ ...session, role: "kitchen" }),
     ).resolves.toBeNull();
     expect(apiMock).not.toHaveBeenCalled();
+  });
+  it("CFDIFIX-3: a signed-in device refreshes the status on focus, visibility, the connection's return and every 5 minutes, one request at a time, never offline, hidden or blocked, and stops once its session is gone", async () => {
+    const handlers = new Map<string, () => void>();
+    let interval: { ms: number; fn: () => void } | null = null;
+    let online = true;
+    let visible = true;
+    let blocked = false;
+    let signedIn = true;
+    let removed = 0;
+    const env: StatusRefreshEnv = {
+      on(event, fn) {
+        handlers.set(event, fn);
+        return () => {
+          handlers.delete(event);
+          removed++;
+        };
+      },
+      visible: () => visible,
+      online: () => online,
+      every(ms, fn) {
+        interval = { ms, fn };
+        return () => {
+          interval = null;
+          removed++;
+        };
+      },
+    };
+    let release: () => void = () => {};
+    const refresh = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const settle = () => new Promise((r) => setTimeout(r, 0));
+    const stop = startStatusRefresh({
+      env,
+      signedIn: async () => signedIn,
+      paused: () => blocked,
+      refresh,
+    });
+    expect(interval!.ms).toBe(STATUS_REFRESH_MS);
+    expect(STATUS_REFRESH_MS).toBe(5 * 60_000);
+    expect([...handlers.keys()].sort()).toEqual([
+      "focus",
+      "online",
+      "visibilitychange",
+    ]);
+    handlers.get("focus")!();
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // One at a time: a trigger while a refresh is in flight is dropped.
+    interval!.fn();
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(1);
+    release();
+    await settle();
+    interval!.fn();
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    release();
+    await settle();
+    online = false;
+    interval!.fn();
+    visible = false;
+    online = true;
+    handlers.get("visibilitychange")!();
+    visible = true;
+    blocked = true;
+    handlers.get("online")!();
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    blocked = false;
+    handlers.get("visibilitychange")!();
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(3);
+    release();
+    await settle();
+    // Signed out (or another employee): it stops for good, removing every listener.
+    signedIn = false;
+    handlers.get("focus")!();
+    await settle();
+    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(handlers.size).toBe(0);
+    expect(interval).toBeNull();
+    expect(removed).toBe(4);
+    stop();
+    expect(removed).toBe(4);
+  });
+  it("CFDIFIX-3: a failing session check stops it too; a failed refresh keeps it running", async () => {
+    const handlers = new Map<string, () => void>();
+    const env: StatusRefreshEnv = {
+      on(event, fn) {
+        handlers.set(event, fn);
+        return () => handlers.delete(event);
+      },
+      visible: () => true,
+      online: () => true,
+      every: () => () => {},
+    };
+    const settle = () => new Promise((r) => setTimeout(r, 0));
+    const failing = vi.fn(async () => {
+      throw new Error("network_unavailable");
+    });
+    startStatusRefresh({
+      env,
+      signedIn: async () => true,
+      paused: () => false,
+      refresh: failing,
+    });
+    handlers.get("focus")!();
+    await settle();
+    handlers.get("focus")!();
+    await settle();
+    expect(failing).toHaveBeenCalledTimes(2);
+    handlers.clear();
+    const refresh = vi.fn(async () => {});
+    startStatusRefresh({
+      env,
+      signedIn: async () => {
+        throw new Error("indexeddb blocked");
+      },
+      paused: () => false,
+      refresh,
+    });
+    handlers.get("focus")!();
+    await settle();
+    expect(refresh).not.toHaveBeenCalled();
+    expect(handlers.size).toBe(0);
   });
 });
 
@@ -970,6 +1109,7 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
         }),
         kind: "receipt",
         origin,
+        now: PRINTED,
       }),
     );
     // Business date 4 Oct 2026, cut at 04:00: the daily global is built 5 Oct 05:00 local.
@@ -989,6 +1129,7 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
         }),
         kind: "receipt",
         origin,
+        now: PRINTED,
       }),
     );
     expect(out).toContain("Disponible hasta el 31/10/2026");
@@ -1008,6 +1149,7 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
         }),
         kind: "receipt",
         origin,
+        now: PRINTED,
       }),
     );
     // Sunday 4 October closes its week: built 5 Oct 05:00, the next day, so with its time.
@@ -1058,6 +1200,62 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
         }),
       ),
     ).toContain("at the close of the month of purchase plus 30 min");
+  });
+  it("CFDIFIX-6: the bound names the periodicity in force, and a different one chosen or pending gets its own sentence", () => {
+    const out = html(
+      createElement(SelfInvoiceBound, {
+        periodicity: "month",
+        next: "day",
+        graceMinutes: 60,
+        locale: "es",
+      }),
+    );
+    expect(out).toContain("al cierre del mes del consumo más 60 min");
+    expect(out).toContain(
+      "Con periodicidad diaria: al cierre del día del consumo más 60 min.",
+    );
+    const same = html(
+      createElement(SelfInvoiceBound, {
+        periodicity: "day",
+        next: "day",
+        graceMinutes: 60,
+        locale: "es",
+      }),
+    );
+    expect(same).not.toContain("Con periodicidad");
+  });
+  it("CFDIFIX-11: a deadline already past when the receipt prints (yesterday's check paid after its daily global was built) asks at the counter instead", () => {
+    const daily = status({
+      selfInvoice: {
+        enabled: true,
+        policy: "month",
+        days: 30,
+        globalBound: bound,
+      },
+    });
+    // Business date 4 Oct: its daily global is built 5 Oct 05:00 local (11:00Z).
+    const late = html(
+      createElement(CfdiReceiptBlock, {
+        ticket,
+        status: daily,
+        kind: "receipt",
+        origin,
+        now: Date.parse("2026-10-05T11:30:00Z"),
+      }),
+    );
+    expect(late).toContain("Pídela en caja con el folio A-000123.");
+    expect(late).not.toContain("Disponible hasta");
+    expect(late).not.toContain("<svg");
+    const onTime = html(
+      createElement(CfdiReceiptBlock, {
+        ticket,
+        status: daily,
+        kind: "receipt",
+        origin,
+        now: Date.parse("2026-10-05T10:59:00Z"),
+      }),
+    );
+    expect(onTime).toContain("Disponible hasta el 05/10/2026 a las 05:00");
   });
 
   const org = (
