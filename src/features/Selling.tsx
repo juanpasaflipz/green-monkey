@@ -630,7 +630,10 @@ export function Selling({
     else void db.cache.get(key).then((d) => setCashSession(d?.value ?? null));
   }, [active, online]);
   const showingReceipt = !!receipt;
+  const wasActive = useRef(active);
   useEffect(() => {
+    const cameBack = active && !wasActive.current;
+    wasActive.current = active;
     if (!active) return;
     const resume = localStorage.getItem("gm-resume");
     const table = localStorage.getItem("gm-table");
@@ -639,9 +642,12 @@ export function Selling({
       unseenFailure.current = false;
       // A check closed elsewhere while Vender was hidden (voided or settled
       // from Órdenes) never stays the cart on screen with its old balance:
-      // re-read it, and start a new order when it is closed (FIT-1).
+      // when Vender comes back, re-read it, and start a new order when it is
+      // closed (FIT-1). Only then: a send, payment or receipt on this screen
+      // already returns the order it changed.
       const shown = currentRef.current;
       if (
+        cameBack &&
         online &&
         shown &&
         isServerOrder(shown) &&
