@@ -2034,6 +2034,37 @@ th {
   .line-note-editor textarea {
     min-height: 56px;
   }
+  /* The payment dialog in two columns, so the quick-cash bills, Cambio and
+     the terminal confirmation are on screen without scrolling (FOH-10). */
+  dialog:has(.pay-columns) {
+    width: min(880px, calc(100vw - 32px));
+    max-height: calc(100dvh - 16px);
+  }
+  .pay-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0 24px;
+    align-items: start;
+  }
+  .pay-columns .large-money {
+    font-size: 32px;
+    margin: 4px 0;
+  }
+  .pay-columns p {
+    margin: 6px 0;
+  }
+  .pay-columns .field {
+    margin: 10px 0;
+  }
+  .pay-columns .option {
+    margin: 6px 0;
+  }
+  dialog:has(.pay-columns) .modal-footer {
+    padding: 10px 24px;
+  }
+  dialog:has(.pay-columns) .modal-footer .row {
+    margin-bottom: 6px;
+  }
   /* A 10" tablet shows a small menu without scrolling the catalog (FOH-10,
      restaurant-day §11: the canonical order's products are all on screen). */
   .catalog {

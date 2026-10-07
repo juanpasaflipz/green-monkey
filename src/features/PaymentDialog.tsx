@@ -196,266 +196,277 @@ export function PaymentDialog({
         </>
       }
     >
-      <span className="muted">{t("remaining")}</span>
-      <div className="large-money">{money(due)}</div>
-      {hasDraftLines && <p className="muted">{t("serviceSendsOnPay")}</p>}
-      <p>{t("paymentHint")}</p>
-      {notice && (
-        <p className="notice" role="alert">
-          {notice}
-        </p>
-      )}
-      {dueChanged && (
-        <p className="warning-panel" role="alert">
-          {t("servicePayDueChanged").replace("{due}", money(due))}
-        </p>
-      )}
-      {pendingPayment && !busy && (
-        <p className="warning-panel" role="status">
-          {t("pendingPaymentRecovery")}
-        </p>
-      )}
-      {!online && (
-        <div className="warning-panel">
-          {slot ? slot.hint(method) : <p>{t("offlineHint")}</p>}
-        </div>
-      )}
-      {blockReason && (
-        <p className="error" role="alert">
-          {blockReason}
-        </p>
-      )}
-      {problem?.field === "drawer" && (
-        <div className="warning-panel" id={`${ids}-drawer-error`}>
-          <p role="alert">{t("servicePayDrawer")}</p>
-          <Button onClick={onGoToCash}>{t("serviceGoToCash")}</Button>
-        </div>
-      )}
-      <div
-        className="service-tabs"
-        role="group"
-        aria-label={t("servicePayMethod")}
-      >
-        <button
-          type="button"
-          aria-pressed={method === "cash"}
-          className={method === "cash" ? "selected" : ""}
-          onClick={() => setMethod("cash")}
-        >
-          {t("cashMethod")}
-        </button>
-        <button
-          type="button"
-          aria-pressed={method === "external"}
-          disabled={!externalAllowed}
-          className={method === "external" ? "selected" : ""}
-          onClick={() => setMethod("external")}
-        >
-          {t("external")}
-        </button>
-      </div>
-      <div className="row wrap">
-        <Button
-          disabled={busy}
-          onClick={() => {
-            setSplitItems(false);
-            setSelected([]);
-            setAmountText(text(due));
-            setAmountFollows(true);
-            setReceivedInput(null);
-          }}
-        >
-          {t("splitAmount")}
-        </Button>
-        <Button
-          // SVC-R8: "Enviar y dividir" sends to the kitchen, so it needs the
-          // same open drawer as Confirmar cobro.
-          disabled={busy || !online || pendingPayment || !drawerOpen}
-          onClick={async () => {
-            setLocalError("");
-            try {
-              const order = await onSplitItems();
-              if (!order) return;
-              setSplitOrder(order);
-              if (!order.itemSplitAvailable) {
-                setLocalError(t("unallocatedHistory"));
-                return;
-              }
-              setSplitItems(true);
-              setSelected([]);
-              setAmountText(text(0));
-              setAmountFollows(false);
-              setReceivedInput(null);
-            } catch (e) {
-              setLocalError(errorNotice(e, locale));
-            }
-          }}
-        >
-          {t(hasDraftLines ? "sendAndSplit" : "splitItems")}
-        </Button>
-      </div>
-      {splitItems && (
-        <fieldset>
-          <legend>{t("selectItems")}</legend>
-          <p className="muted">{t("itemSplitHint")}</p>
-          {units.map((unit) => (
-            <label className="option" key={unit.key}>
-              <input
-                type="checkbox"
-                disabled={busy || unit.due === 0}
-                checked={selected.includes(unit.key)}
-                onChange={() => {
-                  const next = selected.includes(unit.key)
-                    ? selected.filter((key) => key !== unit.key)
-                    : [...selected, unit.key];
-                  setSelected(next);
-                  setAmountText(
-                    text(
-                      units
-                        .filter((u) => next.includes(u.key))
-                        .reduce((n, u) => n + u.due, 0),
-                    ),
-                  );
-                  setReceivedInput(null);
-                }}
-              />
-              <span>
-                {unit.name[locale]} · {unit.unit + 1}
-                <small>
-                  {unit.paid ? `${t("paid")}: ${money(unit.paid)}` : ""}
-                </small>
-              </span>
-              <strong>
-                {unit.due
-                  ? money(unit.due)
-                  : unit.paid
-                    ? t("paid")
-                    : t("discountsRowComp")}
-              </strong>
-            </label>
-          ))}
-        </fieldset>
-      )}
-      <Field label={t("amount")}>
-        <input
-          inputMode="decimal"
-          value={amountText}
-          readOnly={splitItems}
-          aria-invalid={problem?.field === "amount" || undefined}
-          aria-describedby={errorId("amount")}
-          onChange={(e) => {
-            setAmountText(e.target.value);
-            setAmountFollows(false);
-          }}
-        />
-      </Field>
-      {inline("amount")}
-      <Field label={t("tip")}>
-        <input
-          inputMode="decimal"
-          value={tipText}
-          placeholder="0"
-          aria-invalid={problem?.field === "tip" || undefined}
-          aria-describedby={[errorId("tip"), `${ids}-tip-hint`]
-            .filter(Boolean)
-            .join(" ")}
-          onChange={(e) => setTipText(e.target.value)}
-        />
-      </Field>
-      <div className="row wrap chips">
-        <Button onClick={() => setTipText("")}>{t("serviceTipNone")}</Button>
-        {([10, 15] as const).map((p) => (
-          <Button
-            key={p}
-            disabled={amount === null}
-            onClick={() =>
-              amount !== null &&
-              setTipText(text(tipFromPercent(amount, p, exponent)))
-            }
-          >
-            {t("serviceTipPercent").replace("{p}", String(p))}
-          </Button>
-        ))}
-      </div>
-      <p className="muted tiny" id={`${ids}-tip-hint`}>
-        {t("serviceTipVoluntary")}
-      </p>
-      {inline("tip")}
-      {method === "cash" ? (
-        <>
-          <Field label={t("received")}>
-            <input
-              inputMode="decimal"
-              value={receivedText}
-              aria-invalid={problem?.field === "received" || undefined}
-              aria-describedby={errorId("received")}
-              onChange={(e) => setReceivedInput(e.target.value)}
-            />
-          </Field>
-          {suggestions.length > 0 && (
-            <div
-              className="row wrap chips"
-              role="group"
-              aria-label={t("serviceQuickCash")}
-            >
-              {suggestions.map((value, i) => (
-                <Button
-                  key={value}
-                  onClick={() => setReceivedInput(text(value))}
-                >
-                  {i === 0 ? t("serviceExact") : money(value)}
-                </Button>
-              ))}
+      {/* Two columns on a short tablet (styles.css, FOH-10): what is owed and
+          how it is split on the left, the amounts and the method's fields on
+          the right, so a 1024×768 cashier never scrolls to collect. */}
+      <div className="pay-columns">
+        <div className="pay-summary">
+          <span className="muted">{t("remaining")}</span>
+          <div className="large-money">{money(due)}</div>
+          {hasDraftLines && <p className="muted">{t("serviceSendsOnPay")}</p>}
+          <p>{t("paymentHint")}</p>
+          {notice && (
+            <p className="notice" role="alert">
+              {notice}
+            </p>
+          )}
+          {dueChanged && (
+            <p className="warning-panel" role="alert">
+              {t("servicePayDueChanged").replace("{due}", money(due))}
+            </p>
+          )}
+          {pendingPayment && !busy && (
+            <p className="warning-panel" role="status">
+              {t("pendingPaymentRecovery")}
+            </p>
+          )}
+          {!online && (
+            <div className="warning-panel">
+              {slot ? slot.hint(method) : <p>{t("offlineHint")}</p>}
             </div>
           )}
-          {inline("received")}
-          <div className="row between">
-            <span>{t("change")}</span>
-            <strong>
-              {validation.ok && received !== null
-                ? money(
-                    changeDue(
-                      validation.values.received,
-                      validation.values.amount,
-                      validation.values.tip,
-                    ),
-                  )
-                : "—"}
-            </strong>
+          {blockReason && (
+            <p className="error" role="alert">
+              {blockReason}
+            </p>
+          )}
+          {problem?.field === "drawer" && (
+            <div className="warning-panel" id={`${ids}-drawer-error`}>
+              <p role="alert">{t("servicePayDrawer")}</p>
+              <Button onClick={onGoToCash}>{t("serviceGoToCash")}</Button>
+            </div>
+          )}
+          <div
+            className="service-tabs"
+            role="group"
+            aria-label={t("servicePayMethod")}
+          >
+            <button
+              type="button"
+              aria-pressed={method === "cash"}
+              className={method === "cash" ? "selected" : ""}
+              onClick={() => setMethod("cash")}
+            >
+              {t("cashMethod")}
+            </button>
+            <button
+              type="button"
+              aria-pressed={method === "external"}
+              disabled={!externalAllowed}
+              className={method === "external" ? "selected" : ""}
+              onClick={() => setMethod("external")}
+            >
+              {t("external")}
+            </button>
           </div>
-        </>
-      ) : (
-        <>
-          <p className="muted">{t("servicePayExternalNoCash")}</p>
-          <p className="warning-panel">{t("externalHint")}</p>
-          <Field label={t("reference")}>
+          <div className="row wrap">
+            <Button
+              disabled={busy}
+              onClick={() => {
+                setSplitItems(false);
+                setSelected([]);
+                setAmountText(text(due));
+                setAmountFollows(true);
+                setReceivedInput(null);
+              }}
+            >
+              {t("splitAmount")}
+            </Button>
+            <Button
+              // SVC-R8: "Enviar y dividir" sends to the kitchen, so it needs the
+              // same open drawer as Confirmar cobro.
+              disabled={busy || !online || pendingPayment || !drawerOpen}
+              onClick={async () => {
+                setLocalError("");
+                try {
+                  const order = await onSplitItems();
+                  if (!order) return;
+                  setSplitOrder(order);
+                  if (!order.itemSplitAvailable) {
+                    setLocalError(t("unallocatedHistory"));
+                    return;
+                  }
+                  setSplitItems(true);
+                  setSelected([]);
+                  setAmountText(text(0));
+                  setAmountFollows(false);
+                  setReceivedInput(null);
+                } catch (e) {
+                  setLocalError(errorNotice(e, locale));
+                }
+              }}
+            >
+              {t(hasDraftLines ? "sendAndSplit" : "splitItems")}
+            </Button>
+          </div>
+          {splitItems && (
+            <fieldset>
+              <legend>{t("selectItems")}</legend>
+              <p className="muted">{t("itemSplitHint")}</p>
+              {units.map((unit) => (
+                <label className="option" key={unit.key}>
+                  <input
+                    type="checkbox"
+                    disabled={busy || unit.due === 0}
+                    checked={selected.includes(unit.key)}
+                    onChange={() => {
+                      const next = selected.includes(unit.key)
+                        ? selected.filter((key) => key !== unit.key)
+                        : [...selected, unit.key];
+                      setSelected(next);
+                      setAmountText(
+                        text(
+                          units
+                            .filter((u) => next.includes(u.key))
+                            .reduce((n, u) => n + u.due, 0),
+                        ),
+                      );
+                      setReceivedInput(null);
+                    }}
+                  />
+                  <span>
+                    {unit.name[locale]} · {unit.unit + 1}
+                    <small>
+                      {unit.paid ? `${t("paid")}: ${money(unit.paid)}` : ""}
+                    </small>
+                  </span>
+                  <strong>
+                    {unit.due
+                      ? money(unit.due)
+                      : unit.paid
+                        ? t("paid")
+                        : t("discountsRowComp")}
+                  </strong>
+                </label>
+              ))}
+            </fieldset>
+          )}
+        </div>
+        <div className="pay-entry">
+          <Field label={t("amount")}>
             <input
-              value={reference}
-              maxLength={120}
-              autoComplete="off"
-              aria-invalid={problem?.field === "reference" || undefined}
-              aria-describedby={errorId("reference")}
-              onChange={(e) => setReference(e.target.value)}
+              inputMode="decimal"
+              value={amountText}
+              readOnly={splitItems}
+              aria-invalid={problem?.field === "amount" || undefined}
+              aria-describedby={errorId("amount")}
+              onChange={(e) => {
+                setAmountText(e.target.value);
+                setAmountFollows(false);
+              }}
             />
           </Field>
-          {inline("reference")}
-          <label className="option">
+          {inline("amount")}
+          <Field label={t("tip")}>
             <input
-              type="checkbox"
-              checked={confirmed}
-              aria-describedby={errorId("confirmed")}
-              onChange={(e) => setConfirmed(e.target.checked)}
+              inputMode="decimal"
+              value={tipText}
+              placeholder="0"
+              aria-invalid={problem?.field === "tip" || undefined}
+              aria-describedby={[errorId("tip"), `${ids}-tip-hint`]
+                .filter(Boolean)
+                .join(" ")}
+              onChange={(e) => setTipText(e.target.value)}
             />
-            {t("confirmExternal")}
-          </label>
-          {inline("confirmed")}
-        </>
-      )}
-      {(error || localError) && (
-        <p className="error" role="alert">
-          {error || localError}
-        </p>
-      )}
+          </Field>
+          <div className="row wrap chips">
+            <Button onClick={() => setTipText("")}>
+              {t("serviceTipNone")}
+            </Button>
+            {([10, 15] as const).map((p) => (
+              <Button
+                key={p}
+                disabled={amount === null}
+                onClick={() =>
+                  amount !== null &&
+                  setTipText(text(tipFromPercent(amount, p, exponent)))
+                }
+              >
+                {t("serviceTipPercent").replace("{p}", String(p))}
+              </Button>
+            ))}
+          </div>
+          <p className="muted tiny" id={`${ids}-tip-hint`}>
+            {t("serviceTipVoluntary")}
+          </p>
+          {inline("tip")}
+          {method === "cash" ? (
+            <>
+              <Field label={t("received")}>
+                <input
+                  inputMode="decimal"
+                  value={receivedText}
+                  aria-invalid={problem?.field === "received" || undefined}
+                  aria-describedby={errorId("received")}
+                  onChange={(e) => setReceivedInput(e.target.value)}
+                />
+              </Field>
+              {suggestions.length > 0 && (
+                <div
+                  className="row wrap chips"
+                  role="group"
+                  aria-label={t("serviceQuickCash")}
+                >
+                  {suggestions.map((value, i) => (
+                    <Button
+                      key={value}
+                      onClick={() => setReceivedInput(text(value))}
+                    >
+                      {i === 0 ? t("serviceExact") : money(value)}
+                    </Button>
+                  ))}
+                </div>
+              )}
+              {inline("received")}
+              <div className="row between">
+                <span>{t("change")}</span>
+                <strong>
+                  {validation.ok && received !== null
+                    ? money(
+                        changeDue(
+                          validation.values.received,
+                          validation.values.amount,
+                          validation.values.tip,
+                        ),
+                      )
+                    : "—"}
+                </strong>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="muted">{t("servicePayExternalNoCash")}</p>
+              <p className="warning-panel">{t("externalHint")}</p>
+              <Field label={t("reference")}>
+                <input
+                  value={reference}
+                  maxLength={120}
+                  autoComplete="off"
+                  aria-invalid={problem?.field === "reference" || undefined}
+                  aria-describedby={errorId("reference")}
+                  onChange={(e) => setReference(e.target.value)}
+                />
+              </Field>
+              {inline("reference")}
+              <label className="option">
+                <input
+                  type="checkbox"
+                  checked={confirmed}
+                  aria-describedby={errorId("confirmed")}
+                  onChange={(e) => setConfirmed(e.target.checked)}
+                />
+                {t("confirmExternal")}
+              </label>
+              {inline("confirmed")}
+            </>
+          )}
+          {(error || localError) && (
+            <p className="error" role="alert">
+              {error || localError}
+            </p>
+          )}
+        </div>
+      </div>
     </Modal>
   );
 }

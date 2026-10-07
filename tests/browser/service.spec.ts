@@ -216,6 +216,39 @@ test("a 1024×768 tablet shows the first six products of the catalog without scr
     await expect(cards.nth(i)).toBeInViewport({ ratio: 1 });
 });
 
+test("the payment dialog on a 1024×768 tablet: quick cash, Cambio and the terminal confirmation are on screen without scrolling (FOH-10, restaurant-day P-SELL step 5)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await productTile(page, "Limonada natural").click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: /^Cobrar/ });
+  const quick = dialog.getByRole("group", { name: "Efectivo recibido rápido" });
+  for (const button of await quick.getByRole("button").all())
+    await expect(button).toBeInViewport({ ratio: 1 });
+  await expect(dialog.getByText("Cambio", { exact: true })).toBeInViewport({
+    ratio: 1,
+  });
+  await dialog
+    .getByRole("button", { name: "Terminal externa", exact: true })
+    .click();
+  await dialog
+    .getByLabel("Referencia de aprobación", { exact: true })
+    .fill("123456");
+  await expect(
+    dialog.getByRole("checkbox", {
+      name: "Confirmo que la terminal aprobó este pago",
+    }),
+  ).toBeInViewport({ ratio: 1 });
+  await expect(
+    dialog.getByRole("button", { name: "Confirmar cobro" }),
+  ).toBeInViewport({ ratio: 1 });
+  await dialog.getByRole("button", { name: "Cerrar", exact: true }).click();
+});
+
 test("a line note on a 1024×768 tablet: the editor's chips and Listo come on screen without scrolling the cart (FOH-10, restaurant-day A10.1)", async ({
   page,
 }) => {
