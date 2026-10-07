@@ -108,6 +108,10 @@ test("additional round, partial payment reload, refund and drawer close", async 
   await login(page);
   await page.getByRole("button", { name: "Caja", exact: true }).click();
   await page.getByRole("button", { name: "Abrir caja", exact: true }).click();
+  // The opening float is labelled as such (restaurant-day A9.2).
+  await expect(
+    page.getByRole("dialog").getByLabel("Fondo inicial", { exact: true }),
+  ).toHaveValue("500.00");
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Guardar", exact: true })

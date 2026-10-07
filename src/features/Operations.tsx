@@ -579,7 +579,15 @@ export function Operations({
                   ))}
                 </>
               ) : (
-                <Field label={t(modal.item ? "quantity" : "amount")}>
+                <Field
+                  label={t(
+                    modal.kind === "open"
+                      ? "opening"
+                      : modal.item
+                        ? "quantity"
+                        : "amount",
+                  )}
+                >
                   <input
                     name="amount"
                     inputMode="decimal"
