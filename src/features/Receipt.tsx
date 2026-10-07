@@ -445,6 +445,85 @@ export function ReceiptModal({
       title={local ? t.localReceipt : t.receipt}
       close={state === "open" ? onBack : onNext}
       closeLabel={t.close}
+      // The actions stay on screen while a long receipt scrolls: a 10" tablet
+      // prints and starts the next sale without scrolling (FOH-10).
+      footer={
+        <>
+          {error && (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          )}
+          <div className="row wrap receipt-actions">
+            <label className="field compact-field">
+              <span>{t.servicePrintPaper}</span>
+              <select
+                value={settings.paper}
+                onChange={(e) =>
+                  saveSettings({ paper: e.target.value as PaperWidth })
+                }
+              >
+                <option value="80">{t.servicePrintPaper80}</option>
+                <option value="58">{t.servicePrintPaper58}</option>
+              </select>
+            </label>
+            <Button
+              onClick={() => {
+                if (!local) void auditPrint(order.id, "receipt", reprint);
+                void printDocument(
+                  <ReceiptDocument
+                    order={order}
+                    session={session}
+                    locale="es"
+                    kind={kind}
+                    reprint={reprint}
+                    label={printLabel ?? label}
+                    labelHint={printLabelHint ?? labelHint}
+                    header={header}
+                    footer={footer}
+                  />,
+                  settings.paper,
+                );
+              }}
+            >
+              {t.print}
+            </Button>
+            {state === "paid" && onRelease && (
+              <Button
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setError("");
+                  try {
+                    await onRelease();
+                  } catch (e) {
+                    setError(errorNotice(e, locale));
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                {t.serviceReleaseTable}
+              </Button>
+            )}
+            {noteActions}
+            {extraActions}
+            <CfdiOrderActions
+              order={order}
+              session={session}
+              locale={locale}
+              variant="receipt"
+            />
+            <Button
+              variant="primary"
+              disabled={busy}
+              onClick={state === "open" ? onBack : onNext}
+            >
+              {state === "open" ? t.back : t.nextSale}
+            </Button>
+          </div>
+        </>
+      }
     >
       <div className="receipt">
         <ReceiptDocument
@@ -460,79 +539,6 @@ export function ReceiptModal({
         />
       </div>
       <p className="muted tiny">{t.receiptPrintHint}</p>
-      {error && (
-        <p className="error" role="alert">
-          {error}
-        </p>
-      )}
-      <div className="row wrap">
-        <label className="field compact-field">
-          <span>{t.servicePrintPaper}</span>
-          <select
-            value={settings.paper}
-            onChange={(e) =>
-              saveSettings({ paper: e.target.value as PaperWidth })
-            }
-          >
-            <option value="80">{t.servicePrintPaper80}</option>
-            <option value="58">{t.servicePrintPaper58}</option>
-          </select>
-        </label>
-        <Button
-          onClick={() => {
-            if (!local) void auditPrint(order.id, "receipt", reprint);
-            void printDocument(
-              <ReceiptDocument
-                order={order}
-                session={session}
-                locale="es"
-                kind={kind}
-                reprint={reprint}
-                label={printLabel ?? label}
-                labelHint={printLabelHint ?? labelHint}
-                header={header}
-                footer={footer}
-              />,
-              settings.paper,
-            );
-          }}
-        >
-          {t.print}
-        </Button>
-        {state === "paid" && onRelease && (
-          <Button
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true);
-              setError("");
-              try {
-                await onRelease();
-              } catch (e) {
-                setError(errorNotice(e, locale));
-              } finally {
-                setBusy(false);
-              }
-            }}
-          >
-            {t.serviceReleaseTable}
-          </Button>
-        )}
-        {noteActions}
-        {extraActions}
-        <CfdiOrderActions
-          order={order}
-          session={session}
-          locale={locale}
-          variant="receipt"
-        />
-        <Button
-          variant="primary"
-          disabled={busy}
-          onClick={state === "open" ? onBack : onNext}
-        >
-          {state === "open" ? t.back : t.nextSale}
-        </Button>
-      </div>
     </Modal>
   );
 }

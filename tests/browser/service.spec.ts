@@ -249,6 +249,30 @@ test("the payment dialog on a 1024×768 tablet: quick cash, Cambio and the termi
   await dialog.getByRole("button", { name: "Cerrar", exact: true }).click();
 });
 
+test("the receipt on a 1024×768 tablet keeps Imprimir recibo and Siguiente venta on screen while the ticket scrolls (FOH-10, restaurant-day P-SELL step 6)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await productTile(page, "Limonada natural").click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: /^Cobrar/ })
+    .getByRole("button", { name: "Confirmar cobro" })
+    .click();
+  await expect(page.locator(".receipt")).toContainText("Folio:");
+  for (const name of ["Imprimir recibo", "Siguiente venta"])
+    await expect(
+      page.getByRole("button", { name, exact: true }),
+    ).toBeInViewport({ ratio: 1 });
+  await page
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
+  await expect(page.locator(".receipt")).toHaveCount(0);
+});
+
 test("a line note on a 1024×768 tablet: the editor's chips and Listo come on screen without scrolling the cart (FOH-10, restaurant-day A10.1)", async ({
   page,
 }) => {
