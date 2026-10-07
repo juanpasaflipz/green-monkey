@@ -153,7 +153,7 @@ export function PeriodicityStatus({
   locale: Locale;
 }) {
   return (
-    <p className="muted" role="status">
+    <p className="muted">
       {tr(locale, "cfdiPeriodicityCurrent", {
         current: periodicityName(settings.globalPeriodicity, locale),
       })}
