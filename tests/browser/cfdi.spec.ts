@@ -585,7 +585,7 @@ test("customer self-invoices from /f/{code}: inline receptor errors, then succes
   }
 });
 
-test("LD-51 F1/F2/F10: the owner switches the global to daily in the panel; with no global of the month yet it applies at once, the panel states it and the bound it puts on self-invoicing, and the portal shows the daily deadline with its time", async ({
+test("LD-51 F1/F2/F10, CFDIFIX-1/5/7: the owner switches the global to daily in the panel; a ticket sold this month already printed the monthly deadline, so the change waits for next month, the panel says from when and why, and the portal keeps the printed deadline", async ({
   page,
   browser,
 }) => {
@@ -599,27 +599,53 @@ test("LD-51 F1/F2/F10: the owner switches the global to daily in the panel; with
   await ensureCfdiOn(page);
   const customerContext = await browser.newContext();
   const customer = await customerContext.newPage();
+  /** Monthly in force on the server's business date, with no change pending. */
+  const monthly = (v: Awaited<ReturnType<typeof settings>>) =>
+    (v.settings.nextPeriodicity &&
+    v.settings.nextPeriodicityFrom <= v.businessDate
+      ? v.settings.nextPeriodicity
+      : v.settings.globalPeriodicity) === "month";
   try {
-    const before = (await settings(page)).settings;
-    if (before.globalPeriodicity !== "month" || before.nextPeriodicity)
+    let before = await settings(page);
+    if (
+      before.settings.globalPeriodicity !== "month" ||
+      before.settings.nextPeriodicity
+    )
       await saveSettings(page, { globalPeriodicity: "month" });
-    // A global document of this month would make the change wait for next month (F2).
-    const today = new Date().toISOString().slice(0, 10);
-    const periods = (
-      await call<{ documents: unknown[] }[]>(
-        page,
-        `/cfdi/globals?from=${today.slice(0, 8)}01&to=${today}`,
-      )
-    ).body;
-    const unshaped = periods.every((p) => p.documents.length === 0);
+    before = await settings(page);
+    // An earlier run's daily month whose way back waits for next month: nothing to switch.
+    test.skip(
+      !monthly(before) || !!before.settings.nextPeriodicity,
+      "daily globals in force this month (an earlier run), monthly from next month",
+    );
+    // The month, and its last day, are the server's business date's (CFDIFIX-7), never the
+    // browser's clock: around a month boundary they differ.
+    const today: string = before.businessDate;
+    const [y, m] = today.split("-").map(Number);
+    const lastDay =
+      new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10) === today;
+    // A ticket of today, its receipt printed under the monthly global.
+    const order = await paidOrder(page, "CFDI periodicity " + Date.now());
+    const code = order.fiscal.ticket.selfInvoiceCode;
+    await customer.goto(`/f/${code}`);
+    const deadline = customer.getByText(/^Puedes facturar hasta el /);
+    await expect(deadline).toBeVisible();
+    const printed = await deadline.textContent();
+
     await openSettings(page);
     const cfdi = panel(page);
     await expect(cfdi.getByText("Periodicidad actual: mensual.")).toBeVisible();
     await cfdi
       .getByLabel("Periodicidad de la factura global")
       .selectOption("day");
+    // The bound in force (monthly) and the one chosen (daily), CFDIFIX-6.
     await expect(
-      cfdi.getByText(/al cierre del día del consumo más \d+ min/),
+      cfdi.getByText(/al cierre del mes del consumo más \d+ min/),
+    ).toBeVisible();
+    await expect(
+      cfdi.getByText(
+        /Con periodicidad diaria: al cierre del día del consumo más \d+ min\./,
+      ),
     ).toBeVisible();
     await cfdi
       .getByRole("button", { name: "Guardar configuración", exact: true })
@@ -627,23 +653,49 @@ test("LD-51 F1/F2/F10: the owner switches the global to daily in the panel; with
     await expect(
       cfdi.getByText("Configuración de facturación guardada"),
     ).toBeVisible();
-    if (!unshaped) {
-      await expect(cfdi.getByText(/Cambia a diaria desde el/)).toBeVisible();
-      return;
+    const after = (await settings(page)).settings;
+    if (after.globalPeriodicity === "month") {
+      // Deferred: today's ticket (CFDIFIX-1), or a global of the month, decides it.
+      expect(after.nextPeriodicity).toBe("day");
+      const reason = after.periodicityDeferred?.reason;
+      if (!lastDay) expect(["deadline", "globals"]).toContain(reason);
+      await expect(
+        cfdi.getByText(
+          /^Periodicidad actual: mensual\. Cambia a diaria desde el .+\. No se aplicó al momento: .+\.$/,
+        ),
+      ).toBeVisible();
+      await expect(
+        cfdi.getByText(
+          reason === "globals"
+            ? "el mes ya tiene una factura global"
+            : reason === "overdue"
+              ? "un ticket del mes quedaría en un periodo cuya factura global ya está atrasada"
+              : "acortaría el plazo para autofacturar de tickets ya vendidos este mes",
+          { exact: false },
+        ),
+      ).toBeVisible();
+      // The portal keeps answering the deadline the receipt printed.
+      await customer.reload();
+      await expect(customer.getByText(/^Puedes facturar hasta el /)).toHaveText(
+        printed!,
+      );
+    } else {
+      // Only on the month's last day: a monthly and a daily global of today close together, so
+      // today's ticket keeps its deadline and the change may apply at once.
+      expect(lastDay).toBe(true);
+      expect(after.globalPeriodicity).toBe("day");
+      await expect(
+        cfdi.getByText("Periodicidad actual: diaria."),
+      ).toBeVisible();
+      await customer.reload();
+      await expect(
+        customer.getByText(/^Puedes facturar hasta el /),
+      ).toBeVisible();
     }
-    await expect(cfdi.getByText("Periodicidad actual: diaria.")).toBeVisible();
-    expect((await settings(page)).settings.globalPeriodicity).toBe("day");
-    // The portal answers the deadline the receipt prints: the close of today's business day plus
-    // the grace, with its time, and why.
-    const order = await paidOrder(page, "CFDI daily " + Date.now());
-    await customer.goto(`/f/${order.fiscal.ticket.selfInvoiceCode}`);
-    await expect(
-      customer.getByText(
-        /^Puedes facturar hasta el \d{2}\/\d{2}\/\d{4} a las \d{2}:\d{2}\. Después, el ticket se incluye en la factura global del restaurante\.$/,
-      ),
-    ).toBeVisible();
   } finally {
     await customerContext.close();
+    // Back to monthly: a pending change is cancelled; a daily month whose way back has to wait
+    // stays daily with monthly pending from next month, which the next run accepts (it skips).
     await saveSettings(page, { globalPeriodicity: "month" });
     await pauseCfdi(page);
   }
