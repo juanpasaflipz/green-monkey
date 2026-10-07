@@ -21,6 +21,7 @@ import { strings, errorNotice, type Key } from "../i18n";
 import { integrationLabel, operationLabel, stockCauseLabel } from "../labels";
 import { api } from "../api";
 import { db, isResolved } from "../offline";
+import { scope } from "../offline-keys";
 import { ArchivedDrawerNote } from "./offline/ArchivedDrawerNote";
 import { OfflineKitchenReview } from "./offline/OfflineKitchenReview";
 import { Button, Field, Modal, Badge } from "../components/ui";
@@ -83,7 +84,20 @@ export function Operations({
         return;
       }
       if (view === "settings") setData(await api("/capabilities"));
-      else setData(await api("/" + view));
+      else if (view === "cash") {
+        try {
+          setData(await api("/cash"));
+        } catch (e) {
+          // offline (026): during an outage Caja shows the drawer this device
+          // last saw (Selling caches it), never "Caja cerrada" with "Abrir
+          // caja"; the offline notice stays above it (restaurant-day A13.8).
+          const cached = await db.cache.get(scope(session) + ":drawer");
+          if (online || cached?.value === undefined) throw e;
+          setData(cached.value);
+          setError(errorNotice(e, locale));
+          return;
+        }
+      } else setData(await api("/" + view));
       setError("");
     } catch (e) {
       setError(errorNotice(e, locale));
@@ -257,6 +271,7 @@ export function Operations({
               session={session}
               locale={locale}
               data={data}
+              online={online}
               money={m}
               onOpenDrawer={() => setModal({ kind: "open" })}
               onPaidOut={() => setModal({ kind: "paidout" })}

@@ -30,7 +30,10 @@ export function DrawerPanel({
   actions,
   closedActions,
   closeResultActions,
+  online = true,
 }: {
+  /** offline (026): closing and paid-outs need the server. */
+  online?: boolean;
   session: Session;
   locale: Locale;
   data: DrawerView | null;
@@ -122,14 +125,32 @@ export function DrawerPanel({
           </p>
         </div>
         <div className="row wrap">
-          {manager && <Button onClick={onPaidOut}>{t("paidOut")}</Button>}
+          {manager && (
+            <Button
+              disabled={!online}
+              aria-describedby={online ? undefined : "drawer-offline"}
+              onClick={onPaidOut}
+            >
+              {t("paidOut")}
+            </Button>
+          )}
           {data.canClose && (
-            <Button variant="primary" onClick={() => setClosing(true)}>
+            <Button
+              variant="primary"
+              disabled={!online}
+              aria-describedby={online ? undefined : "drawer-offline"}
+              onClick={() => setClosing(true)}
+            >
               {t("closeDrawer")}
             </Button>
           )}
           {actions}
         </div>
+        {!online && (
+          <p className="muted tiny" id="drawer-offline">
+            {t("discountsDrawerOffline")}
+          </p>
+        )}
       </div>
       <div className="drawer-cards">
         {cash ? (

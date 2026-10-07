@@ -1043,6 +1043,34 @@ test("Setting 'Al guardar sin conexión' on the Sync screen applies to the next 
   await context.setOffline(false);
 });
 
+test("Caja during an outage shows the drawer this device last saw, never 'Caja cerrada', and closing waits for the connection (restaurant-day A13.8)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await openDrawer(page);
+  await page.route("**/api/**", (route) => route.abort("internetdisconnected"));
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await expect(pill(page, /^Sin conexión/)).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Cerrar", exact: true }).click();
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  await expect(page.getByText("Caja abierta", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Abrir caja", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Cerrar caja", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText("Cerrar caja y registrar retiros requieren conexión.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  void context;
+});
+
 test("An offline external-terminal sale shows and prints service's local receipt with the method, the reference and the order note (LD-10 B4, LD-1)", async ({
   page,
   context,
