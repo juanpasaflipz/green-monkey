@@ -392,24 +392,38 @@ line), and keep where noted.
     for refunds ([CFDI.md, "Builders"](CFDI.md#builders-fiscal-027-stays-the-system-of-record)),
     including late offline sales that land in a supplementary global part for their
     own day ([OFFLINE_RECOVERY.md, "Late sales and the global invoice"](OFFLINE_RECOVERY.md#late-sales-and-the-global-invoice)).
-  - **RESICO ISR withholding is not modelled (open gap).** The CFDI core sends IVA
-    traslado only and refuses withholdings (`server/cfdi/facturapi-schema.ts:32-38`,
-    which marks them out of scope; `server/cfdi/build.ts` always sets
-    `withholding: false`). Ask the accountant whether a pilot restaurant in régimen
-    626 will invoice personas morales; if so, 030 needs a change before live CFDI.
+  - **RESICO ISR withholding is modelled (030, LD-16 L9) and sandbox-verified on
+    2026-10-07.** A nominative invoice from a persona física in régimen 626 to a persona
+    moral carries a 1.25 % ISR retention per concept, on the concept's base
+    ([CFDI.md, "Regulatory and provider model"](CFDI.md#regulatory-and-provider-model)); in
+    the lead's local rehearsal against the real Facturapi sandbox (LD-51) a portal invoice
+    to a persona moral stamped it exactly. The accountant still confirms the rule before the
+    pilot (which restaurants are 626, and that the retention applies to them as modelled).
+  - **Receptor names are not checked in Facturapi's test mode** (LD-51 F5): a test invoice
+    stamps whatever name the customer typed, so the name check
+    (`cfdi_receptor_name_mismatch`, "Escríbelo exactamente como en tu Constancia de
+    Situación Fiscal") cannot be rehearsed before live mode. Confirm with Facturapi how live
+    mode reports a name that does not match the RFC, and tell staff the first such refusals
+    may appear after go-live.
+  - **Base and Importe rounding of tax-inclusive concepts** (decision D18, LD-51 F6): the app
+    sends each concept at its tax-inclusive price and Facturapi derives the concept's Base
+    and IVA Importe; the app compares the stamped totals with fiscal's figures
+    (`amount_check`). The accountant (or Facturapi) confirms on a sandbox XML that the
+    per-concept Base/Importe rounding is acceptable before the pilot.
   - The USD cash procedure for border restaurants
     ([PILOT_SOP.md §5.1](PILOT_SOP.md#51-dólares-en-efectivo-restaurantes-de-la-frontera)):
     which exchange rate to use and how to keep the paper log.
 - **How to verify.** A written sign-off (email is enough) kept with the launch
   records, then the accountant's review of the staging test invoices from the Wave 3
-  rehearsal (section 2, step 0). The IVA and CFDI behaviour above exists only after
-  **027** and **030** merge, and RESICO withholding is in neither (see above); the
-  rules can be reviewed now.
+  rehearsal (section 2, step 0). The IVA and CFDI behaviour above, RESICO withholding
+  included, is in **027** and **030**; the rules can be reviewed now.
 
 ### 1.14 Facturapi keys and each restaurant's CSD
 
-- **Why.** CFDI stamping goes through Facturapi. Today nothing calls it and live mode
-  is not enabled ([CFDI.md](CFDI.md)).
+- **Why.** CFDI stamping goes through Facturapi. Live mode is not enabled; the shared
+  sandbox flows (activation, sales, portal invoices, a cancellation, the daily global and a
+  late supplementary part) passed a local rehearsal with the staging test key on
+  2026-10-07 (LD-51; [CFDI.md](CFDI.md), "Status").
 - **Where it goes** (worker variables: Wave 2.0 declared `FACTURAPI_API_KEY`,
   `FACTURAPI_TEST_KEY`, `CREDENTIAL_ENCRYPTION_KEY` and `CFDI_LIVE_ENABLED` on
   `worker` (`.railway/railway.ts:125-129`; placeholders at `.env.example:185-188`),
@@ -422,7 +436,13 @@ line), and keep where noted.
   - A **test key** (`sk_test_…`) as `FACTURAPI_TEST_KEY` on the **staging** worker:
     the shared sandbox needed for the Wave 3 staging rehearsal of the daily global
     invoice (a "Missing items" entry of LD-16, see the dependency tags). Per the 030
-    spec, production refuses a test key on its own.
+    spec, production refuses a test key on its own. **Your decision (LD-51 F4):** the
+    test key you supplied belongs to a Facturapi organization registered with your real
+    taxpayer identity, and in the shared sandbox that organization is the issuer of every
+    staging test CFDI (its name, RFC, régimen and postal code are on each one, and the CFDI
+    panel shows it). Recommended: create a dedicated Facturapi organization with a SAT test
+    identity for staging and give the staging worker its test key; otherwise accept it
+    knowingly. Rehearsal files that carry that identity stay out of the repository.
   - `CFDI_LIVE_ENABLED=true` (its effect is *proposed* by the 030 spec) on the
     production worker only when you decide to go live; per the spec it is refused
     anywhere else (on `integration/v1` today, only the web refuses it,
