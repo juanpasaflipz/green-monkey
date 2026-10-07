@@ -17,7 +17,7 @@ import {
   CircleHelp,
 } from "lucide-react";
 import type { Session, Locale, Product } from "../shared/domain";
-import { strings, translateError, type Key } from "./i18n";
+import { strings, errorNotice, type Key } from "./i18n";
 import { api, setSession, clearSessionScope } from "./api";
 import { db, cacheSession, scope } from "./offline";
 import {
@@ -227,7 +227,7 @@ export default function App() {
       // browser that reports itself offline, falls back to the cached session.
       // Never right after a sign-in: the cached session may be another
       // employee's, and sales would be recorded under that person (OFF-R16).
-      if (signedIn) setError(translateError((e as Error).message, locale));
+      if (signedIn) setError(errorNotice(e, locale));
       else if ((e instanceof ApiError && e.transient) || !navigator.onLine)
         await restoreCached();
     } finally {

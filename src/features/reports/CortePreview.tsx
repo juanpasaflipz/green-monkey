@@ -4,7 +4,7 @@ import type {
   CorteDocument,
   DayCorteDocument as DayCorte,
 } from "../../../shared/reports";
-import { strings, translateError } from "../../i18n";
+import { strings, errorNotice } from "../../i18n";
 import { printDocument, usePrintSettings } from "../../print";
 import { Button, Modal } from "../../components/ui";
 import {
@@ -67,7 +67,7 @@ export function CortePreview({
       );
     } catch (e) {
       const code = (e as Error).message;
-      setError({ code, text: translateError(code, locale), step: "load" });
+      setError({ code, text: errorNotice(e, locale), step: "load" });
     }
   }, [targetKey, locale]);
   useEffect(() => {
@@ -109,7 +109,7 @@ export function CortePreview({
       const code = (e as Error).message;
       setError({
         code,
-        text: translateError(code, locale),
+        text: errorNotice(e, locale),
         step: "print",
         sheet,
       });

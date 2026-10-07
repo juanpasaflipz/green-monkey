@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import type { Locale } from "../../shared/domain";
 import type { TerminalState, TerminalStaff } from "../../shared/access";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, translateError, type Key } from "../i18n";
 import { ApiError, api } from "../api";
 import { Button, Field } from "../components/ui";
 import { finishPendingLogout } from "../access/session";
@@ -91,7 +91,7 @@ export function AccessGate({
       await onSignedIn();
     } catch (e) {
       const code = (e as Error).message;
-      setError(translateError(code, locale));
+      setError(errorNotice(e, locale));
       if (["pin_locked", "pin_hard_locked", "device_revoked"].includes(code))
         await refresh();
       if (code === "employee_unavailable") {
@@ -314,7 +314,7 @@ function DemoSignIn({
           });
           await onSignedIn();
         } catch (err) {
-          setError(translateError((err as Error).message, locale));
+          setError(errorNotice(err, locale));
         } finally {
           setBusy(false);
         }

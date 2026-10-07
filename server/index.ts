@@ -21,7 +21,7 @@ import cookieParser from "cookie-parser";
 import helmet from "helmet";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
-import { z, ZodError } from "zod";
+import { z } from "zod";
 import { Decimal } from "decimal.js";
 import { connect, tenant, waitForDatabase } from "./db.js";
 import {
@@ -61,7 +61,8 @@ import {
 import { requireReadySchema } from "./readiness.js";
 import { recordSettlement } from "./checks.js";
 import { makeRoute, trustProxy } from "./http.js";
-import { log, logRequestError, requestIdOf, requestLog } from "./logging.js";
+import { log, requestLog } from "./logging.js";
+import { apiErrorHandler } from "./api-errors.js";
 import { createJobRunner } from "./jobs/runner.js";
 import "./jobs/handlers/index.js";
 import { opsState } from "./ops/status.js";
@@ -499,33 +500,7 @@ if (process.env.NODE_ENV === "production") {
   app.use(express.static(resolve("dist")));
   app.get("/{*path}", (_req, res) => res.sendFile(resolve("dist/index.html")));
 }
-app.use(
-  (
-    error: unknown,
-    req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction,
-  ) => {
-    // The id from the request log (X-Railway-Request-Id when present), so the
-    // client's support reference matches the log line.
-    const requestId = requestIdOf(req);
-    if (!res.headersSent) res.setHeader("X-Request-Id", requestId);
-    const reply = (status: number, code: string) => {
-      logRequestError(error, req, { status, code });
-      return res.status(status).json({ error: code, requestId });
-    };
-    if (error instanceof DomainError) return reply(error.status, error.code);
-    if (error instanceof ZodError) return reply(400, "invalid_input");
-    // body-parser marks malformed or oversized bodies with a type and status.
-    const parse = (error as { type?: string; status?: number }) ?? {};
-    if (parse.type === "entity.parse.failed") return reply(400, "invalid_json");
-    if (parse.type === "entity.too.large")
-      return reply(413, "payload_too_large");
-    // Logged with name, message, stack, route template and SQLSTATE; never
-    // request bodies, cookies or the raw path (SEC-8).
-    return reply(500, "internal_error");
-  },
-);
+app.use(apiErrorHandler);
 const port = Number(process.env.PORT ?? 3001);
 const server = app.listen(port, "0.0.0.0", () => {
   opsState.ready = true;

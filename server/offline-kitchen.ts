@@ -4,7 +4,12 @@ import { permit } from "./auth.js";
 import { audit, once } from "./orders.js";
 import { refreshOrderState } from "./voids.js";
 import { bumpKitchenFeed } from "./kitchen.js";
-import { DomainError, id, type Session } from "../shared/domain.js";
+import {
+  DomainError,
+  businessDate,
+  id,
+  type Session,
+} from "../shared/domain.js";
 
 /** Round state for rounds created by offline sync until the kitchen decides (OFF-4). */
 export const OFFLINE_REVIEW_STATE = "offline_review";
@@ -25,10 +30,16 @@ export async function placeRoundsInOfflineReview(
   return rounds.length;
 }
 
-/** Pending offline-sold rounds, oldest sale first, at most 100. */
+/**
+ * Pending offline-sold rounds, oldest sale first, at most 100. Each names its order's
+ * business day, and the response the current one, so the lane dates an order from another
+ * business day as the KDS does ("#46 · 5 oct", LD-29/LD-48): an offline sale synced after
+ * the cutoff continues the numbers of the day it was sold.
+ */
 export async function listOfflineKitchen(tx: Tx, s: Session) {
   permit(s, ["owner", "manager", "kitchen", "server", "cashier"]);
   const rows = await tx`select k.round_id,r.order_id,o.number as order_number,
+      o.business_date::text as business_date,
       sr.provisional_number,r.station,r.number as round,sr.sold_at,sr.synced_at,
       sr.kitchen_delivery,d.name as device_name,o.mode,t.name as table_name,o.name,
       (select coalesce(jsonb_agg(jsonb_build_object(
@@ -49,10 +60,16 @@ export async function listOfflineKitchen(tx: Tx, s: Session) {
     order by sr.sold_at, k.round_id
     limit 100`;
   return {
+    currentBusinessDate: businessDate(
+      new Date().toISOString(),
+      s.restaurant.timezone,
+      s.restaurant.cutoff,
+    ),
     items: rows.map((r) => ({
       roundId: r.round_id,
       orderId: r.order_id,
       orderNumber: r.order_number,
+      businessDate: r.business_date as string,
       provisionalNumber: r.provisional_number,
       station: r.station,
       round: r.round,

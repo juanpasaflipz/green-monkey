@@ -19,6 +19,41 @@ export class ApiError extends Error {
     );
   }
 }
+/**
+ * The server's request id of an answer (the error body's `requestId`, else the
+ * X-Request-Id header): the "Referencia de soporte" an error notice shows (errorNotice).
+ */
+export function responseRequestId(
+  response: Response,
+  body: unknown,
+): string | undefined {
+  const id = (body as { requestId?: unknown } | null | undefined)?.requestId;
+  return typeof id === "string"
+    ? id
+    : (response.headers.get("x-request-id") ?? undefined);
+}
+
+/**
+ * The ApiError of a failed answer read outside api() (the owner console's own fetches):
+ * the body's error code (else `fallback`), the status, and the request id.
+ */
+export function responseError(
+  response: Response,
+  body: unknown,
+  fallback: string,
+): ApiError {
+  const code = (body as { error?: unknown } | null | undefined)?.error;
+  return new ApiError(
+    typeof code === "string" && code ? code : fallback,
+    response.status,
+    response.status === 401
+      ? "auth"
+      : response.status >= 500
+        ? "server"
+        : "domain",
+    responseRequestId(response, body),
+  );
+}
 export type ApiOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -72,15 +107,18 @@ function abortError() {
 }
 
 /**
- * Answers authentication gives before any handler runs (contract §3.9: the
- * same set offline's sync classifier treats as auth): the request was not
- * processed.
+ * Answers given before any handler runs: authentication's (contract §3.9: the
+ * same set offline's sync classifier treats as auth), and body-parser's for a
+ * body that did not arrive intact (request_aborted, request_size_invalid,
+ * LD-48). The request was not processed.
  */
 function answeredBeforeHandler(failure: ApiError) {
   return (
     failure.status === 401 ||
     failure.message === "session_changed" ||
-    failure.message === "missing_tenant"
+    failure.message === "missing_tenant" ||
+    failure.message === "request_aborted" ||
+    failure.message === "request_size_invalid"
   );
 }
 
@@ -152,6 +190,7 @@ async function request<T>(
         observer?.({ ok: true, latencyMs: Date.now() - started, path });
         return data as T;
       }
+      const requestId = responseRequestId(response, data);
       if (typeof data?.error === "string") {
         if (data.error === "session_changed" && typeof window !== "undefined")
           window.dispatchEvent(new Event("gm-session-changed"));
@@ -163,13 +202,18 @@ async function request<T>(
             : response.status >= 500
               ? "server"
               : "domain",
-          data.requestId,
+          requestId,
         );
       }
       if (response.status === 429)
-        throw new ApiError("rate_limited", 429, "server");
+        throw new ApiError("rate_limited", 429, "server", requestId);
       if (response.status >= 500)
-        throw new ApiError("server_unavailable", response.status, "server");
+        throw new ApiError(
+          "server_unavailable",
+          response.status,
+          "server",
+          requestId,
+        );
       throw new ApiError("invalid_response", response.status, "domain");
     } catch (e) {
       if (!(e instanceof ApiError)) throw e;
@@ -184,8 +228,9 @@ async function request<T>(
       latencyMs: Date.now() - started,
       path,
     });
-    // A retried POST answered by authentication before any handler ran (a 401,
-    // 409 session_changed or missing_tenant): the first attempt may have
+    // A retried POST answered before any handler ran (a 401, 409
+    // session_changed or missing_tenant, or a body that did not arrive
+    // intact, answeredBeforeHandler): the first attempt may have
     // committed before its response was lost, so its outcome stays unknown.
     // Report the first (transient) failure, never an answer that callers read
     // as "not processed" (Selling clears a payment attempt on a session 401,

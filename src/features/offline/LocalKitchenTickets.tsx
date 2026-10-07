@@ -11,17 +11,31 @@ import { Button, Empty, Modal } from "../../components/ui";
 import { KitchenTicketDocument } from "../KitchenTicket";
 import { printDocument, readPrintSettings } from "../../print";
 import { translator } from "./format";
+import {
+  currentBusinessDate,
+  orderNumberText,
+  withBusinessDay,
+} from "../../labels";
 import "./offline.css";
 
 type TicketStatus = "pending" | "ready" | "delivered";
 
-/** Ticket copy shared by the device list and automatic printing. */
-export function ticketCopy(locale: Locale) {
+/**
+ * Ticket copy shared by the device list and automatic printing. A cached
+ * server order from another business day than `today` prints "#142 · 5 oct"
+ * (LD-44), as the screens name it, and so does a provisional number from
+ * another business day: "B-03 · 5 oct" (LD-48).
+ */
+export function ticketCopy(locale: Locale, today?: string | null) {
   const t = translator(locale);
   return {
     banner: t("offlineTicketHeader"),
     footer: t("offlineTicketFooter"),
     round: (n: number) => t("offlineTicketRound", { n }),
+    order: (ref: { number: number; businessDate?: string | null }) =>
+      "#" + orderNumberText(ref, today, locale),
+    dated: (text: string, day: string) =>
+      withBusinessDay(text, day, today, locale),
   };
 }
 
@@ -52,7 +66,7 @@ export async function recentTickets(session: Session, locale: Locale) {
   return localKitchenTickets(
     session,
     Date.now() - 86_400_000,
-    ticketCopy(locale),
+    ticketCopy(locale, currentBusinessDate(session.restaurant)),
     tables,
   );
 }

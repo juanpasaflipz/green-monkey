@@ -3,10 +3,15 @@ import { Plus } from "lucide-react";
 import type { Locale, Session } from "../../shared/domain";
 import type { TableCheck, TableOccupancy } from "../../shared/service";
 import { api } from "../api";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { Badge, Button, Empty, Modal } from "../components/ui";
 import { requestSellingContext, usePoll } from "../serviceHooks";
 import { moneyFormatter } from "./Receipt";
+import {
+  currentBusinessDate,
+  orderNumberLabel,
+  orderNumberText,
+} from "../labels";
 
 /**
  * Mesas: occupancy comes from checks that are not closed. A paid dine-in check
@@ -39,7 +44,7 @@ export function Tables({
         setTables(await api<TableOccupancy[]>("/service/tables"));
         setError("");
       } catch (e) {
-        setError(translateError((e as Error).message, locale));
+        setError(errorNotice(e, locale));
         throw e;
       }
     },
@@ -66,7 +71,7 @@ export function Tables({
     try {
       await fn();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
       poll.refresh();
@@ -74,6 +79,8 @@ export function Tables({
   }
   const minutes = (iso: string) =>
     Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  // LD-29: a check from another business day names its date next to its number.
+  const today = currentBusinessDate(session.restaurant);
   if (!tables)
     return error ? (
       <p className="error" role="alert">
@@ -144,7 +151,7 @@ export function Tables({
                     <span>
                       {t("serviceTablePaidLine").replace(
                         "{n}",
-                        String(c.number),
+                        orderNumberText(c, today, locale),
                       )}
                     </span>
                     <div className="row wrap">
@@ -154,7 +161,7 @@ export function Tables({
                           (LD-15 fiscal Q2). Opening it still shows the check;
                           one paid without a ticket (kill switch) takes rounds. */}
                       <Button
-                        aria-label={`${t("resume")} #${c.number}`}
+                        aria-label={`${t("resume")} ${orderNumberLabel(c, today, locale)}`}
                         onClick={() => resume(c)}
                       >
                         {t("resume")}
@@ -170,7 +177,7 @@ export function Tables({
                 ) : (
                   <Button className="full" key={c.id} onClick={() => resume(c)}>
                     {t("serviceTableCheckLine")
-                      .replace("{n}", String(c.number))
+                      .replace("{n}", orderNumberText(c, today, locale))
                       .replace("{name}", c.name || t("serviceUnnamed"))
                       .replace("{balance}", money(c.balance))
                       .replace("{min}", String(minutes(c.createdAt)))}
@@ -205,7 +212,7 @@ export function Tables({
               "{numbers}",
               prompt.checks
                 .filter((c) => c.checkState === "paid" || c.balance <= 0)
-                .map((c) => "#" + c.number)
+                .map((c) => orderNumberLabel(c, today, locale))
                 .join(", "),
             )}
           </p>

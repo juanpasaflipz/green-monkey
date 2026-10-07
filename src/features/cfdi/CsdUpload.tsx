@@ -12,7 +12,7 @@
 import { useEffect, useId, useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
 import { api } from "../../api";
-import { strings, translateError } from "../../i18n";
+import { strings, errorNotice } from "../../i18n";
 import { Button } from "../../components/ui";
 
 /** ArrayBuffer → base64 without spreading large arrays into String.fromCharCode. */
@@ -121,7 +121,7 @@ export function CsdUpload({
       setNotice(t.cfdiCsdUploaded);
       onDone();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }

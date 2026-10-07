@@ -8,7 +8,7 @@ import {
 } from "react";
 import type { Locale } from "../../../shared/domain";
 import type { Page } from "../../../shared/reports";
-import { translateError } from "../../i18n";
+import { errorNotice } from "../../i18n";
 
 export type ReportState<T> = {
   data: T | null;
@@ -70,7 +70,7 @@ export function useReport<T>(
     } catch (e) {
       const code = (e as Error).message;
       if (request === latest.current)
-        setError({ code, text: translateError(code, locale) });
+        setError({ code, text: errorNotice(e, locale) });
     } finally {
       if (request === latest.current) setLoading(false);
     }

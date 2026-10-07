@@ -159,6 +159,13 @@ const TRANSIENT_CODES = new Set([
   // back to a build without it). The sync never answers it for a record, so it
   // is no verdict on the record and must not need a manager.
   "not_found",
+  // body-parser's answers for a body that did not arrive intact (400, LD-48,
+  // POL-W3R2-L1): no handler ran, and the same record (same operationId)
+  // replays safely. The deterministic body answers (invalid_json,
+  // payload_too_large, unsupported_encoding, unsupported_charset,
+  // too_many_parameters) fail the same way every time and stay conflicts.
+  "request_aborted",
+  "request_size_invalid",
 ]);
 const AUTH_CODES = new Set([
   "unauthorized",

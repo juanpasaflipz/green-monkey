@@ -82,6 +82,14 @@ export type RetentionResult = {
   deleted: Record<string, number>;
   /** Rows whose personal data a redaction rule blanked (never deleted). */
   redacted: Record<string, number>;
+  /**
+   * Tables this run did not drain: their last batch was full (or the time
+   * budget ran out before their first one), so the run stopped at maxBatches
+   * or its budget and matching rows may remain. A table whose last batch came
+   * back short, a full batch followed by an empty one included, is drained
+   * and never listed (PLAT-R3).
+   */
+  backlog: string[];
   skipped: string[];
   failed: string[];
 };
@@ -119,11 +127,13 @@ export async function retentionPass(
 }
 
 /**
- * The daily run (migrate.js --retention-only): repeats bounded passes while the previous one deleted at
- * least one full batch from some table (a backlog may remain), up to maxPasses, and starts a further pass
- * only inside RETENTION_WINDOW. Stops at the first failed run, failed table or lock-timeout skip, and
- * returns that pass's skipped/failed lists with the deletions summed over every pass (P-24). An operator
- * run outside the window therefore does exactly one pass.
+ * The daily run (migrate.js --retention-only): repeats bounded passes while the previous one left a
+ * backlog (some table's last batch was full, so it stopped at maxBatches or its time budget), up to
+ * maxPasses, and starts a further pass only inside RETENTION_WINDOW. A pass whose tables all ended on a
+ * short batch, a full batch followed by an empty one included, is final: no extra empty pass (PLAT-R3).
+ * Stops at the first failed run, failed table or lock-timeout skip, and returns that pass's
+ * backlog/skipped/failed lists with the deletions and redactions summed over every pass (P-24). An
+ * operator run outside the window therefore does exactly one pass.
  */
 export async function retentionPasses(
   sql: postgres.Sql,
@@ -132,6 +142,8 @@ export async function retentionPasses(
     maxPasses?: number;
     now?: () => number;
     pass?: typeof retentionPass;
+    /** runRetention options for every pass (batch size, batches per table, pause). */
+    run?: Parameters<typeof runRetention>[1];
   } = {},
 ): Promise<RetentionResult | null> {
   const maxPasses = o.maxPasses ?? 10;
@@ -140,26 +152,33 @@ export async function retentionPasses(
   const deleted: Record<string, number> = {};
   const redacted: Record<string, number> = {};
   for (let n = 0; ; n++) {
-    const r = await pass(sql, alert);
+    const r = await pass(sql, alert, o.run);
     if (!r) return null;
     for (const [table, count] of Object.entries(r.deleted))
       deleted[table] = (deleted[table] ?? 0) + count;
     for (const [table, count] of Object.entries(r.redacted ?? {}))
       redacted[table] = (redacted[table] ?? 0) + count;
-    const backlog = [
-      ...Object.values(r.deleted),
-      ...Object.values(r.redacted ?? {}),
-    ].some((count) => count >= RETENTION_BATCH);
     if (
       r.failed.length ||
       r.skipped.length ||
-      !backlog ||
+      !r.backlog.length ||
       n + 1 >= maxPasses ||
       !inRetentionWindow(now())
     ) {
       if (n > 0)
-        log.info("retention_passes", { passes: n + 1, deleted, redacted });
-      return { deleted, redacted, skipped: r.skipped, failed: r.failed };
+        log.info("retention_passes", {
+          passes: n + 1,
+          deleted,
+          redacted,
+          backlog: r.backlog,
+        });
+      return {
+        deleted,
+        redacted,
+        backlog: r.backlog,
+        skipped: r.skipped,
+        failed: r.failed,
+      };
     }
   }
 }
@@ -230,6 +249,7 @@ export async function runRetention(
   const started = now();
   const deleted: Record<string, number> = {};
   const redacted: Record<string, number> = {};
+  const backlog: string[] = [];
   const skipped: string[] = [];
   const failed: string[] = [];
   const rules = [
@@ -247,6 +267,10 @@ export async function runRetention(
   for (const rule of rules) {
     if (!IDENT.test(rule.table)) throw Error("retention_table_invalid");
     rule.counts[rule.table] = 0;
+    // A short (or empty) batch drains the table. A loop that ends at
+    // maxBatches or the time budget, even before its first batch, leaves a
+    // possible backlog.
+    let drained = false;
     try {
       for (let n = 0; n < maxBatches && now() - started < budgetMs; n++) {
         if (n > 0 && pauseMs > 0)
@@ -271,8 +295,12 @@ export async function runRetention(
           return result.count;
         });
         rule.counts[rule.table] += count;
-        if (count < batch) break;
+        if (count < batch) {
+          drained = true;
+          break;
+        }
       }
+      if (!drained) backlog.push(rule.table);
     } catch (error) {
       const code = (error as { code?: unknown })?.code;
       if (code === "55P03") {
@@ -297,9 +325,10 @@ export async function runRetention(
   log.info("retention_run", {
     deleted,
     redacted,
+    backlog,
     skipped,
     failed,
     ms: now() - started,
   });
-  return { deleted, redacted, skipped, failed };
+  return { deleted, redacted, backlog, skipped, failed };
 }

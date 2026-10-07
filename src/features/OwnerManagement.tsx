@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import type { Locale } from "../../shared/domain";
 import { PRO_OFFER } from "../../shared/plans";
 import { Button, Field } from "../components/ui";
-import { strings, translateError, type Key } from "../i18n";
+import { responseError } from "../api";
+import { strings, errorNotice, withSupportReference, type Key } from "../i18n";
 import type { AccountConfig } from "./accountConfig";
 
 type Restaurant = {
@@ -111,9 +112,13 @@ export function OwnerManagement({
             body: JSON.stringify(body),
           },
     );
-    const result = await response.json();
-    if (!response.ok) throw Error(result.error ?? "request_failed");
-    return result;
+    if (!response.ok) {
+      // With its status and request id, so a server error shows the
+      // "Referencia de soporte" (docs/RUNBOOK.md "Signals").
+      const error = await response.json().catch(() => ({}));
+      throw responseError(response, error, "request_failed");
+    }
+    return response.json();
   }
   async function run(work: () => Promise<void>) {
     setBusy(true);
@@ -125,14 +130,18 @@ export function OwnerManagement({
       setError(
         // account (031): a material change waits for the console's acceptance.
         code === "legal_acceptance_required"
-          ? translateError(code, locale)
+          ? errorNotice(e, locale)
           : code === "pro_required"
             ? es
               ? "La sucursal de origen necesita Pro activo para agregar otra ubicación."
               : "The source location needs active Pro to add another location."
-            : es
-              ? "No se pudo completar. Revisa la conexión y vuelve a intentar; una solicitud pendiente puede tardar."
-              : "Could not complete. Check your connection and retry; a pending request may take a moment.",
+            : withSupportReference(
+                es
+                  ? "No se pudo completar. Revisa la conexión y vuelve a intentar; una solicitud pendiente puede tardar."
+                  : "Could not complete. Check your connection and retry; a pending request may take a moment.",
+                e,
+                locale,
+              ),
       );
     } finally {
       setBusy(false);
@@ -159,12 +168,16 @@ export function OwnerManagement({
           billing.operation.result?.applied
         )
           await refresh();
-      } catch {
+      } catch (e) {
         if (live)
           setError(
-            es
-              ? "No se pudo actualizar la administración."
-              : "Could not refresh management.",
+            withSupportReference(
+              es
+                ? "No se pudo actualizar la administración."
+                : "Could not refresh management.",
+              e,
+              locale,
+            ),
           );
       }
     }

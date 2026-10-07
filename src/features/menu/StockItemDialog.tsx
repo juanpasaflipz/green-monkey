@@ -3,7 +3,7 @@ import type { Locale } from "../../../shared/domain";
 import type { StockItem } from "../../../shared/menu";
 import { stockItemInput, stockUnits } from "../../../shared/menu-schema";
 import { api } from "../../api";
-import { translateError } from "../../i18n";
+import { errorNotice, translateError } from "../../i18n";
 import { Button, Field, Modal } from "../../components/ui";
 import { decimalInput, translator, trimDecimal } from "./format";
 import { unitLabel } from "./RecipeEditor";
@@ -97,10 +97,9 @@ export function StockItemDialog({
       const code = (e as Error).message;
       setStale(code === "menu_changed" || code === "operation_conflict");
       setError(
-        translateError(
-          code === "operation_conflict" ? "menu_changed" : code,
-          locale,
-        ),
+        code === "operation_conflict"
+          ? translateError("menu_changed", locale)
+          : errorNotice(e, locale),
       );
     } finally {
       setBusy(false);

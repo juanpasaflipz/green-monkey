@@ -7,7 +7,7 @@ import type {
   StockMovement,
 } from "../../../shared/menu";
 import { api } from "../../api";
-import { translateError, type Key } from "../../i18n";
+import { errorNotice, translateError, type Key } from "../../i18n";
 import { Badge, Button, Empty, Modal } from "../../components/ui";
 import { StockItemDialog } from "./StockItemDialog";
 import { unitLabel } from "./RecipeEditor";
@@ -88,7 +88,7 @@ export function StockItemsWorkspace({
       setData(items);
       setPlan(entitlement.plan);
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -104,7 +104,7 @@ export function StockItemsWorkspace({
       await load();
       return true;
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
       await load();
       return false;
     } finally {
@@ -128,7 +128,7 @@ export function StockItemsWorkspace({
         next: page.next,
       }));
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
 

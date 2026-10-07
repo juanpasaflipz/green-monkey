@@ -359,6 +359,54 @@ describe("sync loop", () => {
     expect(mockedApi).not.toHaveBeenCalled();
     expect(await unsyncedCount(s)).toBe(1);
   });
+
+  it("LD-48: a failed attempt keeps the answer's status and request id for Sincronización's support reference, until the row resolves (POLISH-OFFLINE-4)", async () => {
+    const s = session();
+    const retrying = row(s, {}, { sequence: 1 });
+    const review = row(s, {}, { sequence: 2 });
+    await fakeDb.pending.put(retrying);
+    await fakeDb.pending.put(review);
+    mockedApi
+      .mockRejectedValueOnce(
+        new ApiError("internal_error", 500, "server", "3f2a9c1b-0001"),
+      )
+      .mockRejectedValueOnce(
+        new ApiError("some_new_code", 409, "domain", "77aa0e1c-0002"),
+      );
+    await syncPending(s, { force: true, reason: "manual" });
+    expect(await fakeDb.pending.get(retrying.id)).toMatchObject({
+      status: "pending",
+      error: "internal_error",
+      errorStatus: 500,
+      requestId: "3f2a9c1b-0001",
+    });
+    expect(await fakeDb.pending.get(review.id)).toMatchObject({
+      status: "conflict",
+      error: "some_new_code",
+      errorStatus: 409,
+      requestId: "77aa0e1c-0002",
+    });
+    // A failure that never reached the server leaves no request id behind.
+    mockedApi.mockRejectedValueOnce(
+      new ApiError("network_unavailable", 0, "network"),
+    );
+    await syncPending(s, { force: true, reason: "manual" });
+    const offline = (await fakeDb.pending.get(retrying.id))!;
+    expect(offline.error).toBe("network_unavailable");
+    expect(offline.errorStatus).toBe(0);
+    expect(offline.requestId).toBeUndefined();
+    // Once a row resolves, nothing of its last failure stays on it.
+    mockedApi.mockReset();
+    mockedApi.mockResolvedValue({ ok: true });
+    await syncPending(s, { force: true, reason: "manual" });
+    for (const id of [retrying.id, review.id]) {
+      const settled = (await fakeDb.pending.get(id))!;
+      expect(settled.status).toBe("synced");
+      expect(settled.error).toBeUndefined();
+      expect(settled.errorStatus).toBeUndefined();
+      expect(settled.requestId).toBeUndefined();
+    }
+  });
 });
 
 describe("retention and older tabs", () => {

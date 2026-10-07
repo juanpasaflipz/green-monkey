@@ -11,7 +11,7 @@ import {
   tablesBulkInput,
 } from "../../../shared/menu-schema";
 import { api } from "../../api";
-import { translateError } from "../../i18n";
+import { errorNotice, translateError } from "../../i18n";
 import { Badge, Button, Empty, Field, Modal } from "../../components/ui";
 import { translator } from "./format";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -99,7 +99,7 @@ export function FloorWorkspace({
     try {
       setFloor(await api<Floor>("/floor"));
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -115,7 +115,7 @@ export function FloorWorkspace({
       await load();
       return true;
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
       await load();
       return false;
     } finally {
@@ -507,10 +507,9 @@ function useSubmit(locale: Locale, onSaved: () => void) {
     } catch (e) {
       const code = (e as Error).message;
       setError(
-        translateError(
-          code === "operation_conflict" ? "menu_changed" : code,
-          locale,
-        ),
+        code === "operation_conflict"
+          ? translateError("menu_changed", locale)
+          : errorNotice(e, locale),
       );
     } finally {
       setBusy(false);

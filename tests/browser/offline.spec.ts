@@ -2783,4 +2783,282 @@ test.describe("offline table service (Beta) turned on", () => {
     await nextSale(page);
     await context.setOffline(false);
   });
+
+  test("A round parked for a local order resumes from Borradores offline and, after the order synced, onto its server order, also once the synced record is pruned (LD-13 addendum)", async ({
+    page,
+    context,
+  }) => {
+    // Regression: parkCurrentCart parked the cart under the local id and
+    // restoreDraft read GET /orders/<local id>, which fails online and
+    // offline, so the round stayed stuck in Borradores.
+    await page.addInitScript(() => {
+      window.print = () => {};
+    });
+    await login(page);
+    await openDrawer(page);
+    await goOffline(context, page);
+    await product(page, "Taco de hongos").click();
+    await page
+      .getByRole("button", { name: "Enviar (sin conexión)", exact: true })
+      .click();
+    const heading = page.locator(".cart-heading .eyebrow").first();
+    await expect(heading).toHaveText(PROVISIONAL);
+    const number = (await heading.textContent())!.trim();
+    // A round tapped but not sent; Nueva orden parks it in Borradores.
+    const cart = page.locator(".order-line");
+    await product(page, "Agua de jamaica").click();
+    await page
+      .getByRole("button", { name: "Nueva orden", exact: true })
+      .click();
+    await expect(heading).toHaveText("Nueva orden");
+    await expect(cart).toHaveCount(0);
+    const drafts = page.getByRole("dialog", { name: "Borradores" });
+    const parkedRound = (label: string) =>
+      drafts
+        .getByRole("button")
+        .filter({ hasText: `${label} · ronda sin enviar` });
+
+    // Offline: the round goes back onto the local order.
+    await page.getByRole("button", { name: "Borradores", exact: true }).click();
+    await parkedRound(number).click();
+    await expect(drafts).toHaveCount(0);
+    await expect(heading).toHaveText(number);
+    await expect(cart).toHaveCount(1);
+    await expect(cart.first()).toContainText("Agua de jamaica");
+    await expect(page.locator(".existing")).toContainText("Taco de hongos");
+    await expect(page.locator(".cart-bottom [role=alert]")).toHaveCount(0);
+
+    // Parked again; the order record syncs once the connection is back.
+    await page
+      .getByRole("button", { name: "Nueva orden", exact: true })
+      .click();
+    await expect(heading).toHaveText("Nueva orden");
+    await context.setOffline(false);
+    await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+    const orderRow = async () =>
+      (await allRows(page)).find(
+        (row) =>
+          row.body?.kind === "order" && row.body?.provisionalNumber === number,
+      );
+    await expect
+      .poll(async () => (await orderRow())?.status, { timeout: 60_000 })
+      .toBe("synced");
+    const { orderId, orderNumber } = (await orderRow()).result;
+    expect(orderId).toBeTruthy();
+
+    // Online: the local id resolves to the server order the sync recorded,
+    // and opening Borradores stores the parked reference as that server
+    // order (POL-R2-3).
+    await page.getByRole("button", { name: "Borradores", exact: true }).click();
+    await expect(parkedRound(`${number} → #${orderNumber}`)).toHaveCount(1);
+    const s = await session(page);
+    const parkedRefs = () =>
+      page.evaluate(
+        (prefix) =>
+          new Promise<any[]>((resolve, reject) => {
+            const request = indexedDB.open("green-monkey-v1");
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const db = request.result,
+                tx = db.transaction("cache", "readonly"),
+                rows = tx.objectStore("cache").getAll();
+              rows.onsuccess = () =>
+                resolve(
+                  (rows.result as any[])
+                    .filter((row) => String(row.id).startsWith(prefix))
+                    .map((row) => row.value),
+                );
+              tx.oncomplete = () => db.close();
+            };
+          }),
+        `${s.tenantId}:${s.deviceId}:${s.employeeId}:parked-order:`,
+      );
+    await expect
+      .poll(async () => (await parkedRefs()).map((ref) => ref?.id))
+      .toEqual([orderId]);
+    expect((await parkedRefs())[0]).toMatchObject({
+      number: orderNumber,
+      provisionalNumber: number,
+    });
+    // Retention then prunes the synced order record (7 days after it synced,
+    // OFF-12): the round still resumes onto its server order instead of
+    // reading as an order that no longer exists.
+    await page.keyboard.press("Escape");
+    await expect(drafts).toHaveCount(0);
+    await deleteRow(page, (await orderRow()).id);
+    expect(await orderRow()).toBeUndefined();
+    await page.getByRole("button", { name: "Borradores", exact: true }).click();
+    await drafts
+      .getByRole("button")
+      .filter({ hasText: `#${orderNumber} · ronda sin enviar` })
+      .click();
+    await expect(drafts).toHaveCount(0);
+    await expect(heading).toHaveText(`${number} → #${orderNumber}`);
+    await expect(cart).toHaveCount(1);
+    await expect(cart.first()).toContainText("Agua de jamaica");
+    const round = page.waitForResponse(
+      (r) =>
+        new URL(r.url()).pathname === `/api/orders/${orderId}/rounds` &&
+        r.request().method() === "POST",
+    );
+    await page
+      .getByRole("button", { name: "Enviar a cocina", exact: true })
+      .click();
+    expect((await round).status()).toBe(200);
+    await expect(cart).toHaveCount(0);
+    const order = await serverOrder(page, orderId);
+    expect(
+      order.lines
+        .filter((line: any) => line.round === 2)
+        .map((line: any) => line.name.es),
+    ).toEqual(["Agua de jamaica"]);
+    // Leave no open check behind for the next tests, and deliver the kitchen
+    // rounds it put on the KDS as the KDS would (LD-42 hygiene, POL-R2-5).
+    // Round 1 synced from the local order is held for offline review: it is a
+    // card in the KDS lane "Ventas sin conexión por revisar" (not in the
+    // kitchen feed) until someone decides it, and the previous-day clear never
+    // removes it, so the kitchen decides it here ("Ya se preparó",
+    // POLISH-OPS-3); round 2 was sent here.
+    await page.evaluate(
+      async ({ id, amount }) => {
+        const s = await (await fetch("/api/session")).json();
+        const post = async (path: string, body: unknown) => {
+          const r = await fetch("/api" + path, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-csrf-token": s.csrf,
+            },
+            body: JSON.stringify(body),
+          });
+          if (!r.ok) throw Error(`${path}: ${r.status}`);
+        };
+        const lane = await (await fetch("/api/offline/kitchen")).json();
+        for (const item of lane.items.filter((i: any) => i.orderId === id))
+          await post(`/offline/kitchen/${item.roundId}/decision`, {
+            operationId: crypto.randomUUID(),
+            decision: "already_served",
+          });
+        await post(`/orders/${id}/payments`, {
+          operationId: crypto.randomUUID(),
+          amount,
+          tip: 0,
+          received: amount,
+          method: "cash",
+        });
+        const paid = await (await fetch(`/api/orders/${id}`)).json();
+        for (const round of paid.rounds ?? []) {
+          if (round.state === "active")
+            await post(`/kitchen/${round.id}`, {
+              operationId: crypto.randomUUID(),
+              state: "ready",
+            });
+          if (round.state === "active" || round.state === "ready")
+            await post(`/kitchen/${round.id}`, {
+              operationId: crypto.randomUUID(),
+              state: "completed",
+            });
+        }
+      },
+      { id: orderId, amount: order.total - order.paid },
+    );
+    const delivered = await serverOrder(page, orderId);
+    expect(
+      delivered.rounds.find((round: any) => round.number === 2)?.state,
+    ).toBe("completed");
+    // Nothing of this test stays on the kitchen screen: no active or ready
+    // round, and no card in the offline review lane.
+    expect(
+      delivered.rounds
+        .filter((round: any) =>
+          ["active", "ready", "offline_review"].includes(round.state),
+        )
+        .map((round: any) => round.number),
+    ).toEqual([]);
+    const lane = await page.evaluate(async () =>
+      (await fetch("/api/offline/kitchen")).json(),
+    );
+    expect(lane.items.filter((item: any) => item.orderId === orderId)).toEqual(
+      [],
+    );
+  });
+
+  test("A draft whose order no longer exists is shown as such and can only be discarded (LD-13 addendum)", async ({
+    page,
+  }) => {
+    await login(page);
+    await page.getByRole("button", { name: "Vender", exact: true }).click();
+    await product(page, "Taco de hongos").click();
+    await page
+      .getByRole("button", { name: "Nueva orden", exact: true })
+      .click();
+    // The parked cart names a check that no device and no server knows.
+    const s = await session(page);
+    const missing = crypto.randomUUID();
+    await page.evaluate(
+      ({ scope, missing }) =>
+        new Promise<void>((resolve, reject) => {
+          const request = indexedDB.open("green-monkey-v1");
+          request.onerror = () => reject(request.error);
+          request.onsuccess = () => {
+            const db = request.result,
+              tx = db.transaction(["drafts", "cache"], "readwrite"),
+              drafts = tx.objectStore("drafts").getAll();
+            drafts.onsuccess = () => {
+              const parked = (drafts.result as any[]).filter(
+                (d) => d.scope === scope && !d.id.endsWith(":active"),
+              );
+              for (const d of parked)
+                tx.objectStore("cache").put({
+                  id: `${scope}:parked-order:${d.id}`,
+                  value: { id: missing, number: 999 },
+                });
+            };
+            tx.oncomplete = () => {
+              db.close();
+              resolve();
+            };
+            tx.onerror = () => reject(tx.error);
+          };
+        }),
+      {
+        scope: `${s.tenantId}:${s.deviceId}:${s.employeeId}`,
+        missing,
+      },
+    );
+    await page.getByRole("button", { name: "Borradores", exact: true }).click();
+    const drafts = page.getByRole("dialog", { name: "Borradores" });
+    const entry = drafts
+      .getByRole("button")
+      .filter({ hasText: "#999 · ronda sin enviar" });
+    await expect(entry).toHaveCount(1);
+    await entry.click();
+    // The server has no such order: shown as gone, with only a discard.
+    await expect(drafts).toContainText(
+      "La orden de este borrador ya no existe en este dispositivo ni en el servidor.",
+    );
+    await expect(entry).toHaveCount(0);
+    // The gone entry is one bordered card in the list's rhythm (POL-R3-4).
+    const gone = drafts.locator(".draft-gone");
+    await expect(gone).toHaveCSS("display", "grid");
+    await expect(gone).toHaveCSS("row-gap", "12px");
+    await expect(gone).toHaveCSS("border-top-width", "1px");
+    // The discard action names its draft and takes the focus the entry had (POL-5).
+    const discard = drafts.getByRole("button", {
+      name: /^Descartar borrador: #999 · ronda sin enviar · .+ · 1 /,
+    });
+    await expect(discard).toBeFocused();
+    // Why it can only be discarded describes the action, so a screen reader
+    // that lands on it hears the reason (LD-48, POLISH-UX-5).
+    await expect(discard).toHaveAccessibleDescription(
+      "La orden de este borrador ya no existe en este dispositivo ni en el servidor.",
+    );
+    await discard.click();
+    await expect(drafts).not.toContainText("#999");
+    // The focus stays in the dialog: on its heading, the list being empty now.
+    await expect(
+      drafts.getByRole("heading", { name: "Borradores", exact: true }),
+    ).toBeFocused();
+    await expect(page.locator(".cart-bottom [role=alert]")).toHaveCount(0);
+  });
 });

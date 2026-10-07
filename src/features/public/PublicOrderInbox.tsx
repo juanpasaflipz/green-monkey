@@ -2,13 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import type { Locale, Order, Session } from "../../../shared/domain";
 import type { InboxHold, InboxResponse } from "../../../shared/public-ordering";
 import type { PaymentValues } from "../../../shared/service";
-import { strings, translateError, type Key } from "../../i18n";
+import {
+  errorNotice,
+  errorSentence,
+  strings,
+  translateError,
+  type Key,
+} from "../../i18n";
 import { api, ApiError } from "../../api";
 import { usePoll } from "../../serviceHooks";
 import { Button } from "../../components/ui";
 import { PaymentDialog } from "../PaymentDialog";
 import { ReceiptModal, checkStateOf, moneyFormatter } from "../Receipt";
 import { KitchenTicketDocument, ticketsFromOrderRound } from "../KitchenTicket";
+import { currentBusinessDate, orderNumberText } from "../../labels";
 import { printDocument, readPrintSettings } from "../../print";
 import { fill } from "../menu/format";
 import { HoldCard, type AcceptBody } from "./HoldCard";
@@ -153,7 +160,11 @@ export function PublicOrderInbox({
 
   function printKitchen(r: AcceptResult) {
     if (!readPrintSettings().kitchenOnSend) return;
-    const tickets = ticketsFromOrderRound(r.order, r.round);
+    // An accepted round on yesterday's open check prints its date (LD-44).
+    const tickets = ticketsFromOrderRound(r.order, r.round, {
+      today: currentBusinessDate(session.restaurant),
+      locale,
+    });
     if (!tickets.length) return;
     void printDocument(
       tickets.map((ticket, i) => (
@@ -166,17 +177,20 @@ export function PublicOrderInbox({
       )),
     );
   }
-  function failed(hold: InboxHold, code: string) {
+  function failed(hold: InboxHold, error: unknown) {
+    let code = (error as Error).message;
     if (code === "step_up_cancelled") return;
     if (code === "operation_conflict") keys.current.delete(hold.id);
+    // A server error carries its "Referencia de soporte" (POL-R2-6).
+    let text = errorNotice(error, locale);
     if (TARGET_GONE.has(code)) {
       setForceNew((f) => ({ ...f, [hold.id]: true }));
       code = "public_hold_target_invalid";
+      text = translateError(code, locale);
     }
-    setErrors((e) => ({ ...e, [hold.id]: translateError(code, locale) }));
+    setErrors((e) => ({ ...e, [hold.id]: text }));
     // The card disappears with the next read; its outcome must not (UX-7).
-    if (GONE.has(code))
-      setNotice(`${hold.label}: ${translateError(code, locale)}`);
+    if (GONE.has(code)) setNotice(`${hold.label}: ${text}`);
     if (REFRESH.has(code) || TARGET_GONE.has(code)) refresh();
   }
   function accepted(hold: InboxHold, r: AcceptResult) {
@@ -185,7 +199,12 @@ export function PublicOrderInbox({
     setNotice(
       t("publicAcceptedNotice", {
         label: r.hold.label,
-        number: r.order.number,
+        // A round on yesterday's open check names its date (POL-R2-2).
+        number: orderNumberText(
+          r.order,
+          currentBusinessDate(session.restaurant),
+          locale,
+        ),
       }),
     );
     printKitchen(r);
@@ -202,7 +221,7 @@ export function PublicOrderInbox({
       });
       accepted(hold, r);
     } catch (e) {
-      failed(hold, (e as Error).message);
+      failed(hold, e);
     } finally {
       setBusy(null);
     }
@@ -249,18 +268,19 @@ export function PublicOrderInbox({
         values.method === "external" &&
         values.confirmed &&
         !(e instanceof ApiError && e.transient);
-      const message =
-        translateError(code, locale) +
-        (charged
-          ? " " +
-            t("publicExternalChargeRefused", {
-              label: hold.label,
-              amount: moneyFormatter(
-                session.restaurant.currency,
-                locale,
-              )(values.amount + values.tip),
-            })
-          : "");
+      // With the "Referencia de soporte" of a server error, closed by a full
+      // stop before the charge sentence (POL-R2-6, POL-R2-4).
+      const message = charged
+        ? errorSentence(e, locale) +
+          " " +
+          t("publicExternalChargeRefused", {
+            label: hold.label,
+            amount: moneyFormatter(
+              session.restaurant.currency,
+              locale,
+            )(values.amount + values.tip),
+          })
+        : errorNotice(e, locale);
       setPaying((p) => p && { ...p, error: message });
       if (GONE.has(code)) {
         setPaying(null);
@@ -280,7 +300,7 @@ export function PublicOrderInbox({
       });
       refresh();
     } catch (e) {
-      setNotice(translateError((e as Error).message, locale));
+      setNotice(errorNotice(e, locale));
     } finally {
       setPauseBusy(false);
     }

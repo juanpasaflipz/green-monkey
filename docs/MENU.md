@@ -377,7 +377,13 @@ extension points:
   "menu writes keep a stored product fiscal value" guards this.
 - `productInput` (`shared/menu-schema.ts`) takes an optional strict `fiscal`;
   `saveMenuProduct` refuses IVA 8% outside a border region
-  (`fiscal_border_rate_not_allowed`). `legacyProductInput` is unchanged.
+  (`fiscal_border_rate_not_allowed`). Restoring an archived product
+  (`archiveProduct` with `archived: false`) applies the same check to its stored
+  value through fiscal's `assertProductFiscalAllowed`, after `menu_state`
+  (FISCAL-CONCURRENCY-3): an IVA 8% product archived before the restaurant left
+  the border region stays archived; it can come back only with another tax
+  category, or after the restaurant returns to a border region (LD-28).
+  `legacyProductInput` is unchanged.
 - `quote()` takes the server's fiscal context as its fourth parameter and
   stores each line's immutable tax snapshot (`PricedLine.tax`).
 - A tax change bumps the product `version`, like any priced change. Lines

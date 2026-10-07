@@ -3,7 +3,7 @@ import type { Locale, Session } from "../../shared/domain";
 import { stepUpExempt } from "../../shared/access";
 import { api, ApiError } from "../api";
 import { Button, Field } from "../components/ui";
-import { strings, translateError } from "../i18n";
+import { strings, errorNotice, translateError } from "../i18n";
 import "./account.css";
 
 type Privacy = { privacyNoticeUrl: string | null; version: number };
@@ -55,7 +55,7 @@ export function AccountPrivacy({
       setPrivacy(p);
       setUrl(p.privacyNoticeUrl ?? "");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     }
   }
   useEffect(() => {
@@ -92,7 +92,7 @@ export function AccountPrivacy({
       setError(
         code === "invalid_input"
           ? t.accountPrivacyUrlInvalid
-          : translateError(code, locale),
+          : errorNotice(e, locale),
       );
       if (code === "settings_changed") {
         setOperationId(crypto.randomUUID());
@@ -113,6 +113,16 @@ export function AccountPrivacy({
     );
     return list;
   }
+  /**
+   * The notice for a failed export step: the server's answer (with the "Referencia de
+   * soporte" for a server error), "export_aborted" for anything else, nothing when the
+   * owner cancelled the PIN step-up.
+   */
+  function exportFailure(e: unknown): string {
+    if (!(e instanceof ApiError))
+      return translateError("export_aborted", locale);
+    return e.message === "step_up_cancelled" ? "" : errorNotice(e, locale);
+  }
   async function download(kind: "json" | "csv") {
     setExportError("");
     setExportState(t.accountExportPreparing);
@@ -129,9 +139,7 @@ export function AccountPrivacy({
       setExportState(t.accountExportStarted);
     } catch (e) {
       setExportState("");
-      const code = e instanceof ApiError ? e.message : "export_aborted";
-      if (code !== "step_up_cancelled")
-        setExportError(translateError(code, locale));
+      setExportError(exportFailure(e));
     }
   }
   return (
@@ -212,12 +220,9 @@ export function AccountPrivacy({
               // runs here, before anything downloads (UX-11).
               <Button
                 onClick={() =>
-                  void listTables().catch((e) => {
-                    const code =
-                      e instanceof ApiError ? e.message : "export_aborted";
-                    if (code !== "step_up_cancelled")
-                      setExportError(translateError(code, locale));
-                  })
+                  void listTables().catch((e) =>
+                    setExportError(exportFailure(e)),
+                  )
                 }
               >
                 {t.accountExportShowTables}

@@ -17,7 +17,7 @@ import { ManagementTools } from "./ManagementTools";
 import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { minor, type Session, type Locale } from "../../shared/domain";
-import { strings, translateError, type Key } from "../i18n";
+import { strings, errorNotice, type Key } from "../i18n";
 import { integrationLabel, operationLabel, stockCauseLabel } from "../labels";
 import { api } from "../api";
 import { db, isResolved } from "../offline";
@@ -86,7 +86,7 @@ export function Operations({
       else setData(await api("/" + view));
       setError("");
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setLoading(false);
     }
@@ -123,7 +123,7 @@ export function Operations({
       setModal(null);
       await load();
     } catch (e) {
-      setError(translateError((e as Error).message, locale));
+      setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
     }
@@ -550,7 +550,7 @@ export function Operations({
                       expectedVersion: modal.item.version,
                     });
                 } catch (e) {
-                  setError(translateError((e as Error).message, locale));
+                  setError(errorNotice(e, locale));
                 }
               }}
             >

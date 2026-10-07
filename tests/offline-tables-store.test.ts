@@ -8,6 +8,7 @@
  * on, so every test turns it on for the fixture restaurant, except the "off"
  * describe, which checks the default.
  */
+import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Order, Session } from "../shared/domain";
 import { fakeDb } from "./offline-fake-db";
@@ -25,8 +26,10 @@ import {
   guardOnlineCharge,
   guardOnlineCharges,
   OnlineChargeRefused,
+  pruneResolved,
   syncPending,
 } from "../src/offline-queue";
+import { RESOLVED_RETENTION_MS } from "../src/offline-policy";
 import { resetConnectivityForTests } from "../src/connectivity";
 import { scope } from "../src/offline-keys";
 import {
@@ -40,9 +43,13 @@ import {
   localKitchenTickets,
   localOpenOrders,
   orderTicketIds,
+  parkedOrderRef,
+  pinnedParkedOrder,
   reconciledResult,
   refreshOpenOrders,
   rememberOpenOrder,
+  resolveParkedOrder,
+  resolveParkedOrderToResume,
   saveOfflineCheckout,
   saveOfflineOrder,
   saveOfflinePartial,
@@ -58,6 +65,15 @@ import {
   refreshOfflineSettings,
   setOfflineTableServiceForTests,
 } from "../src/offline-settings";
+import { parkedOrderLabel } from "../src/features/offline/format";
+import {
+  currentBusinessDate,
+  orderNumberText,
+  withBusinessDay,
+} from "../src/labels";
+import { orderLabel } from "../src/features/offline/format";
+import { onlineChargeRefusal } from "../src/features/offline/useOnlineChargeBlocks";
+import { translateError } from "../src/i18n";
 
 const mockedApi = vi.mocked(api);
 const uuid = (n: number) =>
@@ -1102,6 +1118,37 @@ describe("grouped online charge: Órdenes › Cobrar juntas (OFF-R29)", () => {
   });
 });
 
+describe("grouped online charge refusal names the business date (LD-29, POL-R2-2)", () => {
+  it('an order from another business day is refused as "#N · 5 oct · …"; today\'s keeps "#N · …"', async () => {
+    const s = session();
+    const id = uuid(114);
+    await cacheSnapshot(s, [serverCopy(id)]);
+    const round = roundInput(100);
+    await saveOfflineRound(ctxOf(s), { target: { orderId: id }, ...round });
+    mockedApi.mockRejectedValue(
+      new ApiError("server_unavailable", 503, "server"),
+    );
+    const order = { ...serverOrder(id), businessDate: "2026-10-05" };
+    const reason = (locale: "es" | "en") =>
+      translateError("offline_round_pending_for_order", locale);
+    const refusal = async (o: Order, locale: "es" | "en") => {
+      const text = await onlineChargeRefusal(s, [o], locale, "2026-10-06");
+      // The refusal started a sync of this device's records: let it finish.
+      await syncPending(s, { force: true, reason: "manual" });
+      return text;
+    };
+    expect(await refusal(order, "es")).toBe(
+      `#${order.number}\u00a0·\u00a05\u00a0oct · ${reason("es")}`,
+    );
+    expect(await refusal(order, "en")).toBe(
+      `#${order.number}\u00a0·\u00a0Oct\u00a05 · ${reason("en")}`,
+    );
+    expect(await refusal({ ...order, businessDate: "2026-10-06" }, "es")).toBe(
+      `#${order.number} · ${reason("es")}`,
+    );
+  });
+});
+
 describe("kitchen ticket round labels (OFF-R28)", () => {
   const copy = {
     banner: "COMANDA · SIN CONEXIÓN",
@@ -1115,6 +1162,59 @@ describe("kitchen ticket round labels (OFF-R28)", () => {
         item.ticket.label,
       ]),
     );
+
+  it("a cached server copy carries its business day: Borradores, the offline comanda and the Sync screen's context date yesterday's #42 (POL-R3-1, LD-44)", async () => {
+    const s = session();
+    const table = uuid(95);
+    // The snapshot's copy (GET /offline/open-orders) of yesterday's open check.
+    await cacheSnapshot(s, [
+      { ...serverCopy(table), businessDate: "2026-10-05" } as ReturnType<
+        typeof serverCopy
+      >,
+    ]);
+    // Borradores: a parked reference stored without a date is named by the copy.
+    const where = await resolveParkedOrder(s, table);
+    expect(parkedOrderLabel(where, { number: 42 }, "2026-10-06", "es")).toBe(
+      "#42\u00a0·\u00a05\u00a0oct",
+    );
+    expect(parkedOrderLabel(where, { number: 42 }, "2026-10-05", "es")).toBe(
+      "#42",
+    );
+    // A copy Selling keeps from a server order it received carries it too.
+    const other = uuid(96);
+    await rememberOpenOrder(s, {
+      ...serverOrder(other),
+      businessDate: "2026-10-05",
+    });
+    expect(
+      parkedOrderLabel(
+        await resolveParkedOrder(s, other),
+        { number: 42 },
+        "2026-10-06",
+        "en",
+      ),
+    ).toBe("#42\u00a0·\u00a0Oct\u00a05");
+    // An offline round on yesterday's check: its record names the day (the Sync
+    // screen dates it) and the comanda prints it with the screens' helper.
+    const round = roundInput(51);
+    await saveOfflineRound(ctxOf(s), { target: { orderId: table }, ...round });
+    expect(
+      (await fakeDb.pending.get(round.operationId))?.context,
+    ).toMatchObject({ orderNumber: 42, businessDate: "2026-10-05" });
+    const dated = {
+      ...copy,
+      order: (ref: { number: number; businessDate?: string | null }) =>
+        "#" + orderNumberText(ref, "2026-10-06", "es"),
+    };
+    const tickets = await localKitchenTickets(s, 0, dated);
+    expect(
+      tickets.find((t) => t.operationId === round.operationId)?.ticket.label,
+    ).toBe("#42\u00a0·\u00a05\u00a0oct · Ronda 2");
+    // Without the formatter (or on its own business day) it stays "#42".
+    expect(await labels(s)).toMatchObject({
+      [round.operationId]: "#42 · Ronda 2",
+    });
+  });
 
   it("a round on a cached server order takes the order's next round, then its real one once synced", async () => {
     const s = session();
@@ -1770,6 +1870,411 @@ describe("sync loop: one order's records stay in order (I10, OFF-R17)", () => {
     expect(await fakeDb.pending.get(paymentRow.id)).toMatchObject({
       status: "pending",
       attempts: 0,
+    });
+  });
+});
+
+describe("parked carts of local orders (LD-13 addendum)", () => {
+  it("a cart parked for a local order resumes onto its projection, then onto the server order its sync recorded", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    // Parked under the local id while the device alone knows the order.
+    const local = await resolveParkedOrder(s, open.id);
+    expect(local.kind).toBe("local");
+    if (local.kind !== "local") throw Error("unreachable");
+    expect(local.order).toMatchObject({
+      id: open.id,
+      state: "local_open",
+      total: 250,
+    });
+    expect(local.order.offline.provisionalNumber).toBe(
+      open.offline.provisionalNumber,
+    );
+    expect(mockedApi).not.toHaveBeenCalled();
+    // The order record syncs: the local id now names the server order, and the
+    // record still knows both numbers (POL-5: Borradores names it without a copy).
+    const serverId = uuid(400);
+    await markSynced(
+      open.id,
+      { orderId: serverId, orderNumber: 77 },
+      Date.now(),
+    );
+    const uncached = await resolveParkedOrder(s, open.id);
+    expect(uncached).toEqual({
+      kind: "server",
+      orderId: serverId,
+      cached: null,
+      synced: {
+        provisionalNumber: open.offline.provisionalNumber,
+        number: 77,
+      },
+    });
+    // Once the device caches the server copy, it is usable offline.
+    await cacheSnapshot(s, [
+      serverCopy(serverId, { offlineOperationIds: [open.id] }),
+    ]);
+    const synced = await resolveParkedOrder(s, open.id);
+    expect(synced).toMatchObject({ kind: "server", orderId: serverId });
+    if (synced.kind !== "server") throw Error("unreachable");
+    expect(synced.cached).toMatchObject({ id: serverId, total: 250 });
+    expect(synced.cached!.offline.provisionalNumber).toBe(
+      open.offline.provisionalNumber,
+    );
+  });
+
+  it("Borradores names the parked round's order: projection, cached copy, the synced record's numbers, else the stored number (POL-5)", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    const provisional = open.offline.provisionalNumber!;
+    expect(provisional).toBeTruthy();
+    // Parked under the local id: stored number 0. Named on its own business day
+    // (the projection carries its provisional number's day, LD-48).
+    const stored = { number: 0 };
+    expect(
+      parkedOrderLabel(
+        await resolveParkedOrder(s, open.id),
+        stored,
+        currentBusinessDate(s.restaurant),
+        "es",
+      ),
+    ).toBe(provisional);
+    // Synced, then closed online: no cached copy, the record names both numbers.
+    const serverId = uuid(430);
+    await markSynced(
+      open.id,
+      { orderId: serverId, orderNumber: 142 },
+      Date.now(),
+    );
+    expect(
+      parkedOrderLabel(
+        await resolveParkedOrder(s, open.id),
+        stored,
+        "2026-10-06",
+        "es",
+      ),
+    ).toBe(`${provisional} → #142`);
+    // A synced record without the server number still names the provisional one.
+    expect(
+      parkedOrderLabel(
+        {
+          kind: "server",
+          orderId: serverId,
+          cached: null,
+          synced: { provisionalNumber: provisional, number: null },
+        },
+        stored,
+        "2026-10-06",
+        "es",
+      ),
+    ).toBe(provisional);
+    // A plain server order with no copy: the number stored when it was parked.
+    expect(
+      parkedOrderLabel(
+        { kind: "server", orderId: uuid(431), cached: null },
+        { number: 12 },
+        "2026-10-06",
+        "es",
+      ),
+    ).toBe("#12");
+    // With the business date stored at park time, an order of another day names
+    // its date as Órdenes does (LD-29, POL-R2-2); today's keeps the plain number.
+    for (const [locale, label] of [
+      ["es", "#12\u00a0·\u00a05\u00a0oct"],
+      ["en", "#12\u00a0·\u00a0Oct\u00a05"],
+    ] as const)
+      expect(
+        parkedOrderLabel(
+          { kind: "server", orderId: uuid(431), cached: null },
+          { number: 12, businessDate: "2026-10-05" },
+          "2026-10-06",
+          locale,
+        ),
+      ).toBe(label);
+    expect(
+      parkedOrderLabel(
+        { kind: "server", orderId: uuid(431), cached: null },
+        { number: 12, businessDate: "2026-10-06" },
+        "2026-10-06",
+        "es",
+      ),
+    ).toBe("#12");
+    // A gone local order, or a new order's draft: nothing names it.
+    expect(parkedOrderLabel({ kind: "gone" }, stored, "2026-10-06", "es")).toBe(
+      null,
+    );
+    expect(parkedOrderLabel(null, null, "2026-10-06", "es")).toBe(null);
+  });
+
+  it("once its local order resolves to the server order its sync recorded, the parked reference names that server order, so the cart still resumes after the synced record is pruned (POL-R2-3)", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    const provisional = open.offline.provisionalNumber!;
+    // As Selling stores it when the round is parked (number 0 while local).
+    const stored = parkedOrderRef({
+      id: open.id,
+      number: 0,
+      businessDate: "2026-10-05",
+    })!;
+    expect(stored).toEqual({
+      id: open.id,
+      number: 0,
+      businessDate: "2026-10-05",
+    });
+    // While the device alone knows the order, the reference stays as parked.
+    expect(
+      pinnedParkedOrder(stored, await resolveParkedOrder(s, open.id)),
+    ).toBeNull();
+    const serverId = uuid(440);
+    const syncedAt = Date.now();
+    await markSynced(
+      open.id,
+      { orderId: serverId, orderNumber: 142 },
+      syncedAt,
+    );
+    const where = await resolveParkedOrder(s, open.id);
+    const pinned = pinnedParkedOrder(stored, where)!;
+    expect(pinned).toEqual({
+      id: serverId,
+      number: 142,
+      businessDate: "2026-10-05",
+      provisionalNumber: provisional,
+    });
+    // Borradores names it the same before and after the rewrite, and the stored
+    // value reads back as written.
+    expect(parkedOrderLabel(where, stored, "2026-10-05", "es")).toBe(
+      `${provisional} → #142`,
+    );
+    expect(parkedOrderRef(JSON.parse(JSON.stringify(pinned)))).toEqual(pinned);
+    // Retention prunes the synced record 7 days later (OFF-12): the local id
+    // alone would now be read as a server id the server does not have.
+    expect(await pruneResolved(syncedAt + RESOLVED_RETENTION_MS + 1)).toBe(1);
+    expect(await fakeDb.pending.get(open.id)).toBeUndefined();
+    expect(await resolveParkedOrder(s, open.id)).toEqual({
+      kind: "server",
+      orderId: open.id,
+      cached: null,
+    });
+    // The pinned reference still reads the server order, under the same name.
+    const after = await resolveParkedOrder(s, pinned.id);
+    expect(after).toEqual({ kind: "server", orderId: serverId, cached: null });
+    expect(pinnedParkedOrder(pinned, after)).toBeNull();
+    expect(parkedOrderLabel(after, pinned, "2026-10-05", "es")).toBe(
+      `${provisional} → #142`,
+    );
+    expect(parkedOrderLabel(after, pinned, "2026-10-06", "en")).toBe(
+      `${provisional} → #142\u00a0·\u00a0Oct\u00a05`,
+    );
+    // A stored value that names no order is not a reference.
+    expect(parkedOrderRef(null)).toBeNull();
+    expect(parkedOrderRef({ number: 3 })).toBeNull();
+  });
+
+  it("a provisional number from another business day names its date: the projection, Borradores, the synced record and the offline comanda tell yesterday's B-01 from today's (LD-48, POLISH-OFFLINE-5)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    // 03:40 in Mexico City with the 04:00 cutoff: business day 5 oct.
+    vi.setSystemTime(new Date("2026-10-06T09:40:00.000Z"));
+    const s = session({
+      offlineUntil: new Date("2026-10-06T13:00:00.000Z").toISOString(),
+    });
+    const yesterday = await localOrder(s, 250);
+    // 04:20: business day 6 oct. The per-day counter restarts, so the device
+    // numbers the next local order the same.
+    vi.setSystemTime(new Date("2026-10-06T10:20:00.000Z"));
+    const today = await localOrder(s, 300);
+    const number = yesterday.offline.provisionalNumber!;
+    expect(today.offline.provisionalNumber).toBe(number);
+    const day = currentBusinessDate(s.restaurant);
+    expect(day).toBe("2026-10-06");
+    const views = await localOpenOrders(s);
+    const viewOf = (id: string) => views.find((v) => v.id === id)!;
+    expect(viewOf(yesterday.id).businessDate).toBe("2026-10-05");
+    expect(viewOf(today.id).businessDate).toBe("2026-10-06");
+    // The cart heading and the offline "Órdenes abiertas" list (orderLabel).
+    expect(orderLabel(viewOf(yesterday.id), day, "es")).toBe(
+      `${number}\u00a0·\u00a05\u00a0oct`,
+    );
+    expect(orderLabel(viewOf(yesterday.id), day, "en")).toBe(
+      `${number}\u00a0·\u00a0Oct\u00a05`,
+    );
+    expect(orderLabel(viewOf(today.id), day, "es")).toBe(number);
+    // Borradores: a round parked for each.
+    const label = async (id: string) =>
+      parkedOrderLabel(
+        await resolveParkedOrder(s, id),
+        { number: 0 },
+        day,
+        "es",
+      );
+    expect(await label(yesterday.id)).toBe(`${number}\u00a0·\u00a05\u00a0oct`);
+    expect(await label(today.id)).toBe(number);
+    // The offline comanda prints the date of yesterday's provisional number.
+    const tickets = await localKitchenTickets(s, 0, {
+      banner: "COMANDA · SIN CONEXIÓN",
+      footer: "Número provisional.",
+      round: (n: number) => `Ronda ${n}`,
+      dated: (text: string, d: string) => withBusinessDay(text, d, day, "es"),
+    });
+    const ticketOf = (id: string) =>
+      tickets.find((t) => t.operationId === id)?.ticket.label;
+    expect(ticketOf(yesterday.id)).toBe(`${number}\u00a0·\u00a05\u00a0oct`);
+    expect(ticketOf(today.id)).toBe(number);
+    // A round added to yesterday's local order: its comanda names the order's day.
+    const round = roundInput(40);
+    await saveOfflineRound(ctxOf(s), {
+      target: { localOrderOperationId: yesterday.id },
+      ...round,
+    });
+    const withRound = await localKitchenTickets(s, 0, {
+      banner: "",
+      footer: "",
+      round: (n: number) => `Ronda ${n}`,
+      dated: (text: string, d: string) => withBusinessDay(text, d, day, "es"),
+    });
+    expect(
+      withRound.find((t) => t.operationId === round.operationId)?.ticket.label,
+    ).toBe(`${number}\u00a0·\u00a05\u00a0oct · Ronda 2`);
+    // Synced as #142 of 5 oct, with no cached copy: Borradores names the server
+    // number with the day the sync returned, and the pinned reference keeps it.
+    const serverId = uuid(450);
+    await markSynced(
+      yesterday.id,
+      { orderId: serverId, orderNumber: 142, businessDate: "2026-10-05" },
+      Date.now(),
+    );
+    const where = await resolveParkedOrder(s, yesterday.id);
+    expect(where).toEqual({
+      kind: "server",
+      orderId: serverId,
+      cached: null,
+      synced: {
+        provisionalNumber: number,
+        number: 142,
+        businessDate: "2026-10-05",
+      },
+    });
+    expect(parkedOrderLabel(where, { number: 0 }, day, "es")).toBe(
+      `${number} → #142\u00a0·\u00a05\u00a0oct`,
+    );
+    expect(
+      pinnedParkedOrder(
+        { id: yesterday.id, number: 0, businessDate: null },
+        where,
+      ),
+    ).toEqual({
+      id: serverId,
+      number: 142,
+      businessDate: "2026-10-05",
+      provisionalNumber: number,
+    });
+  });
+
+  it("online, a round parked for a local order whose record is still 'syncing' syncs it first and resumes onto the server order it became (LD-48, POLISH-OFFLINE-3)", async () => {
+    const s = session();
+    const open = await localOrder(s, 250);
+    // A power cut during its sync: the server committed it as #142, but the
+    // device never stored the answer, so the row stays "syncing".
+    await fakeDb.pending.update(open.id, { status: "syncing" });
+    expect((await resolveParkedOrder(s, open.id)).kind).toBe("local");
+    // Online: the forced pass replays the same record (same operationId) and
+    // the server answers with the order it already made.
+    const serverId = uuid(460);
+    mockedApi.mockResolvedValueOnce({
+      kind: "order",
+      orderId: serverId,
+      orderNumber: 142,
+      roundNumber: 1,
+      tenderId: null,
+      businessDate: "2026-10-06",
+      order: serverOrder(serverId, { paid: 250, state: "completed" }),
+    });
+    const sync = vi.fn(() => syncPending(s, { force: true, reason: "manual" }));
+    const where = await resolveParkedOrderToResume(s, open.id, {
+      online: true,
+      sync,
+    });
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(mockedApi).toHaveBeenCalledWith(
+      "/offline/sync",
+      expect.objectContaining({ operationId: open.id }),
+      expect.anything(),
+    );
+    // Selling now reads that server order (GET /orders) instead of saving the
+    // round on the local projection and printing its comanda.
+    expect(where).toMatchObject({ kind: "server", orderId: serverId });
+    // Offline the projection is still the order: no sync is attempted.
+    const offline = await localOrder(s, 100);
+    const noSync = vi.fn(async () => {});
+    expect(
+      (
+        await resolveParkedOrderToResume(s, offline.id, {
+          online: false,
+          sync: noSync,
+        })
+      ).kind,
+    ).toBe("local");
+    expect(noSync).not.toHaveBeenCalled();
+    // A pass that does not finish in time leaves the record unresolved: the
+    // local projection is used, as before.
+    const slow = vi.fn(() => new Promise<void>(() => {}));
+    expect(
+      (
+        await resolveParkedOrderToResume(s, offline.id, {
+          online: true,
+          sync: slow,
+          timeoutMs: 10,
+        })
+      ).kind,
+    ).toBe("local");
+    expect(slow).toHaveBeenCalledTimes(1);
+    // Selling's resume goes through it, online, with a forced sync pass.
+    expect(readFileSync("src/features/Selling.tsx", "utf8")).toMatch(
+      /resolveParkedOrderToResume\(session, parkedOrder\.id, \{\s*online,\s*sync: \(\) => syncPending\(session, \{ force: true, reason: "manual" \}\),/,
+    );
+  });
+
+  it("a server order id resolves to itself (with its cached copy when there is one)", async () => {
+    const s = session();
+    const serverId = uuid(410);
+    expect(await resolveParkedOrder(s, serverId)).toEqual({
+      kind: "server",
+      orderId: serverId,
+      cached: null,
+    });
+    await cacheSnapshot(s, [serverCopy(serverId)]);
+    const cached = await resolveParkedOrder(s, serverId);
+    expect(cached).toMatchObject({
+      kind: "server",
+      orderId: serverId,
+      cached: { id: serverId },
+    });
+  });
+
+  it("a local order this device no longer has, or whose sync named no order, is gone; another device's record is not read as a local order", async () => {
+    const s = session();
+    const archived = await localOrder(s, 100);
+    await fakeDb.pending.update(archived.id, {
+      status: "archived",
+      archivedAt: Date.now(),
+    });
+    expect(await resolveParkedOrder(s, archived.id)).toEqual({
+      kind: "gone",
+    });
+    const nameless = await localOrder(s, 100);
+    await fakeDb.pending.update(nameless.id, {
+      status: "synced",
+      result: null,
+      syncedAt: Date.now(),
+    });
+    expect(await resolveParkedOrder(s, nameless.id)).toEqual({
+      kind: "gone",
+    });
+    // A record of another device (scope) never decides for this one.
+    const other = session({ deviceId: uuid(420) });
+    const elsewhere = await localOrder(other, 100);
+    expect(await resolveParkedOrder(s, elsewhere.id)).toEqual({
+      kind: "server",
+      orderId: elsewhere.id,
+      cached: null,
     });
   });
 });

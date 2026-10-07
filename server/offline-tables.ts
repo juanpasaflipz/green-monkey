@@ -298,6 +298,7 @@ reviewTargets.resolve = async (tx, p) => {
   const target = {
     orderId: found.order.id,
     number: found.order.number,
+    businessDate: found.order.businessDate ?? null,
     due: dueOf(found.order),
   };
   // A round never goes onto a closed or fully paid check (I6, §4.4.2).
@@ -361,7 +362,8 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
   );
   const rows =
     await tx`select o.id,o.number,o.version,o.mode,o.table_id,t.name as table_name,
-      o.name,o.note,o.total,o.state,o.created_at,o.service_version,o.paid,
+      o.name,o.note,o.total,o.state,o.created_at,o.business_date::text as business_day,
+      o.service_version,o.paid,
       o.tender_ids,o.offline_operation_ids,
       (select coalesce(jsonb_agg(jsonb_build_object(
           'id',l.id,'productId',l.product_id,'round',l.round,
@@ -410,6 +412,8 @@ export async function openOrdersSnapshot(tx: Tx, s: Session) {
       discount: o.discount,
       state: o.state,
       createdAt: o.created_at.toISOString(),
+      // LD-29 / POL-R3-1: a device names yesterday's #10 "#10 · 5 oct".
+      businessDate: o.business_day as string,
       serviceVersion: o.service_version,
       lines: o.lines,
       roundNotes: o.round_notes as { number: number; note: string }[],

@@ -1,6 +1,15 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import type { LineInput, Product } from "../shared/domain";
+import { readFileSync } from "node:fs";
+import { businessDate, type LineInput, type Product } from "../shared/domain";
+import {
+  businessDayLabel,
+  currentBusinessDate,
+  orderNumberLabel,
+  orderNumberText,
+} from "../src/labels";
+import { orderLabel } from "../src/features/offline/format";
+import { resetConnectivityForTests } from "../src/connectivity";
 import {
   cashSuggestions,
   changeDue,
@@ -669,5 +678,130 @@ describe("notes and lost sends", () => {
     expect(next.draft.note).toBe("Nota nueva");
     expect(next.draft.lines).toEqual([a]);
     expect(next.draft.operationId).toBe("n");
+  });
+});
+
+describe("LD-29: business-day labels after the cutoff rollover", () => {
+  const mexico = { timezone: "America/Mexico_City", cutoff: 240 };
+  // Mexico City is UTC−6 all year (no DST since 2022): 09:59Z is 03:59 local.
+  const at = (iso: string) => Date.parse(iso);
+
+  it("the current business date follows the restaurant's timezone and cutoff: 03:59 is still the day before, 04:00 is the new day", () => {
+    expect(currentBusinessDate(mexico, at("2026-10-06T09:59:00Z"))).toBe(
+      "2026-10-05",
+    );
+    expect(currentBusinessDate(mexico, at("2026-10-06T10:00:00Z"))).toBe(
+      "2026-10-06",
+    );
+    // Same instant, another restaurant timezone (Tijuana, UTC−7 in October).
+    expect(
+      currentBusinessDate(
+        { timezone: "America/Tijuana", cutoff: 240 },
+        at("2026-10-06T10:59:00Z"),
+      ),
+    ).toBe("2026-10-05");
+    // The server's own helper gives the same day for the same inputs.
+    expect(currentBusinessDate(mexico, at("2026-10-06T10:00:00Z"))).toBe(
+      businessDate("2026-10-06T10:00:00Z", mexico.timezone, mexico.cutoff),
+    );
+  });
+
+  describe("without an instant", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+      resetConnectivityForTests();
+    });
+
+    it("the current business date reads the corrected server clock, not the raw device clock (POL-3)", () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      // The tablet reads 03:58 local; the server is 3 minutes ahead (04:01).
+      vi.setSystemTime(at("2026-10-06T09:58:00Z"));
+      resetConnectivityForTests({}, 180_000);
+      expect(currentBusinessDate(mexico)).toBe("2026-10-06");
+      // With no measured offset the device clock is all there is.
+      resetConnectivityForTests({}, null);
+      expect(currentBusinessDate(mexico)).toBe("2026-10-05");
+    });
+  });
+
+  it("a same-day order reads #10; one from the previous business day reads #10 · 5 oct (en: #10 · Oct 5)", () => {
+    const order = { number: 10, businessDate: "2026-10-05" };
+    const before = currentBusinessDate(mexico, at("2026-10-06T09:59:00Z"));
+    const after = currentBusinessDate(mexico, at("2026-10-06T10:00:00Z"));
+    expect(orderNumberLabel(order, before, "es")).toBe("#10");
+    // Non-breaking spaces (LD-48, POLISH-UX-2): "#10 · 5 oct" never wraps apart.
+    expect(orderNumberLabel(order, after, "es")).toBe(
+      "#10\u00a0·\u00a05\u00a0oct",
+    );
+    expect(orderNumberLabel(order, after, "en")).toBe(
+      "#10\u00a0·\u00a0Oct\u00a05",
+    );
+    expect(orderNumberText(order, after, "es")).toBe(
+      "10\u00a0·\u00a05\u00a0oct",
+    );
+    for (const locale of ["es", "en"] as const)
+      expect(orderNumberLabel(order, after, locale)).not.toMatch(/ /);
+    expect(businessDayLabel("2026-01-31", "es")).toBe("31 ene");
+    // Today's new #10 keeps the plain number; unknown dates never invent one.
+    expect(
+      orderNumberLabel({ number: 10, businessDate: after }, after, "es"),
+    ).toBe("#10");
+    expect(orderNumberLabel({ number: 10 }, after, "es")).toBe("#10");
+    expect(orderNumberLabel(order, null, "es")).toBe("#10");
+  });
+
+  it("notices and dialog titles that name an order by number use the dated label (POL-R2-2)", () => {
+    const source = (file: string) => readFileSync(file, "utf8");
+    // Selling: the after-switch, paid-after-switch and resume-closed notices.
+    const selling = source("src/features/Selling.tsx");
+    expect(selling).not.toMatch(/"\{n\}",\s*String\(\w+\.number\)/);
+    for (const key of [
+      "serviceRoundFailedAfterSwitch",
+      "serviceSentAfterSwitch",
+      "servicePaidAfterSwitch",
+      "serviceResumeClosed",
+    ])
+      expect(selling, key).toMatch(
+        new RegExp(
+          `t\\("${key}"\\)\\s*\\.replace\\(\\s*"\\{n\\}",\\s*numberText\\(`,
+        ),
+      );
+    expect(selling).toMatch(
+      /const numberText = \([^)]*\) =>\s*orderNumberText\(o, currentBusinessDate\(session\.restaurant\), locale\)/,
+    );
+    // The discount and refund dialog titles, and the QR inbox's accepted notice.
+    for (const file of [
+      "src/features/discounts/DiscountDialog.tsx",
+      "src/features/RefundDialog.tsx",
+      "src/features/public/PublicOrderInbox.tsx",
+    ]) {
+      expect(source(file), file).not.toMatch(
+        /\bn(?:umber)?: \w+(?:\.order)?\.number\b/,
+      );
+      expect(source(file), file).toContain("orderNumberText(");
+    }
+  });
+
+  it("the cart heading names a numbered order's date; provisional numbers are unchanged", () => {
+    const id = "00000000-0000-4000-8000-000000000010";
+    const order = { id, number: 10, businessDate: "2026-10-05" };
+    expect(orderLabel(order, "2026-10-06", "es")).toBe(
+      "#10\u00a0·\u00a05\u00a0oct",
+    );
+    expect(orderLabel(order, "2026-10-05", "es")).toBe("#10");
+    expect(orderLabel(order)).toBe("#10");
+    expect(
+      orderLabel(
+        { ...order, offline: { provisionalNumber: "B-07" } },
+        "2026-10-06",
+        "en",
+      ),
+    ).toBe("B-07 → #10\u00a0·\u00a0Oct\u00a05");
+    expect(
+      orderLabel(
+        { id, number: 0, offline: { provisionalNumber: "B-07" } },
+        "2026-10-06",
+      ),
+    ).toBe("B-07");
   });
 });

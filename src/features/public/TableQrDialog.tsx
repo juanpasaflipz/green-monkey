@@ -4,7 +4,7 @@ import type {
   PublicLinkView,
   RevealedLink,
 } from "../../../shared/public-ordering";
-import { strings, translateError, type Key } from "../../i18n";
+import { errorNotice, strings, type Key } from "../../i18n";
 import { api } from "../../api";
 import { Button, Modal } from "../../components/ui";
 import { fill } from "../menu/format";
@@ -73,7 +73,7 @@ export function TableQrDialog({
       refreshPublicInbox();
     } catch (e) {
       const code = (e as Error).message;
-      if (code !== "step_up_cancelled") setError(translateError(code, locale));
+      if (code !== "step_up_cancelled") setError(errorNotice(e, locale));
     } finally {
       setBusy(false);
       setConfirm(null);

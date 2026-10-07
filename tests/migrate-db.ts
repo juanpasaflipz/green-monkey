@@ -711,6 +711,19 @@ try {
               l.includes('"ok":true'),
           ),
         );
+        // RUNBOOK "Retention": the operator reads any backlog left when the run
+        // stops from this line; a drained run says so with an empty list
+        // (POLISH-OPS-6).
+        const complete = lines
+          .map((l) => JSON.parse(l) as Record<string, unknown>)
+          .filter((l) => l.message === "retention_only_complete");
+        assert.equal(complete.length, 1);
+        assert.deepEqual(
+          complete[0].backlog,
+          [],
+          "the line carries the backlog",
+        );
+        assert.ok(lines.some((l) => l.includes('"backlog":[]')));
 
         // A target with pending migrations and without the retention tables:
         // nothing is migrated, and the failed tables fail the run.
