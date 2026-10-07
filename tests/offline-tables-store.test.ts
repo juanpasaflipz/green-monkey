@@ -1111,7 +1111,7 @@ describe("grouped online charge: Órdenes › Cobrar juntas (OFF-R29)", () => {
 });
 
 describe("grouped online charge refusal names the business date (LD-29, POL-R2-2)", () => {
-  it("an order from another business day is refused as \"#N · 5 oct · …\"; today's keeps \"#N · …\"", async () => {
+  it('an order from another business day is refused as "#N · 5 oct · …"; today\'s keeps "#N · …"', async () => {
     const s = session();
     const id = uuid(114);
     await cacheSnapshot(s, [serverCopy(id)]);
@@ -1135,9 +1135,9 @@ describe("grouped online charge refusal names the business date (LD-29, POL-R2-2
     expect(await refusal(order, "en")).toBe(
       `#${order.number} · Oct 5 · ${reason("en")}`,
     );
-    expect(
-      await refusal({ ...order, businessDate: "2026-10-06" }, "es"),
-    ).toBe(`#${order.number} · ${reason("es")}`);
+    expect(await refusal({ ...order, businessDate: "2026-10-06" }, "es")).toBe(
+      `#${order.number} · ${reason("es")}`,
+    );
   });
 });
 
@@ -1964,7 +1964,11 @@ describe("parked carts of local orders (LD-13 addendum)", () => {
     ).toBeNull();
     const serverId = uuid(440);
     const syncedAt = Date.now();
-    await markSynced(open.id, { orderId: serverId, orderNumber: 142 }, syncedAt);
+    await markSynced(
+      open.id,
+      { orderId: serverId, orderNumber: 142 },
+      syncedAt,
+    );
     const where = await resolveParkedOrder(s, open.id);
     const pinned = pinnedParkedOrder(stored, where)!;
     expect(pinned).toEqual({

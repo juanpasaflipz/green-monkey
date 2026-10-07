@@ -85,7 +85,8 @@ describe("support reference", () => {
       ["es", " Quedó en Borradores"],
       ["en", " It is in Drafts"],
     ] as const) {
-      const ref = locale === "es" ? "Referencia de soporte" : "Support reference";
+      const ref =
+        locale === "es" ? "Referencia de soporte" : "Support reference";
       for (const key of [
         "serviceRoundFailedAfterSwitch",
         "serviceSendFailedAfterSwitch",

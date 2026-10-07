@@ -199,8 +199,12 @@ export function Kitchen({
           .replace("{n}", ticket(x))
           .replace("{r}", String(x.roundNumber)),
       ),
-      ...noted.map((x) => t("serviceKdsNoteAnnounce").replace("{n}", ticket(x))),
-      ...voided.map((x) => t("serviceKdsVoidAnnounce").replace("{n}", ticket(x))),
+      ...noted.map((x) =>
+        t("serviceKdsNoteAnnounce").replace("{n}", ticket(x)),
+      ),
+      ...voided.map((x) =>
+        t("serviceKdsVoidAnnounce").replace("{n}", ticket(x)),
+      ),
     ];
     if (messages.length) setAnnouncement(messages.join(". "));
     const alerted = [...fresh, ...noted];
