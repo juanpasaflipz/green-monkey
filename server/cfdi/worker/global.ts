@@ -189,10 +189,19 @@ function staleRow(
  * self-invoicing deadline it brings forward, CFDIFIX-1) and the month's rows are deleted (036 lets
  * the worker delete only rows no document used), so periodsAfter re-adds the month under the new
  * periodicity. If the month got shaped meanwhile, the change waits for next month like any other,
- * and the event says why (the panel shows it, CFDIFIX-5). The deadline check reads every
- * unclaimed ticket of the month, including any sold between the save and this tick: a receipt
- * printed by a terminal that had not yet refreshed its status carries the old deadline, and
- * deferring only lengthens the deadlines of receipts that printed the new one.
+ * and the event says why (the panel shows it, CFDIFIX-5).
+ *
+ * The deadline check reads every unclaimed ticket of the month, including any sold between the
+ * save and this tick: a receipt printed by a terminal that had not yet refreshed its status
+ * carries the old deadline. A change that brings a deadline of the save's day forward is rebuilt
+ * only once every signed-in terminal has refreshed (the save's `periodicity_applied` event names
+ * the moment, PERIODICITY_REBUILD_WAIT_MS after it, CFDIFIX-CONCURRENCY-2): until then the rows stay
+ * as they are (a stale row is never built) and this step does nothing. A terminal offline for
+ * longer is the residual risk docs/CFDI.md records. The 24-hour and globals conditions are judged
+ * as of the save (CFDIFIX-CONCURRENCY-3): a tick that runs late (a worker outage) never undoes a
+ * change only because it was late. When the re-check still defers, receipts printed since the save
+ * may carry the new periodicity's deadline, which can be later than the old one's: the operator is
+ * alerted (`reverted`).
  */
 async function rebuildMonth(
   tx: Tx,
@@ -201,6 +210,7 @@ async function rebuildMonth(
   facts: FiscalFacts,
   today: string,
   graceMinutes: number,
+  reverted: { at: string; from: Periodicity; to: Periodicity }[],
 ): Promise<SettingsRow> {
   const tenantId = ctx.job.tenantId;
   const monthStart = monthStartOf(today);
@@ -216,10 +226,27 @@ async function rebuildMonth(
     ),
   );
   if (!stale.length) return settings;
+  const target = periodicityOn(today, settings);
+  const [applied] = await tx`
+    select created_at, detail from cfdi_events
+    where document_id is null and kind = 'periodicity_applied'
+    order by created_at desc, id desc limit 1`;
+  const detail = (applied?.detail ?? {}) as {
+    to?: string;
+    rebuildAt?: string;
+    shortens?: boolean;
+  };
+  const savedAt =
+    applied && detail.to === target ? new Date(applied.created_at) : null;
+  if (
+    savedAt &&
+    detail.rebuildAt &&
+    Date.parse(detail.rebuildAt) > Date.now()
+  )
+    return settings;
   for (const r of rows)
     await lockPeriod(tx, tenantId, settings.mode, r.period_key as string);
   const was = stale[0].periodicity as Periodicity;
-  const target = periodicityOn(today, settings);
   const blocked = await periodicityChangeBlocked(
     tx,
     {
@@ -232,6 +259,7 @@ async function rebuildMonth(
     today,
     facts,
     graceMinutes,
+    savedAt ?? new Date(),
   );
   if (!blocked) {
     const removed = await tx`
@@ -257,6 +285,10 @@ async function rebuildMonth(
     reason: blocked,
     source: "tick",
   });
+  // Undoing a change that kept or lengthened today's deadlines shortens the receipts printed
+  // under it since the save: the operator is told (a shortening one only lengthens them).
+  if (savedAt && detail.shortens === false)
+    reverted.push({ at: savedAt.toISOString(), from: target, to: was });
   return (await loadSettings(tx))!;
 }
 
@@ -467,6 +499,7 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
 
   // 1-3. Settings, period rows, then the periodicity promotion. The settings row is locked so a
   // periodicity save (which checks for period rows under the same lock) and this tick serialize.
+  const reverted: { at: string; from: Periodicity; to: Periodicity }[] = [];
   const plan = await ctx.tenant(async (tx) => {
     let settings = await loadSettings(tx, { forUpdate: true });
     if (!settings?.enabled) return null;
@@ -493,6 +526,7 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
       facts,
       today,
       rt.config.graceMinutes,
+      reverted,
     );
     const from = modeFrom(settings);
     // New rows only, after the last one of this mode, with the settings as they are BEFORE the
@@ -563,6 +597,13 @@ async function runTick(rt: CfdiRuntime, ctx: JobContext): Promise<JobOutcome> {
       keys: [...new Set([...due.map((r) => r.period_key as string), ...late])],
     };
   });
+  for (const r of reverted)
+    raise(rt, {
+      key: `cfdi_periodicity_reverted:${tenantTag(tenantId)}:${r.at}`,
+      severity: "warning",
+      title: "CFDI periodicity change undone by the tick",
+      body: `tenant ${tenantTag(tenantId)} ${r.from}->${r.to} saved ${r.at}: receipts printed since may show a later self-invoicing deadline`,
+    });
   if (!plan) {
     // Paused (or not activated): the chain ends, unless a CSD upload is still open. Its sweep
     // (step 0) must run once the upload's job is gone, so the next hour's tick looks again

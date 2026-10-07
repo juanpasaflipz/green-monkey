@@ -15,7 +15,11 @@
  */
 import { useEffect, useState, useSyncExternalStore } from "react";
 import type { Session } from "../../../shared/domain";
-import type { CfdiStatusView, CfdiTicketView } from "../../../shared/cfdi";
+import {
+  STATUS_REFRESH_MS,
+  type CfdiStatusView,
+  type CfdiTicketView,
+} from "../../../shared/cfdi";
 import { api, requestsBlocked } from "../../api";
 import { db, scope } from "../../offline";
 
@@ -49,8 +53,11 @@ export function useCfdiStatus(): CfdiStatusView | null {
 
 const cacheKey = (s: Session) => scope(s) + ":cfdi-status";
 
-/** How often a signed-in device refreshes the cached status while online and visible. */
-export const STATUS_REFRESH_MS = 5 * 60_000;
+/**
+ * How often a signed-in device refreshes the cached status while online and visible (shared: the
+ * tick waits this long, plus a margin, before it rebuilds a month after a shortening change).
+ */
+export { STATUS_REFRESH_MS };
 
 /** What the refresh needs from the browser (injected so it is tested without one). */
 export type StatusRefreshEnv = {

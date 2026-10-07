@@ -27,16 +27,20 @@ import {
   liveInput,
   needsCardForm,
   operationInput,
+  periodicityChangeBlock,
   periodicityOn,
+  PERIODICITY_REBUILD_WAIT_MS,
   substituteInput,
   egresoSubstituteInput,
   cancellationAllowed,
   type CfdiSettingsView,
   type CfdiTicketView,
   type GlobalPeriodView,
+  type PendingSelfInvoice,
   type Periodicity,
   type PeriodicityChangeBlock,
   type Receptor,
+  type SelfInvoiceTerms,
 } from "../../shared/cfdi.js";
 import { parseFolio } from "../../shared/fiscal.js";
 import type { Session } from "../../shared/domain.js";
@@ -74,6 +78,8 @@ import {
   periodicityChangeBlocked,
   platform,
   periodViews,
+  selfInvoiceChangeFrom,
+  sharedIssuerComplete,
   requireCfdi,
   statusView,
   ticketFacts,
@@ -98,6 +104,16 @@ const today = (s: Session) =>
     s.restaurant.timezone,
     s.restaurant.cutoff,
   );
+
+/** Two self-invoicing terms are the same (a pending change's `from` aside). */
+function sameTerms(
+  a: SelfInvoiceTerms,
+  b: SelfInvoiceTerms | null | undefined,
+): boolean {
+  return (
+    !!b && a.policy === b.policy && a.days === b.days && a.reissue === b.reissue
+  );
+}
 
 /** Strict query parsing for GET routes (express query values are strings or arrays). */
 function query(req: express.Request): Record<string, unknown> {
@@ -213,6 +229,9 @@ async function settingsView(
         taxId: st.platform?.sharedIssuer?.taxId ?? org.legalTaxId,
         regime: st.platform?.sharedIssuer?.regime ?? null,
         postalCode: st.platform?.sharedIssuer?.postalCode ?? null,
+        // Stamping takes the shared organization's facts as a whole or not at all
+        // (stampingFacts, CFDIFIX-FISCAL-6): the panel says which taxpayer stamps (UX-6).
+        complete: sharedIssuerComplete(st.platform?.sharedIssuer ?? null),
       }
     : null;
   return {
@@ -252,6 +271,7 @@ async function settingsView(
           selfInvoicePolicy: settings.selfInvoicePolicy,
           selfInvoiceDays: settings.selfInvoiceDays,
           portalReissueGlobal: settings.portalReissueGlobal,
+          selfInvoicePending: settings.nextSelfInvoice,
           supportEmail: settings.supportEmail,
           version: settings.version,
           updatedAt: settings.updatedAt,
@@ -421,15 +441,19 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
     // month's period rows. Otherwise it applies from the first day of next month and the month
     // keeps one periodicity (CFDI-R2-1); the reason is recorded for the panel
     // (periodicity_deferred). Choosing the periodicity in force cancels a pending change (one
-    // that is already in force today stays: the tick promotes it). The settings row is locked
-    // FOR UPDATE above; the tick's rebuild and the global builder take it too, so neither runs on
-    // a month this decision reads differently.
+    // that is already in force today stays: the tick promotes it); a deferred change first
+    // promotes a pending one already in force today, so the month keeps the periodicity it is
+    // under (CFDIFIX-FISCAL-2). The settings row is locked FOR UPDATE above; the tick's rebuild
+    // and the global builder take it too, so neither runs on a month this decision reads
+    // differently.
     const day = today(s);
     const effective = periodicityOn(day, before);
+    const grace = graceMinutes(await platform(tx));
     let periodicity = before.globalPeriodicity;
     let next = before.nextPeriodicity;
     let nextFrom = before.nextPeriodicityFrom;
     let rebuild = false;
+    let shortens = false;
     let deferred: PeriodicityChangeBlock | null = null;
     if (wanted === effective) {
       if (!(nextFrom && nextFrom <= day)) {
@@ -447,9 +471,10 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
         wanted,
         day,
         facts,
-        graceMinutes(await platform(tx)),
+        grace,
       );
       if (deferred) {
+        periodicity = effective;
         next = wanted;
         nextFrom = firstOfNextMonth(day);
       } else {
@@ -457,6 +482,54 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
         next = null;
         nextFrom = null;
         rebuild = true;
+        // Whether the change brings forward the deadline of a ticket sold today: a terminal that
+        // has not refreshed its status yet prints the old one (CFDIFIX-CONCURRENCY-2).
+        shortens =
+          periodicityChangeBlock({
+            hasGlobals: false,
+            dates: [day],
+            from: effective,
+            to: wanted,
+            timezone: facts.timezone,
+            cutoff: facts.cutoff,
+            selfInvoice: {
+              policy: p.selfInvoicePolicy,
+              days: p.selfInvoiceDays,
+              graceMinutes: grace,
+            },
+            now: new Date(),
+          }) === "deadline";
+      }
+    }
+    // A self-invoicing change (window, days or the portal's reissue) is guarded like a
+    // periodicity change (LD-55 CFDIFIX-FISCAL-5 / UX-4): it applies at once unless it brings
+    // forward the deadline of a receipt already printed; then it waits until the first business
+    // day after the latest such deadline (selfInvoiceChangeFrom), and receipts printed meanwhile
+    // print the deadline both terms allow (effectiveSelfInvoiceDeadline's pending). Choosing the
+    // terms in force cancels a waiting change.
+    const inForce: SelfInvoiceTerms = {
+      policy: before.selfInvoicePolicy,
+      days: before.selfInvoiceDays,
+      reissue: before.portalReissueGlobal,
+    };
+    const wantedTerms: SelfInvoiceTerms = {
+      policy: p.selfInvoicePolicy,
+      days: p.selfInvoiceDays,
+      reissue: p.portalReissueGlobal,
+    };
+    let terms = wantedTerms;
+    let selfInvoiceNext: PendingSelfInvoice | null = null;
+    if (!sameTerms(wantedTerms, inForce)) {
+      const from = await selfInvoiceChangeFrom(
+        tx,
+        before,
+        wantedTerms,
+        facts,
+        grace,
+      );
+      if (from) {
+        terms = inForce;
+        selfInvoiceNext = { ...wantedTerms, from };
       }
     }
     await tx`
@@ -464,8 +537,12 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
         next_periodicity = ${next}, next_periodicity_from = ${nextFrom}::date, global_auto = ${p.globalAuto},
         concept_mode = ${p.conceptMode}, concept_description = ${p.conceptDescription},
         card_payment_form = ${p.cardPaymentForm}, default_use = ${p.defaultUse},
-        self_invoice_enabled = ${p.selfInvoiceEnabled}, self_invoice_policy = ${p.selfInvoicePolicy},
-        self_invoice_days = ${p.selfInvoiceDays}, portal_reissue_global = ${p.portalReissueGlobal},
+        self_invoice_enabled = ${p.selfInvoiceEnabled}, self_invoice_policy = ${terms.policy},
+        self_invoice_days = ${terms.days}, portal_reissue_global = ${terms.reissue},
+        next_self_invoice_policy = ${selfInvoiceNext?.policy ?? null},
+        next_self_invoice_days = ${selfInvoiceNext?.days ?? null},
+        next_portal_reissue_global = ${selfInvoiceNext?.reissue ?? null},
+        next_self_invoice_from = ${selfInvoiceNext?.from ?? null}::date,
         support_email = ${p.supportEmail}, version = version + 1, updated_by = ${s.employeeId},
         updated_at = now()`;
     const after = {
@@ -478,9 +555,10 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
       cardPaymentForm: p.cardPaymentForm,
       defaultUse: p.defaultUse,
       selfInvoiceEnabled: p.selfInvoiceEnabled,
-      selfInvoicePolicy: p.selfInvoicePolicy,
-      selfInvoiceDays: p.selfInvoiceDays,
-      portalReissueGlobal: p.portalReissueGlobal,
+      selfInvoicePolicy: terms.policy,
+      selfInvoiceDays: terms.days,
+      portalReissueGlobal: terms.reissue,
+      selfInvoicePending: selfInvoiceNext,
     };
     const was = {
       enabled: before.enabled,
@@ -495,6 +573,7 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
       selfInvoicePolicy: before.selfInvoicePolicy,
       selfInvoiceDays: before.selfInvoiceDays,
       portalReissueGlobal: before.portalReissueGlobal,
+      selfInvoicePending: before.nextSelfInvoice,
     };
     await audit(tx, s, "cfdi.settings.saved", s.tenantId, {
       before: was,
@@ -520,19 +599,57 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
         },
         s.employeeId,
       );
+    // A self-invoicing change that waits says until when and why (the panel shows it).
+    if (
+      selfInvoiceNext &&
+      !(
+        sameTerms(selfInvoiceNext, before.nextSelfInvoice) &&
+        selfInvoiceNext.from === before.nextSelfInvoice?.from
+      )
+    )
+      await insertEvent(
+        tx,
+        s.tenantId,
+        null,
+        "self_invoice_deferred",
+        { to: wantedTerms, from: selfInvoiceNext.from },
+        s.employeeId,
+      );
     await cfdiEnqueue(tx, s.tenantId, {
       kind: "cfdi_global",
       dedupeKey: dedupe.tickEnsure(new Date()),
       payload: {},
     });
-    // A periodicity applied at once: the tick rebuilds the month's period rows now, with a key of
-    // its own (the bucket's may be used up by a tick that already ran).
-    if (rebuild)
+    // A periodicity applied at once: the tick rebuilds the month's period rows, with a key of its
+    // own (the bucket's may be used up by a tick that already ran). The event records when it
+    // applied: the rebuild re-checks the change as of that moment (CFDIFIX-CONCURRENCY-3), and a
+    // change that brings forward a deadline of today waits until every terminal has refreshed
+    // its status, so the re-check sees the tickets they printed with the old one
+    // (CFDIFIX-CONCURRENCY-2; PERIODICITY_REBUILD_WAIT_MS, the tick skips the rebuild until then).
+    if (rebuild) {
+      const rebuildAt = new Date(
+        Date.now() + (shortens ? PERIODICITY_REBUILD_WAIT_MS : 0),
+      );
+      await insertEvent(
+        tx,
+        s.tenantId,
+        null,
+        "periodicity_applied",
+        {
+          from: effective,
+          to: wanted,
+          shortens,
+          rebuildAt: rebuildAt.toISOString(),
+        },
+        s.employeeId,
+      );
       await cfdiEnqueue(tx, s.tenantId, {
         kind: "cfdi_global",
         dedupeKey: `tick:periodicity:${before.version + 1}`,
         payload: {},
+        runAt: shortens ? rebuildAt : undefined,
       });
+    }
     // Turned back on: the chain ended while paused, and the bucket's key may be used up by a
     // tick that ran (and exited) while paused, so the restart has a key of its own (WORKER-4).
     if (p.enabled && !before.enabled)

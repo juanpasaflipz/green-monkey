@@ -13,7 +13,13 @@ import type { JobContext, JobOutcome } from "../../jobs.js";
 import { retryOrExhaust } from "../jobs.js";
 import { canonicalAmounts } from "../build.js";
 import type { FInvoiceInput } from "../facturapi-schema.js";
-import { acuseMatches, parseCfdiTotals } from "../xml.js";
+import {
+  ACUSE_READER_VERSION,
+  acuseMatches,
+  acuseUuids,
+  parseCfdiTotals,
+} from "../xml.js";
+import { LIVE_ACUSE_ATTEMPTS, liveAcuseMismatches } from "../recovery.js";
 import { loadDocument, type DocumentRow } from "../store.js";
 import { classify, event, runtimeOr } from "./common.js";
 import { documentKey, raise, tenantTag } from "./runtime.js";
@@ -122,7 +128,11 @@ export async function deliverJob(ctx: JobContext): Promise<JobOutcome> {
       // never stored, and the status keeps coming from the document (LD-51 F7). The PDF is the
       // same receipt, so it follows the XML's answer. In live mode a mismatch is never expected
       // (a provider-format or parser problem, CFDIFIX-2): the operator is alerted and recovery
-      // fetches it again, at most LIVE_ACUSE_ATTEMPTS times (recovery.ts).
+      // fetches it again, at most LIVE_ACUSE_ATTEMPTS times per reader version (recovery.ts); the
+      // last one is recorded as final, so the register never promises a fetch that will not
+      // come (CFDIFIX-UX-5). The event keeps how many UUIDs the reader found (none: a format or
+      // parser change; some: an acuse of another CFDI), the acuse's SHA-256 and the reader
+      // version, for support to compare with Facturapi's (CFDIFIX-OPS-3).
       if (!loaded.files.includes("cancel_xml")) {
         const xml = await rt.client.downloadCancellationReceipt(
           key,
@@ -132,15 +142,28 @@ export async function deliverJob(ctx: JobContext): Promise<JobOutcome> {
         );
         if (!acuseMatches(xml, doc.uuid)) {
           const live = doc.mode === "live";
-          await ctx.tenant((tx) =>
-            event(
+          await ctx.tenant(async (tx) => {
+            const attempt = live
+              ? (await liveAcuseMismatches(tx, documentId)).live + 1
+              : 1;
+            await event(
               tx,
               ctx,
               documentId,
-              live ? "acuse_mismatch_live" : "acuse_mismatch",
-              { mode: doc.mode },
-            ),
-          );
+              !live
+                ? "acuse_mismatch"
+                : attempt >= LIVE_ACUSE_ATTEMPTS
+                  ? "acuse_mismatch_final"
+                  : "acuse_mismatch_live",
+              {
+                mode: doc.mode,
+                found: acuseUuids(xml).length,
+                sha256: sha256(xml),
+                reader: ACUSE_READER_VERSION,
+                ...(live ? { attempt } : {}),
+              },
+            );
+          });
           if (live)
             raise(rt, {
               key: `cfdi_acuse_mismatch:${tenantTag(tenantId)}:${documentId}`,

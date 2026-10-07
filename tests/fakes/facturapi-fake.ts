@@ -587,6 +587,12 @@ export interface FacturapiFake {
   reset(): void;
   /** Moves the fake clock (only when created with `now`, see options). */
   advance(ms: number): void;
+  /**
+   * Whether 2xx JSON answers carry X-Facturapi-Log-Id. Facturapi documents the header on error
+   * answers (errors.mdx "Useful headers", FacturapiError.logId), so by default only those carry it
+   * (CFDIFIX-OPS-1); a test turns success ids on to cover both cases.
+   */
+  logIdsOnSuccess(on: boolean): void;
   readonly requests: FakeRequestLog[];
   readonly organizations: ReadonlyMap<string, Readonly<Org>>;
   readonly invoices: ReadonlyMap<string, Readonly<Invoice>>;
@@ -605,6 +611,8 @@ export function createFacturapiFake(
      * restaurant's profile to prove the stamp uses the shared organization's (LD-51 F3).
      */
     sharedIssuer?: Partial<typeof TEST_ISSUER>;
+    /** 2xx JSON answers carry X-Facturapi-Log-Id too (default false: error answers only). */
+    successLogIds?: boolean;
   } = {},
 ): FacturapiFake {
   const seed = o.seed ?? "green-monkey-facturapi-fake";
@@ -674,6 +682,7 @@ export function createFacturapiFake(
 
   const language = new AsyncLocalStorage<"es" | "en">();
   let logCounter = 0;
+  let successLogIds = o.successLogIds ?? false;
   function json(
     status: number,
     body: unknown,
@@ -683,7 +692,11 @@ export function createFacturapiFake(
       status,
       headers: {
         "content-type": "application/json; charset=utf-8",
-        "x-facturapi-log-id": `log_fake_${String(++logCounter).padStart(6, "0")}`,
+        ...(status >= 400 || successLogIds
+          ? {
+              "x-facturapi-log-id": `log_fake_${String(++logCounter).padStart(6, "0")}`,
+            }
+          : {}),
         ...headers,
       },
     });
@@ -1962,6 +1975,9 @@ export function createFacturapiFake(
     reset,
     advance(ms: number) {
       offsetMs += ms;
+    },
+    logIdsOnSuccess(on: boolean) {
+      successLogIds = on;
     },
     get requests() {
       return requests;

@@ -291,9 +291,11 @@ async function saveSettings(page: Page, patch: Record<string, unknown>) {
     cardPaymentForm: s.cardPaymentForm,
     defaultUse: s.defaultUse,
     selfInvoiceEnabled: s.selfInvoiceEnabled,
-    selfInvoicePolicy: s.selfInvoicePolicy,
-    selfInvoiceDays: s.selfInvoiceDays,
-    portalReissueGlobal: s.portalReissueGlobal,
+    // A self-invoicing change that waits is kept, as the panel's form keeps it (LD-55).
+    selfInvoicePolicy: s.selfInvoicePending?.policy ?? s.selfInvoicePolicy,
+    selfInvoiceDays: s.selfInvoicePending?.days ?? s.selfInvoiceDays,
+    portalReissueGlobal:
+      s.selfInvoicePending?.reissue ?? s.portalReissueGlobal,
     supportEmail: s.supportEmail,
     ...patch,
   });
@@ -658,7 +660,19 @@ test("LD-51 F1/F2/F10, CFDIFIX-1/5/7: the owner switches the global to daily in 
       cfdi.getByText("Configuración de facturación guardada"),
     ).toBeVisible();
     const after = (await settings(page)).settings;
+    const status = cfdi.getByRole("status").filter({
+      hasText: "Configuración de facturación guardada",
+    });
+    const select = cfdi.getByLabel("Periodicidad de la factura global");
     if (after.globalPeriodicity === "month") {
+      // LD-55 CFDIFIX-UX-2: the save's own status says the change waits, until when and why,
+      // and the select (which shows the chosen daily) is described by the line in force.
+      await expect(status).toContainText(
+        /La periodicidad cambia a diaria desde el .+: .+\./,
+      );
+      await expect(select).toHaveAccessibleDescription(
+        /^Periodicidad actual: mensual\. Cambia a diaria desde el /,
+      );
       // Deferred: today's ticket (CFDIFIX-1), or a global of the month, decides it.
       expect(after.nextPeriodicity).toBe("day");
       const reason = after.periodicityDeferred?.reason;
@@ -691,6 +705,9 @@ test("LD-51 F1/F2/F10, CFDIFIX-1/5/7: the owner switches the global to daily in 
       await expect(
         cfdi.getByText("Periodicidad actual: diaria."),
       ).toBeVisible();
+      await expect(status).toContainText(
+        "La periodicidad diaria aplica desde hoy.",
+      );
       await customer.reload();
       await expect(
         customer.getByText(/^Puedes facturar hasta el /),

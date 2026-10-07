@@ -5,25 +5,39 @@
 //      deadline a receipt already printed brought forward);
 //   F3 the stamping issuer facts in the shared sandbox and what the worker publishes of them;
 //   F7 the cancellation acuse's UUIDs;
-//   F12 the issuance tick's key;
-//   F13 the Facturapi log id of successful answers and the job's one info line.
+//   F12 the issuance tick's key and when it runs (LD-55);
+//   F13 the Facturapi log id of every answer and the job's one log line (LD-55 OPS-1);
+//   LD-55 the deadline's time, and a self-invoicing change that waits (FISCAL-1, FISCAL-5).
 import { describe, expect, it } from "vitest";
+import { Temporal } from "@js-temporal/polyfill";
 import {
+  businessDayStart,
   deadlineShowsTime,
   effectiveSelfInvoiceDeadline,
   globalBuildAt,
+  selfInvoiceChangeFrom,
   periodicityChangeBlock,
   periodicityChangeNow,
   type SelfInvoiceGlobalBound,
 } from "../shared/cfdi";
-import { dedupe } from "../server/cfdi/jobs";
-import { stampingFacts, type FiscalFacts } from "../server/cfdi/store";
+import {
+  dedupe,
+  issuedTickPrefix,
+  issuedTickRunAt,
+} from "../server/cfdi/jobs";
+import {
+  sharedIssuerComplete,
+  stampingFacts,
+  type FiscalFacts,
+} from "../server/cfdi/store";
+import { classifyFacturapiError } from "../server/cfdi/errors";
 import { sharedIssuerOf } from "../server/cfdi/worker/org";
 import { acuseMatches, acuseUuids } from "../server/cfdi/xml";
 import { createFacturapiClient } from "../server/cfdi/facturapi";
 import {
   recordProviderResponse,
   traceDocument,
+  traceFailure,
   traceQuiet,
 } from "../server/cfdi/worker/runtime";
 import { traced } from "../server/cfdi/worker/register";
@@ -127,13 +141,109 @@ describe("LD-51 F1: the self-invoicing deadline ends when the ticket's global is
       at("2026-11-03T10:00:00Z"),
     );
   });
-  it("the receipt and the portal print the time when the deadline falls on the business date or the next day", () => {
+  it("the receipt and the portal print the time whenever the global ends the window (LD-55 CFDIFIX-FISCAL-1 / UX-1), and for a policy deadline on the business date or the next day", () => {
+    // Every global-bound deadline is the period's close + grace (05:00 here), never the whole day.
     expect(deadlineShowsTime(window("day").deadline, date, TZ)).toBe(true);
-    expect(deadlineShowsTime(window("week").deadline, date, TZ)).toBe(false);
+    expect(deadlineShowsTime(window("week").deadline, date, TZ)).toBe(true);
+    expect(deadlineShowsTime(window("fortnight").deadline, date, TZ)).toBe(
+      true,
+    );
+    // A 3-day window cut by a monthly global (30 Oct + 3 days > 1 Nov 05:00).
+    const monthDays = effectiveSelfInvoiceDeadline("2026-10-30", {
+      policy: "days",
+      days: 3,
+      timezone: TZ,
+      global: {
+        globalAt: globalBuildAt(
+          "2026-10-30",
+          bound({ globalPeriodicity: "month" }),
+          TZ,
+        ),
+      },
+    });
+    expect(monthDays.bound).toBe("global");
+    expect(deadlineShowsTime(monthDays.deadline, "2026-10-30", TZ)).toBe(true);
+    // The policy's end of day: with the time only on the purchase date or the next day.
     expect(
       deadlineShowsTime("2026-11-01T05:59:59.999Z", "2026-10-31", TZ),
     ).toBe(true);
     expect(deadlineShowsTime("2026-11-01T05:59:59.999Z", date, TZ)).toBe(false);
+    expect(deadlineShowsTime(window("month").deadline, date, TZ)).toBe(false);
+  });
+});
+
+describe("LD-55 CFDIFIX-FISCAL-5 / UX-4: a self-invoicing change that would shorten printed deadlines waits", () => {
+  // Wednesday 7 October 2026, cutoff 04:00, grace 60, weekly globals.
+  const date = "2026-10-07";
+  const weekly = globalBuildAt(
+    date,
+    bound({ globalPeriodicity: "week" }),
+    TZ,
+  );
+  const fromAt = businessDayStart("2026-11-01", TZ, 240); // 1 Nov 04:00 local
+  it("before the change applies, the later of the new terms' deadline and the current one cut at its start", () => {
+    // Reissue on (policy alone, 31 Oct) → off (weekly global, 12 Oct 05:00), from 1 Nov: the
+    // customer keeps 31 Oct.
+    const w = effectiveSelfInvoiceDeadline(date, {
+      policy: "month",
+      days: 30,
+      timezone: TZ,
+      global: null,
+      pending: {
+        policy: "month",
+        days: 30,
+        global: { globalAt: weekly },
+        fromAt,
+      },
+    });
+    expect(w).toEqual({
+      deadline: "2026-11-01T05:59:59.999Z",
+      bound: "policy",
+    });
+    // A ticket of 31 Oct with a 30-day window → 3 days, from 1 Nov: cut at 1 Nov 04:00 (later
+    // than its new 3 Nov end? no: the new end, 3 Nov 23:59, is later and wins).
+    const d = effectiveSelfInvoiceDeadline("2026-10-31", {
+      policy: "days",
+      days: 30,
+      timezone: TZ,
+      pending: { policy: "days", days: 3, fromAt },
+    });
+    expect(at(d.deadline)).toBe(at("2026-11-04T05:59:59.999Z"));
+    // A 30-day window → reissue off with weekly globals: the current one is cut at the change.
+    const cut = effectiveSelfInvoiceDeadline("2026-10-20", {
+      policy: "days",
+      days: 30,
+      timezone: TZ,
+      pending: {
+        policy: "days",
+        days: 30,
+        global: {
+          globalAt: globalBuildAt(
+            "2026-10-20",
+            bound({ globalPeriodicity: "week" }),
+            TZ,
+          ),
+        },
+        fromAt,
+      },
+    });
+    expect(cut).toEqual({
+      deadline: Temporal.Instant.from(fromAt).toString(),
+      bound: "policy",
+    });
+    expect(deadlineShowsTime(cut.deadline, "2026-10-20", TZ)).toBe(true);
+  });
+  it("the change applies from the first business day starting at or after the latest deadline it would shorten", () => {
+    // A policy end of day (31 Oct 23:59:59.999 local) → 1 Nov.
+    expect(selfInvoiceChangeFrom("2026-11-01T05:59:59.999Z", TZ, 240)).toBe(
+      "2026-11-01",
+    );
+    // A global build (12 Oct 05:00 local, after the 04:00 cutoff) → 13 Oct.
+    expect(selfInvoiceChangeFrom("2026-10-12T11:00:00.000Z", TZ, 240)).toBe(
+      "2026-10-13",
+    );
+    // Exactly a business day's start (1 Nov 04:00 local) → that day.
+    expect(selfInvoiceChangeFrom(fromAt, TZ, 240)).toBe("2026-11-01");
   });
 });
 
@@ -321,23 +431,30 @@ describe("LD-51 F3: the shared sandbox stamps as the platform's test organizatio
       timezone: TZ,
     });
   });
-  it("a fact Facturapi did not report falls back to the profile's, one by one", () => {
+  it("the shared issuer is taken as a whole or not at all (LD-55 CFDIFIX-FISCAL-6): a missing fact means the profile's three, never a mix of two taxpayers", () => {
+    // Régimen 626 reported but the RFC not: the profile's RFC (a persona física) must not meet
+    // the shared organization's régimen in the RESICO decision.
+    for (const missing of [
+      { legalName: null, taxId: null, regime: "626", postalCode: "01000" },
+      { legalName: null, taxId: "EKU9003173C9", regime: null, postalCode: "01000" },
+      { legalName: null, taxId: "EKU9003173C9", regime: "601", postalCode: null },
+    ])
+      expect(
+        stampingFacts(facts, platform(missing), { source: "shared_sandbox" }),
+      ).toMatchObject({
+        rfc: "XIQB891116QE4",
+        regime: "626",
+        postalCode: "42501",
+      });
+    expect(sharedIssuerComplete(null)).toBe(false);
     expect(
-      stampingFacts(
-        facts,
-        platform({
-          legalName: null,
-          taxId: null,
-          regime: "601",
-          postalCode: null,
-        }),
-        { source: "shared_sandbox" },
-      ),
-    ).toMatchObject({
-      rfc: "XIQB891116QE4",
-      regime: "601",
-      postalCode: "42501",
-    });
+      sharedIssuerComplete({
+        legalName: null,
+        taxId: "EKU9003173C9",
+        regime: "601",
+        postalCode: "01000",
+      }),
+    ).toBe(true);
   });
   it("the worker publishes only facts with the shape cfdi_platform accepts (036 CHECKs)", () => {
     const org = (legal: Record<string, unknown> | null) =>
@@ -422,11 +539,26 @@ describe("LD-51 F7: a cancellation acuse counts only when it names the document"
   });
 });
 
-describe("LD-51 F12: the issuance tick's key", () => {
-  it("one key per 10-minute bucket, short enough for the jobs table", () => {
-    const key = dedupe.tickIssued(new Date("2026-10-07T18:43:10Z"));
-    expect(key).toBe("tick:issued:2026-10-07T18:40");
-    expect(`${key}:6a90ceec`.length).toBeLessThanOrEqual(200);
+describe("LD-51 F12 / LD-55: the issuance tick's key and time", () => {
+  const order = "6a90ceec-1d2e-4f3a-9b8c-7d6e5f4a3b2c";
+  it("one bucket per 30 minutes; the key carries the issuing order (only that operation can meet it, CFDIFIX-CONCURRENCY-1), short enough for the jobs table", () => {
+    const key = dedupe.tickIssued(new Date("2026-10-07T18:43:10Z"), order);
+    expect(key).toBe(`tick:issued:2026-10-07T18:30:${order}`);
+    expect(key.startsWith(issuedTickPrefix(new Date("2026-10-07T18:30:00Z")))).toBe(true);
+    expect(key.startsWith(issuedTickPrefix(new Date("2026-10-07T18:59:59Z")))).toBe(true);
+    expect(key.startsWith(issuedTickPrefix(new Date("2026-10-07T19:00:00Z")))).toBe(false);
+    expect(key.length).toBeLessThanOrEqual(200);
+  });
+  it("the tick is due 10 minutes after its bucket ends, never at once (CFDIFIX-FISCAL-4, OPS-2)", () => {
+    expect(issuedTickRunAt(new Date("2026-10-07T18:43:10Z")).toISOString()).toBe(
+      "2026-10-07T19:10:00.000Z",
+    );
+    expect(issuedTickRunAt(new Date("2026-10-07T18:30:00Z")).toISOString()).toBe(
+      "2026-10-07T19:10:00.000Z",
+    );
+    expect(issuedTickRunAt(new Date("2026-10-07T18:59:59.999Z")).toISOString()).toBe(
+      "2026-10-07T19:10:00.000Z",
+    );
   });
 });
 
@@ -455,6 +587,28 @@ describe("LD-51 F13: Facturapi's log id and the job's one info line", () => {
     });
   const key = { kind: "test" as const, secret: "sk_test_cfdifix" };
 
+  it("an error answer reports its X-Facturapi-Log-Id too, and the error carries it (LD-55 CFDIFIX-OPS-1)", async () => {
+    const seen: { logId: string | null; status: number }[] = [];
+    const client = createFacturapiClient({
+      baseUrl: "http://127.0.0.1:4799/v2",
+      fetch: (async () =>
+        new Response(
+          JSON.stringify({ ok: false, message: "RFC inválido", status: 400 }),
+          {
+            status: 400,
+            headers: {
+              "content-type": "application/json",
+              "x-facturapi-log-id": "log_refused_1",
+            },
+          },
+        )) as typeof fetch,
+      onResponse: (m) => seen.push(m),
+    });
+    const error = await client.me(key).catch((e: unknown) => e);
+    expect(seen).toEqual([{ logId: "log_refused_1", status: 400 }]);
+    expect((error as { logId?: string }).logId).toBe("log_refused_1");
+    expect(classifyFacturapiError(error).logId).toBe("log_refused_1");
+  });
   it("every 2xx answer reports its X-Facturapi-Log-Id; none, or one that is not a token, reads null", async () => {
     const seen: { logId: string | null; status: number }[] = [];
     await clientWith({ "x-facturapi-log-id": "log_abc123" }, seen).me(key);
@@ -485,6 +639,7 @@ describe("LD-51 F13: Facturapi's log id and the job's one info line", () => {
     payload: Record<string, unknown> = {
       documentId: "d0c00000-0000-4000-8000-000000000001",
     },
+    message = "cfdi_job_done",
   ) => {
     const lines: { message: string; attrs: Record<string, unknown> }[] = [];
     const ctx = {
@@ -513,7 +668,7 @@ describe("LD-51 F13: Facturapi's log id and the job's one info line", () => {
       return outcome;
     });
     expect(await handler(ctx)).toEqual(outcome);
-    return lines.filter((l) => l.message === "cfdi_job_done");
+    return lines.filter((l) => l.message === message);
   };
 
   it("a job that ends done logs one info line: its document, payload ids and every answer's log id", async () => {
@@ -525,6 +680,7 @@ describe("LD-51 F13: Facturapi's log id and the job's one info line", () => {
         message: "cfdi_job_done",
         attrs: {
           documentId: "d0c00000-0000-4000-8000-000000000001",
+          outcome: "ok",
           facturapiLogIds: ["log_first", "log_after_await"],
         },
       },
@@ -547,6 +703,56 @@ describe("LD-51 F13: Facturapi's log id and the job's one info line", () => {
       await run({ status: "dead", code: "cfdi_attempts_exhausted" }, () => {}),
     ).toEqual([]);
     expect(await run({ status: "done" }, () => traceQuiet())).toEqual([]);
+  });
+  it("a job that failed its document (done), retries or dies logs cfdi_job_failed with its outcome, code and the refused answer's log id, never cfdi_job_done (LD-55 CFDIFIX-OPS-1)", async () => {
+    const refused = () => {
+      recordProviderResponse({ logId: "log_refused", status: 400 });
+      traceFailure("cfdi_receptor_rfc_invalid", "log_refused");
+    };
+    expect(await run({ status: "done" }, refused)).toEqual([]);
+    const failed = await run(
+      { status: "done" },
+      refused,
+      undefined,
+      "cfdi_job_failed",
+    );
+    expect(failed).toEqual([
+      {
+        message: "cfdi_job_failed",
+        attrs: {
+          documentId: "d0c00000-0000-4000-8000-000000000001",
+          outcome: "document_failed",
+          code: "cfdi_receptor_rfc_invalid",
+          logId: "log_refused",
+          facturapiLogIds: ["log_refused", "log_after_await"],
+        },
+      },
+    ]);
+    const retry = await run(
+      { status: "retry", code: "cfdi_provider_unavailable" },
+      () => recordProviderResponse({ logId: "log_503", status: 503 }),
+      undefined,
+      "cfdi_job_failed",
+    );
+    expect(retry[0].attrs).toMatchObject({
+      outcome: "retry",
+      code: "cfdi_provider_unavailable",
+      logId: "log_503",
+    });
+    const dead = await run(
+      { status: "dead", code: "cfdi_attempts_exhausted" },
+      () => {},
+      undefined,
+      "cfdi_job_failed",
+    );
+    expect(dead[0].attrs).toMatchObject({
+      outcome: "dead",
+      code: "cfdi_attempts_exhausted",
+      logId: null,
+    });
+    expect(
+      await run({ status: "done" }, () => traceQuiet(), undefined, "cfdi_job_failed"),
+    ).toEqual([]);
   });
   it("outside a job a log id goes nowhere", () => {
     expect(() => recordProviderResponse({ logId: "log_x" })).not.toThrow();

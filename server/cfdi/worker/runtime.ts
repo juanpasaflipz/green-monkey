@@ -108,9 +108,17 @@ export async function documentKey(
  */
 export type JobTrace = {
   documentId: string | null;
+  /** Every provider answer's X-Facturapi-Log-Id, error answers included (CFDIFIX-OPS-1). */
   logIds: string[];
   /** The job only handed over (cfdi unavailable): its own info line already says so. */
   quiet: boolean;
+  /**
+   * The job ended done but failed its document (a permanent refusal, CFDIFIX-OPS-1): the line is
+   * cfdi_job_failed with the code and the refused answer's log id, not cfdi_job_done.
+   */
+  failure?: { code: string; logId: string | null } | null;
+  /** The last error answer's (status ≥ 400) log id: the id of the refusal a retry follows. */
+  errorLogId?: string | null;
 };
 
 const traces = new AsyncLocalStorage<JobTrace>();
@@ -123,17 +131,30 @@ export function withTrace<T>(
   return traces.run(trace, fn);
 }
 
-/** The Facturapi client's onResponse: a provider answer's log id joins the current job's trace. */
-export function recordProviderResponse(meta: { logId: string | null }): void {
+/**
+ * The Facturapi client's onResponse: a provider answer's log id (2xx or error) joins the current
+ * job's trace.
+ */
+export function recordProviderResponse(meta: {
+  logId: string | null;
+  status?: number;
+}): void {
   const trace = traces.getStore();
-  if (trace && meta.logId && trace.logIds.length < 20)
-    trace.logIds.push(meta.logId);
+  if (!trace || !meta.logId) return;
+  if (trace.logIds.length < 20) trace.logIds.push(meta.logId);
+  if ((meta.status ?? 0) >= 400) trace.errorLogId = meta.logId;
 }
 
 /** The document the current job acted on (a cancellation's document, a refund's credit note). */
 export function traceDocument(documentId: string | null): void {
   const trace = traces.getStore();
   if (trace && documentId) trace.documentId = documentId;
+}
+
+/** The current job failed its document (failDocumentTx): its line says so (CFDIFIX-OPS-1). */
+export function traceFailure(code: string, logId: string | null): void {
+  const trace = traces.getStore();
+  if (trace) trace.failure = { code, logId };
 }
 
 /** The current job only handed over: no second info line. */

@@ -104,9 +104,11 @@ export function shortDate(
   }).format(new Date(iso));
 }
 /**
- * A self-invoicing deadline for the receipt and the portal (LD-51 F1): "31/10/2026", or
- * "08/10/2026 a las 05:00" when it falls on the purchase's business date or the next day (a daily
- * global), where the date alone would read as the whole day.
+ * A self-invoicing deadline for the receipt, the portal and the staff dialog (LD-51 F1): "31/10/2026"
+ * for the policy's end of day, or "12/10/2026 a las 05:00" whenever it is not (a global-bound
+ * deadline: the period's close + grace, early in the morning, LD-55 CFDIFIX-FISCAL-1 / UX-1) and
+ * on the purchase's business date or the next day, where the date alone would read as the whole
+ * day (deadlineShowsTime).
  */
 export function deadlineText(
   iso: string,
@@ -285,6 +287,7 @@ const EVENTS: Record<string, Key> = {
   recovery_queued: "cfdiEventRecovered",
   acuse_mismatch: "cfdiEventAcuseMismatch",
   acuse_mismatch_live: "cfdiEventAcuseMismatchLive",
+  acuse_mismatch_final: "cfdiEventAcuseMismatchFinal",
 };
 const CANCELLATION: Record<string, Key> = {
   queued: "cfdiStatusCanceling",

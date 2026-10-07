@@ -536,10 +536,15 @@ async function finishTickets(
 }
 
 /**
- * cfdi (LD-51 F12): a ticket for a business date whose global was already built (an offline sale
- * synced late, a repair) gets its supplementary global from a tick now, not at the next scheduled
- * one. Called before the folio counter (LO-12), so it never lengthens that lock: nothing for a
- * ticket of today, else one read and at most a job insert, which commits with the ticket.
+ * cfdi (LD-51 F12, LD-55): a ticket for a business date whose period has closed (an offline sale
+ * synced late, last night's check paid this morning, a repair) gets its supplementary global from
+ * the tick of its 30-minute bucket, not at the next scheduled one. Called before this ticket's
+ * folio counter (LO-12): nothing for a ticket of today, else one read and at most a jobs insert,
+ * which commits with the ticket. A command that issues several tickets in one transaction
+ * (recordSettlement) reaches it for a later order after an earlier order took the counter; the
+ * insert's key then carries the order this transaction holds FOR UPDATE, so its unique-key wait can
+ * only meet this same operation (LO-R4 allows reads and LO-R8 inserts after LO-12;
+ * CFDIFIX-CONCURRENCY-1).
  */
 function tellCfdi(tx: Tx, s: Session, due: readonly DueTicket[]) {
   return cfdiTicketsIssued(

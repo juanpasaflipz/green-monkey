@@ -396,6 +396,14 @@ export function parseCfdiTotals(xml: string | Uint8Array): CfdiTotals {
   return result;
 }
 
+/**
+ * The version of the acuse reader below (acuseUuids). Each live acuse mismatch records the version
+ * that read it, and recovery stops fetching after LIVE_ACUSE_ATTEMPTS mismatches of the CURRENT
+ * version: a fix to the reader bumps this, and the tick's sweep (or Reintentar) then fetches the
+ * acuses the old reader could not match (LD-55 CFDIFIX-OPS-3).
+ */
+export const ACUSE_READER_VERSION = 1;
+
 const SAT_UUID_TEXT =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 

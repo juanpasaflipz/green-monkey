@@ -78,11 +78,15 @@ import {
   ticketsLabel,
 } from "../src/features/cfdi/CfdiDocuments";
 import {
+  ActivationPeriodicity,
   cfdiBadge,
   OrganizationFacts,
   orgErrorText,
   PeriodicityStatus,
   SelfInvoiceBound,
+  SelfInvoicePendingStatus,
+  selfInvoiceShortens,
+  settingsSavedNote,
   settling,
 } from "../src/features/cfdi/CfdiSettings";
 import { deadlineText } from "../src/features/cfdi/format";
@@ -1283,7 +1287,17 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
   });
   it("F9: the issuer RFC reads pending until Facturapi reports it, then shows it", () => {
     const pending = html(
-      createElement(OrganizationFacts, { org: org(), locale: "es" }),
+      createElement(OrganizationFacts, {
+        org: org({
+          csd: {
+            status: "valid",
+            serial: "30001000000500003416",
+            validUntil: "2030-01-01T00:00:00.000Z",
+            lastUpload: null,
+          },
+        }),
+        locale: "es",
+      }),
     );
     expect(pending).toContain("RFC del emisor");
     expect(pending).toContain("Pendiente: Facturapi aún no lo reporta");
@@ -1310,6 +1324,7 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
             taxId: "EKU9003173C9",
             regime: "601",
             postalCode: "01000",
+            complete: true,
           },
         }),
         locale: "es",
@@ -1429,6 +1444,284 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
         }),
       ),
     ).not.toContain("No se aplicó");
+  });
+  it("LD-55 CFDIFIX-UX-7: an own organization's pending RFC says the CSD upload confirms it, and an organization in error shows none", () => {
+    const noCsd = html(
+      createElement(OrganizationFacts, { org: org(), locale: "es" }),
+    );
+    expect(noCsd).toContain(
+      "Pendiente: se confirma al subir tu certificado (CSD)",
+    );
+    expect(noCsd).not.toContain("Facturapi aún no lo reporta");
+    const error = html(
+      createElement(OrganizationFacts, {
+        org: org({ status: "error", errorCode: "cfdi_org_key_invalid" }),
+        locale: "es",
+      }),
+    );
+    expect(error).not.toContain("Pendiente");
+    expect(error).toContain('<dd class="muted">—</dd>');
+    expect(
+      html(createElement(OrganizationFacts, { org: org(), locale: "en" })),
+    ).toContain("Pending: confirmed when you upload your certificate (CSD)");
+  });
+  it("LD-55 CFDIFIX-UX-6 / FISCAL-6: the shared issuer note says the rules follow the restaurant's own régimen, and says the profile stamps while Facturapi has not reported the test organization whole", () => {
+    const shared = (complete: boolean) =>
+      html(
+        createElement(OrganizationFacts, {
+          org: org({
+            source: "shared_sandbox",
+            taxId: "EKU9003173C9",
+            legalSyncedVersion: null,
+            sharedIssuer: {
+              legalName: null,
+              taxId: "EKU9003173C9",
+              regime: complete ? "626" : null,
+              postalCode: "01000",
+              complete,
+            },
+          }),
+          locale: "es",
+        }),
+      );
+    expect(shared(true)).toContain(
+      "La periodicidad y las demás reglas siguen tu propio régimen, que es el que aplicará en modo real.",
+    );
+    const partial = shared(false);
+    expect(partial).toContain(strings.es.cfdiSharedIssuerFallback);
+    expect(partial).toContain("se timbra con los datos de tu perfil fiscal");
+    expect(partial).not.toContain("no se usan para timbrar");
+  });
+  it("LD-55 CFDIFIX-UX-3: RESICO's activation shows monthly and no 'you can change it later' hint", () => {
+    const step = (resico: boolean) =>
+      html(
+        createElement(ActivationPeriodicity, {
+          value: "day",
+          onChange: () => {},
+          resico,
+          busy: false,
+          graceMinutes: 60,
+          locale: "es",
+        }),
+      );
+    expect(step(true)).toContain(strings.es.cfdiResicoMonthly);
+    expect(step(true)).not.toContain(strings.es.cfdiActivatePeriodicityHint);
+    expect(step(false)).toContain(strings.es.cfdiActivatePeriodicityHint);
+    expect(step(false)).not.toContain(strings.es.cfdiResicoMonthly);
+  });
+  it("LD-55 CFDIFIX-UX-2: the save's status says whether the periodicity applies today or waits, until when and why; and a self-invoicing change that waits", () => {
+    const base = {
+      enabled: true,
+      mode: "test" as const,
+      testFrom: "2026-10-01",
+      liveFrom: null,
+      liveRequested: null,
+      globalPeriodicity: "month" as const,
+      nextPeriodicity: null,
+      nextPeriodicityFrom: null,
+      globalAuto: true,
+      conceptMode: "grouped" as const,
+      conceptDescription: "Consumo",
+      cardPaymentForm: "04" as const,
+      defaultUse: "G03" as const,
+      selfInvoiceEnabled: true,
+      selfInvoicePolicy: "month" as const,
+      selfInvoiceDays: 30,
+      portalReissueGlobal: true,
+      selfInvoicePending: null,
+      supportEmail: null,
+      version: 3,
+      updatedAt: "2026-10-15T18:00:00.000Z",
+      updatedByName: null,
+      resicoMonthly: false,
+      periodicityDeferred: null,
+    };
+    const deferred = settingsSavedNote(
+      base,
+      {
+        ...base,
+        nextPeriodicity: "day",
+        nextPeriodicityFrom: "2026-11-01",
+        periodicityDeferred: {
+          at: "2026-10-15T18:00:00.000Z",
+          from: "month",
+          to: "day",
+          nextFrom: "2026-11-01",
+          reason: "deadline",
+          source: "save",
+        },
+      },
+      "2026-10-15",
+      "es",
+    );
+    expect(deferred).toBe(
+      "La periodicidad cambia a diaria desde el 1 nov 2026: acortaría el plazo para autofacturar de tickets ya vendidos este mes.",
+    );
+    expect(
+      settingsSavedNote(
+        base,
+        { ...base, globalPeriodicity: "day" },
+        "2026-10-15",
+        "es",
+      ),
+    ).toBe("La periodicidad diaria aplica desde hoy.");
+    expect(settingsSavedNote(base, base, "2026-10-15", "es")).toBe("");
+    expect(
+      settingsSavedNote(
+        base,
+        {
+          ...base,
+          selfInvoicePending: {
+            policy: "month",
+            days: 30,
+            reissue: false,
+            from: "2026-11-01",
+          },
+        },
+        "2026-10-15",
+        "es",
+      ),
+    ).toBe(
+      "El cambio del plazo para autofacturarse aplica desde el 1 nov 2026: antes acortaría el plazo que ya imprimieron tickets vendidos.",
+    );
+    // The periodicity line can describe the select (aria-describedby).
+    expect(
+      html(
+        createElement(PeriodicityStatus, {
+          settings: base,
+          businessDate: "2026-10-15",
+          locale: "es",
+          id: "periodicity-status",
+        }),
+      ),
+    ).toContain('id="periodicity-status"');
+  });
+  it("LD-55 CFDIFIX-UX-4: the form warns when it shortens the self-invoicing deadline, and a change that waits says from when", () => {
+    const on = {
+      selfInvoicePolicy: "month" as const,
+      selfInvoiceDays: 30,
+      portalReissueGlobal: true,
+    };
+    expect(selfInvoiceShortens(on, { ...on, portalReissueGlobal: false })).toBe(
+      true,
+    );
+    expect(
+      selfInvoiceShortens(on, { ...on, selfInvoicePolicy: "days", selfInvoiceDays: 3 }),
+    ).toBe(true);
+    expect(
+      selfInvoiceShortens(
+        { ...on, selfInvoicePolicy: "days", selfInvoiceDays: 10 },
+        { ...on, selfInvoicePolicy: "days", selfInvoiceDays: 20 },
+      ),
+    ).toBe(false);
+    expect(selfInvoiceShortens({ ...on, portalReissueGlobal: false }, on)).toBe(
+      false,
+    );
+    expect(
+      html(
+        createElement(SelfInvoicePendingStatus, {
+          pending: {
+            policy: "month",
+            days: 30,
+            reissue: false,
+            from: "2026-11-01",
+          },
+          locale: "es",
+        }),
+      ),
+    ).toContain(
+      "Cambio pendiente del plazo para autofacturarse: aplica desde el 1 nov 2026",
+    );
+    expect(
+      html(createElement(SelfInvoicePendingStatus, { pending: null, locale: "es" })),
+    ).toBe("");
+  });
+  it("LD-55 CFDIFIX-FISCAL-1 / UX-1: a global-bound deadline prints its time whatever the day: a mid-week weekly sale, a fortnightly one, a 'days' window cut by a monthly global", () => {
+    const receipt = (
+      businessDate: string,
+      periodicity: "week" | "fortnight" | "month",
+      policy: "month" | "days" = "month",
+      days = 30,
+    ) =>
+      html(
+        createElement(CfdiReceiptBlock, {
+          ticket: { ...ticket, businessDate } as FiscalTicketView,
+          status: status({
+            selfInvoice: {
+              enabled: true,
+              policy,
+              days,
+              globalBound: { ...bound, globalPeriodicity: periodicity },
+            },
+          }),
+          kind: "receipt",
+          origin,
+          now: Date.parse(businessDate + "T18:00:00Z"),
+        }),
+      );
+    // Wednesday 7 Oct, cutoff 04:00, grace 60: the week's global is built Monday 12 Oct 05:00.
+    expect(receipt("2026-10-07", "week")).toContain(
+      "Disponible hasta el 12/10/2026 a las 05:00",
+    );
+    expect(receipt("2026-10-07", "fortnight")).toContain(
+      "Disponible hasta el 16/10/2026 a las 05:00",
+    );
+    expect(receipt("2026-10-30", "month", "days", 3)).toContain(
+      "Disponible hasta el 01/11/2026 a las 05:00",
+    );
+    // The portal's and the staff dialog's text (deadlineText).
+    expect(
+      deadlineText(
+        "2026-10-12T11:00:00Z",
+        "2026-10-07",
+        "America/Mexico_City",
+        "es",
+      ),
+    ).toBe("12/10/2026 a las 05:00");
+    expect(
+      deadlineText(
+        "2026-10-16T11:00:00Z",
+        "2026-10-07",
+        "America/Mexico_City",
+        "en",
+      ),
+    ).toMatch(/^10\/16\/2026 at 0?5:00\sAM$/);
+  });
+  it("LD-55 CFDIFIX-FISCAL-5: while a self-invoicing change waits, the receipt prints the deadline both terms allow", () => {
+    // Reissue on → off from 1 Nov (weekly globals): a sale of 7 Oct keeps 31 Oct.
+    const out = html(
+      createElement(CfdiReceiptBlock, {
+        ticket: { ...ticket, businessDate: "2026-10-07" } as FiscalTicketView,
+        status: status({
+          selfInvoice: {
+            enabled: true,
+            policy: "month",
+            days: 30,
+            globalBound: null,
+            pending: {
+              policy: "month",
+              days: 30,
+              globalBound: { ...bound, globalPeriodicity: "week" },
+              fromAt: "2026-11-01T10:00:00.000Z",
+            },
+          },
+        }),
+        kind: "receipt",
+        origin,
+        now: Date.parse("2026-10-07T18:00:00Z"),
+      }),
+    );
+    expect(out).toContain("Disponible hasta el 31/10/2026");
+    expect(out).not.toContain("12/10/2026");
+  });
+  it("LD-55 CFDIFIX-UX-5: the last live mismatch says the acuse will not be requested again and to contact support", () => {
+    const es = eventLabel("acuse_mismatch_final", "es");
+    expect(es).toBe(strings.es.cfdiEventAcuseMismatchFinal);
+    expect(es).toContain("no se volverá a pedir automáticamente");
+    expect(es).toContain("Contacta a soporte");
+    expect(eventLabel("acuse_mismatch_final", "en")).toContain(
+      "will not be requested again",
+    );
   });
   it("F7: the register names the acuse that was not stored", () => {
     expect(eventLabel("acuse_mismatch", "es")).toBe(

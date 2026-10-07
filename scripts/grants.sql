@@ -151,3 +151,8 @@ REVOKE UPDATE(name,note) ON public_order_holds FROM gm_app;
 -- guard refuses every other DELETE (status built, a part, any global document of its key) and every
 -- runtime-role DELETE, and TRUNCATE stays refused. Listed in tests/ops-db.ts PLATFORM-ROLES-5.
 GRANT DELETE ON cfdi_global_periods TO gm_jobs_worker;
+-- 036 cfdifix (LD-55, CFDIFIX-FISCAL-5 / UX-4): a self-invoicing change that would bring forward a
+-- printed deadline is stored as pending by the owner's save (the runtime role); reads resolve it
+-- by date, so the worker never writes these columns.
+GRANT UPDATE (next_self_invoice_policy, next_self_invoice_days, next_portal_reissue_global,
+  next_self_invoice_from) ON cfdi_settings TO gm_app;

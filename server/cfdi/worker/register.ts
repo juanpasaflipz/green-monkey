@@ -4,8 +4,13 @@
  * so the web runner can never claim a cfdi kind without provider keys (tests/import-graph.test.ts).
  *
  * Every handler runs with its job trace (traced): a job that ends done logs one info line,
- * `cfdi_job_done`, with the document it acted on, the ids its payload carries and the
- * X-Facturapi-Log-Id of each provider answer (LD-51 F13). The runner's own `job_done` is debug.
+ * `cfdi_job_done` (outcome "ok"), with the document it acted on, the ids its payload carries and
+ * the X-Facturapi-Log-Id of each provider answer (LD-51 F13). A job that failed its document (a
+ * permanent refusal: done, but the document failed), or that ends retry or dead, logs
+ * `cfdi_job_failed` instead, with its outcome, the code and the log ids, error answers' included,
+ * so a refused stamp never reads like a success and the correlation id Facturapi support asks
+ * for is in the log (LD-55 CFDIFIX-OPS-1). The runner's own `job_done` is debug; its job_failed
+ * and job_dead carry no document or log id.
  * The line is logged here, when the handler returns, before the runner's completeJob: a lease
  * lost at completion logs job_lease_lost next and the job may run again, so a second line for
  * the same jobId can follow (CFDIFIX-10, accepted and documented in docs/CFDI.md "Jobs"; the
@@ -48,19 +53,39 @@ export function traced(handler: JobHandler): JobHandler {
       quiet: false,
     };
     const outcome = await withTrace(trace, () => handler(ctx));
-    if ((!outcome || outcome.status === "done") && !trace.quiet) {
-      const ids: Record<string, string> = {};
-      for (const key of PAYLOAD_IDS) {
-        const value = token(payload[key]);
-        if (value) ids[key] = value;
-      }
-      // jobId, kind and tenantId are bound on ctx.log by the runner.
-      ctx.log.info("cfdi_job_done", {
+    if (trace.quiet) return outcome;
+    const ids: Record<string, string> = {};
+    for (const key of PAYLOAD_IDS) {
+      const value = token(payload[key]);
+      if (value) ids[key] = value;
+    }
+    // jobId, kind and tenantId are bound on ctx.log by the runner.
+    if (!outcome || outcome.status === "done") {
+      if (trace.failure)
+        ctx.log.info("cfdi_job_failed", {
+          documentId: trace.documentId,
+          ...ids,
+          outcome: "document_failed",
+          code: trace.failure.code,
+          logId: trace.failure.logId,
+          facturapiLogIds: trace.logIds,
+        });
+      else
+        ctx.log.info("cfdi_job_done", {
+          documentId: trace.documentId,
+          ...ids,
+          outcome: "ok",
+          facturapiLogIds: trace.logIds,
+        });
+    } else if (outcome.status === "retry" || outcome.status === "dead")
+      ctx.log.info("cfdi_job_failed", {
         documentId: trace.documentId,
         ...ids,
+        outcome: outcome.status,
+        code: outcome.code,
+        logId: trace.errorLogId ?? null,
         facturapiLogIds: trace.logIds,
       });
-    }
     return outcome;
   };
 }

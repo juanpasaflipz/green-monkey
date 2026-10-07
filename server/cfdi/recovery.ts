@@ -6,9 +6,11 @@
  *   - Reintentar (managers, server/cfdi/service.ts retryDocument), tag "r<operation>";
  *   - the global tick's recovery sweep (worker, server/cfdi/worker/global.ts), tag "s<YYYYMMDD>",
  *     only when no live job already serves the document.
- * Loaded by both processes: imports the store, the jobs adapter and the db type only.
+ * Loaded by both processes: imports the store, the jobs adapter, the pure XML reader's version and
+ * the db type only.
  */
 import type { Tx } from "../db.js";
+import { ACUSE_READER_VERSION } from "./xml.js";
 import {
   cfdiEnqueue,
   dedupe,
@@ -22,9 +24,25 @@ import { loadDocument, type DocumentRow } from "./store.js";
 export const RECOVERY_MINUTES = 30;
 /**
  * A live document's cancellation acuse that named another CFDI is fetched again this many times
- * in all (CFDIFIX-2); a test-mode one (Facturapi's sample, LD-51 F7) never again.
+ * in all per acuse reader version (CFDIFIX-2, OPS-3: ACUSE_READER_VERSION); the last one is
+ * recorded as `acuse_mismatch_final` (UX-5). A test-mode one (Facturapi's sample, LD-51 F7) never
+ * again.
  */
 export const LIVE_ACUSE_ATTEMPTS = 3;
+
+/** Live acuse mismatches recorded by the current reader version (deliver.ts, the sweep's cap). */
+export async function liveAcuseMismatches(
+  tx: Tx,
+  documentId: string,
+): Promise<{ sample: number; live: number }> {
+  const [m] = await tx`
+    select count(*) filter (where kind = 'acuse_mismatch')::int as sample,
+      count(*) filter (where kind in ('acuse_mismatch_live','acuse_mismatch_final')
+        and coalesce(detail->>'reader', '1') = ${String(ACUSE_READER_VERSION)})::int as live
+    from cfdi_events where document_id = ${documentId}
+      and kind in ('acuse_mismatch','acuse_mismatch_live','acuse_mismatch_final')`;
+  return { sample: m.sample, live: m.live };
+}
 
 export type RecoveryAction =
   /** pending at the provider, or canceling while the receptor decides: poll again. */
@@ -136,12 +154,9 @@ export async function recoveryAction(
   ) {
     // An acuse that named another CFDI is not stored. Facturapi's test-mode sample is never
     // fetched again (LD-51 F7): the register offers none and the status comes from the document.
-    // A live one is fetched again, LIVE_ACUSE_ATTEMPTS times in all (CFDIFIX-2).
-    const [m] = await tx`
-      select count(*) filter (where kind = 'acuse_mismatch')::int as sample,
-        count(*) filter (where kind = 'acuse_mismatch_live')::int as live
-      from cfdi_events where document_id = ${doc.id}
-        and kind in ('acuse_mismatch','acuse_mismatch_live')`;
+    // A live one is fetched again, LIVE_ACUSE_ATTEMPTS times in all per reader version (CFDIFIX-2,
+    // OPS-3): after a reader fix (ACUSE_READER_VERSION) it is fetched again.
+    const m = await liveAcuseMismatches(tx, doc.id);
     return m.sample > 0 || m.live >= LIVE_ACUSE_ATTEMPTS
       ? null
       : { kind: "deliver", acuse: true };

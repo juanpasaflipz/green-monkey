@@ -7,8 +7,10 @@
  *
  * The printed deadline is the one the portal enforces (LD-51 F1): the restaurant's policy, or,
  * while the portal does not reissue globals, the moment the ticket's global is built (its period's
- * close + the worker's grace) when that comes first, with the time when it falls on the purchase
- * day or the next. A deadline already past when the receipt prints (a check of yesterday's business
+ * close + the worker's grace) when that comes first, with the time whenever it is not the policy's
+ * end of day (LD-55 CFDIFIX-FISCAL-1) or falls on the purchase day or the next; a self-invoicing
+ * change that waits counts as the portal counts it (effectiveSelfInvoiceDeadline's pending,
+ * CFDIFIX-FISCAL-5). A deadline already past when the receipt prints (a check of yesterday's business
  * date paid after its daily global was built, or a reprint) is not printed: the portal would
  * refuse the code, so the receipt says to ask at the counter (CFDIFIX-11).
  */
@@ -68,6 +70,7 @@ export function CfdiReceiptBlock({
   );
   if (!status.selfInvoice?.enabled || !status.ready) return askCashier;
   const bound = status.selfInvoice.globalBound;
+  const pending = status.selfInvoice.pending;
   const { deadline } = effectiveSelfInvoiceDeadline(ticket.businessDate, {
     policy: status.selfInvoice.policy,
     days: status.selfInvoice.days,
@@ -75,6 +78,22 @@ export function CfdiReceiptBlock({
     global: bound
       ? {
           globalAt: globalBuildAt(ticket.businessDate, bound, status.timezone),
+        }
+      : null,
+    pending: pending
+      ? {
+          policy: pending.policy,
+          days: pending.days,
+          global: pending.globalBound
+            ? {
+                globalAt: globalBuildAt(
+                  ticket.businessDate,
+                  pending.globalBound,
+                  status.timezone,
+                ),
+              }
+            : null,
+          fromAt: pending.fromAt,
         }
       : null,
   });

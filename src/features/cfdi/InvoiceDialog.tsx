@@ -24,6 +24,7 @@ import { DocumentDetail } from "./CfdiDocuments";
 import { fileUrl } from "./download";
 import {
   dateLabel,
+  deadlineText,
   docLabel,
   issueOfError,
   moneyLabel,
@@ -251,6 +252,22 @@ export function InvoiceDialog({
           <p className="muted">
             {tr(locale, "cfdiNetOfRefunds", {
               amount: moneyLabel(ticket.total, locale),
+            })}
+          </p>
+        )}
+        {/* The deadline the receipt printed, with its time when it is not the policy's end of
+            day (LD-55 CFDIFIX-FISCAL-1): what the cashier tells a customer who asks. */}
+        {ticket?.deadline &&
+          ticket.eligibility === "available" &&
+          Date.parse(ticket.deadline) > Date.now() && (
+          <p className="muted">
+            {tr(locale, "cfdiStaffSelfInvoiceDeadline", {
+              date: deadlineText(
+                ticket.deadline,
+                ticket.businessDate,
+                session.restaurant.timezone,
+                locale,
+              ),
             })}
           </p>
         )}

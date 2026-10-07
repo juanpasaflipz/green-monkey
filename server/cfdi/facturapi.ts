@@ -58,10 +58,12 @@ export interface FacturapiOptions {
   /** Tests only: shorter timeouts. Production uses 15 s, and 30 s for stamping, cancel and CSD. */
   timeouts?: { standardMs: number; longMs: number };
   /**
-   * Called for every 2xx answer with its X-Facturapi-Log-Id ("Request correlation ID",
-   * errors.mdx "Useful headers"; the SDK's FacturapiError.logId), null when the answer has none:
-   * Facturapi documents the header on error responses, so a success may not carry it. The worker
-   * puts it in the job's info line (LD-51 F13). Never given a secret.
+   * Called for every answer, error answers included (LD-55 CFDIFIX-OPS-1), with its HTTP status
+   * and X-Facturapi-Log-Id ("Request correlation ID", errors.mdx "Useful headers"; the SDK's
+   * FacturapiError.logId, read from that header on any non-2xx answer), null when the answer has
+   * none or it is not a plain token: Facturapi documents the header on error responses, so a
+   * success may not carry it. The worker puts it in the job's log line (LD-51 F13). Never given a
+   * secret.
    */
   onResponse?: (meta: { logId: string | null; status: number }) => void;
 }
@@ -424,7 +426,9 @@ async function readLimited(
 
 /** A non-2xx response as FacturapiError (documented GenericError; anything else → http_<status>). */
 async function httpError(response: Response): Promise<FacturapiError> {
-  const logId = response.headers.get("x-facturapi-log-id") ?? undefined;
+  // Only a plain token reaches logs and events (CFDIFIX-OPS-1).
+  const header = response.headers.get("x-facturapi-log-id");
+  const logId = header && LOG_ID.test(header) ? header : undefined;
   const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
   let body: z.infer<typeof errorResponse> | null = null;
   try {
@@ -565,7 +569,6 @@ export function createFacturapiClient(
       } catch (error) {
         throw failed(error);
       }
-      if (!response.ok) throw await httpError(response).catch(failed);
       const logId = response.headers.get("x-facturapi-log-id");
       try {
         o.onResponse?.({
@@ -575,6 +578,7 @@ export function createFacturapiClient(
       } catch {
         // An observer never breaks a provider call.
       }
+      if (!response.ok) throw await httpError(response).catch(failed);
       try {
         // The body is read under the same deadline: an abort mid-body classifies the same way.
         return await read(response);

@@ -43,9 +43,12 @@ export default defineArea({
     cfdiRetry: "Reintentar",
     cfdiIssuerRfc: "RFC del emisor",
     cfdiIssuerPending: "Pendiente: Facturapi aún no lo reporta",
+    cfdiIssuerPendingCsd: "Pendiente: se confirma al subir tu certificado (CSD)",
     cfdiSharedIssuerTitle: "Emisor de prueba de la plataforma",
     cfdiSharedIssuerNote:
-      "En este modo se timbra con la organización de prueba de la plataforma: los datos fiscales del restaurante (RFC, régimen y código postal) no se usan para timbrar.",
+      "En este modo se timbra con la organización de prueba de la plataforma: los datos fiscales del restaurante (RFC, régimen y código postal) no se usan para timbrar. La periodicidad y las demás reglas siguen tu propio régimen, que es el que aplicará en modo real.",
+    cfdiSharedIssuerFallback:
+      "En este modo se timbra con la organización de prueba de la plataforma, pero Facturapi aún no reporta todos sus datos fiscales (RFC, régimen y código postal): mientras tanto se timbra con los datos de tu perfil fiscal. La periodicidad y las demás reglas siguen tu propio régimen.",
     cfdiIssuerLegalName: "Razón social del emisor",
     cfdiIssuerRegime: "Régimen fiscal del emisor",
     cfdiIssuerPostalCode: "Lugar de expedición (código postal)",
@@ -125,6 +128,15 @@ export default defineArea({
     cfdiSupportEmail: "Correo de contacto para tus clientes",
     cfdiSaveSettings: "Guardar configuración",
     cfdiSaved: "Configuración de facturación guardada",
+    cfdiSavedPeriodicityNow: "La periodicidad {next} aplica desde hoy.",
+    cfdiSavedPeriodicityLater:
+      "La periodicidad cambia a {next} desde el {date}: {reason}.",
+    cfdiSavedSelfInvoiceLater:
+      "El cambio del plazo para autofacturarse aplica desde el {date}: antes acortaría el plazo que ya imprimieron tickets vendidos.",
+    cfdiSelfInvoicePendingStatus:
+      "Cambio pendiente del plazo para autofacturarse: aplica desde el {date}, cuando vence el plazo que ya imprimieron tickets vendidos.",
+    cfdiSelfInvoiceShortenHint:
+      "Este cambio acorta el plazo para autofacturarse. Si acortara el que ya imprimieron tickets vendidos, se aplica cuando ese plazo vence; al guardar te decimos desde qué día.",
     cfdiLiveTitle: "Modo real",
     cfdiLiveFiscal: "Datos fiscales completos",
     cfdiLiveCsd: "Certificado vigente",
@@ -336,6 +348,8 @@ export default defineArea({
     cfdiPortalDeadlineGlobal:
       "Después, el ticket se incluye en la factura global del restaurante.",
     cfdiDateAtTime: "{date} a las {time}",
+    cfdiStaffSelfInvoiceDeadline:
+      "El cliente puede autofacturar este ticket en el portal hasta el {date}.",
     cfdiPortalTestMode: "Modo prueba: la factura no tendrá validez fiscal.",
     cfdiPortalInvoiced: "Este ticket ya se facturó.",
     cfdiPortalDownloadMine: "Descargar mi factura",
@@ -436,6 +450,8 @@ export default defineArea({
       "El acuse que entregó Facturapi es de otro CFDI (modo prueba); no se guardó",
     cfdiEventAcuseMismatchLive:
       "El acuse de cancelación que entregó Facturapi no corresponde a este CFDI; no se guardó y se volverá a pedir",
+    cfdiEventAcuseMismatchFinal:
+      "El acuse de cancelación de Facturapi no corresponde a este CFDI; no se volverá a pedir automáticamente. Contacta a soporte",
   },
   en: {
     cfdiTitle: "Electronic invoicing (CFDI)",
@@ -471,9 +487,12 @@ export default defineArea({
     cfdiRetry: "Retry",
     cfdiIssuerRfc: "Issuer RFC",
     cfdiIssuerPending: "Pending: Facturapi has not reported it yet",
+    cfdiIssuerPendingCsd: "Pending: confirmed when you upload your certificate (CSD)",
     cfdiSharedIssuerTitle: "Platform test issuer",
     cfdiSharedIssuerNote:
-      "In this mode invoices are stamped by the platform's test organization: the restaurant's tax details (RFC, tax regime and postal code) are not used to stamp.",
+      "In this mode invoices are stamped by the platform's test organization: the restaurant's tax details (RFC, tax regime and postal code) are not used to stamp. The global invoice frequency and the other rules follow your own tax regime, the one that applies in live mode.",
+    cfdiSharedIssuerFallback:
+      "In this mode invoices are stamped by the platform's test organization, but Facturapi has not reported all its tax details yet (RFC, tax regime and postal code): until it does, invoices are stamped with your tax profile. The global invoice frequency and the other rules follow your own tax regime.",
     cfdiIssuerLegalName: "Issuer legal name",
     cfdiIssuerRegime: "Issuer tax regime",
     cfdiIssuerPostalCode: "Place of issue (postal code)",
@@ -552,6 +571,15 @@ export default defineArea({
     cfdiSupportEmail: "Contact email for your customers",
     cfdiSaveSettings: "Save settings",
     cfdiSaved: "Invoicing settings saved",
+    cfdiSavedPeriodicityNow: "The {next} frequency applies from today.",
+    cfdiSavedPeriodicityLater:
+      "The global invoice frequency changes to {next} on {date}: {reason}.",
+    cfdiSavedSelfInvoiceLater:
+      "The self-invoicing change applies from {date}: before then it would shorten the deadline receipts already printed.",
+    cfdiSelfInvoicePendingStatus:
+      "Pending self-invoicing change: it applies from {date}, when the deadline receipts already printed ends.",
+    cfdiSelfInvoiceShortenHint:
+      "This change shortens the self-invoicing deadline. If it would shorten the one receipts already printed, it applies when that deadline ends; saving tells you from which day.",
     cfdiLiveTitle: "Live mode",
     cfdiLiveFiscal: "Tax details complete",
     cfdiLiveCsd: "Valid certificate",
@@ -764,6 +792,8 @@ export default defineArea({
     cfdiPortalDeadlineGlobal:
       "After that, the ticket goes into the restaurant's global invoice.",
     cfdiDateAtTime: "{date} at {time}",
+    cfdiStaffSelfInvoiceDeadline:
+      "The customer can self-invoice this ticket on the portal until {date}.",
     cfdiPortalTestMode: "Test mode: the invoice will have no tax validity.",
     cfdiPortalInvoiced: "This ticket has already been invoiced.",
     cfdiPortalDownloadMine: "Download my invoice",
@@ -862,6 +892,8 @@ export default defineArea({
       "The acuse Facturapi returned belongs to another CFDI (test mode); it was not stored",
     cfdiEventAcuseMismatchLive:
       "The cancellation acuse Facturapi returned is not this CFDI's; it was not stored and will be requested again",
+    cfdiEventAcuseMismatchFinal:
+      "Facturapi's cancellation acuse is not this CFDI's; it will not be requested again automatically. Contact support",
   },
   errors: {
     cfdi_unavailable: [
