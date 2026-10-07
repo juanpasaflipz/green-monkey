@@ -30,6 +30,12 @@ const OWNER = "20000000-0000-4000-8000-000000000001";
 const CASHIER = "20000000-0000-4000-8001-000000000001";
 const port = Number(process.env.RESTART_TEST_PORT ?? 3003),
   origin = `http://127.0.0.1:${port}`;
+/**
+ * The export's drain timeout on this test server (EXPORT_DRAIN_TIMEOUT_MS,
+ * honoured outside deployed environments only): short, so FLK-1 can wait an
+ * unawaited drain wait out (FLK-R10).
+ */
+const EXPORT_DRAIN_TIMEOUT_MS = 3000;
 const admin = postgres(process.env.MIGRATION_DATABASE_URL, { max: 1 });
 let server: ChildProcess | undefined;
 
@@ -156,7 +162,11 @@ async function paired(employeeId: string, secret: string) {
 }
 
 try {
-  await start({ ...LEGAL_CI_ENV, PUBLIC_ORDERING_ENABLED: "false" });
+  await start({
+    ...LEGAL_CI_ENV,
+    PUBLIC_ORDERING_ENABLED: "false",
+    EXPORT_DRAIN_TIMEOUT_MS: String(EXPORT_DRAIN_TIMEOUT_MS),
+  });
   const owner = await paired(OWNER, "demo-green-monkey");
   await check(
     "1 account-center POST from a paired shared terminal → 403 device_is_terminal; without gm_account elsewhere → 401 unauthorized",
@@ -398,7 +408,9 @@ try {
       try {
         // Before the fix the JSON abort ended the process at once (later
         // tables' final batches were still waiting on drain); the CSV one
-        // only when its unawaited drain wait timed out (DRAIN_TIMEOUT_MS).
+        // only when its unawaited drain wait timed out: the response had
+        // already ended, so the client leaving aborted nothing (FLK-R10).
+        // Each leg therefore waits the drain timeout out before it looks.
         for (const path of [
           `/api/account-data/export.json?tenant=${TENANT}`,
           `/api/account-data/export/csv/import_batches?tenant=${TENANT}`,
@@ -406,7 +418,7 @@ try {
           const first = await abandon(path);
           assert.equal(first.status, 200, path);
           assert.ok(first.bytes > 0, path);
-          await delay(500);
+          await delay(EXPORT_DRAIN_TIMEOUT_MS + 1000);
           assert.equal(
             server?.exitCode,
             null,

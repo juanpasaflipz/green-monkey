@@ -86,6 +86,21 @@ function claim(tenantId: string) {
 
 /** Abandons the export when the client stops reading for 50 s (the transaction allows 60). */
 export const DRAIN_TIMEOUT_MS = 50_000;
+/**
+ * The drain timeout in use. EXPORT_DRAIN_TIMEOUT_MS (1000..50000 ms) may
+ * shorten it on a local or CI server only: any Railway environment, or
+ * APP_ENV staging or production, keeps 50 s. tests/account-http.ts uses it
+ * to wait a drain wait out in seconds (FLK-R10).
+ */
+export function drainTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number.parseInt(env.EXPORT_DRAIN_TIMEOUT_MS ?? "", 10);
+  const deployed =
+    Boolean(env.RAILWAY_ENVIRONMENT_NAME?.trim()) ||
+    ["staging", "production"].includes(env.APP_ENV?.trim().toLowerCase() ?? "");
+  return deployed || !Number.isFinite(raw)
+    ? DRAIN_TIMEOUT_MS
+    : Math.min(DRAIN_TIMEOUT_MS, Math.max(1000, raw));
+}
 async function write(
   res: express.Response,
   chunk: string,
@@ -94,7 +109,7 @@ async function write(
   if (res.write(chunk)) return;
   try {
     await once(res, "drain", {
-      signal: AbortSignal.any([signal, AbortSignal.timeout(DRAIN_TIMEOUT_MS)]),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(drainTimeoutMs())]),
     });
   } catch {
     throw new DomainError("export_aborted", 499);
