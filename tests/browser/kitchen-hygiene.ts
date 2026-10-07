@@ -27,6 +27,12 @@ import {
  * round or review that cannot be settled fails the test softly (the test's
  * own error, if any, stays the first one reported).
  *
+ * A test's page stays open during its afterEach, so a sale it saved offline
+ * can still sync after the cleanup read the lane (offline.spec's tests that
+ * end with context.setOffline(false) do). The next test's beforeEach, once
+ * the previous test's pages are closed, and the spec file's afterAll settle
+ * those late arrivals against the previous test's own snapshot.
+ *
  * The cleanup signs in once per worker on an API request context of its own,
  * so it never depends on the state a test left its pages, devices or sessions
  * in, and it works the same in every browser project. It keeps the session
@@ -216,6 +222,29 @@ async function deliver(o: Owner, before: Before): Promise<string[]> {
   return left.length ? [...left, ...refused] : [];
 }
 
+/** The latest test this worker cleaned up after, for its late arrivals. */
+let last: { before: Before; baseURL: string; title: string } | null = null;
+
+/**
+ * Settles what the previous test synced after its own cleanup (its pages are
+ * closed by now). Best effort: the previous test has already reported.
+ */
+async function sweep() {
+  const previous = last;
+  last = null;
+  if (!previous) return;
+  await withOwner(previous.baseURL, async (o) => {
+    const late =
+      reviewed(await reviews(o), previous.before).length +
+      created(await feed(o), previous.before).length;
+    if (!late) return;
+    console.log(
+      `kitchen hygiene: settling ${late} late kitchen item(s) of "${previous.title}"`,
+    );
+    await deliver(o, previous.before);
+  }).catch((e) => console.log(`kitchen hygiene: sweep failed: ${e}`));
+}
+
 /**
  * Registers the per-test cleanup in the calling spec file or describe. Call
  * it once at the top level of every spec whose tests send rounds to the
@@ -223,8 +252,9 @@ async function deliver(o: Owner, before: Before): Promise<string[]> {
  */
 export function kitchenHygiene() {
   let before: Before | null = null;
-  test.beforeEach(async ({ baseURL }) => {
+  test.beforeEach(async ({ baseURL }, testInfo) => {
     before = null;
+    await sweep();
     const [f, lane] = await withOwner(baseURL!, (o) =>
       Promise.all([feed(o), reviews(o)]),
     );
@@ -233,7 +263,9 @@ export function kitchenHygiene() {
       reviews: new Set(lane.map((r) => r.roundId)),
       since: Date.parse(f.serverTime) - CLOCK_MARGIN_MS,
     };
+    last = { before, baseURL: baseURL!, title: testInfo.title };
   });
+  test.afterAll(sweep);
   test.afterEach(async ({ baseURL }) => {
     const start = before;
     if (!start) return;
