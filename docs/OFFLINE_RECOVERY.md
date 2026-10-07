@@ -308,8 +308,9 @@ Retry policy:
 
 - Transient failures (network, timeout, 5xx, non-JSON, 429, database unavailable,
   contention the server gave up retrying (`concurrent_update`), a JSON 404 from a
-  server rolled back to a build without the sync endpoint, a device clock slightly
-  ahead, a dependency still queued) are retried forever
+  server rolled back to a build without the sync endpoint, a body that did not
+  arrive intact (`request_aborted`, `request_size_invalid`: no handler ran, LD-48),
+  a device clock slightly ahead, a dependency still queued) are retried forever
   with jittered backoff capped at 60 s. They never become conflicts themselves,
   and they never turn a later record into one: while a record waits on a
   transient answer (or its backoff), every later record of the same order waits

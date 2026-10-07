@@ -107,15 +107,18 @@ function abortError() {
 }
 
 /**
- * Answers authentication gives before any handler runs (contract §3.9: the
- * same set offline's sync classifier treats as auth): the request was not
- * processed.
+ * Answers given before any handler runs: authentication's (contract §3.9: the
+ * same set offline's sync classifier treats as auth), and body-parser's for a
+ * body that did not arrive intact (request_aborted, request_size_invalid,
+ * LD-48). The request was not processed.
  */
 function answeredBeforeHandler(failure: ApiError) {
   return (
     failure.status === 401 ||
     failure.message === "session_changed" ||
-    failure.message === "missing_tenant"
+    failure.message === "missing_tenant" ||
+    failure.message === "request_aborted" ||
+    failure.message === "request_size_invalid"
   );
 }
 
@@ -225,8 +228,9 @@ async function request<T>(
       latencyMs: Date.now() - started,
       path,
     });
-    // A retried POST answered by authentication before any handler ran (a 401,
-    // 409 session_changed or missing_tenant): the first attempt may have
+    // A retried POST answered before any handler ran (a 401, 409
+    // session_changed or missing_tenant, or a body that did not arrive
+    // intact, answeredBeforeHandler): the first attempt may have
     // committed before its response was lost, so its outcome stays unknown.
     // Report the first (transient) failure, never an answer that callers read
     // as "not processed" (Selling clears a payment attempt on a session 401,
