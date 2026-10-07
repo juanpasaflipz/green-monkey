@@ -1192,6 +1192,25 @@ export type ParkedOrderRef = {
   provisionalNumber?: string | null;
 };
 
+/**
+ * The parked-order value Selling stores when it parks a round for `order` (parkedOrderRef
+ * reads it back): its id, number and business date, and the provisional number this
+ * device gave it, so a draft whose local order is later archived still names it
+ * ("B-07 · ronda sin enviar · …", LD-48, POLISH-UX-6) instead of an anonymous card.
+ */
+export function parkedOrderValue(order: Order): ParkedOrderRef {
+  const provisional = (order as Partial<LocalOrderView>).offline
+    ?.provisionalNumber;
+  return {
+    id: order.id,
+    number: order.number,
+    businessDate: order.businessDate ?? null,
+    ...(typeof provisional === "string" && provisional
+      ? { provisionalNumber: provisional }
+      : {}),
+  };
+}
+
 /** Reads a stored parked-order value; null when it names no order. */
 export function parkedOrderRef(value: unknown): ParkedOrderRef | null {
   const v = value as Record<string, unknown> | null | undefined;
@@ -1891,7 +1910,9 @@ ticketHeadings.round = (row, rows, tableName) => {
     return {
       label: label ?? "—",
       // The local order's number was allocated when its order record was saved.
-      ...(label ? { provisionalAt: parent?.recordedAt ?? body.recordedAt } : {}),
+      ...(label
+        ? { provisionalAt: parent?.recordedAt ?? body.recordedAt }
+        : {}),
       round,
       mode: parent?.order.mode ?? "dine_in",
       tableName: tableName(parent?.order.tableId ?? null),

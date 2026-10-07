@@ -47,10 +47,12 @@ import { useOfflineSelling } from "./offline/useOfflineSelling";
 import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
 import { fmt, orderLabel, parkedOrderLabel } from "./offline/format";
+import { DraftGoneEntry, draftEntryText } from "./DraftEntry";
 import { currentBusinessDate, orderNumberText } from "../labels";
 import {
   isServerOrder,
   parkedOrderRef,
+  parkedOrderValue,
   pinnedParkedOrder,
   resolveParkedOrder,
   type LocalOrderView,
@@ -154,6 +156,15 @@ export function Selling({
   const [parked, setParked] = useState<ParkedDraft[] | null>(null);
   /** The draft whose entry just turned "gone": its discard button takes focus. */
   const [goneFocus, setGoneFocus] = useState<string | null>(null);
+  /**
+   * After a discard (LD-48, POLISH-UX-5): the Borradores dialog and the entry that takes
+   * the focus the removed button had (the next one, else the previous one), or null for
+   * the dialog's heading when the list is empty, so focus never falls to <body>.
+   */
+  const [discardFocus, setDiscardFocus] = useState<{
+    dialog: HTMLElement | null;
+    id: string | null;
+  } | null>(null);
   const [tables, setTables] = useState<any[]>([]);
   const [cashSession, setCashSession] = useState<any>(null);
   const [notice, setNotice] = useState("");
@@ -275,12 +286,9 @@ export function Selling({
     if (order)
       await db.cache.put({
         id: parkedOrderId(d.operationId),
-        // LD-29: the business date names an order of another day in Borradores.
-        value: {
-          id: order.id,
-          number: order.number,
-          businessDate: order.businessDate ?? null,
-        },
+        // LD-29: the business date names an order of another day in Borradores;
+        // a local order's provisional number names it once it is gone (LD-48).
+        value: parkedOrderValue(order),
       });
     else await db.cache.delete(parkedOrderId(d.operationId));
   }
@@ -423,11 +431,32 @@ export function Selling({
         null,
     );
   }
-  async function discardDraft({ draft: d }: ParkedDraft) {
+  async function discardDraft(
+    { draft: d }: ParkedDraft,
+    dialog: HTMLElement | null,
+  ) {
     await db.drafts.delete(d.id);
     await db.cache.delete(parkedOrderId(d.id));
+    const list = parked ?? [];
+    const at = list.findIndex((p) => p.draft.id === d.id);
+    const next = at < 0 ? null : (list[at + 1] ?? list[at - 1] ?? null);
+    setDiscardFocus({ dialog, id: next?.draft.id ?? null });
     setParked((list) => list?.filter((p) => p.draft.id !== d.id) ?? null);
   }
+  useEffect(() => {
+    if (!discardFocus) return;
+    const { dialog, id } = discardFocus;
+    setDiscardFocus(null);
+    const entry = id
+      ? dialog?.querySelector<HTMLElement>(`[data-draft-entry="${id}"]`)
+      : null;
+    const target = entry
+      ? entry.matches("button")
+        ? entry
+        : entry.querySelector<HTMLElement>("button")
+      : dialog?.querySelector<HTMLElement>("h2");
+    target?.focus();
+  }, [parked, discardFocus]);
   /**
    * SVC-R5: a parked round goes back onto its check while it is not closed.
    * LD-13 addendum: the check may be a local order (created on this device,
@@ -1874,29 +1903,28 @@ export function Selling({
             <Empty title={t("noData")} />
           ) : (
             parked.map((p) => {
-              const text =
-                (p.label
-                  ? t("serviceDraftRound").replace("{order}", p.label) + " · "
-                  : "") +
-                `${p.draft.order.name || t("order")} · ${p.draft.order.lines.length} ${t("items")}`;
+              const text = draftEntryText(
+                {
+                  label: p.label,
+                  name: p.draft.order.name,
+                  lines: p.draft.order.lines.length,
+                },
+                locale,
+              );
               return p.gone ? (
-                <div className="draft-gone" key={p.draft.id}>
-                  <p>{text}</p>
-                  <p className="warning-panel" role="status">
-                    {t("serviceDraftOrderGone")}
-                  </p>
-                  <Button
-                    aria-label={`${t("serviceDraftDiscard")}: ${text}`}
-                    autoFocus={goneFocus === p.draft.id}
-                    onClick={() => void discardDraft(p)}
-                  >
-                    {t("serviceDraftDiscard")}
-                  </Button>
-                </div>
+                <DraftGoneEntry
+                  key={p.draft.id}
+                  draftId={p.draft.id}
+                  text={text}
+                  locale={locale}
+                  autoFocus={goneFocus === p.draft.id}
+                  onDiscard={(dialog) => void discardDraft(p, dialog)}
+                />
               ) : (
                 <Button
                   className="full"
                   key={p.draft.id}
+                  data-draft-entry={p.draft.id}
                   onClick={() => void restoreDraft(p)}
                 >
                   {text}

@@ -3030,8 +3030,17 @@ test.describe("offline table service (Beta) turned on", () => {
       name: /^Descartar borrador: #999 · ronda sin enviar · .+ · 1 /,
     });
     await expect(discard).toBeFocused();
+    // Why it can only be discarded describes the action, so a screen reader
+    // that lands on it hears the reason (LD-48, POLISH-UX-5).
+    await expect(discard).toHaveAccessibleDescription(
+      "La orden de este borrador ya no existe en este dispositivo ni en el servidor.",
+    );
     await discard.click();
     await expect(drafts).not.toContainText("#999");
+    // The focus stays in the dialog: on its heading, the list being empty now.
+    await expect(
+      drafts.getByRole("heading", { name: "Borradores", exact: true }),
+    ).toBeFocused();
     await expect(page.locator(".cart-bottom [role=alert]")).toHaveCount(0);
   });
 });

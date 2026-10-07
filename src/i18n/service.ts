@@ -168,6 +168,8 @@ export default defineArea({
     serviceDraftOrderGone:
       "La orden de este borrador ya no existe en este dispositivo ni en el servidor.",
     serviceDraftDiscard: "Descartar borrador",
+    serviceDraftItemsOne: "1 producto",
+    serviceDraftItems: "{n} productos",
     servicePayDueChanged:
       "El saldo pendiente cambió a {due}. Revisa el importe antes de confirmar.",
     serviceReprintKitchen: "Reimprimir comanda",
@@ -440,6 +442,8 @@ export default defineArea({
     serviceDraftOrderGone:
       "This draft's order no longer exists on this device or on the server.",
     serviceDraftDiscard: "Discard draft",
+    serviceDraftItemsOne: "1 item",
+    serviceDraftItems: "{n} items",
     servicePayDueChanged:
       "The balance due changed to {due}. Review the amount before confirming.",
     serviceReprintKitchen: "Reprint kitchen ticket",
