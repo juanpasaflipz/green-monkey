@@ -151,7 +151,18 @@ REVOKE UPDATE(name,note) ON public_order_holds FROM gm_app;
 -- guard refuses every other DELETE (status built, a part, any global document of its key) and every
 -- runtime-role DELETE, and TRUNCATE stays refused. Listed in tests/ops-db.ts PLATFORM-ROLES-5.
 GRANT DELETE ON cfdi_global_periods TO gm_jobs_worker;
--- 036 cfdifix (LD-55, CFDIFIX-FISCAL-5 / UX-4): the runtime role's UPDATE of the pending
--- self-invoicing columns is granted by 036 itself, next to the columns it adds: this manifest also
--- applies to schemas before 036 (tests/public-ordering-db.ts applies it at 033), where they do not
--- exist yet.
+-- 036 cfdifix (LD-55, CFDIFIX-FISCAL-5 / UX-4): the owner's save (the runtime role) stores a
+-- self-invoicing change that waits; reads resolve it by date, so the worker never writes these
+-- columns. Granted here, where gm_app is replaced by the deploy's runtime login (gm_<env>_app in
+-- staging and production; a migration naming gm_app would grant a role those clusters do not have,
+-- CFDIFIX-R2-1), and only once 036 added them: this manifest also applies to schemas before 036
+-- (tests/public-ordering-db.ts applies it at 033). The deploy applies it in the newest migration's
+-- transaction, so a schema with 036 always gets it. Idempotent.
+DO $$ BEGIN
+ IF (SELECT count(*) FROM pg_attribute WHERE attrelid = to_regclass('public.cfdi_settings')
+       AND NOT attisdropped AND attname IN ('next_self_invoice_policy','next_self_invoice_days',
+         'next_portal_reissue_global','next_self_invoice_from')) = 4 THEN
+  GRANT UPDATE (next_self_invoice_policy, next_self_invoice_days, next_portal_reissue_global,
+    next_self_invoice_from) ON cfdi_settings TO gm_app;
+ END IF;
+END $$;

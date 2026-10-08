@@ -247,6 +247,70 @@ try {
   );
 
   await check(
+    "a deploy whose runtime login is not gm_app (PG_APP_USER=gm_<env>_app) migrates a fresh database and grants that login, never the literal gm_app, the UPDATE of cfdi_settings' waiting self-invoicing columns, and its save's UPDATE runs (036, CFDIFIX-R2-1)",
+    async () => {
+      // The GitHub Actions deploy job on a fresh staging database: every migration, then the
+      // grants manifest in the newest migration's transaction, as gm_migrator, for the
+      // provisioned runtime login. A migration that names gm_app grants a role staging and
+      // production do not have (42704 there; this shared local cluster has one, so the grant
+      // lands on the wrong role and the owner's save fails with 42501).
+      const saved = parse(readFileSync(file, "utf8"));
+      const role = saved.PG_APP_USER;
+      assert.equal(role, `gm_${env}_app`);
+      const fresh = `green_monkey_provision_${env}_deploy_test`;
+      await admin.unsafe(`drop database if exists "${fresh}" with (force)`);
+      await admin.unsafe(`create database "${fresh}" owner gm_migrator`);
+      const u = new URL(migration);
+      u.pathname = "/" + fresh;
+      const root = postgres(u.href, { max: 1, onnotice: () => {} });
+      const runtimeUrl = new URL(saved.DATABASE_URL);
+      runtimeUrl.pathname = "/" + fresh;
+      const runtime = postgres(runtimeUrl.href, { max: 1, onnotice: () => {} });
+      try {
+        await admin.unsafe(
+          `alter role gm_migrator login password '${MIGRATOR_PASSWORD}'`,
+        );
+        assert.equal(
+          await migrate(["--grants", "--retention"], {
+            MIGRATION_DATABASE_URL: migratorUrl(fresh),
+            PG_APP_USER: role,
+            APP_ENV: "staging",
+          }),
+          0,
+          "the deploy migrates and grants as gm_migrator",
+        );
+        for (const column of [
+          "next_self_invoice_policy",
+          "next_self_invoice_days",
+          "next_portal_reissue_global",
+          "next_self_invoice_from",
+        ]) {
+          const [p] = await root`
+            select has_column_privilege(${role}, 'public.cfdi_settings', ${column}, 'UPDATE') as login,
+                   has_column_privilege('gm_app', 'public.cfdi_settings', ${column}, 'UPDATE') as literal`;
+          assert.deepEqual(
+            { ...p },
+            { login: true, literal: false },
+            `cfdi_settings.${column}: UPDATE for ${role} only`,
+          );
+        }
+        // The columns saveSettings writes for a waiting change, as the runtime login (no row
+        // matches; the privilege is checked all the same).
+        await tenant(runtime, randomUUID(), async (tx) => {
+          await tx`
+            update cfdi_settings set next_self_invoice_policy = ${null}, next_self_invoice_days = ${null},
+              next_portal_reissue_global = ${null}, next_self_invoice_from = ${null}::date
+            where false`;
+        });
+      } finally {
+        await runtime.end({ timeout: 5 }).catch(() => undefined);
+        await root.end({ timeout: 5 }).catch(() => undefined);
+        await admin.unsafe(`drop database if exists "${fresh}" with (force)`);
+      }
+    },
+  );
+
+  await check(
     "a second run is idempotent and reuses the saved passwords",
     async () => {
       const again = await provisionRoles({ ownerUrl, env, file });

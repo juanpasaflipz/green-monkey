@@ -18,10 +18,12 @@
 -- accepts one more kind of statement (the worker's DELETE of a document-less row), which the
 -- previous revision never sends; every UPDATE it allowed is still allowed and every one it refused
 -- is still refused, as are TRUNCATE and every other DELETE. No DML, so the LD-6 NO FORCE / FORCE
--- wrapper is not needed. The worker's DELETE grant lives in scripts/grants.sql ("-- 036
--- cfdifix"); the runtime role's UPDATE of the new settings columns is granted below, with them;
--- RLS tenant_scope still fences both to one tenant. Idempotent: ADD COLUMN IF NOT EXISTS, CREATE OR REPLACE FUNCTION, a CHECK
--- added only when missing.
+-- wrapper is not needed. Grants live in scripts/grants.sql ("-- 036 cfdifix"), the manifest every
+-- deploy applies to the runtime login it names (PG_APP_USER: gm_<env>_app in staging and
+-- production, gm_app only locally), never in a migration (migrations-lint runtime_role_named):
+-- the worker's DELETE of a document-less period row and the runtime role's UPDATE of the new
+-- settings columns; RLS tenant_scope still fences both to one tenant. Idempotent: ADD COLUMN IF
+-- NOT EXISTS, CREATE OR REPLACE FUNCTION, a CHECK added only when missing.
 SET LOCAL lock_timeout = '5s';
 
 -- 1. Worker-published facts (no tenant data; cfdi_platform has one row).
@@ -55,11 +57,6 @@ BEGIN
       AND (next_self_invoice_from IS NULL) = (next_portal_reissue_global IS NULL));
   END IF;
 END $$;
--- The owner's save (the runtime role) stores a waiting change; reads resolve it by date, so the
--- worker never writes these columns. Granted here, with the columns (scripts/grants.sql also
--- applies to schemas before 036). Idempotent.
-GRANT UPDATE (next_self_invoice_policy, next_self_invoice_days, next_portal_reissue_global,
-  next_self_invoice_from) ON cfdi_settings TO gm_app;
 
 -- 3. Period rows: the worker may delete a row no document ever used, so an immediate periodicity
 -- change can rebuild the current month (a row with a part, or any global document of its key,
