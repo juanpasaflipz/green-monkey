@@ -5,3 +5,4 @@
 #   age-keygen -y <offline path>/green-monkey-backup.key   # prints the age1... line
 # Commit only the age1... public line below. The backup workflow refuses to
 # run until one is present. Add a second recipient for a recovery holder.
+age17jup5qkl8vl6m6wwynay2suttlg8t8hp2yxdsspvd25sff54698s699umy

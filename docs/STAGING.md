@@ -187,9 +187,9 @@ The procedure is [RUNBOOK.md](RUNBOOK.md) "Credential rotation"
 The September 30 working session exposed the `gm_staging_app` and
 `gm_staging_billing` passwords (September 30 checkpoint above); the rotations below
 replaced both logins and finalized them, so those passwords no longer work on the
-staging branch. The older Neon branch `pre-021-staging-backup-2026-09-30` still holds
-the pre-rotation passwords in its copy of the roles; deleting it is the owner's
-decision ([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.19). Dates are UTC.
+staging branch. The older Neon branch `pre-021-staging-backup-2026-09-30`, which held
+the pre-rotation passwords in its copy of the roles, was deleted on 2026-10-08 with the
+owner's approval (LD-65); no branch carries them any more. Dates are UTC.
 
 | Date | Role | Action | Operator |
 | --- | --- | --- | --- |
@@ -241,7 +241,7 @@ Recorded without values; dates are UTC.
 | 9 | 2026-10-07 | CD deploys from `main` | "First deploys" below |
 | 10 | — | Railway deploy webhook → ntfy; manual settings | **Pending**: no alert topic yet (LAUNCH_HANDOFF 1.7) |
 | 11–13 | 2026-10-07 | Rotations | "Credential rotation log" above |
-| 14 | — | First staging backup, restore drill, first Retention dispatch, `OPS_LIVE_ENVIRONMENTS=staging` | **Pending**: needs the owner's R2 credentials and age public key (LD-53, LAUNCH_HANDOFF 1.8) |
+| 14 | 2026-10-08 | R2 bucket `gm-backups-staging`, Object Read & Write token (staging environment secrets) and the owner's age recipient configured (LD-66) | **In progress**: first manual backup, first Retention dispatch, restore drill, `OPS_LIVE_ENVIRONMENTS=staging` |
 | 15 | — | Load test `target` and `stress`, pool decision | **Pending** ([LOAD_TEST.md](LOAD_TEST.md)) |
 
 Wave 2.0 items:

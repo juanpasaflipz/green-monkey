@@ -417,3 +417,16 @@ Merge order: platform → fiscal 027 → discounts 028 → reports 029 → cfdi 
 - Final verification before the release PR: full CI-parity qualification on the final head and the restaurant-day gate on the final code (branch N + branch K against the fake).
 - After the release PR merges (squash) and staging deploys green: apply ops/github/main-ruleset.json with github-protect.sh (adds restaurant-day and restaurant-day-cfdi as required checks), set RD_NIGHTLY_REF=main, dispatch the restaurant-day workflow once on main.
 - Owner-only, pending (LAUNCH_HANDOFF §1): production launch itself; R2 + age for backups; old Neon branch pre-021-staging-backup-2026-09-30 decision; production legal values (LD-3); accountant review (IVA/RESICO/CFDI incl. Base/Importe rounding); counsel review of privacy texts; Google OAuth production client; Stripe live; Facturapi User key + CSD per restaurant; pilot hardware; production custom domain DNS-only.
+
+## LD-64 Release v1 merged (PR #8 squash 9e95329) and staged
+- PR CI: qualify, security, restaurant-day (first CI run, green), cfdi-key; restaurant-day-cfdi skipped (no key). Staging deploy 37777378586 applied 036; smoke all six checks green; staging check: gm_staging_app_r20261007 holds UPDATE on the new cfdi_settings columns, no gm_app role exists.
+- Ruleset 24624180 now requires qualify, security, restaurant-day, restaurant-day-cfdi; RD_NIGHTLY_REF=main; restaurant-day dispatched on main (run 37777754078).
+
+## LD-65 Old Neon branch deleted (2026-10-08, owner's approval)
+- pre-021-staging-backup-2026-09-30 (br-polished-hall-aem062zv) deleted; the project keeps only its primary branch. No branch carries pre-rotation passwords any more. LAUNCH_HANDOFF 1.19 and STAGING.md's rotation log get this line in the next PR (bundled with the backup wiring when the owner sends R2 + age).
+
+## LD-66 Staging backups: R2 wired (2026-10-08)
+- Owner created bucket gm-backups-staging and gave an R2 Object Read & Write API token (expires 2026-11-07; it cannot list/create buckets or manage lifecycle). Verified over S3: list, put, get, delete on the bucket. GitHub env staging: R2_ACCESS_KEY_ID (token id), R2_SECRET_ACCESS_KEY (sha256 of the token value), vars R2_ACCOUNT_ID, R2_BUCKET. Token value only in scratchpad secrets/cloudflare.env.
+- Lifecycle rules (daily/ 35 d, monthly/ 1900 d) must be set by the owner in the dashboard (token lacks permission).
+- Rotate the R2 token before 2026-11-07 (or replace it with a non-expiring bucket-scoped token): LAUNCH_HANDOFF note in the next PR.
+- Still needed before the first backup: the owner's age public key (age1…) committed to ops/backup/age-recipients.txt.

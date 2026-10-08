@@ -37,7 +37,7 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 | 1.5 | Google OAuth client | Exists (prior staging client) | Yours |
 | 1.6 | GitHub protection and environment secrets | Done (2026-10-07, cutover step 8) | Yours: production environment secrets and variables |
 | 1.7 | Alert channel (ntfy topic) | **Pending: none set** | Yours |
-| 1.8 | Backup encryption key (age) and off-platform storage (R2) | **Pending: needs your R2 credentials and age public key** | Yours |
+| 1.8 | Backup encryption key (age) and off-platform storage (R2) | **Staging configured 2026-10-08** (bucket, Object Read & Write token expiring 2026-11-07, age recipient); lifecycle rules, token renewal and production remain | Yours |
 | 1.9 | Error tracking (Sentry DSN): approve or decline | Off | Your decision |
 | 1.10 | Secrets you generate | `SIGNING_KEYS` done (2026-10-07) | Yours |
 | 1.11 | Legal entity data (LD-3) | Not set | Yours, after counsel (1.12) |
@@ -48,7 +48,7 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 | 1.16 | The pilot restaurant's printer and tablets | — | Yours |
 | 1.17 | Contacts, escalation and the go-live decision | — | Yours |
 | 1.18 | Custody of the `neondb_owner` password | Rotated 2026-10-07; held by the operator | Yours |
-| 1.19 | The older staging Neon branch | **Pending: your decision** | — |
+| 1.19 | The older staging Neon branch | **Done: both restore branches deleted (2026-10-07, 2026-10-08)** | — |
 
 ### 1.1 Railway access and project tokens
 
@@ -215,9 +215,16 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   server; losing every copy makes the dumps unreadable
   ([BACKUP_RESTORE.md, "Key custody"](BACKUP_RESTORE.md#key-custody)). The Código
   Fiscal de la Federación (art. 30) requires keeping accounting records for five years.
-- **Staging: pending (LD-53).** The first staging backup and the restore drill (cutover
-  step 14) wait for the items below. Staging and production use the same age recipients
-  file, so one key pair serves both.
+- **Staging: configured on 2026-10-08 (LD-66).** You created `gm-backups-staging`
+  and an R2 **Object Read & Write** token; its S3 keys are the staging environment
+  secrets, `R2_ACCOUNT_ID`/`R2_BUCKET` the variables, and your age public key is in
+  `ops/backup/age-recipients.txt` (one key pair serves staging and production; the
+  private key stays with you). Still yours: the bucket's lifecycle rules in the
+  dashboard (`daily/` 35 days, `monthly/` 1900 days; the token cannot manage them), and
+  **replacing the token before it expires on 2026-11-07** with a bucket-scoped Object
+  Read & Write token without expiry (send it to the operator, who updates the two
+  secrets). The first manual backup, the first Retention dispatch, the restore drill
+  (with your private key) and `OPS_LIVE_ENVIRONMENTS=staging` follow (cutover step 14).
 - **What you supply.**
   1. **The R2 buckets.** One per environment: `gm-backups-staging` and
      `gm-backups-production`, created by `scripts/ops/provision-r2.sh <env>` with their
@@ -518,18 +525,10 @@ keep where noted.
 
 ### 1.19 The older staging Neon branch
 
-- **Why.** Two restore branches were taken before the staging changes. The pre-cutover
-  branch (`pre-cutover-staging-2026-10-06`) was deleted with your approval on
-  2026-10-07 (LD-53). The older one, `pre-021-staging-backup-2026-09-30`
-  (`br-polished-hall-aem062zv`, the restore point before migration 021), still
-  carries the **pre-rotation passwords** of `gm_staging_app`, `gm_staging_billing` and
-  `neondb_owner` in its copy of the roles.
-- **Your decision.** Delete it (recommended: staging is cut over and verified, and the
-  current branch has its own restore history), or keep it as a September 30 restore
-  point and never give it a compute endpoint without first resetting those roles'
-  passwords on that branch.
-- **How to verify.** The Neon console no longer lists the branch, or the decision to
-  keep it is recorded in [STAGING.md](STAGING.md#credential-rotation-log).
+- **Done.** Both restore branches taken before the staging changes are deleted with your
+  approval: `pre-cutover-staging-2026-10-06` on 2026-10-07 (LD-53) and
+  `pre-021-staging-backup-2026-09-30` on 2026-10-08 (LD-65). The project keeps only its
+  primary branch, so no branch carries the pre-rotation passwords any more.
 
 ## 2. Launch sequence
 
