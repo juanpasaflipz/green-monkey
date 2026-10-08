@@ -376,10 +376,15 @@ applies **at once** while the current month is unshaped (`periodicityChangeBlock
 - no unclaimed ticket of the month whose self-invoicing deadline the change would bring forward:
   reason `deadline`. Its receipt printed the deadline under the old periodicity (the earlier of
   the policy and the global's build, "Self-invoicing ends when the ticket's global is built"),
-  and the portal must never refuse a customer before the printed date. The deadline is compared
-  under the self-invoicing policy the save stores; a change that keeps or lengthens every
-  deadline (day → month, week → fortnight, or a policy that ends first anyway) still applies at
-  once. The check does not depend on the self-invoicing or reissue switches: a receipt printed
+  and the portal must never refuse a customer before the printed date. Each date's deadline is
+  read as the portal reads it (`deadlineOf`, CFDIFIX-R2-3): before the change, under the terms in
+  force with the self-invoicing change that waits, if any (a receipt printed while it waits
+  carries the later of both); after it, under the terms the save stores. The save decides its
+  self-invoicing part first and then runs this check, and `shortens` below, with the terms it
+  actually stores (in force plus a change left waiting, never the wanted ones alone,
+  CFDIFIX-R2-4); the tick's re-check reads the stored row the same way. A change that keeps or
+  lengthens every deadline (day → month, week → fortnight, or a policy that ends first anyway)
+  still applies at once. The check does not depend on the self-invoicing or reissue switches: a receipt printed
   while they were on keeps its date when they are turned back on. In practice a shorter
   periodicity applies at once only on a month with no unclaimed ticket yet (right after
   activation, or on the 1st before the first sale); on the last day of a month a monthly and a
@@ -464,7 +469,12 @@ days, fewer days), would make the portal refuse customers before the date their 
 Such a save is guarded like a periodicity change: it applies at once unless it brings forward the
 deadline of a ticket not covered by a valid or canceling invoice whose current deadline has not
 passed (unclaimed tickets, tickets in a global the portal may still reissue, tickets whose invoice
-is still on its way); otherwise the terms in force stay and the wanted ones wait
+is still on its way). Today's business date always counts, sold or not, and the next one too when
+it starts within `PERIODICITY_REBUILD_WAIT_MS` (the 5-minute status refresh plus 2 minutes): a
+terminal that has not refreshed its status yet prints the old deadline for those sales
+(CFDIFIX-R2-5). A terminal offline for longer keeps printing the deadline it cached until it
+reconnects: the same accepted residual risk as a periodicity change (CFDIFIX-CONCURRENCY-2,
+"Onboarding runbook" step 7). Otherwise the terms in force stay and the wanted ones wait
 (`next_self_invoice_*`, 036) until the first business day starting after the latest such deadline
 (the 1st of next month for the default month-end window), with a `self_invoice_deferred` event,
 "Cambio pendiente del plazo para autofacturarse: aplica desde el …" in the panel and the save's
@@ -475,13 +485,21 @@ deadline and the current one cut at the change's start (`effectiveSelfInvoiceDea
 after it promises more than the portal will honour. Reads resolve the change by date (in force
 from its first business day, before any save or tick), the status view carries it for offline
 receipts, and choosing the terms in force cancels it. A longer window, or turning the reissue on,
-applies at once.
+applies at once. Whatever the save decides is checked last against every deadline receipts print
+now, the waiting change's included (CFDIFIX-R2-2): a waiting change can lengthen some deadlines
+(a sale of the 20th under "15 días" waiting from the 1st prints the 4th, past the month's end),
+so cancelling it, or replacing it with terms that would cut such a receipt, is refused
+(`cfdi_self_invoice_pending_printed`, 409) and nothing is stored; the panel names the date the
+waiting change applies from, after which its terms are in force and any change is guarded as
+above. Saving the waiting terms again (the panel's form always sends them) keeps it.
 
 **Tickets issued into a closed period** (LD-51 F12, timing per LD-55): fiscal's `issueDueTicket`
 and repair (every issuance: sale, offline recovery, repair) call `cfdiTicketsIssued` before they
-take their ticket's folio
-counter (LO-12, whose statement budget stays as fiscal set it: fiscal-db CONCURRENCY-1 still
-counts two statements per ticket plus one insert each for the category and audit rows under it).
+take that ticket's folio counter (LO-12, whose statement budget stays as fiscal set it: fiscal-db
+CONCURRENCY-1 still counts two statements per ticket plus one insert each for the category and
+audit rows under it). As docs/ARCHITECTURE.md's lock-order row 4 states for `recordSettlement`, a
+later order's cfdi issuance hook runs after an earlier order's counter: a read and at most a jobs
+insert keyed by that order (LO-R4/LO-R8).
 When a ticket's date, older than today's business date, falls in a period that is built or empty,
 or has closed (a build in progress may have read its tickets before this one commits,
 CFDIFIX-CONCURRENCY-4), the hook enqueues ONE tick per tenant per 30-minute bucket, due 10 minutes
@@ -490,8 +508,8 @@ supplementary part and the counter keeps a 10–40 minute window to invoice the 
 far inside RMF 2.7.1.21's 24 hours (CFDIFIX-FISCAL-4, OPS-2). One read finds a committed waiting
 tick of the bucket (`tick:issued:<bucket>:`), which dedupes every later issuance; otherwise one
 insert, keyed by the issuing order (`tick:issued:<bucket>:<orderId>`), which the caller holds FOR
-UPDATE, so a unique-key wait can only meet the same operation (LO-R8): a settlement's later late
-order runs the hook after its first ticket took the folio counter, and a shared key there would
+UPDATE, so a unique-key wait can only meet the same operation (LO-R8): in a settlement a later
+order's hook runs after an earlier order's counter (row 4), and a shared key there would
 wait under LO-12 on another payment's uncommitted tick (CFDIFIX-CONCURRENCY-1; cfdi DB "LD-55
 CFDIFIX-CONCURRENCY-1" proves it under `noRetries`). Two issuances racing in one bucket each insert
 their own tick, due at the same moment: the first sweeps every committed late ticket, the second
@@ -709,6 +727,7 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_request_aborted` | La solicitud a Facturapi se interrumpió. Lo reintentaremos automáticamente. |
 | `cfdi_request_invalid` | La factura no cumple el formato de Facturapi. Avisa a soporte. |
 | `cfdi_resico_monthly` | En RESICO la factura global debe ser mensual. |
+| `cfdi_self_invoice_pending_printed` | Ya hay tickets vendidos que imprimieron el plazo del cambio para autofacturarse que espera: estos términos lo acortarían. Vuelve a elegir los términos de ese cambio hasta que aplique. (The settings panel names the date the waiting change applies from, CFDIFIX-R2-2.) |
 | `cfdi_settings_changed` | La configuración cambió en otro dispositivo. Recarga e intenta de nuevo. |
 | `cfdi_shared_sandbox_not_allowed` | Configuración inválida: el entorno de prueba compartido no se permite en producción. |
 | `cfdi_stamping_failed` | El SAT o el PAC no pudo timbrar la factura. Revisa el detalle o intenta de nuevo. |
@@ -746,6 +765,18 @@ redeclared.
 | `npm run test:db:cfdi` | checks through the worker login and the in-process fake, against the real 027/028 tables: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos (including fiscal's `recordRefundTax` hook and the card/cash FormaPago from `refunds.method`), substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, the EXPLAINs of the running-lease index, and the second-opinion checks (lost cancel/reissue/stamp answers read back, CSD boxes always wiped, motive-01 cancellations whose substitute ended, a cancellation completing under its document key, credit-note corrections, refunds re-decided on hand-over, re-globalization after old cancellations and overdue periods, the CFF 29-A deadline and route III, RESICO coercion, portal failures and file readiness, and the cheap lows), and route III for a global that credit notes relate to (staff and portal) with the register's explanation for an invoice that has them (CFDI-INT-1), and route III's note crediting exactly what the global still declares for the ticket: a refund recorded just before the request, one whose credit note failed, one credited live, and the request waiting for a credit note still in flight (CFDI-INT-2), and a second route III for a ticket back in a supplementary part (CFDI-INT-3), and the abandoned-upload sweep of a paused restaurant (CFDI-INT-7), and the LD-51 checks: the self-invoicing deadline for each periodicity and policy (and a ticket refused past its global's build while unbuilt), activation's periodicity, the immediate change and the tick's rebuild, 036's guard, a change deferred by a month shaped meanwhile or an overdue period, the shared sandbox's issuer facts and the pending issuer RFC, the test-mode sample acuse, unclaimed tickets in a period's counts, fiscal's issuance hook (called directly, and reached through fiscal's own `issueDueTicket` as offline recovery calls it, CFDIFIX-4), the reason a periodicity change waits (CFDIFIX-1, -5) and the `cfdi_job_done` lines; and the LD-55 checks: the late-ticket tick per 30-minute bucket and one supplementary part for a drain, a closed period still building, a settlement's late order against a concurrent late payment under `noRetries`, the grace the worker publishes, a deferred save with a pending periodicity in force, in-flight invoices as uncovered, a self-invoicing change that waits, the rebuild after every terminal refreshed, a late rebuild judged as of the save (and its alert), `cfdi_job_failed` with the refused answer's log id, the final acuse mismatch and a reader fix. `CFDI_DB_ONLY=<regex>` runs only matching checks while debugging |
 | `npx playwright test tests/browser/cfdi.spec.ts` | the panel before activation (with the periodicity step) and the portal (always); activation + CSD (and the issuer RFC Facturapi reports), staff invoice + cancel, portal self-invoice, and the owner's switch to daily globals after a sale: the change waits for next month, the save's status and the panel say from when and why, and the portal keeps the printed (monthly) deadline; on a month's last day the change applies at once and the status says so (they need the worker with the fake; CI starts both, a local run without the worker skips only these four). The daily deadline and its time are covered by the unit and client tests (`tests/cfdi-rehearsal.test.ts`, `tests/cfdi-client.test.ts`: daily, mid-week weekly, fortnightly, a window cut by a monthly global) and the DB checks LD-51 F1 and LD-55 OPS-5 (LD-55 CFDIFIX-OPS-4) |
 | `npm run test:facturapi:sandbox` | opt-in, `FACTURAPI_TEST_KEY` only, official URL, test mode; `RECORD=1` rewrites fixtures as `recorded@<date>` (not run: no key) |
+
+Checks whose rule needs a particular business date never skip on the other days (CFDIFIX-R2-6):
+they pin it. The cfdi DB checks that need a day other than the month's last (FISCAL-2, FISCAL-3,
+CONCURRENCY-2) or day 3 or later (LD-51 F2's overdue leg, CONCURRENCY-3, CFDIFIX-R2-2) create
+their tenant in a zone that puts its business date there: Mexico City at 04:00, Pacific/Kiritimati
+at 00:00 (one day after) or Etc/GMT+12 at 23:59 (one or two days before), whichever satisfies the
+rule now and 30 minutes later (`tests/fixtures/business-date-zones.ts`; `tests/cfdi-shared.test.ts`
+proves one always does, every 10 minutes across month, year and February boundaries). A check that
+needs a day no zone reaches (CFDIFIX-R2-4: the first half of a month) runs its web calls under a
+fixed process clock (`atClock`), never the worker's. The browser periodicity check moves the demo
+restaurant's timezone and cutoff for its duration (local fixture database only, restored in its
+finally and afterEach) on a month's last day, never to a date before the restaurant's own.
 
 Fixture provenance: `tests/fixtures/facturapi/README.md`. CI runs the fake on 127.0.0.1:4799 and
 gives only the worker a fake User key, a synthetic keyring and `FACTURAPI_BASE_URL`.
