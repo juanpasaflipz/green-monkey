@@ -265,6 +265,11 @@ function zoneWhere(ok: (date: string, zone: Zone) => boolean): Zone {
  * since: a check whose outcome needs a day of the month no zone reaches (the first half, say) pins
  * it this way (CFDIFIX-R2-6). Only web calls may run under it (saves, reads, the portal): the
  * worker and the jobs read the database's clock, which stays real.
+ *
+ * CFDIFIX-R3-4: it fakes only the JS clock. loadSettings decides whether a waiting
+ * self-invoicing change is due with Postgres now() (next_self_invoice_from against the tenant's
+ * business date), so under atClock a change is in force or waiting as of the real date, not the
+ * pinned one: a check that pins the clock keeps any waiting change dated so both clocks agree.
  */
 async function atClock<T>(iso: string, fn: () => Promise<T>): Promise<T> {
   const Real = Date;
@@ -6260,6 +6265,120 @@ try {
         from: minusDays(day, -(31 + extra)),
       });
     }
+  });
+
+  await test("CFDIFIX-R3-1. while a self-invoicing change waits, the portal reissues a global when either the terms in force or the waiting ones allow it, as the printed deadline counts both: monthly globals with '30 días' and the reissue off in force, '7 días' with Sustituir waiting; on the 1st, after the month's global is built, the sale of the 28th is invoiced through a reissue until the 28th + 7 it printed (never refused as in a global), the global is replaced without it (never in both), and a ticket of that month whose deadline both terms have ended is expired", async () => {
+    // Day 3 or later: last month's global is due (its close + grace, on the 1st) when the tick
+    // runs (the tenant's zone pins it, CFDIFIX-R2-6, never skipped).
+    const P = await makeTenant("waiting reissue R3-1", {
+      zone: zoneWhere(dayThreeOrLater),
+    });
+    const monthStart = P.today().slice(0, 8) + "01";
+    const lastMonthEnd = minusDays(monthStart, 1);
+    const lastMonthStart = lastMonthEnd.slice(0, 8) + "01";
+    const the28th = lastMonthStart.slice(0, 8) + "28";
+    await activate(P, { testFrom: lastMonthStart, periodicity: "month" });
+    const inForce = await saveSettings(P, {
+      selfInvoicePolicy: "days",
+      selfInvoiceDays: 30,
+      portalReissueGlobal: false,
+    });
+    assert.equal(inForce.settings?.selfInvoiceDays, 30, "lengthens: at once");
+    assert.equal(inForce.settings?.selfInvoicePending, null);
+    const sold = await makeTicket(P, { businessDate: the28th });
+    const early = await makeTicket(P, { businessDate: lastMonthStart });
+    // A sale of this month's 1st: '7 días' would end it on the 8th, before the month's global its
+    // receipt printed, so the change waits (into next month).
+    await makeTicket(P, { businessDate: monthStart });
+    await tick(P);
+    const [g] = await admin`
+      select id from cfdi_documents where tenant_id = ${P.tenantId} and kind = 'global'
+        and period_key = ${globalPeriodFor(lastMonthStart, "month").key} and status = 'valid'`;
+    assert.ok(g, "last month's global is built");
+    for (const tk of [sold, early])
+      assert.deepEqual(
+        (await claims(tk.id)).map((c) => [c.document_id, c.state]),
+        [[g.id, "active"]],
+      );
+    const waits = await saveSettings(P, {
+      selfInvoiceDays: 7,
+      portalReissueGlobal: true,
+    });
+    assert.equal(waits.settings?.portalReissueGlobal, false, "still in force");
+    const pending = waits.settings?.selfInvoicePending;
+    assert.deepEqual(
+      {
+        policy: pending?.policy,
+        days: pending?.days,
+        reissue: pending?.reissue,
+      },
+      { policy: "days", days: 7, reissue: true },
+    );
+    assert.ok(pending!.from >= firstOfNextMonth(P.today()), "it waits");
+    // The 1st, two hours after last month's global was built (its close + the suite's 60-minute
+    // grace), on the web's clock only (atClock). The database's clock stays real and decides
+    // whether the change is due (CFDIFIX-R3-4): it waits into next month, so both clocks agree.
+    const builtAt =
+      Date.parse(boundaries(lastMonthEnd, P.zone.timezone, P.zone.cutoff).end) +
+      60 * 60_000;
+    const printed = Date.parse(
+      selfInvoiceDeadline(the28th, "days", 7, P.zone.timezone),
+    );
+    await atClock(new Date(builtAt + 2 * 3600_000).toISOString(), async () => {
+      assert.equal(P.today(), monthStart);
+      // The sale of the 28th prints the 28th + 7: the waiting terms, unbound by the global.
+      const view = await portal.portalTicket(app, sold.code);
+      assert.deepEqual(
+        {
+          eligibility: view.eligibility,
+          deadline: Date.parse(view.deadline!),
+          bound: view.deadlineBound,
+          reissueAllowed: view.reissueAllowed,
+        },
+        {
+          eligibility: "in_global",
+          deadline: printed,
+          bound: "policy",
+          reissueAllowed: true,
+        },
+      );
+      // Accepted: it waits for the reissue (the portal says "queued").
+      const customer = await portalRequest(sold.code);
+      assert.equal(customer.document.status, "queued");
+      // The 1st of last month: both terms ended it (the 8th; its global), so it is expired, not
+      // "in a global, ask the restaurant".
+      assert.equal(
+        (await portal.portalTicket(app, early.code)).eligibility,
+        "expired",
+      );
+      await rejects(portalRequest(early.code), "cfdi_portal_expired");
+    });
+    assert.deepEqual(
+      (
+        await admin`select motive from cfdi_cancellations where document_id = ${g.id}`
+      ).map((c) => c.motive),
+      ["04"],
+    );
+    await settle(P.tenantId);
+    assert.equal((await docRow(g.id)).status, "canceled");
+    const [replacement] = await admin`
+      select id, status from cfdi_documents where replaces_document_id = ${g.id} and kind = 'global'`;
+    assert.equal(replacement.status, "valid");
+    // Never in a global and self-invoiced: the sale's one active claim is its valid invoice.
+    const active = await admin`
+      select d.kind, d.status, d.source from cfdi_document_tickets c
+      join cfdi_documents d on d.tenant_id = c.tenant_id and d.id = c.document_id
+      where c.ticket_id = ${sold.id} and c.state = 'active'`;
+    assert.deepEqual(
+      active.map((r) => ({ ...r })),
+      [{ kind: "invoice", status: "valid", source: "portal" }],
+    );
+    assert.deepEqual(
+      (await claims(early.id))
+        .filter((c) => c.state === "active")
+        .map((c) => c.document_id),
+      [replacement.id],
+    );
   });
 
   await test("LD-55 CFDIFIX-CONCURRENCY-2. a periodicity change that applied at once and brings today's deadlines forward is rebuilt only after every terminal refreshed its status: a ticket a stale terminal printed meanwhile is seen by the re-check and the change waits for next month", async () => {
