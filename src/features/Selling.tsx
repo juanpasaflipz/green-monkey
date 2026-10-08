@@ -220,6 +220,11 @@ export function Selling({
   draftRef.current = draft;
   const currentRef = useRef(current);
   currentRef.current = current;
+  /** ACC-PR-2: the payment dialog and the receipt, as a late answer sees them. */
+  const paymentOpenRef = useRef(payment);
+  paymentOpenRef.current = payment;
+  const receiptRef = useRef(receipt);
+  receiptRef.current = receipt;
   const releaseKey = useRef(crypto.randomUUID());
   const compact = useMediaQuery("(max-height: 820px) and (min-width: 801px)");
   const paymentKey = useRef(crypto.randomUUID());
@@ -659,10 +664,17 @@ export function Selling({
         const epoch = contextEpoch.current;
         void api<Order>("/orders/" + shown.id)
           .then((o) => {
+            // ACC-PR-2: the answer is dropped unless the cart still shows the
+            // very order it re-read (a send or payment meanwhile replaced it
+            // with a newer copy) and nothing started on it since: unsent
+            // lines, a payment in flight, the payment dialog or a receipt.
             if (
               contextEpoch.current !== epoch ||
-              currentRef.current?.id !== o.id ||
-              draftRef.current.lines.length
+              currentRef.current !== shown ||
+              draftRef.current.lines.length ||
+              payingRef.current ||
+              paymentOpenRef.current ||
+              receiptRef.current
             )
               return;
             if (checkStateOf(o) === "closed") {
