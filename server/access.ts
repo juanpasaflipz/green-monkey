@@ -172,8 +172,7 @@ export async function checkPin(
   if (e.globally_locked)
     return { outcome: "locked", until: e.locked_until.toISOString() };
   const now: Date = e.db_now;
-  const [row] =
-    await tx`select failures,lock_level,locked_until,last_failure_at
+  const [row] = await tx`select failures,lock_level,locked_until,last_failure_at
       from pin_throttles where employee_id=${e.id} and scope=${scope}`;
   const state = decayPinState(
     row
@@ -192,7 +191,10 @@ export async function checkPin(
   if (await secretMatches(secret, e.secret_hash)) {
     if (
       row &&
-      (row.failures || row.lock_level || row.locked_until || row.last_failure_at)
+      (row.failures ||
+        row.lock_level ||
+        row.locked_until ||
+        row.last_failure_at)
     )
       await tx`update pin_throttles set failures=0,lock_level=0,locked_until=null,last_failure_at=null
         where employee_id=${e.id} and scope=${scope}`;
@@ -265,7 +267,8 @@ export async function createSession(
   const id = randomUUID(),
     token = opaque(),
     csrf = randomBytes(24).toString("hex");
-  const [row] = await tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,
+  const [row] =
+    await tx`insert into sessions(tenant_id,id,employee_id,device_id,token_hash,csrf,
       created_at,last_seen_at,authenticated_at,expires_at,absolute_expires_at,offline_until,
       owner_account_id,owner_session_id,selling_authorized)
     select current_setting('app.tenant_id')::uuid,${id},${i.employeeId},${i.deviceId},${hash(token)},${csrf},
@@ -353,7 +356,10 @@ export async function touchSession(
   row: AuthRow,
   selling: boolean,
 ): Promise<{ expiresAt: Date; offlineUntil: Date }> {
-  const unchanged = { expiresAt: row.expires_at, offlineUntil: row.offline_until };
+  const unchanged = {
+    expiresAt: row.expires_at,
+    offlineUntil: row.offline_until,
+  };
   if (!row.absolute_expires_at) return unchanged;
   const [t] = await tx`update sessions set last_seen_at=now(),
       expires_at=least(now()+make_interval(mins=>${ACCESS.sessionIdleMinutes}),absolute_expires_at)
@@ -389,7 +395,8 @@ export async function sessionFailure(
   device: DeviceCookie,
 ): Promise<string> {
   if (!(await loadDevice(tx, device))) return "device_revoked";
-  const [s] = await tx`select s.revoked,s.ended_at,s.expires_at<=now() as expired,
+  const [s] =
+    await tx`select s.revoked,s.ended_at,s.expires_at<=now() as expired,
       s.device_id,e.active as employee_active
     from sessions s join employees e on e.tenant_id=s.tenant_id and e.id=s.employee_id
     where s.id=${session.id} and s.token_hash=${hash(session.token)}`;
@@ -475,8 +482,7 @@ export async function terminalState(
         const until = [e.global_until, e.device_until]
           .filter(Boolean)
           .sort((a: Date, b: Date) => b.getTime() - a.getTime())[0] as
-          | Date
-          | undefined;
+          Date | undefined;
         return {
           id: e.id,
           name: e.name,
@@ -585,7 +591,11 @@ function finishSignIn(
   if ("reused" in result) return { sessionId: result.reused, reused: true };
   setSessionCookie(
     res,
-    { id: result.session.id, tenantId: device.tenantId, token: result.session.token },
+    {
+      id: result.session.id,
+      tenantId: device.tenantId,
+      token: result.session.token,
+    },
     result.session.absoluteExpiresAt,
   );
   return { sessionId: result.session.id, reused: false };
@@ -653,27 +663,44 @@ export async function legacyLogin(
         device: DeviceCookie;
         session: { id: string; token: string; absoluteExpiresAt: Date };
       };
-  const result = await tenant(sql, p.tenantId, async (tx): Promise<DemoResult> => {
-    await lockFreeLimits(tx); // LO-3 before the employee row (PLATFORM-LOCKS-6)
-    const check = await checkPin(tx, { login: p.login }, p.secret, "unpaired");
-    if (check.outcome !== "ok") return { rejected: check };
-    if (check.employee.role !== "owner") return { pair: true };
-    const device = { id: randomUUID(), tenantId: p.tenantId, token: opaque() };
-    await tx`insert into devices(tenant_id,id,name,token_hash,kind,paired_at,paired_by,token_expires_at)
+  const result = await tenant(
+    sql,
+    p.tenantId,
+    async (tx): Promise<DemoResult> => {
+      await lockFreeLimits(tx); // LO-3 before the employee row (PLATFORM-LOCKS-6)
+      const check = await checkPin(
+        tx,
+        { login: p.login },
+        p.secret,
+        "unpaired",
+      );
+      if (check.outcome !== "ok") return { rejected: check };
+      if (check.employee.role !== "owner") return { pair: true };
+      const device = {
+        id: randomUUID(),
+        tenantId: p.tenantId,
+        token: opaque(),
+      };
+      await tx`insert into devices(tenant_id,id,name,token_hash,kind,paired_at,paired_by,token_expires_at)
       values(${p.tenantId},${device.id},'POS',${hash(device.token)},'terminal',now(),${check.employee.id},
         now()+make_interval(days=>${ACCESS.deviceTokenDays}))`;
-    const session = await createSession(tx, {
-      employeeId: check.employee.id,
-      deviceId: device.id,
-    });
-    return { device, session };
-  });
+      const session = await createSession(tx, {
+        employeeId: check.employee.id,
+        deviceId: device.id,
+      });
+      return { device, session };
+    },
+  );
   if ("rejected" in result) throw pinError(result.rejected, "login");
   if ("pair" in result) throw new DomainError("pair_device", 403);
   setDeviceCookie(res, result.device);
   setSessionCookie(
     res,
-    { id: result.session.id, tenantId: p.tenantId, token: result.session.token },
+    {
+      id: result.session.id,
+      tenantId: p.tenantId,
+      token: result.session.token,
+    },
     result.session.absoluteExpiresAt,
   );
   return { ok: true };
@@ -704,7 +731,9 @@ export async function signOut(
       await tenant(
         sql,
         c.tenantId,
-        (tx) => tx`update sessions set ended_at=now(),end_reason='logout',expires_at=least(expires_at,now())
+        (
+          tx,
+        ) => tx`update sessions set ended_at=now(),end_reason='logout',expires_at=least(expires_at,now())
           where id=${c.id} and token_hash=${hash(c.token)} and ended_at is null`,
       );
     } catch (error) {
@@ -730,8 +759,12 @@ export async function endOwnerAccount(
 ) {
   if (!req.cookies?.gm_account) return;
   try {
-    await withOwner(sql, req.cookies.gm_account, undefined, (tx, account) =>
-      tx`update owner_sessions set revoked=true where id=${account.sessionId}`,
+    await withOwner(
+      sql,
+      req.cookies.gm_account,
+      undefined,
+      (tx, account) =>
+        tx`update owner_sessions set revoked=true where id=${account.sessionId}`,
     );
   } catch (error) {
     // An absent or expired account must not prevent logout or pairing.
@@ -752,19 +785,23 @@ export async function stepUp(
   type StepUpResult =
     | { rejected: Exclude<PinCheck, { outcome: "ok" }> }
     | { authenticatedAt: string };
-  const result = await tenant(sql, s.tenantId, async (tx): Promise<StepUpResult> => {
-    const check = await checkPin(
-      tx,
-      { employeeId: s.employeeId },
-      p.secret,
-      deviceScope(s.deviceId),
-    );
-    if (check.outcome !== "ok") return { rejected: check };
-    const [row] =
-      await tx`update sessions set authenticated_at=now(),last_seen_at=now() where id=${s.id}
+  const result = await tenant(
+    sql,
+    s.tenantId,
+    async (tx): Promise<StepUpResult> => {
+      const check = await checkPin(
+        tx,
+        { employeeId: s.employeeId },
+        p.secret,
+        deviceScope(s.deviceId),
+      );
+      if (check.outcome !== "ok") return { rejected: check };
+      const [row] =
+        await tx`update sessions set authenticated_at=now(),last_seen_at=now() where id=${s.id}
         returning authenticated_at`;
-    return { authenticatedAt: (row.authenticated_at as Date).toISOString() };
-  });
+      return { authenticatedAt: (row.authenticated_at as Date).toISOString() };
+    },
+  );
   if ("rejected" in result) throw pinError(result.rejected, "pin");
   return result;
 }

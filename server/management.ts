@@ -1,8 +1,4 @@
-import {
-  employeeSlot,
-  lockFreeLimits,
-  requireSelling,
-} from "./free-limits.js";
+import { employeeSlot, lockFreeLimits, requireSelling } from "./free-limits.js";
 import { requirePro } from "./entitlements.js";
 import { z } from "zod";
 import { Decimal } from "decimal.js";

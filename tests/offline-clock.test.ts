@@ -29,9 +29,12 @@ async function probe(serverMs: number) {
     "fetch",
     vi.fn(
       async () =>
-        new Response(JSON.stringify({ ok: true, now: serverMs, build: "local" }), {
-          headers: { "content-type": "application/json" },
-        }),
+        new Response(
+          JSON.stringify({ ok: true, now: serverMs, build: "local" }),
+          {
+            headers: { "content-type": "application/json" },
+          },
+        ),
     ),
   );
   await probeNow();
@@ -117,8 +120,8 @@ describe("a device clock set back (OFF-R24)", () => {
     expect(clockMovedBackSinceLastContact()).toBe(true);
     // The corrected clock continues from the last time this device showed.
     expect(serverNow()).toBeGreaterThanOrEqual(at("2026-10-05T20:31:00.000Z"));
-    expect(
-      offlineWindow("2026-10-05T20:30:00.000Z", serverNow()).expired,
-    ).toBe(true);
+    expect(offlineWindow("2026-10-05T20:30:00.000Z", serverNow()).expired).toBe(
+      true,
+    );
   });
 });

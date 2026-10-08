@@ -23,7 +23,8 @@ const NOT_THROUGH_TENANT: Record<string, string> = {
   "tests/free-limits-db.ts#entries": "withOwner → accountScope (no tenant())",
   "tests/google-attempts-db.ts#results":
     "Google attempt store transactions (no tenant())",
-  "tests/owner-accounts-db.ts#created": "withOwner → accountScope (no tenant())",
+  "tests/owner-accounts-db.ts#created":
+    "withOwner → accountScope (no tenant())",
   "tests/owner-management-db.ts#locations":
     "withOwner → accountScope (no tenant())",
   "tests/owner-management-db.ts#accepts":

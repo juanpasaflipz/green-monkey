@@ -125,7 +125,9 @@ test("one of three items is paid once and stays allocated after refresh", async 
   await page
     .getByRole("button", { name: "Consultar estado", exact: true })
     .click();
-  await expect(page.getByText(/El servidor ya registró este mismo pago/)).toBeVisible();
+  await expect(
+    page.getByText(/El servidor ya registró este mismo pago/),
+  ).toBeVisible();
   await page.reload();
   await expect(
     page.getByRole("heading", { name: "Recibo", exact: true }),
@@ -231,8 +233,9 @@ test("restaurant configuration persists and English labels remain usable", async
       page.getByLabel("Cierre del día de negocio", { exact: true }),
     ).toHaveValue("05:30");
     await page.getByRole("button", { name: "ES", exact: true }).click();
-    await expect(page.getByRole("region", { name: "Plan and subscription" }))
-      .toContainText("annually, paid upfront");
+    await expect(
+      page.getByRole("region", { name: "Plan and subscription" }),
+    ).toContainText("annually, paid upfront");
     await expect(
       page.getByRole("heading", { name: "Restaurant details", exact: true }),
     ).toBeVisible();

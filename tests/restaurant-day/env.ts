@@ -25,7 +25,9 @@ const LOOPBACK = new Set(["127.0.0.1", "localhost"]);
  * (LD-49). The address stays 127.0.0.1: every device still shares the per-IP
  * buckets of §3.8.
  */
-export const EDGE_HEADERS: Record<string, string> = { "X-Real-IP": "127.0.0.1" };
+export const EDGE_HEADERS: Record<string, string> = {
+  "X-Real-IP": "127.0.0.1",
+};
 
 /** Ports and URLs; TEST_BASE_URL names the web's own plain-http listener. */
 export function runUrls(env: NodeJS.ProcessEnv = process.env) {
@@ -87,12 +89,19 @@ export function cfdiBranch(env: NodeJS.ProcessEnv = process.env): "N" | "K" {
  * loopback FACTURAPI_BASE_URL is accepted (cfdi config). It proves the UI
  * flow, never the sandbox: CI refuses it, and a run with it is never the gate.
  */
-export function cfdiFakePort(env: NodeJS.ProcessEnv = process.env): number | null {
+export function cfdiFakePort(
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
   const raw = env.RD_CFDI_FAKE_PORT?.trim();
   if (!raw) return null;
-  if (env.CI) throw Error("restaurant-day: RD_CFDI_FAKE_PORT is a local triage switch; CI never sets it");
+  if (env.CI)
+    throw Error(
+      "restaurant-day: RD_CFDI_FAKE_PORT is a local triage switch; CI never sets it",
+    );
   if (env.FACTURAPI_TEST_KEY?.trim())
-    throw Error("restaurant-day: RD_CFDI_FAKE_PORT and FACTURAPI_TEST_KEY are exclusive");
+    throw Error(
+      "restaurant-day: RD_CFDI_FAKE_PORT and FACTURAPI_TEST_KEY are exclusive",
+    );
   const port = Number(raw);
   if (!Number.isInteger(port) || port < 1024 || port > 65535)
     throw Error("restaurant-day: RD_CFDI_FAKE_PORT must be a port number");

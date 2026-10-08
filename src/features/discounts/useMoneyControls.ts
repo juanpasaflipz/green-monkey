@@ -10,8 +10,7 @@ import { api } from "../../api";
  * shows the manager approval first.
  */
 let current: { key: string; view: MoneyControlsView } | null = null;
-let loading: { key: string; promise: Promise<MoneyControlsView> } | null =
-  null;
+let loading: { key: string; promise: Promise<MoneyControlsView> } | null = null;
 const listeners = new Set<() => void>();
 const keyOf = (s: Session) => `${s.tenantId}:${s.id}`;
 function emit() {
@@ -26,12 +25,10 @@ export function loadMoneyControls(
   const key = keyOf(session);
   if (!force && current?.key === key) return Promise.resolve(current.view);
   if (!force && loading?.key === key) return loading.promise;
-  const promise = api<MoneyControlsView>("/discounts/controls").then(
-    (view) => {
-      if (keyOf(session) === key) setMoneyControls(view, session);
-      return view;
-    },
-  );
+  const promise = api<MoneyControlsView>("/discounts/controls").then((view) => {
+    if (keyOf(session) === key) setMoneyControls(view, session);
+    return view;
+  });
   loading = { key, promise };
   promise.finally(() => {
     if (loading?.promise === promise) loading = null;

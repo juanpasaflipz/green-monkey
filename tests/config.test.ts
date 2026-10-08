@@ -277,9 +277,9 @@ describe("process configuration", () => {
     // Staging rehearses production: it never falls back to a key derived from
     // JWT_SECRET, which would then sign cfdi-portal-file tokens (P-23).
     expect(() => loadConfig(noKeys, "web")).toThrow("missing_signing_keys");
-    expect(() =>
-      loadConfig({ ...noKeys, SIGNING_KEYS: " " }, "web"),
-    ).toThrow("missing_signing_keys");
+    expect(() => loadConfig({ ...noKeys, SIGNING_KEYS: " " }, "web")).toThrow(
+      "missing_signing_keys",
+    );
     expect(loadConfig(deployedWeb, "web").appEnv).toBe("staging");
     expect(loadConfig(web, "web").appEnv).toBe("development");
     expect(loadConfig({ ...web, APP_ENV: "test" }, "web").appEnv).toBe("test");

@@ -35,7 +35,9 @@ function shortDate(iso: string, locale: Locale) {
  * owners and managers are unlocked by the owner only (A5).
  */
 function managerUnlockable(row: StaffRow) {
-  return ["cashier", "server", "kitchen"].includes(row.role) && !row.locked.hard;
+  return (
+    ["cashier", "server", "kitchen"].includes(row.role) && !row.locked.hard
+  );
 }
 function locked(row: StaffRow) {
   return (
@@ -150,7 +152,9 @@ export function StaffManagement({
                   <td>
                     <div className="badge-stack">
                       <Badge tone={row.active ? "green" : "neutral"}>
-                        {row.active ? t.accessStaffActive : t.accessStaffInactive}
+                        {row.active
+                          ? t.accessStaffActive
+                          : t.accessStaffInactive}
                       </Badge>
                       {locked(row) && (
                         <Badge tone="red">{t.accessStaffLocked}</Badge>
@@ -169,8 +173,14 @@ export function StaffManagement({
                         {row.locked.hard || !row.locked.until
                           ? t.accessHardLocked
                           : t.accessStaffLockedOn
-                              .replace("{n}", String(Math.max(1, row.locked.devices)))
-                              .replace("{time}", lockTime(row.locked.until, locale))}
+                              .replace(
+                                "{n}",
+                                String(Math.max(1, row.locked.devices)),
+                              )
+                              .replace(
+                                "{time}",
+                                lockTime(row.locked.until, locale),
+                              )}
                       </p>
                     )}
                   </td>
@@ -395,7 +405,12 @@ function AddStaff({
             {error}
           </p>
         )}
-        <Button type="submit" variant="primary" className="full" disabled={busy}>
+        <Button
+          type="submit"
+          variant="primary"
+          className="full"
+          disabled={busy}
+        >
           {busy ? t.accessBusy : t.save}
         </Button>
       </form>

@@ -14,7 +14,12 @@ import {
   type Page,
   type Request,
 } from "@playwright/test";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { resolve } from "node:path";
 import { EDGE_HEADERS, OUT } from "./env.js";
 
@@ -46,11 +51,28 @@ export type DeviceName =
   | "probe"
   | "probe2";
 
-type Spec = { width: number; height: number; tz: string; skew?: number; clock?: "install" };
+type Spec = {
+  width: number;
+  height: number;
+  tz: string;
+  skew?: number;
+  clock?: "install";
+};
 export const DEVICE_SPECS: Record<DeviceName, Spec> = {
   ownerA: { width: 1440, height: 900, tz: "America/Mexico_City" },
-  cajaA: { width: 1024, height: 768, tz: "America/Mexico_City", skew: 180_000, clock: "install" },
-  cocinaA: { width: 1024, height: 768, tz: "America/Mexico_City", clock: "install" },
+  cajaA: {
+    width: 1024,
+    height: 768,
+    tz: "America/Mexico_City",
+    skew: 180_000,
+    clock: "install",
+  },
+  cocinaA: {
+    width: 1024,
+    height: 768,
+    tz: "America/Mexico_City",
+    clock: "install",
+  },
   respaldoA: { width: 1024, height: 768, tz: "America/Mexico_City" },
   ownerB: { width: 1440, height: 900, tz: "America/Tijuana" },
   cajaB: { width: 1024, height: 768, tz: "America/Tijuana" },
@@ -64,7 +86,14 @@ export const DEVICE_SPECS: Record<DeviceName, Spec> = {
 /** The device context, created on first use (one per physical device, §3.4). */
 export type Devices = (name: DeviceName) => Promise<Device>;
 
-export type ResponseEntry = { at: number; method: string; url: string; status: number; injected: boolean; requestId?: string };
+export type ResponseEntry = {
+  at: number;
+  method: string;
+  url: string;
+  status: number;
+  injected: boolean;
+  requestId?: string;
+};
 export type Device = {
   name: DeviceName;
   context: BrowserContext;
@@ -92,7 +121,12 @@ export const run = {
   stepUpDialogs: 0,
   taps: 0,
   timing: [] as Array<Record<string, unknown>>,
-  actual: [] as Array<{ step: string; what: string; expected: unknown; actual: unknown }>,
+  actual: [] as Array<{
+    step: string;
+    what: string;
+    expected: unknown;
+    actual: unknown;
+  }>,
   prints: 0,
   seenKds: { A: new Set<string>(), B: new Set<string>() },
   /** RD_SOFT findings so far */
@@ -150,14 +184,16 @@ export async function newDevice(
     lastInputAt: Date.now(),
     pending: 0,
   };
-  if (spec.clock === "install") await context.clock.install({ time: Date.now() + device.skew });
+  if (spec.clock === "install")
+    await context.clock.install({ time: Date.now() + device.skew });
   const page = await context.newPage();
   device.page = page;
   page.on("pageerror", (e) => violation(`${name} pageerror: ${e.message}`));
   // API calls in flight (advance() lets them finish before each clock step).
   const inFlight = new Map<Request, number>();
   const api = (req: Request) =>
-    ["fetch", "xhr"].includes(req.resourceType()) && new URL(req.url()).pathname.startsWith("/api/");
+    ["fetch", "xhr"].includes(req.resourceType()) &&
+    new URL(req.url()).pathname.startsWith("/api/");
   page.on("request", (req) => {
     if (api(req)) inFlight.set(req, Date.now());
     device.pending = inFlight.size;
@@ -180,7 +216,8 @@ export async function newDevice(
     };
     device.responses.push(entry);
     if (!new URL(entry.url).pathname.startsWith("/api/")) return;
-    if (entry.status === 429) violation(`${name} 429 ${entry.method} ${entry.url}`);
+    if (entry.status === 429)
+      violation(`${name} 429 ${entry.method} ${entry.url}`);
     if (entry.status >= 500 && !entry.injected)
       violation(`${name} ${entry.status} ${entry.method} ${entry.url}`);
     if (entry.status >= 400 && !entry.injected) {
@@ -188,7 +225,9 @@ export async function newDevice(
       if (type.includes("json")) {
         const body = await response.json().catch(() => null);
         if (!body?.requestId)
-          violation(`${name} ${entry.status} without requestId ${entry.method} ${entry.url}`);
+          violation(
+            `${name} ${entry.status} without requestId ${entry.method} ${entry.url}`,
+          );
         entry.requestId = body?.requestId;
       }
     }
@@ -198,13 +237,19 @@ export async function newDevice(
     const text = message.text();
     const url = message.location().url ?? "";
     const status = /status of (\d{3})/.exec(text)?.[1];
-    if (/net::ERR_|Failed to fetch|NetworkError/.test(text) && device.outage) return;
+    if (/net::ERR_|Failed to fetch|NetworkError/.test(text) && device.outage)
+      return;
     if (status) {
       const s = Number(status);
-      const seen = [...device.responses].reverse().find((r) => r.url === url && r.status === s);
+      const seen = [...device.responses]
+        .reverse()
+        .find((r) => r.url === url && r.status === s);
       if (seen?.injected) return;
       const allowed = [...BOOT_REFUSALS, ...run.allowed].some(
-        (a) => a.status === s && a.url.test(new URL(url).pathname) && (!seen || seen.method === a.method),
+        (a) =>
+          a.status === s &&
+          a.url.test(new URL(url).pathname) &&
+          (!seen || seen.method === a.method),
       );
       if (allowed && seen) return;
     }
@@ -280,7 +325,9 @@ export function waivedIds(env: NodeJS.ProcessEnv = process.env): string[] {
     .filter(Boolean);
   const forbidden = ids.filter((id) => NEVER_WAIVE.has(id));
   if (forbidden.length)
-    throw Error(`RD_WAIVE: ${forbidden.join(", ")} may never be waived (§13.5)`);
+    throw Error(
+      `RD_WAIVE: ${forbidden.join(", ")} may never be waived (§13.5)`,
+    );
   return ids;
 }
 
@@ -289,7 +336,10 @@ export function waivedIds(env: NodeJS.ProcessEnv = process.env): string[] {
  * waived (RD_WAIVE) a failure is recorded as a "waived" annotation with the
  * actual value instead of failing the gate.
  */
-export async function guard<T>(ids: string[], fn: () => Promise<T>): Promise<T | undefined> {
+export async function guard<T>(
+  ids: string[],
+  fn: () => Promise<T>,
+): Promise<T | undefined> {
   const waived = waivedIds().filter((id) => ids.includes(id));
   if (!waived.length) return fn();
   try {
@@ -316,7 +366,10 @@ const DENY: RegExp[] = [
 ];
 const SPANISH: Array<[string, RegExp]> = [
   ["snake_case code", /\b[a-z]{2,}(?:_[a-z0-9]{2,})+\b/],
-  ["untranslated key", /\b(?:access|service|menu|offline|fiscal|discounts|reports|cfdi|account|ops)[A-Z][A-Za-z]+\b/],
+  [
+    "untranslated key",
+    /\b(?:access|service|menu|offline|fiscal|discounts|reports|cfdi|account|ops)[A-Z][A-Za-z]+\b/,
+  ],
   ["template slot", /\{[a-zA-Z]+\}/],
   ["broken value", /\b(undefined|null|NaN)\b|\[object Object\]|Invalid Date/],
   [
@@ -341,25 +394,40 @@ export const BRANCH_K_ALLOWED = [
 ];
 const GENERIC_ERROR = "No se pudo completar la acción.";
 
-export async function scanText(page: Page, id: string, branch: "N" | "K" = run.branch) {
+export async function scanText(
+  page: Page,
+  id: string,
+  branch: "N" | "K" = run.branch,
+) {
   const found = await page.evaluate(() => {
     const parts: string[] = [document.body.innerText, document.title];
-    for (const el of Array.from(document.querySelectorAll("[aria-label],[title],[placeholder],[alt]")))
+    for (const el of Array.from(
+      document.querySelectorAll("[aria-label],[title],[placeholder],[alt]"),
+    ))
       for (const a of ["aria-label", "title", "placeholder", "alt"]) {
         const v = el.getAttribute(a);
         if (v) parts.push(v);
       }
-    for (const o of Array.from(document.querySelectorAll("option"))) parts.push(o.textContent ?? "");
+    for (const o of Array.from(document.querySelectorAll("option")))
+      parts.push(o.textContent ?? "");
     const quick = Array.from(
-      document.querySelectorAll('[role="group"][aria-label="Efectivo recibido rápido"] button'),
+      document.querySelectorAll(
+        '[role="group"][aria-label="Efectivo recibido rápido"] button',
+      ),
     ).map((b) => (b.textContent ?? "").trim());
     const alerts = Array.from(document.querySelectorAll('[role="alert"]')).map(
       (e) => (e as HTMLElement).innerText,
     );
-    return { text: parts.join("\n"), lang: document.documentElement.lang, quick, alerts };
+    return {
+      text: parts.join("\n"),
+      lang: document.documentElement.lang,
+      quick,
+      alerts,
+    };
   });
   let text = found.text;
-  if (branch === "K") for (const s of BRANCH_K_ALLOWED) text = text.split(s).join(" ");
+  if (branch === "K")
+    for (const s of BRANCH_K_ALLOWED) text = text.split(s).join(" ");
   const problems: string[] = [];
   if (found.lang !== "es") problems.push(`<html lang="${found.lang}">`);
   for (const re of DENY) {
@@ -368,7 +436,10 @@ export async function scanText(page: Page, id: string, branch: "N" | "K" = run.b
   }
   for (const [what, re] of SPANISH) {
     const m = re.exec(text);
-    if (m) problems.push(`${what} "${m[0]}" in …${text.slice(Math.max(0, m.index - 40), m.index + 40)}…`);
+    if (m)
+      problems.push(
+        `${what} "${m[0]}" in …${text.slice(Math.max(0, m.index - 40), m.index + 40)}…`,
+      );
   }
   for (const m of text.matchAll(/\$[\d,]*(?:\.\d+)?/g)) {
     const token = m[0];
@@ -377,7 +448,8 @@ export async function scanText(page: Page, id: string, branch: "N" | "K" = run.b
     problems.push(`money format "${token}"`);
   }
   for (const m of text.matchAll(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g))
-    if (m[1]!.length !== 2 || m[2]!.length !== 2) problems.push(`date format "${m[0]}"`);
+    if (m[1]!.length !== 2 || m[2]!.length !== 2)
+      problems.push(`date format "${m[0]}"`);
   for (const a of found.alerts)
     if (a.includes(GENERIC_ERROR)) problems.push(`generic error alert "${a}"`);
   findings(problems, `G3 ${id}`);
@@ -394,7 +466,12 @@ const SIZES: Array<[number, number]> = [
 export async function checkpoint(
   d: Device,
   id: string,
-  opts: { axe?: boolean; branch?: "N" | "K"; sizes?: Array<[number, number]>; settle?: Locator } = {},
+  opts: {
+    axe?: boolean;
+    branch?: "N" | "K";
+    sizes?: Array<[number, number]>;
+    settle?: Locator;
+  } = {},
 ) {
   const page = d.page;
   await scanText(page, id, opts.branch);
@@ -404,9 +481,15 @@ export async function checkpoint(
       await page.setViewportSize({ width, height });
       if (opts.settle) await expect(opts.settle).toBeVisible();
       const fits = await expect
-        .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), {
-          message: `${id} @${width}x${height}: horizontal scroll`,
-        })
+        .poll(
+          () =>
+            page.evaluate(
+              () => document.documentElement.scrollWidth <= innerWidth,
+            ),
+          {
+            message: `${id} @${width}x${height}: horizontal scroll`,
+          },
+        )
         .toBe(true)
         .then(() => true)
         .catch((error) => {
@@ -418,13 +501,24 @@ export async function checkpoint(
           [`horizontal scroll: ${JSON.stringify(await overflowing(page))}`],
           `${id} @${width}x${height}`,
         );
-      const r = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"]).analyze();
-      writeFileSync(resolve(OUT, "axe", `${id}-${width}x${height}.json`), JSON.stringify(r.violations, null, 2));
+      const r = await new AxeBuilder({ page })
+        .withTags(["wcag2a", "wcag2aa", "wcag21aa", "wcag22aa"])
+        .analyze();
+      writeFileSync(
+        resolve(OUT, "axe", `${id}-${width}x${height}.json`),
+        JSON.stringify(r.violations, null, 2),
+      );
       findings(
-        r.violations.map((v) => ({ id: v.id, nodes: v.nodes.map((n) => n.target.join(" ")) })),
+        r.violations.map((v) => ({
+          id: v.id,
+          nodes: v.nodes.map((n) => n.target.join(" ")),
+        })),
         `${id} @${width}x${height}`,
       );
-      await page.screenshot({ path: resolve(OUT, "screens", `${id}-${width}x${height}.png`), fullPage: true });
+      await page.screenshot({
+        path: resolve(OUT, "screens", `${id}-${width}x${height}.png`),
+        fullPage: true,
+      });
     }
   await page.setViewportSize({ width: d.spec.width, height: d.spec.height });
   if (opts.settle) await expect(opts.settle).toBeVisible();
@@ -433,15 +527,22 @@ export async function checkpoint(
 /** Triage: the innermost elements that stick out past the viewport's right edge. */
 export function overflowing(page: Page) {
   return page.evaluate(() => {
-    const wide = Array.from(document.querySelectorAll<HTMLElement>("body *")).filter(
-      (e) => e.getBoundingClientRect().right > innerWidth + 0.5 && e.getClientRects().length,
+    const wide = Array.from(
+      document.querySelectorAll<HTMLElement>("body *"),
+    ).filter(
+      (e) =>
+        e.getBoundingClientRect().right > innerWidth + 0.5 &&
+        e.getClientRects().length,
     );
     return wide
       .filter((e) => !wide.some((o) => o !== e && e.contains(o)))
       .slice(0, 6)
       .map((e) => {
         const r = e.getBoundingClientRect();
-        const cls = typeof e.className === "string" ? e.className.trim().split(/\s+/).join(".") : "";
+        const cls =
+          typeof e.className === "string"
+            ? e.className.trim().split(/\s+/).join(".")
+            : "";
         return `${e.tagName.toLowerCase()}${cls ? "." + cls : ""} [${Math.round(r.left)}-${Math.round(r.right)}] ${(e.innerText ?? "").slice(0, 40)}`;
       });
   });
@@ -489,7 +590,10 @@ export async function advance(d: Device, ms: number) {
     // A request in flight across a jump would read as seconds of latency.
     // Only short calls matter; a call open for seconds (GET /api/auth/account on a
     // terminal never reports finished) is not waited for.
-    const young = () => [...(d.inFlight ?? new Map()).values()].filter((at) => Date.now() - at < 2_000).length;
+    const young = () =>
+      [...(d.inFlight ?? new Map()).values()].filter(
+        (at) => Date.now() - at < 2_000,
+      ).length;
     await expect
       .poll(young, { intervals: [25], timeout: 5_000 })
       .toBe(0)
@@ -511,13 +615,29 @@ export async function prints(page: Page): Promise<Print[]> {
   return page.evaluate(() => (window as any).__gmPrints as Print[]);
 }
 /** Waits for print number `count` (1-based) and returns it, saved to prints/. */
-export async function nextPrint(page: Page, before: number, label: string): Promise<Print> {
+export async function nextPrint(
+  page: Page,
+  before: number,
+  label: string,
+): Promise<Print> {
   // Printing waits two animation frames; under CPU load allow more than one expect timeout.
-  await expect.poll(async () => (await prints(page)).length, { message: `print ${label}`, timeout: 20_000 }).toBeGreaterThan(before);
+  await expect
+    .poll(async () => (await prints(page)).length, {
+      message: `print ${label}`,
+      timeout: 20_000,
+    })
+    .toBeGreaterThan(before);
   const all = await prints(page);
   const p = all[all.length - 1]!;
   run.prints++;
-  writeFileSync(resolve(OUT, "prints", `${String(run.prints).padStart(3, "0")}-${label}.txt`), p.text);
+  writeFileSync(
+    resolve(
+      OUT,
+      "prints",
+      `${String(run.prints).padStart(3, "0")}-${label}.txt`,
+    ),
+    p.text,
+  );
   return p;
 }
 
@@ -527,7 +647,10 @@ export function notePin() {
   run.pinLedger.push(Date.now());
   const now = Date.now();
   const window = run.pinLedger.filter((t) => now - t < 60_000).length;
-  expect(window, "§3.8: at most 20 PIN submissions per 60 s").toBeLessThanOrEqual(20);
+  expect(
+    window,
+    "§3.8: at most 20 PIN submissions per 60 s",
+  ).toBeLessThanOrEqual(20);
 }
 
 /** Types a PIN on the keypad of `scope` and submits with `submit`. */
@@ -541,7 +664,8 @@ export async function typePin(
   const input = scope.getByLabel(`PIN de ${name}`, { exact: true });
   await expect(input).toBeVisible();
   await expect(input).toHaveAttribute("type", "password");
-  for (const digit of pin) await scope.getByRole("button", { name: digit, exact: true }).click();
+  for (const digit of pin)
+    await scope.getByRole("button", { name: digit, exact: true }).click();
   d.lastInputAt = Date.now();
   notePin();
   await scope.getByRole("button", { name: submit, exact: true }).click();
@@ -554,7 +678,10 @@ export async function typePin(
  * http://127.0.0.1 only from the page; Playwright's request client drops them).
  * Reads only: mutations always go through the UI (§3.6).
  */
-export async function readApi<T = any>(d: Device, path: string): Promise<{ status: number; body: T }> {
+export async function readApi<T = any>(
+  d: Device,
+  path: string,
+): Promise<{ status: number; body: T }> {
   return d.page.evaluate(async (url) => {
     const r = await fetch(url, { headers: { accept: "application/json" } });
     const body: unknown = await r.json().catch(() => null);
@@ -570,8 +697,14 @@ export function record(what: string, expected: unknown, actual: unknown) {
 
 export function writeArtifacts() {
   mkdirSync(OUT, { recursive: true });
-  writeFileSync(resolve(OUT, "actual.json"), JSON.stringify(run.actual, null, 2));
-  writeFileSync(resolve(OUT, "timing.json"), JSON.stringify(run.timing, null, 2));
+  writeFileSync(
+    resolve(OUT, "actual.json"),
+    JSON.stringify(run.actual, null, 2),
+  );
+  writeFileSync(
+    resolve(OUT, "timing.json"),
+    JSON.stringify(run.timing, null, 2),
+  );
 }
 
 export function logLine(file: string, line: string) {
@@ -603,11 +736,18 @@ export function assertLogs() {
       continue;
     }
     if (entry.level === "error") problems.push(`worker error: ${line}`);
-    if (entry.message === "alert" && !["web_down", "web_recovered"].includes(String(entry.key)))
+    if (
+      entry.message === "alert" &&
+      !["web_down", "web_recovered"].includes(String(entry.key))
+    )
       problems.push(`worker alert: ${line}`);
   }
   for (const line of read("server.log")) {
-    if (/"internal_error"|legal_documents_unpublished|legal_unpublished_signup_ignored/.test(line))
+    if (
+      /"internal_error"|legal_documents_unpublished|legal_unpublished_signup_ignored/.test(
+        line,
+      )
+    )
       problems.push(`server: ${line}`);
   }
   findings(problems, "G4 logs");

@@ -2025,7 +2025,9 @@ test("operation dialogs keep one operation id across a lost response", async ({
   const row = page.locator(".order-summary").filter({ hasText: name });
   await row.getByRole("button", { name: "Reembolsar", exact: true }).click();
   const dialog = page.getByRole("dialog");
-  await dialog.getByRole("button", { name: "Por importe", exact: true }).click();
+  await dialog
+    .getByRole("button", { name: "Por importe", exact: true })
+    .click();
   await dialog.getByLabel("Importe", { exact: true }).fill("10");
   await dialog
     .getByLabel("Motivo del reembolso")

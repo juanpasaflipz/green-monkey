@@ -11,7 +11,8 @@ async function deviceRows(
   s: Session,
   only?: string,
 ): Promise<ManagedDevice[]> {
-  const rows = await tx`select d.id,d.name,d.active,d.paired_at,d.last_seen_at,d.token_expires_at,
+  const rows =
+    await tx`select d.id,d.name,d.active,d.paired_at,d.last_seen_at,d.token_expires_at,
       d.idle_lock_seconds,d.free_slot,d.revoked_at,
       coalesce(d.kind, case when d.name='Owner browser' then 'personal' else 'terminal' end) as kind,
       coalesce(d.token_expires_at,'infinity')<=now() as expired,
@@ -149,7 +150,8 @@ export async function endDeviceSession(
  * still needs it for its own policies: LD-15 account Q4).
  */
 async function revokeOwnerSessions(tx: Tx, deviceId: string): Promise<number> {
-  const rows = await tx`select distinct owner_account_id,owner_session_id from sessions
+  const rows =
+    await tx`select distinct owner_account_id,owner_session_id from sessions
     where device_id=${deviceId} and owner_session_id is not null`;
   if (!rows.length) return 0;
   const [prior] =
@@ -230,7 +232,10 @@ export async function retirePersonalDevicesAs(
 }
 
 const revokeInput = z
-  .object({ operationId: id, acknowledgeOpenDrawer: z.boolean().default(false) })
+  .object({
+    operationId: id,
+    acknowledgeOpenDrawer: z.boolean().default(false),
+  })
   .strict();
 /**
  * Unpairs a device: its credential stops working at once, its sessions are

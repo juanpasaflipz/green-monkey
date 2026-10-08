@@ -40,7 +40,11 @@ function parse(raw: string | null): Record<string, unknown> | null {
  * Remembers the lock of a session. Each write carries its own time, so other
  * tabs always receive a storage event, even for the same reason again.
  */
-export function rememberLock(sessionId: string, reason: string, now = Date.now()) {
+export function rememberLock(
+  sessionId: string,
+  reason: string,
+  now = Date.now(),
+) {
   write(LOCK_KEY, JSON.stringify({ sessionId, reason, at: now }));
 }
 export function forgetLock() {
@@ -52,7 +56,11 @@ const TAB = Math.random().toString(36).slice(2, 10);
 
 let lastWrite = { sessionId: "", at: 0 };
 /** Records input for the idle check on restore (at most every 5 s unless forced). */
-export function noteActivity(sessionId: string, force = false, now = Date.now()) {
+export function noteActivity(
+  sessionId: string,
+  force = false,
+  now = Date.now(),
+) {
   if (
     !force &&
     lastWrite.sessionId === sessionId &&
@@ -87,7 +95,10 @@ export function idleElsewhereWait(
 }
 
 /** The reason a lock marker (for example from another tab) holds for this session. */
-export function lockedFor(raw: string | null, sessionId: string): string | null {
+export function lockedFor(
+  raw: string | null,
+  sessionId: string,
+): string | null {
   const lock = parse(raw);
   return lock?.sessionId === sessionId && typeof lock.reason === "string"
     ? lock.reason
@@ -157,14 +168,22 @@ const FORGET_CODES = new Set([
   "device_not_paired",
 ]);
 /** Ended elsewhere, expired or unknown: the cached session stays, locked. */
-const LOCK_CODES = new Set(["unauthorized", "session_expired", "session_ended"]);
+const LOCK_CODES = new Set([
+  "unauthorized",
+  "session_expired",
+  "session_ended",
+]);
 /**
  * What a session 401 does to the offline cache (FOH-7/SEC-6): "forget" deletes
  * the cached session, "lock" remembers a lock with that code, so an offline
  * restore opens behind the lock with no soft unlock; anything else is ignored.
  */
 export function cacheRuleFor(code: string): "forget" | "lock" | null {
-  return FORGET_CODES.has(code) ? "forget" : LOCK_CODES.has(code) ? "lock" : null;
+  return FORGET_CODES.has(code)
+    ? "forget"
+    : LOCK_CODES.has(code)
+      ? "lock"
+      : null;
 }
 
 /**

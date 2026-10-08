@@ -38,7 +38,8 @@ async function staffRows(
   s: Session,
   only?: string,
 ): Promise<StaffRow[]> {
-  const rows = await tx`select e.id,e.name,e.login,e.role,e.active,e.free_slot,e.pin_set_at,e.deactivated_at,
+  const rows =
+    await tx`select e.id,e.name,e.login,e.role,e.active,e.free_slot,e.pin_set_at,e.deactivated_at,
       coalesce(e.locked_until='infinity',false) as hard,
       (select max(coalesce(x.authenticated_at,x.created_at)) from sessions x where x.employee_id=e.id) as last_sign_in,
       (select count(*) from pin_throttles t where t.employee_id=e.id and t.locked_until>now())::int as locked_devices,
@@ -63,7 +64,14 @@ async function staffRows(
       login: e.login,
       role: e.role,
       active: e.active,
-      access: google && pin ? "google_and_pin" : google ? "google" : pin ? "pin" : "none",
+      access:
+        google && pin
+          ? "google_and_pin"
+          : google
+            ? "google"
+            : pin
+              ? "pin"
+              : "none",
       freeSlot: e.free_slot,
       locked: {
         devices: e.locked_devices,
@@ -121,11 +129,13 @@ export async function generateLogin(tx: Tx, name: string) {
     ).map((r) => r.login as string),
   );
   if (!taken.has(base)) return base;
-  for (let n = 2; ; n++)
-    if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
+  for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
 
-function parseWithPin<T extends z.ZodType>(schema: T, raw: unknown): z.infer<T> {
+function parseWithPin<T extends z.ZodType>(
+  schema: T,
+  raw: unknown,
+): z.infer<T> {
   try {
     return schema.parse(raw);
   } catch (error) {
@@ -190,8 +200,7 @@ export async function createStaff(tx: Tx, s: Session, raw: unknown) {
       const slot = await employeeSlot(tx, employeeId, true, p.role);
       let login = p.login;
       if (login) {
-        const [taken] =
-          await tx`select 1 from employees where login=${login}`;
+        const [taken] = await tx`select 1 from employees where login=${login}`;
         if (taken) throw new DomainError("login_taken", 409);
       } else login = await generateLogin(tx, p.name);
       await tx`insert into employees(tenant_id,id,name,login,secret_hash,role,active,free_slot,pin_set_at)
@@ -254,9 +263,7 @@ export async function updateStaff(
   );
 }
 
-const activeInput = z
-  .object({ operationId: id, active: z.boolean() })
-  .strict();
+const activeInput = z.object({ operationId: id, active: z.boolean() }).strict();
 /**
  * Offboarding (SEC-3): deactivation revokes every session of the employee on
  * every device and unpairs the personal devices they entered through Google

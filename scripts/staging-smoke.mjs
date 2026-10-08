@@ -81,7 +81,9 @@ try {
       const tablet = await terminal.newPage();
       await tablet.goto("/app");
       await tablet.getByLabel("Código de vinculación").fill(code);
-      await tablet.getByRole("button", { name: "Vincular", exact: true }).click();
+      await tablet
+        .getByRole("button", { name: "Vincular", exact: true })
+        .click();
       await tablet.getByRole("button", { name: /^Dani Demo/ }).click();
       for (const digit of process.env.FIXTURE_CASHIER_PIN)
         await tablet.getByRole("button", { name: digit, exact: true }).click();

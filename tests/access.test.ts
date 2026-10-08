@@ -134,9 +134,9 @@ describe("shared-terminal rules", () => {
     expect(isRecentAuth(undefined, now, 120)).toBe(true);
     expect(isRecentAuth(terminal, now, 120)).toBe(true);
     expect(isRecentAuth(terminal, now, 30)).toBe(false);
-    expect(
-      isRecentAuth({ ...terminal, authenticatedAt: null }, now, 120),
-    ).toBe(false);
+    expect(isRecentAuth({ ...terminal, authenticatedAt: null }, now, 120)).toBe(
+      false,
+    );
     expect(
       isRecentAuth(
         {
@@ -159,16 +159,26 @@ describe("shared-terminal rules", () => {
     ).toBe(false);
     expect(
       isRecentAuth(
-        { ...terminal, deviceKind: "personal", authenticatedAt: new Date(now - 600_000).toISOString() },
+        {
+          ...terminal,
+          deviceKind: "personal",
+          authenticatedAt: new Date(now - 600_000).toISOString(),
+        },
         now,
         120,
       ),
     ).toBe(false);
     expect(
-      isRecentAuth({ ...terminal, ownerAccount: true, authenticatedAt: null }, now, 120),
+      isRecentAuth(
+        { ...terminal, ownerAccount: true, authenticatedAt: null },
+        now,
+        120,
+      ),
     ).toBe(false);
     expect(stepUpExempt(undefined)).toBe(true);
-    expect(stepUpExempt({ ...terminal, deviceKind: "personal", ownerAccount: true })).toBe(true);
+    expect(
+      stepUpExempt({ ...terminal, deviceKind: "personal", ownerAccount: true }),
+    ).toBe(true);
     expect(stepUpExempt({ ...terminal, deviceKind: "personal" })).toBe(false);
   });
 });

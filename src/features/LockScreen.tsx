@@ -150,9 +150,9 @@ export function LockScreen({
   }, [online, shownLockedUntil, refreshTerminal]);
   const shownLocked = Boolean(
     shown &&
-      (shown.hardLocked ||
-        (shown.lockedUntil &&
-          new Date(shown.lockedUntil).getTime() > Date.now())),
+    (shown.hardLocked ||
+      (shown.lockedUntil &&
+        new Date(shown.lockedUntil).getTime() > Date.now())),
   );
   // A Google owner without a PIN re-enters through Google on their own device.
   const googleOnly =
@@ -219,14 +219,14 @@ export function LockScreen({
             </p>
             {allowsContinueOffline(reason) &&
               new Date(session.offlineUntil).getTime() > Date.now() && (
-              <Button
-                variant="primary"
-                className="full"
-                onClick={onContinueOffline}
-              >
-                {t.accessContinueAs.replace("{name}", session.name)}
-              </Button>
-            )}
+                <Button
+                  variant="primary"
+                  className="full"
+                  onClick={onContinueOffline}
+                >
+                  {t.accessContinueAs.replace("{name}", session.name)}
+                </Button>
+              )}
             {reason === "renew" && (
               <Button className="full" onClick={onDismiss}>
                 {t.accessNotNow}

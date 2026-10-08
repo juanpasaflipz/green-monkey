@@ -106,7 +106,11 @@ type Cookie = { id: string; tenantId: string; token: string };
 /** A paired device; expiresInHours null = legacy row without a server-side expiry. */
 async function device(
   name: string,
-  o: { kind?: string | null; tenant?: string; expiresInHours?: number | null } = {},
+  o: {
+    kind?: string | null;
+    tenant?: string;
+    expiresInHours?: number | null;
+  } = {},
 ): Promise<Cookie> {
   const c = {
     id: randomUUID(),
@@ -260,7 +264,11 @@ try {
   const terminalB = await device("Caja B");
 
   await test("new tables force RLS and gm_app has no DELETE; pairing codes are UPDATE-only on transition columns", async () => {
-    const tables = ["pin_throttles", "device_pairing_codes", "offline_lease_renewals"];
+    const tables = [
+      "pin_throttles",
+      "device_pairing_codes",
+      "offline_lease_renewals",
+    ];
     const rows =
       await admin`select relname,relrowsecurity,relforcerowsecurity from pg_class where relname in ${admin(tables)}`;
     assert.equal(rows.length, 3);
@@ -300,7 +308,10 @@ try {
       where schemaname='public' and tablename='sessions' and indexname in ('sessions_by_employee','sessions_by_device')
       order by indexname`;
     assert.deepEqual(
-      indexes.map((i) => [i.indexname, /\(tenant_id, (\w+)\)$/.exec(i.indexdef)?.[1]]),
+      indexes.map((i) => [
+        i.indexname,
+        /\(tenant_id, (\w+)\)$/.exec(i.indexdef)?.[1],
+      ]),
       [
         ["sessions_by_device", "device_id"],
         ["sessions_by_employee", "employee_id"],
@@ -519,7 +530,11 @@ try {
       await admin`select count(*)::int as n from pin_throttles where employee_id=${managerId}`;
     for (const cookies of [
       {},
-      { gm_device: sign(await device("Otra sucursal", { tenant: otherTenantId })) },
+      {
+        gm_device: sign(
+          await device("Otra sucursal", { tenant: otherTenantId }),
+        ),
+      },
     ])
       for (let i = 0; i < 6; i++)
         await rejects(
@@ -547,19 +562,28 @@ try {
     const scopeA = deviceScope(terminalA.id);
     for (let i = 1; i <= 4; i++)
       assert.equal(
-        (await run((tx) => checkPin(tx, { employeeId: cashierId }, "999999", scopeA)))
-          .outcome,
+        (
+          await run((tx) =>
+            checkPin(tx, { employeeId: cashierId }, "999999", scopeA),
+          )
+        ).outcome,
         "invalid",
       );
     assert.equal(
-      (await run((tx) => checkPin(tx, { employeeId: cashierId }, "999999", scopeA)))
-        .outcome,
+      (
+        await run((tx) =>
+          checkPin(tx, { employeeId: cashierId }, "999999", scopeA),
+        )
+      ).outcome,
       "locked",
     );
     // A locked scope refuses even the right PIN, without evaluating it.
     assert.equal(
-      (await run((tx) => checkPin(tx, { employeeId: cashierId }, CASHIER_PIN, scopeA)))
-        .outcome,
+      (
+        await run((tx) =>
+          checkPin(tx, { employeeId: cashierId }, CASHIER_PIN, scopeA),
+        )
+      ).outcome,
       "locked",
     );
     await rejects(pin(terminalA, cashierId, CASHIER_PIN), "pin_locked");
@@ -574,7 +598,9 @@ try {
     const manager = as(managerId, "manager", terminalA.id);
     for (const scope of [deviceScope(terminalA.id), deviceScope(terminalB.id)])
       for (let i = 0; i < 5; i++)
-        await run((tx) => checkPin(tx, { employeeId: cashierId }, "999999", scope));
+        await run((tx) =>
+          checkPin(tx, { employeeId: cashierId }, "999999", scope),
+        );
     await run((tx) =>
       unlockStaff(tx, manager, cashierId, { operationId: randomUUID() }),
     );
@@ -582,14 +608,26 @@ try {
       await admin`select count(*)::int as n from pin_throttles where employee_id=${cashierId} and (locked_until is not null or failures>0)`;
     assert.equal(unlocked.n, 0);
     assert.equal(
-      (await run((tx) =>
-        checkPin(tx, { employeeId: cashierId }, CASHIER_PIN, deviceScope(terminalA.id)),
-      )).outcome,
+      (
+        await run((tx) =>
+          checkPin(
+            tx,
+            { employeeId: cashierId },
+            CASHIER_PIN,
+            deviceScope(terminalA.id),
+          ),
+        )
+      ).outcome,
       "ok",
     );
     for (let i = 0; i < 5; i++)
       await run((tx) =>
-        checkPin(tx, { employeeId: cashierId }, "999999", deviceScope(terminalB.id)),
+        checkPin(
+          tx,
+          { employeeId: cashierId },
+          "999999",
+          deviceScope(terminalB.id),
+        ),
       );
     await run((tx) =>
       resetStaffPin(tx, owner, cashierId, {
@@ -598,9 +636,16 @@ try {
       }),
     );
     assert.equal(
-      (await run((tx) =>
-        checkPin(tx, { employeeId: cashierId }, "975310", deviceScope(terminalB.id)),
-      )).outcome,
+      (
+        await run((tx) =>
+          checkPin(
+            tx,
+            { employeeId: cashierId },
+            "975310",
+            deviceScope(terminalB.id),
+          ),
+        )
+      ).outcome,
       "ok",
     );
     await run((tx) =>
@@ -616,19 +661,32 @@ try {
     await admin`update employees set failed_attempts=99 where id=${kitchenId}`;
     const scope = deviceScope(terminalB.id);
     assert.equal(
-      (await run((tx) => checkPin(tx, { employeeId: kitchenId }, "000000", scope)))
-        .outcome,
+      (
+        await run((tx) =>
+          checkPin(tx, { employeeId: kitchenId }, "000000", scope),
+        )
+      ).outcome,
       "hard_locked",
     );
     assert.equal(
-      (await run((tx) => checkPin(tx, { employeeId: kitchenId }, KITCHEN_PIN, scope)))
-        .outcome,
+      (
+        await run((tx) =>
+          checkPin(tx, { employeeId: kitchenId }, KITCHEN_PIN, scope),
+        )
+      ).outcome,
       "hard_locked",
     );
     assert.equal(
-      (await run((tx) =>
-        checkPin(tx, { employeeId: kitchenId }, KITCHEN_PIN, deviceScope(terminalA.id)),
-      )).outcome,
+      (
+        await run((tx) =>
+          checkPin(
+            tx,
+            { employeeId: kitchenId },
+            KITCHEN_PIN,
+            deviceScope(terminalA.id),
+          ),
+        )
+      ).outcome,
       "hard_locked",
     );
     await rejects(pin(terminalA, kitchenId, KITCHEN_PIN), "pin_hard_locked");
@@ -636,8 +694,11 @@ try {
       unlockStaff(tx, owner, kitchenId, { operationId: randomUUID() }),
     );
     assert.equal(
-      (await run((tx) => checkPin(tx, { employeeId: kitchenId }, KITCHEN_PIN, scope)))
-        .outcome,
+      (
+        await run((tx) =>
+          checkPin(tx, { employeeId: kitchenId }, KITCHEN_PIN, scope),
+        )
+      ).outcome,
       "ok",
     );
   });
@@ -646,7 +707,9 @@ try {
     const manager = as(managerId, "manager", terminalA.id, {});
     const ownerOnTerminal = as(ownerId, "owner", terminalA.id, {});
     const unlock = (by: Session, employeeId: string) =>
-      run((tx) => unlockStaff(tx, by, employeeId, { operationId: randomUUID() }));
+      run((tx) =>
+        unlockStaff(tx, by, employeeId, { operationId: randomUUID() }),
+      );
     // Owners and managers: owner only.
     for (const employeeId of [ownerId, secondOwnerId, managerId])
       await rejects(unlock(manager, employeeId), "unlock_owner_only");
@@ -657,7 +720,9 @@ try {
       values(${tenantId},${serverId},'Mesero A5',${"srv-" + serverId.slice(0, 8)},${password(serverPin)},'server',now())`;
     const scope = deviceScope(terminalA.id);
     for (let i = 0; i < 5; i++)
-      await run((tx) => checkPin(tx, { employeeId: serverId }, "000000", scope));
+      await run((tx) =>
+        checkPin(tx, { employeeId: serverId }, "000000", scope),
+      );
     await unlock(manager, serverId);
     const [afterManager] = await admin`select e.failed_attempts,e.locked_until,
         (select count(*)::int from pin_throttles t where t.employee_id=e.id and (t.locked_until is not null or t.failures>0)) as throttled
@@ -677,8 +742,11 @@ try {
     // The counter keeps running to the hard lock, which a manager cannot clear.
     await admin`update employees set failed_attempts=99 where id=${serverId}`;
     assert.equal(
-      (await run((tx) => checkPin(tx, { employeeId: serverId }, "000000", scope)))
-        .outcome,
+      (
+        await run((tx) =>
+          checkPin(tx, { employeeId: serverId }, "000000", scope),
+        )
+      ).outcome,
       "hard_locked",
     );
     await rejects(unlock(manager, serverId), /unlock_owner_only|unlock_limit/);
@@ -688,10 +756,16 @@ try {
     await unlock(ownerOnTerminal, serverId);
     const [afterOwner] =
       await admin`select failed_attempts,locked_until from employees where id=${serverId}`;
-    assert.deepEqual({ ...afterOwner }, { failed_attempts: 0, locked_until: null });
+    assert.deepEqual(
+      { ...afterOwner },
+      { failed_attempts: 0, locked_until: null },
+    );
     assert.equal(
-      (await run((tx) => checkPin(tx, { employeeId: serverId }, serverPin, scope)))
-        .outcome,
+      (
+        await run((tx) =>
+          checkPin(tx, { employeeId: serverId }, serverPin, scope),
+        )
+      ).outcome,
       "ok",
     );
     for (let i = 0; i < 4; i++) await unlock(ownerOnTerminal, serverId);
@@ -731,10 +805,17 @@ try {
       )[0].n;
     const before = await counters();
     await rejects(
-      verifyApproval(sql, cashier, { employeeId: managerId, secret: MANAGER_PIN }),
+      verifyApproval(sql, cashier, {
+        employeeId: managerId,
+        secret: MANAGER_PIN,
+      }),
       "too_many_attempts",
     );
-    assert.equal(await counters(), before, "a capped request never reaches checkPin");
+    assert.equal(
+      await counters(),
+      before,
+      "a capped request never reaches checkPin",
+    );
     // Another session on the device is not affected by this session's cap.
     assert.equal(
       await verifyApproval(sql, as(cashierId, "cashier", terminalA.id, {}), {
@@ -752,7 +833,10 @@ try {
     const cashier = as(cashierId, "cashier", terminalA.id, {});
     for (let i = 0; i < 4; i++)
       await rejects(
-        verifyApproval(sql, cashier, { employeeId: managerId, secret: "000000" }),
+        verifyApproval(sql, cashier, {
+          employeeId: managerId,
+          secret: "000000",
+        }),
         "approval_denied",
       );
     await rejects(
@@ -760,7 +844,10 @@ try {
       "pin_locked",
     );
     await rejects(
-      verifyApproval(sql, cashier, { employeeId: managerId, secret: MANAGER_PIN }),
+      verifyApproval(sql, cashier, {
+        employeeId: managerId,
+        secret: MANAGER_PIN,
+      }),
       "pin_locked",
     );
     const scopes =
@@ -779,7 +866,10 @@ try {
     );
     // A non-manager's correct PIN is still denied.
     await rejects(
-      verifyApproval(sql, elsewhere, { employeeId: cashierId, secret: CASHIER_PIN }),
+      verifyApproval(sql, elsewhere, {
+        employeeId: cashierId,
+        secret: CASHIER_PIN,
+      }),
       "approval_denied",
     );
     await clearThrottles(managerId);
@@ -790,7 +880,10 @@ try {
     const terminal = as(managerId, "manager", terminalA.id, {
       authenticatedAt: stale,
     });
-    await rejects(verifyApproval(sql, terminal, undefined), "approval_required");
+    await rejects(
+      verifyApproval(sql, terminal, undefined),
+      "approval_required",
+    );
     const fresh = as(managerId, "manager", terminalA.id, {});
     assert.equal(await verifyApproval(sql, fresh, undefined), managerId);
     const personal = as(managerId, "manager", terminalA.id, {
@@ -816,9 +909,18 @@ try {
     // Confirming with one's own PIN refreshes the session's authentication time.
     const signed = await pin(terminalA, managerId, MANAGER_PIN);
     await admin`update sessions set authenticated_at=now()-interval '1 hour' where id=${signed.sessionId}`;
-    const self = as(managerId, "manager", terminalA.id, { authenticatedAt: stale }, signed.sessionId);
+    const self = as(
+      managerId,
+      "manager",
+      terminalA.id,
+      { authenticatedAt: stale },
+      signed.sessionId,
+    );
     assert.equal(
-      await verifyApproval(sql, self, { employeeId: managerId, secret: MANAGER_PIN }),
+      await verifyApproval(sql, self, {
+        employeeId: managerId,
+        secret: MANAGER_PIN,
+      }),
       managerId,
     );
     const row = await sessionRow(signed.sessionId);
@@ -832,10 +934,15 @@ try {
     const row = await sessionRow(created.id);
     const absoluteHours = (row.absolute_expires_at - row.created_at) / 3600_000;
     assert.ok(Math.abs(absoluteHours - 16) < 0.01);
-    assert.ok(Math.abs((row.expires_at - row.created_at) / 3600_000 - 8) < 0.01);
-    assert.ok(Math.abs((row.offline_until - row.created_at) / 3600_000 - 4) < 0.01);
+    assert.ok(
+      Math.abs((row.expires_at - row.created_at) / 3600_000 - 8) < 0.01,
+    );
+    assert.ok(
+      Math.abs((row.offline_until - row.created_at) / 3600_000 - 4) < 0.01,
+    );
     const touch = async () => {
-      const [r] = await admin`select s.*,e.role,l.selling_authorized as lease_selling from sessions s
+      const [r] =
+        await admin`select s.*,e.role,l.selling_authorized as lease_selling from sessions s
         join employees e on e.id=s.employee_id left join offline_leases l on l.session_id=s.id where s.id=${created.id}`;
       return run((tx) => touchSession(tx, r as any, false));
     };
@@ -843,7 +950,10 @@ try {
       absolute_expires_at=now()+interval '5 hours' where id=${created.id}`;
     const capped = await touch();
     const afterCap = await sessionRow(created.id);
-    assert.equal(afterCap.expires_at.getTime(), afterCap.absolute_expires_at.getTime());
+    assert.equal(
+      afterCap.expires_at.getTime(),
+      afterCap.absolute_expires_at.getTime(),
+    );
     assert.equal(capped.expiresAt.getTime(), afterCap.expires_at.getTime());
     await admin`update sessions set last_seen_at=now()-interval '2 minutes',expires_at=now()+interval '1 minute',
       absolute_expires_at=now()+interval '15 hours' where id=${created.id}`;
@@ -868,7 +978,11 @@ try {
     const terminal = await device("Diagnóstico");
     const cookies = async () => {
       const s = await pin(terminal, cashierId, CASHIER_PIN);
-      return { gm_device: sign(terminal), gm_session: s.cookie, id: s.sessionId };
+      return {
+        gm_device: sign(terminal),
+        gm_session: s.cookie,
+        id: s.sessionId,
+      };
     };
     const live = await cookies();
     const ok = await authenticate(live);
@@ -922,7 +1036,11 @@ try {
       recipe: [],
     }),
   );
-  const offlineSale = (sessionId: string, drawerId: string, recordedAt: Date) => ({
+  const offlineSale = (
+    sessionId: string,
+    drawerId: string,
+    recordedAt: Date,
+  ) => ({
     operationId: randomUUID(),
     order: {
       operationId: randomUUID(),
@@ -962,7 +1080,9 @@ try {
       renewOfflineLease(tx, sessionId, new Date(Date.now() + 10 * 3600_000)),
     );
     assert.ok(renewed);
-    assert.ok(Math.abs(renewed!.getTime() - Date.now() - 4 * 3600_000) < 60_000);
+    assert.ok(
+      Math.abs(renewed!.getTime() - Date.now() - 4 * 3600_000) < 60_000,
+    );
     const renewals =
       await admin`select sequence from offline_lease_renewals where session_id=${sessionId} order by sequence`;
     assert.deepEqual(
@@ -1017,10 +1137,13 @@ try {
     const kitchen = await run((tx) =>
       createSession(tx, { employeeId: kitchenId, deviceId: terminal.id }),
     );
-    const [row] = await admin`select s.*,e.role,l.selling_authorized as lease_selling from sessions s
+    const [row] =
+      await admin`select s.*,e.role,l.selling_authorized as lease_selling from sessions s
       join employees e on e.id=s.employee_id left join offline_leases l on l.session_id=s.id where s.id=${kitchen.id}`;
     await admin`update sessions set last_seen_at=now()-interval '2 minutes' where id=${kitchen.id}`;
-    await run((tx) => touchSession(tx, { ...(row as any), last_seen_at: null }, true));
+    await run((tx) =>
+      touchSession(tx, { ...(row as any), last_seen_at: null }, true),
+    );
     const [kitchenRenewals] =
       await admin`select count(*)::int as n from offline_lease_renewals where session_id=${kitchen.id}`;
     assert.equal(kitchenRenewals.n, 0);
@@ -1032,13 +1155,20 @@ try {
         now()+interval '50 minutes',now()+interval '50 minutes',now()-interval '1 hour',true)`;
     await admin`insert into offline_leases(tenant_id,session_id,employee_id,device_id,contract_version,issued_at,valid_until,selling_authorized,plan,configuration_version,restaurant_snapshot)
       select ${tenantId},${near},${cashierId},${terminal.id},1,now()-interval '5 hours',now()-interval '1 hour',true,'pro',config_version,'{}'::jsonb from restaurants where id=${tenantId}`;
-    const [nearRow] = await admin`select s.*,e.role,l.selling_authorized as lease_selling from sessions s
+    const [nearRow] =
+      await admin`select s.*,e.role,l.selling_authorized as lease_selling from sessions s
       join employees e on e.id=s.employee_id left join offline_leases l on l.session_id=s.id where s.id=${near}`;
     const touched = await run((tx) => touchSession(tx, nearRow as any, true));
     const [renewal] =
       await admin`select valid_until from offline_lease_renewals where session_id=${near}`;
-    assert.equal(renewal.valid_until.getTime(), nearRow.absolute_expires_at.getTime());
-    assert.equal(touched.offlineUntil.getTime(), nearRow.absolute_expires_at.getTime());
+    assert.equal(
+      renewal.valid_until.getTime(),
+      nearRow.absolute_expires_at.getTime(),
+    );
+    assert.equal(
+      touched.offlineUntil.getTime(),
+      nearRow.absolute_expires_at.getTime(),
+    );
   });
 
   await test("ACC-FLOOR-1: a payment attempt left by an ended or expired session of the same employee and device is retried by the next session; a live, revoked or other employee's session goes to review", async () => {
@@ -1109,7 +1239,10 @@ try {
     // Expired at the absolute cap without an end: also the same line.
     const expired = await newSession();
     await admin`update sessions set expires_at=now()-interval '1 second' where id=${expired.id}`;
-    assert.equal((await status(next.session, attempt(expired.id))).retryAllowed, true);
+    assert.equal(
+      (await status(next.session, attempt(expired.id))).retryAllowed,
+      true,
+    );
     // Revoked (deactivation or unpaired device): review only.
     const revoked = await newSession();
     await run((tx) => endSession(tx, revoked.id, "employee_deactivated", true));
@@ -1121,7 +1254,10 @@ try {
     const manager = await newSession(managerId);
     const ended = await newSession();
     await run((tx) => endSession(tx, ended.id, "switched"));
-    assert.equal((await status(manager.session, attempt(ended.id))).retryAllowed, false);
+    assert.equal(
+      (await status(manager.session, attempt(ended.id))).retryAllowed,
+      false,
+    );
   });
 
   await test("ACC-R-5: a void approval needs an open order with an unpaid unit before any PIN is checked", async () => {
@@ -1155,11 +1291,15 @@ try {
       );
     const wrong = { employeeId: managerId, secret: "000000" };
     const failures = async () =>
-      (await admin`select failed_attempts from employees where id=${managerId}`)[0]
-        .failed_attempts;
+      (
+        await admin`select failed_attempts from employees where id=${managerId}`
+      )[0].failed_attempts;
     // An open order with an unpaid unit: the PIN is checked and a wrong one counts.
     const open = await newOrder(tableId);
-    await rejects(verifyApproval(sql, session, wrong, open.id), "approval_denied");
+    await rejects(
+      verifyApproval(sql, session, wrong, open.id),
+      "approval_denied",
+    );
     assert.equal(await failures(), 1);
     // Fully paid: refused before the PIN, which is neither checked nor counted.
     await run((tx) =>
@@ -1173,21 +1313,37 @@ try {
         reference: "",
       }),
     );
-    await rejects(verifyApproval(sql, session, wrong, open.id), "void_exceeds_unpaid");
     await rejects(
-      verifyApproval(sql, session, { employeeId: managerId, secret: MANAGER_PIN }, open.id),
+      verifyApproval(sql, session, wrong, open.id),
+      "void_exceeds_unpaid",
+    );
+    await rejects(
+      verifyApproval(
+        sql,
+        session,
+        { employeeId: managerId, secret: MANAGER_PIN },
+        open.id,
+      ),
       "void_exceeds_unpaid",
     );
     // Closed (here cancelled): refused before the PIN as well, with the code
     // voidLines gives it (assertCheckWritable: check_closed since service 024).
     const closed = await newOrder();
     await admin`update orders set state='cancelled' where id=${closed.id}`;
-    await rejects(verifyApproval(sql, session, wrong, closed.id), "check_closed");
+    await rejects(
+      verifyApproval(sql, session, wrong, closed.id),
+      "check_closed",
+    );
     assert.equal(await failures(), 1);
     // The right PIN on an order that can still be voided approves.
     const voidable = await newOrder();
     assert.equal(
-      await verifyApproval(sql, session, { employeeId: managerId, secret: MANAGER_PIN }, voidable.id),
+      await verifyApproval(
+        sql,
+        session,
+        { employeeId: managerId, secret: MANAGER_PIN },
+        voidable.id,
+      ),
       managerId,
     );
     await clearThrottles(managerId);
@@ -1222,7 +1378,10 @@ try {
         }),
       );
     const approval = { employeeId: managerId, secret: MANAGER_PIN };
-    const body = (o: { id: string; version: number; lines: { id: string }[] }, quantity: number) => ({
+    const body = (
+      o: { id: string; version: number; lines: { id: string }[] },
+      quantity: number,
+    ) => ({
       operationId: randomUUID(),
       expectedVersion: o.version,
       lines: [{ lineId: o.lines[0].id, quantity }],
@@ -1232,11 +1391,19 @@ try {
     });
     // Exactly what POST /api/orders/:id/voids does with one request body.
     const send = async (orderId: string, b: ReturnType<typeof body>) => {
-      const approverId = await verifyApproval(sql, session, b.approval, orderId, b);
+      const approverId = await verifyApproval(
+        sql,
+        session,
+        b.approval,
+        orderId,
+        b,
+      );
       return run((tx) => voidLines(tx, session, orderId, b, approverId));
     };
     const voidRows = async (orderId: string) =>
-      (await admin`select count(*)::int as n from line_voids where order_id=${orderId}`)[0].n;
+      (
+        await admin`select count(*)::int as n from line_voids where order_id=${orderId}`
+      )[0].n;
 
     // Every unit of a one-line order: the void cancels the order.
     const whole = await newOrder(1);
@@ -1252,7 +1419,10 @@ try {
     // another body, is still refused by the order check before the PIN
     // (the fully voided check is closed: check_closed since service 024).
     await rejects(send(whole.id, body(whole, 1)), "check_closed");
-    await rejects(send(whole.id, { ...cancel, reason: "Otro motivo" }), "check_closed");
+    await rejects(
+      send(whole.id, { ...cancel, reason: "Otro motivo" }),
+      "check_closed",
+    );
 
     // The last unpaid unit while the other unit is paid.
     const split = await newOrder(2, tableId);
@@ -1317,7 +1487,10 @@ try {
     const late = stubRes();
     await signOut(
       sql,
-      req({ gm_session: b.cookie, gm_device: sign(terminal) }, { sessionId: a.sessionId }),
+      req(
+        { gm_session: b.cookie, gm_device: sign(terminal) },
+        { sessionId: a.sessionId },
+      ),
       late as any,
     );
     const kept = await sessionRow(b.sessionId);
@@ -1327,7 +1500,10 @@ try {
     const own = stubRes();
     await signOut(
       sql,
-      req({ gm_session: b.cookie, gm_device: sign(terminal) }, { sessionId: b.sessionId }),
+      req(
+        { gm_session: b.cookie, gm_device: sign(terminal) },
+        { sessionId: b.sessionId },
+      ),
       own as any,
     );
     assert.equal((await sessionRow(b.sessionId)).end_reason, "logout");
@@ -1406,7 +1582,8 @@ try {
     const terminal = await device("Robada");
     await admin`update devices set free_slot=null where tenant_id=${tenantId}`;
     const s = await pin(terminal, cashierId, CASHIER_PIN);
-    const [slot] = await admin`select free_slot from devices where id=${terminal.id}`;
+    const [slot] =
+      await admin`select free_slot from devices where id=${terminal.id}`;
     assert.equal(slot.free_slot, 1);
     await run((tx) =>
       revokeDevice(tx, owner, terminal.id, { operationId: randomUUID() }),
@@ -1469,11 +1646,14 @@ try {
     await rejects(
       legacyLogin(
         sql,
-        req({ gm_device: sign(terminal) }, {
-          tenantId,
-          login: `cash-${cashierId.slice(0, 8)}`,
-          secret: CASHIER_PIN,
-        }),
+        req(
+          { gm_device: sign(terminal) },
+          {
+            tenantId,
+            login: `cash-${cashierId.slice(0, 8)}`,
+            secret: CASHIER_PIN,
+          },
+        ),
         stubRes() as any,
       ),
       "device_revoked",
@@ -1677,14 +1857,25 @@ try {
       name: "Invited fixture",
     };
     const cookie = await signInGoogleOwner(sql, identity);
-    const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
+    const account = await withOwner(
+      sql,
+      cookie,
+      undefined,
+      async (_tx, a) => a,
+    );
     accountIds.push(account.id);
     const memberId = randomUUID();
     await admin`insert into employees(tenant_id,id,name,login,secret_hash,role)
       values(${tenantId},${memberId},'Invited fixture',${"account-" + account.id},${password(randomUUID())},'manager')`;
     await admin`insert into owner_memberships(account_id,tenant_id,employee_id) values(${account.id},${tenantId},${memberId})`;
     const entered = await withOwner(sql, cookie, undefined, (tx, a) =>
-      enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, ownerBrowserCookie()),
+      enterOwnerRestaurant(
+        tx,
+        a.id,
+        tenantId,
+        a.sessionId,
+        ownerBrowserCookie(),
+      ),
     );
     const [personal] =
       await admin`select kind,paired_by from devices where id=${entered.device.id}`;
@@ -1705,14 +1896,26 @@ try {
     // device (ACC-R6-2); a new Google sign-in is refused: the member is inactive.
     await rejects(
       withOwner(sql, cookie, undefined, (tx, a) =>
-        enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, ownerBrowserCookie()),
+        enterOwnerRestaurant(
+          tx,
+          a.id,
+          tenantId,
+          a.sessionId,
+          ownerBrowserCookie(),
+        ),
       ),
       "unauthorized",
     );
     const again = await signInGoogleOwner(sql, identity);
     await rejects(
       withOwner(sql, again, undefined, (tx, a) =>
-        enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, ownerBrowserCookie()),
+        enterOwnerRestaurant(
+          tx,
+          a.id,
+          tenantId,
+          a.sessionId,
+          ownerBrowserCookie(),
+        ),
       ),
       "forbidden",
     );
@@ -1725,7 +1928,12 @@ try {
       email: "fired-member@example.com",
       name: "Fired fixture",
     });
-    const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
+    const account = await withOwner(
+      sql,
+      cookie,
+      undefined,
+      async (_tx, a) => a,
+    );
     accountIds.push(account.id);
     const memberId = randomUUID();
     await admin`insert into employees(tenant_id,id,name,login,secret_hash,role)
@@ -1733,7 +1941,13 @@ try {
     await admin`insert into owner_memberships(account_id,tenant_id,employee_id) values(${account.id},${tenantId},${memberId})`;
     const enter = () =>
       withOwner(sql, cookie, undefined, (tx, a) =>
-        enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, ownerBrowserCookie()),
+        enterOwnerRestaurant(
+          tx,
+          a.id,
+          tenantId,
+          a.sessionId,
+          ownerBrowserCookie(),
+        ),
       );
     const entered = await enter();
     const phone = entered.device;
@@ -1755,7 +1969,10 @@ try {
     );
 
     await run((tx) =>
-      setStaffActive(tx, owner, memberId, { operationId: randomUUID(), active: false }),
+      setStaffActive(tx, owner, memberId, {
+        operationId: randomUUID(),
+        active: false,
+      }),
     );
     const [retired] = await admin`select active,revoked_reason,revoked_by,
         revoked_at is not null as stamped,free_slot from devices where id=${phone.id}`;
@@ -1837,14 +2054,16 @@ try {
     // A second sign-in of the same Google account from before the revocation
     // that never entered this device (a fresher gm_account in that browser).
     const older = await signInGoogleOwner(sql, identity);
-    const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
+    const account = await withOwner(
+      sql,
+      cookie,
+      undefined,
+      async (_tx, a) => a,
+    );
     accountIds.push(account.id);
     await admin`insert into owner_memberships(account_id,tenant_id,employee_id) values(${account.id},${tenantId},${secondOwnerId})`;
     const browser = ownerBrowserCookie();
-    const enter = (
-      c: string,
-      b: ReturnType<typeof ownerBrowserCookie>,
-    ) =>
+    const enter = (c: string, b: ReturnType<typeof ownerBrowserCookie>) =>
       withOwner(sql, c, undefined, (tx, a) =>
         enterOwnerRestaurant(tx, a.id, tenantId, a.sessionId, b),
       );
@@ -1869,7 +2088,8 @@ try {
     const laptop = ownerBrowserCookie();
     const fresh = await enter(renewed, laptop);
     assert.notEqual(fresh.device.id, first.device.id);
-    const [d] = await admin`select kind,active from devices where id=${fresh.device.id}`;
+    const [d] =
+      await admin`select kind,active from devices where id=${fresh.device.id}`;
     assert.deepEqual(d, { kind: "personal", active: true });
     // An expired (not revoked) device still resets without a new sign-in.
     await admin`update devices set token_expires_at=now()-interval '1 minute' where id=${fresh.device.id}`;
@@ -1882,18 +2102,36 @@ try {
       expiresInHours: null,
     });
     const terminal = await device("POS", { kind: null, expiresInHours: null });
-    assert.equal((await run((tx) => loadDevice(tx, personal)))?.kind, "personal");
-    assert.equal((await run((tx) => loadDevice(tx, terminal)))?.kind, "terminal");
-    assert.equal(await isTerminalRequest(sql, { gm_device: sign(personal) }), false);
-    assert.equal(await isTerminalRequest(sql, { gm_device: sign(terminal) }), true);
+    assert.equal(
+      (await run((tx) => loadDevice(tx, personal)))?.kind,
+      "personal",
+    );
+    assert.equal(
+      (await run((tx) => loadDevice(tx, terminal)))?.kind,
+      "terminal",
+    );
+    assert.equal(
+      await isTerminalRequest(sql, { gm_device: sign(personal) }),
+      false,
+    );
+    assert.equal(
+      await isTerminalRequest(sql, { gm_device: sign(terminal) }),
+      true,
+    );
     assert.equal(await isTerminalRequest(sql, {}), false);
-    assert.equal(await isTerminalRequest(sql, { gm_device: "forged.value" }), false);
+    assert.equal(
+      await isTerminalRequest(sql, { gm_device: "forged.value" }),
+      false,
+    );
     // The GAP-2 guards fail closed: a failed device lookup throws (refusal)
     // instead of answering "not a terminal" (A3).
     const down = {
       begin: () => Promise.reject(new Error("database unavailable")),
     } as unknown as postgres.Sql;
-    assert.equal(await isTerminalRequest(down, { gm_device: sign(terminal) }), false);
+    assert.equal(
+      await isTerminalRequest(down, { gm_device: sign(terminal) }),
+      false,
+    );
     await rejects(
       isTerminalRequest(down, { gm_device: sign(terminal) }, true),
       /database unavailable/,
@@ -1940,7 +2178,9 @@ try {
       active,
     });
     const hourAgo = new Date(Date.now() - 3600_000).toISOString();
-    const stale = as(ownerId, "owner", terminalA.id, { authenticatedAt: hourAgo });
+    const stale = as(ownerId, "owner", terminalA.id, {
+      authenticatedAt: hourAgo,
+    });
     await rejects(
       run((tx) => saveEmployee(tx, stale, body(randomUUID()))),
       "step_up_required",
@@ -1949,14 +2189,23 @@ try {
       await admin`select count(*)::int as n from employees where id=${employeeId}`;
     assert.equal(absent.n, 0);
     const op = randomUUID();
-    await run((tx) => saveEmployee(tx, as(ownerId, "owner", terminalA.id, {}), body(op)));
+    await run((tx) =>
+      saveEmployee(tx, as(ownerId, "owner", terminalA.id, {}), body(op)),
+    );
     const [created] =
       await admin`select pin_set_at is not null as pin from employees where id=${employeeId}`;
     assert.equal(created.pin, true);
     // operations.hash must not be a plain SHA-256 chain over a 6-digit PIN.
-    const [row] = await admin`select hash,result::text as result from operations where id=${op}`;
-    assert.notEqual(row.hash, hash(JSON.stringify({ ...body(op), secret: hash(secret) })));
-    assert.equal(row.hash, hash(JSON.stringify({ ...body(op), secret: pinFingerprint(secret) })));
+    const [row] =
+      await admin`select hash,result::text as result from operations where id=${op}`;
+    assert.notEqual(
+      row.hash,
+      hash(JSON.stringify({ ...body(op), secret: hash(secret) })),
+    );
+    assert.equal(
+      row.hash,
+      hash(JSON.stringify({ ...body(op), secret: pinFingerprint(secret) })),
+    );
     assert.equal(row.result.includes(secret), false);
     // Google-entered sessions on a personal device are exempt from step-up,
     // as for the Equipo commands; a PIN session on that device is not (A4).
@@ -1998,7 +2247,12 @@ try {
       email: "signup-owner@example.com",
       name: "Signup owner fixture",
     });
-    const account = await withOwner(sql, cookie, undefined, async (_tx, a) => a);
+    const account = await withOwner(
+      sql,
+      cookie,
+      undefined,
+      async (_tx, a) => a,
+    );
     accountIds.push(account.id);
     const signup = await withOwner(sql, cookie, account.csrf, (tx, a) =>
       createOwnerRestaurant(
@@ -2018,7 +2272,13 @@ try {
     signupTenants.push(signup.tenantId);
     // The owner enters from their own phone (personal device, Google session).
     const entered = await withOwner(sql, cookie, undefined, (tx, a) =>
-      enterOwnerRestaurant(tx, a.id, signup.tenantId, a.sessionId, ownerBrowserCookie()),
+      enterOwnerRestaurant(
+        tx,
+        a.id,
+        signup.tenantId,
+        a.sessionId,
+        ownerBrowserCookie(),
+      ),
     );
     const phoneCookies = {
       gm_device: sign(entered.device),
@@ -2037,13 +2297,21 @@ try {
     const code = await tenant(sql, signup.tenantId, (tx) =>
       createPairingCode(tx, phone, { deviceName: "Caja signup" }),
     );
-    const terminal = (await redeemPairingCode(sql, { code: code.code }, null)).device;
+    const terminal = (await redeemPairingCode(sql, { code: code.code }, null))
+      .device;
     const roster = async () =>
       (
-        await terminalState(sql, req({ gm_device: sign(terminal) }), stubRes() as any)
+        await terminalState(
+          sql,
+          req({ gm_device: sign(terminal) }),
+          stubRes() as any,
+        )
       ).staff ?? [];
     // 1. Without a PIN the Google owner is not on the terminal roster.
-    assert.equal((await roster()).some((e) => e.id === ownerEmployee), false);
+    assert.equal(
+      (await roster()).some((e) => e.id === ownerEmployee),
+      false,
+    );
     // 2. "Mi PIN para terminales compartidas" from the phone keeps the phone session.
     const ownPin = "864213";
     const saved = await tenant(sql, signup.tenantId, (tx) =>
@@ -2057,9 +2325,15 @@ try {
     assert.equal(kept.ended_at, null);
     assert.equal(kept.end_reason, null);
     assert.equal(kept.revoked, false);
-    assert.equal((await authenticate(phoneCookies)).session.id, entered.session.id);
+    assert.equal(
+      (await authenticate(phoneCookies)).session.id,
+      entered.session.id,
+    );
     // 3. The owner now appears on the roster and signs in by PIN on the terminal.
-    assert.equal((await roster()).some((e) => e.id === ownerEmployee), true);
+    assert.equal(
+      (await roster()).some((e) => e.id === ownerEmployee),
+      true,
+    );
     const signedIn = await pin(terminal, ownerEmployee, ownPin);
     assert.equal(signedIn.reused, false);
     const terminalCookies = {
@@ -2113,7 +2387,8 @@ try {
     const terminal = await device("Carrera");
     // touchSession with a row read before a concurrent end.
     const touched = await pin(terminal, cashierId, CASHIER_PIN);
-    const [before] = await admin`select s.*,e.role,l.selling_authorized as lease_selling from sessions s
+    const [before] =
+      await admin`select s.*,e.role,l.selling_authorized as lease_selling from sessions s
       join employees e on e.id=s.employee_id left join offline_leases l on l.session_id=s.id where s.id=${touched.sessionId}`;
     await admin`update sessions set last_seen_at=now()-interval '2 minutes' where id=${touched.sessionId}`;
     await run((tx) => endSession(tx, touched.sessionId, "ended_by_manager"));
@@ -2154,7 +2429,11 @@ try {
       release();
       await ending;
       result = await again;
-      assert.equal(waiting, true, "the PIN reuse must wait for the session row lock");
+      assert.equal(
+        waiting,
+        true,
+        "the PIN reuse must wait for the session row lock",
+      );
     } finally {
       release();
       await manager.end();
@@ -2264,18 +2543,18 @@ try {
       inspector = postgres(scratch(false), { max: 1, onnotice: () => {} });
     try {
       const apply = (file: string) =>
-        owner.begin((tx) => tx.unsafe(readFileSync(`migrations/${file}`, "utf8")));
+        owner.begin((tx) =>
+          tx.unsafe(readFileSync(`migrations/${file}`, "utf8")),
+        );
       const files = readdirSync("migrations")
         .filter((n) => n.endsWith(".sql"))
         .sort();
       assert.ok(files.includes("023_access.sql"));
       for (const file of files.filter((n) => n < "023_access.sql"))
         await apply(file);
-      const [who] = await owner`select rolsuper, rolbypassrls from pg_roles where rolname = current_user`;
-      assert.deepEqual(
-        { ...who },
-        { rolsuper: false, rolbypassrls: false },
-      );
+      const [who] =
+        await owner`select rolsuper, rolbypassrls from pg_roles where rolname = current_user`;
+      assert.deepEqual({ ...who }, { rolsuper: false, rolbypassrls: false });
       // Revision 022 rows in two tenants (the superuser inspector is exempt from RLS).
       const org = randomUUID(),
         tenants = [randomUUID(), randomUUID()];
@@ -2306,8 +2585,9 @@ try {
       );
       for (const r of rows.filter((r) => r.token_expires_at))
         assert.ok(
-          Math.abs(r.token_expires_at.getTime() - Date.now() - 30 * 86_400_000) <
-            3_600_000,
+          Math.abs(
+            r.token_expires_at.getTime() - Date.now() - 30 * 86_400_000,
+          ) < 3_600_000,
           "active legacy devices get the 30-day credential expiry",
         );
       const [forced] = await inspector`

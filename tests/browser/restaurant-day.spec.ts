@@ -25,7 +25,12 @@ import { setupA, setupB } from "../restaurant-day/setup-flows.js";
 import { preflight } from "../restaurant-day/preflight.js";
 import { serviceB } from "../restaurant-day/service-b.js";
 import { crossRestaurant } from "../restaurant-day/cross.js";
-import { assertTimingBudgets, serviceA1, serviceA2, timings } from "../restaurant-day/service-a.js";
+import {
+  assertTimingBudgets,
+  serviceA1,
+  serviceA2,
+  timings,
+} from "../restaurant-day/service-a.js";
 import { serviceA4, serviceA5 } from "../restaurant-day/close-a.js";
 import { serviceA3 } from "../restaurant-day/outage.js";
 
@@ -57,15 +62,20 @@ test.afterEach(async () => {
 });
 
 test.afterAll(async () => {
-  for (const d of Object.values(devices)) await d?.context.close().catch(() => {});
+  for (const d of Object.values(devices))
+    await d?.context.close().catch(() => {});
   // RD_SOFT (local triage) is never a pass.
-  expect(run.soft, "RD_SOFT findings: see test-results/restaurant-day/soft-findings.txt").toBe(0);
+  expect(
+    run.soft,
+    "RD_SOFT findings: see test-results/restaurant-day/soft-findings.txt",
+  ).toBe(0);
 });
 
 test.describe("restaurant day", () => {
   let dev: Devices;
   test.beforeAll(async ({ browser }) => {
-    dev = async (name) => (devices[name] ??= await newDevice(browser, name, baseUrl));
+    dev = async (name) =>
+      (devices[name] ??= await newDevice(browser, name, baseUrl));
   });
 
   test("G1 preflight and oracle self-check", async ({ request }) => {
@@ -73,9 +83,14 @@ test.describe("restaurant day", () => {
     run.step = "A0";
     // §5.1: the oracle reproduces the published tables before any browser work.
     expect(oracleDay(), "oracle vs expected.ts").toEqual(expectedDay());
-    writeFileSync(resolve(OUT, "oracle.json"), JSON.stringify(oracle(), null, 2));
+    writeFileSync(
+      resolve(OUT, "oracle.json"),
+      JSON.stringify(oracle(), null, 2),
+    );
     run.step = "G1";
-    expect(existsSync(resolve(OUT, "d22.log")), "G1.9 D22 refusal check").toBe(true);
+    expect(existsSync(resolve(OUT, "d22.log")), "G1.9 D22 refusal check").toBe(
+      true,
+    );
     await preflight(dev, request, state);
   });
 
@@ -103,7 +118,12 @@ test.describe("restaurant day", () => {
       run.step = "§11";
       run.timing = timings;
       const budgets = assertTimingBudgets();
-      test.info().annotations.push({ type: "timing", description: budgets.rows.join("\n") });
+      test
+        .info()
+        .annotations.push({
+          type: "timing",
+          description: budgets.rows.join("\n"),
+        });
       expect(timings).toHaveLength(5);
       await guard(["GAP-4", "DB-3", "FOH-10"], async () => {
         expect(budgets.problems, "§11 tap and latency budgets").toEqual([]);

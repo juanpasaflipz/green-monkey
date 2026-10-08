@@ -322,8 +322,9 @@ test("offline cash persists and synchronizes after reconnect", async ({
   // build id baked into the worker and stamped on the HTML.
   const shell = await page.evaluate(async () => {
     const build =
-      document.querySelector('meta[name="gm-build"]')?.getAttribute("content") ??
-      "";
+      document
+        .querySelector('meta[name="gm-build"]')
+        ?.getAttribute("content") ?? "";
     const names = await caches.keys();
     const name = `green-monkey-shell-${build.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
     const requests = names.includes(name)
@@ -342,7 +343,9 @@ test("offline cash persists and synchronizes after reconnect", async ({
   expect(new URL(shell.scriptURL).search).toBe("");
   expect(shell.names).toContain(shell.name);
   expect(shell.paths).toContain("/index.html");
-  expect(shell.paths.some((path) => path.startsWith("/assets/App-"))).toBe(true);
+  expect(shell.paths.some((path) => path.startsWith("/assets/App-"))).toBe(
+    true,
+  );
   expect(shell.paths.some((path) => path.startsWith("/assets/dexie-"))).toBe(
     true,
   );

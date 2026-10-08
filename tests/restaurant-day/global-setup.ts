@@ -221,7 +221,9 @@ export default async function globalSetup() {
   ] as const;
   const ci = identifying
     .map((n) => [n, LEGAL_CI_ENV[n]] as const)
-    .filter(([n, v]) => process.env[n]?.trim().toLowerCase() === v.toLowerCase());
+    .filter(
+      ([n, v]) => process.env[n]?.trim().toLowerCase() === v.toLowerCase(),
+    );
   if (ci.length)
     throw Error(
       `restaurant-day setup: ${ci.map(([n]) => n).join(", ")} still hold the CI literals; export the RD_* values`,
@@ -461,7 +463,8 @@ export default async function globalSetup() {
     await waitFor(
       "the Facturapi fake",
       async () =>
-        (await fetch(`http://127.0.0.1:${fakePort}/v2/organizations`)).status > 0,
+        (await fetch(`http://127.0.0.1:${fakePort}/v2/organizations`)).status >
+        0,
       30_000,
       fake,
     ).catch((error) => {
@@ -489,7 +492,9 @@ export default async function globalSetup() {
       "/api/ops/status ok",
       async () => {
         const s = await (
-          await fetch(`${u.base.origin}/api/ops/status`, { headers: EDGE_HEADERS })
+          await fetch(`${u.base.origin}/api/ops/status`, {
+            headers: EDGE_HEADERS,
+          })
         ).json();
         return (
           s.ok === true && s.worker?.status === "ok" && s.degraded === false

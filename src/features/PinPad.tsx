@@ -74,7 +74,9 @@ export function PinPad({
     >
       <label className="field">
         <span>
-          {password ? t.secret : t.accessPinFor.replace("{name}", employee.name)}
+          {password
+            ? t.secret
+            : t.accessPinFor.replace("{name}", employee.name)}
         </span>
         <input
           ref={input}
