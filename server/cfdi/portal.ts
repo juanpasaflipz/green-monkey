@@ -37,6 +37,7 @@ import {
   cfdiState,
   fiscalFacts,
   loadDocument,
+  portalReissues,
   portalStatus,
   filesStored,
   ticketFacts,
@@ -256,7 +257,8 @@ export async function portalSubmit(
             receptor: p.receptor,
             cardForm,
             confirmPreStart: false,
-            reissueGlobal: state.settings.portalReissueGlobal,
+            // The terms in force or a change that waits (CFDIFIX-R3-1), as the deadline counts.
+            reissueGlobal: portalReissues(state.settings),
           });
           return { documentId: created.documentId };
         } catch (e) {

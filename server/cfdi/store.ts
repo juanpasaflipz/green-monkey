@@ -1401,6 +1401,20 @@ export async function ticketDeadlineInfo(
   return deadlineOf(businessDate, s, builds.get(businessDate), facts);
 }
 
+/**
+ * Whether the portal reissues a global for a ticket it covers (CFDIFIX-R3-1): the terms in force
+ * allow it, or a self-invoicing change that waits does. deadlineOf gives a customer the later of
+ * both terms' deadlines while a change waits, so a receipt may print the waiting terms' deadline,
+ * unbound by the global; the portal honors it, through a reissue, until that deadline (the
+ * expiry check still applies). The portal request, its expiry check and reissueAllowed all read
+ * this. A ticket is never both in a global and self-invoiced: the reissue takes it out first.
+ */
+export function portalReissues(
+  s: Pick<SettingsRow, "portalReissueGlobal" | "nextSelfInvoice"> | null,
+): boolean {
+  return !!s && (s.portalReissueGlobal || !!s.nextSelfInvoice?.reissue);
+}
+
 /** The self-invoicing terms of settings as the deadline guards read them (deadlineOf's). */
 export type SelfInvoiceSettings = Pick<
   SettingsRow,
@@ -1573,11 +1587,12 @@ export async function ticketView(
     !csdUsable(state.organization, settings?.mode ?? "test", now.getTime())
   )
     status = "not_ready";
-  // The portal's deadline applies to a ticket it could reissue from a global too (CFDI-UX-10).
+  // The portal's deadline applies to a ticket it could reissue from a global too (CFDI-UX-10),
+  // under the terms in force or a change that waits (CFDIFIX-R3-1).
   if (
     o.portal &&
     (status === "available" ||
-      (status === "in_global" && !!settings?.portalReissueGlobal)) &&
+      (status === "in_global" && portalReissues(settings))) &&
     deadline &&
     Date.parse(deadline) < now.getTime()
   )
@@ -1660,7 +1675,7 @@ export async function ticketView(
         }
       : null,
     reissueAllowed: o.portal
-      ? !!settings?.portalReissueGlobal
+      ? portalReissues(settings)
       : !!o.viewer && ["owner", "manager"].includes(o.viewer.role),
     reissueRoute: reissue?.route ?? null,
     reissueReason: reissue?.reason ?? null,

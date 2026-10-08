@@ -1,8 +1,11 @@
 import postgres from "postgres";
+import { MEXICO_CITY } from "../fixtures/business-date-zones.js";
 
 /** The demo organization the fixture seed creates (scripts/demo-fixtures.ts). */
 const DEMO_ORGANIZATION = "10000000-0000-4000-8000-000000000000";
-const DEFAULT_CUTOFF = 240;
+/** The seed's zone (the restaurants table's defaults): Mexico City, business day from 04:00. */
+const DEFAULT_TIMEZONE = MEXICO_CITY.timezone;
+const DEFAULT_CUTOFF = MEXICO_CITY.cutoff;
 const SHIFTED_CUTOFF = 600;
 const MARGIN_MINUTES = 180;
 
@@ -16,6 +19,14 @@ const MARGIN_MINUTES = 180;
  * away. Rollover behaviour itself is covered by DB tests with explicit times.
  * Only the isolated local fixture database is touched (as the specs' own
  * fixture guards require); any other target is left alone.
+ *
+ * Every demo restaurant starts the run in the seed's zone (CFDIFIX-R3-3):
+ * America/Mexico_City, with the 04:00 cutoff (10:00 near the rollover, as
+ * above). A run killed while tests/browser/cfdi.spec.ts had pinned the demo
+ * restaurant's business date elsewhere (Pacific/Kiritimati at 00:00, or a
+ * cutoff an hour later), or while business-day.spec had moved its cutoff,
+ * never reached the spec's finally or afterEach; without this, later local
+ * runs would keep that zone.
  *
  * It also delivers the kitchen rounds earlier runs left open on the demo
  * restaurants and decides the kitchen reviews of offline sales they left
@@ -39,25 +50,31 @@ export default async function globalSetup() {
     return;
   const sql = postgres(process.env.MIGRATION_DATABASE_URL!, { max: 1 });
   try {
-    const restaurants = await sql<{ id: string; timezone: string }[]>`
-      select id, timezone from restaurants
-      where organization_id = ${DEMO_ORGANIZATION} and cutoff = ${DEFAULT_CUTOFF}`;
-    for (const { id, timezone } of restaurants) {
-      const [hour, minute] = new Intl.DateTimeFormat("en-GB", {
-        timeZone: timezone,
-        hour: "2-digit",
-        minute: "2-digit",
-        hourCycle: "h23",
-      })
-        .format(new Date())
-        .split(":")
-        .map(Number);
-      const local = hour * 60 + minute;
-      const untilRollover = (DEFAULT_CUTOFF - local + 1440) % 1440;
-      if (untilRollover >= MARGIN_MINUTES) continue;
+    const [hour, minute] = new Intl.DateTimeFormat("en-GB", {
+      timeZone: DEFAULT_TIMEZONE,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .format(new Date())
+      .split(":")
+      .map(Number);
+    const local = hour * 60 + minute;
+    const untilRollover = (DEFAULT_CUTOFF - local + 1440) % 1440;
+    const cutoff =
+      untilRollover < MARGIN_MINUTES ? SHIFTED_CUTOFF : DEFAULT_CUTOFF;
+    const restaurants = await sql<
+      { id: string; timezone: string; cutoff: number }[]
+    >`
+      select id, timezone, cutoff from restaurants
+      where organization_id = ${DEMO_ORGANIZATION}`;
+    for (const r of restaurants) {
+      if (r.timezone === DEFAULT_TIMEZONE && r.cutoff === cutoff) continue;
+      // The business-day settings trigger (029) records the old zone in the restaurant's tenant.
       await sql.begin(async (tx) => {
-        await tx`select set_config('app.tenant_id', ${id}, true)`;
-        await tx`update restaurants set cutoff = ${SHIFTED_CUTOFF} where id = ${id}`;
+        await tx`select set_config('app.tenant_id', ${r.id}, true)`;
+        await tx`update restaurants set timezone = ${DEFAULT_TIMEZONE}, cutoff = ${cutoff}
+          where id = ${r.id}`;
       });
     }
     const demo = await sql<{ id: string }[]>`

@@ -46,7 +46,10 @@ export type InvoiceRequest = {
   receptor: Receptor;
   cardForm: CardForm | null;
   confirmPreStart: boolean;
-  /** Manager (staff) or the owner's portal setting: cancel the covering global with motive 04. */
+  /**
+   * Manager (staff) or the owner's portal setting (portalReissues: in force, or in a change that
+   * waits, CFDIFIX-R3-1): cancel the covering global with motive 04.
+   */
   reissueGlobal: boolean;
 };
 
