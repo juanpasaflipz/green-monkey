@@ -35,6 +35,7 @@ import {
   type RunState,
 } from "./env.js";
 import { LEGAL_CI_ENV } from "../../server/legal-ci.js";
+import { legalConfig } from "../../server/legal.js";
 import { businessDate, minutesUntilLocal, dstChangeWithin } from "./oracle.js";
 import { waivedIds } from "./ui.js";
 
@@ -224,6 +225,22 @@ export default async function globalSetup() {
   if (ci.length)
     throw Error(
       `restaurant-day setup: ${ci.map(([n]) => n).join(", ")} still hold the CI literals; export the RD_* values`,
+    );
+  // Production publishes only well-formed values (account §2.2, legalConfig):
+  // any other value is left out of the documents or of "Ayuda y soporte" and
+  // logged (legal_optional_values_invalid, a G4 failure much later); fail here
+  // with the names. SUPPORT_PHONE is E.164 without spaces (+525512345678).
+  const refused = legalConfig({
+    ...Object.fromEntries(
+      [...LEGAL, ...LEGAL_OPTIONAL].map((n) => [n, process.env[n] ?? ""]),
+    ),
+    NODE_ENV: "production",
+    APP_ENV: "production",
+  });
+  const unusable = [...refused.missing, ...refused.invalid];
+  if (unusable.length)
+    throw Error(
+      `restaurant-day setup: production refuses ${unusable.map((n) => `RD_${n}`).join(", ")} (format and placeholder rules of server/legal.ts; a phone is E.164 without spaces, like +525512345678)`,
     );
   if (process.env.LEGAL_UNPUBLISHED_SIGNUP === "allow")
     throw Error(
