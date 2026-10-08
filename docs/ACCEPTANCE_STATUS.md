@@ -99,6 +99,16 @@ branch K against the fake (10/10 in 9.3 min, D1–D19 with row K, 564 s), and br
 modelled 10.5 s and 11.6 s, every tap's p95 under 150 ms, system time about 0.5 s. The repository variable `RD_SUPPORT_PHONE` holds the same spaced value (LD-57), so the
 first CI run will stop at setup until it is rewritten in E.164.
 
+**Part 2, October 8, 2026 (local only).** After absorbing integration/v1 (cfdifix's CFDI rehearsal
+fixes and migration 036) and the review items ACC-PR-4 (branch K asserts the server's periodicity
+decision; B1.6 K, B6.9 K (a) and B7.5 K rebound below), ACC-PR-5b (cfdi's 24-hour times) and
+ACC-PR-6 (the CFDI settings panel ignores older answers), on `d29e3de`: branch K against the fake
+(10/10 in 9.3 min, D1–D19 with row K, 564 s; the server's decision "day in force, nothing
+waiting", the receipt's "Disponible hasta el 08/10/2026 a las 17:00" with that run's 16:00
+cutoff), then branch N twice in a row (10/10 in 8.8 min and D1–D19 each, 535 s and 533 s). Every
+run had 0 waivers, 0 soft findings, no error or warn line from the web and only the tolerated
+`web_down` warn from the worker (§15 Q18).
+
 Timing (§11), canonical order sampled five times per run on the 10-inch tablet, local runs:
 every tap's latency p95 within its budget (taps 1-6 and 8 under 80 ms against 150-700 ms; "Confirmar
 cobro" 141-253 ms against 2 s), system time p95 0.53-0.68 s (budget 4 s), kitchen appearance p95
