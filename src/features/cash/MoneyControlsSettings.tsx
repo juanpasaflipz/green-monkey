@@ -11,6 +11,7 @@ import {
   type StaffRole,
 } from "../../../shared/discounts";
 import { api } from "../../api";
+import { dateTime } from "../../datetime";
 import { Button, Field } from "../../components/ui";
 import { strings, errorNotice, translateError, type Key } from "../../i18n";
 import { fill } from "../discounts/format";
@@ -284,9 +285,11 @@ export function MoneyControlsSettings({
           <p className="muted tiny">
             {fill(t("discountsControlsUpdated"), {
               name: view.updatedByName,
-              time: new Date(view.updatedAt).toLocaleString(locale, {
-                timeZone: session.restaurant.timezone,
-              }),
+              time: dateTime(
+                view.updatedAt,
+                session.restaurant.timezone,
+                locale,
+              ),
             })}
           </p>
         )}

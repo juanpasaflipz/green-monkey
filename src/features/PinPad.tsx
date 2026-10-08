@@ -9,6 +9,7 @@ export function lockTime(iso: string, locale: Locale) {
   return new Date(iso).toLocaleTimeString(locale === "es" ? "es-MX" : "en-US", {
     hour: "2-digit",
     minute: "2-digit",
+    hourCycle: "h23",
   });
 }
 

@@ -25,6 +25,12 @@ import { ArchivedDrawerNote } from "./offline/ArchivedDrawerNote";
 import { OfflineKitchenReview } from "./offline/OfflineKitchenReview";
 import { Button, Field, Modal, Badge } from "../components/ui";
 import { DrawerPanel } from "./cash/DrawerPanel";
+import {
+  cachedDrawer as readCachedDrawer,
+  rememberDrawer,
+  type DrawerFact,
+} from "./cash/drawer-cache";
+import type { DrawerView } from "./cash/DrawerCloseDialog";
 import { DrawerReviewDialog } from "./cash/DrawerReviewDialog";
 import { MoneyControlsSettings } from "./cash/MoneyControlsSettings";
 import type { CashHistoryRow } from "./CashHistory";
@@ -32,6 +38,7 @@ import { TodayDashboard } from "./reports/TodayDashboard";
 import { ReportsView, openReports } from "./reports/ReportsView";
 import { CortePrintButton } from "./reports/CortePrintButton";
 import { CORTE_BLIND_WINDOW_HOURS } from "../../shared/reports";
+import { dateTime } from "../datetime";
 export function Operations({
   view,
   session,
@@ -58,6 +65,10 @@ export function Operations({
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  /** offline (026, ACC-PR-1): Caja shows this device's cached drawer. */
+  const [cachedDrawer, setCachedDrawer] = useState(false);
+  /** offline (ACC-PR-3): the device's drawer fact, when this employee has no copy. */
+  const [drawerFact, setDrawerFact] = useState<DrawerFact | null>(null);
   // One operation id per opened dialog, kept across retries (MON-3).
   const [modal, setModalState] = useState<{
     kind: string;
@@ -83,7 +94,30 @@ export function Operations({
         return;
       }
       if (view === "settings") setData(await api("/capabilities"));
-      else setData(await api("/" + view));
+      else if (view === "cash") {
+        try {
+          const drawer = await api<DrawerView | null>("/cash");
+          setData(drawer);
+          setCachedDrawer(false);
+          setDrawerFact(null);
+          void rememberDrawer(session, drawer);
+        } catch (e) {
+          // offline (026): during an outage Caja shows the drawer this device
+          // last saw (Selling caches it), never "Caja cerrada" with "Abrir
+          // caja"; the offline notice stays above it (restaurant-day A13.8).
+          // Only its state: the cached figures are not live and never include
+          // offline sales (ACC-PR-1); they load again with the connection. An
+          // employee with no copy of their own sees the device's drawer fact
+          // (open, when and by whom; ACC-PR-3).
+          const cached = await readCachedDrawer(session);
+          if (online || !cached) throw e;
+          setData(cached.view ?? null);
+          setDrawerFact(cached.fact ?? null);
+          setCachedDrawer(true);
+          setError(errorNotice(e, locale));
+          return;
+        }
+      } else setData(await api("/" + view));
       setError("");
     } catch (e) {
       setError(errorNotice(e, locale));
@@ -95,8 +129,14 @@ export function Operations({
     setLoading(true);
     setData(null);
     setDetail(null);
+    setCachedDrawer(false);
+    setDrawerFact(null);
     void load();
   }, [view]);
+  useEffect(() => {
+    // ACC-PR-1: the cached drawer's note promises the figures on reconnect.
+    if (online && view === "cash" && cachedDrawer) void load();
+  }, [online]);
   /**
    * offline (026): this device's local sales must sync before its drawer is
    * closed. Returns the translated reason, or null (discounts' close dialog
@@ -233,6 +273,7 @@ export function Operations({
               key={historyKey}
               locale={locale}
               currency={session.restaurant.currency}
+              timezone={session.restaurant.timezone}
               rowActions={(row) => (
                 <>
                   {row.needs_review && (
@@ -257,6 +298,9 @@ export function Operations({
               session={session}
               locale={locale}
               data={data}
+              online={online}
+              cached={cachedDrawer}
+              fact={drawerFact}
               money={m}
               onOpenDrawer={() => setModal({ kind: "open" })}
               onPaidOut={() => setModal({ kind: "paidout" })}
@@ -506,9 +550,11 @@ export function Operations({
                     )}
                   </strong>
                   <time>
-                    {new Date(r.created_at).toLocaleString(locale, {
-                      timeZone: session.restaurant.timezone,
-                    })}
+                    {dateTime(
+                      r.created_at,
+                      session.restaurant.timezone,
+                      locale,
+                    )}
                   </time>
                 </div>
               ))}
@@ -579,7 +625,15 @@ export function Operations({
                   ))}
                 </>
               ) : (
-                <Field label={t(modal.item ? "quantity" : "amount")}>
+                <Field
+                  label={t(
+                    modal.kind === "open"
+                      ? "opening"
+                      : modal.item
+                        ? "quantity"
+                        : "amount",
+                  )}
+                >
                   <input
                     name="amount"
                     inputMode="decimal"

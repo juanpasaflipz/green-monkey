@@ -83,6 +83,7 @@ import {
   OrganizationFacts,
   orgErrorText,
   PeriodicityStatus,
+  responseOrder,
   SelfInvoiceBound,
   SelfInvoicePendingStatus,
   selfInvoiceShortens,
@@ -433,6 +434,18 @@ describe("cfdi client: ticket status (29)", () => {
       false,
     );
     expect(ticketStatusWanted(ticket.id, status())).toBe(true);
+    // Never activated (no mode): the server would answer cfdi_disabled (409), which the
+    // browser logs (restaurant-day G4 at A14.4, branch K). Paused keeps its mode: asked.
+    const off = {
+      enabled: false,
+      ready: false,
+      canInvoice: false,
+      selfInvoice: null,
+    };
+    expect(ticketStatusWanted(ticket.id, status({ ...off, mode: null }))).toBe(
+      false,
+    );
+    expect(ticketStatusWanted(ticket.id, status(off))).toBe(true);
     function Probe({ id }: { id: string | null }) {
       return createElement("i", null, String(useCfdiTicketStatus(id)));
     }
@@ -975,6 +988,37 @@ describe("cfdi client: helpers", () => {
       ),
     ).toBe(true);
     expect(settling(null)).toBe(false);
+  });
+  it("settings: an older answer never replaces a newer one (ACC-PR-6)", () => {
+    // Two reads answered out of order: the late, older answer is dropped.
+    let order = responseOrder();
+    const first = order.read();
+    const second = order.read();
+    expect(order.show(second)).toBe(true);
+    expect(order.show(first)).toBe(false);
+    // In order, both apply.
+    order = responseOrder();
+    const a = order.read();
+    const b = order.read();
+    expect(order.show(a)).toBe(true);
+    expect(order.show(b)).toBe(true);
+    // A read in flight when a save answers (the fiscal-save re-read or the poll, possibly
+    // answered before the save committed) is dropped; a read started after it applies.
+    order = responseOrder();
+    const before = order.read();
+    order.saved();
+    expect(order.show(before)).toBe(false);
+    expect(order.stale(before)).toBe(true);
+    const after = order.read();
+    expect(order.stale(after)).toBe(false);
+    expect(order.show(after)).toBe(true);
+    // A failed read's error is stale only when a newer answer is already shown.
+    order = responseOrder();
+    const failed = order.read();
+    expect(order.stale(failed)).toBe(false);
+    const newer = order.read();
+    expect(order.show(newer)).toBe(true);
+    expect(order.stale(failed)).toBe(true);
   });
   it("corte coverage renders the three lines", () => {
     const out = html(

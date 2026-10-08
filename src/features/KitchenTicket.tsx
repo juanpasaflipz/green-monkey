@@ -208,6 +208,7 @@ export function KitchenTicketDocument({
           timeZone: timezone,
           hour: "2-digit",
           minute: "2-digit",
+          hourCycle: "h23",
         })}{" "}
         · {ticket.tableName ?? t.noTable}
         {ticket.waiterName ? ` · ${ticket.waiterName}` : ""}

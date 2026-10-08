@@ -7,6 +7,7 @@ import { tenderMethodLabel } from "../labels";
 import { Badge, Button } from "../components/ui";
 import { fill } from "./discounts/format";
 import "./cash/cash.css";
+import { dateTime } from "../datetime";
 
 /** One closed drawer as GET /cash/history lists it (discounts 028 columns included). */
 export type CashHistoryRow = {
@@ -34,9 +35,12 @@ export type CashHistoryRow = {
 export function CashHistory({
   locale,
   currency,
+  timezone,
   rowActions,
 }: {
   locale: Locale;
+  /** The restaurant's timezone, for the dates it prints (ACC-PR-5). */
+  timezone: string;
   /** Restaurant currency, used when a drawer has no tender currency evidence. */
   currency: string;
   /**
@@ -82,7 +86,7 @@ export function CashHistory({
       {rows.map((row) => (
         <article className="panel" key={row.id}>
           <h3>
-            {row.device_name} · {new Date(row.closed_at).toLocaleString(locale)}
+            {row.device_name} · {dateTime(row.closed_at, timezone, locale)}
           </h3>
           <div className="cash-history-meta">
             {row.closed_by_name && (
@@ -167,7 +171,7 @@ export function CashHistory({
                 <li key={x.id}>
                   {tenderMethodLabel(x.method, x.source, locale)} ·{" "}
                   {format(x.amount + x.tip, row)} ·{" "}
-                  {new Date(x.created_at).toLocaleTimeString(locale)}
+                  {dateTime(x.created_at, timezone, locale)}
                 </li>
               ))}
               {(detail.refunds ?? []).map((x: any) => (
@@ -175,14 +179,14 @@ export function CashHistory({
                   {t.discountsHistoryRefunds} ·{" "}
                   {tenderMethodLabel(x.method ?? "cash", undefined, locale)} · −
                   {format(x.amount, row)} ·{" "}
-                  {new Date(x.created_at).toLocaleTimeString(locale)}
+                  {dateTime(x.created_at, timezone, locale)}
                 </li>
               ))}
               {(detail.movements ?? []).map((x: any) => (
                 <li key={x.id}>
                   {t.discountsHistoryPaidOuts} · {format(x.amount, row)}
                   {x.reason ? ` · ${x.reason}` : ""} ·{" "}
-                  {new Date(x.created_at).toLocaleTimeString(locale)}
+                  {dateTime(x.created_at, timezone, locale)}
                 </li>
               ))}
             </ul>

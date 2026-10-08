@@ -13,6 +13,9 @@ const webkitInstalled = (() => {
 
 export default defineConfig({
   testDir: "tests/browser",
+  // The restaurant-day gate has its own config and production-mode servers
+  // (playwright.restaurant-day.config.ts, npm run test:acceptance:day).
+  testIgnore: ["**/restaurant-day.spec.ts"],
   // Keeps the demo restaurants' business day from rolling over mid-run.
   globalSetup: "./tests/browser/global-setup.ts",
   workers: 1,

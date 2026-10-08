@@ -74,7 +74,10 @@ import {
 } from "../server/access-staff.js";
 import { saasTaxConfig } from "../server/saas-tax.js";
 import { LEGAL_DOCUMENTS } from "../shared/legal.js";
-import { EXPORT_TABLE_DENYLIST } from "../shared/account-export.js";
+import {
+  EXPORT_TABLE_DENYLIST,
+  EXPORT_TABLE_LABELS,
+} from "../shared/account-export.js";
 import type { Session } from "../shared/domain.js";
 
 const { runtime, migration } = isolatedTarget(process.env);
@@ -1881,6 +1884,18 @@ try {
     assert.ok(
       !cfdi.get("cfdi_csd_uploads")!.columns.some((c) => /secret/.test(c)),
     );
+  });
+  await test("29f export: every exportable table has a Spanish and an English label, so the owner's table picker never shows a raw table name (restaurant-day G3, FOH-16)", async () => {
+    const tables = await inTenant(A.tenantId, (tx) => exportTables(tx));
+    assert.ok(tables.length > 40, `${tables.length} tables`);
+    const unlabelled = tables
+      .map((t) => t.name)
+      .filter((name) => !EXPORT_TABLE_LABELS[name]);
+    assert.deepEqual(unlabelled, []);
+    for (const [name, [es, en]] of Object.entries(EXPORT_TABLE_LABELS)) {
+      assert.ok(!/_/.test(es) && !/_/.test(en), name);
+      assert.ok(es.trim() && en.trim(), name);
+    }
   });
   await test("29e export: while an export runs, exportBusy is true (the /account-data/tables pre-check refuses then) and a second one is export_busy; afterwards exports run again (ACC-9)", async () => {
     /** A response whose client reads only when released (backpressure). */

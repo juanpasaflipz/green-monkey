@@ -60,6 +60,14 @@ export function CartLine({
   useEffect(() => {
     if (justAdded) ref.current?.scrollIntoView({ block: "nearest" });
   }, [justAdded]);
+  const editorRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // The editor opens below the line: bring its last control ("Listo") and
+    // the chips above it on screen, so a tablet cashier never scrolls the cart
+    // to finish a note (FOH-10).
+    if (editing)
+      editorRef.current?.lastElementChild?.scrollIntoView({ block: "nearest" });
+  }, [editing]);
   if (line.error)
     return (
       <div
@@ -137,7 +145,7 @@ export function CartLine({
           </button>
         </div>
         {editing && !locked && (
-          <div className="line-note-editor" id={noteId}>
+          <div className="line-note-editor" id={noteId} ref={editorRef}>
             <label className="field">
               <span>{t("serviceLineNote")}</span>
               <textarea

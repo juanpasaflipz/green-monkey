@@ -48,6 +48,7 @@ export function PlanSettings({
       dateStyle: "medium",
       timeZone: timezone,
       timeStyle: "short",
+      hourCycle: "h23",
     }).format(new Date(iso));
   const formatPrice = (minor: number) =>
     new Intl.NumberFormat(es ? "es-MX" : "en-US", {
@@ -132,7 +133,12 @@ export function PlanSettings({
                 )}
               </p>
             )}
-          <BillingControls key={tenantId} tenantId={tenantId} locale={locale} />
+          <BillingControls
+            key={tenantId}
+            tenantId={tenantId}
+            locale={locale}
+            timezone={timezone}
+          />
         </>
       )}
     </section>

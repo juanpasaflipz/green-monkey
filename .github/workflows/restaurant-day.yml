@@ -1,0 +1,207 @@
+name: Restaurant day acceptance
+# The go-live gate (specs/acceptance.md §13): two complete business days through
+# the UI of a production-mode web + worker on a disposable database, then the DB
+# reconciliation suite. About 30 minutes, so it never runs on ordinary PRs: on
+# demand, nightly, and as the required check of a release/* PR into main.
+on:
+  workflow_dispatch:
+    inputs:
+      cfdi:
+        description: Also run branch K (Facturapi sandbox) when FACTURAPI_TEST_KEY is set
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 13 * * *" # 07:00 Mexico City / 06:00 Tijuana: far from the 04:00 cutoff
+  pull_request:
+    branches: [main]
+    # The go-live-waiver-approved label is read from the event payload and a
+    # re-run replays the old one: after the product owner applies it, close and
+    # reopen the PR (§13.5). Label events are not triggers, so labelling never
+    # cancels a gate in progress.
+permissions:
+  contents: read
+concurrency:
+  group: restaurant-day-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  day:
+    # The required status check context (ops/github/main-ruleset.json). A job
+    # skipped by its `if` reports success, so ordinary PRs are never blocked.
+    name: restaurant-day
+    # Ordinary PRs skip at once.
+    if: github.event_name != 'pull_request' || startsWith(github.head_ref, 'release/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    services:
+      postgres:
+        # Neon runs PostgreSQL 18 (OPS-12).
+        image: postgres:18
+        env:
+          POSTGRES_USER: gm_provisioner
+          POSTGRES_PASSWORD: local-only-provisioner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gm_provisioner -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    # No SIGNING_KEYS / JWT_SECRET here: global setup generates both per run (§3.3);
+    # the synthetic CI kid of qualification.yml is refused by a production-mode web.
+    # No DATABASE_URL either: global setup builds every URL for the disposable
+    # green_monkey_acceptance_dev and hands each process only its own (§3.2).
+    env:
+      PGPASSWORD: local-only-provisioner
+      RD_ACCEPTANCE: "1"
+      TEST_BASE_URL: http://127.0.0.1:3390
+      APP_URL: https://127.0.0.1:3390 # LD-16 L12, §3.2.1: https APP_URL over the plain loopback listener
+      # Legal and support values production mode publishes (repository variables, §3.3):
+      # the vendor's real ones or a plausible fictional set that never reaches Railway
+      # (LD-3). Production refuses placeholders and the CI literals, failing G1.6.
+      RD_LEGAL_ENTITY_NAME: ${{ vars.RD_LEGAL_ENTITY_NAME }}
+      RD_LEGAL_ENTITY_ADDRESS: ${{ vars.RD_LEGAL_ENTITY_ADDRESS }}
+      RD_LEGAL_ENTITY_RFC: ${{ vars.RD_LEGAL_ENTITY_RFC }}
+      RD_LEGAL_PRIVACY_CONTACT_EMAIL: ${{ vars.RD_LEGAL_PRIVACY_CONTACT_EMAIL }}
+      RD_LEGAL_JURISDICTION: ${{ vars.RD_LEGAL_JURISDICTION }}
+      RD_SUPPORT_EMAIL: ${{ vars.RD_SUPPORT_EMAIL }}
+      RD_SUPPORT_PHONE: ${{ vars.RD_SUPPORT_PHONE }}
+      RD_SUPPORT_HOURS: ${{ vars.RD_SUPPORT_HOURS }}
+      # Comma-separated audit finding IDs (§13.5); empty on a release PR unless the
+      # product owner applied go-live-waiver-approved.
+      RD_WAIVE: ${{ vars.RD_WAIVE }}
+      WAIVER_APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'go-live-waiver-approved') }}
+    steps:
+      - name: Waivers on a release PR need the product owner's label (§13.5)
+        if: github.event_name == 'pull_request'
+        run: |
+          # >>> waiver-guard
+          if [ -n "$(printf '%s' "${RD_WAIVE:-}" | tr -d ' ,')" ] && [ "${WAIVER_APPROVED:-false}" != "true" ]; then
+            echo "::error::RD_WAIVE=$RD_WAIVE on a release PR needs the go-live-waiver-approved label (specs/acceptance.md §13.5)"
+            exit 1
+          fi
+          # <<< waiver-guard
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nightly runs the release branch named by RD_NIGHTLY_REF (§13.2);
+          # every other event checks out its own ref.
+          ref: ${{ github.event_name == 'schedule' && vars.RD_NIGHTLY_REF || '' }}
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      # Cluster roles, exactly as qualification.yml (CI parity, LD-12/LD-15). The
+      # database itself is dropped, created, granted, migrated and
+      # support-provisioned by global setup (§3.1 steps 2-4).
+      - name: Cluster roles
+        run: |
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/provision-local.sql
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/ops/sql/globals.sql
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -c "GRANT gm_jobs_worker TO gm_worker"
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE gm_migrator LOGIN PASSWORD 'local-only-migrator'"
+      - name: Stamp the build (G1.2, /api/version reports the commit under test)
+        run: |
+          commit="$(git rev-parse HEAD)"
+          node scripts/ops/stamp-build.mjs "$commit"
+          echo "RD_BUILD_COMMIT=$commit" >> "$GITHUB_ENV"
+      # build → legal-ci.sh (LD-22, keeps the RD values) → global setup → browser → DB suite
+      - run: npm run test:acceptance:day
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: restaurant-day
+          path: |
+            playwright-report/restaurant-day/
+            test-results/restaurant-day/
+
+  # A job-level `if` cannot read secrets: this one reports whether the Facturapi
+  # test key exists, so day-cfdi shows "skipped" only when it is absent (§13.2).
+  cfdi-key:
+    if: inputs.cfdi || startsWith(github.head_ref, 'release/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      present: ${{ steps.key.outputs.present }}
+    steps:
+      - id: key
+        env:
+          FACTURAPI_TEST_KEY: ${{ secrets.FACTURAPI_TEST_KEY }}
+        run: echo "present=$([ -n "$FACTURAPI_TEST_KEY" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  # Branch K of B1.6 / B6.9 / B7.5: the worker files against the Facturapi sandbox.
+  # Global setup runs web and worker as APP_ENV=staging (cfdi §2.2 sandbox_shared;
+  # production refuses it) with the same generated keys, https APP_URL and real
+  # RD values; the D22 check still runs with production values (§3.2).
+  day-cfdi:
+    name: restaurant-day-cfdi
+    needs: cfdi-key
+    if: needs.cfdi-key.outputs.present == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: gm_provisioner
+          POSTGRES_PASSWORD: local-only-provisioner
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U gm_provisioner -d postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGPASSWORD: local-only-provisioner
+      RD_ACCEPTANCE: "1"
+      TEST_BASE_URL: http://127.0.0.1:3390
+      APP_URL: https://127.0.0.1:3390
+      RD_LEGAL_ENTITY_NAME: ${{ vars.RD_LEGAL_ENTITY_NAME }}
+      RD_LEGAL_ENTITY_ADDRESS: ${{ vars.RD_LEGAL_ENTITY_ADDRESS }}
+      RD_LEGAL_ENTITY_RFC: ${{ vars.RD_LEGAL_ENTITY_RFC }}
+      RD_LEGAL_PRIVACY_CONTACT_EMAIL: ${{ vars.RD_LEGAL_PRIVACY_CONTACT_EMAIL }}
+      RD_LEGAL_JURISDICTION: ${{ vars.RD_LEGAL_JURISDICTION }}
+      RD_SUPPORT_EMAIL: ${{ vars.RD_SUPPORT_EMAIL }}
+      RD_SUPPORT_PHONE: ${{ vars.RD_SUPPORT_PHONE }}
+      RD_SUPPORT_HOURS: ${{ vars.RD_SUPPORT_HOURS }}
+      RD_WAIVE: ${{ vars.RD_WAIVE }}
+      WAIVER_APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'go-live-waiver-approved') }}
+    steps:
+      - name: Waivers on a release PR need the product owner's label (§13.5)
+        if: github.event_name == 'pull_request'
+        run: |
+          if [ -n "$(printf '%s' "${RD_WAIVE:-}" | tr -d ' ,')" ] && [ "${WAIVER_APPROVED:-false}" != "true" ]; then
+            echo "::error::RD_WAIVE=$RD_WAIVE on a release PR needs the go-live-waiver-approved label (specs/acceptance.md §13.5)"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Cluster roles
+        run: |
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/provision-local.sql
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -f scripts/ops/sql/globals.sql
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 -c "GRANT gm_jobs_worker TO gm_worker"
+          psql -h 127.0.0.1 -U gm_provisioner -d postgres -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE gm_migrator LOGIN PASSWORD 'local-only-migrator'"
+      - name: Stamp the build (G1.2)
+        run: |
+          commit="$(git rev-parse HEAD)"
+          node scripts/ops/stamp-build.mjs "$commit"
+          echo "RD_BUILD_COMMIT=$commit" >> "$GITHUB_ENV"
+      - name: Restaurant day, branch K
+        env:
+          FACTURAPI_TEST_KEY: ${{ secrets.FACTURAPI_TEST_KEY }}
+        run: npm run test:acceptance:day
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: restaurant-day-cfdi
+          path: |
+            playwright-report/restaurant-day/
+            test-results/restaurant-day/

@@ -42,6 +42,7 @@ function DiscountItem({
       timeZone: zone,
       hour: "2-digit",
       minute: "2-digit",
+      hourCycle: "h23",
     });
   const line =
     d.scope === "line"

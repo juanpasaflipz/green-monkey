@@ -489,7 +489,7 @@ export async function terminalState(
   });
   if (!state) {
     clearAccessCookies(res);
-    return { paired: false, google, demo };
+    return { paired: false, reason: "device_revoked", google, demo };
   }
   return {
     paired: true,

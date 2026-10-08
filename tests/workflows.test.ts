@@ -1301,3 +1301,85 @@ describe("the Neon CLI is pinned to an exact version (OPS-R13)", () => {
     }
   });
 });
+
+describe("restaurant-day.yml: the go-live gate (specs/acceptance.md §13)", () => {
+  const day = read(".github/workflows/restaurant-day.yml");
+  const job = (name: string) => {
+    const start = day.indexOf(`\n  ${name}:\n`);
+    expect(start, name).toBeGreaterThan(-1);
+    const next = day.slice(start + 1).search(/\n {2}[\w-]+:\n/);
+    return next === -1 ? day.slice(start) : day.slice(start, start + 1 + next);
+  };
+
+  it("runs on demand, nightly and on release/* PRs into main, never on ordinary PRs", () => {
+    expect(day).toMatch(/\n {2}workflow_dispatch:\n/);
+    expect(day).toContain('- cron: "0 13 * * *"');
+    expect(day).toMatch(/pull_request:\n {4}branches: \[main\]/);
+    for (const name of ["day", "cfdi-key"])
+      expect(job(name), name).toContain("startsWith(github.head_ref, 'release/')");
+    expect(job("day-cfdi")).toContain("needs: cfdi-key");
+    // The ruleset requires both by job name; a job skipped by its `if` reports success.
+    expect(job("day")).toContain("name: restaurant-day\n");
+    expect(job("day-cfdi")).toContain("name: restaurant-day-cfdi\n");
+    const ruleset = JSON.parse(read("ops/github/main-ruleset.json")) as {
+      rules: Array<{ type: string; parameters?: { required_status_checks?: Array<{ context: string }> } }>;
+    };
+    const required = ruleset.rules
+      .find((r) => r.type === "required_status_checks")!
+      .parameters!.required_status_checks!.map((c) => c.context);
+    expect(required).toEqual(expect.arrayContaining(["qualify", "security", "restaurant-day", "restaurant-day-cfdi"]));
+    expect(job("day-cfdi")).toContain("if: needs.cfdi-key.outputs.present == 'true'");
+  });
+
+  it("generates its keys per run and names only the disposable acceptance database (§3.2, §3.3)", () => {
+    for (const name of ["day", "day-cfdi"]) {
+      const text = job(name);
+      expect(text, name).not.toMatch(/\b(SIGNING_KEYS|JWT_SECRET|DATABASE_URL|DEMO_TENANT_ID|MIGRATION_DATABASE_URL):/);
+      expect(text, name).not.toContain("LEGAL_UNPUBLISHED_SIGNUP");
+      expect(text, name).toContain("TEST_BASE_URL: http://127.0.0.1:3390");
+      expect(text, name).toMatch(/APP_URL: https:\/\/127\.0\.0\.1:3390\b/);
+      expect(text, name).toContain('RD_ACCEPTANCE: "1"');
+      expect(text, name).toContain("run: npm run test:acceptance:day");
+      expect(text, name).toContain("node scripts/ops/stamp-build.mjs");
+      expect(text, name).toMatch(/upload-artifact@[0-9a-f]{40} # v[\d.]+\n {8}if: always\(\)/);
+      for (const variable of [
+        "LEGAL_ENTITY_NAME",
+        "LEGAL_ENTITY_ADDRESS",
+        "LEGAL_PRIVACY_CONTACT_EMAIL",
+        "LEGAL_JURISDICTION",
+        "SUPPORT_EMAIL",
+        "SUPPORT_PHONE",
+        "SUPPORT_HOURS",
+      ])
+        expect(text, `${name} ${variable}`).toContain(`RD_${variable}: \${{ vars.RD_${variable} }}`);
+    }
+    // Only the Facturapi branch sees the test key, and only in its test step.
+    expect(job("day")).not.toContain("FACTURAPI");
+    expect(day.match(/secrets\.FACTURAPI_TEST_KEY/g)).toHaveLength(2);
+  });
+
+  it("a waiver on a release PR fails without the product owner's label (§13.5)", () => {
+    const guard = marked(day, "waiver-guard");
+    const body = guard.split("\n").filter((l) => l.trim()).join("\n");
+    // day-cfdi carries the same guard.
+    const cfdi = job("day-cfdi").split("\n").map((l) => l.trim()).join("\n");
+    expect(cfdi).toContain(body.split("\n").map((l) => l.trim()).join("\n"));
+    const status = (env: Record<string, string>) => {
+      try {
+        execFileSync("bash", ["-e", "-c", guard], {
+          env: { PATH: process.env.PATH ?? "", ...env },
+          stdio: "ignore",
+        });
+        return 0;
+      } catch (error) {
+        return (error as { status: number }).status;
+      }
+    };
+    expect(status({})).toBe(0);
+    expect(status({ RD_WAIVE: "", WAIVER_APPROVED: "false" })).toBe(0);
+    expect(status({ RD_WAIVE: " , ", WAIVER_APPROVED: "false" })).toBe(0);
+    expect(status({ RD_WAIVE: "GAP-4", WAIVER_APPROVED: "false" })).toBe(1);
+    expect(status({ RD_WAIVE: "GAP-4,FOH-10" })).toBe(1);
+    expect(status({ RD_WAIVE: "GAP-4", WAIVER_APPROVED: "true" })).toBe(0);
+  });
+});

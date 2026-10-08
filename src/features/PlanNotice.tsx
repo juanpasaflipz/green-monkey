@@ -117,6 +117,7 @@ export function PlanNotice({
       ? new Intl.DateTimeFormat(tag, {
           dateStyle: "medium",
           timeStyle: "short",
+          hourCycle: "h23",
           timeZone: zone,
         }).format(new Date(iso))
       : "";
@@ -124,6 +125,7 @@ export function PlanNotice({
     iso
       ? new Intl.DateTimeFormat(tag, {
           timeStyle: "short",
+          hourCycle: "h23",
           timeZone: zone,
         }).format(new Date(iso))
       : "";

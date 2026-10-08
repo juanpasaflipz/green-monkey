@@ -12,6 +12,7 @@ import { Badge, Button, Empty, Modal } from "../../components/ui";
 import { StockItemDialog } from "./StockItemDialog";
 import { unitLabel } from "./RecipeEditor";
 import { translator, trimDecimal } from "./format";
+import { dateTime } from "../../datetime";
 
 type Filter = "all" | "low" | "negative" | "archived";
 const filters: [Filter, Key][] = [
@@ -149,12 +150,9 @@ export function StockItemsWorkspace({
           (filter === "low" && low(i)) ||
           (filter === "negative" && negative(i))),
   );
+  // dd/MM/yyyy HH:mm, never es-MX's "4:53 p.m." (ACC-PR-5).
   const date = (iso: string) =>
-    new Date(iso).toLocaleString(locale === "es" ? "es-MX" : "en-US", {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone: session.restaurant.timezone,
-    });
+    dateTime(iso, session.restaurant.timezone, locale);
 
   return (
     <div className="menu-workspace">

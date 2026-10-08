@@ -208,6 +208,151 @@ test("dine-in table accepts dessert after delivery, stays occupied until paid an
   expect(axe.violations).toEqual([]);
 });
 
+test("a 1024×768 tablet shows the first six products of the catalog without scrolling (FOH-10, restaurant-day §11)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await login(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  const cards = page.locator("button.product");
+  await expect(cards.nth(5)).toBeVisible();
+  for (let i = 0; i < 6; i++)
+    await expect(cards.nth(i)).toBeInViewport({ ratio: 1 });
+});
+
+test("the payment dialog on a 1024×768 tablet: quick cash, Cambio and the terminal confirmation are on screen without scrolling (FOH-10, restaurant-day P-SELL step 5)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await productTile(page, "Limonada natural").click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: /^Cobrar/ });
+  const quick = dialog.getByRole("group", { name: "Efectivo recibido rápido" });
+  for (const button of await quick.getByRole("button").all())
+    await expect(button).toBeInViewport({ ratio: 1 });
+  await expect(dialog.getByText("Cambio", { exact: true })).toBeInViewport({
+    ratio: 1,
+  });
+  await dialog
+    .getByRole("button", { name: "Terminal externa", exact: true })
+    .click();
+  await dialog
+    .getByLabel("Referencia de aprobación", { exact: true })
+    .fill("123456");
+  await expect(
+    dialog.getByRole("checkbox", {
+      name: "Confirmo que la terminal aprobó este pago",
+    }),
+  ).toBeInViewport({ ratio: 1 });
+  await expect(
+    dialog.getByRole("button", { name: "Confirmar cobro" }),
+  ).toBeInViewport({ ratio: 1 });
+  await dialog.getByRole("button", { name: "Cerrar", exact: true }).click();
+});
+
+test("the receipt header dates the sale dd/MM/yyyy HH:mm, never toLocaleString's 8/10/2026, 0:53:12 (99927cc, restaurant-day G3)", async ({
+  page,
+}) => {
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await productTile(page, "Limonada natural").click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: /^Cobrar/ })
+    .getByRole("button", { name: "Confirmar cobro" })
+    .click();
+  const receipt = page.locator(".receipt");
+  await expect(receipt).toContainText("Folio:");
+  await expect(
+    receipt.getByText(/^#\d+ · \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}(?!\d|:)/),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
+  await expect(receipt).toHaveCount(0);
+});
+
+test("the receipt on a 1024×768 tablet keeps Imprimir recibo and Siguiente venta on screen while the ticket scrolls (FOH-10, restaurant-day P-SELL step 6)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await productTile(page, "Limonada natural").click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: /^Cobrar/ })
+    .getByRole("button", { name: "Confirmar cobro" })
+    .click();
+  await expect(page.locator(".receipt")).toContainText("Folio:");
+  for (const name of ["Imprimir recibo", "Siguiente venta"])
+    await expect(
+      page.getByRole("button", { name, exact: true }),
+    ).toBeInViewport({ ratio: 1 });
+  // The scrolling receipt is reachable from the keyboard (axe
+  // scrollable-region-focusable).
+  const axe = await new AxeBuilder({ page }).withTags(AXE_TAGS).analyze();
+  expect(axe.violations).toEqual([]);
+  await page
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
+  await expect(page.locator(".receipt")).toHaveCount(0);
+});
+
+test("a wide but short desktop window (1600×800) keeps the desktop catalog and cart; the short-tablet layout stops at 1499 px (ACC-PR-8)", async ({
+  page,
+}) => {
+  const art = () =>
+    page
+      .locator("button.product .product-art")
+      .first()
+      .evaluate((e) => getComputedStyle(e).height);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await login(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  const desktop = await art();
+  await page.setViewportSize({ width: 1600, height: 800 });
+  await expect.poll(art).toBe(desktop);
+  await expect(page.locator(".cart-details-summary")).toHaveCount(0);
+  // A 10" tablet still gets the compact layout.
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await expect.poll(art).not.toBe(desktop);
+  await expect(page.locator(".cart-details-summary")).toHaveCount(1);
+});
+
+test("a line note on a 1024×768 tablet: the editor's chips and Listo come on screen without scrolling the cart (FOH-10, restaurant-day A10.1)", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await login(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await productTile(page, "Taco de asada").click();
+  await page
+    .getByRole("dialog")
+    .getByRole("radio", { name: /Salsa verde/ })
+    .check();
+  await page
+    .getByRole("button", { name: "Agregar a la orden", exact: true })
+    .click();
+  await page.getByRole("button", { name: "Nota para Taco de asada" }).click();
+  const line = page.locator("aside.cart .order-line").first();
+  // Whole on screen (ACC-PR-7): a partly visible Listo passed without the fix.
+  await expect(
+    line.getByRole("button", { name: "Sin cebolla", exact: true }),
+  ).toBeInViewport({ ratio: 1 });
+  await expect(
+    line.getByRole("button", { name: "Listo", exact: true }),
+  ).toBeInViewport({ ratio: 1 });
+  await line.getByRole("button", { name: "Sin cebolla", exact: true }).click();
+  await line.getByRole("button", { name: "Listo", exact: true }).click();
+  await expect(line.locator(".line-note")).toHaveText("Sin cebolla");
+});
+
 test("kitchen sees order, line and round notes with modifiers; receipt shows modifiers", async ({
   page,
 }) => {
@@ -1834,6 +1979,11 @@ test("orders: current tab, search, closed tab, detail, reprint and paging", asyn
   const detail = page.getByRole("dialog", { name: `Orden #${paid.number}` });
   await expect(detail).toContainText("Efectivo");
   await expect(detail).toContainText("Cobrada");
+  // The header dates the order dd/MM/yyyy HH:mm, never toLocaleString's
+  // "7/10/2026, 9:41:23" (restaurant-day G3 dates rule, FOH-13).
+  await expect(detail.locator(".order-detail > p.muted").first()).toHaveText(
+    /^\d{2}\/\d{2}\/\d{4} \d{2}:\d{2} · /,
+  );
   const detailAxe = await new AxeBuilder({ page })
     .include("dialog")
     .withTags(AXE_TAGS)

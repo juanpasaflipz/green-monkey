@@ -200,12 +200,17 @@ export function cfdiTicketCovered(v: CfdiTicketView | null): boolean {
   return v?.covering?.status === "valid";
 }
 
-/** Whether useCfdiTicketStatus asks the server at all (an id and CFDI available). */
+/**
+ * Whether useCfdiTicketStatus asks the server at all: an id, CFDI available, and CFDI activated
+ * at some point (a mode). A restaurant that never activated it has no invoice to report, and the
+ * server answers cfdi_disabled (409), which the browser logs on every refund dialog. A paused
+ * restaurant keeps its mode and its invoices, so it is still asked.
+ */
 export function ticketStatusWanted(
   ticketId: string | null,
   status: CfdiStatusView | null,
 ): ticketId is string {
-  return !!ticketId && !!status?.available;
+  return !!ticketId && !!status?.available && status.mode !== null;
 }
 
 /** GET /cfdi/tickets/:id, or null on any failure (never throws). */

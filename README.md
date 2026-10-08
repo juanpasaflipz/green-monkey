@@ -107,6 +107,17 @@ TEST_BASE_URL=http://127.0.0.1:3002 TEST_PRODUCTION=1 npm run test:browser
 
 On this development machine, `bash scripts/compiled-local.sh` serves the compiled app on port 3002 and `bash scripts/browser-check.sh` runs the complete browser suite there. Service workers deliberately do not force-update active sessions.
 
+The restaurant-day go-live gate (two full business days through the UI on a
+production-mode web and worker, then a DB reconciliation) is a separate run that
+needs no server and no `.env`: export `RD_LEGAL_ENTITY_NAME`,
+`RD_LEGAL_ENTITY_ADDRESS`, `RD_LEGAL_PRIVACY_CONTACT_EMAIL`,
+`RD_LEGAL_JURISDICTION`, `RD_SUPPORT_EMAIL`, `RD_SUPPORT_PHONE` and
+`RD_SUPPORT_HOURS` (values production publishes, never the CI literals), point
+`RD_PG_PORT` at the local fixture cluster and run `npm run test:acceptance:day`.
+It resets only the disposable `green_monkey_acceptance_dev`; the regular browser
+suite ignores its spec. See [acceptance status](docs/ACCEPTANCE_STATUS.md) and
+[release](docs/RELEASE.md).
+
 Offline selling (connection pill and manual offline mode, cash or external-terminal
 sales with provisional numbers, on-device kitchen tickets, the KDS review lane,
 exactly-once sync with manager reconcile and archive, service-worker updates),

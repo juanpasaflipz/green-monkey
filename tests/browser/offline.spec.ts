@@ -1166,6 +1166,176 @@ test("Offline kitchen ticket prints and appears in the device list", async ({
   await context.setOffline(false);
 });
 
+test("Setting 'Al guardar sin conexión' on the Sync screen applies to the next offline sale without a reload (restaurant-day A13)", async ({
+  page,
+  context,
+}) => {
+  await page.addInitScript(() => {
+    (window as any).__prints = 0;
+    window.print = () => {
+      (window as any).__prints++;
+    };
+  });
+  await login(page);
+  await page.evaluate(() => localStorage.setItem("gm-offline-print", "ask"));
+  await openDrawer(page);
+  await pill(page, /^Conectado/).click();
+  await page
+    .getByLabel("Al guardar sin conexión")
+    .selectOption({ label: "Imprimir comanda" });
+  await page.getByRole("button", { name: "Operación", exact: true }).click();
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await goOffline(context, page);
+  await saveOfflineSale(page);
+  await expect
+    .poll(() => page.evaluate(() => (window as any).__prints))
+    .toBe(1);
+  await nextSale(page);
+  // The Sync screen dates the local record dd/MM/yyyy HH:mm (restaurant-day G3).
+  await pill(page, /^Sin conexión/).click();
+  await expect(
+    page.getByText(/^Registrado \d{2}\/\d{2}\/\d{4} \d{2}:\d{2} · /).first(),
+  ).toBeVisible();
+  await context.setOffline(false);
+});
+
+test("Caja during an outage shows the drawer this device last saw, never 'Caja cerrada', and closing waits for the connection (restaurant-day A13.8)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  await openDrawer(page);
+  await page.route("**/api/**", (route) => route.abort("internetdisconnected"));
+  await page.getByRole("button", { name: /Taco de hongos/ }).click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await expect(pill(page, /^Sin conexión/)).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Cerrar", exact: true }).click();
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  await expect(page.getByText("Caja abierta", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Abrir caja", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Cerrar caja", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByText("Cerrar caja y registrar retiros requieren conexión.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  void context;
+});
+
+test("Offline Caja shows only the state of the drawer this device cached, never its old figures as live, and loads them again with the connection (ACC-PR-1)", async ({
+  page,
+}) => {
+  await login(page);
+  await openDrawer(page);
+  await page.route("**/api/**", (route) => route.abort("internetdisconnected"));
+  // Vender finds the connection gone.
+  await product(page, "Taco de hongos").click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await expect(pill(page, /^Sin conexión/)).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Cerrar", exact: true }).click();
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  const head = page.locator(".drawer-head");
+  await expect(head.getByText("Caja abierta", { exact: true })).toBeVisible();
+  // The drawer's state: who opened it, when and with what float; no payment count.
+  await expect(head.locator("p").first()).toHaveText(
+    /^Abrió .+ · \d{2}:\d{2} · Fondo inicial \$[\d,]+\.\d{2}$/,
+  );
+  await expect(
+    page.getByRole("note").filter({
+      hasText: "Cifras al reconectar; no incluyen ventas sin conexión.",
+    }),
+  ).toBeVisible();
+  // None of the cached figures (expected cash, sales, tips, terminal net, movements).
+  await expect(page.locator(".drawer-cards")).toHaveCount(0);
+  for (const figure of [
+    "Efectivo esperado",
+    "Ventas en efectivo",
+    "Propinas en efectivo",
+    "Neto en terminal",
+    "Movimientos de efectivo",
+    "Sin movimientos todavía.",
+  ])
+    await expect(page.getByText(figure, { exact: true })).toHaveCount(0);
+  // Closing still waits for the connection, with its reason.
+  await expect(
+    page.getByRole("button", { name: "Cerrar caja", exact: true }),
+  ).toBeDisabled();
+  // With the connection back, Caja shows the live drawer again.
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await expect(pill(page, /^Sin conexión/)).toHaveCount(0, { timeout: 45_000 });
+  await expect(
+    page.getByText("Efectivo esperado", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Cifras al reconectar; no incluyen ventas sin conexión.", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
+});
+
+test("Offline Caja of an employee with no cached drawer shows the device's open drawer, not 'Caja cerrada' with 'Abrir caja' (ACC-PR-3)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  // The owner's Vender caches the open drawer for this device.
+  await openDrawer(page);
+  // The cashier's own Vender never reads the drawer before the outage.
+  await page.route("**/api/cash", (route) =>
+    route.abort("internetdisconnected"),
+  );
+  await switchEmployee(page, "cashier", "123456");
+  await expect(page.locator("button.product").first()).toBeVisible();
+  await goOffline(context, page);
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  const head = page.locator(".drawer-head");
+  await expect(head.getByText("Caja abierta", { exact: true })).toBeVisible();
+  // Only the device's fact: who opened it and when, no figures of any role.
+  await expect(head.locator("p").first()).toHaveText(
+    /^Abrió .+ · \d{2}:\d{2}$/,
+  );
+  await expect(
+    page.getByRole("note").filter({
+      hasText: "Cifras al reconectar; no incluyen ventas sin conexión.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Caja cerrada", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Abrir caja", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator(".drawer-cards")).toHaveCount(0);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await context.setOffline(false);
+});
+
+test("Offline, 'Abrir caja' is disabled with its reason and opens nothing (ACC-PR-3)", async ({
+  page,
+  context,
+}) => {
+  // Nothing on this device knows the drawer: Vender never read it.
+  await page.route("**/api/cash", (route) =>
+    route.abort("internetdisconnected"),
+  );
+  await login(page);
+  await expect(page.locator("button.product").first()).toBeVisible();
+  await goOffline(context, page);
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  const open = page.getByRole("button", { name: "Abrir caja", exact: true });
+  await expect(open).toBeDisabled();
+  await expect(open).toHaveAccessibleDescription(
+    "Abrir caja requiere conexión.",
+  );
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await context.setOffline(false);
+});
+
 test("An offline external-terminal sale shows and prints service's local receipt with the method, the reference and the order note (LD-10 B4, LD-1)", async ({
   page,
   context,

@@ -61,6 +61,8 @@
     "test:account-http": "tsx tests/account-http.ts",
     "support": "tsx scripts/support.ts",
     "support:provision": "tsx scripts/provision-support-operator.ts",
+    "test:acceptance:day": "bash scripts/restaurant-day.sh",
+    "test:db:restaurant-day": "tsx tests/restaurant-day-db.ts",
     "stripe:tax-rate:sandbox": "tsx scripts/stripe-sandbox-tax-rate.ts"
   },
   "dependencies": {

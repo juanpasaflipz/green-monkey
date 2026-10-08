@@ -1990,7 +1990,9 @@ th {
 .receipt-doc .doc-tender .row {
   margin: 4px 0;
 }
-@media (max-height: 820px) and (min-width: 801px) {
+/* A short tablet (10" landscape), never a wide desktop window that happens to
+   be short (ACC-PR-8); Selling's compact cart uses the same query. */
+@media (max-height: 820px) and (min-width: 801px) and (max-width: 1499px) {
   .cart-heading {
     flex-wrap: nowrap;
   }
@@ -2030,6 +2032,74 @@ th {
   }
   .cart-heading {
     margin-bottom: 8px;
+  }
+  .line-note-editor textarea {
+    min-height: 56px;
+  }
+  /* The payment dialog in two columns, so the quick-cash bills, Cambio and
+     the terminal confirmation are on screen without scrolling (FOH-10). */
+  dialog:has(.pay-columns) {
+    width: min(880px, calc(100vw - 32px));
+    max-height: calc(100dvh - 16px);
+  }
+  .pay-columns {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0 24px;
+    align-items: start;
+  }
+  .pay-columns .large-money {
+    font-size: 32px;
+    margin: 4px 0;
+  }
+  .pay-columns p {
+    margin: 6px 0;
+  }
+  .pay-columns .field {
+    margin: 10px 0;
+  }
+  .pay-columns .option {
+    margin: 6px 0;
+  }
+  dialog:has(.pay-columns) .modal-footer {
+    padding: 10px 24px;
+  }
+  dialog:has(.pay-columns) .modal-footer .row {
+    margin-bottom: 6px;
+  }
+  /* A 10" tablet shows a small menu without scrolling the catalog (FOH-10,
+     restaurant-day §11: the canonical order's products are all on screen). */
+  .catalog {
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+  .section-title {
+    margin-bottom: 12px;
+  }
+  .categories {
+    margin: 12px 0;
+  }
+  .catalog-label {
+    margin-bottom: 8px;
+  }
+  .product-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .product-art {
+    height: 64px;
+    margin-bottom: 6px;
+  }
+  .dish-mark {
+    height: 40px;
+    width: 40px;
+    font-size: 16px;
+  }
+  .add-mark {
+    height: 28px;
+    width: 28px;
+    bottom: 6px;
+    right: 6px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
