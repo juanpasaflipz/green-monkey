@@ -253,6 +253,29 @@ test("the payment dialog on a 1024×768 tablet: quick cash, Cambio and the termi
   await dialog.getByRole("button", { name: "Cerrar", exact: true }).click();
 });
 
+test("the receipt header dates the sale dd/MM/yyyy HH:mm, never toLocaleString's 8/10/2026, 0:53:12 (99927cc, restaurant-day G3)", async ({
+  page,
+}) => {
+  await login(page);
+  await openDrawer(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  await productTile(page, "Limonada natural").click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: /^Cobrar/ })
+    .getByRole("button", { name: "Confirmar cobro" })
+    .click();
+  const receipt = page.locator(".receipt");
+  await expect(receipt).toContainText("Folio:");
+  await expect(
+    receipt.getByText(/^#\d+ · \d{2}\/\d{2}\/\d{4} \d{2}:\d{2}(?!\d|:)/),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Siguiente venta", exact: true })
+    .click();
+  await expect(receipt).toHaveCount(0);
+});
+
 test("the receipt on a 1024×768 tablet keeps Imprimir recibo and Siguiente venta on screen while the ticket scrolls (FOH-10, restaurant-day P-SELL step 6)", async ({
   page,
 }) => {
@@ -297,12 +320,13 @@ test("a line note on a 1024×768 tablet: the editor's chips and Listo come on sc
     .click();
   await page.getByRole("button", { name: "Nota para Taco de asada" }).click();
   const line = page.locator("aside.cart .order-line").first();
+  // Whole on screen (ACC-PR-7): a partly visible Listo passed without the fix.
   await expect(
     line.getByRole("button", { name: "Sin cebolla", exact: true }),
-  ).toBeInViewport();
+  ).toBeInViewport({ ratio: 1 });
   await expect(
     line.getByRole("button", { name: "Listo", exact: true }),
-  ).toBeInViewport();
+  ).toBeInViewport({ ratio: 1 });
   await line.getByRole("button", { name: "Sin cebolla", exact: true }).click();
   await line.getByRole("button", { name: "Listo", exact: true }).click();
   await expect(line.locator(".line-note")).toHaveText("Sin cebolla");
