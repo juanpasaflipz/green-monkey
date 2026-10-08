@@ -314,3 +314,106 @@ Merge order: platform → fiscal 027 → discounts 028 → reports 029 → cfdi 
 - PUB-R3-L1 → W3-1 polish round 2: the diner's 5-minute expiry grace applies only to pay_first holds; accept-policy holds keep 60 s.
 - PUB-R3-L2 → W3-1 polish round 2 docs: PLANS_AND_SIGNUP says the kill switch shows "desactivados temporalmente"; "próximamente" only where B4 is reverted.
 - Merge order from here: W3-1 polish (round 1 then round 2: items 7, 10, 11 + LD-43 lows) and W3-2 flake fixes absorb integration/v1 with public, then land; then W3-3 acceptance.
+
+## LD-44 W3-1 polish round 1 clean (track/polish 3 review rounds, verify green at 80ba013); round-2 scope
+- POL-8 / POL-R3-2 DECISION: printed kitchen paper (comanda, cancellation chit, every print call site) carries the business date for an order not from the current business day ("#10 · 5 oct"), same helper as the screens; tests on the print text.
+- Round 2 (finish-track on track/polish, after absorbing integration/v1 with public): spec item 7 (PLAT-R3; public's 034 retention redaction is now in retention.ts — keep both), item 10 (docs pass incl. SERVICE.md/REPORTS.md kiosk-printing reconciliation with PILOT_SOP §1.3, STAGING.md rotation numbering, README/OPERATIONS links, RUNBOOK open follow-ups), LD-43 lows PUB-R3-L1 (diner 5-minute grace only for pay_first holds) and PUB-R3-L2 (PLANS_AND_SIGNUP kill-switch copy), POL-R2-6 (public's inbox/settings notices use errorNotice), POL-R3-1 (cached copies carry businessDate), POL-R3-3 (classify body-parser's other client errors as 4xx; Context7), POL-R3-4 (draft-gone CSS), POL-R2-2/-3/-4/-5, recovery.spec.ts:13 restores 'Taco de hongos' in finally.
+- Item 11 (prettier) moves to the lead's final integration commit after flake and polish both land (formatting-only, verified).
+- acceptance.md A13.4/Q17 updated by the lead to the adopted fiscal strings.
+
+## LD-45 WebKit "HTML 502 from the proxy" flake (main CI 37563046530; diagnosis from the trace)
+- Test-only race: the 502 route is installed before Cobrar, so openPay's GET /api/cash and api()'s 400 ms GET retry reach FAIL_THRESHOLD=2 about 0.4 s after the dialog opens; PaymentDialog relabels the same footer button to "Guardar cobro en este dispositivo" and Playwright's click (element resolved earlier) saves locally. No POST was sent.
+- Fix the tests (W3-2 follow-up on track/flake): the outage starts at the payment's first POST /api/orders (route.fallback() before it, waitForRequest proves the online path); the same gate for offline.spec.ts "API down while browser online" (abort internetdisconnected) and fiscal.spec.ts 695-708 / 762-775; fix the stale "POST is retried once after 800 ms" comment. Add a permanent test pinning the product behaviour: an outage noticed after Cobrar relabels Confirmar in place and the relabelled tap saves locally with zero POSTs.
+- Product hardening ACCEPTED (low): while the payment dialog is open, the confirm button ignores taps for ~700 ms after `online` changes (derived state + timeout, part of canConfirm), and the offline warning panel gets role="status"; regression with page.clock.
+- Counting a request's retries as one connectivity failure: NOT changed in v1 (OFF-1 outage-detection policy; a 502 and its retry both failing is outage evidence). RUNBOOK/OFFLINE_RECOVERY note only.
+
+## LD-46 Client IP on Railway (HIGH; first staging deploy's smoke client_ip failed, run 37567966909)
+- Verified on staging 2026-10-07 with a temporary header-echo service (created, probed, deleted): Railway's edge DISCARDS client-supplied X-Forwarded-For and X-Real-IP and sends X-Forwarded-For "<client>, <edge hop 84.17.x.x>", X-Real-IP "<client>", from a peer in 100.64.0.0/10. With trust proxy "loopback, 100.0.0.0/8", req.ip is the rightmost untrusted hop = the edge hop, so clientIp() returns the edge hop: every client behind that hop shares one key for the access PIN/pairing limits, public ordering ceilings, cfdi portal, account and ops limiters, and ipHash in logs is meaningless. owner-routes.ts and billing-runtime.ts limiters use express-rate-limit's default key (req.ip) — same problem.
+- Fix (track/netfix): clientIp(req) returns X-Real-IP when the immediate peer is a trusted proxy and X-Real-IP is a valid IP (Railway's documented client address, overwritten by the edge), else req.ip; every rateLimit() has an explicit keyGenerator through clientIp (static test: no limiter without one); /api/ops/diagnostics/ip reports {ip, peerTrusted, source: "x-real-ip"|"forwarded"|"peer"} and the CD smoke requires, on a deployed origin, peerTrusted, source "x-real-ip", spoof invariance, not spoofed, not private. Docs: RUNBOOK/INFRASTRUCTURE client-IP paragraph with the verified header shape.
+
+## LD-47 Staging rotations done (steps 11-13, 2026-10-07 ~04:05 UTC) and a rotation-script follow-up
+- Runtime: gm_staging_app → gm_staging_app_r20261007 (web DATABASE_URL/PG_APP_USER, GitHub env var PG_APP_USER), finalized (dropped). Billing: gm_staging_billing → gm_staging_billing_r20261007 (web + worker), finalized. neondb_owner: new 40-char password set by SQL (ALTER ROLE, Neon-supported), old refused; value only in the session scratchpad.
+- The runtime finalize refused on a legacy grant `USAGE on schema public granted by pg_database_owner` (made before the cutover): remainingGrants reports can_set=true via the database owner's implicit membership, but nobody can SET ROLE to pg_database_owner. Cleared by the lead in one atomic transaction (temporary ALTER SCHEMA public OWNER TO neondb_owner → REVOKE → back to pg_database_owner, ACL diff verified: exactly that entry removed). FOLLOW-UP (ops, Wave 3): rotate-db-login finalize treats a pg_database_owner grantor explicitly (same ownership round-trip with the ACL-diff guard, or a clear refusal naming the procedure) + RUNBOOK note; test with a grant made as the database owner.
+- The pre-cutover restore branch (br-super-hat-aeeeffgs) still carries the old passwords: user decision to delete it once staging is verified.
+
+## LD-48 Polish LD-5 second opinion (5 lenses, 25 issues: 1 medium, 24 low; specs/harden-polish-issues.json) → polish round 3 fixes all
+- POL-W3R2-L1 (reported by four lenses): add request_aborted and request_size_invalid to TRANSIENT_CODES (the body did not arrive intact; the same record retries). invalid_json, payload_too_large, unsupported_encoding, unsupported_charset and too_many_parameters stay conflicts (deterministic).
+- LD-29 dating extends to the offline kitchen review, the offline payment review target, the offline "Órdenes abiertas" pick list and provisional numbers from another business day; the Órdenes card shows the date once (no duplicate "Del 5 oct" badge); labels use non-breaking spaces so "#10 · 5 oct" never wraps apart.
+- Unexpected 4xx codes are logged (info) with the request id so a "Referencia de soporte" on a 4xx is searchable; offline sync failures keep the request id and Sincronización shows the reference; PILOT_SOP §7 tells the cashier to read the reference out.
+- SERVICE.md matches what ships (medium); docs-consistency covers it. Remaining lows as each issue's fix says.
+
+## LD-49 netfix landed on integration (merge 82cb8eb; review approved, four lows) + main merged in (5626f60, tree-identical)
+- Follow-up batch (with LD-45 and LD-47): NETFIX-L1 log a warn (once per process) when a trusted peer sends no usable X-Real-IP in production; NETFIX-L2 the ratchet also requires the keyGenerator to call clientIp/ipKeyGenerator(clientIp(...)); NETFIX-L3 RUNBOOK wording (the smoke proves spoof invariance and x-real-ip source, not that the address is the runner's own); NETFIX-L4 rename the stale http.test.ts case.
+- Launch handoff: a production custom domain must be DNS-only in Cloudflare (proxied would make X-Real-IP a Cloudflare address).
+- PRs to main from now on: squash merge (ruleset); integration merges origin/main first (strict up-to-date).
+
+## LD-50 W3-1 polish landed (merge 532476c; tree identical to track/polish e8b6c51, qualified: 1261 unit, 543 DB, 254 browser, load smoke 0 errors)
+- Rounds 1-3 clean; LD-5 second opinion (25 issues) all fixed with tests (LD-48). Support references avoid O/I/L (written 0/1) so they read aloud unambiguously; unexpected 4xx are logged at info with code + requestId.
+- Next: track/flake round 2 (LD-45/47/49 + flake lows) absorbs integration/v1 with polish, then lands; then the prettier commit (spec item 11) on integration, PR to main (squash), green staging deploy.
+
+## LD-51 CFDI rehearsal against the real Facturapi sandbox (local, 532476c; all 9 goals passed: activation, 5 sales, portal física + moral with 1.25 % ISR exact, cancellation 02, daily global FG-1 one concept per ticket, supplementary FG-2 from a late offline sale; no warn/error lines) → track/cfdifix
+- F1 HIGH ACCEPT: the self-invoice deadline (receipt, portal, settings) is the earlier of the policy deadline and the ticket's global period close + grace whenever portal_reissue_global is off; the receipt prints that date (and time when it is the same or next day); the settings form says how periodicity shortens the window.
+- F2 MEDIUM ACCEPT: the activation step asks for the global periodicity (with SAT-4's rule for the issuer's regime shown); a periodicity change applies at once while no period of the current month has been stamped or claimed (built-but-empty periods are rebuilt), otherwise from the next month as today.
+- F3 MEDIUM ACCEPT: in sandbox_shared the issuer facts used for withholding (regime, RFC kind) and LugarExpedicion come from the shared organization's legal data as Facturapi reports it; the CFDI panel shows the platform test organization as the issuer and warns that the restaurant profile is not used for stamping in this mode.
+- F7 ACCEPT: a cancellation receipt is stored as the acuse only if its UUID matches the document; otherwise (Facturapi test-mode sample) it is not offered, and the status still comes from the document.
+- F8-F13 ACCEPT as the report proposes (hide the pending legal-sync note for sandbox_shared; issuer RFC shown as pending until the org resolves; periodicity select shows current + pending; open periods count unclaimed tickets; a ticket issued into an already-built period triggers a tick; successful jobs log one info line with document id and the Facturapi request id when the API returns one — verify the header with Context7).
+- F14 docs: LAUNCH_HANDOFF RESICO withholding is modelled and sandbox-verified (2026-10-07); CFDI.md/DELIVERY_STATUS record the local real-sandbox rehearsal and what remains (organizations provider, live cancellation acceptance, credit notes/substitution, RESICO monthly close, email, alerts).
+- F4 USER ACTION: the Facturapi test key belongs to an organization with the user's real taxpayer identity; staging test documents carry it. Recommend a dedicated Facturapi organization with a SAT test identity for staging (its test key), or accept it knowingly. Rehearsal evidence files in scratchpad/cfdirh/ contain that identity: never commit or share them.
+- F5/F6 → LAUNCH_HANDOFF accountant/provider items: test mode does not validate receptor names; Base vs Importe rounding on tax-inclusive concepts (D18).
+
+## LD-52 W3-2 flake + follow-up batch landed (merge on integration; tree identical to track/flake 2fe8437, qualified: 1279 unit, 548 DB, 257 browser incl. @cross, load smoke 0 errors)
+- Migration 035_kitchen_reopened.sql is flake's (rounds.reopened_at, KDS window ranking). Any later migration takes 036+ (cfdifix's spec said 035: renumber at its merge if it added one).
+- LD-45, LD-47, LD-49 and the flake lows are closed.
+
+## LD-53 User decisions (2026-10-07 ~07:10 CST; user away until ~21:00)
+- Facturapi: the current test key (organization with the user's own identity) stays for staging — LD-51 F4 accepted by the user. Evidence files with that identity remain local only.
+- Neon: the pre-cutover restore branch br-super-hat-aeeeffgs (pre-cutover-staging-2026-10-06) DELETED with the user's approval. Another old branch, pre-021-staging-backup-2026-09-30 (br-polished-hall-aem062zv), also carries the pre-rotation passwords: ask the user before deleting it.
+- R2 + age: the user will provide the credentials (instructions given); until then the backup/restore drill stays pending.
+
+## LD-54 cfdifix clean (track/cfdifix, migration 036_cfdi_rehearsal_fixes.sql; F1-F14 done) → fiscal LD-5 second opinion (4 lenses: fiscal, concurrency, ux, ops) before merge
+- PR #7 merged (squash 3e62285); main CI re-run green after a 16-minute apt stall cancelled the first run; staging deploy applied 035, smoke all green. CI hardening on integration (70f6212): qualify timeout 60 min, Playwright install bounded at 10 min with one retry.
+- The user reset the weekly usage (2026-10-07); workflows continued (one automatic agent retry each).
+
+## LD-55 cfdifix fiscal second opinion (4 lenses, 22 issues: 1 high, 5 medium, 16 low; specs/harden-cfdifix-issues.json) → cfdifix round 2 fixes all
+- CFDIFIX-FISCAL-1 / UX-1 (HIGH): whenever the effective deadline is global-bound (or is not the policy's end of day), the receipt, the portal and the staff view print date AND time ("hasta el 12/10/2026 a las 05:00"); tests with a mid-week weekly sale, fortnightly and monthly-with-days.
+- F12 timing (FISCAL-4, OPS-2, CONCURRENCY-1, CONCURRENCY-4): a late ticket no longer triggers an immediate tick. It enqueues ONE tick per tenant per 30-minute bucket, due at the bucket's end plus 10 minutes (deduped; the suffixed fallback only when that key already ran), so a sync burst lands in one supplementary part and the counter keeps a short direct-invoice window; still far inside RMF 2.7.1.21's 24 h. The hook's read of the period state must not miss a period being built concurrently (re-check in the tick, or enqueue regardless of state for a past-dated ticket).
+- OPS-1: record X-Facturapi-Log-Id on error answers too (FacturapiError.logId; Context7).
+- The rest as each issue's fix proposes (deferred save promotes an in-force pending change first; monthShape treats in-flight invoice claims as uncovered; reissue-off/shorter-policy saves are guarded like a periodicity change; stampingFacts takes the shared issuer as a whole or not at all; acuse mismatch reasons; UX announcements; docs evidence; tests that vary the grace).
+
+## LD-56 cfdifix round 2: F12 key shape accepted
+- The absorb agent reconciled LD-55 with CONCURRENCY-1: a shared bucket key would make concurrent issuances wait on each other's uncommitted unique insert under LO-12. Accepted: the issuance hook dedupes by reading a committed waiting tick of the 30-minute bucket and inserts tick:issued:<bucket>:<orderId>; an offline drain gets one tick per bucket, racing first issuances may add a few same-time ticks (harmless: the builder is idempotent per period).
+- Workflow stalls (agent killed after 3 min without progress) hit long foreground commands; finish-track.js now takes args.rulesExtra (background-run rule) and args.reviewNote.
+
+## LD-57 Acceptance gate in CI
+- The acceptance implementer built the suite (track/acceptance, ~30 commits, product fixes included) and was killed for inactivity before reporting; finish-track resumes it (verify runs track-qualify.sh AND scripts/restaurant-day.sh with the fictional RD_* set in scratchpad/rd-fictional.sh).
+- GitHub repository variables RD_* set to that fictional, plausible set (LD-3: never the CI literals, never on Railway). restaurant-day and restaurant-day-cfdi become required checks when the updated ops/github/main-ruleset.json is applied with github-protect.sh after the acceptance PR merges (applying it earlier would block PRs before the workflow exists on main).
+- FACTURAPI_TEST_KEY is NOT added to GitHub secrets: restaurant-day-cfdi (branch K) skips and reports success; branch K was rehearsed locally against the real sandbox (LD-51).
+
+## LD-58 cfdifix round-2 review (standalone agent; workflow reviewers stalled on context size) → round 3 fix
+- All 22 LD-55 issues verified fixed (UX-4/FISCAL-5 partial → R2-2/R2-5).
+- CFDIFIX-R2-1 HIGH: 036 granted UPDATE on cfdi_settings columns TO the literal gm_app; on staging/production the runtime login is gm_<env>_app and only scripts/grants.sql is name-substituted → migrate would fail (42704) or, with a stray gm_app, every CFDI settings save would fail (42501). CI hid it (PG_APP_USER=gm_app). Fix: grants move to scripts/grants.sql; regression test with a non-gm_app runtime login; migrations-lint forbids naming the runtime role in a migration.
+- CFDIFIX-R2-2 MEDIUM: cancelling/replacing a waiting self-invoicing change could shorten printed deadlines → guard on the stored result. Lows R2-3..R2-7 fixed in the same round.
+- Process: workflow agents are killed after 3 minutes without progress, which large-context reasoning can exceed; long reviews/implementations now run as standalone agents.
+
+## LD-59 W3-3 acceptance gate finished (track/acceptance 9f80d05; branch N green twice in a row, branch K green against the fake, D1-D19, G1-G4 with 0 waivers; qualification 1291 unit / 549 DB / 267 browser / load smoke 0 errors)
+- The fictional RD_SUPPORT_PHONE had spaces; production requires E.164 → GitHub variable and scratchpad/rd-fictional.sh now "+523336150420". Global setup now refuses non-publishable RD values up front (55950e6).
+- Spec deviations recorded in docs/ACCEPTANCE_STATUS.md (bound to built behaviour per LD-16 L1, plus harness spec-error fixes) — ACCEPTED, including the new cfdi-key job so day-cfdi reports skipped without FACTURAPI_TEST_KEY.
+- The track's 18 product changes (incl. a 513-line PaymentDialog layout restructure) get a dedicated adversarial review before merge.
+- Merge order: cfdifix (round 3) → integration; acceptance absorbs it and reruns the gate on both branches (cfdifix rewrites CfdiSettings/status.ts; B1.6 K and the 'open period reads 0' items should change to the fixed behaviour) → integration; prettier commit; final docs; PR; apply the ruleset with github-protect.sh after the acceptance PR merges; set RD_NIGHTLY_REF; deploy.yml gating production on the gate is a follow-up (ops).
+
+## LD-60 Acceptance product-change review (verdict changes_required; specs/acceptance-pr-review.md is binding)
+- PaymentDialog restructure verified intact. Fix ACC-PR-1 (offline Caja hides stale money figures, option a), ACC-PR-2, ACC-PR-3, ACC-PR-5, ACC-PR-7, ACC-PR-8 now on track/acceptance; ACC-PR-4 (gate asserts the server's periodicity decision) and ACC-PR-6 after cfdifix merges and acceptance absorbs it; then rerun the gate (branch N twice + K against the fake) and the qualification.
+
+## LD-61 cfdifix landed (merge 6ef8e94; tree identical to track/cfdifix 891479b: 1345 unit, 566 DB, 258 browser, load smoke 0 errors)
+- Round 3 closed CFDIFIX-R2-1..R2-7 (R2-2 by refusing with cfdi_self_invoice_pending_printed). A focused re-review of round 3 runs in parallel; any must-fix lands on integration before the final PR.
+- Acceptance part 2 absorbs integration (cfdifix) and does ACC-PR-4/5b/6 + gate reruns (N twice, K against the fake).
+- The Mac's maintenance sleep failed one browser run: long runs use caffeinate (lead keeps `caffeinate -dims` running).
+
+## LD-62 cfdifix round-3 re-review: approve (no must-fix in round 3); pre-existing CFDIFIX-R3-1 fixed before release
+- R3-1 (medium, predates round 3): while a waiting change turns reissue on, reissue is allowed when either the in-force or the waiting terms allow it (portal request, expiry check, reissueAllowed), matching deadlineOf. R3-2 lint precision and R3-3 global-setup timezone reset in the same small round on track/cfdifix (merged again into integration afterwards).
+
+## LD-63 Release candidate (integration/v1 after c1fa202 acceptance merge, 23786d2 formatting, final docs)
+- Everything planned for phases 1-4 is merged on integration/v1: Waves 1-2, public 032-034, LD-46 client address, W3-1 polish, W3-2 flake + follow-ups (035), CFDI rehearsal fixes (036), W3-3 restaurant-day gate; migrations 001-036.
+- Final verification before the release PR: full CI-parity qualification on the final head and the restaurant-day gate on the final code (branch N + branch K against the fake).
+- After the release PR merges (squash) and staging deploys green: apply ops/github/main-ruleset.json with github-protect.sh (adds restaurant-day and restaurant-day-cfdi as required checks), set RD_NIGHTLY_REF=main, dispatch the restaurant-day workflow once on main.
+- Owner-only, pending (LAUNCH_HANDOFF §1): production launch itself; R2 + age for backups; old Neon branch pre-021-staging-backup-2026-09-30 decision; production legal values (LD-3); accountant review (IVA/RESICO/CFDI incl. Base/Importe rounding); counsel review of privacy texts; Google OAuth production client; Stripe live; Facturapi User key + CSD per restaurant; pilot hardware; production custom domain DNS-only.
