@@ -118,16 +118,20 @@ export function ownerRoutes(sql: postgres.Sql) {
       next(error);
     }
   });
-  router.get("/google/start", refuseOnTerminal("redirect"), async (_req, res, next) => {
-    if (!google) return res.status(503).json({ error: "google_unavailable" });
-    try {
-      const flow = await google.begin();
-      res.cookie("gm_google_flow", flow.browserToken, flowCookie);
-      res.redirect(303, flow.url);
-    } catch (error) {
-      next(error);
-    }
-  });
+  router.get(
+    "/google/start",
+    refuseOnTerminal("redirect"),
+    async (_req, res, next) => {
+      if (!google) return res.status(503).json({ error: "google_unavailable" });
+      try {
+        const flow = await google.begin();
+        res.cookie("gm_google_flow", flow.browserToken, flowCookie);
+        res.redirect(303, flow.url);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
   router.get("/google/callback", async (req, res) => {
     res.clearCookie("gm_google_flow", { ...flowCookie, maxAge: undefined });
     try {
@@ -208,12 +212,19 @@ export function ownerRoutes(sql: postgres.Sql) {
     try {
       await enterRestaurant(req, res);
     } catch (error) {
-      if (error instanceof DomainError && error.code === "owner_reauth_required") {
+      if (
+        error instanceof DomainError &&
+        error.code === "owner_reauth_required"
+      ) {
         // This Google sign-in predates the device's revocation: end it, so the
         // browser must sign in with Google again (A6).
         try {
-          await withOwner(sql, req.cookies.gm_account ?? "", undefined, (tx, a) =>
-            tx`update owner_sessions set revoked=true where id=${a.sessionId}`,
+          await withOwner(
+            sql,
+            req.cookies.gm_account ?? "",
+            undefined,
+            (tx, a) =>
+              tx`update owner_sessions set revoked=true where id=${a.sessionId}`,
           );
         } catch {
           /* Already invalid: nothing left to end. */
@@ -245,7 +256,9 @@ export function ownerRoutes(sql: postgres.Sql) {
     } catch (error) {
       // The browser's personal device expired, or was revoked before this
       // Google sign-in: issue a fresh browser identity once.
-      if (!(error instanceof DomainError && error.code === "owner_browser_reset"))
+      if (!(
+        error instanceof DomainError && error.code === "owner_browser_reset"
+      ))
         throw error;
       browser = ownerBrowserCookie(undefined);
       result = await enter();

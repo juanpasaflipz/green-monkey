@@ -12,6 +12,7 @@ import { dependencyOf, settleAlreadySynced } from "../../offline-queue";
 import { reconciledResult } from "../../offline-records";
 import { currentBusinessDate, orderNumberText } from "../../labels";
 import { carriesMoney, translator } from "./format";
+import { dateTime } from "../../datetime";
 
 /** POST /api/offline/review (§4.3.5 plus the review explanations). */
 export type OfflineReviewDetail = {
@@ -244,9 +245,10 @@ export function OfflineReviewPanel({
         )}
         <dt>{es ? "Hora de venta" : "Sale time"}</dt>
         <dd>
-          {new Date(detail.soldAt ?? detail.recordedAt).toLocaleString(
-            es ? "es-MX" : "en-US",
-            { timeZone: session.restaurant.timezone },
+          {dateTime(
+            detail.soldAt ?? detail.recordedAt,
+            session.restaurant.timezone,
+            locale,
           )}
         </dd>
         {(money || detail.originalDrawerId) && (

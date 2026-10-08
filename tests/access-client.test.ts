@@ -188,7 +188,10 @@ describe("api() session policy", () => {
     release();
     await poll;
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    const [, init] = fetchMock.mock.calls[1] as unknown as [string, RequestInit];
+    const [, init] = fetchMock.mock.calls[1] as unknown as [
+      string,
+      RequestInit,
+    ];
     expect((init.headers as Record<string, string>)["x-session-id"]).toBe(
       next.id,
     );
@@ -215,7 +218,9 @@ describe("api() session policy", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(isSessionRejection(unsent)).toBe(true);
     expect(isSessionRejection(new ApiError("invalid_pin", 401))).toBe(false);
-    expect(isSessionRejection(new ApiError("session_expired", 409))).toBe(false);
+    expect(isSessionRejection(new ApiError("session_expired", 409))).toBe(
+      false,
+    );
     expect(isSessionRejection(new TypeError("Failed to fetch"))).toBe(false);
   });
 
@@ -317,7 +322,8 @@ describe("api() session policy", () => {
     setSession(session);
     let confirm!: () => void;
     const handler = vi.fn(
-      (_sessionId: string) => new Promise<void>((resolve) => (confirm = resolve)),
+      (_sessionId: string) =>
+        new Promise<void>((resolve) => (confirm = resolve)),
     );
     registerStepUpHandler(handler);
     replies.push({ status: 403, body: { error: "step_up_required" } });
@@ -326,7 +332,11 @@ describe("api() session policy", () => {
     // The prompt is for the session that sent the command.
     expect(handler).toHaveBeenCalledWith(session.id);
     // Manager B switches in from the lock, then the prompt resolves.
-    setSession({ ...session, id: "50000000-0000-4000-8000-0000000000b2", csrf: "csrf-b" });
+    setSession({
+      ...session,
+      id: "50000000-0000-4000-8000-0000000000b2",
+      csrf: "csrf-b",
+    });
     confirm();
     await expect(refund).rejects.toMatchObject({
       message: "session_changed",

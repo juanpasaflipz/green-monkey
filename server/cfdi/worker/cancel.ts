@@ -19,7 +19,7 @@ import {
   type DocumentRow,
 } from "../store.js";
 import { classify, event, MINUTE, runtimeOr } from "./common.js";
-import { documentKey, raise, tenantTag } from "./runtime.js";
+import { documentKey, raise, tenantTag, traceDocument } from "./runtime.js";
 
 export type CancellationRow = {
   id: string;
@@ -309,6 +309,7 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
   });
   if (!loaded) return { status: "done" };
   if ("refused" in loaded) {
+    traceDocument(loaded.refused ?? null);
     raise(rt, {
       key: `cfdi_cancel_failed:${tenantTag(tenantId)}:${loaded.refused}`,
       severity: "warning",
@@ -322,6 +323,7 @@ export async function cancelJob(ctx: JobContext): Promise<JobOutcome> {
   // here would only use up attempts while the substitute is pending (CFDI-R2).
   if ("wait" in loaded) return { status: "done" };
   const { c, doc } = loaded;
+  traceDocument(doc.id);
   /**
    * Records what SAT says about the invoice: canceled, or waiting for the receptor. Under the
    * document's key (LO-3, class 927), the key cfdi_refund decides a credit note under: the

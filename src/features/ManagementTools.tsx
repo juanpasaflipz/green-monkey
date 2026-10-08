@@ -4,6 +4,7 @@ import { api } from "../api";
 import { strings, errorNotice, type Key } from "../i18n";
 import { Button, Field, Modal } from "../components/ui";
 import { minor, type Session, type Locale } from "../../shared/domain";
+import { dateTime } from "../datetime";
 export function ManagementTools({
   view,
   session,
@@ -117,14 +118,18 @@ export function ManagementTools({
                   <span>
                     {r.name}
                     <small>
-                      {new Date(r.started_at).toLocaleString(locale, {
-                        timeZone: session.restaurant.timezone,
-                      })}{" "}
+                      {dateTime(
+                        r.started_at,
+                        session.restaurant.timezone,
+                        locale,
+                      )}{" "}
                       →{" "}
                       {r.ended_at
-                        ? new Date(r.ended_at).toLocaleString(locale, {
-                            timeZone: session.restaurant.timezone,
-                          })
+                        ? dateTime(
+                            r.ended_at,
+                            session.restaurant.timezone,
+                            locale,
+                          )
                         : t("active")}
                     </small>
                   </span>

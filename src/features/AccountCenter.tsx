@@ -141,6 +141,7 @@ export function AccountCenter({
       ? new Intl.DateTimeFormat(tag, {
           dateStyle: "medium",
           timeStyle: "short",
+          hourCycle: "h23",
         }).format(new Date(iso))
       : "";
   const [overview, setOverview] = useState<Overview | null>(null);

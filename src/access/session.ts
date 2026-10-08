@@ -67,8 +67,7 @@ export async function drainBeforeLeaving(
   return unsyncedFor(s);
 }
 
-const UUID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /**
  * Ends the cookie's session. With a session id the server ends it only if the
  * cookie still holds that session, so a logout finished late never signs out

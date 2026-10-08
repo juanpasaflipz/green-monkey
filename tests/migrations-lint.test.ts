@@ -300,6 +300,130 @@ BEGIN UPDATE stock_items SET name = name WHERE id = NEW.id; RETURN NEW; END $$;`
     ).toEqual([]);
   });
 
+  it("no migration names the runtime login: only scripts/grants.sql grants it, as PG_APP_USER (CFDIFIX-R2-1)", () => {
+    expect(rule("runtime_role_named")).toEqual([]);
+    const named = (body: string, name = "037_x.sql") =>
+      lintWith(name, "SET LOCAL lock_timeout = '5s';\n" + body).filter(
+        (f) => f.rule === "runtime_role_named",
+      );
+    // 036 as commit 0c964c7 shipped it: staging's migrate failed with 42704.
+    expect(
+      named(
+        "GRANT UPDATE (next_self_invoice_policy, next_self_invoice_days, next_portal_reissue_global,\n  next_self_invoice_from) ON cfdi_settings TO gm_app;\n",
+      ),
+    ).toEqual([
+      {
+        file: "037_x.sql",
+        rule: "runtime_role_named",
+        detail:
+          "gm_app: the runtime login is granted only by scripts/grants.sql (PG_APP_USER), never by a migration",
+      },
+    ]);
+    // Any environment's login, quoted, in a DO block's EXECUTE string or a function body.
+    for (const [body, role] of [
+      ['GRANT SELECT ON jobs TO "gm_staging_app";', "gm_staging_app"],
+      ["REVOKE UPDATE ON jobs FROM GM_PROD_APP;", "gm_prod_app"],
+      [
+        "DO $$ BEGIN EXECUTE format('GRANT SELECT ON %I TO gm_app', 'jobs'); END $$;",
+        "gm_app",
+      ],
+      [
+        "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $f$ BEGIN\n  -- runs as the owner\n  PERFORM pg_has_role('gm_t1a2b3_app_r20261007', 'gm_jobs_worker', 'member');\nEND $f$;",
+        "gm_t1a2b3_app_r20261007",
+      ],
+      ["ALTER POLICY p ON jobs TO gm_x_app_next;", "gm_x_app_next"],
+    ])
+      expect(named(body).map((f) => f.detail.split(":")[0])).toEqual([role]);
+    // Before 022 too: the rule has no start number.
+    expect(
+      lintMigrations([fixture("010_x.sql", "GRANT SELECT ON jobs TO gm_app;")])
+        .filter((f) => f.rule === "runtime_role_named")
+        .map((f) => f.file),
+    ).toEqual(["010_x.sql"]);
+    // Comments may name it; capability roles and look-alikes are not the runtime login.
+    expect(
+      named(
+        "-- the runtime role (gm_app) gets its UPDATE from scripts/grants.sql\n/* never TO gm_staging_app */\nGRANT SELECT ON jobs TO gm_jobs_worker, gm_support, gm_backup_reader;\nCOMMENT ON TABLE jobs IS 'gm_application jobs';\nDO $$ BEGIN\n  -- not gm_app\n  PERFORM 1;\nEND $$;",
+      ),
+    ).toEqual([]);
+  });
+
+  it("the runtime login is read as a whole name where SQL names a role, through quoted names and escaped spellings; a table or column that looks like it is not the login (CFDIFIX-R3-2)", () => {
+    const named = (body: string) =>
+      lintWith("037_x.sql", "SET LOCAL lock_timeout = '5s';\n" + body)
+        .filter((f) => f.rule === "runtime_role_named")
+        .map((f) => f.detail.split(":")[0]);
+    // A double-quoted name is one token: a `--` or `/*` inside it comments nothing out.
+    expect(scan('GRANT SELECT ON "odd--name" TO gm_app;').code).toBe(
+      'GRANT SELECT ON "odd--name" TO gm_app;',
+    );
+    for (const body of [
+      'GRANT SELECT ON "odd--name" TO gm_app;',
+      'GRANT SELECT ON "odd/*name" TO gm_app; -- */',
+      'ALTER TABLE "a"")--" OWNER TO gm_app;',
+    ])
+      expect(named(body), body).toEqual(["gm_app"]);
+    // U&"…" and U&'…' (UESCAPE included) and E'…' are read decoded.
+    expect(
+      scan(`U&"gm\\005fapp" U&'d!0061t!+000061' UESCAPE '!' E'it\\'s'`).code,
+    ).toBe(`"gm_app" 'data' 'it''s'`);
+    for (const [body, role] of [
+      ['GRANT SELECT ON jobs TO U&"gm\\005fapp";', "gm_app"],
+      ['GRANT SELECT ON jobs TO u&"gm_\\0061pp";', "gm_app"],
+      [
+        `GRANT SELECT ON jobs TO U&"gm!005fstaging!+00005fapp" UESCAPE '!';`,
+        "gm_staging_app",
+      ],
+      [
+        "DO $$ BEGIN PERFORM pg_has_role(U&'gm\\005fapp', 'gm_jobs_worker', 'member'); END $$;",
+        "gm_app",
+      ],
+      [
+        "DO $$ BEGIN EXECUTE E'GRANT SELECT ON jobs TO gm\\137app'; END $$;",
+        "gm_app",
+      ],
+      [
+        "DO $$ BEGIN EXECUTE E'GRANT SELECT ON jobs TO gm\\x5fprod\\u005fapp'; END $$;",
+        "gm_prod_app",
+      ],
+    ] as const)
+      expect(named(body), body).toEqual([role]);
+    // Every place SQL names a role.
+    for (const body of [
+      "ALTER TABLE jobs OWNER TO gm_app;",
+      "CREATE POLICY p ON jobs FOR SELECT TO gm_app USING (true);",
+      "GRANT gm_app TO gm_migrator;",
+      "REVOKE ADMIN OPTION FOR gm_app FROM gm_migrator;",
+      "ALTER DEFAULT PRIVILEGES FOR ROLE gm_migrator GRANT SELECT ON TABLES TO gm_app;",
+      "ALTER ROLE gm_app SET statement_timeout = '10s';",
+      "SET ROLE gm_app;",
+      "CREATE SCHEMA s AUTHORIZATION gm_app;",
+      "REASSIGN OWNED BY gm_app TO gm_migrator;",
+      "DO $$ BEGIN EXECUTE format('GRANT SELECT ON %I TO %I', 'jobs', 'gm_app'); END $$;",
+      "DO $$ BEGIN EXECUTE 'GRANT SELECT ON jobs TO ' || quote_ident('gm_app'); END $$;",
+      "DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles r WHERE r.rolname = 'gm_app') THEN NULL; END IF; END $$;",
+      "DO $$ BEGIN PERFORM 'gm_app'::regrole; END $$;",
+      "DO $$ BEGIN PERFORM set_config('role', 'gm_app', true); END $$;",
+    ])
+      expect(named(body), body).toEqual(["gm_app"]);
+    // A table, column or index named like it, in statements, strings and a DO loop, is not.
+    expect(
+      named(
+        [
+          "CREATE TABLE gm_app_settings (id uuid PRIMARY KEY, gm_app text);",
+          "CREATE INDEX gm_app_settings_id ON gm_app_settings (id);",
+          "ALTER TABLE gm_app_settings ENABLE ROW LEVEL SECURITY;",
+          "ALTER TABLE gm_app_settings FORCE ROW LEVEL SECURITY;",
+          "GRANT SELECT ON gm_app_settings TO gm_jobs_worker;",
+          "REVOKE UPDATE (gm_app) ON gm_app_settings FROM gm_support;",
+          "COMMENT ON TABLE gm_app_settings IS 'gm_app_settings';",
+          "SELECT gm_app FROM gm_app_settings ORDER BY gm_app;",
+          "DO $$ DECLARE t text; BEGIN\n  FOREACH t IN ARRAY ARRAY['gm_app_settings'] LOOP\n    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);\n  END LOOP;\nEND $$;",
+        ].join("\n"),
+      ),
+    ).toEqual([]);
+  });
+
   it("022 creates only hot-path indexes and no CHECK constraints (wave 1 contract)", () => {
     expect(rule("ops_022_scope")).toEqual([]);
     expect(

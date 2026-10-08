@@ -16,9 +16,12 @@ function useOperation() {
 function relative(iso: string | null, locale: Locale) {
   if (!iso) return strings[locale].accessDevicesNeverSeen;
   const seconds = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
-  const format = new Intl.RelativeTimeFormat(locale === "es" ? "es-MX" : "en-US", {
-    numeric: "auto",
-  });
+  const format = new Intl.RelativeTimeFormat(
+    locale === "es" ? "es-MX" : "en-US",
+    {
+      numeric: "auto",
+    },
+  );
   const abs = Math.abs(seconds);
   if (abs < 60) return format.format(Math.round(seconds), "second");
   if (abs < 3600) return format.format(Math.round(seconds / 60), "minute");
@@ -76,7 +79,10 @@ export function DeviceManagement({
   );
   const openCodes = codes.filter((c) => c.state === "open");
   return (
-    <section className="panel device-management" aria-labelledby="devices-title">
+    <section
+      className="panel device-management"
+      aria-labelledby="devices-title"
+    >
       <div className="row between wrap">
         <h2 id="devices-title">{t.accessDevicesTitle}</h2>
         <Button variant="primary" onClick={() => setPairing(true)}>
@@ -135,7 +141,9 @@ export function DeviceManagement({
               <div className="device-main">
                 <div className="row wrap device-title">
                   <strong>{d.name}</strong>
-                  {d.current && <Badge tone="green">{t.accessDevicesThis}</Badge>}
+                  {d.current && (
+                    <Badge tone="green">{t.accessDevicesThis}</Badge>
+                  )}
                   <Badge
                     tone={
                       d.status === "active"
@@ -196,7 +204,10 @@ export function DeviceManagement({
                           });
                           renewEnd();
                           setNotice(
-                            t.accessDevicesSessionEnded.replace("{name}", d.name),
+                            t.accessDevicesSessionEnded.replace(
+                              "{name}",
+                              d.name,
+                            ),
                           );
                           await load();
                         } catch (e) {
@@ -379,7 +390,9 @@ function PairingDialog({
       ) : expired || state === "cancelled" ? (
         <>
           <p role="status">{t.accessDevicesCodeExpired}</p>
-          <Button onClick={() => setCode(null)}>{t.accessDevicesGenerate}</Button>
+          <Button onClick={() => setCode(null)}>
+            {t.accessDevicesGenerate}
+          </Button>
         </>
       ) : (
         <div className="pairing-code">
@@ -389,10 +402,7 @@ function PairingDialog({
             {t.accessDevicesExpiresIn.replace("{time}", countdown(remaining))}
           </p>
           <p>
-            {t.accessDevicesCodeHint.replace(
-              "{url}",
-              `${location.origin}/app`,
-            )}
+            {t.accessDevicesCodeHint.replace("{url}", `${location.origin}/app`)}
           </p>
         </div>
       )}
@@ -415,7 +425,9 @@ function EditDevice({
   const [operationId] = useState(() => crypto.randomUUID());
   const [name, setName] = useState(device.name);
   const [idle, setIdle] = useState(
-    device.idleLockSeconds === null ? "default" : String(device.idleLockSeconds),
+    device.idleLockSeconds === null
+      ? "default"
+      : String(device.idleLockSeconds),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

@@ -8,8 +8,10 @@ writes credentials to 0600 files that it never overwrites, and supports
 
 Status: scripted and dry-run tested locally; `provision-roles.ts` and
 `rotate-db-login.ts` are exercised against throwaway local databases by
-`tests/provision-db.ts`. Nothing has been run against Neon, Railway, GitHub,
-Cloudflare or Google yet.
+`tests/provision-db.ts`. On staging (October 6–7, 2026) `provision-roles.ts`,
+the Railway IaC apply, `railway-vars.sh`, `github-protect.sh` and three
+`rotate-db-login.ts` rotations ran ([STAGING.md](STAGING.md)); R2 and the
+restore rehearsal have not. Nothing has run against production.
 
 ## 0. Decisions (defaults chosen so work is not blocked)
 

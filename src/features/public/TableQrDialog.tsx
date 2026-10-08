@@ -26,6 +26,7 @@ export function shortDateTime(iso: string, locale: Locale, timezone: string) {
     month: "short",
     hour: "2-digit",
     minute: "2-digit",
+    hourCycle: "h23",
     timeZone: timezone,
   }).format(new Date(iso));
 }

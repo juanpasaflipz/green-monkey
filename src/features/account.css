@@ -131,7 +131,9 @@
   /* Printing the codes prints only them (UX-9): the console's other panels
      and the rest of the owner screen stay off the page. */
   body:has(.recovery-codes) .owner-access > :not(.account-center),
-  body:has(.recovery-codes) .account-center > :not(.recovery):not(:has(.recovery)),
+  body:has(.recovery-codes)
+    .account-center
+    > :not(.recovery):not(:has(.recovery)),
   body:has(.recovery-codes) .account-recovery-more > :not(.recovery),
   body:has(.recovery-codes) .recovery > :not(.recovery-codes) {
     display: none;

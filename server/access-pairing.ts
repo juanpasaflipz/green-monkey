@@ -48,7 +48,8 @@ export async function createPairingCode(tx: Tx, s: Session, raw: unknown) {
   const p = createInput.parse(raw);
   // Serializes the open-code limit per restaurant.
   await tx`select pg_advisory_xact_lock(hashtextextended(current_setting('app.tenant_id'),923))`;
-  const [open] = await tx`select count(*)::int as count from device_pairing_codes
+  const [open] =
+    await tx`select count(*)::int as count from device_pairing_codes
     where consumed_at is null and cancelled_at is null and expires_at>now()`;
   if (open.count >= ACCESS.maxOpenPairingCodes)
     throw new DomainError("pairing_code_limit", 409);
@@ -57,7 +58,9 @@ export async function createPairingCode(tx: Tx, s: Session, raw: unknown) {
     const code = generatePairingCode();
     try {
       const [row] = await tx.savepoint(
-        (sp) => (sp as Tx)`insert into device_pairing_codes(tenant_id,id,code_hash,device_name,created_by,expires_at)
+        (
+          sp,
+        ) => (sp as Tx)`insert into device_pairing_codes(tenant_id,id,code_hash,device_name,created_by,expires_at)
           values(${s.tenantId},${id},${pairingHash(code)},${p.deviceName},${s.employeeId},
             now()+make_interval(mins=>${ACCESS.pairingCodeMinutes}))
           returning expires_at`,
@@ -87,7 +90,8 @@ export async function listPairingCodes(
   s: Session,
 ): Promise<PairingCodeRow[]> {
   permit(s, managers);
-  const rows = await tx`select c.id,c.device_name,c.created_at,c.expires_at,c.consumed_at,
+  const rows =
+    await tx`select c.id,c.device_name,c.created_at,c.expires_at,c.consumed_at,
       c.cancelled_at,c.device_id,e.name as created_by
     from device_pairing_codes c join employees e on e.tenant_id=c.tenant_id and e.id=c.created_by
     where (c.consumed_at is null and c.cancelled_at is null and c.expires_at>now())
@@ -119,8 +123,11 @@ export async function cancelPairingCode(
 ) {
   permit(s, managers);
   requireRecentAuth(s);
-  z.object({}).strict().parse(raw ?? {});
-  const [row] = await tx`update device_pairing_codes set cancelled_at=now(),cancelled_by=${s.employeeId}
+  z.object({})
+    .strict()
+    .parse(raw ?? {});
+  const [row] =
+    await tx`update device_pairing_codes set cancelled_at=now(),cancelled_by=${s.employeeId}
     where id=${id} and consumed_at is null and cancelled_at is null and expires_at>now()
     returning id,device_name`;
   if (!row) throw new DomainError("pairing_code_unavailable", 409);
@@ -140,7 +147,8 @@ export async function cancelCodesCreatedBy(
   employeeId: string,
   actorId: string,
 ): Promise<number> {
-  const rows = await tx`update device_pairing_codes set cancelled_at=now(),cancelled_by=${actorId}
+  const rows =
+    await tx`update device_pairing_codes set cancelled_at=now(),cancelled_by=${actorId}
     where created_by=${employeeId} and consumed_at is null and cancelled_at is null
     returning id`;
   return rows.length;
@@ -183,7 +191,8 @@ export async function redeemPairingCode(
     await tx`insert into devices(tenant_id,id,name,token_hash,kind,paired_at,paired_by,token_expires_at)
       values(${row.tenant_id},${device.id},${row.device_name},${hash(device.token)},'terminal',now(),
         ${row.created_by},now()+make_interval(days=>${ACCESS.deviceTokenDays}))`;
-    const [consumed] = await tx`update device_pairing_codes set consumed_at=now(),device_id=${device.id}
+    const [consumed] =
+      await tx`update device_pairing_codes set consumed_at=now(),device_id=${device.id}
       where id=${row.id} and consumed_at is null and cancelled_at is null and expires_at>now()
       returning id`;
     // Unknown, expired, cancelled and used codes are indistinguishable; the
@@ -192,7 +201,8 @@ export async function redeemPairingCode(
     // Re-pairing a browser that holds this restaurant's terminal cookie retires the old device.
     const replaced = previous?.tenantId === row.tenant_id ? previous : null;
     if (replaced) {
-      const [old] = await tx`update devices set active=false,revoked_at=now(),revoked_reason='replaced',free_slot=null
+      const [old] =
+        await tx`update devices set active=false,revoked_at=now(),revoked_reason='replaced',free_slot=null
         where id=${replaced.id} and token_hash=${hash(replaced.token)} and active returning id`;
       if (old)
         await endDeviceSessions(tx, replaced.id, "replaced", { revoke: false });

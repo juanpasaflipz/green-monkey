@@ -46,7 +46,10 @@ export type InvoiceRequest = {
   receptor: Receptor;
   cardForm: CardForm | null;
   confirmPreStart: boolean;
-  /** Manager (staff) or the owner's portal setting: cancel the covering global with motive 04. */
+  /**
+   * Manager (staff) or the owner's portal setting (portalReissues: in force, or in a change that
+   * waits, CFDIFIX-R3-1): cancel the covering global with motive 04.
+   */
   reissueGlobal: boolean;
 };
 
@@ -94,8 +97,10 @@ export async function createInvoiceRequest(
     // An expired or missing certificate fails every stamp: no customer attempt (CFDI-UX-2).
     if (!csdUsable(state.organization, settings.mode))
       throw new DomainError("cfdi_portal_unavailable", 409);
+    // The deadline the printed ticket and the portal show (LD-51 F1): the policy, or the moment
+    // the ticket's global is built when the portal does not reissue globals.
     const facts = await fiscalFacts(tx);
-    const deadline = ticketDeadline(t, settings, facts.timezone);
+    const deadline = await ticketDeadline(tx, t, state, facts);
     if (deadline && Date.parse(deadline) < Date.now())
       throw new DomainError("cfdi_portal_expired", 409);
     // Restaurant-side failures (certificate, organization, provider) never use up the customer's

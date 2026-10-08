@@ -44,6 +44,8 @@ acknowledged a critical alert within 15 minutes during service hours
 | `cfdi_provider_auth_failed` (critical) | ntfy, from the worker | Facturapi refused the platform User key (CFDI publishes `disabled`) or a restaurant's organization key: check the worker's `FACTURAPI_API_KEY` / that organization ([CFDI](CFDI.md) "Operations") |
 | `cfdi_global_overdue:*`, `cfdi_global_late:*`, `cfdi_global_failed:*` (warning) | ntfy, from the worker | a global invoice missed its 24 h deadline, a late supplementary part was issued after it, or a part failed: Facturas globales → **Emitir ahora** / **Reintentar** |
 | `cfdi_stamp_unresolved:*`, `cfdi_cancel_unresolved:*`, `cfdi_cancel_failed:*`, `cfdi_substitution_rejected:*`, `cfdi_reissue_failed:*`, `cfdi_refund_unresolved:*`, `cfdi_ticket_excluded:*`, `cfdi_amount_mismatch:*` (warning) | ntfy, from the worker | one restaurant's document needs a person (`<tenant>` = first 8 hex characters of the tenant id): see the action per key in [CFDI](CFDI.md) "Operations" |
+| `cfdi_acuse_mismatch:*` (warning) | ntfy, from the worker | live mode: a canceled CFDI's acuse from Facturapi does not name the document's UUID, so it was not stored (fetched again up to three times per reader version; the register's last line says it will not be requested again). Read the event's `found` and `sha256`, compare with the acuse in Facturapi and report to engineering; a reader fix (`ACUSE_READER_VERSION`) makes the sweep fetch it again ([CFDI](CFDI.md) "Operations", LD-55) |
+| `cfdi_periodicity_reverted:*` (warning) | ntfy, from the worker | a periodicity change that applied at once was undone by its rebuild tick; receipts printed since may show a later self-invoicing deadline than the portal allows. Check the restaurant's Facturas globales and tell the owner ([CFDI](CFDI.md) "Periodicity changes") |
 | `cfdi_csd_expiring:*` (info) | ntfy, from the worker | a restaurant's CSD expires within 30 days: the owner uploads a new one |
 | `public_order_limited` (log, warn) | web logs | a public QR/kiosk order hit a durable cap (`code`: `public_order_limit`, `public_ordering_busy` or `public_order_churn`); the line names the code's `ref` (the "Ref. 7A3F" staff see in Mesas or Configuración), its kind and the client's `ipHash`, never a token or a path. Repeated lines for one `ref` from one `ipHash`: "Online ordering abuse" below |
 | `rate_limited` with `limiter: public-*` (log, warn) | web logs | a client hit a public ordering per-IP or per-link limit (in memory, per replica); one diner retrying is normal, a steady stream from one `ipHash` is abuse |
@@ -583,10 +585,11 @@ consent; record each in [STAGING.md](STAGING.md)). Pin the CLI with
 15. Load test `target` and `stress`; record the pool decision
     ([LOAD_TEST.md](LOAD_TEST.md)).
 
-**Wave 2.0 deltas to these steps.** Staging has not run this cutover yet, so
-it runs once, from the integrated code that already contains Wave 2.0
-(keyring, worker jobs login, migrations in GitHub Actions), with these
-changes:
+**Wave 2.0 deltas to these steps.** Staging ran this cutover once, on
+2026-10-06/07 (steps 1–13; record in [STAGING.md](STAGING.md)), from the
+integrated code that already contains Wave 2.0 (keyring, worker jobs login,
+migrations in GitHub Actions), with these changes; a fresh staging repeats
+them:
 
 | Step | Delta |
 | --- | --- |

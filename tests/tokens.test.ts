@@ -155,7 +155,9 @@ describe("sealed tokens (contract C-6)", () => {
     // only content, and the MAC is the only key-dependent part.
     env({ SIGNING_KEYS: entry("k1", 2), JWT_SECRET: JWT });
     const other = seal("cfdi-portal-file", payload, { ttlSeconds: 900 });
-    expect(JSON.parse(Buffer.from(other.split(".")[2], "base64url").toString()).d).toEqual(payload);
+    expect(
+      JSON.parse(Buffer.from(other.split(".")[2], "base64url").toString()).d,
+    ).toEqual(payload);
     expect(other.split(".")[3]).not.toBe(mac);
   });
 

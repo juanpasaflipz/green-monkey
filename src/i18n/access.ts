@@ -84,7 +84,8 @@ export default defineArea({
     accessStaffActive: "Activo",
     accessStaffInactive: "Inactivo",
     accessStaffLocked: "Bloqueado",
-    accessStaffUnlockOwnerOnly: "Solo el propietario puede desbloquear a {name}.",
+    accessStaffUnlockOwnerOnly:
+      "Solo el propietario puede desbloquear a {name}.",
     accessStaffPin: "PIN",
     accessStaffGoogle: "Google",
     accessStaffGooglePin: "Google y PIN",
@@ -333,7 +334,7 @@ export default defineArea({
     accessDevicesCodeExpired: "The code expired. Create another one.",
     accessDevicesPaired: "Paired: {name}",
     accessDevicesPairedFree:
-      "On Free only one device starts sales. If this one will be your register, select it in \"Free register and team\".",
+      'On Free only one device starts sales. If this one will be your register, select it in "Free register and team".',
     accessDevicesOpenCodes: "Active codes",
     accessDevicesCancelCode: "Cancel code",
     accessDevicesThis: "This device",

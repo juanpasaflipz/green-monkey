@@ -13,7 +13,19 @@
  */
 import { test, expect, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
+import postgres from "postgres";
 import { TEST_CSD, TEST_CSD_PASSWORD } from "../fixtures/cfdi/test-csd";
+import {
+  deleteOwnerFixtures,
+  fixtureDatabases,
+  ownerFixture,
+  ownerRestaurant,
+  useOwnerCookie,
+} from "./account-fixtures.js";
+import {
+  browserZoneWhereDailyEndsFirst,
+  type Zone,
+} from "../fixtures/business-date-zones.js";
 import { kitchenHygiene } from "./kitchen-hygiene.js";
 
 const AXE_TAGS = ["wcag2a", "wcag2aa", "wcag21aa"];
@@ -24,6 +36,56 @@ const RECEPTOR = {
   postalCode: "42501",
 };
 const uuid = () => crypto.randomUUID();
+const DEMO_TENANT =
+  process.env.DEMO_TENANT_ID ?? "10000000-0000-4000-8000-000000000001";
+
+/**
+ * The demo restaurant's zone while a check has pinned its business date (CFDIFIX-R2-6), restored
+ * by the check's finally and, for a check that timed out before it, by afterEach.
+ */
+let pinnedFrom: Zone | null = null;
+
+/** Local fixture database only (the guard of business-day.spec, finance.spec and global-setup). */
+function fixtureAdmin(baseURL: string | undefined) {
+  const runtime = new URL(process.env.DATABASE_URL ?? "http://invalid"),
+    migration = new URL(process.env.MIGRATION_DATABASE_URL ?? "http://invalid"),
+    base = new URL(baseURL ?? "http://invalid");
+  if (
+    !["localhost", "127.0.0.1"].includes(runtime.hostname) ||
+    runtime.hostname !== migration.hostname ||
+    runtime.port !== migration.port ||
+    runtime.pathname !== migration.pathname ||
+    !/^\/green_monkey(_[a-z]+)?_dev$/.test(runtime.pathname) ||
+    !["localhost", "127.0.0.1"].includes(base.hostname)
+  )
+    throw Error(
+      "Pinning the business date requires the isolated local dev database",
+    );
+  return postgres(process.env.MIGRATION_DATABASE_URL!, { max: 1 });
+}
+
+/** Moves the demo restaurant's timezone and cutoff as the owner would (app.tenant_id set, LD-16). */
+async function setDemoZone(baseURL: string | undefined, zone: Zone) {
+  const admin = fixtureAdmin(baseURL);
+  try {
+    await admin.begin(async (tx) => {
+      await tx`select set_config('app.tenant_id', ${DEMO_TENANT}, true)`;
+      await tx`update restaurants set timezone = ${zone.timezone}, cutoff = ${zone.cutoff}
+        where id = ${DEMO_TENANT}`;
+    });
+  } finally {
+    await admin.end();
+  }
+}
+
+async function unpinDemoZone(baseURL: string | undefined) {
+  const zone = pinnedFrom;
+  if (!zone) return;
+  await setDemoZone(baseURL, zone);
+  pinnedFrom = null;
+}
+
+test.afterEach(async ({ baseURL }) => unpinDemoZone(baseURL));
 
 async function login(page: Page) {
   await page.goto("/app");
@@ -104,6 +166,14 @@ test("Configuración shows the CFDI panel before activation: badge, prerequisite
     await expect(
       cfdi.getByRole("button", { name: "Activar en modo prueba" }),
     ).toBeVisible();
+    // LD-51 F2: activation asks for the global periodicity (monthly by default, D4) and says how
+    // it bounds self-invoicing (F1).
+    await expect(
+      cfdi.getByLabel("Periodicidad de la factura global"),
+    ).toHaveValue("month");
+    await expect(
+      cfdi.getByText(/al cierre del mes del consumo más \d+ min/),
+    ).toBeVisible();
   }
   // The Configuración view keeps a single "Guardar" (RestaurantSettings) and its status text.
   await expect(
@@ -123,6 +193,117 @@ test("Configuración shows the CFDI panel before activation: badge, prerequisite
       .analyze();
     expect(axe.violations).toEqual([]);
     await noHorizontalScroll(page);
+  }
+});
+
+test("Datos fiscales saved on Configuración updates the CFDI requirements on the same screen, without leaving it (acceptance B1.6)", async ({
+  page,
+  context,
+  baseURL,
+}) => {
+  // A new restaurant has no fiscal profile: the CFDI checklist starts with ✗.
+  const { sql, admin } = fixtureDatabases(baseURL);
+  const owner = await ownerFixture(sql, "cfdiprereq");
+  let tenantId = "";
+  try {
+    tenantId = await ownerRestaurant(sql, owner, "Requisitos CFDI");
+    await useOwnerCookie(context, owner, baseURL);
+    await page.goto("/app");
+    await page
+      .locator(".row.between")
+      .filter({ hasText: "Requisitos CFDI" })
+      .getByRole("button", { name: "Entrar", exact: true })
+      .click();
+    await expect(page.locator(".scope")).toContainText("Requisitos CFDI");
+    await openSettings(page);
+    const cfdi = panel(page);
+    // Each requirement is a list item: "✗ " or "✓ " (aria-hidden) and its text.
+    const missing = cfdi.locator("li.cfdi-check.missing", {
+      hasText: "Completa los datos fiscales del restaurante.",
+    });
+    await expect(missing).toBeVisible();
+    const fiscal = page.getByRole("region", { name: "Datos fiscales" });
+    await fiscal.getByLabel(/^RFC/).fill(RECEPTOR.rfc);
+    await fiscal.getByLabel(/^Nombre o razón social/).fill(RECEPTOR.legalName);
+    await fiscal.getByLabel(/^Régimen fiscal/).selectOption(RECEPTOR.regime);
+    await fiscal
+      .getByLabel(/^Código postal del lugar de expedición/)
+      .fill(RECEPTOR.postalCode);
+    await fiscal
+      .getByRole("button", { name: "Guardar datos fiscales", exact: true })
+      .click();
+    await expect(
+      fiscal
+        .getByRole("status")
+        .filter({ hasText: "Datos fiscales guardados" }),
+    ).toBeVisible();
+    // Same screen, no navigation: the requirement turns ✓.
+    await expect(
+      cfdi.locator("li.cfdi-check.ok", { hasText: "Datos fiscales completos" }),
+    ).toBeVisible();
+    await expect(missing).toHaveCount(0);
+  } finally {
+    if (tenantId)
+      await admin.begin(async (tx) => {
+        await tx`select set_config('app.tenant_id', ${tenantId}, true)`;
+        await tx`delete from restaurant_fiscal_profiles where tenant_id=${tenantId}`;
+        // The fiscal save bumps the menu revision (default tax), creating the row.
+        await tx`delete from menu_state where tenant_id=${tenantId}`;
+      });
+    await deleteOwnerFixtures(admin, [owner.accountId]);
+    await sql.end();
+    await admin.end();
+  }
+});
+
+test("Facturas globales: the periods table scrolls by keyboard on a narrow screen, axe-clean at 768 and 390 px (acceptance B7-global)", async ({
+  page,
+}) => {
+  await login(page);
+  test.skip(
+    !(await stampingReady(page)),
+    "needs the cfdi worker with the Facturapi fake",
+  );
+  await ensureFiscalIdentity(page);
+  await ensureCfdiOn(page);
+  try {
+    // The activation tick adds the current period's row.
+    const day = (offset: number) =>
+      new Date(Date.now() - 6 * 3_600_000 + offset * 86_400_000)
+        .toISOString()
+        .slice(0, 10);
+    await expect
+      .poll(
+        async () =>
+          (
+            await call<unknown[]>(
+              page,
+              `/cfdi/globals?from=${day(-300)}&to=${day(0)}`,
+            )
+          ).body.length,
+        { timeout: 30_000 },
+      )
+      .toBeGreaterThan(0);
+    await openSettings(page);
+    await panel(page).getByText("Facturas globales", { exact: true }).click();
+    const periods = panel(page).getByRole("region", {
+      name: "Periodos de factura global",
+    });
+    await expect(periods).toBeVisible();
+    await expect(periods).toHaveAttribute("tabindex", "0");
+    for (const [width, height] of [
+      [768, 1024],
+      [390, 844],
+    ]) {
+      await page.setViewportSize({ width, height });
+      const axe = await new AxeBuilder({ page })
+        .include(".cfdi-globals")
+        .withTags(AXE_TAGS)
+        .analyze();
+      expect(axe.violations).toEqual([]);
+    }
+  } finally {
+    await pauseCfdi(page);
   }
 });
 
@@ -283,9 +464,10 @@ async function saveSettings(page: Page, patch: Record<string, unknown>) {
     cardPaymentForm: s.cardPaymentForm,
     defaultUse: s.defaultUse,
     selfInvoiceEnabled: s.selfInvoiceEnabled,
-    selfInvoicePolicy: s.selfInvoicePolicy,
-    selfInvoiceDays: s.selfInvoiceDays,
-    portalReissueGlobal: s.portalReissueGlobal,
+    // A self-invoicing change that waits is kept, as the panel's form keeps it (LD-55).
+    selfInvoicePolicy: s.selfInvoicePending?.policy ?? s.selfInvoicePolicy,
+    selfInvoiceDays: s.selfInvoicePending?.days ?? s.selfInvoiceDays,
+    portalReissueGlobal: s.selfInvoicePending?.reissue ?? s.portalReissueGlobal,
     supportEmail: s.supportEmail,
     ...patch,
   });
@@ -407,6 +589,10 @@ test("FIT-6: owner activates CFDI in test mode, a wrong CSD password is refused 
         timeout: 30_000,
       });
     }
+    // LD-51 F9: the issuer RFC is the one Facturapi reports for the organization (its CSD's).
+    await expect(cfdi.getByText(RECEPTOR.rfc, { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
     expect(
       (
         await new AxeBuilder({ page })
@@ -573,6 +759,234 @@ test("customer self-invoices from /f/{code}: inline receptor errors, then succes
     ).toEqual([]);
   } finally {
     await customerContext.close();
+    await pauseCfdi(page);
+  }
+});
+
+test("LD-51 F1/F2/F10, CFDIFIX-1/5/7: the owner switches the global to daily in the panel; a ticket sold this month already printed the monthly deadline, so the change waits for next month, the panel says from when and why, and the portal keeps the printed deadline", async ({
+  page,
+  browser,
+  baseURL,
+}) => {
+  test.setTimeout(120_000);
+  await login(page);
+  test.skip(
+    !(await stampingReady(page)),
+    "needs the cfdi worker with the Facturapi fake",
+  );
+  await ensureFiscalIdentity(page);
+  await ensureCfdiOn(page);
+  // CFDIFIX-R2-6: on a month's last day a monthly and a daily global of that day close together,
+  // so today's ticket would not make the change wait. The check runs where a daily global of the
+  // business date ends first (tests/fixtures/business-date-zones.ts): the restaurant's own zone on
+  // any other day; on a month's last day, or in the half hour before it starts, a cutoff an hour
+  // later or Kiritimati, never a date before its own (activation dated CFDI's start with it). The
+  // finally (afterEach too) restores the zone.
+  const own: Zone = (await call<{ restaurant: Zone }>(page, "/session")).body
+    .restaurant;
+  const zone = browserZoneWhereDailyEndsFirst(
+    { timezone: own.timezone, cutoff: own.cutoff },
+    Date.now(),
+    (await settings(page)).globalGraceMinutes,
+  );
+  expect(zone, "a zone where a daily global ends first").not.toBeNull();
+  if (zone!.timezone !== own.timezone || zone!.cutoff !== own.cutoff) {
+    pinnedFrom = { timezone: own.timezone, cutoff: own.cutoff };
+    await setDemoZone(baseURL, zone!);
+    // A fresh session reads the moved zone.
+    await page.reload();
+    await expect(
+      page.getByRole("heading", { name: "Hoy", exact: true }),
+    ).toBeVisible();
+  }
+  const customerContext = await browser.newContext();
+  const customer = await customerContext.newPage();
+  /** Monthly in force on the server's business date, with no change pending. */
+  const monthly = (v: Awaited<ReturnType<typeof settings>>) =>
+    (v.settings.nextPeriodicity &&
+    v.settings.nextPeriodicityFrom <= v.businessDate
+      ? v.settings.nextPeriodicity
+      : v.settings.globalPeriodicity) === "month";
+  try {
+    let before = await settings(page);
+    if (
+      before.settings.globalPeriodicity !== "month" ||
+      before.settings.nextPeriodicity
+    )
+      await saveSettings(page, { globalPeriodicity: "month" });
+    before = await settings(page);
+    // The check never leaves daily globals in force (its change always waits, and the finally
+    // cancels it), so monthly is in force with nothing pending: it never skips (CFDIFIX-R2-6).
+    expect(
+      monthly(before) && !before.settings.nextPeriodicity,
+      "monthly globals in force on the business date, nothing pending",
+    ).toBe(true);
+    // A ticket of today, its receipt printed under the monthly global.
+    const order = await paidOrder(page, "CFDI periodicity " + Date.now());
+    const code = order.fiscal.ticket.selfInvoiceCode;
+    await customer.goto(`/f/${code}`);
+    const deadline = customer.getByText(/^Puedes facturar hasta el /);
+    await expect(deadline).toBeVisible();
+    const printed = await deadline.textContent();
+
+    await openSettings(page);
+    const cfdi = panel(page);
+    await expect(cfdi.getByText("Periodicidad actual: mensual.")).toBeVisible();
+    await cfdi
+      .getByLabel("Periodicidad de la factura global")
+      .selectOption("day");
+    // The bound in force (monthly) and the one chosen (daily), CFDIFIX-6.
+    await expect(
+      cfdi.getByText(/al cierre del mes del consumo más \d+ min/),
+    ).toBeVisible();
+    await expect(
+      cfdi.getByText(
+        /Con periodicidad diaria: al cierre del día del consumo más \d+ min\./,
+      ),
+    ).toBeVisible();
+    await cfdi
+      .getByRole("button", { name: "Guardar configuración", exact: true })
+      .click();
+    await expect(
+      cfdi.getByText("Configuración de facturación guardada"),
+    ).toBeVisible();
+    const after = (await settings(page)).settings;
+    const status = cfdi.getByRole("status").filter({
+      hasText: "Configuración de facturación guardada",
+    });
+    const select = cfdi.getByLabel("Periodicidad de la factura global");
+    // Deferred on any day (the business date is pinned where a daily global ends first): today's
+    // ticket (CFDIFIX-1), or a global of the month, decides it.
+    expect(after.globalPeriodicity).toBe("month");
+    expect(after.nextPeriodicity).toBe("day");
+    const reason = after.periodicityDeferred?.reason;
+    expect(["deadline", "globals"]).toContain(reason);
+    // LD-55 CFDIFIX-UX-2: the save's own status says the change waits, until when and why,
+    // and the select (which shows the chosen daily) is described by the line in force.
+    await expect(status).toContainText(
+      /La periodicidad cambia a diaria desde el .+: .+\./,
+    );
+    await expect(select).toHaveAccessibleDescription(
+      /^Periodicidad actual: mensual\. Cambia a diaria desde el /,
+    );
+    await expect(
+      cfdi.getByText(
+        /^Periodicidad actual: mensual\. Cambia a diaria desde el .+\. No se aplicó al momento: .+\.$/,
+      ),
+    ).toBeVisible();
+    // The reason, in the periodicity line and in the save's status (UX-2).
+    const why =
+      reason === "globals"
+        ? "el mes ya tiene una factura global"
+        : reason === "overdue"
+          ? "un ticket del mes quedaría en un periodo cuya factura global ya está atrasada"
+          : "acortaría el plazo para autofacturar de tickets ya vendidos este mes";
+    await expect(
+      cfdi.getByText(/^Periodicidad actual: mensual\./),
+    ).toContainText(why);
+    await expect(status).toContainText(why);
+    // The portal keeps answering the deadline the receipt printed.
+    await customer.reload();
+    await expect(customer.getByText(/^Puedes facturar hasta el /)).toHaveText(
+      printed!,
+    );
+  } finally {
+    await customerContext.close();
+    // Back to monthly: the pending change is cancelled. Then the restaurant's own zone.
+    await saveSettings(page, { globalPeriodicity: "month" });
+    await pauseCfdi(page);
+    await unpinDemoZone(baseURL);
+  }
+});
+
+test("ACC-PR-6: a settings read the server answered before a save, delivered after it, never puts back the old settings; the next save sends the saved version", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await login(page);
+  test.skip(
+    !(await stampingReady(page)),
+    "needs the cfdi worker with the Facturapi fake",
+  );
+  await ensureFiscalIdentity(page);
+  await ensureCfdiOn(page);
+  const original = (await settings(page)).settings.conceptDescription as string;
+  const saves = () =>
+    page.waitForResponse(
+      (r) =>
+        r.url().endsWith("/api/cfdi/settings") &&
+        r.request().method() === "POST",
+    );
+  try {
+    await openSettings(page);
+    const cfdi = panel(page);
+    const form = cfdi.locator("form.cfdi-settings-form");
+    const description = form.getByLabel("Descripción del concepto");
+    await expect(description).toHaveValue(original);
+    // The next settings read is answered by the server now (the settings before the save) and
+    // delivered only when released.
+    let held = false;
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let delivered = false;
+    await page.route("**/api/cfdi/settings", async (route) => {
+      if (route.request().method() !== "GET" || held) return route.fallback();
+      held = true;
+      const response = await route.fetch();
+      await released;
+      await route.fulfill({ response });
+      delivered = true;
+    });
+    // Datos fiscales saved on the same screen makes the panel read its settings again (b88b322).
+    const fiscal = page.getByRole("region", { name: "Datos fiscales" });
+    await fiscal
+      .getByRole("button", { name: "Guardar datos fiscales", exact: true })
+      .click();
+    await expect(
+      fiscal
+        .getByRole("status")
+        .filter({ hasText: "Datos fiscales guardados" }),
+    ).toBeVisible();
+    await expect.poll(() => held).toBe(true);
+    // While that read is held, the owner saves a new concept description.
+    const changed = `${original.slice(0, 180)} (ACC-PR-6)`;
+    await description.fill(changed);
+    const first = saves();
+    await form
+      .getByRole("button", { name: "Guardar configuración", exact: true })
+      .click();
+    expect((await first).status()).toBe(200);
+    const status = form.getByRole("status");
+    await expect(status).toHaveText("Configuración de facturación guardada");
+    const saved = (await settings(page)).settings;
+    expect(saved.conceptDescription).toBe(changed);
+    // The held read (the settings before the save) arrives after the save's answer.
+    release();
+    await expect.poll(() => delivered).toBe(true);
+    await page.evaluate(
+      () =>
+        new Promise((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(r)),
+        ),
+    );
+    await page.unroute("**/api/cfdi/settings");
+    // The next save sends the version the first one returned. Before ACC-PR-6 the late answer
+    // put back the old version, and the server refused this save as changed elsewhere (409).
+    await description.fill(original);
+    const second = saves();
+    await form
+      .getByRole("button", { name: "Guardar configuración", exact: true })
+      .click();
+    const answer = await second;
+    expect(answer.request().postDataJSON().expectedVersion).toBe(saved.version);
+    expect(answer.status()).toBe(200);
+    await expect(status).toHaveText("Configuración de facturación guardada");
+    await expect(cfdi.getByRole("alert")).toHaveCount(0);
+    await expect(description).toHaveValue(original);
+  } finally {
+    await page.unroute("**/api/cfdi/settings");
+    if ((await settings(page)).settings.conceptDescription !== original)
+      await saveSettings(page, { conceptDescription: original });
     await pauseCfdi(page);
   }
 });

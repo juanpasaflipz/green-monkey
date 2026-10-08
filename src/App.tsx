@@ -575,7 +575,9 @@ export default function App() {
           {session ? (
             <>
               <Button onClick={() => setShowAccount(false)}>
-                {locale === "es" ? "Volver al restaurante" : "Back to restaurant"}
+                {locale === "es"
+                  ? "Volver al restaurante"
+                  : "Back to restaurant"}
               </Button>
               <Button onClick={() => setLocale(locale === "es" ? "en" : "es")}>
                 {locale === "es" ? "English" : "Español"}
@@ -621,8 +623,7 @@ export default function App() {
   const absoluteEnd = session.access?.absoluteExpiresAt
     ? new Date(session.access.absoluteExpiresAt).getTime()
     : null;
-  const expiring =
-    absoluteEnd !== null && absoluteEnd - now <= 30 * 60_000;
+  const expiring = absoluteEnd !== null && absoluteEnd - now <= 30 * 60_000;
   const nav =
     session.role === "kitchen"
       ? [["kitchen", ChefHat]]
@@ -809,10 +810,13 @@ export default function App() {
                 .replace("{name}", session.name)
                 .replace(
                   "{time}",
-                  new Date(session.access!.absoluteExpiresAt!).toLocaleTimeString(
-                    locale === "es" ? "es-MX" : "en-US",
-                    { hour: "2-digit", minute: "2-digit" },
-                  ),
+                  new Date(
+                    session.access!.absoluteExpiresAt!,
+                  ).toLocaleTimeString(locale === "es" ? "es-MX" : "en-US", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    hourCycle: "h23",
+                  }),
                 )}
             </p>
             <Button
@@ -903,7 +907,10 @@ export default function App() {
               // The previous session's prompts and warnings are not the new one's.
               cancelStepUp();
               setLeaving(null);
-              localStorage.setItem("gm-session-generation", crypto.randomUUID());
+              localStorage.setItem(
+                "gm-session-generation",
+                crypto.randomUUID(),
+              );
             }
             void db.cache.put({ id: "session", value: s });
             setLock(null);
@@ -929,7 +936,8 @@ export default function App() {
           onContinueOffline={() => {
             // Never past a lock the server imposed (ACC-18), nor while a
             // session 401 blocks calls (ACC-FLOOR-2).
-            if (!allowsContinueOffline(lock.reason) || requestsBlocked()) return;
+            if (!allowsContinueOffline(lock.reason) || requestsBlocked())
+              return;
             // The lock stays remembered: a reload or the server answering
             // again asks for the PIN again. An earlier soft unlock keeps its
             // reason, so a renewal prompt never turns an idle re-lock into one

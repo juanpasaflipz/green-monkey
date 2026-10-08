@@ -1,10 +1,5 @@
 import "dotenv/config";
-import {
-  test,
-  expect,
-  type Browser,
-  type Page,
-} from "@playwright/test";
+import { test, expect, type Browser, type Page } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
 import postgres from "postgres";
 import { kitchenHygiene } from "./kitchen-hygiene.js";
@@ -123,7 +118,12 @@ async function queuedSales(page: Page) {
   return page.evaluate(
     () =>
       new Promise<
-        { id: string; scope: string; status: string; orderOperationId: string }[]
+        {
+          id: string;
+          scope: string;
+          status: string;
+          orderOperationId: string;
+        }[]
       >((resolve, reject) => {
         const open = indexedDB.open("green-monkey-v1");
         open.onerror = () => reject(open.error);
@@ -228,6 +228,14 @@ test("owner pairs a terminal with a code and a new cashier signs in with name an
   const add = page.getByRole("dialog", { name: "Agregar empleado" });
   await add.getByLabel("Nombre", { exact: true }).fill(cashier);
   await add.getByLabel("Rol").selectOption({ label: "Cajero" });
+  // A short PIN names the rule in Spanish, not the browser's generic
+  // validation bubble (restaurant-day A4.3, FOH-8).
+  await add.getByLabel("PIN nuevo (6 a 8 dígitos)").fill("1234");
+  await add.getByLabel("Confirma el PIN").fill("1234");
+  await add.getByRole("button", { name: "Guardar", exact: true }).click();
+  await expect(add.getByRole("alert")).toHaveText(
+    "El PIN debe tener de 6 a 8 dígitos.",
+  );
   await add.getByLabel("PIN nuevo (6 a 8 dígitos)").fill("481516");
   await add.getByLabel("Confirma el PIN").fill("481516");
   await add.getByRole("button", { name: "Guardar", exact: true }).click();
@@ -240,7 +248,9 @@ test("owner pairs a terminal with a code and a new cashier signs in with name an
   await checkLayout(page, "team", ".staff-management");
 
   // A pairing code from Configuración → Dispositivos.
-  await page.getByRole("button", { name: "Configuración", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Configuración", exact: true })
+    .click();
   await page.getByRole("button", { name: "Vincular un dispositivo" }).click();
   const dialog = page.getByRole("dialog", { name: "Vincular un dispositivo" });
   await dialog.getByLabel("Nombre del dispositivo").fill(`Caja ${id}`);
@@ -268,7 +278,9 @@ test("owner pairs a terminal with a code and a new cashier signs in with name an
     .getByLabel("Código de vinculación")
     .fill(code.toLowerCase().replace("-", " "));
   await tablet.getByRole("button", { name: "Vincular", exact: true }).click();
-  await expect(tablet.getByText(/^Dispositivo vinculado a .+\.$/)).toBeVisible();
+  await expect(
+    tablet.getByText(/^Dispositivo vinculado a .+\.$/),
+  ).toBeVisible();
   await expect(tablet.getByText(`Dispositivo: Caja ${id}`)).toBeVisible();
   await expect(dialog).toContainText(`Vinculado: Caja ${id}`);
   await checkLayout(tablet, "gate-roster");
@@ -330,7 +342,9 @@ test("a paired terminal hides Google and the server refuses owner account entry 
     const enter = await fetch("/api/auth/account/enter", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tenantId: "10000000-0000-4000-8000-000000000001" }),
+      body: JSON.stringify({
+        tenantId: "10000000-0000-4000-8000-000000000001",
+      }),
     });
     return { providers, enter: [enter.status, (await enter.json()).error] };
   });
@@ -409,7 +423,9 @@ test("idle lock after 3 minutes keeps the cart for the same employee; switch use
     await lock.getByRole("button", { name: "Cambiar de usuario" }).click();
     await signIn(lock, "Alex Demo", OWNER_PASSWORD, true);
     await expect(tablet.locator(".scope")).toContainText("Alex Demo");
-    await tablet.getByRole("button", { name: "Operación", exact: true }).click();
+    await tablet
+      .getByRole("button", { name: "Operación", exact: true })
+      .click();
     await tablet.getByRole("button", { name: "Vender", exact: true }).click();
     await expect(tablet.locator(".cart")).not.toContainText("Taco de hongos");
     await context.close();
@@ -559,7 +575,9 @@ test("Escape and a forced close never dismiss a manual or idle lock, the workspa
       await expect(lock).toBeVisible();
       expect(await lockOpen(tablet)).toBe(true);
       await tablet.evaluate(() =>
-        document.querySelector<HTMLDialogElement>("dialog.lock-screen")!.close(),
+        document
+          .querySelector<HTMLDialogElement>("dialog.lock-screen")!
+          .close(),
       );
       await expect.poll(() => lockOpen(tablet)).toBe(true);
       await expect(lock).toBeVisible();
@@ -587,7 +605,9 @@ test("Escape and a forced close never dismiss a manual or idle lock, the workspa
     const second = await context.newPage();
     await second.goto("/app");
     await expect(second.locator(".scope")).toContainText("Alex Demo");
-    const secondLock = second.getByRole("dialog", { name: "Pantalla bloqueada" });
+    const secondLock = second.getByRole("dialog", {
+      name: "Pantalla bloqueada",
+    });
     await expect(secondLock).toHaveCount(0);
     await tablet.getByRole("button", { name: "Bloquear pantalla" }).click();
     await expect(secondLock).toBeVisible();
@@ -709,14 +729,22 @@ test("a revoked session leaves the offline cache on a cold start, and an ended o
  * lock (which would replace the server's reason), and after "Quedarme" the lock
  * keeps its reason with no "Continuar como" and the workspace stays inert (ACC-18).
  */
-async function serverLockHoldsOffline(tablet: Page, lock: ReturnType<Page["getByRole"]>) {
-  await expect(lock).toContainText("Sin conexión no se puede verificar el PIN.");
+async function serverLockHoldsOffline(
+  tablet: Page,
+  lock: ReturnType<Page["getByRole"]>,
+) {
+  await expect(lock).toContainText(
+    "Sin conexión no se puede verificar el PIN.",
+  );
   const continueAs = lock.getByRole("button", {
     name: `Continuar como ${CASHIER.name}`,
   });
   await expect(continueAs).toHaveCount(0);
   await lock.getByRole("button", { name: "Salir", exact: true }).click();
-  const leaving = tablet.getByRole("dialog", { name: "Sin conexión", exact: true });
+  const leaving = tablet.getByRole("dialog", {
+    name: "Sin conexión",
+    exact: true,
+  });
   await expect(leaving).toBeVisible();
   await expect(leaving.getByRole("button", { name: "Quedarme" })).toBeVisible();
   await expect(
@@ -854,10 +882,12 @@ test("a pending PIN confirmation never passes to the next employee after an idle
     const drawer = await call(tablet, "/cash");
     if (!drawer.body || drawer.body.closed_at)
       expect(
-        (await call(tablet, "/cash/open", {
-          operationId: crypto.randomUUID(),
-          opening: 0,
-        })).status,
+        (
+          await call(tablet, "/cash/open", {
+            operationId: crypto.randomUUID(),
+            opening: 0,
+          })
+        ).status,
       ).toBe(200);
     const catalog = (await call<any[]>(tablet, "/catalog")).body;
     const product = catalog.find((p) => p.name.es === "Taco de hongos");
@@ -865,7 +895,13 @@ test("a pending PIN confirmation never passes to the next employee after an idle
     const order = await call(tablet, "/orders", {
       operationId: crypto.randomUUID(),
       lines: [
-        { id: crypto.randomUUID(), productId: product.id, quantity: 1, options: [], note: "" },
+        {
+          id: crypto.randomUUID(),
+          productId: product.id,
+          quantity: 1,
+          options: [],
+          note: "",
+        },
       ],
       mode: "takeaway",
       tableId: null,
@@ -894,13 +930,24 @@ test("a pending PIN confirmation never passes to the next employee after an idle
     const refundThenWalkAway = async (who: string) => {
       const s = await sessionOf(tablet);
       await admin`update sessions set authenticated_at=now()-interval '1 hour' where id=${s.id}`;
-      await tablet.getByRole("button", { name: "Operación", exact: true }).click();
-      await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
-      const card = tablet.locator(".order-summary").filter({ hasText: name }).first();
-      await card.getByRole("button", { name: "Reembolsar", exact: true }).click();
+      await tablet
+        .getByRole("button", { name: "Operación", exact: true })
+        .click();
+      await tablet
+        .getByRole("button", { name: "Órdenes", exact: true })
+        .click();
+      const card = tablet
+        .locator(".order-summary")
+        .filter({ hasText: name })
+        .first();
+      await card
+        .getByRole("button", { name: "Reembolsar", exact: true })
+        .click();
       // discounts (028): the refund dialog's amount tab, reason and submit label.
       const refund = tablet.getByRole("dialog").first();
-      await refund.getByRole("button", { name: "Por importe", exact: true }).click();
+      await refund
+        .getByRole("button", { name: "Por importe", exact: true })
+        .click();
       await refund.getByLabel("Importe", { exact: true }).fill("10");
       await refund
         .getByLabel("Motivo del reembolso")
@@ -925,7 +972,9 @@ test("a pending PIN confirmation never passes to the next employee after an idle
     await expect(lock).toBeHidden();
     await expect(tablet.locator(".scope")).toContainText(manager.name);
     await expect(stepUp).toHaveCount(0);
-    await tablet.getByRole("button", { name: "Operación", exact: true }).click();
+    await tablet
+      .getByRole("button", { name: "Operación", exact: true })
+      .click();
     await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
     await expect(stepUp).toHaveCount(0);
     expect(await refunds()).toBe(0);
@@ -971,7 +1020,9 @@ test("an idle background tab never locks the tab in use; with every tab idle, ea
       p.getByRole("dialog", { name: "Pantalla bloqueada" });
     // The cashier keeps selling in the first tab for 4 minutes: the background
     // tab's own 3-minute timer comes due, but neither tab locks.
-    const product = tablet.locator("button.product", { hasText: "Taco de hongos" });
+    const product = tablet.locator("button.product", {
+      hasText: "Taco de hongos",
+    });
     for (let minute = 0; minute < 4; minute++) {
       await tablet.clock.fastForward("01:00");
       await product.click();
@@ -1013,9 +1064,9 @@ test("an expired session shows the PIN lock with its reason, not a generic error
       name: "Tu sesión terminó. Ingresa tu PIN para continuar.",
     });
     await expect(lock).toBeVisible();
-    await expect(tablet.getByText("No se pudo completar la acción.")).toHaveCount(
-      0,
-    );
+    await expect(
+      tablet.getByText("No se pudo completar la acción."),
+    ).toHaveCount(0);
     await lock.getByRole("button", { name: "Salir", exact: true }).click();
     await expect(
       tablet.getByRole("heading", { name: "¿Quién entra?", exact: true }),
@@ -1046,12 +1097,16 @@ test("logout with unsent sales warns, and the sales sync when the same employee 
     await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
     const first = await sessionOf(tablet);
     await tablet.getByRole("button", { name: "Caja", exact: true }).click();
-    await tablet.getByRole("button", { name: "Abrir caja", exact: true }).click();
+    await tablet
+      .getByRole("button", { name: "Abrir caja", exact: true })
+      .click();
     await tablet
       .getByRole("dialog")
       .getByRole("button", { name: "Guardar", exact: true })
       .click();
-    await expect(tablet.getByText("Caja abierta", { exact: true })).toBeVisible();
+    await expect(
+      tablet.getByText("Caja abierta", { exact: true }),
+    ).toBeVisible();
     await tablet.getByRole("button", { name: "Vender", exact: true }).click();
     await tablet.getByRole("button", { name: /Taco de hongos/ }).click();
     await context.setOffline(true);
@@ -1066,7 +1121,8 @@ test("logout with unsent sales warns, and the sales sync when the same employee 
       "Pendiente de sincronizar",
     );
     const queued = (await queuedSales(tablet)).filter(
-      (r) => r.scope === `${first.tenantId}:${first.deviceId}:${first.employeeId}`,
+      (r) =>
+        r.scope === `${first.tenantId}:${first.deviceId}:${first.employeeId}`,
     );
     expect(queued).toHaveLength(1);
     const [sale] = queued;
@@ -1086,7 +1142,9 @@ test("logout with unsent sales warns, and the sales sync when the same employee 
     await expect(warning).toContainText(
       "Hay 1 ventas guardadas en este dispositivo que aún no se envían.",
     );
-    await tablet.screenshot({ path: "docs/evidence/access-unsent-logout-1440.png" });
+    await tablet.screenshot({
+      path: "docs/evidence/access-unsent-logout-1440.png",
+    });
     await warning
       .getByRole("button", { name: "Salir de todos modos", exact: true })
       .click();
@@ -1123,7 +1181,10 @@ test("logout with unsent sales warns, and the sales sync when the same employee 
       await admin`select count(*)::int as n from offline_recoveries where operation_id=${sale.id}`;
     expect(recovered.n).toBe(0);
     await expect
-      .poll(async () => (await queuedSales(tablet)).find((r) => r.id === sale.id)?.status)
+      .poll(
+        async () =>
+          (await queuedSales(tablet)).find((r) => r.id === sale.id)?.status,
+      )
       .toBe("synced");
     await context.close();
   } finally {
@@ -1166,13 +1227,14 @@ test("offline logout signs out locally and completes on reconnect (SEC-6)", asyn
         "Sin conexión. Para entrar en este dispositivo hace falta conexión; esta pantalla se actualiza sola cuando vuelva.",
       ),
     ).toBeVisible();
-    await expect(tablet.getByText("No se pudo completar la acción.")).toHaveCount(
-      0,
-    );
+    await expect(
+      tablet.getByText("No se pudo completar la acción."),
+    ).toHaveCount(0);
     expect(
       await tablet.evaluate(() => localStorage.getItem("gm-logout-pending")),
     ).toBe(s.id);
-    const [before] = await admin`select ended_at from sessions where id=${s.id}`;
+    const [before] =
+      await admin`select ended_at from sessions where id=${s.id}`;
     expect(before.ended_at).toBeNull();
     await context.setOffline(false);
     await expect
@@ -1228,7 +1290,9 @@ test("staff: edit role, lock by wrong PINs, unlock, reset PIN, deactivate revoke
     await enterSecret(tablet, name, "000000");
     await expect(tablet.getByRole("alert").first()).toBeVisible();
   }
-  await expect(tablet.getByText(/Bloqueado en este dispositivo hasta las/)).toBeVisible();
+  await expect(
+    tablet.getByText(/Bloqueado en este dispositivo hasta las/),
+  ).toBeVisible();
   await expect(tablet.getByLabel(`PIN de ${name}`)).toBeDisabled();
 
   await page.reload();
@@ -1256,7 +1320,9 @@ test("staff: edit role, lock by wrong PINs, unlock, reset PIN, deactivate revoke
   await edit.getByRole("button", { name: "Guardar PIN" }).click();
   await expect(
     page.locator(".staff-management").getByRole("status"),
-  ).toContainText(`PIN actualizado. Las sesiones abiertas de ${name} se cerraron.`);
+  ).toContainText(
+    `PIN actualizado. Las sesiones abiertas de ${name} se cerraron.`,
+  );
   await tablet.getByRole("button", { name: "Órdenes", exact: true }).click();
   const ended = tablet.getByRole("dialog", {
     name: "La sesión se cerró en este dispositivo. Ingresa tu PIN para continuar.",
@@ -1300,10 +1366,14 @@ test("devices: rename, end session, unpair shows the pairing screen on that term
   );
   await signIn(tablet, CASHIER.name, CASHIER.pin);
   await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
-  await page.getByRole("button", { name: "Configuración", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Configuración", exact: true })
+    .click();
   const device = page.locator(".device-row").filter({ hasText: `Barra ${id}` });
   // The code's creator is shown, so a fired manager's terminals can be reviewed (ACC-R6-2).
-  await expect(device).toContainText("Terminal compartida · Vinculado por Alex Demo");
+  await expect(device).toContainText(
+    "Terminal compartida · Vinculado por Alex Demo",
+  );
   await expect(device).toContainText(`En uso por ${CASHIER.name}`);
   await expect(
     page.locator(".device-row").filter({ hasText: "Este dispositivo" }),
@@ -1344,7 +1414,9 @@ test("devices: rename, end session, unpair shows the pairing screen on that term
   await expect(revoke).toContainText(
     `«Barra norte ${id}» dejará de funcionar de inmediato y se cerrarán sus sesiones.`,
   );
-  await revoke.getByRole("button", { name: "Desvincular", exact: true }).click();
+  await revoke
+    .getByRole("button", { name: "Desvincular", exact: true })
+    .click();
   await expect(
     page.locator(".device-management").getByRole("status"),
   ).toContainText(`«Barra norte ${id}» se desvinculó.`);
@@ -1373,17 +1445,25 @@ test("step-up: a refund on a terminal after the window asks for the PIN and reco
     const drawer = await call(page, "/cash");
     if (!drawer.body || drawer.body.closed_at)
       expect(
-        (await call(page, "/cash/open", {
-          operationId: crypto.randomUUID(),
-          opening: 0,
-        })).status,
+        (
+          await call(page, "/cash/open", {
+            operationId: crypto.randomUUID(),
+            opening: 0,
+          })
+        ).status,
       ).toBe(200);
     const catalog = (await call<any[]>(page, "/catalog")).body;
     const product = catalog.find((p) => p.name.es === "Taco de hongos");
     const order = await call(page, "/orders", {
       operationId: crypto.randomUUID(),
       lines: [
-        { id: crypto.randomUUID(), productId: product.id, quantity: 1, options: [], note: "" },
+        {
+          id: crypto.randomUUID(),
+          productId: product.id,
+          quantity: 1,
+          options: [],
+          note: "",
+        },
       ],
       mode: "takeaway",
       tableId: null,
@@ -1403,11 +1483,16 @@ test("step-up: a refund on a terminal after the window asks for the PIN and reco
     await admin`update sessions set authenticated_at=now()-interval '1 hour' where id=${s.id}`;
     await page.getByRole("button", { name: "Operación", exact: true }).click();
     await page.getByRole("button", { name: "Órdenes", exact: true }).click();
-    const card = page.locator(".order-summary").filter({ hasText: name }).first();
+    const card = page
+      .locator(".order-summary")
+      .filter({ hasText: name })
+      .first();
     await card.getByRole("button", { name: "Reembolsar", exact: true }).click();
     // discounts (028): the refund dialog's amount tab, reason and submit label.
     const refund = page.getByRole("dialog").first();
-    await refund.getByRole("button", { name: "Por importe", exact: true }).click();
+    await refund
+      .getByRole("button", { name: "Por importe", exact: true })
+      .click();
     await refund.getByLabel("Importe", { exact: true }).fill("10");
     await refund
       .getByLabel("Motivo del reembolso")
@@ -1459,7 +1544,9 @@ test("expiry banner appears 30 minutes before the absolute cap and Renovar keeps
     await expect(banner).toContainText(
       `La sesión de ${CASHIER.name} termina a las`,
     );
-    await tablet.screenshot({ path: "docs/evidence/access-expiry-banner-1440.png" });
+    await tablet.screenshot({
+      path: "docs/evidence/access-expiry-banner-1440.png",
+    });
     await banner.getByRole("button", { name: "Renovar ahora" }).click();
     const lock = tablet.getByRole("dialog", {
       name: `Renueva la sesión de ${CASHIER.name}`,
@@ -1580,7 +1667,9 @@ test("a renewal can be put off, and an unreachable server shows the offline lock
     await expect(renew).toContainText(
       `Sin conexión no se puede verificar el PIN. Las ventas se registran a nombre de ${CASHIER.name}.`,
     );
-    await expect(renew.getByText("No se pudo completar la acción.")).toHaveCount(0);
+    await expect(
+      renew.getByText("No se pudo completar la acción."),
+    ).toHaveCount(0);
     await renew
       .getByRole("button", { name: `Continuar como ${CASHIER.name}` })
       .click();
@@ -1640,9 +1729,7 @@ test("a soft unlock that began with the server unreachable never works online: t
     .click({ timeout: 5_000 })
     .catch(() => {});
   await expect(lock).toBeVisible({ timeout: 5_000 });
-  await expect(
-    lock.getByLabel(`PIN de ${CASHIER.name}`),
-  ).toBeVisible();
+  await expect(lock.getByLabel(`PIN de ${CASHIER.name}`)).toBeVisible();
   expect(sent).toEqual([]);
   await enterSecret(lock, CASHIER.name, CASHIER.pin);
   await expect(lock).toBeHidden();
@@ -1706,7 +1793,9 @@ test("unpairing a device whose drawer opened after the list loaded asks for the 
   );
   await signIn(tablet, CASHIER.name, CASHIER.pin);
   await expect(tablet.locator(".scope")).toContainText(CASHIER.name);
-  await page.getByRole("button", { name: "Configuración", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Configuración", exact: true })
+    .click();
   const device = page
     .locator(".device-row")
     .filter({ hasText: `Caja tarde ${id}` });
@@ -1725,7 +1814,10 @@ test("unpairing a device whose drawer opened after the list loaded asks for the 
     .click();
   const revoke = page.getByRole("dialog", { name: "Desvincular" });
   await expect(revoke.getByRole("checkbox")).toHaveCount(0);
-  const confirm = revoke.getByRole("button", { name: "Desvincular", exact: true });
+  const confirm = revoke.getByRole("button", {
+    name: "Desvincular",
+    exact: true,
+  });
   await confirm.click();
   await expect(revoke.getByRole("alert")).toContainText(
     "Este dispositivo tiene una caja abierta. Lee el aviso y confírmalo para desvincularlo.",
@@ -1758,7 +1850,13 @@ test("the void approval explains a manager list that failed to load and Reintent
   const order = await call(page, "/orders", {
     operationId: crypto.randomUUID(),
     lines: [
-      { id: crypto.randomUUID(), productId: product.id, quantity: 2, options: [], note: "" },
+      {
+        id: crypto.randomUUID(),
+        productId: product.id,
+        quantity: 2,
+        options: [],
+        note: "",
+      },
     ],
     mode: "takeaway",
     tableId: null,
@@ -1809,17 +1907,25 @@ test("a session ended while the PIN confirmation is open shows its lock instead 
     const drawer = await call(page, "/cash");
     if (!drawer.body || drawer.body.closed_at)
       expect(
-        (await call(page, "/cash/open", {
-          operationId: crypto.randomUUID(),
-          opening: 0,
-        })).status,
+        (
+          await call(page, "/cash/open", {
+            operationId: crypto.randomUUID(),
+            opening: 0,
+          })
+        ).status,
       ).toBe(200);
     const catalog = (await call<any[]>(page, "/catalog")).body;
     const product = catalog.find((p) => p.name.es === "Taco de hongos");
     const order = await call(page, "/orders", {
       operationId: crypto.randomUUID(),
       lines: [
-        { id: crypto.randomUUID(), productId: product.id, quantity: 1, options: [], note: "" },
+        {
+          id: crypto.randomUUID(),
+          productId: product.id,
+          quantity: 1,
+          options: [],
+          note: "",
+        },
       ],
       mode: "takeaway",
       tableId: null,
@@ -1839,11 +1945,16 @@ test("a session ended while the PIN confirmation is open shows its lock instead 
     await admin`update sessions set authenticated_at=now()-interval '1 hour' where id=${s.id}`;
     await page.getByRole("button", { name: "Operación", exact: true }).click();
     await page.getByRole("button", { name: "Órdenes", exact: true }).click();
-    const card = page.locator(".order-summary").filter({ hasText: name }).first();
+    const card = page
+      .locator(".order-summary")
+      .filter({ hasText: name })
+      .first();
     await card.getByRole("button", { name: "Reembolsar", exact: true }).click();
     // discounts (028): the refund dialog's amount tab, reason and submit label.
     const refund = page.getByRole("dialog").first();
-    await refund.getByRole("button", { name: "Por importe", exact: true }).click();
+    await refund
+      .getByRole("button", { name: "Por importe", exact: true })
+      .click();
     await refund.getByLabel("Importe", { exact: true }).fill("10");
     await refund
       .getByLabel("Motivo del reembolso")

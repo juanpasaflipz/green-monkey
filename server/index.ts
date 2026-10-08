@@ -53,11 +53,7 @@ import {
   recordPaidOut,
   refund,
 } from "./operations.js";
-import {
-  acknowledgeVoids,
-  verifyApproval,
-  voidLines,
-} from "./voids.js";
+import { acknowledgeVoids, verifyApproval, voidLines } from "./voids.js";
 import { requireReadySchema } from "./readiness.js";
 import { recordSettlement } from "./checks.js";
 import { makeRoute, trustProxy } from "./http.js";

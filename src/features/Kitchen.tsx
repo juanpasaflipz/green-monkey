@@ -387,6 +387,7 @@ export function Kitchen({
       timeZone: zone,
       hour: "2-digit",
       minute: "2-digit",
+      hourCycle: "h23",
       second: "2-digit",
     });
   const stationName = (s: string) => (s === "bar" ? t("bar") : t("kitchen"));

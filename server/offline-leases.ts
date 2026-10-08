@@ -63,7 +63,11 @@ export async function leaseCovers(
 }
 
 /** One validity window of an offline lease; sequence 0 is the base lease. */
-export type LeaseWindow = { sequence: number; issued_at: Date; valid_until: Date };
+export type LeaseWindow = {
+  sequence: number;
+  issued_at: Date;
+  valid_until: Date;
+};
 export type OfflineLeaseRow = {
   tenant_id: string;
   session_id: string;
@@ -86,7 +90,9 @@ export async function leaseForEvidence(
   tx: Tx,
   sessionId: string,
 ): Promise<(OfflineLeaseRow & { windows: LeaseWindow[] }) | null> {
-  const [lease] = await tx<OfflineLeaseRow[]>`select tenant_id,session_id,employee_id,device_id,
+  const [lease] = await tx<
+    OfflineLeaseRow[]
+  >`select tenant_id,session_id,employee_id,device_id,
       contract_version,issued_at,valid_until,selling_authorized,plan,configuration_version,restaurant_snapshot
     from offline_leases where session_id=${sessionId}`;
   if (!lease) return null;
@@ -95,7 +101,11 @@ export async function leaseForEvidence(
   return {
     ...lease,
     windows: [
-      { sequence: 0, issued_at: lease.issued_at, valid_until: lease.valid_until },
+      {
+        sequence: 0,
+        issued_at: lease.issued_at,
+        valid_until: lease.valid_until,
+      },
       ...renewals,
     ],
   };

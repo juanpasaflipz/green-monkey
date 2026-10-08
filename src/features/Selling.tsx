@@ -44,6 +44,8 @@ import {
   syncPending,
   type Draft,
 } from "../offline";
+import { drawerKey, rememberDrawer } from "./cash/drawer-cache";
+import type { DrawerView } from "./cash/DrawerCloseDialog";
 import { useOfflineSelling } from "./offline/useOfflineSelling";
 import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
@@ -220,8 +222,16 @@ export function Selling({
   draftRef.current = draft;
   const currentRef = useRef(current);
   currentRef.current = current;
+  /** ACC-PR-2: the payment dialog and the receipt, as a late answer sees them. */
+  const paymentOpenRef = useRef(payment);
+  paymentOpenRef.current = payment;
+  const receiptRef = useRef(receipt);
+  receiptRef.current = receipt;
   const releaseKey = useRef(crypto.randomUUID());
-  const compact = useMediaQuery("(max-height: 820px) and (min-width: 801px)");
+  // The short-tablet query of styles.css (ACC-PR-8).
+  const compact = useMediaQuery(
+    "(max-height: 820px) and (min-width: 801px) and (max-width: 1499px)",
+  );
   const paymentKey = useRef(crypto.randomUUID());
   const search = useRef<HTMLInputElement>(null);
   const activeId = scope(session) + ":active";
@@ -619,24 +629,70 @@ export function Selling({
   }, [draft, hydrated, activeId]);
   useEffect(() => {
     if (!active) return;
-    const key = scope(session) + ":drawer";
     if (online)
-      void api("/cash")
+      void api<DrawerView | null>("/cash")
         .then(async (d) => {
           setCashSession(d);
-          await db.cache.put({ id: key, value: d });
+          // Caja reads it during an outage (and the device's drawer fact,
+          // for an employee with no copy of their own; ACC-PR-3).
+          await rememberDrawer(session, d);
         })
         .catch(() => {});
-    else void db.cache.get(key).then((d) => setCashSession(d?.value ?? null));
+    else
+      void db.cache
+        .get(drawerKey(session))
+        .then((d) => setCashSession(d?.value ?? null));
   }, [active, online]);
   const showingReceipt = !!receipt;
+  const wasActive = useRef(active);
   useEffect(() => {
+    const cameBack = active && !wasActive.current;
+    wasActive.current = active;
     if (!active) return;
     const resume = localStorage.getItem("gm-resume");
     const table = localStorage.getItem("gm-table");
     if (!resume && !table) {
       // Vender is on screen with nothing to switch to: its error is visible.
       unseenFailure.current = false;
+      // A check closed elsewhere while Vender was hidden (voided or settled
+      // from Órdenes) never stays the cart on screen with its old balance:
+      // when Vender comes back, re-read it, and start a new order when it is
+      // closed (FIT-1). Only then: a send, payment or receipt on this screen
+      // already returns the order it changed.
+      const shown = currentRef.current;
+      if (
+        cameBack &&
+        online &&
+        shown &&
+        isServerOrder(shown) &&
+        !draftRef.current.lines.length &&
+        !busy &&
+        !paying &&
+        !showingReceipt
+      ) {
+        const epoch = contextEpoch.current;
+        void api<Order>("/orders/" + shown.id)
+          .then((o) => {
+            // ACC-PR-2: the answer is dropped unless the cart still shows the
+            // very order it re-read (a send or payment meanwhile replaced it
+            // with a newer copy) and nothing started on it since: unsent
+            // lines, a payment in flight, the payment dialog or a receipt.
+            if (
+              contextEpoch.current !== epoch ||
+              currentRef.current !== shown ||
+              draftRef.current.lines.length ||
+              payingRef.current ||
+              paymentOpenRef.current ||
+              receiptRef.current
+            )
+              return;
+            if (checkStateOf(o) === "closed") {
+              void replaceContext(null, fresh());
+              setNotice(t("serviceResumeClosed").replace("{n}", numberText(o)));
+            } else setCurrent(o);
+          })
+          .catch(() => {});
+      }
       return;
     }
     // SVC-R10: a send or payment in flight (and the receipt it shows) finishes

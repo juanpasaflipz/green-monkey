@@ -1,8 +1,10 @@
 /**
  * cfdi's cross-area contracts (spec §6.1). Web only.
  *   fiscal (027):  enqueueCfdiRefund, called from recordRefundTax step 9 (only when adjustment rows
- *                  were inserted). No-op when CFDI is not enabled; never throws for a missing
- *                  setting; takes no locks (LO-R8).
+ *                  were inserted); cfdiTicketsIssued, called by issueDueTicket and the repair
+ *                  before they take their ticket's folio counter (every issuance: sale, offline
+ *                  recovery, repair). No-op when CFDI is not enabled; never throw for a missing
+ *                  setting; take no locks; a jobs key only the calling operation can meet (LO-R8).
  *   ops:           cfdiCapability for GET /api/capabilities.
  *   reports (029): cfdiAlerts + cfdiReportAlerts for Today, cfdiCoverage for the day corte.
  * Imports only cfdi's jobs and store modules and the db types, so fiscal → cfdi has no cycle.
@@ -11,7 +13,13 @@ import type { CfdiAlertsView, CfdiCoverage } from "../../shared/cfdi.js";
 import type { ReportAlert } from "../../shared/reports.js";
 import type { Session } from "../../shared/domain.js";
 import type { Tx } from "../db.js";
-import { cfdiEnqueue, dedupe } from "./jobs.js";
+import {
+  cfdiEnqueue,
+  dedupe,
+  issuedTickPrefix,
+  issuedTickRunAt,
+} from "./jobs.js";
+import { businessDate } from "../../shared/domain.js";
 import { attention, platform } from "./store.js";
 
 /** Fiscal's refund hook: decide on a credit note once the refund's tax rows exist. */
@@ -26,6 +34,66 @@ export async function enqueueCfdiRefund(
     kind: "cfdi_refund",
     dedupeKey: dedupe.refund(refundId),
     payload: { refundId },
+  });
+}
+
+/**
+ * Fiscal's issuance hook (LD-51 F12, timing per LD-55): a ticket issued into a period that has
+ * closed (an offline sale synced late, a check of last night paid this morning, a repair) goes
+ * into a supplementary part of its own period (D5) by a tick's late sweep. Without this hook it
+ * waits for the chain's next tick, up to 6 hours away. The hook does not start one at once: it
+ * enqueues ONE tick per tenant per 30-minute bucket, due 10 minutes after the bucket ends, so an
+ * offline drain (one record per request) lands in one supplementary part, not one per tick, and
+ * the counter keeps a short window to invoice the ticket directly (CFDIFIX-FISCAL-4, OPS-2); RMF
+ * 2.7.1.21's 24 hours stay far away.
+ *
+ * Late means the date's period is built or empty, or has closed (CFDIFIX-CONCURRENCY-4): a build
+ * running now may have read its tickets before this one commits, so a closed period always gets
+ * the tick; within the grace window that tick just finds nothing due.
+ *
+ * Keys and locks (CFDIFIX-CONCURRENCY-1): one read, then at most one insert. The read finds the
+ * bucket's tick when one is waiting (committed), which dedupes every later issuance; otherwise the
+ * insert's key carries the issuing order's id (`dedupe.tickIssued`), which the caller holds FOR
+ * UPDATE, so a unique-key wait can only meet the same operation (LO-R8) and never another
+ * transaction's uncommitted tick: recordSettlement's later orders run this hook after its first
+ * order took the folio counter (LO-12), and a shared key there would wait under LO-12 on another
+ * payment's insert. Two issuances racing in one bucket each insert their own tick, due at the
+ * same moment: the first sweeps every committed late ticket, the second finds nothing. A sale of
+ * today's business date costs no statement. Take no lock.
+ */
+export async function cfdiTicketsIssued(
+  tx: Tx,
+  s: Pick<Session, "tenantId" | "restaurant">,
+  tickets: readonly { id: string; businessDate: string }[],
+): Promise<void> {
+  const now = new Date();
+  const today = businessDate(
+    now.toISOString(),
+    s.restaurant.timezone,
+    s.restaurant.cutoff,
+  );
+  const past = tickets.filter((t) => t.businessDate < today);
+  if (!past.length) return;
+  const dates = [...new Set(past.map((t) => t.businessDate))];
+  const prefix = issuedTickPrefix(now);
+  const [r] = await tx`
+    select
+      exists (select 1 from cfdi_settings s
+        join cfdi_global_periods g on g.tenant_id = s.tenant_id and g.mode = s.mode
+          and (g.status in ('built','empty') or g.closes_at <= now())
+        join unnest(${dates}::date[]) d(day) on d.day between g.date_from and g.date_to
+          and d.day >= (case when s.mode = 'live' then coalesce(s.live_from, s.test_from) else s.test_from end)
+        where s.enabled) as late,
+      exists (select 1 from jobs
+        where tenant_id = nullif(current_setting('app.tenant_id', true), '')::uuid
+          and kind = 'cfdi_global' and state in ('queued','available')
+          and dedupe_key like ${prefix + "%"}) as waiting`;
+  if (!r?.late || r.waiting) return;
+  await cfdiEnqueue(tx, s.tenantId, {
+    kind: "cfdi_global",
+    dedupeKey: dedupe.tickIssued(now, past[0].id),
+    payload: {},
+    runAt: issuedTickRunAt(now),
   });
 }
 

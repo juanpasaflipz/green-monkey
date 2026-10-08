@@ -27,7 +27,16 @@ import {
   usoCfdiAllowed,
   type Receptor,
 } from "../shared/cfdi";
-import { boundaries } from "../shared/domain";
+import { boundaries, businessDate } from "../shared/domain";
+import {
+  browserZoneWhereDailyEndsFirst,
+  dailyEndsFirst,
+  dayThreeOrLater,
+  KIRITIMATI,
+  MEXICO_CITY,
+  PIN_HOLD_MS,
+  zoneWhere,
+} from "./fixtures/business-date-zones";
 
 const receptor = (r: Partial<Receptor> = {}): Receptor =>
   receptorInput.parse({
@@ -438,4 +447,56 @@ describe("settings input", () => {
       cfdiSettingsInput.parse({ ...parsed, selfInvoiceDays: 91 }),
     ).toThrow();
   });
+});
+
+describe("CFDIFIX-R2-6: date-bound checks pin their business date, never skip", () => {
+  // Every 10 minutes over the two days before and after a month's start (UTC): a month, the year,
+  // a short February and a leap one. Each moment reads several zones: a generous timeout.
+  const around = (firstIso: string) =>
+    Array.from(
+      { length: (4 * 24 * 60) / 10 },
+      (_, i) => Date.parse(firstIso) - 2 * 86_400_000 + i * 10 * 60_000,
+    );
+  const moments = [
+    ...around("2026-11-01T00:00:00Z"),
+    ...around("2027-01-01T00:00:00Z"),
+    ...around("2027-03-01T00:00:00Z"),
+    ...around("2028-03-01T00:00:00Z"),
+  ];
+  const slow = { timeout: 60_000 };
+  const date = (ms: number, z: { timezone: string; cutoff: number }) =>
+    businessDate(new Date(ms).toISOString(), z.timezone, z.cutoff);
+  it(
+    "the DB suite finds a zone for each rule at every moment, holding for the next 30 minutes",
+    slow,
+    () => {
+      for (const now of moments)
+        for (const rule of [dailyEndsFirst, dayThreeOrLater]) {
+          const zone = zoneWhere(rule, { now });
+          expect(zone, new Date(now).toISOString()).not.toBeNull();
+          expect(rule(date(now, zone!), zone!)).toBe(true);
+          expect(rule(date(now + PIN_HOLD_MS, zone!), zone!)).toBe(true);
+        }
+    },
+  );
+  it(
+    "the browser check pins only ahead of the demo restaurant's date (activation dates its start), at 04:00 or global-setup's 10:00",
+    slow,
+    () => {
+      for (const cutoff of [240, 600]) {
+        const demo = { ...MEXICO_CITY, cutoff };
+        for (const now of moments) {
+          const zone = browserZoneWhereDailyEndsFirst(demo, now);
+          const at = `${cutoff} ${new Date(now).toISOString()}`;
+          expect(zone, at).not.toBeNull();
+          expect(date(now, zone!) >= date(now, demo), at).toBe(true);
+          for (const t of [now, now + PIN_HOLD_MS])
+            expect(dailyEndsFirst(date(t, zone!), zone!), at).toBe(true);
+          // On a month's last day the demo zone cannot run it: Kiritimati's 1st or 2nd does.
+          if (!dailyEndsFirst(date(now, demo), demo))
+            expect(zone, at).toEqual(KIRITIMATI);
+        }
+      }
+    },
+  );
 });

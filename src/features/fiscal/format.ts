@@ -3,6 +3,7 @@
 import type { Locale } from "../../../shared/domain";
 import { groupSelfInvoiceCode, type TaxCategory } from "../../../shared/fiscal";
 import { strings, type Key } from "../../i18n";
+import { dateTime } from "../../datetime";
 
 const categoryKeys: Record<TaxCategory, Key> = {
   iva16: "fiscalCategoryIva16",
@@ -51,21 +52,7 @@ export function fiscalDateTime(
   timezone: string,
   locale: Locale,
 ): string {
-  const parts = new Intl.DateTimeFormat(locale === "es" ? "es-MX" : "en-US", {
-    day: locale === "es" ? "2-digit" : "numeric",
-    month: locale === "es" ? "2-digit" : "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZone: timezone,
-  }).formatToParts(new Date(iso));
-  const part = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((p) => p.type === type)?.value ?? "";
-  const time = `${part("hour")}:${part("minute")}`;
-  return locale === "es"
-    ? `${part("day")}/${part("month")}/${part("year")} ${time}`
-    : `${part("month")} ${part("day")}, ${part("year")} ${time}`;
+  return dateTime(iso, timezone, locale);
 }
 
 /** dd/MM/yyyy of a business date (yyyy-MM-dd). */

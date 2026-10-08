@@ -90,6 +90,12 @@ export function useOfflineSelling({
     window.addEventListener("storage", update);
     return () => window.removeEventListener("storage", update);
   }, []);
+  // "storage" never fires in the tab that wrote it: the Sync screen sets
+  // "Al guardar sin conexión" in this same tab, so re-read it whenever Vender
+  // comes back on screen (restaurant-day A13).
+  useEffect(() => {
+    if (active) setPrintSetting(readPrintSetting());
+  }, [active]);
   // Table names for offline kitchen tickets, refreshed while online.
   useEffect(() => {
     if (!net.canUseServer || !active || session.role === "kitchen") return;

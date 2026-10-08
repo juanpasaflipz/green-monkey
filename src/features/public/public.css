@@ -199,6 +199,10 @@
 .public-settings-head h2 {
   margin: 0;
 }
+/* The paused status is a sentence: it wraps on a phone instead of widening the page. */
+.public-settings-head .badge {
+  white-space: normal;
+}
 .public-policies {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

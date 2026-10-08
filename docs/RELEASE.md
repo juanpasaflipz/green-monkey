@@ -1,9 +1,11 @@
 # Release process
 
-How a change reaches staging and production. Status: workflows and scripts are
-written and validated locally (YAML parsed, scripts dry-run, all suites green);
-branch protection, environments and the first CD run are pending the steps in
-[RUNBOOK.md](RUNBOOK.md) "Staging cutover".
+How a change reaches staging and production. Status (October 8, 2026): CI runs
+on GitHub; branch protection and the `staging`/`production` environments were
+applied during the staging cutover, and CD has deployed `main` to staging since
+2026-10-07 ([STAGING.md](STAGING.md)). The restaurant-day required checks are
+applied right after the release pull request merges. No production deploy has
+run ([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) section 2).
 
 ## Branches and protection
 
@@ -11,8 +13,11 @@ branch protection, environments and the first CD run are pending the steps in
   `ops/github/main-ruleset.json`: pull request required (0 approvals while
   there is a single maintainer; raise to 1 with a second reviewer), stale
   approvals dismissed, conversations resolved, linear history (squash or
-  rebase), no force-push or deletion, required checks `qualify` and
-  `security` (strict: up to date with `main`), no bypass actors.
+  rebase), no force-push or deletion, required checks `qualify`,
+  `security`, `restaurant-day` and `restaurant-day-cfdi` (strict: up to date
+  with `main`), no bypass actors. The two restaurant-day jobs skip at once on
+  any pull request whose head is not `release/*`, and a skipped job reports
+  success, so they gate release merges only.
 - GitHub environments `staging` and `production` accept deployments from the
   branch `main` only: a custom deployment branch policy with exactly one
   rule, `main`, which `github-protect.sh` reads back (PLATFORM-CI-2). The
@@ -47,8 +52,10 @@ left in the kitchen review lane and delivers every kitchen round the test
 opened; `public-ordering.spec` delivers its own rounds. Before a run,
 `tests/browser/global-setup.ts` settles what an interrupted run left on each
 demo restaurant (open rounds, their pending cancellations, pending kitchen
-reviews), naming the restaurant in every statement, and only on the isolated
-local fixture database. Tests find their own records by unique names or by
+reviews, a timezone or cutoff a spec had pinned: every run starts in
+America/Mexico_City at 04:00, or 10:00 near the rollover, CFDIFIX-R3-3),
+naming the restaurant in every statement, and only on the isolated local
+fixture database. Tests find their own records by unique names or by
 searching (no "last" ticket or first register page). A reused staging
 database still accumulates the open checks, but no kitchen rounds or kitchen
 reviews.
@@ -79,6 +86,43 @@ Software S.A. de C.V."), so those servers publish the documents under
 `NODE_ENV=production`. These values, and the `RD_LEGAL_*` / `RD_SUPPORT_*`
 repository variables an acceptance workflow may hold, are **fictional** and
 never reach Railway.
+
+## Restaurant-day gate (`.github/workflows/restaurant-day.yml`)
+
+The go-live acceptance of [ACCEPTANCE_STATUS.md](ACCEPTANCE_STATUS.md)
+"Restaurant-day go-live gate": two complete business days through the UI of a
+production-mode web and worker on a disposable PostgreSQL 18 database, then
+the DB reconciliation suite (`npm run test:acceptance:day`, about 30 minutes
+in CI, 55-minute budget). It runs on demand (`workflow_dispatch`, input `cfdi`
+adds branch K), nightly at 13:00 UTC on the branch named by the repository
+variable `RD_NIGHTLY_REF`, and on every pull request into `main` whose head is
+`release/*`; other pull requests skip it at once.
+
+- Repository variables: `RD_LEGAL_ENTITY_NAME`, `RD_LEGAL_ENTITY_ADDRESS`,
+  `RD_LEGAL_PRIVACY_CONTACT_EMAIL`, `RD_LEGAL_JURISDICTION` (optional
+  `RD_LEGAL_ENTITY_RFC`), `RD_SUPPORT_EMAIL`, `RD_SUPPORT_PHONE`,
+  `RD_SUPPORT_HOURS`: values production mode publishes (the vendor's real ones
+  or a plausible fictional set, LD-3), never the CI literals of
+  `tests/fixtures/legal-ci.ts`, which production refuses. Without them, or with
+  a value production refuses (`RD_SUPPORT_PHONE` is E.164 without spaces, like
+  `+525512345678`), the gate fails at setup and names the variable. `RD_NIGHTLY_REF` (for example `release/v1`) and `RD_WAIVE`
+  (comma-separated finding IDs, normally empty).
+- Secret: `FACTURAPI_TEST_KEY` (a Facturapi test key, `sk_test_…`) enables the
+  `restaurant-day-cfdi` job (branch K, web and worker as `APP_ENV=staging`);
+  without it that job is skipped and branch N alone gates.
+- No signing key, JWT secret or database URL is configured: global setup
+  generates per-run keys in memory and builds every URL for the disposable
+  `green_monkey_acceptance_dev`.
+- Policy (spec §13.2): retries 0; one rerun only with a triage note naming the
+  failing step and its root cause; two consecutive green runs after any change
+  to the suite. A non-empty `RD_WAIVE` fails a release pull request unless the
+  product owner applied the label `go-live-waiver-approved` (the label is read
+  from the event, so close and reopen the pull request after applying it); the
+  money, folio, tenant-isolation and offline exactly-once findings can never
+  be waived.
+- Artifacts (always): `test-results/restaurant-day/` and the Playwright report.
+- Pending (ops): `deploy.yml` does not yet require this gate before a
+  production dispatch (spec §13.2).
 
 ## Go-live checklist (account and legal)
 

@@ -14,7 +14,7 @@ import {
   type DocumentRow,
 } from "../store.js";
 import { event, MINUTE } from "./common.js";
-import { raise, tenantTag, type CfdiRuntime } from "./runtime.js";
+import { raise, tenantTag, traceFailure, type CfdiRuntime } from "./runtime.js";
 
 /** valid: provider ids, UUID and totals; deliver; release dependents; a substitute's cancellation. */
 export async function recordStamped(
@@ -94,6 +94,8 @@ export type Failure = {
   code: string;
   message?: string | null;
   path?: string | null;
+  /** The refused answer's X-Facturapi-Log-Id (CFDIFIX-OPS-1). */
+  logId?: string | null;
 };
 
 /**
@@ -140,7 +142,10 @@ export async function failDocumentTx(
   await event(tx, ctx, documentId, "failed", {
     code: f.code,
     path: f.path ?? null,
+    logId: f.logId ?? null,
   });
+  // The job's log line says the document failed, not that the job succeeded (CFDIFIX-OPS-1).
+  traceFailure(f.code, f.logId ?? null);
   return doc;
 }
 

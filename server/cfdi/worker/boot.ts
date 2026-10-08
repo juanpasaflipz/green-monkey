@@ -26,9 +26,14 @@ import {
 import { classifyFacturapiError } from "../errors.js";
 import { createFacturapiClient, type FacturapiClient } from "../facturapi.js";
 import { ensureTick } from "../jobs.js";
-import { loadSettings } from "../store.js";
+import { loadSettings, type SharedIssuer } from "../store.js";
 import { uploadKeyPair } from "../vault.js";
-import { setCfdiRuntime, type CfdiRuntime } from "./runtime.js";
+import { sharedIssuerOf } from "./org.js";
+import {
+  recordProviderResponse,
+  setCfdiRuntime,
+  type CfdiRuntime,
+} from "./runtime.js";
 
 type AppEnv = "development" | "test" | "staging" | "production";
 const RETRY_MS = 60_000;
@@ -42,6 +47,18 @@ function normalized(
   return out;
 }
 
+const NO_ISSUER: SharedIssuer = {
+  legalName: null,
+  taxId: null,
+  regime: null,
+  postalCode: null,
+};
+
+/**
+ * The platform row. Since 036 it also carries the worker's global grace (the web prints the
+ * self-invoicing deadline with it, LD-51 F1) and the shared sandbox organization's legal data (the
+ * stamping issuer in that mode, LD-51 F3).
+ */
 async function publish(
   sql: postgres.Sql,
   row: {
@@ -50,18 +67,25 @@ async function publish(
     uploadKid: string | null;
     uploadPublicJwk: JsonWebKey | null;
     sharedOrgId: string | null;
+    graceMinutes: number;
+    sharedIssuer: SharedIssuer;
   },
 ): Promise<void> {
+  const issuer = row.sharedIssuer;
   await sql`
     insert into cfdi_platform(id, provider, live_enabled, upload_kid, upload_public_jwk, shared_org_id,
+      global_grace_minutes, shared_legal_name, shared_tax_id, shared_tax_system, shared_postal_code,
       worker_version, updated_at)
     values (1, ${row.provider}, ${row.liveEnabled}, ${row.uploadKid},
       ${row.uploadPublicJwk ? sql.json(row.uploadPublicJwk as never) : null}, ${row.sharedOrgId},
+      ${row.graceMinutes}, ${issuer.legalName}, ${issuer.taxId}, ${issuer.regime}, ${issuer.postalCode},
       ${buildInfo().version.slice(0, 100)}, now())
     on conflict (id) do update set provider = excluded.provider, live_enabled = excluded.live_enabled,
       upload_kid = excluded.upload_kid, upload_public_jwk = excluded.upload_public_jwk,
-      shared_org_id = excluded.shared_org_id, worker_version = excluded.worker_version,
-      updated_at = excluded.updated_at`;
+      shared_org_id = excluded.shared_org_id, global_grace_minutes = excluded.global_grace_minutes,
+      shared_legal_name = excluded.shared_legal_name, shared_tax_id = excluded.shared_tax_id,
+      shared_tax_system = excluded.shared_tax_system, shared_postal_code = excluded.shared_postal_code,
+      worker_version = excluded.worker_version, updated_at = excluded.updated_at`;
 }
 
 /**
@@ -79,15 +103,17 @@ export async function verifyAndPublish(
       : null;
   try {
     let sharedOrgId: string | null = null;
+    let sharedIssuer = NO_ISSUER;
     if (c.provider === "organizations" && c.userKey)
       await runtime.client.listOrganizations(
         { kind: "user", secret: c.userKey },
         "GM-",
       );
-    else if (c.provider === "sandbox_shared" && c.testKey)
-      sharedOrgId = (
-        await runtime.client.me({ kind: "test", secret: c.testKey })
-      ).id;
+    else if (c.provider === "sandbox_shared" && c.testKey) {
+      const me = await runtime.client.me({ kind: "test", secret: c.testKey });
+      sharedOrgId = me.id;
+      sharedIssuer = sharedIssuerOf(me);
+    }
     runtime.providerOk = true;
     await publish(sql, {
       provider: c.provider,
@@ -95,6 +121,8 @@ export async function verifyAndPublish(
       uploadKid: keys ? runtime.ring!.active : null,
       uploadPublicJwk: keys?.publicJwk ?? null,
       sharedOrgId,
+      graceMinutes: c.graceMinutes,
+      sharedIssuer,
     });
     log.info("cfdi_worker_ready", {
       provider: c.provider,
@@ -112,6 +140,8 @@ export async function verifyAndPublish(
         uploadKid: null,
         uploadPublicJwk: null,
         sharedOrgId: null,
+        graceMinutes: c.graceMinutes,
+        sharedIssuer: NO_ISSUER,
       });
       log.warn("cfdi_provider_refused", { code: failure.code });
       void sendAlert({
@@ -122,9 +152,11 @@ export async function verifyAndPublish(
       }).catch(() => undefined);
       return true;
     }
-    // Network or provider outage: keep the decided provider (and the last shared organization).
-    const [previous] =
-      await sql`select shared_org_id from cfdi_platform where id = 1`;
+    // Network or provider outage: keep the decided provider (and the last shared organization
+    // with its legal data).
+    const [previous] = await sql`
+      select shared_org_id, shared_legal_name, shared_tax_id, shared_tax_system, shared_postal_code
+      from cfdi_platform where id = 1`;
     const sharedOrgId = previous?.shared_org_id ?? null;
     if (c.provider === "organizations" || sharedOrgId) {
       runtime.providerOk = true;
@@ -134,6 +166,16 @@ export async function verifyAndPublish(
         uploadKid: keys ? runtime.ring!.active : null,
         uploadPublicJwk: keys?.publicJwk ?? null,
         sharedOrgId,
+        graceMinutes: c.graceMinutes,
+        sharedIssuer:
+          c.provider === "sandbox_shared" && previous
+            ? {
+                legalName: previous.shared_legal_name ?? null,
+                taxId: previous.shared_tax_id ?? null,
+                regime: previous.shared_tax_system ?? null,
+                postalCode: previous.shared_postal_code ?? null,
+              }
+            : NO_ISSUER,
       });
     }
     log.warn("cfdi_provider_unreachable", { code: failure.code });
@@ -188,6 +230,8 @@ export async function cfdiWorkerBoot(
       uploadKid: null,
       uploadPublicJwk: null,
       sharedOrgId: null,
+      graceMinutes: config.graceMinutes,
+      sharedIssuer: NO_ISSUER,
     });
     log.info("cfdi_worker_disabled", { reason: "provider_not_configured" });
     setCfdiRuntime(null);
@@ -201,7 +245,11 @@ export async function cfdiWorkerBoot(
         : null,
     client:
       o.client ??
-      createFacturapiClient({ baseUrl: config.baseUrl ?? undefined }),
+      createFacturapiClient({
+        baseUrl: config.baseUrl ?? undefined,
+        // LD-51 F13: each provider answer's X-Facturapi-Log-Id reaches the job's info line.
+        onResponse: recordProviderResponse,
+      }),
     alert: sendAlert,
     providerOk: false,
   };

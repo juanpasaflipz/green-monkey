@@ -279,6 +279,11 @@ export default defineArea({
     discountsOperationRecorded:
       "Ese intento ya se había registrado con otros datos. Ya ves la cuenta actualizada; revisa antes de confirmar de nuevo.",
     discountsDrawerOpeningRow: "Fondo inicial",
+    discountsDrawerOffline:
+      "Cerrar caja y registrar retiros requieren conexión.",
+    discountsDrawerCachedNote:
+      "Cifras al reconectar; no incluyen ventas sin conexión.",
+    discountsDrawerOpenOffline: "Abrir caja requiere conexión.",
   },
   en: {
     discountsAction: "Discount",
@@ -550,6 +555,11 @@ export default defineArea({
     discountsOperationRecorded:
       "That attempt was already recorded with other data. You now see the updated check; review it before confirming again.",
     discountsDrawerOpeningRow: "Opening float",
+    discountsDrawerOffline:
+      "Closing the drawer and recording paid-outs need a connection.",
+    discountsDrawerCachedNote:
+      "Figures return with the connection; they do not include offline sales.",
+    discountsDrawerOpenOffline: "Opening the drawer needs a connection.",
   },
   errors: {
     discount_invalid: [

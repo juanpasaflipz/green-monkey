@@ -90,9 +90,7 @@ export function ManagerApproval({
         <select
           value={value.employeeId}
           required
-          onChange={(e) =>
-            onChange({ employeeId: e.target.value, secret: "" })
-          }
+          onChange={(e) => onChange({ employeeId: e.target.value, secret: "" })}
         >
           {!value.employeeId && <option value="">—</option>}
           {approvers.map((a) => (

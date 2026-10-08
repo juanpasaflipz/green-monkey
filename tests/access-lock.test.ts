@@ -121,7 +121,9 @@ describe("lock dialog guard (ACC-14)", () => {
       app = new Element(),
       modal = new Element(),
       already = Object.assign(new Element(), { inert: true });
-    vi.stubGlobal("document", { body: { children: [app, keep, modal, already] } });
+    vi.stubGlobal("document", {
+      body: { children: [app, keep, modal, already] },
+    });
     const release = inertOutside(keep as never);
     expect([app.inert, keep.inert, modal.inert, already.inert]).toEqual([
       true,
@@ -142,7 +144,11 @@ describe("lock dialog guard (ACC-14)", () => {
 describe("session 401 and the offline cache (ACC-15)", () => {
   it("a revoked session or device leaves the cache; other session codes lock it", async () => {
     const { cacheRuleFor } = await load();
-    for (const code of ["session_revoked", "device_revoked", "device_not_paired"])
+    for (const code of [
+      "session_revoked",
+      "device_revoked",
+      "device_not_paired",
+    ])
       expect(cacheRuleFor(code)).toBe("forget");
     for (const code of ["unauthorized", "session_expired", "session_ended"])
       expect(cacheRuleFor(code)).toBe("lock");
@@ -271,7 +277,9 @@ describe("renewal prompt (ACC-FLOOR-6)", () => {
     // Any real lock (another tab's manual lock, a soft unlock's re-lock)
     // replaces a renewal prompt, whose "Ahora no" would otherwise pass it.
     const { nextLock } = await load();
-    expect(nextLock({ reason: "renew" }, "manual")).toEqual({ reason: "manual" });
+    expect(nextLock({ reason: "renew" }, "manual")).toEqual({
+      reason: "manual",
+    });
     expect(nextLock({ reason: "renew" }, "session_ended")).toEqual({
       reason: "session_ended",
     });

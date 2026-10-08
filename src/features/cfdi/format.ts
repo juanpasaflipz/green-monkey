@@ -9,6 +9,7 @@ import {
   type Session,
 } from "../../../shared/domain";
 import {
+  deadlineShowsTime,
   docLabel,
   globalPeriodFor,
   PAYMENT_FORMS,
@@ -102,6 +103,34 @@ export function shortDate(
     timeZone: timezone,
   }).format(new Date(iso));
 }
+/**
+ * A self-invoicing deadline for the receipt, the portal and the staff dialog (LD-51 F1): "31/10/2026"
+ * for the policy's end of day, or "12/10/2026 a las 05:00" whenever it is not (a global-bound
+ * deadline: the period's close + grace, early in the morning, LD-55 CFDIFIX-FISCAL-1 / UX-1) and
+ * on the purchase's business date or the next day, where the date alone would read as the whole
+ * day (deadlineShowsTime).
+ */
+export function deadlineText(
+  iso: string,
+  businessDate: string,
+  timezone: string,
+  locale: Locale,
+): string {
+  const date = shortDate(iso, timezone, locale);
+  if (!deadlineShowsTime(iso, businessDate, timezone)) return date;
+  const time = new Intl.DateTimeFormat(intl(locale), {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: timezone,
+    ...(locale === "es" ? { hourCycle: "h23" as const } : {}),
+  }).format(new Date(iso));
+  return t(locale, "cfdiDateAtTime", { date, time });
+}
+
+/**
+ * "7 oct 2026, 16:53" / "Oct 7, 2026, 16:53": an instant in the restaurant timezone with a 24-hour
+ * time, never es-MX's default "4:53 p.m." (restaurant-day G3, ACC-PR-5b).
+ */
 export function dateTimeLabel(
   iso: string,
   timezone: string,
@@ -110,6 +139,7 @@ export function dateTimeLabel(
   return new Intl.DateTimeFormat(intl(locale), {
     dateStyle: "medium",
     timeStyle: "short",
+    hourCycle: "h23",
     timeZone: timezone,
   }).format(new Date(iso));
 }
@@ -260,6 +290,9 @@ const EVENTS: Record<string, Key> = {
   reissue_completed: "cfdiEventReissue",
   retry_requested: "cfdiEventRetryRequested",
   recovery_queued: "cfdiEventRecovered",
+  acuse_mismatch: "cfdiEventAcuseMismatch",
+  acuse_mismatch_live: "cfdiEventAcuseMismatchLive",
+  acuse_mismatch_final: "cfdiEventAcuseMismatchFinal",
 };
 const CANCELLATION: Record<string, Key> = {
   queued: "cfdiStatusCanceling",

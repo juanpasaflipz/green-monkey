@@ -9,6 +9,7 @@ export function lockTime(iso: string, locale: Locale) {
   return new Date(iso).toLocaleTimeString(locale === "es" ? "es-MX" : "en-US", {
     hour: "2-digit",
     minute: "2-digit",
+    hourCycle: "h23",
   });
 }
 
@@ -73,7 +74,9 @@ export function PinPad({
     >
       <label className="field">
         <span>
-          {password ? t.secret : t.accessPinFor.replace("{name}", employee.name)}
+          {password
+            ? t.secret
+            : t.accessPinFor.replace("{name}", employee.name)}
         </span>
         <input
           ref={input}

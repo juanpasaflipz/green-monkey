@@ -73,9 +73,7 @@ export function deviceLimitKey(req: express.Request): string | null {
  */
 export function backstopLimitKey(req: express.Request): string | null {
   const device = readDeviceCookie(req.cookies?.gm_device);
-  return device
-    ? `tenant:${device.tenantId}:${ipKey(req)}`
-    : null;
+  return device ? `tenant:${device.tenantId}:${ipKey(req)}` : null;
 }
 /**
  * Limits for routes every terminal uses (A9/ACC-FLOOR-4). A restaurant's
@@ -92,8 +90,7 @@ function limitPerDevice(perDevice: number, perAnonymousIp: number) {
     rateLimit({
       windowMs: 60_000,
       limit: (req) => (deviceLimitKey(req) ? perDevice : perAnonymousIp),
-      keyGenerator: (req) =>
-        deviceLimitKey(req) ?? `ip:${ipKey(req)}`,
+      keyGenerator: (req) => deviceLimitKey(req) ?? `ip:${ipKey(req)}`,
       standardHeaders: true,
       legacyHeaders: false,
       message: { error: "too_many_attempts" },

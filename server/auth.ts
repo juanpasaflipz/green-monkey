@@ -66,9 +66,12 @@ export function authentication(sql: postgres.Sql) {
       )
         throw new DomainError("session_changed", 409);
       type Outcome = { failure: string } | { session: Session };
-      const result = await tenant(sql, c.tenantId, async (tx): Promise<Outcome> => {
-        const [s] =
-          await tx`select s.*,e.name,e.role,r.name as restaurant_name,r.currency,r.timezone,r.cutoff,r.config_version,
+      const result = await tenant(
+        sql,
+        c.tenantId,
+        async (tx): Promise<Outcome> => {
+          const [s] =
+            await tx`select s.*,e.name,e.role,r.name as restaurant_name,r.currency,r.timezone,r.cutoff,r.config_version,
             d.name as device_name,
             coalesce(d.kind, case when d.name='Owner browser' then 'personal' else 'terminal' end) as device_kind,
             d.idle_lock_seconds,l.contract_version as offline_lease_version,
@@ -80,63 +83,64 @@ export function authentication(sql: postgres.Sql) {
           where s.id=${c.id} and s.token_hash=${hash(c.token)} and not s.revoked and s.ended_at is null
             and s.expires_at>now() and e.active and d.active and coalesce(d.token_expires_at,'infinity')>now()
             and d.id=${device.id} and d.token_hash=${hash(device.token)}`;
-        // Failure path only: one diagnostic query names the reason (FOH-7).
-        if (!s) return { failure: await sessionFailure(tx, c, device) };
-        if (s.owner_account_id) {
-          await tx`select set_config('app.account_id',${s.owner_account_id},true)`;
-          const [owner] =
-            await tx`select a.id from owner_sessions os join owner_accounts a on a.id=os.account_id
+          // Failure path only: one diagnostic query names the reason (FOH-7).
+          if (!s) return { failure: await sessionFailure(tx, c, device) };
+          if (s.owner_account_id) {
+            await tx`select set_config('app.account_id',${s.owner_account_id},true)`;
+            const [owner] =
+              await tx`select a.id from owner_sessions os join owner_accounts a on a.id=os.account_id
             where os.id=${s.owner_session_id} and os.account_id=${s.owner_account_id}
               and not os.revoked and os.expires_at>now() and a.active`;
-          if (!owner) return { failure: "unauthorized" };
-        }
-        const access = await sellingAccess(tx, s.employee_id, s.device_id);
-        const selling = access.allowed;
-        // Drawer continuation (account 031, LD-15 Q5) keeps a register selling
-        // but never renews its offline window.
-        const touched = await touchSession(
-          tx,
-          s as AuthRow,
-          selling && access.basis !== "drawer_continuation",
-        );
-        return {
-          session: {
-            sellingAllowed: selling,
-            id: s.id,
-            tenantId: s.tenant_id,
-            employeeId: s.employee_id,
-            name: s.name,
-            role: s.role,
-            deviceId: s.device_id,
-            expiresAt: touched.expiresAt.toISOString(),
-            offlineUntil: touched.offlineUntil.toISOString(),
-            offlineLeaseVersion: s.offline_lease_version,
-            offlineLeaseConfigVersion: s.offline_lease_config_version ?? null,
-            csrf: s.csrf,
-            restaurant: {
-              name: s.restaurant_name,
-              currency: s.currency,
-              timezone: s.timezone,
-              cutoff: s.cutoff,
-              configVersion: s.config_version,
-            },
-            access: {
-              absoluteExpiresAt: s.absolute_expires_at?.toISOString() ?? null,
-              authenticatedAt: s.authenticated_at?.toISOString() ?? null,
-              deviceName: s.device_name,
-              deviceKind: s.device_kind,
-              idleLockSeconds: effectiveIdleLock(
-                s.idle_lock_seconds,
-                s.role,
-                s.device_kind,
-                idleLockDefault(),
-                Boolean(s.owner_account_id),
-              ),
-              ownerAccount: Boolean(s.owner_account_id),
-            },
-          } as Session,
-        };
-      });
+            if (!owner) return { failure: "unauthorized" };
+          }
+          const access = await sellingAccess(tx, s.employee_id, s.device_id);
+          const selling = access.allowed;
+          // Drawer continuation (account 031, LD-15 Q5) keeps a register selling
+          // but never renews its offline window.
+          const touched = await touchSession(
+            tx,
+            s as AuthRow,
+            selling && access.basis !== "drawer_continuation",
+          );
+          return {
+            session: {
+              sellingAllowed: selling,
+              id: s.id,
+              tenantId: s.tenant_id,
+              employeeId: s.employee_id,
+              name: s.name,
+              role: s.role,
+              deviceId: s.device_id,
+              expiresAt: touched.expiresAt.toISOString(),
+              offlineUntil: touched.offlineUntil.toISOString(),
+              offlineLeaseVersion: s.offline_lease_version,
+              offlineLeaseConfigVersion: s.offline_lease_config_version ?? null,
+              csrf: s.csrf,
+              restaurant: {
+                name: s.restaurant_name,
+                currency: s.currency,
+                timezone: s.timezone,
+                cutoff: s.cutoff,
+                configVersion: s.config_version,
+              },
+              access: {
+                absoluteExpiresAt: s.absolute_expires_at?.toISOString() ?? null,
+                authenticatedAt: s.authenticated_at?.toISOString() ?? null,
+                deviceName: s.device_name,
+                deviceKind: s.device_kind,
+                idleLockSeconds: effectiveIdleLock(
+                  s.idle_lock_seconds,
+                  s.role,
+                  s.device_kind,
+                  idleLockDefault(),
+                  Boolean(s.owner_account_id),
+                ),
+                ownerAccount: Boolean(s.owner_account_id),
+              },
+            } as Session,
+          };
+        },
+      );
       if ("failure" in result) {
         res.clearCookie("gm_session", cookieOptions);
         if (result.failure === "device_revoked")
