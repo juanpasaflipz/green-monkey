@@ -1340,6 +1340,24 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
     expect(out).not.toContain(strings.es.cfdiLegalPending);
     expect(out).not.toContain("Datos fiscales enviados a Facturapi");
   });
+  it("CFDIFIX-R2-7: the shared sandbox's note says the global periodicity follows the restaurant's régimen and the RESICO retention the test organization's (es/en), never that every rule follows the restaurant's", () => {
+    const es = strings.es.cfdiSharedIssuerNote;
+    expect(es).toContain(
+      "la retención de ISR de RESICO sigue el régimen de esa organización",
+    );
+    expect(es).toContain(
+      "La periodicidad de la factura global sigue el régimen del restaurante",
+    );
+    expect(es).not.toContain("las demás reglas");
+    const en = strings.en.cfdiSharedIssuerNote;
+    expect(en).toContain(
+      "the RESICO income tax withholding follows that organization's tax regime",
+    );
+    expect(en).toContain(
+      "The global invoice frequency follows the restaurant's tax regime",
+    );
+    expect(en).not.toContain("the other rules");
+  });
   it("F10: the periodicity field states the current one and a pending change with its date", () => {
     expect(
       html(
@@ -1466,7 +1484,7 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
       html(createElement(OrganizationFacts, { org: org(), locale: "en" })),
     ).toContain("Pending: confirmed when you upload your certificate (CSD)");
   });
-  it("LD-55 CFDIFIX-UX-6 / FISCAL-6: the shared issuer note says the rules follow the restaurant's own régimen, and says the profile stamps while Facturapi has not reported the test organization whole", () => {
+  it("LD-55 CFDIFIX-UX-6 / FISCAL-6, CFDIFIX-R2-7: the shared issuer note says the global periodicity follows the restaurant's own régimen and the RESICO retention the test organization's, and says the profile stamps while Facturapi has not reported the test organization whole", () => {
     const shared = (complete: boolean) =>
       html(
         createElement(OrganizationFacts, {
@@ -1486,7 +1504,7 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
         }),
       );
     expect(shared(true)).toContain(
-      "La periodicidad y las demás reglas siguen tu propio régimen, que es el que aplicará en modo real.",
+      "y la retención de ISR de RESICO sigue el régimen de esa organización. La periodicidad de la factura global sigue el régimen del restaurante, el que aplicará en modo real.",
     );
     const partial = shared(false);
     expect(partial).toContain(strings.es.cfdiSharedIssuerFallback);

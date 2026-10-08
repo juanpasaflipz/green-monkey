@@ -47,7 +47,7 @@ export default defineArea({
       "Pendiente: se confirma al subir tu certificado (CSD)",
     cfdiSharedIssuerTitle: "Emisor de prueba de la plataforma",
     cfdiSharedIssuerNote:
-      "En este modo se timbra con la organización de prueba de la plataforma: los datos fiscales del restaurante (RFC, régimen y código postal) no se usan para timbrar. La periodicidad y las demás reglas siguen tu propio régimen, que es el que aplicará en modo real.",
+      "En este modo se timbra con la organización de prueba de la plataforma: los datos fiscales del restaurante (RFC, régimen y código postal) no se usan para timbrar, y la retención de ISR de RESICO sigue el régimen de esa organización. La periodicidad de la factura global sigue el régimen del restaurante, el que aplicará en modo real.",
     cfdiSharedIssuerFallback:
       "En este modo se timbra con la organización de prueba de la plataforma, pero Facturapi aún no reporta todos sus datos fiscales (RFC, régimen y código postal): mientras tanto se timbra con los datos de tu perfil fiscal. La periodicidad y las demás reglas siguen tu propio régimen.",
     cfdiIssuerLegalName: "Razón social del emisor",
@@ -494,7 +494,7 @@ export default defineArea({
       "Pending: confirmed when you upload your certificate (CSD)",
     cfdiSharedIssuerTitle: "Platform test issuer",
     cfdiSharedIssuerNote:
-      "In this mode invoices are stamped by the platform's test organization: the restaurant's tax details (RFC, tax regime and postal code) are not used to stamp. The global invoice frequency and the other rules follow your own tax regime, the one that applies in live mode.",
+      "In this mode invoices are stamped by the platform's test organization: the restaurant's tax details (RFC, tax regime and postal code) are not used to stamp, and the RESICO income tax withholding follows that organization's tax regime. The global invoice frequency follows the restaurant's tax regime, the one that applies in live mode.",
     cfdiSharedIssuerFallback:
       "In this mode invoices are stamped by the platform's test organization, but Facturapi has not reported all its tax details yet (RFC, tax regime and postal code): until it does, invoices are stamped with your tax profile. The global invoice frequency and the other rules follow your own tax regime.",
     cfdiIssuerLegalName: "Issuer legal name",
