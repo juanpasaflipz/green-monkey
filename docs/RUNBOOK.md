@@ -585,10 +585,11 @@ consent; record each in [STAGING.md](STAGING.md)). Pin the CLI with
 15. Load test `target` and `stress`; record the pool decision
     ([LOAD_TEST.md](LOAD_TEST.md)).
 
-**Wave 2.0 deltas to these steps.** Staging has not run this cutover yet, so
-it runs once, from the integrated code that already contains Wave 2.0
-(keyring, worker jobs login, migrations in GitHub Actions), with these
-changes:
+**Wave 2.0 deltas to these steps.** Staging ran this cutover once, on
+2026-10-06/07 (steps 1–13; record in [STAGING.md](STAGING.md)), from the
+integrated code that already contains Wave 2.0 (keyring, worker jobs login,
+migrations in GitHub Actions), with these changes; a fresh staging repeats
+them:
 
 | Step | Delta |
 | --- | --- |

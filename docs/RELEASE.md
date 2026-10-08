@@ -1,9 +1,11 @@
 # Release process
 
-How a change reaches staging and production. Status: workflows and scripts are
-written and validated locally (YAML parsed, scripts dry-run, all suites green);
-branch protection, environments and the first CD run are pending the steps in
-[RUNBOOK.md](RUNBOOK.md) "Staging cutover".
+How a change reaches staging and production. Status (October 8, 2026): CI runs
+on GitHub; branch protection and the `staging`/`production` environments were
+applied during the staging cutover, and CD has deployed `main` to staging since
+2026-10-07 ([STAGING.md](STAGING.md)). The restaurant-day required checks are
+applied right after the release pull request merges. No production deploy has
+run ([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) section 2).
 
 ## Branches and protection
 
