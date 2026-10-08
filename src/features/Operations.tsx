@@ -59,6 +59,8 @@ export function Operations({
   const [data, setData] = useState<any>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  /** offline (026, ACC-PR-1): Caja shows this device's cached drawer. */
+  const [cachedDrawer, setCachedDrawer] = useState(false);
   // One operation id per opened dialog, kept across retries (MON-3).
   const [modal, setModalState] = useState<{
     kind: string;
@@ -87,13 +89,17 @@ export function Operations({
       else if (view === "cash") {
         try {
           setData(await api("/cash"));
+          setCachedDrawer(false);
         } catch (e) {
           // offline (026): during an outage Caja shows the drawer this device
           // last saw (Selling caches it), never "Caja cerrada" with "Abrir
           // caja"; the offline notice stays above it (restaurant-day A13.8).
+          // Only its state: the cached figures are not live and never include
+          // offline sales (ACC-PR-1); they load again with the connection.
           const cached = await db.cache.get(scope(session) + ":drawer");
           if (online || cached?.value === undefined) throw e;
           setData(cached.value);
+          setCachedDrawer(true);
           setError(errorNotice(e, locale));
           return;
         }
@@ -109,8 +115,13 @@ export function Operations({
     setLoading(true);
     setData(null);
     setDetail(null);
+    setCachedDrawer(false);
     void load();
   }, [view]);
+  useEffect(() => {
+    // ACC-PR-1: the cached drawer's note promises the figures on reconnect.
+    if (online && view === "cash" && cachedDrawer) void load();
+  }, [online]);
   /**
    * offline (026): this device's local sales must sync before its drawer is
    * closed. Returns the translated reason, or null (discounts' close dialog
@@ -272,6 +283,7 @@ export function Operations({
               locale={locale}
               data={data}
               online={online}
+              cached={cachedDrawer}
               money={m}
               onOpenDrawer={() => setModal({ kind: "open" })}
               onPaidOut={() => setModal({ kind: "paidout" })}

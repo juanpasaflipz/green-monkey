@@ -1219,6 +1219,57 @@ test("Caja during an outage shows the drawer this device last saw, never 'Caja c
   void context;
 });
 
+test("Offline Caja shows only the state of the drawer this device cached, never its old figures as live, and loads them again with the connection (ACC-PR-1)", async ({
+  page,
+}) => {
+  await login(page);
+  await openDrawer(page);
+  await page.route("**/api/**", (route) => route.abort("internetdisconnected"));
+  // Vender finds the connection gone.
+  await product(page, "Taco de hongos").click();
+  await page.getByRole("button", { name: "Cobrar", exact: true }).click();
+  await expect(pill(page, /^Sin conexión/)).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Cerrar", exact: true }).click();
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  const head = page.locator(".drawer-head");
+  await expect(head.getByText("Caja abierta", { exact: true })).toBeVisible();
+  // The drawer's state: who opened it, when and with what float; no payment count.
+  await expect(head.locator("p").first()).toHaveText(
+    /^Abrió .+ · \d{2}:\d{2} · Fondo inicial \$[\d,]+\.\d{2}$/,
+  );
+  await expect(
+    page.getByRole("note").filter({
+      hasText: "Cifras al reconectar; no incluyen ventas sin conexión.",
+    }),
+  ).toBeVisible();
+  // None of the cached figures (expected cash, sales, tips, terminal net, movements).
+  await expect(page.locator(".drawer-cards")).toHaveCount(0);
+  for (const figure of [
+    "Efectivo esperado",
+    "Ventas en efectivo",
+    "Propinas en efectivo",
+    "Neto en terminal",
+    "Movimientos de efectivo",
+    "Sin movimientos todavía.",
+  ])
+    await expect(page.getByText(figure, { exact: true })).toHaveCount(0);
+  // Closing still waits for the connection, with its reason.
+  await expect(
+    page.getByRole("button", { name: "Cerrar caja", exact: true }),
+  ).toBeDisabled();
+  // With the connection back, Caja shows the live drawer again.
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await expect(pill(page, /^Sin conexión/)).toHaveCount(0, { timeout: 45_000 });
+  await expect(
+    page.getByText("Efectivo esperado", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Cifras al reconectar; no incluyen ventas sin conexión.", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
+});
+
 test("An offline external-terminal sale shows and prints service's local receipt with the method, the reference and the order note (LD-10 B4, LD-1)", async ({
   page,
   context,

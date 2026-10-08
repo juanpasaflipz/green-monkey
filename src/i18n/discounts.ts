@@ -281,6 +281,8 @@ export default defineArea({
     discountsDrawerOpeningRow: "Fondo inicial",
     discountsDrawerOffline:
       "Cerrar caja y registrar retiros requieren conexión.",
+    discountsDrawerCachedNote:
+      "Cifras al reconectar; no incluyen ventas sin conexión.",
   },
   en: {
     discountsAction: "Discount",
@@ -554,6 +556,8 @@ export default defineArea({
     discountsDrawerOpeningRow: "Opening float",
     discountsDrawerOffline:
       "Closing the drawer and recording paid-outs need a connection.",
+    discountsDrawerCachedNote:
+      "Figures return with the connection; they do not include offline sales.",
   },
   errors: {
     discount_invalid: [
