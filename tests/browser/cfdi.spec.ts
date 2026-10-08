@@ -898,3 +898,95 @@ test("LD-51 F1/F2/F10, CFDIFIX-1/5/7: the owner switches the global to daily in 
     await unpinDemoZone(baseURL);
   }
 });
+
+test("ACC-PR-6: a settings read the server answered before a save, delivered after it, never puts back the old settings; the next save sends the saved version", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await login(page);
+  test.skip(
+    !(await stampingReady(page)),
+    "needs the cfdi worker with the Facturapi fake",
+  );
+  await ensureFiscalIdentity(page);
+  await ensureCfdiOn(page);
+  const original = (await settings(page)).settings.conceptDescription as string;
+  const saves = () =>
+    page.waitForResponse(
+      (r) =>
+        r.url().endsWith("/api/cfdi/settings") &&
+        r.request().method() === "POST",
+    );
+  try {
+    await openSettings(page);
+    const cfdi = panel(page);
+    const form = cfdi.locator("form.cfdi-settings-form");
+    const description = form.getByLabel("Descripción del concepto");
+    await expect(description).toHaveValue(original);
+    // The next settings read is answered by the server now (the settings before the save) and
+    // delivered only when released.
+    let held = false;
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let delivered = false;
+    await page.route("**/api/cfdi/settings", async (route) => {
+      if (route.request().method() !== "GET" || held) return route.fallback();
+      held = true;
+      const response = await route.fetch();
+      await released;
+      await route.fulfill({ response });
+      delivered = true;
+    });
+    // Datos fiscales saved on the same screen makes the panel read its settings again (b88b322).
+    const fiscal = page.getByRole("region", { name: "Datos fiscales" });
+    await fiscal
+      .getByRole("button", { name: "Guardar datos fiscales", exact: true })
+      .click();
+    await expect(
+      fiscal
+        .getByRole("status")
+        .filter({ hasText: "Datos fiscales guardados" }),
+    ).toBeVisible();
+    await expect.poll(() => held).toBe(true);
+    // While that read is held, the owner saves a new concept description.
+    const changed = `${original.slice(0, 180)} (ACC-PR-6)`;
+    await description.fill(changed);
+    const first = saves();
+    await form
+      .getByRole("button", { name: "Guardar configuración", exact: true })
+      .click();
+    expect((await first).status()).toBe(200);
+    const status = form.getByRole("status");
+    await expect(status).toHaveText("Configuración de facturación guardada");
+    const saved = (await settings(page)).settings;
+    expect(saved.conceptDescription).toBe(changed);
+    // The held read (the settings before the save) arrives after the save's answer.
+    release();
+    await expect.poll(() => delivered).toBe(true);
+    await page.evaluate(
+      () =>
+        new Promise((r) =>
+          requestAnimationFrame(() => requestAnimationFrame(r)),
+        ),
+    );
+    await page.unroute("**/api/cfdi/settings");
+    // The next save sends the version the first one returned. Before ACC-PR-6 the late answer
+    // put back the old version, and the server refused this save as changed elsewhere (409).
+    await description.fill(original);
+    const second = saves();
+    await form
+      .getByRole("button", { name: "Guardar configuración", exact: true })
+      .click();
+    const answer = await second;
+    expect(answer.request().postDataJSON().expectedVersion).toBe(saved.version);
+    expect(answer.status()).toBe(200);
+    await expect(status).toHaveText("Configuración de facturación guardada");
+    await expect(cfdi.getByRole("alert")).toHaveCount(0);
+    await expect(description).toHaveValue(original);
+  } finally {
+    await page.unroute("**/api/cfdi/settings");
+    if ((await settings(page)).settings.conceptDescription !== original)
+      await saveSettings(page, { conceptDescription: original });
+    await pauseCfdi(page);
+  }
+});

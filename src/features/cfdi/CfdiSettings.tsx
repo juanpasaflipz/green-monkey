@@ -379,6 +379,35 @@ export function selfInvoiceShortens(
 }
 
 /**
+ * Which GET /cfdi/settings answer may replace what the panel shows (ACC-PR-6). A read (the first
+ * load, the re-read after a fiscal save or a CSD upload, the poll) takes a number when it starts,
+ * and its answer is dropped when a newer one is already shown, so a slow read never puts back
+ * older settings (and their version, which the next save would send). A save's answer is the
+ * newest state when it arrives: a read still in flight may have been answered before the save
+ * committed, so the save takes a fresh number and those reads are dropped.
+ */
+export function responseOrder() {
+  let issued = 0;
+  let shown = 0;
+  return {
+    /** A read starts: its number. */
+    read: () => ++issued,
+    /** Whether read `n`'s answer may be shown; when it may, it is now the one shown. */
+    show(n: number) {
+      if (n <= shown) return false;
+      shown = n;
+      return true;
+    },
+    /** A save answered: its answer is shown, newer than every read started before it. */
+    saved() {
+      shown = ++issued;
+    },
+    /** Whether read `n` failed after a newer answer was shown (its error is stale too). */
+    stale: (n: number) => n < shown,
+  };
+}
+
+/**
  * What a save did that the owner must hear (UX-2): a periodicity change that applied today, or
  * that waits (until when, and why); a self-invoicing change that waits. Read with the status
  * "Configuración de facturación guardada"; empty when nothing of that changed.
@@ -580,18 +609,23 @@ export function CfdiSettings({
     setLiveFrom((d) => d || v.live.defaultFrom);
   }, []);
 
+  // Answers apply in order (ACC-PR-6): a slow read never puts back what a newer read or a save
+  // replaced.
+  const [order] = useState(responseOrder);
+
   const load = useCallback(
     async (resetForm: boolean) => {
+      const n = order.read();
       try {
         const v = await api<CfdiSettingsView>("/cfdi/settings");
-        if (alive.current) apply(v, resetForm);
+        if (alive.current && order.show(n)) apply(v, resetForm);
         return v;
       } catch (e) {
-        if (alive.current) setError(errorNotice(e, locale));
+        if (alive.current && !order.stale(n)) setError(errorNotice(e, locale));
         return null;
       }
     },
-    [apply, locale],
+    [apply, locale, order],
   );
 
   useEffect(() => {
@@ -630,9 +664,10 @@ export function CfdiSettings({
         return;
       }
       inFlight = true;
+      const n = order.read();
       try {
         const v = await api<CfdiSettingsView>("/cfdi/settings");
-        if (!stopped && alive.current) {
+        if (!stopped && alive.current && order.show(n)) {
           setData(v);
           if (!settling(v)) void prefetchCfdiStatus(sessionRef.current);
         }
@@ -647,7 +682,7 @@ export function CfdiSettings({
       stopped = true;
       clearInterval(timer);
     };
-  }, [polling]);
+  }, [polling, order]);
 
   async function post(
     path: string,
@@ -661,6 +696,7 @@ export function CfdiSettings({
     setSaved(false);
     try {
       const v = await api<CfdiSettingsView>(path, body);
+      order.saved();
       after(v);
       apply(v, resetForm);
       void prefetchCfdiStatus(session);
