@@ -57,7 +57,7 @@ This file supplements ACCEPTANCE.md; it does not weaken its requirements. **Part
 
 Performance: fixture size is 12 base products per tenant plus test-created products, not the required 300-product/50-order pilot. Ten-user API latency and comparable source task timings remain unmeasured.
 
-Release: clean install, lint, typecheck, domain tests, isolated DB tests, browser scenarios and production build passed. Local backup/restore passed; Neon/Railway staging, Docker execution, hardware/provider sandbox and schema-compatible application rollback remain unverified.
+Release: clean install, lint, typecheck, domain tests, isolated DB tests, browser scenarios and production build passed. Local backup/restore passed. CI builds and smoke-tests the Docker image on GitHub, and since the staging cutover (2026-10-06/07) CD deploys `main` to Neon/Railway staging with migrations from GitHub Actions and a green smoke ([STAGING.md](STAGING.md)); no acceptance scenario has been run on staging. The staging backup/restore drill, hardware, the Facturapi `organizations` provider (the shared sandbox was rehearsed locally, LD-51) and schema-compatible application rollback remain unverified.
 
 ## Restaurant-day go-live gate (`specs/acceptance.md` v1.1)
 
@@ -85,7 +85,9 @@ that set, not of the vendor's real values (LD-3). Branch K (CFDI with the
 Facturapi sandbox) passed end to end locally only against the Facturapi fake (10/10 and D1–D19;
 `RD_CFDI_FAKE_PORT`, a local triage switch that CI refuses, runs the worker as `APP_ENV=test`). It
 is unverified against the real sandbox, including the D22 test receptor (§15 Q5) and LD-36's
-RESICO test organization.
+RESICO test organization. The CFDI flows branch K drives (activation, sales, portal invoices,
+a cancellation, the daily global and a late supplementary part) were rehearsed separately and
+locally against the real Facturapi sandbox (LD-51), outside the gate.
 
 **Finish round, October 7, 2026 (local only, LD-57).** The first run with the lead's fictional
 `RD_*` set failed at A2: its support phone is written with spaces, production's `legalConfig`
@@ -96,8 +98,8 @@ each with 0 waivers, 0 soft findings, 0 error or warn lines from the web and onl
 `web_down` warn from the worker (§15 Q18): branch N (10/10 in 8.8 min, D1–D19, 530 s in all),
 branch K against the fake (10/10 in 9.3 min, D1–D19 with row K, 564 s), and branch N again on
 `55950e6` (10/10 in 9.2 min, D1–D19, 559 s). §11 in those runs: 8 taps exact and 9 with a bill,
-modelled 10.5 s and 11.6 s, every tap's p95 under 150 ms, system time about 0.5 s. The repository variable `RD_SUPPORT_PHONE` holds the same spaced value (LD-57), so the
-first CI run will stop at setup until it is rewritten in E.164.
+modelled 10.5 s and 11.6 s, every tap's p95 under 150 ms, system time about 0.5 s. The repository variable `RD_SUPPORT_PHONE` has since been rewritten in E.164
+(LD-59), so a CI run no longer stops at setup.
 
 **Part 2, October 8, 2026 (local only).** After absorbing integration/v1 (cfdifix's CFDI rehearsal
 fixes and migration 036) and the review items ACC-PR-4 (branch K asserts the server's periodicity
@@ -173,11 +175,11 @@ confirmation. Local latencies are not production latencies (no network between b
 
 ### Open items
 
-- `RD_SUPPORT_PHONE` (repository variable, LD-57) must be rewritten in E.164 without spaces; with the current value global setup refuses the run.
-- `ops/github/main-ruleset.json` lists `restaurant-day` and `restaurant-day-cfdi`; per LD-57 `scripts/ops/github-protect.sh` applies it only after the acceptance pull request merges. `RD_NIGHTLY_REF` must name the release branch for the nightly run.
-- Real sandbox (branch K) and the vendor's real legal values have never been exercised; the first `restaurant-day-cfdi` run with `FACTURAPI_TEST_KEY` verifies D22. Per LD-57 the key is not in GitHub secrets, so that job skips; branch K was rehearsed locally against the real sandbox (LD-51) and the gate's branch K passes against the fake.
-- §13.2 asks for the gate before any production deploy dispatch; `deploy.yml` does not check it yet (ops).
-- §13.2 requires two consecutive green CI runs after any change to the suite; only local runs exist.
+- Done (LD-59): `RD_SUPPORT_PHONE` (repository variable) is in E.164; the `RD_*` repository variables hold a fictional, plausible set (LD-3, LD-57).
+- `ops/github/main-ruleset.json` lists `restaurant-day` and `restaurant-day-cfdi`; the lead applies it with `scripts/ops/github-protect.sh` right after the release pull request merges (LD-57: earlier, it would block pull requests before the workflow exists on `main`, where it is not yet). `RD_NIGHTLY_REF` (not set yet) must name the release branch for the nightly run.
+- The gate's branch K has never run against the real sandbox, and the vendor's real legal values have never been exercised; the first `restaurant-day-cfdi` run with `FACTURAPI_TEST_KEY` verifies D22. Per LD-57 the key is not in GitHub secrets, so that job reports skipped; branch K passes against the fake, and the CFDI flows it drives were rehearsed locally against the real sandbox outside the gate (LD-51).
+- §13.2 asks for the gate before any production deploy dispatch; `deploy.yml` does not check it yet (ops follow-up).
+- §13.2 requires two consecutive green CI runs after any change to the suite; only local runs exist so far (the workflow reaches `main` with the release pull request).
 - The two product questions branch K surfaced earlier (an open global period reading 0 tickets and
   $0.00, and a periodicity saved right after activation waiting for next month) were answered by
   cfdifix (LD-51 F11 and F2, absorbed October 8, 2026); the B1.6 K and B7.5 K bindings above follow
