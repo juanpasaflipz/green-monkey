@@ -2,7 +2,16 @@
 
 Spanish-first restaurant POS built with React/TypeScript/Vite, Express/TypeScript and PostgreSQL. Neon is the target application database. Railway runs two services from one Docker image, declared in `.railway/railway.ts`: `web` (the compiled app, API and the web jobs runner, on the runtime role and the signing keys) and `worker` (the jobs runner for worker-only kinds on its own jobs login, the billing provider loop and watchdog alerts). Neither holds the schema-owner credential: migrations, grants and the daily retention pass run in GitHub Actions as `gm_migrator`; see [infrastructure](docs/INFRASTRUCTURE.md) and [release process](docs/RELEASE.md).
 
-**Status: working local development application; required scope is still incomplete. Not production-ready.** See [delivery status](docs/DELIVERY_STATUS.md) for every source capability, [verification](docs/RELEASE_REPORT.md), [acceptance coverage](docs/ACCEPTANCE_STATUS.md), and [operator guide](docs/OPERATIONS.md). Release and operations: [release process](docs/RELEASE.md) (CI, CD and migrations), [runbook](docs/RUNBOOK.md), [provisioning](docs/PROVISIONING.md), [backups and restore](docs/BACKUP_RESTORE.md) and [load test](docs/LOAD_TEST.md). These are written and locally rehearsed; none has run against staging or production yet. Pilot and launch: the [pilot operating guide](docs/PILOT_SOP.md) (in Spanish: printers, tablets, pairing, selling without a connection) and the [launch hand-off](docs/LAUNCH_HANDOFF.md) (the steps that need the business owner's accounts, credentials or signature, in order). The pinned source applications were inspected, not run or modified.
+**Status (October 8, 2026): the v1 pilot release is on its way to `main`; staging is cut over; production is not launched.** Staging was cut over on October 6–7, 2026 and deploys `main` through GitHub Actions (migrations as `gm_migrator`, then Railway, then a smoke that is green; [staging](docs/STAGING.md)). Production is launched by the business owner, not by the team. The full required scope of the source matrix is still incomplete: see [delivery status](docs/DELIVERY_STATUS.md) for every capability and its evidence level, [verification](docs/RELEASE_REPORT.md) and [acceptance coverage](docs/ACCEPTANCE_STATUS.md). The pinned source applications were inspected, not run or modified.
+
+Pilot, launch and operations:
+
+- [Pilot operating guide](docs/PILOT_SOP.md) (in Spanish): printers, tablets, pairing, selling without a connection, whom to call.
+- [Launch hand-off](docs/LAUNCH_HANDOFF.md): what only the business owner can supply (accounts, credentials, legal identity, signatures), what staging already did, and the production launch sequence in order.
+- [Runbook](docs/RUNBOOK.md): signals and alerts, "the POS is down", rollback, client address, credential rotation, the staging cutover, DB-9 validation, open follow-ups.
+- [Release process](docs/RELEASE.md): CI, the restaurant-day gate, CD to staging and the gated production dispatch, migrations, retention.
+- Restaurant-day go-live gate: two fictional business days through the UI on a production-mode web and worker, then a DB reconciliation ([acceptance status](docs/ACCEPTANCE_STATUS.md), "Restaurant-day go-live gate"; workflow `.github/workflows/restaurant-day.yml`). It passes locally; its required checks are applied once the release reaches `main`, and two consecutive green CI runs are pending. Local run: "Build and checks" below.
+- [Provisioning](docs/PROVISIONING.md), [backups and restore](docs/BACKUP_RESTORE.md), [load test](docs/LOAD_TEST.md) and the [operator guide](docs/OPERATIONS.md). The staging backup and restore drill and the load test have not run yet.
 
 ## Local setup
 
@@ -46,7 +55,7 @@ Reporting (migration 029) buckets every figure by stored or versioned business d
 
 New in the continuation: per-item split payments with lost-response recovery, table/server reassignment, owner restaurant configuration, and immutable item allocations/configuration snapshots.
 
-The seed is explicit, repeatable, and refuses non-local hosts. It is never run at boot. Seed prices/costs are fictional. Prices are tax-inclusive (Mexico): each product has a tax category (IVA 16%, IVA 8% in a registered border region, IVA 0% or exempt), every order line keeps an immutable tax snapshot, and every settled sale gets a ticket with a consecutive folio and the issuer's RFC, régimen and place of issue, from the owner's fiscal profile. CFDI invoicing is pending (cfdi 030); IEPS is out of scope. See [docs/FISCAL.md](docs/FISCAL.md).
+The seed is explicit, repeatable, and refuses non-local hosts. It is never run at boot. Seed prices/costs are fictional. Prices are tax-inclusive (Mexico): each product has a tax category (IVA 16%, IVA 8% in a registered border region, IVA 0% or exempt), every order line keeps an immutable tax snapshot, and every settled sale gets a ticket with a consecutive folio and the issuer's RFC, régimen and place of issue, from the owner's fiscal profile. CFDI invoicing through Facturapi is built (cfdi 030, rehearsal fixes 036; [CFDI](docs/CFDI.md)); IEPS is out of scope. See [docs/FISCAL.md](docs/FISCAL.md).
 
 ## Build and checks
 
@@ -280,7 +289,7 @@ Subscription flows and webhook verification passed in the dedicated sandbox. See
 - `tests/`: domain, isolated DB, and Playwright scenarios.
 - `work/reference-sources/`: ignored hash-verified source snapshots, never part of the deploy image.
 
-No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe and other configured integrations are **not enabled or verified**. CFDI: built on fiscal, discounts and reports, contract-tested against Facturapi's documented API (fixtures `docs@1c2e617`) and tested end to end against the Facturapi fake, not sandbox-verified; disabled until Facturapi keys are configured; live mode not enabled ([CFDI](docs/CFDI.md)). Cash POS does not require those credentials. The [isolated staging deployment](docs/STAGING.md) is running on Railway with Neon; a live cash/KDS/receipt smoke passed. Full release qualification remains incomplete; live cutover requires specific approval and reconciled migration.
+No Supabase or Vercel runtime dependency is used. R2, Resend, Stripe and other configured integrations are **not enabled or verified**. CFDI: built on fiscal, discounts and reports, contract-tested against Facturapi's documented API (fixtures `docs@1c2e617`) and tested end to end against the Facturapi fake; its shared-sandbox flows passed a local rehearsal against the real Facturapi sandbox on 2026-10-07, and staging runs the shared sandbox with a test key; the per-restaurant `organizations` provider and live mode are not enabled ([CFDI](docs/CFDI.md)). Cash POS does not require those credentials. The [isolated staging deployment](docs/STAGING.md) runs on Railway with Neon and deploys from `main` through GitHub Actions since the October 6–7 cutover. Full release qualification remains incomplete; live cutover requires the owner's decision ([launch hand-off](docs/LAUNCH_HANDOFF.md)) and reconciled migration.
 
 ## Marketing landing page
 
