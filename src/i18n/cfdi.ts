@@ -43,7 +43,8 @@ export default defineArea({
     cfdiRetry: "Reintentar",
     cfdiIssuerRfc: "RFC del emisor",
     cfdiIssuerPending: "Pendiente: Facturapi aún no lo reporta",
-    cfdiIssuerPendingCsd: "Pendiente: se confirma al subir tu certificado (CSD)",
+    cfdiIssuerPendingCsd:
+      "Pendiente: se confirma al subir tu certificado (CSD)",
     cfdiSharedIssuerTitle: "Emisor de prueba de la plataforma",
     cfdiSharedIssuerNote:
       "En este modo se timbra con la organización de prueba de la plataforma: los datos fiscales del restaurante (RFC, régimen y código postal) no se usan para timbrar. La periodicidad y las demás reglas siguen tu propio régimen, que es el que aplicará en modo real.",
@@ -135,6 +136,8 @@ export default defineArea({
       "El cambio del plazo para autofacturarse aplica desde el {date}: antes acortaría el plazo que ya imprimieron tickets vendidos.",
     cfdiSelfInvoicePendingStatus:
       "Cambio pendiente del plazo para autofacturarse: aplica desde el {date}, cuando vence el plazo que ya imprimieron tickets vendidos.",
+    cfdiSelfInvoicePendingPrinted:
+      "Ya hay tickets vendidos que imprimieron el plazo del cambio para autofacturarse que espera (aplica desde el {date}): estos términos lo acortarían. Vuelve a elegir los términos de ese cambio; desde el {date} podrás cambiarlos.",
     cfdiSelfInvoiceShortenHint:
       "Este cambio acorta el plazo para autofacturarse. Si acortara el que ya imprimieron tickets vendidos, se aplica cuando ese plazo vence; al guardar te decimos desde qué día.",
     cfdiLiveTitle: "Modo real",
@@ -487,7 +490,8 @@ export default defineArea({
     cfdiRetry: "Retry",
     cfdiIssuerRfc: "Issuer RFC",
     cfdiIssuerPending: "Pending: Facturapi has not reported it yet",
-    cfdiIssuerPendingCsd: "Pending: confirmed when you upload your certificate (CSD)",
+    cfdiIssuerPendingCsd:
+      "Pending: confirmed when you upload your certificate (CSD)",
     cfdiSharedIssuerTitle: "Platform test issuer",
     cfdiSharedIssuerNote:
       "In this mode invoices are stamped by the platform's test organization: the restaurant's tax details (RFC, tax regime and postal code) are not used to stamp. The global invoice frequency and the other rules follow your own tax regime, the one that applies in live mode.",
@@ -578,6 +582,8 @@ export default defineArea({
       "The self-invoicing change applies from {date}: before then it would shorten the deadline receipts already printed.",
     cfdiSelfInvoicePendingStatus:
       "Pending self-invoicing change: it applies from {date}, when the deadline receipts already printed ends.",
+    cfdiSelfInvoicePendingPrinted:
+      "Receipts already printed carry the deadline of the waiting self-invoicing change (it applies from {date}): these terms would shorten it. Choose that change's terms again; from {date} you can change them.",
     cfdiSelfInvoiceShortenHint:
       "This change shortens the self-invoicing deadline. If it would shorten the one receipts already printed, it applies when that deadline ends; saving tells you from which day.",
     cfdiLiveTitle: "Live mode",
@@ -923,6 +929,10 @@ export default defineArea({
     cfdi_settings_changed: [
       "La configuración cambió en otro dispositivo. Recarga e intenta de nuevo.",
       "Settings changed on another device. Reload and try again.",
+    ],
+    cfdi_self_invoice_pending_printed: [
+      "Ya hay tickets vendidos que imprimieron el plazo del cambio para autofacturarse que espera: estos términos lo acortarían. Vuelve a elegir los términos de ese cambio hasta que aplique.",
+      "Receipts already printed carry the deadline of the waiting self-invoicing change: these terms would shorten it. Choose that change's terms again until it applies.",
     ],
     cfdi_resico_monthly: [
       "En RESICO la factura global debe ser mensual.",

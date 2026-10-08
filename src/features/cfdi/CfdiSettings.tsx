@@ -46,7 +46,13 @@ import {
 } from "../../../shared/cfdi";
 import { REGIMEN_FISCAL } from "../../../shared/sat";
 import { api } from "../../api";
-import { strings, errorNotice, translateError, type Key } from "../../i18n";
+import {
+  strings,
+  errorNotice,
+  translateError,
+  withSupportReference,
+  type Key,
+} from "../../i18n";
 import { Badge, Button, Field } from "../../components/ui";
 import { prefetchCfdiStatus } from "./status";
 import { CsdUpload } from "./CsdUpload";
@@ -323,6 +329,33 @@ export function SelfInvoicePendingStatus({
       })}
     </p>
   );
+}
+
+/**
+ * A refused settings save, translated. Terms that would cut the deadline receipts printed while a
+ * self-invoicing change waits (CFDIFIX-R2-2) name the date that change applies from.
+ */
+export function settingsSaveError(
+  error: unknown,
+  settings: Pick<
+    NonNullable<CfdiSettingsView["settings"]>,
+    "selfInvoicePending"
+  >,
+  locale: Locale,
+): string {
+  const code = (error as { message?: unknown } | null | undefined)?.message;
+  if (
+    code === "cfdi_self_invoice_pending_printed" &&
+    settings.selfInvoicePending
+  )
+    return withSupportReference(
+      tr(locale, "cfdiSelfInvoicePendingPrinted", {
+        date: dateLabel(settings.selfInvoicePending.from, locale),
+      }),
+      error,
+      locale,
+    );
+  return errorNotice(error, locale);
 }
 
 /** Whether `next` self-invoicing terms end earlier than `prev` for some ticket (UX-4 hint). */
@@ -609,6 +642,7 @@ export function CfdiSettings({
     body: unknown,
     after: (v: CfdiSettingsView) => void,
     resetForm = false,
+    notice: (e: unknown) => string = (e) => errorNotice(e, locale),
   ) {
     setBusy(true);
     setError("");
@@ -619,7 +653,7 @@ export function CfdiSettings({
       apply(v, resetForm);
       void prefetchCfdiStatus(session);
     } catch (e) {
-      setError(errorNotice(e, locale));
+      setError(notice(e));
     } finally {
       setBusy(false);
     }
@@ -842,6 +876,7 @@ export function CfdiSettings({
                 setSaved(true);
               },
               true,
+              (e) => settingsSaveError(e, settings, locale),
             );
           }}
         >

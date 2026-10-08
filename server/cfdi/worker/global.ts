@@ -244,6 +244,8 @@ async function rebuildMonth(
   for (const r of rows)
     await lockPeriod(tx, tenantId, settings.mode, r.period_key as string);
   const was = stale[0].periodicity as Periodicity;
+  // Each date's deadline as the portal reads it: the terms in force with the self-invoicing
+  // change that waits, if any (deadlineOf's, CFDIFIX-R2-3), under the old periodicity and the new.
   const blocked = await periodicityChangeBlocked(
     tx,
     {
@@ -256,7 +258,7 @@ async function rebuildMonth(
     today,
     facts,
     graceMinutes,
-    savedAt ?? new Date(),
+    { now: savedAt ?? new Date() },
   );
   if (!blocked) {
     const removed = await tx`

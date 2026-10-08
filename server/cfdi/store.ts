@@ -29,6 +29,7 @@ import {
   businessDayStart,
   periodicityChangeBlock,
   periodicityOn,
+  PERIODICITY_REBUILD_WAIT_MS,
   selfInvoiceChangeFrom as changeFromDeadline,
   type CfdiAlertsView,
   type CfdiAttention,
@@ -49,6 +50,7 @@ import {
   type Receptor,
   type SelfInvoiceGlobalBound,
   type SelfInvoiceTerms,
+  type SelfInvoiceWindow,
   type TicketEligibility,
 } from "../../shared/cfdi.js";
 import { formatFolio, type CfdiTicketPayload } from "../../shared/fiscal.js";
@@ -1399,27 +1401,40 @@ export async function ticketDeadlineInfo(
   return deadlineOf(businessDate, s, builds.get(businessDate), facts);
 }
 
+/** The self-invoicing terms of settings as the deadline guards read them (deadlineOf's). */
+export type SelfInvoiceSettings = Pick<
+  SettingsRow,
+  | "selfInvoicePolicy"
+  | "selfInvoiceDays"
+  | "portalReissueGlobal"
+  | "nextSelfInvoice"
+>;
+export function selfInvoiceWindow(s: SelfInvoiceSettings): SelfInvoiceWindow {
+  return {
+    policy: s.selfInvoicePolicy,
+    days: s.selfInvoiceDays,
+    pending: s.nextSelfInvoice,
+  };
+}
+
 /**
- * When a self-invoicing change (window, days or portal reissue) may apply (LD-55
- * CFDIFIX-FISCAL-5 / UX-4, guarded like a periodicity change): null when it brings forward no
- * deadline a receipt already printed (every ticket not covered by a valid or canceling invoice,
- * fully refunded ones aside, whose current deadline has not passed: unclaimed tickets, tickets in a
- * global the portal may reissue, tickets whose invoice is still on its way and may fail); otherwise
- * the business date from which it applies: the first business day starting at or after the latest
- * deadline it would bring forward (the first of next month for the default month-end window). The
- * current deadline is the one receipts print: the terms in force with any change that already
- * waits. One read per distinct business date set plus the period rows.
+ * The business dates whose printed self-invoicing deadline a change must keep (LD-55
+ * CFDIFIX-FISCAL-5 / UX-4): those of every ticket not covered by a valid or canceling invoice,
+ * fully refunded ones aside (unclaimed tickets, tickets in a global the portal may reissue,
+ * tickets whose invoice is still on its way and may fail), in the last 100 days (deadlines run
+ * at most 90 days or to the month's end). Today's business date always counts, sold or not, and
+ * the next one too when it starts within PERIODICITY_REBUILD_WAIT_MS (the 5-minute status refresh
+ * and its margin): a terminal that has not refreshed its status yet prints the old deadline for
+ * those sales (CFDIFIX-R2-5, as CONCURRENCY-2 for a periodicity). A terminal offline for longer is
+ * the residual risk docs/CFDI.md records.
  */
-export async function selfInvoiceChangeFrom(
+async function deadlineDates(
   tx: Tx,
   s: SettingsRow,
-  wanted: SelfInvoiceTerms,
   facts: Pick<FiscalFacts, "timezone" | "cutoff">,
-  grace: number,
-  now = new Date(),
-): Promise<string | null> {
+  now: Date,
+): Promise<string[]> {
   const today = businessDate_(now.toISOString(), facts.timezone, facts.cutoff);
-  // Deadlines run at most 90 days (policy "days") or to the month's end: 100 days back covers both.
   const rows = await tx`
     select distinct t.business_date::text as d from fiscal_tickets t
     where t.business_date >= (${today}::date - 100)
@@ -1430,15 +1445,34 @@ export async function selfInvoiceChangeFrom(
       and t.gross > coalesce((select sum(a.gross) from fiscal_adjustments a
         where a.tenant_id = t.tenant_id and a.order_id = t.order_id), 0)
     order by 1`;
-  const dates = rows.map((r) => r.d as string);
-  if (!dates.length) return null;
+  const dates = new Set(rows.map((r) => r.d as string));
+  dates.add(today);
+  const next = firstAfter(today);
+  if (
+    Date.parse(businessDayStart(next, facts.timezone, facts.cutoff)) -
+      now.getTime() <=
+    PERIODICITY_REBUILD_WAIT_MS
+  )
+    dates.add(next);
+  return [...dates].sort();
+}
+
+/**
+ * The latest deadline, as receipts print it under `s` (the terms in force with the change that
+ * waits), that the self-invoicing terms `to` would bring forward, among the dates deadlineDates
+ * reads whose deadline has not passed; null when none. Both under the periodicity in force (the
+ * same global build times). One read for the dates plus the period rows.
+ */
+async function latestCut(
+  tx: Tx,
+  s: SettingsRow,
+  to: SelfInvoiceSettings,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  grace: number,
+  now: Date,
+): Promise<number | null> {
+  const dates = await deadlineDates(tx, s, facts, now);
   const builds = await globalBuildTimes(tx, s, dates, facts, grace);
-  const target = {
-    selfInvoicePolicy: wanted.policy,
-    selfInvoiceDays: wanted.days,
-    portalReissueGlobal: wanted.reissue,
-    nextSelfInvoice: null,
-  };
   let latest: number | null = null;
   for (const date of dates) {
     const printed = Date.parse(
@@ -1446,11 +1480,45 @@ export async function selfInvoiceChangeFrom(
     );
     if (printed <= now.getTime()) continue;
     const after = Date.parse(
-      deadlineOf(date, target, builds.get(date), facts).deadline,
+      deadlineOf(date, to, builds.get(date), facts).deadline,
     );
     if (after < printed && (latest === null || printed > latest))
       latest = printed;
   }
+  return latest;
+}
+
+/**
+ * When a self-invoicing change (window, days or portal reissue) may apply (LD-55
+ * CFDIFIX-FISCAL-5 / UX-4, guarded like a periodicity change): null when it brings forward no
+ * deadline a receipt already printed or may still print with a status not yet refreshed
+ * (deadlineDates); otherwise the business date from which it applies: the first business day
+ * starting at or after the latest deadline it would bring forward (the first of next month for
+ * the default month-end window). The current deadline is the one receipts print: the terms in
+ * force with any change that already waits.
+ */
+export async function selfInvoiceChangeFrom(
+  tx: Tx,
+  s: SettingsRow,
+  wanted: SelfInvoiceTerms,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  grace: number,
+  now = new Date(),
+): Promise<string | null> {
+  const today = businessDate_(now.toISOString(), facts.timezone, facts.cutoff);
+  const latest = await latestCut(
+    tx,
+    s,
+    {
+      selfInvoicePolicy: wanted.policy,
+      selfInvoiceDays: wanted.days,
+      portalReissueGlobal: wanted.reissue,
+      nextSelfInvoice: null,
+    },
+    facts,
+    grace,
+    now,
+  );
   if (latest === null) return null;
   const from = changeFromDeadline(
     new Date(latest).toISOString(),
@@ -1458,6 +1526,26 @@ export async function selfInvoiceChangeFrom(
     facts.cutoff,
   );
   return from > today ? from : firstAfter(today);
+}
+
+/**
+ * The save's last word on self-invoicing (CFDIFIX-R2-2): the latest deadline a receipt printed, or
+ * may still print with a status not yet refreshed, under `s` (the terms in force and the change
+ * that waits) that the terms the save is about to store (`stored`, with the change it leaves
+ * waiting, if any) would bring forward; null when every one is kept. Cancelling or replacing a
+ * waiting change that lengthened deadlines would otherwise cut the receipts printed while it
+ * waited ("nothing printed before the save ends earlier than it said").
+ */
+export async function printedDeadlineCut(
+  tx: Tx,
+  s: SettingsRow,
+  stored: SelfInvoiceSettings,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  grace: number,
+  now = new Date(),
+): Promise<string | null> {
+  const latest = await latestCut(tx, s, stored, facts, grace, now);
+  return latest === null ? null : new Date(latest).toISOString();
 }
 
 const firstAfter = (date: string) => {
@@ -1866,8 +1954,10 @@ export async function monthShape(
  * Why changing to `to` must wait for next month, or null when it may apply at once (LD-51 F2,
  * shared/cfdi.ts periodicityChangeBlock): decided by the web under the settings row lock and
  * checked again by the tick, under the same lock and the period keys, before it rebuilds the
- * month's rows. `s` carries the periodicity in force today and the self-invoicing policy that
- * applies after the change; `graceMinutes` is the worker's (published in cfdi_platform).
+ * month's rows. `s` carries the periodicity in force today and the self-invoicing terms receipts
+ * print (in force, with the change that waits: deadlineOf's, CFDIFIX-R2-3); `o.after` the terms
+ * the save stores, when it changes them too (CFDIFIX-R2-4; default `s`'s); `graceMinutes` is the
+ * worker's (published in cfdi_platform).
  */
 export async function periodicityChangeBlocked(
   tx: Tx,
@@ -1876,7 +1966,7 @@ export async function periodicityChangeBlocked(
   today: string,
   facts: Pick<FiscalFacts, "timezone" | "cutoff">,
   graceMinutes: number,
-  now = new Date(),
+  o: { now?: Date; after?: SelfInvoiceSettings } = {},
 ): Promise<PeriodicityChangeBlock | null> {
   const shape = await monthShape(tx, s, today);
   return periodicityChangeBlock({
@@ -1885,12 +1975,9 @@ export async function periodicityChangeBlocked(
     to,
     timezone: facts.timezone,
     cutoff: facts.cutoff,
-    selfInvoice: {
-      policy: s.selfInvoicePolicy,
-      days: s.selfInvoiceDays,
-      graceMinutes,
-    },
-    now,
+    selfInvoice: { ...selfInvoiceWindow(s), graceMinutes },
+    after: o.after ? selfInvoiceWindow(o.after) : undefined,
+    now: o.now ?? new Date(),
   });
 }
 

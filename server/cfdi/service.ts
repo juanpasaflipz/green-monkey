@@ -78,7 +78,9 @@ import {
   periodicityChangeBlocked,
   platform,
   periodViews,
+  printedDeadlineCut,
   selfInvoiceChangeFrom,
+  selfInvoiceWindow,
   sharedIssuerComplete,
   requireCfdi,
   statusView,
@@ -90,6 +92,7 @@ import {
   waitingSubstitute,
   type CfdiState,
   type DocumentRow,
+  type SelfInvoiceSettings,
   type Viewer,
 } from "./store.js";
 
@@ -433,80 +436,18 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
     // so a restaurant that became RESICO can still save its other settings (CFDI-SAT-4, UX-1).
     const wanted =
       facts.regime === "626" ? ("month" as const) : p.globalPeriodicity;
-    // A periodicity change applies at once while the current month is unshaped: no global
-    // document of its periods, no unclaimed ticket in a period, old or new, past its 24-hour
-    // deadline, and no unclaimed ticket of the month whose self-invoicing deadline (the one its
-    // receipt printed) the change would bring forward (LD-51 F2, CFDIFIX-1;
-    // periodicityChangeBlock, with the policy this save stores). The tick then rebuilds the
-    // month's period rows. Otherwise it applies from the first day of next month and the month
-    // keeps one periodicity (CFDI-R2-1); the reason is recorded for the panel
-    // (periodicity_deferred). Choosing the periodicity in force cancels a pending change (one
-    // that is already in force today stays: the tick promotes it); a deferred change first
-    // promotes a pending one already in force today, so the month keeps the periodicity it is
-    // under (CFDIFIX-FISCAL-2). The settings row is locked FOR UPDATE above; the tick's rebuild
-    // and the global builder take it too, so neither runs on a month this decision reads
-    // differently.
     const day = today(s);
     const effective = periodicityOn(day, before);
     const grace = graceMinutes(await platform(tx));
-    let periodicity = before.globalPeriodicity;
-    let next = before.nextPeriodicity;
-    let nextFrom = before.nextPeriodicityFrom;
-    let rebuild = false;
-    let shortens = false;
-    let deferred: PeriodicityChangeBlock | null = null;
-    if (wanted === effective) {
-      if (!(nextFrom && nextFrom <= day)) {
-        next = null;
-        nextFrom = null;
-      }
-    } else {
-      deferred = await periodicityChangeBlocked(
-        tx,
-        {
-          ...before,
-          selfInvoicePolicy: p.selfInvoicePolicy,
-          selfInvoiceDays: p.selfInvoiceDays,
-        },
-        wanted,
-        day,
-        facts,
-        grace,
-      );
-      if (deferred) {
-        periodicity = effective;
-        next = wanted;
-        nextFrom = firstOfNextMonth(day);
-      } else {
-        periodicity = wanted;
-        next = null;
-        nextFrom = null;
-        rebuild = true;
-        // Whether the change brings forward the deadline of a ticket sold today: a terminal that
-        // has not refreshed its status yet prints the old one (CFDIFIX-CONCURRENCY-2).
-        shortens =
-          periodicityChangeBlock({
-            hasGlobals: false,
-            dates: [day],
-            from: effective,
-            to: wanted,
-            timezone: facts.timezone,
-            cutoff: facts.cutoff,
-            selfInvoice: {
-              policy: p.selfInvoicePolicy,
-              days: p.selfInvoiceDays,
-              graceMinutes: grace,
-            },
-            now: new Date(),
-          }) === "deadline";
-      }
-    }
-    // A self-invoicing change (window, days or the portal's reissue) is guarded like a
-    // periodicity change (LD-55 CFDIFIX-FISCAL-5 / UX-4): it applies at once unless it brings
-    // forward the deadline of a receipt already printed; then it waits until the first business
-    // day after the latest such deadline (selfInvoiceChangeFrom), and receipts printed meanwhile
-    // print the deadline both terms allow (effectiveSelfInvoiceDeadline's pending). Choosing the
-    // terms in force cancels a waiting change.
+    const now = new Date();
+    // 1. Self-invoicing first (CFDIFIX-R2-4): the periodicity guard below reads the terms this save
+    // stores. A change (window, days or the portal's reissue) is guarded like a periodicity change
+    // (LD-55 CFDIFIX-FISCAL-5 / UX-4): it applies at once unless it brings forward the deadline of
+    // a receipt already printed, or that a terminal not refreshed yet may print today
+    // (CFDIFIX-R2-5); then it waits until the first business day after the latest such deadline
+    // (selfInvoiceChangeFrom), and receipts printed meanwhile print the deadline both terms allow
+    // (effectiveSelfInvoiceDeadline's pending). Choosing the terms in force cancels a waiting
+    // change.
     const inForce: SelfInvoiceTerms = {
       policy: before.selfInvoicePolicy,
       days: before.selfInvoiceDays,
@@ -526,10 +467,85 @@ export async function saveSettings(tx: Tx, s: Session, raw: unknown) {
         wantedTerms,
         facts,
         grace,
+        now,
       );
       if (from) {
         terms = inForce;
         selfInvoiceNext = { ...wantedTerms, from };
+      }
+    }
+    const stored: SelfInvoiceSettings = {
+      selfInvoicePolicy: terms.policy,
+      selfInvoiceDays: terms.days,
+      portalReissueGlobal: terms.reissue,
+      nextSelfInvoice: selfInvoiceNext,
+    };
+    // Nothing printed before the save ends earlier than it said (CFDIFIX-R2-2): what this save
+    // stores is checked against every deadline receipts print now, the waiting change's included.
+    // Cancelling a waiting change that lengthened some deadlines, or replacing it, would cut the
+    // receipts printed while it waited (the guard above compares the wanted terms alone): refused,
+    // and the panel names the waiting change's date, from which its terms are in force and a new
+    // change is guarded as any other.
+    if (await printedDeadlineCut(tx, before, stored, facts, grace, now))
+      throw new DomainError("cfdi_self_invoice_pending_printed", 409);
+    // 2. The periodicity. A change applies at once while the current month is unshaped: no
+    // global document of its periods, no unclaimed ticket in a period, old or new, past its
+    // 24-hour deadline, and no unclaimed ticket of the month whose self-invoicing deadline (the one
+    // its receipt printed: the terms in force with the change that waits) the change, with the
+    // terms this save stores, would bring forward (LD-51 F2, CFDIFIX-1, CFDIFIX-R2-3/R2-4;
+    // periodicityChangeBlock). The tick then rebuilds the month's period rows. Otherwise it
+    // applies from the first day of next month and the month keeps one periodicity
+    // (CFDI-R2-1); the reason is recorded for the panel (periodicity_deferred). Choosing the
+    // periodicity in force cancels a pending change (one that is already in force today stays:
+    // the tick promotes it); a deferred change first promotes a pending one already in force
+    // today, so the month keeps the periodicity it is under (CFDIFIX-FISCAL-2). The settings row
+    // is locked FOR UPDATE above; the tick's rebuild and the global builder take it too, so
+    // neither runs on a month this decision reads differently.
+    let periodicity = before.globalPeriodicity;
+    let next = before.nextPeriodicity;
+    let nextFrom = before.nextPeriodicityFrom;
+    let rebuild = false;
+    let shortens = false;
+    let deferred: PeriodicityChangeBlock | null = null;
+    if (wanted === effective) {
+      if (!(nextFrom && nextFrom <= day)) {
+        next = null;
+        nextFrom = null;
+      }
+    } else {
+      deferred = await periodicityChangeBlocked(
+        tx,
+        before,
+        wanted,
+        day,
+        facts,
+        grace,
+        { now, after: stored },
+      );
+      if (deferred) {
+        periodicity = effective;
+        next = wanted;
+        nextFrom = firstOfNextMonth(day);
+      } else {
+        periodicity = wanted;
+        next = null;
+        nextFrom = null;
+        rebuild = true;
+        // Whether the change brings forward the deadline of a ticket sold today: a terminal that
+        // has not refreshed its status yet prints the old one (CFDIFIX-CONCURRENCY-2), under the
+        // terms in force with the change that waits; after the save, the terms it stores.
+        shortens =
+          periodicityChangeBlock({
+            hasGlobals: false,
+            dates: [day],
+            from: effective,
+            to: wanted,
+            timezone: facts.timezone,
+            cutoff: facts.cutoff,
+            selfInvoice: { ...selfInvoiceWindow(before), graceMinutes: grace },
+            after: selfInvoiceWindow(stored),
+            now,
+          }) === "deadline";
       }
     }
     await tx`

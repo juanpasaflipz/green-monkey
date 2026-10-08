@@ -260,6 +260,29 @@ function zoneWhere(ok: (date: string, zone: Zone) => boolean): Zone {
   assert.ok(zone, "a zone puts the business date where the check needs it");
   return zone;
 }
+/**
+ * Runs `fn` with this process's clock (`new Date()`, `Date.now()`) at `iso` plus the time elapsed
+ * since: a check whose outcome needs a day of the month no zone reaches (the first half, say) pins
+ * it this way (CFDIFIX-R2-6). Only web calls may run under it (saves, reads, the portal): the
+ * worker and the jobs read the database's clock, which stays real.
+ */
+async function atClock<T>(iso: string, fn: () => Promise<T>): Promise<T> {
+  const Real = Date;
+  const offset = Real.parse(iso) - Real.now();
+  const now = () => Real.now() + offset;
+  globalThis.Date = new Proxy(Real, {
+    construct: (target, args, newTarget) =>
+      Reflect.construct(target, args.length ? args : [now()], newTarget),
+    apply: () => new Real(now()).toString(),
+    get: (target, key, receiver) =>
+      key === "now" ? now : Reflect.get(target, key, receiver),
+  });
+  try {
+    return await fn();
+  } finally {
+    globalThis.Date = Real;
+  }
+}
 
 async function makeTenant(
   label: string,
@@ -6063,6 +6086,180 @@ try {
         ?.globalBound?.globalPeriodicity,
       "day",
     );
+  });
+
+  await test("CFDIFIX-R2-2. a waiting self-invoicing change that lengthens some deadlines prints them while it waits: cancelling it (the terms in force), or replacing it with a shorter window, would cut such a receipt's deadline, so the save is refused (cfdi_self_invoice_pending_printed), nothing is stored and the portal keeps every printed deadline; the waiting terms saved again keep it", async () => {
+    // The review's case ("fin de mes" with the reissue on → "15 días", waiting until the 1st; a
+    // sale of the 20th prints the 4th; cancel, or "10 días", would end it on the 31st), with a
+    // window that fits any month: N = the month's days − 2 ends a sale of the 1st before the
+    // month's last day, and a sale of day 3 or later after it (the tenant's zone pins day 3 or
+    // later, CFDIFIX-R2-6).
+    const R = await makeTenant("waiting change printed R2-2", {
+      zone: zoneWhere(dayThreeOrLater),
+    });
+    const monthStart = R.today().slice(0, 8) + "01";
+    await activate(R, { testFrom: monthStart, periodicity: "month" });
+    const fin = await saveSettings(R, {
+      selfInvoicePolicy: "month",
+      selfInvoiceDays: 30,
+      portalReissueGlobal: true,
+    });
+    assert.equal(fin.settings?.portalReissueGlobal, true, "lengthens: at once");
+    assert.equal(fin.settings?.selfInvoicePending, null);
+    const first = await makeTicket(R, { businessDate: monthStart });
+    const monthEnd = Date.parse(
+      selfInvoiceDeadline(monthStart, "month", 30, R.zone.timezone),
+    );
+    assert.equal(Date.parse((await portalWindow(first)).deadline!), monthEnd);
+    const n = Number(globalPeriodFor(R.today(), "month").to.slice(8, 10)) - 2;
+    const waiting = {
+      policy: "days" as const,
+      days: n,
+      reissue: true,
+      from: firstOfNextMonth(R.today()),
+    };
+    const waits = await saveSettings(R, {
+      selfInvoicePolicy: "days",
+      selfInvoiceDays: n,
+    });
+    assert.deepEqual(waits.settings?.selfInvoicePending, waiting);
+    // A sale while it waits prints today + N: after the month's end.
+    const sold = await makeTicket(R);
+    const printed = Date.parse(
+      selfInvoiceDeadline(sold.businessDate, "days", n, R.zone.timezone),
+    );
+    assert.ok(printed > monthEnd);
+    const deadlines = async () => {
+      const out: number[] = [];
+      for (const tk of [first, sold])
+        out.push(Date.parse((await portalWindow(tk)).deadline!));
+      return out;
+    };
+    assert.deepEqual(await deadlines(), [monthEnd, printed]);
+    for (const patch of [
+      // Cancel: the terms in force would end today's sale at the month's end.
+      { selfInvoicePolicy: "month", selfInvoiceDays: 30 },
+      // Replace with a shorter window: it would wait, but today's sale would end at
+      // max(month's end, today + N − 5).
+      { selfInvoicePolicy: "days", selfInvoiceDays: n - 5 },
+    ]) {
+      await rejects(
+        saveSettings(R, patch),
+        "cfdi_self_invoice_pending_printed",
+      );
+      assert.deepEqual(await deadlines(), [monthEnd, printed], "unchanged");
+      const kept = (await web(R, (tx) => service.getSettings(tx, R.owner)))
+        .settings!;
+      assert.deepEqual(
+        [kept.selfInvoicePolicy, kept.selfInvoicePending],
+        ["month", waiting],
+      );
+    }
+    // The panel's form sends the waiting terms: the other settings still save.
+    const again = await saveSettings(R, {
+      selfInvoicePolicy: "days",
+      selfInvoiceDays: n,
+      supportEmail: "facturas@example.com",
+    });
+    assert.equal(again.settings?.supportEmail, "facturas@example.com");
+    assert.deepEqual(again.settings?.selfInvoicePending, waiting);
+    assert.deepEqual(await deadlines(), [monthEnd, printed]);
+  });
+
+  await test("CFDIFIX-R2-4. a save that changes the self-invoicing terms and the periodicity together judges the periodicity with the terms it stores: 'fin de mes' → '1 día' waits for the 1st, so monthly → quincenal would end a sale of the 8th at the 1–15 global (16th, 05:00) instead of the month's end it printed: it waits too; with no sale yet it applies at once but counts as shortening today's deadline", async () => {
+    // The 8th of next month at noon, Mexico City (the web's clock only, CFDIFIX-R2-6): read with
+    // the wanted '1 día' alone, both periodicities end the sale on the 9th and the change applied
+    // at once.
+    const eighth = firstOfNextMonth(today()).slice(0, 8) + "08";
+    const at = eighth + "T18:00:00.000Z";
+    const Q = await makeTenant("stored terms R2-4");
+    const E = await makeTenant("stored terms no sale R2-4");
+    for (const t of [Q, E]) await activate(t, { periodicity: "month" });
+    const both = {
+      selfInvoicePolicy: "days",
+      selfInvoiceDays: 1,
+      globalPeriodicity: "fortnight",
+    };
+    const monthEnd = Date.parse(
+      selfInvoiceDeadline(eighth, "month", 30, MEXICO.timezone),
+    );
+    await atClock(at, async () => {
+      assert.equal(Q.today(), eighth);
+      const tk = await makeTicket(Q);
+      assert.equal(Date.parse((await portalWindow(tk)).deadline!), monthEnd);
+      const saved = (await saveSettings(Q, both)).settings!;
+      assert.deepEqual(saved.selfInvoicePending, {
+        policy: "days",
+        days: 1,
+        reissue: false,
+        from: firstOfNextMonth(eighth),
+      });
+      assert.deepEqual(
+        [
+          saved.globalPeriodicity,
+          saved.nextPeriodicity,
+          saved.nextPeriodicityFrom,
+          saved.periodicityDeferred?.reason,
+        ],
+        ["month", "fortnight", firstOfNextMonth(eighth), "deadline"],
+      );
+      assert.equal(
+        Date.parse((await portalWindow(tk)).deadline!),
+        monthEnd,
+        "the portal keeps the printed deadline",
+      );
+      // No sale yet: nothing blocks the periodicity, but today's deadline is the month's end
+      // (the terms in force) and quincenal ends it on the 16th: the rebuild waits for every
+      // terminal's status refresh (CFDIFIX-CONCURRENCY-2).
+      const now = (await saveSettings(E, both)).settings!;
+      assert.equal(now.globalPeriodicity, "fortnight", "applies at once");
+      assert.equal(now.selfInvoicePending?.from, firstOfNextMonth(eighth));
+      const [applied] = await admin`
+        select detail from cfdi_events where tenant_id = ${E.tenantId}
+          and kind = 'periodicity_applied'`;
+      assert.equal(applied.detail.shortens, true);
+    });
+  });
+
+  await test("CFDIFIX-R2-5. before any sale, a self-invoicing change that would shorten today's deadline waits (a terminal that has not refreshed its status yet prints the old one), and within minutes of the cutoff the next business date's too", async () => {
+    // A restaurant whose cutoff is `minutes` from now (Mexico City time).
+    const cutoffIn = (minutes: number) => {
+      const [h, m] = new Intl.DateTimeFormat("en-GB", {
+        timeZone: MEXICO.timezone,
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      })
+        .format(new Date())
+        .split(":")
+        .map(Number);
+      return (h * 60 + m + minutes) % 1440;
+    };
+    for (const [minutes, extra] of [
+      [720, 0], // the next business day starts in 12 hours: today alone
+      [5, 1], // it starts in 5 minutes: its sales too
+    ] as const) {
+      const T = await makeTenant(`no sale yet R2-5 ${minutes}`, {
+        zone: { timezone: MEXICO.timezone, cutoff: cutoffIn(minutes) },
+      });
+      await activate(T, { periodicity: "day" });
+      const open = await saveSettings(T, {
+        selfInvoicePolicy: "days",
+        selfInvoiceDays: 30,
+        portalReissueGlobal: true,
+      });
+      assert.equal(open.settings?.portalReissueGlobal, true, "lengthens");
+      // Turning the reissue off ends today's sales tomorrow (their daily global), not today + 30.
+      const day = T.today();
+      const off = await saveSettings(T, { portalReissueGlobal: false });
+      assert.equal(off.settings?.portalReissueGlobal, true, "still in force");
+      assert.deepEqual(off.settings?.selfInvoicePending, {
+        policy: "days",
+        days: 30,
+        reissue: false,
+        from: minusDays(day, -(31 + extra)),
+      });
+    }
   });
 
   await test("LD-55 CFDIFIX-CONCURRENCY-2. a periodicity change that applied at once and brings today's deadlines forward is rebuilt only after every terminal refreshed its status: a ticket a stale terminal printed meanwhile is seen by the re-check and the change waits for next month", async () => {

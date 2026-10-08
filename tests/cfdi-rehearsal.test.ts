@@ -369,6 +369,73 @@ describe("LD-51 F2: a periodicity change applies at once only on an unshaped mon
       }),
     ).toBe("deadline");
   });
+  it("CFDIFIX-R2-3: each date's deadline is the one the portal enforces, a waiting self-invoicing change included: on 3 Oct, monthly globals, '5 días + Sustituir' → 'fin de mes' without Sustituir waits until 6 Oct; a sale of 3 Oct prints 31/10; on 4 Oct a switch to quincenal would end it 16 Oct 05:00, so it waits", () => {
+    const monthly = bound({ globalPeriodicity: "month" });
+    const fromAt = businessDayStart("2026-10-06", TZ, 240);
+    // A sale of 30 Sep printed 5 Oct (5 days, no global bound); the month window without the
+    // reissue would end it 30 Sep: the change waits until the first business day after, 6 Oct.
+    const sep30 = effectiveSelfInvoiceDeadline("2026-09-30", {
+      policy: "days",
+      days: 5,
+      timezone: TZ,
+      global: null,
+    });
+    expect(sep30.deadline).toBe("2026-10-06T05:59:59.999Z");
+    expect(selfInvoiceChangeFrom(sep30.deadline, TZ, 240)).toBe("2026-10-06");
+    // A sale of 3 Oct while it waits prints 31 Oct 23:59:59.999 local.
+    expect(
+      effectiveSelfInvoiceDeadline("2026-10-03", {
+        policy: "days",
+        days: 5,
+        timezone: TZ,
+        global: null,
+        pending: {
+          policy: "month",
+          days: 5,
+          global: { globalAt: globalBuildAt("2026-10-03", monthly, TZ) },
+          fromAt,
+        },
+      }),
+    ).toEqual({ deadline: "2026-11-01T05:59:59.999Z", bound: "policy" });
+    // In force: 5 days with the reissue on; waiting from 6 Oct: the month window without it.
+    type Window = Parameters<typeof periodicityChangeBlock>[0]["after"];
+    const waiting: Window = {
+      policy: "days",
+      days: 5,
+      pending: { policy: "month", days: 5, from: "2026-10-06" },
+    };
+    const on4 = (
+      from: "day" | "week" | "fortnight" | "month",
+      to: "day" | "week" | "fortnight" | "month",
+      o: { selfInvoice?: Window; after?: Window } = {},
+    ) =>
+      periodicityChangeBlock({
+        hasGlobals: false,
+        dates: ["2026-10-01", "2026-10-03"],
+        from,
+        to,
+        timezone: TZ,
+        cutoff: 240,
+        selfInvoice: { ...(o.selfInvoice ?? waiting)!, graceMinutes: 60 },
+        after: o.after,
+        now: new Date("2026-10-04T18:00:00Z"),
+      });
+    // Under quincenal the waiting terms end at the 1–15 Oct global (16 Oct 05:00) and the terms in
+    // force at 6 Oct 04:00: earlier than the printed 31 Oct.
+    expect(on4("month", "fortnight")).toBe("deadline");
+    expect(on4("month", "week")).toBe("deadline");
+    // Read with the 5-day window alone (8 Oct under either periodicity) it would have applied.
+    expect(
+      on4("month", "fortnight", { selfInvoice: { policy: "days", days: 5 } }),
+    ).toBeNull();
+    // Weekly to monthly only lengthens: it applies at once, the waiting change kept.
+    expect(on4("week", "month")).toBeNull();
+    // `after`, the terms the save stores, are read under the new periodicity: a 1-day window in
+    // force would end the 3 Oct sale on 4 Oct 23:59:59.999, before the week's 5 Oct 05:00.
+    expect(on4("week", "month", { after: { policy: "days", days: 1 } })).toBe(
+      "deadline",
+    );
+  });
 });
 
 describe("LD-51 F3: the shared sandbox stamps as the platform's test organization", () => {

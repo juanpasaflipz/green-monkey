@@ -554,15 +554,28 @@ export function businessDayStart(
  *               on-time global into a late one nor hides one that is late;
  *   "deadline"  the change would give an unclaimed ticket of the month an earlier
  *               self-invoicing deadline than it has (CFDIFIX-1): its receipt already printed the
- *               deadline under the old periodicity (effectiveSelfInvoiceDeadline: the earlier of
- *               the policy and the global's build), and the portal must never refuse a customer
+ *               deadline under the old periodicity, and the portal must never refuse a customer
  *               before that date. A change that keeps or lengthens every deadline applies at once.
- *               The check does not depend on the self-invoicing or reissue switches: a receipt
- *               printed while they were on keeps its date when they are turned back on.
+ *               Each date's deadline, before and after, is read as the portal reads it
+ *               (store.ts deadlineOf, CFDIFIX-R2-3): effectiveSelfInvoiceDeadline under the terms
+ *               in force with the change that waits, if any (`pending`, cut at its start). The
+ *               check does not depend on the self-invoicing or reissue switches: every set of
+ *               terms is bound by the global's build (the strictest reading, never later than
+ *               deadlineOf's), so a receipt printed while they were off keeps its date when they
+ *               are turned back on.
  * `dates` are the business dates of the month's unclaimed eligible tickets on or after the mode's
- * start; `selfInvoice` the policy in force after the change and the worker's grace.
+ * start; `selfInvoice` the terms receipts print today (in force, with the change that waits) and
+ * the worker's grace; `after` the terms in force after the save when it changes them too
+ * (CFDIFIX-R2-4; default: the same).
  */
 export type PeriodicityChangeBlock = "globals" | "overdue" | "deadline";
+/** Self-invoicing terms as a deadline reads them: the window, and a change that waits (LD-55). */
+export type SelfInvoiceWindow = {
+  policy: "month" | "days";
+  days: number;
+  /** A change that waits for its business date (CFDIFIX-FISCAL-5 / UX-4); its reissue is not read. */
+  pending?: Pick<PendingSelfInvoice, "policy" | "days" | "from"> | null;
+};
 export function periodicityChangeBlock(i: {
   hasGlobals: boolean;
   dates: readonly string[];
@@ -570,11 +583,8 @@ export function periodicityChangeBlock(i: {
   to: Periodicity;
   timezone: string;
   cutoff: number;
-  selfInvoice: {
-    policy: "month" | "days";
-    days: number;
-    graceMinutes: number;
-  };
+  selfInvoice: SelfInvoiceWindow & { graceMinutes: number };
+  after?: SelfInvoiceWindow;
   now: Date;
 }): PeriodicityChangeBlock | null {
   if (i.hasGlobals) return "globals";
@@ -587,19 +597,35 @@ export function periodicityChangeBlock(i: {
     ),
   );
   if (overdue) return "overdue";
-  const deadline = (date: string, p: Periodicity) =>
-    Date.parse(
+  const deadline = (date: string, p: Periodicity, w: SelfInvoiceWindow) => {
+    const global = {
+      closesAt: closesAt(date, p),
+      graceMinutes: i.selfInvoice.graceMinutes,
+    };
+    return Date.parse(
       effectiveSelfInvoiceDeadline(date, {
-        policy: i.selfInvoice.policy,
-        days: i.selfInvoice.days,
+        policy: w.policy,
+        days: w.days,
         timezone: i.timezone,
-        global: {
-          closesAt: closesAt(date, p),
-          graceMinutes: i.selfInvoice.graceMinutes,
-        },
+        global,
+        pending: w.pending
+          ? {
+              policy: w.pending.policy,
+              days: w.pending.days,
+              global,
+              fromAt: businessDayStart(w.pending.from, i.timezone, i.cutoff),
+            }
+          : null,
       }).deadline,
     );
-  if (i.dates.some((date) => deadline(date, i.to) < deadline(date, i.from)))
+  };
+  const after = i.after ?? i.selfInvoice;
+  if (
+    i.dates.some(
+      (date) =>
+        deadline(date, i.to, after) < deadline(date, i.from, i.selfInvoice),
+    )
+  )
     return "deadline";
   return null;
 }

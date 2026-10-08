@@ -87,6 +87,7 @@ import {
   SelfInvoicePendingStatus,
   selfInvoiceShortens,
   settingsSavedNote,
+  settingsSaveError,
   settling,
 } from "../src/features/cfdi/CfdiSettings";
 import { deadlineText } from "../src/features/cfdi/format";
@@ -1644,6 +1645,32 @@ describe("LD-51 (cfdifix): the printed deadline, the issuer block and the period
         }),
       ),
     ).toBe("");
+  });
+  it("CFDIFIX-R2-2: a save refused because it would cut what receipts printed while a self-invoicing change waits names the date that change applies from (es/en); other refusals read as before", () => {
+    const refused = new Error("cfdi_self_invoice_pending_printed");
+    const waiting = {
+      selfInvoicePending: {
+        policy: "days" as const,
+        days: 15,
+        reissue: true,
+        from: "2026-11-01",
+      },
+    };
+    expect(settingsSaveError(refused, waiting, "es")).toBe(
+      "Ya hay tickets vendidos que imprimieron el plazo del cambio para autofacturarse que espera (aplica desde el 1 nov 2026): estos términos lo acortarían. Vuelve a elegir los términos de ese cambio; desde el 1 nov 2026 podrás cambiarlos.",
+    );
+    const en = settingsSaveError(refused, waiting, "en");
+    expect(en).toContain(
+      "Receipts already printed carry the deadline of the waiting self-invoicing change (it applies from ",
+    );
+    expect(en).not.toContain("{date}");
+    // Without the waiting change in view (another device changed it), the code's own text.
+    expect(settingsSaveError(refused, { selfInvoicePending: null }, "es")).toBe(
+      translateError("cfdi_self_invoice_pending_printed", "es"),
+    );
+    expect(
+      settingsSaveError(new Error("cfdi_settings_changed"), waiting, "en"),
+    ).toBe("Settings changed on another device. Reload and try again.");
   });
   it("LD-55 CFDIFIX-FISCAL-1 / UX-1: a global-bound deadline prints its time whatever the day: a mid-week weekly sale, a fortnightly one, a 'days' window cut by a monthly global", () => {
     const receipt = (
