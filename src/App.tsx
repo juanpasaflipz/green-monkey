@@ -811,7 +811,7 @@ export default function App() {
                   "{time}",
                   new Date(session.access!.absoluteExpiresAt!).toLocaleTimeString(
                     locale === "es" ? "es-MX" : "en-US",
-                    { hour: "2-digit", minute: "2-digit" },
+                    { hour: "2-digit", minute: "2-digit", hourCycle: "h23" },
                   ),
                 )}
             </p>

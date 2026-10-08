@@ -299,6 +299,7 @@ export function OwnerManagement({
                       {es ? "Fin de prueba: " : "Trial ends: "}
                       {new Date(quote.trialEnd * 1000).toLocaleDateString(
                         es ? "es-MX" : "en-US",
+                        { day: "2-digit", month: "2-digit", year: "numeric" },
                       )}
                     </p>
                   )}

@@ -38,6 +38,7 @@ import { TodayDashboard } from "./reports/TodayDashboard";
 import { ReportsView, openReports } from "./reports/ReportsView";
 import { CortePrintButton } from "./reports/CortePrintButton";
 import { CORTE_BLIND_WINDOW_HOURS } from "../../shared/reports";
+import { dateTime } from "../datetime";
 export function Operations({
   view,
   session,
@@ -272,6 +273,7 @@ export function Operations({
               key={historyKey}
               locale={locale}
               currency={session.restaurant.currency}
+              timezone={session.restaurant.timezone}
               rowActions={(row) => (
                 <>
                   {row.needs_review && (
@@ -548,9 +550,11 @@ export function Operations({
                     )}
                   </strong>
                   <time>
-                    {new Date(r.created_at).toLocaleString(locale, {
-                      timeZone: session.restaurant.timezone,
-                    })}
+                    {dateTime(
+                      r.created_at,
+                      session.restaurant.timezone,
+                      locale,
+                    )}
                   </time>
                 </div>
               ))}

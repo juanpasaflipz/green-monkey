@@ -5,6 +5,7 @@ import { PRO_OFFER, accessPlan, type BillingStatus } from "../../shared/plans";
 import { planNotice } from "../../shared/plan-notice";
 import { strings } from "../i18n";
 import { loadAccountConfig, type AccountConfig } from "./accountConfig";
+import { dateTime } from "../datetime";
 type Status = {
   enabled: boolean;
   hostedUrl?: string | null;
@@ -20,9 +21,12 @@ type Status = {
 export function BillingControls({
   tenantId,
   locale,
+  timezone,
 }: {
   tenantId: string;
   locale: Locale;
+  /** The restaurant's timezone, for the dates it prints (ACC-PR-5). */
+  timezone: string;
 }) {
   const es = locale === "es";
   const [status, setStatus] = useState<Status | null>(null),
@@ -152,10 +156,7 @@ export function BillingControls({
           {notice.kind === "payment_failed"
             ? strings[locale].accountNoticePaymentFailed
             : strings[locale].accountNoticeTrialEnding
-                .replace(
-                  "{date}",
-                  new Date(notice.at!).toLocaleString(es ? "es-MX" : "en-US"),
-                )
+                .replace("{date}", dateTime(notice.at!, timezone, locale))
                 .replace("{device}", strings[locale].accountNoticeNoDevice)}
         </p>
       )}
@@ -181,10 +182,7 @@ export function BillingControls({
         status.entitlement.access_until && (
           <p>
             {es ? "Tu prueba termina: " : "Your trial ends: "}
-            {new Date(status.entitlement.access_until).toLocaleString(
-              es ? "es-MX" : "en-US",
-            )}
-            .{" "}
+            {dateTime(status.entitlement.access_until, timezone, locale)}.{" "}
             {es
               ? "Sin tarjeta, volverás a Free."
               : "Without a card, you return to Free."}

@@ -84,6 +84,7 @@ export function OrderDetail({
           timeZone: zone,
           hour: "2-digit",
           minute: "2-digit",
+          hourCycle: "h23",
         })
       : "";
   async function load() {

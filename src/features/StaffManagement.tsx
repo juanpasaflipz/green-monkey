@@ -6,6 +6,7 @@ import { strings, errorNotice, translateError, type Key } from "../i18n";
 import { api } from "../api";
 import { Badge, Button, Field, Modal } from "../components/ui";
 import { lockTime } from "./PinPad";
+import { dateTime } from "../datetime";
 import "../access/access.css";
 
 /**
@@ -175,9 +176,10 @@ export function StaffManagement({
                   </td>
                   <td>
                     {row.lastSignInAt
-                      ? new Date(row.lastSignInAt).toLocaleString(
-                          locale === "es" ? "es-MX" : "en-US",
-                          { dateStyle: "short", timeStyle: "short" },
+                      ? dateTime(
+                          row.lastSignInAt,
+                          session.restaurant.timezone,
+                          locale,
                         )
                       : "—"}
                   </td>

@@ -329,6 +329,8 @@ const SPANISH: Array<[string, RegExp]> = [
   ],
   ["European money", /\d{1,3}(\.\d{3})+,\d{2}/],
   ["ISO date", /\b\d{4}-\d{2}-\d{2}\b/],
+  // ACC-PR-5: times are 24-hour; es-MX's default cycle prints "4:53 p.m.".
+  ["12-hour time", /\d\s?[ap]\.\s?m\./i],
 ];
 export const BRANCH_K_ALLOWED = [
   "Entorno de prueba compartido: las facturas usan la organización de prueba de la plataforma y no tienen validez fiscal.",

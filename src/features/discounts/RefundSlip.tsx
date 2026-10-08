@@ -3,6 +3,7 @@ import type { RefundBatchView } from "../../../shared/discounts";
 import { strings } from "../../i18n";
 import { moneyFormatter } from "../Receipt";
 import { fill, lineLabel, reasonLabel } from "./format";
+import { dateTime } from "../../datetime";
 
 /**
  * "Comprobante de reembolso" (§2.5), printed through printDocument at 58/80 mm.
@@ -34,17 +35,8 @@ export function RefundSlip({
     .flatMap((r) => r.groups);
   const base = taxes.reduce((n, g) => n + g.base, 0);
   const tax = taxes.reduce((n, g) => n + g.tax, 0);
-  const when = new Date(batch.createdAt).toLocaleString(
-    locale === "es" ? "es-MX" : "en-US",
-    {
-      timeZone: restaurant.timezone,
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    },
-  );
+  // dd/MM/yyyy HH:mm, never es-MX's "04:53 p.m." (ACC-PR-5).
+  const when = dateTime(batch.createdAt, restaurant.timezone, locale);
   const cash = batch.rows.filter((r) => r.method === "cash");
   return (
     <div className="receipt-doc refund-slip">

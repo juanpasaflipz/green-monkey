@@ -72,6 +72,7 @@ export function DrawerPanel({
       timeZone: zone,
       hour: "2-digit",
       minute: "2-digit",
+      hourCycle: "h23",
     });
   const offlineNote = !online && (
     <p className="muted tiny" id="drawer-offline">
