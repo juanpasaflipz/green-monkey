@@ -36,7 +36,15 @@ if $dry_run; then
 else
   created=$(neon projects create --name "green-monkey-$env_name" --region-id "$region" --org-id "$NEON_ORG_ID" --output json)
   project=$(node -e 'const j=JSON.parse(process.argv[1]);process.stdout.write(j.project.id)' "$created")
-  branch=$(node -e 'const j=JSON.parse(process.argv[1]);process.stdout.write(j.branch.id)' "$created")
+  # neonctl's create output names the project but not always the branch: fall
+  # back to the project's default branch from the API (production, 2026-10-08).
+  branch=$(node -e 'const j=JSON.parse(process.argv[1]);process.stdout.write(j.branch?.id ?? j.branches?.[0]?.id ?? "")' "$created")
+  if [ -z "$branch" ]; then
+    branch=$(curl -fsS "https://console.neon.tech/api/v2/projects/$project/branches" \
+      -H "Authorization: Bearer $NEON_API_KEY" -H 'Accept: application/json' |
+      node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const b=JSON.parse(s).branches.find(x=>x.default);process.stdout.write(b?b.id:"")})')
+  fi
+  [ -n "$branch" ] || { echo "could not determine the default branch of $project" >&2; exit 1; }
 fi
 echo "project $project, default branch $branch"
 if $dry_run; then

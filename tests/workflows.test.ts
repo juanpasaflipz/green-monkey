@@ -86,6 +86,23 @@ describe("deploy: a rollback never re-applies an older Railway IaC (OPS-R4 regre
     );
   });
 
+  it("the production guard fetches main with the job token as masked basic auth, never a bearer header (first production dispatch)", () => {
+    const guard = deploy.slice(deploy.indexOf("- name: Guard"));
+    // GitHub's git endpoint rejects a bearer header for a private repository:
+    // git then prompts for a username and the guard dies with exit 128.
+    expect(guard).not.toMatch(/extraheader=AUTHORIZATION: bearer/i);
+    expect(guard).toContain(
+      "auth=$(printf 'x-access-token:%s' \"$GH_TOKEN\" | base64 | tr -d '\\n')",
+    );
+    expect(guard).toContain('echo "::add-mask::$auth"');
+    expect(guard).toContain(
+      'git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch -q origin main',
+    );
+    expect(guard.indexOf("::add-mask::$auth")).toBeLessThan(
+      guard.indexOf("fetch -q origin main"),
+    );
+  });
+
   it("auto syncs only the head of main; apply and skip override; anything else fails", () => {
     const decision = marked(deploy, "iac-sync-decision");
     const dir = mkdtempSync(join(tmpdir(), "gm-iac-sync-"));
