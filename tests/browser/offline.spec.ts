@@ -692,6 +692,15 @@ test("With offline table service off (the default), existing checks wait for the
   await nextSale(page);
   await context.setOffline(false);
   await expect(pill(page, /^Conectado/)).toBeVisible({ timeout: 30_000 });
+  // The saved sale syncs before the test ends, so its kitchen review entry exists when the
+  // kitchen hygiene settles what this test opened (W3-2), never landing just after it looked.
+  await expect
+    .poll(
+      async () =>
+        (await allRows(page)).filter((row) => row.status !== "synced").length,
+      { timeout: 60_000 },
+    )
+    .toBe(0);
   expect(openOrders).toBe(0);
 });
 

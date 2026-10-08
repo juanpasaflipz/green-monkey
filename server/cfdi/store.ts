@@ -10,16 +10,27 @@
  * The worker has no SELECT on employees: functions that join employees (documentView) are web-only
  * callers' (spec §3.1).
  */
-import { boundaries, DomainError } from "../../shared/domain.js";
+import {
+  boundaries,
+  businessDate as businessDate_,
+  DomainError,
+} from "../../shared/domain.js";
 import {
   cancellationAllowed,
   cancellationDeadline,
+  DEFAULT_GLOBAL_GRACE_MINUTES,
   docLabel,
+  effectiveSelfInvoiceDeadline,
+  globalBuildAt,
   globalPeriodFor,
   maskEmail,
   maskRfc,
   needsCardForm,
-  selfInvoiceDeadline,
+  businessDayStart,
+  periodicityChangeBlock,
+  periodicityOn,
+  PERIODICITY_REBUILD_WAIT_MS,
+  selfInvoiceChangeFrom as changeFromDeadline,
   type CfdiAlertsView,
   type CfdiAttention,
   type CfdiDocumentFile,
@@ -33,8 +44,13 @@ import {
   type CardForm,
   type GlobalPeriodView,
   type Periodicity,
+  type PendingSelfInvoice,
+  type PeriodicityChangeBlock,
   type PortalDocumentStatus,
   type Receptor,
+  type SelfInvoiceGlobalBound,
+  type SelfInvoiceTerms,
+  type SelfInvoiceWindow,
   type TicketEligibility,
 } from "../../shared/cfdi.js";
 import { formatFolio, type CfdiTicketPayload } from "../../shared/fiscal.js";
@@ -51,8 +67,18 @@ export type PlatformRow = {
   uploadKid: string | null;
   uploadPublicJwk: JsonWebKey | null;
   sharedOrgId: string | null;
+  /** The worker's CFDI_GLOBAL_GRACE_MINUTES (036); null from a worker that predates it. */
+  globalGraceMinutes: number | null;
+  /** The shared sandbox organization's legal data as Facturapi reports it (036, LD-51 F3). */
+  sharedIssuer: SharedIssuer | null;
   workerVersion: string;
   updatedAt: string;
+};
+export type SharedIssuer = {
+  legalName: string | null;
+  taxId: string | null;
+  regime: string | null;
+  postalCode: string | null;
 };
 export type SettingsRow = {
   enabled: boolean;
@@ -72,9 +98,15 @@ export type SettingsRow = {
   cardPaymentForm: CardForm;
   defaultUse: CfdiUse;
   selfInvoiceEnabled: boolean;
+  /** The self-invoicing terms in force today (a pending change already due is applied). */
   selfInvoicePolicy: "month" | "days";
   selfInvoiceDays: number;
   portalReissueGlobal: boolean;
+  /**
+   * A self-invoicing change that waits because it would bring forward a printed deadline (036,
+   * LD-55 CFDIFIX-FISCAL-5 / UX-4); null when none waits or it is due (then it is in force above).
+   */
+  nextSelfInvoice: PendingSelfInvoice | null;
   supportEmail: string | null;
   version: number;
   updatedBy: string;
@@ -192,14 +224,36 @@ export async function platform(tx: Tx): Promise<PlatformRow | null> {
     uploadKid: r.upload_kid,
     uploadPublicJwk: r.upload_public_jwk,
     sharedOrgId: r.shared_org_id,
+    globalGraceMinutes: r.global_grace_minutes ?? null,
+    sharedIssuer:
+      r.shared_legal_name ||
+      r.shared_tax_id ||
+      r.shared_tax_system ||
+      r.shared_postal_code
+        ? {
+            legalName: r.shared_legal_name ?? null,
+            taxId: r.shared_tax_id ?? null,
+            regime: r.shared_tax_system ?? null,
+            postalCode: r.shared_postal_code ?? null,
+          }
+        : null,
     workerVersion: r.worker_version,
     updatedAt: iso(r.updated_at)!,
   };
 }
 
+/** The worker's global grace in minutes (the documented default before a worker published one). */
+export function graceMinutes(p: PlatformRow | null): number {
+  return p?.globalGraceMinutes ?? DEFAULT_GLOBAL_GRACE_MINUTES;
+}
+
+/**
+ * The restaurant's settings; `forUpdate` locks the row (a save, the tick's plan), `forShare` takes
+ * the lock the global builder holds so a periodicity save and a build serialize (LD-51 F2).
+ */
 export async function loadSettings(
   tx: Tx,
-  o: { forUpdate?: boolean } = {},
+  o: { forUpdate?: boolean; forShare?: boolean } = {},
 ): Promise<SettingsRow | null> {
   const [r] = await tx`
     select enabled, mode, test_from::text as test_from, live_from::text as live_from, live_enabled_at,
@@ -207,9 +261,35 @@ export async function loadSettings(
       global_periodicity, next_periodicity, next_periodicity_from::text as next_periodicity_from,
       global_auto, concept_mode, concept_description, card_payment_form, default_use,
       self_invoice_enabled, self_invoice_policy, self_invoice_days, portal_reissue_global,
+      next_self_invoice_policy, next_self_invoice_days, next_portal_reissue_global,
+      next_self_invoice_from::text as next_self_invoice_from,
       support_email, version, updated_by, updated_at
-    from cfdi_settings ${o.forUpdate ? tx`for update` : tx``}`;
+    from cfdi_settings ${o.forUpdate ? tx`for update` : o.forShare ? tx`for share` : tx``}`;
   if (!r) return null;
+  // A pending self-invoicing change applies from its business date: in force once it is due, so
+  // every reader (the portal, the staff view, the save) sees the terms of the day (LD-55).
+  let next: PendingSelfInvoice | null = r.next_self_invoice_from
+    ? {
+        policy: r.next_self_invoice_policy,
+        days: r.next_self_invoice_days,
+        reissue: r.next_portal_reissue_global,
+        from: r.next_self_invoice_from,
+      }
+    : null;
+  let terms: SelfInvoiceTerms = {
+    policy: r.self_invoice_policy,
+    days: r.self_invoice_days,
+    reissue: r.portal_reissue_global,
+  };
+  if (next) {
+    const [d] = await tx`
+      select ((now() at time zone timezone) - make_interval(mins => cutoff))::date::text as today
+      from restaurants where id = nullif(current_setting('app.tenant_id', true), '')::uuid`;
+    if (d && next.from <= d.today) {
+      terms = { policy: next.policy, days: next.days, reissue: next.reissue };
+      next = null;
+    }
+  }
   return {
     enabled: r.enabled,
     mode: r.mode,
@@ -228,9 +308,10 @@ export async function loadSettings(
     cardPaymentForm: r.card_payment_form,
     defaultUse: r.default_use,
     selfInvoiceEnabled: r.self_invoice_enabled,
-    selfInvoicePolicy: r.self_invoice_policy,
-    selfInvoiceDays: r.self_invoice_days,
-    portalReissueGlobal: r.portal_reissue_global,
+    selfInvoicePolicy: terms.policy,
+    selfInvoiceDays: terms.days,
+    portalReissueGlobal: terms.reissue,
+    nextSelfInvoice: next,
     supportEmail: r.support_email,
     version: r.version,
     updatedBy: r.updated_by,
@@ -297,6 +378,39 @@ export function fiscalComplete(f: FiscalFacts): boolean {
   return !!(f.rfc && f.legalName && f.regime && f.postalCode);
 }
 
+/**
+ * Whether the shared sandbox organization's facts are whole: the RFC, régimen and postal code
+ * Facturapi reported for it (LD-55 CFDIFIX-FISCAL-6).
+ */
+export function sharedIssuerComplete(shared: SharedIssuer | null): boolean {
+  return !!(shared?.taxId && shared.regime && shared.postalCode);
+}
+
+/**
+ * The issuer facts a stamp uses (LD-51 F3). An own organization stamps with the restaurant's
+ * fiscal profile (legal data synced to Facturapi). In the shared sandbox the issuer is the
+ * platform's test organization: its régimen and RFC decide the RESICO retention and its postal
+ * code is LugarExpedicion (and DomicilioFiscalReceptor of a global), as Facturapi reports them.
+ * Those facts are taken as a whole or not at all (LD-55 CFDIFIX-FISCAL-6): when the worker could
+ * not read one of them, the restaurant's profile is used for all three, so the RESICO decision
+ * and LugarExpedicion never mix two taxpayers (the panel says which one stamps).
+ */
+export function stampingFacts(
+  facts: FiscalFacts,
+  platformRow: PlatformRow | null,
+  org: Pick<OrganizationRow, "source"> | null,
+): FiscalFacts {
+  const shared = platformRow?.sharedIssuer ?? null;
+  if (org?.source !== "shared_sandbox" || !sharedIssuerComplete(shared))
+    return facts;
+  return {
+    ...facts,
+    rfc: shared!.taxId,
+    regime: shared!.regime,
+    postalCode: shared!.postalCode,
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 // Guards and status
 // ---------------------------------------------------------------------------------------------
@@ -346,18 +460,57 @@ export async function statusView(
   role: string | null,
 ): Promise<CfdiStatusView> {
   const [r] = await tx`
-    select p.provider,
+    select p.provider, p.global_grace_minutes,
       s.enabled, s.mode, s.self_invoice_enabled, s.self_invoice_policy, s.self_invoice_days,
-      s.version, o.status as org_status,
-      (select timezone from restaurants where id = nullif(current_setting('app.tenant_id', true), '')::uuid) as timezone
+      s.portal_reissue_global, s.global_periodicity, s.next_periodicity,
+      s.next_periodicity_from::text as next_periodicity_from,
+      s.next_self_invoice_policy, s.next_self_invoice_days, s.next_portal_reissue_global,
+      s.next_self_invoice_from::text as next_self_invoice_from,
+      s.version, o.status as org_status, rr.timezone, rr.cutoff
     from (select 1) one
     left join cfdi_platform p on p.id = 1
     left join cfdi_settings s on true
-    left join cfdi_organizations o on true`;
+    left join cfdi_organizations o on true
+    left join restaurants rr on rr.id = nullif(current_setting('app.tenant_id', true), '')::uuid`;
   const provider: CfdiProvider = r?.provider ?? "disabled";
   const isAvailable = provider !== "disabled";
   const enabled = isAvailable && !!r?.enabled;
   const ready = enabled && r?.org_status === "ready";
+  const timezone: string = r?.timezone ?? "America/Mexico_City";
+  const cutoff: number = r?.cutoff ?? 0;
+  // The terms in force today, and a change that waits (LD-55 CFDIFIX-FISCAL-5 / UX-4): a due one
+  // is in force, as loadSettings resolves it.
+  let terms: SelfInvoiceTerms | null = r?.mode
+    ? {
+        policy: r.self_invoice_policy,
+        days: r.self_invoice_days,
+        reissue: r.portal_reissue_global,
+      }
+    : null;
+  let pending: PendingSelfInvoice | null = r?.next_self_invoice_from
+    ? {
+        policy: r.next_self_invoice_policy,
+        days: r.next_self_invoice_days,
+        reissue: r.next_portal_reissue_global,
+        from: r.next_self_invoice_from,
+      }
+    : null;
+  if (
+    pending &&
+    pending.from <= businessDate_(new Date().toISOString(), timezone, cutoff)
+  ) {
+    terms = pending;
+    pending = null;
+  }
+  const globalBound: SelfInvoiceGlobalBound | null = r?.mode
+    ? {
+        globalPeriodicity: r.global_periodicity,
+        nextPeriodicity: r.next_periodicity ?? null,
+        nextPeriodicityFrom: r.next_periodicity_from ?? null,
+        cutoff,
+        graceMinutes: r.global_grace_minutes ?? DEFAULT_GLOBAL_GRACE_MINUTES,
+      }
+    : null;
   return {
     available: isAvailable,
     provider,
@@ -366,14 +519,25 @@ export async function statusView(
     ready,
     canInvoice: ready && ["owner", "manager", "cashier"].includes(role ?? ""),
     selfInvoice:
-      enabled && r?.self_invoice_enabled !== undefined && r?.mode
+      enabled && r?.self_invoice_enabled !== undefined && terms
         ? {
             enabled: r.self_invoice_enabled,
-            policy: r.self_invoice_policy,
-            days: r.self_invoice_days,
+            policy: terms.policy,
+            days: terms.days,
+            // LD-51 F1: without the portal's global reissue, a ticket is self-invoiceable only
+            // until its global is built; the receipt prints that bound offline from this.
+            globalBound: terms.reissue ? null : globalBound,
+            pending: pending
+              ? {
+                  policy: pending.policy,
+                  days: pending.days,
+                  globalBound: pending.reissue ? null : globalBound,
+                  fromAt: businessDayStart(pending.from, timezone, cutoff),
+                }
+              : null,
           }
         : null,
-    timezone: r?.timezone ?? "America/Mexico_City",
+    timezone,
     version: r?.version ?? 0,
   };
 }
@@ -1103,21 +1267,292 @@ export function eligibility(
   return "available";
 }
 
-/** The self-invoicing deadline of a ticket, or null when self-invoicing is off. */
-export function ticketDeadline(
+/**
+ * The self-invoicing deadline of a ticket, or null when self-invoicing is off (LD-51 F1): the
+ * policy deadline, or the moment its global is built when that comes first and the portal does
+ * not reissue globals (portal_reissue_global off). The period row's close is used when the tick
+ * created it (a row keeps its periodicity after a later change); otherwise the periodicity in force
+ * on the ticket's date. A ticket before the mode's start belongs to no global: the policy alone.
+ */
+export async function ticketDeadline(
+  tx: Tx,
   t: TicketFacts,
-  settings: SettingsRow | null,
-  timezone: string,
-): string | null {
-  return settings && settings.selfInvoiceEnabled
-    ? selfInvoiceDeadline(
-        t.payload.ticket.businessDate,
-        settings.selfInvoicePolicy,
-        settings.selfInvoiceDays,
-        timezone,
-      )
-    : null;
+  state: Pick<CfdiState, "settings" | "platform">,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+): Promise<string | null> {
+  return (await ticketDeadlineInfo(tx, t, state, facts))?.deadline ?? null;
 }
+
+/**
+ * The instant each business date's global is built (LD-51 F1): its period row's close + grace when
+ * the tick created the row (a row keeps its periodicity after a later change), otherwise the
+ * periodicity in force on the date. A row of the current month left by a periodicity that applied
+ * at once is replaced by the tick's rebuild (LD-51 F2): the periodicity in force decides until
+ * then. Dates before the mode's start belong to no global and are left out. One read.
+ */
+export async function globalBuildTimes(
+  tx: Tx,
+  s: SettingsRow,
+  dates: readonly string[],
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  grace: number,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const covered = [...new Set(dates)].filter((d) => d >= modeFrom(s)).sort();
+  if (!covered.length) return out;
+  const rows = await tx`
+    select closes_at, periodicity, date_from::text as from_date, date_to::text as to_date
+    from cfdi_global_periods
+    where mode = ${s.mode} and date_to >= ${covered[0]}::date
+      and date_from <= ${covered[covered.length - 1]}::date`;
+  const today = businessDate_(
+    new Date().toISOString(),
+    facts.timezone,
+    facts.cutoff,
+  );
+  for (const date of covered) {
+    const found = rows.find((r) => r.from_date <= date && r.to_date >= date);
+    const row =
+      found &&
+      !(
+        found.from_date >= today.slice(0, 8) + "01" &&
+        found.periodicity !== periodicityOn(found.from_date, s)
+      )
+        ? found
+        : null;
+    out.set(
+      date,
+      row
+        ? new Date(
+            new Date(row.closes_at).getTime() + grace * 60_000,
+          ).toISOString()
+        : globalBuildAt(
+            date,
+            {
+              globalPeriodicity: s.globalPeriodicity,
+              nextPeriodicity: s.nextPeriodicity,
+              nextPeriodicityFrom: s.nextPeriodicityFrom,
+              cutoff: facts.cutoff,
+              graceMinutes: grace,
+            },
+            facts.timezone,
+          ),
+    );
+  }
+  return out;
+}
+
+/**
+ * The self-invoicing deadline of a business date under settings `s` (the terms in force and the
+ * change that waits, LD-55), given its global's build time (globalBuildTimes; absent for a date
+ * before the mode's start, which belongs to no global).
+ */
+export function deadlineOf(
+  businessDate: string,
+  s: Pick<
+    SettingsRow,
+    | "selfInvoicePolicy"
+    | "selfInvoiceDays"
+    | "portalReissueGlobal"
+    | "nextSelfInvoice"
+  >,
+  globalAt: string | undefined,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+): { deadline: string; bound: "policy" | "global" } {
+  const next = s.nextSelfInvoice;
+  return effectiveSelfInvoiceDeadline(businessDate, {
+    policy: s.selfInvoicePolicy,
+    days: s.selfInvoiceDays,
+    timezone: facts.timezone,
+    global: !s.portalReissueGlobal && globalAt ? { globalAt } : null,
+    pending: next
+      ? {
+          policy: next.policy,
+          days: next.days,
+          global: !next.reissue && globalAt ? { globalAt } : null,
+          fromAt: businessDayStart(next.from, facts.timezone, facts.cutoff),
+        }
+      : null,
+  });
+}
+
+/** ticketDeadline with what ended it: the policy, or the ticket's global (LD-51 F1). */
+export async function ticketDeadlineInfo(
+  tx: Tx,
+  t: TicketFacts,
+  state: Pick<CfdiState, "settings" | "platform">,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+): Promise<{ deadline: string; bound: "policy" | "global" } | null> {
+  const s = state.settings;
+  if (!s || !s.selfInvoiceEnabled) return null;
+  const businessDate = t.payload.ticket.businessDate;
+  const needsGlobal =
+    !s.portalReissueGlobal ||
+    (!!s.nextSelfInvoice && !s.nextSelfInvoice.reissue);
+  const builds = needsGlobal
+    ? await globalBuildTimes(
+        tx,
+        s,
+        [businessDate],
+        facts,
+        graceMinutes(state.platform),
+      )
+    : new Map<string, string>();
+  return deadlineOf(businessDate, s, builds.get(businessDate), facts);
+}
+
+/** The self-invoicing terms of settings as the deadline guards read them (deadlineOf's). */
+export type SelfInvoiceSettings = Pick<
+  SettingsRow,
+  | "selfInvoicePolicy"
+  | "selfInvoiceDays"
+  | "portalReissueGlobal"
+  | "nextSelfInvoice"
+>;
+export function selfInvoiceWindow(s: SelfInvoiceSettings): SelfInvoiceWindow {
+  return {
+    policy: s.selfInvoicePolicy,
+    days: s.selfInvoiceDays,
+    pending: s.nextSelfInvoice,
+  };
+}
+
+/**
+ * The business dates whose printed self-invoicing deadline a change must keep (LD-55
+ * CFDIFIX-FISCAL-5 / UX-4): those of every ticket not covered by a valid or canceling invoice,
+ * fully refunded ones aside (unclaimed tickets, tickets in a global the portal may reissue,
+ * tickets whose invoice is still on its way and may fail), in the last 100 days (deadlines run
+ * at most 90 days or to the month's end). Today's business date always counts, sold or not, and
+ * the next one too when it starts within PERIODICITY_REBUILD_WAIT_MS (the 5-minute status refresh
+ * and its margin): a terminal that has not refreshed its status yet prints the old deadline for
+ * those sales (CFDIFIX-R2-5, as CONCURRENCY-2 for a periodicity). A terminal offline for longer is
+ * the residual risk docs/CFDI.md records.
+ */
+async function deadlineDates(
+  tx: Tx,
+  s: SettingsRow,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  now: Date,
+): Promise<string[]> {
+  const today = businessDate_(now.toISOString(), facts.timezone, facts.cutoff);
+  const rows = await tx`
+    select distinct t.business_date::text as d from fiscal_tickets t
+    where t.business_date >= (${today}::date - 100)
+      and not exists (select 1 from cfdi_document_tickets c
+        join cfdi_documents x on x.tenant_id = c.tenant_id and x.id = c.document_id
+        where c.tenant_id = t.tenant_id and c.ticket_id = t.id and c.mode = ${s.mode}
+          and c.state <> 'released' and x.kind = 'invoice' and x.status in ('valid','canceling'))
+      and t.gross > coalesce((select sum(a.gross) from fiscal_adjustments a
+        where a.tenant_id = t.tenant_id and a.order_id = t.order_id), 0)
+    order by 1`;
+  const dates = new Set(rows.map((r) => r.d as string));
+  dates.add(today);
+  const next = firstAfter(today);
+  if (
+    Date.parse(businessDayStart(next, facts.timezone, facts.cutoff)) -
+      now.getTime() <=
+    PERIODICITY_REBUILD_WAIT_MS
+  )
+    dates.add(next);
+  return [...dates].sort();
+}
+
+/**
+ * The latest deadline, as receipts print it under `s` (the terms in force with the change that
+ * waits), that the self-invoicing terms `to` would bring forward, among the dates deadlineDates
+ * reads whose deadline has not passed; null when none. Both under the periodicity in force (the
+ * same global build times). One read for the dates plus the period rows.
+ */
+async function latestCut(
+  tx: Tx,
+  s: SettingsRow,
+  to: SelfInvoiceSettings,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  grace: number,
+  now: Date,
+): Promise<number | null> {
+  const dates = await deadlineDates(tx, s, facts, now);
+  const builds = await globalBuildTimes(tx, s, dates, facts, grace);
+  let latest: number | null = null;
+  for (const date of dates) {
+    const printed = Date.parse(
+      deadlineOf(date, s, builds.get(date), facts).deadline,
+    );
+    if (printed <= now.getTime()) continue;
+    const after = Date.parse(
+      deadlineOf(date, to, builds.get(date), facts).deadline,
+    );
+    if (after < printed && (latest === null || printed > latest))
+      latest = printed;
+  }
+  return latest;
+}
+
+/**
+ * When a self-invoicing change (window, days or portal reissue) may apply (LD-55
+ * CFDIFIX-FISCAL-5 / UX-4, guarded like a periodicity change): null when it brings forward no
+ * deadline a receipt already printed or may still print with a status not yet refreshed
+ * (deadlineDates); otherwise the business date from which it applies: the first business day
+ * starting at or after the latest deadline it would bring forward (the first of next month for
+ * the default month-end window). The current deadline is the one receipts print: the terms in
+ * force with any change that already waits.
+ */
+export async function selfInvoiceChangeFrom(
+  tx: Tx,
+  s: SettingsRow,
+  wanted: SelfInvoiceTerms,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  grace: number,
+  now = new Date(),
+): Promise<string | null> {
+  const today = businessDate_(now.toISOString(), facts.timezone, facts.cutoff);
+  const latest = await latestCut(
+    tx,
+    s,
+    {
+      selfInvoicePolicy: wanted.policy,
+      selfInvoiceDays: wanted.days,
+      portalReissueGlobal: wanted.reissue,
+      nextSelfInvoice: null,
+    },
+    facts,
+    grace,
+    now,
+  );
+  if (latest === null) return null;
+  const from = changeFromDeadline(
+    new Date(latest).toISOString(),
+    facts.timezone,
+    facts.cutoff,
+  );
+  return from > today ? from : firstAfter(today);
+}
+
+/**
+ * The save's last word on self-invoicing (CFDIFIX-R2-2): the latest deadline a receipt printed, or
+ * may still print with a status not yet refreshed, under `s` (the terms in force and the change
+ * that waits) that the terms the save is about to store (`stored`, with the change it leaves
+ * waiting, if any) would bring forward; null when every one is kept. Cancelling or replacing a
+ * waiting change that lengthened deadlines would otherwise cut the receipts printed while it
+ * waited ("nothing printed before the save ends earlier than it said").
+ */
+export async function printedDeadlineCut(
+  tx: Tx,
+  s: SettingsRow,
+  stored: SelfInvoiceSettings,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  grace: number,
+  now = new Date(),
+): Promise<string | null> {
+  const latest = await latestCut(tx, s, stored, facts, grace, now);
+  return latest === null ? null : new Date(latest).toISOString();
+}
+
+const firstAfter = (date: string) => {
+  const d = new Date(date + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+};
 
 /** The ticket view shared by staff (documents listed) and the portal (documents omitted). */
 export async function ticketView(
@@ -1129,7 +1564,8 @@ export async function ticketView(
 ): Promise<CfdiTicketView> {
   const settings = state.settings;
   const now = o.now ?? new Date();
-  const deadline = ticketDeadline(t, settings, facts.timezone);
+  const window = await ticketDeadlineInfo(tx, t, state, facts);
+  const deadline = window?.deadline ?? null;
   let status = eligibility(t, state);
   if (
     o.portal &&
@@ -1204,6 +1640,7 @@ export async function ticketView(
     mode: settings?.mode ?? "test",
     eligibility: status,
     deadline,
+    deadlineBound: window?.bound ?? null,
     needsCardForm: needsCardForm(t.payload.payments),
     cardPaymentForm: settings?.cardPaymentForm ?? "04",
     defaultUse: settings?.defaultUse ?? "G03",
@@ -1383,9 +1820,20 @@ export async function periodViews(
     modeFrom: string;
   },
 ): Promise<GlobalPeriodView[]> {
+  // The period's eligible tickets in no CFDI yet, with fiscal's net figures (ticket less its
+  // refund adjustments): an open or "Por emitir" period counts the tickets it will take (LD-51 F11).
   const rows = await tx`
     select g.*, g.date_from::text as from_date, g.date_to::text as to_date,
-      ${unclaimedTickets(tx, tx`${q.modeFrom}::date`)} as unclaimed,
+      (select jsonb_build_object('n', count(*), 'gross', coalesce(sum(x.net), 0), 'tax', coalesce(sum(x.tax), 0))
+        from (select t.gross - coalesce(a.gross, 0) as net, t.tax - coalesce(a.tax, 0) as tax
+          from fiscal_tickets t
+          left join lateral (select sum(f.gross) as gross, sum(f.tax) as tax from fiscal_adjustments f
+            where f.tenant_id = t.tenant_id and f.order_id = t.order_id) a on true
+          where t.tenant_id = g.tenant_id and t.business_date between g.date_from and g.date_to
+            and t.business_date >= ${q.modeFrom}::date
+            and not exists (select 1 from cfdi_document_tickets c where c.tenant_id = t.tenant_id
+              and c.ticket_id = t.id and c.mode = g.mode and c.state <> 'released')) x
+        where x.net > 0) as pending,
       coalesce((select jsonb_agg(jsonb_build_object('id', d.id, 'part', d.part, 'status', d.status,
           'uuid', d.uuid, 'late', d.created_at > g.due_at, 'total', coalesce(d.total, d.expected_total, 0),
           'tax', coalesce(d.tax, d.expected_tax, 0), 'tickets', d.ticket_count) order by d.part)
@@ -1412,6 +1860,8 @@ export async function periodViews(
         d.status !== "canceled" &&
         !(d.status === "failed" && docs.some((n) => n.part > d.part)),
     );
+    const pending = g.pending as { n: number; gross: number; tax: number };
+    const unclaimed = Number(pending.n) > 0;
     const closed = Date.parse(g.closes_at) <= now;
     const overdue = Date.parse(g.due_at) < now;
     const unfinished = current.some((d) =>
@@ -1421,7 +1871,7 @@ export async function periodViews(
     // A built or empty period that has a ticket in no CFDI is due again (CFDI-MONEY-2, SAT-1).
     const status: GlobalPeriodView["status"] = failed
       ? "failed"
-      : g.status === "open" || (closed && g.unclaimed)
+      : g.status === "open" || (closed && unclaimed)
         ? closed
           ? overdue
             ? "overdue"
@@ -1442,9 +1892,11 @@ export async function periodViews(
       closesAt: iso(g.closes_at)!,
       dueAt: iso(g.due_at)!,
       status,
-      ticketCount: counted.reduce((s, d) => s + (d.tickets ?? 0), 0),
-      total: counted.reduce((s, d) => s + d.total, 0),
-      tax: counted.reduce((s, d) => s + d.tax, 0),
+      ticketCount:
+        counted.reduce((s, d) => s + (d.tickets ?? 0), 0) + Number(pending.n),
+      total: counted.reduce((s, d) => s + d.total, 0) + Number(pending.gross),
+      tax: counted.reduce((s, d) => s + d.tax, 0) + Number(pending.tax),
+      unclaimedTickets: Number(pending.n),
       lateTickets: g.late_tickets,
       documents: docs.map((d) => ({
         id: d.id,
@@ -1461,6 +1913,71 @@ export async function periodViews(
           status === "failed" ||
           (!q.globalAuto && g.status === "open")),
     };
+  });
+}
+
+/**
+ * The current month's shape for a periodicity change (LD-51 F2), read in the caller's tenant
+ * transaction: whether any global document of the month's periods exists in the settings' mode,
+ * and the business dates (on or after the mode's start, through `today`) of the month's eligible
+ * tickets not covered by a CFDI of that mode. A ticket counts as covered only by a document that
+ * is valid or canceling: one whose invoice is still queued, stamping, pending or waiting may fail
+ * and return to the portal with the deadline its receipt printed (LD-55 CFDIFIX-FISCAL-3), so its
+ * date counts.
+ */
+export async function monthShape(
+  tx: Tx,
+  s: SettingsRow,
+  today: string,
+): Promise<{ hasGlobals: boolean; dates: string[] }> {
+  const monthStart = today.slice(0, 8) + "01";
+  const start = modeFrom(s) > monthStart ? modeFrom(s) : monthStart;
+  const [g] = await tx`
+    select exists (select 1 from cfdi_documents d
+      join cfdi_global_periods p on p.tenant_id = d.tenant_id and p.mode = d.mode
+        and p.period_key = d.period_key
+      where d.kind = 'global' and d.mode = ${s.mode} and p.date_from >= ${monthStart}::date) as has`;
+  const rows = await tx`
+    select distinct t.business_date::text as d from fiscal_tickets t
+    where t.business_date between ${start}::date and ${today}::date
+      and not exists (select 1 from cfdi_document_tickets c
+        join cfdi_documents x on x.tenant_id = c.tenant_id and x.id = c.document_id
+        where c.tenant_id = t.tenant_id and c.ticket_id = t.id and c.mode = ${s.mode}
+          and c.state <> 'released' and x.status in ('valid','canceling'))
+      and t.gross > coalesce((select sum(a.gross) from fiscal_adjustments a
+        where a.tenant_id = t.tenant_id and a.order_id = t.order_id), 0)
+    order by 1`;
+  return { hasGlobals: !!g?.has, dates: rows.map((r) => r.d as string) };
+}
+
+/**
+ * Why changing to `to` must wait for next month, or null when it may apply at once (LD-51 F2,
+ * shared/cfdi.ts periodicityChangeBlock): decided by the web under the settings row lock and
+ * checked again by the tick, under the same lock and the period keys, before it rebuilds the
+ * month's rows. `s` carries the periodicity in force today and the self-invoicing terms receipts
+ * print (in force, with the change that waits: deadlineOf's, CFDIFIX-R2-3); `o.after` the terms
+ * the save stores, when it changes them too (CFDIFIX-R2-4; default `s`'s); `graceMinutes` is the
+ * worker's (published in cfdi_platform).
+ */
+export async function periodicityChangeBlocked(
+  tx: Tx,
+  s: SettingsRow,
+  to: Periodicity,
+  today: string,
+  facts: Pick<FiscalFacts, "timezone" | "cutoff">,
+  graceMinutes: number,
+  o: { now?: Date; after?: SelfInvoiceSettings } = {},
+): Promise<PeriodicityChangeBlock | null> {
+  const shape = await monthShape(tx, s, today);
+  return periodicityChangeBlock({
+    ...shape,
+    from: periodicityOn(today, s),
+    to,
+    timezone: facts.timezone,
+    cutoff: facts.cutoff,
+    selfInvoice: { ...selfInvoiceWindow(s), graceMinutes },
+    after: o.after ? selfInvoiceWindow(o.after) : undefined,
+    now: o.now ?? new Date(),
   });
 }
 

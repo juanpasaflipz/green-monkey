@@ -1,7 +1,9 @@
 /**
  * "Facturas globales" (spec §2.10): the periods of the current mode with their status, tickets,
  * totals, parts and late tickets, and **Emitir ahora** on due, overdue or failed periods (and on
- * any closed period while automatic emission is off). The server decides `canRun`.
+ * any closed period while automatic emission is off). The server decides `canRun`. Tickets and
+ * totals include the period's tickets in no CFDI yet, shown as "N por emitir" (LD-51 F11): an open
+ * period counts what its global will take.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Locale, Session } from "../../../shared/domain";
@@ -176,6 +178,13 @@ export function GlobalPeriods({
                           {d.late ? ` · ${t.cfdiPeriodLate}` : ""}
                         </button>
                       ))}
+                      {p.unclaimedTickets > 0 && (
+                        <span className="muted tiny">
+                          {tr(locale, "cfdiPeriodUnclaimed", {
+                            n: p.unclaimedTickets,
+                          })}
+                        </span>
+                      )}
                       {p.lateTickets > 0 && (
                         <span className="muted tiny">
                           {tr(locale, "cfdiLateTickets", { n: p.lateTickets })}

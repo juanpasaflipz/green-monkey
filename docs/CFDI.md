@@ -1,10 +1,22 @@
 # CFDI (Facturapi)
 
 **Status.** CFDI: implemented and contract-tested against Facturapi's documented API (fixtures
-`docs@1c2e617`), not sandbox-verified; disabled until Facturapi keys are configured; live mode not
-enabled. No Facturapi key was used and no request reached Facturapi. Only after
-`npm run test:facturapi:sandbox` passes with a real test key may a flow be called
-"sandbox-verified on <date>".
+`docs@1c2e617`); disabled until Facturapi keys are configured; live mode not enabled.
+**Real-sandbox rehearsal (local, 2026-10-07, lead decision LD-51):** with a Facturapi test key in
+the shared sandbox (`sandbox_shared`), these flows passed against the real Facturapi sandbox
+and are sandbox-verified on 2026-10-07: activation, five sales, portal invoices to a persona
+física and to a persona moral (the 1.25 % RESICO ISR retention stamped exact), a staff
+cancellation with motive 02, a daily global with one concept per ticket, and a supplementary
+global part from a late offline sale; the worker logged no warn or error line. Its findings
+(F1–F13) are fixed by track cfdifix with migration 036 ("Rehearsal fixes" below). That rehearsal
+ran on the code before cfdifix (532476c): the fixes are verified against the in-process fake
+only, and the paths the fake stands in for are listed under "Open items" for the staging
+rehearsal (LD-55 CFDIFIX-OPS-4). The fiscal second opinion on cfdifix (LD-55) is fixed in round 2
+("Second opinion on the rehearsal fixes" below).
+`npm run test:facturapi:sandbox` (the recorded-fixture run) was not part of it. Not exercised
+against the sandbox yet: the `organizations` provider (one organization per restaurant, the CSD
+upload), a cancellation that needs the receptor's acceptance, credit notes and substitutions,
+the RESICO monthly global close, email delivery and the alerts.
 
 **Integration status (migration 030).** Merged onto fiscal 027, discounts 028 and reports 029:
 the worker reads fiscal's tickets through `server/fiscal-read.ts`, credit notes come from
@@ -52,7 +64,7 @@ member of `gm_jobs_worker`). The web process never holds Facturapi keys or
 | Worker env | `cfdi_platform.provider` | Meaning |
 | --- | --- | --- |
 | no `WORKER_DATABASE_URL`, or neither Facturapi key | `disabled` (row absent or written so) | Settings says "La facturación electrónica no está configurada en este entorno."; commands answer `cfdi_unavailable`; `/capabilities` `facturapi: {enabled:false, reason:"provider_not_configured"}` |
-| `FACTURAPI_TEST_KEY=sk_test_…` only, `APP_ENV` ≠ production | `sandbox_shared` | staging/dev rehearsal: every restaurant stamps test CFDIs through the platform's sandbox organization; no CSD upload, no live mode |
+| `FACTURAPI_TEST_KEY=sk_test_…` only, `APP_ENV` ≠ production | `sandbox_shared` | staging/dev rehearsal: every restaurant stamps test CFDIs through the platform's sandbox organization, which is the issuer: its régimen, RFC and postal code as Facturapi reports them decide the RESICO retention and LugarExpedicion (LD-51 F3), and the panel shows it; no CSD upload, no live mode |
 | `FACTURAPI_API_KEY=sk_user_…` + `CREDENTIAL_ENCRYPTION_KEY` | `organizations` | one Facturapi organization per restaurant, each starting in test mode with its own `sk_test_` key |
 
 Live is possible only with `provider = organizations`, `APP_ENV=production` and
@@ -65,7 +77,7 @@ Live is possible only with `provider = organizations`, `APP_ENV=production` and
 | worker | `FACTURAPI_TEST_KEY` | must start `sk_test_` (`invalid_facturapi_test_key`); alone with `APP_ENV=production` → `cfdi_shared_sandbox_not_allowed` |
 | worker | `CREDENTIAL_ENCRYPTION_KEY` | `kid:base64url(≥ 32 bytes)[,kid:…]`, kid `^[a-z0-9-]{1,32}$`, first entry seals (`invalid_credential_encryption_key`) |
 | worker | `CFDI_LIVE_ENABLED` | `true` only with `APP_ENV=production` and a User key (`cfdi_live_not_allowed`) |
-| worker | `CFDI_GLOBAL_GRACE_MINUTES` | 0–600, default 60 (`invalid_cfdi_global_grace_minutes`) |
+| worker | `CFDI_GLOBAL_GRACE_MINUTES` | 0–600, default 60 (`invalid_cfdi_global_grace_minutes`); published in `cfdi_platform` for the web's self-invoicing deadline (036) |
 | worker, deployed | any Facturapi key | needs `WORKER_DATABASE_URL` (`cfdi_worker_database_required`) |
 | both | `FACTURAPI_BASE_URL` | development/test only, loopback host only: the fake (`cfdi_base_url_not_allowed`) |
 | web | `CFDI_INVOICE_LINK_EXPIRY_HOURS` | 1–168, default 72: lifetime of the portal request links (`invalid_cfdi_invoice_link_expiry_hours`) |
@@ -86,9 +98,13 @@ Registration in `.railway/railway.ts` and `.env.example` is Wave 2.0's.
    publishes `disabled` and raises `cfdi_provider_auth_failed`.
 3. **Restaurant activation** (owner, PIN step-up): Configuración → "Facturación electrónica
    (CFDI)". Prerequisites: platform available, fiscal profile complete, currency MXN, legal name
-   ≤ 100 characters. **Activar en modo prueba** creates the settings (mode `test`, `test_from` =
-   today) and the organization (`provisioning`); the worker finds or creates it by a name marker
-   (never two), pushes the legal data and seals the organization's test key.
+   ≤ 100 characters. The owner chooses the **periodicity of the global invoice** (monthly by
+   default, D4; a RESICO restaurant is monthly and the step says so; LD-51 F2), with the bound it
+   puts on self-invoicing. **Activar en modo prueba** creates the settings (mode `test`,
+   `test_from` = today, that periodicity) and the organization (`provisioning`); the worker finds
+   or creates it by a name marker (never two), pushes the legal data and seals the
+   organization's test key. In the shared sandbox there is nothing to push: the issuer is the
+   platform's test organization.
 4. **CSD** (owner, step-up): upload the `.cer`, `.key` and password. The web process checks
    them locally (RFC = fiscal profile RFC, validity, key pair, password, not an e.firma), seals
    them to the worker's X25519 key (`cfdi_secrets`, unreadable by `gm_app`) and queues
@@ -100,6 +116,12 @@ Registration in `.railway/railway.ts` and `.env.example` is Wave 2.0's.
    "Incluir en las facturas globales los tickets desde" (default: start of the current global
    period) and presses **Pasar a modo real** (step-up). The worker creates the live key and
    switches the mode. Irreversible: live → test is refused by the settings trigger.
+7. **Later changes** (LD-55). Change the global periodicity, the self-invoicing window or the
+   portal's reissue with every selling terminal online: a change that would shorten deadlines
+   receipts already printed waits on its own ("Periodicity changes", "Self-invoicing changes that
+   would shorten printed deadlines wait"), but a terminal offline longer than the status refresh
+   keeps printing the deadline it cached. Lower `CFDI_GLOBAL_GRACE_MINUTES` only with the reissue
+   on or at a month's start: it shortens every global-bound deadline already printed.
 
 ### Credential key rotation
 
@@ -139,7 +161,7 @@ CSD files are never kept, so nothing else is lost.
 
 | Table | Holds |
 | --- | --- |
-| `cfdi_platform` | the worker's published provider state (one row, no tenant) |
+| `cfdi_platform` | the worker's published provider state (one row, no tenant); since 036 also its `CFDI_GLOBAL_GRACE_MINUTES` and the shared sandbox organization's legal name, RFC, régimen and postal code |
 | `cfdi_settings` | per restaurant: enabled, mode, start dates, periodicity, concept mode, card form, default use, self-invoicing window, portal reissue, support email, version |
 | `cfdi_secrets` | sealed organization keys and CSD upload boxes (worker-readable only) |
 | `cfdi_organizations` | Facturapi organization, legal sync version, CSD state, production readiness |
@@ -149,7 +171,7 @@ CSD files are never kept, so nothing else is lost.
 | `cfdi_cancellations` | cancellation requests and their outcome |
 | `cfdi_files` | XML, PDF and cancellation acuses (5-year retention) |
 | `cfdi_events` | append-only history per document and per restaurant |
-| `cfdi_global_periods` | each global period per mode: close, due, status, late tickets |
+| `cfdi_global_periods` | each global period per mode: close, due, status, late tickets; the worker may delete a row no document ever used (036's guard), to rebuild the current month after a periodicity change |
 
 Invariants: one active or pending claim per ticket and mode (DB-enforced), frozen requests and
 stamp fields are write-once, documents, claims, files and events reject UPDATE/DELETE/TRUNCATE
@@ -171,6 +193,26 @@ Nine kinds, all worker-only (`registerWorkerJobHandler`), discovered every 5 s:
 | `cfdi_global` | period ticks: build parts, late supplementary parts, overdue alerts, refund sweep | 20 |
 | `cfdi_refund` | decide and build the egreso of a refund | 60 |
 | `cfdi_reissue` | motive-04 replacement of a global, then the waiting invoices | 20 |
+
+Every cfdi job that ends done logs one info line, `cfdi_job_done` (LD-51 F13), with `jobId`,
+`kind` and `tenantId`, `outcome: "ok"`, the document it acted on (`documentId`), the ids its
+payload carries (`cancellationId`, `refundId`, `uploadId`, `periodKey`, `action`, `purpose`) and
+`facturapiLogIds`: the `X-Facturapi-Log-Id` of each provider answer that carried one. Facturapi
+documents that header as the request correlation id on error responses (errors.mdx "Useful
+headers"; the Node SDK's `FacturapiError.logId`, read from `x-facturapi-log-id` on any non-2xx
+answer, Context7 `/facturapi/facturapi-node`); whether successful answers carry it is not
+documented, so `facturapiLogIds` may be empty on a success (an open staging item). A job that
+fails its document (a permanent refusal: the job ends done but the document is `failed`), or that
+ends `retry` or `dead`, logs `cfdi_job_failed` instead (LD-55 CFDIFIX-OPS-1), with `outcome`
+(`document_failed`, `retry`, `dead`), the cfdi `code`, `logId` (the refused answer's log id) and
+`facturapiLogIds` (error answers included); the document's `failed`, `stamp_retry` and
+`stamp_unknown` events keep `logId` too, so the id Facturapi support asks for is in the log and in
+the register. Only a plain token is ever logged. Hand-overs while CFDI is unavailable log
+`cfdi_job_waiting` instead. The line is written when the handler returns done, before the
+runner records the completion (CFDIFIX-10, accepted): if the job's lease is lost at that moment
+the runner logs `job_lease_lost` next and the job may run again (every handler is idempotent:
+the document key, the external id, the dedupe keys), so a second `cfdi_job_done` for the same
+`jobId` can follow. Read the line as "the handler finished"; the job's state is the runner's.
 
 Retries never send two invoices: the document id is Facturapi's `idempotency_key` and
 `external_id`, and after an unknown outcome (timeout, network, 5xx) the next attempt first adopts
@@ -313,7 +355,7 @@ Recovery (`server/cfdi/recovery.ts`):
   CFDI to be turned back on (CFDI-INT-7).
 - **RESICO** (SAT-4, UX-1). A restaurant that becomes 626 moves to monthly globals from the first
   of next month (the tick stores the pending change) and a save is coerced to monthly, never
-  refused.
+  refused; the save applies it at once when the current month allows it ("Periodicity changes").
 
 ## Global periods
 
@@ -325,15 +367,157 @@ the next tick, never into the next open period; a part created after `due_at` is
 at most 4,000 concepts; a ticket is never split. With automatic emission off, periods wait for
 **Emitir ahora**.
 
-**Periodicity changes** never reshape a date that already has a period row (CFDI-R2-1). Before
-any row exists (right after activation, until the first tick) a change applies at once; after
-that it is stored as pending from the first day of next month ("El cambio aplica desde el …").
-Each tick adds rows only after the mode's last one: a period in the month of the previous row
-continues that row's periodicity, a new month takes the periodicity in force on its first day,
-and the tick adds the rows before it promotes a pending change, so a month that closed under
-the old periodicity stays one partition of it even when the first tick after the change runs
-days later; late tickets then join a supplementary part of their own period (D5) with its own
-periodicity.
+**Periodicity changes** (LD-51 F2, CFDIFIX-1). Activation takes the periodicity. A later change
+applies **at once** while the current month is unshaped (`periodicityChangeBlock` answers null):
+- no global document of any of its periods (stamped, claiming or failed): reason `globals`;
+- no unclaimed ticket of the month that would sit in a period, old or new, already past its
+  24-hour deadline (RMF 2.7.1.21: re-partitioning must never turn an on-time global into a late
+  one nor hide one that is late): reason `overdue`;
+- no unclaimed ticket of the month whose self-invoicing deadline the change would bring forward:
+  reason `deadline`. Its receipt printed the deadline under the old periodicity (the earlier of
+  the policy and the global's build, "Self-invoicing ends when the ticket's global is built"),
+  and the portal must never refuse a customer before the printed date. Each date's deadline is
+  read as the portal reads it (`deadlineOf`, CFDIFIX-R2-3): before the change, under the terms in
+  force with the self-invoicing change that waits, if any (a receipt printed while it waits
+  carries the later of both); after it, under the terms the save stores. The save decides its
+  self-invoicing part first and then runs this check, and `shortens` below, with the terms it
+  actually stores (in force plus a change left waiting, never the wanted ones alone,
+  CFDIFIX-R2-4); the tick's re-check reads the stored row the same way. A change that keeps or
+  lengthens every deadline (day → month, week → fortnight, or a policy that ends first anyway)
+  still applies at once. The check does not depend on the self-invoicing or reissue switches: a receipt printed
+  while they were on keeps its date when they are turned back on. In practice a shorter
+  periodicity applies at once only on a month with no unclaimed ticket yet (right after
+  activation, or on the 1st before the first sale); on the last day of a month a monthly and a
+  daily global of that day close together, so that day's tickets do not block it. A ticket counts
+  as unclaimed unless a valid or canceling CFDI covers it: one whose invoice is still queued,
+  stamping or pending may fail and return to the portal with its printed deadline (LD-55
+  CFDIFIX-FISCAL-3). A save that must wait, made on a day a pending change is already in force
+  (before the tick promotes it), keeps that pending change in force and stores the new one for
+  next month (CFDIFIX-FISCAL-2).
+
+The save records when the change applied (a document-less `periodicity_applied` event: `from`,
+`to`, `shortens`, `rebuildAt`) and enqueues a tick of its own, which takes the settings row lock
+and every period key of the month, checks the same rule again over every unclaimed ticket of the
+month (including one sold between the save and the tick: a terminal that had not refreshed its
+status printed the old deadline), deletes the month's rows (only the worker may, only rows no
+document used, 036) and adds them back under the new periodicity (`periodicity_rebuilt` event).
+A change that brings forward the deadline of a ticket sold on the save's day (`shortens`: monthly
+to daily, say) is rebuilt only `PERIODICITY_REBUILD_WAIT_MS` after the save (the 5-minute status
+refresh plus 2 minutes, LD-55 CFDIFIX-CONCURRENCY-2): until then every tick leaves the month's rows
+as they are, and the re-check then sees every ticket a terminal printed with the status it held
+before the change. A terminal offline for longer than that keeps printing the old deadline until
+it reconnects: that residual risk is accepted (a long offline period is rare and its sales sync
+late anyway; "Onboarding runbook" step 7 says to change it with every terminal online). The
+re-check judges the 24-hour rule (`overdue`) as of the save, not of the tick (CFDIFIX-CONCURRENCY-3):
+a tick that runs late (a worker outage) never undoes a change only because it ran late; a global
+of the month (`globals`) is judged when the tick runs (its rows cannot be deleted). If the month got
+shaped between the save and the tick, the change waits for next month instead
+(`periodicity_deferred`); undoing a change that kept or lengthened today's deadlines alerts the
+operator (`cfdi_periodicity_reverted`), since receipts printed since the save carry the later
+deadline. The global
+builder takes the settings row (FOR SHARE) before its period key, so a save and a build
+serialize, and it never builds a row a change left stale. Otherwise the change is stored as
+pending from the first day of next month and the panel says so, and why ("Periodicidad actual:
+mensual. Cambia a diaria desde el …. No se aplicó al momento: acortaría el plazo para autofacturar
+de tickets ya vendidos este mes.", F10, CFDIFIX-5): the save and the tick record a document-less
+`periodicity_deferred` event (`from`, `to`, `nextFrom`, `reason`, `source` save or tick; the
+save's names its owner), and the settings view shows the latest one while its change is still the
+pending one. "Periodicidad actual" is the periodicity in force on the server's business date
+(`businessDate` in the view): from its first day a pending change is in force even before the
+tick promotes it (CFDIFIX-6). Earlier months never change
+(CFDI-R2-1), nor does a month once it has a global: each tick adds rows only after the mode's
+last one, a period in
+the month of the previous row continues that row's periodicity, a new month takes the
+periodicity in force on its first day, and the tick adds the rows before it promotes a pending
+change, so a month that closed under the old periodicity stays one partition of it even when
+the first tick after the change runs days later; late tickets then join a supplementary part of
+their own period (D5) with its own periodicity. Choosing the periodicity in force cancels a
+pending change.
+
+**Self-invoicing ends when the ticket's global is built** (LD-51 F1). While "Sustituir la factura
+global automáticamente" (`portal_reissue_global`) is off, the portal never cancels a global, so a
+ticket can be self-invoiced only until its period's global takes it: the period's close plus the
+worker's grace. The deadline the receipt prints, the portal shows and enforces
+(`cfdi_portal_expired`) and the staff ticket view carry is the earlier of the policy deadline
+(end of the purchase month, or N days) and that moment (`effectiveSelfInvoiceDeadline`; the period
+row's close when the tick created it, else the periodicity in force on the ticket's date). With a
+daily global it is the next morning; the receipt and the portal then print the time too ("08/10/2026
+a las 05:00"), and the portal adds that the ticket then goes into the restaurant's global
+invoice. The cached status carries the bound (periodicity, pending change, cutoff, grace), so a
+receipt printed offline shows the same date. Every global-bound deadline lands early in the
+morning after the period's last business date (its close at the cutoff plus the grace), so the
+receipt, the portal and the staff invoice dialog print its time whatever the day ("12/10/2026 a las
+05:00" for a Wednesday sale under weekly globals), and the policy's end of day only on the
+purchase day or the next (`deadlineShowsTime`, LD-55 CFDIFIX-FISCAL-1 / UX-1). The worker's grace
+(`CFDI_GLOBAL_GRACE_MINUTES`) is part of every global-bound deadline: lowering it shortens the
+deadlines receipts already printed (raising it only lengthens them), so change it, if ever, with
+the portal's reissue on or at a month's start. A signed-in device refreshes that status when the
+window regains focus or visibility, when the connection returns and every 5 minutes while online
+and visible (CFDIFIX-3), so a terminal signed in for the whole shift picks up a settings change
+within minutes; the refresh stops once the device's session is no longer the employee it started
+for (sign-out, or an employee change, which starts a new one).
+A deadline already past when the receipt prints (a check of yesterday's business date paid after
+its daily global was built, or a reprint) is not printed: the receipt says "Pídela en caja con
+el folio …" instead (CFDIFIX-11). The settings explain the trade-off for the chosen
+periodicity. With reissue on, the policy alone applies (and each late invoice costs two extra
+stamps). "Emitir ahora" pressed during the grace takes the period's tickets before the printed
+time; that is the manager's choice.
+
+**Self-invoicing changes that would shorten printed deadlines wait** (LD-55 CFDIFIX-FISCAL-5 /
+UX-4). Turning "Sustituir la factura global automáticamente" off, or a shorter window (month → N
+days, fewer days), would make the portal refuse customers before the date their receipt printed.
+Such a save is guarded like a periodicity change: it applies at once unless it brings forward the
+deadline of a ticket not covered by a valid or canceling invoice whose current deadline has not
+passed (unclaimed tickets, tickets in a global the portal may still reissue, tickets whose invoice
+is still on its way). Today's business date always counts, sold or not, and the next one too when
+it starts within `PERIODICITY_REBUILD_WAIT_MS` (the 5-minute status refresh plus 2 minutes): a
+terminal that has not refreshed its status yet prints the old deadline for those sales
+(CFDIFIX-R2-5). A terminal offline for longer keeps printing the deadline it cached until it
+reconnects: the same accepted residual risk as a periodicity change (CFDIFIX-CONCURRENCY-2,
+"Onboarding runbook" step 7). Otherwise the terms in force stay and the wanted ones wait
+(`next_self_invoice_*`, 036) until the first business day starting after the latest such deadline
+(the 1st of next month for the default month-end window), with a `self_invoice_deferred` event,
+"Cambio pendiente del plazo para autofacturarse: aplica desde el …" in the panel and the save's
+status saying so; the form warns as soon as a change would shorten the window. While it waits, a
+receipt prints, and the portal enforces, the deadline both terms allow: the later of the new terms'
+deadline and the current one cut at the change's start (`effectiveSelfInvoiceDeadline`'s
+`pending`), so nothing printed before the save ends earlier than it said and nothing printed
+after it promises more than the portal will honour. Reads resolve the change by date (in force
+from its first business day, before any save or tick), the status view carries it for offline
+receipts, and choosing the terms in force cancels it. A longer window, or turning the reissue on,
+applies at once. Whatever the save decides is checked last against every deadline receipts print
+now, the waiting change's included (CFDIFIX-R2-2): a waiting change can lengthen some deadlines
+(a sale of the 20th under "15 días" waiting from the 1st prints the 4th, past the month's end),
+so cancelling it, or replacing it with terms that would cut such a receipt, is refused
+(`cfdi_self_invoice_pending_printed`, 409) and nothing is stored; the panel names the date the
+waiting change applies from, after which its terms are in force and any change is guarded as
+above. Saving the waiting terms again (the panel's form always sends them) keeps it.
+
+**Tickets issued into a closed period** (LD-51 F12, timing per LD-55): fiscal's `issueDueTicket`
+and repair (every issuance: sale, offline recovery, repair) call `cfdiTicketsIssued` before they
+take that ticket's folio counter (LO-12, whose statement budget stays as fiscal set it: fiscal-db
+CONCURRENCY-1 still counts two statements per ticket plus one insert each for the category and
+audit rows under it). As docs/ARCHITECTURE.md's lock-order row 4 states for `recordSettlement`, a
+later order's cfdi issuance hook runs after an earlier order's counter: a read and at most a jobs
+insert keyed by that order (LO-R4/LO-R8).
+When a ticket's date, older than today's business date, falls in a period that is built or empty,
+or has closed (a build in progress may have read its tickets before this one commits,
+CFDIFIX-CONCURRENCY-4), the hook enqueues ONE tick per tenant per 30-minute bucket, due 10 minutes
+after the bucket ends: not at once, so an offline drain (one record per request) lands in one
+supplementary part and the counter keeps a 10–40 minute window to invoice the ticket directly,
+far inside RMF 2.7.1.21's 24 hours (CFDIFIX-FISCAL-4, OPS-2). One read finds a committed waiting
+tick of the bucket (`tick:issued:<bucket>:`), which dedupes every later issuance; otherwise one
+insert, keyed by the issuing order (`tick:issued:<bucket>:<orderId>`), which the caller holds FOR
+UPDATE, so a unique-key wait can only meet the same operation (LO-R8): in a settlement a later
+order's hook runs after an earlier order's counter (row 4), and a shared key there would
+wait under LO-12 on another payment's uncommitted tick (CFDIFIX-CONCURRENCY-1; cfdi DB "LD-55
+CFDIFIX-CONCURRENCY-1" proves it under `noRetries`). Two issuances racing in one bucket each insert
+their own tick, due at the same moment: the first sweeps every committed late ticket, the second
+finds nothing. A ticket of today's business date costs no statement. Any other tick that runs
+meanwhile (the chain's, a settings panel's) sweeps whatever is late at that moment.
+
+The register counts each period's tickets in no CFDI yet ("N por emitir") in its tickets and
+totals, so an open period shows what its global will take (LD-51 F11).
 
 ## Amounts
 
@@ -345,6 +529,45 @@ periodicity.
 - `amount_check` on every stamped document: `exact`, or `differs` with a reason
   (`pre_ticket_refund_bound`, `egreso_extract`, `base_priced_rounding`: expected, no alert;
   `provider_rounding`: alerts `cfdi_amount_mismatch`).
+
+## Rehearsal fixes (LD-51, track cfdifix, migration 036)
+
+The local rehearsal against the real Facturapi sandbox (2026-10-07) found these; each is fixed with
+a unit, DB and (where it shows) browser check:
+
+| Item | Fix |
+| --- | --- |
+| F1 (high) | The self-invoicing deadline is the earlier of the policy and the ticket's global build while the portal does not reissue globals; receipt, portal and settings agree ("Global periods") |
+| F2 | Activation takes the periodicity; a change applies at once on an unshaped month and the tick rebuilds the month's rows ("Periodicity changes") |
+| F3 | In the shared sandbox the stamping issuer facts (régimen and RFC for the RESICO retention, LugarExpedicion, the global receptor's postal code) are the platform test organization's, as Facturapi reports them (`GET /organizations/me`, published at boot and on each refresh in `cfdi_platform`), taken as a whole or not at all: when one of RFC, régimen or postal code was not reported, the restaurant's profile stamps for all three, never a mix of two taxpayers (LD-55 CFDIFIX-FISCAL-6). The panel shows the test organization, says the restaurant's profile is not used to stamp (or, while Facturapi has not reported the test organization whole, that the profile stamps) and that the periodicity and other rules follow the restaurant's own régimen (CFDIFIX-UX-6). `organizations` mode is unchanged |
+| F7 | A cancellation acuse is stored, and offered in the register, only when its XML names the document's UUID (`Folios/UUID` in any namespace, `acuseUuids`); Facturapi's test mode answers a sample acuse of another CFDI, which is recorded as `acuse_mismatch`, never stored and never fetched again by recovery; the document's status still comes from Facturapi's invoice. In live mode a mismatch is never expected (a provider-format or parser problem, CFDIFIX-2): it is recorded as `acuse_mismatch_live` ("no se guardó y se volverá a pedir"), alerts `cfdi_acuse_mismatch`, and Reintentar or the tick's sweep fetches it again, three times in all per reader version (`LIVE_ACUSE_ATTEMPTS`); the third is `acuse_mismatch_final` ("no se volverá a pedir automáticamente. Contacta a soporte", LD-55 CFDIFIX-UX-5). Each event records `found` (how many UUIDs the reader read: none means a format or parser change, some means an acuse of another CFDI), the acuse's `sha256`, the `attempt` and the reader version; a fix to the reader bumps `ACUSE_READER_VERSION` (`server/cfdi/xml.ts`), and the sweep then fetches the acuses the old reader could not match (CFDIFIX-OPS-3) |
+| F8 | No "datos fiscales actualizados se enviarán" note in the shared sandbox (nothing is synced there) |
+| F9 | The issuer RFC reads "Pendiente" until Facturapi reports it, never the profile's |
+| F10 | The periodicity field states the one in force and a pending change with its date |
+| F11 | Each period counts its unclaimed tickets ("N por emitir") in its tickets and totals |
+| F12 | A ticket issued into a closed period enqueues the tick of its 30-minute bucket, due 10 minutes after it (fiscal's issuance hook, before the folio counter; LD-55 timing, "Tickets issued into a closed period") |
+| F13 | One `cfdi_job_done` info line per successful job, with Facturapi's log ids; `cfdi_job_failed` for a refused document, a retry or a dead job ("Jobs", LD-55) |
+| F4–F6 | Hand-off items for the user, the accountant and the provider ([LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.13 and 1.14) |
+
+### Second opinion on the rehearsal fixes (LD-55, cfdifix round 2)
+
+A four-lens second opinion (fiscal, concurrency, UX, ops; 22 issues) reviewed the fixes above. Each
+is fixed with a check that fails before it:
+
+| Issues | Fix |
+| --- | --- |
+| FISCAL-1 = UX-1 (high) | A global-bound deadline prints its time whatever the day (receipt, portal, staff dialog): "Global periods" |
+| FISCAL-4 = OPS-2 = CONCURRENCY-1, CONCURRENCY-4 | One late-ticket tick per tenant per 30-minute bucket, due 10 minutes after it, keyed by the issuing order; a closed period counts as late before its build commits: "Tickets issued into a closed period" |
+| FISCAL-5 = UX-4 | A self-invoicing change that would shorten printed deadlines waits: "Self-invoicing changes that would shorten printed deadlines wait" |
+| FISCAL-2, FISCAL-3, CONCURRENCY-2, CONCURRENCY-3 | A deferred save keeps an in-force pending periodicity; in-flight invoices count as uncovered; a shortening change is rebuilt after every terminal refreshed; the 24-hour rule is judged as of the save: "Periodicity changes" |
+| FISCAL-6, UX-6 | The shared issuer as a whole or not at all, and what the panel says: F3 above |
+| OPS-1 | Error answers' log ids and `cfdi_job_failed`: "Jobs" |
+| UX-5, OPS-3 | `acuse_mismatch_final`, the reader version and what each mismatch records: F7 above; RUNBOOK alert table |
+| UX-2 | The save's status says whether the periodicity applies today or waits (until when, why), and a self-invoicing change that waits; the periodicity select is described by the line in force |
+| UX-3 | RESICO's activation shows no "you can change it later" hint |
+| UX-7 | An own organization's pending RFC says the CSD upload confirms it; an organization in error shows none |
+| OPS-4 | This page and DELIVERY_STATUS say what the tests prove and what only the fake covers ("Tests", "Open items") |
+| OPS-5 | A DB check republishes a non-default grace and the status, portal and staff deadlines follow it |
 
 ## Operations
 
@@ -359,6 +582,8 @@ periodicity.
 | `cfdi_substitution_rejected:<tenant>:<doc>` | warning | the customer rejected a substitution: two invoices are valid; cancel the new one (02) or **Solicitar de nuevo la cancelación…** on the original (motive 01 with the same substitute) |
 | `cfdi_stamp_unresolved:<tenant>:<doc>` | warning | Facturapi kept the stamp pending past its recovery window: check the invoice in Facturapi |
 | `cfdi_cancel_unresolved:<tenant>:<doc>` / `cfdi_cancel_failed:<tenant>:<doc>` | warning | a cancellation is unanswered after 10 days / was refused: read the detail, repeat or handle at the SAT portal |
+| `cfdi_acuse_mismatch:<tenant>:<doc>` | warning | live mode: the cancellation acuse Facturapi returned does not name the document's UUID; it is not stored and is fetched again (Reintentar or the tick's sweep, three times in all per reader version; the last is `acuse_mismatch_final`). Read the event's `found` (0: the reader found no UUID, a format or parser change; ≥ 1: an acuse of another CFDI, a provider problem) and `sha256`, compare the acuse in Facturapi with the document and report to engineering; a reader fix bumps `ACUSE_READER_VERSION` and the sweep then fetches the missing acuses again |
+| `cfdi_periodicity_reverted:<tenant>:<saved at>` | warning | a periodicity change that applied at once and kept or lengthened deadlines was undone by its rebuild tick (the month got a global, or a ticket it would shorten): receipts printed since the save may show a later self-invoicing deadline than the portal now allows. Check the period register; with reissue on, the portal still honours them |
 | `cfdi_refund_unresolved:<tenant>:<refund>` | warning | a refund's credit note could not be issued: check its parent document; the refund sweep retries |
 | `cfdi_reissue_failed:<tenant>:<doc>` | warning | a global replacement (motive 04) was refused: read the detail; the waiting invoices fail (their tickets are freed) and must be requested again once the cause is fixed |
 | `cfdi_csd_expiring:<tenant>` | info | the CSD expires in less than 30 days: the owner uploads a new one |
@@ -381,7 +606,8 @@ it, with its contact. A customer who comes back sees why their last request fail
 restaurant counts such failures in its attention badge and Hoy. An expired certificate (or a
 missing one in live mode) closes self-invoicing. Downloads appear once the PDF and XML are stored
 (`filesReady`), and each download asks for a fresh token. Downloads need the RFC used, through 15-minute download tokens;
-request links last `CFDI_INVOICE_LINK_EXPIRY_HOURS`. The portal's privacy checkbox links the
+request links last `CFDI_INVOICE_LINK_EXPIRY_HOURS`. The deadline the portal shows is the one the
+receipt printed ("Self-invoicing ends when the ticket's global is built"). The portal's privacy checkbox links the
 restaurant's own privacy notice (Configuración → Privacidad y datos; account 031's
 `restaurantPrivacyUrl`), as the QR and kiosk pages do; without one it shows the fallback line and
 the contact.
@@ -501,6 +727,7 @@ Every code and its Spanish text (`src/i18n/cfdi.ts`, for acceptance `[BIND-030]`
 | `cfdi_request_aborted` | La solicitud a Facturapi se interrumpió. Lo reintentaremos automáticamente. |
 | `cfdi_request_invalid` | La factura no cumple el formato de Facturapi. Avisa a soporte. |
 | `cfdi_resico_monthly` | En RESICO la factura global debe ser mensual. |
+| `cfdi_self_invoice_pending_printed` | Ya hay tickets vendidos que imprimieron el plazo del cambio para autofacturarse que espera: estos términos lo acortarían. Vuelve a elegir los términos de ese cambio hasta que aplique. (The settings panel names the date the waiting change applies from, CFDIFIX-R2-2.) |
 | `cfdi_settings_changed` | La configuración cambió en otro dispositivo. Recarga e intenta de nuevo. |
 | `cfdi_shared_sandbox_not_allowed` | Configuración inválida: el entorno de prueba compartido no se permite en producción. |
 | `cfdi_stamping_failed` | El SAT o el PAC no pudo timbrar la factura. Revisa el detalle o intenta de nuevo. |
@@ -534,10 +761,22 @@ redeclared.
 
 | Command | Covers |
 | --- | --- |
-| `npm test` | `tests/cfdi.test.ts` (builders, rounding proof, XML parser, error classifier), `tests/cfdi-facturapi-contract.test.ts` (documented API), `tests/cfdi-facturapi-fake.test.ts`, `tests/cfdi-shared.test.ts` (receptor rules, periods, deadlines, payment forms, settings), `tests/cfdi-resico.test.ts`, `tests/cfdi-secrets.test.ts` (vault, upload box, CSD inspection, config, redaction), `tests/cfdi-jobs.test.ts` (kinds, limits, retry, dedupe keys), `tests/cfdi-portal-http.test.ts` (portal limiters over HTTP), `tests/cfdi-client.test.ts` (receptor form, printed block, alerts, ticket status, order actions), `tests/import-graph.test.ts` (process boundary), `tests/cfdi-merge-gate.test.ts` (no compat shim returns; the refund hook and `refunds.method`), `tests/cfdi-locks.test.ts` (advisory key classes and their order inside LO-3) |
-| `npm run test:db:cfdi` | checks through the worker login and the in-process fake, against the real 027/028 tables: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos (including fiscal's `recordRefundTax` hook and the card/cash FormaPago from `refunds.method`), substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, the EXPLAINs of the running-lease index, and the second-opinion checks (lost cancel/reissue/stamp answers read back, CSD boxes always wiped, motive-01 cancellations whose substitute ended, a cancellation completing under its document key, credit-note corrections, refunds re-decided on hand-over, re-globalization after old cancellations and overdue periods, the CFF 29-A deadline and route III, RESICO coercion, portal failures and file readiness, and the cheap lows), and route III for a global that credit notes relate to (staff and portal) with the register's explanation for an invoice that has them (CFDI-INT-1), and route III's note crediting exactly what the global still declares for the ticket: a refund recorded just before the request, one whose credit note failed, one credited live, and the request waiting for a credit note still in flight (CFDI-INT-2), and a second route III for a ticket back in a supplementary part (CFDI-INT-3), and the abandoned-upload sweep of a paused restaurant (CFDI-INT-7) |
-| `npx playwright test tests/browser/cfdi.spec.ts` | the panel before activation and the portal (always); activation + CSD, staff invoice + cancel, portal self-invoice (they need the worker with the fake; CI starts both, a local run without the worker skips only these three) |
+| `npm test` | `tests/cfdi.test.ts` (builders, rounding proof, XML parser, error classifier), `tests/cfdi-facturapi-contract.test.ts` (documented API), `tests/cfdi-facturapi-fake.test.ts`, `tests/cfdi-shared.test.ts` (receptor rules, periods, deadlines, payment forms, settings), `tests/cfdi-resico.test.ts`, `tests/cfdi-secrets.test.ts` (vault, upload box, CSD inspection, config, redaction), `tests/cfdi-jobs.test.ts` (kinds, limits, retry, dedupe keys), `tests/cfdi-portal-http.test.ts` (portal limiters over HTTP), `tests/cfdi-client.test.ts` (receptor form, printed block, alerts, ticket status, order actions), `tests/import-graph.test.ts` (process boundary), `tests/cfdi-merge-gate.test.ts` (no compat shim returns; the refund hook and `refunds.method`), `tests/cfdi-locks.test.ts` (advisory key classes and their order inside LO-3), `tests/cfdi-rehearsal.test.ts` (LD-51: the deadline's global bound per periodicity, when a periodicity change applies at once, the shared sandbox's stamping facts, the acuse reader, the issuance tick key, Facturapi's log id and the job's info line; LD-55: the deadline's time whatever the day, a self-invoicing change that waits and from when, the shared issuer as a whole, the 30-minute bucket and its time, error answers' log ids and `cfdi_job_failed`), `tests/cfdi-client.test.ts` LD-55 cases (the three global-bound receipts, the receipt while a change waits, the save's status, the RESICO activation hint, the shortening warning, the pending RFC, the shared issuer note, the final acuse label) |
+| `npm run test:db:cfdi` | checks through the worker login and the in-process fake, against the real 027/028 tables: stamping, portal isolation, concurrency, globals (parts, late supplementary parts, idempotent ticks, runAt), refunds and egresos (including fiscal's `recordRefundTax` hook and the card/cash FormaPago from `refunds.method`), substitution, cancellation, retries and adoption, reconcile, test/live separation, CSD sealing, immutability, RLS, discovery, retry limits, grants idempotency, settings, self-invoice window, email, amount check, provisioning idempotency, refund hook, key rotation, the reissue race (a request held against the worker's reissue step), CFDI unavailable for longer than every retry limit then restored, the recovery sweep and Reintentar, the tick chain restart, the card-form default, concurrent activations and the register cursor, a periodicity change that leaves past periods alone, a staff cancellation completing a rejected substitution, a second substitution refused while one waits and the motive-01 re-request (with its own poll chain), a provider-refused substitution in the attention count, a refund waiting for a queued cancellation, credit notes refusing cancellations in the requests and in the worker, the EXPLAINs of the running-lease index, and the second-opinion checks (lost cancel/reissue/stamp answers read back, CSD boxes always wiped, motive-01 cancellations whose substitute ended, a cancellation completing under its document key, credit-note corrections, refunds re-decided on hand-over, re-globalization after old cancellations and overdue periods, the CFF 29-A deadline and route III, RESICO coercion, portal failures and file readiness, and the cheap lows), and route III for a global that credit notes relate to (staff and portal) with the register's explanation for an invoice that has them (CFDI-INT-1), and route III's note crediting exactly what the global still declares for the ticket: a refund recorded just before the request, one whose credit note failed, one credited live, and the request waiting for a credit note still in flight (CFDI-INT-2), and a second route III for a ticket back in a supplementary part (CFDI-INT-3), and the abandoned-upload sweep of a paused restaurant (CFDI-INT-7), and the LD-51 checks: the self-invoicing deadline for each periodicity and policy (and a ticket refused past its global's build while unbuilt), activation's periodicity, the immediate change and the tick's rebuild, 036's guard, a change deferred by a month shaped meanwhile or an overdue period, the shared sandbox's issuer facts and the pending issuer RFC, the test-mode sample acuse, unclaimed tickets in a period's counts, fiscal's issuance hook (called directly, and reached through fiscal's own `issueDueTicket` as offline recovery calls it, CFDIFIX-4), the reason a periodicity change waits (CFDIFIX-1, -5) and the `cfdi_job_done` lines; and the LD-55 checks: the late-ticket tick per 30-minute bucket and one supplementary part for a drain, a closed period still building, a settlement's late order against a concurrent late payment under `noRetries`, the grace the worker publishes, a deferred save with a pending periodicity in force, in-flight invoices as uncovered, a self-invoicing change that waits, the rebuild after every terminal refreshed, a late rebuild judged as of the save (and its alert), `cfdi_job_failed` with the refused answer's log id, the final acuse mismatch and a reader fix. `CFDI_DB_ONLY=<regex>` runs only matching checks while debugging |
+| `npx playwright test tests/browser/cfdi.spec.ts` | the panel before activation (with the periodicity step) and the portal (always); activation + CSD (and the issuer RFC Facturapi reports), staff invoice + cancel, portal self-invoice, and the owner's switch to daily globals after a sale: the change waits for next month, the save's status and the panel say from when and why, and the portal keeps the printed (monthly) deadline; on a month's last day the change applies at once and the status says so (they need the worker with the fake; CI starts both, a local run without the worker skips only these four). The daily deadline and its time are covered by the unit and client tests (`tests/cfdi-rehearsal.test.ts`, `tests/cfdi-client.test.ts`: daily, mid-week weekly, fortnightly, a window cut by a monthly global) and the DB checks LD-51 F1 and LD-55 OPS-5 (LD-55 CFDIFIX-OPS-4) |
 | `npm run test:facturapi:sandbox` | opt-in, `FACTURAPI_TEST_KEY` only, official URL, test mode; `RECORD=1` rewrites fixtures as `recorded@<date>` (not run: no key) |
+
+Checks whose rule needs a particular business date never skip on the other days (CFDIFIX-R2-6):
+they pin it. The cfdi DB checks that need a day other than the month's last (FISCAL-2, FISCAL-3,
+CONCURRENCY-2) or day 3 or later (LD-51 F2's overdue leg, CONCURRENCY-3, CFDIFIX-R2-2) create
+their tenant in a zone that puts its business date there: Mexico City at 04:00, Pacific/Kiritimati
+at 00:00 (one day after) or Etc/GMT+12 at 23:59 (one or two days before), whichever satisfies the
+rule now and 30 minutes later (`tests/fixtures/business-date-zones.ts`; `tests/cfdi-shared.test.ts`
+proves one always does, every 10 minutes across month, year and February boundaries). A check that
+needs a day no zone reaches (CFDIFIX-R2-4: the first half of a month) runs its web calls under a
+fixed process clock (`atClock`), never the worker's. The browser periodicity check moves the demo
+restaurant's timezone and cutoff for its duration (local fixture database only, restored in its
+finally and afterEach) on a month's last day, never to a date before the restaurant's own.
 
 Fixture provenance: `tests/fixtures/facturapi/README.md`. CI runs the fake on 127.0.0.1:4799 and
 gives only the worker a fake User key, a synthetic keyring and `FACTURAPI_BASE_URL`.
@@ -566,6 +805,12 @@ behaviour.
 - **Refund hook.** Fiscal's `recordRefundTax` calls `enqueueCfdiRefund(tx, s, refundId)` after it
   inserts the refund's tax rows (step 9; a no-op while CFDI is off). Every refund path reaches it:
   discounts' `insertRefundBatch` and the legacy refund.
+- **Issuance hook** (LD-51 F12, LD-55). Fiscal's `issueDueTicket` and `repairMissingTickets` call
+  `cfdiTicketsIssued(tx, s, tickets)` before their ticket's folio counter: the 30-minute bucket's
+  tick, due 10 minutes after it, for a ticket of a closed period (nothing for a ticket of today;
+  else one read and a job insert at most, no lock, a key only the calling operation can meet,
+  LO-R8; a no-op while CFDI is off). In `recordSettlement` a later order's hook runs after the
+  first order's counter: allowed reads and that insert only (ARCHITECTURE rows 3, 4 and 24).
 - **Discounts 028.** A credit note's FormaPago follows `refunds.method`: a card (`external`)
   refund takes the parent's card form (04/28) or the restaurant's, a cash refund 01. The refund
   dialog shows "Esta venta ya tiene factura (CFDI)…" when `useCfdiTicketStatus` reports a valid
@@ -587,7 +832,8 @@ E-Receipts, IEPS, SaaS invoicing (account 031).
 Decisions (defaults, spec §11): D1 key meanings; D2 the platform pays stamps, every plan; D3
 credit/debit asked at invoicing, default 04; D4 monthly by default, RESICO monthly; D5 business
 date membership and supplementary parts (binding); D6 one concept per ticket per category; D7
-self-invoicing until the end of the purchase month, no automatic global replacement; D8 SAT FAQ
+self-invoicing until the end of the purchase month (or the ticket's global build when earlier,
+LD-51 F1), no automatic global replacement; D8 SAT FAQ
 order for an invoice after a global; D9 refunds netted before a CFDI, egreso after; D10 grouped
 concepts; D11 G02/S01 for credit notes; D12 no webhooks; D13 files in `cfdi_files`; D14
 `qrcode.react` for the QR; D15 no foreign receptors; D16 irreversible live switch; D17 roles; D18
@@ -597,11 +843,25 @@ supplies the test key. The accountant confirms D4, D5, D11 and the RESICO retent
 
 ## Open items
 
-- **Sandbox verification** needs a Facturapi test key: rounding (D18), the base-priced RESICO
-  concepts (`tax_included: false`), the rounding and identity of an egreso to PUBLICO EN
-  GENERAL (it carries no InformacionGlobal: CFDI40130 requires that node only for type "I", and
-  SAT's Apéndice 2 egreso examples have none), the undocumented `idempotency_key_in_use` status
-  and the receptor test identity.
+- **Sandbox verification still open** (the 2026-10-07 rehearsal covered the shared sandbox flows
+  in the status above, on the code before cfdifix). For the staging rehearsal, the cfdifix paths
+  verified only against the fake (LD-55 CFDIFIX-OPS-4): the shared organization's issuer facts read
+  from `GET /organizations/me` (`legal.tax_system`, `legal.tax_id`, `address.zip`) and used whole
+  for the retention and LugarExpedicion (F3); whether successful answers carry
+  `X-Facturapi-Log-Id` (F13: documented on error answers only); the live cancellation acuse format
+  the reader parses (F7: test mode always answers Facturapi's sample of another CFDI, so the reader
+  has only read the fake's XML). Also open: the `organizations` provider (an organization per restaurant, its test
+  key, the CSD upload), a cancellation that needs the receptor's acceptance, credit notes (the
+  rounding and identity of an egreso to PUBLICO EN GENERAL, which carries no InformacionGlobal:
+  CFDI40130 requires that node only for type "I", and SAT's Apéndice 2 egreso examples have none)
+  and substitutions, the RESICO monthly global close, email delivery, the alerts, the
+  undocumented `idempotency_key_in_use` status and the recorded fixtures
+  (`npm run test:facturapi:sandbox`). Facturapi's test mode does not validate receptor names
+  (LD-51 F5), so the name check is first seen in live mode; Base vs Importe rounding of
+  tax-inclusive concepts (D18) is for the provider and the accountant to confirm on sample XML
+  (F6). Staging: the global rehearsal with a real cutoff (LD-16 "Missing items"); the staging
+  test key's organization carries a real taxpayer identity (LD-51 F4, a user decision in
+  [LAUNCH_HANDOFF.md](LAUNCH_HANDOFF.md) 1.14).
 - **Live qualification** with a real CSD and production approval.
 - **Second-opinion items not done** (lows unless noted; LD-33 "lows when cheap"): a failure
   email to the portal customer (UX-3's last part: no transactional email channel exists for a
@@ -618,7 +878,11 @@ supplies the test key. The accountant confirms D4, D5, D11 and the RESICO retent
 
 - Facturapi OpenAPI v2 and guides: FacturAPI/facturapi-docs commit
   `1c2e617776da4600ce3bac02a6aab6b0b3fcc88a` (2026-09-19); Node SDK types (Context7
-  `/facturapi/facturapi-node`).
+  `/facturapi/facturapi-node`): `Organization.legal` (`tax_id`, `tax_system`, `address.zip`) for the
+  shared sandbox issuer, `FacturapiError.logId` from the `x-facturapi-log-id` header (errors.mdx
+  "Useful headers": the request correlation id) for the job log line; the cancellation receipt
+  endpoint ("does not necessarily prove that the CFDI is already canceled; check the invoice
+  status").
 - SAT Anexo 20 (CFDI 4.0), "Guía de llenado del CFDI global" (Apéndice 2, routes I and III),
   cancellation FAQ 2026; RMF 2.7.1.21; CFF art. 29-A (cancellation deadline); LISR art. 113-J.
 - zod 4.3.6 (Context7 `/colinhacks/zod`), jose 6 (JWE/ECDH-ES), express-rate-limit 8

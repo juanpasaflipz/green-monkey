@@ -329,9 +329,10 @@ export function firstOfNextMonth(date: string): string {
 }
 
 /**
- * Last instant a customer may self-invoice a ticket: the last calendar day of the purchase month
- * (policy "month") or `days` days after the business date (policy "days"), at 23:59:59.999 in the
- * restaurant timezone.
+ * Last instant a customer may self-invoice a ticket under the restaurant's policy alone: the last
+ * calendar day of the purchase month (policy "month") or `days` days after the business date
+ * (policy "days"), at 23:59:59.999 in the restaurant timezone. The deadline a customer actually
+ * has is effectiveSelfInvoiceDeadline's.
  */
 export function selfInvoiceDeadline(
   businessDate: string,
@@ -349,6 +350,291 @@ export function selfInvoiceDeadline(
     })
     .toInstant()
     .toString();
+}
+
+/**
+ * What bounds self-invoicing besides the policy (LD-51 F1): with portal_reissue_global off, the
+ * portal never cancels a global, so a ticket can be self-invoiced only until its global takes it,
+ * which the worker builds at the period's close + CFDI_GLOBAL_GRACE_MINUTES. The cached status
+ * carries it so a receipt printed offline shows the same date the portal enforces.
+ */
+export type SelfInvoiceGlobalBound = {
+  globalPeriodicity: Periodicity;
+  nextPeriodicity: Periodicity | null;
+  nextPeriodicityFrom: string | null;
+  /** The restaurant's business-day cutoff (minutes after midnight): a period closes at its end. */
+  cutoff: number;
+  /** The worker's CFDI_GLOBAL_GRACE_MINUTES (published in cfdi_platform; default 60). */
+  graceMinutes: number;
+};
+
+/** Default of CFDI_GLOBAL_GRACE_MINUTES (server/cfdi/config.ts), for a worker that published none. */
+export const DEFAULT_GLOBAL_GRACE_MINUTES = 60;
+
+/** The instant the global of a ticket's period is built: its close (end of the business day) + grace. */
+export function globalBuildAt(
+  businessDate: string,
+  bound: SelfInvoiceGlobalBound,
+  timezone: string,
+): string {
+  const closesAt = periodClosesAt(
+    periodOn(businessDate, bound),
+    timezone,
+    bound.cutoff,
+  );
+  return plusMinutes(closesAt, bound.graceMinutes);
+}
+
+function plusMinutes(instant: string, minutes: number): string {
+  return Temporal.Instant.from(instant).add({ minutes }).toString();
+}
+
+/** The global bound of one set of self-invoicing terms: none (reissue on), or the global's build. */
+type GlobalArg =
+  { closesAt: string; graceMinutes: number } | { globalAt: string } | null;
+
+function termsDeadline(
+  businessDate: string,
+  w: {
+    policy: "month" | "days";
+    days: number;
+    timezone: string;
+    global?: GlobalArg;
+  },
+): { deadline: string; bound: "policy" | "global" } {
+  const policy = selfInvoiceDeadline(
+    businessDate,
+    w.policy,
+    w.days,
+    w.timezone,
+  );
+  if (!w.global) return { deadline: policy, bound: "policy" };
+  const globalAt =
+    "globalAt" in w.global
+      ? w.global.globalAt
+      : plusMinutes(w.global.closesAt, w.global.graceMinutes);
+  return Date.parse(globalAt) < Date.parse(policy)
+    ? { deadline: Temporal.Instant.from(globalAt).toString(), bound: "global" }
+    : { deadline: policy, bound: "policy" };
+}
+
+/**
+ * The self-invoicing deadline a customer has (LD-51 F1): the policy deadline, or, when the global
+ * bound applies, the earlier of it and the moment the ticket's global is built (`globalAt`, or the
+ * period's close `closesAt` + `graceMinutes` when the caller read the period row). `bound` says
+ * which one ended it.
+ *
+ * `pending` is a self-invoicing change that would bring forward a deadline a receipt already
+ * printed, so it waits (CFDIFIX-FISCAL-5 / UX-4, guarded like a periodicity change): the terms in
+ * force apply until `fromAt` (the start of the business day it applies from, chosen after every
+ * such printed deadline), the new ones after it. A customer may self-invoice while either allows
+ * it, so the deadline is the later of the new terms' and the current terms' cut at `fromAt`; a
+ * receipt printed while the change waits prints exactly that, and nothing printed before the save
+ * ends earlier than it said.
+ */
+export function effectiveSelfInvoiceDeadline(
+  businessDate: string,
+  w: {
+    policy: "month" | "days";
+    days: number;
+    timezone: string;
+    /** Null or absent: no global bound (reissue on, or a status cached before cfdifix). */
+    global?: GlobalArg;
+    pending?: {
+      policy: "month" | "days";
+      days: number;
+      global?: GlobalArg;
+      /** The instant the pending terms apply from. */
+      fromAt: string;
+    } | null;
+  },
+): { deadline: string; bound: "policy" | "global" } {
+  const current = termsDeadline(businessDate, w);
+  if (!w.pending) return current;
+  const cut =
+    Date.parse(current.deadline) <= Date.parse(w.pending.fromAt)
+      ? current
+      : {
+          deadline: Temporal.Instant.from(w.pending.fromAt).toString(),
+          bound: "policy" as const,
+        };
+  const next = termsDeadline(businessDate, {
+    policy: w.pending.policy,
+    days: w.pending.days,
+    timezone: w.timezone,
+    global: w.pending.global,
+  });
+  return Date.parse(next.deadline) >= Date.parse(cut.deadline) ? next : cut;
+}
+
+/**
+ * The receipt, the portal and the staff view print the deadline's time too whenever it is not the
+ * policy's end of day (23:59:59.999 local): a global-bound deadline (the period's close + the
+ * worker's grace, early in the morning after the period's last business date, LD-55
+ * CFDIFIX-FISCAL-1 / UX-1) or a pending change's start; and on the purchase's business date or the
+ * next calendar day (LD-51 F1). A date alone reads as the whole day.
+ */
+export function deadlineShowsTime(
+  deadline: string,
+  businessDate: string,
+  timezone: string,
+): boolean {
+  const local = Temporal.Instant.from(deadline).toZonedDateTimeISO(timezone);
+  const endOfDay =
+    local.hour === 23 &&
+    local.minute === 59 &&
+    local.second === 59 &&
+    local.millisecond === 999;
+  if (!endOfDay) return true;
+  return (
+    Temporal.PlainDate.compare(
+      local.toPlainDate(),
+      plainDate(businessDate).add({ days: 1 }),
+    ) <= 0
+  );
+}
+
+/**
+ * How long a signed-in terminal may print from its cached CFDI status (src/features/cfdi/status.ts
+ * refreshes it this often while online). A periodicity change that applied at once and brings a
+ * deadline forward is rebuilt only after this plus a margin, so the tick's re-check sees every
+ * ticket a terminal printed with the old status (CFDIFIX-CONCURRENCY-2).
+ */
+export const STATUS_REFRESH_MS = 5 * 60_000;
+export const PERIODICITY_REBUILD_WAIT_MS = STATUS_REFRESH_MS + 2 * 60_000;
+
+/**
+ * Self-invoicing terms (policy, its days, whether the portal reissues globals), and a change that
+ * waits for `from` (a business date) because it would bring forward a printed deadline
+ * (CFDIFIX-FISCAL-5 / UX-4).
+ */
+export type SelfInvoiceTerms = {
+  policy: "month" | "days";
+  days: number;
+  reissue: boolean;
+};
+export type PendingSelfInvoice = SelfInvoiceTerms & { from: string };
+
+/**
+ * The business date a pending self-invoicing change may apply from: the first business day that
+ * starts at or after `deadline`, the latest deadline it would otherwise bring forward.
+ */
+export function selfInvoiceChangeFrom(
+  deadline: string,
+  timezone: string,
+  cutoff: number,
+): string {
+  const before = Temporal.Instant.from(deadline)
+    .subtract({ milliseconds: 1 })
+    .toZonedDateTimeISO(timezone);
+  const minutes = before.hour * 60 + before.minute;
+  const day =
+    minutes < cutoff
+      ? before.toPlainDate().subtract({ days: 1 })
+      : before.toPlainDate();
+  return day.add({ days: 1 }).toString();
+}
+
+/** The instant a business date starts (its cutoff, in the restaurant timezone). */
+export function businessDayStart(
+  date: string,
+  timezone: string,
+  cutoff: number,
+): string {
+  return boundaries(date, timezone, cutoff).start;
+}
+
+/**
+ * Why a periodicity change must wait for the first of next month (LD-51 F2), or null when it may
+ * apply at once:
+ *   "globals"   the month has a global document of one of its periods (stamped, claiming or
+ *               failed: the register and the sweeps read documents by period key);
+ *   "overdue"   an unclaimed ticket of the month would sit in a period, old or new, whose 24-hour
+ *               deadline (RMF 2.7.1.21) already passed: re-partitioning the month never turns an
+ *               on-time global into a late one nor hides one that is late;
+ *   "deadline"  the change would give an unclaimed ticket of the month an earlier
+ *               self-invoicing deadline than it has (CFDIFIX-1): its receipt already printed the
+ *               deadline under the old periodicity, and the portal must never refuse a customer
+ *               before that date. A change that keeps or lengthens every deadline applies at once.
+ *               Each date's deadline, before and after, is read as the portal reads it
+ *               (store.ts deadlineOf, CFDIFIX-R2-3): effectiveSelfInvoiceDeadline under the terms
+ *               in force with the change that waits, if any (`pending`, cut at its start). The
+ *               check does not depend on the self-invoicing or reissue switches: every set of
+ *               terms is bound by the global's build (the strictest reading, never later than
+ *               deadlineOf's), so a receipt printed while they were off keeps its date when they
+ *               are turned back on.
+ * `dates` are the business dates of the month's unclaimed eligible tickets on or after the mode's
+ * start; `selfInvoice` the terms receipts print today (in force, with the change that waits) and
+ * the worker's grace; `after` the terms in force after the save when it changes them too
+ * (CFDIFIX-R2-4; default: the same).
+ */
+export type PeriodicityChangeBlock = "globals" | "overdue" | "deadline";
+/** Self-invoicing terms as a deadline reads them: the window, and a change that waits (LD-55). */
+export type SelfInvoiceWindow = {
+  policy: "month" | "days";
+  days: number;
+  /** A change that waits for its business date (CFDIFIX-FISCAL-5 / UX-4); its reissue is not read. */
+  pending?: Pick<PendingSelfInvoice, "policy" | "days" | "from"> | null;
+};
+export function periodicityChangeBlock(i: {
+  hasGlobals: boolean;
+  dates: readonly string[];
+  from: Periodicity;
+  to: Periodicity;
+  timezone: string;
+  cutoff: number;
+  selfInvoice: SelfInvoiceWindow & { graceMinutes: number };
+  after?: SelfInvoiceWindow;
+  now: Date;
+}): PeriodicityChangeBlock | null {
+  if (i.hasGlobals) return "globals";
+  const closesAt = (date: string, p: Periodicity) =>
+    periodClosesAt(globalPeriodFor(date, p), i.timezone, i.cutoff);
+  const overdue = i.dates.some((date) =>
+    [i.from, i.to].some(
+      (p) =>
+        Date.parse(plusMinutes(closesAt(date, p), 24 * 60)) <= i.now.getTime(),
+    ),
+  );
+  if (overdue) return "overdue";
+  const deadline = (date: string, p: Periodicity, w: SelfInvoiceWindow) => {
+    const global = {
+      closesAt: closesAt(date, p),
+      graceMinutes: i.selfInvoice.graceMinutes,
+    };
+    return Date.parse(
+      effectiveSelfInvoiceDeadline(date, {
+        policy: w.policy,
+        days: w.days,
+        timezone: i.timezone,
+        global,
+        pending: w.pending
+          ? {
+              policy: w.pending.policy,
+              days: w.pending.days,
+              global,
+              fromAt: businessDayStart(w.pending.from, i.timezone, i.cutoff),
+            }
+          : null,
+      }).deadline,
+    );
+  };
+  const after = i.after ?? i.selfInvoice;
+  if (
+    i.dates.some(
+      (date) =>
+        deadline(date, i.to, after) < deadline(date, i.from, i.selfInvoice),
+    )
+  )
+    return "deadline";
+  return null;
+}
+
+/** Whether a periodicity change may apply at once (periodicityChangeBlock answers null). */
+export function periodicityChangeNow(
+  i: Parameters<typeof periodicityChangeBlock>[0],
+): boolean {
+  return periodicityChangeBlock(i) === null;
 }
 
 /**
@@ -452,8 +738,17 @@ export const cfdiSettingsInput = z
   })
   .strict();
 export type CfdiSettingsInput = z.infer<typeof cfdiSettingsInput>;
+/**
+ * Activation asks for the global periodicity (LD-51 F2), so a restaurant never starts on a default
+ * it then cannot change for the month; RESICO (626) is coerced to monthly as every save is (D4,
+ * SAT-4). Optional for older clients: monthly (D4).
+ */
 export const activateInput = z
-  .object({ operationId: id, expectedVersion: z.literal(0) })
+  .object({
+    operationId: id,
+    expectedVersion: z.literal(0),
+    globalPeriodicity: z.enum(PERIODICITIES).default("month"),
+  })
   .strict();
 export const operationInput = z.object({ operationId: id }).strict();
 export const invoiceRequestInput = z
@@ -590,6 +885,22 @@ export type CfdiStatusView = {
     enabled: boolean;
     policy: "month" | "days";
     days: number;
+    /**
+     * The global bound of the deadline (LD-51 F1); null when the portal reissues globals. Absent in
+     * a status cached before cfdifix: the receipt then prints the policy date alone.
+     */
+    globalBound?: SelfInvoiceGlobalBound | null;
+    /**
+     * A self-invoicing change that waits because it would bring forward a printed deadline
+     * (CFDIFIX-FISCAL-5 / UX-4): its terms and the instant they apply from. The receipt prints the
+     * deadline effectiveSelfInvoiceDeadline gives with it. Absent in an older cached status.
+     */
+    pending?: {
+      policy: "month" | "days";
+      days: number;
+      globalBound: SelfInvoiceGlobalBound | null;
+      fromAt: string;
+    } | null;
   } | null;
   timezone: string;
   version: number;
@@ -600,7 +911,24 @@ export type CfdiOrganizationView = {
   /** The organization exists at Facturapi (it has an id): a CSD can be uploaded to it. */
   provisioned: boolean;
   errorCode: string | null;
+  /** The issuer RFC as Facturapi reports it; null ("pendiente") until it does (LD-51 F9). */
   taxId: string | null;
+  /**
+   * Shared sandbox (LD-51 F3): the platform's test organization, which stamps every test CFDI in
+   * this mode, as Facturapi reports it; the restaurant's fiscal profile is not used to stamp.
+   */
+  sharedIssuer: {
+    legalName: string | null;
+    taxId: string | null;
+    regime: string | null;
+    postalCode: string | null;
+    /**
+     * Facturapi reported the RFC, régimen and postal code: stamping uses them as a whole. False:
+     * stamping uses the restaurant's fiscal profile until it does (never a mix of two taxpayers,
+     * CFDIFIX-FISCAL-6 / UX-6).
+     */
+    complete: boolean;
+  } | null;
   legalSyncedVersion: number | null;
   fiscalProfileVersion: number;
   csd: {
@@ -633,6 +961,13 @@ export type CfdiAttention = {
 export type CfdiSettingsView = CfdiStatusView & {
   /** Owner. */
   canEdit: boolean;
+  /** The worker's CFDI_GLOBAL_GRACE_MINUTES: the settings explain the self-invoicing bound. */
+  globalGraceMinutes: number;
+  /**
+   * The restaurant's business date on the server (timezone and cutoff): which month a change
+   * reshapes and which periodicity is in force (CFDIFIX-6).
+   */
+  businessDate: string;
   prerequisites: {
     platform: boolean;
     fiscalComplete: boolean;
@@ -658,11 +993,29 @@ export type CfdiSettingsView = CfdiStatusView & {
     selfInvoicePolicy: "month" | "days";
     selfInvoiceDays: number;
     portalReissueGlobal: boolean;
+    /**
+     * A self-invoicing change (window or portal reissue) that waits until `from` because it would
+     * bring forward the deadline of receipts already printed (CFDIFIX-FISCAL-5 / UX-4); the fields
+     * above are the terms in force on the server's business date.
+     */
+    selfInvoicePending: PendingSelfInvoice | null;
     supportEmail: string | null;
     version: number;
     updatedAt: string;
     updatedByName: string | null;
     resicoMonthly: boolean;
+    /**
+     * Why the pending change did not apply at once (CFDIFIX-5), while it is still the pending one:
+     * refused by the save, or deferred by the tick when the month got shaped before it rebuilt it.
+     */
+    periodicityDeferred: {
+      at: string;
+      from: Periodicity;
+      to: Periodicity;
+      nextFrom: string;
+      reason: PeriodicityChangeBlock;
+      source: "save" | "tick";
+    } | null;
   };
   organization: CfdiOrganizationView | null;
   live: {
@@ -785,7 +1138,13 @@ export type CfdiTicketView = {
   issuerRfc: string | null;
   mode: CfdiMode;
   eligibility: TicketEligibility;
+  /** The self-invoicing deadline (null when self-invoicing is off). */
   deadline: string | null;
+  /**
+   * What ends it (LD-51 F1): the restaurant's policy, or the ticket's global (built at its period's
+   * close + grace while the portal does not reissue globals). Null without a deadline.
+   */
+  deadlineBound: "policy" | "global" | null;
   needsCardForm: boolean;
   /** The restaurant's card payment form (settings): the card question's initial answer (§2.5). */
   cardPaymentForm: CardForm;
@@ -825,9 +1184,12 @@ export type GlobalPeriodView = {
   closesAt: string;
   dueAt: string;
   status: GlobalPeriodStatus;
+  /** Tickets in the period's documents plus its unclaimed ones (LD-51 F11). */
   ticketCount: number;
   total: number;
   tax: number;
+  /** Eligible tickets of the period in no CFDI yet ("Por emitir"), counted in ticketCount. */
+  unclaimedTickets: number;
   lateTickets: number;
   documents: {
     id: string;

@@ -6,6 +6,7 @@
  * (config); organization keys are sealed in cfdi_secrets and opened here per document mode. A test
  * document is never sent with a live key and the reverse (spec §4.4).
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { Alert } from "../../ops/alerts.js";
 import type { Tx } from "../../db.js";
 import type { CfdiWorkerConfig, Keyring } from "../config.js";
@@ -99,4 +100,65 @@ export async function documentKey(
   if (keyKindOf(secret) !== mode)
     throw new CfdiJobError("cfdi_org_key_invalid");
   return { kind: mode, secret };
+}
+
+/**
+ * What a cfdi job did, for its one info line when it succeeds (LD-51 F13): the document it acted
+ * on and the X-Facturapi-Log-Id of each provider answer (the client's onResponse).
+ */
+export type JobTrace = {
+  documentId: string | null;
+  /** Every provider answer's X-Facturapi-Log-Id, error answers included (CFDIFIX-OPS-1). */
+  logIds: string[];
+  /** The job only handed over (cfdi unavailable): its own info line already says so. */
+  quiet: boolean;
+  /**
+   * The job ended done but failed its document (a permanent refusal, CFDIFIX-OPS-1): the line is
+   * cfdi_job_failed with the code and the refused answer's log id, not cfdi_job_done.
+   */
+  failure?: { code: string; logId: string | null } | null;
+  /** The last error answer's (status ≥ 400) log id: the id of the refusal a retry follows. */
+  errorLogId?: string | null;
+};
+
+const traces = new AsyncLocalStorage<JobTrace>();
+
+/** Runs a job handler with its trace (register.ts wraps every cfdi handler with it). */
+export function withTrace<T>(
+  trace: JobTrace,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return traces.run(trace, fn);
+}
+
+/**
+ * The Facturapi client's onResponse: a provider answer's log id (2xx or error) joins the current
+ * job's trace.
+ */
+export function recordProviderResponse(meta: {
+  logId: string | null;
+  status?: number;
+}): void {
+  const trace = traces.getStore();
+  if (!trace || !meta.logId) return;
+  if (trace.logIds.length < 20) trace.logIds.push(meta.logId);
+  if ((meta.status ?? 0) >= 400) trace.errorLogId = meta.logId;
+}
+
+/** The document the current job acted on (a cancellation's document, a refund's credit note). */
+export function traceDocument(documentId: string | null): void {
+  const trace = traces.getStore();
+  if (trace && documentId) trace.documentId = documentId;
+}
+
+/** The current job failed its document (failDocumentTx): its line says so (CFDIFIX-OPS-1). */
+export function traceFailure(code: string, logId: string | null): void {
+  const trace = traces.getStore();
+  if (trace) trace.failure = { code, logId };
+}
+
+/** The current job only handed over: no second info line. */
+export function traceQuiet(): void {
+  const trace = traces.getStore();
+  if (trace) trace.quiet = true;
 }
