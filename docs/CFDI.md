@@ -788,7 +788,9 @@ never the worker's. That clock is JavaScript's only: `loadSettings` decides whet
 self-invoicing change is due with the database's `now()` (CFDIFIX-R3-4), so such a check keeps
 any waiting change dated where both clocks agree. The browser periodicity check moves the demo
 restaurant's timezone and cutoff for its duration (local fixture database only, restored in its
-finally and afterEach) on a month's last day, never to a date before the restaurant's own.
+finally and afterEach) on a month's last day, never to a date before the restaurant's own; a run
+killed before either leaves it pinned until the next run's global setup, which starts every run
+with the demo restaurants in America/Mexico_City at 04:00 (10:00 near the rollover) (CFDIFIX-R3-3).
 
 Fixture provenance: `tests/fixtures/facturapi/README.md`. CI runs the fake on 127.0.0.1:4799 and
 gives only the worker a fake User key, a synthetic keyring and `FACTURAPI_BASE_URL`.

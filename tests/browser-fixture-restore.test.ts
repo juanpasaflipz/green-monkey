@@ -1,8 +1,9 @@
 // POLISH-OPS-4 (LD-48): a browser spec that moves a restaurant's business-day cutoff on the
 // reused local fixture database restores it from test.afterEach, not only from the test's
-// finally: a timed-out test never reaches its finally, and global-setup repairs only a
-// cutoff of exactly 240 (tests/browser/global-setup.ts), so a leftover 0 or 1439 would
-// move the demo restaurant's rollover for every later test and run.
+// finally: a timed-out test never reaches its finally, and global-setup puts the demo
+// restaurants back in the seed's zone only before a run (tests/browser/global-setup.ts,
+// CFDIFIX-R3-3), so a leftover 0 or 1439 would move the demo restaurant's rollover for every
+// later test of the run.
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";

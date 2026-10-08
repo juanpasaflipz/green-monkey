@@ -47,8 +47,10 @@ left in the kitchen review lane and delivers every kitchen round the test
 opened; `public-ordering.spec` delivers its own rounds. Before a run,
 `tests/browser/global-setup.ts` settles what an interrupted run left on each
 demo restaurant (open rounds, their pending cancellations, pending kitchen
-reviews), naming the restaurant in every statement, and only on the isolated
-local fixture database. Tests find their own records by unique names or by
+reviews, a timezone or cutoff a spec had pinned: every run starts in
+America/Mexico_City at 04:00, or 10:00 near the rollover, CFDIFIX-R3-3),
+naming the restaurant in every statement, and only on the isolated local
+fixture database. Tests find their own records by unique names or by
 searching (no "last" ticket or first register page). A reused staging
 database still accumulates the open checks, but no kitchen rounds or kitchen
 reviews.
