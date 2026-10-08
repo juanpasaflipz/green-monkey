@@ -304,6 +304,27 @@ test("the receipt on a 1024×768 tablet keeps Imprimir recibo and Siguiente vent
   await expect(page.locator(".receipt")).toHaveCount(0);
 });
 
+test("a wide but short desktop window (1600×800) keeps the desktop catalog and cart; the short-tablet layout stops at 1499 px (ACC-PR-8)", async ({
+  page,
+}) => {
+  const art = () =>
+    page
+      .locator("button.product .product-art")
+      .first()
+      .evaluate((e) => getComputedStyle(e).height);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await login(page);
+  await page.getByRole("button", { name: "Vender", exact: true }).click();
+  const desktop = await art();
+  await page.setViewportSize({ width: 1600, height: 800 });
+  await expect.poll(art).toBe(desktop);
+  await expect(page.locator(".cart-details-summary")).toHaveCount(0);
+  // A 10" tablet still gets the compact layout.
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await expect.poll(art).not.toBe(desktop);
+  await expect(page.locator(".cart-details-summary")).toHaveCount(1);
+});
+
 test("a line note on a 1024×768 tablet: the editor's chips and Listo come on screen without scrolling the cart (FOH-10, restaurant-day A10.1)", async ({
   page,
 }) => {

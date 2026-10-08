@@ -228,7 +228,10 @@ export function Selling({
   const receiptRef = useRef(receipt);
   receiptRef.current = receipt;
   const releaseKey = useRef(crypto.randomUUID());
-  const compact = useMediaQuery("(max-height: 820px) and (min-width: 801px)");
+  // The short-tablet query of styles.css (ACC-PR-8).
+  const compact = useMediaQuery(
+    "(max-height: 820px) and (min-width: 801px) and (max-width: 1499px)",
+  );
   const paymentKey = useRef(crypto.randomUUID());
   const search = useRef<HTMLInputElement>(null);
   const activeId = scope(session) + ":active";

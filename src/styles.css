@@ -1990,7 +1990,9 @@ th {
 .receipt-doc .doc-tender .row {
   margin: 4px 0;
 }
-@media (max-height: 820px) and (min-width: 801px) {
+/* A short tablet (10" landscape), never a wide desktop window that happens to
+   be short (ACC-PR-8); Selling's compact cart uses the same query. */
+@media (max-height: 820px) and (min-width: 801px) and (max-width: 1499px) {
   .cart-heading {
     flex-wrap: nowrap;
   }
