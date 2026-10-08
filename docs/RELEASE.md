@@ -99,8 +99,9 @@ variable `RD_NIGHTLY_REF`, and on every pull request into `main` whose head is
   `RD_LEGAL_ENTITY_RFC`), `RD_SUPPORT_EMAIL`, `RD_SUPPORT_PHONE`,
   `RD_SUPPORT_HOURS`: values production mode publishes (the vendor's real ones
   or a plausible fictional set, LD-3), never the CI literals of
-  `tests/fixtures/legal-ci.ts`, which production refuses. Without them the gate
-  fails at setup. `RD_NIGHTLY_REF` (for example `release/v1`) and `RD_WAIVE`
+  `tests/fixtures/legal-ci.ts`, which production refuses. Without them, or with
+  a value production refuses (`RD_SUPPORT_PHONE` is E.164 without spaces, like
+  `+525512345678`), the gate fails at setup and names the variable. `RD_NIGHTLY_REF` (for example `release/v1`) and `RD_WAIVE`
   (comma-separated finding IDs, normally empty).
 - Secret: `FACTURAPI_TEST_KEY` (a Facturapi test key, `sk_test_…`) enables the
   `restaurant-day-cfdi` job (branch K, web and worker as `APP_ENV=staging`);

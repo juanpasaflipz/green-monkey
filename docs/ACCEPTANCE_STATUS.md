@@ -81,13 +81,23 @@ this branch, the last two after absorbing integration/v1 (W3-2 flake fixes, LD-4
 the final code (10/10 browser tests in about 9 minutes, then D1–D19), with zero soft findings. The
 track's full qualification passed on the final code as well. It ran on the local
 fixture cluster with a plausible fictional legal and support set, so G1.6 proves publication of
-that set, not of the vendor's real values (LD-3). The workflow has never run on GitHub: the
-repository variables `RD_LEGAL_*`, `RD_SUPPORT_*` and `RD_NIGHTLY_REF` must be set and
-`scripts/ops/github-protect.sh` re-applied before it can gate a release. Branch K (CFDI with the
+that set, not of the vendor's real values (LD-3). Branch K (CFDI with the
 Facturapi sandbox) passed end to end locally only against the Facturapi fake (10/10 and D1–D19;
 `RD_CFDI_FAKE_PORT`, a local triage switch that CI refuses, runs the worker as `APP_ENV=test`). It
 is unverified against the real sandbox, including the D22 test receptor (§15 Q5) and LD-36's
 RESICO test organization.
+
+**Finish round, October 7, 2026 (local only, LD-57).** The first run with the lead's fictional
+`RD_*` set failed at A2: its support phone is written with spaces, production's `legalConfig`
+refuses it (account §2.2: E.164), so "Ayuda y soporte" had no "Teléfono:" line. Not a product
+defect. Global setup now refuses, before any work, every `RD_*` value production would not
+publish, and names it (`55950e6`). With the same number in E.164, three consecutive runs passed,
+each with 0 waivers, 0 soft findings, 0 error or warn lines from the web and only the tolerated
+`web_down` warn from the worker (§15 Q18): branch N (10/10 in 8.8 min, D1–D19, 530 s in all),
+branch K against the fake (10/10 in 9.3 min, D1–D19 with row K, 564 s), and branch N again on
+`55950e6` (10/10 in 9.2 min, D1–D19, 559 s). §11 in those runs: 8 taps exact and 9 with a bill,
+modelled 10.5 s and 11.6 s, every tap's p95 under 150 ms, system time about 0.5 s. The repository variable `RD_SUPPORT_PHONE` holds the same spaced value (LD-57), so the
+first CI run will stop at setup until it is rewritten in E.164.
 
 Timing (§11), canonical order sampled five times per run on the 10-inch tablet, local runs:
 every tap's latency p95 within its budget (taps 1-6 and 8 under 80 ms against 150-700 ms; "Confirmar
@@ -147,10 +157,13 @@ confirmation. Local latencies are not production latencies (no network between b
 - §6.11 says A16 pays exact, but the order book (§6.6), which the money tables come from, pays A16 with "$100": the order book wins, so A07, A16 and A24 take 9 taps.
 - LD-46/LD-49 (absorbed from integration): the web trusts its loopback peer like Railway's edge, so every gate client sends the edge's `X-Real-IP` (127.0.0.1, keeping §3.8's shared per-IP buckets); the clients exercise the production client-address path and the deployed web has no `client_ip_without_real_ip` warning to log.
 - §13.1: the nightly job checks out `vars.RD_NIGHTLY_REF` (scheduled runs start on the default branch), and G1.2 compares `/api/version` with the stamped commit (`RD_BUILD_COMMIT`), not `GITHUB_SHA`.
+- §13.1: `day-cfdi` needs a `cfdi-key` job and runs only when it finds `FACTURAPI_TEST_KEY`. The spec's `if: inputs.cfdi || startsWith(github.head_ref, 'release/')` cannot see whether the secret exists (a job-level `if` cannot read secrets): without the extra job, `restaurant-day-cfdi` would run on every release pull request and, with no key, repeat branch N under a branch K name, where §13.2 wants it to report "skipped". The required check contexts are the job names `restaurant-day` and `restaurant-day-cfdi`. A job skipped by its `if` reports success, so ordinary pull requests are not blocked.
 
 ### Open items
 
-- Real sandbox (branch K) and the vendor's real legal values have never been exercised; the first `restaurant-day-cfdi` run with `FACTURAPI_TEST_KEY` verifies D22.
+- `RD_SUPPORT_PHONE` (repository variable, LD-57) must be rewritten in E.164 without spaces; with the current value global setup refuses the run.
+- `ops/github/main-ruleset.json` lists `restaurant-day` and `restaurant-day-cfdi`; per LD-57 `scripts/ops/github-protect.sh` applies it only after the acceptance pull request merges. `RD_NIGHTLY_REF` must name the release branch for the nightly run.
+- Real sandbox (branch K) and the vendor's real legal values have never been exercised; the first `restaurant-day-cfdi` run with `FACTURAPI_TEST_KEY` verifies D22. Per LD-57 the key is not in GitHub secrets, so that job skips; branch K was rehearsed locally against the real sandbox (LD-51) and the gate's branch K passes against the fake.
 - §13.2 asks for the gate before any production deploy dispatch; `deploy.yml` does not check it yet (ops).
 - §13.2 requires two consecutive green CI runs after any change to the suite; only local runs exist.
 - Product questions surfaced by branch K (left as built, recorded above): an open global period could
