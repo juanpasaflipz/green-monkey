@@ -103,7 +103,12 @@ jobs:
           [ "$CONFIRM" = "deploy ${SHA:0:7} to production" ] || { echo "confirmation phrase mismatch"; exit 1; }
           probe="$RUNNER_TEMP/guard" && mkdir -p "$probe" && cd "$probe"
           git init -q && git remote add origin "https://github.com/$GITHUB_REPOSITORY"
-          git -c "http.extraheader=AUTHORIZATION: bearer $GH_TOKEN" fetch -q origin main
+          # GitHub's git endpoint takes the job token as basic auth (x-access-token),
+          # as actions/checkout sends it; a bearer header makes git prompt for a
+          # username and fail on a private repository (first production dispatch).
+          auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          echo "::add-mask::$auth"
+          git -c "http.extraheader=AUTHORIZATION: basic $auth" fetch -q origin main
           git merge-base --is-ancestor "$SHA" origin/main || { echo "sha is not on main"; exit 1; }
           state=$(gh api "repos/$GITHUB_REPOSITORY/commits/$SHA/statuses" \
             --jq '[.[] | select(.context == "deploy/staging")][0].state')
