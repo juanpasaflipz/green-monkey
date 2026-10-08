@@ -125,6 +125,7 @@ confirmation. Local latencies are not production latencies (no network between b
 | Axe on B7-global (768 px): the "Facturas globales" table scrolls sideways and, while no period has documents, holds nothing a keyboard can reach (`scrollable-region-focusable`) | `b88b322`: the `GlobalPeriods.tsx` table wrapper is a labelled, focusable region | `tests/browser/cfdi.spec.ts` |
 | G4 at A14.4 (branch K): with the platform's CFDI provider configured, every refund dialog of a restaurant that never activated CFDI asked for the ticket's CFDI view and logged a 409 | `a0caee3`: `status.ts` asks only once CFDI has a mode | `tests/cfdi-client.test.ts` |
 | G3 dates (B6-cfdi, A14-detail): Detalle de orden dated the order with `toLocaleString` ("7/10/2026, 9:41:23"); A14-detail had scanned the dialog before it loaded | `bfecfbe`: `OrderDetail.tsx` uses `dateTime`; the checkpoint waits for the loaded detail | `tests/browser/service.spec.ts` |
+| G3 dates (B7-global, branch K; review ACC-PR-5b): cfdi's `dateTimeLabel` ("Abierto hasta" in Facturas globales, document times) printed es-MX's 12-hour "7 oct 2026, 4:53 p.m." | `src/features/cfdi/format.ts` sets `hourCycle: "h23"` ("7 oct 2026, 16:53"); the cfdi files leave the date-format scan's skip list | `tests/datetime.test.ts` (no skip); branch K asserts "Abierto hasta" exactly |
 
 ### Spec expectations bound to the built behaviour (recorded here per LD-16 L1; assertions adapted, not weakened)
 

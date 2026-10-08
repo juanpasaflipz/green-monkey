@@ -127,6 +127,10 @@ export function deadlineText(
   return t(locale, "cfdiDateAtTime", { date, time });
 }
 
+/**
+ * "7 oct 2026, 16:53" / "Oct 7, 2026, 16:53": an instant in the restaurant timezone with a 24-hour
+ * time, never es-MX's default "4:53 p.m." (restaurant-day G3, ACC-PR-5b).
+ */
 export function dateTimeLabel(
   iso: string,
   timezone: string,
@@ -135,6 +139,7 @@ export function dateTimeLabel(
   return new Intl.DateTimeFormat(intl(locale), {
     dateStyle: "medium",
     timeStyle: "short",
+    hourCycle: "h23",
     timeZone: timezone,
   }).format(new Date(iso));
 }

@@ -271,7 +271,11 @@ export async function globalReadiness(owner: Device, caja: Device, state: RunSta
   await expect(row).toHaveCount(1);
   const cells = row.getByRole("cell");
   await expect(cells.nth(0)).toContainText("Prueba");
-  await expect(cells.nth(1)).toHaveText(/^Abierto hasta /);
+  // The daily period closes at the next business day's start (the cutoff), printed with a
+  // 24-hour time (cfdi dateTimeLabel, ACC-PR-5b; G3 refuses "a.m./p.m." at B7-global).
+  const [y, m, d] = state.businessDateB.split("-").map(Number) as [number, number, number];
+  const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  await expect(cells.nth(1)).toHaveText(`Abierto hasta ${dateLabel(next)}, ${state.cutoffB}`);
   const k = EXPECTED.B.globalK;
   const cents = (s: string) => Math.round(Number(s.replace(/[$,]/g, "")) * 100);
   await expect(cells.nth(2)).toHaveText(String(k.tickets));

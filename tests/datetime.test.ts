@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { dateTime } from "../src/datetime";
 import { fiscalDateTime } from "../src/features/fiscal/format";
+import { dateTimeLabel } from "../src/features/cfdi/format";
 
 // restaurant-day G3 dates rule: screens print dd/MM/yyyy (Spanish) or a month
 // name, never toLocaleString's "7/10/2026, 4:53:12".
@@ -20,20 +21,30 @@ describe("dateTime", () => {
       dateTime(at, "America/Mexico_City", "es"),
     );
   });
+  // ACC-PR-5b: cfdi's "Abierto hasta" (Facturas globales) and document times
+  // printed es-MX's "7 oct 2026, 4:53 p.m.", which G3 refuses at B7-global.
+  it("cfdi's dateTimeLabel prints a 24-hour time", () => {
+    const pm = "2026-10-07T22:53:00Z";
+    expect(dateTimeLabel(pm, "America/Mexico_City", "es")).toBe(
+      "7 oct 2026, 16:53",
+    );
+    expect(dateTimeLabel(pm, "America/Mexico_City", "en")).toBe(
+      "Oct 7, 2026, 16:53",
+    );
+    expect(dateTimeLabel(at, "America/Tijuana", "es")).toBe(
+      "7 oct 2026, 03:53",
+    );
+  });
 });
 
 // ACC-PR-5: no screen formats a date with toLocaleString (it prints
 // "7/10/2026, 4:53:12"), and no time is left to the locale's hour cycle:
 // es-MX prints "4:53 p.m.", which the restaurant-day G3 scanner refuses.
 describe("date and time formatting on screens", () => {
-  // The CFDI track rewrites this file (its dateTimeLabel prints es-MX
-  // "4:53 p.m."); it joins the scan once that track adds the hour cycle.
-  const pending = new Set(["src/features/cfdi/format.ts"]);
   const files = ["src", "shared"].flatMap((dir) =>
     readdirSync(dir, { recursive: true, encoding: "utf8" })
       .filter((f) => /\.tsx?$/.test(f))
-      .map((f) => join(dir, f))
-      .filter((f) => !pending.has(f)),
+      .map((f) => join(dir, f)),
   );
   /** Every call of `name` with its argument text, as file:line → arguments. */
   const calls = (name: RegExp) =>
