@@ -14,7 +14,7 @@ import { managers, operators, permit } from "./auth.js";
 import { requireRecentAuth } from "./access.js";
 import { audit, once } from "./orders.js";
 import { discountsByLine } from "./discounts.js";
-import { enqueueCfdiRefund } from "./cfdi/hooks.js";
+import { cfdiTicketsIssued, enqueueCfdiRefund } from "./cfdi/hooks.js";
 import {
   businessDate,
   DomainError,
@@ -536,6 +536,25 @@ async function finishTickets(
 }
 
 /**
+ * cfdi (LD-51 F12, LD-55): a ticket for a business date whose period has closed (an offline sale
+ * synced late, last night's check paid this morning, a repair) gets its supplementary global from
+ * the tick of its 30-minute bucket, not at the next scheduled one. Called before this ticket's
+ * folio counter (LO-12): nothing for a ticket of today, else one read and at most a jobs insert,
+ * which commits with the ticket. A command that issues several tickets in one transaction
+ * (recordSettlement) reaches it for a later order after an earlier order took the counter; the
+ * insert's key then carries the order this transaction holds FOR UPDATE, so its unique-key wait can
+ * only meet this same operation (LO-R4 allows reads and LO-R8 inserts after LO-12;
+ * CFDIFIX-CONCURRENCY-1).
+ */
+function tellCfdi(tx: Tx, s: Session, due: readonly DueTicket[]) {
+  return cfdiTicketsIssued(
+    tx,
+    s,
+    due.map((d) => ({ id: d.orderId, businessDate: d.businessDate })),
+  );
+}
+
+/**
  * Issues the order's ticket when its balance first reaches zero with a positive total, in the
  * caller's transaction (the caller holds FOR UPDATE on the order). Idempotent: an existing
  * ticket is returned without touching the counter. Null for a zero total, an unpaid balance, a
@@ -553,6 +572,7 @@ export async function issueDueTicket(
   const prepared = await prepareTicket(tx, orderId, source);
   if (!prepared) return null;
   if ("ticket" in prepared) return prepared.ticket;
+  await tellCfdi(tx, s, [prepared.due]);
   const record = await insertDueTicket(tx, s, prepared.due);
   const [view] = await finishTickets(tx, s, [{ due: prepared.due, record }]);
   return view;
@@ -814,6 +834,7 @@ export async function repairMissingTickets(
       if (prepared && "due" in prepared) due.push(prepared.due);
     }
     const before = await missingTicketCount(tx);
+    await tellCfdi(tx, s, due);
     const issued: { due: DueTicket; record: TicketRecord }[] = [];
     for (const d of due)
       issued.push({ due: d, record: await insertDueTicket(tx, s, d) });

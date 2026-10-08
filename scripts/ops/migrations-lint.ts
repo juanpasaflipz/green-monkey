@@ -7,9 +7,18 @@
 // Prints one JSON line per finding and exits 1 when there is any.
 //
 // Files numbered 022 and later follow every rule; earlier files predate them
-// and are only checked for names, transactions and as the source of which
-// tables force row-level security. Destructive DDL needs an explicit
-// `-- gm:contract-approved` line agreed with the tech lead (docs/RELEASE.md).
+// and are only checked for names, transactions, the runtime role (below) and as
+// the source of which tables force row-level security. Destructive DDL needs an
+// explicit `-- gm:contract-approved` line agreed with the tech lead
+// (docs/RELEASE.md).
+//
+// Runtime role rule (CFDIFIX-R2-1): no migration names the runtime login
+// (gm_app locally and in CI, gm_<env>_app in staging and production, a rotated
+// gm_<env>_app_<suffix>). Only scripts/grants.sql grants it, and the deploy
+// applies that manifest with gm_app replaced by PG_APP_USER; a migration's
+// literal name grants a role staging and production do not have (42704), or a
+// stray one instead of the real login (every write fails with 42501).
+// Comments may name it; strings and dollar-quoted bodies may not.
 //
 // Backfill rule (OPS-R2): deployed migrations run as gm_migrator, which owns
 // the tables but is neither a superuser nor BYPASSRLS, so FORCE ROW LEVEL
@@ -43,7 +52,8 @@ export interface LintFinding {
     | "rls_on_new_table"
     | "backfill_owner_pattern"
     | "destructive_ddl"
-    | "ops_022_scope";
+    | "ops_022_scope"
+    | "runtime_role_named";
   detail: string;
 }
 
@@ -299,6 +309,25 @@ export function destructive(body: string): string[] {
   });
 }
 
+/** The runtime login, any environment's: gm_app, gm_<env>_app, gm_<env>_app_<suffix>. */
+const RUNTIME_ROLE = /\bgm_(?:[a-z0-9]+_)?app(?:_[a-z0-9]+)?\b/gi;
+
+/**
+ * Runtime login names a migration's SQL carries outside comments: in statements, in
+ * single-quoted strings (EXECUTE format(...)) and in every dollar-quoted body, nested ones
+ * included (DO blocks and function bodies).
+ */
+export function runtimeRoleNames(body: string): string[] {
+  const found = new Set<string>();
+  const visit = (sql: string) => {
+    const { code, bodies } = scan(sql);
+    for (const m of code.matchAll(RUNTIME_ROLE)) found.add(m[0].toLowerCase());
+    for (const inner of bodies) visit(inner);
+  };
+  visit(body);
+  return [...found].sort();
+}
+
 /** Lints a set of migration files (normally the whole directory). */
 export function lintMigrations(files: MigrationFile[]): LintFinding[] {
   const findings: LintFinding[] = [];
@@ -338,6 +367,12 @@ export function lintMigrations(files: MigrationFile[]): LintFinding[] {
             "one concurrent index/validate statement per gm:statement-break",
           );
       }
+    for (const role of runtimeRoleNames(f.body))
+      add(
+        f.name,
+        "runtime_role_named",
+        `${role}: the runtime login is granted only by scripts/grants.sql (PG_APP_USER), never by a migration`,
+      );
     if (f.number < RULES_FROM) continue;
 
     if (

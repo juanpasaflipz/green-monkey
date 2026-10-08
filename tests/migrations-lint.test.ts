@@ -300,6 +300,54 @@ BEGIN UPDATE stock_items SET name = name WHERE id = NEW.id; RETURN NEW; END $$;`
     ).toEqual([]);
   });
 
+  it("no migration names the runtime login: only scripts/grants.sql grants it, as PG_APP_USER (CFDIFIX-R2-1)", () => {
+    expect(rule("runtime_role_named")).toEqual([]);
+    const named = (body: string, name = "037_x.sql") =>
+      lintWith(name, "SET LOCAL lock_timeout = '5s';\n" + body).filter(
+        (f) => f.rule === "runtime_role_named",
+      );
+    // 036 as commit 0c964c7 shipped it: staging's migrate failed with 42704.
+    expect(
+      named(
+        "GRANT UPDATE (next_self_invoice_policy, next_self_invoice_days, next_portal_reissue_global,\n  next_self_invoice_from) ON cfdi_settings TO gm_app;\n",
+      ),
+    ).toEqual([
+      {
+        file: "037_x.sql",
+        rule: "runtime_role_named",
+        detail:
+          "gm_app: the runtime login is granted only by scripts/grants.sql (PG_APP_USER), never by a migration",
+      },
+    ]);
+    // Any environment's login, quoted, in a DO block's EXECUTE string or a function body.
+    for (const [body, role] of [
+      ['GRANT SELECT ON jobs TO "gm_staging_app";', "gm_staging_app"],
+      ["REVOKE UPDATE ON jobs FROM GM_PROD_APP;", "gm_prod_app"],
+      [
+        "DO $$ BEGIN EXECUTE format('GRANT SELECT ON %I TO gm_app', 'jobs'); END $$;",
+        "gm_app",
+      ],
+      [
+        "CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $f$ BEGIN\n  -- runs as the owner\n  PERFORM pg_has_role('gm_t1a2b3_app_r20261007', 'gm_jobs_worker', 'member');\nEND $f$;",
+        "gm_t1a2b3_app_r20261007",
+      ],
+      ["ALTER POLICY p ON jobs TO gm_x_app_next;", "gm_x_app_next"],
+    ])
+      expect(named(body).map((f) => f.detail.split(":")[0])).toEqual([role]);
+    // Before 022 too: the rule has no start number.
+    expect(
+      lintMigrations([fixture("010_x.sql", "GRANT SELECT ON jobs TO gm_app;")])
+        .filter((f) => f.rule === "runtime_role_named")
+        .map((f) => f.file),
+    ).toEqual(["010_x.sql"]);
+    // Comments may name it; capability roles and look-alikes are not the runtime login.
+    expect(
+      named(
+        "-- the runtime role (gm_app) gets its UPDATE from scripts/grants.sql\n/* never TO gm_staging_app */\nGRANT SELECT ON jobs TO gm_jobs_worker, gm_support, gm_backup_reader;\nCOMMENT ON TABLE jobs IS 'gm_application jobs';\nDO $$ BEGIN\n  -- not gm_app\n  PERFORM 1;\nEND $$;",
+      ),
+    ).toEqual([]);
+  });
+
   it("022 creates only hot-path indexes and no CHECK constraints (wave 1 contract)", () => {
     expect(rule("ops_022_scope")).toEqual([]);
     expect(

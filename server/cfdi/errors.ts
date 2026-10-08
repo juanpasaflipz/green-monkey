@@ -32,6 +32,11 @@ export type FacturapiFailure = {
   unknownOutcome: boolean;
   /** Facturapi root code (or http_<status>), for events and logs. */
   providerCode?: string;
+  /**
+   * X-Facturapi-Log-Id of the refused answer (FacturapiError.logId): the correlation id Facturapi
+   * support asks for, kept in the document's event and the job's log line (CFDIFIX-OPS-1).
+   */
+  logId?: string;
 };
 
 /** Facturapi codes that are transient by definition. */
@@ -194,7 +199,11 @@ export function classifyFacturapiError(e: unknown): FacturapiFailure {
     return { retry: true, code: "cfdi_unexpected_error", unknownOutcome: true };
 
   const message = e.message ? e.message.slice(0, 1000) : undefined;
-  const base = { message, providerCode: e.code };
+  const base = {
+    message,
+    providerCode: e.code,
+    ...(e.logId ? { logId: e.logId } : {}),
+  };
 
   switch (e.kind) {
     case "timeout":

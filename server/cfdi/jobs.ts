@@ -77,6 +77,13 @@ export const dedupe = {
   tickActivate: () => "tick:activate",
   tickLive: () => "tick:live",
   tickAfterCancel: (documentId: string) => `tick:after-cancel:${documentId}`,
+  /**
+   * A late ticket's tick (LD-51 F12, LD-55): the issuance's 30-minute bucket and the issuing order
+   * (the caller holds it FOR UPDATE), so only the same operation can ever meet the key
+   * (CFDIFIX-CONCURRENCY-1, LO-R8). `issuedTickPrefix` finds the bucket's waiting tick.
+   */
+  tickIssued: (at: Date, orderId: string) =>
+    `${issuedTickPrefix(at)}${orderId}`,
   run: (operationId: string) => `run:${operationId}`,
   refund: (refundId: string) => `refund:${refundId}`,
   refundForce: (refundId: string, operationId: string) =>
@@ -86,6 +93,20 @@ export const dedupe = {
   reissue: (globalId: string, cancellationId: string) =>
     `reissue:${globalId}:${cancellationId}`,
 };
+
+/** A late ticket's tick (LD-55): one per tenant per 30-minute bucket, due 10 minutes after it. */
+export const ISSUED_TICK_BUCKET_MS = 30 * 60_000;
+export const ISSUED_TICK_DELAY_MS = 10 * 60_000;
+/** "tick:issued:2026-10-05T18:30:" for 18:30:00–18:59:59 UTC. */
+export function issuedTickPrefix(at: Date): string {
+  const start = Math.floor(at.getTime() / ISSUED_TICK_BUCKET_MS);
+  return `tick:issued:${new Date(start * ISSUED_TICK_BUCKET_MS).toISOString().slice(0, 16)}:`;
+}
+/** When the bucket's tick runs: the bucket's end plus ISSUED_TICK_DELAY_MS. */
+export function issuedTickRunAt(at: Date): Date {
+  const start = Math.floor(at.getTime() / ISSUED_TICK_BUCKET_MS);
+  return new Date((start + 1) * ISSUED_TICK_BUCKET_MS + ISSUED_TICK_DELAY_MS);
+}
 
 /** "2026-10-05T18:40" for 18:40:00–18:49:59 UTC. */
 export function tenMinuteBucket(at: Date): string {

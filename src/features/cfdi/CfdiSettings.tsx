@@ -5,6 +5,20 @@
  * step-up (api() asks for the PIN); a manager sees it read-only. While the organization is being
  * set up, a CSD is processing or live mode is requested, GET /cfdi/settings is polled every 3 s
  * (single-flight, 2 min at most).
+ *
+ * Rehearsal fixes (LD-51): activation asks for the global periodicity with RESICO's monthly rule
+ * (F2); the issuer block shows the RFC only once Facturapi reports it (F9) and, in the shared
+ * sandbox, the platform's test organization that stamps, without the legal-sync note (F3, F8);
+ * the periodicity field states the one in force on the server's business date, a pending change
+ * and why it waits (F10, CFDIFIX-5/6); the self-invoicing window explains how the global
+ * periodicity in force, and a different one chosen, shortens it (F1).
+ *
+ * Second opinion (LD-55): the save's status says whether a periodicity change applied today or
+ * waits, and until when (UX-2), and the select is described by the periodicity line; a
+ * self-invoicing change that would shorten printed deadlines waits and says so (UX-4); RESICO's
+ * activation shows no change hint (UX-3); the shared issuer note says the rules follow the
+ * restaurant's own régimen, or that its profile stamps while Facturapi has not reported the test
+ * organization (UX-6); an own organization's pending RFC says the CSD upload confirms it (UX-7).
  */
 import {
   useCallback,
@@ -19,14 +33,26 @@ import {
   CARD_PAYMENT_FORMS,
   CFDI_USES,
   PERIODICITIES,
+  RESICO_REGIME,
+  periodicityOn,
   type CardForm,
+  type CfdiOrganizationView,
   type CfdiSettingsInput,
   type CfdiSettingsView,
   type CfdiUse,
+  type PendingSelfInvoice,
   type Periodicity,
+  type PeriodicityChangeBlock,
 } from "../../../shared/cfdi";
+import { REGIMEN_FISCAL } from "../../../shared/sat";
 import { api } from "../../api";
-import { strings, errorNotice, translateError, type Key } from "../../i18n";
+import {
+  strings,
+  errorNotice,
+  translateError,
+  withSupportReference,
+  type Key,
+} from "../../i18n";
 import { Badge, Button, Field } from "../../components/ui";
 import { prefetchCfdiStatus } from "./status";
 import { CsdUpload } from "./CsdUpload";
@@ -45,6 +71,372 @@ const PERIODICITY_KEYS: Record<Periodicity, Key> = {
   fortnight: "cfdiPeriodicityFortnight",
   month: "cfdiPeriodicityMonth",
 };
+const BOUND_KEYS: Record<Periodicity, Key> = {
+  day: "cfdiBoundDay",
+  week: "cfdiBoundWeek",
+  fortnight: "cfdiBoundFortnight",
+  month: "cfdiBoundMonth",
+};
+
+/** "Diaria", "Mensual", … in a sentence ("Periodicidad actual: mensual."). */
+function periodicityName(p: Periodicity, locale: Locale): string {
+  const label = strings[locale][PERIODICITY_KEYS[p]].split(" (")[0];
+  return label.charAt(0).toLowerCase() + label.slice(1);
+}
+
+/**
+ * The issuer block's facts (LD-51 F3, F8, F9): the RFC only once Facturapi reports it ("pendiente"
+ * before); in the shared sandbox, the platform's test organization that stamps, with the note that
+ * the restaurant's profile is not used, and no legal-sync note (nothing is synced there).
+ */
+export function OrganizationFacts({
+  org,
+  locale,
+}: {
+  org: CfdiOrganizationView;
+  locale: Locale;
+}) {
+  const t = strings[locale];
+  const shared = org.sharedIssuer;
+  // The RFC Facturapi reports; before it does, what fills it (UX-7): an own organization's comes
+  // with its CSD; an organization in error shows none (waiting will not help).
+  const pendingRfc =
+    org.status === "error"
+      ? "—"
+      : org.source === "own" &&
+          (org.csd.status === "missing" || org.csd.status === "error")
+        ? t.cfdiIssuerPendingCsd
+        : t.cfdiIssuerPending;
+  return (
+    <>
+      <dl className="cfdi-facts">
+        <dt>{t.cfdiOrgStatus}</dt>
+        <dd>
+          {org.status === "provisioning" && t.cfdiOrgConfiguring}
+          {org.status === "ready" && t.cfdiOrgReady}
+          {org.status === "error" &&
+            tr(locale, "cfdiOrgError", {
+              error: orgErrorText(org.errorCode, locale),
+            })}
+        </dd>
+        {shared?.legalName && (
+          <>
+            <dt>{t.cfdiIssuerLegalName}</dt>
+            <dd>{shared.legalName}</dd>
+          </>
+        )}
+        <dt>{t.cfdiIssuerRfc}</dt>
+        <dd className={org.taxId ? "mono" : "muted"}>
+          {org.taxId ?? pendingRfc}
+        </dd>
+        {shared?.regime && (
+          <>
+            <dt>{t.cfdiIssuerRegime}</dt>
+            <dd>
+              {shared.regime} —{" "}
+              {REGIMEN_FISCAL[shared.regime]?.[locale] ?? shared.regime}
+            </dd>
+          </>
+        )}
+        {shared?.postalCode && (
+          <>
+            <dt>{t.cfdiIssuerPostalCode}</dt>
+            <dd className="mono">{shared.postalCode}</dd>
+          </>
+        )}
+      </dl>
+      {org.source === "shared_sandbox" && (
+        <p className="cfdi-warning" role="note">
+          <strong>{t.cfdiSharedIssuerTitle}.</strong>{" "}
+          {shared && !shared.complete
+            ? t.cfdiSharedIssuerFallback
+            : t.cfdiSharedIssuerNote}
+        </p>
+      )}
+      {org.source === "own" && org.legalSyncedVersion !== null && (
+        <p className="muted">
+          {tr(locale, "cfdiLegalSynced", { n: org.legalSyncedVersion })}
+        </p>
+      )}
+      {org.source === "own" &&
+        org.status === "ready" &&
+        (org.legalSyncedVersion ?? 0) < org.fiscalProfileVersion && (
+          <p className="muted">{t.cfdiLegalPending}</p>
+        )}
+    </>
+  );
+}
+
+const DEFERRED_KEYS: Record<PeriodicityChangeBlock, Key> = {
+  globals: "cfdiDeferredGlobals",
+  overdue: "cfdiDeferredOverdue",
+  deadline: "cfdiDeferredDeadline",
+};
+
+/**
+ * The periodicity in force and a pending change (LD-51 F10): the select shows what the owner
+ * chose, these lines what applies on the server's business date (a pending change is in force
+ * from its first day even before the tick promotes it, CFDIFIX-6), from when the change does and,
+ * when it could not apply at once, why (CFDIFIX-5).
+ */
+export function PeriodicityStatus({
+  settings,
+  businessDate,
+  locale,
+  id,
+}: {
+  settings: Pick<
+    NonNullable<CfdiSettingsView["settings"]>,
+    "globalPeriodicity" | "nextPeriodicity" | "nextPeriodicityFrom"
+  > &
+    Partial<
+      Pick<NonNullable<CfdiSettingsView["settings"]>, "periodicityDeferred">
+    >;
+  businessDate: string;
+  locale: Locale;
+  /** Describes the periodicity select (aria-describedby, UX-2). */
+  id?: string;
+}) {
+  const current = periodicityOn(businessDate, settings);
+  const pending =
+    settings.nextPeriodicity &&
+    settings.nextPeriodicityFrom &&
+    settings.nextPeriodicityFrom > businessDate
+      ? { next: settings.nextPeriodicity, from: settings.nextPeriodicityFrom }
+      : null;
+  const deferred = pending ? (settings.periodicityDeferred ?? null) : null;
+  return (
+    <p className="muted" id={id}>
+      {tr(locale, "cfdiPeriodicityCurrent", {
+        current: periodicityName(current, locale),
+      })}
+      {pending && (
+        <>
+          {" "}
+          {tr(locale, "cfdiPeriodicityFrom", {
+            next: periodicityName(pending.next, locale),
+            date: dateLabel(pending.from, locale),
+          })}
+        </>
+      )}
+      {deferred && (
+        <>
+          {" "}
+          {tr(locale, "cfdiPeriodicityDeferred", {
+            reason: tr(locale, DEFERRED_KEYS[deferred.reason]),
+          })}
+        </>
+      )}
+    </p>
+  );
+}
+
+/**
+ * How the global periodicity shortens self-invoicing while the portal does not reissue globals
+ * (LD-51 F1): the ticket can be self-invoiced only until its global is built. `periodicity` is the
+ * one bounding this month's tickets; `next`, a different one chosen in the form or pending from
+ * next month, gets its own sentence (CFDIFIX-6).
+ */
+export function SelfInvoiceBound({
+  periodicity,
+  next = null,
+  graceMinutes,
+  locale,
+}: {
+  periodicity: Periodicity;
+  next?: Periodicity | null;
+  graceMinutes: number;
+  locale: Locale;
+}) {
+  return (
+    <p className="muted tiny">
+      {tr(locale, "cfdiSelfInvoiceBound", {
+        when: tr(locale, BOUND_KEYS[periodicity], { n: graceMinutes }),
+      })}
+      {next && next !== periodicity && (
+        <>
+          {" "}
+          {tr(locale, "cfdiSelfInvoiceBoundNext", {
+            next: periodicityName(next, locale),
+            when: tr(locale, BOUND_KEYS[next], { n: graceMinutes }),
+          })}
+        </>
+      )}
+    </p>
+  );
+}
+/**
+ * The activation step's periodicity (LD-51 F2): the select, RESICO's monthly rule and how the
+ * periodicity bounds self-invoicing; the "you can change it later" hint only when the restaurant
+ * can change it (not RESICO, LD-55 CFDIFIX-UX-3).
+ */
+export function ActivationPeriodicity({
+  value,
+  onChange,
+  resico,
+  busy,
+  graceMinutes,
+  locale,
+}: {
+  value: Periodicity;
+  onChange: (p: Periodicity) => void;
+  resico: boolean;
+  busy: boolean;
+  graceMinutes: number;
+  locale: Locale;
+}) {
+  const t = strings[locale];
+  return (
+    <>
+      <Field label={t.cfdiPeriodicity}>
+        <select
+          value={resico ? "month" : value}
+          disabled={busy || resico}
+          onChange={(e) => onChange(e.target.value as Periodicity)}
+        >
+          {PERIODICITIES.map((p) => (
+            <option key={p} value={p}>
+              {t[PERIODICITY_KEYS[p]]}
+            </option>
+          ))}
+        </select>
+      </Field>
+      {resico && <p className="muted">{t.cfdiResicoMonthly}</p>}
+      <p className="muted tiny">{t.cfdiPeriodicityHint}</p>
+      <SelfInvoiceBound
+        periodicity={resico ? "month" : value}
+        graceMinutes={graceMinutes}
+        locale={locale}
+      />
+      {!resico && <p className="muted tiny">{t.cfdiActivatePeriodicityHint}</p>}
+    </>
+  );
+}
+
+/** A self-invoicing change that waits (LD-55 CFDIFIX-FISCAL-5 / UX-4): from when. */
+export function SelfInvoicePendingStatus({
+  pending,
+  locale,
+}: {
+  pending: PendingSelfInvoice | null;
+  locale: Locale;
+}) {
+  if (!pending) return null;
+  return (
+    <p className="muted">
+      {tr(locale, "cfdiSelfInvoicePendingStatus", {
+        date: dateLabel(pending.from, locale),
+      })}
+    </p>
+  );
+}
+
+/**
+ * A refused settings save, translated. Terms that would cut the deadline receipts printed while a
+ * self-invoicing change waits (CFDIFIX-R2-2) name the date that change applies from.
+ */
+export function settingsSaveError(
+  error: unknown,
+  settings: Pick<
+    NonNullable<CfdiSettingsView["settings"]>,
+    "selfInvoicePending"
+  >,
+  locale: Locale,
+): string {
+  const code = (error as { message?: unknown } | null | undefined)?.message;
+  if (
+    code === "cfdi_self_invoice_pending_printed" &&
+    settings.selfInvoicePending
+  )
+    return withSupportReference(
+      tr(locale, "cfdiSelfInvoicePendingPrinted", {
+        date: dateLabel(settings.selfInvoicePending.from, locale),
+      }),
+      error,
+      locale,
+    );
+  return errorNotice(error, locale);
+}
+
+/** Whether `next` self-invoicing terms end earlier than `prev` for some ticket (UX-4 hint). */
+export function selfInvoiceShortens(
+  prev: Pick<
+    Form,
+    "selfInvoicePolicy" | "selfInvoiceDays" | "portalReissueGlobal"
+  >,
+  next: Pick<
+    Form,
+    "selfInvoicePolicy" | "selfInvoiceDays" | "portalReissueGlobal"
+  >,
+): boolean {
+  if (prev.portalReissueGlobal && !next.portalReissueGlobal) return true;
+  if (next.selfInvoicePolicy !== "days") return false;
+  // A month-end window lasts at most 31 days; a window of days shortens it below that.
+  return prev.selfInvoicePolicy === "month"
+    ? next.selfInvoiceDays < 31
+    : next.selfInvoiceDays < prev.selfInvoiceDays;
+}
+
+/**
+ * What a save did that the owner must hear (UX-2): a periodicity change that applied today, or
+ * that waits (until when, and why); a self-invoicing change that waits. Read with the status
+ * "Configuración de facturación guardada"; empty when nothing of that changed.
+ */
+export function settingsSavedNote(
+  prev: NonNullable<CfdiSettingsView["settings"]>,
+  next: NonNullable<CfdiSettingsView["settings"]>,
+  businessDate: string,
+  locale: Locale,
+): string {
+  const parts: string[] = [];
+  const pendingNow =
+    next.nextPeriodicity &&
+    next.nextPeriodicityFrom &&
+    next.nextPeriodicityFrom > businessDate
+      ? { to: next.nextPeriodicity, from: next.nextPeriodicityFrom }
+      : null;
+  const changedPending =
+    pendingNow &&
+    (pendingNow.to !== prev.nextPeriodicity ||
+      pendingNow.from !== prev.nextPeriodicityFrom);
+  if (pendingNow && changedPending)
+    parts.push(
+      tr(locale, "cfdiSavedPeriodicityLater", {
+        next: periodicityName(pendingNow.to, locale),
+        date: dateLabel(pendingNow.from, locale),
+        reason: tr(
+          locale,
+          DEFERRED_KEYS[next.periodicityDeferred?.reason ?? "deadline"],
+        ),
+      }),
+    );
+  else if (
+    periodicityOn(businessDate, next) !== periodicityOn(businessDate, prev)
+  )
+    parts.push(
+      tr(locale, "cfdiSavedPeriodicityNow", {
+        next: periodicityName(periodicityOn(businessDate, next), locale),
+      }),
+    );
+  const si = next.selfInvoicePending;
+  if (
+    si &&
+    !(
+      prev.selfInvoicePending &&
+      prev.selfInvoicePending.from === si.from &&
+      prev.selfInvoicePending.policy === si.policy &&
+      prev.selfInvoicePending.days === si.days &&
+      prev.selfInvoicePending.reissue === si.reissue
+    )
+  )
+    parts.push(
+      tr(locale, "cfdiSavedSelfInvoiceLater", {
+        date: dateLabel(si.from, locale),
+      }),
+    );
+  return parts.join(" ");
+}
+
 const USE_KEYS: Record<CfdiUse, Key> = {
   G03: "cfdiUseG03",
   G01: "cfdiUseG01",
@@ -66,9 +458,10 @@ function formOf(s: NonNullable<CfdiSettingsView["settings"]>): Form {
     cardPaymentForm: s.cardPaymentForm,
     defaultUse: s.defaultUse,
     selfInvoiceEnabled: s.selfInvoiceEnabled,
-    selfInvoicePolicy: s.selfInvoicePolicy,
-    selfInvoiceDays: s.selfInvoiceDays,
-    portalReissueGlobal: s.portalReissueGlobal,
+    // A self-invoicing change that waits is what the owner chose (as the periodicity's).
+    selfInvoicePolicy: s.selfInvoicePending?.policy ?? s.selfInvoicePolicy,
+    selfInvoiceDays: s.selfInvoicePending?.days ?? s.selfInvoiceDays,
+    portalReissueGlobal: s.selfInvoicePending?.reissue ?? s.portalReissueGlobal,
     supportEmail: s.supportEmail,
   };
 }
@@ -158,6 +551,8 @@ export function CfdiSettings({
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [savedNote, setSavedNote] = useState("");
+  const periodicityStatusId = useId();
   const [stillWorking, setStillWorking] = useState(false);
   const [formOperation, setFormOperation] = useState(() => crypto.randomUUID());
   const [activateOperation, setActivateOperation] = useState(() =>
@@ -168,6 +563,8 @@ export function CfdiSettings({
     crypto.randomUUID(),
   );
   const [liveFrom, setLiveFrom] = useState("");
+  const [activatePeriodicity, setActivatePeriodicity] =
+    useState<Periodicity>("month");
   const alive = useRef(true);
   // The poll keeps its 2-minute budget when the parent passes a refreshed session object.
   const sessionRef = useRef(session);
@@ -243,19 +640,20 @@ export function CfdiSettings({
   async function post(
     path: string,
     body: unknown,
-    after: () => void,
+    after: (v: CfdiSettingsView) => void,
     resetForm = false,
+    notice: (e: unknown) => string = (e) => errorNotice(e, locale),
   ) {
     setBusy(true);
     setError("");
     setSaved(false);
     try {
       const v = await api<CfdiSettingsView>(path, body);
-      after();
+      after(v);
       apply(v, resetForm);
       void prefetchCfdiStatus(session);
     } catch (e) {
-      setError(errorNotice(e, locale));
+      setError(notice(e));
     } finally {
       setBusy(false);
     }
@@ -276,6 +674,8 @@ export function CfdiSettings({
   const pre = data.prerequisites;
   const prereqsOk =
     pre.platform && pre.fiscalComplete && pre.currency && pre.legalNameLength;
+  // RESICO issues monthly globals (D4, SAT-4): the activation shows it and sends month.
+  const resico = pre.regime === RESICO_REGIME;
   const set = (patch: Partial<Form>) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
     setSaved(false);
@@ -331,20 +731,34 @@ export function CfdiSettings({
           </ul>
           <p>{t.cfdiIntro}</p>
           {owner && (
-            <Button
-              variant="primary"
-              disabled={busy || !prereqsOk}
-              onClick={() =>
-                void post(
-                  "/cfdi/activate",
-                  { operationId: activateOperation, expectedVersion: 0 },
-                  () => setActivateOperation(crypto.randomUUID()),
-                  true,
-                )
-              }
-            >
-              {t.cfdiActivate}
-            </Button>
+            <>
+              <ActivationPeriodicity
+                value={activatePeriodicity}
+                onChange={setActivatePeriodicity}
+                resico={resico}
+                busy={busy}
+                graceMinutes={data.globalGraceMinutes}
+                locale={locale}
+              />
+              <Button
+                variant="primary"
+                disabled={busy || !prereqsOk}
+                onClick={() =>
+                  void post(
+                    "/cfdi/activate",
+                    {
+                      operationId: activateOperation,
+                      expectedVersion: 0,
+                      globalPeriodicity: resico ? "month" : activatePeriodicity,
+                    },
+                    () => setActivateOperation(crypto.randomUUID()),
+                    true,
+                  )
+                }
+              >
+                {t.cfdiActivate}
+              </Button>
+            </>
           )}
         </div>
       )}
@@ -352,37 +766,12 @@ export function CfdiSettings({
       {settings && org && (
         <div className="cfdi-block">
           <h3>{t.cfdiOrgTitle}</h3>
-          <dl className="cfdi-facts">
-            <dt>{t.cfdiOrgStatus}</dt>
-            <dd>
-              {org.status === "provisioning" && t.cfdiOrgConfiguring}
-              {org.status === "ready" && t.cfdiOrgReady}
-              {org.status === "error" &&
-                tr(locale, "cfdiOrgError", {
-                  error: orgErrorText(org.errorCode, locale),
-                })}
-            </dd>
-            {org.taxId && (
-              <>
-                <dt>{t.cfdiIssuerRfc}</dt>
-                <dd className="mono">{org.taxId}</dd>
-              </>
-            )}
-          </dl>
+          <OrganizationFacts org={org} locale={locale} />
           {org.status === "provisioning" && (
             <p role="status">
               {stillWorking ? t.cfdiStillWorking : t.cfdiProvisioning}
             </p>
           )}
-          {org.legalSyncedVersion !== null && (
-            <p className="muted">
-              {tr(locale, "cfdiLegalSynced", { n: org.legalSyncedVersion })}
-            </p>
-          )}
-          {org.status === "ready" &&
-            (org.legalSyncedVersion ?? 0) < org.fiscalProfileVersion && (
-              <p className="muted">{t.cfdiLegalPending}</p>
-            )}
           {org.status === "error" && (
             <Button
               disabled={busy}
@@ -472,11 +861,22 @@ export function CfdiSettings({
                 conceptDescription: form.conceptDescription.trim(),
                 supportEmail: form.supportEmail?.trim() || null,
               },
-              () => {
+              (v) => {
                 setFormOperation(crypto.randomUUID());
+                setSavedNote(
+                  v.settings
+                    ? settingsSavedNote(
+                        settings,
+                        v.settings,
+                        v.businessDate,
+                        locale,
+                      )
+                    : "",
+                );
                 setSaved(true);
               },
               true,
+              (e) => settingsSaveError(e, settings, locale),
             );
           }}
         >
@@ -500,6 +900,7 @@ export function CfdiSettings({
                 value={
                   settings.resicoMonthly ? "month" : form.globalPeriodicity
                 }
+                aria-describedby={periodicityStatusId}
                 disabled={settings.resicoMonthly}
                 onChange={(e) =>
                   set({ globalPeriodicity: e.target.value as Periodicity })
@@ -515,14 +916,16 @@ export function CfdiSettings({
             {settings.resicoMonthly && (
               <p className="muted">{t.cfdiResicoMonthly}</p>
             )}
-            {settings.nextPeriodicity && settings.nextPeriodicityFrom && (
-              <p className="muted">
-                {tr(locale, "cfdiPeriodicityFrom", {
-                  date: dateLabel(settings.nextPeriodicityFrom, locale),
-                })}
-              </p>
-            )}
+            <PeriodicityStatus
+              settings={settings}
+              businessDate={data.businessDate}
+              locale={locale}
+              id={periodicityStatusId}
+            />
             <p className="muted tiny">{t.cfdiPeriodicityHint}</p>
+            {!settings.resicoMonthly && (
+              <p className="muted tiny">{t.cfdiPeriodicityChangeHint}</p>
+            )}
             <label className="option">
               <input
                 type="checkbox"
@@ -645,6 +1048,31 @@ export function CfdiSettings({
               {t.cfdiPortalReissueToggle}
             </label>
             <p className="muted tiny">{t.cfdiPortalReissue}</p>
+            <SelfInvoicePendingStatus
+              pending={settings.selfInvoicePending}
+              locale={locale}
+            />
+            {form.selfInvoiceEnabled &&
+              selfInvoiceShortens(
+                {
+                  selfInvoicePolicy: settings.selfInvoicePolicy,
+                  selfInvoiceDays: settings.selfInvoiceDays,
+                  portalReissueGlobal: settings.portalReissueGlobal,
+                },
+                form,
+              ) && (
+                <p className="cfdi-warning" role="note">
+                  {t.cfdiSelfInvoiceShortenHint}
+                </p>
+              )}
+            {form.selfInvoiceEnabled && !form.portalReissueGlobal && (
+              <SelfInvoiceBound
+                periodicity={periodicityOn(data.businessDate, settings)}
+                next={settings.resicoMonthly ? "month" : form.globalPeriodicity}
+                graceMinutes={data.globalGraceMinutes}
+                locale={locale}
+              />
+            )}
             <Field label={t.cfdiSupportEmail}>
               <input
                 type="email"
@@ -660,7 +1088,12 @@ export function CfdiSettings({
               </Button>
             )}
           </fieldset>
-          {saved && <p role="status">{t.cfdiSaved}</p>}
+          {saved && (
+            <p role="status">
+              {t.cfdiSaved}
+              {savedNote && `. ${savedNote}`}
+            </p>
+          )}
         </form>
       )}
 
