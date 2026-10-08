@@ -66,6 +66,15 @@ NEONCTL_VERSION=<x.y.z> REHEARSAL_SOURCE_ENV=staging … npx tsx scripts/ops/reh
 NEONCTL_VERSION=<x.y.z> REHEARSAL_SOURCE_ENV=staging … npx tsx scripts/ops/rehearse-neon-restore.ts
 ```
 
+Workstation prerequisites (found in the first staging drill, 2026-10-08):
+`pg_restore` of the dump's major version (PostgreSQL 18; set `REHEARSAL_PG_RESTORE`
+to its path), the AWS CLI (R2 downloads), `age`, a Neon organization or personal
+API key (the logical drill creates a project, which a project-scoped key cannot),
+and Node 24. The script passes `pg_restore` a URL with `sslrootcert=system`
+(libpq 16+) so `verify-full` uses the system's trusted roots instead of
+`~/.postgresql/root.crt`. Delete `work/restore/` after cleanup: it holds the
+decrypted dump.
+
 `NEONCTL_VERSION` is the exact Neon CLI version chosen in
 [PROVISIONING.md](PROVISIONING.md) §1; the script refuses to start without one.
 

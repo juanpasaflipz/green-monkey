@@ -430,3 +430,8 @@ Merge order: platform → fiscal 027 → discounts 028 → reports 029 → cfdi 
 - Lifecycle rules (daily/ 35 d, monthly/ 1900 d) must be set by the owner in the dashboard (token lacks permission).
 - Rotate the R2 token before 2026-11-07 (or replace it with a non-expiring bucket-scoped token): LAUNCH_HANDOFF note in the next PR.
 - Still needed before the first backup: the owner's age public key (age1…) committed to ops/backup/age-recipients.txt.
+
+## LD-67 Staging backups live (2026-10-08)
+- First staging backup (run 37800599099) and Retention (run 37800918722) passed. Restore drill on Neon with the owner's key file (owner-approved, used only by `age -d`): PITR branch + logical restore into a fresh project; checks: newest migration, forced RLS and object counts, control totals vs manifest, runtime role sees one tenant — all OK; RTO 116.7 s (pg_restore 96 s), dump age 6 min. Rehearsal resources deleted with the script's confirmed cleanup; decrypted dump removed. OPS_LIVE_ENVIRONMENTS=staging.
+- Drill script fixes: pg_restore URL gets sslrootcert=system for verify-full (libpq 16+; new scripts/ops/libpq-url.ts + test); the evidence directory is created before writing. Two earlier attempts' temporary projects/branches were deleted by the lead.
+- The owner should revoke the Neon API key used for the drill; tools installed for it: postgresql@18, awscli (Homebrew).

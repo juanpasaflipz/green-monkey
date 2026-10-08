@@ -241,7 +241,7 @@ Recorded without values; dates are UTC.
 | 9 | 2026-10-07 | CD deploys from `main` | "First deploys" below |
 | 10 | — | Railway deploy webhook → ntfy; manual settings | **Pending**: no alert topic yet (LAUNCH_HANDOFF 1.7) |
 | 11–13 | 2026-10-07 | Rotations | "Credential rotation log" above |
-| 14 | 2026-10-08 | R2 bucket `gm-backups-staging`, Object Read & Write token (staging environment secrets) and the owner's age recipient configured (LD-66) | **In progress**: first manual backup, first Retention dispatch, restore drill, `OPS_LIVE_ENVIRONMENTS=staging` |
+| 14 | 2026-10-08 | R2 bucket `gm-backups-staging`, Object Read & Write token (staging environment secrets) and the owner's age recipient (LD-66); first manual backup (run 37800599099, `gm-staging-20261008T152550Z.dump.age`, 1.05 MB); first Retention dispatch (run 37800918722); restore drill on Neon (PITR branch + logical restore into a fresh project, all four verification checks passed, RTO 117 s, dump age 6 min: [evidence](evidence/restore/2026-10-08-staging.json)); rehearsal resources deleted; `OPS_LIVE_ENVIRONMENTS=staging` (LD-67) | Done |
 | 15 | — | Load test `target` and `stress`, pool decision | **Pending** ([LOAD_TEST.md](LOAD_TEST.md)) |
 
 Wave 2.0 items:

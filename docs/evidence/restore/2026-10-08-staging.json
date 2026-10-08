@@ -1,0 +1,105 @@
+{
+  "date": "2026-10-08",
+  "env": "staging",
+  "startedAt": "2026-10-08T15:31:55.615Z",
+  "sourceProject": "wispy-thunder-65050461",
+  "pitr": {
+    "branch": "rehearsal-2026-10-08",
+    "pointInTime": "2026-10-08T14:31:55.615Z",
+    "totals": {
+      "orders": "6",
+      "order_total": "20200",
+      "tenders": "4",
+      "tender_amount": "18200",
+      "refunds": "3",
+      "refund_amount": "9200",
+      "allocations": "4",
+      "allocation_amount": "18000",
+      "stock_movements": "6",
+      "stock_quantity": "2198.000000",
+      "cash_sessions": "7",
+      "line_voids": "0",
+      "offline_recoveries": "2",
+      "audit": "58",
+      "restaurants": "15",
+      "migrations": [
+        "001_core.sql",
+        "002_management.sql",
+        "003_payment_allocations.sql",
+        "004_restaurant_configuration.sql",
+        "005_service_assignment.sql",
+        "006_entitlements.sql",
+        "007_oauth_attempts.sql",
+        "008_owner_accounts.sql",
+        "009_owner_signup_policy.sql",
+        "010_owner_session_lineage.sql",
+        "011_billing.sql",
+        "012_signup_billing_intent.sql",
+        "013_billing_location_identity.sql",
+        "014_locations_and_invitations.sql",
+        "015_location_billing_operations.sql",
+        "016_free_limits.sql",
+        "017_free_location_policy.sql",
+        "018_offline_recovery.sql",
+        "019_offline_lease_retention.sql",
+        "020_offline_recovery_retention.sql",
+        "021_line_voids.sql",
+        "022_ops.sql",
+        "023_access.sql",
+        "024_service_lifecycle.sql",
+        "025_menu.sql",
+        "026_offline_sync.sql",
+        "027_fiscal.sql",
+        "028_discounts.sql",
+        "029_reports.sql",
+        "030_cfdi.sql",
+        "031_account.sql",
+        "032_public_ordering.sql",
+        "033_state_checks_validate.sql",
+        "034_public_ordering_redaction.sql",
+        "035_kitchen_reopened.sql",
+        "036_cfdi_rehearsal_fixes.sql"
+      ]
+    }
+  },
+  "logical": {
+    "project": "bitter-hall-91421199"
+  },
+  "verification": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "restored schema_migrations latest equals bundled",
+        "ok": true
+      },
+      {
+        "name": "all public tables keep forced RLS; policy, trigger and index counts equal the source",
+        "ok": true
+      },
+      {
+        "name": "control totals equal the dump manifest",
+        "ok": true
+      },
+      {
+        "name": "runtime role sees one tenant at a time",
+        "ok": true
+      }
+    ]
+  },
+  "timings": {
+    "pitr_branch_ready_ms": 1870,
+    "provision_ms": 8265,
+    "download_ms": 1402,
+    "decrypt_ms": 16,
+    "pg_restore_ms": 96154,
+    "grants_ms": 1899,
+    "verify_ms": 2299
+  },
+  "rtoMs": 116691,
+  "rpo": {
+    "logicalMs": 364483,
+    "dumpSnapshotAt": "2026-10-08T15:25:51.132Z",
+    "pitr": "any second within the history window (point in time used: one hour ago)"
+  },
+  "sourceDatabase": "green_monkey_staging"
+}

@@ -29,6 +29,8 @@ import type { Tx } from "../../server/db.js";
 import { controlTotals } from "./control-totals.js";
 import { provisionRoles } from "./provision-roles.js";
 import { verifyRestore } from "./restore-verify.js";
+import { libpqUrl } from "./libpq-url.js";
+import { dirname } from "node:path";
 import { main as migrate } from "../migrate.js";
 
 const args = process.argv.slice(2);
@@ -250,7 +252,7 @@ await timed("pg_restore_ms", () =>
     "--no-owner",
     "--no-privileges",
     "--role=gm_migrator",
-    `--dbname=${migratorUrl}`,
+    `--dbname=${libpqUrl(migratorUrl)}`,
     plain,
   ]),
 );
@@ -284,7 +286,10 @@ evidence.rpo = {
 };
 evidence.sourceDatabase = sourceDatabase;
 const out = `docs/evidence/restore/${date}-${env}.json`;
-if (!dryRun) writeFileSync(out, JSON.stringify(evidence, null, 2) + "\n");
+if (!dryRun) {
+  mkdirSync(dirname(out), { recursive: true });
+  writeFileSync(out, JSON.stringify(evidence, null, 2) + "\n");
+}
 console.log(
   JSON.stringify({
     message: dryRun ? "rehearsal_planned" : "rehearsal_complete",
