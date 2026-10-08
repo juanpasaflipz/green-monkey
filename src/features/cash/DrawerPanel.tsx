@@ -5,6 +5,7 @@ import { strings, type Key } from "../../i18n";
 import { tenderMethodLabel } from "../../labels";
 import { countText, fill } from "../discounts/format";
 import { DrawerCloseDialog, type DrawerView } from "./DrawerCloseDialog";
+import type { DrawerFact } from "./drawer-cache";
 import "./cash.css";
 
 /**
@@ -32,6 +33,7 @@ export function DrawerPanel({
   closeResultActions,
   online = true,
   cached = false,
+  fact = null,
 }: {
   /** offline (026): closing and paid-outs need the server. */
   online?: boolean;
@@ -43,6 +45,11 @@ export function DrawerPanel({
    * back with the connection.
    */
   cached?: boolean;
+  /**
+   * offline (ACC-PR-3): with no copy of their own (`data` null), the device's
+   * drawer fact: open or closed, when and by whom, never a figure.
+   */
+  fact?: DrawerFact | null;
   session: Session;
   locale: Locale;
   data: DrawerView | null;
@@ -66,15 +73,54 @@ export function DrawerPanel({
       hour: "2-digit",
       minute: "2-digit",
     });
+  const offlineNote = !online && (
+    <p className="muted tiny" id="drawer-offline">
+      {t("discountsDrawerOffline")}
+    </p>
+  );
+  const cachedNote = cached && (
+    <p className="muted" role="note">
+      {t("discountsDrawerCachedNote")}
+    </p>
+  );
+  if (!data && fact?.open)
+    return (
+      <div className="drawer-panel">
+        <div className="drawer-head">
+          <div>
+            <Badge tone="green">{t("drawerOpen")}</Badge>
+            <p className="muted">
+              {fill(t("discountsDrawerOpenedBy"), {
+                name: fact.openedByName,
+                time: time(fact.openedAt),
+              })}
+            </p>
+          </div>
+          {offlineNote}
+          {cachedNote}
+        </div>
+      </div>
+    );
   if (!data || data.closed_at)
     return (
       <div className="panel narrow">
         <Badge>{t("drawerClosed")}</Badge>
         <h2>{t("openDrawer")}</h2>
         <p>{t("noDrawer")}</p>
-        <Button variant="primary" onClick={onOpenDrawer}>
+        {/* ACC-PR-3: opening a drawer needs the server. */}
+        <Button
+          variant="primary"
+          disabled={!online}
+          aria-describedby={online ? undefined : "drawer-open-offline"}
+          onClick={onOpenDrawer}
+        >
           {t("openDrawer")}
         </Button>
+        {!online && (
+          <p className="muted tiny" id="drawer-open-offline">
+            {t("discountsDrawerOpenOffline")}
+          </p>
+        )}
         {data &&
           !cached &&
           data.discrepancy !== null &&
@@ -161,16 +207,8 @@ export function DrawerPanel({
           )}
           {actions}
         </div>
-        {!online && (
-          <p className="muted tiny" id="drawer-offline">
-            {t("discountsDrawerOffline")}
-          </p>
-        )}
-        {cached && (
-          <p className="muted" role="note">
-            {t("discountsDrawerCachedNote")}
-          </p>
-        )}
+        {offlineNote}
+        {cachedNote}
       </div>
       {!cached && (
         <>

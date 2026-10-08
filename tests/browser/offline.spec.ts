@@ -1270,6 +1270,63 @@ test("Offline Caja shows only the state of the drawer this device cached, never 
   ).toHaveCount(0);
 });
 
+test("Offline Caja of an employee with no cached drawer shows the device's open drawer, not 'Caja cerrada' with 'Abrir caja' (ACC-PR-3)", async ({
+  page,
+  context,
+}) => {
+  await login(page);
+  // The owner's Vender caches the open drawer for this device.
+  await openDrawer(page);
+  // The cashier's own Vender never reads the drawer before the outage.
+  await page.route("**/api/cash", (route) =>
+    route.abort("internetdisconnected"),
+  );
+  await switchEmployee(page, "cashier", "123456");
+  await expect(page.locator("button.product").first()).toBeVisible();
+  await goOffline(context, page);
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  const head = page.locator(".drawer-head");
+  await expect(head.getByText("Caja abierta", { exact: true })).toBeVisible();
+  // Only the device's fact: who opened it and when, no figures of any role.
+  await expect(head.locator("p").first()).toHaveText(
+    /^Abrió .+ · \d{2}:\d{2}$/,
+  );
+  await expect(
+    page.getByRole("note").filter({
+      hasText: "Cifras al reconectar; no incluyen ventas sin conexión.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Caja cerrada", { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Abrir caja", exact: true }),
+  ).toHaveCount(0);
+  await expect(page.locator(".drawer-cards")).toHaveCount(0);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await context.setOffline(false);
+});
+
+test("Offline, 'Abrir caja' is disabled with its reason and opens nothing (ACC-PR-3)", async ({
+  page,
+  context,
+}) => {
+  // Nothing on this device knows the drawer: Vender never read it.
+  await page.route("**/api/cash", (route) =>
+    route.abort("internetdisconnected"),
+  );
+  await login(page);
+  await expect(page.locator("button.product").first()).toBeVisible();
+  await goOffline(context, page);
+  await page.getByRole("button", { name: "Caja", exact: true }).click();
+  const open = page.getByRole("button", { name: "Abrir caja", exact: true });
+  await expect(open).toBeDisabled();
+  await expect(open).toHaveAccessibleDescription(
+    "Abrir caja requiere conexión.",
+  );
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+  await context.setOffline(false);
+});
+
 test("An offline external-terminal sale shows and prints service's local receipt with the method, the reference and the order note (LD-10 B4, LD-1)", async ({
   page,
   context,

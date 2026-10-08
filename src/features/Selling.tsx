@@ -44,6 +44,8 @@ import {
   syncPending,
   type Draft,
 } from "../offline";
+import { drawerKey, rememberDrawer } from "./cash/drawer-cache";
+import type { DrawerView } from "./cash/DrawerCloseDialog";
 import { useOfflineSelling } from "./offline/useOfflineSelling";
 import { useOfflineCurrent } from "./offline/useOfflineCurrent";
 import { OfflineOrdersModal } from "./offline/OfflineOrdersModal";
@@ -624,15 +626,19 @@ export function Selling({
   }, [draft, hydrated, activeId]);
   useEffect(() => {
     if (!active) return;
-    const key = scope(session) + ":drawer";
     if (online)
-      void api("/cash")
+      void api<DrawerView | null>("/cash")
         .then(async (d) => {
           setCashSession(d);
-          await db.cache.put({ id: key, value: d });
+          // Caja reads it during an outage (and the device's drawer fact,
+          // for an employee with no copy of their own; ACC-PR-3).
+          await rememberDrawer(session, d);
         })
         .catch(() => {});
-    else void db.cache.get(key).then((d) => setCashSession(d?.value ?? null));
+    else
+      void db.cache
+        .get(drawerKey(session))
+        .then((d) => setCashSession(d?.value ?? null));
   }, [active, online]);
   const showingReceipt = !!receipt;
   const wasActive = useRef(active);
