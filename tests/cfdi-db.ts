@@ -74,6 +74,13 @@ import { seal } from "../server/tokens.js";
 import { parseCfdiTotals } from "../server/cfdi/xml.js";
 import { boundaries, businessDate, type Session } from "../shared/domain.js";
 import {
+  dailyEndsFirst,
+  dayThreeOrLater,
+  MEXICO_CITY,
+  zoneWhere as pinnedZone,
+  type Zone,
+} from "./fixtures/business-date-zones.js";
+import {
   firstOfNextMonth,
   globalPeriodFor,
   selfInvoiceDeadline,
@@ -201,6 +208,11 @@ type Fixture = {
   drawerId: string;
   folio: number;
   tickets: Map<string, Ticket>;
+  /** The restaurant's timezone and cutoff (Mexico City at 04:00 unless a check pins its date). */
+  zone: Zone;
+  /** The tenant's business date now, and n days before it. */
+  today: () => string;
+  daysAgo: (n: number) => string;
 };
 type Ticket = {
   id: string;
@@ -224,16 +236,36 @@ const today = () =>
     restaurant.timezone,
     restaurant.cutoff,
   );
-const daysAgo = (n: number) => {
-  const d = new Date(today() + "T12:00:00Z");
+const minusDays = (date: string, n: number) => {
+  const d = new Date(date + "T12:00:00Z");
   d.setUTCDate(d.getUTCDate() - n);
   return d.toISOString().slice(0, 10);
 };
+const daysAgo = (n: number) => minusDays(today(), n);
+
+/** The suite's restaurant zone (Mexico City at 04:00) unless a check pins another. */
+const MEXICO: Zone = MEXICO_CITY;
+assert.deepEqual(
+  MEXICO,
+  { timezone: restaurant.timezone, cutoff: restaurant.cutoff },
+  "the fixture restaurant's zone",
+);
+/**
+ * CFDIFIX-R2-6: a check that needs its business date somewhere in the month (not the month's last
+ * day, or day 3 or later) pins it with the tenant's timezone and cutoff instead of skipping on the
+ * other days (tests/fixtures/business-date-zones.ts; docs/CFDI.md "Tests").
+ */
+function zoneWhere(ok: (date: string, zone: Zone) => boolean): Zone {
+  const zone = pinnedZone(ok);
+  assert.ok(zone, "a zone puts the business date where the check needs it");
+  return zone;
+}
 
 async function makeTenant(
   label: string,
-  o: { rfc?: string; legalName?: string; regime?: string } = {},
+  o: { rfc?: string; legalName?: string; regime?: string; zone?: Zone } = {},
 ): Promise<Fixture> {
+  const zone = o.zone ?? MEXICO;
   const organizationId = randomUUID();
   const tenantId = randomUUID();
   const deviceId = randomUUID();
@@ -247,7 +279,7 @@ async function makeTenant(
   await admin.begin(async (tx) => {
     await tx`insert into organizations(id,name) values(${organizationId},${"CFDI " + label})`;
     await tx`insert into restaurants(id,organization_id,name,currency,timezone,cutoff,free_location)
-      values(${tenantId},${organizationId},${"CFDI " + label},'MXN','America/Mexico_City',240,true)`;
+      values(${tenantId},${organizationId},${"CFDI " + label},'MXN',${zone.timezone},${zone.cutoff},true)`;
     await tx`select set_config('app.tenant_id',${tenantId},true)`;
     for (const [role, id] of Object.entries(ids))
       await tx`insert into employees(tenant_id,id,name,login,secret_hash,role)
@@ -271,8 +303,10 @@ async function makeTenant(
     expiresAt: "",
     offlineUntil: "",
     csrf: "",
-    restaurant,
+    restaurant: { ...restaurant, ...zone },
   });
+  const tenantToday = () =>
+    businessDate(new Date().toISOString(), zone.timezone, zone.cutoff);
   return {
     tenantId,
     owner: session("owner"),
@@ -282,6 +316,9 @@ async function makeTenant(
     drawerId,
     folio: 0,
     tickets: new Map(),
+    zone,
+    today: tenantToday,
+    daysAgo: (n) => minusDays(tenantToday(), n),
   };
 }
 
@@ -310,7 +347,7 @@ async function makeTicket(
   const id = randomUUID();
   const orderId = randomUUID();
   const code = selfInvoiceCodeFromBytes(randomBytes(12));
-  const date = o.businessDate ?? today();
+  const date = o.businessDate ?? t.today();
   const tenderIds: string[] = [];
   const taxes = groups.map((g) => {
     const tax = extractTax(g.gross, TAX_RULES[g.category].rateBps).tax;
@@ -390,7 +427,7 @@ async function refund(
         extractTax(sale - before - gross, rate).tax;
       tk.refunded.set(category, before + gross);
       await tx`insert into fiscal_adjustments(tenant_id,id,refund_id,order_id,category,rate_bps,gross,base,tax,business_date,created_by)
-        values(${t.tenantId},${randomUUID()},${refundId},${tk.orderId},${category},${rate},${gross},${gross - tax},${tax},${today()},${t.owner.employeeId})`;
+        values(${t.tenantId},${randomUUID()},${refundId},${tk.orderId},${category},${rate},${gross},${gross - tax},${tax},${t.today()},${t.owner.employeeId})`;
     }
   });
   await tenant(app, t.tenantId, (tx) =>
@@ -574,7 +611,7 @@ async function claimCurrentMonth(t: Fixture) {
       select g.mode, g.period_key, g.periodicity, g.date_from::text as from_date,
         g.date_to::text as to_date
       from cfdi_global_periods g join cfdi_settings s on s.tenant_id = g.tenant_id and s.mode = g.mode
-      where g.date_from >= ${today().slice(0, 8) + "01"}::date
+      where g.date_from >= ${t.today().slice(0, 8) + "01"}::date
       order by g.date_from desc limit 1`;
     assert.ok(row, "the tick created the current month's row");
     await tx`
@@ -5016,21 +5053,23 @@ try {
       eligibility: v.eligibility,
     };
   };
-  /** The earlier of the policy deadline and the period's close + 60 min (the suite's grace). */
+  /**
+   * The earlier of the policy deadline and the period's close + 60 min (the suite's grace), in
+   * the restaurant's zone (Mexico City unless the check pinned another).
+   */
   const expectedWindow = (
     date: string,
     p: Periodicity,
     policy: "month" | "days",
     days: number,
+    zone: Zone = MEXICO,
   ) => {
     const period = globalPeriodFor(date, p);
     const globalAt =
-      Date.parse(
-        boundaries(period.to, restaurant.timezone, restaurant.cutoff).end,
-      ) +
+      Date.parse(boundaries(period.to, zone.timezone, zone.cutoff).end) +
       60 * 60_000;
     const policyAt = Date.parse(
-      selfInvoiceDeadline(date, policy, days, restaurant.timezone),
+      selfInvoiceDeadline(date, policy, days, zone.timezone),
     );
     return globalAt < policyAt
       ? { at: globalAt, bound: "global" as const }
@@ -5389,25 +5428,23 @@ try {
 
     // A ticket two days ago in a daily month: its daily period is already past its 24 hours
     // (RMF 2.7.1.21), so even switching to monthly (which only lengthens deadlines) waits for next
-    // month: the overdue period is never hidden. Needs a month that is at least three days old.
-    if (Number(today().slice(8, 10)) >= 3) {
-      const O = await makeTenant("periodicity F2 overdue");
-      await activate(O, {
-        testFrom: today().slice(0, 8) + "01",
-        periodicity: "day",
-      });
-      await makeTicket(O, { businessDate: daysAgo(2) });
-      const overdue = await saveSettings(O, { globalPeriodicity: "month" });
-      assert.deepEqual(pending(overdue), [
-        "day",
-        "month",
-        firstOfNextMonth(today()),
-      ]);
-      assert.equal(overdue.settings?.periodicityDeferred?.reason, "overdue");
-    } else
-      console.log(
-        "  (F2: the overdue-ticket leg needs day 3 of a month or later; covered in tests/cfdi-rehearsal.test.ts)",
-      );
+    // month: the overdue period is never hidden. Needs a month that is at least three days old:
+    // the tenant's zone pins one (CFDIFIX-R2-6, never skipped).
+    const O = await makeTenant("periodicity F2 overdue", {
+      zone: zoneWhere(dayThreeOrLater),
+    });
+    await activate(O, {
+      testFrom: O.today().slice(0, 8) + "01",
+      periodicity: "day",
+    });
+    await makeTicket(O, { businessDate: O.daysAgo(2) });
+    const overdue = await saveSettings(O, { globalPeriodicity: "month" });
+    assert.deepEqual(pending(overdue), [
+      "day",
+      "month",
+      firstOfNextMonth(O.today()),
+    ]);
+    assert.equal(overdue.settings?.periodicityDeferred?.reason, "overdue");
   });
 
   await test("LD-51 F3/F9. in the shared sandbox the stamping issuer is the platform test organization as Facturapi reports it: its régimen and RFC decide the RESICO retention (none for a 601 issuer though the restaurant's profile is 626) and its postal code is LugarExpedicion of invoices and globals; the panel shows it; an own organization's RFC reads pending until Facturapi reports it", async () => {
@@ -5875,20 +5912,23 @@ try {
   });
 
   await test("LD-55 CFDIFIX-FISCAL-2. a save that must wait, made on a day a pending periodicity is already in force (before the tick promotes it), keeps that periodicity in force and stores the new one for next month", async () => {
-    const lastDay = globalPeriodFor(today(), "month").to === today();
-    if (lastDay) {
-      console.log(
-        "  (FISCAL-2: on the last day of a month a monthly and a daily global close together; covered on any other day)",
-      );
-      return;
-    }
-    const P2 = await makeTenant("pending in force FISCAL-2");
+    // On a month's last day a monthly and a daily global of that day close together: the
+    // tenant's zone pins a day where the daily one ends first (CFDIFIX-R2-6, never skipped).
+    const P2 = await makeTenant("pending in force FISCAL-2", {
+      zone: zoneWhere(dailyEndsFirst),
+    });
     await activate(P2, { periodicity: "day" });
     // Monthly was chosen last month for this one: in force since the 1st, not promoted yet.
     await admin`update cfdi_settings set next_periodicity = 'month',
-      next_periodicity_from = ${today().slice(0, 8) + "01"}::date where tenant_id = ${P2.tenantId}`;
+      next_periodicity_from = ${P2.today().slice(0, 8) + "01"}::date where tenant_id = ${P2.tenantId}`;
     const tk = await makeTicket(P2);
-    const printed = expectedWindow(tk.businessDate, "month", "month", 30);
+    const printed = expectedWindow(
+      tk.businessDate,
+      "month",
+      "month",
+      30,
+      P2.zone,
+    );
     assert.equal(Date.parse((await portalWindow(tk)).deadline!), printed.at);
     // Back to daily would end the ticket's self-invoicing tomorrow at 05:00: it waits, and the
     // monthly periodicity in force today stays (it used to store daily at once).
@@ -5899,7 +5939,7 @@ try {
         saved.settings?.nextPeriodicity,
         saved.settings?.nextPeriodicityFrom,
       ],
-      ["month", "day", firstOfNextMonth(today())],
+      ["month", "day", firstOfNextMonth(P2.today())],
     );
     assert.equal(saved.settings?.periodicityDeferred?.reason, "deadline");
     assert.equal(
@@ -5911,15 +5951,12 @@ try {
   });
 
   await test("LD-55 CFDIFIX-FISCAL-3. a ticket whose invoice is still on its way counts as uncovered when a periodicity change is checked (the invoice may fail and send it back to the portal)", async () => {
-    if (globalPeriodFor(today(), "month").to === today()) {
-      console.log(
-        "  (FISCAL-3: on the last day of a month a daily global does not shorten today's deadline; covered on any other day)",
-      );
-      return;
-    }
-    const F3 = await makeTenant("in-flight claim FISCAL-3");
+    // A daily global shortens today's deadline: the tenant's zone pins such a day (CFDIFIX-R2-6).
+    const F3 = await makeTenant("in-flight claim FISCAL-3", {
+      zone: zoneWhere(dailyEndsFirst),
+    });
     await activate(F3, {
-      testFrom: today().slice(0, 8) + "01",
+      testFrom: F3.today().slice(0, 8) + "01",
       periodicity: "month",
     });
     const tk = await makeTicket(F3);
@@ -5932,7 +5969,7 @@ try {
         saved.settings?.nextPeriodicity,
         saved.settings?.nextPeriodicityFrom,
       ],
-      ["month", "day", firstOfNextMonth(today())],
+      ["month", "day", firstOfNextMonth(F3.today())],
       "the change waits: the invoice may still fail",
     );
     assert.equal(saved.settings?.periodicityDeferred?.reason, "deadline");
@@ -6029,18 +6066,15 @@ try {
   });
 
   await test("LD-55 CFDIFIX-CONCURRENCY-2. a periodicity change that applied at once and brings today's deadlines forward is rebuilt only after every terminal refreshed its status: a ticket a stale terminal printed meanwhile is seen by the re-check and the change waits for next month", async () => {
-    if (globalPeriodFor(today(), "month").to === today()) {
-      console.log(
-        "  (CONCURRENCY-2: on the last day of a month a daily global does not shorten today's deadline, so nothing waits; covered on any other day)",
-      );
-      return;
-    }
-    const W = await makeTenant("rebuild waits CONCURRENCY-2");
+    // A daily global shortens today's deadline: the tenant's zone pins such a day (CFDIFIX-R2-6).
+    const W = await makeTenant("rebuild waits CONCURRENCY-2", {
+      zone: zoneWhere(dailyEndsFirst),
+    });
     await activate(W, {
-      testFrom: today().slice(0, 8) + "01",
+      testFrom: W.today().slice(0, 8) + "01",
       periodicity: "month",
     });
-    const monthKey = "M" + today().slice(0, 7);
+    const monthKey = "M" + W.today().slice(0, 7);
     const rows = async () =>
       (
         await admin`select period_key, periodicity from cfdi_global_periods
@@ -6081,7 +6115,7 @@ try {
         after.nextPeriodicity,
         after.nextPeriodicityFrom,
       ],
-      ["month", "day", firstOfNextMonth(today())],
+      ["month", "day", firstOfNextMonth(W.today())],
     );
     assert.equal(after.periodicityDeferred?.reason, "deadline");
     assert.equal(after.periodicityDeferred?.source, "tick");
@@ -6093,15 +6127,11 @@ try {
   });
 
   await test("LD-55 CFDIFIX-CONCURRENCY-3. a rebuild tick that runs late (a worker outage) judges the 24-hour rule as of the save that applied the change, never undoing it only because it ran late; when it must still undo a change that lengthened deadlines, the operator is alerted", async () => {
-    if (Number(today().slice(8, 10)) < 3) {
-      console.log(
-        "  (CONCURRENCY-3: needs day 3 of a month or later; the as-of-the-save rule is the same on any day)",
-      );
-      return;
-    }
-    const X = await makeTenant("late rebuild CONCURRENCY-3");
+    // Two earlier days of the month: the tenant's zone pins day 3 or later (CFDIFIX-R2-6).
+    const zone = zoneWhere(dayThreeOrLater);
+    const X = await makeTenant("late rebuild CONCURRENCY-3", { zone });
     await activate(X, {
-      testFrom: today().slice(0, 8) + "01",
+      testFrom: X.today().slice(0, 8) + "01",
       periodicity: "day",
     });
     const saved = await saveSettings(X, { globalPeriodicity: "month" });
@@ -6113,8 +6143,8 @@ try {
         where tenant_id = ${X.tenantId} and kind = 'periodicity_applied'`;
       await tx`alter table cfdi_events enable trigger cfdi_events_immutable`;
     });
-    await makeTicket(X, { businessDate: daysAgo(2) });
-    await makeTicket(X, { businessDate: daysAgo(1) });
+    await makeTicket(X, { businessDate: X.daysAgo(2) });
+    await makeTicket(X, { businessDate: X.daysAgo(1) });
     await settle(X.tenantId);
     const after = (await web(X, (tx) => service.getSettings(tx, X.owner)))
       .settings!;
@@ -6128,9 +6158,9 @@ try {
     assert.equal(rebuilt.detail.to, "month");
     // The month got a global before the tick ran: the change must be undone, and receipts printed
     // since the save (monthly, later deadlines) would end earlier: the operator is told.
-    const Y = await makeTenant("reverted CONCURRENCY-3");
+    const Y = await makeTenant("reverted CONCURRENCY-3", { zone });
     await activate(Y, {
-      testFrom: today().slice(0, 8) + "01",
+      testFrom: Y.today().slice(0, 8) + "01",
       periodicity: "day",
     });
     await saveSettings(Y, { globalPeriodicity: "month" });
