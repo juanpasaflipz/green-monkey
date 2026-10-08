@@ -37,7 +37,7 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
 | 1.5 | Google OAuth client | Exists (prior staging client) | Yours |
 | 1.6 | GitHub protection and environment secrets | Done (2026-10-07, cutover step 8) | Yours: production environment secrets and variables |
 | 1.7 | Alert channel (ntfy topic) | **Pending: none set** | Yours |
-| 1.8 | Backup encryption key (age) and off-platform storage (R2) | **Staging configured 2026-10-08** (bucket, Object Read & Write token expiring 2026-11-07, age recipient); lifecycle rules, token renewal and production remain | Yours |
+| 1.8 | Backup encryption key (age) and off-platform storage (R2) | **Staging live 2026-10-08** (backup, retention and a passed restore drill; scheduled); lifecycle rules, token renewal before 2026-11-07 and production remain | Yours |
 | 1.9 | Error tracking (Sentry DSN): approve or decline | Off | Your decision |
 | 1.10 | Secrets you generate | `SIGNING_KEYS` done (2026-10-07) | Yours |
 | 1.11 | Legal entity data (LD-3) | Not set | Yours, after counsel (1.12) |
@@ -223,8 +223,10 @@ The restaurant-side companion is [the pilot operating guide](PILOT_SOP.md) (Span
   dashboard (`daily/` 35 days, `monthly/` 1900 days; the token cannot manage them), and
   **replacing the token before it expires on 2026-11-07** with a bucket-scoped Object
   Read & Write token without expiry (send it to the operator, who updates the two
-  secrets). The first manual backup, the first Retention dispatch, the restore drill
-  (with your private key) and `OPS_LIVE_ENVIRONMENTS=staging` follow (cutover step 14).
+  secrets). The first manual backup, the first Retention dispatch and the restore drill
+  (with your private key, on Neon: all four checks passed, RTO 117 s;
+  [evidence](evidence/restore/2026-10-08-staging.json)) ran on 2026-10-08, and
+  `OPS_LIVE_ENVIRONMENTS=staging` turned on the scheduled staging jobs (LD-67).
 - **What you supply.**
   1. **The R2 buckets.** One per environment: `gm-backups-staging` and
      `gm-backups-production`, created by `scripts/ops/provision-r2.sh <env>` with their
