@@ -13,7 +13,8 @@ import { readFileSync } from "node:fs";
 import { mxn } from "./oracle.js";
 import { FIGURES } from "./selling.js";
 import { orderCard, toOrders } from "./service-a.js";
-import { checkpoint, fill, press, record, run, type Device } from "./ui.js";
+import { checkpoint, fill, press, readApi, record, run, type Device } from "./ui.js";
+import { EXPECTED } from "./expected.js";
 import type { RunState } from "./env.js";
 
 /** cfdi D22 (docs/CFDI.md): the SAT test receptor, the same values as tests/browser/cfdi.spec.ts. */
@@ -54,6 +55,16 @@ export async function activateCfdi(owner: Device, state: RunState) {
   ])
     await expect(checklist.locator("li.cfdi-check.ok", { hasText: item })).toHaveCount(1);
   await expect(checklist.locator("li.cfdi-check.missing")).toHaveCount(0);
+  // Built (cfdi LD-51 F2): the periodicity is chosen in the activation step (default Mensual), so
+  // the spec's "Diaria" is chosen there and the first period is daily. The step says how the
+  // periodicity bounds self-invoicing while the portal does not reissue globals (LD-51 F1).
+  const activation = panel.locator(".cfdi-activation");
+  const grace = await graceMinutes(owner);
+  state.cfdiGraceMinutes = grace;
+  const chosen = activation.getByLabel("Periodicidad de la factura global");
+  await expect(chosen).toHaveValue("month");
+  await chosen.selectOption({ label: "Diaria" });
+  await expect(activation.getByText(`al cierre del día del consumo más ${grace} min`)).toBeVisible();
   const activate = panel.getByRole("button", { name: "Activar en modo prueba", exact: true });
   await expect(activate).toBeEnabled();
   await activate.click();
@@ -65,38 +76,83 @@ export async function activateCfdi(owner: Device, state: RunState) {
   await expect(ready).toBeVisible({ timeout: 120_000 });
   await expect(header).toContainText("Modo prueba");
   const form = panel.locator("form.cfdi-settings-form");
-  await form.getByLabel("Periodicidad de la factura global").selectOption({ label: "Diaria" });
+  const periodicity = form.getByLabel("Periodicidad de la factura global");
+  await expect(periodicity).toHaveValue("day");
+  // The server's decision, read twice: its settings (what applies on its business date and any
+  // change that waits) and the "Periodicidad actual" line the select is described by. The only
+  // outcome that passes is Diaria in force today with nothing waiting; any other fails here.
+  await expectDailyNow(owner, periodicity, state);
   await expect(form.getByRole("checkbox", { name: "Emitir la factura global automáticamente" })).toBeChecked();
   await form.getByRole("radio", { name: "Tarjeta de crédito (04)" }).check();
   await form.getByRole("button", { name: "Guardar configuración", exact: true }).click();
-  await expect(form.getByRole("status").filter({ hasText: "Configuración de facturación guardada" })).toBeVisible();
-  await expect(form.getByLabel("Periodicidad de la factura global")).toHaveValue("day");
-  // Built (CFDI-R2-1): activation queues a global tick that adds the current period's row,
-  // and once any period row exists a periodicity change applies from the first day of next
-  // month, so a period never mixes periodicities. The first period is then monthly.
-  const deferred = form.getByText(/^El cambio aplica desde el /);
-  if (await deferred.isVisible()) {
-    const [y, m] = state.businessDateB.split("-").map(Number) as [number, number];
-    const next = `${m === 12 ? y + 1 : y}-${String((m % 12) + 1).padStart(2, "0")}-01`;
-    await expect(deferred).toHaveText(`El cambio aplica desde el ${dateLabel(next)}.`);
-    state.cfdiFirstPeriodicity = "month";
-  } else state.cfdiFirstPeriodicity = "day";
-  record("B1.6 first global periodicity", "day (spec) or month (built, deferred)", state.cfdiFirstPeriodicity);
+  // The periodicity did not change, so the save's status carries no periodicity note (UX-2).
+  await expect(form.getByRole("status")).toHaveText("Configuración de facturación guardada");
+  await expect(periodicity).toHaveValue("day");
+  await expectDailyNow(owner, periodicity, state);
 }
 
-/** cfdi's periodLabel for the business date's period: "7 oct 2026" or "Octubre 2026". */
-function periodLabel(businessDate: string, periodicity: unknown) {
-  if (periodicity !== "month") return dateLabel(businessDate);
-  const [y, m] = businessDate.split("-").map(Number) as [number, number];
-  const name = new Intl.DateTimeFormat("es-MX", { month: "long", timeZone: "UTC" }).format(new Date(Date.UTC(y, m - 1, 1)));
-  return `${name[0]!.toUpperCase()}${name.slice(1)} ${y}`;
+type SettingsBody = {
+  businessDate: string;
+  globalGraceMinutes: number;
+  settings: null | {
+    globalPeriodicity: string;
+    nextPeriodicity: string | null;
+    nextPeriodicityFrom: string | null;
+  };
+};
+
+/** The worker's global grace as the server publishes it (GET /api/cfdi/settings, LD-51 F1). */
+async function graceMinutes(owner: Device) {
+  const { status, body } = await readApi<SettingsBody>(owner, "/api/cfdi/settings");
+  expect(status).toBe(200);
+  expect(Number.isInteger(body.globalGraceMinutes) && body.globalGraceMinutes > 0, "globalGraceMinutes").toBe(true);
+  return body.globalGraceMinutes;
 }
 
-/** The last day of the business date's month as dd/MM/yyyy (selfInvoiceDeadline, policy "month"). */
-function monthEnd(businessDate: string) {
-  const [y, m] = businessDate.split("-").map(Number) as [number, number];
-  const last = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  return `${String(last).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
+/**
+ * The server's periodicity decision for the business date (GET /api/cfdi/settings): the
+ * periodicity in force (a pending change counts from its first day) and a change that waits.
+ */
+async function periodicityDecision(owner: Device) {
+  const { status, body } = await readApi<SettingsBody>(owner, "/api/cfdi/settings");
+  expect(status).toBe(200);
+  const s = body.settings;
+  expect(s, "CFDI settings after activation").not.toBeNull();
+  const from = s!.nextPeriodicity ? s!.nextPeriodicityFrom : null;
+  return {
+    businessDate: body.businessDate,
+    current: from && from <= body.businessDate ? s!.nextPeriodicity : s!.globalPeriodicity,
+    waiting: from && from > body.businessDate ? { periodicity: s!.nextPeriodicity, from } : null,
+  };
+}
+
+/** B1.6 K: Diaria applies on the business date, by the server's settings and by its status line. */
+async function expectDailyNow(owner: Device, periodicity: Locator, state: RunState) {
+  const decision = await periodicityDecision(owner);
+  record("B1.6 periodicity decision (server)", "day in force, nothing waiting", decision);
+  expect(decision).toEqual({ businessDate: state.businessDateB, current: "day", waiting: null });
+  await expect(periodicity).toHaveAccessibleDescription("Periodicidad actual: diaria.");
+}
+
+/**
+ * The printed self-invoicing deadline (B6.9 K (a)). The spec's "{fin de mes}" is the "month"
+ * policy; built (cfdi LD-51 F1, LD-55 CFDIFIX-FISCAL-1), while «Sustituir la factura global» is off
+ * (the default) the ticket can be self-invoiced only until its global is built, and the receipt
+ * prints that when it comes first: a daily period closes at the next business day's start (the
+ * cutoff) and the worker builds it the grace later, printed with its time. On the month's last
+ * business date the month end comes first, with its time (it falls on the purchase day).
+ * Wall-clock arithmetic in the restaurant's zone: no DST transition falls between the cutoff
+ * (04:00 or 16:00) and the build.
+ */
+function receiptDeadline(state: RunState) {
+  const [y, m, d] = state.businessDateB.split("-").map(Number) as [number, number, number];
+  const [h, min] = state.cutoffB.split(":").map(Number) as [number, number];
+  const grace = state.cfdiGraceMinutes as number;
+  const built = new Date(Date.UTC(y, m - 1, d + 1, h, min + grace));
+  const monthEnd = new Date(Date.UTC(y, m, 0, 23, 59));
+  const at = built < monthEnd ? built : monthEnd;
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${two(at.getUTCDate())}/${two(at.getUTCMonth() + 1)}/${at.getUTCFullYear()} a las ${two(at.getUTCHours())}:${two(at.getUTCMinutes())}`;
 }
 
 /** B6.9 K (a): the receipt's self-invoicing block replaces fiscal's "Pídela con el folio" line. */
@@ -107,7 +163,9 @@ export async function selfInvoiceReceipt(caja: Device, state: RunState) {
   await expect(block.locator("strong")).toHaveText("¿Necesitas factura? (modo prueba)");
   await expect(block).toContainText(`Escanea o entra a ${new URL(state.baseUrl).host}/factura`);
   await expect(block).toContainText(CODE);
-  await expect(block).toContainText(`Disponible hasta el ${monthEnd(state.businessDateB)}`);
+  const deadline = receiptDeadline(state);
+  await expect(block.getByText(/^Disponible hasta el /)).toHaveText(`Disponible hasta el ${deadline}`);
+  record("B6.9 K receipt deadline", "fin de mes (spec); the daily global's build (built)", deadline);
   await expect(receipt).not.toContainText(`Pídela con el folio ${FIGURES.B3!.folio}`);
   await expect(block.getByRole("img", { name: "Código QR para facturar este ticket" })).toBeVisible();
 }
@@ -197,11 +255,11 @@ function dateLabel(businessDate: string) {
 }
 
 /**
- * B7.5 K: the period holding the business date is open (a global is built after
- * its period closes) and offers no "Emitir ahora"; the ticket chips on Detalle.
- * Built: the register sums stamped documents, so an open period reads 0 tickets
- * and $0.00 until it is built; the readiness set (the six tickets J-000003 is not
- * in, §7.11 row K) is reconciled by D19 instead.
+ * B7.5 K: the period D{business date} is open (a global is built after its period
+ * closes) and offers no "Emitir ahora"; the ticket chips on Detalle. The register
+ * counts what the open period's global will take (cfdi LD-51 F11, "N por emitir"):
+ * the six tickets J-000003 is not in and the §7.11 row K totals (gross and IVA),
+ * which D19 also reconciles from the fiscal tables.
  */
 export async function globalReadiness(owner: Device, caja: Device, state: RunState) {
   const panel = await cfdiPanel(owner);
@@ -209,12 +267,17 @@ export async function globalReadiness(owner: Device, caja: Device, state: RunSta
   const globals = panel.getByRole("region", { name: "Facturas globales" });
   const row = globals
     .getByRole("row")
-    .filter({ has: owner.page.getByRole("cell").filter({ hasText: periodLabel(state.businessDateB, state.cfdiFirstPeriodicity) }) });
+    .filter({ has: owner.page.getByRole("cell").filter({ hasText: dateLabel(state.businessDateB) }) });
   await expect(row).toHaveCount(1);
   const cells = row.getByRole("cell");
   await expect(cells.nth(0)).toContainText("Prueba");
   await expect(cells.nth(1)).toHaveText(/^Abierto hasta /);
-  record("B7.5 open period tickets (register)", "6 (spec)", await cells.nth(2).innerText());
+  const k = EXPECTED.B.globalK;
+  const cents = (s: string) => Math.round(Number(s.replace(/[$,]/g, "")) * 100);
+  await expect(cells.nth(2)).toHaveText(String(k.tickets));
+  await expect(cells.nth(3)).toHaveText(mxn(cents(k.iva8.sales) + cents(k.tasa0)));
+  await expect(cells.nth(4)).toHaveText(k.iva8.tax);
+  await expect(cells.nth(5)).toContainText(`${k.tickets} por emitir`);
   await expect(globals.getByRole("button", { name: "Emitir ahora" })).toHaveCount(0);
   await checkpoint(owner, "B7-global", { settle: globals });
   // The chips: J-000003 invoiced individually, the other six waiting for the global.
