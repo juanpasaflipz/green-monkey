@@ -589,6 +589,31 @@ describe("integrated charges (P2): what the waiting panel says and offers", () =
       /^No sabemos si el cobro se completó/,
     );
   });
+  it("a push that went dead (payments_push_failed) is unknown: it names the terminal, never offers a retry, and a manager resolves it as any unknown outcome", () => {
+    const dead = attempt({
+      state: "unknown",
+      errorCode: "payments_push_failed",
+      providerReference: null,
+      providerStatus: null,
+    });
+    expect(attemptStatus(dead, "es", cashier)).toEqual({
+      message:
+        "No pudimos confirmar el envío a MP Caja. Revisa la pantalla de la terminal antes de intentar otra vez; un gerente resuelve el cobro.",
+      tone: "warning",
+      live: true,
+      actions: ["recheck"],
+    });
+    expect(attemptStatus(dead, "en", manager)).toMatchObject({
+      message:
+        "We could not confirm the charge reached MP Caja. Check the terminal's screen before trying again; a manager resolves the charge.",
+      actions: ["recheck", "resolve"],
+    });
+    expect(resolveOptions(dead)).toEqual(["record", "not_charged"]);
+    // Offline it only waits, like any live charge.
+    expect(
+      attemptStatus(dead, "es", { manager: true, online: false }).actions,
+    ).toEqual([]);
+  });
   it("a decline names its reason; «Cobrar sin integración» only when the integration itself failed", () => {
     const refused = attemptStatus(
       attempt({ state: "declined", errorCode: "payments_provider_rejected" }),

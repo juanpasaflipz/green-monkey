@@ -455,6 +455,38 @@ export async function pushHandler(ctx: JobContext): Promise<JobOutcome> {
 }
 
 /**
+ * payments_push went dead (its last claim threw, or its lease expired on that claim) with the
+ * attempt still `sending`: the provider may hold the charge (MP keeps the order under the attempt
+ * id, Clip's create may have reached the reader), so the attempt becomes `unknown`
+ * (`payments_push_failed`) through the worker's own transition, alerted like any unknown outcome.
+ * The POS then offers «Volver a consultar» and a manager's «Resolver cobro», and Excepciones lists
+ * it after 10 minutes. Nothing is sent again: MP's idempotency key stays the attempt id and a
+ * Clip create is never repeated. A `created` attempt never reached the provider (`sending` is
+ * committed before the call) and stays cancellable from the POS.
+ */
+export async function pushDead(ctx: {
+  job: JobContext["job"];
+  tenant: JobContext["tenant"];
+}): Promise<void> {
+  const attemptId = id((ctx.job.payload as { attemptId?: unknown })?.attemptId);
+  if (!attemptId) return;
+  const tenantId = ctx.job.tenantId;
+  const moved = await ctx.tenant(async (tx) => {
+    const a = await lockAttempt(tx, attemptId);
+    if (a?.state !== "sending") return false;
+    await tx`update payment_attempts set state='unknown',error_code='payments_push_failed',
+        version=version+1 where id=${attemptId}`;
+    await workerEvent(tx, tenantId, attemptId, "unknown", {
+      code: "payments_push_failed",
+      before: "sending",
+    });
+    return true;
+  });
+  const rt = paymentsRuntime();
+  if (moved && rt) raise(rt, unknownAlert(tenantId, "push_failed"));
+}
+
+/**
  * A Clip create with an unknown outcome: withdraw whatever the reader has not picked up yet
  * (documented delete by serial number). Best effort; recorded as an event either way.
  */

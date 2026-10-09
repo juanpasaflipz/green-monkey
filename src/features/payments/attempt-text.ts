@@ -141,9 +141,13 @@ export function attemptStatus(
         actions: ["retry", "otherMethod"],
       };
     case "unknown":
-      // Never a blind retry: someone checks the terminal or a manager resolves.
+      // Never a blind retry: someone checks the terminal or a manager resolves. A push that
+      // went dead (the worker could not record the provider's answer) names the terminal.
       return {
-        message: t("payUnknown"),
+        message:
+          a.errorCode === "payments_push_failed"
+            ? terminal("payUnknownPushFailed")
+            : t("payUnknown"),
         tone: "warning",
         live,
         actions: ["recheck", ...(o.manager ? (["resolve"] as const) : [])],

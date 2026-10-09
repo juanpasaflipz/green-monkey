@@ -173,6 +173,26 @@ export function createJobRunner(
     reservedByKind.set(kind, (reservedByKind.get(kind) ?? 0) + n);
   };
 
+  /** The kind's onDead hook, after the dead write (server/jobs.ts JobDeadHook). */
+  async function deadHook(
+    job: ClaimedJob,
+    entry: RegisteredHandler,
+    code: string,
+    jobLog: Logger,
+  ) {
+    if (!entry.onDead) return;
+    try {
+      await entry.onDead({
+        job,
+        code,
+        log: jobLog,
+        tenant: (fn) => tenant(sql, job.tenantId, fn),
+      });
+    } catch (error) {
+      jobLog.error("job_dead_hook_failed", { code }, error);
+    }
+  }
+
   function execute(job: ClaimedJob, entry: RegisteredHandler) {
     const abort = new AbortController();
     const jobLog = log.child({
@@ -255,6 +275,7 @@ export function createJobRunner(
         else if (state === "dead") {
           jobLog.error("job_dead", attrs);
           o.onDead?.(job, action.code);
+          await deadHook(job, entry, action.code, jobLog);
         } else jobLog.info("job_failed", attrs);
         if (!result.ok && state !== "lost")
           jobLog.warn("job_handler_error", { code: action.code }, result.error);
@@ -318,14 +339,18 @@ export function createJobRunner(
       claimed += jobs.length;
       if (jobs.length === free) saturated = true;
       for (const job of expired) {
-        log
-          .child({ jobId: job.id, kind: job.kind, tenantId: job.tenantId })
-          .error("job_dead", {
-            code: "lease_expired",
-            attempts: job.attempts,
-            state: "dead",
-          });
+        const jobLog = log.child({
+          jobId: job.id,
+          kind: job.kind,
+          tenantId: job.tenantId,
+        });
+        jobLog.error("job_dead", {
+          code: "lease_expired",
+          attempts: job.attempts,
+          state: "dead",
+        });
         o.onDead?.(job, "lease_expired");
+        await deadHook(job, entry, "lease_expired", jobLog);
       }
     }
     return { claimed, saturated };

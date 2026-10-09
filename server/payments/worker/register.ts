@@ -7,6 +7,7 @@ import { registerWorkerJobHandler } from "../../jobs/worker-registry.js";
 import {
   cancelHandler,
   pollHandler,
+  pushDead,
   pushHandler,
   webhookHandler,
 } from "./charge.js";
@@ -17,10 +18,12 @@ import {
   wipeHandler,
 } from "./setup.js";
 
+// A push that goes dead with the attempt still `sending` leaves it `unknown` (pushDead).
 registerWorkerJobHandler("payments_push", pushHandler, {
   leaseSeconds: 30,
   concurrency: 4,
   maxAttempts: 3,
+  onDead: pushDead,
 });
 registerWorkerJobHandler("payments_poll", pollHandler, {
   leaseSeconds: 30,

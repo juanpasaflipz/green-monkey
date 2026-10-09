@@ -26,7 +26,8 @@ import {
 } from "../server/db.js";
 import { setLogSink } from "../server/logging.js";
 import type { Alert } from "../server/ops/alerts.js";
-import { handlers } from "../server/jobs.js";
+import { enqueueJob, handlers } from "../server/jobs.js";
+import { requeueJob } from "../server/jobs/queue.js";
 import { createJobRunner } from "../server/jobs/runner.js";
 import { workerHandlers } from "../server/jobs/worker-registry.js";
 import "../server/jobs/handlers/payments.js";
@@ -1639,6 +1640,189 @@ try {
       ["dismissed", "not_charged"],
     );
     assert.equal((await tenderOf(v3.id)).length, 0);
+  });
+
+  await test("dead push: when payments_push goes dead with the attempt still sending (its last claim fails, or its lease expires on that claim), the attempt becomes unknown (payments_push_failed) and nothing is sent again; Cobros en terminal lists it with Resolver, Excepciones after 10 minutes, and a manager resolves it", async () => {
+    const pushJob = async (attemptId: string) =>
+      (
+        await asOwner(
+          A,
+          (tx) => tx`select id,state,attempts,error_code from jobs
+            where kind='payments_push' and dedupe_key=${attemptId}`,
+        )
+      )[0] as {
+        id: string;
+        state: string;
+        attempts: number;
+        error_code: string;
+      };
+    const exceptions = async () =>
+      (
+        await write(owner, (tx) =>
+          exceptionRows(tx, owner, {
+            from: businessDate(
+              new Date(Date.now() - 86_400_000).toISOString(),
+              restaurant.timezone,
+              restaurant.cutoff,
+            ),
+            to: today,
+            limit: "500",
+          }),
+        )
+      ).rows as { kind: string; detail: { attemptId?: string } }[];
+    const listed = async (kind: string, attemptId: string) =>
+      (await exceptions()).some(
+        (r) => r.kind === kind && r.detail.attemptId === attemptId,
+      );
+    // (a) MP: a settled charge leaves its order id recorded for this restaurant; the next create
+    // is answered with that same id, so recording the answer fails on every claim (3) until the
+    // job is dead, with the attempt sending.
+    const o1 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const first = await pending(o1, terminals.mp);
+    fake.approve(first.ref, { ...TEST_CARD });
+    assert.equal(await drive(first.id, ["settled"]), "settled");
+    const o = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    fake.next("mercadopago", "reusedOrderId");
+    const deadBefore = dead.length;
+    const alertsBefore = alerts.length;
+    const view = await start(cashier, o.id, terminals.mp, o.total);
+    assert.equal(
+      await drive(view.id, ["unknown", "pending", "declined"]),
+      "unknown",
+    );
+    const row = await attemptRow(view.id);
+    assert.deepEqual(
+      [row.error_code, row.provider_reference],
+      ["payments_push_failed", null],
+    );
+    assert.deepEqual(
+      dead.splice(deadBefore).map((d) => d.kind),
+      ["payments_push"],
+      "the push went dead (removed here: the suite's final check expects none)",
+    );
+    const job = await pushJob(view.id);
+    assert.deepEqual([job.state, job.attempts], ["dead", 3]);
+    assert.deepEqual((await eventsOf(view.id)).at(-1), {
+      kind: "unknown",
+      actor: "worker",
+      detail: { code: "payments_push_failed", before: "sending" },
+    });
+    assert.ok(
+      alerts
+        .slice(alertsBefore)
+        .some((a) =>
+          /payments_attempt_unknown .*reason=push_failed/.test(a.body),
+        ),
+    );
+    // MP idempotency: every create carried the attempt id as its key; a staff requeue of the dead
+    // job finds the attempt unknown and sends nothing.
+    const creates = () =>
+      fake.requests.filter(
+        (r) => r.method === "POST" && r.path === "/mp/v1/orders",
+      ).length;
+    assert.equal(
+      fake.requests.filter(
+        (r) =>
+          r.method === "POST" &&
+          r.path === "/mp/v1/orders" &&
+          r.idempotencyKey === view.id,
+      ).length,
+      3,
+    );
+    const createsBefore = creates();
+    await write(manager, (tx) => requeueJob(tx, manager, job.id));
+    await round(A);
+    assert.equal(creates(), createsBefore, "a requeued push sends nothing");
+    assert.equal((await pushJob(view.id)).state, "done");
+    assert.equal(await stateOf(view.id), "unknown");
+    // Cobros en terminal (and the waiting panel) show it as live and unknown: Resolver.
+    const charges = await write(cashier, (tx) => activeAttempts(tx, cashier));
+    assert.deepEqual(
+      charges
+        .filter((a: AttemptView) => a.id === view.id)
+        .map((a: AttemptView) => [a.state, a.errorCode]),
+      [["unknown", "payments_push_failed"]],
+    );
+    // Excepciones lists an unknown outcome only after 10 minutes.
+    assert.equal(await listed("terminal_attempt_unknown_open", view.id), false);
+    // The manager resolves it with the existing outcomes: «No se cobró» (step-up, note).
+    const done = await resolve(fresh(A, ids.manager, "manager"), view.id, {
+      outcome: "not_charged",
+      note: NOTE,
+      confirmed: true,
+    });
+    assert.deepEqual(
+      [done.attempt.state, done.attempt.resolution],
+      ["dismissed", "not_charged"],
+    );
+    assert.equal((await tenderOf(view.id)).length, 0);
+    assert.equal(await listed("terminal_attempt_dismissed", view.id), true);
+
+    // (b) Clip, lease expired on the last claim (the worker died after committing sending). The
+    // attempt was started 11 minutes ago: a fixture row as startTerminalCharge writes it.
+    const o2 = await newOrder(cashier, [{ product: ids.taco, quantity: 1 }]);
+    const clipAttempt = randomUUID();
+    await asOwner(A, async (tx) => {
+      await tx`insert into payment_attempts(tenant_id,id,operation_id,settle_operation_id,target,origin,
+          order_id,terminal_id,provider,provider_device_id,terminal_label,amount,tip,currency,employee_id,
+          device_id,session_id,cash_session_id,created_at)
+        values(${A},${clipAttempt},${randomUUID()},${randomUUID()},'order','pos',${o2.id},${terminals.clip},
+          'clip','P8220724FAKE01','Clip Caja',${o2.total},0,'MXN',${ids.cashier},${ids.device1},
+          ${randomUUID()},${ids.drawer1},now() - interval '11 minutes')`;
+      await enqueueJob(
+        tx,
+        { tenantId: A },
+        {
+          kind: "payments_push",
+          dedupeKey: clipAttempt,
+          payload: { attemptId: clipAttempt },
+        },
+      );
+    });
+    await tenant(
+      worker,
+      A,
+      (
+        tx,
+      ) => tx`update payment_attempts set state='sending',sent_at=now(),version=version+1
+        where id=${clipAttempt}`,
+    );
+    await admin`update jobs set state='running', attempts=3, lease_until=now() - interval '1 second'
+      where tenant_id=${A} and kind='payments_push' and dedupe_key=${clipAttempt}`;
+    const clipCreates = () =>
+      fake.requests.filter(
+        (r) => r.method === "POST" && r.path.startsWith("/clip/"),
+      ).length;
+    const clipBefore = clipCreates();
+    // A fresh runner (the restarted worker) expires the lost job on its first drain.
+    const expired: string[] = [];
+    const restarted = createJobRunner(worker, {
+      handlers: workerHandlers,
+      concurrency: 4,
+      sweepMs: 3_600_000,
+      onDead: (j, code) => expired.push(`${j.kind}:${code}`),
+    });
+    await restarted.drainTenant(A);
+    while (restarted.running() > 0) await sleep(10);
+    await restarted.stop(2000);
+    assert.deepEqual(expired, ["payments_push:lease_expired"]);
+    const clipRow = await attemptRow(clipAttempt);
+    assert.deepEqual(
+      [clipRow.state, clipRow.error_code],
+      ["unknown", "payments_push_failed"],
+    );
+    assert.equal(clipCreates(), clipBefore, "Clip is never sent again");
+    assert.equal(
+      await listed("terminal_attempt_unknown_open", clipAttempt),
+      true,
+      "Excepciones lists it once it is older than 10 minutes",
+    );
+    const doneClip = await resolve(
+      fresh(A, ids.manager, "manager"),
+      clipAttempt,
+      { outcome: "not_charged", note: NOTE, confirmed: true },
+    );
+    assert.equal(doneClip.attempt.state, "dismissed");
   });
 
   await test("13. cancel: approved during the cancel stays approved and settles (the worker re-reads first); Clip's 400 on a taken charge keeps it pending with «cancélalo en la terminal» until the reader cancels; approved or later is not cancellable", async () => {

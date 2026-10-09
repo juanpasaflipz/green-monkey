@@ -189,6 +189,8 @@ export default defineArea({
     payExpired: "El cobro venció en la terminal",
     payUnknown:
       "No sabemos si el cobro se completó. Revisa la pantalla de la terminal antes de intentar otra vez.",
+    payUnknownPushFailed:
+      "No pudimos confirmar el envío a {terminal}. Revisa la pantalla de la terminal antes de intentar otra vez; un gerente resuelve el cobro.",
     payRecheck: "Volver a consultar",
     payRecheckSent: "Consultando al proveedor…",
     payCancelOnTerminal:
@@ -487,6 +489,8 @@ export default defineArea({
     payExpired: "The charge expired on the terminal",
     payUnknown:
       "We don't know whether the charge went through. Check the terminal's screen before trying again.",
+    payUnknownPushFailed:
+      "We could not confirm the charge reached {terminal}. Check the terminal's screen before trying again; a manager resolves the charge.",
     payRecheck: "Check again",
     payRecheckSent: "Asking the provider…",
     payCancelOnTerminal:
@@ -812,6 +816,10 @@ export default defineArea({
     payments_attempt_timeout: [
       "La terminal no dio un resultado a tiempo. Revisa la terminal; un gerente lo resuelve.",
       "The terminal gave no result in time. Check the terminal; a manager resolves it.",
+    ],
+    payments_push_failed: [
+      "No pudimos confirmar el envío a la terminal. Revisa la terminal; un gerente lo resuelve.",
+      "We could not confirm the charge reached the terminal. Check the terminal; a manager resolves it.",
     ],
     payments_terminal_unknown: [
       "La terminal registrada sin conexión ya no existe; el cobro se guardó sin terminal.",

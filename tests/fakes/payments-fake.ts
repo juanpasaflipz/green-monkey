@@ -7,7 +7,9 @@
  *   fake.next("mercadopago" | "clip", behaviour)  the next create answers with `behaviour`:
  *     "ok" (default), "queued2205", "busy" (Clip: reader offline), "rateLimit429",
  *     "server5xx", "timeout" (the connection drops with no answer: a lost create),
- *     "clipCreateTimeout" (alias of timeout for Clip), "belowMin"
+ *     "clipCreateTimeout" (alias of timeout for Clip), "belowMin", "reusedOrderId" (MP: 201 with
+ *     the id of the fake's newest MP order, an answer the restaurant cannot record twice, so the
+ *     push fails on every claim; the same key keeps getting that answer)
  *   fake.approve(ref, {paid?, tip?, brand?, type?, last4?, fee?})   paid at the terminal
  *   fake.decline(ref) / fake.expire(ref) / fake.cancelOnTerminal(ref) / fake.refund(ref)
  *   fake.lateApproval(ref, ms, o?)                                 approve after ms
@@ -39,7 +41,8 @@ export type Behaviour =
   | "server5xx"
   | "timeout"
   | "clipCreateTimeout"
-  | "belowMin";
+  | "belowMin"
+  | "reusedOrderId";
 type Approval = {
   paid?: number;
   tip?: number;
@@ -364,6 +367,14 @@ export async function startPaymentsFake(
           });
         if (behaviour === "rateLimit429") return send(res, 429, {});
         if (behaviour === "server5xx") return send(res, 503, {});
+        if (behaviour === "reusedOrderId") {
+          const newest = [...charges.values()]
+            .filter((x) => x.provider === "mercadopago")
+            .at(-1);
+          if (!newest) return send(res, 503, {});
+          idempotency.set(key, { body: raw, chargeId: newest.id });
+          return send(res, 201, mpOrder(newest));
+        }
         const c = newCharge("mercadopago", body, key);
         idempotency.set(key, { body: raw, chargeId: c.id });
         return send(res, 201, mpOrder(c));

@@ -93,18 +93,35 @@ export type JobOutcome =
  */
 export type JobHandler = (ctx: JobContext) => Promise<JobOutcome>;
 
+/**
+ * Optional per kind: runs once after the runner wrote a job of this kind dead (its last allowed
+ * claim failed, or its lease expired on that claim: `code` is then "lease_expired"), so the area
+ * can leave what the job had half done in a state people can resolve (payments: an attempt left
+ * `sending` becomes `unknown`). Same tenant scope and replay rules as the handler, no provider
+ * call. A throw is logged (job_dead_hook_failed) and changes nothing else; a requeued job runs
+ * the handler again as usual.
+ */
+export type JobDeadHook = (ctx: {
+  job: ClaimedJob;
+  code: string;
+  tenant<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
+  log: Logger;
+}) => Promise<void>;
+
 export interface RegisteredHandler {
   handler: JobHandler;
   concurrency: number;
   leaseSeconds: number;
   /** A failure at attempts >= maxAttempts goes dead (attempts counts claims). */
   maxAttempts: number;
+  onDead?: JobDeadHook;
 }
 
 export interface JobRegistrationOptions {
   concurrency?: number;
   leaseSeconds?: number;
   maxAttempts?: number;
+  onDead?: JobDeadHook;
 }
 
 const registry = new Map<string, RegisteredHandler>();
@@ -133,7 +150,13 @@ export function jobRegistration(
     maxAttempts > MAX_ATTEMPTS_LIMIT
   )
     throw Error("job handler maxAttempts must be an integer from 1 to 100");
-  return { handler, concurrency, leaseSeconds, maxAttempts };
+  return {
+    handler,
+    concurrency,
+    leaseSeconds,
+    maxAttempts,
+    ...(o.onDead ? { onDead: o.onDead } : {}),
+  };
 }
 
 /** Registers a web-process kind (server/jobs/handlers/<area>.ts). */
