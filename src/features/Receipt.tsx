@@ -9,7 +9,7 @@ import {
 } from "../../shared/domain";
 import { strings, errorNotice } from "../i18n";
 import { api } from "../api";
-import { tenderMethodLabel } from "../labels";
+import { tenderLabel } from "../labels";
 import { dateTime } from "../datetime";
 import { Badge, Button, Modal } from "../components/ui";
 import { printDocument, usePrintSettings, type PaperWidth } from "../print";
@@ -236,12 +236,10 @@ export function ReceiptDocument({
       {order.tenders.map((tender) => (
         <div className="doc-tender" key={tender.id}>
           <div className="row between">
-            <span>
-              {tenderMethodLabel(tender.method, tender.source, locale)}
-            </span>
+            <span>{tenderLabel(tender, locale)}</span>
             <strong>{money(tender.amount)}</strong>
           </div>
-          {tender.method === "external" && tender.external_reference && (
+          {tender.method !== "cash" && tender.external_reference && (
             <div className="muted">
               {t.serviceReceiptReference.replace(
                 "{ref}",
@@ -287,14 +285,12 @@ export function ReceiptDocument({
           {localPayment?.method && (
             <div className="doc-tender">
               <div className="row between">
-                <span>
-                  {tenderMethodLabel(localPayment.method, undefined, locale)}
-                </span>
+                <span>{tenderLabel(localPayment, locale)}</span>
                 {localPayment.amount !== undefined && (
                   <strong>{money(localPayment.amount)}</strong>
                 )}
               </div>
-              {localPayment.method === "external" && localPayment.reference && (
+              {localPayment.method !== "cash" && localPayment.reference && (
                 <div className="muted">
                   {t.serviceReceiptReference.replace(
                     "{ref}",

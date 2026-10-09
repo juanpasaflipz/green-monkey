@@ -1,5 +1,6 @@
 import { businessDate, type Locale } from "../shared/domain";
 import { serverNow } from "./clock";
+import { platformLabel } from "../shared/payments";
 import { strings, type Key } from "./i18n";
 
 /**
@@ -196,6 +197,52 @@ export function tenderMethodLabel(
     return strings[locale].serviceTenderRecovered;
   // Unknown methods (a future integrated tender) never print as cash.
   return strings[locale][tenderMethods[method] ?? "serviceTenderOther"];
+}
+/**
+ * payments (037): a tender as receipts and lists print it: "Pagado en Uber Eats", "Tarjeta ·
+ * BBVA" (plus "VISA •••• 4242" when an integrated terminal reported it), otherwise the method
+ * label. Accepts tender rows (snake case) and fiscal ticket payments (camel case).
+ */
+export function tenderLabel(
+  tender: {
+    method: string;
+    source?: string;
+    platform?: string | null;
+    platform_label?: string | null;
+    platformLabel?: string | null;
+    terminal_label?: string | null;
+    label?: string | null;
+    card_brand?: string | null;
+    card_last4?: string | null;
+    cardBrand?: string | null;
+    cardLast4?: string | null;
+  },
+  locale: Locale,
+): string {
+  if (tender.source === "offline_recovery" || !tender.method)
+    return tenderMethodLabel(tender.method, tender.source, locale);
+  const s = strings[locale];
+  if (tender.method === "platform" && tender.platform)
+    return s.payPlatformPaidIn.replace(
+      "{platform}",
+      platformLabel(
+        tender.platform,
+        tender.platform_label ?? tender.platformLabel ?? null,
+        locale,
+      ),
+    );
+  const terminal =
+    tender.terminal_label ??
+    (tender.method === "external" ? tender.label : null);
+  if (tender.method === "external" && terminal) {
+    const brand = tender.card_brand ?? tender.cardBrand;
+    const last4 = tender.card_last4 ?? tender.cardLast4;
+    const card = s.payCardOnTerminal.replace("{terminal}", terminal);
+    return brand && last4
+      ? `${card} · ${s.payCardLast4.replace("{brand}", brand.toUpperCase()).replace("{last4}", last4)}`
+      : card;
+  }
+  return tenderMethodLabel(tender.method, tender.source, locale);
 }
 export function channelLabel(channel: string, locale: Locale): string {
   return strings[locale][channels[channel] ?? "serviceChannelPos"];

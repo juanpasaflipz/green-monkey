@@ -9,7 +9,6 @@ import { checkRole, connect, tenant, type Tx } from "../server/db.js";
 import {
   addRound,
   createOrder,
-  getOrder,
   recordPayment,
 } from "../server/orders.js";
 import { catalog, menuRevision, publicCatalog } from "../server/menu-read.js";
@@ -165,8 +164,6 @@ async function newOrder(
     }),
   );
 }
-const orderOf = (id: string, s: Session = owner) =>
-  write(s, (tx) => getOrder(tx, id));
 function pay(s: Session, orderId: string, body: Record<string, unknown>) {
   return write(s, (tx) =>
     recordPayment(tx, s, orderId, { operationId: randomUUID(), ...body }),

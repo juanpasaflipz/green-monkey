@@ -17,7 +17,6 @@
  * then says committed and a retry returns it); `discarded` stores a
  * `payment_attempt_discarded` operation that refuses it.
  */
-import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { Tx } from "./db.js";
 import { DomainError, id, type Order, type Session } from "../shared/domain.js";

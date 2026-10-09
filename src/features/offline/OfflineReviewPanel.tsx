@@ -23,7 +23,7 @@ export type OfflineReviewDetail = {
   kind: OfflineRecordKind;
   collected: number;
   tip: number;
-  method: "cash" | "external" | null;
+  method: "cash" | "external" | "platform" | null;
   reference: string | null;
   recordedAt: string;
   recordedAtDevice: string | null;
@@ -225,7 +225,13 @@ export function OfflineReviewPanel({
               {format(detail.collected)} + {format(detail.tip)}{" "}
               {es ? "propina" : "tip"}
               {detail.method
-                ? ` · ${t(external ? "offlineMethodExternal" : "offlineMethodCash")}`
+                ? ` · ${t(
+                    external
+                      ? "offlineMethodExternal"
+                      : detail.method === "platform"
+                        ? "payMethodPlatform"
+                        : "offlineMethodCash",
+                  )}`
                 : ""}
               {detail.reference ? ` · ${detail.reference}` : ""}
             </dd>

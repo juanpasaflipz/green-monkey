@@ -113,6 +113,15 @@ export default defineArea({
     payReportsMarginAfterFees: "Margen después de comisiones",
     payReportsPlatformSales: "Plataformas",
     payRefundPlatform: "Reembolso por plataforma (sin efectivo)",
+    payCsvProvider: "Proveedor",
+    payCsvProviderReference: "Referencia del proveedor",
+    payCsvCardBrand: "Marca de tarjeta",
+    payCsvCardLast4: "Últimos 4",
+    payCsvFeeSource: "Origen de la comisión",
+    payCsvFeeProvider: "del proveedor",
+    payOfflineSavePlatform: "Guardar pago por plataforma",
+    payOfflineHintPlatform:
+      "Sin conexión: el pago por plataforma se guarda en este dispositivo y se registra al reconectar. No cuenta como efectivo.",
     payProblemPlatformRequired: "Elige la plataforma.",
     payProblemPlatformName: "Escribe el nombre de la plataforma.",
     payProblemPlatformFullBalance:
@@ -227,6 +236,15 @@ export default defineArea({
     payReportsMarginAfterFees: "Margin after fees",
     payReportsPlatformSales: "Platforms",
     payRefundPlatform: "Platform refund (no cash)",
+    payCsvProvider: "Provider",
+    payCsvProviderReference: "Provider reference",
+    payCsvCardBrand: "Card brand",
+    payCsvCardLast4: "Last 4",
+    payCsvFeeSource: "Fee source",
+    payCsvFeeProvider: "from the provider",
+    payOfflineSavePlatform: "Save platform payment",
+    payOfflineHintPlatform:
+      "Offline: the platform payment is saved on this device and recorded when you reconnect. It does not count as cash.",
     payProblemPlatformRequired: "Choose the platform.",
     payProblemPlatformName: "Enter the platform's name.",
     payProblemPlatformFullBalance:

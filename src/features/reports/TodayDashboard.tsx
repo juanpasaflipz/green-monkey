@@ -84,6 +84,8 @@ export function TodayDashboard({
   const s = data.summary;
   const cash = s.collections.byMethod.find((x) => x.method === "cash");
   const terminal = s.collections.byMethod.find((x) => x.method === "external");
+  // payments (037): platform sales are sales, shown apart from cash and card.
+  const platform = s.collections.byMethod.find((x) => x.method === "platform");
   const change =
     data.lastWeek && data.lastWeek.salesTotalUntilNow > 0
       ? fill(t.reportsTodayVsLastWeek, {
@@ -140,6 +142,9 @@ export function TodayDashboard({
           },
           { label: t.reportsTodayCash, value: m(cash?.amount ?? 0) },
           { label: t.reportsTodayTerminal, value: m(terminal?.amount ?? 0) },
+          ...(platform?.amount
+            ? [{ label: t.payReportsPlatformSales, value: m(platform.amount) }]
+            : []),
           { label: t.reportsTips, value: m(s.collections.tips) },
         ]}
       />

@@ -2,7 +2,9 @@ import { useState, type ReactNode } from "react";
 import type { Locale, Session } from "../../../shared/domain";
 import { Badge, Button } from "../../components/ui";
 import { strings, type Key } from "../../i18n";
-import { tenderMethodLabel } from "../../labels";
+import { tenderLabel } from "../../labels";
+import { PLATFORM_KEYS } from "../payments/PlatformFields";
+import type { PlatformCode } from "../../../shared/payments";
 import { countText, fill } from "../discounts/format";
 import { DrawerCloseDialog, type DrawerView } from "./DrawerCloseDialog";
 import type { DrawerFact } from "./drawer-cache";
@@ -141,11 +143,12 @@ export function DrawerPanel({
           .map((x) => ({
             id: x.id,
             at: x.created_at,
-            label: `${t("discountsDrawerMovementSale")} · ${tenderMethodLabel(x.method, x.source, locale)}`,
+            label: `${t("discountsDrawerMovementSale")} · ${tenderLabel(x, locale)}`,
             amount: x.amount + x.tip,
           })),
+        // payments (037): only cash refunds leave the drawer's cash.
         ...data.refunds
-          .filter((x) => x.method !== "external")
+          .filter((x) => x.method === "cash")
           .map((x) => ({
             id: x.id,
             at: x.created_at,
@@ -262,8 +265,85 @@ export function DrawerPanel({
                 </dd>
               </dl>
               <p className="muted tiny">{t("discountsDrawerCardHint")}</p>
+              {(data.byTerminal ?? []).some((r) => r.terminalId) && (
+                <div className="data-table">
+                  <table aria-label={t("cashCardByTerminal")}>
+                    <caption>{t("cashCardByTerminal")}</caption>
+                    <thead>
+                      <tr>
+                        <th>{t("payTerminal")}</th>
+                        <th>{t("discountsDrawerCardSales")}</th>
+                        <th>{t("discountsDrawerCardTips")}</th>
+                        <th>{t("discountsDrawerCardNet")}</th>
+                        {manager && <th>{t("cashTerminalFees")}</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(data.byTerminal ?? []).map((r) => (
+                        <tr key={r.terminalId ?? "other"}>
+                          <td>{r.label ?? t("payOtherTerminal")}</td>
+                          <td>{money(r.amount)}</td>
+                          <td>{money(r.tips)}</td>
+                          <td>{money(r.net)}</td>
+                          {manager && (
+                            <td>
+                              {r.fees
+                                ? money(r.fees.provider + r.fees.estimated)
+                                : "—"}
+                            </td>
+                          )}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </section>
+            {!!data.platform?.count && (
+              <section className="panel drawer-card">
+                <h2>{t("cashPlatforms")}</h2>
+                <dl className="cash-figures">
+                  {(data.platforms ?? []).map((p) => (
+                    <div key={p.platform} className="contents">
+                      <dt>{t(PLATFORM_KEYS[p.platform as PlatformCode])}</dt>
+                      <dd>
+                        {money(p.net)}
+                        {manager &&
+                        p.commission !== undefined &&
+                        p.commission > 0
+                          ? ` · ${t("cashPlatformCommissions")}: ${money(p.commission)}`
+                          : ""}
+                      </dd>
+                    </div>
+                  ))}
+                  <dt>
+                    <strong>{t("discountsDrawerCardNet")}</strong>
+                  </dt>
+                  <dd>
+                    <strong>{money(data.platform.net)}</strong>
+                  </dd>
+                </dl>
+              </section>
+            )}
           </div>
+          {!!data.unresolvedAttempts?.length && (
+            <div className="warning-panel" role="status">
+              <p>{t("cashUnresolvedAttempts")}</p>
+              <ul>
+                {data.unresolvedAttempts.map((a) => (
+                  <li key={a.id}>
+                    {a.holdLabel
+                      ? t("payAttemptKiosk").replace("{label}", a.holdLabel)
+                      : t("payAttemptOrder").replace(
+                          "{number}",
+                          String(a.orderNumber ?? ""),
+                        )}{" "}
+                    · {a.terminal} · {money(a.amount)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {cash && (
             <>
               <h2>{t("discountsDrawerCashMovements")}</h2>

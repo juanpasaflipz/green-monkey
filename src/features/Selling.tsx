@@ -74,6 +74,9 @@ import {
 } from "../print";
 import { CartLine } from "./CartLine";
 import { PaymentDialog } from "./PaymentDialog";
+import { usePaymentOptions } from "./payments/options";
+import { PLATFORM_KEYS } from "./payments/PlatformFields";
+import type { PlatformCode } from "../../shared/payments";
 import { ReceiptModal, checkStateOf, noteEditableOf } from "./Receipt";
 import { NoteDialog } from "./OrderDetail";
 import {
@@ -200,6 +203,9 @@ export function Selling({
   const [noteReprint, setNoteReprint] = useState<Order | null>(null);
   /** SVC-R2: one payment request at a time, from the tap until it settles. */
   const [paying, setPaying] = useState(false);
+  // payments (037): terminals and platforms for the payment dialog and the price list.
+  const [optionsRefresh, setOptionsRefresh] = useState(0);
+  const paymentOptions = usePaymentOptions(session, online, optionsRefresh);
   /**
    * SVC-R7: ids of the cart lines in a send that has not answered yet. They
    * cannot be edited and a product tap never merges into them (the ref is
@@ -792,7 +798,11 @@ export function Selling({
     const timer = setTimeout(() => setLastAddedId(null), 600);
     return () => clearTimeout(timer);
   }, [lastAddedId]);
-  const cart = priceCart(draft.lines, catalog, true);
+  // payments (037, LD-72): the order's platform price list (set at creation), else the cart's.
+  const priceList = current
+    ? (current.pricePlatform ?? null)
+    : (draft.pricePlatform ?? null);
+  const cart = priceCart(draft.lines, catalog, true, priceList);
   const priced = cart.lines.flatMap((l) => (l.priced ? [l.priced] : []));
   const draftTotal = cart.total;
   for (const l of priced) nameCache.current.set(l.id, l.name);
@@ -1247,6 +1257,11 @@ export function Selling({
             method: values.method,
             reference: values.reference,
             confirmed: values.confirmed,
+            ...(values.terminalId ? { terminalId: values.terminalId } : {}),
+            ...(values.platform ? { platform: values.platform } : {}),
+            ...(values.platformLabel
+              ? { platformLabel: values.platformLabel }
+              : {}),
           },
           {
             draft,
@@ -1283,9 +1298,15 @@ export function Selling({
         method: values.method,
         // Always present: the stored attempt (paymentAttemptV1) requires both,
         // and cash sends the server defaults, so the fingerprint is unchanged.
-        externalConfirmed: values.method === "external" && values.confirmed,
-        reference: values.method === "external" ? values.reference.trim() : "",
+        externalConfirmed: values.method !== "cash" && values.confirmed,
+        reference: values.method === "cash" ? "" : values.reference.trim(),
         ...(items ? { items } : {}),
+        // payments (037): only when present (an older payload hashes as before).
+        ...(values.terminalId ? { terminalId: values.terminalId } : {}),
+        ...(values.platform ? { platform: values.platform } : {}),
+        ...(values.platformLabel
+          ? { platformLabel: values.platformLabel }
+          : {}),
       };
       submittedAttempt = {
         formatVersion: 1,
@@ -1379,6 +1400,37 @@ export function Selling({
       />
     </Field>
   );
+  // payments (037, LD-72): ring a new order at a platform's prices.
+  const priceListField =
+    !current && paymentOptions.platforms.length > 0 ? (
+      <Field label={t("payPriceList")}>
+        <select
+          value={draft.pricePlatform ?? ""}
+          disabled={!!sending}
+          onChange={(e) => {
+            const value = e.target.value as PlatformCode | "";
+            setDraft((d) => {
+              const { pricePlatform: _old, ...rest } = d;
+              return value ? { ...rest, pricePlatform: value } : rest;
+            });
+          }}
+        >
+          <option value="">{t("payPriceListPos")}</option>
+          {paymentOptions.platforms.map((p) => (
+            <option key={p.platform} value={p.platform}>
+              {t(PLATFORM_KEYS[p.platform])}
+            </option>
+          ))}
+        </select>
+      </Field>
+    ) : current?.pricePlatform ? (
+      <p className="muted tiny">
+        {t("payPriceListLocked").replace(
+          "{platform}",
+          t(PLATFORM_KEYS[current.pricePlatform]),
+        )}
+      </p>
+    ) : null;
   const cartPanel = (
     <>
       <div className="cart-heading">
@@ -1461,6 +1513,7 @@ export function Selling({
         <div className="cart-fields">
           {nameField}
           {tableField}
+          {priceListField}
         </div>
       )}
       <div className="cart-lines">
@@ -1909,6 +1962,16 @@ export function Selling({
               </>
             ),
           }}
+          paymentOptions={paymentOptions}
+          pricePlatform={priceList}
+          onSetDefaultTerminal={(terminalId) => {
+            void api(`/payments/devices/${session.deviceId}/terminal`, {
+              operationId: crypto.randomUUID(),
+              terminalId,
+            })
+              .then(() => setOptionsRefresh((n) => n + 1))
+              .catch(() => {});
+          }}
           onClose={() => setPayment(false)}
           onGoToCash={() => {
             setPayment(false);
@@ -2035,6 +2098,7 @@ export function Selling({
         >
           {nameField}
           {tableField}
+          {priceListField}
           {noteField}
           {!current && (
             <p className="muted tiny">{t("serviceOrderNoteHint")}</p>

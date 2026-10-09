@@ -4,16 +4,20 @@ import type {
   DateRange,
   DrawerRow,
   MethodTotals,
+  PlatformTotals,
   TenderReportRow,
+  TerminalTotals,
 } from "../../../../shared/reports";
+import { platformLabel, type TenderMethod } from "../../../../shared/payments";
 import { strings, errorNotice } from "../../../i18n";
-import { tenderMethodLabel } from "../../../labels";
+import { tenderLabel, tenderMethodLabel } from "../../../labels";
 import { Badge, Button, Field } from "../../../components/ui";
 import { OrderDetail } from "../../OrderDetail";
 import {
   fetchAllPages,
   fetchBreakdown,
   fetchDrawers,
+  fetchSummary,
   fetchTenders,
 } from "../api";
 import { exportCsv, methodColumns, tenderColumns } from "../csv";
@@ -39,7 +43,7 @@ export function PaymentsTab({
   const t = strings[locale];
   const m = money(session.restaurant.currency, locale);
   const zone = session.restaurant.timezone;
-  const [method, setMethod] = useState<"" | "cash" | "external">("");
+  const [method, setMethod] = useState<"" | TenderMethod>("");
   const [drawer, setDrawer] = useState("");
   // REPORTS-UI-8: the Caja filter belongs to the range it was chosen in. A range change (or a
   // drawer the new range does not list) clears it, so the select and the request agree.
@@ -62,6 +66,11 @@ export function PaymentsTab({
     [range.from, range.to],
     { online, locale },
   );
+  // payments (037): card money by terminal and platform money by platform (S6/S7).
+  const summary = useReport(() => fetchSummary(range), [range.from, range.to], {
+    online,
+    locale,
+  });
   const drawers = useReport<DrawerRow[]>(
     () => fetchDrawers(range),
     [range.from, range.to],
@@ -187,6 +196,111 @@ export function PaymentsTab({
         )}
         <p className="muted tiny">{t.reportsCollectionsHint}</p>
       </section>
+      {summary.data && summary.data.collections.byTerminal.length > 0 && (
+        <section className="panel" aria-labelledby="report-pay-terminals">
+          <h2 id="report-pay-terminals">{t.payReportsByTerminal}</h2>
+          <DataTable<TerminalTotals>
+            caption={t.payReportsByTerminal}
+            locale={locale}
+            rows={summary.data.collections.byTerminal}
+            rowKey={(r) => r.terminalId ?? "other"}
+            columns={[
+              {
+                key: "terminal",
+                header: t.payTerminal,
+                render: (r) => r.label ?? t.payOtherTerminal,
+              },
+              {
+                key: "count",
+                header: t.reportsColCount,
+                numeric: true,
+                render: (r) => r.count,
+              },
+              {
+                key: "amount",
+                header: t.reportsColAmount,
+                numeric: true,
+                render: (r) => m(r.amount),
+              },
+              {
+                key: "tips",
+                header: t.reportsColTips,
+                numeric: true,
+                render: (r) => m(r.tips),
+              },
+              {
+                key: "refunds",
+                header: t.reportsColRefunds,
+                numeric: true,
+                render: (r) => m(r.refunds),
+              },
+              {
+                key: "fees",
+                header: t.payReportsFees,
+                numeric: true,
+                render: (r) =>
+                  m(r.fees.provider + r.fees.estimated) +
+                  (r.fees.estimated ? ` (${t.payReportsFeesEstimated})` : ""),
+              },
+              {
+                key: "net",
+                header: t.payReportsNetAfterFees,
+                numeric: true,
+                render: (r) => m(r.netAfterFees),
+              },
+            ]}
+          />
+        </section>
+      )}
+      {summary.data && summary.data.collections.byPlatform.length > 0 && (
+        <section className="panel" aria-labelledby="report-pay-platforms">
+          <h2 id="report-pay-platforms">{t.payReportsByPlatform}</h2>
+          <DataTable<PlatformTotals>
+            caption={t.payReportsByPlatform}
+            locale={locale}
+            rows={summary.data.collections.byPlatform}
+            rowKey={(r) => r.platform}
+            columns={[
+              {
+                key: "platform",
+                header: t.payPlatform,
+                render: (r) => platformLabel(r.platform, r.label, locale),
+              },
+              {
+                key: "count",
+                header: t.reportsColCount,
+                numeric: true,
+                render: (r) => r.count,
+              },
+              {
+                key: "amount",
+                header: t.reportsColAmount,
+                numeric: true,
+                render: (r) => m(r.amount),
+              },
+              {
+                key: "refunds",
+                header: t.reportsColRefunds,
+                numeric: true,
+                render: (r) => m(r.refunds),
+              },
+              {
+                key: "commission",
+                header: t.payReportsCommission,
+                numeric: true,
+                render: (r) => m(r.commission),
+              },
+              {
+                key: "net",
+                header: t.reportsColNet,
+                numeric: true,
+                render: (r) => m(r.net),
+              },
+            ]}
+          />
+          <p className="muted tiny">{t.payPlatformsHint}</p>
+        </section>
+      )}
       <section className="panel" aria-labelledby="report-tenders">
         <h2 id="report-tenders">{t.reportsTendersTitle}</h2>
         <ReportToolbar
@@ -208,6 +322,9 @@ export function PaymentsTab({
               </option>
               <option value="external">
                 {tenderMethodLabel("external", undefined, locale)}
+              </option>
+              <option value="platform">
+                {tenderMethodLabel("platform", undefined, locale)}
               </option>
             </select>
           </Field>
@@ -266,7 +383,18 @@ export function PaymentsTab({
               header: t.reportsColMethod,
               render: (r) => (
                 <>
-                  {tenderMethodLabel(r.method, r.source, locale)}{" "}
+                  {tenderLabel(
+                    {
+                      method: r.method,
+                      source: r.source,
+                      platform: r.platform,
+                      platformLabel: r.platformLabel,
+                      label: r.terminal,
+                      cardBrand: r.cardBrand,
+                      cardLast4: r.cardLast4,
+                    },
+                    locale,
+                  )}{" "}
                   {r.offline && <Badge>{t.reportsOfflineBadge}</Badge>}
                 </>
               ),

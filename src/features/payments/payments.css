@@ -1,0 +1,25 @@
+/* Payments (037): Configuración → Pagos con tarjeta y plataformas. */
+.payment-settings h3 {
+  margin-top: 1.25rem;
+}
+.payment-terminal-form,
+.payment-platforms .row {
+  align-items: flex-end;
+  gap: 0.75rem;
+}
+.payment-platforms .field {
+  max-width: 14rem;
+}
+.payment-prices input {
+  width: 7rem;
+  min-height: 44px;
+}
+.pay-terminals {
+  border: 0;
+  margin: 0.5rem 0;
+  padding: 0;
+}
+.pay-terminals legend {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}

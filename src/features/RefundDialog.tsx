@@ -6,6 +6,7 @@ import {
   type Session,
 } from "../../shared/domain";
 import { parseMoneyInput } from "../../shared/service";
+import type { TenderMethod } from "../../shared/payments";
 import {
   amountRefundAllowed,
   itemRefundExpectation,
@@ -28,7 +29,7 @@ import {
   currentBusinessDate,
   orderNumberLabel,
   orderNumberText,
-  tenderMethodLabel,
+  tenderLabel,
 } from "../labels";
 import { printDocument, readPrintSettings } from "../print";
 import { RefundSlip } from "./discounts/RefundSlip";
@@ -49,7 +50,7 @@ import { cfdiTicketCovered, useCfdiTicketStatus } from "./cfdi/status";
 
 type Tender = {
   id: string;
-  method: "cash" | "external";
+  method: TenderMethod;
   amount: number;
   refunded: number;
   external_reference: string | null;
@@ -382,6 +383,11 @@ export function RefundDialog({
               </strong>
             </p>
           )}
+          {result.batch.platformAmount > 0 && (
+            <p>
+              {t("payRefundPlatform")}: {money(result.batch.platformAmount)}
+            </p>
+          )}
           {result.batch.externalAmount > 0 && (
             <p>
               {fill(t("discountsRefundDoneTerminal"), {
@@ -638,7 +644,7 @@ export function RefundDialog({
                   {amountTenders.map((x) => (
                     <option key={x.id} value={x.id}>
                       {fill(t("discountsRefundTenderOption"), {
-                        method: tenderMethodLabel(x.method, x.source, locale),
+                        method: tenderLabel(x, locale),
                         paid: money(x.amount),
                         available: money(x.amount - x.refunded),
                       })}

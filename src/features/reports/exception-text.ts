@@ -96,6 +96,8 @@ export function exceptionDetail(
           cash: m(num(d.cash)),
           external: m(num(d.external)),
         }),
+        // payments (037): the platform part of a refund, when there is one.
+        num(d.platform) ? `${t.payRefundPlatform} ${m(num(d.platform))}` : "",
         d.mode === "items"
           ? t.reportsRefundModeItems
           : d.mode === "amount"
@@ -107,7 +109,10 @@ export function exceptionDetail(
         .join(" · ");
     case "terminal_difference":
       // REPORTS-UI-4: the signed amount alone reads like a loss; the word says which.
-      return differenceLabel(row.amount, locale);
+      // payments (037): a batch total typed per terminal names its terminal.
+      return d.terminalId !== undefined
+        ? `${typeof d.terminal === "string" && d.terminal ? d.terminal : t.payOtherTerminal} · ${differenceLabel(row.amount, locale)}`
+        : differenceLabel(row.amount, locale);
     case "drawer_difference":
       return [
         differenceLabel(row.amount, locale),

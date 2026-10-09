@@ -18,12 +18,22 @@ import { strings, errorNotice, type Key } from "../i18n";
 import { Button, Field, Modal } from "../components/ui";
 import { moneyFormatter } from "./Receipt";
 import { currentBusinessDate, orderNumberLabel } from "../labels";
+import type {
+  PaymentOptions,
+  PlatformCode,
+  TenderMethod,
+} from "../../shared/payments";
+import { EMPTY_PAYMENT_OPTIONS } from "./payments/options";
+import { TerminalPicker } from "./payments/TerminalPicker";
+import { PlatformFields } from "./payments/PlatformFields";
 
 /** Offline (026) fills this slot; it is used only while the device is offline. */
 export type OfflinePaymentSlot = {
   allowExternal: boolean;
-  confirmLabel: (method: "cash" | "external") => string;
-  hint: (method: "cash" | "external") => ReactNode;
+  /** payments (037): the platform tender follows the same offline rule as the terminal. */
+  allowPlatform?: boolean;
+  confirmLabel: (method: TenderMethod) => string;
+  hint: (method: TenderMethod) => ReactNode;
   /** Translated reason that disables Confirm. */
   blockReason: string | null;
 };
@@ -55,6 +65,9 @@ export function PaymentDialog({
   onClose,
   onGoToCash,
   offline,
+  paymentOptions = EMPTY_PAYMENT_OPTIONS,
+  pricePlatform = null,
+  onSetDefaultTerminal,
 }: {
   due: number;
   current: Order | null;
@@ -74,6 +87,12 @@ export function PaymentDialog({
   onClose: () => void;
   onGoToCash: () => void;
   offline?: OfflinePaymentSlot;
+  /** payments (037): terminals and platforms (GET /payments/options, cached for offline). */
+  paymentOptions?: PaymentOptions;
+  /** payments (037, LD-72): the order was rung at this platform's prices. */
+  pricePlatform?: PlatformCode | null;
+  /** "Usar siempre en este dispositivo" (online only). */
+  onSetDefaultTerminal?: (terminalId: string) => void;
 }) {
   const t = (k: Key) => strings[locale][k];
   const currency = session.restaurant.currency;
@@ -81,7 +100,38 @@ export function PaymentDialog({
   const money = moneyFormatter(currency, locale);
   const text = (n: number) => (n / 10 ** exponent).toFixed(exponent);
   const ids = useId();
-  const [method, setMethod] = useState<"cash" | "external">("cash");
+  const [method, setMethod] = useState<TenderMethod>(
+    pricePlatform ? "platform" : "cash",
+  );
+  // payments (037): the card record's terminal (null = "Otra terminal"), defaulting to
+  // this device's terminal once the options arrive, until the cashier picks one.
+  const [terminalId, setTerminalId] = useState<string | null>(
+    paymentOptions.defaultTerminalId,
+  );
+  const [terminalPicked, setTerminalPicked] = useState(false);
+  if (
+    !terminalPicked &&
+    terminalId === null &&
+    paymentOptions.defaultTerminalId &&
+    paymentOptions.terminals.some(
+      (x) => x.id === paymentOptions.defaultTerminalId,
+    )
+  )
+    setTerminalId(paymentOptions.defaultTerminalId);
+  const [useAsDefault, setUseAsDefault] = useState(false);
+  const offeredPlatforms = pricePlatform
+    ? paymentOptions.platforms.filter((p) => p.platform === pricePlatform)
+        .length
+      ? paymentOptions.platforms.filter((p) => p.platform === pricePlatform)
+      : [{ platform: pricePlatform }]
+    : paymentOptions.platforms;
+  const [platform, setPlatform] = useState<PlatformCode | null>(
+    pricePlatform ??
+      (paymentOptions.platforms.length === 1
+        ? paymentOptions.platforms[0].platform
+        : null),
+  );
+  const [platformLabel, setPlatformLabel] = useState("");
   const [amountText, setAmountText] = useState(() => text(due));
   /** Importe follows the balance due until the cashier types an amount. */
   const [amountFollows, setAmountFollows] = useState(true);
@@ -135,7 +185,8 @@ export function PaymentDialog({
   const receivedText = receivedInput ?? followed;
   const received = parse(receivedText);
   const validation = validatePayment({
-    amountText,
+    // A platform covers the whole balance (Q6): its amount is the balance.
+    amountText: method === "platform" ? text(due) : amountText,
     tipText,
     receivedText,
     method,
@@ -145,6 +196,9 @@ export function PaymentDialog({
     exponent,
     drawerOpen,
     online,
+    terminalId: method === "external" ? terminalId : null,
+    platform: method === "platform" ? platform : null,
+    platformLabel,
   });
   const waitingForItems = splitItems && !selected.length;
   const problem =
@@ -169,6 +223,10 @@ export function PaymentDialog({
   const slot = online ? undefined : offline;
   const blockReason = slot?.blockReason ?? null;
   const externalAllowed = online || !!slot?.allowExternal;
+  const platformAllowed =
+    offeredPlatforms.length > 0 &&
+    !splitItems &&
+    (online || !!(slot?.allowPlatform ?? slot?.allowExternal));
   const canConfirm =
     !busy &&
     !settling &&
@@ -203,12 +261,22 @@ export function PaymentDialog({
             variant="primary"
             className="full"
             disabled={!canConfirm}
-            onClick={() =>
+            onClick={() => {
+              if (
+                online &&
+                useAsDefault &&
+                validation.ok &&
+                validation.values.method === "external" &&
+                validation.values.terminalId &&
+                validation.values.terminalId !==
+                  paymentOptions.defaultTerminalId
+              )
+                onSetDefaultTerminal?.(validation.values.terminalId);
               onConfirm(
                 validation.ok ? validation.values : null,
                 splitItems ? selected : undefined,
-              )
-            }
+              );
+            }}
           >
             {busy ? t("loading") : confirmLabel}
             <Check size={20} />
@@ -278,6 +346,20 @@ export function PaymentDialog({
             >
               {t("external")}
             </button>
+            {(platformAllowed || method === "platform") && (
+              <button
+                type="button"
+                aria-pressed={method === "platform"}
+                disabled={!platformAllowed}
+                className={method === "platform" ? "selected" : ""}
+                onClick={() => {
+                  setMethod("platform");
+                  setConfirmed(false);
+                }}
+              >
+                {t("payMethodPlatform")}
+              </button>
+            )}
           </div>
           <div className="row wrap">
             <Button
@@ -366,8 +448,8 @@ export function PaymentDialog({
           <Field label={t("amount")}>
             <input
               inputMode="decimal"
-              value={amountText}
-              readOnly={splitItems}
+              value={method === "platform" ? text(due) : amountText}
+              readOnly={splitItems || method === "platform"}
               aria-invalid={problem?.field === "amount" || undefined}
               aria-describedby={errorId("amount")}
               onChange={(e) => {
@@ -377,107 +459,145 @@ export function PaymentDialog({
             />
           </Field>
           {inline("amount")}
-          <Field label={t("tip")}>
-            <input
-              inputMode="decimal"
-              value={tipText}
-              placeholder="0"
-              aria-invalid={problem?.field === "tip" || undefined}
-              aria-describedby={[errorId("tip"), `${ids}-tip-hint`]
-                .filter(Boolean)
-                .join(" ")}
-              onChange={(e) => setTipText(e.target.value)}
-            />
-          </Field>
-          <div className="row wrap chips">
-            <Button onClick={() => setTipText("")}>
-              {t("serviceTipNone")}
-            </Button>
-            {([10, 15] as const).map((p) => (
-              <Button
-                key={p}
-                disabled={amount === null}
-                onClick={() =>
-                  amount !== null &&
-                  setTipText(text(tipFromPercent(amount, p, exponent)))
-                }
-              >
-                {t("serviceTipPercent").replace("{p}", String(p))}
-              </Button>
-            ))}
-          </div>
-          <p className="muted tiny" id={`${ids}-tip-hint`}>
-            {t("serviceTipVoluntary")}
-          </p>
-          {inline("tip")}
-          {method === "cash" ? (
+          {method === "platform" ? (
             <>
-              <Field label={t("received")}>
-                <input
-                  inputMode="decimal"
-                  value={receivedText}
-                  aria-invalid={problem?.field === "received" || undefined}
-                  aria-describedby={errorId("received")}
-                  onChange={(e) => setReceivedInput(e.target.value)}
-                />
-              </Field>
-              {suggestions.length > 0 && (
-                <div
-                  className="row wrap chips"
-                  role="group"
-                  aria-label={t("serviceQuickCash")}
-                >
-                  {suggestions.map((value, i) => (
-                    <Button
-                      key={value}
-                      onClick={() => setReceivedInput(text(value))}
-                    >
-                      {i === 0 ? t("serviceExact") : money(value)}
-                    </Button>
-                  ))}
-                </div>
-              )}
-              {inline("received")}
-              <div className="row between">
-                <span>{t("change")}</span>
-                <strong>
-                  {validation.ok && received !== null
-                    ? money(
-                        changeDue(
-                          validation.values.received,
-                          validation.values.amount,
-                          validation.values.tip,
-                        ),
-                      )
-                    : "—"}
-                </strong>
-              </div>
+              <p className="muted">
+                {t("payPlatformBalance").replace("{amount}", money(due))}
+              </p>
+              <PlatformFields
+                platforms={offeredPlatforms}
+                platform={platform}
+                onPlatform={setPlatform}
+                label={platformLabel}
+                onLabel={setPlatformLabel}
+                reference={reference}
+                onReference={setReference}
+                confirmed={confirmed}
+                onConfirmed={setConfirmed}
+                locale={locale}
+                disabled={busy}
+                problem={problem}
+                errorIdOf={errorId}
+              />
             </>
           ) : (
             <>
-              <p className="muted">{t("servicePayExternalNoCash")}</p>
-              <p className="warning-panel">{t("externalHint")}</p>
-              <Field label={t("reference")}>
+              <Field label={t("tip")}>
                 <input
-                  value={reference}
-                  maxLength={120}
-                  autoComplete="off"
-                  aria-invalid={problem?.field === "reference" || undefined}
-                  aria-describedby={errorId("reference")}
-                  onChange={(e) => setReference(e.target.value)}
+                  inputMode="decimal"
+                  value={tipText}
+                  placeholder="0"
+                  aria-invalid={problem?.field === "tip" || undefined}
+                  aria-describedby={[errorId("tip"), `${ids}-tip-hint`]
+                    .filter(Boolean)
+                    .join(" ")}
+                  onChange={(e) => setTipText(e.target.value)}
                 />
               </Field>
-              {inline("reference")}
-              <label className="option">
-                <input
-                  type="checkbox"
-                  checked={confirmed}
-                  aria-describedby={errorId("confirmed")}
-                  onChange={(e) => setConfirmed(e.target.checked)}
-                />
-                {t("confirmExternal")}
-              </label>
-              {inline("confirmed")}
+              <div className="row wrap chips">
+                <Button onClick={() => setTipText("")}>
+                  {t("serviceTipNone")}
+                </Button>
+                {([10, 15] as const).map((p) => (
+                  <Button
+                    key={p}
+                    disabled={amount === null}
+                    onClick={() =>
+                      amount !== null &&
+                      setTipText(text(tipFromPercent(amount, p, exponent)))
+                    }
+                  >
+                    {t("serviceTipPercent").replace("{p}", String(p))}
+                  </Button>
+                ))}
+              </div>
+              <p className="muted tiny" id={`${ids}-tip-hint`}>
+                {t("serviceTipVoluntary")}
+              </p>
+              {inline("tip")}
+              {method === "cash" ? (
+                <>
+                  <Field label={t("received")}>
+                    <input
+                      inputMode="decimal"
+                      value={receivedText}
+                      aria-invalid={problem?.field === "received" || undefined}
+                      aria-describedby={errorId("received")}
+                      onChange={(e) => setReceivedInput(e.target.value)}
+                    />
+                  </Field>
+                  {suggestions.length > 0 && (
+                    <div
+                      className="row wrap chips"
+                      role="group"
+                      aria-label={t("serviceQuickCash")}
+                    >
+                      {suggestions.map((value, i) => (
+                        <Button
+                          key={value}
+                          onClick={() => setReceivedInput(text(value))}
+                        >
+                          {i === 0 ? t("serviceExact") : money(value)}
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+                  {inline("received")}
+                  <div className="row between">
+                    <span>{t("change")}</span>
+                    <strong>
+                      {validation.ok && received !== null
+                        ? money(
+                            changeDue(
+                              validation.values.received,
+                              validation.values.amount,
+                              validation.values.tip,
+                            ),
+                          )
+                        : "—"}
+                    </strong>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="muted">{t("servicePayExternalNoCash")}</p>
+                  <p className="warning-panel">{t("externalHint")}</p>
+                  <TerminalPicker
+                    terminals={paymentOptions.terminals}
+                    value={terminalId}
+                    onChange={(id) => {
+                      setTerminalId(id);
+                      setTerminalPicked(true);
+                    }}
+                    useAsDefault={useAsDefault}
+                    onUseAsDefault={setUseAsDefault}
+                    canSetDefault={online && !!onSetDefaultTerminal}
+                    locale={locale}
+                    disabled={busy}
+                  />
+                  <Field label={t("reference")}>
+                    <input
+                      value={reference}
+                      maxLength={120}
+                      autoComplete="off"
+                      aria-invalid={problem?.field === "reference" || undefined}
+                      aria-describedby={errorId("reference")}
+                      onChange={(e) => setReference(e.target.value)}
+                    />
+                  </Field>
+                  {inline("reference")}
+                  <label className="option">
+                    <input
+                      type="checkbox"
+                      checked={confirmed}
+                      aria-describedby={errorId("confirmed")}
+                      onChange={(e) => setConfirmed(e.target.checked)}
+                    />
+                    {t("confirmExternal")}
+                  </label>
+                  {inline("confirmed")}
+                </>
+              )}
             </>
           )}
           {(error || localError) && (

@@ -60,3 +60,8 @@
   gap: 8px;
   align-items: center;
 }
+
+/* payments (037): a dt/dd pair grouped for React keys keeps the figures grid. */
+.cash-figures > .contents {
+  display: contents;
+}
