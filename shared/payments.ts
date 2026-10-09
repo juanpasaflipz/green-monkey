@@ -256,6 +256,70 @@ export const resolveAttemptInput = z
   })
   .strict();
 
+/**
+ * Provider credentials typed by the owner (spec §9.1): loose, length-bounded format checks only;
+ * the provider's own verification (in the worker) decides validity. A parse failure is reported
+ * as payments_credentials_invalid_format and never echoes a value.
+ */
+export const mpCredentialsInput = z
+  .object({
+    accessToken: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_-]{20,400}$/),
+    webhookSecret: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9]{16,128}$/),
+  })
+  .strict();
+export const clipCredentialsInput = z
+  .object({
+    apiKey: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_-]{8,200}$/),
+    secretKey: z
+      .string()
+      .trim()
+      .regex(/^[A-Za-z0-9_-]{8,200}$/),
+  })
+  .strict();
+export const deviceModeInput = z
+  .object({ operationId: id, mode: z.enum(["PDV", "STANDALONE"]) })
+  .strict();
+/** A provider account as Configuración shows it (never a secret, a token or its hash). */
+export type ProviderAccountView = {
+  provider: Provider;
+  /** The worker serves this provider (PAYMENTS_PROVIDERS). */
+  available: boolean;
+  state: "not_connected" | "verifying" | "active" | "failed" | "disabled";
+  label: string | null;
+  verifiedAt: string | null;
+  errorCode: string | null;
+};
+export type ProviderDeviceView = {
+  provider: Provider;
+  deviceId: string;
+  operatingMode: "PDV" | "STANDALONE" | null;
+  status: string | null;
+  seenAt: string;
+  /** The active terminal configured on this device, if any. */
+  terminalId: string | null;
+};
+export type ProvidersView = {
+  accounts: ProviderAccountView[];
+  devices: ProviderDeviceView[];
+};
+/** POST …/credentials reply: the notification URL is shown once (no-store). */
+export type CredentialsSaved = {
+  provider: Provider;
+  state: "verifying";
+  webhookUrl: string;
+};
+/** Connectivity dot of an integrated terminal chip (spec §5.1 TerminalPicker). */
+export type TerminalStatus = "online" | "offline" | "no_data";
+
 const terminalName = z.string().trim().min(1).max(40);
 const feeBp = z.number().int().min(0).max(PAYMENTS_LIMITS.feeBpMax).nullable();
 /** Manual terminals in P1; integrated kinds need an active provider account (P2). */
@@ -334,6 +398,41 @@ export const setDeviceTerminalInput = z
   .object({ operationId: id, terminalId: id.nullable() })
   .strict();
 
+/** An integrated charge attempt as the dialog, banner and resolve dialog see it (P2). */
+export type AttemptView = {
+  id: string;
+  state: AttemptState;
+  target: "order" | "kiosk_hold";
+  origin: "pos" | "kiosk";
+  orderId: string | null;
+  holdId: string | null;
+  /** The order's number, or null for a hold target (labelled by holdLabel). */
+  orderNumber: number | null;
+  /** "Kiosco · K-14" for a hold target (critic R8). */
+  holdLabel: string | null;
+  terminalId: string;
+  terminalLabel: string;
+  provider: Provider;
+  amount: number;
+  tip: number;
+  /** Total the provider reports charged (tip included), once approved. */
+  paidAmount: number | null;
+  providerReference: string | null;
+  providerStatus: string | null;
+  cardType: CardType | null;
+  cardBrand: string | null;
+  cardLast4: string | null;
+  errorCode: string | null;
+  cancelRequested: boolean;
+  resolution: string | null;
+  createdAt: string;
+  decidedAt: string | null;
+};
+/** Attempt states the payment dialog stops waiting on. */
+export function isAttemptFinal(state: string): boolean {
+  return (FINAL_ATTEMPT_STATES as readonly string[]).includes(state);
+}
+
 /** A terminal as the payment dialog sees it (fees only for managers). */
 export type TerminalOption = {
   id: string;
@@ -342,6 +441,8 @@ export type TerminalOption = {
   feeBp?: number | null;
   /** Integrated charging available now (P2); false in P1 and offline. */
   integrated: boolean;
+  /** Integrated terminals: the provider's last device report (P2). */
+  status?: TerminalStatus;
 };
 export type PlatformOption = {
   platform: PlatformCode;

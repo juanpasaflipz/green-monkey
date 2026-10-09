@@ -22,8 +22,10 @@ import {
   setDeviceTerminalInput,
   type PaymentOptions,
   type PaymentSettingsView,
+  type Provider,
   type TerminalKind,
 } from "../../shared/payments.js";
+import { integratedProviders, terminalStatus } from "./providers.js";
 
 /** LO-3 area key, class 934 (critic R3): every payments configuration write. */
 async function lockPaymentsConfig(tx: Tx, s: Session) {
@@ -43,12 +45,25 @@ export async function paymentOptions(
 ): Promise<PaymentOptions> {
   permit(s, operators);
   const manager = managers.includes(s.role);
-  const [terminals, platforms, defaults] = await Promise.all([
-    tx`select id,name,kind,fee_bp from payment_terminals
+  const [terminals, platforms, defaults, devices, integrated] =
+    await Promise.all([
+      tx`select id,name,kind,fee_bp,provider_device_id from payment_terminals
       where active and archived_at is null order by lower(name),id`,
-    tx`select platform,enabled,commission_bp from payment_platforms`,
-    tx`select terminal_id from payment_device_terminals where device_id=${s.deviceId}`,
-  ]);
+      tx`select platform,enabled,commission_bp from payment_platforms`,
+      tx`select terminal_id from payment_device_terminals where device_id=${s.deviceId}`,
+      tx`select provider,device_id,status,seen_at from payment_provider_devices`,
+      integratedProviders(tx),
+    ]);
+  // P2: an integrated terminal charges through its provider when the worker serves the provider
+  // and the restaurant's account is active; it can always take a manual record.
+  const live = (kind: TerminalKind) => {
+    const provider = KIND_PROVIDER[kind] as Provider | null;
+    return Boolean(
+      provider &&
+      integrated.served.includes(provider) &&
+      integrated.accounts.get(provider)?.state === "active",
+    );
+  };
   const enabled = PLATFORMS.flatMap((platform) => {
     const row = platforms.find((p) => p.platform === platform);
     if (row && !row.enabled) return [];
@@ -66,15 +81,24 @@ export async function paymentOptions(
       name: t.name,
       kind: t.kind,
       ...(manager ? { feeBp: t.fee_bp ?? null } : {}),
-      // Integrated charging arrives with phase P2 (worker and provider adapters); an integrated
-      // terminal can always take a manual record meanwhile.
-      integrated: false,
+      integrated: live(t.kind),
+      ...(KIND_PROVIDER[t.kind as TerminalKind]
+        ? {
+            status: terminalStatus(
+              devices.find(
+                (d) =>
+                  d.provider === KIND_PROVIDER[t.kind as TerminalKind] &&
+                  d.device_id === t.provider_device_id,
+              ) as { status: string | null; seen_at: Date } | undefined,
+            ),
+          }
+        : {}),
     })),
     platforms: enabled,
     defaultTerminalId: terminals.some((t) => t.id === defaultId)
       ? defaultId
       : null,
-    integratedAvailable: false,
+    integratedAvailable: terminals.some((t) => live(t.kind)),
   };
 }
 

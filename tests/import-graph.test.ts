@@ -183,6 +183,52 @@ describe("process boundaries", () => {
     );
   });
 
+  it("payments (037 P2, spec §4.0): the web never reaches the payments worker modules or the vault; the worker never reaches the web's settle; the provider adapters import only http.ts from server/", () => {
+    const web = reachable("server/index.ts");
+    expect(
+      [...web].filter((f) => f.startsWith("server/payments/worker/")),
+    ).toEqual([]);
+    for (const forbidden of [
+      "server/vault/vault.ts",
+      "server/vault/rekey.ts",
+      "server/cfdi/vault.ts",
+    ])
+      expect(web.has(forbidden), forbidden).toBe(false);
+    // The web seals with the public key only, and settles in its own job.
+    expect(web.has("server/vault/seal-upload.ts")).toBe(true);
+    expect(web.has("server/payments/terminal.ts")).toBe(true);
+    expect(web.has("server/jobs/handlers/payments.ts")).toBe(true);
+    const worker = reachable("server/worker.ts");
+    expect(worker.has("server/payments/worker/register.ts")).toBe(true);
+    expect(worker.has("server/payments/worker/boot.ts")).toBe(true);
+    for (const forbidden of [
+      "server/payments/terminal.ts",
+      "server/payments/settings.ts",
+      "server/payments/providers.ts",
+      "server/payments/webhooks.ts",
+      "server/routes/payments.ts",
+    ])
+      expect(worker.has(forbidden), forbidden).toBe(false);
+    for (const adapter of [
+      "server/payments/worker/mercadopago.ts",
+      "server/payments/worker/clip.ts",
+    ]) {
+      const fromServer = directImports(resolve(adapter))
+        .map((t) => relative(process.cwd(), t))
+        .filter((t) => t.startsWith("server/"));
+      expect(
+        fromServer.filter(
+          (t) =>
+            t !== "server/payments/worker/http.ts" &&
+            t !== "server/payments/worker/mercadopago.ts",
+        ),
+        adapter,
+      ).toEqual([]);
+    }
+    const http = directImports(resolve("server/payments/worker/http.ts"));
+    expect(http).toEqual([]);
+  });
+
   it("the instrument preload loads configuration before anything else", () => {
     const source = readFileSync("server/instrument.ts", "utf8");
     const firstImport = source.match(/^import\s+["'][^"']+["'];/m)?.[0];
