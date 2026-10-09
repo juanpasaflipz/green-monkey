@@ -35,7 +35,7 @@
     "test:access-http": "tsx tests/access-http.ts",
     "access:pairing-code": "tsx scripts/pairing-code.ts",
     "test:db:recovery": "tsx tests/offline-recovery-db.ts",
-    "test:db:qualification": "npm run test:db:core && npm run test:db:identity && npm run test:db:owner && npm run test:db:entitlements && npm run test:db:billing && npm run test:db:free && npm run test:db:recovery && npm run test:db:voids && npm run test:db:ops && npm run test:db:access && npm run test:db:service && npm run test:db:menu && npm run test:db:offline && npm run test:db:fiscal && npm run test:db:discounts && npm run test:db:reports && npm run test:db:cfdi && npm run test:db:account && npm run test:db:support && npm run test:db:public",
+    "test:db:qualification": "npm run test:db:core && npm run test:db:identity && npm run test:db:owner && npm run test:db:entitlements && npm run test:db:billing && npm run test:db:free && npm run test:db:recovery && npm run test:db:voids && npm run test:db:ops && npm run test:db:access && npm run test:db:service && npm run test:db:menu && npm run test:db:offline && npm run test:db:fiscal && npm run test:db:discounts && npm run test:db:reports && npm run test:db:cfdi && npm run test:db:account && npm run test:db:support && npm run test:db:public && npm run test:db:payments",
     "test:browser": "playwright test",
     "test:db:service": "tsx tests/service-db.ts",
     "db:migrate": "tsx scripts/migrate.ts",
@@ -63,7 +63,8 @@
     "support:provision": "tsx scripts/provision-support-operator.ts",
     "test:acceptance:day": "bash scripts/restaurant-day.sh",
     "test:db:restaurant-day": "tsx tests/restaurant-day-db.ts",
-    "stripe:tax-rate:sandbox": "tsx scripts/stripe-sandbox-tax-rate.ts"
+    "stripe:tax-rate:sandbox": "tsx scripts/stripe-sandbox-tax-rate.ts",
+    "test:db:payments": "tsx tests/payments-db.ts"
   },
   "dependencies": {
     "@fontsource-variable/inter": "5.3.0",
