@@ -131,6 +131,8 @@ export default defineArea({
     payReportsNetBeforeCommission: "Ventas netas (antes de comisión)",
     payReportsNetAfterCommission: "Neto después de comisión (estimado)",
     payRefundPlatform: "Reembolso por plataforma (sin efectivo)",
+    payRefundPlatformHint:
+      "La plataforma le devuelve el dinero al cliente: no sale efectivo de la caja.",
     payCsvProvider: "Proveedor",
     payCsvProviderReference: "Referencia del proveedor",
     payCsvCardBrand: "Marca de tarjeta",
@@ -286,6 +288,8 @@ export default defineArea({
     payReportsNetBeforeCommission: "Net sales (before commission)",
     payReportsNetAfterCommission: "Net after commission (estimated)",
     payRefundPlatform: "Platform refund (no cash)",
+    payRefundPlatformHint:
+      "The platform refunds the customer: no cash leaves the drawer.",
     payCsvProvider: "Provider",
     payCsvProviderReference: "Provider reference",
     payCsvCardBrand: "Card brand",

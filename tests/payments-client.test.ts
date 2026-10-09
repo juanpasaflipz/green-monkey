@@ -17,6 +17,7 @@ import {
 } from "../src/features/reports/csv";
 import { money } from "../src/features/reports/format";
 import { referenceFromName } from "../shared/payments";
+import { refundParts } from "../src/features/RefundDialog";
 import {
   buildCorteDocument,
   drawerRow,
@@ -291,6 +292,19 @@ describe("Excepciones and the tender CSV", () => {
       .split(/\r\n/)[0];
     expect(drawerHeader).toContain("Plataformas");
     expect(drawerHeader).toContain("Reembolsos de plataformas");
+  });
+});
+
+describe("refund dialog breakdown (PAYMENTS-UX-8)", () => {
+  it("a platform portion is its own part, never cash", () => {
+    expect(
+      refundParts([
+        { method: "cash", amount: 1000 },
+        { method: "external", amount: 500 },
+        { method: "platform", amount: 12_900 },
+        { method: "card", amount: 7 },
+      ]),
+    ).toEqual({ cash: 1000, external: 500, platform: 12_900 });
   });
 });
 
