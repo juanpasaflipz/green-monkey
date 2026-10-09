@@ -28,6 +28,9 @@ import {
 } from "node:crypto";
 import { CompactEncrypt, compactDecrypt, decodeProtectedHeader } from "jose";
 import type { Keyring } from "../cfdi/config.js";
+import { PAYMENTS_UPLOAD_TYP } from "./seal-upload.js";
+
+export { PAYMENTS_UPLOAD_TYP };
 
 /** A vault failure; `code` names the problem, never a value. */
 export class VaultError extends Error {
@@ -195,7 +198,6 @@ export function createVault<P extends string>(o: VaultOptions<P>): Vault<P> {
 
 /** The payments area's vault (spec §9.1). Purposes match 037's payment_secrets.purpose. */
 export type PaymentSecretPurpose = "mp_credentials" | "clip_credentials";
-export const PAYMENTS_UPLOAD_TYP = "gm-payments-upload";
 export const paymentsVault = createVault<PaymentSecretPurpose>({
   salt: "green-monkey/payments",
   secretInfo: "secret-a256gcm",

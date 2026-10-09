@@ -6,6 +6,9 @@
 import { createPublicKey, type KeyObject } from "node:crypto";
 import { CompactEncrypt } from "jose";
 
+/** Protected-header typ of a payments credentials upload box (server/vault/vault.ts opens it). */
+export const PAYMENTS_UPLOAD_TYP = "gm-payments-upload";
+
 /** Thrown when the published key cannot be used; the caller maps it to its area's 503/409. */
 export class UploadKeyError extends Error {
   constructor() {
