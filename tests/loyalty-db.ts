@@ -1102,7 +1102,9 @@ try {
     const result = await runRetention(admin, { pauseMs: 0 });
     assert.deepEqual(result.failed, []);
     assert(result.redacted.loyalty_members >= 2);
-    const [old, recent, imported] = await Promise.all([member(f, ids.old), member(f, ids.recent), member(f, ids.imported)]);
+    const old = await member(f, ids.old);
+    const recent = await member(f, ids.recent);
+    const imported = await member(f, ids.imported);
     assert(old.redacted_at && imported.redacted_at && !recent.redacted_at);
     assert.deepEqual([old.name, old.phone_e164, imported.stamps], ["", null, 3]);
     const [r] = await asAdmin(f.tenantId, (tx) => tx`select redaction_reason,redacted_by from loyalty_members where id=${ids.old}`);
@@ -1311,7 +1313,13 @@ try {
       const r = await redeem(f, o.id, members[i].id, lineOf(o, f.p.burrito));
       redeemed.push({ order: r.order, discountId: r.order.discounts!.find((x) => x.reasonCode === "loyalty_reward")!.id });
     }
-    const fresh = await Promise.all(Array.from({ length: 6 }, () => newOrder(f, [{ product: f.p.combo, quantity: 1 }, { product: f.p.burrito, quantity: 1 }])));
+    const fresh = await noRetries("L16 orders", () =>
+      Promise.all(
+        Array.from({ length: 6 }, () =>
+          newOrder(f, [{ product: f.p.combo, quantity: 1 }, { product: f.p.burrito, quantity: 1 }]),
+        ),
+      ),
+    );
     const a = await approvalFor(sql, f.s.manager, undefined, "required");
     await noRetries("L16 burst", () =>
       Promise.all([
